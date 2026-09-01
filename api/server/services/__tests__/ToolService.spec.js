@@ -724,6 +724,7 @@ describe('ToolService - Action Capability Gating', () => {
     mockCreateMongooseOcrPdfChunkArtifactRepository.mockReturnValue({
       findBySourcePdfKey: jest.fn().mockResolvedValue([]),
       upsert: jest.fn(),
+      compareAndSetArtifactFilepath: jest.fn(async ({ filepath }) => filepath),
     });
     mockGetS3DownloadURLForKey.mockResolvedValue('https://files.example.test/original.pdf');
     mockS3ObjectExistsByKey.mockResolvedValue({ exists: false });
@@ -1400,6 +1401,11 @@ describe('ToolService - Action Capability Gating', () => {
           ({ file }) => file.ocrFileKey,
         ),
       ).toEqual(['file:file-a', 'file:file-b', 'file:file-c']);
+      expect(
+        mockRunOcrPreprocessingBatchPipeline.mock.calls[0][0].files.map(
+          ({ file }) => file.sourceCode,
+        ),
+      ).toEqual(['F1', 'F2', 'F3']);
       expect(result).toEqual({
         status: 'completed',
         ocrTurnActive: true,
@@ -1411,24 +1417,101 @@ describe('ToolService - Action Capability Gating', () => {
         currentOcrMarkdownResults: expect.arrayContaining([
           expect.objectContaining({
             ocrFileKey: 'file:file-a',
+            sourceCode: 'F1',
             kind: 'ocr_preprocessing_merged_markdown',
             ocrSource: 'ocr_preprocessing_merge',
             content: expect.stringContaining('<file:file-a>'),
           }),
           expect.objectContaining({
             ocrFileKey: 'file:file-b',
+            sourceCode: 'F2',
             kind: 'ocr_preprocessing_merged_markdown',
             ocrSource: 'ocr_preprocessing_merge',
             content: expect.stringContaining('<file:file-b>'),
           }),
           expect.objectContaining({
             ocrFileKey: 'file:file-c',
+            sourceCode: 'F3',
             kind: 'ocr_preprocessing_merged_markdown',
             ocrSource: 'ocr_preprocessing_merge',
             content: expect.stringContaining('<file:file-c>'),
           }),
         ]),
       });
+    });
+
+    it('keeps request-scoped source codes stable across failures and partial results', async () => {
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.body = { conversationId: 'convo-source-codes' };
+      req.steelNativeContext = {
+        requestId: 'resp-source-codes',
+        assistantTurnIndex: 4,
+        memoryCheckpointTurnIndex: 3,
+        currentTurnFiles: [
+          { fileId: 'file-a', filename: 'a.png', mediaType: 'image/png' },
+          { fileId: 'file-b', filename: 'b.png', mediaType: 'image/png' },
+          { fileId: 'file-c', filename: 'c.png', mediaType: 'image/png' },
+        ],
+      };
+      mockRunOcrPreprocessingBatchPipeline.mockImplementationOnce(async (input) => {
+        const [first, second, third] = input.files;
+        return {
+          files: [
+            {
+              file: first.file,
+              status: 'failed',
+              errorMessage: 'first file failed',
+              failures: [{ stage: 'paddleocr', errorMessage: 'first file failed' }],
+            },
+            {
+              file: second.file,
+              status: 'failed',
+              errorMessage: 'second file partial',
+              failures: [{ stage: 'organizer', errorMessage: 'second file partial' }],
+              partial: {
+                markdown: '| OCR |\n| --- |\n| partial |',
+                chunkCount: 1,
+                pageRanges: [],
+              },
+            },
+            {
+              file: third.file,
+              status: 'completed',
+              markdown: '| OCR |\n| --- |\n| success |',
+              chunkCount: 1,
+              pageRanges: [],
+            },
+          ],
+        };
+      });
+
+      const result = await runSteelPaddleOcrPreflight({
+        req,
+        res: {},
+        agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+        signal: new AbortController().signal,
+      });
+
+      expect(
+        mockRunOcrPreprocessingBatchPipeline.mock.calls[0][0].files.map(
+          ({ file }) => file.sourceCode,
+        ),
+      ).toEqual(['F1', 'F2', 'F3']);
+      expect(result).toEqual(
+        expect.objectContaining({
+          status: 'partial',
+          completedKeys: ['file:file-c'],
+          failedKeys: ['file:file-a', 'file:file-b'],
+          currentOcrFailures: [
+            expect.objectContaining({ ocrFileKey: 'file:file-a', sourceCode: 'F1' }),
+            expect.objectContaining({ ocrFileKey: 'file:file-b', sourceCode: 'F2' }),
+          ],
+          currentOcrMarkdownResults: [
+            expect.objectContaining({ ocrFileKey: 'file:file-b', sourceCode: 'F2' }),
+            expect.objectContaining({ ocrFileKey: 'file:file-c', sourceCode: 'F3' }),
+          ],
+        }),
+      );
     });
 
     it('fails closed when loaded OCR organizer rules are malformed', async () => {
@@ -1779,6 +1862,22 @@ describe('ToolService - Action Capability Gating', () => {
           contentType: 'application/pdf',
         }),
       ]);
+      const artifactRepository = mockCreateMongooseOcrPdfChunkArtifactRepository.mock.results.at(-1)
+        ?.value;
+      expect(artifactRepository.upsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sourcePdfKey: 'uploads/user_123/pdf-small__small.pdf',
+          sourceStorageKey: 'uploads/user_123/pdf-small__small.pdf',
+          sourceFileId: 'pdf-small',
+          pipelineVersion: 1,
+          pageStart: 1,
+          pageEnd: 49,
+          artifact: expect.objectContaining({
+            storageKey: 'uploads/user_123/pdf-small__small.pdf',
+            filepath: 'https://files.example.test/original-small.pdf',
+          }),
+        }),
+      );
       expect(mockRunOcrPreprocessingBatchPipeline).toHaveBeenCalledWith(
         expect.objectContaining({
           files: [
@@ -1840,6 +1939,88 @@ describe('ToolService - Action Capability Gating', () => {
       expect(artifacts[0]).toEqual(expect.objectContaining({ storageKey: filepath, filepath }));
       expect(refreshed).toBe(artifacts[0]);
       expect(mockGetS3DownloadURLForKey).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when a canonical original PDF object is missing', async () => {
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.user = { id: 'user_123', tenantId: 'tenant-a' };
+      req.body = { conversationId: 'convo-missing-original' };
+      req.steelNativeContext = {
+        requestId: 'resp-missing-original',
+        assistantTurnIndex: 4,
+        memoryCheckpointTurnIndex: 3,
+        currentTurnFiles: [
+          {
+            fileId: 'pdf-missing-original',
+            filename: 'missing-original.pdf',
+            mediaType: 'application/pdf',
+          },
+        ],
+      };
+      const sourcePdfKey = 'uploads/user_123/pdf-missing-original__missing-original.pdf';
+      mockGetFiles.mockResolvedValueOnce([
+        {
+          file_id: 'pdf-missing-original',
+          filename: 'missing-original.pdf',
+          filepath: 'https://files.example.test/missing-original.pdf',
+          storageKey: sourcePdfKey,
+          source: 's3',
+          type: 'application/pdf',
+          bytes: 987,
+          user: 'user_123',
+          tenantId: 'tenant-a',
+        },
+      ]);
+      const chunk = {
+        chunkIndex: 1,
+        chunkCount: 1,
+        pageStart: 1,
+        pageEnd: 49,
+        chunkSizePages: 50,
+      };
+      const row = {
+        sourcePdfKey,
+        pipelineVersion: 1,
+        ...chunk,
+        artifact: {
+          source: 's3',
+          storageKey: sourcePdfKey,
+          filepath: 'https://files.example.test/expired-original.pdf',
+          filename: 'missing-original.pdf',
+          bytes: 987,
+          contentType: 'application/pdf',
+        },
+      };
+      const repository = {
+        findBySourcePdfKey: jest.fn().mockResolvedValue([row]),
+        upsert: jest.fn(),
+        compareAndSetArtifactFilepath: jest.fn(),
+      };
+      mockCreateMongooseOcrPdfChunkArtifactRepository.mockReturnValueOnce(repository);
+      mockGetPdfPageCount.mockResolvedValueOnce(49);
+      mockBuildPdfPageChunks.mockReturnValueOnce([chunk]);
+      mockS3ObjectExistsByKey.mockResolvedValueOnce({ exists: false });
+      mockRunOcrPreprocessingBatchPipeline.mockImplementationOnce(async (input) =>
+        createMockOcrBatchResult(input),
+      );
+
+      await runSteelPaddleOcrPreflight({
+        req,
+        res: {},
+        agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+        signal: new AbortController().signal,
+      });
+
+      const pipelineInput = mockRunOcrPreprocessingBatchPipeline.mock.calls[0][0];
+      await expect(
+        pipelineInput.files[0].artifacts.ensurePdfChunkArtifacts({
+          file: pipelineInput.files[0].file,
+          sourcePdfKey,
+          chunks: [chunk],
+        }),
+      ).rejects.toThrow('canonical original PDF object is missing');
+      expect(mockGetS3DownloadURLForKey).not.toHaveBeenCalled();
+      expect(repository.compareAndSetArtifactFilepath).not.toHaveBeenCalled();
     });
 
     it('emits compact PaddleOCR chunk tool output while preserving raw result for DB capture', async () => {
@@ -5437,6 +5618,106 @@ describe('ToolService - Action Capability Gating', () => {
         req.steelNativeContext.delegateOcrContext.modelOptions,
       );
       expect(result.configurable.delegateOcrStreaming).toBe(true);
+    });
+
+    it('persists a refreshed PDF range URL before retrying delegate_ocr', async () => {
+      const { HumanMessage } = require('@librechat/agents/langchain/messages');
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.config.fileStrategy = 's3';
+      req.steelNativeContext = {
+        delegateOcrPolicy: {
+          resolved: true,
+          allowed: true,
+          allowedFileKeys: ['file:drawing-1'],
+        },
+        delegateOcrContext: {
+          history: [new HumanMessage('重新確認圖面')],
+          modelOptions: { authFilePath: '/tmp/auth.json', model: 'gpt-5.6-luna' },
+          steelConversation: {
+            currentUserTurn: { role: 'user', content: '重新確認圖面' },
+            activeHistory: [{ role: 'user', content: '重新確認圖面' }],
+          },
+        },
+      };
+      const fileRecord = {
+        file_id: 'drawing-1',
+        user: 'user_123',
+        filename: 'drawing.pdf',
+        type: 'application/pdf',
+        source: 's3',
+        storageKey: 'uploads/user_123/drawing-1__drawing.pdf',
+      };
+      const ensuredUrl = 'https://fresh.example/pages-1-50.pdf';
+      const refreshedUrl = 'https://fresh.example/pages-1-50?expires=43200.pdf';
+      const compareAndSetArtifactFilepath = jest.fn().mockResolvedValue(refreshedUrl);
+      const artifactRepository = {
+        findBySourcePdfKey: jest.fn().mockResolvedValue([]),
+        upsert: jest.fn(),
+        compareAndSetArtifactFilepath,
+      };
+      const getDownloadStream = jest.fn().mockResolvedValue({
+        async *[Symbol.asyncIterator]() {
+          yield Buffer.from('%PDF-1.7');
+        },
+      });
+      const artifact = {
+        sourcePdfKey: fileRecord.storageKey,
+        chunkIndex: 1,
+        chunkCount: 1,
+        pageStart: 1,
+        pageEnd: 50,
+        chunkSizePages: 50,
+        source: 's3',
+        storageKey: 'ocr/pages-1-50.pdf',
+        filepath: ensuredUrl,
+        filename: 'pages-1-50.pdf',
+        bytes: 100,
+        contentType: 'application/pdf',
+        artifactOrigin: 'uploaded',
+      };
+      mockGetFiles.mockResolvedValueOnce([fileRecord]);
+      mockGetStrategyFunctions.mockReturnValueOnce({ getDownloadStream });
+      mockGetPdfPageCount.mockResolvedValueOnce(50);
+      mockBuildPdfPageChunks.mockReturnValueOnce([
+        { chunkIndex: 1, chunkCount: 1, pageStart: 1, pageEnd: 50, chunkSizePages: 50 },
+      ]);
+      mockEnsurePdfChunkArtifacts.mockResolvedValueOnce([artifact]);
+      mockCreateMongooseOcrPdfChunkArtifactRepository.mockReturnValueOnce(artifactRepository);
+      mockGetS3DownloadURLForKey.mockResolvedValueOnce(refreshedUrl);
+      let attempt = 0;
+      const stream = jest.fn(async function* (messages) {
+        attempt += 1;
+        if (attempt === 1) {
+          throw new Error('RequestExpired');
+        }
+        yield { content: JSON.stringify(messages.at(-1)?.content) };
+      });
+      mockCreateOpenAIOAuthModel.mockReturnValue({ stream });
+
+      const result = await loadToolsForExecution({
+        req,
+        res: {},
+        agent: { id: 'agent_123' },
+        toolNames: ['delegate_ocr'],
+        actionsEnabled: false,
+      });
+      const tool = result.loadedTools.find((entry) => entry.name === 'delegate_ocr');
+      const output = await tool.invoke({ fileKeys: ['file:drawing-1'] });
+
+      expect(output.content).toContain(refreshedUrl);
+      expect(stream).toHaveBeenCalledTimes(2);
+      expect(compareAndSetArtifactFilepath).toHaveBeenCalledWith({
+        sourcePdfKey: fileRecord.storageKey,
+        pipelineVersion: 1,
+        pageStart: 1,
+        pageEnd: 50,
+        previousFilepath: ensuredUrl,
+        filepath: refreshedUrl,
+      });
+      expect(mockGetS3DownloadURLForKey).toHaveBeenCalledWith({
+        storageKey: artifact.storageKey,
+        contentType: 'application/pdf',
+      });
     });
 
     it('hard-stops quote-only delegation before any file, signer, rules, or model dependency', async () => {

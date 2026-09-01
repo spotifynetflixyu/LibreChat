@@ -13,6 +13,140 @@ import {
 
 type Mongoose = typeof import('mongoose');
 
+export const ocrPdfChunkArtifactMinimumUrlValiditySeconds: number = 6 * 60 * 60;
+const maxCloudFrontPolicyParameterLength = 16 * 1024;
+
+export function getSignedUrlRemainingValiditySeconds(
+  filepath: string,
+  now: number = Date.now(),
+): number | undefined {
+  let url: URL;
+  try {
+    url = new URL(filepath);
+  } catch {
+    return undefined;
+  }
+
+  const parameters = new Map(
+    [...url.searchParams.entries()].map(([key, value]) => [key.toLowerCase(), value]),
+  );
+  const epochSeconds = Number(parameters.get('expires'));
+  if (Number.isSafeInteger(epochSeconds) && epochSeconds >= 0) {
+    return Math.floor((epochSeconds * 1000 - now) / 1000);
+  }
+
+  const expiresInSeconds = Number(parameters.get('x-amz-expires'));
+  const amzDate = parameters.get('x-amz-date');
+  if (
+    amzDate &&
+    Number.isSafeInteger(expiresInSeconds) &&
+    expiresInSeconds >= 0 &&
+    /^\d{8}T\d{6}Z$/u.test(amzDate)
+  ) {
+    const issuedAt = Date.UTC(
+      Number(amzDate.slice(0, 4)),
+      Number(amzDate.slice(4, 6)) - 1,
+      Number(amzDate.slice(6, 8)),
+      Number(amzDate.slice(9, 11)),
+      Number(amzDate.slice(11, 13)),
+      Number(amzDate.slice(13, 15)),
+    );
+    const issuedDate = new Date(issuedAt);
+    const validIssuedDate =
+      Number.isFinite(issuedAt) &&
+      issuedDate.getUTCFullYear() === Number(amzDate.slice(0, 4)) &&
+      issuedDate.getUTCMonth() === Number(amzDate.slice(4, 6)) - 1 &&
+      issuedDate.getUTCDate() === Number(amzDate.slice(6, 8)) &&
+      issuedDate.getUTCHours() === Number(amzDate.slice(9, 11)) &&
+      issuedDate.getUTCMinutes() === Number(amzDate.slice(11, 13)) &&
+      issuedDate.getUTCSeconds() === Number(amzDate.slice(13, 15));
+    if (validIssuedDate) {
+      return Math.floor((issuedAt + expiresInSeconds * 1000 - now) / 1000);
+    }
+  }
+
+  const policy = parameters.get('policy');
+  if (!policy || policy.length > maxCloudFrontPolicyParameterLength) {
+    return undefined;
+  }
+  const encodedPolicies = [
+    policy.replace(/-/gu, '+').replace(/_/gu, '=').replace(/~/gu, '/'),
+    policy,
+  ];
+  for (const encodedPolicy of encodedPolicies) {
+    try {
+      const policyText = Buffer.from(
+        encodedPolicy,
+        encodedPolicy === policy ? 'base64url' : 'base64',
+      ).toString('utf8');
+      if (policyText.length > maxCloudFrontPolicyParameterLength) {
+        continue;
+      }
+      const parsed: unknown = JSON.parse(policyText);
+      const expiration = findPolicyEpochTime(parsed);
+      if (expiration !== undefined) {
+        return Math.floor((expiration * 1000 - now) / 1000);
+      }
+    } catch {
+      continue;
+    }
+  }
+  return undefined;
+}
+
+export function hasSufficientOcrPdfChunkArtifactUrlValidity(
+  filepath: string,
+  now: number = Date.now(),
+): boolean {
+  const remaining = getSignedUrlRemainingValiditySeconds(filepath, now);
+  return (
+    remaining !== undefined && remaining >= ocrPdfChunkArtifactMinimumUrlValiditySeconds
+  );
+}
+
+function findPolicyEpochTime(value: unknown): number | undefined {
+  if (value === null || typeof value !== 'object') {
+    return undefined;
+  }
+  const policy = value as Record<string, unknown>;
+  const statementValue = findObjectValue(policy, 'statement');
+  const statements = Array.isArray(statementValue) ? statementValue : [statementValue];
+  for (const statement of statements) {
+    if (statement === null || typeof statement !== 'object' || Array.isArray(statement)) {
+      continue;
+    }
+    const condition = findObjectValue(statement as Record<string, unknown>, 'condition');
+    if (condition === null || typeof condition !== 'object' || Array.isArray(condition)) {
+      continue;
+    }
+    const dateLessThan = findObjectValue(
+      condition as Record<string, unknown>,
+      'datelessthan',
+    );
+    if (dateLessThan === null || typeof dateLessThan !== 'object' || Array.isArray(dateLessThan)) {
+      continue;
+    }
+    const epochValue = findObjectValue(
+      dateLessThan as Record<string, unknown>,
+      'aws:epochtime',
+    );
+    const epoch = Number(epochValue);
+    if (Number.isSafeInteger(epoch) && epoch >= 0) {
+      return epoch;
+    }
+  }
+  return undefined;
+}
+
+function findObjectValue(object: Record<string, unknown>, normalizedKey: string): unknown {
+  for (const [key, value] of Object.entries(object)) {
+    if (key.toLowerCase() === normalizedKey) {
+      return value;
+    }
+  }
+  return undefined;
+}
+
 export interface OcrPdfChunkArtifactRecord extends OcrPreprocessingPageChunk {
   sourcePdfKey: string;
   sourceStorageKey?: string;
@@ -52,6 +186,14 @@ export interface OcrPdfChunkArtifactRepository {
     chunkSizePages?: number;
   }): Promise<OcrPdfChunkArtifactRecord[]>;
   upsert(artifact: OcrPdfChunkArtifactRecord): Promise<void>;
+  compareAndSetArtifactFilepath(input: {
+    sourcePdfKey: string;
+    pipelineVersion: number;
+    pageStart: number;
+    pageEnd: number;
+    previousFilepath: string;
+    filepath: string;
+  }): Promise<string>;
   compareAndSetSupersededByRanges?(input: {
     sourcePdfKey: string;
     pipelineVersion: number;
@@ -89,6 +231,50 @@ export function createMongooseOcrPdfChunkArtifactRepository(
         { $set: artifact },
         { upsert: true },
       );
+    },
+    async compareAndSetArtifactFilepath({
+      sourcePdfKey,
+      pipelineVersion,
+      pageStart,
+      pageEnd,
+      previousFilepath,
+      filepath,
+    }) {
+      const result = await SteelOcrPdfChunkArtifact.updateOne(
+        {
+          sourcePdfKey,
+          pipelineVersion,
+          pageStart,
+          pageEnd,
+          'artifact.filepath': previousFilepath,
+        },
+        {
+          $set: {
+            'artifact.filepath': filepath,
+          },
+        },
+      );
+      const matchedCount = result.matchedCount ?? result.modifiedCount ?? 0;
+      if (matchedCount === 1) {
+        return filepath;
+      }
+      const winner = await SteelOcrPdfChunkArtifact.findOne({
+        sourcePdfKey,
+        pipelineVersion,
+        pageStart,
+        pageEnd,
+      }).lean<OcrPdfChunkArtifactRecord | null>();
+      if (!winner) {
+        throw new Error(
+          `Missing OCR artifact row for ${sourcePdfKey} pages ${pageStart}-${pageEnd}`,
+        );
+      }
+      if (!winner.artifact?.filepath) {
+        throw new Error(
+          `OCR artifact row has no filepath for ${sourcePdfKey} pages ${pageStart}-${pageEnd}`,
+        );
+      }
+      return winner.artifact.filepath;
     },
     async compareAndSetSupersededByRanges({
       sourcePdfKey,
@@ -230,6 +416,7 @@ export interface EnsurePdfChunkArtifactsInput {
   repository: OcrPdfChunkArtifactRepository;
   storage: OcrPdfChunkArtifactStorage;
   createPdfChunk(input: { chunk: OcrPreprocessingPageChunk }): Promise<Uint8Array>;
+  now?: number;
 }
 
 export interface CommitOcrPdfChunkSplitInput extends EnsurePdfChunkArtifactsInput {
@@ -277,6 +464,41 @@ export async function ensurePdfChunkArtifacts(
         storageKey: existing.artifact.storageKey,
       });
       if (existingObjectIsPresent) {
+        if (
+          hasSufficientOcrPdfChunkArtifactUrlValidity(
+            existing.artifact.filepath,
+            input.now,
+          )
+        ) {
+          artifacts.push({
+            sourcePdfKey: existing.sourcePdfKey,
+            chunkIndex: chunk.chunkIndex,
+            chunkCount: chunk.chunkCount,
+            pageStart: chunk.pageStart,
+            pageEnd: chunk.pageEnd,
+            chunkSizePages: chunk.chunkSizePages,
+            source: existing.artifact.source,
+            storageKey: existing.artifact.storageKey,
+            storageRegion: existing.artifact.storageRegion,
+            filepath: existing.artifact.filepath,
+            filename: existing.artifact.filename,
+            bytes: existing.artifact.bytes,
+            contentType: existing.artifact.contentType,
+            artifactOrigin: 'existing',
+          });
+          continue;
+        }
+        const filepath = await input.storage.getDownloadUrl({
+          storageKey: existing.artifact.storageKey,
+        });
+        const persistedFilepath = await input.repository.compareAndSetArtifactFilepath({
+          sourcePdfKey: existing.sourcePdfKey,
+          pipelineVersion: existing.pipelineVersion,
+          pageStart: existing.pageStart,
+          pageEnd: existing.pageEnd,
+          previousFilepath: existing.artifact.filepath,
+          filepath,
+        });
         artifacts.push({
           sourcePdfKey: existing.sourcePdfKey,
           chunkIndex: chunk.chunkIndex,
@@ -287,9 +509,7 @@ export async function ensurePdfChunkArtifacts(
           source: existing.artifact.source,
           storageKey: existing.artifact.storageKey,
           storageRegion: existing.artifact.storageRegion,
-          filepath: await input.storage.getDownloadUrl({
-            storageKey: existing.artifact.storageKey,
-          }),
+          filepath: persistedFilepath,
           filename: existing.artifact.filename,
           bytes: existing.artifact.bytes,
           contentType: existing.artifact.contentType,

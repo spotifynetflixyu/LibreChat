@@ -358,6 +358,7 @@ describe('Steel native context adapter', () => {
         currentOcrMarkdownResults: [
           {
             ocrFileKey: 'file:676b6f2c-0361-412a-92f0-92711c94ffef',
+            sourceCode: 'F1',
             filename: 'PL.pdf',
             ocrPreprocessing: {
               chunkCount: 2,
@@ -438,7 +439,7 @@ describe('Steel native context adapter', () => {
       'Satisfy any other user intent only within those allowed sections',
     );
     expect(context.runtimeContextText).toContain(
-      'file_key: file:676b6f2c-0361-412a-92f0-92711c94ffef\nsource_filename: "PL.pdf"\npage_ranges: 1-2, 3-4\nchunk_count: 2\n<file:676b6f2c-0361-412a-92f0-92711c94ffef>',
+      'file_key: file:676b6f2c-0361-412a-92f0-92711c94ffef\nsource_code: F1\nsource_filename: "PL.pdf"\npage_ranges: 1-2, 3-4\nchunk_count: 2\n<file:676b6f2c-0361-412a-92f0-92711c94ffef>',
     );
     expect(context.runtimeContextText).toContain('| 鐵板 | 2 |');
     expect(context.runtimeContextText).not.toContain('paddleocr_status:');
@@ -462,11 +463,11 @@ describe('Steel native context adapter', () => {
     expect(directive).toContain('[ocr_main_merge]');
     expect(directive).toContain('[final_ocr_markdown]');
     expect(directive).toMatch(
-      /final answer MUST contain only per-source consolidated OCR table\(s\), an optional `manual_review` section\/table, and the required OCR completion summary/u,
+      /final answer MUST start with exactly one `## 來源檔案對照表` mapping table with columns `來源` and `檔名` in backend F-code order, then one consolidated `## OCR 結果確認表`, an optional final `## manual_review` table, and the OCR completion summary/u,
     );
     expect(directive).toMatch(/Do not output page headings or page details/u);
     expect(directive).toMatch(
-      /Do not output explanatory prose, bullet lists, calculations, or duplicate tables/u,
+      /Do not output page headings or page details, explanatory prose, bullet lists, calculations, or duplicate tables/u,
     );
     expect(directive).toContain('Satisfy any other user intent only within those allowed sections');
     expect(directive).not.toContain('Answer any other user intent too');
@@ -511,6 +512,31 @@ describe('Steel native context adapter', () => {
       'file_key: file:file-without-name\n<file:file-without-name>\nOCR Markdown',
     );
     expect(context.runtimeContextText).not.toContain('source_filename:');
+  });
+
+  it('renders only strictly valid backend OCR source codes', async () => {
+    const context = await buildSteelGlobalAgentContext({
+      conversation: { requestId: 'request_ocr_source_code_validation', activeHistory: [] },
+      dependencies: createDependencies(),
+      mode: 'ocr',
+      attachments: {
+        currentOcrMarkdownResults: [
+          {
+            ocrFileKey: 'file:valid-source-code',
+            sourceCode: 'F12',
+            content: '<file:valid-source-code>\n| OCR |\n| --- |\n| valid |',
+          },
+          {
+            ocrFileKey: 'file:invalid-source-code',
+            sourceCode: 'F01',
+            content: '<file:invalid-source-code>\n| OCR |\n| --- |\n| invalid |',
+          },
+        ],
+      },
+    });
+
+    expect(context.runtimeContextText).toContain('source_code: F12');
+    expect(context.runtimeContextText).not.toContain('source_code: F01');
   });
 
   it('does not expose OCR chunk statuses when organized Markdown is present', async () => {

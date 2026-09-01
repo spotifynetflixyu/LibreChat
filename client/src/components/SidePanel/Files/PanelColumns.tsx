@@ -30,7 +30,7 @@ export const columns: ColumnDef<TFile | undefined>[] = [
     cell: ({ row }) => <PanelFileCell row={row} />,
   },
   {
-    accessorKey: 'updatedAt',
+    accessorKey: 'createdAt',
     meta: {
       size: '10%',
     },
@@ -51,7 +51,7 @@ export const columns: ColumnDef<TFile | undefined>[] = [
     },
     cell: ({ row }) => (
       <span className="flex justify-end text-xs">
-        {formatDate(row.original?.updatedAt?.toString() ?? '')}
+        {formatDate(row.original?.createdAt?.toString() ?? '')}
       </span>
     ),
   },

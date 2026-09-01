@@ -7,6 +7,8 @@ import {
   commitOcrPdfChunkSplit,
   createMongooseOcrPdfChunkArtifactRepository,
   ensurePdfChunkArtifacts,
+  getSignedUrlRemainingValiditySeconds,
+  hasSufficientOcrPdfChunkArtifactUrlValidity,
   resolveCanonicalOcrPageChunks,
   type OcrPdfChunkArtifactRecord,
 } from './artifacts';
@@ -77,6 +79,82 @@ describe('OCR PDF chunk artifacts', () => {
     );
   });
 
+  it('rotates a canonical URL with a targeted compare-and-set update', async () => {
+    const updateOne = jest.fn(async () => ({ matchedCount: 1, modifiedCount: 1 }));
+    createArtifactModel.mockReturnValueOnce({ updateOne } as never);
+    const repository = createMongooseOcrPdfChunkArtifactRepository(mongoose);
+
+    await expect(
+      repository.compareAndSetArtifactFilepath?.({
+        sourcePdfKey: 's3://bucket/original.pdf',
+        pipelineVersion: 1,
+        pageStart: 1,
+        pageEnd: 50,
+        previousFilepath: 'https://cdn.example/old.pdf',
+        filepath: 'https://cdn.example/fresh.pdf',
+      }),
+    ).resolves.toBe('https://cdn.example/fresh.pdf');
+    expect(updateOne).toHaveBeenCalledWith(
+      {
+        sourcePdfKey: 's3://bucket/original.pdf',
+        pipelineVersion: 1,
+        pageStart: 1,
+        pageEnd: 50,
+        'artifact.filepath': 'https://cdn.example/old.pdf',
+      },
+      { $set: { 'artifact.filepath': 'https://cdn.example/fresh.pdf' } },
+    );
+  });
+
+  it('returns the concurrent URL winner when compare-and-set loses the race', async () => {
+    const winner = {
+      artifact: {
+        filepath: 'https://cdn.example/winner.pdf',
+      },
+    };
+    const updateOne = jest.fn(async () => ({ matchedCount: 0, modifiedCount: 0 }));
+    const lean = jest.fn(async () => winner);
+    const findOne = jest.fn(() => ({ lean }));
+    createArtifactModel.mockReturnValueOnce({ updateOne, findOne } as never);
+    const repository = createMongooseOcrPdfChunkArtifactRepository(mongoose);
+
+    await expect(
+      repository.compareAndSetArtifactFilepath?.({
+        sourcePdfKey: 's3://bucket/original.pdf',
+        pipelineVersion: 1,
+        pageStart: 1,
+        pageEnd: 50,
+        previousFilepath: 'https://cdn.example/old.pdf',
+        filepath: 'https://cdn.example/fresh.pdf',
+      }),
+    ).resolves.toBe('https://cdn.example/winner.pdf');
+    expect(findOne).toHaveBeenCalledWith({
+      sourcePdfKey: 's3://bucket/original.pdf',
+      pipelineVersion: 1,
+      pageStart: 1,
+      pageEnd: 50,
+    });
+  });
+
+  it('fails closed when compare-and-set cannot find the canonical row', async () => {
+    const updateOne = jest.fn(async () => ({ matchedCount: 0, modifiedCount: 0 }));
+    const lean = jest.fn(async () => null);
+    const findOne = jest.fn(() => ({ lean }));
+    createArtifactModel.mockReturnValueOnce({ updateOne, findOne } as never);
+    const repository = createMongooseOcrPdfChunkArtifactRepository(mongoose);
+
+    await expect(
+      repository.compareAndSetArtifactFilepath?.({
+        sourcePdfKey: 's3://bucket/original.pdf',
+        pipelineVersion: 1,
+        pageStart: 1,
+        pageEnd: 50,
+        previousFilepath: 'https://cdn.example/old.pdf',
+        filepath: 'https://cdn.example/fresh.pdf',
+      }),
+    ).rejects.toThrow('Missing OCR artifact row');
+  });
+
   it('builds deterministic storage keys from source PDF key and page range', () => {
     expect(
       buildOcrPdfChunkArtifactStorageKey({
@@ -88,6 +166,110 @@ describe('OCR PDF chunk artifacts', () => {
         },
       }),
     ).toMatch(/^ocr-preprocessing\/[a-f0-9]{64}\/v1\/pages-000001-000050\.pdf$/);
+  });
+
+  it('parses S3 and CloudFront signed URL expiry with an inclusive six-hour boundary', () => {
+    const now = Date.UTC(2026, 0, 1, 0, 0, 0);
+    const s3Date = '20260101T000000Z';
+    const s3Url = `https://s3.example/chunk.pdf?X-Amz-Date=${s3Date}&X-Amz-Expires=21600`;
+    const cloudFrontUrl = `https://cdn.example/chunk.pdf?Expires=${now / 1000 + 21600}`;
+
+    expect(getSignedUrlRemainingValiditySeconds(s3Url, now)).toBe(21600);
+    expect(hasSufficientOcrPdfChunkArtifactUrlValidity(s3Url, now)).toBe(true);
+    expect(hasSufficientOcrPdfChunkArtifactUrlValidity(cloudFrontUrl, now)).toBe(true);
+    expect(
+      hasSufficientOcrPdfChunkArtifactUrlValidity(
+        `https://cdn.example/chunk.pdf?Expires=${now / 1000 + 21599}`,
+        now,
+      ),
+    ).toBe(false);
+  });
+
+  it('parses CloudFront custom policy expiry and rejects malformed policies', () => {
+    const now = Date.UTC(2026, 0, 1, 0, 0, 0);
+    const policy = Buffer.from(
+      JSON.stringify({ Statement: [{ Condition: { DateLessThan: { 'AWS:EpochTime': now / 1000 + 21600 } } }] }),
+    ).toString('base64url');
+
+    expect(
+      getSignedUrlRemainingValiditySeconds(`https://cdn.example/chunk.pdf?Policy=${policy}`, now),
+    ).toBe(21600);
+    const policyWithWindow = Buffer.from(
+      JSON.stringify({
+        Statement: [
+          {
+            Condition: {
+              DateGreaterThan: { 'AWS:EpochTime': now / 1000 - 60 },
+              DateLessThan: { 'AWS:EpochTime': now / 1000 + 21600 },
+            },
+          },
+        ],
+      }),
+    ).toString('base64url');
+    expect(
+      getSignedUrlRemainingValiditySeconds(
+        `https://cdn.example/chunk.pdf?Policy=${policyWithWindow}`,
+        now,
+      ),
+    ).toBe(21600);
+    const cloudFrontPolicy = Buffer.from(
+      JSON.stringify({
+        Statement: [
+          {
+            Resource: 'https://cdn.example/xx/檔案.pdf',
+            Condition: { DateLessThan: { 'AWS:EpochTime': now / 1000 + 21600 } },
+          },
+        ],
+      }),
+    )
+      .toString('base64')
+      .replace(/\+/gu, '-')
+      .replace(/=/gu, '_')
+      .replace(/\//gu, '~');
+    expect(cloudFrontPolicy).toMatch(/[~_]/u);
+    expect(
+      getSignedUrlRemainingValiditySeconds(
+        `https://cdn.example/chunk.pdf?Policy=${cloudFrontPolicy}`,
+        now,
+      ),
+    ).toBe(21600);
+    expect(
+      hasSufficientOcrPdfChunkArtifactUrlValidity(
+        'https://cdn.example/chunk.pdf?Policy=not-base64-json',
+        now,
+      ),
+    ).toBe(false);
+    const oversizedPolicy = Buffer.from(
+      JSON.stringify({ Statement: [{ Condition: { DateLessThan: { 'AWS:EpochTime': 1e30 } } }] }),
+    ).toString('base64url');
+    expect(
+      getSignedUrlRemainingValiditySeconds(
+        `https://cdn.example/chunk.pdf?Policy=${oversizedPolicy}`,
+        now,
+      ),
+    ).toBeUndefined();
+    const oversizedValidPolicy = Buffer.from(
+      JSON.stringify({
+        Statement: [
+          {
+            Condition: { DateLessThan: { 'AWS:EpochTime': now / 1000 + 21600 } },
+            padding: 'x'.repeat(20_000),
+          },
+        ],
+      }),
+    ).toString('base64url');
+    expect(
+      getSignedUrlRemainingValiditySeconds(
+        `https://cdn.example/chunk.pdf?Policy=${oversizedValidPolicy}`,
+        now,
+      ),
+    ).toBeUndefined();
+    expect(
+      getSignedUrlRemainingValiditySeconds(
+        'https://s3.example/chunk.pdf?X-Amz-Date=20261301T000000Z&X-Amz-Expires=21600',
+        now,
+      ),
+    ).toBeUndefined();
   });
 
   it('updates reused legacy parent metadata when committing a new partial split', async () => {
@@ -143,6 +325,7 @@ describe('OCR PDF chunk artifacts', () => {
       upsert: jest.fn(async (artifact) => {
         rows.set(`${artifact.chunkIndex}`, artifact);
       }),
+      compareAndSetArtifactFilepath: jest.fn(async ({ filepath }) => filepath),
     };
     const storage = {
       source: 's3' as const,
@@ -186,6 +369,100 @@ describe('OCR PDF chunk artifacts', () => {
       expect.stringContaining('/pages-000001-000050.pdf'),
       expect.stringContaining('/pages-000051-000100.pdf'),
     ]);
+  });
+
+  it('persists a fresh URL before returning a reused artifact', async () => {
+    const chunks = buildPdfPageChunks({ pageCount: 50, chunkSizePages: 50 });
+    const existingRow: OcrPdfChunkArtifactRecord = {
+      sourcePdfKey: 's3://bucket/original.pdf',
+      pipelineVersion: 1,
+      ...chunks[0]!,
+      artifact: {
+        source: 's3',
+        storageKey: 'ocr/pages-1-50.pdf',
+        filepath: 'https://cdn.example/old.pdf',
+        filename: 'pages-1-50.pdf',
+        bytes: 123,
+        contentType: 'application/pdf',
+      },
+    };
+    const compareAndSetArtifactFilepath = jest
+      .fn()
+      .mockResolvedValue('https://cdn.example/fresh.pdf');
+    const repository = {
+      findBySourcePdfKey: jest.fn(async () => [existingRow]),
+      upsert: jest.fn(),
+      compareAndSetArtifactFilepath,
+    };
+    const storage = {
+      source: 's3' as const,
+      exists: jest.fn().mockResolvedValue(true),
+      saveBuffer: jest.fn(),
+      getDownloadUrl: jest.fn().mockResolvedValue('https://cdn.example/fresh.pdf'),
+    };
+
+    const [artifact] = await ensurePdfChunkArtifacts({
+      sourcePdfKey: existingRow.sourcePdfKey,
+      chunks,
+      repository,
+      storage,
+      createPdfChunk: jest.fn(),
+    });
+
+    expect(compareAndSetArtifactFilepath).toHaveBeenCalledWith({
+      sourcePdfKey: existingRow.sourcePdfKey,
+      pipelineVersion: existingRow.pipelineVersion,
+      pageStart: existingRow.pageStart,
+      pageEnd: existingRow.pageEnd,
+      previousFilepath: 'https://cdn.example/old.pdf',
+      filepath: 'https://cdn.example/fresh.pdf',
+    });
+    expect(artifact?.filepath).toBe('https://cdn.example/fresh.pdf');
+    expect(repository.upsert).not.toHaveBeenCalled();
+  });
+
+  it('reuses a present canonical artifact URL with at least six hours remaining', async () => {
+    const now = Date.UTC(2026, 0, 1, 0, 0, 0);
+    const chunks = buildPdfPageChunks({ pageCount: 50, chunkSizePages: 50 });
+    const filepath = `https://s3.example/chunk.pdf?X-Amz-Date=20260101T000000Z&X-Amz-Expires=21600`;
+    const existingRow: OcrPdfChunkArtifactRecord = {
+      sourcePdfKey: 's3://bucket/original.pdf',
+      pipelineVersion: 1,
+      ...chunks[0]!,
+      artifact: {
+        source: 's3',
+        storageKey: 'ocr/pages-1-50.pdf',
+        filepath,
+        filename: 'pages-1-50.pdf',
+        bytes: 123,
+        contentType: 'application/pdf',
+      },
+    };
+    const repository = {
+      findBySourcePdfKey: jest.fn(async () => [existingRow]),
+      upsert: jest.fn(),
+      compareAndSetArtifactFilepath: jest.fn(),
+    };
+    const storage = {
+      source: 's3' as const,
+      exists: jest.fn().mockResolvedValue(true),
+      saveBuffer: jest.fn(),
+      getDownloadUrl: jest.fn(),
+    };
+
+    const [artifact] = await ensurePdfChunkArtifacts({
+      sourcePdfKey: existingRow.sourcePdfKey,
+      chunks,
+      repository,
+      storage,
+      createPdfChunk: jest.fn(),
+      now,
+    });
+
+    expect(artifact?.filepath).toBe(filepath);
+    expect(storage.getDownloadUrl).not.toHaveBeenCalled();
+    expect(repository.compareAndSetArtifactFilepath).not.toHaveBeenCalled();
+    expect(repository.upsert).not.toHaveBeenCalled();
   });
 
   it('recreates stored rows whose S3 chunk object is missing', async () => {
@@ -241,6 +518,7 @@ describe('OCR PDF chunk artifacts', () => {
       upsert: jest.fn(async (artifact) => {
         rows.set(`${artifact.chunkIndex}:${artifact.pageStart}:${artifact.pageEnd}`, artifact);
       }),
+      compareAndSetArtifactFilepath: jest.fn(async ({ filepath }) => filepath),
     };
     const storage = {
       source: 's3' as const,
@@ -376,6 +654,7 @@ describe('OCR PDF chunk artifacts', () => {
       upsert: jest.fn(async (artifact) => {
         events.push(`upsert:${artifact.pageStart}-${artifact.pageEnd}`);
       }),
+      compareAndSetArtifactFilepath: jest.fn(async ({ filepath }) => filepath),
       compareAndSetSupersededByRanges: jest.fn(async () => {
         events.push('commit-marker');
         return 'updated' as const;

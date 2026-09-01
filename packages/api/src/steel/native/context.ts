@@ -369,6 +369,11 @@ function readOcrFileKey(result: SteelRuntimeJsonObject): {
   return { rawFileKey, safeFileKey };
 }
 
+function readValidOcrSourceCode(result: SteelRuntimeJsonObject): string | undefined {
+  const sourceCode = typeof result.sourceCode === 'string' ? result.sourceCode.trim() : '';
+  return /^F[1-9][0-9]*$/u.test(sourceCode) ? sourceCode : undefined;
+}
+
 function replaceLeadingOcrFileLabel(content: string, rawFileKey: string, safeFileKey: string) {
   if (!rawFileKey || !safeFileKey || rawFileKey === safeFileKey) {
     return content;
@@ -794,6 +799,7 @@ export function buildSteelNativeRuntimeContextText({
       }
 
       const { rawFileKey, safeFileKey } = readOcrFileKey(result);
+      const sourceCode = readValidOcrSourceCode(result);
       const filename = typeof result.filename === 'string' ? result.filename.trim() : '';
       const preprocessing = readValidOcrPreprocessingMetadata(result);
       const pageRangeText = preprocessing?.pageRanges
@@ -828,6 +834,7 @@ export function buildSteelNativeRuntimeContextText({
       return [
         ...(mode === 'ocr' ? [] : [legacyPaddleOcrStatuses]),
         safeFileKey ? `file_key: ${safeFileKey}` : '',
+        sourceCode ? `source_code: ${sourceCode}` : '',
         filename ? `source_filename: ${JSON.stringify(filename)}` : '',
         pageRangeText ? `page_ranges: ${pageRangeText}` : '',
         preprocessing ? `chunk_count: ${preprocessing.chunkCount}` : '',
@@ -844,8 +851,9 @@ export function buildSteelNativeRuntimeContextText({
       ? [
           '# Current-turn OCR completion directive',
           'Apply [ocr_main_merge] and [final_ocr_markdown].',
-          'Your final answer MUST contain only per-source consolidated OCR table(s), an optional `manual_review` section/table, and the required OCR completion summary.',
-          'Do not output page headings or page details. Do not output explanatory prose, bullet lists, calculations, or duplicate tables.',
+          'Your final answer MUST start with exactly one `## 來源檔案對照表` mapping table with columns `來源` and `檔名` in backend F-code order, then one consolidated `## OCR 結果確認表`, an optional final `## manual_review` table, and the OCR completion summary.',
+          'In OCR and manual_review tables, use backend `source_code` verbatim for `來源`; never use filename or file_key, and never invent or renumber a code.',
+          'Do not output page headings or page details, explanatory prose, bullet lists, calculations, or duplicate tables.',
           'Satisfy any other user intent only within those allowed sections, even when the current user turn includes metadata such as customer name.',
         ].join('\n')
       : '';

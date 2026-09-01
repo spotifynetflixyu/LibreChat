@@ -79,6 +79,7 @@ const {
   buildPdfPageChunks,
   normalizeOcrPageChunks,
   getPdfPageCount,
+  hasSufficientOcrPdfChunkArtifactUrlValidity,
   createPdfPageRangeChunker,
   ensurePdfChunkArtifacts,
   commitOcrPdfChunkSplit,
@@ -1105,6 +1106,8 @@ function createDelegateOcrExecute({ req, signal }) {
         for (let index = 0; index < artifacts.length; index += 1) {
           const artifact = artifacts[index];
           const range = effectiveRanges[index];
+          let currentArtifact = artifact;
+          let artifactSignCount = 0;
           const artifactFile = {
             ...file,
             fileId: `${file.fileId}#${range.pageStart}-${range.pageEnd}`,
@@ -1129,7 +1132,21 @@ function createDelegateOcrExecute({ req, signal }) {
                     `delegate_ocr range artifact URL is unavailable for pages ${batchFile.pageStart}-${batchFile.pageEnd}`,
                   );
                 }
-                return batchFile.filepath;
+                if (artifactSignCount === 0) {
+                  artifactSignCount += 1;
+                  return currentArtifact.filepath;
+                }
+                const refreshed = await artifactStore.refreshPdfChunkArtifact({
+                  file: preprocessingFile,
+                  chunk: range,
+                  artifact: currentArtifact,
+                });
+                currentArtifact = refreshed;
+                artifactFile.filepath = refreshed.filepath;
+                artifactFile.storageKey = refreshed.storageKey;
+                artifactFile.filename = refreshed.filename;
+                artifactSignCount += 1;
+                return refreshed.filepath;
               }
               const nonPdfRecord = storedById.get(batchFile.fileId);
               if (!nonPdfRecord) {
@@ -1284,6 +1301,23 @@ function toSteelOcrPreprocessingFile(file, fileRecord) {
     ocrFileKey: file.ocrFileKey,
     sourcePdfKey,
   };
+}
+
+function getSteelOcrSourceCode(value) {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const sourceCode = value.trim();
+  return /^F[1-9][0-9]*$/u.test(sourceCode) ? sourceCode : undefined;
+}
+
+function withoutSteelOcrSourceCode(file) {
+  if (!file || typeof file !== 'object') {
+    return file;
+  }
+  const metadata = { ...file };
+  delete metadata.sourceCode;
+  return metadata;
 }
 
 function compactSteelText(values) {
@@ -1558,13 +1592,28 @@ function createSteelOcrPdfChunkStorage({ fileRecord, contentType = 'application/
   };
 }
 
-async function refreshSteelOcrPdfChunkArtifact({ artifact, storage }) {
+async function refreshSteelOcrPdfChunkArtifact({ artifact, storage, repository, file, chunk }) {
   if (!artifact.storageKey || isHttpUrl(artifact.storageKey)) {
     return artifact;
   }
+  const filepath = await storage.getDownloadUrl({ storageKey: artifact.storageKey });
+  const persistedFilepath =
+    repository?.compareAndSetArtifactFilepath &&
+    (artifact.sourcePdfKey ?? file?.sourcePdfKey) &&
+    Number.isInteger(chunk?.pageStart) &&
+    Number.isInteger(chunk?.pageEnd)
+      ? await repository.compareAndSetArtifactFilepath({
+          sourcePdfKey: artifact.sourcePdfKey ?? file.sourcePdfKey,
+          pipelineVersion: ocrPreprocessingPipelineVersion,
+          pageStart: chunk.pageStart,
+          pageEnd: chunk.pageEnd,
+          previousFilepath: artifact.filepath,
+          filepath,
+        })
+      : filepath;
   return {
     ...artifact,
-    filepath: await storage.getDownloadUrl({ storageKey: artifact.storageKey }),
+    filepath: persistedFilepath,
   };
 }
 
@@ -1588,7 +1637,13 @@ function getOriginalPdfStorageKey(file, fileRecord) {
   return fileRecord?.storageKey ?? file?.storageKey;
 }
 
-async function createOriginalPdfChunkArtifact({ file, fileRecord, storage, chunks }) {
+async function createOriginalPdfChunkArtifact({
+  file,
+  fileRecord,
+  storage,
+  chunks,
+  sourcePdfKey = file.sourcePdfKey,
+}) {
   const chunk = chunks[0];
   const storageKey = getOriginalPdfStorageKey(file, fileRecord);
   const filepath = storageKey
@@ -1604,13 +1659,55 @@ async function createOriginalPdfChunkArtifact({ file, fileRecord, storage, chunk
 
   return {
     ...chunk,
-    sourcePdfKey: file.sourcePdfKey,
+    sourcePdfKey,
     source: getSteelOcrArtifactSource(fileRecord),
     storageKey: storageKey ?? filepath,
     filepath,
     filename: file.filename ?? fileRecord?.filename ?? 'source.pdf',
     bytes: fileRecord?.bytes ?? 0,
     contentType: getSteelOcrContentType(file, fileRecord),
+    artifactOrigin: 'original',
+  };
+}
+
+async function persistOriginalPdfChunkArtifact({ artifact, file, fileRecord, repository }) {
+  if (!artifact || !artifact.storageKey || isHttpUrl(artifact.storageKey)) {
+    return;
+  }
+  await repository.upsert({
+    sourcePdfKey: artifact.sourcePdfKey,
+    sourceStorageKey: fileRecord?.storageKey,
+    sourceFileId: file.fileId,
+    sourceFilename: file.filename,
+    sourceBytes: fileRecord?.bytes,
+    pipelineVersion: ocrPreprocessingPipelineVersion,
+    chunkIndex: artifact.chunkIndex,
+    chunkCount: artifact.chunkCount,
+    pageStart: artifact.pageStart,
+    pageEnd: artifact.pageEnd,
+    chunkSizePages: artifact.chunkSizePages,
+    artifact: {
+      source: artifact.source,
+      storageKey: artifact.storageKey,
+      filepath: artifact.filepath,
+      filename: artifact.filename,
+      bytes: artifact.bytes,
+      contentType: 'application/pdf',
+    },
+  });
+}
+
+function mapCanonicalOriginalPdfChunkArtifact({ row, chunk, filepath = row.artifact.filepath }) {
+  return {
+    ...chunk,
+    sourcePdfKey: row.sourcePdfKey,
+    source: row.artifact.source,
+    storageKey: row.artifact.storageKey,
+    storageRegion: row.artifact.storageRegion,
+    filepath,
+    filename: row.artifact.filename,
+    bytes: row.artifact.bytes,
+    contentType: row.artifact.contentType,
     artifactOrigin: 'original',
   };
 }
@@ -1634,13 +1731,60 @@ function createSteelOcrPdfChunkArtifactStore({ file, fileRecord, pdfBytes, force
     },
     async ensurePdfChunkArtifacts({ sourcePdfKey, chunks }) {
       if (!forceSplit && isSingleOriginalPdfChunk(chunks)) {
+        const originalChunk = chunks[0];
+        const existingRows = await repository.findBySourcePdfKey({
+          sourcePdfKey,
+          pipelineVersion: ocrPreprocessingPipelineVersion,
+        });
+        const existing = existingRows.find(
+          (row) =>
+            row.pageStart === originalChunk.pageStart && row.pageEnd === originalChunk.pageEnd,
+        );
+        if (existing) {
+          const objectIsPresent = await storage.exists({ storageKey: existing.artifact.storageKey });
+          if (!objectIsPresent) {
+            throw new Error(
+              `OCR canonical original PDF object is missing for pages ${originalChunk.pageStart}-${originalChunk.pageEnd}`,
+            );
+          }
+          if (
+            hasSufficientOcrPdfChunkArtifactUrlValidity(existing.artifact.filepath)
+          ) {
+            return [mapCanonicalOriginalPdfChunkArtifact({ row: existing, chunk: originalChunk })];
+          }
+          const filepath = await storage.getDownloadUrl({
+            storageKey: existing.artifact.storageKey,
+          });
+          const persistedFilepath = await repository.compareAndSetArtifactFilepath({
+            sourcePdfKey: existing.sourcePdfKey,
+            pipelineVersion: existing.pipelineVersion,
+            pageStart: existing.pageStart,
+            pageEnd: existing.pageEnd,
+            previousFilepath: existing.artifact.filepath,
+            filepath,
+          });
+          return [
+            mapCanonicalOriginalPdfChunkArtifact({
+              row: existing,
+              chunk: originalChunk,
+              filepath: persistedFilepath,
+            }),
+          ];
+        }
         const originalArtifact = await createOriginalPdfChunkArtifact({
           file,
           fileRecord,
           storage,
           chunks,
+          sourcePdfKey,
         });
         if (originalArtifact) {
+          await persistOriginalPdfChunkArtifact({
+            artifact: originalArtifact,
+            file,
+            fileRecord,
+            repository,
+          });
           return [originalArtifact];
         }
       }
@@ -1689,8 +1833,14 @@ function createSteelOcrPdfChunkArtifactStore({ file, fileRecord, pdfBytes, force
         source: artifact.source ?? getSteelOcrArtifactSource(fileRecord),
       }));
     },
-    async refreshPdfChunkArtifact({ artifact }) {
-      return refreshSteelOcrPdfChunkArtifact({ artifact, storage });
+    async refreshPdfChunkArtifact({ artifact, chunk }) {
+      return refreshSteelOcrPdfChunkArtifact({
+        artifact,
+        storage,
+        repository,
+        file,
+        chunk,
+      });
     },
   };
 }
@@ -2719,10 +2869,12 @@ function createCurrentOcrFailureResult({ file, result, errorMessage }) {
   ]
     .map(normalizeSafeSteelAiUrl)
     .find((value) => value !== undefined);
+  const sourceCode = getSteelOcrSourceCode(result?.file?.sourceCode ?? file?.sourceCode);
   return {
     ocrFileKey: result?.file?.ocrFileKey ?? file?.ocrFileKey,
     filename: result?.file?.filename ?? file?.filename,
     mediaType: result?.file?.mediaType ?? file?.mediaType,
+    ...(sourceCode ? { sourceCode } : {}),
     ...(fileUrl ? { fileUrl } : {}),
     stage: result?.stage ?? 'preflight',
     ...(result?.chunkIndex !== undefined ? { chunkIndex: result.chunkIndex } : {}),
@@ -2793,7 +2945,9 @@ function createCurrentOcrMergedMarkdownResult({
     fileId: file?.fileId ?? file?.file_id ?? file?.id,
   });
   const sourcePdfKey = file?.sourcePdfKey;
+  const sourceCode = getSteelOcrSourceCode(file?.sourceCode);
   const visibleFile = { ...file };
+  delete visibleFile.sourceCode;
   for (const key of [
     'sourcePdfKey',
     'filepath',
@@ -2817,6 +2971,7 @@ function createCurrentOcrMergedMarkdownResult({
   }
   return {
     ...visibleFile,
+    ...(sourceCode ? { sourceCode } : {}),
     ocrFileKey: safeOcrFileKey,
     kind: 'ocr_preprocessing_merged_markdown',
     ocrSource: 'ocr_preprocessing_merge',
@@ -3045,10 +3200,19 @@ async function runSteelPaddleOcrPreflight({
   }
 
   const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+  let sourceCodeIndex = 0;
   const currentTargets = files
     .map((file) => {
       const descriptor = getSteelOcrFileDescriptor(file);
-      return descriptor ? { originalFile: file, descriptor } : undefined;
+      if (!descriptor) {
+        return undefined;
+      }
+      sourceCodeIndex += 1;
+      return {
+        originalFile: file,
+        descriptor,
+        sourceCode: `F${sourceCodeIndex}`,
+      };
     })
     .filter((target) => target !== undefined);
   const fileRecordsById = await getSteelCurrentFileRecords(req, files);
@@ -3077,6 +3241,7 @@ async function runSteelPaddleOcrPreflight({
       {
         ...target.originalFile,
         ...target.descriptor,
+        sourceCode: target.sourceCode,
       },
       fileRecord,
     );
@@ -3193,6 +3358,19 @@ async function runSteelPaddleOcrPreflight({
   if (batchFiles.length > 0) {
     try {
       ocrPreprocessingRules ??= await resolveSteelOcrPreprocessingRules();
+      const preprocessingMemory = {
+        readOcrPreprocessingState: (input) => writer.readOcrPreprocessingState(input),
+        capturePaddleOcrChunkResult: (input) =>
+          writer.capturePaddleOcrChunkResult({
+            ...input,
+            file: withoutSteelOcrSourceCode(input.file),
+          }),
+        captureOcrPreprocessingChunkMarkdown: (input) =>
+          writer.captureOcrPreprocessingChunkMarkdown({
+            ...input,
+            file: withoutSteelOcrSourceCode(input.file),
+          }),
+      };
       const batchResult = await runOcrPreprocessingBatchPipeline({
         conversationId,
         requestId,
@@ -3201,7 +3379,7 @@ async function runSteelPaddleOcrPreflight({
         files: batchFiles,
         ocrRuleVersion: ocrPreprocessingRules.ocrRuleVersion,
         ocrRulesText: ocrPreprocessingRules.ocrRulesText,
-        memory: writer,
+        memory: preprocessingMemory,
         organizer: createSteelOcrOrganizer({ agent, signal }),
         paddleOcr: createSteelPaddleOcrChunkRunner({
           req,

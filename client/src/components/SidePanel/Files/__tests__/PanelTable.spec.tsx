@@ -237,3 +237,33 @@ describe('PanelTable handleFileClick', () => {
     expect(mockAddFile).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('PanelTable file dates', () => {
+  it('renders and sorts files by their creation date', () => {
+    const olderFile = makeFile({
+      file_id: 'older-file',
+      filename: 'older.pdf',
+      createdAt: '2020-01-01T12:00:00',
+      updatedAt: '2040-01-01T12:00:00',
+    });
+    const newerFile = makeFile({
+      file_id: 'newer-file',
+      filename: 'newer.pdf',
+      createdAt: '2030-01-01T12:00:00',
+      updatedAt: '2025-01-01T12:00:00',
+    });
+
+    renderTable([newerFile, olderFile]);
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_date' }));
+
+    expect(screen.getByText('1 Jan 2020')).toBeInTheDocument();
+    expect(screen.getByText('1 Jan 2030')).toBeInTheDocument();
+    expect(screen.queryByText('1 Jan 2040')).not.toBeInTheDocument();
+    expect(
+      screen
+        .getAllByRole('row')
+        .slice(1)
+        .map((row) => row.textContent),
+    ).toEqual(['older.pdf1 Jan 2020', 'newer.pdf1 Jan 2030']);
+  });
+});
