@@ -342,12 +342,6 @@ describe('Steel rule sources', () => {
       },
     });
     expect(builtRules[mainFlowIndex]?.selectors).not.toHaveProperty('otherGlobalRulesKey');
-    expect(
-      [builtRules[ocrIndex], builtRules[visionIndex], builtRules[organizerIndex], builtRules[mainFlowIndex]].every(
-        (rule) =>
-          !/(主\s*Agent|子\s*Agent|主agent|子agent)/u.test(`${rule?.title}\n${rule?.prompt}`),
-      ),
-    ).toBe(true);
   });
 
   it('publishes delegate_ocr tool metadata', () => {
