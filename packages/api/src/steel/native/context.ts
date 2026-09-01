@@ -882,7 +882,7 @@ export function buildSteelNativeRuntimeContextText({
       ? [
           OCR_COMPLETION_DIRECTIVE_MARKER,
           'Apply [ocr_main_merge] and [final_ocr_markdown].',
-          'Your final answer MUST start with exactly one `## 來源檔案對照表` mapping table with columns `來源` and `檔名` in `source_file_mapping` order, then one consolidated `## OCR 結果確認表`, followed by an optional final `## manual_review` table.',
+          'Your final answer MUST start with exactly one `## source_file_mapping` table with columns `來源` and `檔名` in `source_file_mapping` order, then one consolidated `## ocr_result` table, followed by an optional final `## manual_review` table. Use these three fixed machine titles verbatim; never translate, rename, or add a prefix or suffix.',
           'Copy `source_code` and `source_filename` from `source_file_mapping` into the mapping table. In OCR and manual_review tables, use each file metadata `source_code` verbatim for `來源`; never use `source_filename` or `file_key`, and never invent or renumber a code.',
           'Do not output page headings or page details, explanatory prose, bullet lists, calculations, or duplicate tables. End after the final table.',
           'Satisfy any other user intent only within those allowed sections, even when the current user turn includes metadata such as customer name.',

@@ -1364,6 +1364,7 @@ describe('ToolService - Action Capability Gating', () => {
 
     it('routes every current OCR-capable file through the preprocessing pipeline', async () => {
       const req = createMockReq([AgentCapabilities.tools]);
+      const signal = new AbortController().signal;
       req.body = { conversationId: 'convo-1' };
       req.steelNativeContext = {
         requestId: 'resp-1',
@@ -1375,12 +1376,19 @@ describe('ToolService - Action Capability Gating', () => {
           { fileId: 'file-c', filename: 'c.pdf', mediaType: 'application/pdf' },
         ],
       };
+      mockRunOcrPreprocessingBatchPipeline.mockImplementationOnce(async (input) => {
+        await input.onProgress({
+          file: input.files[0].file,
+          progress: { stage: 'paddleocr_chunk_loaded', chunkIndex: 1, chunkCount: 1 },
+        });
+        return createMockOcrBatchResult(input);
+      });
 
       const result = await runSteelPaddleOcrPreflight({
         req,
         res: {},
         agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
-        signal: new AbortController().signal,
+        signal,
         streamId: 'stream-1',
       });
 
@@ -1396,6 +1404,16 @@ describe('ToolService - Action Capability Gating', () => {
         }),
       );
       expect(mockRunOcrPreprocessingBatchPipeline).toHaveBeenCalledTimes(1);
+      expect(mockRunOcrPreprocessingBatchPipeline.mock.calls[0][0].signal).toBe(signal);
+      expect(req.steelNativeContext.steelHistory.activityEvents).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'parse_status',
+            message: 'Loaded saved PaddleOCR (chunk 1/1) (file:file-a)',
+            parseStatus: 'partial',
+          }),
+        ]),
+      );
       expect(
         mockRunOcrPreprocessingBatchPipeline.mock.calls[0][0].files.map(
           ({ file }) => file.ocrFileKey,

@@ -3393,6 +3393,7 @@ async function runSteelPaddleOcrPreflight({
         requestId,
         turnIndex,
         checkpointTurnIndex: checkpointTurnIndex ?? Math.max(0, turnIndex - 1),
+        signal,
         files: batchFiles,
         ocrRuleVersion: ocrPreprocessingRules.ocrRuleVersion,
         ocrRulesText: ocrPreprocessingRules.ocrRulesText,

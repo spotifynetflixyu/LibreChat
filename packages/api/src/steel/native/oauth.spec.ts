@@ -176,13 +176,13 @@ function ocrMessages(): BaseMessage[] {
 
 function ocrMarkdown(): string {
   return [
-    '## 來源檔案對照表',
+    '## source_file_mapping',
     '',
     '| 來源 | 檔名 |',
     '| --- | --- |',
     '| F1 | file.pdf |',
     '',
-    '## OCR 結果確認表',
+    '## ocr_result',
     '',
     '| 來源 | 零件編號 |',
     '| --- | --- |',
@@ -2196,7 +2196,7 @@ describe('OpenAI OAuth model adapter', () => {
     const result = await model.invoke(ocrMessages());
 
     expect(result.content).toBe(
-      `${ocrMarkdown()}\n\nOCR 整理完成：共 1 個來源、1 筆資料，無待複核事項。`,
+      `${ocrMarkdown()}\n\nOCR 整理完成：共 1 個來源、1 筆資料。`,
     );
   });
 
@@ -2214,9 +2214,9 @@ describe('OpenAI OAuth model adapter', () => {
     expect(result.content).toBe('plain text');
   });
 
-  it('buffers split OCR stream text and appends one backend summary last', async () => {
+  it('streams split OCR deltas immediately and appends one backend summary suffix', async () => {
     const source = ocrMarkdown();
-    const splitAt = source.indexOf('## OCR 結果確認表');
+    const splitAt = source.indexOf('## ocr_result');
     const doGenerate = jest.fn();
     const doStream = jest.fn(async () =>
       createStreamResult([
@@ -2235,9 +2235,16 @@ describe('OpenAI OAuth model adapter', () => {
       chunks.push(chunk);
     }
 
-    const summary = 'OCR 整理完成：共 1 個來源、1 筆資料，無待複核事項。';
-    expect(chunks.map((chunk) => chunk.content)).toEqual([`${source}\n\n${summary}`, '']);
-    expect(chunks[chunks.length - 2]?.content).toBe(`${source}\n\n${summary}`);
+    const summary = 'OCR 整理完成：共 1 個來源、1 筆資料。';
+    expect(chunks.map((chunk) => chunk.content)).toEqual([
+      source.slice(0, splitAt),
+      source.slice(splitAt),
+      `\n\n${summary}`,
+      '',
+    ]);
+    expect(chunks[0]?.content).toBe(source.slice(0, splitAt));
+    expect(chunks[1]?.content).toBe(source.slice(splitAt));
+    expect(chunks[chunks.length - 2]?.content).toBe(`\n\n${summary}`);
     expect(
       chunks
         .map((chunk) => chunk.content)
@@ -2246,10 +2253,126 @@ describe('OpenAI OAuth model adapter', () => {
     ).toHaveLength(1);
   });
 
+  it('streams a result-only OCR summary with its partial clause', async () => {
+    const source = [
+      '## ocr_result',
+      '',
+      '| 來源 | 零件編號 |',
+      '| --- | --- |',
+      '| F1 | P1 |',
+    ].join('\n');
+    const doGenerate = jest.fn();
+    const doStream = jest.fn(async () =>
+      createStreamResult([
+        { type: 'text-delta', id: 'text_1', delta: source },
+        { type: 'finish', usage: createUsage(), finishReason: { unified: 'stop', raw: 'stop' } },
+      ]),
+    );
+    const model = createOpenAIOAuthModel({
+      ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+      model: 'gpt-5.5',
+    });
+
+    const chunks = [];
+    for await (const chunk of await model.stream(ocrMessages())) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks.map((chunk) => chunk.content)).toEqual([
+      source,
+      '\n\nOCR 整理完成：共 1 筆資料。',
+      '',
+    ]);
+  });
+
+  it('does not append OCR summary for malformed or table-less streamed text', async () => {
+    const cases = ['plain text', '## source_file_mapping\n\nnot a table'];
+
+    for (const source of cases) {
+      const doGenerate = jest.fn();
+      const doStream = jest.fn(async () =>
+        createStreamResult([
+          { type: 'text-delta', id: 'text_1', delta: source },
+          { type: 'finish', usage: createUsage(), finishReason: { unified: 'stop', raw: 'stop' } },
+        ]),
+      );
+      const model = createOpenAIOAuthModel({
+        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+        model: 'gpt-5.5',
+      });
+
+      const chunks = [];
+      for await (const chunk of await model.stream(ocrMessages())) {
+        chunks.push(chunk);
+      }
+
+      expect(chunks.map((chunk) => chunk.content)).toEqual([source, '']);
+      expect(chunks.map((chunk) => chunk.content).join('')).not.toContain('OCR 整理完成：');
+    }
+  });
+
+  it('preserves legacy provider OCR summary without replaying or appending a replacement', async () => {
+    const source = ocrMarkdown();
+    const legacySummary = 'OCR 整理完成：共 9 個來源、9 筆資料，無待複核事項。';
+    const providerText = `${source}\n\n${legacySummary}`;
+    const doGenerate = jest.fn();
+    const doStream = jest.fn(async () =>
+      createStreamResult([
+        { type: 'text-delta', id: 'text_1', delta: providerText },
+        { type: 'finish', usage: createUsage(), finishReason: { unified: 'stop', raw: 'stop' } },
+      ]),
+    );
+    const model = createOpenAIOAuthModel({
+      ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+      model: 'gpt-5.5',
+    });
+
+    const chunks = [];
+    for await (const chunk of await model.stream(ocrMessages())) {
+      chunks.push(chunk);
+    }
+
+    expect(chunks.map((chunk) => chunk.content)).toEqual([providerText, '']);
+    expect(chunks.map((chunk) => chunk.content).join('')).toBe(providerText);
+    expect(chunks.map((chunk) => chunk.content).join('')).not.toContain(
+      '共 1 個來源、1 筆資料。',
+    );
+  });
+
+  it('preserves streamed OCR text when the provider emits an error', async () => {
+    const source = ocrMarkdown();
+    const providerError = new Error('ocr stream failed');
+    const doGenerate = jest.fn();
+    const doStream = jest.fn(async () =>
+      createStreamResult([
+        { type: 'text-delta', id: 'text_1', delta: source },
+        { type: 'error', error: providerError },
+      ]),
+    );
+    const model = createOpenAIOAuthModel({
+      ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+      model: 'gpt-5.5',
+    });
+
+    const chunks = [];
+    let caughtError: unknown;
+    try {
+      for await (const chunk of await model.stream(ocrMessages())) {
+        chunks.push(chunk);
+      }
+    } catch (error) {
+      caughtError = error;
+    }
+
+    expect(chunks.map((chunk) => chunk.content)).toEqual([source]);
+    expect(caughtError).toBe(providerError);
+    expect(chunks.map((chunk) => chunk.content).join('')).not.toContain('OCR 整理完成：');
+  });
+
   it.each([
     { finishReason: { unified: 'length' as const, raw: 'length' }, label: 'non-stop' },
     { finishReason: { unified: 'tool-calls' as const, raw: 'tool_calls' }, label: 'tool call' },
-  ])('leaves buffered OCR text unchanged for $label results', async ({ finishReason, label }) => {
+  ])('preserves raw OCR text unchanged for $label results', async ({ finishReason, label }) => {
     const source = ocrMarkdown();
     const doGenerate = jest.fn();
     const doStream = jest.fn(async () =>

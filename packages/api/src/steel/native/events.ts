@@ -1,4 +1,5 @@
 import type { SteelOcrMissingPageRangesByFileKey } from '../ocr/failures';
+import type { OcrPreprocessingPipelineProgress } from '../ocr/preprocess';
 import { isPaddleOcrDiagnosticCode } from '../ocr/diagnostics';
 import type { CaptureSteelNativeToolResultResult } from './tool-result';
 
@@ -1164,18 +1165,7 @@ export interface BuildSteelPaddleOcrPreflightEventEnvelopesInput
 }
 
 export type SteelOcrPreprocessingProgress =
-  | {
-      stage: 'pdf_chunks_ready';
-      pageCount: number;
-      chunkCount: number;
-      source: 'fetched' | 'uploaded';
-    }
-  | { stage: 'paddleocr_chunk_started'; chunkIndex: number; chunkCount: number }
-  | { stage: 'paddleocr_chunk_saved'; chunkIndex: number; chunkCount: number }
-  | { stage: 'organizer_chunk_started'; chunkIndex: number; chunkCount: number }
-  | { stage: 'organizer_chunk_saved'; chunkIndex: number; chunkCount: number }
-  | { stage: 'merged_markdowns_read'; chunkCount: number }
-  | { stage: 'processing_with_merged_markdown'; chunkCount: number }
+  | OcrPreprocessingPipelineProgress
   | {
       stage: 'failed';
       errorMessage: string;
@@ -1413,6 +1403,18 @@ export function buildSteelOcrPreprocessingEventEnvelopes({
           },
         },
       ];
+    case 'paddleocr_chunk_loaded':
+      return [
+        {
+          event: steelNativeStreamEventName,
+          data: {
+            type: 'parse_status',
+            message: `Loaded saved PaddleOCR (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${ocrFileKey})`,
+            parseStatus: 'partial',
+            ...eventBase,
+          },
+        },
+      ];
     case 'paddleocr_chunk_saved':
       return [
         {
@@ -1441,6 +1443,18 @@ export function buildSteelOcrPreprocessingEventEnvelopes({
           data: {
             type: 'parse_status',
             message: `Running OCR markdown process (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${ocrFileKey})`,
+            parseStatus: 'partial',
+            ...eventBase,
+          },
+        },
+      ];
+    case 'organizer_chunk_loaded':
+      return [
+        {
+          event: steelNativeStreamEventName,
+          data: {
+            type: 'parse_status',
+            message: `Loaded saved OCR markdown (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${ocrFileKey})`,
             parseStatus: 'partial',
             ...eventBase,
           },

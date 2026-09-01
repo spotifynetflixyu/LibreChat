@@ -840,6 +840,22 @@ describe('Steel native event mapping', () => {
         conversationId: 'conversation_1',
         requestId: 'request_1',
         ocrFileKey: 'file:file-a',
+        progress: { stage: 'paddleocr_chunk_loaded', chunkIndex: 2, chunkCount: 5 },
+      }).map((entry) => entry.data),
+    ).toEqual([
+      expect.objectContaining({
+        type: 'parse_status',
+        source: 'ocr_preprocessing',
+        message: 'Loaded saved PaddleOCR (chunk 2/5) (file:file-a)',
+        parseStatus: 'partial',
+      }),
+    ]);
+
+    expect(
+      buildSteelOcrPreprocessingEventEnvelopes({
+        conversationId: 'conversation_1',
+        requestId: 'request_1',
+        ocrFileKey: 'file:file-a',
         progress: { stage: 'paddleocr_chunk_saved', chunkIndex: 3, chunkCount: 5 },
       }).map((entry) => entry.data),
     ).toEqual([
@@ -854,6 +870,22 @@ describe('Steel native event mapping', () => {
         source: 'ocr_preprocessing',
         message: 'Saved PaddleOCR preflight (chunk 3/5) (file:file-a)',
         savedCounts: { paddleocr_preflight: 1 },
+      }),
+    ]);
+
+    expect(
+      buildSteelOcrPreprocessingEventEnvelopes({
+        conversationId: 'conversation_1',
+        requestId: 'request_1',
+        ocrFileKey: 'file:file-a',
+        progress: { stage: 'organizer_chunk_loaded', chunkIndex: 2, chunkCount: 5 },
+      }).map((entry) => entry.data),
+    ).toEqual([
+      expect.objectContaining({
+        type: 'parse_status',
+        source: 'ocr_preprocessing',
+        message: 'Loaded saved OCR markdown (chunk 2/5) (file:file-a)',
+        parseStatus: 'partial',
       }),
     ]);
 

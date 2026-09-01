@@ -234,6 +234,77 @@ describe('Steel working-order memory writer', () => {
     );
   });
 
+  it('invalidates saved organizer Markdown when PaddleOCR raw data changes', async () => {
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+    const file = {
+      fileId: 'file-reprocessed',
+      filename: 'reprocessed.pdf',
+      mediaType: 'application/pdf',
+      storageKey: 'uploads/reprocessed.pdf',
+    };
+    const chunk = {
+      sourcePdfKey: 'pdf-reprocessed',
+      chunkIndex: 1,
+      chunkCount: 1,
+      pageStart: 1,
+      pageEnd: 2,
+      pdfChunk: {
+        source: 's3' as const,
+        storageKey: 'chunks/reprocessed.pdf',
+        filepath: '/tmp/reprocessed.pdf',
+      },
+    };
+
+    await writer.capturePaddleOcrChunkResult({
+      conversationId: 'conversation_reprocessed',
+      turnIndex: 2,
+      checkpointTurnIndex: 1,
+      file,
+      chunk,
+      rawResultHash: 'hash-old',
+      data: { text: 'old OCR text' },
+    });
+    await writer.captureOcrPreprocessingChunkMarkdown({
+      conversationId: 'conversation_reprocessed',
+      turnIndex: 3,
+      checkpointTurnIndex: 2,
+      file,
+      chunk,
+      rawResultHash: 'hash-old',
+      ocrRuleVersion: 'rules-v1',
+      content: '| value |\n| --- |\n| old |',
+    });
+    await writer.capturePaddleOcrChunkResult({
+      conversationId: 'conversation_reprocessed',
+      turnIndex: 4,
+      checkpointTurnIndex: 3,
+      file,
+      chunk,
+      rawResultHash: 'hash-new',
+      data: { text: 'new OCR text' },
+    });
+
+    await expect(
+      writer.readOcrPreprocessingState({
+        conversationId: 'conversation_reprocessed',
+        sourcePdfKey: 'pdf-reprocessed',
+        ocrFileKey: 'file:file-reprocessed',
+        ocrRuleVersion: 'rules-v1',
+      }),
+    ).resolves.toEqual(
+      expect.objectContaining({
+        chunks: [
+          expect.objectContaining({
+            rawSaved: true,
+            rawResultHash: 'hash-new',
+            rawOcrText: 'new OCR text',
+            organizedSaved: false,
+          }),
+        ],
+      }),
+    );
+  });
+
   it('retains whole-file PaddleOCR identity without source references', async () => {
     const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
     const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);

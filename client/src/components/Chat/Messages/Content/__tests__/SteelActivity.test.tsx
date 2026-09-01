@@ -101,6 +101,46 @@ jest.mock('~/hooks/useLocalize', () => ({
 }));
 
 describe('SteelActivity', () => {
+  it('renders loaded saved OCR chunk events live and from persisted refresh state', () => {
+    render(
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(steelNativeActivityByMessageId('assistant-live-resume'), [
+            {
+              type: 'parse_status',
+              source: 'ocr_preprocessing',
+              conversationId: 'conversation-1',
+              messageId: 'assistant-live-resume',
+              message: 'Loaded saved PaddleOCR (chunk 17/18) (file:scan.pdf)',
+              parseStatus: 'partial',
+            },
+          ]);
+        }}
+      >
+        <SteelActivity messageId="assistant-live-resume" isCreatedByUser={false} />
+        <SteelActivity
+          messageId="assistant-persisted-resume"
+          isCreatedByUser={false}
+          persistedActivityEvents={[
+            {
+              type: 'parse_status',
+              source: 'ocr_preprocessing',
+              message: 'Loaded saved OCR markdown (chunk 8/18) (file:scan.pdf)',
+              parseStatus: 'partial',
+            },
+          ]}
+        />
+      </RecoilRoot>,
+    );
+
+    expect(
+      screen.getByText('Loaded saved PaddleOCR (chunk 17/18) (file:scan.pdf)'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText('Loaded saved OCR markdown (chunk 8/18) (file:scan.pdf)'),
+    ).toBeInTheDocument();
+  });
+
   it('renders persisted PaddleOCR preflight activity without live Recoil events', () => {
     render(
       <RecoilRoot>

@@ -1012,23 +1012,12 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
 
     if (ocrMode) {
       let generatedText = '';
-      let emittedTextLength = 0;
       let response: LanguageModelV3GenerateResult['response'];
       let usage: LanguageModelV3Usage | undefined;
       let finishReason: LanguageModelV3GenerateResult['finishReason'] | undefined;
       let completed = false;
       let streamError: Error | undefined;
       let hasClientTool = false;
-
-      const flushRawText = () => {
-        if (generatedText.length <= emittedTextLength) {
-          return undefined;
-        }
-
-        const pendingText = generatedText.slice(emittedTextLength);
-        emittedTextLength = generatedText.length;
-        return pendingText;
-      };
 
       try {
         while (true) {
@@ -1044,6 +1033,9 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
 
           if (value.type === 'text-delta') {
             generatedText += value.delta;
+            if (value.delta !== '') {
+              yield toStreamTextChunk(value.delta, this.options.model);
+            }
             continue;
           }
 
@@ -1069,10 +1061,6 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
             (value.type === 'tool-input-start' && value.providerExecuted !== true)
           ) {
             hasClientTool = true;
-            const pendingText = flushRawText();
-            if (pendingText) {
-              yield toStreamTextChunk(pendingText, this.options.model);
-            }
             if (value.type === 'tool-call') {
               yield toStreamToolCallChunk(value, this.options.model);
             }
@@ -1088,27 +1076,16 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
       }
 
       if (streamError) {
-        const pendingText = flushRawText();
-        if (pendingText) {
-          yield toStreamTextChunk(pendingText, this.options.model);
-        }
         throw streamError;
       }
 
       if (!hasClientTool && isCompletedTextResult(finishReason)) {
         const finalizedText = finalizeOcrMarkdown(generatedText);
-        if (finalizedText !== generatedText) {
-          yield toStreamTextChunk(finalizedText, this.options.model);
-        } else if (generatedText.length > emittedTextLength) {
-          const pendingText = flushRawText();
-          if (pendingText) {
-            yield toStreamTextChunk(pendingText, this.options.model);
-          }
-        }
-      } else {
-        const pendingText = flushRawText();
-        if (pendingText) {
-          yield toStreamTextChunk(pendingText, this.options.model);
+        if (
+          finalizedText.startsWith(generatedText) &&
+          finalizedText.length > generatedText.length
+        ) {
+          yield toStreamTextChunk(finalizedText.slice(generatedText.length), this.options.model);
         }
       }
       yield toStreamFinalChunk({ finishReason, model: this.options.model, response, usage });

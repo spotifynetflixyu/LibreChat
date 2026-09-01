@@ -138,6 +138,14 @@ describe('MessageParts Steel activity metadata', () => {
   });
 
   it('prepends strict preflight cards while preserving existing tool content and activity events', () => {
+    const activityEvents = [
+      {
+        type: 'parse_status',
+        source: 'ocr_preprocessing',
+        message: 'Loaded saved PaddleOCR (chunk 16/18) (file:scan.pdf)',
+        parseStatus: 'partial',
+      },
+    ];
     const existing = {
       type: ContentTypes.TOOL_CALL,
       [ContentTypes.TOOL_CALL]: {
@@ -179,7 +187,7 @@ describe('MessageParts Steel activity metadata', () => {
       {
         steel: {
           preflightToolCalls: [preflight],
-          activityEvents: [{ type: 'memory_saved', source: 'tool_result' }],
+          activityEvents,
         },
       },
       [existing],
@@ -193,7 +201,7 @@ describe('MessageParts Steel activity metadata', () => {
     );
     expect(passed.content[0][ContentTypes.TOOL_CALL].runStepStatus).toBe('completed');
     expect(passed.content[1]).toBe(existing);
-    expect(passed.persistedActivityEvents).toHaveLength(1);
+    expect(passed.persistedActivityEvents).toBe(activityEvents);
   });
 
   it('hydrates structured PaddleOCR failures with bounded diagnostics', () => {

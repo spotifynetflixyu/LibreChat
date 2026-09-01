@@ -660,12 +660,19 @@ function toOcrPreprocessingState({
       document.memoryKind === 'paddleocr_preflight' &&
       isOcrPreprocessingKind(document.payload, 'paddleocr_mcp_chunk_result')
     ) {
+      const rawResultHash = nextChunk.rawResultHash ?? currentChunk.rawResultHash;
+      const organizerMatchesRaw =
+        !currentChunk.organizedSaved ||
+        (rawResultHash !== undefined && currentChunk.rawResultHash === rawResultHash);
       chunksByRange.set(getOcrPageRangeKey(nextChunk), {
         ...nextChunk,
         ...currentChunk,
-        rawResultHash: nextChunk.rawResultHash ?? currentChunk.rawResultHash,
+        rawResultHash,
         rawOcrText: getPaddleOcrResultText(document.payload.result) ?? currentChunk.rawOcrText,
         rawSaved: true,
+        ...(organizerMatchesRaw
+          ? {}
+          : { organizedSaved: false, organizedMarkdown: undefined }),
       });
       continue;
     }
@@ -675,10 +682,17 @@ function toOcrPreprocessingState({
       isCurrentRule &&
       isOcrPreprocessingKind(document.payload, 'ocr_preprocessing_chunk_markdown')
     ) {
+      if (
+        !currentChunk.rawSaved ||
+        nextChunk.rawResultHash === undefined ||
+        nextChunk.rawResultHash !== currentChunk.rawResultHash
+      ) {
+        continue;
+      }
       chunksByRange.set(getOcrPageRangeKey(nextChunk), {
         ...nextChunk,
         ...currentChunk,
-        rawResultHash: nextChunk.rawResultHash ?? currentChunk.rawResultHash,
+        rawResultHash: currentChunk.rawResultHash,
         ocrRuleVersion: nextChunk.ocrRuleVersion ?? currentChunk.ocrRuleVersion,
         organizedSaved: true,
         organizedMarkdown: getStringProperty(document.payload, 'content') ?? '',

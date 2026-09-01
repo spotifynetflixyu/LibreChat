@@ -148,6 +148,26 @@ const makeMcpToolCallWithoutId = (name: string, hasOutput = true): TMessageConte
     },
   }) as unknown as TMessageContentParts;
 
+const makePersistedPaddleOcrToolCall = (index: number): TMessageContentParts =>
+  ({
+    type: ContentTypes.TOOL_CALL,
+    [ContentTypes.TOOL_CALL]: {
+      id: `paddle-${index}`,
+      name: `paddleocr_vl${MCP_DELIMITER}PaddleOCR`,
+      args: {
+        input_data: `uploads/chunk-${index}.pdf`,
+        output_mode: 'detailed',
+        return_images: false,
+        use_doc_orientation_classify: true,
+        use_doc_unwarping: true,
+        use_layout_detection: true,
+      },
+      output: JSON.stringify({ status: 'ok', chunkIndex: index, chunkCount: 18 }),
+      progress: 1,
+      runStepStatus: 'completed',
+    },
+  }) as unknown as TMessageContentParts;
+
 const makeTextPart = (text: string): TMessageContentParts =>
   ({ type: ContentTypes.TEXT, text }) as unknown as TMessageContentParts;
 
@@ -192,6 +212,26 @@ describe('ContentParts integration: MCP image hoist and grouping', () => {
     // One AttachmentGroup hoisted at the group level — inner ToolCalls skip rendering theirs.
     expect(groups).toHaveLength(1);
     expect(groups[0].getAttribute('data-count')).toBe('2');
+  });
+
+  it('keeps 18 refreshed PaddleOCR preflight tool cards collapsible', () => {
+    const content = Array.from({ length: 18 }, (_, index) =>
+      makePersistedPaddleOcrToolCall(index + 1),
+    );
+
+    renderContentParts({
+      ...baseProps,
+      content,
+    });
+
+    const toggle = screen.getByRole('button', { name: 'Used 18 tools' });
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'true');
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute('aria-expanded', 'false');
   });
 
   it('does not group a single tool call — image renders inline (no hoist)', () => {

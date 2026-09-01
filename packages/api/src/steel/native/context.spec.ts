@@ -477,7 +477,10 @@ describe('Steel native context adapter', () => {
     expect(directive).toContain('[ocr_main_merge]');
     expect(directive).toContain('[final_ocr_markdown]');
     expect(directive).toMatch(
-      /final answer MUST start with exactly one `## 來源檔案對照表` mapping table with columns `來源` and `檔名` in `source_file_mapping` order, then one consolidated `## OCR 結果確認表`, followed by an optional final `## manual_review` table/u,
+      /final answer MUST start with exactly one `## source_file_mapping` table with columns `來源` and `檔名` in `source_file_mapping` order, then one consolidated `## ocr_result` table, followed by an optional final `## manual_review` table/u,
+    );
+    expect(directive).toContain(
+      'Use these three fixed machine titles verbatim; never translate, rename, or add a prefix or suffix.',
     );
     expect(directive).toMatch(/Do not output page headings or page details/u);
     expect(directive).toMatch(
