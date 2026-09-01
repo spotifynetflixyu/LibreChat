@@ -11,6 +11,7 @@ import type { RunnableConfig } from '@librechat/agents/langchain/runnables';
 import type { JsonSchemaType, LCTool } from '@librechat/agents';
 import type { BaseMessage } from '@librechat/agents/langchain/messages';
 import type { OpenAIOAuthModelOptions } from './oauth';
+import { isExpiredSignedUrlError } from '../../storage/url';
 import { createOpenAIOAuthModel } from './oauth';
 
 export const delegateOcrToolName = 'delegate_ocr' as const;
@@ -835,26 +836,55 @@ export async function delegateOcr(input: DelegateOcrInput): Promise<string> {
         { cause: error },
       );
     }
-    const messages = buildDelegateOcrMessages({
-      files: signedFiles,
-      currentUserTurn,
-      ocrRulesText: input.ocrRulesText,
-    });
     let answer: string;
-    try {
-      answer = await (input.invokeModel ?? invokeNativeOcrModel)({
-        messages,
-        modelOptions: input.modelOptions,
-        signal: input.signal,
-        onDelta: input.onDelta,
-      });
-    } catch (error) {
+    let retriedExpiredUrl = false;
+    const throwBatchFailure = (error: unknown): never => {
       const rangeLabel = batch.range ?? pageRanges?.[answers.length];
       const suffix = rangeLabel ? ` for pages ${rangeLabel.pageStart}-${rangeLabel.pageEnd}` : '';
       throw new Error(
         `delegate_ocr failed${suffix}: ${error instanceof Error ? error.message : String(error)}`,
         { cause: error },
       );
+    };
+    while (true) {
+      const messages = buildDelegateOcrMessages({
+        files: signedFiles,
+        currentUserTurn,
+        ocrRulesText: input.ocrRulesText,
+      });
+      let emittedDelta = false;
+      try {
+        answer = await (input.invokeModel ?? invokeNativeOcrModel)({
+          messages,
+          modelOptions: input.modelOptions,
+          signal: input.signal,
+          onDelta: input.onDelta
+            ? async (delta) => {
+                if (delta !== '') {
+                  emittedDelta = true;
+                }
+                await input.onDelta?.(delta);
+              }
+            : undefined,
+        });
+        break;
+      } catch (error) {
+        if (!retriedExpiredUrl && !emittedDelta && isExpiredSignedUrlError(error)) {
+          retriedExpiredUrl = true;
+          try {
+            signedFiles = await Promise.all(
+              batch.files.map(async (file) => ({
+                file,
+                url: await batch.signFile(file),
+              })),
+            );
+          } catch (signError) {
+            throwBatchFailure(signError);
+          }
+          continue;
+        }
+        throwBatchFailure(error);
+      }
     }
     if (answer.trim() === '') {
       const rangeLabel = batch.range ?? pageRanges?.[answers.length];

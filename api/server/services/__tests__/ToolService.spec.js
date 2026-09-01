@@ -2920,6 +2920,58 @@ describe('ToolService - Action Capability Gating', () => {
       );
     });
 
+    it('retries explicit signed URL expiry without rebuilding MCP and refreshes the input URL', async () => {
+      jest.useFakeTimers();
+      try {
+        const file = {
+          fileId: 'file-signed-expired',
+          filename: 'signed-expired.jpg',
+          mediaType: 'image/jpeg',
+        };
+        const req = createMockPaddleOcrPreflightReq(file);
+        const invoke = jest
+          .fn()
+          .mockResolvedValueOnce({ status: 'error', error: 'RequestExpired' })
+          .mockResolvedValueOnce({ status: 'success', content: 'Recovered signed OCR' });
+        const refreshedUrl = 'https://files.example.test/refreshed-signed-expired.jpg';
+        mockFindMissingPaddleOcrFileKeys.mockResolvedValueOnce({
+          completedKeys: [],
+          missingFiles: [],
+          missingKeys: [`file:${file.fileId}`],
+        });
+        mockGetS3DownloadURLForKey.mockResolvedValueOnce(refreshedUrl);
+        mockPaddleOcrToolLoads(invoke);
+        mockPaddleOcrBatchWithOrganizer([]);
+
+        const resultPromise = runSteelPaddleOcrPreflight({
+          req,
+          res: {},
+          agent: {
+            id: 'agent_123',
+            provider: 'openai_oauth_responses',
+            model: 'gpt-5.6-luna',
+            model_parameters: { model: 'gpt-5.6-luna' },
+          },
+          signal: new AbortController().signal,
+          streamId: 'stream-1',
+        });
+        await jest.runAllTimersAsync();
+        const result = await resultPromise;
+
+        expect(result.status).toBe('completed');
+        expect(invoke).toHaveBeenCalledTimes(2);
+        expect(invoke.mock.calls[0][0].input_data).toBe(
+          'https://files.example.test/ocr-input.pdf',
+        );
+        expect(invoke.mock.calls[1][0].input_data).toBe(refreshedUrl);
+        expect(mockMCPManager.appConnections.disconnect).not.toHaveBeenCalled();
+        expect(reinitMCPServer).not.toHaveBeenCalled();
+        expect(mockLoadToolsUtil).toHaveBeenCalledTimes(1);
+      } finally {
+        jest.useRealTimers();
+      }
+    });
+
     it('keeps error-content PaddleOCR failures recoverable without saving raw OCR or organizing it', async () => {
       const file = {
         fileId: 'file-error-content-failure',

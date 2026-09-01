@@ -32,6 +32,7 @@ export enum FileContext {
   message_attachment = 'message_attachment',
   skill_file = 'skill_file',
   filename = 'filename',
+  createdAt = 'createdAt',
   updatedAt = 'updatedAt',
   source = 'source',
   filterSource = 'filterSource',

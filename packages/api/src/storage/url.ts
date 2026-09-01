@@ -6,6 +6,91 @@ export const DEFAULT_REMOTE_FILE_FETCH_MAX_BYTES: number = 512 * 1024 * 1024;
 
 const REMOTE_FILE_PROTOCOLS = new Set(['http:', 'https:']);
 
+const SIGNED_URL_EXPIRY_EXPLICIT_PATTERN =
+  /\b(?:requestexpired|signaturedoesnotmatch|expiredtoken)\b|request\s+has\s+expired/iu;
+const SIGNED_URL_CONTEXT_PATTERN =
+  /\b(?:signed|presigned|pre-signed|x-amz|sigv\d|aws4(?:-hmac-sha256)?)\b/iu;
+const EXPIRY_CONTEXT_PATTERN =
+  /\b(?:expired|expires?|expiry|expiration|expiring)\b|has\s+expired/iu;
+
+interface SignedUrlErrorScan {
+  fragments: string[];
+}
+
+function scanSignedUrlError(value: unknown, scan: SignedUrlErrorScan, visited: Set<object>): void {
+  if (typeof value === 'string') {
+    scan.fragments.push(value);
+    return;
+  }
+  if (value === null || typeof value !== 'object' || visited.has(value)) {
+    return;
+  }
+
+  visited.add(value);
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      scanSignedUrlError(entry, scan, visited);
+    }
+    return;
+  }
+
+  const objectValue = value as { [key: string]: unknown };
+  const keys = new Set([
+    'name',
+    'code',
+    'Code',
+    'errorCode',
+    'ErrorCode',
+    'message',
+    'Message',
+    'description',
+    'Description',
+    'detail',
+    'error_description',
+    'status',
+    'statusCode',
+    'status_code',
+    'response',
+    'data',
+    'body',
+    'error',
+    'errors',
+    'details',
+    'cause',
+    'reason',
+    'originalError',
+    'errorMessage',
+  ]);
+
+  for (const key of keys) {
+    let nested: unknown;
+    try {
+      nested = objectValue[key];
+    } catch {
+      continue;
+    }
+    scanSignedUrlError(nested, scan, visited);
+  }
+}
+
+/**
+ * Identifies provider failures caused by an expired or otherwise invalid
+ * signed/presigned URL. Traversal includes nested Error causes and common
+ * response/data payloads while remaining safe for cyclic error objects.
+ */
+export function isExpiredSignedUrlError(error: unknown): boolean {
+  const scan: SignedUrlErrorScan = { fragments: [] };
+  scanSignedUrlError(error, scan, new Set<object>());
+  const text = scan.fragments.join('\n');
+  if (SIGNED_URL_EXPIRY_EXPLICIT_PATTERN.test(text)) {
+    return true;
+  }
+
+  const hasSignedContext = SIGNED_URL_CONTEXT_PATTERN.test(text);
+  const hasExpiryContext = EXPIRY_CONTEXT_PATTERN.test(text);
+  return hasSignedContext && hasExpiryContext;
+}
+
 type HeaderGetter = {
   get: (name: string) => string | null;
 };

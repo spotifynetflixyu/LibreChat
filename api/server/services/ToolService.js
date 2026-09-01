@@ -72,6 +72,7 @@ const {
   runOcrPreprocessingBatchPipeline,
   getPaddleOcrResultContent,
   getPaddleOcrResultError,
+  isExpiredSignedUrlError,
   isPaddleOcrDiagnosticCode: isPaddleOcrDiagnosticCodeFromApi,
   PADDLE_OCR_MCP_SERVER_NAME: paddleOcrMcpServerNameFromApi,
   resolveOcrPreprocessingChunkSizePages,
@@ -1872,6 +1873,9 @@ function collectErrorMessages(error) {
 }
 
 function isRetryableSteelPaddleOcrPreflightError(error) {
+  if (isExpiredSignedUrlError(error)) {
+    return true;
+  }
   if (isPaddleOcrDiagnosticCode(error?.diagnosticCode)) {
     return [
       'ai_studio_unavailable',

@@ -42,7 +42,7 @@ interface DataTableProps<TData, TValue> {
 
 const contextMap: Record<string, TranslationKeys> = {
   [FileContext.filename]: 'com_ui_name',
-  [FileContext.updatedAt]: 'com_ui_date',
+  [FileContext.createdAt]: 'com_ui_date',
   [FileContext.filterSource]: 'com_ui_storage',
   [FileContext.context]: 'com_ui_context',
   [FileContext.bytes]: 'com_ui_size',

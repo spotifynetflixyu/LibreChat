@@ -222,6 +222,71 @@ describe('delegate_ocr', () => {
     );
   });
 
+  it('refreshes every file and retries once when a signed URL expires before streaming', async () => {
+    const signFile = jest
+      .fn()
+      .mockResolvedValueOnce('https://old.example/image.png')
+      .mockResolvedValueOnce('https://old.example/quote.pdf')
+      .mockResolvedValueOnce('https://fresh.example/image.png')
+      .mockResolvedValueOnce('https://fresh.example/quote.pdf');
+    const invokeModel = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('RequestExpired'))
+      .mockResolvedValueOnce('Recovered OCR');
+
+    await expect(
+      delegateOcr({
+        fileKeys: ['file:image-1', 'file:pdf-1'],
+        currentUserTurn: '重新確認圖面',
+        modelOptions,
+        ocrRulesText: 'OCR rules',
+        userId: 'user-1',
+        findOwnedFiles: async () => files,
+        signFile,
+        invokeModel,
+      }),
+    ).resolves.toBe('Recovered OCR');
+
+    expect(invokeModel).toHaveBeenCalledTimes(2);
+    expect(signFile).toHaveBeenCalledTimes(4);
+    expect(JSON.stringify(invokeModel.mock.calls[0]?.[0]?.messages)).toContain(
+      'https://old.example/image.png',
+    );
+    expect(JSON.stringify(invokeModel.mock.calls[1]?.[0]?.messages)).toContain(
+      'https://fresh.example/image.png',
+    );
+    expect(JSON.stringify(invokeModel.mock.calls[1]?.[0]?.messages)).toContain(
+      'https://fresh.example/quote.pdf',
+    );
+  });
+
+  it('does not retry an expired signed URL after streaming a delta', async () => {
+    const signFile = jest.fn(async (file: DelegateOcrFileRecord) => file.filepath ?? '');
+    const onDelta = jest.fn();
+    const invokeModel = jest.fn(async ({ onDelta: emitDelta }) => {
+      await emitDelta?.('partial');
+      throw new Error('RequestExpired');
+    });
+
+    await expect(
+      delegateOcr({
+        fileKeys: ['file:image-1'],
+        currentUserTurn: '重新確認圖面',
+        modelOptions,
+        ocrRulesText: 'OCR rules',
+        userId: 'user-1',
+        findOwnedFiles: async () => [files[0]],
+        signFile,
+        invokeModel,
+        onDelta,
+      }),
+    ).rejects.toThrow('delegate_ocr failed: RequestExpired');
+
+    expect(invokeModel).toHaveBeenCalledTimes(1);
+    expect(signFile).toHaveBeenCalledTimes(1);
+    expect(onDelta).toHaveBeenCalledWith('partial');
+  });
+
   it('runs 106 pages as three ordered sequential batches and fails fast with the original range', async () => {
     const order: string[] = [];
     const prepareBatches = async () =>
