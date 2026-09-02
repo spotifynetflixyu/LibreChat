@@ -368,4 +368,71 @@ describe('Steel working-order memory writer', () => {
       missingKeys: [],
     });
   });
+
+  it('isolates delegate OCR chunks by exact delegate index', async () => {
+    const SteelWorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
+    const writer = createMongooseSteelWorkingOrderMemoryWriter(mongoose);
+    const file = {
+      fileId: 'delegate-file',
+      filename: 'delegate.pdf',
+      mediaType: 'application/pdf',
+    };
+    const chunk = {
+      sourcePdfKey: 'delegate-pdf',
+      chunkIndex: 1,
+      chunkCount: 1,
+      pageStart: 1,
+      pageEnd: 2,
+      pdfChunk: {
+        source: 's3' as const,
+        storageKey: 'delegate-chunk.pdf',
+        filepath: '/tmp/delegate-chunk.pdf',
+      },
+    };
+
+    await writer.captureDelegatePaddleOcrChunkResult({
+      conversationId: 'conversation-delegate',
+      turnIndex: 1,
+      checkpointTurnIndex: 1,
+      file,
+      chunk,
+      rawResultHash: 'hash-delegate',
+      data: { text: 'delegate OCR' },
+      delegateOcrIndex: 1,
+    });
+
+    await expect(
+      writer.readDelegateOcrPreprocessingState({
+        conversationId: 'conversation-delegate',
+        sourcePdfKey: 'delegate-pdf',
+        ocrFileKey: 'file:delegate-file',
+        ocrRuleVersion: 'rules-v1',
+        delegateOcrIndex: 1,
+      }),
+    ).resolves.toEqual(expect.objectContaining({ chunks: [expect.objectContaining({ rawSaved: true })] }));
+    await expect(
+      writer.readDelegateOcrPreprocessingState({
+        conversationId: 'conversation-delegate',
+        sourcePdfKey: 'delegate-pdf',
+        ocrFileKey: 'file:delegate-file',
+        ocrRuleVersion: 'rules-v1',
+        delegateOcrIndex: 2,
+      }),
+    ).resolves.toEqual(expect.objectContaining({ chunks: [] }));
+    await expect(
+      writer.readOcrPreprocessingState({
+        conversationId: 'conversation-delegate',
+        sourcePdfKey: 'delegate-pdf',
+        ocrFileKey: 'file:delegate-file',
+        ocrRuleVersion: 'rules-v1',
+      }),
+    ).resolves.toEqual(expect.objectContaining({ chunks: [] }));
+
+    const document = await SteelWorkingOrderMemory.findOne({
+      conversationId: 'conversation-delegate',
+    }).lean();
+    expect(document?.payload).toEqual(
+      expect.objectContaining({ preflightMode: 'delegate', delegateOcrIndex: 1 }),
+    );
+  });
 });

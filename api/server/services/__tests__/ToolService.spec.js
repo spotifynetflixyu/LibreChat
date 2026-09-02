@@ -348,6 +348,8 @@ jest.mock('~/cache', () => ({
 const {
   loadAgentTools,
   loadToolsForExecution,
+  prepareDelegateOcrResume,
+  executeDelegateOcrResume,
   resolveDelegateOcrPolicyForRequest,
   processRequiredActions,
   runSteelPaddleOcrPreflight,
@@ -965,6 +967,91 @@ describe('ToolService - Action Capability Gating', () => {
         allowedFileKeys: [],
       });
       expect(mockGetFiles).toHaveBeenCalledTimes(1);
+    });
+
+    it('resumes only the exact user message with original params and owner-authorized files', async () => {
+      const originalFiles = [
+        { fileKey: 'filename:PL.pdf', pageRanges: [{ pageStart: 3, pageEnd: 7 }] },
+      ];
+      const run = {
+        conversationId: 'convo-1',
+        triggeringMessageId: 'user-message-1',
+        delegateOcrIndex: 4,
+        claimToken: 'claim-4',
+        status: 'running',
+        toolParameters: { files: originalFiles },
+        files: [{ fileId: 'file-1', filename: 'PL.pdf' }],
+      };
+      const stateService = {
+        findResumableDelegateOcrRun: jest.fn().mockResolvedValue(run),
+        acquireDelegateExecutionLease: jest.fn().mockResolvedValue({
+          claimToken: 'claim-4',
+          executionLeaseToken: 'lease-4',
+          executionLeaseExpiresAt: new Date(Date.now() + 60_000),
+        }),
+      };
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.steelNativeContext = {
+        delegateOcrContext: { delegateOcrStateService: stateService },
+      };
+      mockGetFiles.mockResolvedValueOnce([
+        { file_id: 'file-1', user: 'user_123', filename: 'PL.pdf', type: 'application/pdf' },
+      ]);
+
+      const resume = await prepareDelegateOcrResume({
+        req,
+        conversationId: 'convo-1',
+        triggeringMessageId: 'user-message-1',
+        userId: 'user_123',
+      });
+
+      expect(stateService.findResumableDelegateOcrRun).toHaveBeenCalledWith({
+        conversationId: 'convo-1',
+        triggeringMessageId: 'user-message-1',
+      });
+      expect(resume.files).toEqual(originalFiles);
+      expect(resume.files[0]).toBe(originalFiles[0]);
+      expect(mockGetFiles).toHaveBeenCalledWith(
+        { user: 'user_123', file_id: { $in: ['file-1'] } },
+        {},
+        {},
+      );
+      expect(req.steelNativeContext.delegateOcrContext.delegateOcrPolicy).toEqual({
+        resolved: true,
+        allowed: false,
+        allowedFileKeys: [],
+        reason: 'delegate_ocr_resume',
+      });
+      expect(req.steelNativeContext.delegateOcrContext.delegateOcrRun).toBe(run);
+    });
+
+    it('re-emits a finalized candidate without requiring model options or rerunning AI', async () => {
+      const onDelta = jest.fn();
+      const markdown = '## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| F1 | P1 |';
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.steelNativeContext = { delegateOcrContext: {} };
+
+      const result = await executeDelegateOcrResume({
+        req,
+        resume: {
+          run: {
+            claimToken: 'claim-4',
+            status: 'save_failed',
+            responseGenerationId: 'generation-4',
+          },
+          files: [{ fileKey: 'file:file-1' }],
+          candidate: { markdown },
+        },
+        onDelta,
+      });
+
+      expect(result).toBe(markdown);
+      expect(onDelta).toHaveBeenCalledWith(markdown, {
+        claimToken: 'claim-4',
+        generationId: 'generation-4',
+        attemptToken: undefined,
+      });
+      expect(mockCreateOpenAIOAuthModel).not.toHaveBeenCalled();
     });
   });
 

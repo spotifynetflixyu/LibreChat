@@ -71,6 +71,15 @@ describe('convertInputToMessages', () => {
     expect(convertInputToMessages(input)).toEqual([{ role: 'user', content: 'Hi' }]);
   });
 
+  it('preserves an input message id for exact delegate OCR resume', () => {
+    const input = [
+      { type: 'message', id: 'user-message-1', role: 'user', content: 'Resume OCR' },
+    ] as unknown as InputItem[];
+    expect(convertInputToMessages(input)).toEqual([
+      { role: 'user', content: 'Resume OCR', messageId: 'user-message-1' },
+    ]);
+  });
+
   it('maps assistant role to assistant', () => {
     const input: InputItem[] = [{ type: 'message', role: 'assistant', content: 'Hello!' }];
     expect(convertInputToMessages(input)).toEqual([{ role: 'assistant', content: 'Hello!' }]);

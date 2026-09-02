@@ -17,8 +17,27 @@ export const steelNativeErrorMessageMaxLength: number = 512;
 export type SteelNativeEventSource =
   | 'ocr_preprocessing'
   | 'paddleocr_preflight'
+  | 'delegate_ocr_preflight'
   | 'tool_result'
   | 'quote_runtime';
+
+export type SteelNativeDelegateOcrStage =
+  | 'resume'
+  | 'paddleocr'
+  | 'organizer'
+  | 'agent'
+  | 'reconciliation'
+  | 'saving'
+  | 'summary'
+  | 'response';
+
+export type SteelNativeDelegateOcrStatus =
+  | 'started'
+  | 'progress'
+  | 'retrying'
+  | 'succeeded'
+  | 'failed'
+  | 'replaced';
 
 export type SteelNativeSavedCounts = Record<string, number>;
 export type SteelNativeTableCounts = Record<string, number>;
@@ -54,6 +73,22 @@ export interface SteelNativeMemorySavedEvent extends SteelNativeEventBase {
   totalTableCounts?: SteelNativeTableCounts;
 }
 
+export interface SteelNativeDelegateOcrStatusEvent extends SteelNativeEventBase {
+  type: 'delegate_ocr_status';
+  source: 'delegate_ocr_preflight';
+  delegateOcrIndex: number;
+  stage: SteelNativeDelegateOcrStage;
+  status: SteelNativeDelegateOcrStatus;
+  message: string;
+  errorMessage?: string;
+  chunkIndex?: number;
+  chunkCount?: number;
+  /** Correlation values are accepted on live events but are stripped before persistence. */
+  claimToken?: string;
+  generationId?: string;
+  attemptToken?: string;
+}
+
 export interface SteelNativeQuoteAuditStartedEvent extends SteelNativeEventBase {
   type: 'quote_audit';
   stage: 'stage_2';
@@ -76,6 +111,7 @@ export type SteelNativeQuoteAuditEvent =
 export type SteelNativeStreamEvent =
   | SteelNativeParseStatusEvent
   | SteelNativeMemorySavedEvent
+  | SteelNativeDelegateOcrStatusEvent
   | SteelNativeQuoteAuditEvent;
 
 export interface SteelNativeEventEnvelope {
@@ -136,6 +172,7 @@ const steelNativeEventBaseFields = [
 const steelNativeEventSources = [
   'ocr_preprocessing',
   'paddleocr_preflight',
+  'delegate_ocr_preflight',
   'tool_result',
   'quote_runtime',
 ] as const;
@@ -433,6 +470,46 @@ function isSteelNativeEventData(value: unknown): value is SteelNativeStreamEvent
       (value.totalSavedCounts === undefined || isCountMap(value.totalSavedCounts)) &&
       (value.savedTableCounts === undefined || isCountMap(value.savedTableCounts)) &&
       (value.totalTableCounts === undefined || isCountMap(value.totalTableCounts))
+    );
+  }
+
+  if (value.type === 'delegate_ocr_status') {
+    if (
+      !hasOnlyKeys(value, [
+        'type',
+        'source',
+        ...steelNativeEventBaseFields,
+        'delegateOcrIndex',
+        'stage',
+        'status',
+        'message',
+        'errorMessage',
+        'chunkIndex',
+        'chunkCount',
+        'claimToken',
+        'generationId',
+        'attemptToken',
+      ])
+    ) {
+      return false;
+    }
+    return (
+      value.source === 'delegate_ocr_preflight' &&
+      isSafeInteger(value.delegateOcrIndex) &&
+      value.delegateOcrIndex >= 1 &&
+      ['resume', 'paddleocr', 'organizer', 'agent', 'reconciliation', 'saving', 'summary', 'response'].includes(
+        value.stage as string,
+      ) &&
+      ['started', 'progress', 'retrying', 'succeeded', 'failed', 'replaced'].includes(
+        value.status as string,
+      ) &&
+      typeof value.message === 'string' &&
+      (value.errorMessage === undefined || typeof value.errorMessage === 'string') &&
+      (value.chunkIndex === undefined || (isSafeInteger(value.chunkIndex) && value.chunkIndex >= 0)) &&
+      (value.chunkCount === undefined || (isSafeInteger(value.chunkCount) && value.chunkCount >= 1)) &&
+      (value.claimToken === undefined || typeof value.claimToken === 'string') &&
+      (value.generationId === undefined || typeof value.generationId === 'string') &&
+      (value.attemptToken === undefined || typeof value.attemptToken === 'string')
     );
   }
 
@@ -833,6 +910,49 @@ function canonicalizeSteelNativeEvent(value: unknown): SteelNativeStreamEvent | 
         event[field] = counts;
       }
     }
+  } else if (value.type === 'delegate_ocr_status') {
+    if (
+      value.source !== 'delegate_ocr_preflight' ||
+      !isSafeInteger(value.delegateOcrIndex) ||
+      value.delegateOcrIndex < 1 ||
+      !['resume', 'paddleocr', 'organizer', 'agent', 'reconciliation', 'saving', 'summary', 'response'].includes(
+        value.stage as string,
+      ) ||
+      !['started', 'progress', 'retrying', 'succeeded', 'failed', 'replaced'].includes(
+        value.status as string,
+      ) ||
+      typeof value.message !== 'string'
+    ) {
+      return undefined;
+    }
+    event.type = 'delegate_ocr_status';
+    event.source = 'delegate_ocr_preflight';
+    event.delegateOcrIndex = value.delegateOcrIndex;
+    event.stage = value.stage;
+    event.status = value.status;
+    event.message = value.message;
+    if (value.errorMessage !== undefined) {
+      if (typeof value.errorMessage !== 'string') {
+        return undefined;
+      }
+      const errorMessage = sanitizeErrorMessage(value.errorMessage);
+      if (errorMessage) {
+        event.errorMessage = errorMessage;
+      }
+    }
+    if (value.chunkIndex !== undefined) {
+      if (!isSafeInteger(value.chunkIndex) || value.chunkIndex < 0) {
+        return undefined;
+      }
+      event.chunkIndex = value.chunkIndex;
+    }
+    if (value.chunkCount !== undefined) {
+      if (!isSafeInteger(value.chunkCount) || value.chunkCount < 1) {
+        return undefined;
+      }
+      event.chunkCount = value.chunkCount;
+    }
+    // claim/generation/attempt tokens intentionally do not cross persistence boundaries.
   } else if (value.type === 'quote_audit') {
     if (value.stage === 'stage_2' && value.status === 'started') {
       if (value.source !== 'quote_runtime' || value.message !== 'Stage 2 started') {
@@ -1225,6 +1345,70 @@ function baseEvent(input: SteelNativeEventBase): SteelNativeEventBase {
 }
 
 export type BuildSteelQuoteAuditEventInput = Omit<SteelNativeEventBase, 'source'>;
+
+export interface BuildSteelDelegateOcrStatusEventInput extends Omit<SteelNativeEventBase, 'source'> {
+  delegateOcrIndex: number;
+  stage: SteelNativeDelegateOcrStage;
+  status: SteelNativeDelegateOcrStatus;
+  message: string;
+  errorMessage?: string;
+  chunkIndex?: number;
+  chunkCount?: number;
+  claimToken?: string;
+  generationId?: string;
+  attemptToken?: string;
+}
+
+/** Build one delegate OCR lifecycle event. Correlation tokens are for live gating only. */
+export function buildSteelDelegateOcrStatusEvent({
+  delegateOcrIndex,
+  stage,
+  status,
+  message,
+  errorMessage,
+  chunkIndex,
+  chunkCount,
+  claimToken,
+  generationId,
+  attemptToken,
+  ...input
+}: BuildSteelDelegateOcrStatusEventInput): SteelNativeDelegateOcrStatusEvent {
+  return {
+    type: 'delegate_ocr_status',
+    source: 'delegate_ocr_preflight',
+    delegateOcrIndex,
+    stage,
+    status,
+    message,
+    ...(errorMessage !== undefined ? { errorMessage } : {}),
+    ...(chunkIndex !== undefined ? { chunkIndex } : {}),
+    ...(chunkCount !== undefined ? { chunkCount } : {}),
+    ...(claimToken !== undefined ? { claimToken } : {}),
+    ...(generationId !== undefined ? { generationId } : {}),
+    ...(attemptToken !== undefined ? { attemptToken } : {}),
+    ...baseEvent({ ...input, source: 'delegate_ocr_preflight' }),
+  };
+}
+
+export function buildSteelDelegateOcrStatusEventEnvelope(
+  input: BuildSteelDelegateOcrStatusEventInput,
+): SteelNativeEventEnvelope {
+  return {
+    event: steelNativeStreamEventName,
+    data: buildSteelDelegateOcrStatusEvent(input),
+  };
+}
+
+export function buildSteelDelegateOcrStatusEventEnvelopes(
+  input: BuildSteelDelegateOcrStatusEventInput,
+): SteelNativeEventEnvelope[] {
+  return [buildSteelDelegateOcrStatusEventEnvelope(input)];
+}
+
+export const buildSteelDelegateOcrEvent: typeof buildSteelDelegateOcrStatusEvent =
+  buildSteelDelegateOcrStatusEvent;
+export const buildSteelDelegateOcrEventEnvelope: typeof buildSteelDelegateOcrStatusEventEnvelope =
+  buildSteelDelegateOcrStatusEventEnvelope;
 
 export function buildSteelQuoteAuditEvent(
   input: BuildSteelQuoteAuditEventInput = {},

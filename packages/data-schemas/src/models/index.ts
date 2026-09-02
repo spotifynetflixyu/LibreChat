@@ -53,6 +53,8 @@ import {
   createSteelSourceVersionModel,
   createSteelToolCallModel,
   createSteelWorkingOrderMemoryModel,
+  createSteelDelegateOcrRunModel,
+  createSteelConversationOcrStateModel,
 } from './steel';
 import logger from '~/config/winston';
 
@@ -98,6 +100,8 @@ export function createModels(mongoose: typeof import('mongoose')): {
   Group: ReturnType<typeof createGroupModel>;
   Config: ReturnType<typeof createConfigModel>;
   SteelWorkingOrderMemory: ReturnType<typeof createSteelWorkingOrderMemoryModel>;
+  SteelDelegateOcrRun: ReturnType<typeof createSteelDelegateOcrRunModel>;
+  SteelConversationOcrState: ReturnType<typeof createSteelConversationOcrStateModel>;
   SteelAIRun: ReturnType<typeof createSteelAIRunModel>;
   SteelAICapability: ReturnType<typeof createSteelAICapabilityModel>;
   SteelSourceVersion: ReturnType<typeof createSteelSourceVersionModel>;
@@ -154,6 +158,8 @@ export function createModels(mongoose: typeof import('mongoose')): {
     Group: createGroupModel(mongoose),
     Config: createConfigModel(mongoose),
     SteelWorkingOrderMemory: createSteelWorkingOrderMemoryModel(mongoose),
+    SteelDelegateOcrRun: createSteelDelegateOcrRunModel(mongoose),
+    SteelConversationOcrState: createSteelConversationOcrStateModel(mongoose),
     SteelAIRun: createSteelAIRunModel(mongoose),
     SteelAICapability: createSteelAICapabilityModel(mongoose),
     SteelSourceVersion: createSteelSourceVersionModel(mongoose),
@@ -203,4 +209,6 @@ export {
   createSteelSourceVersionModel,
   createSteelToolCallModel,
   createSteelWorkingOrderMemoryModel,
+  createSteelDelegateOcrRunModel,
+  createSteelConversationOcrStateModel,
 } from './steel';

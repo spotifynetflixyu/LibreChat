@@ -222,3 +222,6 @@ export interface ISteelNamedState extends Document {
   createdAt?: Date;
   updatedAt?: Date;
 }
+
+export * from './delegateOcr';
+export * from './conversationOcrState';

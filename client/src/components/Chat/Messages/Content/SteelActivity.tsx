@@ -141,6 +141,10 @@ function getActivityLabel(
   event: SteelNativeActivityEvent,
   localize: ReturnType<typeof useLocalize>,
 ) {
+  if (event.type === 'delegate_ocr_status') {
+    return event.message;
+  }
+
   if (event.type === 'quote_audit') {
     return event.message;
   }
@@ -243,6 +247,10 @@ function getTotalCountText(
 }
 
 function shouldDisplayEvent(event: SteelNativeActivityEvent): boolean {
+  if (event.type === 'delegate_ocr_status') {
+    return true;
+  }
+
   if (event.type === 'quote_audit') {
     return true;
   }
@@ -255,7 +263,9 @@ function shouldDisplayEvent(event: SteelNativeActivityEvent): boolean {
 }
 
 function getErrorMessage(event: SteelNativeActivityEvent): string | undefined {
-  return event.type === 'parse_status' ? event.errorMessage : undefined;
+  return event.type === 'parse_status' || event.type === 'delegate_ocr_status'
+    ? event.errorMessage
+    : undefined;
 }
 
 function formatPageRange(range: { pageStart: number; pageEnd: number }): string {

@@ -10,6 +10,12 @@ const mockSpendStructuredTokens = jest.fn().mockResolvedValue({});
 const mockRecordCollectedUsage = jest
   .fn()
   .mockResolvedValue({ input_tokens: 100, output_tokens: 50 });
+const mockResponsesOcrStateService = {
+  readConversationOcrState: jest.fn(),
+  upsertCurrentOcrResult: jest.fn(),
+};
+const mockCreateSteelOcrStateService = jest.fn(() => mockResponsesOcrStateService);
+const mockFinalizeOcrResponse = jest.fn();
 const mockGetBalanceConfig = jest.fn().mockReturnValue({ enabled: true });
 const mockGetTransactionsConfig = jest.fn().mockReturnValue({ enabled: true });
 const mockResolveMemoryAvailability = jest.fn().mockResolvedValue(true);
@@ -182,6 +188,8 @@ jest.mock('@librechat/agents', () => ({
 
 jest.mock('@librechat/api', () => ({
   delegateOcrStreamEventName: 'on_delegate_ocr_stream',
+  createSteelOcrStateService: (...args) => mockCreateSteelOcrStateService(...args),
+  finalizeOcrResponse: (...args) => mockFinalizeOcrResponse(...args),
   /** Pass-through: the controller strips UI-only activity-label parts
    *  before SDK formatting; the mock must expose it like any other used
    *  export or the call throws before the assertions run. */
@@ -444,6 +452,9 @@ describe('createResponse controller', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockGlobalDiscoveredAgentConfigs = null;
+    mockCreateSteelOcrStateService.mockReturnValue(mockResponsesOcrStateService);
+    mockResponsesOcrStateService.readConversationOcrState.mockResolvedValue(null);
+    mockResponsesOcrStateService.upsertCurrentOcrResult.mockResolvedValue({});
 
     const controller = require('../responses');
     createResponse = controller.createResponse;
@@ -1103,6 +1114,57 @@ describe('createResponse controller', () => {
         expect.objectContaining({
           text: '## OCR 結果確認表\n\n| 頁 | 圖號 |\n',
         }),
+      );
+    });
+
+    it('saves the corrected whole OCR response before updating latest OCR state', async () => {
+      const api = require('@librechat/api');
+      const { saveMessage } = require('~/models');
+      const raw =
+        '## source_file_mapping\n\n| 來源 | 檔名 |\n| --- | --- |\n| F1 | PL.pdf |\n\n## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| F1 | RAW |';
+      const corrected = raw.replace('RAW', 'CORRECTED');
+      const correctedOcr =
+        '## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| F1 | CORRECTED |';
+      const aggregated = {
+        id: 'resp_123',
+        status: 'completed',
+        output: [
+          {
+            id: 'msg_1',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: raw }],
+          },
+        ],
+        usage: { input_tokens: 100, output_tokens: 50, total_tokens: 150 },
+      };
+      api.buildAggregatedResponse.mockReturnValueOnce(aggregated);
+      mockResponsesOcrStateService.readConversationOcrState.mockResolvedValue({
+        currentOcrResultMarkdown: '## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| F1 | OLD |',
+        sourceMappings: [{ sourceCode: 'F1', sourceFilename: 'PL.pdf' }],
+      });
+      mockFinalizeOcrResponse.mockReturnValue({
+        ok: true,
+        finalResponse: corrected,
+        ocrResultMarkdown: correctedOcr,
+      });
+
+      await createResponse(req, res);
+
+      const assistantMessage = saveMessage.mock.calls
+        .map((call) => call[1])
+        .find((message) => message.isCreatedByUser === false);
+      expect(assistantMessage).toEqual(expect.objectContaining({ text: corrected }));
+      expect(aggregated.output[0].content).toEqual([{ type: 'output_text', text: corrected }]);
+      expect(mockResponsesOcrStateService.upsertCurrentOcrResult).toHaveBeenCalledWith(
+        expect.objectContaining({
+          markdown: correctedOcr,
+          messageId: 'resp_mock-123',
+        }),
+      );
+      expect(saveMessage.mock.invocationCallOrder.at(-1)).toBeLessThan(
+        mockResponsesOcrStateService.upsertCurrentOcrResult.mock.invocationCallOrder[0],
       );
     });
 

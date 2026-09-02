@@ -22,6 +22,7 @@ export interface SteelRuntimeOtherGlobalRules {
   ocrVisionRules: SteelAgentRule[];
   ocrMainRules: SteelAgentRule[];
   ocrOrganizerRules: SteelAgentRule[];
+  ocrDelegateRules: SteelAgentRule[];
   fileRules: SteelAgentRule[];
   sourcePriorityRules: SteelAgentRule[];
   markdownOutputRules: SteelAgentRule[];
@@ -49,6 +50,8 @@ export interface SteelRuntimeContext {
     currentOcrMarkdownResults: SteelRuntimeJsonObject[];
     currentOcrFailures: SteelRuntimeJsonObject[];
     currentOcrSourceFileMapping: SteelRuntimeOcrSourceFileMapping[];
+    previousOcrResultMarkdown?: string;
+    suggestedOcrResultColumns?: string[];
   };
 }
 
@@ -61,6 +64,8 @@ export interface SteelRuntimeContextAttachmentsInput {
   currentOcrMarkdownResults?: SteelRuntimeJsonObject[];
   currentOcrFailures?: SteelRuntimeJsonObject[];
   currentOcrSourceFileMapping?: SteelRuntimeOcrSourceFileMapping[];
+  previousOcrResultMarkdown?: string;
+  suggestedOcrResultColumns?: string[];
 }
 
 export interface SteelRuntimeContextDependencies {
@@ -147,6 +152,12 @@ export async function prepareSteelRuntimeContext({
       currentOcrMarkdownResults: attachments?.currentOcrMarkdownResults ?? [],
       currentOcrFailures: attachments?.currentOcrFailures ?? [],
       currentOcrSourceFileMapping: attachments?.currentOcrSourceFileMapping ?? [],
+      ...(attachments?.previousOcrResultMarkdown !== undefined
+        ? { previousOcrResultMarkdown: attachments.previousOcrResultMarkdown }
+        : {}),
+      ...(attachments?.suggestedOcrResultColumns !== undefined
+        ? { suggestedOcrResultColumns: attachments.suggestedOcrResultColumns }
+        : {}),
     },
   };
 }

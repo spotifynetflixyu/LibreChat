@@ -66,6 +66,12 @@ const mockSaveConvo = jest.fn();
 const mockSaveMessage = jest.fn();
 const mockIsAgentTriggerPrincipalActive = jest.fn();
 const mockDeleteAgentCheckpoint = jest.fn();
+const mockOcrStateService = {
+  readConversationOcrState: jest.fn(),
+  upsertCurrentOcrResult: jest.fn(),
+};
+const mockCreateSteelOcrStateService = jest.fn(() => mockOcrStateService);
+const mockFinalizeOcrResponse = jest.fn();
 const mockStartupTelemetry = {
   mark: jest.fn(),
   setStreamId: jest.fn(),
@@ -190,6 +196,8 @@ jest.mock('@librechat/api', () => ({
     return messages.length === 0;
   },
   deleteAgentCheckpoint: (...args) => mockDeleteAgentCheckpoint(...args),
+  createSteelOcrStateService: (...args) => mockCreateSteelOcrStateService(...args),
+  finalizeOcrResponse: (...args) => mockFinalizeOcrResponse(...args),
 }));
 
 jest.mock('~/server/cleanup', () => ({
@@ -320,6 +328,10 @@ describe('ResumableAgentController resume metadata', () => {
     mockGenerationJobManager.steering.consumeRecovered.mockResolvedValue(true);
     mockSaveMessage.mockResolvedValue({});
     mockDeleteAgentCheckpoint.mockResolvedValue(undefined);
+    mockFinalizeOcrResponse.mockReset();
+    mockCreateSteelOcrStateService.mockReturnValue(mockOcrStateService);
+    mockOcrStateService.readConversationOcrState.mockResolvedValue(null);
+    mockOcrStateService.upsertCurrentOcrResult.mockResolvedValue({});
   });
 
   it.each([
@@ -3440,6 +3452,227 @@ describe('ResumableAgentController resume metadata', () => {
     );
     expect(mockGenerationJobManager.completeJob).not.toHaveBeenCalled();
     expect(mockGenerationJobManager.steering.closeAndDrain).not.toHaveBeenCalled();
+  });
+
+  it('reconciles completed OCR response before saving message and publishing FINAL', async () => {
+    const userMessage = {
+      messageId: 'ocr-user-msg',
+      parentMessageId: 'parent-msg',
+      conversationId: 'conversation-123',
+      text: '整理 OCR 結果。',
+    };
+    const rawResponseText =
+      '## source_file_mapping\n\n| 來源 | 檔名 |\n| --- | --- |\n| F1 | BH.pdf |\n\n## ocr_result\n\n| 零件編號 |\n| --- |\n| RAW |';
+    const correctedResponseText =
+      '## source_file_mapping\n\n| 來源 | 檔名 |\n| --- | --- |\n| F1 | BH.pdf |\n\n## ocr_result\n\n| 零件編號 |\n| --- |\n| CORRECTED |';
+    const correctedOcrMarkdown =
+      '## ocr_result\n\n| 零件編號 |\n| --- |\n| CORRECTED |';
+    const previousOcrMarkdown = '## ocr_result\n\n| 零件編號 |\n| --- |\n| PREVIOUS |';
+    const terminalClaim = {
+      streamId: 'conversation-123',
+      createdAt: 1000,
+      status: 'complete',
+      persistencePending: true,
+      drainedSteers: [],
+    };
+    mockGenerationJobManager.claimTerminalJob.mockResolvedValue(terminalClaim);
+    mockOcrStateService.readConversationOcrState.mockResolvedValue({
+      currentOcrResultMarkdown: previousOcrMarkdown,
+      currentOcrResultGenerationId: 'previous-generation',
+      sourceMappings: [{ sourceCode: 'F1', sourceFilename: 'BH.pdf' }],
+    });
+    mockFinalizeOcrResponse.mockReturnValue({
+      ok: true,
+      finalResponse: correctedResponseText,
+      ocrResultMarkdown: correctedOcrMarkdown,
+    });
+
+    const client = {
+      options: {},
+      savedMessageIds: new Set(),
+      skipSaveUserMessage: false,
+      sendMessage: jest.fn(async (_text, options) => {
+        options.onStart(userMessage, 'ocr-response-msg');
+        const response = {
+          messageId: 'ocr-response-msg',
+          parentMessageId: userMessage.messageId,
+          conversationId: 'conversation-123',
+          text: rawResponseText,
+          content: [{ type: 'text', text: rawResponseText }],
+        };
+        expect(await options.beforeResponsePersistence(response)).toBe(true);
+        response.databasePromise = Promise.resolve({
+          conversation: { conversationId: 'conversation-123', title: 'Existing' },
+        });
+        return response;
+      }),
+    };
+    const req = {
+      user: { id: 'user-123' },
+      body: {
+        text: userMessage.text,
+        messageId: userMessage.messageId,
+        parentMessageId: userMessage.parentMessageId,
+        conversationId: 'conversation-123',
+        endpointOption: { endpoint: 'agents', modelOptions: { model: 'gpt-4.1' } },
+      },
+      config: {},
+      steelNativeContext: { ocrTurnActive: true },
+    };
+
+    await AgentController(
+      req,
+      createResumableResponse(),
+      jest.fn(),
+      jest.fn().mockResolvedValue({ client }),
+      null,
+    );
+    await waitForExpectation(() => {
+      expect(mockGenerationJobManager.publishTerminalClaim).toHaveBeenCalledWith(
+        terminalClaim,
+        expect.objectContaining({ final: true }),
+      );
+    });
+
+    expect(mockCreateSteelOcrStateService).toHaveBeenCalledWith(expect.anything());
+    expect(mockOcrStateService.readConversationOcrState).toHaveBeenCalledWith(
+      'conversation-123',
+    );
+    expect(mockFinalizeOcrResponse).toHaveBeenCalledWith({
+      assistantResponse: rawResponseText,
+      previousOcrMarkdown: previousOcrMarkdown,
+      canonicalMapping: [{ sourceCode: 'F1', sourceFilename: 'BH.pdf' }],
+      delegateSummary: false,
+      agentKind: 'regular_ocr',
+    });
+
+    const savedResponse = mockSaveMessage.mock.calls.find(
+      ([, message]) => message?.messageId === 'ocr-response-msg',
+    )?.[1];
+    expect(savedResponse).toEqual(
+      expect.objectContaining({
+        messageId: 'ocr-response-msg',
+        text: correctedResponseText,
+        content: [{ type: 'text', text: correctedResponseText }],
+      }),
+    );
+    const finalEvent = mockGenerationJobManager.publishTerminalClaim.mock.calls.find(
+      ([, event]) => event?.final === true,
+    )?.[1];
+    expect(finalEvent.responseMessage).toEqual(
+      expect.objectContaining({
+        messageId: 'ocr-response-msg',
+        text: correctedResponseText,
+        content: [{ type: 'text', text: correctedResponseText }],
+      }),
+    );
+    expect(mockOcrStateService.upsertCurrentOcrResult).toHaveBeenCalledWith({
+      conversationId: 'conversation-123',
+      generationId: '1000',
+      attemptNumber: 1,
+      markdown: correctedOcrMarkdown,
+      messageId: 'ocr-response-msg',
+      expectedGenerationId: 'previous-generation',
+    });
+
+    const responseSaveOrder = mockSaveMessage.mock.invocationCallOrder.find((order, index) => {
+      const message = mockSaveMessage.mock.calls[index]?.[1];
+      return message?.messageId === 'ocr-response-msg' ? order : false;
+    });
+    expect(responseSaveOrder).toBeDefined();
+    expect(responseSaveOrder).toBeLessThan(
+      mockOcrStateService.upsertCurrentOcrResult.mock.invocationCallOrder[0],
+    );
+    expect(
+      mockOcrStateService.upsertCurrentOcrResult.mock.invocationCallOrder[0],
+    ).toBeLessThan(mockGenerationJobManager.publishTerminalClaim.mock.invocationCallOrder[0]);
+  });
+
+  it('keeps completed non-OCR response persistence unchanged', async () => {
+    const userMessage = {
+      messageId: 'normal-user-msg',
+      parentMessageId: 'parent-msg',
+      conversationId: 'conversation-123',
+      text: '一般回答。',
+    };
+    const responseText = '一般回答內容。';
+    const terminalClaim = {
+      streamId: 'conversation-123',
+      createdAt: 1000,
+      status: 'complete',
+      persistencePending: true,
+      drainedSteers: [],
+    };
+    mockGenerationJobManager.claimTerminalJob.mockResolvedValue(terminalClaim);
+
+    const client = {
+      options: {},
+      savedMessageIds: new Set(),
+      skipSaveUserMessage: false,
+      sendMessage: jest.fn(async (_text, options) => {
+        options.onStart(userMessage, 'normal-response-msg');
+        const response = {
+          messageId: 'normal-response-msg',
+          parentMessageId: userMessage.messageId,
+          conversationId: 'conversation-123',
+          text: responseText,
+          content: [{ type: 'text', text: responseText }],
+        };
+        expect(await options.beforeResponsePersistence(response)).toBe(true);
+        response.databasePromise = Promise.resolve({
+          conversation: { conversationId: 'conversation-123', title: 'Existing' },
+        });
+        return response;
+      }),
+    };
+    const req = {
+      user: { id: 'user-123' },
+      body: {
+        text: userMessage.text,
+        messageId: userMessage.messageId,
+        parentMessageId: userMessage.parentMessageId,
+        conversationId: 'conversation-123',
+        endpointOption: { endpoint: 'agents', modelOptions: { model: 'gpt-4.1' } },
+      },
+      config: {},
+    };
+
+    await AgentController(
+      req,
+      createResumableResponse(),
+      jest.fn(),
+      jest.fn().mockResolvedValue({ client }),
+      null,
+    );
+    await waitForExpectation(() => {
+      expect(mockGenerationJobManager.publishTerminalClaim).toHaveBeenCalledWith(
+        terminalClaim,
+        expect.objectContaining({ final: true }),
+      );
+    });
+
+    expect(mockCreateSteelOcrStateService).not.toHaveBeenCalled();
+    expect(mockFinalizeOcrResponse).not.toHaveBeenCalled();
+    expect(mockOcrStateService.upsertCurrentOcrResult).not.toHaveBeenCalled();
+    expect(mockSaveMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        messageId: 'normal-response-msg',
+        text: responseText,
+      }),
+      expect.objectContaining({
+        context: 'api/server/controllers/agents/request.js - resumable response end',
+      }),
+    );
+    const finalEvent = mockGenerationJobManager.publishTerminalClaim.mock.calls.find(
+      ([, event]) => event?.final === true,
+    )?.[1];
+    expect(finalEvent.responseMessage).toEqual(
+      expect.objectContaining({
+        messageId: 'normal-response-msg',
+        text: responseText,
+      }),
+    );
   });
 
   it.each([

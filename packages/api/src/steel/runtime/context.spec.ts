@@ -39,6 +39,7 @@ function createDependencies(): SteelRuntimeContextDependencies {
       ocrVisionRules: [],
       ocrMainRules: [createAgentRule({ ruleSections: ['ocr_main_flow'] })],
       ocrOrganizerRules: [],
+      ocrDelegateRules: [],
       fileRules: [],
       sourcePriorityRules: [],
       markdownOutputRules: [],
@@ -107,5 +108,17 @@ describe('Steel runtime context', () => {
       { sourceCode: 'F1', sourceFilename: '' },
       { sourceCode: 'F2', sourceFilename: 'second.pdf' },
     ]);
+  });
+
+  it('passes the latest OCR result and suggested columns to OCR main context', async () => {
+    const input = createInput(createDependencies());
+    input.attachments = {
+      ...input.attachments,
+      previousOcrResultMarkdown: '## ocr_result\n\n| 零件編號 |\n| --- |\n| P1 |',
+      suggestedOcrResultColumns: ['零件編號', '數量'],
+    };
+    const context = await prepareSteelRuntimeContext(input);
+    expect(context.attachments.previousOcrResultMarkdown).toContain('## ocr_result');
+    expect(context.attachments.suggestedOcrResultColumns).toEqual(['零件編號', '數量']);
   });
 });

@@ -176,6 +176,7 @@ export function convertInputToMessages(input: string | InputItem[]): InternalMes
     if (item.type === 'message') {
       const messageItem = item as {
         type: 'message';
+        id?: string;
         role: string;
         content: string | (InputContent | ModelContent)[];
       };
@@ -233,7 +234,13 @@ export function convertInputToMessages(input: string | InputItem[]): InternalMes
         role = 'user';
       }
 
-      messages.push({ role, content });
+      messages.push({
+        role,
+        content,
+        ...(typeof messageItem.id === 'string' && messageItem.id.trim() !== ''
+          ? { messageId: messageItem.id }
+          : {}),
+      });
     }
 
     if (item.type === 'function_call') {

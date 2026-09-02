@@ -347,6 +347,10 @@ function buildRules(repoRoot) {
   const vision = readRulePrompt(repoRoot, 'docs/rules/其他規則/Vision規則.txt');
   const ocrSubagent = readRulePrompt(repoRoot, 'docs/rules/其他規則/OCR子Agent整理規則.txt');
   const ocrMainAgent = readRulePrompt(repoRoot, 'docs/rules/其他規則/OCR主Agent整理規則.txt');
+  const ocrDelegateAgent = readRulePrompt(
+    repoRoot,
+    'docs/rules/其他規則/OCR委派Agent更新規則.txt',
+  );
   const categoryRules = listTextFiles(repoRoot, 'docs/rules/類別規則')
     .map((sourceFile) => {
       const rule = readRulePrompt(repoRoot, sourceFile);
@@ -548,6 +552,33 @@ function buildRules(repoRoot) {
         'OCR 流程與 Markdown 輸出規則',
         'ocr_flow_and_markdown_output',
         ocrMainAgent.sha256,
+        'other_rule',
+      ),
+    }),
+    unifiedRule({
+      slug: 'steel-delegate-ocr-agent-update-policy',
+      ruleKind: 'other',
+      title: 'delegate_ocr OCR 更新規則',
+      ruleSections: ['ocr_delegate_update'],
+      selectors: {
+        appliesTo: ['steel_quote_runtime', 'steel_delegate_ocr', 'other_global_rules'],
+        includeWhenFileContext: true,
+        confidence: 'high',
+      },
+      prompt: ocrDelegateAgent.prompt,
+      outputPolicy: {
+        mainOutputFormat: 'final_ocr_markdown',
+        mergeScope: 'conversation_ocr_result',
+        preserveSourceRows: true,
+        forbidOcrVision: true,
+        forbidUpdateSummary: true,
+      },
+      priority: 39,
+      source: ruleSource(
+        'docs/rules/其他規則/OCR委派Agent更新規則.txt',
+        'delegate_ocr OCR 更新規則',
+        'delegate_ocr_result_update',
+        ocrDelegateAgent.sha256,
         'other_rule',
       ),
     }),

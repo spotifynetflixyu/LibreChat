@@ -1,4 +1,5 @@
 const { nanoid } = require('nanoid');
+const mongoose = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
 const { logger } = require('@librechat/data-schemas');
 const { Callback, ToolEndHandler, formatAgentMessages } = require('@librechat/agents');
@@ -65,6 +66,8 @@ const {
   getLangfuseTraceMessageFields,
   stripActivityLabelParts,
   CHILD_THREAD_READ_ONLY_ERROR,
+  createSteelOcrStateService,
+  finalizeOcrResponse,
 } = require('@librechat/api');
 const {
   createResponsesToolEndCallback,
@@ -79,6 +82,8 @@ const {
   loadToolsForExecution,
   resolveDelegateOcrPolicyForRequest,
   runSteelPaddleOcrPreflight,
+  prepareDelegateOcrResume,
+  executeDelegateOcrResume,
   isFatalAgentInitializationError,
 } = require('~/server/services/ToolService');
 const {
@@ -413,6 +418,57 @@ async function saveInputMessages(req, conversationId, inputMessages, agentId) {
   }
 }
 
+function replaceResponsesOutputText(response, text) {
+  let replaced = false;
+  for (const output of response.output ?? []) {
+    for (const content of output?.content ?? []) {
+      if (typeof content?.text !== 'string') {
+        continue;
+      }
+      content.text = replaced ? '' : text;
+      replaced = true;
+    }
+  }
+}
+
+function materializeResponsesTrackerText(tracker, text = tracker?.accumulatedText ?? '') {
+  if (!tracker?.currentMessage || !Array.isArray(tracker.currentMessage.content)) {
+    return;
+  }
+  tracker.accumulatedText = text;
+  const content = tracker.currentMessage.content[tracker.currentContentIndex];
+  if (content && typeof content === 'object' && 'text' in content) {
+    content.text = text;
+  }
+}
+
+async function runPreparedResponsesDelegateOcr({
+  req,
+  res,
+  signal,
+  agent,
+  resume,
+  responseId,
+  messageDeltaHandler,
+}) {
+  return executeDelegateOcrResume({
+    req,
+    res,
+    signal,
+    agent,
+    resume,
+    onDelta: async (delta) => {
+      if (!delta) {
+        return;
+      }
+      await messageDeltaHandler.handle('on_message_delta', {
+        id: `delegate_ocr_resume:${responseId}`,
+        delta: { content: [{ type: 'text', text: delta }] },
+      });
+    },
+  });
+}
+
 /**
  * Save response output to database
  * @param {import('express').Request} req
@@ -431,14 +487,82 @@ async function saveResponseOutput(
   agentId,
   processingDurationMs,
 ) {
-  const responseText = extractSteelNativeResponseOutputText(response);
+  let responseText = extractSteelNativeResponseOutputText(response);
+  let ocrFinalization;
+  if (/^ {0,3}##(?!#)[ \t]+ocr_result[ \t]*$/imu.test(responseText)) {
+    const stateService = createSteelOcrStateService(mongoose);
+    const state = await stateService.readConversationOcrState(conversationId);
+    const delegateContext = req.steelNativeContext?.delegateOcrContext;
+    const delegateRun = delegateContext?.delegateOcrRun;
+    const executionLeaseToken =
+      delegateContext?.delegateOcrExecutionLease?.executionLeaseToken ??
+      delegateRun?.executionLeaseToken;
+    const agentKind = delegateRun
+      ? 'delegate_ocr'
+      : req.steelNativeContext?.ocrTurnActive === true
+        ? 'regular_ocr'
+        : 'other';
+    const finalized = finalizeOcrResponse({
+      assistantResponse: responseText,
+      previousOcrMarkdown: state?.currentOcrResultMarkdown,
+      canonicalMapping: (state?.sourceMappings ?? []).map(({ sourceCode, sourceFilename }) => ({
+        sourceCode,
+        sourceFilename,
+      })),
+      delegateSummary: agentKind === 'delegate_ocr',
+      agentKind,
+    });
+    if (finalized.ok) {
+      responseText = finalized.finalResponse;
+      replaceResponsesOutputText(response, responseText);
+      const candidateToken = `${responseId}:${Date.now()}`;
+      if (delegateRun?.claimToken) {
+        const candidate = await stateService.setDelegateFinalizedCandidate({
+          claimToken: delegateRun.claimToken,
+          ...(executionLeaseToken ? { executionLeaseToken } : {}),
+          candidate: {
+            token: candidateToken,
+            markdown: finalized.finalResponse,
+            source: 'backend',
+            generationId: responseId,
+            targetMessageId: responseId,
+            createdAt: new Date(),
+          },
+        });
+        if (!candidate) {
+          throw new Error('delegate_ocr finalization lease is stale');
+        }
+        const journal = await stateService.updateDelegateFinalizationJournal({
+            claimToken: delegateRun.claimToken,
+            ...(executionLeaseToken ? { executionLeaseToken } : {}),
+            candidateToken,
+            journal: {
+              candidateValidated: true,
+              candidateValidatedToken: candidateToken,
+            },
+          });
+        if (!journal) {
+          throw new Error('delegate_ocr finalization journal lease is stale');
+        }
+      }
+      ocrFinalization = {
+        stateService,
+        state,
+        finalized,
+        delegateRun,
+        executionLeaseToken,
+        candidateToken,
+      };
+    } else if (finalized.reason === 'mapping_mismatch') {
+      responseText = '目前 AI model 暫時不可用，建議先切換別的 model。';
+      replaceResponsesOutputText(response, responseText);
+    }
+  }
 
   const langfuseTraceFields = await getLangfuseTraceMessageFields(req.config, responseId);
 
   // Save the assistant message
-  await db.saveMessage(
-    req,
-    {
+  const responseMessage = {
       messageId: responseId,
       conversationId,
       parentMessageId: null,
@@ -468,9 +592,150 @@ async function saveResponseOutput(
           req.steelNativeContext?.steelActivityEvents,
         preflightToolCalls: req.steelNativeContext?.steelHistory?.preflightToolCalls,
       }),
-    },
-    { context: 'Responses API - save assistant response' },
-  );
+    };
+  const saveMessageOperation = () =>
+    db.saveMessage(req, responseMessage, { context: 'Responses API - save assistant response' });
+  let savedMessage;
+  let responseMessageSaveError;
+  for (let attempt = 1; attempt <= (ocrFinalization ? 3 : 1); attempt += 1) {
+    try {
+      savedMessage = await saveMessageOperation();
+      if (!savedMessage) {
+        throw new Error('Responses API OCR message save returned no document');
+      }
+      break;
+    } catch (error) {
+      if (attempt >= 3 || !ocrFinalization) {
+        responseMessageSaveError = error;
+        break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+    }
+  }
+  if (responseMessageSaveError) {
+    if (ocrFinalization?.delegateRun?.claimToken) {
+      await ocrFinalization.stateService
+        .transitionDelegateOcrRun({
+          claimToken: ocrFinalization.delegateRun.claimToken,
+          ...(ocrFinalization.executionLeaseToken
+            ? { executionLeaseToken: ocrFinalization.executionLeaseToken }
+            : {}),
+          status: 'save_failed',
+          currentStage: 'failed',
+          failureKind: 'persistence',
+        })
+        .catch(() => undefined);
+    }
+    throw responseMessageSaveError;
+  }
+  if (ocrFinalization) {
+    if (ocrFinalization.delegateRun?.claimToken) {
+      const journal = await ocrFinalization.stateService.updateDelegateFinalizationJournal({
+        claimToken: ocrFinalization.delegateRun.claimToken,
+        ...(ocrFinalization.executionLeaseToken
+          ? { executionLeaseToken: ocrFinalization.executionLeaseToken }
+          : {}),
+        candidateToken: ocrFinalization.candidateToken,
+        journal: {
+          messagePersisted: true,
+          messagePersistedToken: ocrFinalization.candidateToken,
+        },
+      });
+      if (!journal) {
+        throw new Error('delegate_ocr message journal lease is stale');
+      }
+    }
+    const saveOcrResult = () =>
+      ocrFinalization.stateService.upsertCurrentOcrResult({
+        conversationId,
+        generationId: responseId,
+        attemptNumber: ocrFinalization.delegateRun?.agentAttemptNumber ?? 1,
+        markdown: ocrFinalization.finalized.ocrResultMarkdown,
+        messageId: responseId,
+        ...(ocrFinalization.delegateRun?.claimToken
+          ? { claimToken: ocrFinalization.delegateRun.claimToken }
+          : {}),
+        ...(ocrFinalization.executionLeaseToken
+          ? { executionLeaseToken: ocrFinalization.executionLeaseToken }
+          : {}),
+        ...(ocrFinalization.delegateRun?.delegateOcrIndex !== undefined
+          ? { delegateOcrIndex: ocrFinalization.delegateRun.delegateOcrIndex }
+          : {}),
+        ...(ocrFinalization.state?.currentOcrResultGenerationId
+          ? { expectedGenerationId: ocrFinalization.state.currentOcrResultGenerationId }
+          : {}),
+      });
+    let ocrResultSaved = false;
+    let ocrResultSaveError;
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try {
+        const saved = await saveOcrResult();
+        if (!saved) {
+          throw new Error('Responses API OCR result save returned no document');
+        }
+        ocrResultSaved = true;
+        break;
+      } catch (error) {
+        ocrResultSaveError = error;
+        if (attempt >= 3) {
+          logger.error('[Responses API] Corrected message saved but OCR result state failed', {
+            conversationId,
+            responseId,
+            error: error?.message,
+          });
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 1000));
+      }
+    }
+    if (ocrFinalization.delegateRun?.claimToken) {
+      const runInput = {
+        claimToken: ocrFinalization.delegateRun.claimToken,
+        ...(ocrFinalization.executionLeaseToken
+          ? { executionLeaseToken: ocrFinalization.executionLeaseToken }
+          : {}),
+      };
+      if (ocrResultSaved) {
+        await ocrFinalization.stateService.updateDelegateFinalizationJournal({
+          ...runInput,
+          candidateToken: ocrFinalization.candidateToken,
+          journal: {
+            resultPersisted: true,
+            resultPersistedToken: ocrFinalization.candidateToken,
+          },
+        });
+        await ocrFinalization.stateService.transitionDelegateOcrRun({
+          ...runInput,
+          status: 'completed',
+          currentStage: 'completed',
+        });
+        await ocrFinalization.stateService.clearCompletedDelegateClaim({
+          conversationId,
+          claimToken: ocrFinalization.delegateRun.claimToken,
+        });
+        await ocrFinalization.stateService.updateDelegateFinalizationJournal({
+          ...runInput,
+          candidateToken: ocrFinalization.candidateToken,
+          journal: {
+            claimCleared: true,
+            claimClearedToken: ocrFinalization.candidateToken,
+          },
+        });
+      } else {
+        await ocrFinalization.stateService.transitionDelegateOcrRun({
+          ...runInput,
+          status: 'save_failed',
+          currentStage: 'failed',
+          failureKind: 'persistence',
+        });
+        logger.error('[Responses API] Delegate OCR final save failed', {
+          conversationId,
+          responseId,
+          error: ocrResultSaveError?.message,
+        });
+      }
+    }
+  }
 }
 
 /**
@@ -957,19 +1222,6 @@ const executeResponse = async (envelope, { req, res }) => {
       steelHistory,
       steelActivityEvents: steelHistory.activityEvents,
     };
-    const paddleOcrPreflight = await runSteelPaddleOcrPreflight({
-      req,
-      res,
-      agent: primaryConfig,
-      signal: abortController.signal,
-      streamId: req._resumableStreamId || null,
-      userMCPAuthMap: mergedMCPAuthMap,
-    });
-    req.steelNativeContext = {
-      ...(req.steelNativeContext ?? {}),
-      paddleOcrPreflight,
-      ocrTurnActive: paddleOcrPreflight?.ocrTurnActive === true,
-    };
     const { activeHistory, currentUserTurn } = collectSteelNativeResponseMessages(
       allMessages,
       conversationId,
@@ -989,11 +1241,37 @@ const executeResponse = async (envelope, { req, res }) => {
       currentUserTurnText,
       steelConversation,
     };
-    const delegateOcrPolicy = await resolveDelegateOcrPolicyForRequest({
-      req,
-      currentUserTurn: currentUserTurnText,
+    const delegateOcrResume =
+      typeof prepareDelegateOcrResume === 'function'
+        ? await prepareDelegateOcrResume({
+            req,
+            conversationId,
+            triggeringMessageId: currentUserTurn?.messageId,
+            userId: principal?.userId ?? req.user?.id,
+          })
+        : undefined;
+    const paddleOcrPreflight = delegateOcrResume
+      ? { ocrTurnActive: false, delegateOcrResume: true }
+      : await runSteelPaddleOcrPreflight({
+          req,
+          res,
+          agent: primaryConfig,
+          signal: abortController.signal,
+          streamId: req._resumableStreamId || null,
+          userMCPAuthMap: mergedMCPAuthMap,
+        });
+    req.steelNativeContext = {
+      ...(req.steelNativeContext ?? {}),
+      paddleOcrPreflight,
       ocrTurnActive: paddleOcrPreflight?.ocrTurnActive === true,
-    });
+    };
+    const delegateOcrPolicy = delegateOcrResume
+      ? { resolved: true, allowed: false, allowedFileKeys: [], reason: 'delegate_ocr_resume' }
+      : await resolveDelegateOcrPolicyForRequest({
+          req,
+          currentUserTurn: currentUserTurnText,
+          ocrTurnActive: paddleOcrPreflight?.ocrTurnActive === true,
+        });
     req.steelNativeContext.delegateOcrPolicy = delegateOcrPolicy;
     for (const runAgent of runAgents) {
       Object.assign(
@@ -1035,6 +1313,12 @@ const executeResponse = async (envelope, { req, res }) => {
                 : {}),
               ...(paddleOcrPreflight?.currentOcrSourceFileMapping?.length > 0
                 ? { currentOcrSourceFileMapping: paddleOcrPreflight.currentOcrSourceFileMapping }
+                : {}),
+              ...(typeof paddleOcrPreflight?.previousOcrResultMarkdown === 'string'
+                ? { previousOcrResultMarkdown: paddleOcrPreflight.previousOcrResultMarkdown }
+                : {}),
+              ...(paddleOcrPreflight?.suggestedOcrResultColumns?.length > 0
+                ? { suggestedOcrResultColumns: paddleOcrPreflight.suggestedOcrResultColumns }
                 : {}),
             },
           }
@@ -1283,13 +1567,25 @@ const executeResponse = async (envelope, { req, res }) => {
         version: 'v2',
       };
 
-      await run.processStream({ messages: providerMessages }, config, {
-        callbacks: {
-          [Callback.TOOL_ERROR]: (graph, error, toolId) => {
-            logger.error(`[Responses API] Tool Error "${toolId}"`, error);
+      if (delegateOcrResume) {
+        await runPreparedResponsesDelegateOcr({
+          req,
+          res,
+          signal: abortController.signal,
+          agent: primaryConfig,
+          resume: delegateOcrResume,
+          responseId,
+          messageDeltaHandler: handlers.on_message_delta,
+        });
+      } else {
+        await run.processStream({ messages: providerMessages }, config, {
+          callbacks: {
+            [Callback.TOOL_ERROR]: (graph, error, toolId) => {
+              logger.error(`[Responses API] Tool Error "${toolId}"`, error);
+            },
           },
-        },
-      });
+        });
+      }
 
       // Record token usage against balance
       const balanceConfig = getBalanceConfig(appConfig);
@@ -1326,6 +1622,7 @@ const executeResponse = async (envelope, { req, res }) => {
           await saveInputMessages(req, conversationId, inputMessages, agentId);
 
           // Build response for saving (use tracker with buildResponse for streaming)
+          materializeResponsesTrackerText(tracker);
           const finalResponse = markSteelNativeResponseStored(
             buildResponse(context, tracker, 'completed'),
           );
@@ -1336,6 +1633,10 @@ const executeResponse = async (envelope, { req, res }) => {
             finalResponse,
             agentId,
             Math.max(0, Date.now() - requestStartTime),
+          );
+          materializeResponsesTrackerText(
+            tracker,
+            extractSteelNativeResponseOutputText(finalResponse),
           );
 
           logger.debug(
@@ -1486,13 +1787,25 @@ const executeResponse = async (envelope, { req, res }) => {
         version: 'v2',
       };
 
-      await run.processStream({ messages: providerMessages }, config, {
-        callbacks: {
-          [Callback.TOOL_ERROR]: (graph, error, toolId) => {
-            logger.error(`[Responses API] Tool Error "${toolId}"`, error);
+      if (delegateOcrResume) {
+        await runPreparedResponsesDelegateOcr({
+          req,
+          res,
+          signal: abortController.signal,
+          agent: primaryConfig,
+          resume: delegateOcrResume,
+          responseId,
+          messageDeltaHandler: handlers.on_message_delta,
+        });
+      } else {
+        await run.processStream({ messages: providerMessages }, config, {
+          callbacks: {
+            [Callback.TOOL_ERROR]: (graph, error, toolId) => {
+              logger.error(`[Responses API] Tool Error "${toolId}"`, error);
+            },
           },
-        },
-      });
+        });
+      }
 
       // Record token usage against balance
       const balanceConfig = getBalanceConfig(appConfig);

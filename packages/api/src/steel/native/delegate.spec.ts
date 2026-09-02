@@ -14,6 +14,7 @@ import {
   normalizeDelegateOcrChunk,
   parseDelegateOcrPageRangesFromTurn,
   delegateOcrArgsSchema,
+  runDelegateOcrWorkflow,
   resolveDelegateOcrPolicy,
   resolveDelegateOcrFileKeys,
   type DelegateOcrFileRecord,
@@ -916,5 +917,79 @@ describe('delegate_ocr', () => {
         tool_call_id: 'call_tool_node',
       }),
     );
+  });
+
+  it('runs delegate preprocessing once and retries only the canonical agent on mapping mismatch', async () => {
+    const preprocess = jest.fn(async ({ currentUserTurn, signedFiles }) => {
+      expect(currentUserTurn).toBe('請重新核對圖面');
+      expect(signedFiles[0]?.url).toBe('https://fresh.example/drawing.png');
+      return { organizerMarkdown: '## organizer\n\n| 來源 | 零件編號 |\n| --- | --- |\n| F1 | A |' };
+    });
+    const beginAttempt = jest.fn(async ({ attemptNumber }) => ({
+      attemptToken: `attempt-${attemptNumber}`,
+    }));
+    const wrongMapping =
+      '## source_file_mapping\n\n| 來源 | 檔名 |\n| --- | --- |\n| F2 | wrong.png |\n\n## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| F1 | A |';
+    const invokeModel = jest
+      .fn()
+      .mockResolvedValueOnce(wrongMapping)
+      .mockResolvedValueOnce(wrongMapping)
+      .mockResolvedValueOnce(wrongMapping);
+
+    await expect(
+      runDelegateOcrWorkflow({
+        files: [
+          { fileKey: 'file:image-1', pageRanges: [{ pageStart: 35, pageEnd: 36 }] },
+        ],
+        currentUserTurn: '請重新核對圖面',
+        modelOptions,
+        ocrRulesText: 'OCR rules',
+        userId: 'user-1',
+        findOwnedFiles: async () => [files[0]],
+        signFile: async () => 'https://fresh.example/drawing.png',
+        invokeModel,
+        workflow: {
+          runPreprocessing: preprocess,
+          canonicalMapping: [{ sourceCode: 'F1', sourceFilename: 'drawing.png' }],
+          runStore: { beginAttempt },
+        },
+      }),
+    ).rejects.toThrow('目前 AI model 暫時不可用，建議先切換別的 model。');
+    expect(preprocess).toHaveBeenCalledTimes(1);
+    expect(invokeModel).toHaveBeenCalledTimes(3);
+    const packet = JSON.stringify(invokeModel.mock.calls[0]?.[0]?.messages);
+    const canonicalPacket = JSON.stringify(
+      invokeModel.mock.calls[0]?.[0]?.messages?.[1]?.content,
+    );
+    expect(packet).toContain('drawing.png');
+    expect(packet).toContain('organizer');
+    expect(canonicalPacket).toContain('\\"pageRanges\\":[{\\"pageStart\\":35,\\"pageEnd\\":36}]');
+    expect(packet).not.toContain('請重新核對圖面');
+    expect(packet).not.toContain('https://fresh.example');
+    expect(beginAttempt).toHaveBeenCalledTimes(3);
+  });
+
+  it('suppresses stale delegate stream events through the injected dispatch gate', async () => {
+    const events: unknown[] = [];
+    const tool = createDelegateOcrTool({
+      execute: async ({ onDelta }) => {
+        await onDelta?.('stale');
+        return 'stale';
+      },
+    });
+    await tool.invoke(
+      { files: [{ fileKey: 'file:image-1' }] },
+      {
+        configurable: {
+          delegateOcrStreaming: true,
+          delegateOcrClaimToken: 'claim-1',
+          delegateOcrGenerationId: 'generation-1',
+          delegateOcrAttemptToken: 'attempt-1',
+          canDispatchEvent: async () => false,
+          hostCustomEventDispatcher: async (_name, payload) => events.push(payload),
+        },
+      },
+    );
+    expect(events).toEqual([]);
   });
 });

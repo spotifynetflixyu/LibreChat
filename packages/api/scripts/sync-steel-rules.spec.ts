@@ -192,7 +192,7 @@ describe('Steel rule sources', () => {
     const summary = runDryRun();
     const sourceFiles = summary.rules.map((rule) => rule.sourceFile);
     expect(summary.mode).toBe('dry-run');
-    expect(summary.rules).toHaveLength(18);
+    expect(summary.rules).toHaveLength(19);
     expect(sourceFiles.sort()).toEqual(listRuleFiles(rulesDir).sort());
     expect(new Set(sourceFiles).size).toBe(sourceFiles.length);
     expect(summary.rules.every((rule) => rule.promptLength > 0)).toBe(true);
@@ -208,6 +208,7 @@ describe('Steel rule sources', () => {
     ).toBe(true);
     expect(summary.rules.map((rule) => rule.slug).sort()).toEqual([
       'steel-default-agent-instruction',
+      'steel-delegate-ocr-agent-update-policy',
       'steel-drawing-ocr-policy',
       'steel-drawing-vision-policy',
       'steel-ocr-main-agent-organizer-policy',
@@ -279,10 +280,14 @@ describe('Steel rule sources', () => {
     const mainFlowIndex = builtRules.findIndex(
       (rule) => rule.slug === 'steel-ocr-main-agent-organizer-policy',
     );
+    const delegateUpdateIndex = builtRules.findIndex(
+      (rule) => rule.slug === 'steel-delegate-ocr-agent-update-policy',
+    );
     expect(ocrIndex).toBeGreaterThanOrEqual(0);
     expect(visionIndex).toBe(ocrIndex + 1);
     expect(organizerIndex).toBe(visionIndex + 1);
     expect(mainFlowIndex).toBe(organizerIndex + 1);
+    expect(delegateUpdateIndex).toBe(mainFlowIndex + 1);
     expect(builtRules[ocrIndex]).toMatchObject({
       title: '圖面 OCR 共同規則',
       ruleSections: ['ocr_shared'],
@@ -342,6 +347,23 @@ describe('Steel rule sources', () => {
       },
     });
     expect(builtRules[mainFlowIndex]?.selectors).not.toHaveProperty('otherGlobalRulesKey');
+    expect(builtRules[delegateUpdateIndex]).toMatchObject({
+      title: 'delegate_ocr OCR 更新規則',
+      priority: 39,
+      ruleSections: ['ocr_delegate_update'],
+      selectors: {
+        appliesTo: ['steel_quote_runtime', 'steel_delegate_ocr', 'other_global_rules'],
+      },
+      outputPolicy: {
+        mainOutputFormat: 'final_ocr_markdown',
+        mergeScope: 'conversation_ocr_result',
+        forbidOcrVision: true,
+        forbidUpdateSummary: true,
+      },
+      source: {
+        sourceFile: 'docs/rules/其他規則/OCR委派Agent更新規則.txt',
+      },
+    });
   });
 
   it('publishes delegate_ocr tool metadata', () => {

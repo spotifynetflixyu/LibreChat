@@ -85,6 +85,8 @@ export interface SteelNativeContextAttachmentsInput {
   currentOcrMarkdownResults?: readonly SteelRuntimeJsonObject[];
   currentOcrFailures?: readonly SteelRuntimeJsonObject[];
   currentOcrSourceFileMapping?: readonly SteelRuntimeOcrSourceFileMapping[];
+  previousOcrResultMarkdown?: string;
+  suggestedOcrResultColumns?: readonly string[];
   priorActiveFileEvidence?: readonly SteelRuntimeJsonObject[];
 }
 
@@ -464,9 +466,8 @@ function buildOcrMainRuleItems(
 
 function buildDelegateOcrRuleItems(runtimeContext: SteelRuntimeContext): string[] {
   return [
-    ...sortOcrRules(runtimeContext.rules.otherGlobalRules.ocrSharedRules).map(renderAgentRule),
-    ...sortOcrRules(runtimeContext.rules.otherGlobalRules.ocrVisionRules).map(renderAgentRule),
-    ...buildOcrMainRuleItems(runtimeContext, ['final_ocr_markdown']),
+    ...buildOcrMainRuleItems(runtimeContext, ['ocr_main_merge', 'final_ocr_markdown']),
+    ...sortOcrRules(runtimeContext.rules.otherGlobalRules.ocrDelegateRules).map(renderAgentRule),
   ];
 }
 
@@ -537,6 +538,7 @@ const explicitOcrRuleSections = [
   'vision_processing',
   'ocr_main_flow',
   'ocr_organizer',
+  'ocr_delegate_update',
 ] as const;
 
 function hasExplicitOcrRuleSection(rule: SteelAgentRule): boolean {
@@ -581,16 +583,26 @@ function isOcrOrganizerRule(rule: SteelAgentRule): boolean {
   return hasRuleSection(rule, ['ocr_organizer'], ['[ocr_organizer]']);
 }
 
+function isOcrDelegateRule(rule: SteelAgentRule): boolean {
+  if (hasExplicitOcrRuleSection(rule)) {
+    return hasRuleSection(rule, ['ocr_delegate_update']);
+  }
+
+  return hasRuleSection(rule, ['ocr_delegate_update'], ['[ocr_delegate_update]']);
+}
+
 function filterOtherGlobalRules(rules: readonly SteelAgentRule[]) {
   const ocrSharedRules = rules.filter(isOcrSharedRule);
   const ocrVisionRules = rules.filter(isOcrVisionRule);
   const ocrMainRules = rules.filter(isOcrMainRule);
   const ocrOrganizerRules = rules.filter(isOcrOrganizerRule);
+  const ocrDelegateRules = rules.filter(isOcrDelegateRule);
   const ocrRuleSet = new Set([
     ...ocrSharedRules,
     ...ocrVisionRules,
     ...ocrMainRules,
     ...ocrOrganizerRules,
+    ...ocrDelegateRules,
   ]);
 
   return {
@@ -598,6 +610,7 @@ function filterOtherGlobalRules(rules: readonly SteelAgentRule[]) {
     ocrVisionRules,
     ocrMainRules,
     ocrOrganizerRules,
+    ocrDelegateRules,
     fileRules: rules.filter(
       (rule) => hasRuleSection(rule, ['file', 'file_policy']) && !ocrRuleSet.has(rule),
     ),
@@ -888,7 +901,21 @@ export function buildSteelNativeRuntimeContextText({
           'Satisfy any other user intent only within those allowed sections, even when the current user turn includes metadata such as customer name.',
         ].join('\n')
       : '';
-    return [sourceFileMapping, markdown, currentTurnOcrDirective].filter(Boolean).join('\n\n');
+    const previousOcrResult = runtimeContext.attachments.previousOcrResultMarkdown?.trim();
+    const suggestedColumns = runtimeContext.attachments.suggestedOcrResultColumns ?? [];
+    const previousContext = previousOcrResult
+      ? `previous_ocr_result_markdown:\n${previousOcrResult}`
+      : '';
+    const suggestedColumnsContext = suggestedColumns.length > 0
+      ? `suggested_ocr_result_columns: ${JSON.stringify(suggestedColumns)}`
+      : '';
+    return [
+      sourceFileMapping,
+      previousContext,
+      suggestedColumnsContext,
+      markdown,
+      currentTurnOcrDirective,
+    ].filter(Boolean).join('\n\n');
   }
 
   if (
@@ -992,6 +1019,11 @@ export async function buildSteelGlobalAgentContext({
       currentOcrSourceFileMapping:
         attachments?.currentOcrSourceFileMapping !== undefined
           ? [...attachments.currentOcrSourceFileMapping]
+          : undefined,
+      previousOcrResultMarkdown: attachments?.previousOcrResultMarkdown,
+      suggestedOcrResultColumns:
+        attachments?.suggestedOcrResultColumns !== undefined
+          ? [...attachments.suggestedOcrResultColumns]
           : undefined,
     },
     dependencies,

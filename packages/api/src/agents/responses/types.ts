@@ -151,6 +151,7 @@ export type ReasoningContent = ReasoningTextContent;
 /** System message input item */
 export interface SystemMessageItemParam {
   type: 'message';
+  id?: string;
   role: 'system';
   content: string | InputContent[];
 }
@@ -158,6 +159,7 @@ export interface SystemMessageItemParam {
 /** Developer message input item */
 export interface DeveloperMessageItemParam {
   type: 'message';
+  id?: string;
   role: 'developer';
   content: string | InputContent[];
 }
@@ -165,6 +167,7 @@ export interface DeveloperMessageItemParam {
 /** User message input item */
 export interface UserMessageItemParam {
   type: 'message';
+  id?: string;
   role: 'user';
   content: string | InputContent[];
 }
@@ -172,6 +175,7 @@ export interface UserMessageItemParam {
 /** Assistant message input item */
 export interface AssistantMessageItemParam {
   type: 'message';
+  id?: string;
   role: 'assistant';
   content: string | ModelContent[];
 }

@@ -4,6 +4,7 @@ import type { EventSubmission, TMessage } from 'librechat-data-provider';
 import { steelNativeActivityByMessageId, type SteelNativeActivityEvent } from '~/store/steel';
 import useSteelEventHandler, {
   appendSteelNativeActivityEvent,
+  normalizeSteelActivityEvent,
 } from '~/hooks/SSE/useSteelEventHandler';
 
 const createSubmission = (initialResponseId = 'assistant-1'): EventSubmission =>
@@ -62,6 +63,66 @@ describe('useSteelEventHandler', () => {
         receivedAt: expect.any(Number),
       },
     ]);
+  });
+
+  it('stores indexed delegate OCR lifecycle events in the top-level activity state', () => {
+    const { result } = renderHook(() => useHarness('assistant-delegate'), {
+      wrapper: RecoilRoot,
+    });
+
+    act(() => {
+      result.current.steelEventHandler(
+        {
+          event: 'steel_event',
+          data: {
+            type: 'delegate_ocr_status',
+            source: 'delegate_ocr_preflight',
+            conversationId: 'conversation-1',
+            requestId: 'request-1',
+            delegateOcrIndex: 3,
+            stage: 'resume',
+            status: 'started',
+            message: 'Resuming delegate OCR 3',
+            claimToken: 'claim-secret',
+            generationId: 'generation-secret',
+            attemptToken: 'attempt-secret',
+          },
+        },
+        createSubmission('assistant-delegate'),
+      );
+    });
+
+    expect(result.current.activity).toEqual([
+      expect.objectContaining({
+        type: 'delegate_ocr_status',
+        source: 'delegate_ocr_preflight',
+        delegateOcrIndex: 3,
+        stage: 'resume',
+        status: 'started',
+      }),
+    ]);
+    expect(result.current.activity[0]).not.toHaveProperty('claimToken');
+    expect(result.current.activity[0]).not.toHaveProperty('generationId');
+    expect(result.current.activity[0]).not.toHaveProperty('attemptToken');
+  });
+
+  it('sanitizes delegate OCR lifecycle diagnostics', () => {
+    const normalized = normalizeSteelActivityEvent({
+      event: 'steel_event',
+      data: {
+        type: 'delegate_ocr_status',
+        source: 'delegate_ocr_preflight',
+        delegateOcrIndex: 1,
+        stage: 'summary',
+        status: 'failed',
+        message: 'OCR summary failed',
+        errorMessage: 'failed https://user:pass@example.test/?token=secret Bearer secret',
+      },
+    });
+
+    expect(normalized).toEqual(
+      expect.objectContaining({ errorMessage: 'failed [redacted-url] Bearer [REDACTED]' }),
+    );
   });
 
   it('keeps distinct Code Interpreter executions and deduplicates replayed ids', () => {

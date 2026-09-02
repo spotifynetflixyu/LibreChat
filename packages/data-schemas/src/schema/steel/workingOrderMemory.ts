@@ -141,5 +141,17 @@ steelWorkingOrderMemorySchema.index({
   createdAt: -1,
 });
 steelWorkingOrderMemorySchema.index({ conversationId: 1, checkpointTurnIndex: 1, state: 1 });
+steelWorkingOrderMemorySchema.index({
+  conversationId: 1,
+  state: 1,
+  memoryKind: 1,
+  'payload.preflightMode': 1,
+  'payload.delegateOcrIndex': 1,
+  'payload.ocrFileKey': 1,
+  'payload.ocrPreprocessing.sourcePdfKey': 1,
+  'payload.ocrPreprocessing.pipelineVersion': 1,
+  'payload.ocrPreprocessing.pageStart': 1,
+  'payload.ocrPreprocessing.pageEnd': 1,
+});
 
 export default steelWorkingOrderMemorySchema;

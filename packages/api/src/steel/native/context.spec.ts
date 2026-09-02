@@ -152,6 +152,17 @@ function createDependencies(): SteelRuntimeContextDependencies {
           priority: 37,
         }),
       ],
+      ocrDelegateRules: [
+        createAgentRule({
+          id: 9,
+          slug: 'steel-delegate-ocr-update-rule',
+          ruleType: 'other',
+          title: 'Steel delegate OCR update rule',
+          prompt: '[ocr_delegate_update]\nDelegate OCR update rule fixture\n[/ocr_delegate_update]',
+          ruleSections: ['ocr_delegate_update'],
+          priority: 39,
+        }),
+      ],
       fileRules: [createAgentRule({ id: 8, slug: 'steel-file-rule', ruleSections: ['file_policy'] })],
       sourcePriorityRules: [],
       markdownOutputRules: [],
@@ -170,6 +181,11 @@ describe('Steel native context adapter', () => {
         '[ocr_main_flow]\nFlow\n[/ocr_main_flow]\n[ocr_vision]\nIntegration\n[/ocr_vision]',
       ],
       ['organizer', ['ocr_organizer'], '[ocr_organizer]\nOrganizer\n[/ocr_organizer]'],
+      [
+        'delegate',
+        ['ocr_delegate_update'],
+        '[ocr_delegate_update]\nDelegate\n[/ocr_delegate_update]',
+      ],
     ].map(([slug, ruleSections, prompt], index) => ({
       id: index + 1,
       slug: `steel-ocr-${slug}`,
@@ -199,6 +215,9 @@ describe('Steel native context adapter', () => {
     expect(groups.ocrMainRules.map((rule) => rule.slug)).toEqual(['steel-ocr-flow']);
     expect(groups.ocrOrganizerRules.map((rule) => rule.slug)).toEqual([
       'steel-ocr-organizer',
+    ]);
+    expect(groups.ocrDelegateRules.map((rule) => rule.slug)).toEqual([
+      'steel-ocr-delegate',
     ]);
   });
 
@@ -491,7 +510,7 @@ describe('Steel native context adapter', () => {
     expect(directive).not.toContain('Answer any other user intent too');
   });
 
-  it('gives delegate_ocr DB-backed OCR, Vision, and final Markdown rules only', async () => {
+  it('gives delegate_ocr DB-backed main and delegate update rules only', async () => {
     const context = await buildSteelGlobalAgentContext({
       conversation: { requestId: 'request_delegate_ocr_rules', activeHistory: [] },
       dependencies: createDependencies(),
@@ -499,12 +518,14 @@ describe('Steel native context adapter', () => {
     });
 
     expect(context.mode).toBe('delegate_ocr');
-    expect(context.instructionPrefix).toContain('OCR shared rule fixture');
-    expect(context.instructionPrefix).toContain('Vision rule fixture');
+    expect(context.instructionPrefix).not.toContain('OCR shared rule fixture');
+    expect(context.instructionPrefix).not.toContain('Vision rule fixture');
+    expect(context.instructionPrefix).toContain('[ocr_main_merge]');
+    expect(context.instructionPrefix).toContain('OCR main organizer rule fixture');
     expect(context.instructionPrefix).toContain('[final_ocr_markdown]');
     expect(context.instructionPrefix).toContain('Final OCR Markdown rule fixture');
-    expect(context.instructionPrefix).not.toContain('[ocr_main_merge]');
-    expect(context.instructionPrefix).not.toContain('OCR main organizer rule fixture');
+    expect(context.instructionPrefix).toContain('[ocr_delegate_update]');
+    expect(context.instructionPrefix).toContain('Delegate OCR update rule fixture');
     expect(context.instructionPrefix).not.toContain('OCR organizer rule fixture');
     expect(context.instructionPrefix).not.toContain('Agent rule fixture');
     expect(context.instructionPrefix).not.toContain('Quote rule fixture');
@@ -530,6 +551,25 @@ describe('Steel native context adapter', () => {
       'file_key: file:file-without-name\n<file:file-without-name>\nOCR Markdown',
     );
     expect(context.runtimeContextText).not.toContain('source_filename:');
+  });
+
+  it('gives OCR main the previous result and suggested columns without file URLs', async () => {
+    const previous = '## ocr_result\n\n| 來源 | 零件編號 | 數量 |\n| --- | --- | --- |\n| F1 | P1 | 2 |';
+    const context = await buildSteelGlobalAgentContext({
+      conversation: { requestId: 'request_ocr_previous_result', activeHistory: [] },
+      dependencies: createDependencies(),
+      mode: 'ocr',
+      attachments: {
+        previousOcrResultMarkdown: previous,
+        suggestedOcrResultColumns: ['來源', '零件編號', '數量'],
+      },
+    });
+
+    expect(context.runtimeContextText).toContain(`previous_ocr_result_markdown:\n${previous}`);
+    expect(context.runtimeContextText).toContain(
+      'suggested_ocr_result_columns: ["來源","零件編號","數量"]',
+    );
+    expect(context.runtimeContextText).not.toContain('http');
   });
 
   it('renders only strictly valid backend OCR source codes', async () => {

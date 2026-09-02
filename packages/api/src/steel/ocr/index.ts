@@ -5,4 +5,6 @@ export * from './failures';
 export * from './merge';
 export * from './organizer';
 export * from './preprocess';
+export * from './result';
 export * from './text';
+export * from './state';

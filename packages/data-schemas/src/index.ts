@@ -20,6 +20,8 @@ export {
   createSteelSourceVersionModel,
   createSteelToolCallModel,
   createSteelWorkingOrderMemoryModel,
+  createSteelDelegateOcrRunModel,
+  createSteelConversationOcrStateModel,
 } from './models';
 export {
   createMethods,

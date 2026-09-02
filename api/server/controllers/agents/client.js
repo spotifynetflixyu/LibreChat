@@ -128,6 +128,7 @@ const {
   Permissions,
   VisionModes,
   ContentTypes,
+  StepTypes,
   ApprovalEvents,
   EModelEndpoint,
   PermissionTypes,
@@ -145,6 +146,8 @@ const { getMCPServerTools } = require('~/server/services/Config');
 const {
   resolveDelegateOcrPolicyForRequest,
   runSteelPaddleOcrPreflight,
+  prepareDelegateOcrResume,
+  executeDelegateOcrResume,
 } = require('~/server/services/ToolService');
 const BaseClient = require('~/app/clients/BaseClient');
 const { getMCPManager } = require('~/config');
@@ -1959,6 +1962,7 @@ class AgentClient extends BaseClient {
         : undefined,
     });
     let paddleOcrPreflight;
+    let delegateOcrResume;
     if (this.options.req) {
       const currentUserTurnText = latestOrdered?.text ?? '';
       this.options.req.steelNativeContext = {
@@ -1974,24 +1978,48 @@ class AgentClient extends BaseClient {
           steelConversation,
         },
       };
-      paddleOcrPreflight = await runSteelPaddleOcrPreflight({
-        req: this.options.req,
-        res: this.options.res,
-        agent: this.options.agent,
-        signal: opts?.abortController?.signal,
-        streamId: this.options.req?._resumableStreamId || null,
-      });
+      delegateOcrResume =
+        typeof prepareDelegateOcrResume === 'function'
+          ? await prepareDelegateOcrResume({
+              req: this.options.req,
+              conversationId: this.conversationId,
+              triggeringMessageId: latestOrdered?.messageId,
+              userId: this.options.req.user?.id,
+            })
+          : undefined;
+      if (delegateOcrResume) {
+        /** A resumed delegate run owns this turn's OCR work. Hide the
+         * parent-facing tool and skip regular Paddle preflight; the direct
+         * coordinator runs only after OAuth model options are available. */
+        paddleOcrPreflight = { ocrTurnActive: false, delegateOcrResume: true };
+      } else {
+        paddleOcrPreflight = await runSteelPaddleOcrPreflight({
+          req: this.options.req,
+          res: this.options.res,
+          agent: this.options.agent,
+          signal: opts?.abortController?.signal,
+          streamId: this.options.req?._resumableStreamId || null,
+        });
+      }
       this.options.req.steelNativeContext = {
         ...(this.options.req.steelNativeContext ?? {}),
         paddleOcrPreflight,
         ocrTurnActive: paddleOcrPreflight?.ocrTurnActive === true,
       };
-      const delegateOcrPolicy = await resolveDelegateOcrPolicyForRequest({
-        req: this.options.req,
-        currentUserTurn: currentUserTurnText,
-        ocrTurnActive: paddleOcrPreflight?.ocrTurnActive === true,
-      });
+      const delegateOcrPolicy = delegateOcrResume
+        ? {
+            resolved: true,
+            allowed: false,
+            allowedFileKeys: [],
+            reason: 'delegate_ocr_resume',
+          }
+        : await resolveDelegateOcrPolicyForRequest({
+            req: this.options.req,
+            currentUserTurn: currentUserTurnText,
+            ocrTurnActive: paddleOcrPreflight?.ocrTurnActive === true,
+          });
       this.options.req.steelNativeContext.delegateOcrPolicy = delegateOcrPolicy;
+      this.options.req.steelNativeContext.delegateOcrResume = delegateOcrResume;
       const runAgents = [
         this.options.agent,
         ...(this.agentConfigs ? Array.from(this.agentConfigs.values()) : []),
@@ -2027,6 +2055,12 @@ class AgentClient extends BaseClient {
               : {}),
             ...(paddleOcrPreflight?.currentOcrSourceFileMapping?.length > 0
               ? { currentOcrSourceFileMapping: paddleOcrPreflight.currentOcrSourceFileMapping }
+              : {}),
+            ...(typeof paddleOcrPreflight?.previousOcrResultMarkdown === 'string'
+              ? { previousOcrResultMarkdown: paddleOcrPreflight.previousOcrResultMarkdown }
+              : {}),
+            ...(paddleOcrPreflight?.suggestedOcrResultColumns?.length > 0
+              ? { suggestedOcrResultColumns: paddleOcrPreflight.suggestedOcrResultColumns }
               : {}),
             priorActiveFileEvidence: [],
           }
@@ -3673,11 +3707,70 @@ class AgentClient extends BaseClient {
           await this.activityLabelsMarkedPromise;
         }
         try {
-          await run.processStream({ messages }, config, {
-            callbacks: {
-              [Callback.TOOL_ERROR]: logToolError,
-            },
-          });
+          const shouldResumeDelegateOcr =
+            Boolean(delegateOcrResume) && typeof executeDelegateOcrResume === 'function';
+          if (shouldResumeDelegateOcr) {
+            const resumeStepId = `delegate_ocr_resume:${this.responseMessageId ?? this.conversationId}`;
+            const resumeMetadata = {
+              ...config.configurable,
+              run_id: this.responseMessageId ?? resumeStepId,
+              thread_id: this.conversationId,
+              last_agent_id: this.options.agent?.id,
+              langgraph_node: this.options.agent?.id,
+            };
+            /** Seed the shared aggregator with a message-creation step so
+             * on_message_delta attaches to the ordinary assistant content
+             * slot even though LangGraph is intentionally bypassed. */
+            if (!this.stepMap?.has(resumeStepId)) {
+              const resumeStep = {
+                id: resumeStepId,
+                index: this.contentParts.length,
+                stepDetails: {
+                  type: StepTypes.MESSAGE_CREATION,
+                  message_creation: {
+                    message_id: this.responseMessageId ?? resumeStepId,
+                  },
+                },
+              };
+              const onRunStep = this.options.eventHandlers?.on_run_step;
+              if (onRunStep?.handle) {
+                await onRunStep.handle('on_run_step', resumeStep, resumeMetadata);
+              } else {
+                this.stepMap?.set(resumeStepId, resumeStep);
+              }
+            }
+            const onMessageDelta = this.options.eventHandlers?.on_message_delta;
+            await executeDelegateOcrResume({
+              req: this.options.req,
+              res: this.options.res,
+              streamId,
+              signal: abortController.signal,
+              agent: this.options.agent,
+              resume: delegateOcrResume,
+              onDelta: async (delta) => {
+                if (!delta) {
+                  return;
+                }
+                const data = {
+                  id: resumeStepId,
+                  delta: {
+                    content: [{ type: ContentTypes.TEXT, text: delta }],
+                  },
+                };
+                if (onMessageDelta?.handle) {
+                  await onMessageDelta.handle('on_message_delta', data, resumeMetadata);
+                } else {
+                  this.contentParts.push({ type: ContentTypes.TEXT, text: delta });
+                }
+              },
+            });
+          } else {
+            await run.processStream({ messages }, config, {
+              callbacks: {
+                [Callback.TOOL_ERROR]: logToolError,
+              },
+            });
+          }
         } finally {
           reasoningLabel?.complete();
         }

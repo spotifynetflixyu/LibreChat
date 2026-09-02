@@ -7,6 +7,8 @@ import {
   parseSteelNativeHistory,
   buildSteelCodeInterpreterAuditEvent,
   buildSteelQuoteAuditEvent,
+  buildSteelDelegateOcrStatusEvent,
+  buildSteelDelegateOcrStatusEventEnvelope,
   buildSteelNativeEventEnvelopes,
   buildSteelOcrPreprocessingEventEnvelopes,
   buildSteelPaddleOcrPreflightEventEnvelopes,
@@ -549,6 +551,56 @@ describe('Steel native event mapping', () => {
       requestId: 'request_1',
       messageId: 'message_1',
       providerToolCallId: 'call_python',
+    });
+  });
+
+  it('builds and persists indexed delegate OCR lifecycle events without tokens', () => {
+    const event = buildSteelDelegateOcrStatusEvent({
+      conversationId: 'conversation_1',
+      requestId: 'request_1',
+      messageId: 'message_1',
+      delegateOcrIndex: 2,
+      stage: 'paddleocr',
+      status: 'retrying',
+      message: 'Retrying PaddleOCR (chunk 2/3)',
+      chunkIndex: 2,
+      chunkCount: 3,
+      claimToken: 'claim-secret',
+      generationId: 'generation-secret',
+      attemptToken: 'attempt-secret',
+      errorMessage: 'failed https://signed.example.test/?token=secret',
+    });
+    expect(event).toEqual(
+      expect.objectContaining({
+        type: 'delegate_ocr_status',
+        source: 'delegate_ocr_preflight',
+        delegateOcrIndex: 2,
+        claimToken: 'claim-secret',
+        generationId: 'generation-secret',
+        attemptToken: 'attempt-secret',
+      }),
+    );
+
+    const history = createSteelNativeHistory();
+    expect(appendSteelNativeActivityEvent(history, event)).toBe(true);
+    const persisted = history.activityEvents[0];
+    expect(persisted).toEqual(
+      expect.objectContaining({
+        type: 'delegate_ocr_status',
+        source: 'delegate_ocr_preflight',
+        delegateOcrIndex: 2,
+        stage: 'paddleocr',
+        status: 'retrying',
+        errorMessage: 'failed [redacted-url]',
+      }),
+    );
+    expect(persisted).not.toHaveProperty('claimToken');
+    expect(persisted).not.toHaveProperty('generationId');
+    expect(persisted).not.toHaveProperty('attemptToken');
+
+    expect(buildSteelDelegateOcrStatusEventEnvelope(event)).toEqual({
+      event: steelNativeStreamEventName,
+      data: event,
     });
   });
 

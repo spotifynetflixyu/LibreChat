@@ -113,6 +113,42 @@ and drawing tables, including part tables, dimensions, holes, slots, bends,
 cut marks, bolt sizes, and OCR uncertainty.
 _Avoid_: Formal source data, confirmed price/spec fact, provider-only memory
 
+**Delegate OCR Preflight**:
+A conversation-scoped, indexed OCR execution started by one `delegate_ocr` tool call for its exact selected files and PDF page ranges, with dedicated PaddleOCR and Organizer progress.
+_Avoid_: Current-turn attachment preflight state, reusing another index's OCR data, direct nested file inspection
+
+**Delegate OCR Index**:
+The ordered identity of one **Delegate OCR Preflight** within a conversation; the latest index identifies the newest delegate OCR execution and isolates its persisted progress from earlier calls.
+_Avoid_: Provider tool-call id, global file cache identity, conversation-wide mutable OCR state
+
+**Organizer Markdown**:
+The persisted, per-file or per-chunk organized result produced from PaddleOCR data, selected-file metadata, and the latest text of the triggering user message; prior OCR row values are excluded, while existing OCR result columns may be supplied as suggestions.
+_Avoid_: Final OCR Result, raw PaddleOCR payload, assistant response
+
+**Delegate OCR Agent**:
+The terminal agent that takes over after the parent AI calls `delegate_ocr`, merges the prior OCR result with current Organizer Markdown, and streams the final assistant response directly to the UI.
+_Avoid_: Parent AI post-processing, Organizer, direct OCR or Vision inspection
+
+**Conversation OCR Result**:
+The latest completed full `ocr_result` Markdown for one conversation, supplied as prior OCR context when a later OCR workflow updates that result.
+_Avoid_: In-progress Delegate OCR Preflight, Organizer Markdown, raw PaddleOCR payload
+
+**Conversation Source Mapping**:
+The durable `source_file_mapping` for a conversation, assigning each file identity one stable source code that regular and delegate OCR workflows both preserve.
+_Avoid_: Per-run source numbering, filename-derived identity, renumbering or recycling source codes
+
+**OCR Update Summary**:
+The backend-generated `ocr_update_summary` Markdown table that compares prior and completed OCR rows by part number, uses the completed OCR result's columns, and places struck-through old values beside changed new values.
+_Avoid_: Agent-generated section, permanent audit log, preflight progress, full OCR result
+
+**OCR Result Reconciliation**:
+The backend finalization step that compares an emitted full OCR result with the prior result by source and part number, restores mistakenly omitted old rows in stable order, and produces the canonical result saved for the conversation.
+_Avoid_: AI row matching, deleting absent old parts, PaddleOCR or Organizer persistence
+
+**OCR Result Finalizer**:
+The provider-independent backend process that detects any completed AI response containing `ocr_result`, reconciles that result, replaces and saves the full corrected assistant message, and updates the conversation's current OCR result.
+_Avoid_: Delegate-only save path, provider callback, PaddleOCR checkpoint writer
+
 **File Analysis Data**:
 A legacy user-verifiable extraction workspace from the workbook/file-analysis flow, containing AI-read rows from quote request files with source file, page, and region metadata.
 _Avoid_: Output Sheet Memory, quote workbook, Admin import source, raw OCR dump, hidden provider state
@@ -286,6 +322,108 @@ _Avoid_: Multi-company tenant model, organization/workspace scoping
 - **Quote Request Evidence** helps interpret the current order, but it does not update formal customer, product, price, weight, formula, or cutting-price tables by itself.
 - **Drawing Evidence** is created from **Quote Request Evidence** and may become
   **File Analysis Data** for user review before it affects quote workbook rows.
+- An initial `delegate_ocr` tool call creates a new **Delegate OCR Index** and
+  **Delegate OCR Preflight**. Rerun or regenerate of the same triggering user
+  message identity resumes that incomplete index from its persisted tool
+  parameters before the parent AI runs;
+  a later `delegate_ocr` call caused by another user message creates the next
+  index and starts new PaddleOCR and Organizer progress.
+- A **Delegate OCR Preflight** never reuses PaddleOCR or **Organizer Markdown**
+  records from an earlier **Delegate OCR Index**, even when the selected files
+  and page ranges are identical. It may reuse the existing source file or
+  deterministic PDF page-range artifact without repeating file splitting.
+- A conversation has at most one unfinished **Delegate OCR Index** for the
+  triggering user message. During its rerun or regenerate, the backend resumes
+  persisted work and withholds `delegate_ocr` from the parent AI.
+- The Organizer receives the triggering user message, selected-file URL
+  metadata, and optional `suggested_ocr_result_columns` derived in order from the
+  current OCR result; it does not receive prior OCR row values. The suggestion
+  is omitted when no current result exists and does not prevent new columns.
+- When the triggering user message is edited before an incomplete index is
+  rerun, the Organizer receives the latest edited text while the preflight keeps
+  its persisted file parameters. Radically changed intent is outside this
+  workflow's supported resume semantics.
+- The **Delegate OCR Agent** receives the prior **Conversation OCR Result**,
+  `suggested_ocr_result_columns` derived from that result, current **Organizer
+  Markdown**, the full **Conversation Source Mapping**, and URL-free metadata,
+  but not the triggering user message or original file URL.
+- After the parent AI calls `delegate_ocr`, the **Delegate OCR Agent** becomes
+  terminal response owner; its output streams directly to the UI and the parent
+  AI does not process the tool result again.
+- A **Delegate OCR Index** completes only after the **Delegate OCR Agent** emits
+  final OCR Markdown and the backend saves the new **Conversation OCR Result**.
+  A failed save is retried twice at one-second intervals without rerunning AI;
+  failed, paused, or partial state does not replace the latest completed result.
+- PaddleOCR failure does not itself block finalization: the Organizer may use AI
+  OCR fallback and still emit **Organizer Markdown**. Neither PaddleOCR nor
+  Organizer persistence updates the **Conversation OCR Result**; only the full
+  result emitted by the **Delegate OCR Agent** can do so.
+- Regular and delegate OCR workflows share the **Conversation Source Mapping**,
+  selected pure processing modules, artifact handling, and UI event components.
+  They retain separate entrypoints, state, orchestration, PaddleOCR records, and
+  Organizer records; they do not share an end-to-end flow.
+- A **Conversation Source Mapping** assigns source codes by file identity in
+  append-only order; existing codes remain stable, new files receive new codes,
+  and the full mapping is supplied when producing a complete OCR result. Stored
+  filenames retain their complete extensions, such as `PL.pdf`.
+- The backend, not the **Delegate OCR Agent**, creates the **OCR Update Summary**.
+  It compares rows by source plus part number after **OCR Result Reconciliation**;
+  a row without a prior part number is displayed without an empty struck-through
+  old-value annotation.
+- Before saving, **OCR Result Reconciliation** restores every prior row with a
+  source and part number that is absent from the emitted result. The corrected
+  result is sent to the UI and becomes the saved **Conversation OCR Result**;
+  OCR rows are not deleted through this workflow. Restored rows retain their
+  prior relative order rather than being appended arbitrarily. Prior rows
+  missing either source or part number are not restored automatically; current
+  unkeyed rows remain available for manual review.
+- The **Delegate OCR Agent** may stream its initial response. After it finishes,
+  the backend replaces the entire visible assistant response with the finalized
+  response containing reconciled OCR data; only that replacement is persisted
+  as the canonical OCR result.
+- The agent-emitted `source_file_mapping` must contain the same source-code and
+  full-filename pairs as the database mapping, although row and section order
+  may differ. A mismatch is never silently rewritten: the delegate agent is
+  retried up to two times without repeating OCR or Organizer work.
+- Final response order is `source_file_mapping`, `ocr_result`, `manual_review`,
+  then the backend-produced `ocr_update_summary` when changes exist.
+- Every completed AI response containing a parseable `ocr_result` passes through
+  the **OCR Result Finalizer**. Its reconciled full Message and corrected current
+  OCR result are both saved. Regular and delegate OCR main agents additionally
+  receive the prior OCR result, `suggested_ocr_result_columns`, and URL-free file
+  metadata; only delegate OCR receives an **OCR Update Summary**.
+- The **OCR Result Finalizer** first persists the reconciled full assistant
+  Message, then updates the current OCR result. Its finalized candidate remains
+  on the unfinished index so a later request can repair a partial database write
+  before provider execution without rerunning AI.
+- A delegate result missing `ocr_result` or containing an unparseable OCR table
+  marks the index `save_failed`. Rerunning the same message reruns only the
+  **Delegate OCR Agent** with URL-free file metadata; a new user message may
+  continue using the prior completed OCR result.
+- A **Delegate OCR Index** uses `running`, `agent_running`, `finalizing`,
+  `completed`, `agent_failed`, `save_failed`, or `superseded` status, plus its
+  current stage and per-chunk checkpoints. An interrupted non-terminal status is
+  resumable without a separate paused status.
+- Delegate resume, agent retry/failure, OCR reconciliation, OCR save
+  retry/success/failure, summary failure, and response replacement emit indexed
+  UI events with safe diagnostic data and correlation identifiers.
+- OCR result save success and terminal failure both emit UI events. Failure after
+  the initial attempt and two one-second retries preserves the prior result.
+- Failure to generate an **OCR Update Summary** does not roll back a saved OCR
+  result or prevent its **Delegate OCR Index** from completing; the UI receives
+  the failure reason for diagnosis.
+- Automatic delegate-agent retry is limited to a mismatched
+  `source_file_mapping`. A missing `ocr_result` section or unparseable OCR table
+  emits an OCR-result-save failure event without automatic agent retry.
+- Backend finalization does not validate OCR source-code values, required OCR
+  columns, or duplicate source-and-part-number rows. The delegate rule forbids
+  duplicate rows for the same source and part number; if duplicates still
+  appear, backend correction and diff logic do not resolve them and the emitted
+  OCR result may be saved as-is.
+- Exhausting the initial delegate-agent attempt and two mapping retries marks
+  the index `agent_failed`. Rerunning the same message may reuse that index's
+  OCR and Organizer data with the currently selected model; reserved source
+  codes remain assigned even when the agent fails.
 - **File Analysis Data** saves the user from manually retyping detected tables,
   but it remains a review/edit dataset until the user confirms and requests
   workbook creation or update.

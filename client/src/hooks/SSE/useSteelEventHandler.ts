@@ -1,7 +1,12 @@
 import { useCallback } from 'react';
 import { useRecoilCallback } from 'recoil';
 import type { EventSubmission } from 'librechat-data-provider';
-import type { SteelNativeActivityEnvelope, SteelNativeActivityEvent } from '~/store/steel';
+import type {
+  SteelNativeActivityEnvelope,
+  SteelNativeActivityEvent,
+  SteelNativeDelegateOcrStage,
+  SteelNativeDelegateOcrStatus,
+} from '~/store/steel';
 import { steelNativeActivityByMessageId, steelNativeStreamEventName } from '~/store/steel';
 
 const MAX_STEEL_ACTIVITY_EVENTS = 100;
@@ -10,14 +15,21 @@ type MaybeSteelNativeActivityEnvelope = Partial<SteelNativeActivityEnvelope> & {
   data?: Partial<SteelNativeActivityEvent>;
 };
 
-const steelActivityEventTypes = new Set(['parse_status', 'memory_saved', 'quote_audit']);
 const steelActivitySources = new Set([
   'assistant_markdown',
   'ocr_preprocessing',
   'paddleocr_preflight',
+  'delegate_ocr_preflight',
   'quote_runtime',
   'responses_output',
   'tool_result',
+]);
+
+const steelActivityEventTypes = new Set([
+  'parse_status',
+  'memory_saved',
+  'quote_audit',
+  'delegate_ocr_status',
 ]);
 
 function isSavedCounts(value: unknown): value is Record<string, number> {
@@ -58,6 +70,33 @@ function isMissingPageRangesByFileKey(
   );
 }
 
+const steelActivityErrorMaxLength = 512;
+
+function sanitizeSteelActivityError(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  const normalized = value
+    .replace(/https?:\/\/[^\s<>"'`]+/giu, '[redacted-url]')
+    .replace(
+      /\b(?:api[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|authorization|credential|password|secret|signature|sig|token|key)\s*[:=]\s*[^\s&;,]+/giu,
+      (match) => `${match.slice(0, match.search(/[:=]/u) + 1)}[REDACTED]`,
+    )
+    .replace(/\bBearer\s+[^\s"'`]+/giu, 'Bearer [REDACTED]')
+    .replace(/\bsk-[a-z0-9_-]+/giu, 'sk-[REDACTED]')
+    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/gu, ' ')
+    .replace(/\s+/gu, ' ')
+    .trim();
+
+  if (!normalized) {
+    return undefined;
+  }
+  return normalized.length <= steelActivityErrorMaxLength
+    ? normalized
+    : `${normalized.slice(0, steelActivityErrorMaxLength - 3)}...`;
+}
+
 function normalizedCountMetadata(data: Partial<SteelNativeActivityEvent>) {
   return {
     ...(isSavedCounts(data.savedTableCounts) ? { savedTableCounts: data.savedTableCounts } : {}),
@@ -82,6 +121,56 @@ export function normalizeSteelActivityEvent(
     typeof data.message !== 'string'
   ) {
     return null;
+  }
+
+  if (data.type === 'delegate_ocr_status') {
+    if (
+      data.source !== 'delegate_ocr_preflight' ||
+      !Number.isSafeInteger(data.delegateOcrIndex) ||
+      (data.delegateOcrIndex as number) < 1 ||
+      ![
+        'resume',
+        'paddleocr',
+        'organizer',
+        'agent',
+        'reconciliation',
+        'saving',
+        'summary',
+        'response',
+      ].includes(data.stage as string) ||
+      !['started', 'progress', 'retrying', 'succeeded', 'failed', 'replaced'].includes(
+        data.status as string,
+      )
+    ) {
+      return null;
+    }
+    if (
+      (data.chunkIndex !== undefined &&
+        (!Number.isSafeInteger(data.chunkIndex) || (data.chunkIndex as number) < 0)) ||
+      (data.chunkCount !== undefined &&
+        (!Number.isSafeInteger(data.chunkCount) || (data.chunkCount as number) < 1))
+    ) {
+      return null;
+    }
+    const errorMessage = sanitizeSteelActivityError(data.errorMessage);
+    return {
+      type: 'delegate_ocr_status',
+      source: 'delegate_ocr_preflight',
+      message: data.message,
+      delegateOcrIndex: data.delegateOcrIndex as number,
+      stage: data.stage as SteelNativeDelegateOcrStage,
+      status: data.status as SteelNativeDelegateOcrStatus,
+      ...(errorMessage ? { errorMessage } : {}),
+      ...(typeof data.chunkIndex === 'number' ? { chunkIndex: data.chunkIndex } : {}),
+      ...(typeof data.chunkCount === 'number' ? { chunkCount: data.chunkCount } : {}),
+      ...(typeof data.conversationId === 'string' ? { conversationId: data.conversationId } : {}),
+      ...(typeof data.requestId === 'string' ? { requestId: data.requestId } : {}),
+      ...(typeof data.messageId === 'string' ? { messageId: data.messageId } : {}),
+      ...(typeof data.toolName === 'string' ? { toolName: data.toolName } : {}),
+      ...(typeof data.providerToolCallId === 'string'
+        ? { providerToolCallId: data.providerToolCallId }
+        : {}),
+    };
   }
 
   if (data.type === 'quote_audit') {
@@ -213,7 +302,8 @@ function getTargetMessageIds(
     !event.messageId ||
     event.source === 'assistant_markdown' ||
     event.source === 'ocr_preprocessing' ||
-    event.source === 'paddleocr_preflight'
+    event.source === 'paddleocr_preflight' ||
+    event.source === 'delegate_ocr_preflight'
   ) {
     if (currentResponseId) {
       ids.add(currentResponseId);
@@ -240,7 +330,17 @@ function stableEventKey(event: SteelNativeActivityEvent): string {
     totalTableCounts: event.totalTableCounts,
     stage: event.type === 'quote_audit' ? event.stage : undefined,
     status: event.type === 'quote_audit' ? event.status : undefined,
-    errorMessage: event.type === 'parse_status' ? event.errorMessage : undefined,
+    delegateOcrIndex: event.type === 'delegate_ocr_status' ? event.delegateOcrIndex : undefined,
+    delegateStage: event.type === 'delegate_ocr_status' ? event.stage : undefined,
+    delegateStatus: event.type === 'delegate_ocr_status' ? event.status : undefined,
+    chunkIndex:
+      event.type === 'delegate_ocr_status' ? event.chunkIndex : undefined,
+    chunkCount:
+      event.type === 'delegate_ocr_status' ? event.chunkCount : undefined,
+    errorMessage:
+      event.type === 'parse_status' || event.type === 'delegate_ocr_status'
+        ? event.errorMessage
+        : undefined,
     failedKeys: event.type === 'parse_status' ? event.failedKeys : undefined,
     missingPageRangesByFileKey:
       event.type === 'parse_status' ? event.missingPageRangesByFileKey : undefined,
