@@ -80,8 +80,10 @@ const {
   normalizeOcrPageChunks,
   getPdfPageCount,
   hasSufficientOcrPdfChunkArtifactUrlValidity,
+  isUsableOcrPdfChunkArtifactUrl,
   createPdfPageRangeChunker,
   ensurePdfChunkArtifacts,
+  loadExistingPdfChunkArtifacts: loadExistingOcrPdfChunkArtifacts,
   commitOcrPdfChunkSplit,
   resolveCanonicalOcrPageChunks,
   getS3DownloadURLForKey,
@@ -1024,88 +1026,67 @@ function createDelegateOcrExecute({ req, signal }) {
       return getDownloadURL({ file });
     };
 
-    const prepareBatches = async ({ files, storedFiles, pageRanges }) => {
+    const prepareBatches = async ({ files, fileInputs, storedFiles }) => {
       const storedById = new Map(
-        storedFiles
-          .map((record) => [getSteelFileId(record), record])
-          .filter(([fileId]) => fileId),
+        storedFiles.map((record) => [getSteelFileId(record), record]).filter(([fileId]) => fileId),
       );
-      const pdfFiles = files.filter((file) => isPdfSteelFile(file));
-      const nonPdfFiles = files.filter((file) => !isPdfSteelFile(file));
-      if (pdfFiles.length === 0) {
-        return [
-          {
-            files,
-            signFile: async (file) => {
-              const storedFile = storedById.get(file.fileId);
-              if (!storedFile) {
-                throw new Error(`delegate_ocr file record disappeared: file:${file.fileId}`);
-              }
-              return signStoredFile(storedFile);
-            },
-          },
-        ];
+      if (files.length !== fileInputs.length) {
+        throw new Error('delegate_ocr selected file metadata is incomplete');
       }
 
       const batches = [];
-      for (const file of pdfFiles) {
+      for (let fileIndex = 0; fileIndex < files.length; fileIndex += 1) {
+        const file = files[fileIndex];
+        const fileInput = fileInputs[fileIndex];
         const storedFile = storedById.get(file.fileId);
         if (!storedFile) {
           throw new Error(`delegate_ocr file record disappeared: file:${file.fileId}`);
         }
-        const pdfBytes = await readSteelStoredFileBytes({ req, fileRecord: storedFile });
-        const pageCount = await getPdfPageCount({ pdfBytes });
-        const configuredChunkSizePages = resolveOcrPreprocessingChunkSizePages();
-        const chunks = pageRanges?.length
-          ? pageRanges.map((range, index) => ({
-              chunkIndex: index + 1,
-              chunkCount: pageRanges.length,
-              pageStart: range.pageStart,
-              pageEnd: range.pageEnd,
-              chunkSizePages: configuredChunkSizePages,
-            }))
-          : buildPdfPageChunks({
-              pageCount,
-              chunkSizePages: configuredChunkSizePages,
-            });
-        const effectiveRanges = chunks.map(({ pageStart, pageEnd }) => ({ pageStart, pageEnd }));
-        for (const range of effectiveRanges) {
-          if (range.pageEnd > pageCount) {
-            throw new Error(
-              `delegate_ocr page range ${range.pageStart}-${range.pageEnd} exceeds PDF page count ${pageCount}`,
-            );
-          }
+        if (!isPdfSteelFile(file)) {
+          batches.push({
+            files: [file],
+            signFile: async () => signStoredFile(storedFile),
+          });
+          continue;
+        }
+        const pageRanges = fileInput?.pageRanges;
+        if (!Array.isArray(pageRanges) || pageRanges.length === 0) {
+          throw new Error(`delegate_ocr PDF file requires pageRanges: file:${file.fileId}`);
+        }
+        const sourcePdfKey = storedFile.storageKey;
+        if (
+          typeof sourcePdfKey !== 'string' ||
+          sourcePdfKey.trim() === '' ||
+          sourcePdfKey.trim() !== sourcePdfKey ||
+          isHttpUrl(sourcePdfKey)
+        ) {
+          throw new Error(`delegate_ocr PDF storage key is unavailable for file:${file.fileId}`);
         }
         const preprocessingFile = toSteelOcrPreprocessingFile(file, storedFile);
         if (!preprocessingFile) {
           throw new Error(`delegate_ocr PDF source is unavailable for file:${file.fileId}`);
         }
+        preprocessingFile.sourcePdfKey = sourcePdfKey;
         const artifactStore = createSteelOcrPdfChunkArtifactStore({
           file: preprocessingFile,
           fileRecord: storedFile,
-          pdfBytes,
-          forceSplit: pageRanges?.length > 0,
         });
-        const artifacts = [];
-        for (const chunk of chunks) {
-          try {
-            const ensured = await artifactStore.ensurePdfChunkArtifacts({
-              sourcePdfKey: preprocessingFile.sourcePdfKey,
-              chunks: [chunk],
-            });
-            artifacts.push(...ensured);
-          } catch (error) {
-            throw new Error(
-              `delegate_ocr failed preparing pages ${chunk.pageStart}-${chunk.pageEnd}: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
-              { cause: error },
-            );
-          }
+        let artifacts;
+        try {
+          artifacts = await artifactStore.loadExistingPdfChunkArtifacts({
+            sourcePdfKey,
+            pageRanges,
+          });
+        } catch (error) {
+          throw new Error(
+            `delegate_ocr failed preparing file:${file.fileId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+            { cause: error },
+          );
         }
-        for (let index = 0; index < artifacts.length; index += 1) {
-          const artifact = artifacts[index];
-          const range = effectiveRanges[index];
+        for (const artifact of artifacts) {
+          const range = { pageStart: artifact.pageStart, pageEnd: artifact.pageEnd };
           let currentArtifact = artifact;
           let artifactSignCount = 0;
           const artifactFile = {
@@ -1118,41 +1099,30 @@ function createDelegateOcrExecute({ req, signal }) {
             pageStart: range.pageStart,
             pageEnd: range.pageEnd,
           };
-          const batchFiles =
-            batches.length === 0
-              ? [artifactFile, ...nonPdfFiles]
-              : [artifactFile];
           batches.push({
-            files: batchFiles,
+            files: [artifactFile],
             range,
             signFile: async (batchFile) => {
-              if (batchFile.pageStart !== undefined) {
-                if (!batchFile.filepath) {
-                  throw new Error(
-                    `delegate_ocr range artifact URL is unavailable for pages ${batchFile.pageStart}-${batchFile.pageEnd}`,
-                  );
-                }
-                if (artifactSignCount === 0) {
-                  artifactSignCount += 1;
-                  return currentArtifact.filepath;
-                }
-                const refreshed = await artifactStore.refreshPdfChunkArtifact({
-                  file: preprocessingFile,
-                  chunk: range,
-                  artifact: currentArtifact,
-                });
-                currentArtifact = refreshed;
-                artifactFile.filepath = refreshed.filepath;
-                artifactFile.storageKey = refreshed.storageKey;
-                artifactFile.filename = refreshed.filename;
+              if (!batchFile.filepath) {
+                throw new Error(
+                  `delegate_ocr range artifact URL is unavailable for pages ${batchFile.pageStart}-${batchFile.pageEnd}`,
+                );
+              }
+              if (artifactSignCount === 0) {
                 artifactSignCount += 1;
-                return refreshed.filepath;
+                return currentArtifact.filepath;
               }
-              const nonPdfRecord = storedById.get(batchFile.fileId);
-              if (!nonPdfRecord) {
-                throw new Error(`delegate_ocr file record disappeared: file:${batchFile.fileId}`);
-              }
-              return signStoredFile(nonPdfRecord);
+              const refreshed = await artifactStore.refreshPdfChunkArtifact({
+                file: preprocessingFile,
+                chunk: range,
+                artifact: currentArtifact,
+              });
+              currentArtifact = refreshed;
+              artifactFile.filepath = refreshed.filepath;
+              artifactFile.storageKey = refreshed.storageKey;
+              artifactFile.filename = refreshed.filename;
+              artifactSignCount += 1;
+              return refreshed.filepath;
             },
           });
         }
@@ -1162,8 +1132,7 @@ function createDelegateOcrExecute({ req, signal }) {
 
     const execute = createDelegateOcrRequestExecute({
       currentUserTurn,
-      policy:
-        delegateContext.delegateOcrPolicy ?? req?.steelNativeContext?.delegateOcrPolicy,
+      policy: delegateContext.delegateOcrPolicy ?? req?.steelNativeContext?.delegateOcrPolicy,
       modelOptions: delegateContext.modelOptions,
       userId: req.user?.id,
       availableFiles: collectDelegateOcrAvailableFiles(req, delegateContext),
@@ -1595,11 +1564,23 @@ function createSteelOcrPdfChunkStorage({ fileRecord, contentType = 'application/
   };
 }
 
-async function refreshSteelOcrPdfChunkArtifact({ artifact, storage, repository, file, chunk }) {
+async function refreshSteelOcrPdfChunkArtifact({
+  artifact,
+  storage,
+  repository,
+  file,
+  chunk,
+  validateUrl = false,
+}) {
   if (!artifact.storageKey || isHttpUrl(artifact.storageKey)) {
     return artifact;
   }
   const filepath = await storage.getDownloadUrl({ storageKey: artifact.storageKey });
+  if (validateUrl && !isUsableOcrPdfChunkArtifactUrl(filepath, artifact.storageKey)) {
+    throw new Error(
+      `OCR artifact signer returned an invalid URL for pages ${chunk.pageStart}-${chunk.pageEnd}`,
+    );
+  }
   const persistedFilepath =
     repository?.compareAndSetArtifactFilepath &&
     (artifact.sourcePdfKey ?? file?.sourcePdfKey) &&
@@ -1614,6 +1595,11 @@ async function refreshSteelOcrPdfChunkArtifact({ artifact, storage, repository, 
           filepath,
         })
       : filepath;
+  if (validateUrl && !isUsableOcrPdfChunkArtifactUrl(persistedFilepath, artifact.storageKey)) {
+    throw new Error(
+      `OCR artifact URL is invalid for pages ${chunk.pageStart}-${chunk.pageEnd}`,
+    );
+  }
   return {
     ...artifact,
     filepath: persistedFilepath,
@@ -1725,6 +1711,20 @@ function createSteelOcrPdfChunkArtifactStore({ file, fileRecord, pdfBytes, force
   };
 
   return {
+    async loadExistingPdfChunkArtifacts({ sourcePdfKey, pageRanges }) {
+      const artifacts = await loadExistingOcrPdfChunkArtifacts({
+        sourcePdfKey,
+        sourceStorageKey: fileRecord?.storageKey,
+        sourceFileId: file.fileId,
+        pageRanges,
+        repository,
+        storage,
+      });
+      return artifacts.map((artifact) => ({
+        ...artifact,
+        source: artifact.source ?? getSteelOcrArtifactSource(fileRecord),
+      }));
+    },
     async resolveCanonicalChunks({ sourcePdfKey, chunks }) {
       const rows = await repository.findBySourcePdfKey({
         sourcePdfKey,
@@ -1843,6 +1843,7 @@ function createSteelOcrPdfChunkArtifactStore({ file, fileRecord, pdfBytes, force
         repository,
         file,
         chunk,
+        validateUrl: true,
       });
     },
   };

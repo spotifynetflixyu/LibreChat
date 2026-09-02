@@ -90,6 +90,7 @@ const mockGetPdfPageCount = jest.fn();
 const mockCreatePdfPageRangeChunk = jest.fn();
 const mockCreatePdfPageRangeChunker = jest.fn();
 const mockEnsurePdfChunkArtifacts = jest.fn();
+const mockLoadExistingPdfChunkArtifacts = jest.fn();
 const mockCreateMongooseOcrPdfChunkArtifactRepository = jest.fn();
 const mockGetS3DownloadURLForKey = jest.fn();
 const mockS3ObjectExistsByKey = jest.fn();
@@ -200,6 +201,7 @@ jest.mock('@librechat/api', () => ({
   createPdfPageRangeChunk: (...args) => mockCreatePdfPageRangeChunk(...args),
   createPdfPageRangeChunker: (...args) => mockCreatePdfPageRangeChunker(...args),
   ensurePdfChunkArtifacts: (...args) => mockEnsurePdfChunkArtifacts(...args),
+  loadExistingPdfChunkArtifacts: (...args) => mockLoadExistingPdfChunkArtifacts(...args),
   createMongooseOcrPdfChunkArtifactRepository: (...args) =>
     mockCreateMongooseOcrPdfChunkArtifactRepository(...args),
   getS3DownloadURLForKey: (...args) => mockGetS3DownloadURLForKey(...args),
@@ -711,6 +713,19 @@ describe('ToolService - Action Capability Gating', () => {
     mockCreatePdfPageRangeChunker.mockResolvedValue((range) => mockCreatePdfPageRangeChunk(range));
     mockEnsurePdfChunkArtifacts.mockResolvedValue([
       {
+        chunkIndex: 1,
+        chunkCount: 1,
+        pageStart: 1,
+        pageEnd: 1,
+        chunkSizePages: 50,
+        filepath: 'https://files.example.test/chunk.pdf',
+        storageKey: 'ocr-preprocessing/source/v1/pages-000001-000001.pdf',
+        source: 's3',
+      },
+    ]);
+    mockLoadExistingPdfChunkArtifacts.mockResolvedValue([
+      {
+        sourcePdfKey: 'uploads/user/file-ocr.pdf',
         chunkIndex: 1,
         chunkCount: 1,
         pageStart: 1,
@@ -5667,19 +5682,12 @@ describe('ToolService - Action Capability Gating', () => {
         filepath: oldUrl,
       };
       const getDownloadURL = jest.fn().mockResolvedValue(freshUrl);
-      const getDownloadStream = jest.fn().mockResolvedValue({
-        async *[Symbol.asyncIterator]() {
-          yield Buffer.from('%PDF-1.7');
-        },
-      });
       const stream = jest.fn(async function* () {
         yield { content: '連續邊長為 ' };
         yield { content: [{ type: 'text', text: '1,400mm。' }] };
       });
       mockGetFiles.mockResolvedValueOnce([fileRecord]);
-      mockGetStrategyFunctions.mockReturnValueOnce({ getDownloadURL, getDownloadStream });
-      mockGetPdfPageCount.mockResolvedValueOnce(35);
-      mockEnsurePdfChunkArtifacts.mockResolvedValueOnce([
+      mockLoadExistingPdfChunkArtifacts.mockResolvedValueOnce([
         {
           sourcePdfKey: fileRecord.storageKey,
           chunkIndex: 1,
@@ -5708,7 +5716,11 @@ describe('ToolService - Action Capability Gating', () => {
       });
       const tool = result.loadedTools.find((entry) => entry.name === 'delegate_ocr');
       const output = await tool.invoke(
-        { fileKeys: ['file:pdf'] },
+        {
+          files: [
+            { fileKey: 'file:pdf', pageRanges: [{ pageStart: 35, pageEnd: 35 }] },
+          ],
+        },
         { toolCall: { id: 'call_delegate_1' } },
       );
 
@@ -5773,18 +5785,14 @@ describe('ToolService - Action Capability Gating', () => {
         storageKey: 'uploads/user_123/drawing-1__drawing.pdf',
       };
       const ensuredUrl = 'https://fresh.example/pages-1-50.pdf';
-      const refreshedUrl = 'https://fresh.example/pages-1-50?expires=43200.pdf';
+      const refreshedUrl =
+        'https://fresh.example/ocr/pages-1-50.pdf?Expires=4102444800';
       const compareAndSetArtifactFilepath = jest.fn().mockResolvedValue(refreshedUrl);
       const artifactRepository = {
         findBySourcePdfKey: jest.fn().mockResolvedValue([]),
         upsert: jest.fn(),
         compareAndSetArtifactFilepath,
       };
-      const getDownloadStream = jest.fn().mockResolvedValue({
-        async *[Symbol.asyncIterator]() {
-          yield Buffer.from('%PDF-1.7');
-        },
-      });
       const artifact = {
         sourcePdfKey: fileRecord.storageKey,
         chunkIndex: 1,
@@ -5801,12 +5809,7 @@ describe('ToolService - Action Capability Gating', () => {
         artifactOrigin: 'uploaded',
       };
       mockGetFiles.mockResolvedValueOnce([fileRecord]);
-      mockGetStrategyFunctions.mockReturnValueOnce({ getDownloadStream });
-      mockGetPdfPageCount.mockResolvedValueOnce(50);
-      mockBuildPdfPageChunks.mockReturnValueOnce([
-        { chunkIndex: 1, chunkCount: 1, pageStart: 1, pageEnd: 50, chunkSizePages: 50 },
-      ]);
-      mockEnsurePdfChunkArtifacts.mockResolvedValueOnce([artifact]);
+      mockLoadExistingPdfChunkArtifacts.mockResolvedValueOnce([artifact]);
       mockCreateMongooseOcrPdfChunkArtifactRepository.mockReturnValueOnce(artifactRepository);
       mockGetS3DownloadURLForKey.mockResolvedValueOnce(refreshedUrl);
       let attempt = 0;
@@ -5827,7 +5830,11 @@ describe('ToolService - Action Capability Gating', () => {
         actionsEnabled: false,
       });
       const tool = result.loadedTools.find((entry) => entry.name === 'delegate_ocr');
-      const output = await tool.invoke({ fileKeys: ['file:drawing-1'] });
+      const output = await tool.invoke({
+        files: [
+          { fileKey: 'file:drawing-1', pageRanges: [{ pageStart: 1, pageEnd: 50 }] },
+        ],
+      });
 
       expect(output.content).toContain(refreshedUrl);
       expect(stream).toHaveBeenCalledTimes(2);
@@ -5911,7 +5918,7 @@ describe('ToolService - Action Capability Gating', () => {
       expect(mockCreateOpenAIOAuthModel).not.toHaveBeenCalled();
     });
 
-    it('rejects an out-of-bounds page range before creating any PDF artifact', async () => {
+    it('rejects a requested PDF range that is unavailable in the artifact DB', async () => {
       const { HumanMessage } = require('@librechat/agents/langchain/messages');
       const req = createMockReq([AgentCapabilities.tools]);
       req.config.fileStrategy = 's3';
@@ -5940,14 +5947,9 @@ describe('ToolService - Action Capability Gating', () => {
           storageKey: 'uploads/user_123/drawing-1__drawing.pdf',
         },
       ]);
-      mockGetStrategyFunctions.mockReturnValueOnce({
-        getDownloadStream: jest.fn().mockResolvedValue({
-          async *[Symbol.asyncIterator]() {
-            yield Buffer.from('%PDF-1.7');
-          },
-        }),
-      });
-      mockGetPdfPageCount.mockResolvedValueOnce(34);
+      mockLoadExistingPdfChunkArtifacts.mockRejectedValueOnce(
+        new Error('delegate_ocr page range 35-35 exceeds stored artifact page count 34'),
+      );
 
       const result = await loadToolsForExecution({
         req,
@@ -5958,14 +5960,16 @@ describe('ToolService - Action Capability Gating', () => {
       });
       const tool = result.loadedTools.find((entry) => entry.name === 'delegate_ocr');
 
-      await expect(tool.invoke({ fileKeys: ['file:drawing-1'] })).rejects.toThrow(
-        'exceeds PDF page count 34',
-      );
-      expect(mockEnsurePdfChunkArtifacts).not.toHaveBeenCalled();
+      await expect(tool.invoke({
+        files: [
+          { fileKey: 'file:drawing-1', pageRanges: [{ pageStart: 35, pageEnd: 35 }] },
+        ],
+      })).rejects.toThrow('exceeds stored artifact page count 34');
+      expect(mockLoadExistingPdfChunkArtifacts).toHaveBeenCalledTimes(1);
       expect(mockCreateOpenAIOAuthModel).not.toHaveBeenCalled();
     });
 
-    it('physically splits an explicit page-1 range instead of sending the full PDF', async () => {
+    it('loads an explicit page-1 range from the artifact DB without reading the original PDF', async () => {
       const { HumanMessage } = require('@librechat/agents/langchain/messages');
       const req = createMockReq([AgentCapabilities.tools]);
       req.config.fileStrategy = 's3';
@@ -5993,15 +5997,7 @@ describe('ToolService - Action Capability Gating', () => {
           storageKey: 'uploads/user_123/drawing-1__drawing.pdf',
         },
       ]);
-      mockGetStrategyFunctions.mockReturnValueOnce({
-        getDownloadStream: jest.fn().mockResolvedValue({
-          async *[Symbol.asyncIterator]() {
-            yield Buffer.from('%PDF-1.7');
-          },
-        }),
-      });
-      mockGetPdfPageCount.mockResolvedValueOnce(3);
-      mockEnsurePdfChunkArtifacts.mockResolvedValueOnce([
+      mockLoadExistingPdfChunkArtifacts.mockResolvedValueOnce([
         {
           chunkIndex: 1,
           chunkCount: 1,
@@ -6027,9 +6023,15 @@ describe('ToolService - Action Capability Gating', () => {
         actionsEnabled: false,
       });
       const tool = result.loadedTools.find((entry) => entry.name === 'delegate_ocr');
-      await tool.invoke({ fileKeys: ['file:drawing-1'] });
+      await tool.invoke({
+        files: [
+          { fileKey: 'file:drawing-1', pageRanges: [{ pageStart: 1, pageEnd: 1 }] },
+        ],
+      });
 
-      expect(mockEnsurePdfChunkArtifacts).toHaveBeenCalledTimes(1);
+      expect(mockLoadExistingPdfChunkArtifacts).toHaveBeenCalledTimes(1);
+      expect(mockGetPdfPageCount).not.toHaveBeenCalled();
+      expect(mockCreatePdfPageRangeChunk).not.toHaveBeenCalled();
       expect(JSON.stringify(stream.mock.calls[0][0].at(-1)?.content)).toContain(
         'pages-1-1.pdf',
       );
@@ -6063,26 +6065,13 @@ describe('ToolService - Action Capability Gating', () => {
         storageKey: 'uploads/user_123/drawing-1__drawing.pdf',
       };
       mockGetFiles.mockResolvedValueOnce([fileRecord]);
-      mockGetStrategyFunctions.mockReturnValueOnce({
-        getDownloadStream: jest.fn().mockResolvedValue({
-          async *[Symbol.asyncIterator]() {
-            yield Buffer.from('%PDF-1.7');
-          },
-        }),
-      });
-      mockGetPdfPageCount.mockResolvedValueOnce(106);
-      mockBuildPdfPageChunks.mockReturnValueOnce([
-        { chunkIndex: 1, chunkCount: 3, pageStart: 1, pageEnd: 50, chunkSizePages: 50 },
-        { chunkIndex: 2, chunkCount: 3, pageStart: 51, pageEnd: 100, chunkSizePages: 50 },
-        { chunkIndex: 3, chunkCount: 3, pageStart: 101, pageEnd: 106, chunkSizePages: 50 },
-      ]);
-      mockEnsurePdfChunkArtifacts.mockImplementation(async ({ chunks }) =>
-        chunks.map(({ chunkIndex, chunkCount, pageStart, pageEnd, chunkSizePages }) => ({
-          chunkIndex,
-          chunkCount,
+      mockLoadExistingPdfChunkArtifacts.mockImplementation(async ({ pageRanges }) =>
+        pageRanges.map(({ pageStart, pageEnd }, index) => ({
+          chunkIndex: index + 1,
+          chunkCount: pageRanges.length,
           pageStart,
           pageEnd,
-          chunkSizePages,
+          chunkSizePages: 50,
           filepath: `https://fresh.example/pages-${pageStart}-${pageEnd}.pdf`,
           storageKey: `ocr/pages-${pageStart}-${pageEnd}.pdf`,
           filename: `pages-${pageStart}-${pageEnd}.pdf`,
@@ -6102,9 +6091,30 @@ describe('ToolService - Action Capability Gating', () => {
         actionsEnabled: false,
       });
       const tool = result.loadedTools.find((entry) => entry.name === 'delegate_ocr');
-      const output = await tool.invoke({ fileKeys: ['file:drawing-1'] });
+      const output = await tool.invoke({
+        files: [
+          {
+            fileKey: 'file:drawing-1',
+            pageRanges: [
+              { pageStart: 1, pageEnd: 50 },
+              { pageStart: 51, pageEnd: 100 },
+              { pageStart: 101, pageEnd: 106 },
+            ],
+          },
+        ],
+      });
 
       expect(stream).toHaveBeenCalledTimes(3);
+      expect(mockLoadExistingPdfChunkArtifacts).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sourcePdfKey: fileRecord.storageKey,
+          pageRanges: [
+            { pageStart: 1, pageEnd: 50 },
+            { pageStart: 51, pageEnd: 100 },
+            { pageStart: 101, pageEnd: 106 },
+          ],
+        }),
+      );
       expect(stream.mock.calls.map(([messages]) => JSON.stringify(messages.at(-1)?.content))).toEqual(
         expect.arrayContaining([
           expect.stringContaining('pages-1-50.pdf'),
@@ -6143,31 +6153,9 @@ describe('ToolService - Action Capability Gating', () => {
           storageKey: 'uploads/user_123/drawing-1__drawing.pdf',
         },
       ]);
-      mockGetStrategyFunctions.mockReturnValueOnce({
-        getDownloadStream: jest.fn().mockResolvedValue({
-          async *[Symbol.asyncIterator]() {
-            yield Buffer.from('%PDF-1.7');
-          },
-        }),
-      });
-      mockGetPdfPageCount.mockResolvedValueOnce(106);
-      mockBuildPdfPageChunks.mockReturnValueOnce([
-        { chunkIndex: 1, chunkCount: 3, pageStart: 1, pageEnd: 50, chunkSizePages: 50 },
-        { chunkIndex: 2, chunkCount: 3, pageStart: 51, pageEnd: 100, chunkSizePages: 50 },
-        { chunkIndex: 3, chunkCount: 3, pageStart: 101, pageEnd: 106, chunkSizePages: 50 },
-      ]);
-      mockEnsurePdfChunkArtifacts.mockImplementation(async ({ chunks }) => {
-        if (chunks[0]?.pageStart === 51) {
-          throw new Error('storage unavailable');
-        }
-        return chunks.map((chunk) => ({
-          ...chunk,
-          filepath: `https://fresh.example/pages-${chunk.pageStart}-${chunk.pageEnd}.pdf`,
-          storageKey: `ocr/pages-${chunk.pageStart}-${chunk.pageEnd}.pdf`,
-          filename: `pages-${chunk.pageStart}-${chunk.pageEnd}.pdf`,
-          source: 's3',
-        }));
-      });
+      mockLoadExistingPdfChunkArtifacts.mockRejectedValueOnce(
+        new Error('OCR artifact object is missing for 51-100'),
+      );
 
       const result = await loadToolsForExecution({
         req,
@@ -6178,14 +6166,23 @@ describe('ToolService - Action Capability Gating', () => {
       });
       const tool = result.loadedTools.find((entry) => entry.name === 'delegate_ocr');
 
-      await expect(tool.invoke({ fileKeys: ['file:drawing-1'] })).rejects.toThrow(
-        'failed preparing pages 51-100',
-      );
+      await expect(tool.invoke({
+        files: [
+          {
+            fileKey: 'file:drawing-1',
+            pageRanges: [
+              { pageStart: 1, pageEnd: 50 },
+              { pageStart: 51, pageEnd: 100 },
+              { pageStart: 101, pageEnd: 106 },
+            ],
+          },
+        ],
+      })).rejects.toThrow('OCR artifact object is missing for 51-100');
       expect(mockCreateOpenAIOAuthModel).not.toHaveBeenCalled();
-      expect(mockEnsurePdfChunkArtifacts).toHaveBeenCalledTimes(2);
+      expect(mockLoadExistingPdfChunkArtifacts).toHaveBeenCalledTimes(1);
     });
 
-    it('keeps a selected non-PDF source alongside the first PDF range batch', async () => {
+    it('runs selected PDF and image files as ordered batches while ignoring image ranges', async () => {
       const { HumanMessage } = require('@librechat/agents/langchain/messages');
       const req = createMockReq([AgentCapabilities.tools]);
       req.config.fileStrategy = 's3';
@@ -6230,8 +6227,7 @@ describe('ToolService - Action Capability Gating', () => {
           Promise.resolve(`https://fresh.example/${file.filename}`),
         ),
       });
-      mockGetPdfPageCount.mockResolvedValueOnce(35);
-      mockEnsurePdfChunkArtifacts.mockResolvedValueOnce([
+      mockLoadExistingPdfChunkArtifacts.mockResolvedValueOnce([
         {
           chunkIndex: 1,
           chunkCount: 1,
@@ -6247,7 +6243,7 @@ describe('ToolService - Action Capability Gating', () => {
       const stream = jest.fn(async function* (messages) {
         yield { content: JSON.stringify(messages.at(-1)?.content) };
       });
-      mockCreateOpenAIOAuthModel.mockReturnValueOnce({ stream });
+      mockCreateOpenAIOAuthModel.mockReturnValue({ stream });
 
       const result = await loadToolsForExecution({
         req,
@@ -6257,12 +6253,26 @@ describe('ToolService - Action Capability Gating', () => {
         actionsEnabled: false,
       });
       const tool = result.loadedTools.find((entry) => entry.name === 'delegate_ocr');
-      await tool.invoke({ fileKeys: ['file:drawing-1', 'file:detail-1'] });
+      await tool.invoke({
+        files: [
+          { fileKey: 'file:drawing-1', pageRanges: [{ pageStart: 35, pageEnd: 35 }] },
+          { fileKey: 'file:detail-1', pageRanges: [{ pageStart: 999, pageEnd: 999 }] },
+        ],
+      });
 
-      expect(stream).toHaveBeenCalledTimes(1);
-      const source = JSON.stringify(stream.mock.calls[0][0].at(-1)?.content);
-      expect(source).toContain('pages-35-35.pdf');
-      expect(source).toContain('detail.png');
+      expect(stream).toHaveBeenCalledTimes(2);
+      expect(mockLoadExistingPdfChunkArtifacts).toHaveBeenCalledTimes(1);
+      expect(mockLoadExistingPdfChunkArtifacts).toHaveBeenCalledWith(
+        expect.objectContaining({
+          sourcePdfKey: 'uploads/user_123/drawing-1__drawing.pdf',
+          pageRanges: [{ pageStart: 35, pageEnd: 35 }],
+        }),
+      );
+      const sources = stream.mock.calls.map(([messages]) =>
+        JSON.stringify(messages.at(-1)?.content),
+      );
+      expect(sources[0]).toContain('pages-35-35.pdf');
+      expect(sources[1]).toContain('detail.png');
     });
 
     it('lets delegate_ocr signing errors propagate to the generic tool error UI path', async () => {
@@ -6288,12 +6298,14 @@ describe('ToolService - Action Capability Gating', () => {
         {
           file_id: 'drawing-1',
           user: 'user_123',
+          filename: 'drawing.png',
+          type: 'image/png',
           source: 's3',
-          storageKey: 'uploads/user_123/drawing-1__drawing.pdf',
+          storageKey: 'uploads/user_123/drawing-1__drawing.png',
         },
       ]);
-      mockGetStrategyFunctions.mockReturnValueOnce({
-        getDownloadURL: jest.fn().mockRejectedValue(new Error('S3 signer failed')),
+      mockGetStrategyFunctions.mockImplementation(() => {
+        throw new Error('S3 signer failed');
       });
 
       const result = await loadToolsForExecution({
@@ -6307,7 +6319,11 @@ describe('ToolService - Action Capability Gating', () => {
 
       await expect(
         tool.invoke(
-          { fileKeys: ['file:drawing-1'] },
+          {
+            files: [
+              { fileKey: 'file:drawing-1', pageRanges: [{ pageStart: 1, pageEnd: 1 }] },
+            ],
+          },
           { toolCall: { id: 'call_delegate_error' } },
         ),
       ).rejects.toThrow('S3 signer failed');

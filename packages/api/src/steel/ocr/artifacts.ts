@@ -419,6 +419,16 @@ export interface EnsurePdfChunkArtifactsInput {
   now?: number;
 }
 
+export interface LoadExistingPdfChunkArtifactsInput {
+  sourcePdfKey: string;
+  sourceStorageKey?: string;
+  sourceFileId?: string;
+  pageRanges: readonly OcrPageRange[];
+  repository: OcrPdfChunkArtifactRepository;
+  storage: OcrPdfChunkArtifactStorage;
+  now?: number;
+}
+
 export interface CommitOcrPdfChunkSplitInput extends EnsurePdfChunkArtifactsInput {
   parent: OcrPageRange & Pick<OcrPreprocessingPageChunk, 'chunkSizePages'>;
   children: readonly OcrPageRange[];
@@ -435,6 +445,196 @@ export function buildOcrPdfChunkArtifactStorageKey(input: {
   const pageEnd = String(input.chunk.pageEnd).padStart(6, '0');
 
   return `ocr-preprocessing/${sourceHash}/v${pipelineVersion}/pages-${pageStart}-${pageEnd}.pdf`;
+}
+
+function getCanonicalArtifactStorageKey(storageKey: string): string {
+  const hasControlCharacter = [...storageKey].some((character) => {
+    const codePoint = character.codePointAt(0) ?? 0;
+    return codePoint <= 31 || codePoint === 127;
+  });
+  const invalid =
+    storageKey === '' ||
+    storageKey.trim() !== storageKey ||
+    /^https?:\/\//iu.test(storageKey) ||
+    storageKey.startsWith('/') ||
+    storageKey.includes('\\') ||
+    hasControlCharacter;
+  const segments = storageKey.split('/');
+  if (
+    invalid ||
+    segments.some((segment) => segment === '' || segment === '.' || segment === '..')
+  ) {
+    throw new Error('OCR artifact storage key is invalid');
+  }
+  return storageKey;
+}
+
+function isArtifactUrlBoundToStorageKey(filepath: string, storageKey: string): boolean {
+  let url: URL;
+  try {
+    url = new URL(filepath);
+  } catch {
+    return false;
+  }
+  if (url.protocol !== 'https:') {
+    return false;
+  }
+  let pathname: string;
+  try {
+    pathname = decodeURIComponent(url.pathname);
+  } catch {
+    return false;
+  }
+  if (!pathname.startsWith('/') || pathname.startsWith('//')) {
+    return false;
+  }
+  const pathKey = pathname.slice(1);
+  try {
+    return getCanonicalArtifactStorageKey(pathKey) === storageKey;
+  } catch {
+    return false;
+  }
+}
+
+export function isUsableOcrPdfChunkArtifactUrl(
+  filepath: string,
+  storageKey: string,
+  now?: number,
+): boolean {
+  return (
+    isArtifactUrlBoundToStorageKey(filepath, storageKey) &&
+    hasSufficientOcrPdfChunkArtifactUrlValidity(filepath, now)
+  );
+}
+
+export async function loadExistingPdfChunkArtifacts(
+  input: LoadExistingPdfChunkArtifactsInput,
+): Promise<EnsuredOcrPdfChunkArtifact[]> {
+  const pipelineVersion = ocrPreprocessingPipelineVersion;
+  const rows = (
+    await input.repository.findBySourcePdfKey({
+      sourcePdfKey: input.sourcePdfKey,
+      pipelineVersion,
+    })
+  ).filter(
+    (row) => row.sourcePdfKey === input.sourcePdfKey && row.pipelineVersion === pipelineVersion,
+  );
+  if (rows.length === 0) {
+    throw new Error(`Missing OCR artifact rows for ${input.sourcePdfKey}`);
+  }
+  const rowsByRange = new Map<string, OcrPdfChunkArtifactRecord>();
+  for (const row of rows) {
+    const key = getOcrPageRangeKey(row);
+    if (rowsByRange.has(key)) {
+      throw new Error(`Duplicate OCR artifact rows for ${key}`);
+    }
+    rowsByRange.set(key, row);
+  }
+  const requestedRanges = input.pageRanges.map(({ pageStart, pageEnd }) => ({
+    pageStart,
+    pageEnd,
+  }));
+  if (requestedRanges.length === 0) {
+    throw new Error('delegate_ocr PDF pageRanges must be non-empty');
+  }
+  let previousRange: OcrPageRange | undefined;
+  const maxPageEnd = Math.max(...rows.map((row) => row.pageEnd));
+  for (const range of requestedRanges) {
+    if (
+      !Number.isInteger(range.pageStart) ||
+      !Number.isInteger(range.pageEnd) ||
+      range.pageStart < 1 ||
+      range.pageEnd < range.pageStart ||
+      range.pageEnd > maxPageEnd
+    ) {
+      throw new Error(`Invalid OCR artifact page range ${range.pageStart}-${range.pageEnd}`);
+    }
+    if (previousRange && range.pageStart <= previousRange.pageEnd) {
+      throw new Error('delegate_ocr PDF pageRanges must be sorted and non-overlapping');
+    }
+    previousRange = range;
+  }
+
+  const expandRange = (
+    range: OcrPageRange,
+    ancestors: ReadonlySet<string>,
+    depth: number,
+  ): OcrPdfChunkArtifactRecord[] => {
+    if (depth > rows.length) {
+      throw new Error(`OCR artifact split depth exceeded for ${getOcrPageRangeKey(range)}`);
+    }
+    const key = getOcrPageRangeKey(range);
+    if (ancestors.has(key)) {
+      throw new Error(`OCR artifact split cycle for ${key}`);
+    }
+    const row = rowsByRange.get(key);
+    if (!row) {
+      throw new Error(`Missing OCR artifact row for ${key}`);
+    }
+    if (row.sourceFileId && input.sourceFileId && row.sourceFileId !== input.sourceFileId) {
+      throw new Error(`OCR artifact file owner mismatch for ${key}`);
+    }
+    if (
+      row.sourceStorageKey &&
+      input.sourceStorageKey &&
+      row.sourceStorageKey !== input.sourceStorageKey
+    ) {
+      throw new Error(`OCR artifact storage owner mismatch for ${key}`);
+    }
+    if (!row.supersededByRanges) {
+      return [row];
+    }
+    const children = validateOcrPageSplit({ parent: row, children: row.supersededByRanges });
+    const nextAncestors = new Set(ancestors).add(key);
+    return children.flatMap((child) => expandRange(child, nextAncestors, depth + 1));
+  };
+  const leaves = requestedRanges.flatMap((range) => expandRange(range, new Set(), 0));
+  const artifacts: EnsuredOcrPdfChunkArtifact[] = [];
+  for (let index = 0; index < leaves.length; index += 1) {
+    const row = leaves[index]!;
+    if (row.artifact.source !== input.storage.source) {
+      throw new Error(`OCR artifact storage source mismatch for ${getOcrPageRangeKey(row)}`);
+    }
+    const storageKey = getCanonicalArtifactStorageKey(row.artifact.storageKey);
+    if (!(await input.storage.exists({ storageKey }))) {
+      throw new Error(`OCR artifact object is missing for ${getOcrPageRangeKey(row)}`);
+    }
+    let filepath = row.artifact.filepath;
+    if (!isUsableOcrPdfChunkArtifactUrl(filepath, storageKey, input.now)) {
+      const refreshed = await input.storage.getDownloadUrl({ storageKey });
+      if (!isUsableOcrPdfChunkArtifactUrl(refreshed, storageKey, input.now)) {
+        throw new Error(`OCR artifact signer returned an invalid URL for ${getOcrPageRangeKey(row)}`);
+      }
+      filepath = await input.repository.compareAndSetArtifactFilepath({
+        sourcePdfKey: row.sourcePdfKey,
+        pipelineVersion,
+        pageStart: row.pageStart,
+        pageEnd: row.pageEnd,
+        previousFilepath: row.artifact.filepath,
+        filepath: refreshed,
+      });
+      if (!isUsableOcrPdfChunkArtifactUrl(filepath, storageKey, input.now)) {
+        throw new Error(`OCR artifact URL is invalid for ${getOcrPageRangeKey(row)}`);
+      }
+    }
+    artifacts.push({
+      sourcePdfKey: row.sourcePdfKey,
+      chunkIndex: index + 1,
+      chunkCount: leaves.length,
+      pageStart: row.pageStart,
+      pageEnd: row.pageEnd,
+      chunkSizePages: row.chunkSizePages,
+      source: row.artifact.source,
+      storageKey,
+      storageRegion: row.artifact.storageRegion,
+      filepath,
+      filename: row.artifact.filename,
+      bytes: row.artifact.bytes,
+      contentType: row.artifact.contentType,
+      artifactOrigin: 'existing',
+    });
+  }
+  return artifacts;
 }
 
 export async function ensurePdfChunkArtifacts(

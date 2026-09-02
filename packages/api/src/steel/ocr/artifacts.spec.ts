@@ -9,6 +9,8 @@ import {
   ensurePdfChunkArtifacts,
   getSignedUrlRemainingValiditySeconds,
   hasSufficientOcrPdfChunkArtifactUrlValidity,
+  isUsableOcrPdfChunkArtifactUrl,
+  loadExistingPdfChunkArtifacts,
   resolveCanonicalOcrPageChunks,
   type OcrPdfChunkArtifactRecord,
 } from './artifacts';
@@ -178,6 +180,13 @@ describe('OCR PDF chunk artifacts', () => {
     expect(hasSufficientOcrPdfChunkArtifactUrlValidity(s3Url, now)).toBe(true);
     expect(hasSufficientOcrPdfChunkArtifactUrlValidity(cloudFrontUrl, now)).toBe(true);
     expect(
+      isUsableOcrPdfChunkArtifactUrl(
+        `http://cdn.example/chunk.pdf?Expires=${now / 1000 + 21600}`,
+        'chunk.pdf',
+        now,
+      ),
+    ).toBe(false);
+    expect(
       hasSufficientOcrPdfChunkArtifactUrlValidity(
         `https://cdn.example/chunk.pdf?Expires=${now / 1000 + 21599}`,
         now,
@@ -270,6 +279,175 @@ describe('OCR PDF chunk artifacts', () => {
         now,
       ),
     ).toBeUndefined();
+  });
+
+  it('loads canonical split children directly from existing artifact rows', async () => {
+    const now = Date.UTC(2026, 0, 1, 0, 0, 0);
+    const expires = now / 1000 + 21600;
+    const row = (
+      pageStart: number,
+      pageEnd: number,
+      supersededByRanges?: Array<{ pageStart: number; pageEnd: number }>,
+    ): OcrPdfChunkArtifactRecord => ({
+      sourcePdfKey: 'uploads/user/pdf-1.pdf',
+      sourceStorageKey: 'uploads/user/pdf-1.pdf',
+      sourceFileId: 'pdf-1',
+      pipelineVersion: 1,
+      chunkIndex: 1,
+      chunkCount: 1,
+      pageStart,
+      pageEnd,
+      chunkSizePages: pageEnd - pageStart + 1,
+      ...(supersededByRanges ? { supersededByRanges } : {}),
+      artifact: {
+        source: 's3',
+        storageKey: `ocr/pages-${pageStart}-${pageEnd}.pdf`,
+        filepath: `https://cdn.example/ocr/pages-${pageStart}-${pageEnd}.pdf?Expires=${expires}`,
+        filename: `pages-${pageStart}-${pageEnd}.pdf`,
+        bytes: 100,
+        contentType: 'application/pdf',
+      },
+    });
+    const repository = {
+      findBySourcePdfKey: jest.fn(async () => [
+        row(1, 50, [
+          { pageStart: 1, pageEnd: 25 },
+          { pageStart: 26, pageEnd: 50 },
+        ]),
+        row(1, 25),
+        row(26, 50),
+      ]),
+      upsert: jest.fn(),
+      compareAndSetArtifactFilepath: jest.fn(async ({ filepath }) => filepath),
+    };
+    const storage = {
+      source: 's3' as const,
+      exists: jest.fn(async () => true),
+      saveBuffer: jest.fn(),
+      getDownloadUrl: jest.fn(),
+    };
+
+    const artifacts = await loadExistingPdfChunkArtifacts({
+      sourcePdfKey: 'uploads/user/pdf-1.pdf',
+      sourceStorageKey: 'uploads/user/pdf-1.pdf',
+      sourceFileId: 'pdf-1',
+      pageRanges: [{ pageStart: 1, pageEnd: 50 }],
+      repository,
+      storage,
+      now,
+    });
+
+    expect(artifacts.map(({ pageStart, pageEnd }) => ({ pageStart, pageEnd }))).toEqual([
+      { pageStart: 1, pageEnd: 25 },
+      { pageStart: 26, pageEnd: 50 },
+    ]);
+    expect(storage.getDownloadUrl).not.toHaveBeenCalled();
+    expect(repository.upsert).not.toHaveBeenCalled();
+  });
+
+  it('re-signs an expired or mismatched DB URL from the trusted artifact storage key', async () => {
+    const now = Date.UTC(2026, 0, 1, 0, 0, 0);
+    const storageKey = 'ocr/pages-1-50.pdf';
+    const staleUrl = `https://cdn.example/ocr/wrong.pdf?Expires=${now / 1000 + 21600}`;
+    const freshUrl = `https://cdn.example/${storageKey}?Expires=${now / 1000 + 21600}`;
+    const record: OcrPdfChunkArtifactRecord = {
+      sourcePdfKey: 'uploads/user/pdf-1.pdf',
+      sourceStorageKey: 'uploads/user/pdf-1.pdf',
+      sourceFileId: 'pdf-1',
+      pipelineVersion: 1,
+      chunkIndex: 1,
+      chunkCount: 1,
+      pageStart: 1,
+      pageEnd: 50,
+      chunkSizePages: 50,
+      artifact: {
+        source: 's3',
+        storageKey,
+        filepath: staleUrl,
+        filename: 'pages-1-50.pdf',
+        bytes: 100,
+        contentType: 'application/pdf',
+      },
+    };
+    const repository = {
+      findBySourcePdfKey: jest.fn(async () => [record]),
+      upsert: jest.fn(),
+      compareAndSetArtifactFilepath: jest.fn(async ({ filepath }) => filepath),
+    };
+    const storage = {
+      source: 's3' as const,
+      exists: jest.fn(async () => true),
+      saveBuffer: jest.fn(),
+      getDownloadUrl: jest.fn(async () => freshUrl),
+    };
+
+    await expect(
+      loadExistingPdfChunkArtifacts({
+        sourcePdfKey: record.sourcePdfKey,
+        sourceStorageKey: record.sourceStorageKey,
+        sourceFileId: record.sourceFileId,
+        pageRanges: [{ pageStart: 1, pageEnd: 50 }],
+        repository,
+        storage,
+        now,
+      }),
+    ).resolves.toEqual([expect.objectContaining({ storageKey, filepath: freshUrl })]);
+    expect(storage.getDownloadUrl).toHaveBeenCalledWith({ storageKey });
+    expect(repository.compareAndSetArtifactFilepath).toHaveBeenCalledWith({
+      sourcePdfKey: record.sourcePdfKey,
+      pipelineVersion: 1,
+      pageStart: 1,
+      pageEnd: 50,
+      previousFilepath: staleUrl,
+      filepath: freshUrl,
+    });
+  });
+
+  it('fails closed when the DB artifact object is missing', async () => {
+    const now = Date.UTC(2026, 0, 1, 0, 0, 0);
+    const record: OcrPdfChunkArtifactRecord = {
+      sourcePdfKey: 'uploads/user/pdf-1.pdf',
+      sourceStorageKey: 'uploads/user/pdf-1.pdf',
+      sourceFileId: 'pdf-1',
+      pipelineVersion: 1,
+      chunkIndex: 1,
+      chunkCount: 1,
+      pageStart: 1,
+      pageEnd: 50,
+      chunkSizePages: 50,
+      artifact: {
+        source: 's3',
+        storageKey: 'ocr/pages-1-50.pdf',
+        filepath: `https://cdn.example/ocr/pages-1-50.pdf?Expires=${now / 1000 + 21600}`,
+        filename: 'pages-1-50.pdf',
+        bytes: 100,
+        contentType: 'application/pdf',
+      },
+    };
+    const repository = {
+      findBySourcePdfKey: jest.fn(async () => [record]),
+      upsert: jest.fn(),
+      compareAndSetArtifactFilepath: jest.fn(async ({ filepath }) => filepath),
+    };
+    const storage = {
+      source: 's3' as const,
+      exists: jest.fn(async () => false),
+      saveBuffer: jest.fn(),
+      getDownloadUrl: jest.fn(),
+    };
+
+    await expect(
+      loadExistingPdfChunkArtifacts({
+        sourcePdfKey: record.sourcePdfKey,
+        sourceStorageKey: record.sourceStorageKey,
+        sourceFileId: record.sourceFileId,
+        pageRanges: [{ pageStart: 1, pageEnd: 50 }],
+        repository,
+        storage,
+        now,
+      }),
+    ).rejects.toThrow('OCR artifact object is missing for 1:50');
+    expect(storage.getDownloadUrl).not.toHaveBeenCalled();
   });
 
   it('updates reused legacy parent metadata when committing a new partial split', async () => {

@@ -139,23 +139,54 @@ describe('delegate_ocr', () => {
   it('rejects non-positive or inverted page ranges at the public tool seam', () => {
     expect(() =>
       delegateOcrArgsSchema.parse({
-        fileKeys: ['file:pdf-1'],
-        pageRanges: [{ pageStart: 0, pageEnd: 1 }],
+        files: [
+          { fileKey: 'file:pdf-1', pageRanges: [{ pageStart: 0, pageEnd: 1 }] },
+        ],
       }),
     ).toThrow();
     expect(() =>
       delegateOcrArgsSchema.parse({
-        fileKeys: ['file:pdf-1'],
-        pageRanges: [{ pageStart: 3, pageEnd: 2 }],
+        files: [
+          { fileKey: 'file:pdf-1', pageRanges: [{ pageStart: 3, pageEnd: 2 }] },
+        ],
       }),
     ).toThrow('pageEnd must be greater than or equal to pageStart');
+  });
+
+  it('groups page ranges under each file at the public tool seam', () => {
+    expect(
+      delegateOcrArgsSchema.parse({
+        files: [
+          {
+            fileKey: 'file:pdf-1',
+            pageRanges: [
+              { pageStart: 1, pageEnd: 25 },
+              { pageStart: 26, pageEnd: 50 },
+            ],
+          },
+          { fileKey: 'file:image-1' },
+        ],
+      }),
+    ).toEqual({
+      files: [
+        {
+          fileKey: 'file:pdf-1',
+          pageRanges: [
+            { pageStart: 1, pageEnd: 25 },
+            { pageStart: 26, pageEnd: 50 },
+          ],
+        },
+        { fileKey: 'file:image-1' },
+      ],
+    });
+    expect(delegateOcrArgsSchema.safeParse({ fileKeys: ['file:pdf-1'] }).success).toBe(false);
   });
 
   it('sends only the exact current turn and omits older provider history', async () => {
     const invokeModel = jest.fn(async () => '已完成。');
 
     await delegateOcr({
-      fileKeys: ['file:image-1'],
+      files: [{ fileKey: 'file:image-1' }],
       history: [new HumanMessage('舊問題'), new AIMessage('舊回答')],
       currentUserTurn: '重新核對第 35 頁孔數',
       modelOptions,
@@ -175,9 +206,11 @@ describe('delegate_ocr', () => {
     expect(JSON.stringify(messages)).not.toContain('舊回答');
   });
 
-  it('uses the current-turn page range over conflicting tool ranges and batches exact artifacts', async () => {
-    const prepareBatches = jest.fn(async ({ pageRanges }) => {
-      expect(pageRanges).toEqual([{ pageStart: 35, pageEnd: 35 }]);
+  it('passes the selected file page ranges to exact artifact batching', async () => {
+    const prepareBatches = jest.fn(async ({ fileInputs }) => {
+      expect(fileInputs).toEqual([
+        { fileKey: 'file:pdf-1', pageRanges: [{ pageStart: 35, pageEnd: 35 }] },
+      ]);
       return [
         {
           files: [
@@ -197,8 +230,9 @@ describe('delegate_ocr', () => {
     const invokeModel = jest.fn(async () => '孔數為 4。');
 
     await delegateOcr({
-      fileKeys: ['file:pdf-1'],
-      pageRanges: [{ pageStart: 1, pageEnd: 50 }],
+      files: [
+        { fileKey: 'file:pdf-1', pageRanges: [{ pageStart: 35, pageEnd: 35 }] },
+      ],
       currentUserTurn: '重新核對第 35 頁孔數',
       history: [new HumanMessage('舊問題')],
       modelOptions,
@@ -236,7 +270,7 @@ describe('delegate_ocr', () => {
 
     await expect(
       delegateOcr({
-        fileKeys: ['file:image-1', 'file:pdf-1'],
+        files: [{ fileKey: 'file:image-1' }, { fileKey: 'file:pdf-1' }],
         currentUserTurn: '重新確認圖面',
         modelOptions,
         ocrRulesText: 'OCR rules',
@@ -270,7 +304,7 @@ describe('delegate_ocr', () => {
 
     await expect(
       delegateOcr({
-        fileKeys: ['file:image-1'],
+        files: [{ fileKey: 'file:image-1' }],
         currentUserTurn: '重新確認圖面',
         modelOptions,
         ocrRulesText: 'OCR rules',
@@ -317,7 +351,7 @@ describe('delegate_ocr', () => {
 
     await expect(
       delegateOcr({
-        fileKeys: ['file:pdf-1'],
+        files: [{ fileKey: 'file:pdf-1' }],
         currentUserTurn: '重新核對整份 106 頁 PDF',
         history: [],
         modelOptions,
@@ -355,7 +389,7 @@ describe('delegate_ocr', () => {
     });
 
     await delegateOcr({
-      fileKeys: ['file:pdf-1'],
+      files: [{ fileKey: 'file:pdf-1' }],
       currentUserTurn: '重新核對圖面',
       history: [],
       modelOptions,
@@ -413,33 +447,36 @@ describe('delegate_ocr', () => {
   it('parses common model-generated file key variants without attachment metadata', () => {
     const fileId = '676b6f2c-0361-412a-92f0-92711c94ffef';
 
-    expect(
-      resolveDelegateOcrFileKeys(
-        [
-          `file:${fileId}.pdf`,
-          `files:${fileId}.pdf`,
-          `file_id:${fileId}.pdf`,
-          `<file:${fileId}.pdf>`,
-          `${fileId}.pdf`,
-        ],
-        undefined,
-      ),
-    ).toEqual([`file:${fileId}`]);
+    for (const key of [
+      `file:${fileId}.pdf`,
+      `files:${fileId}.pdf`,
+      `file_id:${fileId}.pdf`,
+      `<file:${fileId}.pdf>`,
+      `${fileId}.pdf`,
+    ]) {
+      expect(resolveDelegateOcrFileKeys([key], undefined)).toEqual([`file:${fileId}`]);
+    }
     expect(resolveDelegateOcrFileKeys(['file:drawing-1.pdf'], undefined)).toEqual([
       'file:drawing-1',
     ]);
   });
 
-  it('resolves multiple file keys in order and deduplicates aliases', () => {
+  it('resolves multiple file keys in order and rejects duplicate aliases', () => {
     expect(
       resolveDelegateOcrFileKeys(
-        ['files:drawing-1.pdf', 'file:drawing-2.png', 'filename:A.pdf'],
+        ['files:drawing-1.pdf', 'file:drawing-2.png'],
         [
           { fileId: 'drawing-1', filename: 'A.pdf' },
           { fileId: 'drawing-2', filename: 'B.png' },
         ],
       ),
     ).toEqual(['file:drawing-1', 'file:drawing-2']);
+    expect(() =>
+      resolveDelegateOcrFileKeys(
+        ['files:drawing-1.pdf', 'filename:A.pdf'],
+        [{ fileId: 'drawing-1', filename: 'A.pdf' }],
+      ),
+    ).toThrow('duplicate attachment file keys');
   });
 
   it('resolves generic PDF aliases only when one PDF attachment is available', () => {
@@ -448,12 +485,9 @@ describe('delegate_ocr', () => {
       { fileId: 'image-1', filename: 'drawing.png' },
     ];
 
-    expect(
-      resolveDelegateOcrFileKeys(
-        ['pdf', 'file:pdf', 'files:pdf', 'file_id:pdf', '<file:pdf>'],
-        availableFiles,
-      ),
-    ).toEqual(['file:pdf-1']);
+    for (const key of ['pdf', 'file:pdf', 'files:pdf', 'file_id:pdf', '<file:pdf>']) {
+      expect(resolveDelegateOcrFileKeys([key], availableFiles)).toEqual(['file:pdf-1']);
+    }
     expect(() =>
       resolveDelegateOcrFileKeys(
         ['file:pdf'],
@@ -495,7 +529,7 @@ describe('delegate_ocr', () => {
       invokeModel,
     });
 
-    await expect(execute({ fileKeys: ['file:pdf-1'] })).resolves.toBe(
+    await expect(execute({ files: [{ fileKey: 'file:pdf-1' }] })).resolves.toBe(
       '原始 PDF 已重新確認。',
     );
     expect(getOwnedFileRecords).toHaveBeenCalledWith({
@@ -535,7 +569,7 @@ describe('delegate_ocr', () => {
       invokeModel,
     });
 
-    await expect(execute({ fileKeys: [`${fileId}.pdf`] })).resolves.toBe(
+    await expect(execute({ files: [{ fileKey: `${fileId}.pdf` }] })).resolves.toBe(
       '已依原始圖面完成 Vision 判讀。',
     );
     expect(getOwnedFileRecords).toHaveBeenCalledWith({
@@ -545,7 +579,7 @@ describe('delegate_ocr', () => {
     expect(signStoredFile).toHaveBeenCalledWith(storedFile);
     expect(invokeModel).toHaveBeenCalledTimes(1);
 
-    await expect(execute({ fileKeys: [`files:${fileId}.pdf`] })).resolves.toBe(
+    await expect(execute({ files: [{ fileKey: `files:${fileId}.pdf` }] })).resolves.toBe(
       '已依原始圖面完成 Vision 判讀。',
     );
     expect(getOwnedFileRecords).toHaveBeenLastCalledWith({
@@ -553,7 +587,7 @@ describe('delegate_ocr', () => {
       $or: [{ file_id: { $in: [fileId] } }],
     });
 
-    await expect(execute({ fileKeys: [`file:${fileId}.pdf`] })).resolves.toBe(
+    await expect(execute({ files: [{ fileKey: `file:${fileId}.pdf` }] })).resolves.toBe(
       '已依原始圖面完成 Vision 判讀。',
     );
     expect(getOwnedFileRecords).toHaveBeenLastCalledWith({
@@ -561,7 +595,7 @@ describe('delegate_ocr', () => {
       $or: [{ file_id: { $in: [fileId] } }],
     });
 
-    await expect(execute({ fileKeys: ['file:pdf'] })).resolves.toBe(
+    await expect(execute({ files: [{ fileKey: 'file:pdf' }] })).resolves.toBe(
       '已依原始圖面完成 Vision 判讀。',
     );
     expect(getOwnedFileRecords).toHaveBeenLastCalledWith({
@@ -585,14 +619,14 @@ describe('delegate_ocr', () => {
 
     await expect(
       createExecute([{ fileId: 'file-1', filename: 'PL.pdf' }])({
-        fileKeys: ['unknown.pdf'],
+        files: [{ fileKey: 'unknown.pdf' }],
       }),
     ).rejects.toThrow('delegate_ocr could not resolve attachment file keys: unknown.pdf');
     await expect(
       createExecute([
         { fileId: 'file-1', filename: 'PL.pdf' },
         { fileId: 'file-2', filename: 'PL.pdf' },
-      ])({ fileKeys: ['PL.pdf'] }),
+      ])({ files: [{ fileKey: 'PL.pdf' }] }),
     ).rejects.toThrow('delegate_ocr attachment file key is ambiguous: PL.pdf');
   });
 
@@ -617,7 +651,7 @@ describe('delegate_ocr', () => {
       invokeModel,
     });
 
-    await expect(execute({ fileKeys: ['file:other'] })).rejects.toThrow(
+    await expect(execute({ files: [{ fileKey: 'file:other' }] })).rejects.toThrow(
       'delegate_ocr attachment file keys are not allowed: file:other',
     );
     expect(getOwnedFileRecords).not.toHaveBeenCalled();
@@ -639,7 +673,7 @@ describe('delegate_ocr', () => {
     const invokeModel = jest.fn(async () => '開槽連續邊長為 1,400mm。');
 
     const result = await delegateOcr({
-      fileKeys: ['file:image-1', 'file:pdf-1'],
+      files: [{ fileKey: 'file:image-1' }, { fileKey: 'file:pdf-1' }],
       history,
       modelOptions,
       ocrRulesText: 'OCR_RULE\nVISION_RULE\nOCR_MAIN_RULE',
@@ -680,7 +714,7 @@ describe('delegate_ocr', () => {
   it('rejects a missing or unowned file key before invoking the model', async () => {
     await expect(
       delegateOcr({
-        fileKeys: ['file:missing'],
+        files: [{ fileKey: 'file:missing' }],
         history: [new HumanMessage('重新解析')],
         modelOptions,
         ocrRulesText: 'OCR rules',
@@ -701,7 +735,7 @@ describe('delegate_ocr', () => {
 
     await expect(
       tool.invoke(
-        { fileKeys: ['file:image-1'] },
+        { files: [{ fileKey: 'file:image-1' }] },
         { toolCall: { id: 'call_delegate_1' } },
       ),
     ).resolves.toEqual(
@@ -713,13 +747,13 @@ describe('delegate_ocr', () => {
       }),
     );
     expect(execute).toHaveBeenNthCalledWith(1, {
-      fileKeys: ['file:image-1'],
+      files: [{ fileKey: 'file:image-1' }],
       providerToolCallId: 'call_delegate_1',
     });
 
     await expect(
       tool.invoke(
-        { fileKeys: ['file:image-1'] },
+        { files: [{ fileKey: 'file:image-1' }] },
         { toolCall: { id: 'call_delegate_2' } },
       ),
     ).rejects.toThrow('S3 signer failed');
@@ -742,7 +776,7 @@ describe('delegate_ocr', () => {
         tool_calls: [
           {
             name: delegateOcrToolName,
-            args: { fileKeys: ['file:image-1'] },
+            args: { files: [{ fileKey: 'file:image-1' }] },
             id,
           },
         ],
@@ -815,7 +849,7 @@ describe('delegate_ocr', () => {
       tool_calls: [
         {
           name: delegateOcrToolName,
-          args: { fileKeys: ['file:image-1'] },
+          args: { files: [{ fileKey: 'file:image-1' }] },
           id: 'call_abort',
         },
       ],
@@ -864,7 +898,7 @@ describe('delegate_ocr', () => {
       tool_calls: [
         {
           name: delegateOcrToolName,
-          args: { fileKeys: ['file:image-1'] },
+          args: { files: [{ fileKey: 'file:image-1' }] },
           id: 'call_tool_node',
         },
       ],

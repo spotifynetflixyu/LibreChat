@@ -52,14 +52,18 @@ export function isDelegateOcrStreamedArtifact(
   );
 }
 
-export interface DelegateOcrArgs {
-  fileKeys: string[];
-  pageRanges?: DelegateOcrPageRange[];
-}
-
 export interface DelegateOcrPageRange {
   pageStart: number;
   pageEnd: number;
+}
+
+export interface DelegateOcrFileInput {
+  fileKey: string;
+  pageRanges?: DelegateOcrPageRange[];
+}
+
+export interface DelegateOcrArgs {
+  files: DelegateOcrFileInput[];
 }
 
 const delegateOcrPageRangeSchema: z.ZodType<DelegateOcrPageRange> = z
@@ -71,15 +75,46 @@ const delegateOcrPageRangeSchema: z.ZodType<DelegateOcrPageRange> = z
     message: 'pageEnd must be greater than or equal to pageStart',
   });
 
+const delegateOcrPageRangesSchema = z
+  .array(delegateOcrPageRangeSchema)
+  .min(1)
+  .superRefine((ranges, context) => {
+    for (let index = 1; index < ranges.length; index += 1) {
+      const previous = ranges[index - 1]!;
+      const current = ranges[index]!;
+      if (current.pageStart < previous.pageStart) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'pageRanges must be sorted by pageStart',
+          path: [index, 'pageStart'],
+        });
+        continue;
+      }
+      if (current.pageStart <= previous.pageEnd) {
+        context.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'pageRanges must not overlap',
+          path: [index, 'pageStart'],
+        });
+      }
+    }
+  });
+
 export const delegateOcrArgsSchema: z.ZodType<DelegateOcrArgs> = z
   .object({
-    fileKeys: z
-      .array(z.string().trim().min(1))
+    files: z
+      .array(
+        z
+          .object({
+            fileKey: z.string().trim().min(1),
+            pageRanges: delegateOcrPageRangesSchema.optional(),
+          })
+          .strict(),
+      )
       .min(1)
       .describe(
-        'One or more attachment keys to inspect with Vision. Use `file:<file_id>`.',
+        'Files to inspect in order. PDF files require pageRanges; image pageRanges are ignored.',
       ),
-    pageRanges: z.array(delegateOcrPageRangeSchema).optional(),
   })
   .strict();
 
@@ -193,8 +228,8 @@ export interface DelegateOcrPreparedBatch {
 
 export interface PrepareDelegateOcrBatchesInput {
   files: readonly DelegateOcrFileRecord[];
+  fileInputs: readonly DelegateOcrFileInput[];
   storedFiles: readonly DelegateOcrStoredFileRecord[];
-  pageRanges?: readonly DelegateOcrPageRange[];
 }
 
 export type PrepareDelegateOcrBatches = (
@@ -213,10 +248,9 @@ export interface InvokeDelegateOcrModelInput {
 export type InvokeDelegateOcrModel = (input: InvokeDelegateOcrModelInput) => Promise<string>;
 
 export interface DelegateOcrInput {
-  fileKeys: readonly string[];
+  files: readonly DelegateOcrFileInput[];
   history?: readonly BaseMessage[];
   currentUserTurn?: string;
-  pageRanges?: readonly DelegateOcrPageRange[];
   modelOptions: OpenAIOAuthModelOptions;
   ocrRulesText: string;
   userId: string;
@@ -230,8 +264,7 @@ export interface DelegateOcrInput {
 }
 
 export interface DelegateOcrExecuteInput {
-  fileKeys: string[];
-  pageRanges?: DelegateOcrPageRange[];
+  files: DelegateOcrFileInput[];
   providerToolCallId?: string;
   onDelta?: DelegateOcrOnDelta;
 }
@@ -371,7 +404,10 @@ export function resolveDelegateOcrFileKeys(
   fileKeys: readonly string[],
   availableFiles: readonly DelegateOcrAvailableFile[] | undefined,
 ): string[] {
-  const requestedKeys = uniqueStrings(fileKeys);
+  const requestedKeys = fileKeys
+    .filter((fileKey): fileKey is string => typeof fileKey === 'string')
+    .map((fileKey) => fileKey.trim())
+    .filter(Boolean);
   const hasAvailableFiles = availableFiles !== undefined && availableFiles.length > 0;
 
   const fileIdsByAlias = new Map<string, Set<string>>();
@@ -463,7 +499,11 @@ export function resolveDelegateOcrFileKeys(
     );
   }
 
-  return uniqueStrings(resolvedKeys);
+  const uniqueResolved = new Set(resolvedKeys);
+  if (uniqueResolved.size !== resolvedKeys.length) {
+    throw new Error('delegate_ocr duplicate attachment file keys are not allowed');
+  }
+  return resolvedKeys;
 }
 
 export function buildDelegateOcrFileFilter(
@@ -795,21 +835,18 @@ function buildDelegateOcrMessages({
 
 export async function delegateOcr(input: DelegateOcrInput): Promise<string> {
   const currentUserTurn = getDelegateOcrCurrentTurn(input);
-  const explicitTurnRanges = parseDelegateOcrPageRangesFromTurn(currentUserTurn);
-  const pageRanges = normalizeDelegateOcrPageRanges(
-    explicitTurnRanges ?? input.pageRanges,
-  );
-  const parsed = delegateOcrArgsSchema.parse({ fileKeys: input.fileKeys, pageRanges });
+  const parsed = delegateOcrArgsSchema.parse({ files: input.files });
+  const fileKeys = parsed.files.map(({ fileKey }) => fileKey);
   const ownedFiles = await input.findOwnedFiles({
-    fileKeys: parsed.fileKeys,
+    fileKeys,
     userId: input.userId,
   });
-  const selectedFiles = orderSelectedFiles(parsed.fileKeys, ownedFiles);
+  const selectedFiles = orderSelectedFiles(fileKeys, ownedFiles);
   const batches = input.prepareBatches
     ? await input.prepareBatches({
         files: selectedFiles,
+        fileInputs: parsed.files,
         storedFiles: input.storedFiles ?? [],
-        pageRanges,
       })
     : [{ files: selectedFiles, signFile: input.signFile }];
   if (batches.length === 0) {
@@ -829,7 +866,7 @@ export async function delegateOcr(input: DelegateOcrInput): Promise<string> {
         })),
       );
     } catch (error) {
-      const rangeLabel = batch.range ?? pageRanges?.[answers.length];
+      const rangeLabel = batch.range;
       const suffix = rangeLabel ? ` for pages ${rangeLabel.pageStart}-${rangeLabel.pageEnd}` : '';
       throw new Error(
         `delegate_ocr failed${suffix}: ${error instanceof Error ? error.message : String(error)}`,
@@ -839,7 +876,7 @@ export async function delegateOcr(input: DelegateOcrInput): Promise<string> {
     let answer: string;
     let retriedExpiredUrl = false;
     const throwBatchFailure = (error: unknown): never => {
-      const rangeLabel = batch.range ?? pageRanges?.[answers.length];
+      const rangeLabel = batch.range;
       const suffix = rangeLabel ? ` for pages ${rangeLabel.pageStart}-${rangeLabel.pageEnd}` : '';
       throw new Error(
         `delegate_ocr failed${suffix}: ${error instanceof Error ? error.message : String(error)}`,
@@ -887,7 +924,7 @@ export async function delegateOcr(input: DelegateOcrInput): Promise<string> {
       }
     }
     if (answer.trim() === '') {
-      const rangeLabel = batch.range ?? pageRanges?.[answers.length];
+      const rangeLabel = batch.range;
       throw new Error(
         rangeLabel
           ? `delegate_ocr model returned an empty answer for pages ${rangeLabel.pageStart}-${rangeLabel.pageEnd}`
@@ -913,15 +950,17 @@ export function createDelegateOcrRequestExecute({
   prepareBatches,
   signal,
 }: CreateDelegateOcrRequestExecuteInput): DelegateOcrExecute {
-  return async ({ fileKeys, pageRanges, onDelta }) => {
-    if (!Array.isArray(fileKeys) || fileKeys.length === 0) {
-      throw new Error('delegate_ocr requires at least one attachment file key');
-    }
+  return async ({ files, onDelta }) => {
+    const parsed = delegateOcrArgsSchema.parse({ files });
     const storedFileById = new Map<string, DelegateOcrStoredFileRecord>();
-    const resolvedFileKeys = resolveDelegateOcrFileKeys(fileKeys, availableFiles);
-    if (resolvedFileKeys.length === 0) {
-      throw new Error('delegate_ocr requires at least one resolved attachment file key');
-    }
+    const resolvedFileKeys = resolveDelegateOcrFileKeys(
+      parsed.files.map(({ fileKey }) => fileKey),
+      availableFiles,
+    );
+    const resolvedFiles = parsed.files.map((file, index) => ({
+      ...file,
+      fileKey: resolvedFileKeys[index]!,
+    }));
     if (
       !isResolvedDelegateOcrPolicy(policy) ||
       policy.allowed !== true ||
@@ -938,10 +977,9 @@ export function createDelegateOcrRequestExecute({
     }
     const rulesText = await loadOcrRules();
     return delegateOcr({
-      fileKeys: resolvedFileKeys,
+      files: resolvedFiles,
       history,
       currentUserTurn,
-      pageRanges,
       modelOptions,
       ocrRulesText: rulesText,
       userId,
@@ -967,11 +1005,11 @@ export function createDelegateOcrRequestExecute({
         return signStoredFile(storedFile);
       },
       prepareBatches: prepareBatches
-        ? ({ files, pageRanges }) =>
+        ? ({ files, fileInputs }) =>
             prepareBatches({
               files,
+              fileInputs,
               storedFiles: [...storedFileById.values()],
-              pageRanges,
             })
         : undefined,
       invokeModel,
@@ -985,7 +1023,7 @@ export function getDelegateOcrToolDefinition(): LCTool {
   return {
     name: delegateOcrToolName,
     description:
-      'Use this tool only when you must independently reopen an original attached image or PDF with Vision to verify uncertain visual evidence. Do not call it when the user directly supplies or corrects a value, asks only to update or organize confirmed OCR/table data, or the request can be answered from confirmed data. Quote and pricing requests forbid this tool. Pass one or more relevant attachment keys as `file:<file_id>`.',
+      'Use this tool only when you must independently reopen original attached images or PDF chunks with Vision to verify uncertain visual evidence. Do not call it when the user directly supplies or corrects a value, asks only to update or organize confirmed OCR/table data, or the request can be answered from confirmed data. Quote and pricing requests forbid this tool. Pass one or more files in order, using only `file_key` and `page_ranges` shown in source attachment or OCR metadata; do not invent either value. Map `file_key` to `fileKey`. Every PDF requires its own non-empty `pageRanges`; multiple ranges are supported. Image `pageRanges` are ignored.',
     parameters: zodToJsonSchema(delegateOcrArgsSchema, {
       name: delegateOcrToolName,
       target: 'openApi3',
@@ -1046,8 +1084,7 @@ export function createDelegateOcrTool({
       try {
         const parsed = delegateOcrArgsSchema.parse(toolArguments);
         const answer = await execute({
-          fileKeys: parsed.fileKeys,
-          ...(parsed.pageRanges ? { pageRanges: parsed.pageRanges } : {}),
+          files: parsed.files,
           providerToolCallId,
           onDelta,
         });
