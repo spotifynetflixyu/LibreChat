@@ -348,6 +348,57 @@ describe('ContentParts integration: MCP image hoist and grouping', () => {
     );
   });
 
+  it('keeps an auto-expanded group open between completed and pending tool batches', () => {
+    const pendingContent = [makeMcpToolCall('t1', false), makeMcpToolCall('t2', false)];
+    const completedContent = [makeMcpToolCall('t1'), makeMcpToolCall('t2')];
+    const nextPendingContent = [...completedContent, makeMcpToolCall('t3', false)];
+    const settledContent = [...completedContent, makeMcpToolCall('t3')];
+
+    const { rerender } = render(
+      <RecoilRoot>
+        <ContentParts {...baseProps} isSubmitting content={pendingContent} />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Used 2 tools' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+
+    rerender(
+      <RecoilRoot>
+        <ContentParts {...baseProps} isSubmitting content={completedContent} />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Used 2 tools' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+
+    rerender(
+      <RecoilRoot>
+        <ContentParts {...baseProps} isSubmitting content={nextPendingContent} />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Used 3 tools' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+
+    rerender(
+      <RecoilRoot>
+        <ContentParts {...baseProps} content={settledContent} />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Used 3 tools' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+  });
+
   it('does not reuse fallback-index expansion state across message ids', () => {
     const content = [makeMcpToolCallWithoutId('first'), makeMcpToolCallWithoutId('second')];
 

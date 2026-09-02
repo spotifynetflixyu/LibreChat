@@ -22,11 +22,6 @@ jest.mock('react-i18next', () => ({
   useTranslation: () => ({ i18n: { language: 'en' } }),
 }));
 
-jest.mock('../CancelledIcon', () => ({
-  __esModule: true,
-  default: () => <span data-testid="cancelled-icon" />,
-}));
-
 const defaults = {
   phase: 'completed' as const,
   inProgressText: 'Running foo',
@@ -67,6 +62,20 @@ describe('ProgressText duration', () => {
   it('does not render on a cancelled card', () => {
     renderProgressText({ phase: 'cancelled', durationMs: 3500 });
     expect(screen.queryByText('· 3.5s')).not.toBeInTheDocument();
+  });
+
+  it('keeps the cancelled label visible beside a fixed-size icon', () => {
+    renderProgressText({ phase: 'cancelled', finishedText: 'Cancelled' });
+
+    const button = screen.getByRole('button');
+    const icon = button.querySelector('svg');
+
+    expect(screen.getByText('Cancelled')).toBeInTheDocument();
+    expect(icon).toHaveClass('size-4', 'shrink-0');
+    expect(icon).toHaveAttribute('aria-hidden', 'true');
+    expect(icon).not.toHaveClass('h-full');
+    expect(icon).not.toHaveClass('w-full');
+    expect(icon?.parentElement).toBe(button);
   });
 
   it('does not render on a failed card', () => {

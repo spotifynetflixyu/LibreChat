@@ -202,6 +202,26 @@ describe('ContentParts — interim skill cards', () => {
     );
   });
 
+  it('keeps the loading cursor while rendering Steel activity for an empty live response', () => {
+    mockSteelActivity.mockClear();
+    render(
+      <ContentParts
+        {...baseProps}
+        isSubmitting
+        isLatestMessage
+        persistedActivityEvents={[{ type: 'parse_status' }]}
+      />,
+    );
+
+    expect(screen.getByTestId('empty-text')).toBeInTheDocument();
+    expect(mockSteelActivity).toHaveBeenCalledWith(
+      expect.objectContaining({
+        persistedActivityEvents: expect.arrayContaining([{ type: 'parse_status' }]),
+      }),
+      {},
+    );
+  });
+
   it('renders a PendingSkillCall per manual skill on assistant messages', () => {
     render(<ContentParts {...baseProps} manualSkills={['brand-guidelines', 'pptx']} />);
     const cards = screen.getAllByTestId('pending-skill-call');

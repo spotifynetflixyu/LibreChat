@@ -209,7 +209,12 @@ function getTargetMessageIds(
   }
 
   const currentResponseId = submission.initialResponse?.messageId;
-  if (!event.messageId || event.source === 'assistant_markdown') {
+  if (
+    !event.messageId ||
+    event.source === 'assistant_markdown' ||
+    event.source === 'ocr_preprocessing' ||
+    event.source === 'paddleocr_preflight'
+  ) {
     if (currentResponseId) {
       ids.add(currentResponseId);
     }

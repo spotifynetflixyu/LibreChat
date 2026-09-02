@@ -182,6 +182,49 @@ describe('useSteelEventHandler', () => {
     ]);
   });
 
+  it('mirrors OCR preprocessing activity under the current assistant response id', () => {
+    const { result } = renderHook(
+      () => {
+        const steelEventHandler = useSteelEventHandler();
+        const eventActivity = useRecoilValue(steelNativeActivityByMessageId('assistant-actual'));
+        const currentActivity = useRecoilValue(
+          steelNativeActivityByMessageId('assistant-preliminary_'),
+        );
+        return { currentActivity, eventActivity, steelEventHandler };
+      },
+      { wrapper: RecoilRoot },
+    );
+
+    act(() => {
+      result.current.steelEventHandler(
+        {
+          event: 'steel_event',
+          data: {
+            type: 'parse_status',
+            source: 'ocr_preprocessing',
+            conversationId: 'conversation-1',
+            requestId: 'request-1',
+            messageId: 'assistant-actual',
+            message: 'Loaded saved PaddleOCR (chunk 1/1) (file:file-a)',
+            parseStatus: 'partial',
+          },
+        },
+        createSubmission('assistant-preliminary_'),
+      );
+    });
+
+    expect(result.current.eventActivity).toHaveLength(1);
+    expect(result.current.currentActivity).toEqual([
+      expect.objectContaining({
+        type: 'parse_status',
+        source: 'ocr_preprocessing',
+        messageId: 'assistant-actual',
+        message: 'Loaded saved PaddleOCR (chunk 1/1) (file:file-a)',
+        parseStatus: 'partial',
+      }),
+    ]);
+  });
+
   it('falls back to the current assistant response for tool-result events without message id', () => {
     const { result } = renderHook(() => useHarness('assistant-live'), {
       wrapper: RecoilRoot,
