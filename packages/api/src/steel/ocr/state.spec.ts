@@ -182,12 +182,16 @@ describe('Steel delegate OCR state', () => {
       service.clearCompletedDelegateClaim({
         conversationId: 'conversation-cas',
         claimToken: 'wrong-claim',
+        delegateOcrIndex: 1,
+        executionLeaseToken: 'lease-cas',
       }),
     ).resolves.toBeNull();
     await expect(
       service.clearCompletedDelegateClaim({
         conversationId: 'conversation-cas',
         claimToken: 'claim-cas',
+        delegateOcrIndex: 1,
+        executionLeaseToken: 'lease-cas',
       }),
     ).resolves.toEqual(expect.objectContaining({ currentOcrResultMarkdown: 'current' }));
     await service.claimNewDelegateOcrIndex({
@@ -274,6 +278,222 @@ describe('Steel delegate OCR state', () => {
         now: new Date(now.getTime() + 1001),
       }),
     ).resolves.toEqual(expect.objectContaining({ executionLeaseToken: 'lease-2' }));
+  });
+
+  it('takes over resumable leases with compare-and-set fencing', async () => {
+    const service = createSteelDelegateOcrStateService(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const conversationId = 'conversation-resume-cas';
+    const triggeringMessageId = 'message-resume-cas';
+    const claimToken = 'claim-resume-cas';
+    await service.claimNewDelegateOcrIndex({
+      conversationId,
+      triggeringMessageId,
+      claimToken,
+    });
+    await service.materializeDelegateOcrRun({
+      conversationId,
+      delegateOcrIndex: 1,
+      claimToken,
+      triggeringMessageId,
+      toolParameters: {},
+      files: [],
+    });
+    const initialLease = await service.acquireDelegateExecutionLease({
+      claimToken,
+      leaseToken: 'lease-resume-old',
+    });
+    expect(initialLease?.executionLeaseToken).toBe('lease-resume-old');
+    await State.updateOne(
+      { conversationId },
+      { $set: { 'activeDelegateClaim.executionLeaseToken': 'lease-state-stale' } },
+    );
+
+    const differentMessage = await service.acquireDelegateExecutionLease({
+      claimToken,
+      leaseToken: 'lease-resume-wrong-message',
+      expectedConversationId: conversationId,
+      expectedDelegateOcrIndex: 1,
+      expectedTriggeringMessageId: 'message-other',
+      expectedLeaseToken: 'lease-resume-old',
+    });
+    expect(differentMessage).toBeUndefined();
+
+    const takeover = await service.acquireDelegateExecutionLease({
+      claimToken,
+      leaseToken: 'lease-resume-new',
+      expectedConversationId: conversationId,
+      expectedDelegateOcrIndex: 1,
+      expectedTriggeringMessageId: triggeringMessageId,
+      expectedLeaseToken: 'lease-resume-old',
+    });
+    expect(takeover?.executionLeaseToken).toBe('lease-resume-new');
+    await expect(service.readActiveDelegateClaim(conversationId)).resolves.toEqual(
+      expect.objectContaining({ executionLeaseToken: 'lease-resume-new' }),
+    );
+    await expect(
+      service.acquireDelegateExecutionLease({
+        claimToken,
+        leaseToken: 'lease-resume-second',
+        expectedConversationId: conversationId,
+        expectedDelegateOcrIndex: 1,
+        expectedTriggeringMessageId: triggeringMessageId,
+        expectedLeaseToken: 'lease-resume-old',
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      service.transitionDelegateOcrRun({
+        claimToken,
+        executionLeaseToken: 'lease-resume-old',
+        status: 'completed',
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      service.upsertCurrentOcrResult({
+        conversationId,
+        claimToken,
+        executionLeaseToken: 'lease-resume-old',
+        generationId: 'generation-old',
+        attemptNumber: 1,
+        markdown: 'stale result',
+        delegateOcrIndex: 1,
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      service.clearCompletedDelegateClaim({
+        conversationId,
+        claimToken,
+        delegateOcrIndex: 1,
+        executionLeaseToken: 'lease-resume-old',
+      }),
+    ).resolves.toBeNull();
+    await expect(service.readActiveDelegateClaim(conversationId)).resolves.toEqual(
+      expect.objectContaining({ executionLeaseToken: 'lease-resume-new' }),
+    );
+
+    await expect(
+      service.transitionDelegateOcrRun({
+        claimToken,
+        executionLeaseToken: 'lease-resume-new',
+        status: 'agent_failed',
+      }),
+    ).resolves.toEqual(expect.objectContaining({ status: 'agent_failed' }));
+    await State.updateOne(
+      { conversationId },
+      { $unset: { 'activeDelegateClaim.executionLeaseToken': 1 } },
+    );
+    await expect(
+      service.acquireDelegateExecutionLease({
+        claimToken,
+        leaseToken: 'lease-resume-final',
+        expectedConversationId: conversationId,
+        expectedDelegateOcrIndex: 1,
+        expectedTriggeringMessageId: triggeringMessageId,
+        expectedLeaseToken: 'lease-resume-new',
+      }),
+    ).resolves.toEqual(expect.objectContaining({ executionLeaseToken: 'lease-resume-final' }));
+    await expect(service.readActiveDelegateClaim(conversationId)).resolves.toEqual(
+      expect.objectContaining({ executionLeaseToken: 'lease-resume-final' }),
+    );
+  });
+
+  it('matches missing and explicit null lease tokens, but never reclaims terminal runs', async () => {
+    const service = createSteelDelegateOcrStateService(mongoose);
+    const Run = createSteelDelegateOcrRunModel(mongoose);
+    const createRun = async (
+      suffix: string,
+      status?: 'completed' | 'superseded' | 'save_failed',
+    ) => {
+      const conversationId = `conversation-null-cas-${suffix}`;
+      const triggeringMessageId = `message-null-cas-${suffix}`;
+      const claimToken = `claim-null-cas-${suffix}`;
+      await service.claimNewDelegateOcrIndex({ conversationId, triggeringMessageId, claimToken });
+      await service.materializeDelegateOcrRun({
+        conversationId,
+        delegateOcrIndex: 1,
+        claimToken,
+        triggeringMessageId,
+        toolParameters: {},
+        files: [],
+      });
+      if (status) {
+        await service.transitionDelegateOcrRun({ claimToken, status });
+      }
+      return { conversationId, triggeringMessageId, claimToken };
+    };
+
+    const missing = await createRun('missing');
+    await expect(
+      service.acquireDelegateExecutionLease({
+        claimToken: missing.claimToken,
+        leaseToken: 'lease-null-missing',
+        expectedConversationId: missing.conversationId,
+        expectedDelegateOcrIndex: 1,
+        expectedTriggeringMessageId: missing.triggeringMessageId,
+        expectedLeaseToken: null,
+      }),
+    ).resolves.toEqual(expect.objectContaining({ executionLeaseToken: 'lease-null-missing' }));
+
+    const explicitNull = await createRun('explicit');
+    await Run.updateOne(
+      { claimToken: explicitNull.claimToken },
+      { $set: { executionLeaseToken: null } },
+    );
+    await expect(
+      service.acquireDelegateExecutionLease({
+        claimToken: explicitNull.claimToken,
+        leaseToken: 'lease-null-explicit',
+        expectedConversationId: explicitNull.conversationId,
+        expectedDelegateOcrIndex: 1,
+        expectedTriggeringMessageId: explicitNull.triggeringMessageId,
+        expectedLeaseToken: null,
+      }),
+    ).resolves.toEqual(expect.objectContaining({ executionLeaseToken: 'lease-null-explicit' }));
+
+    const terminal = await createRun('terminal', 'completed');
+    await expect(
+      service.acquireDelegateExecutionLease({
+        claimToken: terminal.claimToken,
+        leaseToken: 'lease-terminal',
+        expectedConversationId: terminal.conversationId,
+        expectedDelegateOcrIndex: 1,
+        expectedTriggeringMessageId: terminal.triggeringMessageId,
+        expectedLeaseToken: null,
+      }),
+    ).resolves.toBeUndefined();
+
+    const superseded = await createRun('superseded', 'superseded');
+    await expect(
+      service.acquireDelegateExecutionLease({
+        claimToken: superseded.claimToken,
+        leaseToken: 'lease-superseded',
+        expectedConversationId: superseded.conversationId,
+        expectedDelegateOcrIndex: 1,
+        expectedTriggeringMessageId: superseded.triggeringMessageId,
+        expectedLeaseToken: null,
+      }),
+    ).resolves.toBeUndefined();
+
+    const failed = await createRun('failed', 'save_failed');
+    await expect(
+      service.acquireDelegateExecutionLease({
+        claimToken: failed.claimToken,
+        leaseToken: 'lease-save-failed',
+        expectedConversationId: failed.conversationId,
+        expectedDelegateOcrIndex: 1,
+        expectedTriggeringMessageId: failed.triggeringMessageId,
+        expectedLeaseToken: null,
+      }),
+    ).resolves.toEqual(expect.objectContaining({ executionLeaseToken: 'lease-save-failed' }));
+    await expect(service.findResumableDelegateOcrRun(failed)).resolves.toEqual(
+      expect.objectContaining({ status: 'save_failed' }),
+    );
+    await expect(
+      service.findResumableDelegateOcrRun({
+        conversationId: failed.conversationId,
+        triggeringMessageId: 'message-different',
+      }),
+    ).resolves.toBeNull();
   });
 
   it('creates expected collections and indexes', () => {

@@ -26,6 +26,8 @@ const mockRunSteelPaddleOcrPreflight = jest.fn().mockResolvedValue({
   currentPaddleOcrResults: [],
   currentOcrMarkdownResults: [],
 });
+const mockPrepareDelegateOcrResume = jest.fn();
+const mockExecuteDelegateOcrResume = jest.fn();
 jest.mock('~/server/services/ToolService', () => ({
   resolveDelegateOcrPolicyForRequest: jest.fn().mockResolvedValue({
     resolved: true,
@@ -33,6 +35,8 @@ jest.mock('~/server/services/ToolService', () => ({
     allowedFileKeys: [],
   }),
   runSteelPaddleOcrPreflight: (...args) => mockRunSteelPaddleOcrPreflight(...args),
+  prepareDelegateOcrResume: (...args) => mockPrepareDelegateOcrResume(...args),
+  executeDelegateOcrResume: (...args) => mockExecuteDelegateOcrResume(...args),
 }));
 const { GenerationJobManager, createStreamServices } = require('@librechat/api');
 const BaseClient = require('~/app/clients/BaseClient');
@@ -2103,6 +2107,120 @@ describe('AgentClient - titleConvo', () => {
       expect(JSON.stringify(providerHistory.at(-1).content)).toContain(
         '請重新確認開槽連續邊長',
       );
+    });
+
+    it('executes a prepared delegate OCR resume directly without parent processStream', async () => {
+      const processStream = jest.fn().mockResolvedValue(undefined);
+      const run = {
+        Graph: undefined,
+        getCalibrationRatio: jest.fn(() => 0),
+        processStream,
+      };
+      const resume = {
+        run: { claimToken: 'claim-resume', delegateOcrIndex: 2 },
+        files: [{ fileKey: 'filename:PL.pdf', pageRanges: [{ pageStart: 3, pageEnd: 7 }] }],
+      };
+      mockCreateRun.mockResolvedValueOnce(run);
+      mockPrepareDelegateOcrResume.mockResolvedValueOnce(resume);
+      mockExecuteDelegateOcrResume.mockImplementationOnce(async ({ onDelta }) => {
+        await onDelta('resumed OCR markdown');
+        return 'resumed OCR markdown';
+      });
+      mockRunSteelPaddleOcrPreflight.mockClear();
+      mockReq.steelNativeContext = {
+        delegateOcrContext: {},
+      };
+      client.options.agent.tools = ['delegate_ocr', 'search_price_candidates'];
+      client.options.agent.toolDefinitions = [
+        { name: 'delegate_ocr' },
+        { name: 'search_price_candidates' },
+      ];
+      client.options.agent.toolRegistry = new Map([
+        ['delegate_ocr', { name: 'delegate_ocr' }],
+        ['search_price_candidates', { name: 'search_price_candidates' }],
+      ]);
+      client.useMemory = jest.fn().mockResolvedValue(undefined);
+      client.contentParts = [];
+      client.stepMap = new Map();
+      client.options.eventHandlers = {};
+      client.recordCollectedUsage = jest.fn().mockResolvedValue(undefined);
+
+      await client.buildMessages(
+        [
+          {
+            messageId: 'user-resume-1',
+            parentMessageId: null,
+            sender: 'User',
+            text: 'resume OCR',
+            isCreatedByUser: true,
+          },
+        ],
+        'user-resume-1',
+        {},
+      );
+
+      await client.chatCompletion({
+        payload: [{ role: 'user', content: 'resume OCR' }],
+        abortController: new AbortController(),
+      });
+
+      expect(mockPrepareDelegateOcrResume).toHaveBeenCalledWith({
+        req: mockReq,
+        conversationId: 'convo-123',
+        triggeringMessageId: 'user-resume-1',
+        userId: 'user-123',
+      });
+      expect(mockRunSteelPaddleOcrPreflight).not.toHaveBeenCalled();
+      expect(mockExecuteDelegateOcrResume).toHaveBeenCalledWith(
+        expect.objectContaining({ req: mockReq, resume, onDelta: expect.any(Function) }),
+      );
+      expect(processStream).not.toHaveBeenCalled();
+      const createRunArgs = mockCreateRun.mock.calls.at(-1)[0];
+      expect(createRunArgs.delegateOcrPolicy).toEqual({
+        resolved: true,
+        allowed: false,
+        allowedFileKeys: [],
+        reason: 'delegate_ocr_resume',
+      });
+      expect(createRunArgs.agents[0].tools).not.toContain('delegate_ocr');
+      expect(createRunArgs.agents[0].toolDefinitions.map(({ name }) => name)).not.toContain(
+        'delegate_ocr',
+      );
+      expect(createRunArgs.agents[0].toolRegistry.has('delegate_ocr')).toBe(false);
+      expect(client.contentParts).toEqual(
+        expect.arrayContaining([{ type: ContentTypes.TEXT, text: 'resumed OCR markdown' }]),
+      );
+    });
+
+    it('stops before parent run creation when delegate OCR resume preparation loses its CAS', async () => {
+      const processStream = jest.fn().mockResolvedValue(undefined);
+      mockCreateRun.mockClear();
+      mockPrepareDelegateOcrResume.mockRejectedValueOnce(
+        new Error('delegate_ocr resume execution lease is unavailable'),
+      );
+      mockRunSteelPaddleOcrPreflight.mockClear();
+      mockReq.steelNativeContext = { delegateOcrContext: {} };
+      client.useMemory = jest.fn().mockResolvedValue(undefined);
+
+      await expect(
+        client.buildMessages(
+          [
+            {
+              messageId: 'user-resume-1',
+              parentMessageId: null,
+              sender: 'User',
+              text: 'resume OCR',
+              isCreatedByUser: true,
+            },
+          ],
+          'user-resume-1',
+          {},
+        ),
+      ).rejects.toThrow('delegate_ocr resume execution lease is unavailable');
+
+      expect(mockRunSteelPaddleOcrPreflight).not.toHaveBeenCalled();
+      expect(mockCreateRun).not.toHaveBeenCalled();
+      expect(processStream).not.toHaveBeenCalled();
     });
   });
 

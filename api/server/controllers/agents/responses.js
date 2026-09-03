@@ -704,15 +704,25 @@ async function saveResponseOutput(
             resultPersistedToken: ocrFinalization.candidateToken,
           },
         });
-        await ocrFinalization.stateService.transitionDelegateOcrRun({
+        const completedRun = await ocrFinalization.stateService.transitionDelegateOcrRun({
           ...runInput,
           status: 'completed',
           currentStage: 'completed',
         });
-        await ocrFinalization.stateService.clearCompletedDelegateClaim({
+        if (!completedRun) {
+          throw new Error('delegate_ocr completion lease is stale');
+        }
+        const clearedClaim = await ocrFinalization.stateService.clearCompletedDelegateClaim({
           conversationId,
           claimToken: ocrFinalization.delegateRun.claimToken,
+          delegateOcrIndex: ocrFinalization.delegateRun.delegateOcrIndex,
+          ...(ocrFinalization.executionLeaseToken
+            ? { executionLeaseToken: ocrFinalization.executionLeaseToken }
+            : {}),
         });
+        if (!clearedClaim) {
+          throw new Error('delegate_ocr completed claim lease is stale');
+        }
         await ocrFinalization.stateService.updateDelegateFinalizationJournal({
           ...runInput,
           candidateToken: ocrFinalization.candidateToken,

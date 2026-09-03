@@ -13,8 +13,14 @@ const mockRecordCollectedUsage = jest
 const mockResponsesOcrStateService = {
   readConversationOcrState: jest.fn(),
   upsertCurrentOcrResult: jest.fn(),
+  setDelegateFinalizedCandidate: jest.fn(),
+  updateDelegateFinalizationJournal: jest.fn(),
+  transitionDelegateOcrRun: jest.fn(),
+  clearCompletedDelegateClaim: jest.fn(),
 };
 const mockCreateSteelOcrStateService = jest.fn(() => mockResponsesOcrStateService);
+const mockPrepareDelegateOcrResume = jest.fn();
+const mockExecuteDelegateOcrResume = jest.fn();
 const mockFinalizeOcrResponse = jest.fn();
 const mockGetBalanceConfig = jest.fn().mockReturnValue({ enabled: true });
 const mockGetTransactionsConfig = jest.fn().mockReturnValue({ enabled: true });
@@ -329,6 +335,8 @@ jest.mock('@librechat/api', () => ({
 jest.mock('~/server/services/ToolService', () => ({
   loadAgentTools: jest.fn().mockResolvedValue([]),
   loadToolsForExecution: jest.fn().mockResolvedValue([]),
+  prepareDelegateOcrResume: (...args) => mockPrepareDelegateOcrResume(...args),
+  executeDelegateOcrResume: (...args) => mockExecuteDelegateOcrResume(...args),
   resolveDelegateOcrPolicyForRequest: jest.fn().mockResolvedValue({
     resolved: true,
     allowed: false,
@@ -455,6 +463,10 @@ describe('createResponse controller', () => {
     mockCreateSteelOcrStateService.mockReturnValue(mockResponsesOcrStateService);
     mockResponsesOcrStateService.readConversationOcrState.mockResolvedValue(null);
     mockResponsesOcrStateService.upsertCurrentOcrResult.mockResolvedValue({});
+    mockResponsesOcrStateService.setDelegateFinalizedCandidate.mockResolvedValue({});
+    mockResponsesOcrStateService.updateDelegateFinalizationJournal.mockResolvedValue({});
+    mockResponsesOcrStateService.transitionDelegateOcrRun.mockResolvedValue({});
+    mockResponsesOcrStateService.clearCompletedDelegateClaim.mockResolvedValue({});
 
     const controller = require('../responses');
     createResponse = controller.createResponse;
@@ -1168,6 +1180,53 @@ describe('createResponse controller', () => {
       );
     });
 
+    it('does not clear a resumed delegate claim when the completion lease is stale', async () => {
+      const api = require('@librechat/api');
+      const raw = '## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| F1 | P1 |';
+      api.buildAggregatedResponse.mockReturnValueOnce({
+        id: 'resp_123',
+        status: 'completed',
+        output: [
+          {
+            id: 'msg_1',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: raw }],
+          },
+        ],
+        usage: { input_tokens: 100, output_tokens: 50, total_tokens: 150 },
+      });
+      req.steelNativeContext = {
+        delegateOcrContext: {
+          delegateOcrRun: {
+            claimToken: 'claim-stale',
+            delegateOcrIndex: 4,
+            agentAttemptNumber: 2,
+          },
+          delegateOcrExecutionLease: { executionLeaseToken: 'lease-stale' },
+        },
+      };
+      mockFinalizeOcrResponse.mockReturnValue({
+        ok: true,
+        finalResponse: raw,
+        ocrResultMarkdown: raw,
+      });
+      mockResponsesOcrStateService.transitionDelegateOcrRun.mockResolvedValueOnce(null);
+
+      await createResponse(req, res);
+
+      expect(mockResponsesOcrStateService.transitionDelegateOcrRun).toHaveBeenCalledWith({
+        claimToken: 'claim-stale',
+        executionLeaseToken: 'lease-stale',
+        status: 'completed',
+        currentStage: 'completed',
+      });
+      expect(mockResponsesOcrStateService.clearCompletedDelegateClaim).not.toHaveBeenCalled();
+      expect(api.sendResponsesErrorResponse).not.toHaveBeenCalled();
+      expect(res.json).toHaveBeenCalled();
+    });
+
     it('should call recordCollectedUsage after successful non-streaming completion', async () => {
       await createResponse(req, res);
 
@@ -1479,6 +1538,113 @@ describe('createResponse controller', () => {
       expect(req.steelNativeContext.delegateOcrContext.modelOptions).toEqual({
         model: 'gpt-5.6-luna',
       });
+    });
+
+    it('resumes delegate OCR directly without parent streaming or regular preflight', async () => {
+      const api = require('@librechat/api');
+      const resume = {
+        run: { claimToken: 'claim-resume', delegateOcrIndex: 2 },
+        files: [{ fileKey: 'filename:PL.pdf', pageRanges: [{ pageStart: 3, pageEnd: 7 }] }],
+      };
+      const hideDelegateOcr = (config, options = {}) => {
+        const next = { ...config };
+        if (options.delegateOcrPolicy?.allowed === false) {
+          next.tools = (config.tools ?? []).filter((tool) => tool !== 'delegate_ocr');
+          next.toolDefinitions = (config.toolDefinitions ?? []).filter(
+            (definition) => definition?.name !== 'delegate_ocr',
+          );
+          next.toolRegistry = new Map(
+            [...(config.toolRegistry ?? new Map())].filter(([name]) => name !== 'delegate_ocr'),
+          );
+        }
+        return next;
+      };
+      api.prepareSteelNativeToolConfig
+        .mockImplementationOnce(hideDelegateOcr)
+        .mockImplementationOnce(hideDelegateOcr)
+        .mockImplementationOnce(hideDelegateOcr);
+      api.initializeAgent.mockResolvedValueOnce({
+        id: 'agent-123',
+        model: 'claude-3',
+        model_parameters: {},
+        tools: ['delegate_ocr', 'search_price_candidates'],
+        toolDefinitions: [{ name: 'delegate_ocr' }, { name: 'search_price_candidates' }],
+        toolRegistry: new Map([
+          ['delegate_ocr', { name: 'delegate_ocr' }],
+          ['search_price_candidates', { name: 'search_price_candidates' }],
+        ]),
+        edges: [],
+        agentContextAttachments: [],
+      });
+      api.validateResponseRequest.mockReturnValueOnce({
+        request: {
+          model: 'agent-123',
+          input: 'resume OCR',
+          stream: false,
+        },
+      });
+      api.convertInputToMessages.mockReturnValueOnce([
+        { role: 'user', content: 'resume OCR', messageId: 'user-resume-1' },
+      ]);
+      mockPrepareDelegateOcrResume.mockResolvedValueOnce(resume);
+      mockExecuteDelegateOcrResume.mockResolvedValueOnce('resumed OCR markdown');
+
+      await createResponse(req, res);
+
+      expect(mockPrepareDelegateOcrResume).toHaveBeenCalledWith({
+        req,
+        conversationId: 'mock-uuid-456',
+        triggeringMessageId: 'user-resume-1',
+        userId: 'user-123',
+      });
+      expect(require('~/server/services/ToolService').runSteelPaddleOcrPreflight).not.toHaveBeenCalled();
+      expect(require('~/server/services/ToolService').resolveDelegateOcrPolicyForRequest).not.toHaveBeenCalled();
+      expect(mockExecuteDelegateOcrResume).toHaveBeenCalledWith(
+        expect.objectContaining({ req, res, resume, onDelta: expect.any(Function) }),
+      );
+      const run = await api.createRun.mock.results.at(-1).value;
+      expect(run.processStream).not.toHaveBeenCalled();
+      const createRunArgs = api.createRun.mock.calls.at(-1)[0];
+      expect(createRunArgs.delegateOcrPolicy).toEqual({
+        resolved: true,
+        allowed: false,
+        allowedFileKeys: [],
+        reason: 'delegate_ocr_resume',
+      });
+      expect(createRunArgs.agents[0].tools).not.toContain('delegate_ocr');
+      expect(createRunArgs.agents[0].toolDefinitions.map(({ name }) => name)).not.toContain(
+        'delegate_ocr',
+      );
+      expect(createRunArgs.agents[0].toolRegistry.has('delegate_ocr')).toBe(false);
+    });
+
+    it('fails closed on delegate OCR resume CAS loss without creating or streaming a parent run', async () => {
+      const api = require('@librechat/api');
+      const casError = new Error('delegate_ocr resume execution lease is unavailable');
+      mockPrepareDelegateOcrResume.mockRejectedValueOnce(casError);
+      api.validateResponseRequest.mockReturnValueOnce({
+        request: {
+          model: 'agent-123',
+          input: 'resume OCR',
+          stream: false,
+        },
+      });
+      api.convertInputToMessages.mockReturnValueOnce([
+        { role: 'user', content: 'resume OCR', messageId: 'user-resume-1' },
+      ]);
+
+      await createResponse(req, res);
+
+      expect(mockPrepareDelegateOcrResume).toHaveBeenCalled();
+      expect(api.createRun).not.toHaveBeenCalled();
+      expect(mockExecuteDelegateOcrResume).not.toHaveBeenCalled();
+      expect(res.json).not.toHaveBeenCalled();
+      expect(require('@librechat/api').sendResponsesErrorResponse).toHaveBeenCalledWith(
+        res,
+        500,
+        casError.message,
+        'server_error',
+      );
     });
 
     it('hydrates historical attachment references for previous_response_id policy authorization', async () => {

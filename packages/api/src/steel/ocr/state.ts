@@ -54,6 +54,10 @@ export interface MaterializeDelegateOcrRunInput {
 export interface AcquireDelegateExecutionLeaseInput {
   claimToken: string;
   leaseToken?: string;
+  expectedConversationId?: string;
+  expectedDelegateOcrIndex?: number;
+  expectedTriggeringMessageId?: string;
+  expectedLeaseToken?: string | null;
   now?: Date;
   leaseDurationMs?: number;
 }
@@ -96,6 +100,8 @@ export interface UpdateFinalizationJournalInput {
 export interface ClearCompletedClaimInput {
   conversationId: string;
   claimToken: string;
+  delegateOcrIndex: number;
+  executionLeaseToken?: string;
 }
 
 export interface SupersedeDelegateClaimInput {
@@ -351,8 +357,39 @@ export function createSteelDelegateOcrStateService(mongoose: Mongoose): SteelDel
     const executionLeaseToken = input.leaseToken ?? randomUUID();
     const leaseDurationMs = input.leaseDurationMs ?? 60_000;
     const executionLeaseExpiresAt = new Date(now.getTime() + leaseDurationMs);
-    const run = await Run.findOneAndUpdate(
-      {
+    const expectedLeaseTokenSupplied = Object.prototype.hasOwnProperty.call(
+      input,
+      'expectedLeaseToken',
+    );
+    let runFilter;
+    if (expectedLeaseTokenSupplied) {
+      if (
+        (input.expectedLeaseToken !== null && typeof input.expectedLeaseToken !== 'string') ||
+        typeof input.expectedConversationId !== 'string' ||
+        !Number.isSafeInteger(input.expectedDelegateOcrIndex) ||
+        typeof input.expectedTriggeringMessageId !== 'string'
+      ) {
+        return undefined;
+      }
+      runFilter = {
+        conversationId: input.expectedConversationId,
+        delegateOcrIndex: input.expectedDelegateOcrIndex,
+        claimToken: input.claimToken,
+        triggeringMessageId: input.expectedTriggeringMessageId,
+        status: {
+          $in: ['running', 'agent_running', 'finalizing', 'agent_failed', 'save_failed'],
+        },
+        ...(input.expectedLeaseToken === null
+          ? {
+              $or: [
+                { executionLeaseToken: { $exists: false } },
+                { executionLeaseToken: null },
+              ],
+            }
+          : { executionLeaseToken: input.expectedLeaseToken }),
+      };
+    } else {
+      runFilter = {
         claimToken: input.claimToken,
         status: { $nin: ['completed', 'superseded'] },
         $or: [
@@ -360,7 +397,10 @@ export function createSteelDelegateOcrStateService(mongoose: Mongoose): SteelDel
           { executionLeaseExpiresAt: { $exists: false } },
           { executionLeaseExpiresAt: { $lte: now } },
         ],
-      },
+      };
+    }
+    const run = await Run.findOneAndUpdate(
+      runFilter,
       { $set: { executionLeaseToken, executionLeaseExpiresAt } },
       { new: true },
     ).lean<ISteelDelegateOcrRun>();
@@ -372,6 +412,9 @@ export function createSteelDelegateOcrStateService(mongoose: Mongoose): SteelDel
         conversationId: run.conversationId,
         'activeDelegateClaim.claimToken': input.claimToken,
         'activeDelegateClaim.delegateOcrIndex': run.delegateOcrIndex,
+        ...(expectedLeaseTokenSupplied
+          ? { 'activeDelegateClaim.triggeringMessageId': input.expectedTriggeringMessageId }
+          : {}),
       },
       { $set: { 'activeDelegateClaim.executionLeaseToken': executionLeaseToken } },
       { new: true },
@@ -460,6 +503,10 @@ export function createSteelDelegateOcrStateService(mongoose: Mongoose): SteelDel
       {
         conversationId: input.conversationId,
         'activeDelegateClaim.claimToken': input.claimToken,
+        'activeDelegateClaim.delegateOcrIndex': input.delegateOcrIndex,
+        ...(input.executionLeaseToken
+          ? { 'activeDelegateClaim.executionLeaseToken': input.executionLeaseToken }
+          : {}),
       },
       {
         $unset: { activeDelegateClaim: 1 },

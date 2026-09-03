@@ -1476,6 +1476,10 @@ function createDelegateOcrExecute({ req, res, streamId = null, signal, agent }) 
             await stateService.clearCompletedDelegateClaim({
               conversationId,
               claimToken: activeRun.claimToken,
+              delegateOcrIndex: activeRun.delegateOcrIndex,
+              ...(activeRun.executionLeaseToken
+                ? { executionLeaseToken: activeRun.executionLeaseToken }
+                : {}),
             });
           }
         }
@@ -1514,6 +1518,7 @@ function createDelegateOcrExecute({ req, res, streamId = null, signal, agent }) 
             .clearCompletedDelegateClaim({
               conversationId,
               claimToken: claim.claimToken,
+              delegateOcrIndex: claim.delegateOcrIndex,
             })
             .catch(() => undefined);
           throw error;
@@ -2009,7 +2014,11 @@ async function prepareDelegateOcrResume({ req, conversationId, triggeringMessage
     typeof stateService.acquireDelegateExecutionLease === 'function'
       ? await stateService.acquireDelegateExecutionLease({
           claimToken: run.claimToken,
-          ...(run.executionLeaseToken ? { leaseToken: run.executionLeaseToken } : {}),
+          leaseToken: crypto.randomUUID(),
+          expectedConversationId: conversationId,
+          expectedDelegateOcrIndex: run.delegateOcrIndex,
+          expectedTriggeringMessageId: triggeringMessageId,
+          expectedLeaseToken: run.executionLeaseToken ?? null,
         })
       : undefined;
   if (typeof stateService.acquireDelegateExecutionLease === 'function' && !lease) {

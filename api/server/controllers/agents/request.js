@@ -2311,18 +2311,30 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
                   resultPersistedToken: ocrResponseFinalization.candidateToken,
                 },
               });
-              await ocrResponseFinalization.stateService.transitionDelegateOcrRun({
-                claimToken: ocrResponseFinalization.claimToken,
-                ...(ocrResponseFinalization.executionLeaseToken
-                  ? { executionLeaseToken: ocrResponseFinalization.executionLeaseToken }
-                  : {}),
-                status: 'completed',
-                currentStage: 'completed',
-              });
-              await ocrResponseFinalization.stateService.clearCompletedDelegateClaim({
-                conversationId,
-                claimToken: ocrResponseFinalization.claimToken,
-              });
+              const completedRun =
+                await ocrResponseFinalization.stateService.transitionDelegateOcrRun({
+                  claimToken: ocrResponseFinalization.claimToken,
+                  ...(ocrResponseFinalization.executionLeaseToken
+                    ? { executionLeaseToken: ocrResponseFinalization.executionLeaseToken }
+                    : {}),
+                  status: 'completed',
+                  currentStage: 'completed',
+                });
+              if (!completedRun) {
+                throw new Error('delegate_ocr completion lease is stale');
+              }
+              const clearedClaim =
+                await ocrResponseFinalization.stateService.clearCompletedDelegateClaim({
+                  conversationId,
+                  claimToken: ocrResponseFinalization.claimToken,
+                  delegateOcrIndex: ocrResponseFinalization.delegateOcrIndex,
+                  ...(ocrResponseFinalization.executionLeaseToken
+                    ? { executionLeaseToken: ocrResponseFinalization.executionLeaseToken }
+                    : {}),
+                });
+              if (!clearedClaim) {
+                throw new Error('delegate_ocr completed claim lease is stale');
+              }
               await ocrResponseFinalization.stateService.updateDelegateFinalizationJournal({
                 claimToken: ocrResponseFinalization.claimToken,
                 ...(ocrResponseFinalization.executionLeaseToken

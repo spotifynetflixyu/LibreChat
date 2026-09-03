@@ -1009,6 +1009,16 @@ describe('ToolService - Action Capability Gating', () => {
         conversationId: 'convo-1',
         triggeringMessageId: 'user-message-1',
       });
+      expect(stateService.acquireDelegateExecutionLease).toHaveBeenCalledWith({
+        claimToken: 'claim-4',
+        leaseToken: expect.any(String),
+        expectedConversationId: 'convo-1',
+        expectedDelegateOcrIndex: 4,
+        expectedTriggeringMessageId: 'user-message-1',
+        expectedLeaseToken: null,
+      });
+      const leaseToken = stateService.acquireDelegateExecutionLease.mock.calls[0][0].leaseToken;
+      expect(leaseToken).toEqual(expect.stringMatching(/^[0-9a-f-]{16,}$/i));
       expect(resume.files).toEqual(originalFiles);
       expect(resume.files[0]).toBe(originalFiles[0]);
       expect(mockGetFiles).toHaveBeenCalledWith(
@@ -1023,6 +1033,74 @@ describe('ToolService - Action Capability Gating', () => {
         reason: 'delegate_ocr_resume',
       });
       expect(req.steelNativeContext.delegateOcrContext.delegateOcrRun).toBe(run);
+    });
+
+    it('does not resume a run claimed by a different triggering message', async () => {
+      const stateService = {
+        findResumableDelegateOcrRun: jest.fn().mockResolvedValue(undefined),
+        acquireDelegateExecutionLease: jest.fn(),
+      };
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.steelNativeContext = {
+        delegateOcrContext: { delegateOcrStateService: stateService },
+      };
+
+      const resume = await prepareDelegateOcrResume({
+        req,
+        conversationId: 'convo-1',
+        triggeringMessageId: 'different-user-message',
+        userId: 'user_123',
+      });
+
+      expect(resume).toBeUndefined();
+      expect(stateService.findResumableDelegateOcrRun).toHaveBeenCalledWith({
+        conversationId: 'convo-1',
+        triggeringMessageId: 'different-user-message',
+      });
+      expect(stateService.acquireDelegateExecutionLease).not.toHaveBeenCalled();
+    });
+
+    it('fails closed when execution lease CAS loses the resume race', async () => {
+      const run = {
+        conversationId: 'convo-1',
+        triggeringMessageId: 'user-message-1',
+        delegateOcrIndex: 4,
+        claimToken: 'claim-4',
+        executionLeaseToken: 'prior-lease-4',
+        status: 'running',
+        toolParameters: {
+          files: [{ fileKey: 'filename:PL.pdf', pageRanges: [{ pageStart: 3, pageEnd: 7 }] }],
+        },
+        files: [{ fileId: 'file-1', filename: 'PL.pdf' }],
+      };
+      const stateService = {
+        findResumableDelegateOcrRun: jest.fn().mockResolvedValue(run),
+        acquireDelegateExecutionLease: jest.fn().mockResolvedValue(undefined),
+      };
+      const req = createMockReq([AgentCapabilities.tools]);
+      req.steelNativeContext = {
+        delegateOcrContext: { delegateOcrStateService: stateService },
+      };
+      mockGetFiles.mockResolvedValueOnce([
+        { file_id: 'file-1', user: 'user_123', filename: 'PL.pdf', type: 'application/pdf' },
+      ]);
+
+      await expect(
+        prepareDelegateOcrResume({
+          req,
+          conversationId: 'convo-1',
+          triggeringMessageId: 'user-message-1',
+          userId: 'user_123',
+        }),
+      ).rejects.toThrow('delegate_ocr resume execution lease is unavailable');
+      expect(stateService.acquireDelegateExecutionLease).toHaveBeenCalledWith({
+        claimToken: 'claim-4',
+        leaseToken: expect.any(String),
+        expectedConversationId: 'convo-1',
+        expectedDelegateOcrIndex: 4,
+        expectedTriggeringMessageId: 'user-message-1',
+        expectedLeaseToken: 'prior-lease-4',
+      });
     });
 
     it('re-emits a finalized candidate without requiring model options or rerunning AI', async () => {

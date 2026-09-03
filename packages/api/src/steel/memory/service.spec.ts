@@ -396,9 +396,43 @@ describe('Steel working-order memory writer', () => {
       checkpointTurnIndex: 1,
       file,
       chunk,
-      rawResultHash: 'hash-delegate',
-      data: { text: 'delegate OCR' },
+      rawResultHash: 'hash-delegate-1',
+      data: { text: 'delegate OCR 1' },
       delegateOcrIndex: 1,
+    });
+    await writer.captureDelegateOcrPreprocessingChunkMarkdown({
+      conversationId: 'conversation-delegate',
+      requestId: 'request-delegate-1',
+      turnIndex: 2,
+      checkpointTurnIndex: 2,
+      file,
+      chunk,
+      rawResultHash: 'hash-delegate-1',
+      ocrRuleVersion: 'rules-v1',
+      content: '| delegate |\n| --- |\n| 1 |',
+      delegateOcrIndex: 1,
+    });
+    await writer.captureDelegatePaddleOcrChunkResult({
+      conversationId: 'conversation-delegate',
+      turnIndex: 3,
+      checkpointTurnIndex: 3,
+      file,
+      chunk,
+      rawResultHash: 'hash-delegate-2',
+      data: { text: 'delegate OCR 2' },
+      delegateOcrIndex: 2,
+    });
+    await writer.captureDelegateOcrPreprocessingChunkMarkdown({
+      conversationId: 'conversation-delegate',
+      requestId: 'request-delegate-2',
+      turnIndex: 4,
+      checkpointTurnIndex: 4,
+      file,
+      chunk,
+      rawResultHash: 'hash-delegate-2',
+      ocrRuleVersion: 'rules-v1',
+      content: '| delegate |\n| --- |\n| 2 |',
+      delegateOcrIndex: 2,
     });
 
     await expect(
@@ -409,7 +443,20 @@ describe('Steel working-order memory writer', () => {
         ocrRuleVersion: 'rules-v1',
         delegateOcrIndex: 1,
       }),
-    ).resolves.toEqual(expect.objectContaining({ chunks: [expect.objectContaining({ rawSaved: true })] }));
+    ).resolves.toEqual(
+      expect.objectContaining({
+        chunks: [
+          expect.objectContaining({
+            rawSaved: true,
+            organizedSaved: true,
+            rawResultHash: 'hash-delegate-1',
+            rawOcrText: 'delegate OCR 1',
+            ocrRuleVersion: 'rules-v1',
+            organizedMarkdown: '| delegate |\n| --- |\n| 1 |',
+          }),
+        ],
+      }),
+    );
     await expect(
       writer.readDelegateOcrPreprocessingState({
         conversationId: 'conversation-delegate',
@@ -418,7 +465,20 @@ describe('Steel working-order memory writer', () => {
         ocrRuleVersion: 'rules-v1',
         delegateOcrIndex: 2,
       }),
-    ).resolves.toEqual(expect.objectContaining({ chunks: [] }));
+    ).resolves.toEqual(
+      expect.objectContaining({
+        chunks: [
+          expect.objectContaining({
+            rawSaved: true,
+            organizedSaved: true,
+            rawResultHash: 'hash-delegate-2',
+            rawOcrText: 'delegate OCR 2',
+            ocrRuleVersion: 'rules-v1',
+            organizedMarkdown: '| delegate |\n| --- |\n| 2 |',
+          }),
+        ],
+      }),
+    );
     await expect(
       writer.readOcrPreprocessingState({
         conversationId: 'conversation-delegate',
@@ -428,11 +488,53 @@ describe('Steel working-order memory writer', () => {
       }),
     ).resolves.toEqual(expect.objectContaining({ chunks: [] }));
 
-    const document = await SteelWorkingOrderMemory.findOne({
+    const documents = await SteelWorkingOrderMemory.find({
       conversationId: 'conversation-delegate',
     }).lean();
-    expect(document?.payload).toEqual(
-      expect.objectContaining({ preflightMode: 'delegate', delegateOcrIndex: 1 }),
+    expect(documents).toHaveLength(4);
+    expect(documents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          memoryKind: 'paddleocr_preflight',
+          checkpointTurnIndex: 1,
+          payload: expect.objectContaining({
+            preflightMode: 'delegate',
+            delegateOcrIndex: 1,
+            ocrPreprocessing: expect.objectContaining({ rawResultHash: 'hash-delegate-1' }),
+            result: { text: 'delegate OCR 1' },
+          }),
+        }),
+        expect.objectContaining({
+          memoryKind: 'ocr_extract',
+          checkpointTurnIndex: 2,
+          payload: expect.objectContaining({
+            preflightMode: 'delegate',
+            delegateOcrIndex: 1,
+            content: '| delegate |\n| --- |\n| 1 |',
+            ocrPreprocessing: expect.objectContaining({ rawResultHash: 'hash-delegate-1' }),
+          }),
+        }),
+        expect.objectContaining({
+          memoryKind: 'paddleocr_preflight',
+          checkpointTurnIndex: 3,
+          payload: expect.objectContaining({
+            preflightMode: 'delegate',
+            delegateOcrIndex: 2,
+            ocrPreprocessing: expect.objectContaining({ rawResultHash: 'hash-delegate-2' }),
+            result: { text: 'delegate OCR 2' },
+          }),
+        }),
+        expect.objectContaining({
+          memoryKind: 'ocr_extract',
+          checkpointTurnIndex: 4,
+          payload: expect.objectContaining({
+            preflightMode: 'delegate',
+            delegateOcrIndex: 2,
+            content: '| delegate |\n| --- |\n| 2 |',
+            ocrPreprocessing: expect.objectContaining({ rawResultHash: 'hash-delegate-2' }),
+          }),
+        }),
+      ]),
     );
   });
 });
