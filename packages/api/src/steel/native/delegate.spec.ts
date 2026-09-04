@@ -27,6 +27,19 @@ const modelOptions = {
   temperature: 0.2,
 };
 
+const poisonedModelOptions = {
+  ...modelOptions,
+  enableCodeInterpreter: true,
+  tools: [
+    { type: 'function', function: { name: 'search_customers' } },
+    { name: 'steel_search_customers' },
+    { type: 'function', function: { name: 'search_price_candidates' } },
+    { name: 'steel_search_price_candidates' },
+    { name: 'delegate_ocr' },
+    { type: 'function', function: { name: 'web_search' } },
+  ],
+};
+
 const files: DelegateOcrFileRecord[] = [
   {
     fileId: 'image-1',
@@ -273,7 +286,7 @@ describe('delegate_ocr', () => {
       delegateOcr({
         files: [{ fileKey: 'file:image-1' }, { fileKey: 'file:pdf-1' }],
         currentUserTurn: '重新確認圖面',
-        modelOptions,
+        modelOptions: poisonedModelOptions,
         ocrRulesText: 'OCR rules',
         userId: 'user-1',
         findOwnedFiles: async () => files,
@@ -284,6 +297,17 @@ describe('delegate_ocr', () => {
 
     expect(invokeModel).toHaveBeenCalledTimes(2);
     expect(signFile).toHaveBeenCalledTimes(4);
+    expect(invokeModel.mock.calls.map(([invocation]) => invocation.modelOptions)).toEqual([
+      {
+        ...poisonedModelOptions,
+        tools: [{ type: 'function', function: { name: 'web_search' } }],
+      },
+      {
+        ...poisonedModelOptions,
+        tools: [{ type: 'function', function: { name: 'web_search' } }],
+      },
+    ]);
+    expect(poisonedModelOptions.tools).toHaveLength(6);
     expect(JSON.stringify(invokeModel.mock.calls[0]?.[0]?.messages)).toContain(
       'https://old.example/image.png',
     );
@@ -692,7 +716,7 @@ describe('delegate_ocr', () => {
     expect(signFile).toHaveBeenCalledTimes(2);
 
     const invocation = invokeModel.mock.calls[0]?.[0];
-    expect(invocation?.modelOptions).toEqual(modelOptions);
+    expect(invocation?.modelOptions).toEqual({ ...modelOptions, tools: [] });
     expect(invocation?.messages[1]).toBeInstanceOf(HumanMessage);
     expect(invocation?.messages[1]?.content).toBe('請重新確認開槽連續邊長');
     expect(JSON.stringify(invocation?.messages)).not.toContain('existing provider system context');
@@ -942,7 +966,7 @@ describe('delegate_ocr', () => {
           { fileKey: 'file:image-1', pageRanges: [{ pageStart: 35, pageEnd: 36 }] },
         ],
         currentUserTurn: '請重新核對圖面',
-        modelOptions,
+        modelOptions: poisonedModelOptions,
         ocrRulesText: 'OCR rules',
         userId: 'user-1',
         findOwnedFiles: async () => [files[0]],
@@ -967,6 +991,21 @@ describe('delegate_ocr', () => {
     expect(packet).not.toContain('請重新核對圖面');
     expect(packet).not.toContain('https://fresh.example');
     expect(beginAttempt).toHaveBeenCalledTimes(3);
+    expect(invokeModel.mock.calls.map(([invocation]) => invocation.modelOptions)).toEqual([
+      {
+        ...poisonedModelOptions,
+        tools: [{ type: 'function', function: { name: 'web_search' } }],
+      },
+      {
+        ...poisonedModelOptions,
+        tools: [{ type: 'function', function: { name: 'web_search' } }],
+      },
+      {
+        ...poisonedModelOptions,
+        tools: [{ type: 'function', function: { name: 'web_search' } }],
+      },
+    ]);
+    expect(poisonedModelOptions.tools).toHaveLength(6);
   });
 
   it('suppresses stale delegate stream events through the injected dispatch gate', async () => {

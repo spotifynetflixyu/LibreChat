@@ -12,6 +12,7 @@ import {
 import type { LCTool, LCToolRegistry } from '@librechat/agents';
 import type { SteelNativeToolExecute } from './tools';
 import type { SteelToolJsonObject, SteelToolResult } from '../tools/results';
+import { getDelegateOcrToolDefinition } from './delegate';
 
 function getNames(tools: readonly LCTool[] | undefined): string[] {
   return tools?.map((tool) => tool.name) ?? [];
@@ -142,7 +143,7 @@ describe('Steel native tool adapter', () => {
       'steel_search_customers',
     ]);
     expect(result.toolDefinitions?.find(({ name }) => name === 'delegate_ocr')?.description).toBe(
-      'Use this tool only when you must independently reopen an original attached image or PDF with Vision to verify uncertain visual evidence. Do not call it when the user directly supplies or corrects a value, asks only to update or organize confirmed OCR/table data, or the request can be answered from confirmed data. Quote and pricing requests forbid this tool. Pass one or more relevant attachment keys as `file:<file_id>`.',
+      getDelegateOcrToolDefinition().description,
     );
     expect(getNativeSteelToolName('search_customers', result.nameMap)).toBe(
       'steel_search_customers',
@@ -640,7 +641,7 @@ describe('Steel native tool adapter', () => {
     expect(resolveSteelProviderToolName('web_search')).toBeUndefined();
   });
 
-  it('removes PaddleOCR while preserving Steel execution tools for OCR turns', () => {
+  it('removes PaddleOCR and Steel execution tools from OCR main agents', () => {
     const result = stripSteelToolsForOcrTurn({
       tools: [
         { name: 'search_customers' },
@@ -666,18 +667,12 @@ describe('Steel native tool adapter', () => {
     });
 
     expect(result.tools?.map((tool) => (typeof tool === 'string' ? tool : tool?.name))).toEqual([
-      'search_customers',
-      'search_price_candidates',
       'web_search',
     ]);
     expect(result.toolDefinitions?.map((tool) => tool.name)).toEqual([
-      'search_customers',
-      'search_price_candidates',
       'web_search',
     ]);
     expect([...result.toolRegistry?.keys() ?? []]).toEqual([
-      'search_customers',
-      'search_price_candidates',
       'web_search',
     ]);
   });
@@ -705,9 +700,9 @@ describe('Steel native tool adapter', () => {
       expected: ['search_customers', 'search_price_candidates', 'web_search'],
     },
     {
-      name: 'OCR turns remove PaddleOCR while retaining all Steel tools',
+      name: 'OCR main turns remove PaddleOCR and Steel tools',
       options: { ocrTurnActive: true },
-      expected: ['search_customers', 'search_price_candidates', 'web_search'],
+      expected: ['web_search'],
     },
     {
       name: 'preflight turns retain PaddleOCR and Steel tools',
@@ -725,7 +720,7 @@ describe('Steel native tool adapter', () => {
       ],
     },
     {
-      name: 'OCR preflight removes delegate despite an allowed attachment policy',
+      name: 'OCR main removes Steel tools despite an allowed delegate attachment policy',
       options: {
         ocrTurnActive: true,
         delegateOcrPolicy: {
@@ -734,7 +729,7 @@ describe('Steel native tool adapter', () => {
           allowedFileKeys: ['file:attachment-1'],
         },
       },
-      expected: ['search_customers', 'search_price_candidates', 'web_search'],
+      expected: ['web_search'],
     },
     {
       name: 'authorized attachment policy retains delegate OCR',

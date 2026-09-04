@@ -37,8 +37,10 @@ import {
   createDelegateOcrTool,
   delegateOcrStreamedArtifact,
   delegateOcrToolName,
+  runDelegateOcrWorkflow,
 } from './delegate';
 import { clearOpenAIOAuthCredentialInvalid, isOpenAIOAuthCredentialInvalid } from './auth-state';
+import { prepareSteelNativeToolConfig } from './tools';
 
 jest.mock('@langchain/core/callbacks/dispatch', () => {
   const actual = jest.requireActual<typeof import('@langchain/core/callbacks/dispatch')>(
@@ -193,6 +195,92 @@ function ocrMarkdown(): string {
 describe('OpenAI OAuth model adapter', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  it('keeps Code Interpreter but sends no Steel tools to the delegate merge provider', async () => {
+    const doStream: jest.Mock = jest.fn(async () =>
+      createStreamResult([
+        { type: 'text-start', id: 'delegate-text' },
+        { type: 'text-delta', id: 'delegate-text', delta: ocrMarkdown() },
+        { type: 'text-end', id: 'delegate-text' },
+        { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage: createUsage() },
+      ]),
+    );
+    const doGenerate = jest.fn(async () => createGenerateResult([{ type: 'text', text: 'parent' }]));
+    const parentOptions = {
+      ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+      model: 'gpt-5.5',
+      enableCodeInterpreter: true,
+      tools: ['search_customers', 'search_price_candidates', 'delegate_ocr', 'web_search'].map((name) => ({
+        type: 'function',
+        function: {
+          name,
+          description: name,
+          parameters: { type: 'object', properties: {} },
+        },
+      })) as BindToolsInput[],
+    };
+
+    const answer = await runDelegateOcrWorkflow({
+      files: [{ fileKey: 'file:pdf-1' }],
+      currentUserTurn: '重新核對圖面',
+      userId: 'user-1',
+      modelOptions: parentOptions,
+      ocrRulesText: 'Consolidate Organizer Markdown.',
+      findOwnedFiles: async () => [{
+        fileId: 'pdf-1',
+        filename: 'file.pdf',
+        filepath: 'uploads/file.pdf',
+        mediaType: 'application/pdf',
+      }],
+      signFile: async () => 'https://signed.example/file.pdf',
+      workflow: {
+        canonicalMapping: [{ sourceCode: 'F1', sourceFilename: 'file.pdf' }],
+        runPreprocessing: async () => ({ organizerMarkdown: ocrMarkdown() }),
+      },
+    });
+
+    expect(answer).toContain('## ocr_result');
+    expect(doStream).toHaveBeenCalledTimes(1);
+    const delegateCall = doStream.mock.calls[0][0] as LanguageModelV3CallOptions;
+    expect(delegateCall.tools).toEqual([
+      expect.objectContaining({ type: 'function', name: 'web_search' }),
+      expect.objectContaining({ type: 'provider', name: 'code_interpreter' }),
+    ]);
+    expect(JSON.stringify(delegateCall.prompt)).not.toContain('https://signed.example');
+    expect(JSON.stringify(delegateCall.prompt)).not.toContain('重新核對圖面');
+
+    await createOpenAIOAuthModel(parentOptions).invoke([new HumanMessage('報價')]);
+    expect(getGenerateCall(doGenerate).tools).toEqual([
+      expect.objectContaining({ type: 'function', name: 'search_customers' }),
+      expect.objectContaining({ type: 'function', name: 'search_price_candidates' }),
+      expect.objectContaining({ type: 'function', name: 'delegate_ocr' }),
+      expect.objectContaining({ type: 'function', name: 'web_search' }),
+      expect.objectContaining({ type: 'provider', name: 'code_interpreter' }),
+    ]);
+    expect(parentOptions.enableCodeInterpreter).toBe(true);
+    expect(parentOptions.tools).toHaveLength(4);
+  });
+
+  it('binds no Steel tools to the regular OCR main provider while retaining Code Interpreter', async () => {
+    const doGenerate = jest.fn(async () => createGenerateResult([{ type: 'text', text: ocrMarkdown() }]));
+    const toolDefinitions = [
+      'search_customers', 'steel_search_price_candidates', 'delegate_ocr', 'web_search',
+    ].map((name) => ({ name, description: name, parameters: { type: 'object' as const, properties: {} } }));
+    const visible = prepareSteelNativeToolConfig({ toolDefinitions }, { ocrTurnActive: true });
+    const model = createOpenAIOAuthModel({
+      ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
+      model: 'gpt-5.5',
+      enableCodeInterpreter: true,
+    });
+
+    await model.bindTools(visible.toolDefinitions).invoke(ocrMessages());
+
+    expect(getGenerateCall(doGenerate).tools).toEqual([
+      expect.objectContaining({ type: 'function', name: 'web_search' }),
+      expect.objectContaining({ type: 'provider', name: 'code_interpreter' }),
+    ]);
+    expect(toolDefinitions).toHaveLength(4);
   });
 
   it('uses the LibreChat credential loader for default provider credentials', async () => {
@@ -603,7 +691,7 @@ describe('OpenAI OAuth model adapter', () => {
         tool_calls: [
           {
             name: delegateOcrToolName,
-            args: { fileKeys: ['file:image-1'] },
+            args: { files: [{ fileKey: 'file:image-1' }] },
             id,
           },
         ],

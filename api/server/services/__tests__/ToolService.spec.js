@@ -5034,6 +5034,31 @@ describe('ToolService - Action Capability Gating', () => {
   });
 
   describe('loadToolsForExecution — action tool gating', () => {
+    it('does not load Steel tools for the regular OCR main agent', async () => {
+      const capabilities = [AgentCapabilities.tools];
+      const req = createMockReq(capabilities);
+      req.steelNativeContext = {
+        ocrTurnActive: true,
+        delegateOcrPolicy: { resolved: true, allowed: true, allowedFileKeys: ['file:drawing'] },
+      };
+      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
+      const toolNames = ['search_customers', 'search_price_candidates', 'delegate_ocr'];
+      const toolRegistry = new Map(toolNames.map((name) => [name, { name }]));
+
+      const result = await loadToolsForExecution({
+        req,
+        res: {},
+        agent: { id: 'ocr-agent', tools: toolNames },
+        toolNames,
+        toolRegistry,
+        actionsEnabled: false,
+      });
+
+      expect(result.loadedTools).toEqual([]);
+      expect(mockLoadToolsUtil).not.toHaveBeenCalled();
+      expect(toolRegistry.size).toBe(3);
+    });
+
     it('should preserve the remote-agent permission boundary for deferred tool loading', async () => {
       const capabilities = [AgentCapabilities.tools, AgentCapabilities.file_search];
       const req = createMockReq(capabilities);
@@ -5810,6 +5835,12 @@ describe('ToolService - Action Capability Gating', () => {
             authFilePath: '/tmp/auth.json',
             model: 'gpt-5.6-luna',
             reasoningEffort: 'high',
+            enableCodeInterpreter: true,
+            tools: ['search_customers', 'search_price_candidates', 'delegate_ocr'].map((name) => ({
+              name,
+              description: name,
+              parameters: { type: 'object', properties: {} },
+            })),
           },
           steelConversation: {
             requestId: 'response-1',
@@ -5917,8 +5948,9 @@ describe('ToolService - Action Capability Gating', () => {
       expect(JSON.stringify(nestedMessages)).toContain(freshUrl);
       expect(JSON.stringify(nestedMessages)).not.toContain(oldUrl);
       expect(mockCreateOpenAIOAuthModel).toHaveBeenCalledWith(
-        req.steelNativeContext.delegateOcrContext.modelOptions,
+        { ...req.steelNativeContext.delegateOcrContext.modelOptions, tools: [] },
       );
+      expect(req.steelNativeContext.delegateOcrContext.modelOptions.tools).toHaveLength(3);
       expect(result.configurable.delegateOcrStreaming).toBe(true);
     });
 
