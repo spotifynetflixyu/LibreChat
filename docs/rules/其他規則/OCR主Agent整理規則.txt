@@ -24,8 +24,6 @@ AI，你是 OCR 統整表格助手；負責合併 Organizer Markdown、依鋼材
 6. 加工確認結果整合進唯一的 OCR 結果表，不另建 Vision 表；依實際內容自主加入加工欄位，保留每項的加工、數量、總量、判斷依據與信心／複核原因。
 7. 同一個`來源`與同一個`零件編號`的資料不得重複輸出兩列或以上；本輪確認的新值整合回原資料列。`來源`或`零件編號`缺值時不得猜測補值。
 8. 固定依 `[最終 Markdown 輸出順序]` 輸出；不輸出逐頁標題、逐頁表格、尺寸／加工 bullet list、分隔線、解釋文字或額外重複表格。
-
-{{steel_material_classification}}
 [/ocr_main_merge]
 
 [final_ocr_markdown]
