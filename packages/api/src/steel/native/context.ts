@@ -441,11 +441,11 @@ function sortOcrRules(rules: readonly SteelAgentRule[]): SteelAgentRule[] {
     .map(({ rule }) => rule);
 }
 
-function renderOcrRuleSections(
-  rules: readonly SteelAgentRule[],
-  sections: readonly ('ocr_material_classification' | 'ocr_main_merge' | 'final_ocr_markdown')[],
+function buildOcrMainRuleItems(
+  runtimeContext: SteelRuntimeContext,
+  sections: readonly ('ocr_main_merge' | 'final_ocr_markdown')[],
 ): string[] {
-  return sortOcrRules(rules)
+  return sortOcrRules(runtimeContext.rules.otherGlobalRules.ocrMainRules)
     .map((rule) => {
       const prompt = rule.prompt.trim();
       const extracted = sections.flatMap((section) => {
@@ -462,17 +462,6 @@ function renderOcrRuleSections(
       }
       return compactText([`## ${rule.title}`, extracted.join('\n')]).join('\n');
     });
-}
-
-function buildOcrMainRuleItems(
-  runtimeContext: SteelRuntimeContext,
-  sections: readonly ('ocr_main_merge' | 'final_ocr_markdown')[],
-): string[] {
-  const { ocrSharedRules, ocrMainRules } = runtimeContext.rules.otherGlobalRules;
-  return [
-    ...renderOcrRuleSections(ocrSharedRules, ['ocr_material_classification']),
-    ...renderOcrRuleSections(ocrMainRules, sections),
-  ];
 }
 
 function buildDelegateOcrRuleItems(runtimeContext: SteelRuntimeContext): string[] {

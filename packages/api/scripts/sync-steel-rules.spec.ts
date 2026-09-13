@@ -393,8 +393,7 @@ describe('Steel rule sources', () => {
     const organizer = rules.find((rule) => rule.slug === 'steel-ocr-subagent-organizer-policy')!;
     const main = rules.find((rule) => rule.slug === 'steel-ocr-main-agent-organizer-policy')!;
     const organizerPrompt = resolveOcrOrganizerRulesText(`${shared.prompt}\n\n${organizer.prompt}`);
-    expect(organizerPrompt.split(classification)).toHaveLength(2);
-    expect(main.prompt).not.toContain(classification);
+    expect(organizerPrompt).toContain(classification);
 
     const mainRule: SteelAgentRule = {
       id: 1,
@@ -432,14 +431,7 @@ describe('Steel rule sources', () => {
           },
         },
         otherGlobalRules: {
-          ocrSharedRules: [{
-            ...mainRule,
-            slug: shared.slug,
-            title: 'OCR shared',
-            ruleSections: shared.ruleSections,
-            prompt: shared.prompt.replace('[/ocr_shared]', 'shared-only-sentinel\n[/ocr_shared]'),
-            priority: shared.priority,
-          }],
+          ocrSharedRules: [],
           ocrVisionRules: [],
           ocrMainRules: [mainRule],
           ocrOrganizerRules: [],
@@ -458,34 +450,12 @@ describe('Steel rule sources', () => {
     };
     for (const mode of ['ocr', 'delegate_ocr'] as const) {
       const { instructionPrefix } = buildSteelNativeInstructionPrefix({ runtimeContext, mode });
-      expect(instructionPrefix.split(classification)).toHaveLength(2);
-      expect(instructionPrefix).not.toContain('shared-only-sentinel');
+      expect(instructionPrefix).toContain(classification);
       expect(instructionPrefix).not.toContain('{{steel_material_classification}}');
     }
     for (const rule of [shared, main]) {
       expect(rule.source.sha256).toBe(createHash('sha256').update(rule.prompt).digest('hex'));
-    }
-    expect(shared.prompt.split(classification)).toHaveLength(2);
-
-    runtimeContext.rules.otherGlobalRules.ocrSharedRules = [];
-    for (const mode of ['ocr', 'delegate_ocr'] as const) {
-      const { instructionPrefix } = buildSteelNativeInstructionPrefix({ runtimeContext, mode });
-      expect(instructionPrefix).not.toContain(classification);
-    }
-
-    runtimeContext.rules.otherGlobalRules.ocrSharedRules = [{
-      ...mainRule,
-      ruleSections: shared.ruleSections,
-      prompt: '[ocr_shared]legacy shared text[/ocr_shared]',
-    }];
-    runtimeContext.rules.otherGlobalRules.ocrMainRules = [{
-      ...mainRule,
-      prompt: '[ocr_main_merge]legacy main classification[/ocr_main_merge]',
-    }];
-    for (const mode of ['ocr', 'delegate_ocr'] as const) {
-      const { instructionPrefix } = buildSteelNativeInstructionPrefix({ runtimeContext, mode });
-      expect(instructionPrefix).toContain('legacy main classification');
-      expect(instructionPrefix).not.toContain('legacy shared text');
+      expect(rule.prompt.split(classification)).toHaveLength(2);
     }
   });
 
