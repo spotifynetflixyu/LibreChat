@@ -120,9 +120,19 @@ function sha256(value) {
 }
 
 function readRulePrompt(repoRoot, sourceFile) {
-  const prompt = fs.readFileSync(path.join(repoRoot, sourceFile), 'utf8').trim();
+  let prompt = fs.readFileSync(path.join(repoRoot, sourceFile), 'utf8').trim();
   if (!prompt) {
     throw new Error(`${sourceFile} is empty`);
+  }
+
+  const classificationMarker = '{{steel_material_classification}}';
+  if (prompt.includes(classificationMarker)) {
+    const classificationFile = 'docs/rules/其他規則/鋼材種類判斷規則.txt';
+    const classification = fs.readFileSync(path.join(repoRoot, classificationFile), 'utf8').trim();
+    if (!classification || classification.includes(classificationMarker)) {
+      throw new Error(`${classificationFile} must contain a non-empty, standalone specification`);
+    }
+    prompt = prompt.replaceAll(classificationMarker, () => classification);
   }
 
   return { prompt, sha256: sha256(prompt) };
