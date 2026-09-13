@@ -2,6 +2,12 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { execFileSync } from 'child_process';
+import { createHash } from 'crypto';
+import { resolveOcrOrganizerRulesText } from '../src/steel/ocr/organizer';
+import { buildSteelNativeInstructionPrefix } from '../src/steel/native/context';
+
+import type { SteelAgentRule } from '../src/steel/repositories/rules';
+import type { SteelRuntimeContext } from '../src/steel/runtime/context';
 
 type DryRunRule = {
   slug: string;
@@ -39,6 +45,7 @@ const oldRulesDir = path.join(repoRoot, 'docs/rules/鋼材規則');
 const rulesDir = path.join(repoRoot, 'docs/rules');
 const categoryRulesDir = path.join(rulesDir, '類別規則');
 const syncScript = path.join(repoRoot, 'packages/api/scripts/sync-steel-rules.cjs');
+const classificationSource = 'docs/rules/其他規則/鋼材種類判斷規則.txt';
 const migrationSql = fs.readFileSync(
   path.join(repoRoot, 'supabase/migration/20260828053235_remove_steel_rule_source_refs.sql'),
   'utf8',
@@ -193,7 +200,7 @@ describe('Steel rule sources', () => {
     const sourceFiles = summary.rules.map((rule) => rule.sourceFile);
     expect(summary.mode).toBe('dry-run');
     expect(summary.rules).toHaveLength(19);
-    expect(sourceFiles.sort()).toEqual(listRuleFiles(rulesDir).sort());
+    expect([...sourceFiles, classificationSource].sort()).toEqual(listRuleFiles(rulesDir).sort());
     expect(new Set(sourceFiles).size).toBe(sourceFiles.length);
     expect(summary.rules.every((rule) => rule.promptLength > 0)).toBe(true);
     expect(summary.rules.filter((rule) => rule.factType === 'category_rule').at(0)?.slug).toBe(
@@ -377,6 +384,90 @@ describe('Steel rule sources', () => {
       'delegate_ocr',
     ]);
     expect(agentRule?.source.sourceFile).toBe('docs/rules/agent規則.txt');
+  });
+
+  it('delivers the shared classification source through both runtime prompt extractors', () => {
+    const rules = ruleSync.buildRules(repoRoot);
+    const classification = fs.readFileSync(path.join(repoRoot, classificationSource), 'utf8').trim();
+    const shared = rules.find((rule) => rule.slug === 'steel-drawing-ocr-policy')!;
+    const organizer = rules.find((rule) => rule.slug === 'steel-ocr-subagent-organizer-policy')!;
+    const main = rules.find((rule) => rule.slug === 'steel-ocr-main-agent-organizer-policy')!;
+    const organizerPrompt = resolveOcrOrganizerRulesText(`${shared.prompt}\n\n${organizer.prompt}`);
+    expect(organizerPrompt).toContain(classification);
+
+    const mainRule: SteelAgentRule = {
+      id: 1,
+      slug: main.slug,
+      version: 1,
+      ruleType: 'other',
+      title: 'OCR main',
+      locale: 'zh-TW',
+      ruleSections: main.ruleSections,
+      selectors: null,
+      prompt: main.prompt,
+      toolPolicy: null,
+      outputPolicy: null,
+      priority: main.priority,
+      confidence: 'high',
+      active: true,
+      reviewState: 'reviewed',
+    };
+    const runtimeContext: SteelRuntimeContext = {
+      rules: {
+        agentRules: [],
+        outputRules: [],
+        steelGlobalRules: {
+          instructionPackets: [],
+          quoteDefaults: [],
+          quoteRules: [],
+          groupedBy: {
+            packetGroups: [],
+            catalogFamilies: [],
+            productFamilies: [],
+            chargeTypes: [],
+            formulaCodes: [],
+            quoteRuleTypes: [],
+            quoteDefaultTypes: [],
+          },
+        },
+        otherGlobalRules: {
+          ocrSharedRules: [],
+          ocrVisionRules: [],
+          ocrMainRules: [mainRule],
+          ocrOrganizerRules: [],
+          ocrDelegateRules: [],
+          fileRules: [],
+          sourcePriorityRules: [],
+          markdownOutputRules: [],
+        },
+      },
+      attachments: {
+        currentPaddleOcrStatuses: [],
+        currentOcrMarkdownResults: [],
+        currentOcrFailures: [],
+        currentOcrSourceFileMapping: [],
+      },
+    };
+    for (const mode of ['ocr', 'delegate_ocr'] as const) {
+      const { instructionPrefix } = buildSteelNativeInstructionPrefix({ runtimeContext, mode });
+      expect(instructionPrefix).toContain(classification);
+      expect(instructionPrefix).not.toContain('{{steel_material_classification}}');
+    }
+    for (const rule of [shared, main]) {
+      expect(rule.source.sha256).toBe(createHash('sha256').update(rule.prompt).digest('hex'));
+      expect(rule.prompt.split(classification)).toHaveLength(2);
+    }
+  });
+
+  it('rejects an empty shared classification source before publication', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'steel-rule-classification-'));
+    try {
+      fs.cpSync(rulesDir, path.join(tempRoot, 'docs/rules'), { recursive: true });
+      fs.writeFileSync(path.join(tempRoot, classificationSource), '  \n');
+      expect(() => ruleSync.buildRules(tempRoot)).toThrow('non-empty, standalone specification');
+    } finally {
+      fs.rmSync(tempRoot, { recursive: true, force: true });
+    }
   });
 
   it('publishes processing and cutting rule metadata', () => {
