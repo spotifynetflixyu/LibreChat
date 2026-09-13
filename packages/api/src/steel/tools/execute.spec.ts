@@ -815,7 +815,7 @@ describe('executeSteelTool', () => {
     });
   });
 
-  it('uses the 250-candidate cap after filtering unusable names', async () => {
+  it('uses the 500-candidate material cap', async () => {
     const run = async (rows: object[]) => {
       const result = await executeSteelTool({
         client: createClient([
@@ -833,11 +833,11 @@ describe('executeSteelTool', () => {
       return data.queryResults?.[0] ?? {};
     };
 
-    const twenty = await run(
-      Array.from({ length: 20 }, (_, index) => createHMaterialRow(3000 + index, 200 + index, 100)),
+    const fiveHundred = await run(
+      Array.from({ length: 500 }, (_, index) => createHMaterialRow(3000 + index, 200 + index, 100)),
     );
-    const twentyOne = await run(
-      Array.from({ length: 21 }, (_, index) => createHMaterialRow(4000 + index, 200 + index, 100)),
+    const fiveHundredOne = await run(
+      Array.from({ length: 501 }, (_, index) => createHMaterialRow(4000 + index, 200 + index, 100)),
     );
     const duplicateNameRows = Array.from({ length: 21 }, (_, index) =>
       createHMaterialRow(5000 + index, 300 + index, 100),
@@ -845,18 +845,78 @@ describe('executeSteelTool', () => {
     duplicateNameRows[1]!.product_name = duplicateNameRows[0]!.product_name;
     const duplicateNames = await run(duplicateNameRows);
 
-    expect(twenty).toMatchObject({
-      totalAvailable: 20,
-      returnedCount: 20,
+    expect(fiveHundred).toMatchObject({
+      totalAvailable: 500,
+      returnedCount: 500,
       truncated: false,
     });
-    expect(twentyOne).toMatchObject({
-      totalAvailable: 21,
-      returnedCount: 21,
-      truncated: false,
+    expect(fiveHundredOne).toMatchObject({
+      totalAvailable: 501,
+      returnedCount: 500,
+      truncated: true,
       candidates: expect.any(Array),
     });
+    expect(fiveHundredOne.candidates).toHaveLength(500);
     expect(duplicateNames).toMatchObject({ totalAvailable: 21, returnedCount: 21, truncated: false });
+  });
+
+  it('uses the 500-candidate cap for processing candidates', async () => {
+    const run = async (rows: object[]) => {
+      const result = await executeSteelTool({
+        client: createClient([rows]),
+        toolName: 'search_price_candidates',
+        arguments: {
+          queries: [{ categories: ['鐵板'], processingCategories: ['加工/孔'] }],
+        },
+      });
+      if (!result.ok) throw new Error(result.errorSummary);
+      const data = JSON.parse(JSON.stringify(result.data)) as {
+        processingPrice?: { queryResults?: Array<Record<string, unknown>> };
+      };
+      return data.processingPrice?.queryResults?.[0] ?? {};
+    };
+
+    const fiveHundred = await run(
+      Array.from({ length: 500 }, (_, index) =>
+        createProcessingRow({
+          id: String(7000 + index),
+          erp_item_code: `HOLE-${index}`,
+          category: '加工/孔',
+          subcategory: '鐵板',
+          product_name: `鐵板圓孔 ${index}`,
+          normalized_spec_text: `鐵板圓孔 ${index}`,
+          spec_key: `HOLE-${index} 鐵板圓孔`,
+        }),
+      ),
+    );
+    const fiveHundredOne = await run(
+      Array.from({ length: 501 }, (_, index) =>
+        createProcessingRow({
+          id: String(8000 + index),
+          erp_item_code: `HOLE-${index}`,
+          category: '加工/孔',
+          subcategory: '鐵板',
+          product_name: `鐵板圓孔 ${index}`,
+          normalized_spec_text: `鐵板圓孔 ${index}`,
+          spec_key: `HOLE-${index} 鐵板圓孔`,
+        }),
+      ),
+    );
+
+    expect(fiveHundred).toMatchObject({
+      totalAvailable: 500,
+      returnedCount: 500,
+      truncated: false,
+      groups: [{ processingCategory: '加工/孔', returnedCount: 500, truncated: false }],
+    });
+    expect(fiveHundredOne).toMatchObject({
+      totalAvailable: 501,
+      returnedCount: 500,
+      truncated: true,
+      groups: [{ processingCategory: '加工/孔', returnedCount: 500, truncated: true }],
+    });
+    const group = (fiveHundredOne.groups as Array<{ items: unknown[] }>)[0];
+    expect(group.items).toHaveLength(500);
   });
 
   it('filters missing product names before threshold and preserves ordered OR dedupe', async () => {

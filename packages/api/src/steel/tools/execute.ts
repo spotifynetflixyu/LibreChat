@@ -558,7 +558,7 @@ function buildProcessingPrice(
   });
 
   const totalAvailable = applicable.length;
-  const returnedItems = applicable.slice(0, 250);
+  const returnedItems = applicable.slice(0, 500);
   const returnedByCategory = new Map<string, SteelRawToolOutput[]>();
   returnedItems.forEach((candidate) => {
     const category = String(candidate.category);
@@ -775,7 +775,7 @@ async function searchPriceCandidates(
     });
     materialOffset += supportedQuery.categories.length;
     const totalAvailable = combinedCandidates.length;
-    const candidates = combinedCandidates.slice(0, 250).map(toSafePriceCandidate);
+    const candidates = combinedCandidates.slice(0, 500).map(toSafePriceCandidate);
     const metadata = metadataByQueryId.get(supportedQuery.queryId)!;
     const matched = totalAvailable > 0 || categoryCandidates.length > 0;
 

@@ -545,7 +545,7 @@ function trimCompactPriceResult(
 
 function compactPriceCandidateData(
   data: SteelToolJsonObject,
-  maxSerializedChars = 79_500,
+  maxSerializedChars = 199_500,
 ): SteelToolJsonObject | undefined {
   const compactData: SteelToolJsonObject = {
     queryResults: compactJsonObjects(data.queryResults, compactQueryResult),
