@@ -1,5 +1,12 @@
 # LibreChat
 
+## Task Scope
+
+Keep changes focused on the request and preserve unrelated work. Use the agent
+activation rules of the host; this project does not require a separate agent
+pipeline for routine tasks. Select checks for the affected behavior and risk,
+while completing every project check whose trigger applies.
+
 ## Project Overview
 
 LibreChat is a monorepo with the following key workspaces:
@@ -13,7 +20,8 @@ LibreChat is a monorepo with the following key workspaces:
 | `/client` | TypeScript/React | Frontend | `packages/data-provider`, `packages/client` | Frontend SPA |
 | `/packages/client` | TypeScript | Frontend | `packages/data-provider` | Shared frontend utilities |
 
-The source code for `@librechat/agents` (major backend dependency, same team) is at `/home/danny/agentus`.
+Resolve `@librechat/agents` source from the dependency version installed in this
+checkout; do not assume a separate source checkout is available.
 
 ---
 
@@ -57,7 +65,7 @@ Supabase Data API grants and RLS policies. This project currently has the
 before changing that assumption.
 
 Supabase development is cloud-only for this project; see
-`docs/steel-supabase-development.md`. Apply tested schema migrations through the
+`docs/local-dev.md`. Apply tested schema migrations through the
 cloud Supabase connection in `.env` `STEEL_POSTGRES_URL`, not through a local
 Docker Supabase stack. Supabase MCP is configured in the tracked project
 `.mcp.json`; authenticate through the MCP client instead of committing tokens or
@@ -81,10 +89,23 @@ do not create ad hoc or temporary update scripts when an existing project script
 covers the workflow. For unified Steel rules under `docs/rules`, use
 `packages/api/scripts/sync-steel-rules.cjs` for dry-run, apply, and database
 readback, with the repository rule files remaining the source of truth.
+Every Steel rule database mutation must use this script, including single-rule
+changes. Do not use ad hoc SQL, direct upserts, or temporary update scripts.
 Always pass the intended target explicitly: `--target dev` loads `.env`, while
 `--target prod` loads `.env.prod`. Run `--dry-run` against the same target before
 `--apply`; do not infer the destination database from an ambient
 `STEEL_POSTGRES_URL`.
+
+When both DEV and PROD are requested, run the complete dry-run, apply, and
+readback sequence separately for `--target dev` and `--target prod`. After each
+apply, verify the manifest and managed-row counts, `active=true`,
+`review_state=reviewed`, prompt SHA matches, and no stale managed rows.
+
+Supabase pooler URLs cannot be distinguished by hostname, port, and database
+path alone. Different Supabase projects may share a pooler endpoint and the
+`postgres` database label while encoding project identity in the URL username.
+Compare the project username or a secret-safe fingerprint of it, and never print
+connection URLs, usernames, passwords, or other credentials.
 
 ### Naming and File Organization
 
@@ -95,23 +116,18 @@ Always pass the intended target explicitly: `--target dev` loads `.env`, while
 ### Structure and Clarity
 
 - **Never-nesting**: early returns, flat code, minimal indentation. Break complex operations into well-named helpers.
-- **Functional first**: pure functions, immutable data, `map`/`filter`/`reduce` over imperative loops. Only reach for OOP when it clearly improves domain modeling or state encapsulation.
+- Prefer pure functions and immutable data. Choose transformations or loops for the operation and nearby patterns; use OOP when it clearly improves domain modeling or state encapsulation.
 - **No dynamic imports** unless absolutely necessary.
 
-### DRY
+### Reuse
 
-- Extract repeated logic into utility functions.
-- Reusable hooks / higher-order components for UI patterns.
-- Parameterized helpers instead of near-duplicate functions.
-- Constants for repeated values; configuration objects over duplicated init code.
-- Shared validators, centralized error handling, single source of truth for business rules.
-- Shared typing system with interfaces/types extending common base definitions.
-- Abstraction layers for external API interactions.
+- Reuse existing hooks, validators, shared types, and business-rule logic before adding equivalents.
+- Extract repeated logic when it simplifies the changed code; keep abstractions proportional to actual reuse.
+- Follow nearby patterns and avoid unrelated refactors or speculative configuration layers.
 
 ### Iteration and Performance
 
-- **Minimize looping** — especially over shared data structures like message arrays, which are iterated frequently throughout the codebase. Every additional pass adds up at scale.
-- Consolidate sequential O(n) operations into a single pass whenever possible; never loop over the same collection twice if the work can be combined.
+- When changing hot paths such as shared message arrays, use evidence to identify costly repeated work. Prefer a single pass when it preserves clarity and behavior.
 - Choose data structures that reduce the need to iterate (e.g., `Map`/`Set` for lookups instead of `Array.find`/`Array.includes`).
 - Avoid unnecessary object creation; consider space-time tradeoffs.
 - Prevent memory leaks: careful with closures, dispose resources/event listeners, no circular references.
@@ -129,13 +145,17 @@ Always pass the intended target explicitly: `--target dev` loads `.env`, while
   parallelizing reads. Speculative reads must remain scoped to the authenticated
   user or tenant and must not write to the response before validation succeeds.
 
+### Auth User Document Cache
+
+When adding or changing code that mutates user documents, invalidate the auth user document cache for affected users. This includes single-user updates and bulk role/user mutations; otherwise OpenID JWT request burst caching can serve a stale `req.user` until its TTL expires.
+
 ### Type Safety
 
 - **Never use `any`**. Explicit types for all parameters, return values, and variables.
 - **Limit `unknown`** — avoid `unknown`, `Record<string, unknown>`, and `as unknown as T` assertions. A `Record<string, unknown>` almost always signals a missing explicit type definition.
 - **Don't duplicate types** — before defining a new type, check whether it already exists in the project (especially `packages/data-provider`). Reuse and extend existing types rather than creating redundant definitions.
 - Use union types, generics, and interfaces appropriately.
-- All TypeScript and ESLint warnings/errors must be addressed — do not leave unresolved diagnostics.
+- Address TypeScript and ESLint diagnostics introduced by the change. Compare with the existing baseline and report unrelated issues without expanding the patch.
 
 ### Comments and Documentation
 
@@ -156,7 +176,6 @@ Multi-line imports count total character length across all lines. Consolidate va
 
 ### JS/TS Loop Preferences
 
-- **Limit looping as much as possible.** Prefer single-pass transformations and avoid re-iterating the same data.
 - `for (let i = 0; ...)` for performance-critical or index-dependent operations.
 - `for...of` for simple array iteration.
 - `for...in` only for object property enumeration.
@@ -250,10 +269,13 @@ Multi-line imports count total character length across all lines. Consolidate va
 
 ## Testing
 
+Select focused tests for the changed behavior and risk. Broaden or repeat checks
+only when new changes, failures, or unresolved risks justify it.
+
 - Framework: **Jest**, run per-workspace.
 - Run tests from their workspace directory: `cd api && npx jest <pattern>`, `cd packages/api && npx jest <pattern>`, etc.
 - Frontend tests: `__tests__` directories alongside components; use `test/layout-test-utils` for rendering.
-- Cover loading, success, and error states for UI/data flows.
+- Cover loading, success, and error states affected by UI/data-flow changes.
 
 ### Philosophy
 
@@ -268,7 +290,9 @@ Multi-line imports count total character length across all lines. Consolidate va
 
 ## Formatting
 
-Fix all formatting lint errors (trailing spaces, tabs, newlines, indentation) using auto-fix when available. All TypeScript/ESLint warnings and errors **must** be resolved.
+Match existing formatting and fix issues introduced by this change. Do not run
+Prettier unless explicitly requested. Prefer targeted edits and `git diff --check`;
+avoid unrelated formatting or baseline diagnostic cleanup.
 
 <!-- OPENWIKI:START -->
 
