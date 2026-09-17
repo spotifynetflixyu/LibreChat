@@ -1,6 +1,6 @@
 # Independent quotation preflight
 
-Status: implemented locally, 2026-09-17. Automated validation is recorded below; no production deployment or live-provider quotation smoke is claimed.
+Status: quotation execution implemented locally, 2026-09-17. Flexible preparation-confirmation and saved-state injection are implemented and verified locally. No production deployment or live-provider quotation smoke is claimed.
 
 ## Output compatibility
 
@@ -14,7 +14,7 @@ Preserve the existing division of output responsibilities as clarified by the us
 - Before calling the customer lookup tool, AI must establish that `ocr_result` exists. The current tool is `search_customers`; `customer_data` is the resulting output sheet, not the tool name.
 - If lookup returns multiple customers, ask the user which customer they mean. Do not emit resolved `customer_data` or a quotation signal until the choice is established.
 - For one resolved customer, output its `customer_data`. If no customer matches, visibly disclose default B tier and persist that customer context. A lookup failure does not establish a no-match result.
-- Emit `customer_data` Markdown and the quotation signal in the same completed AI response. A unique match or disclosed no-match B fallback needs no additional customer-confirmation turn.
+- Treat complete-order confirmation, customer or explicit direct-B selection, customer-data presentation, and consent to start quotation as prerequisites that may be collected in different orders or combined user messages. Ask only for missing or changed information. Present `customer_data`, then wait for start consent unless the user already explicitly authorized quotation of the displayed order and confirmed pricing context. Merely supplying a customer name or choosing B is not start consent. Customer Markdown and the signal may be emitted in separate responses; unchanged confirmed information is reusable.
 
 ## Signal acceptance and entry gate
 
@@ -51,7 +51,7 @@ Preserve the existing division of output responsibilities as clarified by the us
 - Once the run completes, automatically process pending messages in arrival order. Persist message identity and processing progress so delivery retries, reconnects, or recovery do not apply a message twice or lose it. Cancellation also releases pending messages after its terminal state is durably accepted.
 - For a pending order correction, AI applies the correction and emits a new full `ocr_result`. The backend saves that complete result, and the user must confirm quotation of the revised order before AI emits another quotation signal.
 - Confirmation of an old order revision does not authorize quotation of a later correction. A pending instruction containing both a correction and a request to quote still presents the changed complete order for confirmation first.
-- Only after the revised order is confirmed does AI follow the customer-resolution flow and emit `customer_data` with a new quotation signal. The backend checks all prerequisites again after that response completes.
+- Only after the revised order is confirmed and customer data is available (reusing unchanged saved data) may AI emit a new quotation signal upon explicit start consent. The backend checks all prerequisites again after that response completes.
 
 ## Cancellation button
 
@@ -73,7 +73,7 @@ Preserve the existing division of output responsibilities as clarified by the us
 
 ## Implementation contracts
 
-- `## quote_signal` has the fixed body `start`, with no AI-generated index or token. A successful resolved customer lookup saves `customerDataMarkdown` with the current order hash and assistant-response ID before any index allocation. Admission checks completed-response Markdown against that preparation, then atomically allocates an internal ticket/index. Repeated delivery of that response reuses its run, including cancelled runs. Each run freezes the validated customer Markdown in its snapshot and supplies that exact tier context to every child and retry. Backend chunk metadata retains original source order; AI output has no JSON sidecar or extra columns.
+- `## quote_signal` has the fixed body `start`, with no AI-generated index or token. A successful resolved customer lookup saves `customerDataMarkdown`; an explicit B choice is saved from completed AI customer Markdown, including before OCR exists. Admission checks the saved customer and current confirmed-order context against the turn snapshot, then atomically allocates an internal ticket/index for the signal response. Repeated delivery of that response reuses its run, including cancelled runs. Each run freezes the validated customer Markdown in its snapshot and supplies that exact tier context to every child and retry. Backend chunk metadata retains original source order; AI output has no JSON sidecar or extra columns.
 - Implement durable storage, execution leases, atomic signal acceptance, restart recovery, and ownership checks, including cancellation authorization and stale-worker write protection.
 - Preserve rule and calculation provenance, cross-chunk pricing dependencies, AI output rules, and bounded concurrency.
 - Integrate existing edit/rerun semantics and distinguish current output artifacts from historical quotation artifacts.
@@ -86,7 +86,7 @@ Preserve the existing division of output responsibilities as clarified by the us
 
 ## Acceptance scenarios
 
-1. A text order produces one full saved `ocr_result`; quotation waits for confirmation, then customer resolution and a completed response containing both `customer_data` and a new signal.
+1. A text order produces one full saved `ocr_result`; quotation waits for order confirmation, saved `customer_data`, and start consent before a completed response emits a new signal. Customer data and the signal may arrive in separate responses.
 2. Multiple customer matches produce a selection question and no quotation signal until the user resolves the customer.
 3. Missing order data, missing customer data, an incomplete response, or a repeated accepted signal does not create a new quotation.
 4. A category with 61 source rows creates chunks of 30, 30, and 1. Recovery after the first two chunks were saved reruns only the third; aggregation-only failure reruns no completed child.
@@ -123,3 +123,11 @@ Quotation review output uses `manual_reviews_chunk` for each child and `manual_r
 After the ordinary agent completes a response containing the fixed quotation signal, the backend checks required OCR/customer Markdown and signal admission before independent quotation preflight. The ordinary agent prepares complete order Markdown, confirms the order and customer, and emits the fixed start signal; its tool policy excludes price lookup. Backend validation concerns structure and run admission, while pricing and business review remain AI responsibilities.
 
 Every new user turn checks unfinished quotation and OCR preflight before invoking ordinary conversation-provider work. Resume an interrupted task first; cancelled quotation is terminal and requires a fresh completed AI response with the fixed signal. The Chat and Responses entry paths share this ordering.
+
+## Flexible preparation and saved state
+
+Each ordinary or pending AI turn receives `hasOcrResult`, `hasCustomerData`, and `hasSystemOrder`, plus saved complete OCR and customer Markdown. These report database presence, not user consent. `shouldAskToQuote` is derived from OCR and customer data being present with no existing system order. An existing final quotation from any run suppresses repeated proactive quotation questions even if the latest run is cancelled. A user-requested re-quote still requires a new signal.
+
+AI may collect customer choice before order data. An explicit B-tier choice emits canonical `customer_data` (blank customer code, 未指定客戶, B, 用戶指定預設 B tier), which a completed response saves without fabricating a lookup. Named customers still use the actual customer tool after OCR exists. Customer Markdown remains available across turns and order revisions; a new unresolved customer lookup invalidates the previous selection. A signal can be emitted in a later response without repeating unchanged customer Markdown. Admission binds the current order/customer versions supplied at the start of that turn, preserving response deduplication and stale-response protection. Changes to order or pricing context still require appropriate new user confirmation.
+
+Latest saved-state verification: quotation module 79 tests passed; Chat/Responses integration 410 passed and 2 skipped; data-schema and API builds passed. Review of cross-response customer updates completed with delayed-result fencing verified.

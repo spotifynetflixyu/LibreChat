@@ -12,7 +12,7 @@ import type { QuotationChildResultInput, QuotationLookupEvidence, QuotationPytho
 import type { QuotationModelInput } from './model';
 
 import { createSteelQuotationStateService } from './state';
-import { hasQuotationOrder } from './preparation';
+import { defaultQuotationCustomerMarkdown, hasQuotationOrder } from './preparation';
 import { parseAssistantMarkdown } from '../ocr/result';
 import { registerQuotationExecution } from './control';
 import { buildDefaultSteelGlobalAgentContext } from '../native/context';
@@ -73,25 +73,32 @@ export async function acceptQuotationResponse(input: {
   scope: SteelQuotationScope;
   response: string;
   responseId: string;
+  messageId?: string;
+  expectedOrderHash?: string;
+  expectedCustomerPreparationId?: string;
   finishReason?: string;
 }): Promise<SteelQuotationActiveRun | undefined> {
   if (input.finishReason !== 'stop') return undefined;
   const signal = parseQuotationSignal(input.response);
-  if (!signal) return undefined;
-  if (parseAssistantMarkdown(input.response).sections.some((section) => section.title.split(/[｜|]/u)[0]?.trim() === 'ocr_result')) {
+  const sections = parseAssistantMarkdown(input.response).sections;
+  const hasSection = (title: string) => sections.some((section) => section.title.split(/[｜|]/u)[0]?.trim() === title);
+  const customer = extractCustomerDataTable(input.response);
+  if (!signal && !hasSection('customer_data')) return undefined;
+  if (hasSection('customer_data') && !customer) {
+    throw new Error('Customer data must contain one readable Markdown table');
+  }
+  if (signal && hasSection('ocr_result')) {
     throw new Error('A revised order must be confirmed before issuing a quotation signal');
   }
   const service = createSteelQuotationStateService(mongoose);
-  const state = await service.readState(input.scope);
+  let state = await service.readState(input.scope);
   const existingTicket = state?.tickets.find((entry) => entry.responseId === input.responseId);
-  const preparedCustomer = state?.currentCustomer;
-  const savedCustomer = existingTicket ?? preparedCustomer;
-  const customer = extractCustomerDataTable(input.response);
-  if (!savedCustomer || !customer ||
-    JSON.stringify(customer) !== JSON.stringify(extractCustomerDataTable(savedCustomer.customerMarkdown))) {
-    throw new Error('Quotation signal does not match the saved order and customer');
-  }
-  if (existingTicket?.acceptedRunId) {
+  const matchesCustomer = (markdown: string) =>
+    JSON.stringify(customer) === JSON.stringify(extractCustomerDataTable(markdown));
+  if (signal && existingTicket?.acceptedRunId) {
+    if (customer && !matchesCustomer(existingTicket.customerMarkdown)) {
+      throw new Error('Quotation replay customer data does not match the saved run');
+    }
     return service.acceptSignal({
       scope: input.scope,
       index: existingTicket.index,
@@ -104,9 +111,37 @@ export async function acceptQuotationResponse(input: {
       targetMessageId: input.responseId,
     });
   }
-  if (!state?.currentOrder || !hasQuotationOrder(state.currentOrder.markdown) || !preparedCustomer ||
-    preparedCustomer.responseId !== input.responseId || preparedCustomer.orderHash !== state.currentOrder.sha256) {
-    throw new Error('Quotation signal requires the current saved order and customer from this response');
+  if (customer && (!state?.currentCustomer || !matchesCustomer(state.currentCustomer.customerMarkdown))) {
+    if (!matchesCustomer(defaultQuotationCustomerMarkdown)) {
+      throw new Error('Customer Markdown does not match the saved customer lookup');
+    }
+    if (!input.messageId || state?.currentOrder?.sha256 !== input.expectedOrderHash ||
+      state?.currentCustomer?.preparationId !== input.expectedCustomerPreparationId) {
+      throw new Error('Default customer selection is based on stale preparation data');
+    }
+    await service.saveCustomer({
+      scope: input.scope,
+      customerMarkdown: defaultQuotationCustomerMarkdown,
+      customerIdentity: 'explicit-default:B',
+      triggeringMessageId: input.messageId,
+      responseId: input.responseId,
+      orderHash: state?.currentOrder?.sha256,
+      expectedPreparationId: input.expectedCustomerPreparationId ?? null,
+      selectionProvenance: { method: 'default_tier', selectionMessageId: input.messageId },
+    });
+    state = await service.readState(input.scope);
+  }
+  if (!signal) return undefined;
+  const preparedCustomer = state?.currentCustomer;
+  if (!state?.currentOrder || !hasQuotationOrder(state.currentOrder.markdown) || !preparedCustomer) {
+    throw new Error('Quotation signal requires a saved complete order and customer');
+  }
+  const customerResolvedThisResponse = preparedCustomer.responseId === input.responseId &&
+    preparedCustomer.orderHash === state.currentOrder.sha256 && customer !== undefined;
+  if ((input.expectedOrderHash !== undefined && input.expectedOrderHash !== state.currentOrder.sha256) ||
+    (!customerResolvedThisResponse && (input.expectedOrderHash !== state.currentOrder.sha256 ||
+      input.expectedCustomerPreparationId !== preparedCustomer.preparationId))) {
+    throw new Error('Quotation signal is based on stale preparation data');
   }
   const chunks = buildQuotationChunks(state.currentOrder.markdown);
   const conversation = { requestId: input.responseId, conversationId: input.scope.conversationId, activeHistory: [] };
@@ -118,10 +153,10 @@ export async function acceptQuotationResponse(input: {
     scope: input.scope,
     preparationId: preparedCustomer.preparationId,
     responseId: input.responseId,
-    orderHash: preparedCustomer.orderHash,
+    orderHash: state.currentOrder.sha256,
     customerMarkdown: preparedCustomer.customerMarkdown,
     customerIdentity: preparedCustomer.customerIdentity,
-    triggeringMessageId: preparedCustomer.triggeringMessageId,
+    triggeringMessageId: input.messageId ?? preparedCustomer.triggeringMessageId,
     selectionProvenance: preparedCustomer.selectionProvenance,
   });
   return service.acceptSignal({

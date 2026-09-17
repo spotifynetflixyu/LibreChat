@@ -10,6 +10,7 @@ import type { OpenAIOAuthModelOptions } from '../native/oauth';
 import type { QuotationModelInput } from './model';
 
 import { createSteelQuotationStateService } from './state';
+import { defaultQuotationCustomerMarkdown } from './preparation';
 import {
   processQuotationPendingMessages,
   type SteelQuotationPendingInputPreparationResult,
@@ -79,6 +80,34 @@ afterAll(async () => {
 });
 
 describe('quotation pending processor', () => {
+  it('saves a queued default-B selection before an order exists without starting a quotation', async () => {
+    await service.enqueuePendingMessage({ scope, sourceMessageId: 'choose-b', sourceMessageText: '使用預設 B tier' });
+    invokeMock.mockResolvedValue({ markdown: defaultQuotationCustomerMarkdown, lookups: [], pythonEvidence: [] });
+    const publish = jest.fn(async () => undefined);
+
+    await processQuotationPendingMessages(processInput(publish));
+
+    const state = await service.readState(scope);
+    expect(state?.currentCustomer?.customerMarkdown).toBe(defaultQuotationCustomerMarkdown);
+    expect(state?.currentOrder).toBeUndefined();
+    expect(state?.activeRun).toBeUndefined();
+    expect(state?.pendingMessages[0]?.status).toBe('completed');
+    expect(publish).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['## quote_signal', '  ## quote_signal ##', '## quote_signal｜報價'])('rejects a queued signal section %s before admission', async (heading) => {
+    await service.enqueuePendingMessage({ scope, sourceMessageId: 'queued-change', sourceMessageText: '修改訂單' });
+    invokeMock.mockResolvedValue({ markdown: `${heading}\n\nstart`, lookups: [], pythonEvidence: [] });
+    const publish = jest.fn(async () => undefined);
+
+    await expect(processQuotationPendingMessages(processInput(publish))).rejects.toThrow('new order confirmation');
+
+    const state = await service.readState(scope);
+    expect(state?.nextSignalIndex).toBe(0);
+    expect(state?.activeRun).toBeUndefined();
+    expect(publish).not.toHaveBeenCalled();
+  });
+
   it('journals the model result and recovers after publication failure without invoking the model twice', async () => {
     const files: SteelQuotationPendingMessageFile[] = [{
       fileId: 'file-1',

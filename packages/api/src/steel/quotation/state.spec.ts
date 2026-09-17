@@ -146,7 +146,7 @@ describe('Steel quotation state service', () => {
     );
   });
 
-  it('saves a customer without allocating an index and clears it when the order changes', async () => {
+  it('saves a customer without allocating an index and retains it when the order changes', async () => {
     const preparation = await prepareCustomer();
     const saved = await service.readState(scope);
     expect(preparation.preparationId).toEqual(expect.any(String));
@@ -160,7 +160,7 @@ describe('Steel quotation state service', () => {
     await service.clearCustomer({ scope, responseId: 'response-1' });
     expect((await service.readState(scope))?.currentCustomer).toBeUndefined();
 
-    await service.saveCustomer({
+    const retainedPreparation = await service.saveCustomer({
       scope,
       customerMarkdown: preparation.customerMarkdown,
       customerIdentity: preparation.customerIdentity,
@@ -171,13 +171,76 @@ describe('Steel quotation state service', () => {
     });
     await service.setOrder({ scope, fullMarkdown: '# revised order' });
     const revised = await service.readState(scope);
-    expect(revised?.currentCustomer).toBeUndefined();
+    expect(revised?.currentCustomer).toEqual(retainedPreparation);
     expect(revised?.nextSignalIndex).toBe(0);
+  });
+
+  it('supports customer preparation before OCR and clears by observed preparation ID', async () => {
+    const preparation = await service.saveCustomer({
+      scope,
+      customerMarkdown: '## customer_data\n| name | B |',
+      customerIdentity: 'customer-before-ocr',
+      triggeringMessageId: 'customer-message',
+      responseId: 'customer-response',
+      selectionProvenance: { method: 'default_tier' },
+    });
+    expect(preparation.orderHash).toBeUndefined();
+    expect((await service.readState(scope))?.nextSignalIndex).toBe(0);
+
+    await service.setOrder({ scope, fullMarkdown: '# OCR order' });
+    expect((await service.readState(scope))?.currentCustomer).toEqual(preparation);
+
+    await service.clearCustomer({
+      scope,
+      responseId: 'later-response',
+      preparationId: preparation.preparationId,
+    });
+    expect((await service.readState(scope))?.currentCustomer).toBeUndefined();
+  });
+
+  it('returns the existing preparation for an idempotent response and fences expected replacements', async () => {
+    const first = await prepareCustomer();
+    if (!first.orderHash) throw new Error('test setup did not save an order hash');
+    const firstOrderHash = first.orderHash;
+    const repeated = await service.saveCustomer({
+      scope,
+      customerMarkdown: first.customerMarkdown,
+      customerIdentity: first.customerIdentity,
+      triggeringMessageId: first.triggeringMessageId,
+      responseId: first.responseId,
+      selectionProvenance: first.selectionProvenance,
+      orderHash: firstOrderHash,
+      expectedPreparationId: 'already-replaced',
+    });
+    expect(repeated.preparationId).toBe(first.preparationId);
+
+    const second = await service.saveCustomer({
+      scope,
+      customerMarkdown: '## customer_data\n| name | C |',
+      customerIdentity: 'customer-c',
+      triggeringMessageId: 'message-2',
+      responseId: 'response-2',
+      selectionProvenance: { method: 'selected', selectionMessageId: 'selection-2' },
+      orderHash: firstOrderHash,
+      expectedPreparationId: first.preparationId,
+    });
+    expect(second.preparationId).not.toBe(first.preparationId);
+    await expect(service.saveCustomer({
+      scope,
+      customerMarkdown: '## customer_data\n| name | D |',
+      customerIdentity: 'customer-d',
+      triggeringMessageId: 'message-3',
+      responseId: 'response-3',
+      selectionProvenance: { method: 'unique' },
+      orderHash: firstOrderHash,
+      expectedPreparationId: first.preparationId,
+    })).rejects.toThrow('changed since it was read');
   });
 
   it('rejects stale and mismatched customer preparations before ticket allocation', async () => {
     const preparation = await prepareCustomer();
     const orderHash = preparation.orderHash;
+    if (!orderHash) throw new Error('test setup did not save an order hash');
     await expect(service.saveCustomer({
       scope,
       customerMarkdown: preparation.customerMarkdown,
@@ -232,6 +295,8 @@ describe('Steel quotation state service', () => {
 
   it('allocates one response-bound ticket and index under concurrent retries', async () => {
     const preparation = await prepareCustomer();
+    const orderHash = preparation.orderHash;
+    if (!orderHash) throw new Error('test setup did not save an order hash');
     const issueInput = {
       scope,
       customerMarkdown: preparation.customerMarkdown,
@@ -240,7 +305,7 @@ describe('Steel quotation state service', () => {
       selectionProvenance: preparation.selectionProvenance,
       preparationId: preparation.preparationId,
       responseId: preparation.responseId,
-      orderHash: preparation.orderHash,
+      orderHash,
     };
     const tickets = await Promise.all(
       Array.from({ length: 16 }, () => service.issueTicket(issueInput)),
@@ -254,10 +319,13 @@ describe('Steel quotation state service', () => {
       ...issueInput,
       customerIdentity: 'tampered-customer',
     })).rejects.toThrow('response binding');
-    await expect(service.issueTicket({
+    const nextResponseTicket = await service.issueTicket({
       ...issueInput,
       responseId: 'new-response',
-    })).rejects.toThrow('current customer preparation');
+      triggeringMessageId: 'new-confirmation-message',
+    });
+    expect(nextResponseTicket.index).toBe(2);
+    expect(nextResponseTicket.preparationId).toBe(preparation.preparationId);
   });
 
   it('invalidates old tickets when the order hash changes and fences order edits during a run', async () => {
@@ -351,6 +419,37 @@ describe('Steel quotation state service', () => {
     });
     expect(artifacts).toBe(2);
     expect(MAX_QUOTATION_ARTIFACT_BYTES).toBeGreaterThan(1_000_000);
+  });
+
+  it('detects historical final orders while ignoring raw and main artifacts by scope', async () => {
+    const Artifact = createSteelQuotationArtifactModel(mongoose);
+    expect(await service.hasSystemOrder(scope)).toBe(false);
+    await Artifact.create({
+      userId: scope.userId,
+      conversationId: scope.conversationId,
+      runId: 'raw-run',
+      operationId: 'raw',
+      kind: 'main',
+      sha256: 'raw-sha',
+      payload: 'raw snapshot',
+    });
+    expect(await service.hasSystemOrder(scope)).toBe(false);
+    await Artifact.create({
+      userId: scope.userId,
+      conversationId: scope.conversationId,
+      runId: 'historical-run',
+      operationId: 'final',
+      kind: 'final',
+      sha256: 'historical-sha',
+      payload: 'historical final',
+    });
+    expect(await service.hasSystemOrder(scope)).toBe(true);
+
+    const latest = await prepareRun(scope, '# latest order');
+    await service.cancelRun({ scope, runId: latest.run.runId });
+    expect((await service.readState(scope))?.activeRun?.status).toBe('cancelled');
+    expect(await service.hasSystemOrder(scope)).toBe(true);
+    expect(await service.hasSystemOrder({ userId: 'other-owner', conversationId: scope.conversationId })).toBe(false);
   });
 
   it('keeps cancellation terminal until a new signal creates a fresh run', async () => {

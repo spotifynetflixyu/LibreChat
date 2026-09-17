@@ -82,13 +82,16 @@ export interface SteelQuotationSaveCustomerInput {
   triggeringMessageId: string;
   responseId: string;
   selectionProvenance: SteelQuotationSelectionProvenance;
-  orderHash: string;
+  orderHash?: string;
+  expectedPreparationId?: string | null;
   now?: Date;
 }
 
 export interface SteelQuotationClearCustomerInput {
   scope: SteelQuotationScope;
   responseId: string;
+  preparationId?: string;
+  orderHash?: string;
 }
 
 export interface SteelQuotationChunkInput {
@@ -247,6 +250,7 @@ export interface SteelQuotationDeleteResult {
 export interface SteelQuotationStateService {
   ensureState(scope: SteelQuotationScope): Promise<ISteelQuotationState>;
   readState(scope: SteelQuotationScope): Promise<ISteelQuotationState | null>;
+  hasSystemOrder(scope: SteelQuotationScope): Promise<boolean>;
   setOrder(input: SteelQuotationOrderInput): Promise<ISteelQuotationState>;
   saveCustomer(input: SteelQuotationSaveCustomerInput): Promise<SteelQuotationCustomerPreparation>;
   clearCustomer(input: SteelQuotationClearCustomerInput): Promise<ISteelQuotationState>;
@@ -492,19 +496,14 @@ function sameSelectionProvenance(
 
 function matchesCustomerPreparation(
   preparation: SteelQuotationCustomerPreparation | undefined,
-  input: Pick<SteelQuotationIssueTicketInput, 'customerMarkdown' | 'customerIdentity' | 'triggeringMessageId' | 'selectionProvenance'> & {
+  input: Pick<SteelQuotationIssueTicketInput, 'customerMarkdown' | 'customerIdentity' | 'selectionProvenance'> & {
     preparationId?: string;
-    responseId?: string;
-    orderHash?: string;
   },
 ): boolean {
   return preparation !== undefined &&
     preparation.customerMarkdown === input.customerMarkdown &&
     preparation.customerIdentity === input.customerIdentity &&
-    preparation.triggeringMessageId === input.triggeringMessageId &&
     preparation.preparationId === input.preparationId &&
-    preparation.responseId === input.responseId &&
-    preparation.orderHash === input.orderHash &&
     sameSelectionProvenance(preparation.selectionProvenance, input.selectionProvenance);
 }
 
@@ -550,6 +549,15 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
     return state;
   }
 
+  async function hasSystemOrder(scope: SteelQuotationScope): Promise<boolean> {
+    validateScope(scope);
+    return (await Artifact.exists({
+      ...stateFilter(scope),
+      kind: 'final',
+      operationId: 'final',
+    })) !== null;
+  }
+
   async function setOrder(input: SteelQuotationOrderInput): Promise<ISteelQuotationState> {
     validateScope(input.scope);
     validateText(input.fullMarkdown, 'fullMarkdown', MAX_QUOTATION_ORDER_BYTES);
@@ -587,14 +595,13 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
       const update = orderChanged
         ? {
             $set: { currentOrder: nextOrder, tickets: retainedTickets, updatedAt: now },
-            $unset: { currentCustomer: 1 },
           }
         : { $set: { currentOrder: nextOrder, updatedAt: now } };
       assertAuthorityBounds({
         userId: current.userId,
         conversationId: current.conversationId,
         currentOrder: nextOrder,
-        currentCustomer: orderChanged ? undefined : current.currentCustomer,
+        currentCustomer: current.currentCustomer,
         nextSignalIndex: current.nextSignalIndex,
         tickets: orderChanged ? retainedTickets : current.tickets,
         activeRun: current.activeRun,
@@ -617,24 +624,53 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
     validateText(input.customerIdentity, 'customerIdentity', MAX_QUOTATION_CUSTOMER_BYTES);
     validateText(input.triggeringMessageId, 'triggeringMessageId', 1_000);
     validateText(input.responseId, 'responseId', 300);
-    validateText(input.orderHash, 'orderHash', 128);
+    if (input.orderHash !== undefined) {
+      validateText(input.orderHash, 'orderHash', 128);
+    }
+    if (input.expectedPreparationId !== undefined && input.expectedPreparationId !== null) {
+      validateText(input.expectedPreparationId, 'expectedPreparationId', 200);
+    }
     validateSelectionProvenance(input.selectionProvenance);
     const now = nowOrDefault(input.now);
     const preparation: SteelQuotationCustomerPreparation = {
       preparationId: randomUUID(),
       customerMarkdown: input.customerMarkdown,
       customerIdentity: input.customerIdentity,
-      orderHash: input.orderHash,
       triggeringMessageId: input.triggeringMessageId,
       responseId: input.responseId,
       selectionProvenance: input.selectionProvenance,
+      ...(input.orderHash !== undefined ? { orderHash: input.orderHash } : {}),
     };
     await ensureState(input.scope);
 
     for (let attempt = 0; attempt < 4; attempt += 1) {
       const current = await readState(input.scope);
-      if (!current?.currentOrder || current.currentOrder.sha256 !== input.orderHash) {
+      const existing = current?.currentCustomer;
+      if (
+        existing &&
+        existing.responseId === input.responseId &&
+        existing.customerMarkdown === input.customerMarkdown &&
+        existing.customerIdentity === input.customerIdentity &&
+        existing.triggeringMessageId === input.triggeringMessageId &&
+        existing.orderHash === input.orderHash &&
+        sameSelectionProvenance(existing.selectionProvenance, input.selectionProvenance)
+      ) {
+        return existing;
+      }
+      if (
+        input.expectedPreparationId !== undefined &&
+        (existing?.preparationId ?? null) !== input.expectedPreparationId
+      ) {
+        throw new Error('customer preparation changed since it was read');
+      }
+      if (
+        (input.orderHash === undefined && current?.currentOrder !== undefined) ||
+        (input.orderHash !== undefined && current?.currentOrder?.sha256 !== input.orderHash)
+      ) {
         throw new Error('customer preparation order is stale');
+      }
+      if (!current) {
+        continue;
       }
       if (isUnfinished(current.activeRun?.status)) {
         throw new Error('cannot save customer preparation while a run is unfinished');
@@ -643,10 +679,18 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
         ...current,
         currentCustomer: preparation,
       });
+      const preparationFilter = input.expectedPreparationId !== undefined
+        ? input.expectedPreparationId === null
+          ? { currentCustomer: { $exists: false } }
+          : { 'currentCustomer.preparationId': input.expectedPreparationId }
+        : { 'currentCustomer.responseId': { $ne: input.responseId } };
       const updated = await State.findOneAndUpdate(
         {
           ...stateFilter(input.scope),
-          'currentOrder.sha256': input.orderHash,
+          ...(input.orderHash !== undefined
+            ? { 'currentOrder.sha256': input.orderHash }
+            : { 'currentOrder': { $exists: false } }),
+          ...preparationFilter,
           $or: [
             { activeRun: { $exists: false } },
             { 'activeRun.status': { $in: terminalStatuses } },
@@ -670,14 +714,25 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
   ): Promise<ISteelQuotationState> {
     validateScope(input.scope);
     validateText(input.responseId, 'responseId', 300);
+    if (input.preparationId !== undefined) {
+      validateText(input.preparationId, 'preparationId', 200);
+    }
     const current = await ensureState(input.scope);
-    if (current.currentCustomer?.responseId !== input.responseId) {
+    if (!current.currentCustomer || (
+      input.preparationId !== undefined
+        ? current.currentCustomer.preparationId !== input.preparationId
+        : current.currentCustomer.responseId !== input.responseId
+    )) {
       return current;
     }
+    const customerFilter = input.preparationId !== undefined
+      ? { 'currentCustomer.preparationId': input.preparationId }
+      : { 'currentCustomer.responseId': input.responseId };
     const updated = await State.findOneAndUpdate(
       {
         ...stateFilter(input.scope),
-        'currentCustomer.responseId': input.responseId,
+        ...customerFilter,
+        ...(input.orderHash !== undefined ? { 'currentOrder.sha256': input.orderHash } : {}),
       },
       {
         $unset: { currentCustomer: 1 },
@@ -726,7 +781,8 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
             existing.customerIdentity !== input.customerIdentity ||
             existing.orderHash !== input.orderHash ||
             existing.preparationId !== input.preparationId ||
-            existing.triggeringMessageId !== input.triggeringMessageId
+            existing.triggeringMessageId !== input.triggeringMessageId ||
+            !sameSelectionProvenance(existing.selectionProvenance, input.selectionProvenance)
           ) {
             throw new Error('quotation ticket response binding is immutable');
           }
@@ -775,7 +831,6 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
           ...(hasBinding
             ? {
                 'currentCustomer.preparationId': input.preparationId,
-                'currentCustomer.responseId': input.responseId,
                 'tickets.responseId': { $ne: input.responseId },
               }
             : {}),
@@ -1130,11 +1185,8 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
         !matchesCustomerPreparation(current.currentCustomer, {
           customerMarkdown: ticket.customerMarkdown,
           customerIdentity: ticket.customerIdentity,
-          triggeringMessageId: ticket.triggeringMessageId,
           selectionProvenance: ticket.selectionProvenance,
           preparationId: ticket.preparationId,
-          responseId: ticket.responseId,
-          orderHash: ticket.orderHash,
         })) {
         throw new Error('quotation signal customer preparation is stale');
       }
@@ -1221,7 +1273,6 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
         ...(ticket.preparationId !== undefined && ticket.responseId !== undefined
           ? {
               'currentCustomer.preparationId': ticket.preparationId,
-              'currentCustomer.responseId': ticket.responseId,
             }
           : {}),
         $or: [
@@ -2197,6 +2248,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
   return {
     ensureState,
     readState,
+    hasSystemOrder,
     setOrder,
     saveCustomer,
     clearCustomer,

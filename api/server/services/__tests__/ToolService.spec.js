@@ -7053,7 +7053,9 @@ describe('quotation transport bridge', () => {
   const makeInput = (resume = false) => ({
     req: { user: { id: 'owner' }, steelNativeContext: {
       requestId: 'response-1', conversationId: 'conversation-1',
-      quotation: { scope: { userId: 'owner', conversationId: 'conversation-1' }, resume },
+      quotation: { scope: { userId: 'owner', conversationId: 'conversation-1' }, resume,
+        messageId: 'confirm-user', state: { currentOrder: { sha256: 'order-hash' }, currentCustomer: { preparationId: 'customer-preparation' } },
+      },
       delegateOcrContext: { modelOptions: { model: 'test-model' } },
       steelHistory: { activityEvents: [], preflightToolCalls: [] },
     } },
@@ -7071,7 +7073,9 @@ describe('quotation transport bridge', () => {
   it('accepts only the completed AI output before starting quotation', async () => {
     const input = makeInput();
     await executeSteelQuotationWorkflow(input);
-    expect(mockAcceptQuotation).toHaveBeenCalledWith(expect.objectContaining({ response: '## quote_signal', finishReason: 'stop' }));
+    expect(mockAcceptQuotation).toHaveBeenCalledWith(expect.objectContaining({ response: '## quote_signal', finishReason: 'stop',
+      messageId: 'confirm-user', expectedOrderHash: 'order-hash', expectedCustomerPreparationId: 'customer-preparation',
+    }));
     expect(mockRunQuotation).toHaveBeenCalledTimes(1);
     expect(mockProcessQuotationPending).toHaveBeenCalledTimes(1);
     expect(mockAcceptQuotation.mock.invocationCallOrder[0]).toBeLessThan(mockRunQuotation.mock.invocationCallOrder[0]);

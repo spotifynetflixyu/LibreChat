@@ -45,7 +45,7 @@ const steelQuotationCustomerPreparationSchema = new Schema<SteelQuotationCustome
     preparationId: { type: String, required: true },
     customerMarkdown: { type: String, required: true },
     customerIdentity: { type: String, required: true },
-    orderHash: { type: String, required: true },
+    orderHash: { type: String },
     triggeringMessageId: { type: String, required: true },
     responseId: { type: String, required: true },
     selectionProvenance: {

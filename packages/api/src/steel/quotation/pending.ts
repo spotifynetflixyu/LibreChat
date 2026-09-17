@@ -8,8 +8,9 @@ import type { QuotationModelInput } from './model';
 import { invokeQuotationModel } from './model';
 import { createSteelQuotationStateService } from './state';
 import { createSteelOcrStateService } from '../ocr/state';
-import { finalizeOcrResponse } from '../ocr/result';
+import { finalizeOcrResponse, parseAssistantMarkdown } from '../ocr/result';
 import { quotationPreparationInstruction } from './preparation';
+import { acceptQuotationResponse } from './runner';
 import { buildDefaultSteelGlobalAgentContext } from '../native/context';
 
 export interface SteelQuotationPendingInputPreparationInput {
@@ -60,7 +61,11 @@ export async function processQuotationPendingMessages(input: {
     heartbeat.unref();
     try {
       const messageId = claim.targetMessageId ?? randomUUID();
-      const previous = await ocrService.readConversationOcrState(input.scope.conversationId);
+      const [previous, quotationState, hasSystemOrder] = await Promise.all([
+        ocrService.readConversationOcrState(input.scope.conversationId),
+        service.readState(input.scope),
+        service.hasSystemOrder(input.scope),
+      ]);
       let markdown = claim.resultMarkdown;
       if (!markdown) {
         const sourceMessageFiles = claim.sourceMessageFiles ?? [];
@@ -83,7 +88,7 @@ export async function processQuotationPendingMessages(input: {
         });
         const result = await invokeQuotationModel({
           role: 'preparation',
-          prompt: `${rules.instructionPrefix}\n\n${quotationPreparationInstruction(previous?.currentOcrResultMarkdown)}\n\nThe previous quotation is now terminal. Process the queued message below exactly once. For order changes, output the complete revised ocr_result and ask the user to confirm a NEW quotation. Do not output customer_data or quote_signal in this response.`,
+          prompt: `${rules.instructionPrefix}\n\n${quotationPreparationInstruction(previous?.currentOcrResultMarkdown, quotationState?.currentCustomer?.customerMarkdown, hasSystemOrder)}\n\nThe previous quotation is now terminal. Process the queued message below exactly once. For order changes, output the complete revised ocr_result and ask the user to confirm the revised order. Do not repeatedly ask whether to quote an existing system_order. An explicit default-B choice may emit customer_data. Do not output quote_signal in this response.`,
           input: preparedInput?.input ?? claim.sourceMessageText ?? '',
           modelOptions: input.modelOptions,
           signal: controller.signal,
@@ -91,9 +96,20 @@ export async function processQuotationPendingMessages(input: {
           onUsage: input.onUsage,
         });
         markdown = result.markdown;
-        if (/^##\s+(quote_signal|system_order|customer_quote)\s*$/mu.test(markdown)) {
+        if (parseAssistantMarkdown(markdown).sections.some((section) =>
+          ['quote_signal', 'system_order', 'customer_quote'].includes(section.title.split(/[｜|]/u)[0]?.trim()),
+        )) {
           throw new Error('Queued corrections require a new order confirmation');
         }
+        await acceptQuotationResponse({
+          scope: input.scope,
+          response: markdown,
+          responseId: messageId,
+          messageId: claim.sourceMessageId,
+          expectedOrderHash: quotationState?.currentOrder?.sha256,
+          expectedCustomerPreparationId: quotationState?.currentCustomer?.preparationId,
+          finishReason: 'stop',
+        });
         if (/^##\s+ocr_result\s*$/mu.test(markdown)) {
           const finalized = finalizeOcrResponse({
             assistantResponse: markdown,

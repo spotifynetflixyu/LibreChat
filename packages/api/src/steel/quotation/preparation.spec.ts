@@ -1,4 +1,4 @@
-import { bindQuotationCustomerResult, hasQuotationOrder, prepareQuotationTurn } from './preparation';
+import { bindQuotationCustomerResult, hasQuotationOrder, prepareQuotationTurn, quotationPreparationStatus } from './preparation';
 import type { SteelToolResult } from '../tools/results';
 
 const mockRead = jest.fn();
@@ -8,9 +8,11 @@ const mockEnqueue = jest.fn();
 const mockSetOrder = jest.fn();
 const mockReadOcr = jest.fn();
 const mockArtifact = jest.fn();
+const mockHasSystemOrder = jest.fn();
 jest.mock('./state', () => ({ createSteelQuotationStateService: () => ({
   ensureState: mockRead, readState: mockRead, saveCustomer: mockSave, clearCustomer: mockClear,
   enqueuePendingMessage: mockEnqueue, setOrder: mockSetOrder, getArtifact: mockArtifact,
+  hasSystemOrder: mockHasSystemOrder,
 }) }));
 jest.mock('../ocr/state', () => ({ createSteelOcrStateService: () => ({ readConversationOcrState: mockReadOcr }) }));
 const scope = { userId: 'owner', conversationId: 'conversation' };
@@ -23,6 +25,40 @@ beforeEach(() => {
   mockSave.mockResolvedValue({ preparationId: 'saved-customer' });
   mockReadOcr.mockResolvedValue(null);
   mockArtifact.mockResolvedValue(null);
+  mockHasSystemOrder.mockResolvedValue(false);
+});
+
+it.each([
+  [false, false, false], [false, false, true], [false, true, false], [false, true, true],
+  [true, false, false], [true, false, true], [true, true, false], [true, true, true],
+])('reports saved data readiness for OCR=%s customer=%s systemOrder=%s', (hasOcrResult, hasCustomerData, hasSystemOrder) => {
+  expect(quotationPreparationStatus(hasOcrResult ? order : undefined, hasCustomerData ? 'saved customer' : undefined, hasSystemOrder)).toEqual({
+    hasOcrResult, hasCustomerData, hasSystemOrder,
+    shouldAskToQuote: hasOcrResult && hasCustomerData && !hasSystemOrder,
+  });
+});
+
+it('injects fresh saved customer and system-order presence into each ordinary turn', async () => {
+  const customerMarkdown = '## customer_data\n\n| 價格等級 |\n| --- |\n| B |';
+  mockRead.mockResolvedValue({ currentOrder: { markdown: order, sha256: 'order-hash' },
+    currentCustomer: { customerMarkdown }, tickets: [], pendingMessages: [] });
+  mockHasSystemOrder.mockResolvedValue(true);
+  const first = await prepareQuotationTurn({ scope, messageId: 'u1', responseId: 'a1', text: '你好' });
+  expect(first.instruction).toContain(JSON.stringify({ hasOcrResult: true, hasCustomerData: true, hasSystemOrder: true, shouldAskToQuote: false }));
+  expect(first.instruction).toContain(customerMarkdown);
+  expect(first.instruction).toContain(order);
+  mockHasSystemOrder.mockResolvedValue(false);
+  const second = await prepareQuotationTurn({ scope, messageId: 'u2', responseId: 'a2', text: '繼續' });
+  expect(second.instruction).toContain(JSON.stringify({ hasOcrResult: true, hasCustomerData: true, hasSystemOrder: false, shouldAskToQuote: true }));
+  expect(mockHasSystemOrder).toHaveBeenCalledTimes(2);
+});
+
+it('clears a prior-turn customer when a new lookup is unresolved', async () => {
+  mockRead.mockResolvedValue({ currentOrder: { markdown: order, sha256: 'order-hash' },
+    currentCustomer: { preparationId: 'prior-customer', responseId: 'old-response' }, pendingMessages: [] });
+  await bindQuotationCustomerResult({ expectedOrderHash: 'order-hash', scope, messageId: 'u1', responseId: 'new-response', expectedCustomerPreparationId: 'prior-customer', result: success([{ id: 1 }, { id: 2 }]) });
+  expect(mockClear).toHaveBeenCalledWith({ scope, responseId: 'new-response', preparationId: 'prior-customer', orderHash: 'order-hash' });
+  expect(mockSave).not.toHaveBeenCalled();
 });
 it('requires the exact saved OCR section and actual rows', () => {
   expect(hasQuotationOrder(order)).toBe(true);
@@ -30,14 +66,14 @@ it('requires the exact saved OCR section and actual rows', () => {
   expect(hasQuotationOrder('## source_file_mapping\n\n| 來源 | 檔名 |\n| --- | --- |\n| F1 | foo.pdf |')).toBe(false);
 });
 it('does not issue customer data or a signal for multiple matches', async () => {
-  const result = await bindQuotationCustomerResult({ scope, messageId: 'confirm', responseId: 'response-1', result: success([{ id: 1 }, { id: 2 }]) });
+  const result = await bindQuotationCustomerResult({ expectedOrderHash: 'order-hash', scope, messageId: 'confirm', responseId: 'response-1', result: success([{ id: 1 }, { id: 2 }]) });
   expect(mockSave).not.toHaveBeenCalled();
-  expect(mockClear).toHaveBeenCalledWith({ scope, responseId: 'response-1' });
+  expect(mockClear).not.toHaveBeenCalled();
   expect(result.ok && result.data.quotationSelectionRequired).toBe(true);
   expect(result.ok && result.data.customerDataMarkdown).toBeUndefined();
 });
 it('binds no-match to a disclosed saved B-tier customer and customer context before admission', async () => {
-  const result = await bindQuotationCustomerResult({ scope, messageId: 'confirm', responseId: 'response-1', result: success([]) });
+  const result = await bindQuotationCustomerResult({ expectedOrderHash: 'order-hash', scope, messageId: 'confirm', responseId: 'response-1', result: success([]) });
   expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({ customerIdentity: 'no-match:default-B',
     triggeringMessageId: 'confirm', customerMarkdown: expect.stringContaining('使用預設 B tier') }));
   expect(result.ok && result.data.quoteSignal).toBe('## quote_signal\n\nstart');
@@ -45,13 +81,13 @@ it('binds no-match to a disclosed saved B-tier customer and customer context bef
 });
 it('does not turn lookup errors into a default customer', async () => {
   const result = { ok: false, toolName: 'search_customers', errorCategory: 'repository_error', errorSummary: 'offline', durationMs: 1, redactionVersion: 1 } as const;
-  expect(await bindQuotationCustomerResult({ scope, messageId: 'confirm', responseId: 'response-1', result })).toBe(result);
+  expect(await bindQuotationCustomerResult({ expectedOrderHash: 'order-hash', scope, messageId: 'confirm', responseId: 'response-1', result })).toBe(result);
   expect(mockSave).not.toHaveBeenCalled();
-  expect(mockClear).toHaveBeenCalledWith({ scope, responseId: 'response-1' });
+  expect(mockClear).not.toHaveBeenCalled();
 });
 it('rejects customer lookup without saved OCR', async () => {
   mockRead.mockResolvedValue({ pendingMessages: [] });
-  await expect(bindQuotationCustomerResult({ scope, messageId: 'confirm', responseId: 'response-1', result: success([]) })).rejects.toThrow('saved order');
+  await expect(bindQuotationCustomerResult({ expectedOrderHash: 'order-hash', scope, messageId: 'confirm', responseId: 'response-1', result: success([]) })).rejects.toThrow('saved order');
 });
 it('queues a correction and resumes before reading or updating the order', async () => {
   mockRead.mockResolvedValue({ activeRun: { runId: 'r1', status: 'interrupted', triggerMessageId: 'old' }, pendingMessages: [] });

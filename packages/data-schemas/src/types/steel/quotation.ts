@@ -43,7 +43,7 @@ export interface SteelQuotationCustomerPreparation {
   preparationId: string;
   customerMarkdown: string;
   customerIdentity: string;
-  orderHash: string;
+  orderHash?: string;
   triggeringMessageId: string;
   responseId: string;
   selectionProvenance: SteelQuotationSelectionProvenance;

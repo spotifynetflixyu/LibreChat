@@ -11,7 +11,7 @@ import { createSteelQuotationStateService } from './state';
 import { buildQuotationChunks, quotationSignal } from './protocol';
 import { parseMarkdownTables } from '../markdown/table';
 import { acceptQuotationResponse, runQuotationPreflight } from './runner';
-import { bindQuotationCustomerResult } from './preparation';
+import { bindQuotationCustomerResult, defaultQuotationCustomerMarkdown, quotationPreparationStatus } from './preparation';
 
 jest.mock('../native/context', () => ({
   buildDefaultSteelGlobalAgentContext: jest.fn(async ({ mode }: { mode: string }) => ({ instructionPrefix: mode })),
@@ -263,15 +263,76 @@ function runnerInput(
 
 describe('quotation runner integration', () => {
   async function prepareCustomer(responseId = 'response-1', tier = 'C') {
-    await service.setOrder({ scope, fullMarkdown: orderMarkdown(31) });
+    const state = await service.setOrder({ scope, fullMarkdown: orderMarkdown(31) });
     const result = await bindQuotationCustomerResult({
       scope, messageId: `user-${responseId}`, responseId,
+      expectedOrderHash: state.currentOrder!.sha256,
+      expectedCustomerPreparationId: state.currentCustomer?.preparationId,
       result: { ok: true, toolName: 'search_customers', durationMs: 1, redactionVersion: 1,
         data: { customers: [{ id: 1, erpCustomerCode: 'C1', displayName: '測試客戶', customerTier: tier }] } },
     });
     if (!result.ok) throw new Error('Customer setup failed');
     return `${String(result.data.customerDataMarkdown)}\n\n${quotationSignal}`;
   }
+
+  it('accepts a later signal-only response using the saved customer and current turn snapshot', async () => {
+    const response = await prepareCustomer();
+    const customerOnly = response.replace(`\n\n${quotationSignal}`, '');
+    await expect(acceptQuotationResponse({ scope, response: customerOnly, responseId: 'response-1', finishReason: 'stop' })).resolves.toBeUndefined();
+    const state = await service.readState(scope);
+    expect(state?.nextSignalIndex).toBe(0);
+    const run = await acceptQuotationResponse({ scope, response: quotationSignal, responseId: 'confirmation-response',
+      messageId: 'confirmation-user', expectedOrderHash: state?.currentOrder?.sha256,
+      expectedCustomerPreparationId: state?.currentCustomer?.preparationId, finishReason: 'stop' });
+    expect(run?.index).toBe(1);
+    expect(run?.triggerMessageId).toBe('confirmation-user');
+  });
+
+  it('persists explicit default-B Markdown before OCR and retains it for later quotation', async () => {
+    const output = { scope, response: defaultQuotationCustomerMarkdown, responseId: 'default-b-response', messageId: 'default-b-user' };
+    await expect(acceptQuotationResponse({ ...output, finishReason: 'length' })).resolves.toBeUndefined();
+    expect((await service.readState(scope))?.currentCustomer).toBeUndefined();
+    await Promise.all([1, 2].map(() => acceptQuotationResponse({ ...output, finishReason: 'stop' })));
+    const first = await service.readState(scope);
+    expect(first?.currentCustomer?.customerIdentity).toBe('explicit-default:B');
+    expect(first?.currentCustomer?.customerMarkdown).toBe(defaultQuotationCustomerMarkdown);
+    expect(first?.nextSignalIndex).toBe(0);
+    expect(quotationPreparationStatus(first?.currentOrder?.markdown, first?.currentCustomer?.customerMarkdown)).toEqual({
+      hasOcrResult: false, hasCustomerData: true, hasSystemOrder: false, shouldAskToQuote: false,
+    });
+    await service.setOrder({ scope, fullMarkdown: orderMarkdown(1) });
+    const prepared = await service.readState(scope);
+    expect(prepared?.currentCustomer?.preparationId).toBe(first?.currentCustomer?.preparationId);
+    const run = await acceptQuotationResponse({ scope, response: quotationSignal, responseId: 'quote-after-ocr',
+      messageId: 'confirmed-order', expectedOrderHash: prepared?.currentOrder?.sha256,
+      expectedCustomerPreparationId: prepared?.currentCustomer?.preparationId, finishReason: 'stop' });
+    expect(run?.index).toBe(1);
+    const snapshot = await service.readArtifact({ scope, ref: run!.snapshotRef });
+    expect((JSON.parse(snapshot!) as { customerMarkdown: string }).customerMarkdown).toBe(defaultQuotationCustomerMarkdown);
+  });
+
+  it('rejects a stale confirmation after the customer or order changed', async () => {
+    await prepareCustomer();
+    const first = await service.readState(scope);
+    const input = { scope, response: quotationSignal, responseId: 'later-confirmation', messageId: 'confirm-user',
+      expectedOrderHash: first?.currentOrder?.sha256, expectedCustomerPreparationId: first?.currentCustomer?.preparationId,
+      finishReason: 'stop' };
+    await prepareCustomer('new-customer-response', 'D');
+    await expect(acceptQuotationResponse(input)).rejects.toThrow('stale preparation');
+    const next = await service.readState(scope);
+    await service.setOrder({ scope, fullMarkdown: orderMarkdown(1) });
+    await expect(acceptQuotationResponse({ ...input, expectedCustomerPreparationId: next?.currentCustomer?.preparationId })).rejects.toThrow('stale preparation');
+    expect((await service.readState(scope))?.nextSignalIndex).toBe(0);
+  });
+
+  it('rejects stale or fabricated customer Markdown without allocating a quotation', async () => {
+    await prepareCustomer();
+    await expect(acceptQuotationResponse({ scope, response: defaultQuotationCustomerMarkdown,
+      responseId: 'stale-default', messageId: 'stale-user', finishReason: 'stop' })).rejects.toThrow('stale preparation');
+    await expect(acceptQuotationResponse({ scope, response: defaultQuotationCustomerMarkdown.replace('| B |', '| A |'),
+      responseId: 'forged', messageId: 'forged-user', finishReason: 'stop' })).rejects.toThrow('saved customer lookup');
+    expect((await service.readState(scope))?.nextSignalIndex).toBe(0);
+  });
 
   it('saves customer Markdown without an index and admits concurrent delivery only once', async () => {
     const response = await prepareCustomer();
@@ -311,11 +372,37 @@ describe('quotation runner integration', () => {
 
   it('invalidates a successful customer selection when a later lookup is unresolved', async () => {
     const response = await prepareCustomer();
+    const state = await service.readState(scope);
     await bindQuotationCustomerResult({ scope, messageId: 'user-response-1', responseId: 'response-1',
+      expectedOrderHash: state!.currentOrder!.sha256,
+      expectedCustomerPreparationId: state?.currentCustomer?.preparationId,
       result: { ok: true, toolName: 'search_customers', durationMs: 1, redactionVersion: 1, data: { customers: [{ id: 1 }, { id: 2 }] } },
     });
     await expect(acceptQuotationResponse({ scope, response, responseId: 'response-1', finishReason: 'stop' })).rejects.toThrow();
     expect((await service.readState(scope))?.nextSignalIndex).toBe(0);
+  });
+
+  it.each(['failure', 'multiple', 'unique'])('rejects a delayed older customer lookup with %s after a newer selection', async (outcome) => {
+    await prepareCustomer('older-response', 'C');
+    const beforeLookup = await service.readState(scope);
+    await prepareCustomer('newer-response', 'D');
+    const newer = await service.readState(scope);
+    const result: SteelToolResult = outcome === 'failure'
+      ? { ok: false, toolName: 'search_customers', durationMs: 1, redactionVersion: 1, errorCategory: 'repository_error', errorSummary: 'offline' }
+      : { ok: true, toolName: 'search_customers', durationMs: 1, redactionVersion: 1,
+          data: { customers: outcome === 'multiple' ? [{ id: 1 }, { id: 2 }] : [{ id: 1, customerTier: 'C' }] } };
+    await expect(bindQuotationCustomerResult({ scope, messageId: 'older-user', responseId: 'older-response',
+      expectedOrderHash: beforeLookup!.currentOrder!.sha256,
+      expectedCustomerPreparationId: beforeLookup?.currentCustomer?.preparationId, result,
+    })).rejects.toThrow('stale preparation');
+    await expect(acceptQuotationResponse({ scope, response: quotationSignal, responseId: 'older-response',
+      messageId: 'older-user', expectedOrderHash: beforeLookup!.currentOrder!.sha256,
+      expectedCustomerPreparationId: beforeLookup?.currentCustomer?.preparationId, finishReason: 'stop',
+    })).rejects.toThrow('stale preparation');
+    const after = await service.readState(scope);
+    expect(after?.currentCustomer).toEqual(newer?.currentCustomer);
+    expect(after?.nextSignalIndex).toBe(0);
+    expect(after?.activeRun).toBeUndefined();
   });
 
   it('keeps a cancelled signal replay terminal and allocates a fresh index for a new response', async () => {

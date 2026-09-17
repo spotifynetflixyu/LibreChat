@@ -10,6 +10,30 @@ import { escapeMarkdownTableCell } from '../markdown/row-codec';
 import { createSteelQuotationStateService } from './state';
 import { quotationSignal } from './protocol';
 
+export const defaultQuotationCustomerMarkdown: string = [
+  '## customer_data',
+  '',
+  '| 客戶編號 | 客戶名稱 | 價格等級 | 說明 |',
+  '| --- | --- | --- | --- |',
+  '|  | 未指定客戶 | B | 用戶指定預設 B tier |',
+].join('\n');
+
+export function quotationPreparationStatus(order?: string, customer?: string, hasSystemOrder = false): {
+  hasOcrResult: boolean;
+  hasCustomerData: boolean;
+  hasSystemOrder: boolean;
+  shouldAskToQuote: boolean;
+} {
+  const hasOcrResult = hasQuotationOrder(order);
+  const hasCustomerData = Boolean(customer?.trim());
+  return {
+    hasOcrResult,
+    hasCustomerData,
+    hasSystemOrder,
+    shouldAskToQuote: hasOcrResult && hasCustomerData && !hasSystemOrder,
+  };
+}
+
 export function isUnfinishedQuotation(status?: string): boolean {
   return status !== undefined && status !== 'completed' && status !== 'cancelled';
 }
@@ -46,8 +70,10 @@ export async function prepareQuotationTurn(input: {
     }
     return { scope: input.scope, state, instruction: '', resume: true };
   }
-  const ocr = await createSteelOcrStateService(mongoose)
-    .readConversationOcrState(input.scope.conversationId);
+  const [ocr, hasSystemOrder] = await Promise.all([
+    createSteelOcrStateService(mongoose).readConversationOcrState(input.scope.conversationId),
+    service.hasSystemOrder(input.scope),
+  ]);
   const markdown = ocr?.currentOcrResultMarkdown;
   if (markdown) {
     state = await service.setOrder({
@@ -61,24 +87,33 @@ export async function prepareQuotationTurn(input: {
     scope: input.scope,
     state,
     resume: false,
-    instruction: quotationPreparationInstruction(hasQuotationOrder(state.currentOrder?.markdown)
-      ? state.currentOrder?.markdown : undefined),
+    instruction: quotationPreparationInstruction(
+      state.currentOrder?.markdown, state.currentCustomer?.customerMarkdown, hasSystemOrder,
+    ),
   };
 }
 
-export function quotationPreparationInstruction(order?: string): string {
+export function quotationPreparationInstruction(order?: string, customer?: string, hasSystemOrder = false): string {
+  const status = quotationPreparationStatus(order, customer, hasSystemOrder);
   return [
+    '# Saved quotation state for this turn',
+    JSON.stringify(status),
+    'These flags report saved data, not user consent. When shouldAskToQuote is true, ask whether to start quoting only if the user has not already clearly authorized the current order and customer/tier. When hasSystemOrder is true, do not repeatedly ask whether to quote; handle the current request. A new signal still requires an explicit request to quote again, and order changes still require confirmation of the updated order.',
     '# Current quotation preparation workflow',
-    'Before quoting, present one complete ## ocr_result table for the user to confirm. Text orders use the same complete table; use stable 來源=文字訂單 and stable 零件編號 for new text rows.',
+    'When preparing a new or revised order, present one complete ## ocr_result table for the user to confirm. Reuse an unchanged saved order rather than presenting it again on every turn. Text orders use the same complete table; use stable 來源=文字訂單 and stable 零件編號 for new text rows.',
     'The ocr_result table must contain 來源, 零件編號, 類別, and the available specification/quantity fields. Preserve existing columns and all user-provided material, size, unit, quantity, and notes; leave unknown facts blank. Keep dimensions in explicitly labeled mm columns where applicable.',
     'Apply corrections or explicit deletions to the whole order and output the full new ocr_result. Never quote in that response; wait for the user to confirm quotation of the displayed revision.',
     order ? `For an explicit deletion only, also emit ## ocr_deletions with columns order_hash, 來源, 零件編號 listing exactly the deleted prior rows. Use order_hash=${quotationFingerprint(order)}. Never use omission alone to delete rows.` : '',
-    'Do not call search_customers before a saved ocr_result exists. Only call it when the user confirms the current order and requests quotation.',
+    'Treat order confirmation, customer/tier selection, presentation of customer_data, and consent to start quoting as prerequisites, not a fixed interview sequence. Reuse unchanged information and explicit confirmations; ask only for missing or changed facts. Customer details may arrive before the order, but do not call search_customers before a saved ocr_result exists.',
     'If multiple customer matches are returned, ask the user to choose and do not output customer_data or quote_signal. After the user chooses, search the exact selected customer again to resolve the selection.',
-    'After a unique match or successful no-match search, copy the tool-provided customerDataMarkdown and quoteSignal exactly in the same response, then finish. No-match explicitly uses default B. A tool error is not no-match.',
+    'Ask for the customer name or the choice to use default B tier only if neither is known. After a unique match or successful no-match search, present the tool-provided customerDataMarkdown exactly. A successful no-match explicitly uses default B; a tool error is not no-match.',
+    'For an explicit direct-B choice, do not invent a customer or search merely to manufacture a no-match. Present ## customer_data with columns 客戶編號, 客戶名稱, 價格等級, 說明 and one row: blank customer code, 未指定客戶, B, 用戶指定預設 B tier.',
+    'When hasSystemOrder is false and the complete order and customer_data are presented, ask whether to start quoting unless the user already explicitly requested quotation of that displayed order and confirmed customer/tier. A customer name or B-tier choice alone is not start consent. Wait for the answer without emitting quoteSignal. Customer_data and quoteSignal may occur in separate responses; preserve unchanged confirmed context across turns.',
+    'Emit quoteSignal only after all prerequisites are satisfied, then finish. Order confirmation and start consent may be in one user message; do not ask the same question again. Changes to the order or customer/tier invalidate prior start consent. A new explicit request to re-quote unchanged confirmed data is fresh start consent, including after cancellation.',
     'Use exactly ## quote_signal followed by a blank line and start; include no index or token. Never invent customer identity. Do not call search_price_candidates, calculate or output system_order/customer_quote, or output a quotation completion summary in this preparation response.',
     'A saved order is not confirmation by itself. Never reuse confirmation after a correction, and never emit a signal if this response contains ocr_result.',
-    order ? `# Saved complete order\n${order}` : '# No saved order exists. Prepare the complete ocr_result first.',
+    status.hasOcrResult ? `# Saved complete order\n${order}` : '# No saved complete order exists. Prepare the complete ocr_result first.',
+    status.hasCustomerData ? `# Saved customer data\n${customer}` : '# No saved customer_data exists. Ask for a customer name or an explicit default-B choice if it is not already known.',
   ].join('\n\n');
 }
 
@@ -95,23 +130,37 @@ export async function bindQuotationCustomerResult(input: {
   scope: SteelQuotationScope;
   messageId: string;
   responseId: string;
+  expectedOrderHash: string;
+  expectedCustomerPreparationId?: string;
   result: SteelToolResult;
 }): Promise<SteelToolResult> {
   const service = createSteelQuotationStateService(mongoose);
-  await service.clearCustomer({ scope: input.scope, responseId: input.responseId });
-  if (!input.result.ok) {
-    return input.result;
-  }
   const state = await service.readState(input.scope);
   if (!state?.currentOrder || !hasQuotationOrder(state.currentOrder.markdown) ||
     isUnfinishedQuotation(state.activeRun?.status)) {
     throw new Error('Customer lookup requires a saved order and no unfinished quotation');
+  }
+  if (state.currentOrder.sha256 !== input.expectedOrderHash ||
+    state.currentCustomer?.preparationId !== input.expectedCustomerPreparationId) {
+    throw new Error('Customer lookup is based on stale preparation data');
+  }
+  const clearPrevious = async () => {
+    if (input.expectedCustomerPreparationId) {
+      await service.clearCustomer({ scope: input.scope, responseId: input.responseId,
+        preparationId: input.expectedCustomerPreparationId, orderHash: input.expectedOrderHash,
+      });
+    }
+  };
+  if (!input.result.ok) {
+    await clearPrevious();
+    return input.result;
   }
   const customers = input.result.data.customers;
   if (!Array.isArray(customers)) {
     throw new Error('Customer lookup returned an invalid customer list');
   }
   if (customers.length > 1) {
+    await clearPrevious();
     return {
       ...input.result,
       data: { ...input.result.data, quotationSelectionRequired: true },
@@ -137,6 +186,7 @@ export async function bindQuotationCustomerResult(input: {
     customerIdentity: identity,
     responseId: input.responseId,
     orderHash: state.currentOrder.sha256,
+    expectedPreparationId: input.expectedCustomerPreparationId ?? null,
     triggeringMessageId: input.messageId,
     selectionProvenance: {
       method: customer ? 'unique' : 'default_tier',

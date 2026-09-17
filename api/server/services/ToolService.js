@@ -873,11 +873,13 @@ function createSteelNativeToolExecute({ req, res, streamId, runState }) {
 
   return async ({ toolName, arguments: args, providerToolCallId }) => {
     const quotation = req.steelNativeContext?.quotation;
+    let quotationLookupState;
     if (quotation) {
       if (toolName === 'search_price_candidates') {
         throw new Error('Price lookup is only available inside quotation chunks');
       }
       const state = await createSteelQuotationStateService(mongoose).readState(quotation.scope);
+      quotationLookupState = state;
       if (!hasQuotationOrder(state?.currentOrder?.markdown) ||
         isUnfinishedQuotation(state?.activeRun?.status)) {
         throw new Error('Customer lookup requires a saved order and no unfinished quotation');
@@ -895,6 +897,8 @@ function createSteelNativeToolExecute({ req, res, streamId, runState }) {
         scope: quotation.scope,
         messageId: quotation.messageId,
         responseId: req.steelNativeContext.requestId,
+        expectedOrderHash: quotationLookupState.currentOrder.sha256,
+        expectedCustomerPreparationId: quotationLookupState.currentCustomer?.preparationId,
         result,
       });
     }
@@ -6277,6 +6281,9 @@ async function executeSteelQuotationWorkflow({
       scope,
       response: quotationMessageText(last),
       responseId: context.requestId,
+      messageId: quotation.messageId,
+      expectedOrderHash: quotation.state?.currentOrder?.sha256,
+      expectedCustomerPreparationId: quotation.state?.currentCustomer?.preparationId,
       finishReason: last.response_metadata?.finish_reason,
     });
     if (!accepted) return;
