@@ -1,5 +1,11 @@
 import { useRecoilValue } from 'recoil';
-import { MutationKeys, QueryKeys, dataService } from 'librechat-data-provider';
+import {
+  DynamicQueryKeys,
+  MutationKeys,
+  QueryKeys,
+  dataService,
+  isSteelQuotationActiveStatus,
+} from 'librechat-data-provider';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type {
   QueryObserverResult,
@@ -12,6 +18,7 @@ import type {
   OpenAIOAuthTokenLogoutStatus,
   OpenAIOAuthTokenStatus,
   OpenAIOAuthUsageRemaining,
+  SteelQuotationStatus,
 } from 'librechat-data-provider';
 import store from '~/store';
 
@@ -40,6 +47,28 @@ export const useGetOpenAIOAuthUsageQuery = (
       staleTime: 30_000,
       ...config,
       enabled: (config?.enabled ?? true) === true && queriesEnabled,
+    },
+  );
+};
+
+export const useGetSteelQuotationStatusQuery = (
+  conversationId?: string | null,
+  config?: UseQueryOptions<SteelQuotationStatus>,
+): QueryObserverResult<SteelQuotationStatus> => {
+  const queriesEnabled = useRecoilValue<boolean>(store.queriesEnabled);
+  const enabled = Boolean(conversationId) && (config?.enabled ?? true) && queriesEnabled;
+  return useQuery<SteelQuotationStatus>(
+    DynamicQueryKeys.steelQuotationStatus(conversationId ?? ''),
+    () => dataService.getSteelQuotationStatus(conversationId ?? ''),
+    {
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: true,
+      refetchOnMount: true,
+      refetchInterval: (data) =>
+        data && isSteelQuotationActiveStatus(data.status) ? 1_000 : false,
+      staleTime: 0,
+      ...config,
+      enabled,
     },
   );
 };
@@ -94,6 +123,21 @@ export const useRefreshOpenAIOAuthTokenMutation = (): UseMutationResult<
     {
       onSuccess: (data) => {
         queryClient.setQueryData([QueryKeys.openAIOAuthTokenStatus], data);
+      },
+    },
+  );
+};
+
+export const useCancelSteelQuotationMutation = (
+  conversationId?: string | null,
+): UseMutationResult<SteelQuotationStatus, unknown, number, unknown> => {
+  const queryClient = useQueryClient();
+  return useMutation(
+    [MutationKeys.cancelSteelQuotation, conversationId],
+    (index: number) => dataService.cancelSteelQuotation(conversationId ?? '', index),
+    {
+      onSuccess: (data) => {
+        queryClient.setQueryData(DynamicQueryKeys.steelQuotationStatus(conversationId ?? ''), data);
       },
     },
   );

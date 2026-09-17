@@ -4,6 +4,7 @@ import type { EventSubmission, TMessage } from 'librechat-data-provider';
 import { steelNativeActivityByMessageId, type SteelNativeActivityEvent } from '~/store/steel';
 import useSteelEventHandler, {
   appendSteelNativeActivityEvent,
+  normalizePersistedSteelActivityEvent,
   normalizeSteelActivityEvent,
 } from '~/hooks/SSE/useSteelEventHandler';
 
@@ -63,6 +64,98 @@ describe('useSteelEventHandler', () => {
         receivedAt: expect.any(Number),
       },
     ]);
+  });
+
+  it('normalizes and deduplicates quotation status events by run and progress identity', () => {
+    const { result } = renderHook(() => useHarness('assistant-quotation'), {
+      wrapper: RecoilRoot,
+    });
+    const event = {
+      event: 'steel_event' as const,
+      data: {
+        type: 'quotation_status' as const,
+        source: 'quotation_preflight' as const,
+        conversationId: 'conversation-1',
+        requestId: 'request-1',
+        messageId: 'assistant-quotation',
+        index: 3,
+        runId: 'quotation-run-3',
+        stage: 'chunk',
+        status: 'running' as const,
+        completedChunks: 1,
+        totalChunks: 3,
+        chunkIndex: 2,
+        attempt: 'attempt-1',
+      },
+    };
+
+    act(() => {
+      result.current.steelEventHandler(event, createSubmission('assistant-quotation'));
+      result.current.steelEventHandler(event, createSubmission('assistant-quotation'));
+    });
+
+    expect(result.current.activity).toEqual([
+      expect.objectContaining({
+        type: 'quotation_status',
+        source: 'quotation_preflight',
+        conversationId: 'conversation-1',
+        index: 3,
+        runId: 'quotation-run-3',
+        status: 'running',
+        completedChunks: 1,
+        totalChunks: 3,
+        chunkIndex: 2,
+        attempt: 'attempt-1',
+      }),
+    ]);
+    expect(
+      normalizePersistedSteelActivityEvent({
+        ...event.data,
+        message: undefined,
+      }),
+    ).toEqual(expect.objectContaining({ type: 'quotation_status', status: 'running' }));
+  });
+
+  it('does not let a delayed active event regress a terminal quotation status', () => {
+    const terminal: SteelNativeActivityEvent = {
+      type: 'quotation_status',
+      source: 'quotation_preflight',
+      conversationId: 'conversation-1',
+      index: 3,
+      runId: 'quotation-run-3',
+      stage: 'cancelled',
+      status: 'cancelled',
+      completedChunks: 1,
+      totalChunks: 3,
+    };
+    const delayed: SteelNativeActivityEvent = {
+      ...terminal,
+      stage: 'chunk',
+      status: 'running',
+      completedChunks: 0,
+      chunkIndex: 1,
+      attempt: 'attempt-1',
+    };
+
+    expect([terminal, delayed].reduce(appendSteelNativeActivityEvent, [])).toEqual([terminal]);
+  });
+
+  it('rejects malformed quotation status progress events', () => {
+    expect(
+      normalizeSteelActivityEvent({
+        event: 'steel_event',
+        data: {
+          type: 'quotation_status',
+          source: 'quotation_preflight',
+          conversationId: 'conversation-1',
+          index: 1,
+          stage: 'chunk',
+          status: 'running',
+          completedChunks: 4,
+          totalChunks: 3,
+        },
+      }),
+    ).toBeNull();
   });
 
   it('stores indexed delegate OCR lifecycle events in the top-level activity state', () => {

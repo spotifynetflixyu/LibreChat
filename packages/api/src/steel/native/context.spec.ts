@@ -93,7 +93,7 @@ function createDependencies(): SteelRuntimeContextDependencies {
       }),
       createAgentRule({
         id: 3,
-        slug: 'steel-output-rule',
+        slug: 'steel-workbook-output-policy',
         ruleType: 'output',
         title: 'Steel output rule',
         prompt: 'Workbook output rule fixture',
@@ -243,9 +243,25 @@ describe('Steel native context adapter', () => {
   });
 
   it('keeps the standard prefix deterministic and leaves the dynamic tail empty', async () => {
+    const dependencies = createDependencies();
+    dependencies.listAgentRules = jest.fn(async () => [
+      createAgentRule(),
+      createAgentRule({
+        id: 11,
+        slug: 'steel-quote-main-agent-policy',
+        ruleSections: ['quote_main'],
+        prompt: 'Quotation-only main fixture',
+      }),
+      createAgentRule({
+        id: 12,
+        slug: 'steel-quote-child-agent-policy',
+        ruleSections: ['quote_child'],
+        prompt: 'Quotation-only child fixture',
+      }),
+    ]);
     const context = await buildDefaultSteelGlobalAgentContext({
       conversation: { requestId: 'request_1', activeHistory: [] },
-      dependencies: createDependencies(),
+      dependencies,
     });
 
     expect(context.mode).toBe('standard');
@@ -254,6 +270,8 @@ describe('Steel native context adapter', () => {
     expect(context.instructionPrefix).toContain('Quote rule fixture');
     expect(context.instructionPrefix).toContain('Calculation output rule fixture');
     expect(context.instructionPrefix).toContain('Workbook output rule fixture');
+    expect(context.instructionPrefix).not.toContain('Quotation-only main fixture');
+    expect(context.instructionPrefix).not.toContain('Quotation-only child fixture');
     expect(context.instructionPrefix.indexOf('Calculation output rule fixture')).toBeLessThan(
       context.instructionPrefix.indexOf('Workbook output rule fixture'),
     );
@@ -529,6 +547,71 @@ describe('Steel native context adapter', () => {
     expect(context.instructionPrefix).not.toContain('OCR organizer rule fixture');
     expect(context.instructionPrefix).not.toContain('Agent rule fixture');
     expect(context.instructionPrefix).not.toContain('Quote rule fixture');
+  });
+
+  it('gives quote_main only its aggregation and review contract', async () => {
+    const dependencies = createDependencies();
+    dependencies.listAgentRules = jest.fn(async () => [
+      createAgentRule({
+        slug: 'steel-quote-main-agent-policy',
+        ruleSections: ['quote_main'],
+        prompt: 'Quotation main aggregation rule fixture',
+      }),
+    ]);
+    const context = await buildSteelGlobalAgentContext({
+      conversation: { requestId: 'request_quote_main_rules', activeHistory: [] },
+      dependencies,
+      mode: 'quote_main',
+    });
+
+    expect(context.mode).toBe('quote_main');
+    expect(context.instructionPrefix).toContain('Quotation main aggregation rule fixture');
+    expect(context.instructionPrefix).not.toContain('Agent rule fixture');
+    expect(context.instructionPrefix).not.toContain('Quote rule fixture');
+    expect(context.instructionPrefix).not.toContain('Calculation output rule fixture');
+    expect(context.instructionPrefix).not.toContain('search_price_candidates');
+    expect(context.instructionPrefix).toContain('Workbook output rule fixture');
+  });
+
+  it('gives quote_child workbook row rules and finishes with its scoped output contract', async () => {
+    const dependencies = createDependencies();
+    dependencies.listAgentRules = jest.fn(async () => [
+      createAgentRule({
+        slug: 'steel-quote-child-agent-policy',
+        ruleSections: ['quote_child'],
+        prompt: 'Quotation child lookup rule fixture',
+      }),
+    ]);
+    dependencies.listOutputRules = jest.fn(async () => [
+      createAgentRule({
+        slug: 'steel-quote-calculation-verification-policy',
+        ruleType: 'output',
+        ruleSections: ['system_order_calculation'],
+        prompt: 'Quotation calculation rule fixture',
+      }),
+      createAgentRule({
+        id: 3,
+        slug: 'steel-workbook-output-policy',
+        ruleType: 'output',
+        prompt: 'Workbook output rule fixture',
+      }),
+    ]);
+    const context = await buildSteelGlobalAgentContext({
+      conversation: { requestId: 'request_quote_child_rules', activeHistory: [] },
+      dependencies,
+      mode: 'quote_child',
+    });
+
+    expect(context.mode).toBe('quote_child');
+    expect(context.instructionPrefix).toContain('Quotation child lookup rule fixture');
+    expect(context.instructionPrefix).toContain('Quote rule fixture');
+    expect(context.instructionPrefix).toContain('Quotation calculation rule fixture');
+    expect(context.instructionPrefix).toContain('Use tier B when the customer tier is unknown.');
+    expect(context.instructionPrefix).toContain('Workbook output rule fixture');
+    expect(context.instructionPrefix.lastIndexOf('Quotation child lookup rule fixture')).toBeGreaterThan(
+      context.instructionPrefix.indexOf('Workbook output rule fixture'),
+    );
+    expect(context.instructionPrefix).not.toContain('Agent rule fixture');
   });
 
   it('does not invent source filenames for OCR Markdown results', async () => {

@@ -55,6 +55,15 @@ const {
   createSteelPostgresPool,
   createSteelToolRunState,
   executeSteelTool,
+  bindQuotationCustomerResult,
+  acceptQuotationResponse,
+  runQuotationPreflight,
+  processQuotationPendingMessages,
+  quotationMessageText,
+  buildSteelQuotationStatusEventEnvelope,
+  createSteelQuotationStateService,
+  hasQuotationOrder,
+  isUnfinishedQuotation,
   mergeSteelToolDefinitions,
   resolveSteelProviderToolName,
   prepareSteelNativeToolConfig,
@@ -863,13 +872,31 @@ function createSteelNativeToolExecute({ req, res, streamId, runState }) {
   };
 
   return async ({ toolName, arguments: args, providerToolCallId }) => {
-    const result = await executeSteelTool({
+    const quotation = req.steelNativeContext?.quotation;
+    if (quotation) {
+      if (toolName === 'search_price_candidates') {
+        throw new Error('Price lookup is only available inside quotation chunks');
+      }
+      const state = await createSteelQuotationStateService(mongoose).readState(quotation.scope);
+      if (!hasQuotationOrder(state?.currentOrder?.markdown) ||
+        isUnfinishedQuotation(state?.activeRun?.status)) {
+        throw new Error('Customer lookup requires a saved order and no unfinished quotation');
+      }
+    }
+    let result = await executeSteelTool({
       client: getDefaultSteelNativeToolClient(),
       toolName,
       arguments: args,
       providerToolCallId,
       runState,
     });
+    if (quotation && toolName === 'search_customers') {
+      result = await bindQuotationCustomerResult({
+        scope: quotation.scope,
+        messageId: quotation.messageId,
+        result,
+      });
+    }
     const captureResult = await captureSteelNativeToolResult({
       writer: getWorkingOrderMemoryWriter(),
       conversationId,
@@ -5776,6 +5803,10 @@ async function loadToolsForExecution({
       allowPaddleOcr,
       excludeDelegateOcr,
       delegateOcrPolicy: req?.steelNativeContext?.delegateOcrPolicy,
+      ...(req?.steelNativeContext?.quotation ? {
+        quotationRole: 'preparation',
+        hasQuotationOrder: hasQuotationOrder(req.steelNativeContext.quotation.state?.currentOrder?.markdown),
+      } : {}),
     },
   );
   const executionToolNames = (visibleToolConfig.tools ?? []).filter(
@@ -6228,7 +6259,157 @@ async function loadActionToolsForExecution({
   return loadedActionTools;
 }
 
+/** Shared post-response/pre-turn quotation adapter for chat and Responses transports. */
+async function executeSteelQuotationWorkflow({
+  req, res, streamId, signal, agent, run, onText, onUsage, onSteerApplied, userMCPAuthMap, requestScopedConnections,
+}) {
+  const context = req?.steelNativeContext;
+  const quotation = context?.quotation;
+  if (!quotation) return;
+  const { scope } = quotation;
+  const service = createSteelQuotationStateService(mongoose);
+  if (!quotation.resume) {
+    const messages = run?.getRunMessages?.() ?? [];
+    const last = [...messages].reverse().find((message) => message.getType?.() === 'ai' || message._getType?.() === 'ai');
+    if (!last || last.tool_calls?.length || signal.aborted || run?.interrupt) return;
+    const accepted = await acceptQuotationResponse({
+      scope,
+      response: quotationMessageText(last),
+      responseId: context.requestId,
+      finishReason: last.response_metadata?.finish_reason,
+    });
+    if (!accepted) return;
+  }
+  const modelOptions = context.delegateOcrContext?.modelOptions;
+  if (!modelOptions) throw new Error('Quotation requires resolved model options');
+  const persist = async ({ messageId, parentMessageId, markdown }, emit = true) => {
+    const saved = await db.saveMessage(req, {
+      messageId,
+      conversationId: scope.conversationId,
+      parentMessageId,
+      isCreatedByUser: false,
+      text: markdown,
+      content: [{ type: 'text', text: markdown }],
+      sender: agent?.name ?? 'Agent',
+      endpoint: 'agents',
+      model: agent?.id,
+      finish_reason: 'stop',
+      metadata: { steel: { activityEvents: context.steelHistory?.activityEvents, preflightToolCalls: context.steelHistory?.preflightToolCalls } },
+    }, { context: 'Quotation preflight durable publication' });
+    if (!saved) throw new Error('Quotation message publication failed');
+    if (emit) await onText(`\n\n${markdown}`);
+  };
+  const collectSteers = async (terminal = false) => {
+    if (!streamId || !onSteerApplied) return;
+    const lifecycle = GenerationJobManager.steering;
+    const pending = terminal
+      ? await lifecycle.closeAndDrain(streamId, req._resumableJobCreatedAt)
+      : await lifecycle.drain(streamId, req._resumableJobCreatedAt);
+    for (let index = 0; index < pending.length; index += 1) {
+      const message = pending[index];
+      try {
+        if (String(message.userId) !== scope.userId) throw new Error('Queued message owner mismatch');
+        await service.enqueuePendingMessage({
+          scope,
+          sourceMessageId: message.steerId,
+          sourceMessageText: message.text,
+          sourceMessageFiles: message.files?.map((file) => ({
+            fileId: file.file_id ?? file.fileId ?? file.id,
+            filename: file.filename ?? file.name,
+            mediaType: file.type ?? file.mediaType ?? file.mimeType,
+          })),
+          targetMessageId: `${message.steerId}-quotation-response`,
+        });
+        await onSteerApplied(message);
+        await GenerationJobManager.noteSteersRemoved(streamId, [message.steerId], req._resumableJobCreatedAt);
+      } catch (error) {
+        await lifecycle.restoreClaimed(streamId, pending.slice(index), req._resumableJobCreatedAt);
+        throw error;
+      }
+    }
+  };
+  const quotationToolIndexes = new Map();
+  const result = await runQuotationPreflight({
+    scope, modelOptions, signal, onUsage,
+    onProgress: async ({ run: active, completedChunks, totalChunks, chunkIndex, attempt }) => {
+      await collectSteers();
+      await emitSteelNativeEvents({ req, res, streamId, events: [buildSteelQuotationStatusEventEnvelope({
+        conversationId: scope.conversationId,
+        requestId: context.requestId,
+        messageId: context.requestId,
+        index: active.index,
+        runId: active.runId,
+        stage: active.status,
+        status: active.status,
+        completedChunks, totalChunks, chunkIndex, attempt,
+      })] });
+    },
+    onTool: async ({ run: active, id, chunkIndex, attempt, arguments: args, result: toolResult }) => {
+      const providerToolCallId = `quotation:${active.runId}:${chunkIndex}:${attempt}:${id}`;
+      const stepId = `${providerToolCallId}:step`;
+      const index = quotationToolIndexes.get(providerToolCallId) ?? (context.steelHistory?.preflightToolCalls?.length ?? 0);
+      quotationToolIndexes.set(providerToolCallId, index);
+      const call = { type: 'tool_call', id: providerToolCallId, name: 'search_price_candidates', args, progress: toolResult ? 1 : 0,
+        ...(toolResult ? { output: JSON.stringify(toolResult) } : {}) };
+      const historyChanged = upsertSteelNativePreflightToolCall(context.steelHistory, call);
+      await emitSteelNativeEvents({ req, res, streamId, historyChanged, events: toolResult
+        ? [createSteelPaddleOcrRunStepCompletedEvent({ stepId, providerToolCallId, toolName: call.name, args, output: toolResult, index })]
+        : [createSteelPaddleOcrRunStepEvent({ requestId: context.requestId, stepId, providerToolCallId, toolName: call.name, index }),
+          createSteelPaddleOcrRunStepDeltaEvent({ stepId, providerToolCallId, toolName: call.name, args, index })] });
+    },
+    publishFinal: async ({ run: active, markdown }) => persist({
+      messageId: active.targetMessageId ?? context.requestId,
+      parentMessageId: active.triggerMessageId,
+      markdown,
+    }),
+  });
+  if (result.status === 'busy') {
+    await onText('\n\n報價正在處理中，這則訊息已保存，完成後會自動處理。');
+    return;
+  }
+  if (result.status === 'cancelled') await onText('\n\n報價已取消。');
+  await collectSteers(true);
+  let pendingDisplay = [];
+  await processQuotationPendingMessages({
+    scope, modelOptions, signal, onUsage,
+    publish: async (output) => {
+      await persist(output, false);
+      if (/^ {0,3}##[ \t]+ocr_result[ \t]*$/imu.test(output.markdown)) pendingDisplay = [output.markdown];
+      else pendingDisplay.push(output.markdown);
+    },
+    preparePendingInput: async ({ sourceMessageId, sourceMessageText, sourceMessageFiles, signal: pendingSignal, assertActive }) => {
+      await assertActive();
+      const previousContext = req.steelNativeContext;
+      req.steelNativeContext = {
+        ...previousContext,
+        currentTurnFiles: sourceMessageFiles,
+        requestId: `${sourceMessageId}-quotation-ocr`,
+        assistantTurnIndex: previousContext.assistantTurnIndex ?? 0,
+      };
+      try {
+        const prepared = await runSteelPaddleOcrPreflight({ req, res, streamId, signal: pendingSignal, agent, userMCPAuthMap, requestScopedConnections });
+        await assertActive();
+        const results = prepared.currentOcrMarkdownResults ?? [];
+        if (prepared.failedKeys?.length || results.length === 0 || results.some((entry) => entry.ocrPreprocessing?.partial === true || typeof entry.content !== 'string' || !entry.content.trim())) {
+          throw new Error('Queued attachments could not finish OCR; their message remains pending');
+        }
+        return {
+          currentUserTurn: sourceMessageText,
+          input: [sourceMessageText ?? '', ...results.map((entry) => entry.content)].join('\n\n'),
+        };
+      } finally {
+        req.steelNativeContext = previousContext;
+      }
+    },
+  });
+  // Emit one final order revision; multiple ocr_result sections in the parent
+  // response would let its ordinary save-finalizer pick an earlier correction.
+  if (pendingDisplay.some((markdown) => /^ {0,3}##[ \t]+ocr_result[ \t]*$/imu.test(markdown))) quotation.pendingOrderPersisted = true;
+  if (pendingDisplay.length) await onText(`\n\n${pendingDisplay.join('\n\n')}`);
+}
+
 module.exports = {
+  executeSteelQuotationWorkflow,
   loadTools,
   isBuiltInTool,
   getToolkitKey,

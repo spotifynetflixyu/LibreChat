@@ -9,7 +9,7 @@ import type {
   UpdateFilter,
   UpdateResult,
 } from 'mongodb';
-import type { IChatProject, IConversation } from '../types';
+import type { IChatProject, IConversation, ISteelQuotationArtifact, ISteelQuotationState } from '../types';
 import { ConversationMethods, createConversationMethods } from './conversation';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createModels } from '../models';
@@ -30,6 +30,8 @@ let ConversationTag: mongoose.Model<{
   count: number;
   position: number;
 }>;
+let SteelQuotationState: mongoose.Model<ISteelQuotationState>;
+let SteelQuotationArtifact: mongoose.Model<ISteelQuotationArtifact>;
 let modelsToCleanup: string[] = [];
 
 // Mock message methods (same as original test mocking ./Message)
@@ -53,6 +55,8 @@ beforeAll(async () => {
     count: number;
     position: number;
   }>;
+  SteelQuotationState = models.SteelQuotationState;
+  SteelQuotationArtifact = models.SteelQuotationArtifact;
 
   methods = createConversationMethods(mongoose, { getMessages, deleteMessages });
 
@@ -1562,6 +1566,22 @@ describe('Conversation Operations', () => {
         title: 'To Delete',
         endpoint: EModelEndpoint.openAI,
       });
+      await SteelQuotationState.create({
+        userId: 'user123',
+        conversationId: mockConversationData.conversationId,
+        nextSignalIndex: 1,
+        tickets: [],
+        pendingMessages: [],
+      });
+      await SteelQuotationArtifact.create({
+        userId: 'user123',
+        conversationId: mockConversationData.conversationId,
+        runId: 'run-delete',
+        operationId: 'final',
+        kind: 'final',
+        sha256: 'sha-delete',
+        payload: 'deleted with conversation',
+      });
 
       deleteMessages.mockResolvedValue({ deletedCount: 5 });
 
@@ -1581,6 +1601,8 @@ describe('Conversation Operations', () => {
         conversationId: mockConversationData.conversationId,
       });
       expect(deletedConvo).toBeNull();
+      expect(await SteelQuotationState.findOne({ userId: 'user123', conversationId: mockConversationData.conversationId })).toBeNull();
+      expect(await SteelQuotationArtifact.findOne({ userId: 'user123', conversationId: mockConversationData.conversationId })).toBeNull();
     });
 
     it('cascades parent deletion through owner-scoped child-thread lineage', async () => {

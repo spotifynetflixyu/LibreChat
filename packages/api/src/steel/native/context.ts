@@ -24,7 +24,13 @@ import type {
 
 export const steelNativeContextVersion = 1 as const;
 
-export const steelNativeContextModes = ['standard', 'ocr', 'delegate_ocr'] as const;
+export const steelNativeContextModes = [
+  'standard',
+  'ocr',
+  'delegate_ocr',
+  'quote_main',
+  'quote_child',
+] as const;
 
 export type SteelNativeContextMode = (typeof steelNativeContextModes)[number];
 
@@ -471,6 +477,56 @@ function buildDelegateOcrRuleItems(runtimeContext: SteelRuntimeContext): string[
   ];
 }
 
+function buildQuotationRuleItems(
+  runtimeContext: SteelRuntimeContext,
+  role: 'main' | 'child',
+): string[] {
+  const section = role === 'main' ? 'quote_main' : 'quote_child';
+  return runtimeContext.rules.agentRules
+    .filter(
+      (rule) =>
+        rule.slug === `steel-quote-${role}-agent-policy` || rule.ruleSections.includes(section),
+    )
+    .map(renderAgentRule);
+}
+
+function buildQuotationQuoteRuleItems(runtimeContext: SteelRuntimeContext): string[] {
+  return [
+    ...runtimeContext.rules.steelGlobalRules.quoteDefaults.map(renderQuoteDefault),
+    ...runtimeContext.rules.steelGlobalRules.quoteRules.map(renderQuoteRule),
+  ];
+}
+
+function buildQuotationWorkbookRuleItems(runtimeContext: SteelRuntimeContext): string[] {
+  const workbookSections = new Set(['workbook_output', 'output_policy', 'output_sheet', 'customer_tier_sync']);
+  return runtimeContext.rules.outputRules
+    .filter(
+      (rule) =>
+        rule.slug === 'steel-workbook-output-policy' ||
+        rule.ruleSections.some((section) => workbookSections.has(section)),
+    )
+    .map(renderAgentRule);
+}
+
+function isQuotationAgentRule(rule: SteelAgentRule): boolean {
+  return (
+    rule.slug === 'steel-quote-main-agent-policy' ||
+    rule.slug === 'steel-quote-child-agent-policy' ||
+    rule.ruleSections.includes('quote_main') ||
+    rule.ruleSections.includes('quote_child')
+  );
+}
+
+function buildQuotationCalculationRuleItems(runtimeContext: SteelRuntimeContext): string[] {
+  return runtimeContext.rules.outputRules
+    .filter(
+      (rule) =>
+        rule.slug === 'steel-quote-calculation-verification-policy' ||
+        rule.ruleSections.includes('system_order_calculation'),
+    )
+    .map(renderAgentRule);
+}
+
 export function buildSteelNativeInstructionPrefix({
   runtimeContext,
   mode = 'standard',
@@ -501,8 +557,22 @@ export function buildSteelNativeInstructionPrefix({
               buildDelegateOcrRuleItems(runtimeContext),
             ),
           ]
+        : mode === 'quote_main'
+          ? [
+              buildSlot('agent', 'Steel Quotation Consolidation Rules', buildQuotationRuleItems(runtimeContext, 'main')),
+              buildSlot('quote_rules', 'Steel Quote Defaults and Category Rules', []),
+              buildSlot('output', 'Steel Quotation Consolidated Output Rules', [...buildQuotationWorkbookRuleItems(runtimeContext), ...buildQuotationRuleItems(runtimeContext, 'main')]),
+              buildSlot('other', 'Steel Other Rules', []),
+            ]
+          : mode === 'quote_child'
+            ? [
+                buildSlot('agent', 'Steel Item Pricing Rules', buildQuotationRuleItems(runtimeContext, 'child')),
+                buildSlot('quote_rules', 'Steel Quote Defaults and Category Rules', buildQuotationQuoteRuleItems(runtimeContext)),
+                buildSlot('output', 'Steel Quotation Calculation Rules', [...buildQuotationWorkbookRuleItems(runtimeContext), ...buildQuotationCalculationRuleItems(runtimeContext), ...buildQuotationRuleItems(runtimeContext, 'child')]),
+                buildSlot('other', 'Steel Other Rules', []),
+              ]
       : [
-          buildSlot('agent', 'Steel Agent Rules', runtimeContext.rules.agentRules.map(renderAgentRule)),
+          buildSlot('agent', 'Steel Agent Rules', runtimeContext.rules.agentRules.filter((rule) => !isQuotationAgentRule(rule)).map(renderAgentRule)),
           buildSlot('quote_rules', 'Steel Quote Defaults and Category Rules', [
             ...runtimeContext.rules.steelGlobalRules.quoteDefaults.map(renderQuoteDefault),
             ...runtimeContext.rules.steelGlobalRules.quoteRules.map(renderQuoteRule),

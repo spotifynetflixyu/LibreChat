@@ -99,6 +99,8 @@ const {
   buildDefaultSteelGlobalAgentContext,
   prepareLibreChatSteelChatContext,
   prepareSteelNativeToolConfig,
+  prepareQuotationTurn,
+  hasQuotationOrder,
   stripSteelOcrPartsFromProviderMessages,
   buildAgentContextAttachmentsByAgentId,
   buildSkillPrimeContentParts,
@@ -148,6 +150,7 @@ const {
   runSteelPaddleOcrPreflight,
   prepareDelegateOcrResume,
   executeDelegateOcrResume,
+  executeSteelQuotationWorkflow,
 } = require('~/server/services/ToolService');
 const BaseClient = require('~/app/clients/BaseClient');
 const { getMCPManager } = require('~/config');
@@ -1978,8 +1981,19 @@ class AgentClient extends BaseClient {
           steelConversation,
         },
       };
+      const quotation = await prepareQuotationTurn({
+        scope: { userId: this.options.req.user.id, conversationId: this.conversationId },
+        messageId: latestOrdered?.messageId ?? this.responseMessageId,
+        responseId: this.responseMessageId,
+        text: currentUserTurnText,
+        files: currentTurnSteelFileReferences,
+      });
+      this.options.req.steelNativeContext.quotation = {
+        ...quotation,
+        messageId: latestOrdered?.messageId ?? this.responseMessageId,
+      };
       delegateOcrResume =
-        typeof prepareDelegateOcrResume === 'function'
+        !quotation.resume && typeof prepareDelegateOcrResume === 'function'
           ? await prepareDelegateOcrResume({
               req: this.options.req,
               conversationId: this.conversationId,
@@ -1987,7 +2001,9 @@ class AgentClient extends BaseClient {
               userId: this.options.req.user?.id,
             })
           : undefined;
-      if (delegateOcrResume) {
+      if (quotation.resume) {
+        paddleOcrPreflight = { ocrTurnActive: false };
+      } else if (delegateOcrResume) {
         /** A resumed delegate run owns this turn's OCR work. Hide the
          * parent-facing tool and skip regular Paddle preflight; the direct
          * coordinator runs only after OAuth model options are available. */
@@ -2028,6 +2044,8 @@ class AgentClient extends BaseClient {
         Object.assign(
           runAgent,
           prepareSteelNativeToolConfig(runAgent, {
+            quotationRole: 'preparation',
+            hasQuotationOrder: hasQuotationOrder(quotation.state?.currentOrder?.markdown),
             ocrTurnActive: paddleOcrPreflight?.ocrTurnActive === true,
             delegateOcrPolicy,
           }),
@@ -2091,6 +2109,9 @@ class AgentClient extends BaseClient {
     }
     if (steelNativeContext.runtimeContextText) {
       sharedRunContextParts.push(steelNativeContext.runtimeContextText);
+    }
+    if (!ocrTurnActive && this.options.req?.steelNativeContext?.quotation?.instruction) {
+      sharedRunContextParts.push(this.options.req.steelNativeContext.quotation.instruction);
     }
 
     /** Memory context (user preferences/memories). Keyed context (with memory
@@ -3708,9 +3729,37 @@ class AgentClient extends BaseClient {
           await this.activityLabelsMarkedPromise;
         }
         try {
+          let quotationStepSeeded = false;
+          const quotationStepId = `quotation:${this.responseMessageId}`;
+          const executeQuotation = () => executeSteelQuotationWorkflow({
+            req: this.options.req, res: this.options.res, streamId,
+            signal: abortController.signal, agent: this.options.agent, run, userMCPAuthMap,
+            onSteerApplied: (item) => this.applySteerPart(streamId, item),
+            onUsage: async (usage) => { this.collectedUsage?.push(usage); },
+            onText: async (text) => {
+              const metadata = { ...config.configurable, run_id: this.responseMessageId,
+                thread_id: this.conversationId, last_agent_id: this.options.agent?.id,
+                langgraph_node: this.options.agent?.id };
+              if (!quotationStepSeeded) {
+                quotationStepSeeded = true;
+                await this.options.eventHandlers?.on_run_step?.handle('on_run_step', {
+                  id: quotationStepId, index: this.contentParts.length,
+                  stepDetails: { type: StepTypes.MESSAGE_CREATION,
+                    message_creation: { message_id: this.responseMessageId } },
+                }, metadata);
+              }
+              const handler = this.options.eventHandlers?.on_message_delta;
+              if (handler?.handle) await handler.handle('on_message_delta', {
+                id: quotationStepId, delta: { content: [{ type: ContentTypes.TEXT, text }] },
+              }, metadata);
+              else this.contentParts.push({ type: ContentTypes.TEXT, text });
+            },
+          });
           const shouldResumeDelegateOcr =
             Boolean(delegateOcrResume) && typeof executeDelegateOcrResume === 'function';
-          if (shouldResumeDelegateOcr) {
+          if (this.options.req?.steelNativeContext?.quotation?.resume) {
+            await executeQuotation();
+          } else if (shouldResumeDelegateOcr) {
             const resumeStepId = `delegate_ocr_resume:${this.responseMessageId ?? this.conversationId}`;
             const resumeMetadata = {
               ...config.configurable,
@@ -3771,6 +3820,7 @@ class AgentClient extends BaseClient {
                 [Callback.TOOL_ERROR]: logToolError,
               },
             });
+            await executeQuotation();
           }
         } finally {
           reasoningLabel?.complete();

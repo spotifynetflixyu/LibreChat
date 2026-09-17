@@ -1,5 +1,6 @@
+import { createHash } from 'node:crypto';
 import { parseMarkdownTables } from '../markdown/table';
-import { escapeMarkdownTableCell } from '../markdown/row-codec';
+import { escapeMarkdownTableCell, parsePipeTableRow, isMarkdownTableSeparatorCell } from '../markdown/row-codec';
 
 const H2_PATTERN = /^ {0,3}##(?!#)[ \t]+(.+?)[ \t]*$/u;
 const FENCE_START_PATTERN = /^ {0,3}(`{3,}|~{3,})/u;
@@ -95,6 +96,7 @@ export interface FinalizeOcrResponseInput {
   readonly canonicalMapping: readonly SourceMappingEntry[];
   readonly delegateSummary?: boolean;
   readonly agentKind?: OcrAgentKind;
+  readonly currentUserTurn?: string;
 }
 
 export interface FinalizeOcrResponseSuccess {
@@ -107,6 +109,7 @@ export interface FinalizeOcrResponseSuccess {
 }
 
 export type FinalizationFailureReason =
+  | 'invalid_ocr_deletion'
   | 'missing_ocr_result'
   | 'invalid_ocr_result_table'
   | 'mapping_mismatch';
@@ -243,7 +246,7 @@ function validHeaders(headers: readonly string[], required: readonly string[], e
     : required.every((header) => headers.includes(header));
 }
 
-function tableFromMarkdown(markdown: string, required: readonly string[], exact: boolean): ParsedTable {
+function tableFromMarkdown(markdown: string, required: readonly string[], exact: boolean, allowEmpty = false): ParsedTable {
   const visibleLines: string[] = [];
   let fence: MarkdownFence | undefined;
   for (const line of markdown.split(/\r?\n/u)) {
@@ -261,7 +264,14 @@ function tableFromMarkdown(markdown: string, required: readonly string[], exact:
     visibleLines.push(line);
   }
   const visibleMarkdown = visibleLines.join('\n');
-  const table = parseMarkdownTables(visibleMarkdown)[0];
+  let table = parseMarkdownTables(visibleMarkdown)[0];
+  if (!table && allowEmpty) {
+    const lines = visibleLines.filter((line) => line.trim().length > 0);
+    const headers = parsePipeTableRow(lines[0] ?? '');
+    const separator = parsePipeTableRow(lines[1] ?? '');
+    if (lines.length === 2 && headers && separator && headers.length === separator.length &&
+      separator.every(isMarkdownTableSeparatorCell)) table = { headers, rows: [] };
+  }
   if (!table) {
     const hasPipeBlock = visibleLines.some((line) => {
       const trimmed = line.trim();
@@ -270,7 +280,7 @@ function tableFromMarkdown(markdown: string, required: readonly string[], exact:
     return { ok: false, reason: hasPipeBlock ? 'invalid_table' : 'missing_table' };
   }
   if (
-    table.rows.length === 0 ||
+    (!allowEmpty && table.rows.length === 0) ||
     !validHeaders(table.headers, required, exact) ||
     table.rows.some((row) => row.length !== table.headers.length)
   ) {
@@ -421,10 +431,14 @@ function changedCellCount(current: readonly string[], old: readonly string[], he
 export function reconcileOcrResults(
   previous: OcrTable | undefined,
   current: OcrTable,
+  deletedKeys: ReadonlySet<string> = new Set(),
 ): OcrReconciliation {
   const currentHeaders = [...current.headers];
-  const previousRows = previous?.rows ?? [];
   const previousHeaders = previous?.headers ?? currentHeaders;
+  const previousRows = (previous?.rows ?? []).filter((row) => {
+    const key = tableKey(row, previousHeaders);
+    return key === undefined || !deletedKeys.has(key);
+  });
   const oldCounts = countKeys(previousRows, previousHeaders);
   const currentCounts = countKeys(current.rows, currentHeaders);
   const duplicateKeys = [...new Set([
@@ -636,6 +650,34 @@ function renderResultSection(table: OcrTable): string {
   return `## ${RESULT_TITLE}\n\n${renderTable(table)}`;
 }
 
+function explicitDeletionKeys(
+  input: FinalizeOcrResponseInput,
+  document: ParsedAssistantMarkdown,
+  previous: OcrTable | undefined,
+): Set<string> | undefined {
+  const sections = document.sections.filter((section) => section.title === 'ocr_deletions');
+  if (sections.length === 0) return new Set();
+  if (sections.length !== 1 || !previous || !input.previousOcrMarkdown ||
+    !/(?:刪除|刪掉|删除|删掉|移除|去掉|只保留|\bdelete\b|\bremove\b)/iu.test(input.currentUserTurn ?? '')) {
+    return undefined;
+  }
+  const tables = parseMarkdownTables(sections[0].body);
+  const table = tables[0];
+  if (tables.length !== 1 || !table || table.headers.join('|') !== 'order_hash|來源|零件編號' ||
+    table.rows.length === 0) return undefined;
+  const hash = createHash('sha256').update(input.previousOcrMarkdown).digest('hex');
+  const previousCounts = countKeys(previous.rows, previous.headers);
+  const keys = new Set<string>();
+  for (const row of table.rows) {
+    const key = `${(row[1] ?? '').trim()}\u0000${(row[2] ?? '').trim()}`;
+    if (row.length !== 3 || row[0] !== hash || previousCounts.get(key) !== 1 || keys.has(key)) {
+      return undefined;
+    }
+    keys.add(key);
+  }
+  return keys;
+}
+
 function normalizeInput(
   inputOrResponse: FinalizeOcrResponseInput | string,
   previousOcrMarkdown?: string,
@@ -668,7 +710,7 @@ export function finalizeOcrResponse(
 ): FinalizeOcrResponseResult {
   const input = normalizeInput(inputOrResponse, previousOcrMarkdown, canonicalMapping, delegateSummary);
   const document = parseAssistantMarkdown(input.assistantResponse);
-  const resultParsed = tableInSection(document, RESULT_TITLE, parseOcrResultTable);
+  const resultParsed = tableInSection(document, RESULT_TITLE, (markdown) => tableFromMarkdown(markdown, [], false, true));
   if (resultParsed.ok === false) {
     return { ok: false, reason: resultParsed.reason === 'missing_table' ? 'missing_ocr_result' : 'invalid_ocr_result_table' };
   }
@@ -705,11 +747,18 @@ export function finalizeOcrResponse(
     : { ok: true, entries: mappingParsed.ok ? mappingEntries(mappingParsed.table) : [] };
 
   const previous = parsePreviousTable(input.previousOcrMarkdown);
-  const reconciliation = reconcileOcrResults(previous, resultParsed.table);
+  const deletedKeys = explicitDeletionKeys(input, document, previous);
+  if (!deletedKeys || (resultParsed.table.rows.length === 0 && (!previous || deletedKeys.size !== previous.rows.length || deletedKeys.size === 0)) || resultParsed.table.rows.some((row) => {
+    const key = tableKey(row, resultParsed.table.headers);
+    return key !== undefined && deletedKeys.has(key);
+  })) {
+    return { ok: false, reason: 'invalid_ocr_deletion' };
+  }
+  const reconciliation = reconcileOcrResults(previous, resultParsed.table, deletedKeys);
   const summaryResult = buildOcrUpdateSummary(previous, resultParsed.table, reconciliation);
   const review = getSection(document, REVIEW_TITLE);
   const used = new Set<MarkdownSection>([...document.sections.filter((section) =>
-    section.title === SOURCE_TITLE || section.title === RESULT_TITLE || section.title === REVIEW_TITLE || section.title === SUMMARY_TITLE)]);
+    section.title === SOURCE_TITLE || section.title === RESULT_TITLE || section.title === REVIEW_TITLE || section.title === SUMMARY_TITLE || section.title === 'ocr_deletions')]);
   const chunks: string[] = [];
   const sourceSection = getSection(document, SOURCE_TITLE);
   if (input.agentKind === 'regular_ocr') {

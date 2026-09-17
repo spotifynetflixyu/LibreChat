@@ -351,6 +351,8 @@ function categoryRule({ sourceFile, prompt, fileSha }) {
 
 function buildRules(repoRoot) {
   const agent = readRulePrompt(repoRoot, 'docs/rules/agent規則.txt');
+  const quoteMain = readRulePrompt(repoRoot, 'docs/rules/報價主Agent規則.txt');
+  const quoteChild = readRulePrompt(repoRoot, 'docs/rules/報價子Agent規則.txt');
   const quoteCalculation = readRulePrompt(repoRoot, 'docs/rules/報價計算驗證規則.txt');
   const output = readRulePrompt(repoRoot, 'docs/rules/輸出規則.txt');
   const ocr = readRulePrompt(repoRoot, 'docs/rules/其他規則/OCR規則.txt');
@@ -394,6 +396,66 @@ function buildRules(repoRoot) {
         'Steel 預設 Agent Instruction',
         'agent_default_instruction',
         agent.sha256,
+        'agent_rule',
+      ),
+    }),
+    unifiedRule({
+      slug: 'steel-quote-main-agent-policy',
+      ruleKind: 'agent',
+      title: 'Steel 報價合併與核對工作規則',
+      ruleSections: ['quote_main', 'quotation_aggregation', 'quotation_review'],
+      selectors: {
+        appliesTo: ['steel_quote_main'],
+        locale: 'zh-TW',
+        confidence: 'high',
+      },
+      prompt: quoteMain.prompt,
+      toolPolicy: {
+        availableTools: [],
+        forbiddenTools: ['search_price_candidates', 'OpenAI Python'],
+      },
+      outputPolicy: {
+        activeSheets: ['system_order', 'manual_review'],
+        forbidCustomerQuote: true,
+        forbidCompletionSummary: true,
+        forbidControlSidecars: true,
+      },
+      priority: 11,
+      source: ruleSource(
+        'docs/rules/報價主Agent規則.txt',
+        'Steel 報價合併與核對工作規則',
+        'steel-quote-main-agent-policy',
+        quoteMain.sha256,
+        'agent_rule',
+      ),
+    }),
+    unifiedRule({
+      slug: 'steel-quote-child-agent-policy',
+      ruleKind: 'agent',
+      title: 'Steel 報價分組整理工作規則',
+      ruleSections: ['quote_child', 'quotation_lookup', 'quotation_lineage'],
+      selectors: {
+        appliesTo: ['steel_quote_child'],
+        locale: 'zh-TW',
+        confidence: 'high',
+      },
+      prompt: quoteChild.prompt,
+      toolPolicy: {
+        requiredTools: ['search_price_candidates', 'OpenAI Python'],
+        availableTools: ['search_price_candidates', 'OpenAI Python'],
+      },
+      outputPolicy: {
+        activeSheets: ['system_order_chunk'],
+        lineageVersion: 1,
+        forbidCustomerQuote: true,
+        forbidCompletionSummary: true,
+      },
+      priority: 12,
+      source: ruleSource(
+        'docs/rules/報價子Agent規則.txt',
+        'Steel 報價分組整理工作規則',
+        'steel-quote-child-agent-policy',
+        quoteChild.sha256,
         'agent_rule',
       ),
     }),

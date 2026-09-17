@@ -37,6 +37,8 @@ export interface SteelNativeToolConfig {
 }
 
 export interface SteelNativeToolVisibilityOptions {
+  quotationRole?: 'unrestricted' | 'preparation' | 'main' | 'child';
+  hasQuotationOrder?: boolean;
   ocrTurnActive?: boolean;
   allowPaddleOcr?: boolean;
   excludeDelegateOcr?: boolean;
@@ -140,6 +142,8 @@ function isVisibleForSteelNativeTurn(
     excludeDelegateOcr,
     delegateOcrPolicy,
     initializationDefer,
+    quotationRole,
+    hasQuotationOrder,
   }: Required<SteelNativeToolVisibilityOptions>,
 ): boolean {
   if (toolName === delegateOcrToolName) {
@@ -164,6 +168,15 @@ function isVisibleForSteelNativeTurn(
   }
   const steelProviderToolName =
     typeof toolName === 'string' ? resolveSteelProviderToolName(toolName) : undefined;
+  if (quotationRole !== 'unrestricted' && steelProviderToolName) {
+    if (steelProviderToolName === 'search_price_candidates' && quotationRole !== 'child') {
+      return false;
+    }
+    if (steelProviderToolName === 'search_customers' &&
+      (quotationRole !== 'preparation' || !hasQuotationOrder)) {
+      return false;
+    }
+  }
   return (
     !ocrTurnActive ||
     allowPaddleOcr ||
@@ -178,6 +191,8 @@ export function prepareSteelNativeToolConfig<T extends SteelNativeToolConfig>(
   options: SteelNativeToolVisibilityOptions = {},
 ): T {
   const visibility = {
+    quotationRole: options.quotationRole ?? 'unrestricted',
+    hasQuotationOrder: options.hasQuotationOrder === true,
     ocrTurnActive: options.ocrTurnActive === true,
     allowPaddleOcr: options.allowPaddleOcr === true,
     excludeDelegateOcr: options.excludeDelegateOcr === true,

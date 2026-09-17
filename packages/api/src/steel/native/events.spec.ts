@@ -9,6 +9,8 @@ import {
   buildSteelQuoteAuditEvent,
   buildSteelDelegateOcrStatusEvent,
   buildSteelDelegateOcrStatusEventEnvelope,
+  buildSteelQuotationStatusEvent,
+  buildSteelQuotationStatusEventEnvelope,
   buildSteelNativeEventEnvelopes,
   buildSteelOcrPreprocessingEventEnvelopes,
   buildSteelPaddleOcrPreflightEventEnvelopes,
@@ -287,6 +289,53 @@ describe('Steel native event mapping', () => {
     expect(first.preflightToolCalls).not.toBe(second.preflightToolCalls);
   });
 
+  it('persists typed price-search preflight cards with their query and result payloads', () => {
+    const history = createSteelNativeHistory();
+    const args = {
+      queries: [
+        {
+          categories: ['鐵板'],
+          materials: ['黑鐵', '2B'],
+          thicknessMm: ['1.5'],
+          keyword: '承板',
+        },
+      ],
+    };
+    const output = JSON.stringify({
+      ok: true,
+      toolName: 'search_price_candidates',
+      data: { queryResults: [{ queryId: 'q1', status: 'ok', candidates: [] }] },
+    });
+
+    expect(
+      upsertSteelNativePreflightToolCall(history, {
+        type: 'tool_call',
+        id: 'quotation-run-1-chunk-0-attempt-1-call-1',
+        name: 'steel_search_price_candidates',
+        args,
+        output,
+        progress: 1,
+      }),
+    ).toBe(true);
+    expect(history.preflightToolCalls[0]).toEqual({
+      type: 'tool_call',
+      id: 'quotation-run-1-chunk-0-attempt-1-call-1',
+      name: 'steel_search_price_candidates',
+      args,
+      output,
+      progress: 1,
+    });
+    expect(
+      upsertSteelNativePreflightToolCall(history, {
+        type: 'tool_call',
+        id: 'bad-price-card',
+        name: 'search_price_candidates',
+        args: { queries: ['raw query text'] },
+        progress: 0,
+      }),
+    ).toBe(false);
+  });
+
   it('upgrades legacy activity events without replacing their array', () => {
     const activityEvents = [memoryEvent('legacy')];
     const context: {
@@ -529,6 +578,75 @@ describe('Steel native event mapping', () => {
       requestId: 'request_1',
       messageId: 'message_1',
     });
+  });
+
+  it('builds and persists quotation status envelopes with stable progress fields', () => {
+    const event = buildSteelQuotationStatusEvent({
+      conversationId: 'conversation_1',
+      requestId: 'request_1',
+      messageId: 'message_1',
+      index: 2,
+      runId: 'quotation-run-2',
+      stage: 'chunk',
+      status: 'running',
+      completedChunks: 1,
+      totalChunks: 3,
+      message: 'Processing quotation chunk 2',
+      chunkIndex: 2,
+      attempt: 'attempt-1',
+    });
+
+    expect(event).toEqual({
+      type: 'quotation_status',
+      source: 'quotation_preflight',
+      conversationId: 'conversation_1',
+      requestId: 'request_1',
+      messageId: 'message_1',
+      index: 2,
+      runId: 'quotation-run-2',
+      stage: 'chunk',
+      status: 'running',
+      completedChunks: 1,
+      totalChunks: 3,
+      message: 'Processing quotation chunk 2',
+      chunkIndex: 2,
+      attempt: 'attempt-1',
+    });
+
+    const history = createSteelNativeHistory();
+    expect(appendSteelNativeActivityEvent(history, event)).toBe(true);
+    expect(history.activityEvents).toEqual([event]);
+    expect(buildSteelQuotationStatusEventEnvelope(event)).toEqual({
+      event: steelNativeStreamEventName,
+      data: event,
+    });
+  });
+
+  it('validates persisted quotation status progress bounds', () => {
+    const validEvent = buildSteelQuotationStatusEvent({
+      conversationId: 'conversation_1',
+      index: 1,
+      stage: 'aggregation',
+      status: 'aggregating',
+      completedChunks: 2,
+      totalChunks: 2,
+    });
+
+    expect(
+      parseSteelNativeHistory({ activityEvents: [validEvent], preflightToolCalls: [] }),
+    ).toEqual({ activityEvents: [validEvent], preflightToolCalls: [] });
+    expect(
+      parseSteelNativeHistory({
+        activityEvents: [{ ...validEvent, completedChunks: 3 }],
+        preflightToolCalls: [],
+      }),
+    ).toBeUndefined();
+    expect(
+      parseSteelNativeHistory({
+        activityEvents: [{ ...validEvent, source: 'quote_runtime' }],
+        preflightToolCalls: [],
+      }),
+    ).toBeUndefined();
   });
 
   it('builds an exact positive Code Interpreter audit event', () => {

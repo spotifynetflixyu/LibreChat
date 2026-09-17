@@ -17,6 +17,8 @@ import {
   steelWorkingOrderMemorySchema,
   steelDelegateOcrRunSchema,
   steelConversationOcrStateSchema,
+  steelQuotationStateSchema,
+  steelQuotationArtifactSchema,
 } from '~/schema/steel';
 
 type Mongoose = typeof import('mongoose');
@@ -63,6 +65,26 @@ export function createSteelConversationOcrStateModel(
     'SteelConversationOcrState',
     steelConversationOcrStateSchema,
     'steel_conversation_ocr_state',
+  );
+}
+
+export function createSteelQuotationStateModel(mongoose: Mongoose): Model<t.ISteelQuotationState> {
+  return createSteelModel(
+    mongoose,
+    'SteelQuotationState',
+    steelQuotationStateSchema,
+    'steel_quotation_states',
+  );
+}
+
+export function createSteelQuotationArtifactModel(
+  mongoose: Mongoose,
+): Model<t.ISteelQuotationArtifact> {
+  return createSteelModel(
+    mongoose,
+    'SteelQuotationArtifact',
+    steelQuotationArtifactSchema,
+    'steel_quotation_artifacts',
   );
 }
 

@@ -2,6 +2,10 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { fireEvent, render, screen } from '@testing-library/react';
 import { steelNativeActivityByMessageId } from '~/store/steel';
+import {
+  useCancelSteelQuotationMutation,
+  useGetSteelQuotationStatusQuery,
+} from '~/data-provider/Steel';
 import SteelActivity from '../SteelActivity';
 
 type LocalizeOptions = {
@@ -10,6 +14,9 @@ type LocalizeOptions = {
   fileKey?: string;
   ranges?: string;
   source?: string;
+  error?: string;
+  completedChunks?: number;
+  totalChunks?: number;
 };
 
 jest.mock('~/hooks/useLocalize', () => ({
@@ -53,6 +60,24 @@ jest.mock('~/hooks/useLocalize', () => ({
     }
     if (key === 'com_ui_steel_activity_total_counts') {
       return `Total: ${options?.counts ?? ''}`;
+    }
+    if (key === 'com_ui_steel_activity_quotation') {
+      return 'Quotation progress';
+    }
+    if (key === 'com_ui_steel_quote_cancel') {
+      return 'Cancel quotation';
+    }
+    if (key === 'com_ui_steel_quote_canceling') {
+      return 'Canceling quotation…';
+    }
+    if (key === 'com_ui_steel_quote_cancel_failed') {
+      return `Quotation cancellation failed: ${options?.error ?? ''}`;
+    }
+    if (key === 'com_ui_steel_quote_status_running') {
+      return `Quotation in progress (${options?.completedChunks ?? 0}/${options?.totalChunks ?? 0} chunks)`;
+    }
+    if (key === 'com_ui_steel_quote_status_completed') {
+      return 'Quotation completed';
     }
     if (key === 'com_ui_steel_activity_source_count') {
       return `${options?.source ?? ''}: ${options?.count ?? 0}`;
@@ -100,7 +125,138 @@ jest.mock('~/hooks/useLocalize', () => ({
   },
 }));
 
+jest.mock('~/data-provider/Steel', () => ({
+  __esModule: true,
+  useCancelSteelQuotationMutation: jest.fn(),
+  useGetSteelQuotationStatusQuery: jest.fn(),
+}));
+
+const mockUseCancelSteelQuotationMutation = jest.mocked(useCancelSteelQuotationMutation);
+const mockUseGetSteelQuotationStatusQuery = jest.mocked(useGetSteelQuotationStatusQuery);
+
+const quotationStatusEvent = {
+  type: 'quotation_status' as const,
+  source: 'quotation_preflight' as const,
+  conversationId: 'conversation-1',
+  messageId: 'assistant-quotation',
+  index: 4,
+  runId: 'quotation-run-4',
+  stage: 'chunk',
+  status: 'running' as const,
+  completedChunks: 1,
+  totalChunks: 3,
+};
+
+beforeEach(() => {
+  mockUseGetSteelQuotationStatusQuery.mockReturnValue({ data: undefined } as ReturnType<
+    typeof useGetSteelQuotationStatusQuery
+  >);
+  mockUseCancelSteelQuotationMutation.mockReturnValue({
+    isLoading: false,
+    error: null,
+    mutate: jest.fn(),
+  } as unknown as ReturnType<typeof useCancelSteelQuotationMutation>);
+});
+
 describe('SteelActivity', () => {
+  it('renders quotation progress and sends the specific quotation index to cancel', () => {
+    const mutate = jest.fn();
+    mockUseCancelSteelQuotationMutation.mockReturnValue({
+      isLoading: false,
+      error: null,
+      mutate,
+    } as unknown as ReturnType<typeof useCancelSteelQuotationMutation>);
+
+    render(
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(steelNativeActivityByMessageId('assistant-quotation'), [quotationStatusEvent]);
+        }}
+      >
+        <SteelActivity messageId="assistant-quotation" isCreatedByUser={false} />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByText('Quotation in progress (1/3 chunks)')).toBeInTheDocument();
+    const cancel = screen.getByRole('button', { name: 'Cancel quotation' });
+    fireEvent.click(cancel);
+    expect(mutate).toHaveBeenCalledWith(4);
+  });
+
+  it('disables duplicate cancellation clicks while cancellation is pending', () => {
+    mockUseCancelSteelQuotationMutation.mockReturnValue({
+      isLoading: true,
+      error: null,
+      mutate: jest.fn(),
+    } as unknown as ReturnType<typeof useCancelSteelQuotationMutation>);
+
+    render(
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(steelNativeActivityByMessageId('assistant-quotation-pending'), [
+            { ...quotationStatusEvent, messageId: 'assistant-quotation-pending' },
+          ]);
+        }}
+      >
+        <SteelActivity messageId="assistant-quotation-pending" isCreatedByUser={false} />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Canceling quotation…' })).toBeDisabled();
+  });
+
+  it('keeps the cancel action available and reports a failed cancellation', () => {
+    mockUseCancelSteelQuotationMutation.mockReturnValue({
+      isLoading: false,
+      error: new Error('request failed'),
+      mutate: jest.fn(),
+    } as unknown as ReturnType<typeof useCancelSteelQuotationMutation>);
+
+    render(
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(steelNativeActivityByMessageId('assistant-quotation-error'), [
+            { ...quotationStatusEvent, messageId: 'assistant-quotation-error' },
+          ]);
+        }}
+      >
+        <SteelActivity messageId="assistant-quotation-error" isCreatedByUser={false} />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Cancel quotation' })).toBeEnabled();
+    expect(screen.getByText('Quotation cancellation failed: request failed')).toBeInTheDocument();
+  });
+
+  it('hides cancellation after the backend reports completion', () => {
+    mockUseGetSteelQuotationStatusQuery.mockReturnValue({
+      data: {
+        conversationId: 'conversation-1',
+        index: 4,
+        runId: 'quotation-run-4',
+        status: 'completed',
+        completedChunks: 3,
+        totalChunks: 3,
+        canCancel: false,
+      },
+    } as ReturnType<typeof useGetSteelQuotationStatusQuery>);
+
+    render(
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(steelNativeActivityByMessageId('assistant-quotation-completed'), [
+            { ...quotationStatusEvent, messageId: 'assistant-quotation-completed' },
+          ]);
+        }}
+      >
+        <SteelActivity messageId="assistant-quotation-completed" isCreatedByUser={false} />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByText('Quotation completed')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Cancel quotation' })).not.toBeInTheDocument();
+  });
+
   it('renders loaded saved OCR chunk events live and from persisted refresh state', () => {
     render(
       <RecoilRoot

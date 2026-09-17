@@ -299,6 +299,10 @@ export const activeJobs = () => `${BASE_URL}/api/agents/chat/active`;
 export const steelBase = () => `${BASE_URL}/api/steel`;
 export const steelModels = () => `${steelBase()}/ai/models`;
 export const openAIOAuthUsage = () => `${steelBase()}/ai/oauth-usage`;
+export const steelQuotationStatus = (conversationId: string) =>
+  `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/quotation`;
+export const steelQuotationCancel = (conversationId: string, index: number) =>
+  `${steelQuotationStatus(conversationId)}/${encodeURIComponent(String(index))}/cancel`;
 
 export const adminSteelBase = () => `${BASE_URL}/api/admin/steel`;
 export const adminSteelCapabilitySmoke = () => `${adminSteelBase()}/ai/capability-smoke`;

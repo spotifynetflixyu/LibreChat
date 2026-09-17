@@ -199,7 +199,7 @@ describe('Steel rule sources', () => {
     const summary = runDryRun();
     const sourceFiles = summary.rules.map((rule) => rule.sourceFile);
     expect(summary.mode).toBe('dry-run');
-    expect(summary.rules).toHaveLength(19);
+    expect(summary.rules).toHaveLength(21);
     expect([...sourceFiles, classificationSource].sort()).toEqual(listRuleFiles(rulesDir).sort());
     expect(new Set(sourceFiles).size).toBe(sourceFiles.length);
     expect(summary.rules.every((rule) => rule.promptLength > 0)).toBe(true);
@@ -221,6 +221,8 @@ describe('Steel rule sources', () => {
       'steel-ocr-main-agent-organizer-policy',
       'steel-ocr-subagent-organizer-policy',
       'steel-quote-calculation-verification-policy',
+      'steel-quote-child-agent-policy',
+      'steel-quote-main-agent-policy',
       'steel-workbook-output-policy',
       'steel_category_price_lookup_guide',
       'steel_quote_rules_c_type',

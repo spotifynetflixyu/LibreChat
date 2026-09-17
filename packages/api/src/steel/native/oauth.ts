@@ -61,6 +61,11 @@ export interface OpenAIOAuthProviderOptions {
 }
 
 export interface OpenAIOAuthModelOptions extends OpenAIOAuthProviderOptions {
+  onCodeInterpreterEvidence?: (evidence: {
+    type: 'tool-call' | 'tool-result';
+    toolCallId: string;
+    payload: string;
+  }) => Promise<void>;
   enableCodeInterpreter?: boolean;
   frequencyPenalty?: number;
   maxOutputTokens?: number;
@@ -930,6 +935,19 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
         tools: this.options.tools,
       }),
     );
+
+    if (this.options.onCodeInterpreterEvidence) {
+      for (const part of result.content) {
+        if ((part.type === 'tool-call' || part.type === 'tool-result') &&
+          part.toolName === 'code_interpreter' && (part.type === 'tool-result' || part.providerExecuted) === true) {
+          await this.options.onCodeInterpreterEvidence({
+            type: part.type,
+            toolCallId: part.toolCallId,
+            payload: JSON.stringify(part),
+          });
+        }
+      }
+    }
 
     if (inspectCodeInterpreter) {
       await dispatchCodeInterpreterAudit('stage_1', result.content);

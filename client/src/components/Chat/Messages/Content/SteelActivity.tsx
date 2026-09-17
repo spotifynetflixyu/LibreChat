@@ -1,6 +1,8 @@
-import { memo, useMemo, useState } from 'react';
-import { AlertTriangle, CheckCircle2, ChevronDown } from 'lucide-react';
+import { memo, useContext, useMemo, useState } from 'react';
+import { AlertTriangle, CheckCircle2, ChevronDown, LoaderCircle } from 'lucide-react';
+import { Button } from '@librechat/client';
 import { useRecoilValue } from 'recoil';
+import type { SteelQuotationStatus } from 'librechat-data-provider';
 import type {
   SteelNativeActivityEvent,
   SteelNativeSavedCounts,
@@ -9,6 +11,11 @@ import type {
 import { steelNativeActivityByMessageId } from '~/store/steel';
 import useLocalize from '~/hooks/useLocalize';
 import {
+  useCancelSteelQuotationMutation,
+  useGetSteelQuotationStatusQuery,
+} from '~/data-provider/Steel';
+import { ChatContext } from '~/Providers';
+import {
   appendSteelNativeActivityEvent,
   normalizePersistedSteelActivityEvent,
 } from '~/hooks/SSE/useSteelEventHandler';
@@ -16,6 +23,7 @@ import {
 type SteelActivityProps = {
   messageId: string;
   isCreatedByUser?: boolean;
+  conversationId?: string | null;
   persistedActivityEvents?: readonly unknown[];
 };
 
@@ -36,6 +44,125 @@ const savedRecordLabelKeys = new Map<string, LocalizeKey>([
   ['price_evidence', 'com_ui_steel_activity_record_price_evidence'],
   ['working_order_row', 'com_ui_steel_activity_record_working_order_rows'],
 ]);
+
+function isQuotationCancellableStatus(status: SteelQuotationStatus['status']): boolean {
+  return (
+    status === 'queued' ||
+    status === 'running' ||
+    status === 'aggregating' ||
+    status === 'finalizing' ||
+    status === 'interrupted'
+  );
+}
+
+function getQuotationStatusText(
+  localize: Localize,
+  status: SteelQuotationStatus['status'],
+  completedChunks: number,
+  totalChunks: number,
+): string {
+  if (status === 'queued') {
+    return localize('com_ui_steel_quote_status_queued');
+  }
+  if (status === 'running') {
+    return localize('com_ui_steel_quote_status_running', { completedChunks, totalChunks });
+  }
+  if (status === 'aggregating') {
+    return localize('com_ui_steel_quote_status_aggregating');
+  }
+  if (status === 'finalizing') {
+    return localize('com_ui_steel_quote_status_finalizing');
+  }
+  if (status === 'interrupted') {
+    return localize('com_ui_steel_quote_status_interrupted');
+  }
+  if (status === 'completed') {
+    return localize('com_ui_steel_quote_status_completed');
+  }
+  if (status === 'cancelled') {
+    return localize('com_ui_steel_quote_status_cancelled');
+  }
+  return localize('com_ui_steel_quote_status_idle');
+}
+
+function getQuotationCancelError(error: unknown): string | undefined {
+  let message: string | undefined;
+  if (error instanceof Error && error.message) {
+    message = error.message;
+  } else if (typeof error === 'string' && error) {
+    message = error;
+  }
+  return message;
+}
+
+type SteelQuotationProgressProps = {
+  conversationId: string;
+  event?: Extract<SteelNativeActivityEvent, { type: 'quotation_status' }>;
+  localize: Localize;
+};
+
+const SteelQuotationProgress = memo(function SteelQuotationProgress({
+  conversationId,
+  event,
+  localize,
+}: SteelQuotationProgressProps) {
+  const quotationQuery = useGetSteelQuotationStatusQuery(conversationId);
+  const cancelMutation = useCancelSteelQuotationMutation(conversationId);
+  const status = quotationQuery.data ?? event;
+
+  if (!status) {
+    return null;
+  }
+
+  const index = status.index ?? event?.index ?? null;
+  const canCancel = quotationQuery.data?.canCancel ?? isQuotationCancellableStatus(status.status);
+  const cancelError = getQuotationCancelError(cancelMutation.error);
+  const statusText = getQuotationStatusText(
+    localize,
+    status.status,
+    status.completedChunks,
+    status.totalChunks,
+  );
+  const isCanceling = cancelMutation.isLoading;
+  const hasError = Boolean(cancelError);
+
+  return (
+    <div
+      className="flex min-h-5 flex-wrap items-center gap-x-1.5 gap-y-1 rounded-md border border-border-light bg-surface-secondary px-2 py-1 dark:border-border-medium dark:bg-surface-tertiary"
+      aria-label={localize('com_ui_steel_activity_quotation')}
+    >
+      <LoaderCircle
+        aria-hidden="true"
+        className={`h-3.5 w-3.5 shrink-0 ${isCanceling ? 'animate-spin text-text-secondary' : 'text-text-secondary'}`}
+      />
+      <span className="min-w-0 whitespace-normal break-words">{statusText}</span>
+      {event?.message && (
+        <span className="min-w-0 whitespace-normal break-words text-text-tertiary">
+          {event.message}
+        </span>
+      )}
+      {canCancel && index !== null && status.status !== 'completed' && status.status !== 'cancelled' && (
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="h-7 px-2 py-1"
+          disabled={isCanceling}
+          onClick={() => cancelMutation.mutate(index)}
+        >
+          {isCanceling
+            ? localize('com_ui_steel_quote_canceling')
+            : localize('com_ui_steel_quote_cancel')}
+        </Button>
+      )}
+      {hasError && (
+        <span className="min-w-0 whitespace-normal break-words text-status-error">
+          {localize('com_ui_steel_quote_cancel_failed', { error: cancelError })}
+        </span>
+      )}
+    </div>
+  );
+});
 
 function getSavedCountTotal(event: SteelNativeActivityEvent): number {
   return Object.values(event.savedCounts ?? {}).reduce((total, count) => {
@@ -141,6 +268,13 @@ function getActivityLabel(
   event: SteelNativeActivityEvent,
   localize: ReturnType<typeof useLocalize>,
 ) {
+  if (event.type === 'quotation_status') {
+    return (
+      event.message ??
+      getQuotationStatusText(localize, event.status, event.completedChunks, event.totalChunks)
+    );
+  }
+
   if (event.type === 'delegate_ocr_status') {
     return event.message;
   }
@@ -247,6 +381,10 @@ function getTotalCountText(
 }
 
 function shouldDisplayEvent(event: SteelNativeActivityEvent): boolean {
+  if (event.type === 'quotation_status') {
+    return false;
+  }
+
   if (event.type === 'delegate_ocr_status') {
     return true;
   }
@@ -312,9 +450,11 @@ function getMissingPageRangeTexts(
 const SteelActivity = memo(function SteelActivity({
   messageId,
   isCreatedByUser,
+  conversationId,
   persistedActivityEvents,
 }: SteelActivityProps) {
   const localize = useLocalize();
+  const chatConversationId = useContext(ChatContext)?.conversation?.conversationId;
   const liveEvents = useRecoilValue(steelNativeActivityByMessageId(messageId));
   const [isExpanded, setIsExpanded] = useState(false);
 
@@ -330,7 +470,7 @@ const SteelActivity = memo(function SteelActivity({
     [persistedActivityEvents],
   );
 
-  const displayEvents = useMemo(() => {
+  const allActivityEvents = useMemo(() => {
     const allEvents =
       persistedEvents.length === 0
         ? liveEvents
@@ -338,10 +478,28 @@ const SteelActivity = memo(function SteelActivity({
             appendSteelNativeActivityEvent,
             persistedEvents,
           );
-    return allEvents.filter(shouldDisplayEvent);
+    return allEvents;
   }, [liveEvents, persistedEvents]);
 
-  if (isCreatedByUser || displayEvents.length === 0) {
+  const displayEvents = useMemo(
+    () => allActivityEvents.filter(shouldDisplayEvent),
+    [allActivityEvents],
+  );
+  const latestQuotationEvent = useMemo(
+    () =>
+      [...allActivityEvents]
+        .reverse()
+        .find(
+          (event): event is Extract<SteelNativeActivityEvent, { type: 'quotation_status' }> =>
+            event.type === 'quotation_status',
+        ),
+    [allActivityEvents],
+  );
+  const quotationConversationId =
+    conversationId ?? latestQuotationEvent?.conversationId ?? chatConversationId;
+  const hasQuotationActivity = latestQuotationEvent !== undefined;
+
+  if (isCreatedByUser || (displayEvents.length === 0 && !hasQuotationActivity)) {
     return null;
   }
 
@@ -361,6 +519,13 @@ const SteelActivity = memo(function SteelActivity({
       aria-label={localize('com_ui_steel_activity')}
       className="mt-1 flex flex-col gap-1 text-xs text-text-secondary"
     >
+      {hasQuotationActivity && quotationConversationId && (
+        <SteelQuotationProgress
+          conversationId={quotationConversationId}
+          event={latestQuotationEvent}
+          localize={localize}
+        />
+      )}
       {isCollapsible && (
         <button
           type="button"

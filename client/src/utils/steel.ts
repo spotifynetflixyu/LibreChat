@@ -21,23 +21,30 @@ export function getPersistedSteelActivityEvents(
   return Array.isArray(activityEvents) ? activityEvents : undefined;
 }
 
+type PersistedSteelPaddleOcrPreflightToolCallArgs = {
+  input_data?: string;
+  output_mode: 'detailed';
+  return_images: boolean;
+  use_doc_orientation_classify: boolean;
+  use_doc_unwarping: boolean;
+  use_layout_detection: boolean;
+};
+
+type PersistedSteelPriceSearchToolCallArgs = {
+  queries: Array<Record<string, unknown>>;
+};
+
 type PersistedSteelPreflightToolCall = {
   type: 'tool_call';
   id: string;
   name: string;
-  args: {
-    input_data?: string;
-    output_mode: 'detailed';
-    return_images: boolean;
-    use_doc_orientation_classify: boolean;
-    use_doc_unwarping: boolean;
-    use_layout_detection: boolean;
-  };
+  args: PersistedSteelPaddleOcrPreflightToolCallArgs | PersistedSteelPriceSearchToolCallArgs;
   output?: string;
   progress: 0 | 1;
 };
 
 const preflightOutputMaxBytes = 4 * 1024;
+const priceSearchOutputMaxBytes = 12 * 1024 * 1024;
 const preflightStringMaxLength = 256;
 const preflightErrorMaxLength = 512;
 const preflightDiagnosticCodeMaxLength = 128;
@@ -199,6 +206,42 @@ function isPaddleOcrFailureOutput(parsed: Record<string, unknown>): boolean {
   return true;
 }
 
+function isPriceSearchToolName(value: unknown): value is string {
+  return value === 'search_price_candidates' || value === 'steel_search_price_candidates';
+}
+
+function isPriceSearchToolCallArgs(value: Record<string, unknown>): value is PersistedSteelPriceSearchToolCallArgs {
+  return (
+    Object.keys(value).sort().join(',') === 'queries' &&
+    Array.isArray(value.queries) &&
+    value.queries.length >= 1 &&
+    value.queries.length <= 100 &&
+    value.queries.every((query) => isPlainObject(query))
+  );
+}
+
+function isPriceSearchOutput(value: string): boolean {
+  if (utf8ByteLength(value) > priceSearchOutputMaxBytes) {
+    return false;
+  }
+  try {
+    const parsed: unknown = JSON.parse(value);
+    if (!isPlainObject(parsed) || !isPriceSearchToolName(parsed.toolName)) {
+      return false;
+    }
+    if (parsed.ok === true) {
+      return isPlainObject(parsed.data);
+    }
+    return (
+      parsed.ok === false &&
+      typeof parsed.errorCategory === 'string' &&
+      typeof parsed.errorSummary === 'string'
+    );
+  } catch {
+    return false;
+  }
+}
+
 function isPersistedSteelPreflightToolCall(
   value: unknown,
 ): value is PersistedSteelPreflightToolCall {
@@ -219,7 +262,8 @@ function isPersistedSteelPreflightToolCall(
     value.id.length === 0 ||
     utf8ByteLength(value.id) > preflightStringMaxLength ||
     typeof value.name !== 'string' ||
-    (value.name !== 'paddleocr_vl' &&
+    (!isPriceSearchToolName(value.name) &&
+      value.name !== 'paddleocr_vl' &&
       !/^paddleocr_vl(?:---|_mcp_)[A-Za-z0-9_-]+$/u.test(value.name)) ||
     (value.progress !== 0 && value.progress !== 1) ||
     (value.output !== undefined && typeof value.output !== 'string')
@@ -230,6 +274,13 @@ function isPersistedSteelPreflightToolCall(
   if (!isPlainObject(args)) {
     return false;
   }
+  if (isPriceSearchToolName(value.name)) {
+    if (!isPriceSearchToolCallArgs(args)) {
+      return false;
+    }
+    return value.output === undefined || isPriceSearchOutput(value.output);
+  }
+
   const argKeys = Object.keys(args).sort();
   if (
     argKeys.join(',') !==
@@ -288,7 +339,8 @@ function clonePersistedSteelPreflightToolCall(
     runStepStatus = 'failed';
   } else if (value.output !== undefined) {
     const parsed = JSON.parse(value.output) as Record<string, unknown>;
-    runStepStatus = isPaddleOcrFailureOutput(parsed) ? 'failed' : 'completed';
+    runStepStatus =
+      parsed.ok === false || isPaddleOcrFailureOutput(parsed) ? 'failed' : 'completed';
   }
   return {
     type: ContentTypes.TOOL_CALL,

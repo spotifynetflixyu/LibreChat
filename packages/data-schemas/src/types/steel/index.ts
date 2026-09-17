@@ -225,3 +225,4 @@ export interface ISteelNamedState extends Document {
 
 export * from './delegateOcr';
 export * from './conversationOcrState';
+export * from './quotation';

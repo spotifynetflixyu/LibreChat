@@ -1,5 +1,6 @@
 import type { SteelOcrMissingPageRangesByFileKey } from '../ocr/failures';
 import type { OcrPreprocessingPipelineProgress } from '../ocr/preprocess';
+import type { SteelToolJsonObject } from '../tools/results';
 import { isPaddleOcrDiagnosticCode } from '../ocr/diagnostics';
 import type { CaptureSteelNativeToolResultResult } from './tool-result';
 
@@ -12,12 +13,15 @@ export const steelNativeHistoryMaxBytes: number = 12 * 1024 * 1024;
 export const steelNativePreflightToolCallMaxCount: number = 100;
 export const steelNativePreflightToolCallIdMaxBytes: number = 256;
 export const steelNativePreflightToolCallOutputMaxBytes: number = 4 * 1024;
+/** Price lookup results use the provider's compact result payload rather than the OCR card shape. */
+export const steelNativePriceSearchOutputMaxBytes: number = steelNativeHistoryMaxBytes;
 export const steelNativeErrorMessageMaxLength: number = 512;
 
 export type SteelNativeEventSource =
   | 'ocr_preprocessing'
   | 'paddleocr_preflight'
   | 'delegate_ocr_preflight'
+  | 'quotation_preflight'
   | 'tool_result'
   | 'quote_runtime';
 
@@ -38,6 +42,16 @@ export type SteelNativeDelegateOcrStatus =
   | 'succeeded'
   | 'failed'
   | 'replaced';
+
+export type SteelNativeQuotationStatus =
+  | 'idle'
+  | 'queued'
+  | 'running'
+  | 'aggregating'
+  | 'finalizing'
+  | 'interrupted'
+  | 'completed'
+  | 'cancelled';
 
 export type SteelNativeSavedCounts = Record<string, number>;
 export type SteelNativeTableCounts = Record<string, number>;
@@ -89,6 +103,21 @@ export interface SteelNativeDelegateOcrStatusEvent extends SteelNativeEventBase 
   attemptToken?: string;
 }
 
+export interface SteelNativeQuotationStatusEvent extends SteelNativeEventBase {
+  type: 'quotation_status';
+  source: 'quotation_preflight';
+  conversationId: string;
+  index: number;
+  runId?: string;
+  stage: string;
+  status: SteelNativeQuotationStatus;
+  completedChunks: number;
+  totalChunks: number;
+  message?: string;
+  chunkIndex?: number;
+  attempt?: string;
+}
+
 export interface SteelNativeQuoteAuditStartedEvent extends SteelNativeEventBase {
   type: 'quote_audit';
   stage: 'stage_2';
@@ -112,6 +141,7 @@ export type SteelNativeStreamEvent =
   | SteelNativeParseStatusEvent
   | SteelNativeMemorySavedEvent
   | SteelNativeDelegateOcrStatusEvent
+  | SteelNativeQuotationStatusEvent
   | SteelNativeQuoteAuditEvent;
 
 export interface SteelNativeEventEnvelope {
@@ -119,7 +149,7 @@ export interface SteelNativeEventEnvelope {
   data: SteelNativeStreamEvent;
 }
 
-export interface SteelNativePreflightToolCallArgs {
+export interface SteelNativePaddleOcrPreflightToolCallArgs {
   input_data?: string;
   output_mode: 'detailed';
   return_images: boolean;
@@ -127,6 +157,14 @@ export interface SteelNativePreflightToolCallArgs {
   use_doc_unwarping: boolean;
   use_layout_detection: boolean;
 }
+
+export interface SteelNativePriceSearchToolCallArgs {
+  queries: SteelToolJsonObject[];
+}
+
+export type SteelNativePreflightToolCallArgs =
+  | SteelNativePaddleOcrPreflightToolCallArgs
+  | SteelNativePriceSearchToolCallArgs;
 
 export interface SteelNativePreflightToolCall {
   type: 'tool_call';
@@ -173,6 +211,7 @@ const steelNativeEventSources = [
   'ocr_preprocessing',
   'paddleocr_preflight',
   'delegate_ocr_preflight',
+  'quotation_preflight',
   'tool_result',
   'quote_runtime',
 ] as const;
@@ -513,6 +552,55 @@ function isSteelNativeEventData(value: unknown): value is SteelNativeStreamEvent
     );
   }
 
+  if (value.type === 'quotation_status') {
+    if (
+      !hasOnlyKeys(value, [
+        'type',
+        'source',
+        ...steelNativeEventBaseFields,
+        'index',
+        'runId',
+        'stage',
+        'status',
+        'completedChunks',
+        'totalChunks',
+        'message',
+        'chunkIndex',
+        'attempt',
+      ])
+    ) {
+      return false;
+    }
+    return (
+      value.source === 'quotation_preflight' &&
+      typeof value.conversationId === 'string' &&
+      value.conversationId.length > 0 &&
+      isSafeInteger(value.index) &&
+      value.index >= 0 &&
+      (value.runId === undefined || (typeof value.runId === 'string' && value.runId.length > 0)) &&
+      typeof value.stage === 'string' &&
+      value.stage.length > 0 &&
+      [
+        'idle',
+        'queued',
+        'running',
+        'aggregating',
+        'finalizing',
+        'interrupted',
+        'completed',
+        'cancelled',
+      ].includes(value.status as string) &&
+      isSafeInteger(value.completedChunks) &&
+      value.completedChunks >= 0 &&
+      isSafeInteger(value.totalChunks) &&
+      value.totalChunks >= 0 &&
+      value.completedChunks <= value.totalChunks &&
+      (value.message === undefined || typeof value.message === 'string') &&
+      (value.chunkIndex === undefined || (isSafeInteger(value.chunkIndex) && value.chunkIndex >= 0)) &&
+      (value.attempt === undefined || (typeof value.attempt === 'string' && value.attempt.length > 0))
+    );
+  }
+
   if (value.type === 'memory_saved') {
     if (
       !hasOnlyKeys(value, [
@@ -578,9 +666,24 @@ function isSteelNativeEventData(value: unknown): value is SteelNativeStreamEvent
   );
 }
 
+function isPriceSearchToolCallArgs(value: Record<string, unknown>): value is SteelNativePriceSearchToolCallArgs {
+  if (Object.keys(value).sort().join(',') !== 'queries') {
+    return false;
+  }
+  return (
+    Array.isArray(value.queries) &&
+    value.queries.length >= 1 &&
+    value.queries.length <= 100 &&
+    value.queries.every((query) => isRecord(query))
+  );
+}
+
 function isPreflightToolCallArgs(value: unknown): value is SteelNativePreflightToolCallArgs {
   if (!isRecord(value)) {
     return false;
+  }
+  if ('queries' in value) {
+    return isPriceSearchToolCallArgs(value);
   }
   const keys = Object.keys(value).sort();
   const requiredKeys = [
@@ -805,6 +908,33 @@ function isSafePreflightOutput(value: string, allowLegacyError = false): boolean
   return canonicalizePreflightOutput(value, allowLegacyError) !== undefined;
 }
 
+function isPriceSearchToolName(value: unknown): value is string {
+  return value === 'search_price_candidates' || value === 'steel_search_price_candidates';
+}
+
+function canonicalizePriceSearchOutput(value: string): string | undefined {
+  if (Buffer.byteLength(value, 'utf8') > steelNativePriceSearchOutputMaxBytes) {
+    return undefined;
+  }
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (!isRecord(parsed) || !isPriceSearchToolName(parsed.toolName)) {
+      return undefined;
+    }
+    if (parsed.ok === true) {
+      return isRecord(parsed.data) ? value : undefined;
+    }
+    if (parsed.ok === false) {
+      return typeof parsed.errorCategory === 'string' && typeof parsed.errorSummary === 'string'
+        ? value
+        : undefined;
+    }
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function isPaddleOcrToolName(value: unknown): value is string {
   return (
     typeof value === 'string' &&
@@ -819,14 +949,17 @@ function isSteelNativePreflightToolCall(
   return (
     isRecord(value) &&
     value.type === 'tool_call' &&
-    isPaddleOcrToolName(value.name) &&
+    (isPaddleOcrToolName(value.name) || isPriceSearchToolName(value.name)) &&
     typeof value.id === 'string' &&
     value.id.length > 0 &&
     Buffer.byteLength(value.id, 'utf8') <= steelNativePreflightToolCallIdMaxBytes &&
     isPreflightToolCallArgs(value.args) &&
     (value.progress === 0 || value.progress === 1) &&
     (value.output === undefined ||
-      (typeof value.output === 'string' && isSafePreflightOutput(value.output, allowLegacyError)))
+      (typeof value.output === 'string' &&
+        (isPriceSearchToolName(value.name)
+          ? canonicalizePriceSearchOutput(value.output) !== undefined
+          : isSafePreflightOutput(value.output, allowLegacyError))))
   );
 }
 
@@ -953,6 +1086,59 @@ function canonicalizeSteelNativeEvent(value: unknown): SteelNativeStreamEvent | 
       event.chunkCount = value.chunkCount;
     }
     // claim/generation/attempt tokens intentionally do not cross persistence boundaries.
+  } else if (value.type === 'quotation_status') {
+    if (
+      value.source !== 'quotation_preflight' ||
+      typeof value.conversationId !== 'string' ||
+      value.conversationId.length === 0 ||
+      !isSafeInteger(value.index) ||
+      value.index < 0 ||
+      (value.runId !== undefined &&
+        (typeof value.runId !== 'string' || value.runId.length === 0)) ||
+      typeof value.stage !== 'string' ||
+      value.stage.length === 0 ||
+      ![
+        'idle',
+        'queued',
+        'running',
+        'aggregating',
+        'finalizing',
+        'interrupted',
+        'completed',
+        'cancelled',
+      ].includes(value.status as string) ||
+      !isSafeInteger(value.completedChunks) ||
+      value.completedChunks < 0 ||
+      !isSafeInteger(value.totalChunks) ||
+      value.totalChunks < 0 ||
+      value.completedChunks > value.totalChunks ||
+      (value.message !== undefined && typeof value.message !== 'string') ||
+      (value.chunkIndex !== undefined &&
+        (!isSafeInteger(value.chunkIndex) || value.chunkIndex < 0)) ||
+      (value.attempt !== undefined && (typeof value.attempt !== 'string' || value.attempt.length === 0))
+    ) {
+      return undefined;
+    }
+    event.type = 'quotation_status';
+    event.source = 'quotation_preflight';
+    event.conversationId = value.conversationId;
+    event.index = value.index;
+    event.stage = value.stage;
+    event.status = value.status;
+    event.completedChunks = value.completedChunks;
+    event.totalChunks = value.totalChunks;
+    if (value.runId !== undefined) {
+      event.runId = value.runId;
+    }
+    if (value.message !== undefined) {
+      event.message = value.message;
+    }
+    if (value.chunkIndex !== undefined) {
+      event.chunkIndex = value.chunkIndex;
+    }
+    if (value.attempt !== undefined) {
+      event.attempt = value.attempt;
+    }
   } else if (value.type === 'quote_audit') {
     if (value.stage === 'stage_2' && value.status === 'started') {
       if (value.source !== 'quote_runtime' || value.message !== 'Stage 2 started') {
@@ -994,7 +1180,7 @@ function canonicalizeSteelNativePreflightToolCall(
     typeof value.id !== 'string' ||
     value.id.length === 0 ||
     Buffer.byteLength(value.id, 'utf8') > steelNativePreflightToolCallIdMaxBytes ||
-    !isPaddleOcrToolName(value.name) ||
+    (!isPaddleOcrToolName(value.name) && !isPriceSearchToolName(value.name)) ||
     !isPreflightToolCallArgs(value.args) ||
     (value.progress !== 0 && value.progress !== 1)
   ) {
@@ -1006,7 +1192,9 @@ function canonicalizeSteelNativePreflightToolCall(
     if (typeof value.output !== 'string') {
       return undefined;
     }
-    output = canonicalizePreflightOutput(value.output, allowLegacyError);
+    output = isPriceSearchToolName(value.name)
+      ? canonicalizePriceSearchOutput(value.output)
+      : canonicalizePreflightOutput(value.output, allowLegacyError);
     if (output === undefined) {
       return undefined;
     }
@@ -1016,14 +1204,16 @@ function canonicalizeSteelNativePreflightToolCall(
     type: 'tool_call',
     id: value.id,
     name: value.name,
-    args: {
-      ...(value.args.input_data !== undefined ? { input_data: value.args.input_data } : {}),
-      output_mode: value.args.output_mode,
-      return_images: value.args.return_images,
-      use_doc_orientation_classify: value.args.use_doc_orientation_classify,
-      use_doc_unwarping: value.args.use_doc_unwarping,
-      use_layout_detection: value.args.use_layout_detection,
-    },
+    args: isPriceSearchToolName(value.name)
+      ? { queries: value.args.queries.map((query) => ({ ...query })) }
+      : {
+          ...(value.args.input_data !== undefined ? { input_data: value.args.input_data } : {}),
+          output_mode: value.args.output_mode,
+          return_images: value.args.return_images,
+          use_doc_orientation_classify: value.args.use_doc_orientation_classify,
+          use_doc_unwarping: value.args.use_doc_unwarping,
+          use_layout_detection: value.args.use_layout_detection,
+        },
     progress: value.progress,
     ...(output !== undefined ? { output } : {}),
   };
@@ -1409,6 +1599,62 @@ export const buildSteelDelegateOcrEvent: typeof buildSteelDelegateOcrStatusEvent
   buildSteelDelegateOcrStatusEvent;
 export const buildSteelDelegateOcrEventEnvelope: typeof buildSteelDelegateOcrStatusEventEnvelope =
   buildSteelDelegateOcrStatusEventEnvelope;
+
+export interface BuildSteelQuotationStatusEventInput {
+  conversationId: string;
+  requestId?: string;
+  messageId?: string;
+  index: number;
+  runId?: string;
+  stage: string;
+  status: SteelNativeQuotationStatus;
+  completedChunks: number;
+  totalChunks: number;
+  message?: string;
+  chunkIndex?: number;
+  attempt?: string;
+}
+
+export function buildSteelQuotationStatusEvent({
+  conversationId,
+  requestId,
+  messageId,
+  index,
+  runId,
+  stage,
+  status,
+  completedChunks,
+  totalChunks,
+  message,
+  chunkIndex,
+  attempt,
+}: BuildSteelQuotationStatusEventInput): SteelNativeQuotationStatusEvent {
+  return {
+    type: 'quotation_status',
+    source: 'quotation_preflight',
+    conversationId,
+    ...(requestId !== undefined ? { requestId } : {}),
+    ...(messageId !== undefined ? { messageId } : {}),
+    index,
+    ...(runId !== undefined ? { runId } : {}),
+    stage,
+    status,
+    completedChunks,
+    totalChunks,
+    ...(message !== undefined ? { message } : {}),
+    ...(chunkIndex !== undefined ? { chunkIndex } : {}),
+    ...(attempt !== undefined ? { attempt } : {}),
+  };
+}
+
+export function buildSteelQuotationStatusEventEnvelope(
+  input: BuildSteelQuotationStatusEventInput,
+): SteelNativeEventEnvelope {
+  return {
+    event: steelNativeStreamEventName,
+    data: buildSteelQuotationStatusEvent(input),
+  };
+}
 
 export function buildSteelQuoteAuditEvent(
   input: BuildSteelQuoteAuditEventInput = {},

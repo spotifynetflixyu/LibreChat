@@ -396,6 +396,7 @@ const ContentParts = memo(function ContentParts({
     <SteelActivity
       messageId={messageId}
       isCreatedByUser={isCreatedByUser}
+      conversationId={conversationId}
       persistedActivityEvents={persistedActivityEvents}
     />
   );

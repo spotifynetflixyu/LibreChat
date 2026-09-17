@@ -18,6 +18,10 @@ import {
   refreshChatProjectStatsForUser,
   updateChatProjectLastConversationForUser,
 } from './chatProject';
+import {
+  createSteelQuotationArtifactModel,
+  createSteelQuotationStateModel,
+} from '~/models/steel';
 import { createTempChatExpirationDate } from '~/utils/tempChatRetention';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { isValidObjectIdString } from '~/utils/objectId';
@@ -41,6 +45,20 @@ const ARCHIVE_CONVERSATION_BATCH_SIZE = 500;
 const PROJECT_STATS_REFRESH_CONCURRENCY = 10;
 const PROJECT_STATS_REFRESH_MAX_PASSES = 2;
 const PROJECT_DISCOVERY_MAX_ATTEMPTS = 3;
+
+async function deleteSteelQuotationState(
+  mongoose: typeof import('mongoose'),
+  userId: string,
+  conversationIds: readonly string[],
+): Promise<void> {
+  if (conversationIds.length === 0) {
+    return;
+  }
+  const State = createSteelQuotationStateModel(mongoose);
+  const Artifact = createSteelQuotationArtifactModel(mongoose);
+  const filter = { userId, conversationId: { $in: conversationIds } };
+  await Promise.all([State.deleteMany(filter), Artifact.deleteMany(filter)]);
+}
 
 async function discoverProjectIds(
   Conversation: Model<IConversation>,
@@ -1358,6 +1376,12 @@ export function createConversationMethods(
         });
       } catch (error) {
         logger.error('[deleteConvos] Conversations deleted but message cleanup failed', error);
+      }
+
+      try {
+        await deleteSteelQuotationState(mongoose, user, conversationIds);
+      } catch (error) {
+        logger.error('[deleteConvos] Conversations deleted but quotation cleanup failed', error);
       }
 
       /**

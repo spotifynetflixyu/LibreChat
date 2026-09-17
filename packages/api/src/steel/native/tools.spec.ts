@@ -808,3 +808,15 @@ describe('Steel native tool adapter', () => {
     expect([...result.toolRegistry?.keys() ?? []]).toEqual(expected);
   });
 });
+
+describe('quotation tool capability boundaries', () => {
+  const config = { tools: ['search_customers', 'search_price_candidates', 'steel_search_price_candidates', 'web_search'] };
+  it('only exposes customer lookup after saved OCR exists', () => {
+    expect(prepareSteelNativeToolConfig(config, { quotationRole: 'preparation' }).tools).toEqual(['web_search']);
+    expect(prepareSteelNativeToolConfig(config, { quotationRole: 'preparation', hasQuotationOrder: true }).tools).toEqual(['search_customers', 'web_search']);
+  });
+  it('exposes price lookup exclusively to the quotation child', () => {
+    expect(prepareSteelNativeToolConfig(config, { quotationRole: 'main', hasQuotationOrder: true }).tools).toEqual(['web_search']);
+    expect(prepareSteelNativeToolConfig(config, { quotationRole: 'child' }).tools).toEqual(['search_price_candidates', 'steel_search_price_candidates', 'web_search']);
+  });
+});

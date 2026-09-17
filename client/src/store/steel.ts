@@ -7,6 +7,7 @@ export type SteelNativeActivitySource =
   | 'ocr_preprocessing'
   | 'paddleocr_preflight'
   | 'delegate_ocr_preflight'
+  | 'quotation_preflight'
   | 'quote_runtime'
   | 'responses_output'
   | 'tool_result';
@@ -29,6 +30,15 @@ export type SteelNativeDelegateOcrStatus =
   | 'succeeded'
   | 'failed'
   | 'replaced';
+export type SteelNativeQuotationStatus =
+  | 'idle'
+  | 'queued'
+  | 'running'
+  | 'aggregating'
+  | 'finalizing'
+  | 'interrupted'
+  | 'completed'
+  | 'cancelled';
 export interface SteelOcrMissingPageRange {
   pageStart: number;
   pageEnd: number;
@@ -62,6 +72,29 @@ export type SteelNativeActivityEvent =
       messageId?: string;
       toolName?: string;
       providerToolCallId?: string;
+      receivedAt?: number;
+    }
+  | {
+      type: 'quotation_status';
+      source: 'quotation_preflight';
+      conversationId: string;
+      requestId?: string;
+      messageId?: string;
+      index: number;
+      runId?: string;
+      stage: string;
+      status: SteelNativeQuotationStatus;
+      completedChunks: number;
+      totalChunks: number;
+      message?: string;
+      chunkIndex?: number;
+      attempt?: string;
+      toolName?: string;
+      providerToolCallId?: string;
+      savedCounts?: SteelNativeSavedCounts;
+      savedTableCounts?: SteelNativeTableCounts;
+      totalSavedCounts?: SteelNativeSavedCounts;
+      totalTableCounts?: SteelNativeTableCounts;
       receivedAt?: number;
     }
   | {

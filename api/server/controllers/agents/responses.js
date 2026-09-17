@@ -68,6 +68,8 @@ const {
   CHILD_THREAD_READ_ONLY_ERROR,
   createSteelOcrStateService,
   finalizeOcrResponse,
+  prepareQuotationTurn,
+  hasQuotationOrder,
 } = require('@librechat/api');
 const {
   createResponsesToolEndCallback,
@@ -84,6 +86,7 @@ const {
   runSteelPaddleOcrPreflight,
   prepareDelegateOcrResume,
   executeDelegateOcrResume,
+  executeSteelQuotationWorkflow,
   isFatalAgentInitializationError,
 } = require('~/server/services/ToolService');
 const {
@@ -489,7 +492,8 @@ async function saveResponseOutput(
 ) {
   let responseText = extractSteelNativeResponseOutputText(response);
   let ocrFinalization;
-  if (/^ {0,3}##(?!#)[ \t]+ocr_result[ \t]*$/imu.test(responseText)) {
+  if (req.steelNativeContext?.quotation?.pendingOrderPersisted !== true &&
+    /^ {0,3}##(?!#)[ \t]+ocr_result[ \t]*$/imu.test(responseText)) {
     const stateService = createSteelOcrStateService(mongoose);
     const state = await stateService.readConversationOcrState(conversationId);
     const delegateContext = req.steelNativeContext?.delegateOcrContext;
@@ -511,6 +515,7 @@ async function saveResponseOutput(
       })),
       delegateSummary: agentKind === 'delegate_ocr',
       agentKind,
+      currentUserTurn: delegateContext?.currentUserTurnText,
     });
     if (finalized.ok) {
       responseText = finalized.finalResponse;
@@ -553,6 +558,9 @@ async function saveResponseOutput(
         executionLeaseToken,
         candidateToken,
       };
+    } else if (finalized.reason === 'invalid_ocr_deletion') {
+      responseText = `訂單刪除未通過確認，原訂單未變更。請重新指定要刪除的項目。\n\n${state?.currentOcrResultMarkdown ?? ''}`;
+      replaceResponsesOutputText(response, responseText);
     } else if (finalized.reason === 'mapping_mismatch') {
       responseText = '目前 AI model 暫時不可用，建議先切換別的 model。';
       replaceResponsesOutputText(response, responseText);
@@ -1251,8 +1259,19 @@ const executeResponse = async (envelope, { req, res }) => {
       currentUserTurnText,
       steelConversation,
     };
+    const quotation = await prepareQuotationTurn({
+      scope: { userId: principal?.userId ?? req.user.id, conversationId },
+      messageId: currentUserTurn?.messageId ?? responseId,
+      responseId,
+      text: currentUserTurnText,
+      files: currentTurnFiles,
+    });
+    req.steelNativeContext.quotation = {
+      ...quotation,
+      messageId: currentUserTurn?.messageId ?? responseId,
+    };
     const delegateOcrResume =
-      typeof prepareDelegateOcrResume === 'function'
+      !quotation.resume && typeof prepareDelegateOcrResume === 'function'
         ? await prepareDelegateOcrResume({
             req,
             conversationId,
@@ -1260,7 +1279,9 @@ const executeResponse = async (envelope, { req, res }) => {
             userId: principal?.userId ?? req.user?.id,
           })
         : undefined;
-    const paddleOcrPreflight = delegateOcrResume
+    const paddleOcrPreflight = quotation.resume
+      ? { ocrTurnActive: false }
+      : delegateOcrResume
       ? { ocrTurnActive: false, delegateOcrResume: true }
       : await runSteelPaddleOcrPreflight({
           req,
@@ -1287,6 +1308,8 @@ const executeResponse = async (envelope, { req, res }) => {
       Object.assign(
         runAgent,
         prepareSteelNativeToolConfig(runAgent, {
+          quotationRole: 'preparation',
+          hasQuotationOrder: hasQuotationOrder(quotation.state?.currentOrder?.markdown),
           ocrTurnActive: paddleOcrPreflight?.ocrTurnActive === true,
           delegateOcrPolicy,
         }),
@@ -1297,6 +1320,8 @@ const executeResponse = async (envelope, { req, res }) => {
         Object.assign(
           context.agent,
           prepareSteelNativeToolConfig(context.agent, {
+            quotationRole: 'preparation',
+            hasQuotationOrder: hasQuotationOrder(quotation.state?.currentOrder?.markdown),
             ocrTurnActive: paddleOcrPreflight?.ocrTurnActive === true,
             delegateOcrPolicy,
           }),
@@ -1306,6 +1331,8 @@ const executeResponse = async (envelope, { req, res }) => {
         Object.assign(
           context,
           prepareSteelNativeToolConfig(context, {
+            quotationRole: 'preparation',
+            hasQuotationOrder: hasQuotationOrder(quotation.state?.currentOrder?.markdown),
             ocrTurnActive: paddleOcrPreflight?.ocrTurnActive === true,
             delegateOcrPolicy,
           }),
@@ -1375,7 +1402,8 @@ const executeResponse = async (envelope, { req, res }) => {
           sharedRunContext: buildSharedRunContextWithSteel(
             inlineMemoryContextByAgentId.get(runAgent.id),
             agentScopedContext.get(runAgent.id),
-            steelNativeContext.runtimeContextText,
+            [steelNativeContext.runtimeContextText, !ocrTurnActive && quotation.instruction]
+              .filter(Boolean).join('\n\n'),
           ),
         }),
       ),
@@ -1577,7 +1605,17 @@ const executeResponse = async (envelope, { req, res }) => {
         version: 'v2',
       };
 
-      if (delegateOcrResume) {
+      const executeQuotation = () => executeSteelQuotationWorkflow({
+        req, res, signal: abortController.signal, agent: primaryConfig, run, userMCPAuthMap,
+        requestScopedConnections: agentToolContexts.get(primaryConfig.id)?.requestScopedConnections,
+        onUsage: async (usage) => { collectedUsage.push(usage); },
+        onText: async (text) => handlers.on_message_delta.handle('on_message_delta', {
+          id: `quotation:${responseId}`, delta: { content: [{ type: 'text', text }] },
+        }),
+      });
+      if (req.steelNativeContext?.quotation?.resume) {
+        await executeQuotation();
+      } else if (delegateOcrResume) {
         await runPreparedResponsesDelegateOcr({
           req,
           res,
@@ -1595,6 +1633,7 @@ const executeResponse = async (envelope, { req, res }) => {
             },
           },
         });
+        await executeQuotation();
       }
 
       // Record token usage against balance
@@ -1797,7 +1836,17 @@ const executeResponse = async (envelope, { req, res }) => {
         version: 'v2',
       };
 
-      if (delegateOcrResume) {
+      const executeQuotation = () => executeSteelQuotationWorkflow({
+        req, res, signal: abortController.signal, agent: primaryConfig, run, userMCPAuthMap,
+        requestScopedConnections: agentToolContexts.get(primaryConfig.id)?.requestScopedConnections,
+        onUsage: async (usage) => { collectedUsage.push(usage); },
+        onText: async (text) => handlers.on_message_delta.handle('on_message_delta', {
+          id: `quotation:${responseId}`, delta: { content: [{ type: 'text', text }] },
+        }),
+      });
+      if (req.steelNativeContext?.quotation?.resume) {
+        await executeQuotation();
+      } else if (delegateOcrResume) {
         await runPreparedResponsesDelegateOcr({
           req,
           res,
@@ -1815,6 +1864,7 @@ const executeResponse = async (envelope, { req, res }) => {
             },
           },
         });
+        await executeQuotation();
       }
 
       // Record token usage against balance

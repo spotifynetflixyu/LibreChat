@@ -3168,3 +3168,21 @@ describe('OpenAI OAuth model adapter', () => {
     expect(cancel).toHaveBeenCalledTimes(1);
   });
 });
+
+it('captures actual provider Python results for durable quotation validation', async () => {
+  const evidence = jest.fn().mockResolvedValue(undefined);
+  const doGenerate = jest.fn(async () => createGenerateResult([
+    { type: 'tool-call', toolCallId: 'python-proof', toolName: 'code_interpreter', input: '{"code":"print(2*3)"}', providerExecuted: true },
+    { type: 'tool-result', toolCallId: 'python-proof', toolName: 'code_interpreter', result: { outputs: [{ type: 'logs', logs: '{"quote_calculations":{"1":{"總數":"6"}}}' }] } },
+    { type: 'text', text: '## system_order_chunk\n\ncalculated' },
+  ]));
+  const model = createOpenAIOAuthModel({
+    ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
+    model: 'gpt-5.5', enableCodeInterpreter: true, onCodeInterpreterEvidence: evidence,
+  });
+  await model.invoke([new HumanMessage('Calculate the chunk')]);
+  expect(evidence).toHaveBeenCalledTimes(2);
+  expect(evidence).toHaveBeenLastCalledWith(expect.objectContaining({
+    type: 'tool-result', toolCallId: 'python-proof', payload: expect.stringContaining('quote_calculations'),
+  }));
+});

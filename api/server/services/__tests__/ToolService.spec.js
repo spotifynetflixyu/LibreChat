@@ -115,8 +115,17 @@ const mockBuildSteelPaddleOcrPreflightEventEnvelopes = jest.fn(() => [
     },
   },
 ]);
+const mockAcceptQuotation = jest.fn();
+const mockRunQuotation = jest.fn();
+const mockProcessQuotationPending = jest.fn();
+const mockQuoteState = { enqueuePendingMessage: jest.fn() };
+const mockSaveQuotationMessage = jest.fn().mockResolvedValue({ messageId: 'saved' });
 jest.mock('@librechat/api', () => ({
   ...jest.requireActual('@librechat/api'),
+  acceptQuotationResponse: (...args) => mockAcceptQuotation(...args),
+  runQuotationPreflight: (...args) => mockRunQuotation(...args),
+  processQuotationPendingMessages: (...args) => mockProcessQuotationPending(...args),
+  createSteelQuotationStateService: () => mockQuoteState,
   AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE: 'AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE',
   isFatalAgentInitializationError: (error) =>
     ['AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE', 'resource_recovery_required'].includes(error?.code),
@@ -313,6 +322,7 @@ jest.mock('~/server/services/Threads', () => ({
 const mockGetFiles = jest.fn();
 jest.mock('~/models', () => ({
   findPluginAuthsByKeys: jest.fn(),
+  saveMessage: (...args) => mockSaveQuotationMessage(...args),
   getFiles: (...args) => mockGetFiles(...args),
 }));
 jest.mock('~/config', () => ({
@@ -347,6 +357,7 @@ jest.mock('~/cache', () => ({
 
 const {
   loadAgentTools,
+  executeSteelQuotationWorkflow,
   loadToolsForExecution,
   prepareDelegateOcrResume,
   executeDelegateOcrResume,
@@ -7034,5 +7045,81 @@ describe('ToolService - Action Capability Gating', () => {
       expect(callsByName.get(rawNameA).requestBuilder.path).toBe('/echo');
       expect(callsByName.get(rawNameB).requestBuilder.path).toBe('/items');
     });
+  });
+});
+
+
+describe('quotation transport bridge', () => {
+  const makeInput = (resume = false) => ({
+    req: { user: { id: 'owner' }, steelNativeContext: {
+      requestId: 'response-1', conversationId: 'conversation-1',
+      quotation: { scope: { userId: 'owner', conversationId: 'conversation-1' }, resume },
+      delegateOcrContext: { modelOptions: { model: 'test-model' } },
+      steelHistory: { activityEvents: [], preflightToolCalls: [] },
+    } },
+    signal: new AbortController().signal,
+    agent: { id: 'agent-1' },
+    run: { getRunMessages: () => [{ getType: () => 'ai', content: '## quote_signal', response_metadata: { finish_reason: 'stop' } }] },
+    onText: jest.fn(),
+  });
+  beforeEach(() => {
+    mockAcceptQuotation.mockReset().mockResolvedValue({ runId: 'run-1' });
+    mockRunQuotation.mockReset().mockResolvedValue({ status: 'completed' });
+    mockProcessQuotationPending.mockReset().mockResolvedValue(undefined);
+    mockSaveQuotationMessage.mockReset().mockResolvedValue({ messageId: 'saved' });
+  });
+  it('accepts only the completed AI output before starting quotation', async () => {
+    const input = makeInput();
+    await executeSteelQuotationWorkflow(input);
+    expect(mockAcceptQuotation).toHaveBeenCalledWith(expect.objectContaining({ response: '## quote_signal', finishReason: 'stop' }));
+    expect(mockRunQuotation).toHaveBeenCalledTimes(1);
+    expect(mockProcessQuotationPending).toHaveBeenCalledTimes(1);
+    expect(mockAcceptQuotation.mock.invocationCallOrder[0]).toBeLessThan(mockRunQuotation.mock.invocationCallOrder[0]);
+  });
+  it('does not start a quotation for an ordinary response or incomplete tool exchange', async () => {
+    mockAcceptQuotation.mockResolvedValue(undefined);
+    await executeSteelQuotationWorkflow(makeInput());
+    expect(mockRunQuotation).not.toHaveBeenCalled();
+    const input = makeInput();
+    input.run.getRunMessages = () => [{ getType: () => 'ai', tool_calls: [{ id: 'pending' }], content: 'signal' }];
+    mockAcceptQuotation.mockClear();
+    await executeSteelQuotationWorkflow(input);
+    expect(mockAcceptQuotation).not.toHaveBeenCalled();
+  });
+  it('resumes without accepting a new signal and drains pending after cancellation', async () => {
+    mockRunQuotation.mockResolvedValue({ status: 'cancelled' });
+    const input = makeInput(true);
+    await executeSteelQuotationWorkflow(input);
+    expect(mockAcceptQuotation).not.toHaveBeenCalled();
+    expect(mockProcessQuotationPending).toHaveBeenCalledTimes(1);
+    expect(input.onText).toHaveBeenCalledWith(expect.stringContaining('報價已取消'));
+  });
+  it('does not process pending messages while another owner holds the run lease', async () => {
+    mockRunQuotation.mockResolvedValue({ status: 'busy' });
+    await executeSteelQuotationWorkflow(makeInput(true));
+    expect(mockProcessQuotationPending).not.toHaveBeenCalled();
+  });
+  it('persists every queued correction but emits only the latest OCR revision for the parent finalizer', async () => {
+    mockProcessQuotationPending.mockImplementation(async ({ publish }) => {
+      await publish({ messageId: 'q1', parentMessageId: 'u1', markdown: '## ocr_result\nrevision one' });
+      await publish({ messageId: 'q2', parentMessageId: 'u2', markdown: '## ocr_result\nrevision two' });
+    });
+    const input = makeInput(true);
+    await executeSteelQuotationWorkflow(input);
+    expect(mockSaveQuotationMessage).toHaveBeenCalledTimes(2);
+    expect(input.onText).toHaveBeenCalledTimes(1);
+    expect(input.onText).toHaveBeenCalledWith('\n\n## ocr_result\nrevision two');
+  });
+  it('durably publishes to the original response id before presenting the result', async () => {
+    const input = makeInput(true);
+    mockRunQuotation.mockImplementation(async ({ publishFinal }) => {
+      await publishFinal({ run: { targetMessageId: 'original-response', triggerMessageId: 'original-input' }, markdown: '## system_order\ncomplete' });
+      return { status: 'completed' };
+    });
+    await executeSteelQuotationWorkflow(input);
+    expect(mockSaveQuotationMessage).toHaveBeenCalledWith(input.req, expect.objectContaining({
+      messageId: 'original-response', parentMessageId: 'original-input', conversationId: 'conversation-1', text: '## system_order\ncomplete',
+    }), expect.anything());
+    expect(mockSaveQuotationMessage.mock.invocationCallOrder[0]).toBeLessThan(input.onText.mock.invocationCallOrder[0]);
   });
 });

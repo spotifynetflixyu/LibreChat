@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   buildOcrUpdateSummary,
   finalizeOcrResponse,
@@ -268,5 +269,33 @@ describe('finalizeOcrResponse', () => {
       expect(result.finalResponse).toBe(response);
       expect(result.ocrResultMarkdown).toBe(response);
     }
+  });
+});
+
+
+describe('explicit order deletion', () => {
+  const previous = `## ocr_result\n\n${table(['來源', '零件編號', '數量'], [['文字訂單', '1', '2'], ['文字訂單', '2', '3']])}`;
+  const hash = createHash('sha256').update(previous).digest('hex');
+  const deletions = (ids: string[], fingerprint = hash) => `## ocr_deletions\n\n${table(['order_hash', '來源', '零件編號'], ids.map((id) => [fingerprint, '文字訂單', id]))}`;
+  const run = (rows: string[][], control: string, text = '刪除項目 1') => finalizeOcrResponse({
+    assistantResponse: `## ocr_result\n\n${table(['來源', '零件編號', '數量'], rows)}\n\n${control}`,
+    previousOcrMarkdown: previous, canonicalMapping: [], agentKind: 'other', currentUserTurn: text,
+  });
+  it('does not restore explicitly deleted rows and strips deletion control from display', () => {
+    const result = run([['文字訂單', '2', '3']], deletions(['1']));
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.ocrResultMarkdown).not.toContain('| 文字訂單 | 1 |');
+    expect(result.finalResponse).not.toContain('ocr_deletions');
+  });
+  it('allows deleting every row only with complete valid explicit deletion evidence', () => {
+    expect(run([], deletions(['1', '2']), '刪除全部').ok).toBe(true);
+    expect(run([], deletions(['1'])).ok).toBe(false);
+    expect(run([], '').ok).toBe(false);
+  });
+  it('rejects stale hashes, unrequested deletion and a deleted row retained in the table', () => {
+    expect(run([['文字訂單', '2', '3']], deletions(['1'], 'stale')).ok).toBe(false);
+    expect(run([['文字訂單', '2', '3']], deletions(['1']), '請報價').ok).toBe(false);
+    expect(run([['文字訂單', '1', '2'], ['文字訂單', '2', '3']], deletions(['1'])).ok).toBe(false);
   });
 });

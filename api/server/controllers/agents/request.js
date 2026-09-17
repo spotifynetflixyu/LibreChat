@@ -423,7 +423,7 @@ function replaceResponseMarkdown(response, markdown) {
 }
 
 async function prepareOcrResponseFinalization(req, response, conversationId, generationId) {
-  if (typeof response?.text !== 'string') {
+  if (typeof response?.text !== 'string' || req?.steelNativeContext?.quotation?.pendingOrderPersisted === true) {
     return null;
   }
   const delegateContext = req?.steelNativeContext?.delegateOcrContext;
@@ -463,8 +463,12 @@ async function prepareOcrResponseFinalization(req, response, conversationId, gen
     })),
     delegateSummary: agentKind === 'delegate_ocr',
     agentKind,
+    currentUserTurn: delegateContext?.currentUserTurnText,
   });
   if (!finalized.ok) {
+    if (finalized.reason === 'invalid_ocr_deletion') {
+      replaceResponseMarkdown(response, `訂單刪除未通過確認，原訂單未變更。請重新指定要刪除的項目。\n\n${state?.currentOcrResultMarkdown ?? ''}`);
+    }
     if (finalized.reason === 'mapping_mismatch') {
       replaceResponseMarkdown(
         response,

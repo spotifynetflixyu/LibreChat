@@ -4,7 +4,11 @@ import { QueryKeys, dataService } from 'librechat-data-provider';
 import type { PropsWithChildren } from 'react';
 import type { OpenAIOAuthTokenStatus } from 'librechat-data-provider';
 
-import { useLogoutOpenAIOAuthCodexMutation, useRefreshOpenAIOAuthTokenMutation } from '../queries';
+import {
+  useCancelSteelQuotationMutation,
+  useLogoutOpenAIOAuthCodexMutation,
+  useRefreshOpenAIOAuthTokenMutation,
+} from '../queries';
 
 jest.mock('recoil', () => ({
   useRecoilValue: () => true,
@@ -76,5 +80,52 @@ describe('OpenAI OAuth token mutations', () => {
     expect(queryClient.getQueryData([QueryKeys.openAIOAuthTokenStatus])).toEqual(loggedOutToken);
     expect(invalidate).toHaveBeenCalledWith([QueryKeys.openAIOAuthUsage]);
     expect(refetch).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('Steel quotation cancellation', () => {
+  const conversationId = 'conversation-1';
+  const runningStatus = {
+    conversationId,
+    index: 4,
+    runId: 'quotation-run-4',
+    status: 'running' as const,
+    completedChunks: 1,
+    totalChunks: 3,
+    canCancel: true,
+  };
+
+  it('stores the backend cancellation result under the exact status query key', async () => {
+    const queryClient = new QueryClient();
+    const cancelledStatus = { ...runningStatus, status: 'cancelled' as const, canCancel: false };
+    jest.spyOn(dataService, 'cancelSteelQuotation').mockResolvedValue(cancelledStatus);
+    const { result } = renderHook(() => useCancelSteelQuotationMutation(conversationId), {
+      wrapper: createWrapper(queryClient),
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync(4);
+    });
+
+    expect(queryClient.getQueryData([QueryKeys.steelQuotationStatus, conversationId])).toEqual(
+      cancelledStatus,
+    );
+  });
+
+  it('does not fabricate a terminal cancellation result when the API fails', async () => {
+    const queryClient = new QueryClient();
+    queryClient.setQueryData([QueryKeys.steelQuotationStatus, conversationId], runningStatus);
+    jest.spyOn(dataService, 'cancelSteelQuotation').mockRejectedValue(new Error('request failed'));
+    const { result } = renderHook(() => useCancelSteelQuotationMutation(conversationId), {
+      wrapper: createWrapper(queryClient),
+    });
+
+    await act(async () => {
+      await expect(result.current.mutateAsync(4)).rejects.toThrow('request failed');
+    });
+
+    expect(queryClient.getQueryData([QueryKeys.steelQuotationStatus, conversationId])).toEqual(
+      runningStatus,
+    );
   });
 });

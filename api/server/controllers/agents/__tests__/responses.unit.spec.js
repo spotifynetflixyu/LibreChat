@@ -21,6 +21,13 @@ const mockResponsesOcrStateService = {
 const mockCreateSteelOcrStateService = jest.fn(() => mockResponsesOcrStateService);
 const mockPrepareDelegateOcrResume = jest.fn();
 const mockExecuteDelegateOcrResume = jest.fn();
+const mockPrepareQuotationTurn = jest.fn().mockResolvedValue({
+  resume: false,
+  state: {},
+  instruction: '',
+});
+const mockHasQuotationOrder = jest.fn().mockReturnValue(false);
+const mockExecuteSteelQuotationWorkflow = jest.fn().mockResolvedValue(undefined);
 const mockFinalizeOcrResponse = jest.fn();
 const mockGetBalanceConfig = jest.fn().mockReturnValue({ enabled: true });
 const mockGetTransactionsConfig = jest.fn().mockReturnValue({ enabled: true });
@@ -196,6 +203,8 @@ jest.mock('@librechat/api', () => ({
   delegateOcrStreamEventName: 'on_delegate_ocr_stream',
   createSteelOcrStateService: (...args) => mockCreateSteelOcrStateService(...args),
   finalizeOcrResponse: (...args) => mockFinalizeOcrResponse(...args),
+  prepareQuotationTurn: (...args) => mockPrepareQuotationTurn(...args),
+  hasQuotationOrder: (...args) => mockHasQuotationOrder(...args),
   /** Pass-through: the controller strips UI-only activity-label parts
    *  before SDK formatting; the mock must expose it like any other used
    *  export or the call throws before the assertions run. */
@@ -337,6 +346,7 @@ jest.mock('~/server/services/ToolService', () => ({
   loadToolsForExecution: jest.fn().mockResolvedValue([]),
   prepareDelegateOcrResume: (...args) => mockPrepareDelegateOcrResume(...args),
   executeDelegateOcrResume: (...args) => mockExecuteDelegateOcrResume(...args),
+  executeSteelQuotationWorkflow: (...args) => mockExecuteSteelQuotationWorkflow(...args),
   resolveDelegateOcrPolicyForRequest: jest.fn().mockResolvedValue({
     resolved: true,
     allowed: false,
@@ -1180,6 +1190,45 @@ describe('createResponse controller', () => {
       );
     });
 
+    it('does not re-finalize OCR after quotation workflow persisted a pending order', async () => {
+      const api = require('@librechat/api');
+      const { saveMessage } = require('~/models');
+      const raw =
+        '## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| 文字訂單 | PENDING |';
+      api.buildAggregatedResponse.mockReturnValueOnce({
+        id: 'resp_123',
+        status: 'completed',
+        output: [
+          {
+            id: 'msg_1',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: raw }],
+          },
+        ],
+        usage: { input_tokens: 100, output_tokens: 50, total_tokens: 150 },
+      });
+      mockExecuteSteelQuotationWorkflow.mockImplementationOnce(async ({ onText }) => {
+        req.steelNativeContext.quotation.pendingOrderPersisted = true;
+        await onText(raw);
+      });
+
+      await createResponse(req, res);
+
+      expect(mockFinalizeOcrResponse).not.toHaveBeenCalled();
+      expect(mockCreateSteelOcrStateService).not.toHaveBeenCalled();
+      expect(saveMessage).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({
+          messageId: 'resp_mock-123',
+          text: raw,
+          isCreatedByUser: false,
+        }),
+        expect.any(Object),
+      );
+    });
+
     it('does not clear a resumed delegate claim when the completion lease is stale', async () => {
       const api = require('@librechat/api');
       const raw = '## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| F1 | P1 |';
@@ -1618,6 +1667,48 @@ describe('createResponse controller', () => {
       expect(createRunArgs.agents[0].toolRegistry.has('delegate_ocr')).toBe(false);
     });
 
+    it('resumes quotation directly without parent processStream or OCR preflight', async () => {
+      const api = require('@librechat/api');
+      const { runSteelPaddleOcrPreflight } = require('~/server/services/ToolService');
+      const resume = {
+        resume: true,
+        state: { currentOrder: { markdown: '## ocr_result' } },
+        instruction: '',
+      };
+      api.validateResponseRequest.mockReturnValueOnce({
+        request: {
+          model: 'agent-123',
+          input: '繼續報價',
+          stream: false,
+        },
+      });
+      api.convertInputToMessages.mockReturnValueOnce([
+        { role: 'user', content: '繼續報價', messageId: 'user-quotation-resume-1' },
+      ]);
+      api.getLatestHumanMessageText.mockReturnValueOnce('繼續報價');
+      mockPrepareQuotationTurn.mockResolvedValueOnce(resume);
+      mockExecuteSteelQuotationWorkflow.mockImplementationOnce(async ({ onText }) => {
+        await onText('resumed quotation');
+      });
+
+      await createResponse(req, res);
+
+      expect(mockPrepareQuotationTurn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scope: { userId: 'user-123', conversationId: 'mock-uuid-456' },
+          messageId: 'user-quotation-resume-1',
+          responseId: 'resp_mock-123',
+          text: '繼續報價',
+        }),
+      );
+      expect(runSteelPaddleOcrPreflight).not.toHaveBeenCalled();
+      const run = await api.createRun.mock.results.at(-1).value;
+      expect(run.processStream).not.toHaveBeenCalled();
+      expect(mockExecuteSteelQuotationWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({ req, res, agent: expect.any(Object), run }),
+      );
+    });
+
     it('fails closed on delegate OCR resume CAS loss without creating or streaming a parent run', async () => {
       const api = require('@librechat/api');
       const casError = new Error('delegate_ocr resume execution lease is unavailable');
@@ -1933,6 +2024,30 @@ describe('createResponse controller', () => {
         { messages: strippedHistory },
         expect.any(Object),
         expect.any(Object),
+      );
+    });
+
+    it('runs the quotation workflow after normal streaming processStream', async () => {
+      const api = require('@librechat/api');
+      const processStream = jest.fn().mockResolvedValue(undefined);
+      api.createRun.mockResolvedValueOnce({ processStream });
+      mockPrepareQuotationTurn.mockResolvedValueOnce({
+        resume: false,
+        state: {},
+        instruction: '',
+      });
+      mockExecuteSteelQuotationWorkflow.mockImplementationOnce(async ({ onText }) => {
+        await onText('streamed quotation');
+      });
+
+      await createResponse(req, res);
+
+      expect(processStream).toHaveBeenCalledTimes(1);
+      expect(mockExecuteSteelQuotationWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({ req, res, run: expect.any(Object) }),
+      );
+      expect(processStream.mock.invocationCallOrder[0]).toBeLessThan(
+        mockExecuteSteelQuotationWorkflow.mock.invocationCallOrder[0],
       );
     });
 

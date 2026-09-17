@@ -6,6 +6,7 @@ import type {
   SteelNativeActivityEvent,
   SteelNativeDelegateOcrStage,
   SteelNativeDelegateOcrStatus,
+  SteelNativeQuotationStatus,
 } from '~/store/steel';
 import { steelNativeActivityByMessageId, steelNativeStreamEventName } from '~/store/steel';
 
@@ -20,6 +21,7 @@ const steelActivitySources = new Set([
   'ocr_preprocessing',
   'paddleocr_preflight',
   'delegate_ocr_preflight',
+  'quotation_preflight',
   'quote_runtime',
   'responses_output',
   'tool_result',
@@ -28,6 +30,7 @@ const steelActivitySources = new Set([
 const steelActivityEventTypes = new Set([
   'parse_status',
   'memory_saved',
+  'quotation_status',
   'quote_audit',
   'delegate_ocr_status',
 ]);
@@ -118,9 +121,62 @@ export function normalizeSteelActivityEvent(
     !steelActivityEventTypes.has(data.type) ||
     typeof data.source !== 'string' ||
     !steelActivitySources.has(data.source) ||
-    typeof data.message !== 'string'
+    (data.type !== 'quotation_status' && typeof data.message !== 'string')
   ) {
     return null;
+  }
+
+  if (data.type === 'quotation_status') {
+    if (
+      data.source !== 'quotation_preflight' ||
+      typeof data.conversationId !== 'string' ||
+      data.conversationId.length === 0 ||
+      !Number.isSafeInteger(data.index) ||
+      (data.index as number) < 0 ||
+      typeof data.stage !== 'string' ||
+      data.stage.length === 0 ||
+      ![
+        'idle',
+        'queued',
+        'running',
+        'aggregating',
+        'finalizing',
+        'interrupted',
+        'completed',
+        'cancelled',
+      ].includes(data.status as string) ||
+      !Number.isSafeInteger(data.completedChunks) ||
+      (data.completedChunks as number) < 0 ||
+      !Number.isSafeInteger(data.totalChunks) ||
+      (data.totalChunks as number) < 0 ||
+      (data.completedChunks as number) > (data.totalChunks as number) ||
+      (data.runId !== undefined &&
+        (typeof data.runId !== 'string' || data.runId.length === 0)) ||
+      (data.message !== undefined && typeof data.message !== 'string') ||
+      (data.chunkIndex !== undefined &&
+        (!Number.isSafeInteger(data.chunkIndex) || (data.chunkIndex as number) < 0)) ||
+      (data.attempt !== undefined &&
+        (typeof data.attempt !== 'string' || data.attempt.length === 0))
+    ) {
+      return null;
+    }
+
+    return {
+      type: 'quotation_status',
+      source: 'quotation_preflight',
+      conversationId: data.conversationId,
+      index: data.index as number,
+      stage: data.stage,
+      status: data.status as SteelNativeQuotationStatus,
+      completedChunks: data.completedChunks as number,
+      totalChunks: data.totalChunks as number,
+      ...(typeof data.requestId === 'string' ? { requestId: data.requestId } : {}),
+      ...(typeof data.messageId === 'string' ? { messageId: data.messageId } : {}),
+      ...(typeof data.runId === 'string' ? { runId: data.runId } : {}),
+      ...(typeof data.message === 'string' ? { message: data.message } : {}),
+      ...(typeof data.chunkIndex === 'number' ? { chunkIndex: data.chunkIndex } : {}),
+      ...(typeof data.attempt === 'string' ? { attempt: data.attempt } : {}),
+    };
   }
 
   if (data.type === 'delegate_ocr_status') {
@@ -303,7 +359,8 @@ function getTargetMessageIds(
     event.source === 'assistant_markdown' ||
     event.source === 'ocr_preprocessing' ||
     event.source === 'paddleocr_preflight' ||
-    event.source === 'delegate_ocr_preflight'
+    event.source === 'delegate_ocr_preflight' ||
+    event.source === 'quotation_preflight'
   ) {
     if (currentResponseId) {
       ids.add(currentResponseId);
@@ -333,9 +390,9 @@ function stableEventKey(event: SteelNativeActivityEvent): string {
     delegateOcrIndex: event.type === 'delegate_ocr_status' ? event.delegateOcrIndex : undefined,
     delegateStage: event.type === 'delegate_ocr_status' ? event.stage : undefined,
     delegateStatus: event.type === 'delegate_ocr_status' ? event.status : undefined,
-    chunkIndex:
+    delegateChunkIndex:
       event.type === 'delegate_ocr_status' ? event.chunkIndex : undefined,
-    chunkCount:
+    delegateChunkCount:
       event.type === 'delegate_ocr_status' ? event.chunkCount : undefined,
     errorMessage:
       event.type === 'parse_status' || event.type === 'delegate_ocr_status'
@@ -344,7 +401,30 @@ function stableEventKey(event: SteelNativeActivityEvent): string {
     failedKeys: event.type === 'parse_status' ? event.failedKeys : undefined,
     missingPageRangesByFileKey:
       event.type === 'parse_status' ? event.missingPageRangesByFileKey : undefined,
+    index: event.type === 'quotation_status' ? event.index : undefined,
+    runId: event.type === 'quotation_status' ? event.runId : undefined,
+    quotationStage: event.type === 'quotation_status' ? event.stage : undefined,
+    quotationStatus: event.type === 'quotation_status' ? event.status : undefined,
+    completedChunks: event.type === 'quotation_status' ? event.completedChunks : undefined,
+    totalChunks: event.type === 'quotation_status' ? event.totalChunks : undefined,
+    chunkIndex: event.type === 'quotation_status' ? event.chunkIndex : undefined,
+    attempt: event.type === 'quotation_status' ? event.attempt : undefined,
   });
+}
+
+function isTerminalQuotationStatus(status: SteelNativeQuotationStatus): boolean {
+  return status === 'completed' || status === 'cancelled';
+}
+
+function isSameQuotationRun(
+  left: Extract<SteelNativeActivityEvent, { type: 'quotation_status' }>,
+  right: Extract<SteelNativeActivityEvent, { type: 'quotation_status' }>,
+): boolean {
+  return (
+    left.conversationId === right.conversationId &&
+    left.index === right.index &&
+    left.runId === right.runId
+  );
 }
 
 function getOcrPreprocessingProgressState(event: SteelNativeActivityEvent):
@@ -391,6 +471,18 @@ export function appendSteelNativeActivityEvent(
   current: SteelNativeActivityEvent[],
   incoming: SteelNativeActivityEvent,
 ): SteelNativeActivityEvent[] {
+  if (incoming.type === 'quotation_status' && !isTerminalQuotationStatus(incoming.status)) {
+    const terminalEvent = current.find(
+      (event): event is Extract<SteelNativeActivityEvent, { type: 'quotation_status' }> =>
+        event.type === 'quotation_status' &&
+        isTerminalQuotationStatus(event.status) &&
+        isSameQuotationRun(event, incoming),
+    );
+    if (terminalEvent) {
+      return current;
+    }
+  }
+
   const incomingKey = stableEventKey(incoming);
   if (current.some((event) => stableEventKey(event) === incomingKey)) {
     return current;

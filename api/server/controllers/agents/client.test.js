@@ -28,6 +28,13 @@ const mockRunSteelPaddleOcrPreflight = jest.fn().mockResolvedValue({
 });
 const mockPrepareDelegateOcrResume = jest.fn();
 const mockExecuteDelegateOcrResume = jest.fn();
+const mockPrepareQuotationTurn = jest.fn().mockResolvedValue({
+  resume: false,
+  state: {},
+  instruction: '',
+});
+const mockHasQuotationOrder = jest.fn().mockReturnValue(false);
+const mockExecuteSteelQuotationWorkflow = jest.fn().mockResolvedValue(undefined);
 jest.mock('~/server/services/ToolService', () => ({
   resolveDelegateOcrPolicyForRequest: jest.fn().mockResolvedValue({
     resolved: true,
@@ -37,6 +44,7 @@ jest.mock('~/server/services/ToolService', () => ({
   runSteelPaddleOcrPreflight: (...args) => mockRunSteelPaddleOcrPreflight(...args),
   prepareDelegateOcrResume: (...args) => mockPrepareDelegateOcrResume(...args),
   executeDelegateOcrResume: (...args) => mockExecuteDelegateOcrResume(...args),
+  executeSteelQuotationWorkflow: (...args) => mockExecuteSteelQuotationWorkflow(...args),
 }));
 const { GenerationJobManager, createStreamServices } = require('@librechat/api');
 const BaseClient = require('~/app/clients/BaseClient');
@@ -73,6 +81,8 @@ jest.mock('@librechat/api', () => ({
   hydrateMissingIndexTokenCounts: jest.fn(({ indexTokenCountMap }) => indexTokenCountMap ?? {}),
   generateTitle: jest.fn(),
   buildDefaultSteelGlobalAgentContext: jest.fn(),
+  prepareQuotationTurn: (...args) => mockPrepareQuotationTurn(...args),
+  hasQuotationOrder: (...args) => mockHasQuotationOrder(...args),
   prepareLibreChatSteelChatContext: jest.fn((conversation) => {
     const toReference = (message) =>
       message
@@ -2106,6 +2116,74 @@ describe('AgentClient - titleConvo', () => {
       expect(providerHistory.at(-1)._getType()).toBe('human');
       expect(JSON.stringify(providerHistory.at(-1).content)).toContain(
         '請重新確認開槽連續邊長',
+      );
+      expect(processStream.mock.invocationCallOrder[0]).toBeLessThan(
+        mockExecuteSteelQuotationWorkflow.mock.invocationCallOrder[0],
+      );
+      expect(mockExecuteSteelQuotationWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({ req: mockReq, run: expect.any(Object) }),
+      );
+    });
+
+    it('executes a prepared quotation resume without parent processStream or OCR preflight', async () => {
+      const processStream = jest.fn().mockResolvedValue(undefined);
+      const run = {
+        Graph: undefined,
+        getCalibrationRatio: jest.fn(() => 0),
+        processStream,
+      };
+      mockCreateRun.mockResolvedValueOnce(run);
+      mockPrepareQuotationTurn.mockResolvedValueOnce({
+        resume: true,
+        state: { currentOrder: { markdown: '## ocr_result' } },
+        instruction: '',
+      });
+      mockExecuteSteelQuotationWorkflow.mockImplementationOnce(async ({ onText }) => {
+        await onText('resumed quotation');
+      });
+      mockRunSteelPaddleOcrPreflight.mockClear();
+      mockPrepareDelegateOcrResume.mockClear();
+      mockReq.steelNativeContext = { delegateOcrContext: {} };
+      client.useMemory = jest.fn().mockResolvedValue(undefined);
+      client.contentParts = [];
+      client.stepMap = new Map();
+      client.options.eventHandlers = {};
+      client.recordCollectedUsage = jest.fn().mockResolvedValue(undefined);
+
+      await client.buildMessages(
+        [
+          {
+            messageId: 'user-quotation-resume-1',
+            parentMessageId: null,
+            sender: 'User',
+            text: '繼續報價',
+            isCreatedByUser: true,
+          },
+        ],
+        'user-quotation-resume-1',
+        {},
+      );
+
+      await client.chatCompletion({
+        payload: [{ role: 'user', content: '繼續報價' }],
+        abortController: new AbortController(),
+      });
+
+      expect(mockPrepareQuotationTurn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scope: { userId: 'user-123', conversationId: 'convo-123' },
+          messageId: 'user-quotation-resume-1',
+          responseId: 'response-123',
+        }),
+      );
+      expect(mockPrepareDelegateOcrResume).not.toHaveBeenCalled();
+      expect(mockRunSteelPaddleOcrPreflight).not.toHaveBeenCalled();
+      expect(mockExecuteSteelQuotationWorkflow).toHaveBeenCalledWith(
+        expect.objectContaining({ req: mockReq, res: mockRes, run }),
+      );
+      expect(processStream).not.toHaveBeenCalled();
+      expect(client.contentParts).toEqual(
+        expect.arrayContaining([{ type: ContentTypes.TEXT, text: 'resumed quotation' }]),
       );
     });
 

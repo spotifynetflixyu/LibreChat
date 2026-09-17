@@ -61,7 +61,7 @@ A chat turn after an edited user message that is no longer part of the active tr
 _Avoid_: Deleted message, active chat history, conversation branch
 
 **Queued Steer**:
-A user correction sent while an AI quote turn is still running, saved for application at the next safe orchestration boundary or follow-up turn.
+A user correction sent while an AI quote turn is still running, saved for application at the next safe orchestration boundary or follow-up turn. During an independent **Quotation Run**, it remains pending until that quotation completes or is explicitly cancelled; it never changes the quotation already in progress.
 _Avoid_: Cancellation, hidden prompt injection, lost input
 
 **Workbook Line**:
@@ -130,8 +130,28 @@ The terminal agent that takes over after the parent AI calls `delegate_ocr`, mer
 _Avoid_: Parent AI post-processing, Organizer, direct OCR or Vision inspection
 
 **Conversation OCR Result**:
-The latest completed full `ocr_result` Markdown for one conversation, supplied as prior OCR context when a later OCR workflow updates that result.
-_Avoid_: In-progress Delegate OCR Preflight, Organizer Markdown, raw PaddleOCR payload
+The current complete order interpretation for one conversation, expressed as `ocr_result` Markdown and covering both attachment-derived items and text orders. It is the order presented for review before quoting; its existence alone does not mean the customer has confirmed it.
+_Avoid_: Attachment-only extraction, confirmed quotation, In-progress Delegate OCR Preflight, Organizer Markdown, raw PaddleOCR payload
+
+**Quotation Customer Data**:
+The customer identity, contact details, and pricing tier established for a quotation, expressed as `customer_data`. An unresolved choice between customer matches is not established customer data; no matching customer may use the explicitly disclosed default B tier.
+_Avoid_: Customer search candidates, assumed customer identity, treating a lookup failure as no matching customer
+
+**Quotation Signal Index**:
+The conversation-local identity of one request to price the current complete order for the established customer context. Reusing the same index refers to the same quotation request; a new quotation requires a new index.
+_Avoid_: OCR index, quotation chunk number, every delivery being a new quotation
+
+**Quotation Run**:
+One execution of a quotation request against its fixed order and customer context, including intermediate quotation results and the complete final `system_order`. An interrupted run remains the same quotation until it is completed or explicitly cancelled.
+_Avoid_: OCR execution, a new quote on every reconnect, mixing later order changes into an unfinished quote
+
+**Quotation Chunk Result**:
+A partial quotation expressed as `system_order_chunk`, covering the materials and processing belonging to an assigned portion of the order. It uses the same table columns and row semantics as the complete `system_order`, but is not itself the completed quotation.
+_Avoid_: Complete system_order, order extraction without price lookup, a different quotation column format
+
+**Quotation Cancellation**:
+The user's explicit decision to end an unfinished quotation while retaining its history. A cancelled quotation is no longer eligible for recovery or publication as a completed quotation; another quotation requires a new signal index.
+_Avoid_: Disconnection, recoverable interruption, deleting the order, completed quotation
 
 **Conversation Source Mapping**:
 The durable `source_file_mapping` for a conversation, assigning each file identity one stable source code that regular and delegate OCR workflows both preserve.

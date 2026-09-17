@@ -8,6 +8,7 @@ import type {
   OpenAIOAuthTokenLogoutStatus,
   OpenAIOAuthTokenStatus,
   OpenAIOAuthUsageRemaining,
+  SteelQuotationStatus,
 } from './steel';
 import * as permissions from './accessPermissions';
 import * as endpoints from './api-endpoints';
@@ -83,6 +84,17 @@ export function updateFavorites(favorites: q.TUserFavorite[]): Promise<q.TUserFa
 
 export function getOpenAIOAuthUsage(): Promise<OpenAIOAuthUsageRemaining> {
   return request.get(endpoints.openAIOAuthUsage());
+}
+
+export function getSteelQuotationStatus(conversationId: string): Promise<SteelQuotationStatus> {
+  return request.get(endpoints.steelQuotationStatus(conversationId));
+}
+
+export function cancelSteelQuotation(
+  conversationId: string,
+  index: number,
+): Promise<SteelQuotationStatus> {
+  return request.post(endpoints.steelQuotationCancel(conversationId, index));
 }
 
 export function getOpenAIOAuthTokenStatus(): Promise<OpenAIOAuthTokenStatus> {
