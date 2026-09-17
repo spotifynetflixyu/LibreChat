@@ -565,7 +565,7 @@ describe('Steel native context adapter', () => {
     });
 
     expect(context.mode).toBe('quote_main');
-    expect(context.instructionPrefix).toContain('Quotation main aggregation rule fixture');
+    expect(context.instructionPrefix.split('Quotation main aggregation rule fixture')).toHaveLength(2);
     expect(context.instructionPrefix).not.toContain('Agent rule fixture');
     expect(context.instructionPrefix).not.toContain('Quote rule fixture');
     expect(context.instructionPrefix).not.toContain('Calculation output rule fixture');
@@ -603,7 +603,7 @@ describe('Steel native context adapter', () => {
     });
 
     expect(context.mode).toBe('quote_child');
-    expect(context.instructionPrefix).toContain('Quotation child lookup rule fixture');
+    expect(context.instructionPrefix.split('Quotation child lookup rule fixture')).toHaveLength(2);
     expect(context.instructionPrefix).toContain('Quote rule fixture');
     expect(context.instructionPrefix).toContain('Quotation calculation rule fixture');
     expect(context.instructionPrefix).toContain('Use tier B when the customer tier is unknown.');

@@ -7,6 +7,7 @@ import type {
   SteelQuotationArtifactRef,
   SteelQuotationCheckpointRef,
   SteelQuotationChunkState,
+  SteelQuotationCustomerPreparation,
   SteelQuotationOrder,
   SteelQuotationPendingMessage,
   SteelQuotationPendingMessageFile,
@@ -39,6 +40,22 @@ const steelQuotationSelectionProvenanceSchema = new Schema<SteelQuotationSelecti
   { _id: false },
 );
 
+const steelQuotationCustomerPreparationSchema = new Schema<SteelQuotationCustomerPreparation>(
+  {
+    preparationId: { type: String, required: true },
+    customerMarkdown: { type: String, required: true },
+    customerIdentity: { type: String, required: true },
+    orderHash: { type: String, required: true },
+    triggeringMessageId: { type: String, required: true },
+    responseId: { type: String, required: true },
+    selectionProvenance: {
+      type: steelQuotationSelectionProvenanceSchema,
+      required: true,
+    },
+  },
+  { _id: false },
+);
+
 const steelQuotationTicketSchema = new Schema<SteelQuotationTicket>(
   {
     index: { type: Number, required: true },
@@ -52,6 +69,8 @@ const steelQuotationTicketSchema = new Schema<SteelQuotationTicket>(
       required: true,
     },
     issuedAt: { type: Date, required: true },
+    preparationId: { type: String },
+    responseId: { type: String },
     acceptedRunId: { type: String },
   },
   { _id: false },
@@ -170,6 +189,7 @@ const steelQuotationStateSchema: Schema<ISteelQuotationState> = new Schema<IStee
     userId: { type: String, required: true },
     conversationId: { type: String, required: true },
     currentOrder: { type: steelQuotationOrderSchema },
+    currentCustomer: { type: steelQuotationCustomerPreparationSchema },
     nextSignalIndex: { type: Number, required: true, default: 0 },
     tickets: { type: [steelQuotationTicketSchema], required: true, default: [] },
     activeRun: { type: steelQuotationActiveRunSchema },

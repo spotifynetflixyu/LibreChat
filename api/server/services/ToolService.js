@@ -894,6 +894,7 @@ function createSteelNativeToolExecute({ req, res, streamId, runState }) {
       result = await bindQuotationCustomerResult({
         scope: quotation.scope,
         messageId: quotation.messageId,
+        responseId: req.steelNativeContext.requestId,
         result,
       });
     }

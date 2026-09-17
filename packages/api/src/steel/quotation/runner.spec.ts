@@ -4,12 +4,18 @@ import { MongoMemoryServer } from 'mongodb-memory-server';
 import type { SteelQuotationScope, SteelQuotationActiveRun } from '@librechat/data-schemas';
 import type { OpenAIOAuthModelOptions } from '../native/oauth';
 import type { SteelToolJsonObject, SteelToolResult } from '../tools/results';
-import type { QuotationChunk, QuotationPythonEvidence } from './protocol';
+import type { QuotationChunk } from './protocol';
 import type { QuotationModelInput, QuotationModelResult } from './model';
 
 import { createSteelQuotationStateService } from './state';
-import { buildQuotationChunks } from './protocol';
-import { runQuotationPreflight } from './runner';
+import { buildQuotationChunks, quotationSignal } from './protocol';
+import { parseMarkdownTables } from '../markdown/table';
+import { acceptQuotationResponse, runQuotationPreflight } from './runner';
+import { bindQuotationCustomerResult } from './preparation';
+
+jest.mock('../native/context', () => ({
+  buildDefaultSteelGlobalAgentContext: jest.fn(async ({ mode }: { mode: string }) => ({ instructionPrefix: mode })),
+}));
 
 const scope: SteelQuotationScope = {
   userId: 'quotation-runner-user',
@@ -97,6 +103,17 @@ function lookupResult(): SteelToolResult {
   };
 }
 
+function failedLookupResult(): SteelToolResult {
+  return {
+    ok: false,
+    toolName: 'search_price_candidates',
+    errorCategory: 'repository_error',
+    errorSummary: 'temporary lookup failure',
+    durationMs: 1,
+    redactionVersion: 1,
+  };
+}
+
 function systemRow(source: QuotationChunk['sourceRows'][number]): readonly string[] {
   return [
     'ERP-PLATE',
@@ -118,49 +135,12 @@ function systemRow(source: QuotationChunk['sourceRows'][number]): readonly strin
   ];
 }
 
-function childMarkdown(chunk: QuotationChunk, lookupCallId: string): string {
-  const rows = chunk.sourceRows.map(systemRow);
-  const lineage = Object.fromEntries(
-    chunk.sourceRows.map((source, index) => [String(index + 1), {
-      sourceRowId: source.sourceRowId,
-      kind: 'material',
-      lookupCallId,
-      queryId: 'q1',
-      candidateIdentity: {
-        erpItemCode: 'ERP-PLATE',
-        productName: '鐵板 6T',
-        category: '鐵板',
-        material: '黑鐵',
-        formulaCode: 'PL',
-      },
-    }]),
-  );
+function childMarkdown(rows: readonly (readonly string[])[]): string {
   return [
     '## system_order_chunk',
     '',
     markdownTable(systemHeaders, rows),
-    '',
-    '```json',
-    JSON.stringify({ version: 1, quote_lineage: lineage }),
-    '```',
   ].join('\n');
-}
-
-function childPythonEvidence(chunk: QuotationChunk): QuotationPythonEvidence {
-  const quoteCalculations = Object.fromEntries(
-    chunk.sourceRows.map((source, index) => [String(index + 1), { 總數: source.cells[3] ?? '' }]),
-  );
-  const toolCallId = `python-${chunk.chunkIndex}`;
-  return {
-    type: 'tool-result',
-    toolCallId,
-    payload: JSON.stringify({
-      type: 'tool-result',
-      toolCallId,
-      toolName: 'code_interpreter',
-      result: JSON.stringify({ quote_calculations: quoteCalculations }),
-    }),
-  };
 }
 
 function mainMarkdown(order: string): string {
@@ -174,38 +154,49 @@ function createLookupExecutor(): (args: SteelToolJsonObject, callId: string) => 
 
 function createModel(
   options: {
-    failChunk?: (chunkIndex: number) => boolean;
-    onChildStarted?: (chunkIndex: number) => void;
-    onChild?: (input: QuotationModelInput, chunk: QuotationChunk) => Promise<QuotationModelResult> | QuotationModelResult;
+    failChunk?: (childCall: number) => boolean;
+    onChildStarted?: (childCall: number) => void;
+    onChild?: (input: QuotationModelInput) => Promise<QuotationModelResult> | QuotationModelResult;
+    onMainInput?: (input: string) => void;
   } = {},
 ) {
+  let childCall = 0;
   return jest.fn(async (input: QuotationModelInput): Promise<QuotationModelResult> => {
     if (input.role === 'main') {
+      options.onMainInput?.(input.input);
       return {
         markdown: mainMarkdown((JSON.parse(input.input) as { order: string }).order),
         lookups: [],
         pythonEvidence: [],
       };
     }
-    const payload = JSON.parse(input.input) as { chunk: QuotationChunk };
-    const chunk = payload.chunk;
-    options.onChildStarted?.(chunk.chunkIndex);
-    if (options.failChunk?.(chunk.chunkIndex)) {
-      throw new Error(`chunk ${chunk.chunkIndex} failed`);
+    const payload = JSON.parse(input.input) as { chunk: string };
+    const rows = parseMarkdownTables(payload.chunk)[0]?.rows ?? [];
+    const call = ++childCall;
+    options.onChildStarted?.(call);
+    if (options.failChunk?.(call)) {
+      throw new Error(`child call ${call} failed`);
     }
     if (options.onChild) {
-      return options.onChild(input, chunk);
+      return options.onChild(input);
     }
-    const lookupCallId = `lookup-${chunk.chunkIndex}`;
+    const lookupCallId = `lookup-${call}`;
     await input.lookup?.(lookupCallId, { queries: [] });
-    const pythonEvidence = childPythonEvidence(chunk);
-    await input.onPythonEvidence?.(pythonEvidence);
     return {
-      markdown: childMarkdown(chunk, lookupCallId),
+      markdown: childMarkdown(rows.map(systemRowFromSourceRow)),
       lookups: [],
-      pythonEvidence: [pythonEvidence],
+      pythonEvidence: [],
     };
   });
+}
+
+function systemRowFromSourceRow(row: readonly string[]): readonly string[] {
+  return [
+    'ERP-PLATE',
+    row[1] ? `鐵板 6T ${row[1]}` : '鐵板 6T',
+    '黑鐵', 'Kg', row[3] ?? '', '', row[3] ?? '', '12', '2', 'PL',
+    row[4] ?? '', row[5] ?? '', row[6] ?? '', '', '鐵板', '',
+  ];
 }
 
 let mongoServer: MongoMemoryServer;
@@ -271,10 +262,94 @@ function runnerInput(
 }
 
 describe('quotation runner integration', () => {
+  async function prepareCustomer(responseId = 'response-1', tier = 'C') {
+    await service.setOrder({ scope, fullMarkdown: orderMarkdown(31) });
+    const result = await bindQuotationCustomerResult({
+      scope, messageId: `user-${responseId}`, responseId,
+      result: { ok: true, toolName: 'search_customers', durationMs: 1, redactionVersion: 1,
+        data: { customers: [{ id: 1, erpCustomerCode: 'C1', displayName: '測試客戶', customerTier: tier }] } },
+    });
+    if (!result.ok) throw new Error('Customer setup failed');
+    return `${String(result.data.customerDataMarkdown)}\n\n${quotationSignal}`;
+  }
+
+  it('saves customer Markdown without an index and admits concurrent delivery only once', async () => {
+    const response = await prepareCustomer();
+    const prepared = await service.readState(scope);
+    expect(prepared?.nextSignalIndex).toBe(0);
+    expect(prepared?.currentCustomer?.customerMarkdown).toContain('| C |');
+    const runs = await Promise.all(Array.from({ length: 2 }, () => acceptQuotationResponse({
+      scope, response, responseId: 'response-1', finishReason: 'stop',
+    })));
+    expect(runs[0]?.runId).toBe(runs[1]?.runId);
+    expect((await service.readState(scope))?.nextSignalIndex).toBe(1);
+    const model = createModel();
+    await runQuotationPreflight(runnerInput(model, createLookupExecutor()));
+    const children = model.mock.calls.filter(([input]) => input.role === 'child');
+    expect(children).toHaveLength(2);
+    for (const [input] of children) {
+      expect((JSON.parse(input.input) as { customer: string }).customer).toBe(prepared?.currentCustomer?.customerMarkdown);
+    }
+  });
+
+  it('does not allocate an index for missing, mismatched, stale or unfinished response data', async () => {
+    const response = await prepareCustomer();
+    await expect(acceptQuotationResponse({ scope, response, responseId: 'response-1', finishReason: 'length' })).resolves.toBeUndefined();
+    for (const invalid of [
+      quotationSignal,
+      response.replace('| C |', '| A |'),
+      ...['## ocr_result', '  ## ocr_result', '## ocr_result ##'].map((heading) =>
+        `${orderMarkdown(1).replace('## ocr_result', heading)}\n\n${response}`),
+    ]) {
+      await expect(acceptQuotationResponse({ scope, response: invalid, responseId: 'response-1', finishReason: 'stop' })).rejects.toThrow();
+    }
+    await expect(acceptQuotationResponse({ scope, response, responseId: 'other-response', finishReason: 'stop' })).rejects.toThrow();
+    await service.setOrder({ scope, fullMarkdown: orderMarkdown(1) });
+    await expect(acceptQuotationResponse({ scope, response, responseId: 'response-1', finishReason: 'stop' })).rejects.toThrow();
+    expect((await service.readState(scope))?.nextSignalIndex).toBe(0);
+  });
+
+  it('invalidates a successful customer selection when a later lookup is unresolved', async () => {
+    const response = await prepareCustomer();
+    await bindQuotationCustomerResult({ scope, messageId: 'user-response-1', responseId: 'response-1',
+      result: { ok: true, toolName: 'search_customers', durationMs: 1, redactionVersion: 1, data: { customers: [{ id: 1 }, { id: 2 }] } },
+    });
+    await expect(acceptQuotationResponse({ scope, response, responseId: 'response-1', finishReason: 'stop' })).rejects.toThrow();
+    expect((await service.readState(scope))?.nextSignalIndex).toBe(0);
+  });
+
+  it('keeps a cancelled signal replay terminal and allocates a fresh index for a new response', async () => {
+    const response = await prepareCustomer();
+    const first = await acceptQuotationResponse({ scope, response, responseId: 'response-1', finishReason: 'stop' });
+    await service.cancelRun({ scope, runId: first!.runId });
+    const replay = await acceptQuotationResponse({ scope, response, responseId: 'response-1', finishReason: 'stop' });
+    expect(replay?.status).toBe('cancelled');
+    expect((await service.readState(scope))?.nextSignalIndex).toBe(1);
+    const nextResponse = await prepareCustomer('response-2', 'D');
+    const next = await acceptQuotationResponse({ scope, response: nextResponse, responseId: 'response-2', finishReason: 'stop' });
+    expect(next?.index).toBe(2);
+    expect(next?.runId).not.toBe(first?.runId);
+  });
+
   it('reuses completed chunks after an interrupted child and runs only the pending chunk', async () => {
-    await prepareRun(31);
+    const run = await prepareRun(31);
     let failSecondChunk = true;
+    const reviews = `## manual_reviews_chunk\n\n${markdownTable(
+      ['來源表格', '來源件號 / 項次', '問題欄位', '目前判斷', '需確認內容', '影響範圍'],
+      [['F1', 'P1', '單價', '', '確認 P1 價格', '報價']],
+    )}`;
+    const mainInputs: string[] = [];
     const invokeModel = createModel({
+      onMainInput: (input) => mainInputs.push(input),
+      onChild: async (input) => {
+        const rows = parseMarkdownTables((JSON.parse(input.input) as { chunk: string }).chunk)[0]!.rows;
+        await input.lookup?.(`lookup-${rows[0]![1]}`, { queries: [] });
+        return {
+          markdown: childMarkdown(rows.map(systemRowFromSourceRow)) + (rows[0]![1] === 'P1' ? `\n\n${reviews}` : ''),
+          lookups: [],
+          pythonEvidence: [],
+        };
+      },
       failChunk: (chunkIndex) => {
         if (chunkIndex !== 2 || !failSecondChunk) return false;
         failSecondChunk = false;
@@ -282,19 +357,28 @@ describe('quotation runner integration', () => {
       },
     });
     const executeLookup = createLookupExecutor();
-    await expect(runQuotationPreflight(runnerInput(invokeModel, executeLookup))).rejects.toThrow('chunk 2 failed');
+    await expect(runQuotationPreflight(runnerInput(invokeModel, executeLookup))).rejects.toThrow('child call 2 failed');
     const interrupted = await service.readState(scope);
     expect(interrupted?.activeRun?.status).toBe('interrupted');
     expect(interrupted?.activeRun?.chunks.map((chunk) => chunk.status)).toEqual(['completed', 'pending']);
+    const saved = await service.readCheckpoint({ scope, runId: run.runId, operationId: 'chunk:1' });
+    expect((JSON.parse(saved!) as { markdown: string }).markdown).toContain(reviews);
     const callsAfterFailure = invokeModel.mock.calls.length;
 
     const completed = await runQuotationPreflight(runnerInput(invokeModel, executeLookup));
     expect(completed.status).toBe('completed');
     expect(invokeModel.mock.calls.length).toBe(callsAfterFailure + 2);
-    const childIndexes = invokeModel.mock.calls
+    const childInputs = invokeModel.mock.calls
       .filter(([input]) => input.role === 'child')
-      .map(([input]) => (JSON.parse(input.input) as { chunk: QuotationChunk }).chunk.chunkIndex);
-    expect(childIndexes).toEqual([1, 2, 2]);
+      .map(([input]) => JSON.parse(input.input) as { chunk: string; categoryOrder: string; customer: string });
+    expect(childInputs).toHaveLength(3);
+    expect(childInputs.every((payload) => !/sourceRows|sourceRowId|quote_lineage/iu.test(JSON.stringify(payload)))).toBe(true);
+    expect(childInputs.every((payload) => payload.categoryOrder.includes('## system_order_chunk'))).toBe(true);
+    expect(childInputs.every((payload) => payload.customer === customerMarkdown)).toBe(true);
+    expect(mainInputs).toHaveLength(1);
+    const chunks = (JSON.parse(mainInputs[0]!) as { chunks: string[] }).chunks;
+    expect(chunks.filter((chunk) => chunk.includes(reviews))).toHaveLength(1);
+    expect(chunks.join('\n').match(/## manual_reviews_chunk/g)).toHaveLength(1);
     expect(executeLookup).toHaveBeenCalledTimes(2);
   });
 
@@ -321,6 +405,20 @@ describe('quotation runner integration', () => {
     expect(completed.status).toBe('completed');
     expect(invokeModel.mock.calls.length).toBe(callsAfterFailure);
     expect(executeLookup).toHaveBeenCalledTimes(1);
+  });
+
+  it('completes a no-data child after a failed structured lookup and gives main only table chunks', async () => {
+    await prepareRun(1);
+    const mainInputs: string[] = [];
+    const invokeModel = createModel({ onMainInput: (input) => mainInputs.push(input) });
+    const executeLookup = jest.fn(async () => failedLookupResult());
+    const completed = await runQuotationPreflight(runnerInput(invokeModel, executeLookup));
+    expect(completed.status).toBe('completed');
+    expect(executeLookup).toHaveBeenCalledTimes(1);
+    expect(mainInputs).toHaveLength(1);
+    expect(mainInputs[0]).not.toContain('quote_lineage');
+    expect(mainInputs[0]).not.toContain('sourceRowId');
+    expect(mainInputs[0]).toContain('## system_order_chunk');
   });
 
   it('cancels a child execution and does not publish a late final response', async () => {

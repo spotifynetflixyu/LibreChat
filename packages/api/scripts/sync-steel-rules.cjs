@@ -387,7 +387,7 @@ function buildRules(repoRoot) {
       },
       prompt: agent.prompt,
       toolPolicy: {
-        availableTools: ['search_customers', 'search_price_candidates', 'delegate_ocr'],
+        availableTools: ['search_customers', 'delegate_ocr'],
       },
       outputPolicy: { answerLanguage: 'zh-TW' },
       priority: 10,
@@ -415,7 +415,7 @@ function buildRules(repoRoot) {
         forbiddenTools: ['search_price_candidates', 'OpenAI Python'],
       },
       outputPolicy: {
-        activeSheets: ['system_order', 'manual_review'],
+        activeSheets: ['system_order', 'manual_reviews'],
         forbidCustomerQuote: true,
         forbidCompletionSummary: true,
         forbidControlSidecars: true,
@@ -433,7 +433,7 @@ function buildRules(repoRoot) {
       slug: 'steel-quote-child-agent-policy',
       ruleKind: 'agent',
       title: 'Steel 報價分組整理工作規則',
-      ruleSections: ['quote_child', 'quotation_lookup', 'quotation_lineage'],
+      ruleSections: ['quote_child', 'quotation_lookup', 'quotation_markdown'],
       selectors: {
         appliesTo: ['steel_quote_child'],
         locale: 'zh-TW',
@@ -441,12 +441,11 @@ function buildRules(repoRoot) {
       },
       prompt: quoteChild.prompt,
       toolPolicy: {
-        requiredTools: ['search_price_candidates', 'OpenAI Python'],
+        requiredTools: ['search_price_candidates'],
         availableTools: ['search_price_candidates', 'OpenAI Python'],
       },
       outputPolicy: {
-        activeSheets: ['system_order_chunk'],
-        lineageVersion: 1,
+        activeSheets: ['system_order_chunk', 'manual_reviews_chunk'],
         forbidCustomerQuote: true,
         forbidCompletionSummary: true,
       },

@@ -559,14 +559,14 @@ export function buildSteelNativeInstructionPrefix({
           ]
         : mode === 'quote_main'
           ? [
-              buildSlot('agent', 'Steel Quotation Consolidation Rules', buildQuotationRuleItems(runtimeContext, 'main')),
+              buildSlot('agent', 'Steel Quotation Consolidation Rules', []),
               buildSlot('quote_rules', 'Steel Quote Defaults and Category Rules', []),
               buildSlot('output', 'Steel Quotation Consolidated Output Rules', [...buildQuotationWorkbookRuleItems(runtimeContext), ...buildQuotationRuleItems(runtimeContext, 'main')]),
               buildSlot('other', 'Steel Other Rules', []),
             ]
           : mode === 'quote_child'
             ? [
-                buildSlot('agent', 'Steel Item Pricing Rules', buildQuotationRuleItems(runtimeContext, 'child')),
+                buildSlot('agent', 'Steel Item Pricing Rules', []),
                 buildSlot('quote_rules', 'Steel Quote Defaults and Category Rules', buildQuotationQuoteRuleItems(runtimeContext)),
                 buildSlot('output', 'Steel Quotation Calculation Rules', [...buildQuotationWorkbookRuleItems(runtimeContext), ...buildQuotationCalculationRuleItems(runtimeContext), ...buildQuotationRuleItems(runtimeContext, 'child')]),
                 buildSlot('other', 'Steel Other Rules', []),

@@ -13,6 +13,7 @@ import type {
   SteelQuotationArtifactRef,
   SteelQuotationCheckpointRef,
   SteelQuotationChunkState,
+  SteelQuotationCustomerPreparation,
   SteelQuotationOrder,
   SteelQuotationPendingMessage,
   SteelQuotationPendingMessageFile,
@@ -68,7 +69,26 @@ export interface SteelQuotationIssueTicketInput {
   customerIdentity: string;
   triggeringMessageId: string;
   selectionProvenance: SteelQuotationSelectionProvenance;
+  preparationId?: string;
+  responseId?: string;
+  orderHash?: string;
   now?: Date;
+}
+
+export interface SteelQuotationSaveCustomerInput {
+  scope: SteelQuotationScope;
+  customerMarkdown: string;
+  customerIdentity: string;
+  triggeringMessageId: string;
+  responseId: string;
+  selectionProvenance: SteelQuotationSelectionProvenance;
+  orderHash: string;
+  now?: Date;
+}
+
+export interface SteelQuotationClearCustomerInput {
+  scope: SteelQuotationScope;
+  responseId: string;
 }
 
 export interface SteelQuotationChunkInput {
@@ -228,6 +248,8 @@ export interface SteelQuotationStateService {
   ensureState(scope: SteelQuotationScope): Promise<ISteelQuotationState>;
   readState(scope: SteelQuotationScope): Promise<ISteelQuotationState | null>;
   setOrder(input: SteelQuotationOrderInput): Promise<ISteelQuotationState>;
+  saveCustomer(input: SteelQuotationSaveCustomerInput): Promise<SteelQuotationCustomerPreparation>;
+  clearCustomer(input: SteelQuotationClearCustomerInput): Promise<ISteelQuotationState>;
   issueTicket(input: SteelQuotationIssueTicketInput): Promise<SteelQuotationTicket>;
   acceptSignal(input: SteelQuotationAcceptSignalInput): Promise<SteelQuotationActiveRun>;
   writeArtifact(input: SteelQuotationWriteArtifactInput): Promise<SteelQuotationArtifactRef>;
@@ -302,6 +324,21 @@ function validateText(value: string, field: string, limit: number): void {
   }
 }
 
+function validateSelectionProvenance(selectionProvenance: SteelQuotationSelectionProvenance): void {
+  if (!selectionProvenance || !['unique', 'selected', 'default_tier'].includes(selectionProvenance.method)) {
+    throw new Error('selectionProvenance method is invalid');
+  }
+  for (const [name, value] of [
+    ['lookupMessageId', selectionProvenance.lookupMessageId],
+    ['selectionMessageId', selectionProvenance.selectionMessageId],
+    ['selectedCustomerId', selectionProvenance.selectedCustomerId],
+  ] as const) {
+    if (value !== undefined) {
+      validateText(value, `selectionProvenance.${name}`, 1_000);
+    }
+  }
+}
+
 function validatePositiveIndex(value: number, field: string): void {
   if (!Number.isSafeInteger(value) || value < 1) {
     throw new Error(`${field} must be a positive safe integer`);
@@ -361,6 +398,7 @@ function authorityByteLength(state: SteelQuotationStateLike): number {
       userId: state.userId,
       conversationId: state.conversationId,
       currentOrder: state.currentOrder,
+      currentCustomer: state.currentCustomer,
       nextSignalIndex: state.nextSignalIndex,
       tickets: state.tickets,
       activeRun: state.activeRun,
@@ -373,6 +411,7 @@ interface SteelQuotationStateLike {
   userId: string;
   conversationId: string;
   currentOrder?: SteelQuotationOrder;
+  currentCustomer?: SteelQuotationCustomerPreparation;
   nextSignalIndex: number;
   tickets: SteelQuotationTicket[];
   activeRun?: SteelQuotationActiveRun;
@@ -439,6 +478,34 @@ function getActiveRun(state: ISteelQuotationState | null, runId: string): SteelQ
 
 function isDuplicateKey(error: Error): boolean {
   return 'code' in error && error.code === 11000;
+}
+
+function sameSelectionProvenance(
+  left: SteelQuotationSelectionProvenance,
+  right: SteelQuotationSelectionProvenance,
+): boolean {
+  return left.method === right.method &&
+    left.lookupMessageId === right.lookupMessageId &&
+    left.selectionMessageId === right.selectionMessageId &&
+    left.selectedCustomerId === right.selectedCustomerId;
+}
+
+function matchesCustomerPreparation(
+  preparation: SteelQuotationCustomerPreparation | undefined,
+  input: Pick<SteelQuotationIssueTicketInput, 'customerMarkdown' | 'customerIdentity' | 'triggeringMessageId' | 'selectionProvenance'> & {
+    preparationId?: string;
+    responseId?: string;
+    orderHash?: string;
+  },
+): boolean {
+  return preparation !== undefined &&
+    preparation.customerMarkdown === input.customerMarkdown &&
+    preparation.customerIdentity === input.customerIdentity &&
+    preparation.triggeringMessageId === input.triggeringMessageId &&
+    preparation.preparationId === input.preparationId &&
+    preparation.responseId === input.responseId &&
+    preparation.orderHash === input.orderHash &&
+    sameSelectionProvenance(preparation.selectionProvenance, input.selectionProvenance);
 }
 
 export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuotationStateService {
@@ -518,12 +585,16 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
         ],
       };
       const update = orderChanged
-        ? { $set: { currentOrder: nextOrder, tickets: retainedTickets, updatedAt: now } }
+        ? {
+            $set: { currentOrder: nextOrder, tickets: retainedTickets, updatedAt: now },
+            $unset: { currentCustomer: 1 },
+          }
         : { $set: { currentOrder: nextOrder, updatedAt: now } };
       assertAuthorityBounds({
         userId: current.userId,
         conversationId: current.conversationId,
         currentOrder: nextOrder,
+        currentCustomer: orderChanged ? undefined : current.currentCustomer,
         nextSignalIndex: current.nextSignalIndex,
         tickets: orderChanged ? retainedTickets : current.tickets,
         activeRun: current.activeRun,
@@ -538,6 +609,92 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
     throw new Error('quotation order changed concurrently; retry the operation');
   }
 
+  async function saveCustomer(
+    input: SteelQuotationSaveCustomerInput,
+  ): Promise<SteelQuotationCustomerPreparation> {
+    validateScope(input.scope);
+    validateText(input.customerMarkdown, 'customerMarkdown', MAX_QUOTATION_CUSTOMER_BYTES);
+    validateText(input.customerIdentity, 'customerIdentity', MAX_QUOTATION_CUSTOMER_BYTES);
+    validateText(input.triggeringMessageId, 'triggeringMessageId', 1_000);
+    validateText(input.responseId, 'responseId', 300);
+    validateText(input.orderHash, 'orderHash', 128);
+    validateSelectionProvenance(input.selectionProvenance);
+    const now = nowOrDefault(input.now);
+    const preparation: SteelQuotationCustomerPreparation = {
+      preparationId: randomUUID(),
+      customerMarkdown: input.customerMarkdown,
+      customerIdentity: input.customerIdentity,
+      orderHash: input.orderHash,
+      triggeringMessageId: input.triggeringMessageId,
+      responseId: input.responseId,
+      selectionProvenance: input.selectionProvenance,
+    };
+    await ensureState(input.scope);
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const current = await readState(input.scope);
+      if (!current?.currentOrder || current.currentOrder.sha256 !== input.orderHash) {
+        throw new Error('customer preparation order is stale');
+      }
+      if (isUnfinished(current.activeRun?.status)) {
+        throw new Error('cannot save customer preparation while a run is unfinished');
+      }
+      assertAuthorityBounds({
+        ...current,
+        currentCustomer: preparation,
+      });
+      const updated = await State.findOneAndUpdate(
+        {
+          ...stateFilter(input.scope),
+          'currentOrder.sha256': input.orderHash,
+          $or: [
+            { activeRun: { $exists: false } },
+            { 'activeRun.status': { $in: terminalStatuses } },
+          ],
+        },
+        {
+          $set: { currentCustomer: preparation, updatedAt: now },
+        },
+        { new: true },
+      ).lean<ISteelQuotationState>();
+      if (updated?.currentCustomer?.preparationId === preparation.preparationId) {
+        assertAuthorityBounds(updated);
+        return updated.currentCustomer;
+      }
+    }
+    throw new Error('customer preparation changed concurrently; retry the operation');
+  }
+
+  async function clearCustomer(
+    input: SteelQuotationClearCustomerInput,
+  ): Promise<ISteelQuotationState> {
+    validateScope(input.scope);
+    validateText(input.responseId, 'responseId', 300);
+    const current = await ensureState(input.scope);
+    if (current.currentCustomer?.responseId !== input.responseId) {
+      return current;
+    }
+    const updated = await State.findOneAndUpdate(
+      {
+        ...stateFilter(input.scope),
+        'currentCustomer.responseId': input.responseId,
+      },
+      {
+        $unset: { currentCustomer: 1 },
+      },
+      { new: true },
+    ).lean<ISteelQuotationState>();
+    if (updated) {
+      assertAuthorityBounds(updated);
+      return updated;
+    }
+    const raced = await readState(input.scope);
+    if (raced) {
+      return raced;
+    }
+    throw new Error('quotation authority state is unavailable');
+  }
+
   async function issueTicket(
     input: SteelQuotationIssueTicketInput,
   ): Promise<SteelQuotationTicket> {
@@ -545,11 +702,37 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
     validateText(input.customerMarkdown, 'customerMarkdown', MAX_QUOTATION_CUSTOMER_BYTES);
     validateText(input.customerIdentity, 'customerIdentity', MAX_QUOTATION_CUSTOMER_BYTES);
     validateText(input.triggeringMessageId, 'triggeringMessageId', 1_000);
+    validateSelectionProvenance(input.selectionProvenance);
+    const hasBinding = input.preparationId !== undefined ||
+      input.responseId !== undefined || input.orderHash !== undefined;
+    if (hasBinding && (input.preparationId === undefined || input.responseId === undefined || input.orderHash === undefined)) {
+      throw new Error('quotation ticket binding requires preparationId, responseId and orderHash');
+    }
+    if (hasBinding) {
+      validateText(input.preparationId!, 'preparationId', 200);
+      validateText(input.responseId!, 'responseId', 300);
+      validateText(input.orderHash!, 'orderHash', 128);
+    }
     const now = nowOrDefault(input.now);
     await ensureState(input.scope);
 
     for (let attempt = 0; attempt < 4; attempt += 1) {
       const current = await readState(input.scope);
+      if (hasBinding) {
+        const existing = current?.tickets.find((candidate) => candidate.responseId === input.responseId);
+        if (existing) {
+          if (
+            existing.customerMarkdown !== input.customerMarkdown ||
+            existing.customerIdentity !== input.customerIdentity ||
+            existing.orderHash !== input.orderHash ||
+            existing.preparationId !== input.preparationId ||
+            existing.triggeringMessageId !== input.triggeringMessageId
+          ) {
+            throw new Error('quotation ticket response binding is immutable');
+          }
+          return existing;
+        }
+      }
       if (!current?.currentOrder) {
         throw new Error('cannot issue quotation ticket without a current order');
       }
@@ -558,6 +741,12 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
       }
       if (current.tickets.length >= MAX_QUOTATION_TICKETS) {
         throw new Error(`quotation authority exceeds ${MAX_QUOTATION_TICKETS} tickets`);
+      }
+      if (hasBinding && (
+        current.currentOrder.sha256 !== input.orderHash ||
+        !matchesCustomerPreparation(current.currentCustomer, input)
+      )) {
+        throw new Error('quotation ticket does not match the current customer preparation');
       }
       const index = current.nextSignalIndex + 1;
       validatePositiveIndex(index, 'quotation index');
@@ -570,6 +759,9 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
         triggeringMessageId: input.triggeringMessageId,
         selectionProvenance: input.selectionProvenance,
         issuedAt: now,
+        ...(hasBinding
+          ? { preparationId: input.preparationId, responseId: input.responseId }
+          : {}),
       };
       assertAuthorityBounds({
         ...current,
@@ -580,6 +772,13 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
           ...stateFilter(input.scope),
           nextSignalIndex: current.nextSignalIndex,
           'currentOrder.sha256': current.currentOrder.sha256,
+          ...(hasBinding
+            ? {
+                'currentCustomer.preparationId': input.preparationId,
+                'currentCustomer.responseId': input.responseId,
+                'tickets.responseId': { $ne: input.responseId },
+              }
+            : {}),
           $or: [
             { activeRun: { $exists: false } },
             { 'activeRun.status': { $in: terminalStatuses } },
@@ -926,6 +1125,20 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
     if (!current.currentOrder || current.currentOrder.sha256 !== input.orderHash) {
       throw new Error('quotation signal order is stale');
     }
+    if (ticket.preparationId !== undefined || ticket.responseId !== undefined) {
+      if (ticket.preparationId === undefined || ticket.responseId === undefined ||
+        !matchesCustomerPreparation(current.currentCustomer, {
+          customerMarkdown: ticket.customerMarkdown,
+          customerIdentity: ticket.customerIdentity,
+          triggeringMessageId: ticket.triggeringMessageId,
+          selectionProvenance: ticket.selectionProvenance,
+          preparationId: ticket.preparationId,
+          responseId: ticket.responseId,
+          orderHash: ticket.orderHash,
+        })) {
+        throw new Error('quotation signal customer preparation is stale');
+      }
+    }
     if (isUnfinished(current.activeRun?.status)) {
       throw new Error('another quotation run is unfinished');
     }
@@ -966,6 +1179,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
       userId: current.userId,
       conversationId: current.conversationId,
       currentOrder: current.currentOrder,
+      currentCustomer: current.currentCustomer,
       nextSignalIndex: current.nextSignalIndex,
       tickets: current.tickets,
       activeRun: nextRun,
@@ -1004,6 +1218,12 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
             acceptedRunId: { $exists: false },
           },
         },
+        ...(ticket.preparationId !== undefined && ticket.responseId !== undefined
+          ? {
+              'currentCustomer.preparationId': ticket.preparationId,
+              'currentCustomer.responseId': ticket.responseId,
+            }
+          : {}),
         $or: [
           { activeRun: { $exists: false } },
           { 'activeRun.status': { $in: terminalStatuses } },
@@ -1444,6 +1664,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
         userId: current.userId,
         conversationId: current.conversationId,
         currentOrder: current.currentOrder,
+        currentCustomer: current.currentCustomer,
         nextSignalIndex: current.nextSignalIndex,
         tickets: current.tickets,
         activeRun: { ...run, checkpointRefs: nextRefs, chunks: nextChunks },
@@ -1526,6 +1747,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
       userId: current?.userId ?? input.scope.userId,
       conversationId: current?.conversationId ?? input.scope.conversationId,
       currentOrder: current?.currentOrder,
+      currentCustomer: current?.currentCustomer,
       nextSignalIndex: current?.nextSignalIndex ?? 0,
       tickets: current?.tickets ?? [],
       activeRun: current?.activeRun,
@@ -1976,6 +2198,8 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
     ensureState,
     readState,
     setOrder,
+    saveCustomer,
+    clearCustomer,
     issueTicket,
     acceptSignal,
     writeArtifact,

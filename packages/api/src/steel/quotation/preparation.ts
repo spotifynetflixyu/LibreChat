@@ -1,13 +1,14 @@
 import { createHash } from 'node:crypto';
 import mongoose from 'mongoose';
 
-import type { ISteelQuotationState, SteelQuotationPendingMessageFile, SteelQuotationScope, SteelQuotationTicket } from '@librechat/data-schemas';
+import type { ISteelQuotationState, SteelQuotationPendingMessageFile, SteelQuotationScope } from '@librechat/data-schemas';
 import type { SteelToolJsonObject, SteelToolJsonValue, SteelToolResult } from '../tools/results';
 
 import { createSteelOcrStateService } from '../ocr/state';
 import { parseAssistantMarkdown, parseOcrResultTable } from '../ocr/result';
 import { escapeMarkdownTableCell } from '../markdown/row-codec';
 import { createSteelQuotationStateService } from './state';
+import { quotationSignal } from './protocol';
 
 export function isUnfinishedQuotation(status?: string): boolean {
   return status !== undefined && status !== 'completed' && status !== 'cancelled';
@@ -74,8 +75,8 @@ export function quotationPreparationInstruction(order?: string): string {
     order ? `For an explicit deletion only, also emit ## ocr_deletions with columns order_hash, 來源, 零件編號 listing exactly the deleted prior rows. Use order_hash=${quotationFingerprint(order)}. Never use omission alone to delete rows.` : '',
     'Do not call search_customers before a saved ocr_result exists. Only call it when the user confirms the current order and requests quotation.',
     'If multiple customer matches are returned, ask the user to choose and do not output customer_data or quote_signal. After the user chooses, search the exact selected customer again to resolve the selection.',
-    'After a unique match or successful no-match search, copy the tool-provided customerDataMarkdown and quoteSignalMarkdown exactly in the same response, then finish. No-match explicitly uses default B. A tool error is not no-match.',
-    'Never invent a signal token/index or customer identity. Do not call search_price_candidates, calculate or output system_order/customer_quote, or output a quotation completion summary in this preparation response.',
+    'After a unique match or successful no-match search, copy the tool-provided customerDataMarkdown and quoteSignal exactly in the same response, then finish. No-match explicitly uses default B. A tool error is not no-match.',
+    'Use exactly ## quote_signal followed by a blank line and start; include no index or token. Never invent customer identity. Do not call search_price_candidates, calculate or output system_order/customer_quote, or output a quotation completion summary in this preparation response.',
     'A saved order is not confirmation by itself. Never reuse confirmation after a correction, and never emit a signal if this response contains ocr_result.',
     order ? `# Saved complete order\n${order}` : '# No saved order exists. Prepare the complete ocr_result first.',
   ].join('\n\n');
@@ -93,12 +94,14 @@ function cell(value: SteelToolJsonValue | undefined): string {
 export async function bindQuotationCustomerResult(input: {
   scope: SteelQuotationScope;
   messageId: string;
+  responseId: string;
   result: SteelToolResult;
 }): Promise<SteelToolResult> {
+  const service = createSteelQuotationStateService(mongoose);
+  await service.clearCustomer({ scope: input.scope, responseId: input.responseId });
   if (!input.result.ok) {
     return input.result;
   }
-  const service = createSteelQuotationStateService(mongoose);
   const state = await service.readState(input.scope);
   if (!state?.currentOrder || !hasQuotationOrder(state.currentOrder.markdown) ||
     isUnfinishedQuotation(state.activeRun?.status)) {
@@ -128,10 +131,12 @@ export async function bindQuotationCustomerResult(input: {
     '| --- | --- | --- | --- |',
     `| ${cell(customer?.erpCustomerCode)} | ${customer ? cell(customer.displayName) : '查無客戶'} | ${tier} | ${!customer || !/^[A-F]$/.test(String(customer.customerTier)) ? '使用預設 B tier' : ''} |`,
   ].join('\n');
-  const ticket = await service.issueTicket({
+  await service.saveCustomer({
     scope: input.scope,
     customerMarkdown: markdown,
     customerIdentity: identity,
+    responseId: input.responseId,
+    orderHash: state.currentOrder.sha256,
     triggeringMessageId: input.messageId,
     selectionProvenance: {
       method: customer ? 'unique' : 'default_tier',
@@ -144,13 +149,13 @@ export async function bindQuotationCustomerResult(input: {
     data: {
       ...input.result.data,
       customerDataMarkdown: markdown,
-      quoteSignalMarkdown: renderQuotationSignal(ticket),
+      quoteSignal: renderQuotationSignal(),
     },
   };
 }
 
-export function renderQuotationSignal(ticket: Pick<SteelQuotationTicket, 'index' | 'token'>): string {
-  return `## quote_signal\n\n| index | token |\n| --- | --- |\n| ${ticket.index} | ${ticket.token} |`;
+export function renderQuotationSignal(): string {
+  return quotationSignal;
 }
 
 export function quotationFingerprint(text: string): string {

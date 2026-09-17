@@ -39,6 +39,16 @@ export interface SteelQuotationSelectionProvenance {
   selectedCustomerId?: string;
 }
 
+export interface SteelQuotationCustomerPreparation {
+  preparationId: string;
+  customerMarkdown: string;
+  customerIdentity: string;
+  orderHash: string;
+  triggeringMessageId: string;
+  responseId: string;
+  selectionProvenance: SteelQuotationSelectionProvenance;
+}
+
 export interface SteelQuotationTicket {
   index: number;
   token: string;
@@ -48,6 +58,8 @@ export interface SteelQuotationTicket {
   triggeringMessageId: string;
   selectionProvenance: SteelQuotationSelectionProvenance;
   issuedAt: Date;
+  preparationId?: string;
+  responseId?: string;
   acceptedRunId?: string;
 }
 
@@ -129,6 +141,7 @@ export interface SteelQuotationPendingMessageFile {
 
 export interface ISteelQuotationState extends Document, SteelQuotationScope {
   currentOrder?: SteelQuotationOrder;
+  currentCustomer?: SteelQuotationCustomerPreparation;
   nextSignalIndex: number;
   tickets: SteelQuotationTicket[];
   activeRun?: SteelQuotationActiveRun;

@@ -8,6 +8,7 @@ import {
 
 import type {
   SteelQuotationActiveRun,
+  SteelQuotationCustomerPreparation,
   SteelQuotationScope,
   SteelQuotationTicket,
 } from '@librechat/data-schemas';
@@ -55,6 +56,23 @@ async function prepareRun(
     targetMessageId: 'assistant-target-1',
   });
   return { ticket, run };
+}
+
+async function prepareCustomer(
+  inputScope: SteelQuotationScope = scope,
+  responseId = 'response-1',
+  order = '# system_order\n| row |',
+): Promise<SteelQuotationCustomerPreparation> {
+  await service.setOrder({ scope: inputScope, fullMarkdown: order });
+  return service.saveCustomer({
+    scope: inputScope,
+    customerMarkdown: '## customer_data\n| name | A |',
+    customerIdentity: 'customer-a',
+    triggeringMessageId: `message-${responseId}`,
+    responseId,
+    selectionProvenance: { method: 'unique', lookupMessageId: 'lookup-1' },
+    orderHash: String((await service.readState(inputScope))?.currentOrder?.sha256),
+  });
 }
 
 beforeAll(async () => {
@@ -126,6 +144,120 @@ describe('Steel quotation state service', () => {
     expect(state?.activeRun?.leaseToken).toBe(
       leases[0]?.leaseToken ?? leases[1]?.leaseToken,
     );
+  });
+
+  it('saves a customer without allocating an index and clears it when the order changes', async () => {
+    const preparation = await prepareCustomer();
+    const saved = await service.readState(scope);
+    expect(preparation.preparationId).toEqual(expect.any(String));
+    expect(saved?.nextSignalIndex).toBe(0);
+    expect(saved?.currentCustomer).toEqual(preparation);
+
+    await service.clearCustomer({ scope, responseId: 'other-response' });
+    expect((await service.readState(scope))?.currentCustomer?.preparationId).toBe(
+      preparation.preparationId,
+    );
+    await service.clearCustomer({ scope, responseId: 'response-1' });
+    expect((await service.readState(scope))?.currentCustomer).toBeUndefined();
+
+    await service.saveCustomer({
+      scope,
+      customerMarkdown: preparation.customerMarkdown,
+      customerIdentity: preparation.customerIdentity,
+      triggeringMessageId: preparation.triggeringMessageId,
+      responseId: preparation.responseId,
+      selectionProvenance: preparation.selectionProvenance,
+      orderHash: String((await service.readState(scope))?.currentOrder?.sha256),
+    });
+    await service.setOrder({ scope, fullMarkdown: '# revised order' });
+    const revised = await service.readState(scope);
+    expect(revised?.currentCustomer).toBeUndefined();
+    expect(revised?.nextSignalIndex).toBe(0);
+  });
+
+  it('rejects stale and mismatched customer preparations before ticket allocation', async () => {
+    const preparation = await prepareCustomer();
+    const orderHash = preparation.orderHash;
+    await expect(service.saveCustomer({
+      scope,
+      customerMarkdown: preparation.customerMarkdown,
+      customerIdentity: preparation.customerIdentity,
+      triggeringMessageId: preparation.triggeringMessageId,
+      responseId: 'stale-response',
+      selectionProvenance: preparation.selectionProvenance,
+      orderHash: 'stale-order-hash',
+    })).rejects.toThrow('stale');
+    await expect(service.issueTicket({
+      scope,
+      customerMarkdown: preparation.customerMarkdown,
+      customerIdentity: preparation.customerIdentity,
+      triggeringMessageId: preparation.triggeringMessageId,
+      selectionProvenance: preparation.selectionProvenance,
+      preparationId: 'wrong-preparation',
+      responseId: preparation.responseId,
+      orderHash,
+    })).rejects.toThrow('current customer preparation');
+
+    const ticket = await service.issueTicket({
+      scope,
+      customerMarkdown: preparation.customerMarkdown,
+      customerIdentity: preparation.customerIdentity,
+      triggeringMessageId: preparation.triggeringMessageId,
+      selectionProvenance: preparation.selectionProvenance,
+      preparationId: preparation.preparationId,
+      responseId: preparation.responseId,
+      orderHash,
+    });
+    await service.saveCustomer({
+      scope,
+      customerMarkdown: preparation.customerMarkdown,
+      customerIdentity: 'different-customer',
+      triggeringMessageId: 'message-2',
+      responseId: 'response-2',
+      selectionProvenance: { method: 'unique' },
+      orderHash,
+    });
+    await expect(service.acceptSignal({
+      scope,
+      index: ticket.index,
+      token: ticket.token,
+      orderHash,
+      customerMarkdown: ticket.customerMarkdown,
+      customerIdentity: ticket.customerIdentity,
+      prompts,
+      chunks: [],
+    })).rejects.toThrow('customer preparation');
+    expect((await service.readState(scope))?.nextSignalIndex).toBe(1);
+  });
+
+  it('allocates one response-bound ticket and index under concurrent retries', async () => {
+    const preparation = await prepareCustomer();
+    const issueInput = {
+      scope,
+      customerMarkdown: preparation.customerMarkdown,
+      customerIdentity: preparation.customerIdentity,
+      triggeringMessageId: preparation.triggeringMessageId,
+      selectionProvenance: preparation.selectionProvenance,
+      preparationId: preparation.preparationId,
+      responseId: preparation.responseId,
+      orderHash: preparation.orderHash,
+    };
+    const tickets = await Promise.all(
+      Array.from({ length: 16 }, () => service.issueTicket(issueInput)),
+    );
+    expect(new Set(tickets.map((ticket) => ticket.token)).size).toBe(1);
+    expect(new Set(tickets.map((ticket) => ticket.index))).toEqual(new Set([1]));
+    const state = await service.readState(scope);
+    expect(state?.nextSignalIndex).toBe(1);
+    expect(state?.tickets).toHaveLength(1);
+    await expect(service.issueTicket({
+      ...issueInput,
+      customerIdentity: 'tampered-customer',
+    })).rejects.toThrow('response binding');
+    await expect(service.issueTicket({
+      ...issueInput,
+      responseId: 'new-response',
+    })).rejects.toThrow('current customer preparation');
   });
 
   it('invalidates old tickets when the order hash changes and fences order edits during a run', async () => {
@@ -219,6 +351,34 @@ describe('Steel quotation state service', () => {
     });
     expect(artifacts).toBe(2);
     expect(MAX_QUOTATION_ARTIFACT_BYTES).toBeGreaterThan(1_000_000);
+  });
+
+  it('keeps cancellation terminal until a new signal creates a fresh run', async () => {
+    const first = await prepareRun();
+    const lease = await service.acquireLease({ scope, runId: first.run.runId });
+    if (!lease) throw new Error('lease missing');
+    await service.checkpoint({ scope, runId: first.run.runId, leaseToken: lease.leaseToken,
+      operationId: 'chunk:1', kind: 'chunk', payload: 'saved old quotation', chunkIndex: 1 });
+    await service.cancelRun({ scope, runId: first.run.runId });
+    await expect(service.acquireLease({ scope, runId: first.run.runId })).resolves.toBeUndefined();
+    const repeated = await service.acceptSignal({ scope, index: first.ticket.index,
+      token: first.ticket.token, orderHash: first.ticket.orderHash,
+      customerMarkdown: first.ticket.customerMarkdown, customerIdentity: first.ticket.customerIdentity,
+      prompts, chunks: [{ index: 1, sourceRowCount: 1 }] });
+    expect(repeated).toEqual(expect.objectContaining({ runId: first.run.runId, status: 'cancelled' }));
+    const ticket = await service.issueTicket({ scope, customerMarkdown: first.ticket.customerMarkdown,
+      customerIdentity: first.ticket.customerIdentity, triggeringMessageId: 'new-quotation-request',
+      selectionProvenance: { method: 'unique' } });
+    expect(ticket.index).toBeGreaterThan(first.ticket.index);
+    const next = await service.acceptSignal({ scope, index: ticket.index, token: ticket.token,
+      orderHash: ticket.orderHash, customerMarkdown: ticket.customerMarkdown,
+      customerIdentity: ticket.customerIdentity, prompts, chunks: [{ index: 1, sourceRowCount: 1 }] });
+    expect(next.runId).not.toBe(first.run.runId);
+    expect(next.status).toBe('queued');
+    expect(next.chunks.every((chunk) => chunk.status !== 'completed')).toBe(true);
+    expect(next.checkpointRefs).toHaveLength(0);
+    await expect(service.acquireLease({ scope, runId: first.run.runId })).resolves.toBeUndefined();
+    await expect(service.acquireLease({ scope, runId: next.runId })).resolves.toBeDefined();
   });
 
   it('archives terminal runs so a duplicate signal can recover the original run', async () => {

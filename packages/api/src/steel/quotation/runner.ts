@@ -12,6 +12,8 @@ import type { QuotationChildResultInput, QuotationLookupEvidence, QuotationPytho
 import type { QuotationModelInput } from './model';
 
 import { createSteelQuotationStateService } from './state';
+import { hasQuotationOrder } from './preparation';
+import { parseAssistantMarkdown } from '../ocr/result';
 import { registerQuotationExecution } from './control';
 import { buildDefaultSteelGlobalAgentContext } from '../native/context';
 import { createSteelPostgresPool } from '../postgres';
@@ -21,6 +23,7 @@ import {
   buildQuotationChunks,
   extractCustomerDataTable,
   parseQuotationSignal,
+  stripLegacyQuotationChildSidecars,
   validateQuotationChildResult,
   finalizeQuotationMainResponse,
 } from './protocol';
@@ -75,16 +78,35 @@ export async function acceptQuotationResponse(input: {
   if (input.finishReason !== 'stop') return undefined;
   const signal = parseQuotationSignal(input.response);
   if (!signal) return undefined;
-  if (/^##\s+ocr_result\s*$/mu.test(input.response)) {
+  if (parseAssistantMarkdown(input.response).sections.some((section) => section.title.split(/[｜|]/u)[0]?.trim() === 'ocr_result')) {
     throw new Error('A revised order must be confirmed before issuing a quotation signal');
   }
   const service = createSteelQuotationStateService(mongoose);
   const state = await service.readState(input.scope);
-  const ticket = state?.tickets.find((entry) => entry.index === signal.index && entry.token === signal.token);
+  const existingTicket = state?.tickets.find((entry) => entry.responseId === input.responseId);
+  const preparedCustomer = state?.currentCustomer;
+  const savedCustomer = existingTicket ?? preparedCustomer;
   const customer = extractCustomerDataTable(input.response);
-  if (!ticket || !state?.currentOrder || !customer ||
-    JSON.stringify(customer) !== JSON.stringify(extractCustomerDataTable(ticket.customerMarkdown))) {
+  if (!savedCustomer || !customer ||
+    JSON.stringify(customer) !== JSON.stringify(extractCustomerDataTable(savedCustomer.customerMarkdown))) {
     throw new Error('Quotation signal does not match the saved order and customer');
+  }
+  if (existingTicket?.acceptedRunId) {
+    return service.acceptSignal({
+      scope: input.scope,
+      index: existingTicket.index,
+      token: existingTicket.token,
+      orderHash: existingTicket.orderHash,
+      customerMarkdown: existingTicket.customerMarkdown,
+      customerIdentity: existingTicket.customerIdentity,
+      prompts: { child: 'replay', main: 'replay' },
+      chunks: [],
+      targetMessageId: input.responseId,
+    });
+  }
+  if (!state?.currentOrder || !hasQuotationOrder(state.currentOrder.markdown) || !preparedCustomer ||
+    preparedCustomer.responseId !== input.responseId || preparedCustomer.orderHash !== state.currentOrder.sha256) {
+    throw new Error('Quotation signal requires the current saved order and customer from this response');
   }
   const chunks = buildQuotationChunks(state.currentOrder.markdown);
   const conversation = { requestId: input.responseId, conversationId: input.scope.conversationId, activeHistory: [] };
@@ -92,10 +114,20 @@ export async function acceptQuotationResponse(input: {
     buildDefaultSteelGlobalAgentContext({ conversation, mode: 'quote_child' }),
     buildDefaultSteelGlobalAgentContext({ conversation, mode: 'quote_main' }),
   ]);
+  const ticket = await service.issueTicket({
+    scope: input.scope,
+    preparationId: preparedCustomer.preparationId,
+    responseId: input.responseId,
+    orderHash: preparedCustomer.orderHash,
+    customerMarkdown: preparedCustomer.customerMarkdown,
+    customerIdentity: preparedCustomer.customerIdentity,
+    triggeringMessageId: preparedCustomer.triggeringMessageId,
+    selectionProvenance: preparedCustomer.selectionProvenance,
+  });
   return service.acceptSignal({
     scope: input.scope,
-    index: signal.index,
-    token: signal.token,
+    index: ticket.index,
+    token: ticket.token,
     orderHash: ticket.orderHash,
     customerMarkdown: ticket.customerMarkdown,
     customerIdentity: ticket.customerIdentity,
@@ -190,7 +222,14 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
         const generated = await (input.invokeModel ?? invokeQuotationModel)({
           role: 'child',
           prompt: snapshot.prompts.child,
-          input: JSON.stringify({ chunk, customer: snapshot.customerMarkdown, categoryRows: chunks.filter((item) => item.category === chunk.category).flatMap((item) => item.sourceRows) }),
+          input: JSON.stringify({
+            chunk: chunk.markdown,
+            categoryOrder: chunks
+              .filter((item) => item.category === chunk.category)
+              .map((item) => item.markdown)
+              .join('\n\n'),
+            customer: snapshot.customerMarkdown,
+          }),
           modelOptions: input.modelOptions,
           signal: controller.signal,
           assertActive: async () => { await assertActive(); },
@@ -226,7 +265,13 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
         validateQuotationChildResult(candidate);
         await checkpoint(operationId, 'chunk', stored, chunk.chunkIndex);
       }
-      results.push(await loadChild(chunk, stored));
+      const loaded = await loadChild(chunk, stored);
+      const validated = validateQuotationChildResult(loaded);
+      results.push({
+        ...loaded,
+        response: validated.markdown,
+        markdown: validated.markdown,
+      });
       await progress(chunk.chunkIndex);
     }
     await service.transitionRun({ ...leaseInput, status: 'aggregating' });
@@ -236,7 +281,11 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
       const output = await (input.invokeModel ?? invokeQuotationModel)({
         role: 'main',
         prompt: snapshot.prompts.main,
-        input: JSON.stringify({ order: snapshot.orderMarkdown, customer: snapshot.customerMarkdown, chunks: results.map((result) => ({ chunkIndex: result.chunk.chunkIndex, markdown: result.response })) }),
+        input: JSON.stringify({
+          order: snapshot.orderMarkdown,
+          customer: snapshot.customerMarkdown,
+          chunks: results.map((result) => result.response ?? result.markdown ?? ''),
+        }),
         modelOptions: input.modelOptions,
         signal: controller.signal,
         assertActive: async () => { await assertActive(); },
@@ -264,26 +313,33 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     await input.onProgress?.({ run: completed, completedChunks: chunks.length, totalChunks: chunks.length });
     return publish(final.response, completed);
 
-    async function loadChild(chunk: ReturnType<typeof buildQuotationChunks>[number], serialized: string): Promise<QuotationChildResultInput> {
+    async function loadChild(
+      chunk: ReturnType<typeof buildQuotationChunks>[number],
+      serialized: string,
+    ): Promise<QuotationChildResultInput> {
       const saved = JSON.parse(serialized) as SavedQuotationChild;
       const lookupEvidence: QuotationLookupEvidence[] = [];
       for (const key of saved.lookupOperations) {
         const evidence = await service.readCheckpoint({ scope, runId, operationId: key });
         if (!evidence) throw new Error('Quotation lookup evidence is missing');
         const lookup = JSON.parse(evidence) as SavedQuotationLookup;
-        if (lookup.result.ok) lookupEvidence.push({ lookupCallId: lookup.lookupCallId, persisted: true, result: lookup.result });
+        if (lookup.result.toolName !== 'search_price_candidates') {
+          throw new Error('Quotation lookup evidence is for an unauthorized tool');
+        }
+        lookupEvidence.push({ lookupCallId: lookup.lookupCallId, persisted: true, result: lookup.result });
       }
-      if (lookupEvidence.length === 0) throw new Error('Quotation has no persisted successful lookup');
       const pythonEvidence: QuotationPythonEvidence[] = [];
       for (const key of saved.pythonOperations) {
         const payload = await service.readCheckpoint({ scope, runId, operationId: key });
         if (!payload) throw new Error('Quotation Python evidence is missing');
         pythonEvidence.push(JSON.parse(payload) as QuotationPythonEvidence);
       }
-      const customer = extractCustomerDataTable(snapshot.customerMarkdown);
-      const tier = customer?.rows[0]?.[customer.headers.indexOf('價格等級')];
-      if (!tier || !/^[A-F]$/.test(tier)) throw new Error('Quotation customer tier is missing');
-      return { chunk, response: saved.markdown, lookupEvidence, pythonEvidence, customerTier: tier as 'A' | 'B' | 'C' | 'D' | 'E' | 'F' };
+      return {
+        chunk,
+        response: stripLegacyQuotationChildSidecars(saved.markdown),
+        lookupEvidence,
+        pythonEvidence,
+      };
     }
   } catch (error) {
     const current = await service.readState(scope);

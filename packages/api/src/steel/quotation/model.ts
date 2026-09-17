@@ -76,8 +76,8 @@ export async function invokeQuotationModel(input: QuotationModelInput): Promise<
       if (response.response_metadata.finish_reason !== 'stop') {
         throw new Error('Quotation model did not complete its output');
       }
-      if (child && !lookups.some((entry) => entry.result.ok)) {
-        throw new Error('Quotation chunk requires successful price lookup evidence');
+      if (child && lookups.length === 0) {
+        throw new Error('Quotation chunk requires a search_price_candidates attempt');
       }
       return { markdown: quotationMessageText(response), lookups, pythonEvidence };
     }

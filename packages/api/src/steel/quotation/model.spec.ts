@@ -9,7 +9,7 @@ const invoke = jest.fn();
 const base = () => ({ prompt: 'rules', input: 'chunk', modelOptions: {} as OpenAIOAuthModelOptions,
   signal: new AbortController().signal, assertActive: jest.fn().mockResolvedValue(undefined) });
 beforeEach(() => { jest.clearAllMocks(); factory.mockReturnValue({ invoke } as never); });
-it('binds price lookup and Python only for item pricing, then requires real lookup success', async () => {
+it('binds price lookup and Python only for item pricing, then accepts a completed attempt', async () => {
   invoke.mockResolvedValueOnce(new AIMessageChunk({ content: '', tool_calls: [{ name: 'search_price_candidates', id: 'lookup', args: { queries: [{ queryId: 'q1', text: 'plate' }] } }], response_metadata: { finish_reason: 'tool_calls' } }))
     .mockResolvedValueOnce(new AIMessageChunk({ content: '## system_order_chunk', response_metadata: { finish_reason: 'stop' } }));
   const lookup = jest.fn().mockResolvedValue({ ok: true, toolName: 'search_price_candidates', data: { queryResults: [] }, durationMs: 1, redactionVersion: 1 });
@@ -19,9 +19,22 @@ it('binds price lookup and Python only for item pricing, then requires real look
 });
 it('rejects child completion without lookup and truncated output', async () => {
   invoke.mockResolvedValue(new AIMessageChunk({ content: 'guessed', response_metadata: { finish_reason: 'stop' } }));
-  await expect(invokeQuotationModel({ ...base(), role: 'child' })).rejects.toThrow('lookup evidence');
+  await expect(invokeQuotationModel({ ...base(), role: 'child' })).rejects.toThrow('search_price_candidates attempt');
   invoke.mockResolvedValue(new AIMessageChunk({ content: 'partial', response_metadata: { finish_reason: 'length' } }));
   await expect(invokeQuotationModel({ ...base(), role: 'main' })).rejects.toThrow('complete');
+});
+it('accepts a structured failed price lookup when the child returns blank-data Markdown', async () => {
+  invoke.mockResolvedValueOnce(new AIMessageChunk({ content: '', tool_calls: [{ name: 'search_price_candidates', id: 'failed-lookup', args: { queries: [{ queryId: 'q1', categories: ['鐵板'] }] } }], response_metadata: { finish_reason: 'tool_calls' } }))
+    .mockResolvedValueOnce(new AIMessageChunk({ content: '## system_order_chunk', response_metadata: { finish_reason: 'stop' } }));
+  const lookup = jest.fn().mockResolvedValue({
+    ok: false,
+    toolName: 'search_price_candidates',
+    errorCategory: 'repository_error',
+    errorSummary: 'temporary lookup failure',
+    durationMs: 1,
+    redactionVersion: 1,
+  });
+  await expect(invokeQuotationModel({ ...base(), role: 'child', lookup })).resolves.toEqual(expect.objectContaining({ markdown: '## system_order_chunk' }));
 });
 it('gives consolidation no tools and prevents an invented tool call from executing', async () => {
   invoke.mockResolvedValue(new AIMessageChunk({ content: '', tool_calls: [{ name: 'search_price_candidates', id: 'bad', args: {} }] }));

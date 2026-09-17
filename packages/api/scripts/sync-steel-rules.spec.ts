@@ -375,14 +375,13 @@ describe('Steel rule sources', () => {
     });
   });
 
-  it('publishes delegate_ocr tool metadata', () => {
+  it('publishes preparation tools without price lookup', () => {
     const agentRule = ruleSync
       .buildRules(repoRoot)
       .find((rule) => rule.slug === 'steel-default-agent-instruction');
 
     expect(agentRule?.toolPolicy.availableTools).toEqual([
       'search_customers',
-      'search_price_candidates',
       'delegate_ocr',
     ]);
     expect(agentRule?.source.sourceFile).toBe('docs/rules/agent規則.txt');
