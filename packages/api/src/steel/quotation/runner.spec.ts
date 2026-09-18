@@ -14,12 +14,13 @@ import { createSteelQuotationStateService } from './state';
 import { buildQuotationChunks, quotationSignal } from './protocol';
 import { parseMarkdownTables } from '../markdown/table';
 import { invokeQuotationModel } from './model';
+import { quotationStatus } from './routes';
 import { acceptQuotationResponse, runQuotationPreflight } from './runner';
 import type { QuotationProgress } from './runner';
 import type { SteelNativeHistory } from '../native/events';
 import { createSteelNativeHistory, appendSteelNativeActivityEvent, upsertSteelNativePreflightToolCall } from '../native/events';
 import { getQuotationHistoryDelta, readQuotationHistory } from './history';
-import { bindQuotationCustomerResult, defaultQuotationCustomerMarkdown, quotationPreparationStatus } from './preparation';
+import { bindQuotationCustomerResult, defaultQuotationCustomerMarkdown, prepareQuotationTurn, quotationPreparationStatus } from './preparation';
 
 jest.mock('../native/oauth', () => ({ createOpenAIOAuthModel: jest.fn() }));
 const oauthFactory = jest.mocked(createOpenAIOAuthModel);
@@ -327,6 +328,86 @@ describe('quotation runner integration', () => {
     }
     expect(publishFinal).toHaveBeenCalledTimes(1);
     expect((await service.readState(scope))?.activeRun?.status).toBe('completed');
+  });
+
+  it.each(['paused', 'error'] as const)(
+    'resumes a %s preflight with the correct persisted batch size and total', async (reason) => {
+      const run = await prepareRun(163);
+      const controller = new AbortController();
+      const failedModel = createModel({ onChild: () => {
+        if (reason === 'paused') controller.abort(new Error('Paused by user'));
+        throw new Error('Preflight interrupted');
+      } });
+      await expect(runQuotationPreflight(runnerInput(failedModel, createLookupExecutor(), {
+        signal: controller.signal,
+      }))).rejects.toThrow(reason === 'paused' ? 'Paused by user' : 'Preflight interrupted');
+      expect((await service.readState(scope))?.activeRun?.interruption)
+        .toEqual({ reason, chunkIndex: 1 });
+      const resumed = createModel();
+      const progress: QuotationProgress[] = [];
+      await runQuotationPreflight({
+        ...runnerInput(resumed, createLookupExecutor()),
+        onProgress: async (event) => { progress.push(event); },
+      });
+      const rows = resumed.mock.calls.filter(([input]) => input.role === 'child')
+        .map(([input]) => parseMarkdownTables(JSON.parse(input.input).chunk)[0]!.rows.length);
+      expect(rows).toEqual(reason === 'paused' ? [30, 30, 30, 30, 30, 13] : [10, 10, 10, 30, 30, 30, 30, 13]);
+      const total = reason === 'paused' ? 6 : 8;
+      expect(progress[progress.length - 1]).toEqual(expect.objectContaining({ completedChunks: total, totalChunks: total }));
+      const state = await service.readState(scope);
+      expect(quotationStatus(state, scope.conversationId))
+        .toEqual(expect.objectContaining({ completedChunks: total, totalChunks: total }));
+      const restored = await readQuotationHistory({ scope, runId: run.runId });
+      expect(restored.activityEvents[restored.activityEvents.length - 1])
+        .toEqual(expect.objectContaining({ completedChunks: total, totalChunks: total }));
+    },
+  );
+
+  it('resumes the remaining small chunks after pause and a new message without changing the total', async () => {
+    const run = await prepareRun(163);
+    const controller = new AbortController();
+    const validModel = createModel();
+    const model = createModel({ onChild: async (input) => {
+      const rows = parseMarkdownTables(JSON.parse(input.input).chunk)[0]!.rows;
+      if (rows.length === 30 && rows[0]![1] === 'P91') {
+        return { markdown: '| incomplete', lookups: [], pythonEvidence: [] };
+      }
+      return validModel(input);
+    } });
+    await expect(runQuotationPreflight({
+      ...runnerInput(model, createLookupExecutor(), { signal: controller.signal }),
+      onProgress: async (event) => {
+        if (event.stage === 'chunk_saved' && event.completedChunks === 4 && event.totalChunks === 8) {
+          controller.abort(new Error('Paused after first recovery slice'));
+        }
+      },
+    })).rejects.toThrow('Paused after first recovery slice');
+    const paused = await service.readState(scope);
+    expect(paused?.activeRun?.interruption).toEqual({ reason: 'paused', chunkIndex: 4 });
+    expect(quotationStatus(paused, scope.conversationId))
+      .toEqual(expect.objectContaining({ completedChunks: 4, totalChunks: 8 }));
+    const savedSlice = await service.readCheckpoint({ scope, runId: run.runId, operationId: 'slice:4:1' });
+    expect(savedSlice).toBeTruthy();
+    const prepared = await prepareQuotationTurn({
+      scope, messageId: 'resume-message', responseId: 'resume-response', text: '接續報價',
+    });
+    expect(prepared.resume).toBe(true);
+    const resumed = createModel();
+    const events: QuotationProgress[] = [];
+    await runQuotationPreflight({
+      ...runnerInput(resumed, createLookupExecutor()),
+      onProgress: async (event) => { events.push(event); },
+    });
+    expect(resumed.mock.calls.filter(([input]) => input.role === 'child')
+      .map(([input]) => parseMarkdownTables(JSON.parse(input.input).chunk)[0]!.rows.length))
+      .toEqual([10, 10, 30, 13]);
+    expect(events.filter((event) => event.stage === 'chunk_started')
+      .map(({ chunkIndex, completedChunks, totalChunks }) => [chunkIndex, completedChunks, totalChunks]))
+      .toEqual([[5, 4, 8], [6, 5, 8], [7, 6, 8], [8, 7, 8]]);
+    expect(await service.readCheckpoint({ scope, runId: run.runId, operationId: 'slice:4:1' })).toBe(savedSlice);
+    const restored = await readQuotationHistory({ scope, runId: run.runId });
+    expect(restored.activityEvents[restored.activityEvents.length - 1])
+      .toEqual(expect.objectContaining({ completedChunks: 8, totalChunks: 8 }));
   });
 
   it('immediately repairs invalid large chunks in durable slices and restarts only the unfinished slice', async () => {

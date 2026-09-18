@@ -550,6 +550,21 @@ describe('Steel quotation state service', () => {
     expect(MAX_QUOTATION_ARTIFACT_BYTES).toBeGreaterThan(1_000_000);
   });
 
+  it('persists interruption reasons for valid chunks and clears stale reasons for legacy callers', async () => {
+    const { run } = await prepareRun();
+    const lease = (await service.acquireLease({ scope, runId: run.runId }))!;
+    const input = { scope, runId: run.runId, leaseToken: lease.leaseToken };
+    await expect(service.interruptRun({ ...input, interruption: { reason: 'error', chunkIndex: 2 } }))
+      .resolves.toBeUndefined();
+    expect((await service.readState(scope))?.activeRun?.leaseToken).toBe(lease.leaseToken);
+    const interrupted = await service.interruptRun({ ...input, interruption: { reason: 'paused', chunkIndex: 1 } });
+    expect(interrupted?.interruption).toEqual({ reason: 'paused', chunkIndex: 1 });
+    const resumed = (await service.acquireLease({ scope, runId: run.runId }))!;
+    expect((await service.readState(scope))?.activeRun?.interruption).toEqual({ reason: 'paused', chunkIndex: 1 });
+    await service.interruptRun({ ...input, leaseToken: resumed.leaseToken });
+    expect((await service.readState(scope))?.activeRun?.interruption).toBeUndefined();
+  });
+
   it('only reports a saved final from the latest completed signal', async () => {
     const Artifact = createSteelQuotationArtifactModel(mongoose);
     expect(await service.hasSystemOrder(scope)).toBe(false);

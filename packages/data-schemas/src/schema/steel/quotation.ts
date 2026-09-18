@@ -146,6 +146,12 @@ const steelQuotationActiveRunSchema = new Schema<SteelQuotationActiveRun>(
     },
     leaseToken: { type: String },
     leaseExpiresAt: { type: Date },
+    interruption: {
+      type: new Schema<NonNullable<SteelQuotationActiveRun['interruption']>>({
+        reason: { type: String, enum: ['paused', 'error'], required: true },
+        chunkIndex: { type: Number, min: 1 },
+      }, { _id: false }),
+    },
     acceptedAt: { type: Date, required: true },
     updatedAt: { type: Date, required: true },
   },

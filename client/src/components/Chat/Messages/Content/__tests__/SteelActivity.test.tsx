@@ -908,6 +908,38 @@ describe('SteelActivity', () => {
     expect(container.querySelector('.result-thinking')).not.toBeInTheDocument();
   });
 
+  it.each([
+    { polledCompleted: 3, polledTotal: 6, completed: 3, chunkIndex: 4 },
+    { polledCompleted: 3, polledTotal: 8, completed: 4, chunkIndex: 5 },
+  ])('shows expanded retry progress before polling catches up ($completed/8)', ({
+    polledCompleted, polledTotal, completed, chunkIndex,
+  }) => {
+    mockUseGetSteelQuotationStatusQuery.mockReturnValue({
+      data: {
+        conversationId: 'conversation-1', index: 4, runId: 'quotation-split-run',
+        status: 'running', completedChunks: polledCompleted, totalChunks: polledTotal,
+        canCancel: true,
+      },
+    } as ReturnType<typeof useGetSteelQuotationStatusQuery>);
+    render(
+      <RecoilRoot>
+        <SteelActivity
+          messageId="assistant-split-progress"
+          isCreatedByUser={false}
+          persistedActivityEvents={[{
+            ...quotationStatusEvent,
+            messageId: 'assistant-split-progress', runId: 'quotation-split-run',
+            stage: 'chunk_started', status: 'running', chunkIndex,
+            completedChunks: completed, totalChunks: 8,
+          }]}
+        />
+      </RecoilRoot>,
+    );
+    expect(screen.getAllByText(`Quotation chunk ${chunkIndex} started (${completed}/8 chunks)`))
+      .toHaveLength(2);
+    expect(screen.getByRole('button', { name: 'Cancel quotation' })).toBeEnabled();
+  });
+
   it('keeps a terminal polled status over a stale main streaming event', () => {
     mockUseGetSteelQuotationStatusQuery.mockReturnValue({
       data: {

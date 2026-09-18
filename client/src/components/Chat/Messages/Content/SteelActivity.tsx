@@ -301,6 +301,14 @@ const SteelQuotationProgress = memo(function SteelQuotationProgress({
     return null;
   }
 
+  const sameRunProgress =
+    !hasMismatchedQuery && event?.runId !== undefined && event.runId === queryData?.runId;
+  const completedChunks = sameRunProgress
+    ? Math.max(status.completedChunks, event.completedChunks)
+    : status.completedChunks;
+  const totalChunks = sameRunProgress
+    ? Math.max(status.totalChunks, event.totalChunks)
+    : status.totalChunks;
   const index = status.index ?? event?.index ?? null;
   const canCancel =
     !hasMismatchedQuery &&
@@ -316,8 +324,8 @@ const SteelQuotationProgress = memo(function SteelQuotationProgress({
   const statusText = getQuotationStatusText(
     localize,
     status.status,
-    status.completedChunks,
-    status.totalChunks,
+    completedChunks,
+    totalChunks,
     event?.stage,
     event?.chunkIndex,
     event?.repairAttempt,

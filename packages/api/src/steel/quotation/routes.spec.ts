@@ -1,6 +1,6 @@
 import type { Request, Response } from 'express';
 
-import { createQuotationRouteHandlers } from './routes';
+import { createQuotationRouteHandlers, quotationStatus } from './routes';
 import { createSteelQuotationStateService } from './state';
 import { abortQuotationExecution } from './control';
 
@@ -40,12 +40,34 @@ const activeRun = {
   runId: 'run-1',
   index: 1,
   status: 'running' as const,
-  chunks: [{ status: 'completed' as const }, { status: 'pending' as const }],
+  chunks: [
+    { index: 1, sourceRowCount: 10, status: 'completed' as const },
+    { index: 2, sourceRowCount: 10, status: 'pending' as const },
+  ],
+  checkpointRefs: [],
 };
 
 describe('quotation route handlers', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+  });
+
+  it('projects split quotation progress into durable ten-row units', () => {
+    const splitRun = {
+      ...activeRun,
+      chunks: [
+        { index: 1, sourceRowCount: 10, status: 'completed' as const },
+        { index: 2, sourceRowCount: 23, status: 'pending' as const },
+      ],
+      checkpointRefs: [
+        { operationId: 'split:2', kind: 'main' },
+        { operationId: 'slice:2:1', kind: 'chunk' },
+      ],
+    };
+    expect(quotationStatus({ activeRun: splitRun } as never, 'conversation-1')).toMatchObject({
+      completedChunks: 2,
+      totalChunks: 4,
+    });
   });
 
   it('requires authentication and conversation ownership before reading status', async () => {

@@ -11,6 +11,11 @@ import {
   buildSteelQuotationStatusEvent,
   upsertSteelNativePreflightToolCall,
 } from '../native/events';
+import {
+  getQuotationProgress,
+  getQuotationWorkUnits,
+  parseQuotationRepairOperation,
+} from './progress';
 
 export interface SavedQuotationLookup {
   lookupCallId: string;
@@ -92,15 +97,26 @@ export async function readQuotationHistory(input: {
     }
   }
 
-  const completed = run.chunks.filter((chunk) => chunk.status === 'completed' && chunk.checkpointRef);
-  const base = { conversationId: input.scope.conversationId, runId: run.runId, index: run.index, totalChunks: run.chunks.length };
-  for (let index = 0; index < completed.length; index += 1) {
+  const workUnits = getQuotationWorkUnits(run);
+  const progress = getQuotationProgress(run);
+  const base = {
+    conversationId: input.scope.conversationId,
+    runId: run.runId,
+    index: run.index,
+    totalChunks: progress.totalChunks,
+  };
+  let completedCount = 0;
+  for (const unit of workUnits) {
+    if (!unit.completed) {
+      continue;
+    }
+    completedCount += 1;
     appendSteelNativeActivityEvent(history, buildSteelQuotationStatusEvent({
       ...base,
       stage: 'chunk_saved',
       status: 'running',
-      chunkIndex: completed[index]!.index,
-      completedChunks: index + 1,
+      chunkIndex: unit.chunkIndex,
+      completedChunks: completedCount,
       message: 'Restored from saved quotation checkpoints',
     }));
   }
@@ -114,11 +130,19 @@ export async function readQuotationHistory(input: {
     if (!payload) continue;
     try {
       const event = JSON.parse(payload);
-      const chunkIndex = Number(operationId.split(':')[1]);
-      if (event.type !== 'quotation_status' || event.conversationId !== input.scope.conversationId ||
-        event.runId !== run.runId || event.index !== run.index || event.chunkIndex !== chunkIndex ||
-        !run.chunks.some((chunk) => chunk.index === chunkIndex)) continue;
-      appendSteelNativeActivityEvent(history, event);
+      const operation = parseQuotationRepairOperation(operationId);
+      if (!operation || event.type !== 'quotation_status' || event.conversationId !== input.scope.conversationId ||
+        event.runId !== run.runId || event.index !== run.index || event.chunkIndex !== operation.sourceChunkIndex ||
+        event.attempt !== operation.attempt || event.repairAttempt !== operation.repairAttempt ||
+        event.stage !== operation.stage) continue;
+      const projected = getQuotationProgress(run, operation.sourceChunkIndex, operation.sliceIndex);
+      if (projected.chunkIndex === undefined) continue;
+      appendSteelNativeActivityEvent(history, {
+        ...event,
+        chunkIndex: projected.chunkIndex,
+        completedChunks: projected.completedChunks,
+        totalChunks: projected.totalChunks,
+      });
     } catch {
       // A malformed historical activity must not prevent resuming valid quotation work.
       continue;
@@ -128,7 +152,7 @@ export async function readQuotationHistory(input: {
     ...base,
     stage: run.status,
     status: run.status,
-    completedChunks: completed.length,
+    completedChunks: progress.completedChunks,
     message: 'Restored from saved quotation checkpoints',
   }));
   return history;

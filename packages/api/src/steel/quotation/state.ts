@@ -165,6 +165,10 @@ export interface SteelQuotationTransitionRunInput extends SteelQuotationRunInput
   status: Exclude<SteelQuotationRunStatus, 'completed' | 'cancelled' | 'interrupted'>;
 }
 
+export interface SteelQuotationInterruptInput extends SteelQuotationRunInput {
+  interruption?: SteelQuotationActiveRun['interruption'];
+}
+
 export interface SteelQuotationCompleteRunInput extends SteelQuotationRunInput {
   finalRef: SteelQuotationArtifactRef;
   targetMessageId?: string;
@@ -276,7 +280,7 @@ export interface SteelQuotationStateService {
   transitionRun(
     input: SteelQuotationTransitionRunInput,
   ): Promise<SteelQuotationActiveRun | undefined>;
-  interruptRun(input: SteelQuotationRunInput): Promise<SteelQuotationActiveRun | undefined>;
+  interruptRun(input: SteelQuotationInterruptInput): Promise<SteelQuotationActiveRun | undefined>;
   cancelRun(input: Omit<SteelQuotationRunInput, 'leaseToken'> & { leaseToken?: string }): Promise<
     SteelQuotationActiveRun | undefined
   >;
@@ -1457,9 +1461,15 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
   }
 
   async function interruptRun(
-    input: SteelQuotationRunInput,
+    input: SteelQuotationInterruptInput,
   ): Promise<SteelQuotationActiveRun | undefined> {
     validateScope(input.scope);
+    if (input.interruption && !['paused', 'error'].includes(input.interruption.reason)) {
+      throw new Error('Invalid quotation interruption reason');
+    }
+    if (input.interruption?.chunkIndex !== undefined) {
+      validatePositiveIndex(input.interruption.chunkIndex, 'interrupted chunk index');
+    }
     const now = nowOrDefault(input.now);
     const updated = await State.findOneAndUpdate(
       {
@@ -1468,10 +1478,19 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
         'activeRun.leaseToken': input.leaseToken,
         'activeRun.status': { $in: leaseStatuses },
         'activeRun.leaseExpiresAt': { $gt: now },
+        ...(input.interruption?.chunkIndex !== undefined && {
+          'activeRun.chunks.index': input.interruption.chunkIndex,
+        }),
       },
       {
-        $set: { 'activeRun.status': 'interrupted', 'activeRun.updatedAt': now, updatedAt: now },
-        $unset: { 'activeRun.leaseToken': 1, 'activeRun.leaseExpiresAt': 1 },
+        $set: {
+          'activeRun.status': 'interrupted', 'activeRun.updatedAt': now, updatedAt: now,
+          ...(input.interruption && { 'activeRun.interruption': input.interruption }),
+        },
+        $unset: {
+          'activeRun.leaseToken': 1, 'activeRun.leaseExpiresAt': 1,
+          ...(!input.interruption && { 'activeRun.interruption': 1 }),
+        },
       },
       { new: true },
     ).lean<ISteelQuotationState>();

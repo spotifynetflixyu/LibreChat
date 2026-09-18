@@ -22,6 +22,7 @@ import { createSteelPostgresPool } from '../postgres';
 import { executeSteelTool, createSteelToolRunState } from '../tools/execute';
 import { invokeQuotationModel } from './model';
 import { readQuotationHistory } from './history';
+import { getQuotationProgress } from './progress';
 import { buildSteelQuotationStatusEvent } from '../native/events';
 import {
   buildQuotationChunks,
@@ -234,13 +235,11 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     }
     return active;
   };
-  const progress = async (chunkIndex?: number, attempt?: string, stage?: QuotationProgress['stage']) => {
+  const progress = async (chunkIndex?: number, attempt?: string, stage?: QuotationProgress['stage'], sliceIndex?: number) => {
     const active = await assertActive();
     await input.onProgress?.({
       run: active,
-      completedChunks: active.chunks.filter((entry) => entry.status === 'completed').length,
-      totalChunks: active.chunks.length,
-      chunkIndex,
+      ...getQuotationProgress(active, chunkIndex, sliceIndex),
       attempt,
       ...(stage ? { stage } : {}),
     });
@@ -249,6 +248,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     const saved = await service.checkpoint({ ...leaseInput, operationId, kind, payload, chunkIndex });
     if (!saved) throw new Error('Quotation checkpoint lost its execution lease');
   };
+  let interruptedChunkIndex: number | undefined;
   try {
     const running = await service.transitionRun({ ...leaseInput, status: 'running' });
     if (!running) throw new Error('Quotation could not start with its execution lease');
@@ -259,6 +259,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     const results: QuotationChildResultInput[] = [];
     await progress(undefined, undefined, 'started');
     for (const chunk of chunks) {
+      interruptedChunkIndex = chunk.chunkIndex;
       const operationId = `chunk:${chunk.chunkIndex}`;
       let stored = await service.readCheckpoint({ scope, runId, operationId });
       if (!stored) {
@@ -267,8 +268,9 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
         const parentOutputRef = run.checkpointRefs.filter((ref) =>
           ref.operationId.startsWith(`child-output:${chunk.chunkIndex}:`) &&
           !ref.operationId.split(':')[2]!.startsWith('slice-')).pop();
-        let rejectedParent = false;
-        if (!splitPayload && parentOutputRef) {
+        let rejectedParent = run.interruption?.reason === 'error' &&
+          run.interruption.chunkIndex === chunk.chunkIndex;
+        if (!splitPayload && !rejectedParent && run.interruption?.reason !== 'paused' && parentOutputRef) {
           const previousOutput = await service.readCheckpoint({ scope, runId, operationId: parentOutputRef.operationId });
           if (!previousOutput) throw new Error('Quotation output evidence is missing');
           try {
@@ -295,6 +297,9 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
               JSON.stringify(plan.sourceRowIds) !== JSON.stringify(sourceRowIds)) {
               throw new Error('Saved quotation recovery plan does not match its source rows');
             }
+            if (!run.checkpointRefs.some((ref) => ref.operationId === splitOperation)) {
+              await checkpoint(splitOperation, 'main', splitPayload);
+            }
           } else {
             await checkpoint(splitOperation, 'main', JSON.stringify({
               version: 1,
@@ -317,6 +322,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
             }
             const loaded = await loadChild(slice, saved);
             validateQuotationChildResult(loaded);
+            await progress(chunk.chunkIndex, undefined, 'chunk_saved', index + 1);
             children.push(loaded);
             const evidence = JSON.parse(saved) as SavedQuotationChild;
             lookupOperations.push(...evidence.lookupOperations);
@@ -337,6 +343,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
       });
       await progress(chunk.chunkIndex, undefined, 'chunk_saved');
     }
+    interruptedChunkIndex = undefined;
     await service.transitionRun({ ...leaseInput, status: 'aggregating' });
     await progress();
     let main = await service.readCheckpoint({ scope, runId, operationId: 'main' });
@@ -387,7 +394,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     });
     if (!completed) throw new Error('Quotation completion lost its execution lease');
     clearInterval(heartbeat);
-    await input.onProgress?.({ run: completed, completedChunks: chunks.length, totalChunks: chunks.length });
+    await input.onProgress?.({ run: completed, ...getQuotationProgress(completed) });
     return publish(final.response, completed);
 
     async function generateChild(
@@ -396,7 +403,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     ): Promise<string> {
       const attemptPrefix = sliceIndex === undefined ? '' : `slice-${sliceIndex}-`;
       const attempt = `${attemptPrefix}${randomUUID()}`;
-      await progress(chunk.chunkIndex, attempt, 'chunk_started');
+      await progress(chunk.chunkIndex, attempt, 'chunk_started', sliceIndex);
       const lookupOperations: string[] = [];
       const pythonOperations: string[] = [];
       const toolState = createSteelToolRunState(120);
@@ -423,12 +430,14 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
             ...repair,
             conversationId: scope.conversationId,
             runId, index: active.index, status: active.status,
-            completedChunks: active.chunks.filter((entry) => entry.status === 'completed').length,
-            totalChunks: active.chunks.length,
+            ...getQuotationProgress(active),
             chunkIndex: chunk.chunkIndex, attempt,
           });
           await checkpoint(`repair:${chunk.chunkIndex}:${attempt}:${repair.repairAttempt}:${repair.stage}`, 'main', JSON.stringify(event));
-          await input.onProgress?.({ ...event, stage: repair.stage, run: active });
+          await input.onProgress?.({
+            ...event, ...getQuotationProgress(active, chunk.chunkIndex, sliceIndex),
+            stage: repair.stage, run: active,
+          });
         },
         validateChildOutput: async (markdown) => {
           await assertActive();
@@ -500,13 +509,19 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
   } catch (error) {
     const current = await service.readState(scope);
     if (current?.activeRun?.runId === runId && current.activeRun.status === 'cancelled') {
-      await input.onProgress?.({ run: current.activeRun, completedChunks: current.activeRun.chunks.filter((chunk) => chunk.status === 'completed').length, totalChunks: current.activeRun.chunks.length });
+      await input.onProgress?.({ run: current.activeRun, ...getQuotationProgress(current.activeRun) });
       return { status: 'cancelled' };
     }
-    const interrupted = await service.interruptRun(leaseInput);
+    const interrupted = await service.interruptRun({
+      ...leaseInput,
+      interruption: {
+        reason: input.signal.aborted ? 'paused' : 'error',
+        ...(interruptedChunkIndex !== undefined && { chunkIndex: interruptedChunkIndex }),
+      },
+    });
     if (interrupted) {
       try {
-        await input.onProgress?.({ run: interrupted, completedChunks: interrupted.chunks.filter((chunk) => chunk.status === 'completed').length, totalChunks: interrupted.chunks.length });
+        await input.onProgress?.({ run: interrupted, ...getQuotationProgress(interrupted) });
       } catch {
         // The durable interrupted state remains authoritative if the stream has closed.
       }

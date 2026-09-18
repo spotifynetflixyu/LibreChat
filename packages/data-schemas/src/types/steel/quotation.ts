@@ -112,6 +112,10 @@ export interface SteelQuotationActiveRun {
   checkpointRefs: SteelQuotationCheckpointRef[];
   leaseToken?: string;
   leaseExpiresAt?: Date;
+  interruption?: {
+    reason: 'paused' | 'error';
+    chunkIndex?: number;
+  };
   acceptedAt: Date;
   updatedAt: Date;
 }

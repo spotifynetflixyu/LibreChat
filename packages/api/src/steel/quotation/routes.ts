@@ -6,6 +6,7 @@ import type { ISteelQuotationState, SteelQuotationScope } from '@librechat/data-
 import { createSteelQuotationStateService } from './state';
 import { abortQuotationExecution } from './control';
 import { isUnfinishedQuotation } from './preparation';
+import { getQuotationProgress } from './progress';
 
 interface QuotationRequest extends Request {
   user?: { id?: string };
@@ -18,13 +19,14 @@ export interface QuotationStatus {
 
 export function quotationStatus(state: ISteelQuotationState | null, conversationId: string): QuotationStatus {
   const run = state?.activeRun;
+  const progress = run ? getQuotationProgress(run) : { completedChunks: 0, totalChunks: 0 };
   return {
     conversationId,
     index: run?.index ?? null,
     runId: run?.runId,
     status: run?.status ?? 'idle',
-    completedChunks: run?.chunks.filter((chunk) => chunk.status === 'completed').length ?? 0,
-    totalChunks: run?.chunks.length ?? 0,
+    completedChunks: progress.completedChunks,
+    totalChunks: progress.totalChunks,
     canCancel: isUnfinishedQuotation(run?.status),
   };
 }
