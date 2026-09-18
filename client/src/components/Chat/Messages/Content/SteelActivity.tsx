@@ -19,6 +19,7 @@ import {
   appendSteelNativeActivityEvent,
   normalizePersistedSteelActivityEvent,
 } from '~/hooks/SSE/useSteelEventHandler';
+import { EmptyText } from './Parts';
 
 type SteelActivityProps = {
   messageId: string;
@@ -29,6 +30,34 @@ type SteelActivityProps = {
 
 type Localize = ReturnType<typeof useLocalize>;
 type LocalizeKey = Parameters<Localize>[0];
+
+export function useSteelActivityEvents(
+  messageId: string,
+  persistedActivityEvents?: readonly unknown[],
+): SteelNativeActivityEvent[] {
+  const liveEvents = useRecoilValue(steelNativeActivityByMessageId(messageId));
+  const persistedEvents = useMemo(
+    () =>
+      (persistedActivityEvents ?? []).reduce<SteelNativeActivityEvent[]>(
+        (current, persistedEvent) => {
+          const normalized = normalizePersistedSteelActivityEvent(persistedEvent);
+          return normalized ? appendSteelNativeActivityEvent(current, normalized) : current;
+        },
+        [],
+      ),
+    [persistedActivityEvents],
+  );
+
+  return useMemo(() => {
+    if (persistedEvents.length === 0) {
+      return liveEvents;
+    }
+    return liveEvents.reduce<SteelNativeActivityEvent[]>(
+      appendSteelNativeActivityEvent,
+      persistedEvents,
+    );
+  }, [liveEvents, persistedEvents]);
+}
 
 const assistantOcrSavedCountKeys = new Set(['ocr_extract']);
 const officialOcrMarkdownSavedCountKeys = new Set(['ocr_markdown']);
@@ -55,29 +84,81 @@ function isQuotationCancellableStatus(status: SteelQuotationStatus['status']): b
   );
 }
 
+function isQuotationActiveStatus(status: SteelQuotationStatus['status']): boolean {
+  return (
+    status === 'queued' ||
+    status === 'running' ||
+    status === 'aggregating' ||
+    status === 'finalizing'
+  );
+}
+
+function isQuotationPreflightWaitingStatus(status: SteelQuotationStatus['status']): boolean {
+  return status === 'queued' || status === 'running' || status === 'aggregating';
+}
+
 function getQuotationStatusText(
   localize: Localize,
   status: SteelQuotationStatus['status'],
   completedChunks: number,
   totalChunks: number,
+  stage?: string,
+  chunkIndex?: number,
 ): string {
+  if (status === 'aggregating' && stage === 'main_streaming') {
+    return localize('com_ui_steel_quote_status_main_responding', {
+      completedChunks,
+      totalChunks,
+    });
+  }
+  if (status === 'aggregating' && stage === 'aggregating') {
+    return localize('com_ui_steel_quote_status_main_consolidating', {
+      completedChunks,
+      totalChunks,
+    });
+  }
+
   if (status === 'queued') {
     return localize('com_ui_steel_quote_status_queued');
   }
   if (status === 'running') {
+    if (chunkIndex !== undefined && stage === 'chunk') {
+      return localize('com_ui_steel_quote_status_chunk_running', {
+        chunkIndex,
+        completedChunks,
+        totalChunks,
+      });
+    }
+    if (chunkIndex !== undefined && stage === 'chunk_started') {
+      return localize('com_ui_steel_quote_status_chunk_started', {
+        chunkIndex,
+        completedChunks,
+        totalChunks,
+      });
+    }
+    if (chunkIndex !== undefined && stage === 'chunk_saved') {
+      return localize('com_ui_steel_quote_status_chunk_saved', {
+        chunkIndex,
+        completedChunks,
+        totalChunks,
+      });
+    }
     return localize('com_ui_steel_quote_status_running', { completedChunks, totalChunks });
   }
   if (status === 'aggregating') {
-    return localize('com_ui_steel_quote_status_aggregating');
+    return localize('com_ui_steel_quote_status_main_consolidating', {
+      completedChunks,
+      totalChunks,
+    });
   }
   if (status === 'finalizing') {
-    return localize('com_ui_steel_quote_status_finalizing');
+    return localize('com_ui_steel_quote_status_finalizing', { completedChunks, totalChunks });
   }
   if (status === 'interrupted') {
     return localize('com_ui_steel_quote_status_interrupted');
   }
   if (status === 'completed') {
-    return localize('com_ui_steel_quote_status_completed');
+    return localize('com_ui_steel_quote_status_completed', { completedChunks, totalChunks });
   }
   if (status === 'cancelled') {
     return localize('com_ui_steel_quote_status_cancelled');
@@ -99,68 +180,116 @@ type SteelQuotationProgressProps = {
   conversationId: string;
   event?: Extract<SteelNativeActivityEvent, { type: 'quotation_status' }>;
   localize: Localize;
+  showLoadingDot: boolean;
 };
 
 const SteelQuotationProgress = memo(function SteelQuotationProgress({
   conversationId,
   event,
   localize,
+  showLoadingDot,
 }: SteelQuotationProgressProps) {
   const quotationQuery = useGetSteelQuotationStatusQuery(conversationId);
   const cancelMutation = useCancelSteelQuotationMutation(conversationId);
-  const status = quotationQuery.data ?? event;
+  const queryData = quotationQuery.data;
+  const hasMismatchedQuery = Boolean(
+    event &&
+      queryData &&
+      (event.index !== queryData.index ||
+        (event.runId !== undefined && event.runId !== queryData.runId)),
+  );
+  const terminalEventWins = Boolean(
+    event &&
+      queryData &&
+      !hasMismatchedQuery &&
+      (event.status === 'completed' || event.status === 'cancelled'),
+  );
+  let status = queryData ?? event;
+  if (hasMismatchedQuery || terminalEventWins) {
+    status = event;
+  }
 
   if (!status) {
     return null;
   }
 
   const index = status.index ?? event?.index ?? null;
-  const canCancel = quotationQuery.data?.canCancel ?? isQuotationCancellableStatus(status.status);
-  const cancelError = getQuotationCancelError(cancelMutation.error);
+  const canCancel =
+    !hasMismatchedQuery &&
+    !terminalEventWins &&
+    (queryData?.canCancel ?? isQuotationCancellableStatus(status.status));
+  let cancelError: string | undefined;
+  if (!hasMismatchedQuery && !terminalEventWins) {
+    cancelError = getQuotationCancelError(cancelMutation.error);
+  }
   const statusText = getQuotationStatusText(
     localize,
     status.status,
     status.completedChunks,
     status.totalChunks,
+    event?.stage,
+    event?.chunkIndex,
   );
   const isCanceling = cancelMutation.isLoading;
   const hasError = Boolean(cancelError);
+  const shouldShowLoadingDot =
+    showLoadingDot &&
+    !hasMismatchedQuery &&
+    isQuotationPreflightWaitingStatus(status.status) &&
+    (queryData == null || isQuotationPreflightWaitingStatus(queryData.status));
+  const isActive = isQuotationActiveStatus(status.status);
+  let StatusIcon = AlertTriangle;
+  let statusIconClass = 'text-status-error';
+  if (isActive || isCanceling) {
+    StatusIcon = LoaderCircle;
+    statusIconClass = 'animate-spin text-text-secondary';
+  } else if (status.status === 'completed') {
+    StatusIcon = CheckCircle2;
+    statusIconClass = 'text-status-success';
+  }
 
   return (
-    <div
-      className="flex min-h-5 flex-wrap items-center gap-x-1.5 gap-y-1 rounded-md border border-border-light bg-surface-secondary px-2 py-1 dark:border-border-medium dark:bg-surface-tertiary"
-      aria-label={localize('com_ui_steel_activity_quotation')}
-    >
-      <LoaderCircle
-        aria-hidden="true"
-        className={`h-3.5 w-3.5 shrink-0 ${isCanceling ? 'animate-spin text-text-secondary' : 'text-text-secondary'}`}
-      />
-      <span className="min-w-0 whitespace-normal break-words">{statusText}</span>
-      {event?.message && (
-        <span className="min-w-0 whitespace-normal break-words text-text-tertiary">
-          {event.message}
-        </span>
+    <>
+      <div
+        className="my-3 flex min-h-5 flex-wrap items-center gap-x-1.5 gap-y-1 rounded-md border border-border-light bg-surface-secondary px-2 py-1 dark:border-border-medium dark:bg-surface-tertiary"
+        aria-label={localize('com_ui_steel_activity_quotation')}
+      >
+        <StatusIcon aria-hidden="true" className={`h-3.5 w-3.5 shrink-0 ${statusIconClass}`} />
+        <span className="min-w-0 flex-1 whitespace-normal break-words">{statusText}</span>
+        {event?.message && (
+          <span className="min-w-0 whitespace-normal break-words text-text-tertiary">
+            {event.message}
+          </span>
+        )}
+        {canCancel &&
+          index !== null &&
+          status.status !== 'completed' &&
+          status.status !== 'cancelled' && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="ms-auto h-7 shrink-0 px-2 py-1"
+              disabled={isCanceling}
+              onClick={() => cancelMutation.mutate(index)}
+            >
+              {isCanceling
+                ? localize('com_ui_steel_quote_canceling')
+                : localize('com_ui_steel_quote_cancel')}
+            </Button>
+          )}
+        {hasError && (
+          <span className="min-w-0 whitespace-normal break-words text-status-error">
+            {localize('com_ui_steel_quote_cancel_failed', { error: cancelError })}
+          </span>
+        )}
+      </div>
+      {shouldShowLoadingDot && (
+        <div className="relative min-h-8 overflow-visible ps-2 pt-2">
+          <EmptyText />
+        </div>
       )}
-      {canCancel && index !== null && status.status !== 'completed' && status.status !== 'cancelled' && (
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="h-7 px-2 py-1"
-          disabled={isCanceling}
-          onClick={() => cancelMutation.mutate(index)}
-        >
-          {isCanceling
-            ? localize('com_ui_steel_quote_canceling')
-            : localize('com_ui_steel_quote_cancel')}
-        </Button>
-      )}
-      {hasError && (
-        <span className="min-w-0 whitespace-normal break-words text-status-error">
-          {localize('com_ui_steel_quote_cancel_failed', { error: cancelError })}
-        </span>
-      )}
-    </div>
+    </>
   );
 });
 
@@ -269,9 +398,36 @@ function getActivityLabel(
   localize: ReturnType<typeof useLocalize>,
 ) {
   if (event.type === 'quotation_status') {
-    return (
-      event.message ??
-      getQuotationStatusText(localize, event.status, event.completedChunks, event.totalChunks)
+    if (event.stage === 'started') {
+      return localize('com_ui_steel_quote_status_started', {
+        completedChunks: event.completedChunks,
+        totalChunks: event.totalChunks,
+      });
+    }
+
+    if (event.stage === 'chunk_started' && event.chunkIndex !== undefined) {
+      return localize('com_ui_steel_quote_status_chunk_started', {
+        chunkIndex: event.chunkIndex,
+        completedChunks: event.completedChunks,
+        totalChunks: event.totalChunks,
+      });
+    }
+
+    if (event.stage === 'chunk_saved' && event.chunkIndex !== undefined) {
+      return localize('com_ui_steel_quote_status_chunk_saved', {
+        chunkIndex: event.chunkIndex,
+        completedChunks: event.completedChunks,
+        totalChunks: event.totalChunks,
+      });
+    }
+
+    return getQuotationStatusText(
+      localize,
+      event.status,
+      event.completedChunks,
+      event.totalChunks,
+      event.stage,
+      event.chunkIndex,
     );
   }
 
@@ -382,7 +538,7 @@ function getTotalCountText(
 
 function shouldDisplayEvent(event: SteelNativeActivityEvent): boolean {
   if (event.type === 'quotation_status') {
-    return false;
+    return event.status !== 'queued';
   }
 
   if (event.type === 'delegate_ocr_status') {
@@ -455,31 +611,8 @@ const SteelActivity = memo(function SteelActivity({
 }: SteelActivityProps) {
   const localize = useLocalize();
   const chatConversationId = useContext(ChatContext)?.conversation?.conversationId;
-  const liveEvents = useRecoilValue(steelNativeActivityByMessageId(messageId));
   const [isExpanded, setIsExpanded] = useState(false);
-
-  const persistedEvents = useMemo(
-    () =>
-      (persistedActivityEvents ?? []).reduce<SteelNativeActivityEvent[]>(
-        (current, persistedEvent) => {
-          const normalized = normalizePersistedSteelActivityEvent(persistedEvent);
-          return normalized ? appendSteelNativeActivityEvent(current, normalized) : current;
-        },
-        [],
-      ),
-    [persistedActivityEvents],
-  );
-
-  const allActivityEvents = useMemo(() => {
-    const allEvents =
-      persistedEvents.length === 0
-        ? liveEvents
-        : liveEvents.reduce<SteelNativeActivityEvent[]>(
-            appendSteelNativeActivityEvent,
-            persistedEvents,
-          );
-    return allEvents;
-  }, [liveEvents, persistedEvents]);
+  const allActivityEvents = useSteelActivityEvents(messageId, persistedActivityEvents);
 
   const displayEvents = useMemo(
     () => allActivityEvents.filter(shouldDisplayEvent),
@@ -494,6 +627,11 @@ const SteelActivity = memo(function SteelActivity({
             event.type === 'quotation_status',
         ),
     [allActivityEvents],
+  );
+  const showQuotationLoadingDot = Boolean(
+    latestQuotationEvent &&
+      isQuotationPreflightWaitingStatus(latestQuotationEvent.status) &&
+      latestQuotationEvent.stage !== 'main_streaming',
   );
   const quotationConversationId =
     conversationId ?? latestQuotationEvent?.conversationId ?? chatConversationId;
@@ -524,6 +662,7 @@ const SteelActivity = memo(function SteelActivity({
           conversationId={quotationConversationId}
           event={latestQuotationEvent}
           localize={localize}
+          showLoadingDot={showQuotationLoadingDot}
         />
       )}
       {isCollapsible && (
@@ -534,7 +673,7 @@ const SteelActivity = memo(function SteelActivity({
           aria-expanded={isExpanded}
           aria-label={eventCountText}
         >
-          <CheckCircle2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-green-600" />
+          <CheckCircle2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-status-success" />
           <span className="font-medium">{eventCountText}</span>
           <ChevronDown
             className={[
@@ -547,7 +686,7 @@ const SteelActivity = memo(function SteelActivity({
       )}
       {totalCountText && (
         <div className="flex min-h-5 items-center gap-1.5 rounded-md border border-border-light bg-surface-secondary px-2 py-1 font-medium dark:border-border-medium dark:bg-surface-tertiary">
-          <CheckCircle2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-green-600" />
+          <CheckCircle2 aria-hidden="true" className="h-3.5 w-3.5 shrink-0 text-status-success" />
           <span className="min-w-0 whitespace-normal break-words">{totalCountText}</span>
         </div>
       )}
@@ -567,6 +706,7 @@ const SteelActivity = memo(function SteelActivity({
         const eventIndex = firstVisibleIndex + index;
         const savedText = getSavedCountText(event, localize);
         const errorMessage = getErrorMessage(event);
+        const quotationNote = event.type === 'quotation_status' ? event.message : undefined;
         const hasError = Boolean(errorMessage);
         const Icon = hasError ? AlertTriangle : CheckCircle2;
         return (
@@ -576,11 +716,16 @@ const SteelActivity = memo(function SteelActivity({
           >
             <Icon
               aria-hidden="true"
-              className={`h-3.5 w-3.5 shrink-0 ${hasError ? 'text-red-600' : 'text-green-600'}`}
+              className={`h-3.5 w-3.5 shrink-0 ${hasError ? 'text-red-600' : 'text-status-success'}`}
             />
             <span className="min-w-0 whitespace-normal break-words">
               {getActivityLabel(event, localize)}
             </span>
+            {quotationNote && (
+              <span className="min-w-0 whitespace-normal break-words text-text-tertiary">
+                {quotationNote}
+              </span>
+            )}
             {errorMessage && (
               <span className="min-w-0 whitespace-normal break-words text-red-600">
                 {errorMessage}

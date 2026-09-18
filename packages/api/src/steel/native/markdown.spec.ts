@@ -27,6 +27,19 @@ describe('Steel native Markdown extraction', () => {
     ).toBe('final text');
   });
 
+  it('checks both fields for the requested saved Markdown section without duplicating it', () => {
+    const order = '## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| 文字訂單 | 1 |';
+    expect(extractSteelNativeMarkdownText({
+      text: '請確認訂單。', content: [{ type: 'text', text: order }], sectionTitle: 'ocr_result',
+    })).toBe(order);
+    expect(extractSteelNativeMarkdownText({
+      text: order, content: [{ type: 'text', text: order }], sectionTitle: 'ocr_result',
+    })).toBe(order);
+    expect(extractSteelNativeMarkdownText({
+      text: order, content: [{ type: 'text', text: '請確認訂單。' }], sectionTitle: 'ocr_result',
+    })).toBe(order);
+  });
+
   it('extracts Open Responses output text parts', () => {
     const response = {
       id: 'resp_1',

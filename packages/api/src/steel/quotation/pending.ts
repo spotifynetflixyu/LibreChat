@@ -88,7 +88,7 @@ export async function processQuotationPendingMessages(input: {
         });
         const result = await invokeQuotationModel({
           role: 'preparation',
-          prompt: `${rules.instructionPrefix}\n\n${quotationPreparationInstruction(previous?.currentOcrResultMarkdown, quotationState?.currentCustomer?.customerMarkdown, hasSystemOrder)}\n\nThe previous quotation is now terminal. Process the queued message below exactly once. For order changes, output the complete revised ocr_result and ask the user to confirm the revised order. Do not repeatedly ask whether to quote an existing system_order. An explicit default-B choice may emit customer_data. Do not output quote_signal in this response.`,
+          prompt: `${rules.instructionPrefix}\n\n${quotationPreparationInstruction(previous?.currentOcrResultMarkdown, quotationState?.currentCustomer?.customerMarkdown, hasSystemOrder)}\n\nThe previous quotation is now terminal. Process the queued message below exactly once. For order changes, output the complete revised ocr_result and ask the user to confirm the revised order. When hasSystemOrder is true, do not repeatedly ask whether to quote the current completed system_order; historical results do not count. An explicit default-B choice may emit customer_data. Do not output quote_signal in this response.`,
           input: preparedInput?.input ?? claim.sourceMessageText ?? '',
           modelOptions: input.modelOptions,
           signal: controller.signal,

@@ -91,7 +91,7 @@ function mergeChunkMarkdownTables(
     }),
   );
 
-  return renderMarkdownTable(headers, rows);
+  return `## ocr_result_chunk\n\n${renderMarkdownTable(headers, rows)}`;
 }
 
 function renderMarkdownTable(headers: readonly string[], rows: readonly string[][]): string {

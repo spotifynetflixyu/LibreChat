@@ -184,6 +184,7 @@ export interface SteelQuotationPendingMessageInput {
   sourceMessageText?: string;
   sourceMessageFiles?: readonly SteelQuotationPendingMessageFile[];
   targetMessageId?: string;
+  preserveExistingTarget?: boolean;
   now?: Date;
 }
 
@@ -551,11 +552,28 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
 
   async function hasSystemOrder(scope: SteelQuotationScope): Promise<boolean> {
     validateScope(scope);
-    return (await Artifact.exists({
-      ...stateFilter(scope),
-      kind: 'final',
-      operationId: 'final',
-    })) !== null;
+    const matches = await State.aggregate<{ exists: boolean }>([
+      { $match: { ...stateFilter(scope), 'activeRun.status': 'completed' } },
+      { $limit: 1 },
+      { $lookup: {
+        from: Artifact.collection.name,
+        let: { runId: '$activeRun.runId' },
+        pipeline: [
+          { $match: {
+            ...stateFilter(scope),
+            kind: 'final',
+            operationId: 'final',
+            $expr: { $eq: ['$runId', '$$runId'] },
+          } },
+          { $limit: 1 },
+          { $project: { _id: 1 } },
+        ],
+        as: 'currentFinal',
+      } },
+      { $match: { 'currentFinal.0': { $exists: true } } },
+      { $project: { _id: 0, exists: { $literal: true } } },
+    ]);
+    return matches.length > 0;
   }
 
   async function setOrder(input: SteelQuotationOrderInput): Promise<ISteelQuotationState> {
@@ -877,7 +895,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
   }
 
   function assertPendingMessageIdentity(
-    input: Pick<SteelQuotationPendingMessageInput, 'sourceMessageText' | 'sourceMessageFiles' | 'targetMessageId'>,
+    input: Pick<SteelQuotationPendingMessageInput, 'sourceMessageText' | 'sourceMessageFiles' | 'targetMessageId' | 'preserveExistingTarget'>,
     receipt: Pick<SteelQuotationPendingCompletionReceipt, 'sourceMessageText' | 'sourceMessageFiles' | 'targetMessageId' | 'completedTargetMessageId'>,
   ): void {
     if (
@@ -894,6 +912,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
     }
     const completedTargetMessageId = receipt.completedTargetMessageId ?? receipt.targetMessageId;
     if (
+      !input.preserveExistingTarget &&
       input.targetMessageId !== undefined &&
       completedTargetMessageId !== undefined &&
       input.targetMessageId !== completedTargetMessageId
@@ -1818,6 +1837,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
         (candidate) => candidate.sourceMessageId === input.sourceMessageId,
       );
       if (racedMessage) {
+        assertPendingMessageIdentity(input, racedMessage);
         return racedMessage;
       }
       throw new Error('pending message changed concurrently; retry the operation');

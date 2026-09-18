@@ -371,6 +371,24 @@ function getTargetMessageIds(
 }
 
 function stableEventKey(event: SteelNativeActivityEvent): string {
+  if (event.type === 'quotation_status') {
+    return JSON.stringify({
+      type: event.type,
+      source: event.source,
+      conversationId: event.conversationId,
+      index: event.index,
+      runId: event.runId,
+      quotationStage: event.stage,
+      quotationStatus: event.status,
+      completedChunks: event.completedChunks,
+      totalChunks: event.totalChunks,
+      chunkIndex: event.chunkIndex,
+      attempt: event.attempt,
+      toolName: event.toolName,
+      providerToolCallId: event.providerToolCallId,
+    });
+  }
+
   return JSON.stringify({
     type: event.type,
     source: event.source,

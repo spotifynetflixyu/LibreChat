@@ -93,7 +93,7 @@ it('queues a correction and resumes before reading or updating the order', async
   mockRead.mockResolvedValue({ activeRun: { runId: 'r1', status: 'interrupted', triggerMessageId: 'old' }, pendingMessages: [] });
   const result = await prepareQuotationTurn({ scope, messageId: 'new', responseId: 'a2', text: '數量改成 3' });
   expect(result.resume).toBe(true);
-  expect(mockEnqueue).toHaveBeenCalledWith(expect.objectContaining({ sourceMessageId: 'new', sourceMessageText: '數量改成 3' }));
+  expect(mockEnqueue).toHaveBeenCalledWith(expect.objectContaining({ sourceMessageId: 'new', sourceMessageText: '數量改成 3', targetMessageId: 'a2', preserveExistingTarget: true }));
   expect(mockReadOcr).not.toHaveBeenCalled();
 });
 it('recovers completed but unpublished quotations before a new turn', async () => {

@@ -197,6 +197,7 @@ jest.mock('@librechat/api', () => ({
   },
   deleteAgentCheckpoint: (...args) => mockDeleteAgentCheckpoint(...args),
   createSteelOcrStateService: (...args) => mockCreateSteelOcrStateService(...args),
+  extractSteelNativeMarkdownText: jest.requireActual('@librechat/api').extractSteelNativeMarkdownText,
   finalizeOcrResponse: (...args) => mockFinalizeOcrResponse(...args),
 }));
 
@@ -3454,7 +3455,7 @@ describe('ResumableAgentController resume metadata', () => {
     expect(mockGenerationJobManager.steering.closeAndDrain).not.toHaveBeenCalled();
   });
 
-  it('reconciles completed OCR response before saving message and publishing FINAL', async () => {
+  it.each(['text', 'empty-text-content', 'missing-text-content', 'split-content', 'summary-text-content'])('reconciles completed OCR response (%s) before saving message and publishing FINAL', async (representation) => {
     const userMessage = {
       messageId: 'ocr-user-msg',
       parentMessageId: 'parent-msg',
@@ -3497,8 +3498,10 @@ describe('ResumableAgentController resume metadata', () => {
           messageId: 'ocr-response-msg',
           parentMessageId: userMessage.messageId,
           conversationId: 'conversation-123',
-          text: rawResponseText,
-          content: [{ type: 'text', text: rawResponseText }],
+          ...(representation === 'missing-text-content' ? {} : { text: representation === 'text' ? rawResponseText : representation === 'summary-text-content' ? '訂單已整理，請確認。' : '' }),
+          content: representation === 'split-content'
+            ? [{ type: 'text', text: rawResponseText.slice(0, 20) }, { type: 'text', text: rawResponseText.slice(20) }]
+            : [{ type: 'text', text: rawResponseText }],
         };
         expect(await options.beforeResponsePersistence(response)).toBe(true);
         response.databasePromise = Promise.resolve({
@@ -3517,7 +3520,7 @@ describe('ResumableAgentController resume metadata', () => {
         endpointOption: { endpoint: 'agents', modelOptions: { model: 'gpt-4.1' } },
       },
       config: {},
-      steelNativeContext: { ocrTurnActive: true },
+      steelNativeContext: { ocrTurnActive: representation === 'text' },
     };
 
     await AgentController(
@@ -3543,7 +3546,7 @@ describe('ResumableAgentController resume metadata', () => {
       previousOcrMarkdown: previousOcrMarkdown,
       canonicalMapping: [{ sourceCode: 'F1', sourceFilename: 'BH.pdf' }],
       delegateSummary: false,
-      agentKind: 'regular_ocr',
+      agentKind: representation === 'text' ? 'regular_ocr' : 'other',
     });
 
     const savedResponse = mockSaveMessage.mock.calls.find(
@@ -3553,7 +3556,9 @@ describe('ResumableAgentController resume metadata', () => {
       expect.objectContaining({
         messageId: 'ocr-response-msg',
         text: correctedResponseText,
-        content: [{ type: 'text', text: correctedResponseText }],
+        content: representation === 'split-content'
+          ? [{ type: 'text', text: correctedResponseText }, { type: 'text', text: '' }]
+          : [{ type: 'text', text: correctedResponseText }],
       }),
     );
     const finalEvent = mockGenerationJobManager.publishTerminalClaim.mock.calls.find(
@@ -3563,7 +3568,9 @@ describe('ResumableAgentController resume metadata', () => {
       expect.objectContaining({
         messageId: 'ocr-response-msg',
         text: correctedResponseText,
-        content: [{ type: 'text', text: correctedResponseText }],
+        content: representation === 'split-content'
+          ? [{ type: 'text', text: correctedResponseText }, { type: 'text', text: '' }]
+          : [{ type: 'text', text: correctedResponseText }],
       }),
     );
     expect(mockOcrStateService.upsertCurrentOcrResult).toHaveBeenCalledWith({

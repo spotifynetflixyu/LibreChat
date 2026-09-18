@@ -116,6 +116,37 @@ describe('useSteelEventHandler', () => {
     ).toEqual(expect.objectContaining({ type: 'quotation_status', status: 'running' }));
   });
 
+  it('deduplicates restored and live chunk saves while preserving retry attempts', () => {
+    const restored: SteelNativeActivityEvent = {
+      type: 'quotation_status',
+      source: 'quotation_preflight',
+      conversationId: 'conversation-1',
+      requestId: 'restored-request',
+      messageId: 'assistant-restored',
+      index: 3,
+      runId: 'quotation-run-3',
+      stage: 'chunk_saved',
+      status: 'running',
+      completedChunks: 1,
+      totalChunks: 2,
+      chunkIndex: 1,
+      attempt: 'attempt-1',
+      message: 'Restored from saved quotation checkpoints',
+    };
+    const live = {
+      ...restored,
+      requestId: 'live-request',
+      messageId: 'assistant-live',
+      message: undefined,
+    };
+    const retry = { ...live, attempt: 'attempt-2' };
+
+    expect([restored, live, retry].reduce(appendSteelNativeActivityEvent, [])).toEqual([
+      restored,
+      retry,
+    ]);
+  });
+
   it('does not let a delayed active event regress a terminal quotation status', () => {
     const terminal: SteelNativeActivityEvent = {
       type: 'quotation_status',

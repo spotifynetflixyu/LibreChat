@@ -11,6 +11,7 @@ import SteelActivity from '../SteelActivity';
 type LocalizeOptions = {
   count?: number;
   counts?: string;
+  chunkIndex?: number;
   fileKey?: string;
   ranges?: string;
   source?: string;
@@ -76,8 +77,35 @@ jest.mock('~/hooks/useLocalize', () => ({
     if (key === 'com_ui_steel_quote_status_running') {
       return `Quotation in progress (${options?.completedChunks ?? 0}/${options?.totalChunks ?? 0} chunks)`;
     }
+    if (key === 'com_ui_steel_quote_status_chunk_running') {
+      return `Quotation child chunk ${options?.chunkIndex ?? 0} in progress (${options?.completedChunks ?? 0}/${options?.totalChunks ?? 0} chunks)`;
+    }
+    if (key === 'com_ui_steel_quote_status_queued') {
+      return 'Quotation queued';
+    }
+    if (key === 'com_ui_steel_quote_status_started') {
+      return `Quotation started (${options?.completedChunks ?? 0}/${options?.totalChunks ?? 0} chunks)`;
+    }
+    if (key === 'com_ui_steel_quote_status_chunk_started') {
+      return `Quotation chunk ${options?.chunkIndex ?? 0} started (${options?.completedChunks ?? 0}/${options?.totalChunks ?? 0} chunks)`;
+    }
+    if (key === 'com_ui_steel_quote_status_chunk_saved') {
+      return `Quotation chunk ${options?.chunkIndex ?? 0} saved (${options?.completedChunks ?? 0}/${options?.totalChunks ?? 0} chunks)`;
+    }
+    if (key === 'com_ui_steel_quote_status_main_consolidating') {
+      return `Quotation main agent consolidating (${options?.completedChunks ?? 0}/${options?.totalChunks ?? 0} chunks)`;
+    }
+    if (key === 'com_ui_steel_quote_status_main_responding') {
+      return `Quotation main agent responding (${options?.completedChunks ?? 0}/${options?.totalChunks ?? 0} chunks)`;
+    }
+    if (key === 'com_ui_steel_quote_status_aggregating') {
+      return `Aggregating quotation (${options?.completedChunks ?? 0}/${options?.totalChunks ?? 0} chunks)`;
+    }
+    if (key === 'com_ui_steel_quote_status_finalizing') {
+      return `Finalizing quotation (${options?.completedChunks ?? 0}/${options?.totalChunks ?? 0} chunks)`;
+    }
     if (key === 'com_ui_steel_quote_status_completed') {
-      return 'Quotation completed';
+      return `Quotation completed (${options?.completedChunks ?? 0}/${options?.totalChunks ?? 0} chunks)`;
     }
     if (key === 'com_ui_steel_activity_source_count') {
       return `${options?.source ?? ''}: ${options?.count ?? 0}`;
@@ -167,7 +195,7 @@ describe('SteelActivity', () => {
       mutate,
     } as unknown as ReturnType<typeof useCancelSteelQuotationMutation>);
 
-    render(
+    const { container } = render(
       <RecoilRoot
         initializeState={({ set }) => {
           set(steelNativeActivityByMessageId('assistant-quotation'), [quotationStatusEvent]);
@@ -177,8 +205,10 @@ describe('SteelActivity', () => {
       </RecoilRoot>,
     );
 
-    expect(screen.getByText('Quotation in progress (1/3 chunks)')).toBeInTheDocument();
+    expect(screen.getAllByText('Quotation in progress (1/3 chunks)')).toHaveLength(2);
     const cancel = screen.getByRole('button', { name: 'Cancel quotation' });
+    expect(cancel).toHaveClass('ms-auto', 'shrink-0');
+    expect(container.querySelector('.my-3 .animate-spin')).toBeInTheDocument();
     fireEvent.click(cancel);
     expect(mutate).toHaveBeenCalledWith(4);
   });
@@ -241,7 +271,7 @@ describe('SteelActivity', () => {
       },
     } as ReturnType<typeof useGetSteelQuotationStatusQuery>);
 
-    render(
+    const { container } = render(
       <RecoilRoot
         initializeState={({ set }) => {
           set(steelNativeActivityByMessageId('assistant-quotation-completed'), [
@@ -253,8 +283,403 @@ describe('SteelActivity', () => {
       </RecoilRoot>,
     );
 
-    expect(screen.getByText('Quotation completed')).toBeInTheDocument();
+    expect(screen.getByText('Quotation completed (3/3 chunks)')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Cancel quotation' })).not.toBeInTheDocument();
+    expect(container.querySelector('.my-3 .animate-spin')).not.toBeInTheDocument();
+    expect(container.querySelector('.my-3 .text-status-success')).toBeInTheDocument();
+  });
+
+  it('keeps historical completion when the conversation query belongs to a newer run', () => {
+    mockUseGetSteelQuotationStatusQuery.mockReturnValue({
+      data: {
+        conversationId: 'conversation-1',
+        index: 4,
+        runId: 'quotation-run-2',
+        status: 'running',
+        completedChunks: 1,
+        totalChunks: 2,
+        canCancel: true,
+      },
+    } as ReturnType<typeof useGetSteelQuotationStatusQuery>);
+
+    render(
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(steelNativeActivityByMessageId('assistant-quotation-old'), [
+            {
+              ...quotationStatusEvent,
+              messageId: 'assistant-quotation-old',
+              runId: 'quotation-run-1',
+              status: 'completed' as const,
+              completedChunks: 2,
+              totalChunks: 2,
+            },
+          ]);
+        }}
+      >
+        <SteelActivity messageId="assistant-quotation-old" isCreatedByUser={false} />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getAllByText('Quotation completed (2/2 chunks)')).toHaveLength(2);
+    expect(screen.queryByRole('button', { name: 'Cancel quotation' })).not.toBeInTheDocument();
+  });
+
+  it('shows a fresh queued quotation only in the progress summary', () => {
+    render(
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(steelNativeActivityByMessageId('assistant-quotation-queued'), [
+            {
+              ...quotationStatusEvent,
+              messageId: 'assistant-quotation-queued',
+              runId: 'quotation-run-queued',
+              status: 'queued' as const,
+              completedChunks: 0,
+              totalChunks: 2,
+            },
+          ]);
+        }}
+      >
+        <SteelActivity messageId="assistant-quotation-queued" isCreatedByUser={false} />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getAllByText('Quotation queued')).toHaveLength(1);
+    expect(screen.queryByRole('button', { name: '1 events' })).not.toBeInTheDocument();
+  });
+
+  it('uses chunk stage labels with global chunk and completion counts', () => {
+    render(
+      <RecoilRoot>
+        <SteelActivity
+          messageId="assistant-quotation-stages"
+          isCreatedByUser={false}
+          persistedActivityEvents={[
+            {
+              ...quotationStatusEvent,
+              messageId: 'assistant-quotation-stages',
+              runId: 'quotation-run-stages',
+              stage: 'chunk',
+              status: 'running' as const,
+              chunkIndex: 1,
+              completedChunks: 0,
+              totalChunks: 2,
+            },
+            {
+              ...quotationStatusEvent,
+              messageId: 'assistant-quotation-stages',
+              runId: 'quotation-run-stages',
+              stage: 'chunk_started',
+              status: 'running' as const,
+              chunkIndex: 1,
+              completedChunks: 1,
+              totalChunks: 2,
+            },
+            {
+              ...quotationStatusEvent,
+              messageId: 'assistant-quotation-stages',
+              runId: 'quotation-run-stages',
+              stage: 'chunk_saved',
+              status: 'running' as const,
+              chunkIndex: 2,
+              completedChunks: 2,
+              totalChunks: 2,
+            },
+          ]}
+        />
+      </RecoilRoot>,
+    );
+
+    expect(
+      screen.getByText('Quotation child chunk 1 in progress (0/2 chunks)'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Quotation chunk 1 started (1/2 chunks)')).toBeInTheDocument();
+    expect(screen.getAllByText('Quotation chunk 2 saved (2/2 chunks)')).toHaveLength(2);
+  });
+
+  it('labels quotation main phases with global completion counts', () => {
+    render(
+      <RecoilRoot>
+        <SteelActivity
+          messageId="assistant-quotation-main"
+          isCreatedByUser={false}
+          persistedActivityEvents={[
+            {
+              ...quotationStatusEvent,
+              messageId: 'assistant-quotation-main',
+              runId: 'quotation-run-main',
+              stage: 'aggregating',
+              status: 'aggregating' as const,
+              completedChunks: 2,
+              totalChunks: 2,
+            },
+            {
+              ...quotationStatusEvent,
+              messageId: 'assistant-quotation-main',
+              runId: 'quotation-run-main',
+              stage: 'main_streaming',
+              status: 'aggregating' as const,
+              completedChunks: 2,
+              totalChunks: 2,
+            },
+          ]}
+        />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByText('Quotation main agent consolidating (2/2 chunks)')).toBeInTheDocument();
+    expect(screen.getAllByText('Quotation main agent responding (2/2 chunks)')).toHaveLength(2);
+  });
+
+  it('keeps a terminal polled status over a stale main streaming event', () => {
+    mockUseGetSteelQuotationStatusQuery.mockReturnValue({
+      data: {
+        conversationId: 'conversation-1',
+        index: 4,
+        runId: 'quotation-run-main-terminal',
+        status: 'completed',
+        completedChunks: 2,
+        totalChunks: 2,
+        canCancel: false,
+      },
+    } as ReturnType<typeof useGetSteelQuotationStatusQuery>);
+
+    const { container } = render(
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(steelNativeActivityByMessageId('assistant-main-terminal'), [
+            {
+              ...quotationStatusEvent,
+              messageId: 'assistant-main-terminal',
+              runId: 'quotation-run-main-terminal',
+              stage: 'main_streaming',
+              status: 'aggregating' as const,
+              completedChunks: 2,
+              totalChunks: 2,
+            },
+          ]);
+        }}
+      >
+        <SteelActivity messageId="assistant-main-terminal" isCreatedByUser={false} />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByText('Quotation completed (2/2 chunks)')).toBeInTheDocument();
+    expect(container.querySelector('.my-3 .animate-spin')).not.toBeInTheDocument();
+  });
+
+  it('keeps a same-run terminal event over stale active query data', () => {
+    mockUseGetSteelQuotationStatusQuery.mockReturnValue({
+      data: {
+        conversationId: 'conversation-1',
+        index: 4,
+        runId: 'quotation-run-event-terminal',
+        status: 'aggregating',
+        completedChunks: 2,
+        totalChunks: 2,
+        canCancel: true,
+      },
+    } as ReturnType<typeof useGetSteelQuotationStatusQuery>);
+
+    const { container } = render(
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(steelNativeActivityByMessageId('assistant-event-terminal'), [
+            {
+              ...quotationStatusEvent,
+              messageId: 'assistant-event-terminal',
+              runId: 'quotation-run-event-terminal',
+              stage: 'completed',
+              status: 'completed' as const,
+              completedChunks: 2,
+              totalChunks: 2,
+            },
+          ]);
+        }}
+      >
+        <SteelActivity messageId="assistant-event-terminal" isCreatedByUser={false} />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getAllByText('Quotation completed (2/2 chunks)')).toHaveLength(2);
+    expect(screen.queryByRole('button', { name: 'Cancel quotation' })).not.toBeInTheDocument();
+    expect(container.querySelector('.my-3 .animate-spin')).not.toBeInTheDocument();
+  });
+
+  it('shows the loading dot only for live preflight before main streaming', () => {
+    const live = render(
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(steelNativeActivityByMessageId('assistant-live-preflight'), [
+            {
+              ...quotationStatusEvent,
+              messageId: 'assistant-live-preflight',
+              runId: 'quotation-run-live',
+              stage: 'chunk_started',
+              status: 'running' as const,
+              chunkIndex: 2,
+              completedChunks: 1,
+              totalChunks: 2,
+            },
+          ]);
+        }}
+      >
+        <SteelActivity messageId="assistant-live-preflight" isCreatedByUser={false} />
+      </RecoilRoot>,
+    );
+    expect(live.container.querySelector('.result-thinking')).toBeInTheDocument();
+    live.unmount();
+
+    const restored = render(
+      <RecoilRoot>
+        <SteelActivity
+          messageId="assistant-restored-preflight"
+          isCreatedByUser={false}
+          persistedActivityEvents={[
+            {
+              ...quotationStatusEvent,
+              messageId: 'assistant-restored-preflight',
+              runId: 'quotation-run-live',
+              stage: 'chunk_started',
+              status: 'running' as const,
+              chunkIndex: 2,
+              completedChunks: 1,
+              totalChunks: 2,
+            },
+          ]}
+        />
+      </RecoilRoot>,
+    );
+    expect(restored.container.querySelector('.result-thinking')).toBeInTheDocument();
+    restored.unmount();
+
+    const mainStreaming = render(
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(steelNativeActivityByMessageId('assistant-main-streaming'), [
+            {
+              ...quotationStatusEvent,
+              messageId: 'assistant-main-streaming',
+              runId: 'quotation-run-live',
+              stage: 'main_streaming',
+              status: 'aggregating' as const,
+              completedChunks: 2,
+              totalChunks: 2,
+            },
+          ]);
+        }}
+      >
+        <SteelActivity messageId="assistant-main-streaming" isCreatedByUser={false} />
+      </RecoilRoot>,
+    );
+    expect(mainStreaming.container.querySelector('.result-thinking')).not.toBeInTheDocument();
+    mainStreaming.unmount();
+
+    const finalizing = render(
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(steelNativeActivityByMessageId('assistant-finalizing'), [
+            {
+              ...quotationStatusEvent,
+              messageId: 'assistant-finalizing',
+              runId: 'quotation-run-live',
+              stage: 'finalizing',
+              status: 'finalizing' as const,
+              completedChunks: 2,
+              totalChunks: 2,
+            },
+          ]);
+        }}
+      >
+        <SteelActivity messageId="assistant-finalizing" isCreatedByUser={false} />
+      </RecoilRoot>,
+    );
+    expect(finalizing.container.querySelector('.result-thinking')).not.toBeInTheDocument();
+    finalizing.unmount();
+
+    const interrupted = render(
+      <RecoilRoot>
+        <SteelActivity
+          messageId="assistant-interrupted"
+          isCreatedByUser={false}
+          persistedActivityEvents={[
+            {
+              ...quotationStatusEvent,
+              messageId: 'assistant-interrupted',
+              runId: 'quotation-run-interrupted',
+              stage: 'interrupted',
+              status: 'interrupted' as const,
+              completedChunks: 1,
+              totalChunks: 2,
+            },
+          ]}
+        />
+      </RecoilRoot>,
+    );
+    expect(interrupted.container.querySelector('.result-thinking')).not.toBeInTheDocument();
+  });
+
+  it('replays persisted two-chunk quotation checkpoints after a reload-equivalent remount', () => {
+    const restoredEvents = [
+      {
+        ...quotationStatusEvent,
+        messageId: 'assistant-restored-quotation',
+        runId: 'quotation-run-restored',
+        status: 'running' as const,
+        completedChunks: 1,
+        totalChunks: 2,
+        message: 'Restored from saved quotation checkpoints',
+      },
+      {
+        ...quotationStatusEvent,
+        messageId: 'assistant-restored-quotation',
+        runId: 'quotation-run-restored',
+        status: 'running' as const,
+        completedChunks: 2,
+        totalChunks: 2,
+        message: 'Restored from saved quotation checkpoints',
+      },
+      {
+        ...quotationStatusEvent,
+        messageId: 'assistant-restored-quotation',
+        runId: 'quotation-run-restored',
+        status: 'completed' as const,
+        completedChunks: 2,
+        totalChunks: 2,
+        message: 'Restored from saved quotation checkpoints',
+      },
+    ];
+
+    const { unmount } = render(
+      <RecoilRoot>
+        <SteelActivity
+          messageId="assistant-restored-quotation"
+          isCreatedByUser={false}
+          persistedActivityEvents={restoredEvents}
+        />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByText('Quotation in progress (1/2 chunks)')).toBeInTheDocument();
+    expect(screen.getByText('Quotation in progress (2/2 chunks)')).toBeInTheDocument();
+    expect(screen.getAllByText('Quotation completed (2/2 chunks)')).toHaveLength(2);
+    expect(screen.getAllByText('Restored from saved quotation checkpoints')).toHaveLength(4);
+
+    unmount();
+
+    render(
+      <RecoilRoot>
+        <SteelActivity
+          messageId="assistant-restored-quotation-reloaded"
+          isCreatedByUser={false}
+          persistedActivityEvents={restoredEvents}
+        />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getAllByText('Quotation completed (2/2 chunks)')).toHaveLength(2);
+    expect(screen.getAllByText('Restored from saved quotation checkpoints')).toHaveLength(4);
   });
 
   it('renders loaded saved OCR chunk events live and from persisted refresh state', () => {

@@ -4,5 +4,6 @@ export * from './protocol';
 export * from './model';
 export * from './routes';
 export * from './runner';
+export * from './history';
 
 export * from './pending';

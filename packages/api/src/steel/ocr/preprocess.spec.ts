@@ -25,7 +25,7 @@ function emptyState(input: {
 }
 
 function tableMarkdown(value: string): string {
-  return `| result |\n| --- |\n| ${value} |`;
+  return `## ocr_result_chunk\n\n| result |\n| --- |\n| ${value} |`;
 }
 
 function adaptiveSplitEligibleError(message: string) {
@@ -107,7 +107,7 @@ function organizerRetryFixture(input: { organizer: OcrOrganizer }) {
 }
 
 describe('OCR preprocessing orchestrator', () => {
-  it('pairs each chunk raw text with its own signed artifact and stores tables only', async () => {
+  it('pairs each chunk raw text with its own signed artifact and stores a fixed heading with tables', async () => {
     const chunks = buildPdfPageChunks({ pageCount: 100 });
     const baseState = emptyState({
       ocrFileKey: 'file:paired',
@@ -221,6 +221,10 @@ describe('OCR preprocessing orchestrator', () => {
         ],
       ]),
     );
+    for (const [saved] of memory.captureOcrPreprocessingChunkMarkdown.mock.calls) {
+      expect(saved.content.startsWith('## ocr_result_chunk\n\n')).toBe(true);
+      expect(saved.content.match(/^## /gmu)).toHaveLength(1);
+    }
   });
 
   it('uses the refreshed artifact from the successful PaddleOCR attempt for persistence and Organizer Vision', async () => {
@@ -948,6 +952,8 @@ describe('OCR preprocessing orchestrator', () => {
     ).resolves.toEqual({
       status: 'ready',
       markdown: [
+        '## ocr_result_chunk',
+        '',
         '| 品名 | 數量 | 材質 |',
         '| --- | --- | --- |',
         '| A | 1 |  |',
@@ -1667,7 +1673,7 @@ describe('OCR preprocessing orchestrator', () => {
       chunks: [{ chunkIndex: 1, markdown: source }],
     });
 
-    expect(merged).toBe(source);
+    expect(merged).toBe(`## ocr_result_chunk\n\n${source}`);
     expect(parseMarkdownTables(merged)[0]?.rows).toEqual([['A|B', 'C:\\path']]);
     expect(
       mergeChunkMarkdownForFileKey({
@@ -1675,7 +1681,7 @@ describe('OCR preprocessing orchestrator', () => {
         ocrRuleVersion: 'rules-v2',
         chunks: [{ chunkIndex: 1, markdown: merged }],
       }),
-    ).toBe(source);
+    ).toBe(merged);
   });
 
   it('orders merged Markdown by page range rather than historical chunk index', () => {
@@ -1922,7 +1928,7 @@ describe('OCR preprocessing orchestrator', () => {
           }),
         ],
         partial: {
-          markdown: '| item | value |\n| --- | --- |\n| first | 1 |\n| third | 3 |',
+          markdown: '## ocr_result_chunk\n\n| item | value |\n| --- | --- |\n| first | 1 |\n| third | 3 |',
           pageRanges: [
             { pageStart: 1, pageEnd: 25 },
             { pageStart: 51, pageEnd: 70 },
@@ -2571,7 +2577,7 @@ describe('OCR preprocessing orchestrator', () => {
       expect.objectContaining({
         status: 'failed',
         partial: {
-          markdown: '| item | value |\n| --- | --- |\n| cached | 1 |',
+          markdown: '## ocr_result_chunk\n\n| item | value |\n| --- | --- |\n| cached | 1 |',
           pageRanges: [{ pageStart: 1, pageEnd: 1 }],
           chunkCount: 1,
         },

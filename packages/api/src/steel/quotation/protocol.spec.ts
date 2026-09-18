@@ -90,11 +90,18 @@ describe('quotation protocol', () => {
   });
 
   it('groups categories into chunks while keeping source identity in backend state', () => {
-    const rows = Array.from({ length: 31 }, (_, index) => ['F1', `P${index + 1}`, index === 30 ? 'H型鋼' : '鐵板', '1', '6', '100', '200']);
+    const rows = Array.from({ length: 62 }, (_, index) => ['F1', `P${index + 1}`, index % 2 === 0 ? '鐵板' : 'H型鋼', '1', '6', '100', '200']);
     const chunks = buildQuotationChunks(ocr(rows));
-    expect(chunks.map((chunk) => chunk.sourceRows.length)).toEqual([30, 1]);
+    expect(chunks.map((chunk) => chunk.sourceRows.length)).toEqual([30, 1, 30, 1]);
+    expect(chunks.map((chunk) => chunk.category)).toEqual(['鐵板', '鐵板', 'H型鋼', 'H型鋼']);
+    expect(chunks.map((chunk) => chunk.chunkIndex)).toEqual([1, 2, 3, 4]);
+    expect(chunks.every((chunk) => chunk.chunkCount === 4)).toBe(true);
+    expect(chunks.flatMap((chunk) => chunk.sourceRows.map((row) => row.cells[1]))).toEqual([
+      ...Array.from({ length: 31 }, (_, index) => `P${index * 2 + 1}`),
+      ...Array.from({ length: 31 }, (_, index) => `P${index * 2 + 2}`),
+    ]);
     expect(chunks[0]!.sourceRows[0]!.sourceRowId).toBe('source-row-1');
-    expect(chunks[1]!.sourceRows[0]!.sourceRowId).toBe('source-row-31');
+    expect(chunks[1]!.sourceRows[0]!.sourceRowId).toBe('source-row-61');
     expect(chunks.every((chunk) => !chunk.markdown.includes('source-row-'))).toBe(true);
   });
 
@@ -114,6 +121,10 @@ describe('quotation protocol', () => {
     expect(validateQuotationChildResult({ ...child, response: `${child.response}\n\n${reviews}` }).markdown)
       .toBe(`${child.response}\n\n${reviews}`);
     expect(validateQuotationChildResult(child).markdown).not.toContain('manual_reviews_chunk');
+    expect(validateQuotationChildResult({
+      ...child,
+      response: `${child.response}\n\n${reviews.replace('## manual_reviews_chunk', '## manual_reviews_chunk\n\n以下項目待確認。')}\n\n請確認以上事項。`,
+    }).markdown).toContain(reviews);
   });
 
   it('rejects malformed, empty or duplicate child review sections', () => {
@@ -166,11 +177,16 @@ describe('quotation protocol', () => {
       response: `## system_order_chunk\n\n${table(systemHeaders.slice(0, -1), [pricedRow.slice(0, -1)])}`,
       lookupEvidence: [successfulLookup()],
     })).toThrow('invalid system_order_chunk');
+    expect(validateQuotationChildResult({
+      chunk,
+      response: `以下為本次報價。\n\n## system_order_chunk\n\n價格說明。\n\n${table(systemHeaders, [pricedRow])}\n\n補充文字`,
+      lookupEvidence: [successfulLookup()],
+    }).rows).toEqual([pricedRow]);
     expect(() => validateQuotationChildResult({
       chunk,
-      response: `## system_order_chunk\n\n${table(systemHeaders, [pricedRow])}\n\n補充文字`,
+      response: `## system_order_chunk\n\n${table(systemHeaders, [pricedRow])}\n| unfinished`,
       lookupEvidence: [successfulLookup()],
-    })).toThrow('16-column');
+    })).toThrow('incomplete Markdown row');
   });
 
   it('uses the main table rows after AI correction or reordering and strips legacy controls', () => {
@@ -206,19 +222,46 @@ describe('quotation protocol', () => {
     expect(finalized.response).not.toContain('quote_lineage');
     expect(finalized.response.match(/## customer_quote/g)).toHaveLength(1);
     expect(finalized.summary).toBe('查價輸出完成：共 2 筆 system_order，無待複核事項。');
+    expect(finalized.response).toContain(`## quote_summary\n\n${finalized.summary}`);
+    expect(finalized.response).not.toContain('## manual_reviews');
+    const repeated = finalizeQuotationMainResponse({ fullOcrResult: '', mainResponse: finalized.response, childResults: [child] });
+    expect(repeated.response).toBe(finalized.response);
   });
 
-  it.each(['manual_reviews', 'manual_review'])('normalizes %s without requiring backend source coverage', (title) => {
+  it('normalizes numeric cells before saving the final order and composing the customer quote', () => {
+    const source = [...pricedRow];
+    source[4] = '2支';
+    source[7] = '1,234.50元';
+    source[8] = 'B';
+    const expected = [...pricedRow];
+    expected[4] = '2';
+    expected[7] = '1234.50';
+    expected[8] = '2';
+    const result = finalizeQuotationMainResponse({
+      fullOcrResult: '',
+      mainResponse: `## system_order\n\n${table(systemHeaders, [source])}`,
+      childResults: [childInput(chunkForRows(), pricedRow)],
+    });
+    expect(result.rows).toEqual([expected]);
+    expect(result.response).not.toContain('1,234.50元');
+    expect(result.response.match(/## customer_quote/g)).toHaveLength(1);
+  });
+
+  it.each(['manual_reviews', 'manual_review', 'manual_reviews｜訂單.pdf'])('normalizes %s without requiring backend source coverage', (title) => {
     const review = table(reviewHeaders, [['ocr_result', 'P-not-in-source', '單價', '需確認', '由 AI 規則判斷', '備註']]);
     const finalized = finalizeQuotationMainResponse({
       fullOcrResult: ocr([['F1', 'P1', '鐵板', '2', '6', '100', '200']]),
-      mainResponse: `## system_order\n\n${table(systemHeaders, [blankRow])}\n\n## ${title}\n\n${review}\n\n## notes\n\n補充`,
+      mainResponse: `## system_order｜訂單.pdf\n\n${table(systemHeaders, [blankRow])}\n\n## ${title}\n\n${review}\n\n## notes\n\n補充`,
       childResults: [childInput(chunkForRows(), blankRow, [failedLookup()])],
     });
     expect(finalized.summary).toBe('查價輸出完成：共 1 筆 system_order、1 項待複核事項。');
     expect(finalized.response).toContain('## manual_reviews\n');
+    expect(finalized.response).toContain('## system_order\n');
+    expect(finalized.response).toContain('## customer_quote\n');
+    expect(finalized.response).not.toContain('｜訂單.pdf');
     expect(finalized.response.indexOf('## manual_reviews')).toBeGreaterThan(finalized.response.indexOf('## notes'));
     expect(finalized.response).not.toContain('## manual_review\n');
+    expect(finalized.response.endsWith(`## quote_summary\n\n${finalized.summary}`)).toBe(true);
   });
 
   it('rejects duplicate main review aliases and invalid review columns', () => {

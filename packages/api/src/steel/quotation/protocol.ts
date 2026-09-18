@@ -1,6 +1,7 @@
 import { parseMarkdownTables } from '../markdown/table';
 import { escapeMarkdownTableCell } from '../markdown/row-codec';
 import { buildCustomerQuoteFromMarkdown } from '../markdown/quote';
+import { normalizeSystemOrderMarkdown } from '../markdown/order';
 import { parseAssistantMarkdown, parseOcrResultTable } from '../ocr/result';
 
 import type { SteelToolResult } from '../tools/results';
@@ -175,10 +176,11 @@ function parseExactTable(
   };
 }
 
-function isOnlyTableContent(body: string): boolean {
+function hasIncompleteTableRow(body: string): boolean {
   return sectionBodyWithoutFences(body)
     .split(/\r?\n/u)
-    .every((line) => line.trim() === '' || (line.trim().startsWith('|') && line.trim().endsWith('|')));
+    .some((line) => line.trim().startsWith('|') &&
+      (line.trim().length === 1 || !line.trim().endsWith('|')));
 }
 
 export function parseQuotationSignal(response: string): QuotationSignal | undefined {
@@ -375,19 +377,22 @@ function validateChildTable(input: QuotationChildResultInput): ValidatedQuotatio
   const document = parseAssistantMarkdown(sanitizedResponse);
   const section = exactSection(document, 'system_order_chunk');
   const reviewSection = exactSection(document, 'manual_reviews_chunk');
-  if (!section || section.title !== 'system_order_chunk' || document.preamble.trim() !== '' ||
+  if (!section || section.title !== 'system_order_chunk' ||
     document.sections[0] !== section ||
     document.sections.length !== (reviewSection ? 2 : 1) ||
     (reviewSection && reviewSection.title !== 'manual_reviews_chunk') || fenced.blocks.length > 0 ||
-    /^ {0,3}(`{3,}|~{3,})/mu.test(sanitizedResponse) || !isOnlyTableContent(section.body)) {
+    /^ {0,3}(`{3,}|~{3,})/mu.test(sanitizedResponse)) {
     protocolError('invalid_child_result', 'Child result must contain one 16-column system_order_chunk followed by an optional manual_reviews_chunk Markdown table.');
+  }
+  if (hasIncompleteTableRow(section.body) || (reviewSection && hasIncompleteTableRow(reviewSection.body))) {
+    protocolError('invalid_child_result', 'Quotation child result contains an incomplete Markdown row; its output must be completed before saving the chunk.');
   }
   const table = parseExactTable(section.body, quotationSystemOrderColumns);
   if (!table) {
     protocolError('invalid_child_result', 'Child result has an invalid system_order_chunk table.');
   }
   const reviewTable = reviewSection && parseExactTable(reviewSection.body, quotationManualReviewColumns);
-  if (reviewSection && (!isOnlyTableContent(reviewSection.body) || !reviewTable)) {
+  if (reviewSection && !reviewTable) {
     protocolError('invalid_child_result', 'Child result has an invalid manual_reviews_chunk table.');
   }
   if (!evidenceIsPersistedSearch(input.lookupEvidence)) {
@@ -464,16 +469,17 @@ export function finalizeQuotationMainResponse(input: FinalizeQuotationMainInput)
   if (input.childResults.length === 0) protocolError('incomplete_aggregate', 'Quotation has no child results.');
   input.childResults.forEach(validateChildTable);
 
-  const main = sectionRows(input.mainResponse, 'system_order');
+  const mainResponse = normalizeSystemOrderMarkdown(input.mainResponse);
+  const main = sectionRows(mainResponse, 'system_order');
   if (!main || main.table.headers.length !== quotationSystemOrderColumns.length ||
     main.table.headers.some((header, index) => header !== quotationSystemOrderColumns[index])) {
     protocolError('invalid_main_result', 'Quotation main result must contain one exact 16-column system_order table.');
   }
-  const reviewCount = sectionCount(input.mainResponse, 'manual_reviews') + sectionCount(input.mainResponse, 'manual_review');
+  const reviewCount = sectionCount(mainResponse, 'manual_reviews') + sectionCount(mainResponse, 'manual_review');
   if (reviewCount > 1) {
     protocolError('invalid_main_result', 'Quotation main result may contain only one manual_reviews section.');
   }
-  const review = sectionRows(input.mainResponse, 'manual_reviews') ?? sectionRows(input.mainResponse, 'manual_review');
+  const review = sectionRows(mainResponse, 'manual_reviews') ?? sectionRows(mainResponse, 'manual_review');
   if (reviewCount === 1 && !review) {
     protocolError('invalid_main_result', 'manual_reviews must use the current six columns and contain rows.');
   }
@@ -482,11 +488,11 @@ export function finalizeQuotationMainResponse(input: FinalizeQuotationMainInput)
     protocolError('invalid_main_result', 'manual_reviews must use the current six columns.');
   }
 
-  const sanitized = stripQuoteControls(input.mainResponse);
+  const sanitized = stripQuoteControls(mainResponse);
   const sanitizedMain = sectionRows(sanitized, 'system_order');
   if (!sanitizedMain) protocolError('invalid_main_result', 'Quotation main system_order disappeared during finalization.');
   const rows = main.table.rows;
-  const systemOrderMarkdown = `${sanitizedMain.heading}\n\n${renderTable({ headers: quotationSystemOrderColumns, rows })}`;
+  const systemOrderMarkdown = `## system_order\n\n${renderTable({ headers: quotationSystemOrderColumns, rows })}`;
   const customerQuote = buildCustomerQuoteFromMarkdown(systemOrderMarkdown);
   if (!customerQuote) protocolError('invalid_main_result', 'Quotation system_order cannot produce a customer quote.');
 
@@ -505,7 +511,7 @@ export function finalizeQuotationMainResponse(input: FinalizeQuotationMainInput)
       return;
     }
     if (title === 'manual_reviews' || title === 'manual_review') {
-      manualReviewSection = section.raw.trim().replace(/^(##\s+)manual_review(?=[\s｜|]|$)/u, '$1manual_reviews');
+      manualReviewSection = section.raw.trim().replace(/^##[^\r\n]*/u, '## manual_reviews');
       return;
     }
     outputParts.push(section.raw.trim());
@@ -516,7 +522,7 @@ export function finalizeQuotationMainResponse(input: FinalizeQuotationMainInput)
   const summary = manualReviewCount > 0
     ? `查價輸出完成：共 ${rows.length} 筆 system_order、${manualReviewCount} 項待複核事項。`
     : `查價輸出完成：共 ${rows.length} 筆 system_order，無待複核事項。`;
-  outputParts.push(summary);
+  outputParts.push(`## quote_summary\n\n${summary}`);
   return {
     response: outputParts.filter(Boolean).join(document.newline + document.newline),
     systemOrderMarkdown,

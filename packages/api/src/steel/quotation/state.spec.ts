@@ -421,35 +421,42 @@ describe('Steel quotation state service', () => {
     expect(MAX_QUOTATION_ARTIFACT_BYTES).toBeGreaterThan(1_000_000);
   });
 
-  it('detects historical final orders while ignoring raw and main artifacts by scope', async () => {
+  it('only reports a saved final from the latest completed signal', async () => {
     const Artifact = createSteelQuotationArtifactModel(mongoose);
     expect(await service.hasSystemOrder(scope)).toBe(false);
-    await Artifact.create({
-      userId: scope.userId,
-      conversationId: scope.conversationId,
-      runId: 'raw-run',
-      operationId: 'raw',
-      kind: 'main',
-      sha256: 'raw-sha',
-      payload: 'raw snapshot',
-    });
+    const first = await prepareRun();
+    const lease = await service.acquireLease({ scope, runId: first.run.runId });
+    if (!lease) throw new Error('lease missing');
+    await service.checkpoint({ scope, runId: first.run.runId, leaseToken: lease.leaseToken,
+      operationId: 'main', kind: 'main', payload: 'raw main output' });
     expect(await service.hasSystemOrder(scope)).toBe(false);
-    await Artifact.create({
-      userId: scope.userId,
-      conversationId: scope.conversationId,
-      runId: 'historical-run',
-      operationId: 'final',
-      kind: 'final',
-      sha256: 'historical-sha',
-      payload: 'historical final',
-    });
-    expect(await service.hasSystemOrder(scope)).toBe(true);
-
-    const latest = await prepareRun(scope, '# latest order');
-    await service.cancelRun({ scope, runId: latest.run.runId });
-    expect((await service.readState(scope))?.activeRun?.status).toBe('cancelled');
+    const finalRef = await service.writeArtifact({ scope, runId: first.run.runId,
+      operationId: 'final', kind: 'final', payload: 'complete system order', leaseToken: lease.leaseToken });
+    expect(await service.hasSystemOrder(scope)).toBe(false);
+    await service.completeRun({ scope, runId: first.run.runId, leaseToken: lease.leaseToken, finalRef });
     expect(await service.hasSystemOrder(scope)).toBe(true);
     expect(await service.hasSystemOrder({ userId: 'other-owner', conversationId: scope.conversationId })).toBe(false);
+    expect(await service.hasSystemOrder({ userId: scope.userId, conversationId: 'other-conversation' })).toBe(false);
+
+    const latest = await prepareRun(scope, '# latest order');
+    expect(await service.hasSystemOrder(scope)).toBe(false);
+    const latestLease = await service.acquireLease({ scope, runId: latest.run.runId });
+    if (!latestLease) throw new Error('lease missing');
+    await service.interruptRun({ scope, runId: latest.run.runId, leaseToken: latestLease.leaseToken });
+    expect(await service.hasSystemOrder(scope)).toBe(false);
+    await service.cancelRun({ scope, runId: latest.run.runId });
+    expect(await service.hasSystemOrder(scope)).toBe(false);
+    expect(await Artifact.exists({ ...scope, runId: first.run.runId, operationId: 'final' })).not.toBeNull();
+
+    const next = await prepareRun(scope, '# new signal');
+    const nextLease = await service.acquireLease({ scope, runId: next.run.runId });
+    if (!nextLease) throw new Error('lease missing');
+    const nextRef = await service.writeArtifact({ scope, runId: next.run.runId,
+      operationId: 'final', kind: 'final', payload: 'new system order', leaseToken: nextLease.leaseToken });
+    await service.completeRun({ scope, runId: next.run.runId, leaseToken: nextLease.leaseToken, finalRef: nextRef });
+    expect(await service.hasSystemOrder(scope)).toBe(true);
+    await Artifact.deleteOne({ ...scope, runId: next.run.runId, operationId: 'final' });
+    expect(await service.hasSystemOrder(scope)).toBe(false);
   });
 
   it('keeps cancellation terminal until a new signal creates a fresh run', async () => {
@@ -638,6 +645,28 @@ describe('Steel quotation state service', () => {
     expect(await service.readState(scope)).toBeNull();
   });
 
+  it('preserves a queued reply target on regeneration while keeping source identity immutable', async () => {
+    const original = { scope, sourceMessageId: 'retry-source', sourceMessageText: '開始報價',
+      sourceMessageFiles: [{ fileId: 'order-file' }], targetMessageId: 'original-response' };
+    await service.enqueuePendingMessage(original);
+    const retry = { ...original, targetMessageId: 'regenerated-response', preserveExistingTarget: true };
+    expect(await service.enqueuePendingMessage(retry)).toEqual(expect.objectContaining({ targetMessageId: 'original-response' }));
+    await expect(service.enqueuePendingMessage({ ...retry, preserveExistingTarget: false })).rejects.toThrow('identity is immutable');
+    await expect(service.enqueuePendingMessage({ ...retry, sourceMessageText: '改訂單' })).rejects.toThrow('identity is immutable');
+    await expect(service.enqueuePendingMessage({ ...retry, sourceMessageFiles: [] })).rejects.toThrow('identity is immutable');
+    expect((await service.readState(scope))?.pendingMessages).toHaveLength(1);
+    const otherScope = { ...scope, userId: 'other-owner' };
+    expect(await service.enqueuePendingMessage({ ...retry, scope: otherScope })).toEqual(expect.objectContaining({ targetMessageId: 'regenerated-response' }));
+  });
+
+  it('concurrent regenerations reuse one queued target', async () => {
+    const results = await Promise.all(['response-a', 'response-b'].map((targetMessageId) =>
+      service.enqueuePendingMessage({ scope, sourceMessageId: 'race-source', sourceMessageText: '開始報價', targetMessageId, preserveExistingTarget: true }),
+    ));
+    expect(results[0]?.targetMessageId).toBe(results[1]?.targetMessageId);
+    expect((await service.readState(scope))?.pendingMessages).toHaveLength(1);
+  });
+
   it('keeps FIFO pending claims serialized when the earliest message is live', async () => {
     await service.enqueuePendingMessage({ scope, sourceMessageId: 'fifo-1', sourceMessageText: 'one' });
     await service.enqueuePendingMessage({ scope, sourceMessageId: 'fifo-2', sourceMessageText: 'two' });
@@ -728,5 +757,11 @@ describe('Steel quotation state service', () => {
       userId: scope.userId,
       conversationId: scope.conversationId,
     })).toBe(128);
+    const retry = { scope, sourceMessageId: 'bounded-1', sourceMessageText: 'correction-1', targetMessageId: 'new-response', preserveExistingTarget: true };
+    expect(await service.enqueuePendingMessage(retry)).toEqual(expect.objectContaining({ status: 'completed', completedTargetMessageId: 'target-1' }));
+    await expect(service.enqueuePendingMessage({ ...retry, sourceMessageText: 'changed' })).rejects.toThrow('identity is immutable');
+    await expect(service.enqueuePendingMessage({ ...retry, sourceMessageFiles: [{ fileId: 'changed' }] })).rejects.toThrow('identity is immutable');
+    await expect(service.enqueuePendingMessage({ ...retry, preserveExistingTarget: false })).rejects.toThrow('identity is immutable');
+    expect((await service.readState(scope))?.pendingMessages).toHaveLength(1);
   });
 });

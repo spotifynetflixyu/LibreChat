@@ -28,6 +28,7 @@ const {
   deleteAgentCheckpoint,
   getAttachmentTitleText,
   createSteelOcrStateService,
+  extractSteelNativeMarkdownText,
   finalizeOcrResponse,
   appendSteelNativeActivityEvent,
   buildSteelDelegateOcrStatusEventEnvelope,
@@ -423,9 +424,10 @@ function replaceResponseMarkdown(response, markdown) {
 }
 
 async function prepareOcrResponseFinalization(req, response, conversationId, generationId) {
-  if (typeof response?.text !== 'string' || req?.steelNativeContext?.quotation?.pendingOrderPersisted === true) {
+  if (!response || req?.steelNativeContext?.quotation?.pendingOrderPersisted === true) {
     return null;
   }
+  const responseText = extractSteelNativeMarkdownText({ ...response, sectionTitle: 'ocr_result' });
   const delegateContext = req?.steelNativeContext?.delegateOcrContext;
   const delegateRun = delegateContext?.activeRun ?? delegateContext?.delegateOcrRun;
   const agentKind = delegateContext?.didExecute === true || delegateRun
@@ -433,7 +435,7 @@ async function prepareOcrResponseFinalization(req, response, conversationId, gen
     : req?.steelNativeContext?.ocrTurnActive === true
       ? 'regular_ocr'
       : 'other';
-  const hasOcrResult = /^ {0,3}##(?!#)[ \t]+ocr_result[ \t]*$/imu.test(response.text);
+  const hasOcrResult = /^ {0,3}##(?!#)[ \t]+ocr_result[ \t]*$/imu.test(responseText);
   if (!hasOcrResult && agentKind === 'other') {
     return null;
   }
@@ -455,7 +457,7 @@ async function prepareOcrResponseFinalization(req, response, conversationId, gen
     return { ...failureContext, failure: { reason: 'ocr_result_missing' } };
   }
   const finalized = finalizeOcrResponse({
-    assistantResponse: response.text,
+    assistantResponse: responseText,
     previousOcrMarkdown: state?.currentOcrResultMarkdown,
     canonicalMapping: (state?.sourceMappings ?? []).map((mapping) => ({
       sourceCode: mapping.sourceCode,

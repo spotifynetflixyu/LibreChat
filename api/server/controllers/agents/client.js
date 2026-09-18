@@ -1205,6 +1205,49 @@ class AgentClient extends BaseClient {
     detachScopeListeners();
   }
 
+  buildQuotationTextWiring(config) {
+    let quotationStepSeeded = false;
+    let quotationTextIndex;
+    const quotationStepId = `quotation:${this.responseMessageId}`;
+    const appendQuotationText = async (text) => {
+      const metadata = { ...config.configurable, run_id: this.responseMessageId,
+        thread_id: this.conversationId, last_agent_id: this.options.agent?.id,
+        langgraph_node: this.options.agent?.id };
+      if (!quotationStepSeeded) {
+        quotationStepSeeded = true;
+        quotationTextIndex = this.contentParts.length;
+        await this.options.eventHandlers?.on_run_step?.handle('on_run_step', {
+          id: quotationStepId, runId: this.responseMessageId, index: quotationTextIndex,
+          stepDetails: { type: StepTypes.MESSAGE_CREATION,
+            message_creation: { message_id: this.responseMessageId } },
+        }, metadata);
+      }
+      const handler = this.options.eventHandlers?.on_message_delta;
+      if (handler?.handle) await handler.handle('on_message_delta', {
+        id: quotationStepId, delta: { content: [{ type: ContentTypes.TEXT, text }] },
+      }, metadata);
+      else {
+        const existing = this.contentParts[quotationTextIndex];
+        this.contentParts[quotationTextIndex] = {
+          type: ContentTypes.TEXT,
+          text: (existing?.type === ContentTypes.TEXT ? existing.text : '') + text,
+        };
+      }
+    };
+    return {
+      onText: appendQuotationText,
+      onFinalText: async (text) => {
+        if (quotationTextIndex === undefined) {
+          await appendQuotationText(text);
+          return;
+        }
+        this.contentParts[quotationTextIndex] = {
+          ...this.contentParts[quotationTextIndex], type: ContentTypes.TEXT, text,
+        };
+      },
+    };
+  }
+
   /**
    * Activity-label wiring. At each batch boundary the hook synchronously
    * claims a live content slot (steering's index-offset pattern: push
@@ -3729,31 +3772,13 @@ class AgentClient extends BaseClient {
           await this.activityLabelsMarkedPromise;
         }
         try {
-          let quotationStepSeeded = false;
-          const quotationStepId = `quotation:${this.responseMessageId}`;
           const executeQuotation = () => executeSteelQuotationWorkflow({
             req: this.options.req, res: this.options.res, streamId,
+            contentParts: this.contentParts,
             signal: abortController.signal, agent: this.options.agent, run, userMCPAuthMap,
             onSteerApplied: (item) => this.applySteerPart(streamId, item),
             onUsage: async (usage) => { this.collectedUsage?.push(usage); },
-            onText: async (text) => {
-              const metadata = { ...config.configurable, run_id: this.responseMessageId,
-                thread_id: this.conversationId, last_agent_id: this.options.agent?.id,
-                langgraph_node: this.options.agent?.id };
-              if (!quotationStepSeeded) {
-                quotationStepSeeded = true;
-                await this.options.eventHandlers?.on_run_step?.handle('on_run_step', {
-                  id: quotationStepId, index: this.contentParts.length,
-                  stepDetails: { type: StepTypes.MESSAGE_CREATION,
-                    message_creation: { message_id: this.responseMessageId } },
-                }, metadata);
-              }
-              const handler = this.options.eventHandlers?.on_message_delta;
-              if (handler?.handle) await handler.handle('on_message_delta', {
-                id: quotationStepId, delta: { content: [{ type: ContentTypes.TEXT, text }] },
-              }, metadata);
-              else this.contentParts.push({ type: ContentTypes.TEXT, text });
-            },
+            ...this.buildQuotationTextWiring(config),
           });
           const shouldResumeDelegateOcr =
             Boolean(delegateOcrResume) && typeof executeDelegateOcrResume === 'function';

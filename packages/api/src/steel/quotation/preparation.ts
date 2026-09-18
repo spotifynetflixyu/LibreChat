@@ -66,6 +66,7 @@ export async function prepareQuotationTurn(input: {
         sourceMessageText: input.text,
         sourceMessageFiles: input.files,
         targetMessageId: input.responseId,
+        preserveExistingTarget: true,
       });
     }
     return { scope: input.scope, state, instruction: '', resume: true };
@@ -98,7 +99,7 @@ export function quotationPreparationInstruction(order?: string, customer?: strin
   return [
     '# Saved quotation state for this turn',
     JSON.stringify(status),
-    'These flags report saved data, not user consent. When shouldAskToQuote is true, ask whether to start quoting only if the user has not already clearly authorized the current order and customer/tier. When hasSystemOrder is true, do not repeatedly ask whether to quote; handle the current request. A new signal still requires an explicit request to quote again, and order changes still require confirmation of the updated order.',
+    'These flags report saved data, not user consent. hasSystemOrder is true only for the latest accepted quotation whose run is completed and whose full final result is saved. Older system_order results do not count; a new unfinished, interrupted, or cancelled quotation has hasSystemOrder=false. When shouldAskToQuote is true, ask whether to start quoting only if the user has not already clearly authorized the current order and customer/tier. When hasSystemOrder is true, do not repeatedly ask whether to quote; handle the current request. A new signal still requires an explicit request to quote again, and order changes still require confirmation of the updated order.',
     '# Current quotation preparation workflow',
     'When preparing a new or revised order, present one complete ## ocr_result table for the user to confirm. Reuse an unchanged saved order rather than presenting it again on every turn. Text orders use the same complete table; use stable 來源=文字訂單 and stable 零件編號 for new text rows.',
     'The ocr_result table must contain 來源, 零件編號, 類別, and the available specification/quantity fields. Preserve existing columns and all user-provided material, size, unit, quantity, and notes; leave unknown facts blank. Keep dimensions in explicitly labeled mm columns where applicable.',

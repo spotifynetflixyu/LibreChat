@@ -1,4 +1,5 @@
 import type { Response } from '../../agents/responses/types';
+import { parseAssistantMarkdown } from '../ocr/result';
 
 function getStringProperty(value: unknown, key: string): string | undefined {
   if (value == null || typeof value !== 'object') {
@@ -55,15 +56,25 @@ function extractOutputContentText(part: unknown): string {
 export function extractSteelNativeMarkdownText({
   text,
   content,
+  sectionTitle,
 }: {
   text?: string | null;
   content?: unknown;
+  sectionTitle?: string;
 }): string {
+  const contentText = extractContentText(content);
+  if (sectionTitle) {
+    const hasSection = (markdown: string) => parseAssistantMarkdown(markdown).sections
+      .some((section) => section.title === sectionTitle);
+    if (!hasSection(text ?? '') && hasSection(contentText)) {
+      return contentText;
+    }
+  }
   if (typeof text === 'string' && text.trim().length > 0) {
     return text;
   }
 
-  return extractContentText(content);
+  return contentText;
 }
 
 export function extractSteelNativeResponseOutputText(response: Pick<Response, 'output'>): string {

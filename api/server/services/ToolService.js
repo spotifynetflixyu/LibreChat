@@ -38,6 +38,8 @@ const {
   appendSteelNativeActivityEvent,
   upsertSteelNativePreflightToolCall,
   ensureSteelNativeHistory,
+  getQuotationHistoryDelta,
+  upsertQuotationToolContent,
   steelNativeStreamEventName,
   buildSteelPaddleOcrPreflightEventEnvelopes,
   buildSteelOcrPreprocessingEventEnvelopes,
@@ -6266,7 +6268,7 @@ async function loadActionToolsForExecution({
 
 /** Shared post-response/pre-turn quotation adapter for chat and Responses transports. */
 async function executeSteelQuotationWorkflow({
-  req, res, streamId, signal, agent, run, onText, onUsage, onSteerApplied, userMCPAuthMap, requestScopedConnections,
+  req, res, streamId, signal, agent, run, onText, onFinalText, onUsage, onSteerApplied, userMCPAuthMap, requestScopedConnections, contentParts,
 }) {
   const context = req?.steelNativeContext;
   const quotation = context?.quotation;
@@ -6291,7 +6293,11 @@ async function executeSteelQuotationWorkflow({
   const modelOptions = context.delegateOcrContext?.modelOptions;
   if (!modelOptions) throw new Error('Quotation requires resolved model options');
   const persist = async ({ messageId, parentMessageId, markdown }, emit = true) => {
-    const saved = await db.saveMessage(req, {
+    const saved = await db.saveMessage({
+      userId: req.user?.id,
+      isTemporary: req.body?.isTemporary,
+      interfaceConfig: req.config?.interfaceConfig,
+    }, {
       messageId,
       conversationId: scope.conversationId,
       parentMessageId,
@@ -6305,7 +6311,7 @@ async function executeSteelQuotationWorkflow({
       metadata: { steel: { activityEvents: context.steelHistory?.activityEvents, preflightToolCalls: context.steelHistory?.preflightToolCalls } },
     }, { context: 'Quotation preflight durable publication' });
     if (!saved) throw new Error('Quotation message publication failed');
-    if (emit) await onText(`\n\n${markdown}`);
+    if (emit) await (onFinalText ?? onText)(`\n\n${markdown}`);
   };
   const collectSteers = async (terminal = false) => {
     if (!streamId || !onSteerApplied) return;
@@ -6339,7 +6345,29 @@ async function executeSteelQuotationWorkflow({
   const quotationToolIndexes = new Map();
   const result = await runQuotationPreflight({
     scope, modelOptions, signal, onUsage,
-    onProgress: async ({ run: active, completedChunks, totalChunks, chunkIndex, attempt }) => {
+    onTextDelta: onFinalText ? onText : undefined,
+    onHistory: async (restored) => {
+      const history = ensureSteelNativeHistory(context);
+      const delta = getQuotationHistoryDelta(history, restored);
+      const events = delta.activityEvents.map((data) => ({ event: steelNativeStreamEventName, data }));
+      let historyChanged = false;
+      for (const call of delta.preflightToolCalls) {
+        const index = history.preflightToolCalls.findIndex((saved) => saved.id === call.id);
+        const toolIndex = contentParts
+          ? upsertQuotationToolContent(contentParts, call)
+          : index < 0 ? history.preflightToolCalls.length : index;
+        quotationToolIndexes.set(call.id, toolIndex);
+        historyChanged = upsertSteelNativePreflightToolCall(history, call) || historyChanged;
+        const stepId = `${call.id}:step`;
+        events.push(
+          createSteelPaddleOcrRunStepEvent({ requestId: context.requestId, stepId, providerToolCallId: call.id, toolName: call.name, index: toolIndex }),
+          createSteelPaddleOcrRunStepDeltaEvent({ stepId, providerToolCallId: call.id, toolName: call.name, args: call.args, index: toolIndex }),
+          createSteelPaddleOcrRunStepCompletedEvent({ stepId, providerToolCallId: call.id, toolName: call.name, args: call.args, output: JSON.parse(call.output), index: toolIndex }),
+        );
+      }
+      await emitSteelNativeEvents({ req, res, streamId, events, historyChanged });
+    },
+    onProgress: async ({ run: active, completedChunks, totalChunks, chunkIndex, attempt, stage }) => {
       await collectSteers();
       await emitSteelNativeEvents({ req, res, streamId, events: [buildSteelQuotationStatusEventEnvelope({
         conversationId: scope.conversationId,
@@ -6347,7 +6375,7 @@ async function executeSteelQuotationWorkflow({
         messageId: context.requestId,
         index: active.index,
         runId: active.runId,
-        stage: active.status,
+        stage: stage ?? active.status,
         status: active.status,
         completedChunks, totalChunks, chunkIndex, attempt,
       })] });
@@ -6355,10 +6383,12 @@ async function executeSteelQuotationWorkflow({
     onTool: async ({ run: active, id, chunkIndex, attempt, arguments: args, result: toolResult }) => {
       const providerToolCallId = `quotation:${active.runId}:${chunkIndex}:${attempt}:${id}`;
       const stepId = `${providerToolCallId}:step`;
-      const index = quotationToolIndexes.get(providerToolCallId) ?? (context.steelHistory?.preflightToolCalls?.length ?? 0);
-      quotationToolIndexes.set(providerToolCallId, index);
       const call = { type: 'tool_call', id: providerToolCallId, name: 'search_price_candidates', args, progress: toolResult ? 1 : 0,
         ...(toolResult ? { output: JSON.stringify(toolResult) } : {}) };
+      const index = contentParts
+        ? upsertQuotationToolContent(contentParts, call)
+        : quotationToolIndexes.get(providerToolCallId) ?? (context.steelHistory?.preflightToolCalls?.length ?? 0);
+      quotationToolIndexes.set(providerToolCallId, index);
       const historyChanged = upsertSteelNativePreflightToolCall(context.steelHistory, call);
       await emitSteelNativeEvents({ req, res, streamId, historyChanged, events: toolResult
         ? [createSteelPaddleOcrRunStepCompletedEvent({ stepId, providerToolCallId, toolName: call.name, args, output: toolResult, index })]

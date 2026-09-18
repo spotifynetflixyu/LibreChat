@@ -1855,7 +1855,7 @@
   "com_ui_steel_quote_status_aggregating": "正在彙整報價",
   "com_ui_steel_quote_status_finalizing": "正在完成報價",
   "com_ui_steel_quote_status_interrupted": "報價已中斷",
-  "com_ui_steel_quote_status_completed": "報價已完成",
+  "com_ui_steel_quote_status_completed": "報價已完成（{{completedChunks}}/{{totalChunks}} 個分塊）",
   "com_ui_steel_quote_status_cancelled": "報價已取消",
   "com_ui_steer": "引導",
   "com_ui_steer_cancel": "取消引導訊息",

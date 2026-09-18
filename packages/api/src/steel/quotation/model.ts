@@ -7,6 +7,7 @@ import type { SteelToolJsonObject, SteelToolResult } from '../tools/results';
 
 import { createOpenAIOAuthModel } from '../native/oauth';
 import { createSteelNativeTool, mergeSteelToolDefinitions } from '../native/tools';
+import { createSystemOrderNormalizer } from '../markdown/order';
 
 export interface QuotationModelLookup {
   id: string;
@@ -24,6 +25,7 @@ export interface QuotationModelInput {
   lookup?(id: string, arguments_: SteelToolJsonObject): Promise<SteelToolResult>;
   onPythonEvidence?(evidence: QuotationPythonEvidence): Promise<void>;
   onUsage?(usage: NonNullable<AIMessageChunk['usage_metadata']>): Promise<void>;
+  onTextDelta?(text: string): Promise<void>;
 }
 
 export interface QuotationModelResult {
@@ -66,7 +68,38 @@ export async function invokeQuotationModel(input: QuotationModelInput): Promise<
   for (let step = 0; step < 24; step += 1) {
     input.signal.throwIfAborted();
     await input.assertActive();
-    const response = await model.invoke(messages, { signal: input.signal });
+    let response: AIMessageChunk;
+    if (input.role === 'main' && input.onTextDelta) {
+      let combined: AIMessageChunk | undefined;
+      const normalizer = createSystemOrderNormalizer();
+      const stream = await model.stream(messages, { signal: input.signal });
+      for await (const part of stream) {
+        input.signal.throwIfAborted();
+        combined = combined ? combined.concat(part) : part;
+        if (combined.tool_calls?.length || combined.tool_call_chunks?.length) {
+          throw new Error('Quotation main model cannot execute tools');
+        }
+        const text = normalizer.append(quotationMessageText(part));
+        if (text) {
+          await input.assertActive();
+          input.signal.throwIfAborted();
+          await input.onTextDelta(text);
+        }
+      }
+      input.signal.throwIfAborted();
+      if (!combined) throw new Error('Quotation model did not complete its output');
+      await input.assertActive();
+      if (combined.response_metadata.finish_reason === 'stop') {
+        const tail = normalizer.finish();
+        if (tail) {
+          input.signal.throwIfAborted();
+          await input.onTextDelta(tail);
+        }
+      }
+      response = combined;
+    } else {
+      response = await model.invoke(messages, { signal: input.signal });
+    }
     await input.assertActive();
     if (response.usage_metadata) {
       await input.onUsage?.(response.usage_metadata);

@@ -111,6 +111,7 @@ jest.mock('../ActivityPhaseGroup', () => ({
 jest.mock('../SteelActivity', () => ({
   __esModule: true,
   default: jest.fn(() => null),
+  useSteelActivityEvents: jest.fn(() => []),
 }));
 
 jest.mock('../Container', () => ({
@@ -164,6 +165,7 @@ jest.mock('../ParallelContent', () => ({
 }));
 
 import ContentParts from '../ContentParts';
+import { useSteelActivityEvents } from '../SteelActivity';
 
 const mockSteelActivity = jest.requireMock('../SteelActivity').default as jest.MockedFunction<
   (_props: { persistedActivityEvents?: readonly unknown[] }) => null
@@ -179,9 +181,33 @@ const baseProps = {
 };
 
 beforeEach(() => {
+  jest.mocked(useSteelActivityEvents).mockReturnValue([]);
   jest
     .mocked(groupSequentialToolCalls)
     .mockImplementation((parts) => parts.map((part) => ({ type: 'single', part })));
+});
+
+describe('ContentParts — accepted quotation signal', () => {
+  it('hides the accepted signal without adding a cursor or moving later parts', () => {
+    const signal: TMessageContentParts = { type: ContentTypes.TEXT, text: '## quote_signal\n\nstart' };
+    const content = [signal, { type: ContentTypes.TEXT, text: '## system_order\n\nrow' } as TMessageContentParts];
+    const { rerender } = render(<ContentParts {...baseProps} content={content} isSubmitting />);
+    expect(screen.getAllByTestId('real-part-text')).toHaveLength(2);
+    jest.mocked(useSteelActivityEvents).mockReturnValue([{
+      type: 'quotation_status', source: 'quotation_preflight', conversationId: 'c1',
+      messageId: 'msg-1', index: 1, stage: 'started', status: 'running',
+      completedChunks: 0, totalChunks: 1,
+    }]);
+    rerender(<ContentParts {...baseProps} content={[...content]} isSubmitting />);
+    expect(screen.getAllByTestId('real-part-text')).toHaveLength(1);
+    expect(screen.getByTestId('real-part-text')).toHaveAttribute('data-index', '1');
+    expect(content[0]).toBe(signal);
+    rerender(<ContentParts {...baseProps} content={[signal]} isSubmitting />);
+    expect(screen.queryByTestId('real-part-text')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('empty-text')).not.toBeInTheDocument();
+    rerender(<ContentParts {...baseProps} content={[signal]} isCreatedByUser />);
+    expect(screen.getByTestId('real-part-text')).toBeInTheDocument();
+  });
 });
 
 describe('ContentParts — interim skill cards', () => {

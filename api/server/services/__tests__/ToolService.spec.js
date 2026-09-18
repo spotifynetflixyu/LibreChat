@@ -7121,9 +7121,110 @@ describe('quotation transport bridge', () => {
       return { status: 'completed' };
     });
     await executeSteelQuotationWorkflow(input);
-    expect(mockSaveQuotationMessage).toHaveBeenCalledWith(input.req, expect.objectContaining({
+    expect(mockSaveQuotationMessage).toHaveBeenCalledWith(expect.objectContaining({ userId: 'owner' }), expect.objectContaining({
       messageId: 'original-response', parentMessageId: 'original-input', conversationId: 'conversation-1', text: '## system_order\ncomplete',
     }), expect.anything());
     expect(mockSaveQuotationMessage.mock.invocationCallOrder[0]).toBeLessThan(input.onText.mock.invocationCallOrder[0]);
+  });
+  it('restores tool cards and events into persisted and current response history without duplication', async () => {
+    const input = makeInput(true);
+    const restored = {
+      activityEvents: [{ type: 'quotation_status', source: 'quotation_preflight', conversationId: 'conversation-1', runId: 'run-1', index: 1, stage: 'completed', status: 'completed', completedChunks: 2, totalChunks: 2 }],
+      preflightToolCalls: [{ type: 'tool_call', id: 'quotation:run-1:1:attempt:call', name: 'search_price_candidates', args: { queries: [{ queryId: 'q1', categories: ['鐵板'] }] }, output: JSON.stringify({ ok: true, toolName: 'search_price_candidates', data: { queryResults: [] } }), progress: 1 }],
+    };
+    mockRunQuotation.mockImplementation(async ({ onHistory, publishFinal }) => {
+      await onHistory(restored);
+      await onHistory(restored);
+      await publishFinal({ run: { targetMessageId: 'original-response', triggerMessageId: 'original-input' }, markdown: '## system_order\ncomplete' });
+      return { status: 'completed' };
+    });
+    await executeSteelQuotationWorkflow(input);
+    expect(input.req.steelNativeContext.steelHistory).toEqual(restored);
+    expect(mockSaveQuotationMessage).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ metadata: { steel: restored } }), expect.anything());
+  });
+  it('streams main deltas before publishing the durable authoritative final replacement', async () => {
+    const input = makeInput(true);
+    input.onFinalText = jest.fn();
+    mockRunQuotation.mockImplementation(async ({ onTextDelta, publishFinal }) => {
+      await onTextDelta('## system_order\n');
+      expect(input.onText).toHaveBeenCalledWith('## system_order\n');
+      expect(mockSaveQuotationMessage).not.toHaveBeenCalled();
+      await onTextDelta('row\n');
+      await publishFinal({ run: { targetMessageId: 'original-response' }, markdown: '## system_order\nrow\n\n## customer_quote\nfinal' });
+      return { status: 'completed' };
+    });
+    await executeSteelQuotationWorkflow(input);
+    expect(input.onText.mock.calls).toEqual([['## system_order\n'], ['row\n']]);
+    expect(input.onFinalText).toHaveBeenCalledTimes(1);
+    expect(input.onFinalText).toHaveBeenCalledWith('\n\n## system_order\nrow\n\n## customer_quote\nfinal');
+    expect(mockSaveQuotationMessage.mock.invocationCallOrder[0]).toBeLessThan(input.onFinalText.mock.invocationCallOrder[0]);
+  });
+  it('emits restored and live quotation tools after signal text and reserves the final text slot', async () => {
+    const input = makeInput(true);
+    input.streamId = 'quotation-stream';
+    input.contentParts = [{ type: 'text', text: '## quote_signal\n\nstart' }];
+    mockEmitChunk.mockClear();
+    const args = { queries: [{ queryId: 'q1' }] };
+    const result = { ok: true, toolName: 'search_price_candidates', data: {} };
+    const restored = { activityEvents: [], preflightToolCalls: [{ type: 'tool_call', id: 'restored-lookup', name: result.toolName, args, output: JSON.stringify(result), progress: 1 }] };
+    mockRunQuotation.mockImplementation(async ({ onHistory, onTool, onProgress, publishFinal }) => {
+      await onHistory(restored);
+      const run = { runId: 'run-1', index: 1, status: 'running', targetMessageId: 'response-1' };
+      await onProgress({ run, stage: 'chunk_started', chunkIndex: 2, completedChunks: 1, totalChunks: 2 });
+      const tool = { run, id: 'live-lookup', chunkIndex: 2, attempt: 'attempt-1', arguments: args };
+      await onTool(tool);
+      await onTool({ ...tool, result });
+      await publishFinal({ run, markdown: '## system_order\ncomplete' });
+      return { status: 'completed' };
+    });
+    input.onText.mockImplementation(async (text) => {
+      expect(input.contentParts).toHaveLength(3);
+      input.contentParts.push({ type: 'text', text });
+    });
+    await executeSteelQuotationWorkflow(input);
+    const events = mockEmitChunk.mock.calls.map((call) => call[1]);
+    expect(events.filter((event) => event.event === StepEvents.ON_RUN_STEP).map((event) => event.data.index)).toEqual([1, 2]);
+    expect(events.filter((event) => event.event === StepEvents.ON_RUN_STEP_COMPLETED).map((event) => event.data.result.index)).toEqual([1, 2]);
+    expect(events).toContainEqual(expect.objectContaining({ data: expect.objectContaining({ stage: 'chunk_started', chunkIndex: 2 }) }));
+    expect(input.contentParts.map((part) => part.type)).toEqual(['text', 'tool_call', 'tool_call', 'text']);
+  });
+  it('publishes quotation and pending replies through the real authenticated message persistence contract', async () => {
+    const { MongoMemoryServer } = require('mongodb-memory-server');
+    const { Mongoose, Types } = require('mongoose');
+    const { createModels, createMethods } = jest.requireActual('@librechat/data-schemas');
+    const server = await MongoMemoryServer.create();
+    const connection = new Mongoose();
+    try {
+      await connection.connect(server.getUri());
+      const models = createModels(connection);
+      const methods = createMethods(connection);
+      mockSaveQuotationMessage.mockImplementation(methods.saveMessage);
+      const input = makeInput(true);
+      const userId = new Types.ObjectId().toString();
+      input.req.user.id = userId;
+      input.req.body = { isTemporary: true };
+      input.req.config = { interfaceConfig: { temporaryChatRetention: 3600 } };
+      input.req.steelNativeContext.quotation.scope = {
+        userId, conversationId: '6bf991da-be8c-5300-bd85-ff6ee2d17bb5',
+      };
+      mockRunQuotation.mockImplementation(async ({ publishFinal }) => {
+        await publishFinal({ run: { targetMessageId: 'original-response', triggerMessageId: 'original-input' }, markdown: '## system_order\ncomplete' });
+        return { status: 'completed' };
+      });
+      mockProcessQuotationPending.mockImplementation(async ({ publish }) => {
+        await publish({ messageId: 'pending-response', parentMessageId: 'pending-input', markdown: '## ocr_result\nupdated' });
+      });
+      await executeSteelQuotationWorkflow(input);
+      const saved = await models.Message.find({ user: userId }).lean();
+      expect(saved).toHaveLength(2);
+      expect(saved.map((message) => message.messageId).sort()).toEqual(['original-response', 'pending-response']);
+      expect(saved.every((message) => message.isTemporary && message.expiredAt)).toBe(true);
+      input.req.user = undefined;
+      await expect(executeSteelQuotationWorkflow(input)).rejects.toThrow('User not authenticated');
+      expect(await models.Message.countDocuments()).toBe(2);
+    } finally {
+      await connection.disconnect();
+      await server.stop();
+    }
   });
 });

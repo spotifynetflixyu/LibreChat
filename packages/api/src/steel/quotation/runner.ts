@@ -10,6 +10,8 @@ import type { OpenAIOAuthModelOptions } from '../native/oauth';
 import type { SteelToolJsonObject, SteelToolResult } from '../tools/results';
 import type { QuotationChildResultInput, QuotationLookupEvidence, QuotationPythonEvidence } from './protocol';
 import type { QuotationModelInput } from './model';
+import type { SteelNativeHistory } from '../native/events';
+import type { SavedQuotationLookup } from './history';
 
 import { createSteelQuotationStateService } from './state';
 import { defaultQuotationCustomerMarkdown, hasQuotationOrder } from './preparation';
@@ -19,6 +21,7 @@ import { buildDefaultSteelGlobalAgentContext } from '../native/context';
 import { createSteelPostgresPool } from '../postgres';
 import { executeSteelTool, createSteelToolRunState } from '../tools/execute';
 import { invokeQuotationModel } from './model';
+import { readQuotationHistory } from './history';
 import {
   buildQuotationChunks,
   extractCustomerDataTable,
@@ -34,14 +37,9 @@ interface SavedQuotationChild {
   pythonOperations: string[];
 }
 
-interface SavedQuotationLookup {
-  lookupCallId: string;
-  arguments: SteelToolJsonObject;
-  result: SteelToolResult;
-}
-
 export interface QuotationProgress {
   run: SteelQuotationActiveRun;
+  stage?: 'started' | 'chunk_started' | 'chunk_saved' | 'main_streaming';
   completedChunks: number;
   totalChunks: number;
   chunkIndex?: number;
@@ -52,6 +50,7 @@ export interface QuotationRunnerInput {
   scope: SteelQuotationScope;
   modelOptions: OpenAIOAuthModelOptions;
   signal: AbortSignal;
+  onHistory?(history: SteelNativeHistory): Promise<void>;
   onProgress?(progress: QuotationProgress): Promise<void>;
   onTool?(input: {
     run: SteelQuotationActiveRun;
@@ -63,6 +62,7 @@ export interface QuotationRunnerInput {
   }): Promise<void>;
   publishFinal(input: { run: SteelQuotationActiveRun; markdown: string }): Promise<void>;
   onUsage?: QuotationModelInput['onUsage'];
+  onTextDelta?: QuotationModelInput['onTextDelta'];
   invokeModel?: typeof invokeQuotationModel;
   executeLookup?: (args: SteelToolJsonObject, callId: string) => Promise<SteelToolResult>;
 }
@@ -180,6 +180,9 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
   const initial = await service.readState(input.scope);
   const run = initial?.activeRun;
   if (!run) return { status: 'idle' };
+  if (input.onHistory) {
+    await input.onHistory(await readQuotationHistory({ scope: input.scope, runId: run.runId }));
+  }
   if (run.status === 'cancelled') return { status: 'cancelled' };
   const scope = input.scope;
   const runId = run.runId;
@@ -224,7 +227,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     }
     return active;
   };
-  const progress = async (chunkIndex?: number, attempt?: string) => {
+  const progress = async (chunkIndex?: number, attempt?: string, stage?: QuotationProgress['stage']) => {
     const active = await assertActive();
     await input.onProgress?.({
       run: active,
@@ -232,6 +235,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
       totalChunks: active.chunks.length,
       chunkIndex,
       attempt,
+      ...(stage ? { stage } : {}),
     });
   };
   const checkpoint = async (operationId: string, kind: 'chunk' | 'tool' | 'main' | 'final', payload: string, chunkIndex?: number) => {
@@ -239,18 +243,20 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     if (!saved) throw new Error('Quotation checkpoint lost its execution lease');
   };
   try {
+    const running = await service.transitionRun({ ...leaseInput, status: 'running' });
+    if (!running) throw new Error('Quotation could not start with its execution lease');
     const payload = await service.readArtifact({ scope, ref: run.snapshotRef });
     if (!payload) throw new Error('Quotation input snapshot is missing');
     const snapshot = JSON.parse(payload) as SteelQuotationSnapshotPayload;
     const chunks = buildQuotationChunks(snapshot.orderMarkdown);
     const results: QuotationChildResultInput[] = [];
-    await progress();
+    await progress(undefined, undefined, 'started');
     for (const chunk of chunks) {
       const operationId = `chunk:${chunk.chunkIndex}`;
       let stored = await service.readCheckpoint({ scope, runId, operationId });
       if (!stored) {
         const attempt = randomUUID();
-        await progress(chunk.chunkIndex, attempt);
+        await progress(chunk.chunkIndex, attempt, 'chunk_started');
         const lookupOperations: string[] = [];
         const pythonOperations: string[] = [];
         const toolState = createSteelToolRunState(120);
@@ -259,10 +265,6 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
           prompt: snapshot.prompts.child,
           input: JSON.stringify({
             chunk: chunk.markdown,
-            categoryOrder: chunks
-              .filter((item) => item.category === chunk.category)
-              .map((item) => item.markdown)
-              .join('\n\n'),
             customer: snapshot.customerMarkdown,
           }),
           modelOptions: input.modelOptions,
@@ -307,12 +309,13 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
         response: validated.markdown,
         markdown: validated.markdown,
       });
-      await progress(chunk.chunkIndex);
+      await progress(chunk.chunkIndex, undefined, 'chunk_saved');
     }
     await service.transitionRun({ ...leaseInput, status: 'aggregating' });
     await progress();
     let main = await service.readCheckpoint({ scope, runId, operationId: 'main' });
     if (!main) {
+      let mainStreaming = false;
       const output = await (input.invokeModel ?? invokeQuotationModel)({
         role: 'main',
         prompt: snapshot.prompts.main,
@@ -325,6 +328,14 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
         signal: controller.signal,
         assertActive: async () => { await assertActive(); },
         onUsage: input.onUsage,
+        onTextDelta: input.onTextDelta ? async (text) => {
+          controller.signal.throwIfAborted();
+          if (!mainStreaming) {
+            mainStreaming = true;
+            await progress(undefined, undefined, 'main_streaming');
+          }
+          await input.onTextDelta?.(text);
+        } : undefined,
       });
       main = output.markdown;
       await checkpoint(`main-output:${randomUUID()}`, 'main', main);

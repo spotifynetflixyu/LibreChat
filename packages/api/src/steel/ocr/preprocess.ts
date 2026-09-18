@@ -506,7 +506,7 @@ function normalizeOrganizerMarkdown(markdown: string, artifactUrl?: string): str
     throw new Error('OCR organizer output must contain at least one Markdown table');
   }
 
-  return tables
+  const content = tables
     .map((table) => [
       `| ${table.headers.map(escapeMarkdownTableCell).join(' | ')} |`,
       `| ${table.headers.map(() => '---').join(' | ')} |`,
@@ -515,6 +515,7 @@ function normalizeOrganizerMarkdown(markdown: string, artifactUrl?: string): str
       ),
     ].join('\n'))
     .join('\n\n');
+  return `## ocr_result_chunk\n\n${content}`;
 }
 
 function getResultPageRanges(

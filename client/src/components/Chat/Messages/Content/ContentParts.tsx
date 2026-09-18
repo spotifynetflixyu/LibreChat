@@ -22,9 +22,13 @@ import EditContentParts from './EditContentParts';
 import ApprovalProvider from './ApprovalContext';
 import Sources from '~/components/Web/Sources';
 import ToolCallGroup from './ToolCallGroup';
-import SteelActivity from './SteelActivity';
+import SteelActivity, { useSteelActivityEvents } from './SteelActivity';
 import Container from './Container';
 import Part from './Part';
+import {
+  hasAcceptedQuotationPreflight,
+  hideQuoteSignalFromContent,
+} from './hideQuoteSignal';
 
 /** An empty TEXT part — the placeholder some endpoints seed in
  * `initialResponse.content` before the model produces anything. */
@@ -277,12 +281,18 @@ const ContentParts = memo(function ContentParts({
     (localIndex: number) => contentIndices?.[localIndex] ?? localIndex + contentIndexOffset,
     [contentIndexOffset, contentIndices],
   );
+  const steelActivityEvents = useSteelActivityEvents(messageId, persistedActivityEvents);
+  const displayContent = useMemo(() => {
+    const shouldHideQuoteSignal =
+      !isCreatedByUser && hasAcceptedQuotationPreflight(steelActivityEvents, messageId);
+    return hideQuoteSignalFromContent(content, shouldHideQuoteSignal);
+  }, [content, isCreatedByUser, messageId, steelActivityEvents]);
   /** Hoisted above the early returns to feed the entrance-detection hook
    *  below, so it is memoized rather than re-walked on every unrelated
    *  re-render of a message that has no phases at all. */
   const phaseSegments = useMemo(
-    () => (nestedActivityPhase ? undefined : groupActivityPhases(content)),
-    [nestedActivityPhase, content],
+    () => (nestedActivityPhase ? undefined : groupActivityPhases(displayContent)),
+    [displayContent, nestedActivityPhase],
   );
   const completedPhaseIndices = useMemo(() => {
     const indices = new Set<number>();
@@ -359,7 +369,7 @@ const ContentParts = memo(function ContentParts({
    */
   const hasRealContent = useMemo(
     () =>
-      (content ?? []).some((part) => {
+      (displayContent ?? []).some((part) => {
         if (part == null) {
           return false;
         }
@@ -368,13 +378,13 @@ const ContentParts = memo(function ContentParts({
         }
         return getTextPartText(part).length > 0;
       }),
-    [content],
+    [displayContent],
   );
   const computedMarkdownTableBaseIndexByPart = useMemo(() => {
     const baseIndexByPart = new Map<number, number>();
     let tableBaseIndex = 0;
 
-    (content ?? []).forEach((part, idx) => {
+    (displayContent ?? []).forEach((part, idx) => {
       if (!part || !isTextContentPart(part)) {
         return;
       }
@@ -384,7 +394,7 @@ const ContentParts = memo(function ContentParts({
     });
 
     return baseIndexByPart;
-  }, [absoluteIndexAt, content]);
+  }, [absoluteIndexAt, displayContent]);
   const markdownTableBaseIndexByPart =
     inheritedMarkdownTableBaseIndexByPart ?? computedMarkdownTableBaseIndexByPart;
 
@@ -417,7 +427,7 @@ const ContentParts = memo(function ContentParts({
           conversationId={conversationId}
           isLatestMessage={isLatestMessage}
           isCreatedByUser={isCreatedByUser}
-          nextType={content?.[localIdx + 1]?.type}
+          nextType={displayContent?.[localIdx + 1]?.type}
           isSubmitting={effectiveIsSubmitting}
           partAttachments={filterAttachmentsForPart(
             attachmentMap[getToolCallId(part)],
@@ -428,7 +438,7 @@ const ContentParts = memo(function ContentParts({
     },
     [
       attachmentMap,
-      content,
+      displayContent,
       contentIndexOffset,
       localIndexByAbsolute,
       conversationId,
@@ -458,7 +468,7 @@ const ContentParts = memo(function ContentParts({
           conversationId={conversationId}
           isLatestMessage={isLatestMessage}
           isCreatedByUser={isCreatedByUser}
-          nextType={content?.[localIdx + 1]?.type}
+          nextType={displayContent?.[localIdx + 1]?.type}
           isSubmitting={effectiveIsSubmitting}
           partAttachments={filterAttachmentsForPart(
             attachmentMap[getToolCallId(part)],
@@ -471,7 +481,7 @@ const ContentParts = memo(function ContentParts({
     },
     [
       attachmentMap,
-      content,
+      displayContent,
       contentIndexOffset,
       localIndexByAbsolute,
       conversationId,
@@ -495,12 +505,12 @@ const ContentParts = memo(function ContentParts({
   const { sequentialParts, detectedResumeAuthors } = useMemo(() => {
     const parts: PartWithIndex[] = [];
     const authors = new Map<number, string | undefined>();
-    if (!content) {
+    if (!displayContent) {
       return { sequentialParts: parts, detectedResumeAuthors: authors };
     }
     let prevType: string | undefined;
     let activeAgentId: string | undefined;
-    content.forEach((part, localIdx) => {
+    displayContent.forEach((part, localIdx) => {
       if (!part) {
         return;
       }
@@ -515,7 +525,7 @@ const ContentParts = memo(function ContentParts({
       parts.push({ part, idx });
     });
     return { sequentialParts: parts, detectedResumeAuthors: authors };
-  }, [absoluteIndexAt, content]);
+  }, [absoluteIndexAt, displayContent]);
   const postSteerAuthors = resumeAuthors ?? detectedResumeAuthors;
 
   const groupedParts = useMemo(
@@ -552,7 +562,7 @@ const ContentParts = memo(function ContentParts({
   );
 
   // Early return: no content to render AND no pending skill cards
-  if (!content && !hasPendingSkills) {
+  if (!displayContent && !hasPendingSkills) {
     return renderSteelActivity();
   }
 
@@ -578,7 +588,7 @@ const ContentParts = memo(function ContentParts({
   }
 
   if (phaseSegments != null) {
-    const relativeGlobalLastContentIdx = lastVisibleContentIdx(content ?? []);
+    const relativeGlobalLastContentIdx = lastVisibleContentIdx(displayContent ?? []);
     const globalLastContentIdx =
       relativeGlobalLastContentIdx < 0 ? -1 : absoluteIndexAt(relativeGlobalLastContentIdx);
     const renderSegment = (
@@ -612,7 +622,7 @@ const ContentParts = memo(function ContentParts({
         />
       );
     };
-    const hasParallelContent = content?.some((part) => part?.groupId != null) === true;
+    const hasParallelContent = displayContent?.some((part) => part?.groupId != null) === true;
     return (
       <ApprovalProvider>
         <SearchContext.Provider value={{ searchResults }}>
@@ -661,7 +671,7 @@ const ContentParts = memo(function ContentParts({
     );
   }
 
-  const safeContent = content ?? [];
+  const safeContent = displayContent ?? [];
   /** A solitary seeded empty TEXT part (useChatFunctions' assistant-side
    *  placeholder) is the same waiting state as no content at all — route it
    *  through EmptyText instead of Markdown's flush initializing dot so both
@@ -682,7 +692,7 @@ const ContentParts = memo(function ContentParts({
       <>
         {renderPendingSkills()}
         <ParallelContentRenderer
-          content={content}
+          content={displayContent}
           messageId={messageId}
           createdAt={createdAt}
           processingDurationMs={!isCreatedByUser ? processingDurationMs : undefined}

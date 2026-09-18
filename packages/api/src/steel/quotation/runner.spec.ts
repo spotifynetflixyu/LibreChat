@@ -11,6 +11,10 @@ import { createSteelQuotationStateService } from './state';
 import { buildQuotationChunks, quotationSignal } from './protocol';
 import { parseMarkdownTables } from '../markdown/table';
 import { acceptQuotationResponse, runQuotationPreflight } from './runner';
+import type { QuotationProgress } from './runner';
+import type { SteelNativeHistory } from '../native/events';
+import { createSteelNativeHistory, appendSteelNativeActivityEvent, upsertSteelNativePreflightToolCall } from '../native/events';
+import { getQuotationHistoryDelta, readQuotationHistory } from './history';
 import { bindQuotationCustomerResult, defaultQuotationCustomerMarkdown, quotationPreparationStatus } from './preparation';
 
 jest.mock('../native/context', () => ({
@@ -158,12 +162,17 @@ function createModel(
     onChildStarted?: (childCall: number) => void;
     onChild?: (input: QuotationModelInput) => Promise<QuotationModelResult> | QuotationModelResult;
     onMainInput?: (input: string) => void;
+    streamMain?: boolean;
   } = {},
 ) {
   let childCall = 0;
   return jest.fn(async (input: QuotationModelInput): Promise<QuotationModelResult> => {
     if (input.role === 'main') {
       options.onMainInput?.(input.input);
+      if (options.streamMain) {
+        await input.onTextDelta?.('## system_order\n');
+        await input.onTextDelta?.('preview row\n');
+      }
       return {
         markdown: mainMarkdown((JSON.parse(input.input) as { order: string }).order),
         lookups: [],
@@ -181,7 +190,7 @@ function createModel(
       return options.onChild(input);
     }
     const lookupCallId = `lookup-${call}`;
-    await input.lookup?.(lookupCallId, { queries: [] });
+    await input.lookup?.(lookupCallId, { queries: [{ queryId: 'q1', categories: ['鐵板'] }] });
     return {
       markdown: childMarkdown(rows.map(systemRowFromSourceRow)),
       lookups: [],
@@ -248,6 +257,7 @@ function runnerInput(
     signal?: AbortSignal;
     onProgress?: (progress: { run: SteelQuotationActiveRun }) => Promise<void>;
     publishFinal?: (input: { run: SteelQuotationActiveRun; markdown: string }) => Promise<void>;
+    onTextDelta?: (text: string) => Promise<void>;
   } = {},
 ) {
   return {
@@ -257,11 +267,71 @@ function runnerInput(
     invokeModel,
     executeLookup,
     onProgress: options.onProgress,
+    onTextDelta: options.onTextDelta,
     publishFinal: options.publishFinal ?? jest.fn(async () => undefined),
   };
 }
 
 describe('quotation runner integration', () => {
+  it('forwards main text during aggregation once chunks are saved and publishes only the finalized order', async () => {
+    await prepareRun(1);
+    const progress: QuotationProgress[] = [];
+    const publishFinal = jest.fn(async () => undefined);
+    const onTextDelta = jest.fn(async () => {
+      const state = await service.readState(scope);
+      expect(state?.activeRun?.status).toBe('aggregating');
+      expect(state?.activeRun?.chunks.every((chunk) => chunk.status === 'completed')).toBe(true);
+      expect(publishFinal).not.toHaveBeenCalled();
+    });
+    await runQuotationPreflight({
+      ...runnerInput(createModel({ streamMain: true }), createLookupExecutor(), { publishFinal, onTextDelta }),
+      onProgress: async (value) => { progress.push(value); },
+    });
+    expect(onTextDelta.mock.calls).toHaveLength(2);
+    expect(progress.filter((value) => value.stage === 'main_streaming')).toHaveLength(1);
+    expect(publishFinal).toHaveBeenCalledWith(expect.objectContaining({ markdown: expect.stringContaining('## customer_quote') }));
+    expect(publishFinal).toHaveBeenCalledTimes(1);
+  });
+  it('keeps streamed partial main output out of checkpoints and resumes without repeating child work', async () => {
+    const run = await prepareRun(1);
+    const executeLookup = createLookupExecutor();
+    const publishFinal = jest.fn(async () => undefined);
+    const onTextDelta = jest.fn().mockResolvedValueOnce(undefined).mockRejectedValue(new Error('stream disconnected'));
+    await expect(runQuotationPreflight(runnerInput(createModel({ streamMain: true }), executeLookup, {
+      publishFinal, onTextDelta,
+    }))).rejects.toThrow('stream disconnected');
+    const interrupted = await service.readState(scope);
+    expect(interrupted?.activeRun?.status).toBe('interrupted');
+    expect(interrupted?.activeRun?.chunks[0]?.status).toBe('completed');
+    expect(await service.readCheckpoint({ scope, runId: run.runId, operationId: 'main' })).toBeUndefined();
+    expect(publishFinal).not.toHaveBeenCalled();
+    await runQuotationPreflight(runnerInput(createModel(), executeLookup, { publishFinal }));
+    expect(executeLookup).toHaveBeenCalledTimes(1);
+    expect(publishFinal).toHaveBeenCalledTimes(1);
+  });
+  it('starts fresh work as running and reports distinct child checkpoints without fake recovery', async () => {
+    const run = await prepareRun(31);
+    expect(await readQuotationHistory({ scope, runId: run.runId })).toEqual(createSteelNativeHistory());
+    const progress: QuotationProgress[] = [];
+    const model = createModel({ onChild: async (input) => {
+      expect((await service.readState(scope))?.activeRun?.status).toBe('running');
+      const rows = parseMarkdownTables(JSON.parse(input.input).chunk)[0]!.rows;
+      await input.lookup?.('lookup', { queries: [{ queryId: 'q1' }] });
+      return { markdown: childMarkdown(rows.map(systemRowFromSourceRow)), lookups: [], pythonEvidence: [] };
+    } });
+    await runQuotationPreflight({ ...runnerInput(model, createLookupExecutor()), onProgress: async (event) => { progress.push(event); } });
+    expect(progress.map(({ stage, run: active, chunkIndex, completedChunks }) => [stage ?? active.status, active.status, chunkIndex, completedChunks])).toEqual([
+      ['started', 'running', undefined, 0],
+      ['chunk_started', 'running', 1, 0],
+      ['chunk_saved', 'running', 1, 1],
+      ['chunk_started', 'running', 2, 1],
+      ['chunk_saved', 'running', 2, 2],
+      ['aggregating', 'aggregating', undefined, 2],
+      ['finalizing', 'finalizing', undefined, 2],
+      ['completed', 'completed', undefined, 2],
+    ]);
+  });
+
   async function prepareCustomer(responseId = 'response-1', tier = 'C') {
     const state = await service.setOrder({ scope, fullMarkdown: orderMarkdown(31) });
     const result = await bindQuotationCustomerResult({
@@ -457,13 +527,22 @@ describe('quotation runner integration', () => {
     expect(invokeModel.mock.calls.length).toBe(callsAfterFailure + 2);
     const childInputs = invokeModel.mock.calls
       .filter(([input]) => input.role === 'child')
-      .map(([input]) => JSON.parse(input.input) as { chunk: string; categoryOrder: string; customer: string });
+      .map(([input]) => JSON.parse(input.input) as { chunk: string; customer: string });
     expect(childInputs).toHaveLength(3);
     expect(childInputs.every((payload) => !/sourceRows|sourceRowId|quote_lineage/iu.test(JSON.stringify(payload)))).toBe(true);
-    expect(childInputs.every((payload) => payload.categoryOrder.includes('## system_order_chunk'))).toBe(true);
+    expect(childInputs.map((payload) => Object.keys(payload).sort())).toEqual([
+      ['chunk', 'customer'], ['chunk', 'customer'], ['chunk', 'customer'],
+    ]);
+    expect(childInputs.map((payload) => parseMarkdownTables(payload.chunk)[0]!.rows.map((row) => row[1]))).toEqual([
+      Array.from({ length: 30 }, (_, index) => `P${index + 1}`), ['P31'], ['P31'],
+    ]);
     expect(childInputs.every((payload) => payload.customer === customerMarkdown)).toBe(true);
     expect(mainInputs).toHaveLength(1);
-    const chunks = (JSON.parse(mainInputs[0]!) as { chunks: string[] }).chunks;
+    const mainInput = JSON.parse(mainInputs[0]!) as { order: string; customer: string; chunks: string[] };
+    expect(mainInput.order).toBe(orderMarkdown(31));
+    expect(mainInput.customer).toBe(customerMarkdown);
+    const chunks = mainInput.chunks;
+    expect(chunks).toHaveLength(2);
     expect(chunks.filter((chunk) => chunk.includes(reviews))).toHaveLength(1);
     expect(chunks.join('\n').match(/## manual_reviews_chunk/g)).toHaveLength(1);
     expect(executeLookup).toHaveBeenCalledTimes(2);
@@ -556,11 +635,61 @@ describe('quotation runner integration', () => {
     expect(completedState?.activeRun?.status).toBe('completed');
     expect(completedState?.activeRun?.checkpointRefs.some((ref) => ref.operationId === 'final')).toBe(true);
     const callsAfterFailure = invokeModel.mock.calls.length;
-
-    const recovered = await runQuotationPreflight(runnerInput(invokeModel, executeLookup, { publishFinal }));
+    const onHistory = jest.fn(async (_history: SteelNativeHistory) => undefined);
+    const recovered = await runQuotationPreflight({ ...runnerInput(invokeModel, executeLookup, { publishFinal }), onHistory });
     expect(recovered.status).toBe('completed');
     expect(invokeModel.mock.calls.length).toBe(callsAfterFailure);
     expect(publishFinal).toHaveBeenCalledTimes(2);
+    expect(onHistory).toHaveBeenCalledTimes(1);
+    expect(onHistory.mock.calls[0]?.[0].preflightToolCalls).toEqual([expect.objectContaining({ name: 'search_price_candidates', progress: 1, args: { queries: [{ queryId: 'q1', categories: ['鐵板'] }] } })]);
+    expect(onHistory.mock.calls[0]?.[0].activityEvents).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'quotation_status', status: 'completed', completedChunks: 1, totalChunks: 1 })]));
+    expect(onHistory.mock.invocationCallOrder[0]).toBeLessThan(publishFinal.mock.invocationCallOrder[1]!);
     expect((await service.readState(scope))?.activeRun?.checkpointRefs.some((ref) => ref.operationId === 'published')).toBe(true);
+  });
+
+  it('restores published quotation tools and global chunk progress idempotently', async () => {
+    const run = await prepareRun(31);
+    const model = createModel();
+    const lookup = createLookupExecutor();
+    await runQuotationPreflight(runnerInput(model, lookup));
+    const history = await readQuotationHistory({ scope, runId: run.runId });
+    expect(history.preflightToolCalls).toHaveLength(2);
+    expect(history.activityEvents).toEqual([
+      expect.objectContaining({ chunkIndex: 1, completedChunks: 1, totalChunks: 2 }),
+      expect.objectContaining({ chunkIndex: 2, completedChunks: 2, totalChunks: 2 }),
+      expect.objectContaining({ status: 'completed', completedChunks: 2, totalChunks: 2 }),
+    ]);
+    const current = createSteelNativeHistory();
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const delta = getQuotationHistoryDelta(current, history);
+      delta.activityEvents.forEach((event) => appendSteelNativeActivityEvent(current, event));
+      delta.preflightToolCalls.forEach((call) => upsertSteelNativePreflightToolCall(current, call));
+    }
+    expect(current).toEqual(history);
+    const publishFinal = jest.fn();
+    const onHistory = jest.fn();
+    const previousCalls = model.mock.calls.length;
+    await runQuotationPreflight({ ...runnerInput(model, lookup, { publishFinal }), onHistory });
+    expect(onHistory).toHaveBeenCalledWith(history);
+    expect(publishFinal).not.toHaveBeenCalled();
+    expect(model).toHaveBeenCalledTimes(previousCalls);
+  });
+
+  it('restores actual lookup activity without declaring an interrupted chunk completed', async () => {
+    const run = await prepareRun(1);
+    const model = createModel({ onChild: async (input) => {
+      await input.lookup?.('actual-call', { queries: [{ queryId: 'q1' }] });
+      throw new Error('interrupted after lookup');
+    } });
+    await expect(runQuotationPreflight(runnerInput(model, createLookupExecutor()))).rejects.toThrow('interrupted after lookup');
+    const history = await readQuotationHistory({ scope, runId: run.runId });
+    expect(history.preflightToolCalls).toEqual([expect.objectContaining({ id: expect.stringContaining(':actual-call'), progress: 1 })]);
+    expect(history.activityEvents).toEqual([expect.objectContaining({ status: 'interrupted', completedChunks: 0, totalChunks: 1 })]);
+    expect(await readQuotationHistory({ scope: { ...scope, userId: 'another-owner' }, runId: run.runId })).toEqual(createSteelNativeHistory());
+    expect(await readQuotationHistory({ scope, runId: 'another-run' })).toEqual(createSteelNativeHistory());
+    await service.cancelRun({ scope, runId: run.runId });
+    const onHistory = jest.fn();
+    await runQuotationPreflight({ ...runnerInput(model, createLookupExecutor()), onHistory });
+    expect(onHistory.mock.calls[0]?.[0].activityEvents).toEqual([expect.objectContaining({ status: 'cancelled', completedChunks: 0 })]);
   });
 });
