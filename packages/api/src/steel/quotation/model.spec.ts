@@ -1,4 +1,4 @@
-import { AIMessageChunk, HumanMessage, SystemMessage, ToolMessage, mapChatMessagesToStoredMessages } from '@librechat/agents/langchain/messages';
+import { AIMessage, AIMessageChunk, ToolMessage } from '@librechat/agents/langchain/messages';
 import type { BaseMessage } from '@librechat/agents/langchain/messages';
 import { invokeQuotationModel } from './model';
 import type { QuotationModelInput } from './model';
@@ -82,7 +82,7 @@ it('binds price lookup and Python only for item pricing, then accepts a complete
 });
 it('rejects child completion without lookup and truncated output', async () => {
   invoke.mockResolvedValue(new AIMessageChunk({ content: 'guessed', response_metadata: { finish_reason: 'stop' } }));
-  await expect(invokeQuotationModel({ ...base(), role: 'child' })).rejects.toThrow('search_price_candidates attempt');
+  await expect(invokeQuotationModel({ ...base(), role: 'child' })).rejects.toThrow('search_price_candidates result');
   invoke.mockResolvedValue(new AIMessageChunk({ content: 'partial', response_metadata: { finish_reason: 'length' } }));
   await expect(invokeQuotationModel({ ...base(), role: 'main' })).rejects.toThrow('complete');
 });
@@ -167,33 +167,37 @@ it('repairs a malformed row through the real validator while preserving lookup, 
       return childToolCall();
     })
     .mockResolvedValueOnce(new AIMessageChunk({ content: malformedChild, response_metadata: { finish_reason: 'stop' } }))
+    .mockResolvedValueOnce(childToolCall('fresh-lookup'))
     .mockResolvedValueOnce(new AIMessageChunk({ content: validChild, response_metadata: { finish_reason: 'stop' } }));
-  const lookup = jest.fn().mockResolvedValue(lookupResult);
+  const lookup = jest.fn().mockResolvedValueOnce(lookupResult).mockResolvedValueOnce(lookupResult);
+  const onChildMessages = jest.fn();
   const validator = jest.fn(async (markdown: string) => {
     validateQuotationChildResult({ chunk: childOrder, response: markdown, lookupEvidence: [lookupEvidence()] });
   });
   const onPythonEvidence = jest.fn().mockResolvedValue(undefined);
 
-  const result = await invokeQuotationModel({ ...childInput(), lookup, validateChildOutput: validator, onPythonEvidence });
+  const result = await invokeQuotationModel({ ...childInput(), lookup, validateChildOutput: validator, onPythonEvidence, onChildMessages });
 
   expect(result.markdown).toBe(validChild);
-  expect(lookup).toHaveBeenCalledTimes(1);
+  expect(lookup).toHaveBeenCalledTimes(2);
   expect(validator).toHaveBeenCalledTimes(2);
   expect(onPythonEvidence.mock.calls).toEqual(pythonEvidence.map((evidence) => [evidence]));
   expect(result.pythonEvidence).toEqual(pythonEvidence);
-  const repairMessages = invoke.mock.calls[2]?.[0] as Array<{ content: unknown }>;
-  const repairText = repairMessages.map((message) => String(message.content)).join('\n');
+  const repairMessages = invoke.mock.calls[2]?.[0] as BaseMessage[];
+  expect(repairMessages).toHaveLength(2);
   expect(repairMessages[1]?.content).toBe(childInput().input);
-  expect(JSON.stringify(repairMessages[2])).toContain('lookup-1');
-  expect(String(repairMessages[3]?.content)).toContain('search_price_candidates');
-  expect(String(repairMessages[4]?.content)).toContain(malformedChild);
-  expect(repairText).toContain(childInput().input);
-  expect(repairText).toContain('The quotation chunk was not accepted');
-  expect(repairText).toContain(JSON.stringify(pythonEvidence));
-  expect(repairMessages).toHaveLength(6);
+  expect(JSON.stringify(repairMessages)).not.toContain('lookup-1');
+  const freshMessages = invoke.mock.calls[3]?.[0] as BaseMessage[];
+  const freshCall = freshMessages.find((message) => message.getType() === 'ai' &&
+    (message as AIMessage).tool_calls?.some((call) => call.id === 'fresh-lookup')) as AIMessage;
+  expect(freshCall.tool_calls[0].args).toEqual(expect.any(Object));
+  expect(freshMessages.some((message) => message.getType() === 'tool' &&
+    (message as ToolMessage).tool_call_id === 'fresh-lookup')).toBe(true);
+  expect(onChildMessages.mock.calls.flatMap(([saved]) => saved)
+    .some((message: { data: { content: unknown } }) => message.data.content === malformedChild)).toBe(true);
 });
 
-it('bounds invalid child output at three generations', async () => {
+it('retries an invalid small child only once before interrupting', async () => {
   const protocolError = new QuotationProtocolError('invalid_child_result', 'invalid child row');
   const validator = jest.fn(async () => {
     throw protocolError;
@@ -202,17 +206,23 @@ it('bounds invalid child output at three generations', async () => {
 
   const onChildRepair = jest.fn();
   await expect(invokeQuotationModel({ ...childInput(), validateChildOutput: validator, onChildRepair })).rejects.toBe(protocolError);
-  expect(invoke).toHaveBeenCalledTimes(3);
-  expect(validator).toHaveBeenCalledTimes(3);
+  expect(invoke).toHaveBeenCalledTimes(2);
+  expect(validator).toHaveBeenCalledTimes(2);
   expect(onChildRepair.mock.calls.map(([event]) => [event.stage, event.repairAttempt])).toEqual([
-    ['chunk_repair_started', 1], ['chunk_repair_started', 2], ['chunk_repair_failed', 2],
+    ['chunk_repair_started', 1], ['chunk_repair_failed', 1],
   ]);
+  expect(invoke.mock.calls.slice(1).every(([messages]) => {
+    const providerMessages = messages as BaseMessage[];
+    return !providerMessages.some((message) => String(message.content).includes(malformedChild)) &&
+      !providerMessages.some((message) => message.getType() === 'ai');
+  })).toBe(true);
 });
 
-it('masks leaked control markers only in provider history while preserving raw output and emitting repair success', async () => {
+it('filters a failed draft from provider history while preserving raw output and emitting repair success', async () => {
   const leaked = `${validChild}\n| <|im_start|>assistant <|meta_sep|>analysis`;
   invoke.mockResolvedValueOnce(childToolCall())
     .mockResolvedValueOnce(new AIMessageChunk({ content: leaked, response_metadata: { finish_reason: 'stop' } }))
+    .mockResolvedValueOnce(childToolCall('fresh-lookup'))
     .mockResolvedValueOnce(new AIMessageChunk({ content: validChild, response_metadata: { finish_reason: 'stop' } }));
   const onChildMessages = jest.fn();
   const onChildRepair = jest.fn();
@@ -220,16 +230,53 @@ it('masks leaked control markers only in provider history while preserving raw o
     validateQuotationChildResult({ chunk: childOrder, response: markdown, lookupEvidence: [lookupEvidence()] });
   });
   await invokeQuotationModel({ ...childInput(), lookup: jest.fn().mockResolvedValue(lookupResult), onChildMessages, onChildRepair, validateChildOutput });
-  const repairedHistory = invoke.mock.calls[2]![0];
-  const rejected = repairedHistory.find((message: BaseMessage) => String(message.content).includes('Rejected quotation output'));
-  expect(rejected.content).toContain(validChild);
-  expect(rejected.content).not.toContain('<|im_start|>');
-  expect(rejected.content).toContain('assistant');
+  const repairedHistory = invoke.mock.calls[2]![0] as BaseMessage[];
+  expect(repairedHistory.some((message) => String(message.content).includes(leaked))).toBe(false);
+  expect(repairedHistory.some((message) => message.getType() === 'ai')).toBe(false);
   expect(onChildMessages.mock.calls.at(-1)![0].some((message: { data: { content: unknown } }) => message.data.content === leaked)).toBe(true);
   expect(onChildRepair.mock.calls.map(([event]) => [event.stage, event.repairAttempt])).toEqual([
     ['chunk_repair_started', 1], ['chunk_repair_succeeded', 1],
   ]);
   expect(onChildRepair.mock.calls[0]![0].message).toContain('model control text');
+});
+
+it('preserves actual tool calls and results while sanitizing leaked invocation prose', async () => {
+  invoke.mockResolvedValueOnce(new AIMessageChunk({ content: 'assistant to=functions.fake_tool', tool_calls: [{
+    name: 'search_price_candidates', id: 'lookup-1', args: { query: 'original lookup' },
+  }], response_metadata: { finish_reason: 'tool_calls' } }))
+    .mockResolvedValueOnce(new AIMessageChunk({ content: validChild, response_metadata: { finish_reason: 'stop' } }));
+  await invokeQuotationModel({ ...childInput(), lookup: jest.fn().mockResolvedValue(lookupResult),
+    validateChildOutput: async (markdown) => {
+      validateQuotationChildResult({ chunk: childOrder, response: markdown, lookupEvidence: [lookupEvidence()] });
+    } });
+  const resumed = invoke.mock.calls[1]![0] as BaseMessage[];
+  const toolTurn = resumed.find((message) => message.getType() === 'ai') as AIMessage;
+  expect(toolTurn.tool_calls[0].id).toBe('lookup-1');
+  expect(toolTurn.content).toBe('');
+  expect(resumed.some((message) => message.getType() === 'tool' &&
+    (message as ToolMessage).tool_call_id === 'lookup-1')).toBe(true);
+});
+
+it('does not replay a failed child draft with the production Unicode tail while preserving the raw transcript', async () => {
+  const poisonedTail = '\u3011\u3010\uff1a\u3011\u3010\u201c\u3011\u3010analysis code';
+  const poisoned = `${validChild}\n| ${poisonedTail}`;
+  invoke.mockResolvedValueOnce(childToolCall())
+    .mockResolvedValueOnce(new AIMessageChunk({ content: poisoned, response_metadata: { finish_reason: 'stop' } }))
+    .mockResolvedValueOnce(childToolCall('fresh-lookup'))
+    .mockResolvedValueOnce(new AIMessageChunk({ content: validChild, response_metadata: { finish_reason: 'stop' } }));
+  const onChildMessages = jest.fn();
+  const validateChildOutput = jest.fn(async (markdown: string) => {
+    validateQuotationChildResult({ chunk: childOrder, response: markdown, lookupEvidence: [lookupEvidence()] });
+  });
+
+  await invokeQuotationModel({ ...childInput(), lookup: jest.fn().mockResolvedValue(lookupResult),
+    onChildMessages, validateChildOutput });
+
+  const repairMessages = invoke.mock.calls[2]![0] as BaseMessage[];
+  expect(repairMessages.some((message) => String(message.content).includes(poisonedTail))).toBe(false);
+  expect(repairMessages.some((message) => message.getType() === 'ai')).toBe(false);
+  expect(onChildMessages.mock.calls.flatMap(([saved]) => saved)
+    .some((message: { data: { content: unknown } }) => message.data.content === poisoned)).toBe(true);
 });
 
 it('captures main Python evidence without offering Steel tools, while preparation keeps Python disabled', async () => {
@@ -253,87 +300,11 @@ it('captures main Python evidence without offering Steel tools, while preparatio
   expect(factory).toHaveBeenLastCalledWith(expect.objectContaining({ enableCodeInterpreter: false, tools: [], onCodeInterpreterEvidence: undefined }));
 });
 
-it.each([
-  '<|im_start|>assistant to=functions.search_price_candidates',
-  '<|im_start|>assistant\nto=functions.search_price_candidates',
-  '\u3011\u3010\uff1a\u3011\u3010\u201c\u3011\u3010assistant to=functions.search_price_candidates',
-])('omits old lookup results during fresh repair for %j and requires a new result', async (toolText) => {
-  const leaked = `${validChild}\n| ${toolText}`;
-  const oldResult = { ...lookupResult, data: { queryResults: [{ queryId: 'OLD-PRICE-RESULT', status: 'ok', candidates: [] }] } };
-  invoke.mockResolvedValueOnce(childToolCall('old-lookup'))
-    .mockResolvedValueOnce(new AIMessageChunk({ content: leaked, response_metadata: { finish_reason: 'stop' } }))
-    .mockResolvedValueOnce(new AIMessageChunk({ content: validChild, response_metadata: { finish_reason: 'stop' } }))
-    .mockResolvedValueOnce(childToolCall('fresh-lookup'))
-    .mockResolvedValueOnce(new AIMessageChunk({ content: validChild, response_metadata: { finish_reason: 'stop' } }));
-  const lookup = jest.fn().mockResolvedValueOnce(oldResult).mockResolvedValueOnce(lookupResult);
-  const onChildMessages = jest.fn();
-  const onChildRepair = jest.fn();
-  await invokeQuotationModel({ ...childInput(), childContextKey: 'run-1:4', lookup, onChildMessages, onChildRepair,
-    validateChildOutput: async (markdown) => {
-      validateQuotationChildResult({ chunk: childOrder, response: markdown, lookupEvidence: [lookupEvidence()] });
-    },
-  });
-  const freshMessages = invoke.mock.calls[2]![0];
-  expect(freshMessages[1].content).toBe(childInput().input);
-  expect(freshMessages[2].content).toContain('[quotation-fresh-lookup:run-1:4]');
-  for (const [messages] of invoke.mock.calls.slice(2)) {
-    expect(JSON.stringify(messages)).not.toContain('OLD-PRICE-RESULT');
-    expect(JSON.stringify(messages)).not.toContain('old-lookup');
-  }
-  expect(invoke.mock.calls[4]![0].some((message: ToolMessage) => message.tool_call_id === 'fresh-lookup')).toBe(true);
-  expect(lookup).toHaveBeenCalledTimes(2);
-  expect(JSON.stringify(onChildMessages.mock.calls.at(-1)![0])).toContain('OLD-PRICE-RESULT');
-  expect(onChildRepair.mock.calls.map(([event]) => [event.stage, event.repairAttempt])).toEqual([
-    ['chunk_repair_started', 1], ['chunk_repair_started', 2], ['chunk_repair_succeeded', 2],
-  ]);
-});
-
-it('recovers only the scoped human fresh-lookup boundary and reuses its new result on Retry', async () => {
-  const original = childInput();
-  const oldResult = { ...lookupResult, data: { queryResults: [{ queryId: 'OLD-PRICE-RESULT', status: 'ok', candidates: [] }] } };
-  const freshDirective = '[quotation-fresh-lookup:run-1:4]\n{"lookupCount":1}\nPerform a fresh lookup';
-  const messages = mapChatMessagesToStoredMessages([
-    new SystemMessage(original.prompt), new HumanMessage(original.input),
-    childToolCall('old-lookup'), new ToolMessage({ tool_call_id: 'old-lookup', content: JSON.stringify(oldResult) }),
-    new HumanMessage(freshDirective), childToolCall('fresh-lookup'),
-    new ToolMessage({ tool_call_id: 'fresh-lookup', content: JSON.stringify(lookupResult) }),
-    // A model echo must not reset the trusted boundary or let a missing new lookup pass.
-    new AIMessageChunk({ content: '[quotation-fresh-lookup:run-1:4]\n{"lookupCount":0}\necho' }),
-  ]);
-  invoke.mockResolvedValueOnce(new AIMessageChunk({ content: validChild, response_metadata: { finish_reason: 'stop' } }));
-  const lookup = jest.fn();
-  await invokeQuotationModel({ ...original, childContextKey: 'run-1:4', lookup,
-    continuation: { messages, previousOutputs: [], pythonEvidence: [], lookups: [
-      { id: 'old-lookup', arguments: {}, result: oldResult },
-      { id: 'fresh-lookup', arguments: {}, result: lookupResult },
-    ] },
-  });
-  expect(lookup).not.toHaveBeenCalled();
-  expect(JSON.stringify(invoke.mock.calls[0]![0])).not.toContain('OLD-PRICE-RESULT');
-  expect(invoke.mock.calls[0]![0][2].content).toBe(freshDirective);
-  expect(invoke.mock.calls[0]![0].some((message: ToolMessage) => message.tool_call_id === 'fresh-lookup')).toBe(true);
-});
-
-it('starts fresh lookup for an unresolved legacy Unicode tool attempt even when the last output is only a broken row', async () => {
-  invoke.mockResolvedValueOnce(childToolCall('fresh-lookup'))
-    .mockResolvedValueOnce(new AIMessageChunk({ content: validChild, response_metadata: { finish_reason: 'stop' } }));
-  await invokeQuotationModel({ ...childInput(), childContextKey: 'run-1:4', lookup: jest.fn().mockResolvedValue(lookupResult),
-    continuation: {
-      previousOutputs: ['| \u3011\u3010assistant to=functions.search_price_candidates', `${validChild}\n| unfinished`],
-      lookups: [{ id: 'old-lookup', arguments: {}, result: lookupResult }],
-      pythonEvidence: [{ type: 'tool-result', toolCallId: 'old-python', payload: 'OLD-PYTHON-RESULT' }],
-    },
-  });
-  const messages = invoke.mock.calls[0]![0];
-  expect(messages[2].content).toContain('[quotation-fresh-lookup:run-1:4]');
-  expect(JSON.stringify(messages)).not.toContain('old-lookup');
-  expect(JSON.stringify(messages)).not.toContain('OLD-PYTHON-RESULT');
-});
-
-it('repairs a length-finished child even when the candidate validates', async () => {
+it('starts every repair from a clean prompt and requires a new lookup result', async () => {
   invoke
-    .mockResolvedValueOnce(childToolCall())
-    .mockResolvedValueOnce(new AIMessageChunk({ content: validChild, response_metadata: { finish_reason: 'length' } }))
+    .mockResolvedValueOnce(childToolCall('old-lookup'))
+    .mockResolvedValueOnce(new AIMessageChunk({ content: malformedChild, response_metadata: { finish_reason: 'stop' } }))
+    .mockResolvedValueOnce(childToolCall('fresh-lookup'))
     .mockResolvedValueOnce(new AIMessageChunk({ content: validChild, response_metadata: { finish_reason: 'stop' } }));
   const lookup = jest.fn().mockResolvedValue(lookupResult);
   const validator = jest.fn(async (markdown: string) => {
@@ -343,9 +314,67 @@ it('repairs a length-finished child even when the candidate validates', async ()
   await expect(invokeQuotationModel({ ...childInput(), lookup, validateChildOutput: validator })).resolves.toEqual(
     expect.objectContaining({ markdown: validChild }),
   );
+  const repair = invoke.mock.calls[2]![0] as BaseMessage[];
+  expect(repair.filter((message) => message.getType() === 'system')).toHaveLength(1);
+  expect(repair.some((message) => message.getType() === 'human' && message.content === childInput().input)).toBe(true);
+  expect(repair.some((message) => message.getType() === 'tool')).toBe(false);
+  expect(invoke.mock.calls[0]![1].toolChoice).toEqual({ type: 'tool', toolName: 'search_price_candidates' });
+  expect(invoke.mock.calls[1]![1].toolChoice).toEqual({ type: 'auto' });
+  expect(invoke.mock.calls[2]![1].toolChoice).toEqual({ type: 'tool', toolName: 'search_price_candidates' });
+  expect(invoke.mock.calls[3]![1].toolChoice).toEqual({ type: 'auto' });
+  expect(lookup).toHaveBeenCalledTimes(2);
+  expect(lookup).toHaveBeenLastCalledWith('fresh-lookup', {
+    queries: [{ queryId: 'q1', categories: ['鐵板'] }],
+  });
+});
+
+it('does not count printed lookup JSON or an earlier lookup as a real call in the new attempt', async () => {
+  const printedCall = `search_price_candidates {"queries":[{"categories":["鐵板"]}]}\n\n${validChild}`;
+  invoke.mockResolvedValueOnce(childToolCall('old-lookup'))
+    .mockResolvedValueOnce(new AIMessageChunk({ content: malformedChild, response_metadata: { finish_reason: 'stop' } }))
+    .mockResolvedValueOnce(new AIMessageChunk({ content: printedCall, response_metadata: { finish_reason: 'stop' } }));
+  const lookup = jest.fn().mockResolvedValue(lookupResult);
+  await expect(invokeQuotationModel({ ...childInput(), lookup,
+    validateChildOutput: async (markdown) => {
+      validateQuotationChildResult({ chunk: childOrder, response: markdown, lookupEvidence: [lookupEvidence()] });
+    },
+  })).rejects.toThrow('This quotation attempt requires a search_price_candidates result');
   expect(lookup).toHaveBeenCalledTimes(1);
+  expect(invoke.mock.calls[2]![1].toolChoice).toEqual({ type: 'tool', toolName: 'search_price_candidates' });
+  expect(invoke.mock.calls[2]![0]).toHaveLength(2);
+});
+
+it('does not locally repair when maxChildRepairAttempts is zero', async () => {
+  const onChildRepair = jest.fn();
+  const onChildMessages = jest.fn();
+  invoke.mockResolvedValueOnce(new AIMessageChunk({ content: malformedChild, response_metadata: { finish_reason: 'stop' } }));
+  await expect(invokeQuotationModel({ ...childInput(), maxChildRepairAttempts: 0, onChildRepair, onChildMessages,
+    validateChildOutput: async (markdown) => {
+      validateQuotationChildResult({ chunk: childOrder, response: markdown, lookupEvidence: [lookupEvidence()] });
+    },
+  })).rejects.toThrow('incomplete Markdown row');
+  expect(invoke).toHaveBeenCalledTimes(1);
+  expect(onChildRepair).not.toHaveBeenCalled();
+  expect(onChildMessages.mock.calls.at(-1)![0].at(-1).data.content).toBe(malformedChild);
+});
+
+it('repairs a length-finished child even when the candidate validates', async () => {
+  invoke
+    .mockResolvedValueOnce(childToolCall())
+    .mockResolvedValueOnce(new AIMessageChunk({ content: validChild, response_metadata: { finish_reason: 'length' } }))
+    .mockResolvedValueOnce(childToolCall('fresh-lookup'))
+    .mockResolvedValueOnce(new AIMessageChunk({ content: validChild, response_metadata: { finish_reason: 'stop' } }));
+  const lookup = jest.fn().mockResolvedValue(lookupResult);
+  const validator = jest.fn(async (markdown: string) => {
+    validateQuotationChildResult({ chunk: childOrder, response: markdown, lookupEvidence: [lookupEvidence()] });
+  });
+
+  await expect(invokeQuotationModel({ ...childInput(), lookup, validateChildOutput: validator })).resolves.toEqual(
+    expect.objectContaining({ markdown: validChild }),
+  );
+  expect(lookup).toHaveBeenCalledTimes(2);
   expect(validator).toHaveBeenCalledTimes(2);
-  expect(invoke).toHaveBeenCalledTimes(3);
+  expect(invoke).toHaveBeenCalledTimes(4);
 });
 
 it('does not retry a generic validator or checkpoint error', async () => {
@@ -394,57 +423,6 @@ it('repairs a valid child that omitted lookup and succeeds after one lookup', as
   expect(invoke).toHaveBeenCalledTimes(3);
 });
 
-it.each([true, false])('balances an interrupted tool turn on Retry (persisted result: %s)', async (persisted) => {
-  const original = childInput();
-  const messages = mapChatMessagesToStoredMessages([
-    new SystemMessage(original.prompt), new HumanMessage(original.input), childToolCall(),
-  ]);
-  const lookups = persisted ? [{ id: 'lookup-1', arguments: {}, result: lookupResult }] : [];
-  if (!persisted) invoke.mockResolvedValueOnce(childToolCall('lookup-2'));
-  invoke.mockResolvedValueOnce(new AIMessageChunk({ content: validChild, response_metadata: { finish_reason: 'stop' } }));
-  const lookup = jest.fn().mockResolvedValue(lookupResult);
-  const onChildMessages = jest.fn();
-  await invokeQuotationModel({
-    ...original, lookup, onChildMessages,
-    continuation: { messages, previousOutputs: [], lookups, pythonEvidence: [] },
-  });
-  const resumed = invoke.mock.calls[0]![0];
-  expect(resumed[1].content).toBe(original.input);
-  expect(resumed[2].tool_calls[0].id).toBe('lookup-1');
-  expect(resumed[3].getType()).toBe('tool');
-  expect(resumed[3].tool_call_id).toBe('lookup-1');
-  if (persisted) {
-    expect(resumed[3].content).toContain('search_price_candidates');
-    expect(lookup).not.toHaveBeenCalled();
-  } else {
-    expect(resumed[3].status).toBe('error');
-    expect(resumed[3].content).toContain('No result is available');
-    expect(lookup).toHaveBeenCalledTimes(1);
-  }
-  expect(onChildMessages.mock.calls.at(-1)![0].at(-1).data.content).toBe(validChild);
-});
-
-it('rehydrates legacy output and Python evidence with the original chunk and persisted lookups', async () => {
-  const pythonEvidence: QuotationPythonEvidence[] = [{ type: 'tool-result', toolCallId: 'py-1', payload: '{"output":"42"}' }];
-  invoke.mockResolvedValueOnce(new AIMessageChunk({ content: validChild, response_metadata: { finish_reason: 'stop' } }));
-  const lookup = jest.fn();
-  await invokeQuotationModel({
-    ...childInput(), lookup,
-    continuation: {
-      previousOutputs: [malformedChild],
-      lookups: [{ id: 'lookup-1', arguments: { query: 'original lookup' }, result: lookupResult }],
-      pythonEvidence,
-    },
-  });
-  const resumed = invoke.mock.calls[0]![0];
-  expect(resumed[1].content).toBe(childInput().input);
-  expect(resumed[2].tool_calls[0].args).toEqual({ query: 'original lookup' });
-  expect(resumed[3].tool_call_id).toBe('lookup-1');
-  expect(resumed[4].content).toBe(malformedChild);
-  expect(resumed[5].content).toContain(JSON.stringify(pythonEvidence));
-  expect(lookup).not.toHaveBeenCalled();
-});
-
 it('preserves the exhausted final response and stops when transcript persistence fails', async () => {
   invoke.mockResolvedValue(new AIMessageChunk({ content: malformedChild, response_metadata: { finish_reason: 'stop' } }));
   const onChildMessages = jest.fn();
@@ -455,18 +433,4 @@ it('preserves the exhausted final response and stops when transcript persistence
   onChildMessages.mockRejectedValueOnce(new Error('transcript storage failed'));
   await expect(invokeQuotationModel({ ...childInput(), onChildMessages, validateChildOutput })).rejects.toThrow('transcript storage failed');
   expect(invoke).toHaveBeenCalledTimes(1);
-});
-
-it.each(['different input', 'orphan result', 'unmatched result'])('rejects corrupt Retry history: %s', async (scenario) => {
-  const original = childInput();
-  const messages: BaseMessage[] = [new SystemMessage(original.prompt), new HumanMessage(
-    scenario === 'different input' ? 'another chunk' : original.input,
-  )];
-  if (scenario === 'unmatched result') messages.push(childToolCall());
-  if (scenario !== 'different input') messages.push(new ToolMessage({ content: 'result', tool_call_id: 'unrelated' }));
-  await expect(invokeQuotationModel({
-    ...original,
-    continuation: { messages: mapChatMessagesToStoredMessages(messages), previousOutputs: [], lookups: [], pythonEvidence: [] },
-  })).rejects.toThrow('Saved quotation');
-  expect(invoke).not.toHaveBeenCalled();
 });

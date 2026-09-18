@@ -197,6 +197,27 @@ describe('OpenAI OAuth model adapter', () => {
     jest.clearAllMocks();
   });
 
+  it('forwards a named quotation lookup choice per invocation without changing later defaults', async () => {
+    const doGenerate = jest.fn(async () => createGenerateResult([{ type: 'text', text: 'result' }]));
+    const model = createOpenAIOAuthModel({
+      ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
+      model: 'gpt-5.6-terra',
+      tools: [{ type: 'function', function: {
+        name: 'search_price_candidates', description: 'Search prices',
+        parameters: { type: 'object', properties: { queries: { type: 'array' } } },
+      } }],
+    });
+    await model.invoke([new HumanMessage('報價')], {
+      toolChoice: { type: 'tool', toolName: 'search_price_candidates' },
+    });
+    expect(getGenerateCall(doGenerate).toolChoice).toEqual({ type: 'tool', toolName: 'search_price_candidates' });
+    expect(getGenerateCall(doGenerate).tools).toContainEqual(expect.objectContaining({
+      type: 'function', name: 'search_price_candidates',
+    }));
+    await model.invoke([new HumanMessage('完成報價')]);
+    expect(doGenerate.mock.calls[1]![0].toolChoice).toEqual({ type: 'auto' });
+  });
+
   it('keeps Code Interpreter but sends no Steel tools to the delegate merge provider', async () => {
     const doStream: jest.Mock = jest.fn(async () =>
       createStreamResult([
@@ -565,6 +586,16 @@ describe('OpenAI OAuth model adapter', () => {
       }),
     );
     expect(requestBody).not.toHaveProperty('temperature');
+    await provider('gpt-5.6-luna').doGenerate({
+      prompt: [{ role: 'user', content: [{ type: 'text', text: '查詢鐵板價格' }] }],
+      tools: [{ type: 'function', name: 'search_price_candidates',
+        inputSchema: { type: 'object', properties: { queries: { type: 'array' } } } }],
+      toolChoice: { type: 'tool', toolName: 'search_price_candidates' },
+    });
+    expect(requestBody).toEqual(expect.objectContaining({
+      tool_choice: { type: 'function', name: 'search_price_candidates' },
+      tools: expect.arrayContaining([expect.objectContaining({ type: 'function', name: 'search_price_candidates' })]),
+    }));
   });
 
   it('can be piped after a system context runnable in the native graph path', async () => {

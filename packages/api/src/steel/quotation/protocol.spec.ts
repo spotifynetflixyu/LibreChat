@@ -3,6 +3,8 @@ import {
   extractCustomerDataTable,
   finalizeQuotationMainResponse,
   parseQuotationSignal,
+  splitQuotationChunk,
+  mergeQuotationChildResults,
   validateQuotationChildResult,
 } from './protocol';
 
@@ -82,6 +84,32 @@ const pricedRow = ['ERP-1', '鐵板 6T P1', '黑鐵', 'Kg', '2', '', '2', '12', 
 const blankRow = ['', '鐵板 P1', '', '', '2', '', '', '', '2', '', '6', '100', '200', '', '鐵板', '查無候選，需確認'];
 
 describe('quotation protocol', () => {
+  it('splits recovery source rows exactly once and merges complete material, processing and review tables', () => {
+    const parent = chunkForRows(Array.from({ length: 23 }, (_, index) =>
+      ['F1', `P${index + 1}`, '鐵板', '2', '6', '100', '200']));
+    const slices = splitQuotationChunk(parent);
+    expect(slices.map((slice) => slice.sourceRows.length)).toEqual([10, 10, 3]);
+    expect(slices.flatMap((slice) => slice.sourceRows)).toEqual(parent.sourceRows);
+    const children = slices.map((chunk) => ({
+      ...childInput(chunk, pricedRow),
+      response: `${childInput(chunk, pricedRow).response}\n\n## manual_reviews_chunk\n\n${table(reviewHeaders, [
+        ['ocr_result', chunk.sourceRows[0]!.cells[1]!, '單價', '', '需確認', '報價'],
+      ])}`,
+    }));
+    const merged = mergeQuotationChildResults(parent, children);
+    expect(merged.match(/## system_order_chunk/g)).toHaveLength(1);
+    expect(merged.match(/## manual_reviews_chunk/g)).toHaveLength(1);
+    expect(validateQuotationChildResult({ ...childInput(parent, pricedRow), response: merged }).rows).toHaveLength(3);
+    expect(merged.indexOf('P1 |')).toBeLessThan(merged.indexOf('P11 |'));
+    expect(merged.indexOf('P11 |')).toBeLessThan(merged.indexOf('P21 |'));
+    expect(() => mergeQuotationChildResults(parent, children.slice(1))).toThrow('source');
+    expect(() => mergeQuotationChildResults(parent, [children[0]!, ...children])).toThrow('source');
+    expect(() => mergeQuotationChildResults(parent, [...children].reverse())).toThrow('source');
+    expect(() => mergeQuotationChildResults(parent, [
+      ...children.slice(0, -1), { ...children[2]!, response: `${children[2]!.response}\n| unfinished` },
+    ])).toThrow('incomplete Markdown row');
+  });
+
   it('parses only the fixed standalone quotation start signal', () => {
     expect(parseQuotationSignal('## quote_signal\n\nstart')).toEqual({ action: 'start' });
     for (const text of [

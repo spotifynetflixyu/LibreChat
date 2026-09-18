@@ -295,6 +295,145 @@ describe('quotation runner integration', () => {
     oauthFactory.mockReset();
   });
 
+  it('immediately repairs invalid large chunks in durable slices and restarts only the unfinished slice', async () => {
+    const run = await prepareRun(61);
+    const chunks = buildQuotationChunks(orderMarkdown(61));
+    const child = (rows: QuotationChunk['sourceRows']) => childMarkdown(rows.map(systemRow));
+    const response = (content: string) => new AIMessageChunk({ content, response_metadata: { finish_reason: 'stop' } });
+    const lookup = (id: string) => new AIMessageChunk({ content: '', tool_calls: [
+      { name: 'search_price_candidates', id, args: { queries: [{ queryId: id }] } },
+    ], response_metadata: { finish_reason: 'tool_calls' } });
+    const middle = chunks[1]!;
+    const review = `## manual_reviews_chunk\n\n${markdownTable(
+      ['來源表格', '來源件號 / 項次', '問題欄位', '目前判斷', '需確認內容', '影響範圍'],
+      [['F1', 'P31', '單價', '', '確認價格', '報價']],
+    )}`;
+    const broken = `${child(middle.sourceRows.slice(0, 5))}\n| \u3011\u3010\uff1a\u3011\u3010\u201c\u3011\u3010analysis code`;
+    const providerInvoke = configureOAuthResponses([
+      lookup('first'), response(child(chunks[0]!.sourceRows)),
+      lookup('large'), response(broken),
+      lookup('slice-1'), response(`${child(middle.sourceRows.slice(0, 10))}\n\n${review}`),
+      lookup('slice-2'), response(broken),
+      lookup('slice-2-repair-1'), response(broken),
+      lookup('slice-2-resumed'), response(child(middle.sourceRows.slice(10, 20))),
+      lookup('slice-3'), response(child(middle.sourceRows.slice(20))),
+      lookup('last'), response(child(chunks[2]!.sourceRows)),
+      response(mainMarkdown(orderMarkdown(61))),
+    ]);
+    const executeLookup = createLookupExecutor();
+    const publishFinal = jest.fn(async () => undefined);
+    await expect(runQuotationPreflight(runnerInput(invokeQuotationModel, executeLookup, { publishFinal })))
+      .rejects.toThrow('expected 16 columns, found 0');
+    const interrupted = (await service.readState(scope))!.activeRun!;
+    expect(interrupted.chunks.map((chunk) => chunk.status)).toEqual(['completed', 'pending', 'pending']);
+    expect(await service.readCheckpoint({ scope, runId: run.runId, operationId: 'chunk:2' })).toBeUndefined();
+    const splitPlan = await service.readCheckpoint({ scope, runId: run.runId, operationId: 'split:2' });
+    expect(JSON.parse(splitPlan!).rowsPerSlice).toBe(10);
+    const firstSlice = await service.readCheckpoint({ scope, runId: run.runId, operationId: 'slice:2:1' });
+    expect(JSON.parse(firstSlice!).markdown).toContain(review);
+    expect(executeLookup).toHaveBeenCalledTimes(5);
+    expect(publishFinal).not.toHaveBeenCalled();
+    const calls = providerInvoke.mock.calls.length;
+    await expect(runQuotationPreflight(runnerInput(invokeQuotationModel, executeLookup, { publishFinal })))
+      .resolves.toEqual(expect.objectContaining({ status: 'completed' }));
+    expect(providerInvoke).toHaveBeenCalledTimes(calls + 7);
+    expect(executeLookup).toHaveBeenCalledTimes(8);
+    const resumedInput = JSON.parse(providerInvoke.mock.calls[calls]![0][1].content);
+    expect(parseMarkdownTables(resumedInput.chunk)[0]!.rows.map((row) => row[1]))
+      .toEqual(Array.from({ length: 10 }, (_, i) => `P${i + 41}`));
+    const saved = JSON.parse((await service.readCheckpoint({ scope, runId: run.runId, operationId: 'chunk:2' }))!);
+    expect(saved.markdown).toContain(review);
+    expect(parseMarkdownTables(saved.markdown)[0]!.rows.map((row) => row[1]))
+      .toEqual(middle.sourceRows.map((row) => systemRow(row)[1]));
+    expect(await service.readCheckpoint({ scope, runId: run.runId, operationId: 'slice:2:1' })).toBe(firstSlice);
+    expect(await service.readCheckpoint({ scope, runId: run.runId, operationId: 'split:2' })).toBe(splitPlan);
+    expect(publishFinal).toHaveBeenCalledTimes(1);
+    const history = await readQuotationHistory({ scope, runId: run.runId });
+    expect(history.preflightToolCalls).toHaveLength(8);
+  });
+
+  it('resumes an exhausted legacy parent directly with a saved recovery plan', async () => {
+    const run = await prepareRun(23);
+    const lease = await service.acquireLease({ scope, runId: run.runId });
+    const leased = { scope, runId: run.runId, leaseToken: lease!.leaseToken };
+    await service.checkpoint({ ...leased, operationId: 'repair:1:legacy:2:chunk_repair_failed', kind: 'main',
+      payload: JSON.stringify({ stage: 'chunk_repair_failed', repairAttempt: 2, maxRepairAttempts: 2 }),
+    });
+    await service.checkpoint({ ...leased, operationId: 'child-output:1:legacy', kind: 'main',
+      payload: JSON.stringify({ markdown: '| incomplete', lookupOperations: [], pythonOperations: [] }),
+    });
+    await service.interruptRun(leased);
+    const model = createModel({ onChild: async (input) => {
+      const plan = JSON.parse((await service.readCheckpoint({ scope, runId: run.runId, operationId: 'split:1' }))!);
+      expect(plan.version).toBe(1);
+      expect(plan.rowsPerSlice).toBe(10);
+      expect(plan.sourceRowIds.map((ids: string[]) => ids.length)).toEqual([10, 10, 3]);
+      expect(input).not.toHaveProperty('continuation');
+      const rows = parseMarkdownTables(JSON.parse(input.input).chunk)[0]!.rows;
+      await input.lookup?.(`lookup-${rows[0]![1]}`, { queries: [] });
+      return { markdown: childMarkdown(rows.map(systemRowFromSourceRow)), lookups: [], pythonEvidence: [] };
+    } });
+    await expect(runQuotationPreflight(runnerInput(model, createLookupExecutor())))
+      .resolves.toEqual(expect.objectContaining({ status: 'completed' }));
+    expect(model.mock.calls.filter(([input]) => input.role === 'child').map(([input]) =>
+      parseMarkdownTables(JSON.parse(input.input).chunk)[0]!.rows.length)).toEqual([10, 10, 3]);
+  });
+
+  it('rejects a changed recovery source plan before invoking a child', async () => {
+    const run = await prepareRun(23);
+    const lease = await service.acquireLease({ scope, runId: run.runId });
+    const leased = { scope, runId: run.runId, leaseToken: lease!.leaseToken };
+    await service.checkpoint({ ...leased, operationId: 'split:1', kind: 'main',
+      payload: JSON.stringify({ version: 1, sourceRowIds: [['source-row-2']] }),
+    });
+    await service.interruptRun(leased);
+    const model = createModel();
+    await expect(runQuotationPreflight(runnerInput(model, createLookupExecutor())))
+      .rejects.toThrow('recovery plan does not match');
+    expect(model).not.toHaveBeenCalled();
+    expect(await service.readCheckpoint({ scope, runId: run.runId, operationId: 'chunk:1' })).toBeUndefined();
+  });
+
+  it('does not split valid saved output after interruption before the parent checkpoint', async () => {
+    const run = await prepareRun(30);
+    const lease = await service.acquireLease({ scope, runId: run.runId });
+    const leased = { scope, runId: run.runId, leaseToken: lease!.leaseToken };
+    const lookupKey = 'lookup:1:interrupted:lookup-old';
+    await service.checkpoint({ ...leased, operationId: lookupKey, kind: 'tool', payload: JSON.stringify({
+      lookupCallId: 'lookup-old', arguments: { queries: [] }, result: lookupResult(),
+    }) });
+    await service.checkpoint({ ...leased, operationId: 'child-output:1:interrupted', kind: 'main',
+      payload: JSON.stringify({ markdown: childMarkdown(buildQuotationChunks(orderMarkdown(30))[0]!.sourceRows.map(systemRow)),
+        lookupOperations: [lookupKey], pythonOperations: [] }),
+    });
+    await service.interruptRun(leased);
+    const model = createModel();
+    await runQuotationPreflight(runnerInput(model, createLookupExecutor()));
+    const childInputs = model.mock.calls.filter(([input]) => input.role === 'child');
+    expect(childInputs).toHaveLength(1);
+    expect(parseMarkdownTables(JSON.parse(childInputs[0]![0].input).chunk)[0]!.rows).toHaveLength(30);
+    expect(childInputs[0]![0]).not.toHaveProperty('continuation');
+    expect(await service.readCheckpoint({ scope, runId: run.runId, operationId: 'split:1' })).toBeUndefined();
+  });
+
+  it.each(['provider failure', 'checkpoint failure', 'cancellation', 'lease loss'])(
+    'does not split a large child for %s even after its last repair event', async (failure) => {
+      const run = await prepareRun(30);
+      const controller = new AbortController();
+      const model = createModel({ onChild: async (input) => {
+        await input.onChildRepair?.({ stage: 'chunk_repair_failed', repairAttempt: 2, maxRepairAttempts: 2 });
+        if (failure === 'cancellation') controller.abort(new Error(failure));
+        if (failure === 'lease loss') await service.cancelRun({ scope, runId: run.runId });
+        throw new Error(failure);
+      } });
+      const execution = runQuotationPreflight(runnerInput(model, createLookupExecutor(), { signal: controller.signal }));
+      if (failure === 'lease loss') await expect(execution).resolves.toEqual({ status: 'cancelled' });
+      else await expect(execution).rejects.toThrow(failure);
+      expect(model).toHaveBeenCalledTimes(1);
+      expect(await service.readCheckpoint({ scope, runId: run.runId, operationId: 'split:1' })).toBeUndefined();
+    },
+  );
+
   it('forwards main text during aggregation once chunks are saved and publishes only the finalized order', async () => {
     await prepareRun(1);
     const progress: QuotationProgress[] = [];
@@ -362,6 +501,7 @@ describe('quotation runner integration', () => {
     const providerInvoke = configureOAuthResponses([
       new AIMessageChunk({ content: '', tool_calls: [{ name: 'search_price_candidates', id: 'lookup-1', args: { queries: [{ queryId: 'q1' }] } }], response_metadata: { finish_reason: 'tool_calls' } }),
       new AIMessageChunk({ content: malformed, response_metadata: { finish_reason: 'stop' } }),
+      new AIMessageChunk({ content: '', tool_calls: [{ name: 'search_price_candidates', id: 'lookup-repair', args: { queries: [{ queryId: 'q1' }] } }], response_metadata: { finish_reason: 'tool_calls' } }),
       new AIMessageChunk({ content: valid, response_metadata: { finish_reason: 'stop' } }),
       new AIMessageChunk({ content: mainMarkdown(orderMarkdown(1)), response_metadata: { finish_reason: 'stop' } }),
     ]);
@@ -389,66 +529,12 @@ describe('quotation runner integration', () => {
     const savedChunk = await service.readCheckpoint({ scope, runId: run.runId, operationId: 'chunk:1' });
     expect((JSON.parse(savedChunk!) as { markdown: string }).markdown).toBe(valid);
     expect(savedChunk).not.toContain(malformed);
-    expect(executeLookup).toHaveBeenCalledTimes(1);
-    expect(providerInvoke).toHaveBeenCalledTimes(4);
-    expect(oauthFactory).toHaveBeenCalledTimes(2);
-    expect(progress.filter((event) => event.stage?.startsWith('chunk_repair_')).map((event) => [event.stage, event.repairAttempt])).toEqual([
-      ['chunk_repair_started', 1], ['chunk_repair_succeeded', 1],
-    ]);
+    expect(executeLookup).toHaveBeenCalledTimes(2);
+    expect(providerInvoke).toHaveBeenCalledTimes(5);
+    expect(oauthFactory).toHaveBeenCalledTimes(3);
+    expect(progress.filter((event) => event.stage?.startsWith('chunk_repair_')).map((event) => [event.stage, event.repairAttempt])).toEqual([]);
     const history = await readQuotationHistory({ scope, runId: run.runId });
-    expect(history.activityEvents.filter((event) => event.type === 'quotation_status' && event.stage.startsWith('chunk_repair_'))).toEqual([
-      expect.objectContaining({ stage: 'chunk_repair_started', repairAttempt: 1, maxRepairAttempts: 2 }),
-      expect.objectContaining({ stage: 'chunk_repair_succeeded', repairAttempt: 1, maxRepairAttempts: 2 }),
-    ]);
-  });
-
-  it('resumes the pending sibling after repair exhaustion with its persisted conversation and tools', async () => {
-    const run = await prepareRun(31);
-    const chunks = buildQuotationChunks(orderMarkdown(31));
-    const firstValid = childMarkdown(chunks[0]!.sourceRows.map(systemRow));
-    const secondValid = childMarkdown(chunks[1]!.sourceRows.map(systemRow));
-    const secondMalformed = `${secondValid}\n| 未完成`;
-    const providerInvoke = configureOAuthResponses([
-      new AIMessageChunk({ content: '', tool_calls: [{ name: 'search_price_candidates', id: 'lookup-1', args: { queries: [{ queryId: 'q1' }] } }], response_metadata: { finish_reason: 'tool_calls' } }),
-      new AIMessageChunk({ content: firstValid, response_metadata: { finish_reason: 'stop' } }),
-      new AIMessageChunk({ content: '', tool_calls: [{ name: 'search_price_candidates', id: 'lookup-2', args: { queries: [{ queryId: 'q1' }] } }], response_metadata: { finish_reason: 'tool_calls' } }),
-      new AIMessageChunk({ content: secondMalformed, response_metadata: { finish_reason: 'stop' } }),
-      new AIMessageChunk({ content: secondMalformed, response_metadata: { finish_reason: 'stop' } }),
-      new AIMessageChunk({ content: secondMalformed, response_metadata: { finish_reason: 'stop' } }),
-      new AIMessageChunk({ content: secondValid, response_metadata: { finish_reason: 'stop' } }),
-      new AIMessageChunk({ content: mainMarkdown(orderMarkdown(31)), response_metadata: { finish_reason: 'stop' } }),
-    ]);
-    const executeLookup = createLookupExecutor();
-
-    await expect(runQuotationPreflight(runnerInput(invokeQuotationModel, executeLookup))).rejects.toThrow(
-      'incomplete Markdown row',
-    );
-    const interrupted = await service.readState(scope);
-    expect(interrupted?.activeRun?.status).toBe('interrupted');
-    expect(interrupted?.activeRun?.chunks.map((chunk) => chunk.status)).toEqual(['completed', 'pending']);
-    const failedHistory = await readQuotationHistory({ scope, runId: run.runId });
-    expect(failedHistory.activityEvents.filter((event) => event.type === 'quotation_status' && event.stage === 'chunk_repair_failed')).toEqual([
-      expect.objectContaining({ repairAttempt: 2, maxRepairAttempts: 2, chunkIndex: 2, message: expect.stringContaining('incomplete Markdown row') }),
-    ]);
-    const savedFirst = await service.readCheckpoint({ scope, runId: run.runId, operationId: 'chunk:1' });
-    expect((JSON.parse(savedFirst!) as { markdown: string }).markdown).toBe(firstValid);
-    expect(await service.readCheckpoint({ scope, runId: run.runId, operationId: 'chunk:2' })).toBeUndefined();
-    expect(executeLookup).toHaveBeenCalledTimes(2);
-    expect(oauthFactory).toHaveBeenCalledTimes(2);
-    const callsAfterFailure = providerInvoke.mock.calls.length;
-
-    await expect(runQuotationPreflight(runnerInput(invokeQuotationModel, executeLookup))).resolves.toEqual(
-      expect.objectContaining({ status: 'completed' }),
-    );
-    expect(providerInvoke).toHaveBeenCalledTimes(callsAfterFailure + 2);
-    const resumedMessages = providerInvoke.mock.calls[callsAfterFailure]![0];
-    expect(resumedMessages.some((message: { content: unknown }) => message.content === secondMalformed)).toBe(true);
-    expect(resumedMessages.some((message: { tool_call_id?: string }) => message.tool_call_id === 'lookup-2')).toBe(true);
-    expect(resumedMessages.some((message: { content: unknown }) => message.content === firstValid)).toBe(false);
-    expect(executeLookup).toHaveBeenCalledTimes(2);
-    expect(oauthFactory).toHaveBeenCalledTimes(4);
-    const savedSecond = await service.readCheckpoint({ scope, runId: run.runId, operationId: 'chunk:2' });
-    expect((JSON.parse(savedSecond!) as { markdown: string }).markdown).toBe(secondValid);
+    expect(history.activityEvents.filter((event) => event.type === 'quotation_status' && event.stage.startsWith('chunk_repair_'))).toEqual([]);
   });
 
   it('saves a canonical chunk without another AI generation when only its closing delimiter is missing', async () => {
@@ -488,7 +574,7 @@ describe('quotation runner integration', () => {
     expect(child.pythonOperations).toEqual([]);
   });
 
-  it('resumes a legacy failed output with its original input and durable lookup evidence', async () => {
+  it('repairs a legacy failed output from clean input with a fresh lookup', async () => {
     const run = await prepareRun(1);
     const lease = await service.acquireLease({ scope, runId: run.runId });
     const leased = { scope, runId: run.runId, leaseToken: lease!.leaseToken };
@@ -503,18 +589,21 @@ describe('quotation runner integration', () => {
     }) });
     await service.interruptRun(leased);
     const providerInvoke = configureOAuthResponses([
+      new AIMessageChunk({ content: '', tool_calls: [{ name: 'search_price_candidates', id: 'lookup-new', args: { queries: [{ queryId: 'fresh-query' }] } }], response_metadata: { finish_reason: 'tool_calls' } }),
       new AIMessageChunk({ content: valid, response_metadata: { finish_reason: 'stop' } }),
       new AIMessageChunk({ content: mainMarkdown(orderMarkdown(1)), response_metadata: { finish_reason: 'stop' } }),
     ]);
     const executeLookup = createLookupExecutor();
     await runQuotationPreflight(runnerInput(invokeQuotationModel, executeLookup));
-    expect(executeLookup).not.toHaveBeenCalled();
+    expect(executeLookup).toHaveBeenCalledTimes(1);
     const resumed = providerInvoke.mock.calls[0]![0];
     expect(resumed[1].content).toContain('P1');
     expect(resumed[1].content).toContain('C1');
-    expect(resumed[2].tool_calls[0].args.queries[0].queryId).toBe('old-query');
-    expect(resumed[3].tool_call_id).toBe('lookup-old');
-    expect(resumed[4].content).toBe(broken);
+    expect(resumed).toHaveLength(2);
+    expect(JSON.stringify(resumed)).not.toContain('old-query');
+    expect(JSON.stringify(resumed)).not.toContain(broken);
+    const savedRaw = await service.readCheckpoint({ scope, runId: run.runId, operationId: 'child-output:1:legacy' });
+    expect(JSON.parse(savedRaw!).markdown).toBe(broken);
     expect((await service.readState(scope))?.activeRun?.status).toBe('completed');
   });
 

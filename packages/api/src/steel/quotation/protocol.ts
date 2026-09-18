@@ -93,6 +93,7 @@ export interface ValidatedQuotationChildResult {
   readonly markdown: string;
   readonly table: QuotationChunkTable;
   readonly rows: readonly (readonly string[])[];
+  readonly reviewTable?: QuotationChunkTable;
 }
 
 export interface QuotationProtocolFailure {
@@ -309,6 +310,35 @@ export function buildQuotationChunks(fullOcrResult: string): readonly QuotationC
   return chunks;
 }
 
+export function splitQuotationChunk(chunk: QuotationChunk): readonly QuotationChunk[] {
+  const slices: QuotationChunk[] = [];
+  for (let offset = 0; offset < chunk.sourceRows.length; offset += 10) {
+    const sourceRows = chunk.sourceRows.slice(offset, offset + 10);
+    const table = { headers: chunk.table.headers, rows: sourceRows.map((row) => row.cells) };
+    slices.push({ ...chunk, sourceRows, table, markdown: renderQuotationChunkTable(table) });
+  }
+  return slices;
+}
+
+export function mergeQuotationChildResults(
+  parent: QuotationChunk,
+  children: readonly QuotationChildResultInput[],
+): string {
+  const sources = children.flatMap((child) => child.chunk.sourceRows);
+  if (sources.length !== parent.sourceRows.length || sources.some((source, index) =>
+    source.sourceRowId !== parent.sourceRows[index]!.sourceRowId ||
+    JSON.stringify(source.cells) !== JSON.stringify(parent.sourceRows[index]!.cells))) {
+    throw new Error('Quotation recovery slices do not match the original source rows');
+  }
+  const validated = children.map(validateQuotationChildResult);
+  const rows = validated.flatMap((child) => child.rows);
+  const reviews = validated.flatMap((child) => child.reviewTable?.rows ?? []);
+  return [
+    renderQuotationChunkTable({ headers: quotationSystemOrderColumns, rows }),
+    ...(reviews.length ? [`## manual_reviews_chunk\n\n${renderTable({ headers: quotationManualReviewColumns, rows: reviews })}`] : []),
+  ].join('\n\n');
+}
+
 function isQuoteControlFence(language: string, content: string): boolean {
   if (/^(?:json|application\/json)$/iu.test(language.trim())) {
     try {
@@ -409,6 +439,7 @@ function validateChildTable(input: QuotationChildResultInput): ValidatedQuotatio
       ? `## manual_reviews_chunk\n\n${renderTable(reviewTable)}` : ''].filter(Boolean).join('\n\n'),
     table,
     rows: table.rows,
+    ...(reviewTable ? { reviewTable } : {}),
   };
 }
 

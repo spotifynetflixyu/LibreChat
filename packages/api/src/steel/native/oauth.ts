@@ -83,6 +83,10 @@ export interface OpenAIOAuthModelOptions extends OpenAIOAuthProviderOptions {
   tools?: BindToolsInput[];
 }
 
+export interface OpenAIOAuthInvokeOptions extends Partial<RunnableConfig> {
+  toolChoice?: LanguageModelV3CallOptions['toolChoice'];
+}
+
 async function loadCreateOpenAIOAuth(): Promise<CreateOpenAIOAuth> {
   const provider = await dynamicImportOpenAIOAuth('@openai-oauth/ai-sdk');
   return provider.createOpenAIOAuth;
@@ -962,7 +966,7 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
     });
   }
 
-  async invoke(messages: BaseMessage[], config?: Partial<RunnableConfig>): Promise<AIMessageChunk> {
+  async invoke(messages: BaseMessage[], config?: OpenAIOAuthInvokeOptions): Promise<AIMessageChunk> {
     const providerModel = await this.getProviderModel();
     const ocrMode = hasOcrCompletionDirective(messages);
     const inspectCodeInterpreter = shouldInspectCodeInterpreter(messages, this.options);
@@ -976,6 +980,7 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
         messages,
         options: this.options,
         tools: this.options.tools,
+        toolChoice: config?.toolChoice,
       }),
     );
 
