@@ -163,6 +163,18 @@ describe('quotation protocol', () => {
     expect(result.markdown).toContain('ERP-1');
   });
 
+  it.each([
+    '```text\nnotes\n```',
+    '   ~~~~text\r\nnotes\r\n   ~~~~~',
+    '```text\nunfinished',
+    '~~~text\nunfinished',
+  ])('rejects non-control fenced content in child results: %s', (fence) => {
+    const child = childInput(chunkForRows(), pricedRow);
+    expect(() => validateQuotationChildResult({
+      ...child, response: `${child.response}\n\n${fence}`,
+    })).toThrow('Child result must contain one 16-column system_order_chunk');
+  });
+
   it('rejects malformed child tables while retaining escaped Markdown cell parsing', () => {
     const chunk = chunkForRows();
     const escaped = [...pricedRow];

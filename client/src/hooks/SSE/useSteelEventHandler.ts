@@ -419,14 +419,6 @@ function stableEventKey(event: SteelNativeActivityEvent): string {
     failedKeys: event.type === 'parse_status' ? event.failedKeys : undefined,
     missingPageRangesByFileKey:
       event.type === 'parse_status' ? event.missingPageRangesByFileKey : undefined,
-    index: event.type === 'quotation_status' ? event.index : undefined,
-    runId: event.type === 'quotation_status' ? event.runId : undefined,
-    quotationStage: event.type === 'quotation_status' ? event.stage : undefined,
-    quotationStatus: event.type === 'quotation_status' ? event.status : undefined,
-    completedChunks: event.type === 'quotation_status' ? event.completedChunks : undefined,
-    totalChunks: event.type === 'quotation_status' ? event.totalChunks : undefined,
-    chunkIndex: event.type === 'quotation_status' ? event.chunkIndex : undefined,
-    attempt: event.type === 'quotation_status' ? event.attempt : undefined,
   });
 }
 

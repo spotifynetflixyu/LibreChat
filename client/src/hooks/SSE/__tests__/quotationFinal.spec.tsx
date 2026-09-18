@@ -134,17 +134,17 @@ describe('quotation final response reconciliation', () => {
       showStopButton = typeof update === 'function' ? update(showStopButton) : update;
     };
 
-    const submission = {
+    const submission: EventSubmission = {
       userMessage,
       initialResponse,
       // The UI cache already contains this turn's user/placeholder rows. The
       // transport submission carries only the history from before the turn.
       messages: [],
       conversation: conversationState,
-      endpointOption: {},
+      endpointOption: { endpoint: conversationState.endpoint },
       isRegenerate: false,
       isTemporary: false,
-    } as EventSubmission;
+    };
 
     const pendingFrames: FrameRequestCallback[] = [];
     jest.spyOn(window, 'requestAnimationFrame').mockImplementation((callback) => {

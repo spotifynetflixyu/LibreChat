@@ -62,19 +62,20 @@ export function extractSteelNativeMarkdownText({
   content?: unknown;
   sectionTitle?: string;
 }): string {
-  const contentText = extractContentText(content);
-  if (sectionTitle) {
-    const hasSection = (markdown: string) => parseAssistantMarkdown(markdown).sections
-      .some((section) => section.title === sectionTitle);
-    if (!hasSection(text ?? '') && hasSection(contentText)) {
-      return contentText;
-    }
+  if (typeof text !== 'string' || text.trim().length === 0) {
+    return extractContentText(content);
   }
-  if (typeof text === 'string' && text.trim().length > 0) {
+  if (!sectionTitle) {
     return text;
   }
 
-  return contentText;
+  const hasSection = (markdown: string) => parseAssistantMarkdown(markdown).sections
+    .some((section) => section.title === sectionTitle);
+  if (hasSection(text)) {
+    return text;
+  }
+  const contentText = extractContentText(content);
+  return hasSection(contentText) ? contentText : text;
 }
 
 export function extractSteelNativeResponseOutputText(response: Pick<Response, 'output'>): string {

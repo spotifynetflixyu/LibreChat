@@ -159,7 +159,6 @@ function exactSection(document: ReturnType<typeof parseAssistantMarkdown>, title
 function parseExactTable(
   body: string,
   headers: readonly string[],
-  options: { readonly allowEmpty?: boolean } = {},
 ): QuotationChunkTable | undefined {
   const tables = parseMarkdownTables(sectionBodyWithoutFences(body));
   if (tables.length !== 1) return undefined;
@@ -167,7 +166,7 @@ function parseExactTable(
   if (
     table.headers.length !== headers.length ||
     headers.some((header, index) => table.headers[index] !== header) ||
-    (!options.allowEmpty && table.rows.length === 0) ||
+    table.rows.length === 0 ||
     table.rows.some((row) => row.length !== headers.length)
   ) return undefined;
   return {
@@ -283,39 +282,6 @@ export function buildQuotationChunks(fullOcrResult: string): readonly QuotationC
   return chunks;
 }
 
-interface FencedBlock {
-  readonly language: string;
-  readonly content: string;
-}
-
-function readFencedBlocks(markdown: string): { visible: string; blocks: readonly FencedBlock[] } {
-  const lines = markdown.split(/\r?\n/u);
-  const visible: string[] = [];
-  const blocks: FencedBlock[] = [];
-  let opening: { character: '`' | '~'; length: number; language: string; content: string[] } | undefined;
-  for (const line of lines) {
-    if (!opening) {
-      const match = line.match(/^ {0,3}(`{3,}|~{3,})([^`]*)$/u);
-      if (match) {
-        opening = {
-          character: match[1]![0] as '`' | '~',
-          length: match[1]!.length,
-          language: match[2]!.trim(),
-          content: [],
-        };
-      } else visible.push(line);
-      continue;
-    }
-    const closing = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/u)?.[1];
-    if (closing?.[0] === opening.character && closing.length >= opening.length) {
-      blocks.push({ language: opening.language, content: opening.content.join('\n') });
-      opening = undefined;
-    } else opening.content.push(line);
-  }
-  if (opening) visible.push(...opening.content);
-  return { visible: visible.join('\n'), blocks };
-}
-
 function isQuoteControlFence(language: string, content: string): boolean {
   if (/^(?:json|application\/json)$/iu.test(language.trim())) {
     try {
@@ -373,14 +339,13 @@ function validateChildTable(input: QuotationChildResultInput): ValidatedQuotatio
   const response = input.response ?? input.markdown;
   if (!response) protocolError('invalid_child_result', 'Quotation child result is empty.');
   const sanitizedResponse = stripLegacyQuotationChildSidecars(response);
-  const fenced = readFencedBlocks(sanitizedResponse);
   const document = parseAssistantMarkdown(sanitizedResponse);
   const section = exactSection(document, 'system_order_chunk');
   const reviewSection = exactSection(document, 'manual_reviews_chunk');
   if (!section || section.title !== 'system_order_chunk' ||
     document.sections[0] !== section ||
     document.sections.length !== (reviewSection ? 2 : 1) ||
-    (reviewSection && reviewSection.title !== 'manual_reviews_chunk') || fenced.blocks.length > 0 ||
+    (reviewSection && reviewSection.title !== 'manual_reviews_chunk') ||
     /^ {0,3}(`{3,}|~{3,})/mu.test(sanitizedResponse)) {
     protocolError('invalid_child_result', 'Child result must contain one 16-column system_order_chunk followed by an optional manual_reviews_chunk Markdown table.');
   }

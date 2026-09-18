@@ -111,13 +111,6 @@ function getQuotationStatusText(
       totalChunks,
     });
   }
-  if (status === 'aggregating' && stage === 'aggregating') {
-    return localize('com_ui_steel_quote_status_main_consolidating', {
-      completedChunks,
-      totalChunks,
-    });
-  }
-
   if (status === 'queued') {
     return localize('com_ui_steel_quote_status_queued');
   }
