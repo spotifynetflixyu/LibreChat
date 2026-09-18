@@ -6367,7 +6367,7 @@ async function executeSteelQuotationWorkflow({
       }
       await emitSteelNativeEvents({ req, res, streamId, events, historyChanged });
     },
-    onProgress: async ({ run: active, completedChunks, totalChunks, chunkIndex, attempt, stage }) => {
+    onProgress: async ({ run: active, completedChunks, totalChunks, chunkIndex, attempt, stage, repairAttempt, maxRepairAttempts, message }) => {
       await collectSteers();
       await emitSteelNativeEvents({ req, res, streamId, events: [buildSteelQuotationStatusEventEnvelope({
         conversationId: scope.conversationId,
@@ -6377,7 +6377,7 @@ async function executeSteelQuotationWorkflow({
         runId: active.runId,
         stage: stage ?? active.status,
         status: active.status,
-        completedChunks, totalChunks, chunkIndex, attempt,
+        completedChunks, totalChunks, chunkIndex, attempt, repairAttempt, maxRepairAttempts, message,
       })] });
     },
     onTool: async ({ run: active, id, chunkIndex, attempt, arguments: args, result: toolResult }) => {

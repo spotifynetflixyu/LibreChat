@@ -101,6 +101,19 @@ it('recovers completed but unpublished quotations before a new turn', async () =
   expect((await prepareQuotationTurn({ scope, messageId: 'new', responseId: 'a2', text: '改成 3' })).resume).toBe(true);
 });
 
+it('resumes the original quotation request without enqueuing it as a new message', async () => {
+  const activeRun = { runId: 'r1', status: 'interrupted', triggerMessageId: 'confirm' };
+  mockRead.mockResolvedValue({ activeRun, pendingMessages: [] });
+  const result = await prepareQuotationTurn({
+    scope, messageId: 'confirm', responseId: 'original-response', text: '確認，開始報價',
+  });
+  expect(result.resume).toBe(true);
+  expect(result.state.activeRun).toEqual(activeRun);
+  expect(mockEnqueue).not.toHaveBeenCalled();
+  expect(mockSetOrder).not.toHaveBeenCalled();
+  expect(mockReadOcr).not.toHaveBeenCalled();
+});
+
 it('does not resume a cancelled quotation when there are no pending messages', async () => {
   mockRead.mockResolvedValue({ currentOrder: { markdown: order, sha256: 'order-hash' }, tickets: [], pendingMessages: [],
     activeRun: { runId: 'cancelled-run', status: 'cancelled', triggerMessageId: 'old' } });

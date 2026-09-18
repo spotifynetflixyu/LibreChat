@@ -649,6 +649,22 @@ describe('Steel native event mapping', () => {
     ).toBeUndefined();
   });
 
+  it('retains separate repair attempts and rejects invalid repair counters', () => {
+    const first = buildSteelQuotationStatusEvent({
+      conversationId: 'conversation_1', index: 1, runId: 'run-1', stage: 'chunk_repair_started', status: 'running',
+      completedChunks: 0, totalChunks: 1, chunkIndex: 1, attempt: 'attempt-1', repairAttempt: 1, maxRepairAttempts: 2,
+      message: 'Invalid Markdown row',
+    });
+    const second = { ...first, repairAttempt: 2 };
+    const history = createSteelNativeHistory();
+    expect(appendSteelNativeActivityEvent(history, first)).toBe(true);
+    expect(appendSteelNativeActivityEvent(history, second)).toBe(true);
+    expect(parseSteelNativeHistory(history)?.activityEvents).toEqual([first, second]);
+    for (const counts of [{ repairAttempt: 0 }, { repairAttempt: 3 }, { maxRepairAttempts: -1 }, { repairAttempt: 1.5 }]) {
+      expect(appendSteelNativeActivityEvent(history, { ...first, ...counts })).toBe(false);
+    }
+  });
+
   it('builds an exact positive Code Interpreter audit event', () => {
     expect(
       buildSteelCodeInterpreterAuditEvent({

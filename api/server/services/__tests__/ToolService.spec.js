@@ -7171,6 +7171,8 @@ describe('quotation transport bridge', () => {
       await onHistory(restored);
       const run = { runId: 'run-1', index: 1, status: 'running', targetMessageId: 'response-1' };
       await onProgress({ run, stage: 'chunk_started', chunkIndex: 2, completedChunks: 1, totalChunks: 2 });
+      await onProgress({ run, stage: 'chunk_repair_started', chunkIndex: 2, completedChunks: 1, totalChunks: 2,
+        attempt: 'attempt-1', repairAttempt: 2, maxRepairAttempts: 2, message: 'Invalid Markdown row' });
       const tool = { run, id: 'live-lookup', chunkIndex: 2, attempt: 'attempt-1', arguments: args };
       await onTool(tool);
       await onTool({ ...tool, result });
@@ -7186,6 +7188,9 @@ describe('quotation transport bridge', () => {
     expect(events.filter((event) => event.event === StepEvents.ON_RUN_STEP).map((event) => event.data.index)).toEqual([1, 2]);
     expect(events.filter((event) => event.event === StepEvents.ON_RUN_STEP_COMPLETED).map((event) => event.data.result.index)).toEqual([1, 2]);
     expect(events).toContainEqual(expect.objectContaining({ data: expect.objectContaining({ stage: 'chunk_started', chunkIndex: 2 }) }));
+    expect(events).toContainEqual(expect.objectContaining({ data: expect.objectContaining({
+      stage: 'chunk_repair_started', chunkIndex: 2, attempt: 'attempt-1', repairAttempt: 2, maxRepairAttempts: 2, message: 'Invalid Markdown row',
+    }) }));
     expect(input.contentParts.map((part) => part.type)).toEqual(['text', 'tool_call', 'tool_call', 'text']);
   });
   it('publishes quotation and pending replies through the real authenticated message persistence contract', async () => {

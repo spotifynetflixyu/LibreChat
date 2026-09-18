@@ -116,6 +116,8 @@ export interface SteelNativeQuotationStatusEvent extends SteelNativeEventBase {
   message?: string;
   chunkIndex?: number;
   attempt?: string;
+  repairAttempt?: number;
+  maxRepairAttempts?: number;
 }
 
 export interface SteelNativeQuoteAuditStartedEvent extends SteelNativeEventBase {
@@ -567,6 +569,8 @@ function isSteelNativeEventData(value: unknown): value is SteelNativeStreamEvent
         'message',
         'chunkIndex',
         'attempt',
+        'repairAttempt',
+        'maxRepairAttempts',
       ])
     ) {
       return false;
@@ -597,7 +601,8 @@ function isSteelNativeEventData(value: unknown): value is SteelNativeStreamEvent
       value.completedChunks <= value.totalChunks &&
       (value.message === undefined || typeof value.message === 'string') &&
       (value.chunkIndex === undefined || (isSafeInteger(value.chunkIndex) && value.chunkIndex >= 0)) &&
-      (value.attempt === undefined || (typeof value.attempt === 'string' && value.attempt.length > 0))
+      (value.attempt === undefined || (typeof value.attempt === 'string' && value.attempt.length > 0)) &&
+      validQuotationRepairCounts(value)
     );
   }
 
@@ -1115,10 +1120,13 @@ function canonicalizeSteelNativeEvent(value: unknown): SteelNativeStreamEvent | 
       (value.message !== undefined && typeof value.message !== 'string') ||
       (value.chunkIndex !== undefined &&
         (!isSafeInteger(value.chunkIndex) || value.chunkIndex < 0)) ||
-      (value.attempt !== undefined && (typeof value.attempt !== 'string' || value.attempt.length === 0))
+      (value.attempt !== undefined && (typeof value.attempt !== 'string' || value.attempt.length === 0)) ||
+      !validQuotationRepairCounts(value)
     ) {
       return undefined;
     }
+    if (value.repairAttempt !== undefined) event.repairAttempt = value.repairAttempt;
+    if (value.maxRepairAttempts !== undefined) event.maxRepairAttempts = value.maxRepairAttempts;
     event.type = 'quotation_status';
     event.source = 'quotation_preflight';
     event.conversationId = value.conversationId;
@@ -1600,6 +1608,13 @@ export const buildSteelDelegateOcrEvent: typeof buildSteelDelegateOcrStatusEvent
 export const buildSteelDelegateOcrEventEnvelope: typeof buildSteelDelegateOcrStatusEventEnvelope =
   buildSteelDelegateOcrStatusEventEnvelope;
 
+function validQuotationRepairCounts(value: Record<string, unknown>): boolean {
+  return (value.repairAttempt === undefined || (isSafeInteger(value.repairAttempt) && value.repairAttempt >= 1)) &&
+    (value.maxRepairAttempts === undefined || (isSafeInteger(value.maxRepairAttempts) && value.maxRepairAttempts >= 1)) &&
+    (value.repairAttempt === undefined || value.maxRepairAttempts === undefined ||
+      (value.repairAttempt as number) <= (value.maxRepairAttempts as number));
+}
+
 export interface BuildSteelQuotationStatusEventInput {
   conversationId: string;
   requestId?: string;
@@ -1613,6 +1628,8 @@ export interface BuildSteelQuotationStatusEventInput {
   message?: string;
   chunkIndex?: number;
   attempt?: string;
+  repairAttempt?: number;
+  maxRepairAttempts?: number;
 }
 
 export function buildSteelQuotationStatusEvent({
@@ -1628,6 +1645,8 @@ export function buildSteelQuotationStatusEvent({
   message,
   chunkIndex,
   attempt,
+  repairAttempt,
+  maxRepairAttempts,
 }: BuildSteelQuotationStatusEventInput): SteelNativeQuotationStatusEvent {
   return {
     type: 'quotation_status',
@@ -1644,6 +1663,8 @@ export function buildSteelQuotationStatusEvent({
     ...(message !== undefined ? { message } : {}),
     ...(chunkIndex !== undefined ? { chunkIndex } : {}),
     ...(attempt !== undefined ? { attempt } : {}),
+    ...(repairAttempt !== undefined ? { repairAttempt } : {}),
+    ...(maxRepairAttempts !== undefined ? { maxRepairAttempts } : {}),
   };
 }
 

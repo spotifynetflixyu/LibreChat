@@ -34,13 +34,24 @@ const steelActivityEventTypes = new Set([
   'quote_audit',
   'delegate_ocr_status',
 ]);
+const quotationRepairStages = new Set([
+  'chunk_repair_started',
+  'chunk_repair_succeeded',
+  'chunk_repair_failed',
+]);
 
 function isSavedCounts(value: unknown): value is Record<string, number> {
   if (value == null || typeof value !== 'object' || Array.isArray(value)) {
     return false;
   }
 
-  return Object.values(value).every((count) => typeof count === 'number' && Number.isFinite(count));
+  return Object.values(value as object).every(
+    (count) => typeof count === 'number' && Number.isFinite(count),
+  );
+}
+
+function isPositiveSafeInteger(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 }
 
 function isStringArray(value: unknown): value is readonly string[] {
@@ -156,7 +167,16 @@ export function normalizeSteelActivityEvent(
       (data.chunkIndex !== undefined &&
         (!Number.isSafeInteger(data.chunkIndex) || (data.chunkIndex as number) < 0)) ||
       (data.attempt !== undefined &&
-        (typeof data.attempt !== 'string' || data.attempt.length === 0))
+        (typeof data.attempt !== 'string' || data.attempt.length === 0)) ||
+      (data.repairAttempt !== undefined && !isPositiveSafeInteger(data.repairAttempt)) ||
+      (data.maxRepairAttempts !== undefined && !isPositiveSafeInteger(data.maxRepairAttempts)) ||
+      (data.repairAttempt !== undefined &&
+        data.maxRepairAttempts !== undefined &&
+        (data.repairAttempt as number) > (data.maxRepairAttempts as number)) ||
+      (quotationRepairStages.has(data.stage) &&
+        (data.chunkIndex === undefined ||
+          !Number.isSafeInteger(data.chunkIndex) ||
+          (data.chunkIndex as number) < 0))
     ) {
       return null;
     }
@@ -176,6 +196,16 @@ export function normalizeSteelActivityEvent(
       ...(typeof data.message === 'string' ? { message: data.message } : {}),
       ...(typeof data.chunkIndex === 'number' ? { chunkIndex: data.chunkIndex } : {}),
       ...(typeof data.attempt === 'string' ? { attempt: data.attempt } : {}),
+      ...(typeof data.repairAttempt === 'number' ? { repairAttempt: data.repairAttempt } : {}),
+      ...(typeof data.maxRepairAttempts === 'number'
+        ? { maxRepairAttempts: data.maxRepairAttempts }
+        : {}),
+      ...(isSavedCounts(data.savedCounts) ? { savedCounts: data.savedCounts } : {}),
+      ...normalizedCountMetadata(data),
+      ...(typeof data.toolName === 'string' ? { toolName: data.toolName } : {}),
+      ...(typeof data.providerToolCallId === 'string'
+        ? { providerToolCallId: data.providerToolCallId }
+        : {}),
     };
   }
 
@@ -384,6 +414,12 @@ function stableEventKey(event: SteelNativeActivityEvent): string {
       totalChunks: event.totalChunks,
       chunkIndex: event.chunkIndex,
       attempt: event.attempt,
+      repairAttempt: event.repairAttempt,
+      maxRepairAttempts: event.maxRepairAttempts,
+      savedCounts: event.savedCounts,
+      savedTableCounts: event.savedTableCounts,
+      totalSavedCounts: event.totalSavedCounts,
+      totalTableCounts: event.totalTableCounts,
       toolName: event.toolName,
       providerToolCallId: event.providerToolCallId,
     });

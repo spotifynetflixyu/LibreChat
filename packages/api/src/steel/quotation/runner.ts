@@ -9,7 +9,7 @@ import type {
 import type { OpenAIOAuthModelOptions } from '../native/oauth';
 import type { SteelToolJsonObject, SteelToolResult } from '../tools/results';
 import type { QuotationChildResultInput, QuotationLookupEvidence, QuotationPythonEvidence } from './protocol';
-import type { QuotationModelInput } from './model';
+import type { QuotationChildContinuation, QuotationModelInput, QuotationRepairProgress } from './model';
 import type { SteelNativeHistory } from '../native/events';
 import type { SavedQuotationLookup } from './history';
 
@@ -22,6 +22,7 @@ import { createSteelPostgresPool } from '../postgres';
 import { executeSteelTool, createSteelToolRunState } from '../tools/execute';
 import { invokeQuotationModel } from './model';
 import { readQuotationHistory } from './history';
+import { buildSteelQuotationStatusEvent } from '../native/events';
 import {
   buildQuotationChunks,
   extractCustomerDataTable,
@@ -39,11 +40,14 @@ interface SavedQuotationChild {
 
 export interface QuotationProgress {
   run: SteelQuotationActiveRun;
-  stage?: 'started' | 'chunk_started' | 'chunk_saved' | 'main_streaming';
+  stage?: 'started' | 'chunk_started' | 'chunk_saved' | 'main_streaming' | QuotationRepairProgress['stage'];
   completedChunks: number;
   totalChunks: number;
   chunkIndex?: number;
   attempt?: string;
+  repairAttempt?: number;
+  maxRepairAttempts?: number;
+  message?: string;
 }
 
 export interface QuotationRunnerInput {
@@ -257,11 +261,52 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
       if (!stored) {
         const attempt = randomUUID();
         await progress(chunk.chunkIndex, attempt, 'chunk_started');
-        const lookupOperations: string[] = [];
-        const pythonOperations: string[] = [];
+        const savedRefs = run.checkpointRefs;
+        const lookupOperations = savedRefs.filter((ref) => ref.operationId.startsWith(`lookup:${chunk.chunkIndex}:`))
+          .map((ref) => ref.operationId);
+        const pythonOperations = savedRefs.filter((ref) => ref.operationId.startsWith(`python:${chunk.chunkIndex}:`))
+          .map((ref) => ref.operationId);
+        const outputRefs = savedRefs.filter((ref) => ref.operationId.startsWith(`child-output:${chunk.chunkIndex}:`));
+        const historyRef = savedRefs.filter((ref) => ref.operationId.startsWith(`child-history:${chunk.chunkIndex}:`)).pop();
+        let continuation: QuotationChildContinuation | undefined;
+        if (historyRef || outputRefs.length || lookupOperations.length || pythonOperations.length) {
+          const readSaved = async (key: string) => {
+            const payload = await service.readCheckpoint({ scope, runId, operationId: key });
+            if (!payload) throw new Error('Quotation continuation evidence is missing');
+            return payload;
+          };
+          continuation = { previousOutputs: [], lookups: [], pythonEvidence: [] };
+          for (const key of lookupOperations) {
+            const lookup = JSON.parse(await readSaved(key)) as SavedQuotationLookup;
+            if (lookup.result.toolName !== 'search_price_candidates' || !key.endsWith(`:${lookup.lookupCallId}`)) {
+              throw new Error('Quotation continuation lookup is invalid');
+            }
+            continuation.lookups.push({ id: lookup.lookupCallId, arguments: lookup.arguments, result: lookup.result });
+          }
+          for (const key of pythonOperations) {
+            continuation.pythonEvidence.push(JSON.parse(await readSaved(key)) as QuotationPythonEvidence);
+          }
+          if (historyRef) {
+            const messages = JSON.parse(await readSaved(historyRef.operationId)) as unknown;
+            if (!Array.isArray(messages) || messages.length < 2 ||
+              messages.some((message) => !message || typeof message.type !== 'string' || !message.data)) {
+              throw new Error('Saved quotation child conversation is invalid');
+            }
+            continuation.messages = messages;
+          } else {
+            for (const ref of outputRefs) {
+              const saved = JSON.parse(await readSaved(ref.operationId)) as SavedQuotationChild;
+              if (typeof saved.markdown !== 'string') throw new Error('Saved quotation child output is invalid');
+              if (!continuation.previousOutputs.includes(saved.markdown)) continuation.previousOutputs.push(saved.markdown);
+            }
+          }
+        }
         const toolState = createSteelToolRunState(120);
+        let revision = 0;
+        let historyRevision = 0;
         const generated = await (input.invokeModel ?? invokeQuotationModel)({
           role: 'child',
+          childContextKey: `${runId}:${chunk.chunkIndex}`,
           prompt: snapshot.prompts.child,
           input: JSON.stringify({
             chunk: chunk.markdown,
@@ -271,6 +316,29 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
           signal: controller.signal,
           assertActive: async () => { await assertActive(); },
           onUsage: input.onUsage,
+          continuation,
+          onChildMessages: async (messages) => {
+            await checkpoint(`child-history:${chunk.chunkIndex}:${attempt}:${historyRevision++}`, 'main', JSON.stringify(messages));
+          },
+          onChildRepair: async (repair) => {
+            const active = await assertActive();
+            const event = buildSteelQuotationStatusEvent({
+              ...repair,
+              conversationId: scope.conversationId,
+              runId, index: active.index, status: active.status,
+              completedChunks: active.chunks.filter((entry) => entry.status === 'completed').length,
+              totalChunks: active.chunks.length,
+              chunkIndex: chunk.chunkIndex, attempt,
+            });
+            await checkpoint(`repair:${chunk.chunkIndex}:${attempt}:${repair.repairAttempt}:${repair.stage}`, 'main', JSON.stringify(event));
+            await input.onProgress?.({ ...event, stage: repair.stage, run: active });
+          },
+          validateChildOutput: async (markdown) => {
+            await assertActive();
+            const output = JSON.stringify({ markdown, lookupOperations, pythonOperations });
+            await checkpoint(`child-output:${chunk.chunkIndex}:${attempt}:${revision++}`, 'main', output);
+            validateQuotationChildResult(await loadChild(chunk, output));
+          },
           onPythonEvidence: async (evidence) => {
             const key = `python:${chunk.chunkIndex}:${attempt}:${evidence.toolCallId}:${evidence.type}`;
             await checkpoint(key, 'tool', JSON.stringify(evidence));
@@ -299,7 +367,8 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
         stored = JSON.stringify({ markdown: generated.markdown, lookupOperations, pythonOperations });
         await checkpoint(`child-output:${chunk.chunkIndex}:${attempt}`, 'main', stored);
         const candidate = await loadChild(chunk, stored);
-        validateQuotationChildResult(candidate);
+        const validated = validateQuotationChildResult(candidate);
+        stored = JSON.stringify({ markdown: validated.markdown, lookupOperations, pythonOperations });
         await checkpoint(operationId, 'chunk', stored, chunk.chunkIndex);
       }
       const loaded = await loadChild(chunk, stored);
@@ -316,6 +385,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     let main = await service.readCheckpoint({ scope, runId, operationId: 'main' });
     if (!main) {
       let mainStreaming = false;
+      const mainAttempt = randomUUID();
       const output = await (input.invokeModel ?? invokeQuotationModel)({
         role: 'main',
         prompt: snapshot.prompts.main,
@@ -328,6 +398,10 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
         signal: controller.signal,
         assertActive: async () => { await assertActive(); },
         onUsage: input.onUsage,
+        onPythonEvidence: async (evidence) => {
+          await assertActive();
+          await checkpoint(`python:main:${mainAttempt}:${evidence.toolCallId}:${evidence.type}`, 'tool', JSON.stringify(evidence));
+        },
         onTextDelta: input.onTextDelta ? async (text) => {
           controller.signal.throwIfAborted();
           if (!mainStreaming) {

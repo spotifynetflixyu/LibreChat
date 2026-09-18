@@ -1,5 +1,5 @@
 import { parseMarkdownTables } from '../markdown/table';
-import { escapeMarkdownTableCell } from '../markdown/row-codec';
+import { escapeMarkdownTableCell, parsePipeTableRow } from '../markdown/row-codec';
 import { buildCustomerQuoteFromMarkdown } from '../markdown/quote';
 import { normalizeSystemOrderMarkdown } from '../markdown/order';
 import { parseAssistantMarkdown, parseOcrResultTable } from '../ocr/result';
@@ -114,14 +114,21 @@ export class QuotationProtocolError extends Error implements QuotationProtocolFa
   constructor(
     readonly code: QuotationProtocolErrorCode,
     message: string,
+    readonly requiresFreshLookup = false,
   ) {
     super(message);
     this.name = 'QuotationProtocolError';
   }
 }
 
-function protocolError(code: QuotationProtocolErrorCode, message: string): never {
-  throw new QuotationProtocolError(code, message);
+function protocolError(code: QuotationProtocolErrorCode, message: string, requiresFreshLookup = false): never {
+  throw new QuotationProtocolError(code, message, requiresFreshLookup);
+}
+
+export function quotationOutputRequiresFreshLookup(response: string): boolean {
+  return response.includes('search_price_candidates') && (
+    /<\|[^|\r\n]{1,80}\|>/u.test(response) || /\bassistant\s+to\s*=/iu.test(response)
+  );
 }
 
 function baseSectionTitle(title: string): string {
@@ -175,11 +182,31 @@ function parseExactTable(
   };
 }
 
-function hasIncompleteTableRow(body: string): boolean {
-  return sectionBodyWithoutFences(body)
-    .split(/\r?\n/u)
-    .some((line) => line.trim().startsWith('|') &&
-      (line.trim().length === 1 || !line.trim().endsWith('|')));
+function hasEscapedTrailingPipe(line: string): boolean {
+  const trimmed = line.trimEnd();
+  if (!trimmed.endsWith('|')) return false;
+  let backslashes = 0;
+  for (let index = trimmed.length - 2; index >= 0 && trimmed[index] === '\\'; index -= 1) {
+    backslashes += 1;
+  }
+  return backslashes % 2 === 1;
+}
+
+function normalizeMissingTrailingPipes(body: string, expectedColumns: number): string {
+  return body.split(/\r?\n/u).map((line) => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith('|')) return line;
+    const missingTrailingPipe = !trimmed.endsWith('|') || hasEscapedTrailingPipe(trimmed);
+    if (!missingTrailingPipe || parsePipeTableRow(trimmed)?.length !== expectedColumns) return line;
+    return `${line.trimEnd()} |`;
+  }).join('\n');
+}
+
+function incompleteTableRow(body: string): { line: number; columns: number } | undefined {
+  const lines = sectionBodyWithoutFences(body).split(/\r?\n/u);
+  const index = lines.findIndex((line) => line.trim().startsWith('|') &&
+    (line.trim().length === 1 || !line.trim().endsWith('|')));
+  return index < 0 ? undefined : { line: index + 1, columns: parsePipeTableRow(lines[index]!)?.length ?? 0 };
 }
 
 export function parseQuotationSignal(response: string): QuotationSignal | undefined {
@@ -338,6 +365,11 @@ function evidenceIsPersistedSearch(evidence: readonly QuotationLookupEvidence[])
 function validateChildTable(input: QuotationChildResultInput): ValidatedQuotationChildResult {
   const response = input.response ?? input.markdown;
   if (!response) protocolError('invalid_child_result', 'Quotation child result is empty.');
+  const leakedControlLine = response.split(/\r?\n/u).findIndex((line) =>
+    /<\|[^|\r\n]{1,80}\|>/u.test(line) || /\bassistant\s+to\s*=/iu.test(line));
+  if (leakedControlLine >= 0) {
+    protocolError('invalid_child_result', `Quotation child result contains model control text on line ${leakedControlLine + 1}. Use actual tool calls for lookups; return only complete Markdown tables, without role or channel markers.`, quotationOutputRequiresFreshLookup(response));
+  }
   const sanitizedResponse = stripLegacyQuotationChildSidecars(response);
   const document = parseAssistantMarkdown(sanitizedResponse);
   const section = exactSection(document, 'system_order_chunk');
@@ -349,14 +381,22 @@ function validateChildTable(input: QuotationChildResultInput): ValidatedQuotatio
     /^ {0,3}(`{3,}|~{3,})/mu.test(sanitizedResponse)) {
     protocolError('invalid_child_result', 'Child result must contain one 16-column system_order_chunk followed by an optional manual_reviews_chunk Markdown table.');
   }
-  if (hasIncompleteTableRow(section.body) || (reviewSection && hasIncompleteTableRow(reviewSection.body))) {
-    protocolError('invalid_child_result', 'Quotation child result contains an incomplete Markdown row; its output must be completed before saving the chunk.');
+  const normalizedSectionBody = normalizeMissingTrailingPipes(section.body, quotationSystemOrderColumns.length);
+  const normalizedReviewBody = reviewSection
+    ? normalizeMissingTrailingPipes(reviewSection.body, quotationManualReviewColumns.length)
+    : undefined;
+  for (const [title, body, width] of [
+    ['system_order_chunk', normalizedSectionBody, quotationSystemOrderColumns.length],
+    ['manual_reviews_chunk', normalizedReviewBody, quotationManualReviewColumns.length],
+  ] as const) {
+    const row = body ? incompleteTableRow(body) : undefined;
+    if (row) protocolError('invalid_child_result', `Quotation child result contains an incomplete Markdown row in ${title} at section line ${row.line}: expected ${width} columns, found ${row.columns}; return the complete replacement table before saving the chunk.`);
   }
-  const table = parseExactTable(section.body, quotationSystemOrderColumns);
+  const table = parseExactTable(normalizedSectionBody, quotationSystemOrderColumns);
   if (!table) {
     protocolError('invalid_child_result', 'Child result has an invalid system_order_chunk table.');
   }
-  const reviewTable = reviewSection && parseExactTable(reviewSection.body, quotationManualReviewColumns);
+  const reviewTable = normalizedReviewBody && parseExactTable(normalizedReviewBody, quotationManualReviewColumns);
   if (reviewSection && !reviewTable) {
     protocolError('invalid_child_result', 'Child result has an invalid manual_reviews_chunk table.');
   }

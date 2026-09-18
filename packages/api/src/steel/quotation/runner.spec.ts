@@ -1,7 +1,9 @@
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
+import { AIMessageChunk } from '@librechat/agents/langchain/messages';
 
 import type { SteelQuotationScope, SteelQuotationActiveRun } from '@librechat/data-schemas';
+import { createOpenAIOAuthModel } from '../native/oauth';
 import type { OpenAIOAuthModelOptions } from '../native/oauth';
 import type { SteelToolJsonObject, SteelToolResult } from '../tools/results';
 import type { QuotationChunk } from './protocol';
@@ -10,12 +12,16 @@ import type { QuotationModelInput, QuotationModelResult } from './model';
 import { createSteelQuotationStateService } from './state';
 import { buildQuotationChunks, quotationSignal } from './protocol';
 import { parseMarkdownTables } from '../markdown/table';
+import { invokeQuotationModel } from './model';
 import { acceptQuotationResponse, runQuotationPreflight } from './runner';
 import type { QuotationProgress } from './runner';
 import type { SteelNativeHistory } from '../native/events';
 import { createSteelNativeHistory, appendSteelNativeActivityEvent, upsertSteelNativePreflightToolCall } from '../native/events';
 import { getQuotationHistoryDelta, readQuotationHistory } from './history';
 import { bindQuotationCustomerResult, defaultQuotationCustomerMarkdown, quotationPreparationStatus } from './preparation';
+
+jest.mock('../native/oauth', () => ({ createOpenAIOAuthModel: jest.fn() }));
+const oauthFactory = jest.mocked(createOpenAIOAuthModel);
 
 jest.mock('../native/context', () => ({
   buildDefaultSteelGlobalAgentContext: jest.fn(async ({ mode }: { mode: string }) => ({ instructionPrefix: mode })),
@@ -250,8 +256,10 @@ async function prepareRun(rowCount: number): Promise<SteelQuotationActiveRun> {
   });
 }
 
+type QuotationInvoker = (input: QuotationModelInput) => Promise<QuotationModelResult>;
+
 function runnerInput(
-  invokeModel: ReturnType<typeof createModel>,
+  invokeModel: QuotationInvoker,
   executeLookup: (args: SteelToolJsonObject, callId: string) => Promise<SteelToolResult>,
   options: {
     signal?: AbortSignal;
@@ -272,7 +280,21 @@ function runnerInput(
   };
 }
 
+function configureOAuthResponses(responses: AIMessageChunk[]): jest.Mock {
+  const providerInvoke = jest.fn(async () => {
+    const response = responses.shift();
+    if (!response) throw new Error('Unexpected OAuth provider invocation');
+    return response;
+  });
+  oauthFactory.mockReturnValue({ invoke: providerInvoke, stream: jest.fn() } as never);
+  return providerInvoke;
+}
+
 describe('quotation runner integration', () => {
+  beforeEach(() => {
+    oauthFactory.mockReset();
+  });
+
   it('forwards main text during aggregation once chunks are saved and publishes only the finalized order', async () => {
     await prepareRun(1);
     const progress: QuotationProgress[] = [];
@@ -330,6 +352,170 @@ describe('quotation runner integration', () => {
       ['finalizing', 'finalizing', undefined, 2],
       ['completed', 'completed', undefined, 2],
     ]);
+  });
+
+  it('checkpoints a failed raw child before its repaired candidate and saves only the repaired chunk', async () => {
+    const run = await prepareRun(1);
+    const chunk = buildQuotationChunks(orderMarkdown(1))[0]!;
+    const valid = childMarkdown(chunk.sourceRows.map(systemRow));
+    const malformed = `${valid}\n| 未完成`;
+    const providerInvoke = configureOAuthResponses([
+      new AIMessageChunk({ content: '', tool_calls: [{ name: 'search_price_candidates', id: 'lookup-1', args: { queries: [{ queryId: 'q1' }] } }], response_metadata: { finish_reason: 'tool_calls' } }),
+      new AIMessageChunk({ content: malformed, response_metadata: { finish_reason: 'stop' } }),
+      new AIMessageChunk({ content: valid, response_metadata: { finish_reason: 'stop' } }),
+      new AIMessageChunk({ content: mainMarkdown(orderMarkdown(1)), response_metadata: { finish_reason: 'stop' } }),
+    ]);
+    const executeLookup = createLookupExecutor();
+    const progress: QuotationProgress[] = [];
+    await expect(runQuotationPreflight({ ...runnerInput(invokeQuotationModel, executeLookup), onProgress: async (event) => {
+      progress.push(event);
+      if (event.stage?.startsWith('chunk_repair_')) {
+        const current = await service.readState(scope);
+        expect(current?.activeRun?.checkpointRefs.some((ref) => ref.operationId.endsWith(`:${event.stage}`))).toBe(true);
+        expect(current?.activeRun?.chunks[0]?.status).toBe('pending');
+      }
+    } })).resolves.toEqual(
+      expect.objectContaining({ status: 'completed' }),
+    );
+
+    const state = await service.readState(scope);
+    const rawRefs = state?.activeRun?.checkpointRefs.filter((ref) => ref.operationId.startsWith('child-output:1:')) ?? [];
+    expect(rawRefs).toHaveLength(3);
+    const rawCandidates = await Promise.all(rawRefs.slice(0, 2).map((ref) => service.readCheckpoint({
+      scope, runId: run.runId, operationId: ref.operationId,
+    })));
+    expect((JSON.parse(rawCandidates[0]!) as { markdown: string }).markdown).toBe(malformed);
+    expect((JSON.parse(rawCandidates[1]!) as { markdown: string }).markdown).toBe(valid);
+    const savedChunk = await service.readCheckpoint({ scope, runId: run.runId, operationId: 'chunk:1' });
+    expect((JSON.parse(savedChunk!) as { markdown: string }).markdown).toBe(valid);
+    expect(savedChunk).not.toContain(malformed);
+    expect(executeLookup).toHaveBeenCalledTimes(1);
+    expect(providerInvoke).toHaveBeenCalledTimes(4);
+    expect(oauthFactory).toHaveBeenCalledTimes(2);
+    expect(progress.filter((event) => event.stage?.startsWith('chunk_repair_')).map((event) => [event.stage, event.repairAttempt])).toEqual([
+      ['chunk_repair_started', 1], ['chunk_repair_succeeded', 1],
+    ]);
+    const history = await readQuotationHistory({ scope, runId: run.runId });
+    expect(history.activityEvents.filter((event) => event.type === 'quotation_status' && event.stage.startsWith('chunk_repair_'))).toEqual([
+      expect.objectContaining({ stage: 'chunk_repair_started', repairAttempt: 1, maxRepairAttempts: 2 }),
+      expect.objectContaining({ stage: 'chunk_repair_succeeded', repairAttempt: 1, maxRepairAttempts: 2 }),
+    ]);
+  });
+
+  it('resumes the pending sibling after repair exhaustion with its persisted conversation and tools', async () => {
+    const run = await prepareRun(31);
+    const chunks = buildQuotationChunks(orderMarkdown(31));
+    const firstValid = childMarkdown(chunks[0]!.sourceRows.map(systemRow));
+    const secondValid = childMarkdown(chunks[1]!.sourceRows.map(systemRow));
+    const secondMalformed = `${secondValid}\n| 未完成`;
+    const providerInvoke = configureOAuthResponses([
+      new AIMessageChunk({ content: '', tool_calls: [{ name: 'search_price_candidates', id: 'lookup-1', args: { queries: [{ queryId: 'q1' }] } }], response_metadata: { finish_reason: 'tool_calls' } }),
+      new AIMessageChunk({ content: firstValid, response_metadata: { finish_reason: 'stop' } }),
+      new AIMessageChunk({ content: '', tool_calls: [{ name: 'search_price_candidates', id: 'lookup-2', args: { queries: [{ queryId: 'q1' }] } }], response_metadata: { finish_reason: 'tool_calls' } }),
+      new AIMessageChunk({ content: secondMalformed, response_metadata: { finish_reason: 'stop' } }),
+      new AIMessageChunk({ content: secondMalformed, response_metadata: { finish_reason: 'stop' } }),
+      new AIMessageChunk({ content: secondMalformed, response_metadata: { finish_reason: 'stop' } }),
+      new AIMessageChunk({ content: secondValid, response_metadata: { finish_reason: 'stop' } }),
+      new AIMessageChunk({ content: mainMarkdown(orderMarkdown(31)), response_metadata: { finish_reason: 'stop' } }),
+    ]);
+    const executeLookup = createLookupExecutor();
+
+    await expect(runQuotationPreflight(runnerInput(invokeQuotationModel, executeLookup))).rejects.toThrow(
+      'incomplete Markdown row',
+    );
+    const interrupted = await service.readState(scope);
+    expect(interrupted?.activeRun?.status).toBe('interrupted');
+    expect(interrupted?.activeRun?.chunks.map((chunk) => chunk.status)).toEqual(['completed', 'pending']);
+    const failedHistory = await readQuotationHistory({ scope, runId: run.runId });
+    expect(failedHistory.activityEvents.filter((event) => event.type === 'quotation_status' && event.stage === 'chunk_repair_failed')).toEqual([
+      expect.objectContaining({ repairAttempt: 2, maxRepairAttempts: 2, chunkIndex: 2, message: expect.stringContaining('incomplete Markdown row') }),
+    ]);
+    const savedFirst = await service.readCheckpoint({ scope, runId: run.runId, operationId: 'chunk:1' });
+    expect((JSON.parse(savedFirst!) as { markdown: string }).markdown).toBe(firstValid);
+    expect(await service.readCheckpoint({ scope, runId: run.runId, operationId: 'chunk:2' })).toBeUndefined();
+    expect(executeLookup).toHaveBeenCalledTimes(2);
+    expect(oauthFactory).toHaveBeenCalledTimes(2);
+    const callsAfterFailure = providerInvoke.mock.calls.length;
+
+    await expect(runQuotationPreflight(runnerInput(invokeQuotationModel, executeLookup))).resolves.toEqual(
+      expect.objectContaining({ status: 'completed' }),
+    );
+    expect(providerInvoke).toHaveBeenCalledTimes(callsAfterFailure + 2);
+    const resumedMessages = providerInvoke.mock.calls[callsAfterFailure]![0];
+    expect(resumedMessages.some((message: { content: unknown }) => message.content === secondMalformed)).toBe(true);
+    expect(resumedMessages.some((message: { tool_call_id?: string }) => message.tool_call_id === 'lookup-2')).toBe(true);
+    expect(resumedMessages.some((message: { content: unknown }) => message.content === firstValid)).toBe(false);
+    expect(executeLookup).toHaveBeenCalledTimes(2);
+    expect(oauthFactory).toHaveBeenCalledTimes(4);
+    const savedSecond = await service.readCheckpoint({ scope, runId: run.runId, operationId: 'chunk:2' });
+    expect((JSON.parse(savedSecond!) as { markdown: string }).markdown).toBe(secondValid);
+  });
+
+  it('saves a canonical chunk without another AI generation when only its closing delimiter is missing', async () => {
+    const run = await prepareRun(1);
+    const row = [...systemRow(buildQuotationChunks(orderMarkdown(1))[0]!.sourceRows[0]!)];
+    row[15] = 'F1 P1';
+    const valid = childMarkdown([row]);
+    const missingDelimiter = valid.slice(0, -1);
+    const providerInvoke = configureOAuthResponses([
+      new AIMessageChunk({ content: '', tool_calls: [{ name: 'search_price_candidates', id: 'lookup-format', args: {} }], response_metadata: { finish_reason: 'tool_calls' } }),
+      new AIMessageChunk({ content: missingDelimiter, response_metadata: { finish_reason: 'stop' } }),
+      new AIMessageChunk({ content: mainMarkdown(orderMarkdown(1)), response_metadata: { finish_reason: 'stop' } }),
+    ]);
+    await runQuotationPreflight(runnerInput(invokeQuotationModel, createLookupExecutor()));
+    expect(providerInvoke).toHaveBeenCalledTimes(3);
+    const saved = await service.readCheckpoint({ scope, runId: run.runId, operationId: 'chunk:1' });
+    expect(JSON.parse(saved!).markdown).toBe(valid);
+    const state = await service.readState(scope);
+    const rawRef = state!.activeRun!.checkpointRefs.find((ref) => ref.operationId.startsWith('child-output:1:'))!;
+    const raw = await service.readCheckpoint({ scope, runId: run.runId, operationId: rawRef.operationId });
+    expect(JSON.parse(raw!).markdown).toBe(missingDelimiter);
+  });
+
+  it('checkpoints main Python results separately from child evidence', async () => {
+    const run = await prepareRun(1);
+    const model = createModel();
+    const evidence = { type: 'tool-result' as const, toolCallId: 'python-main', payload: '{"output":"checked"}' };
+    await runQuotationPreflight(runnerInput(async (input) => {
+      if (input.role === 'main') await input.onPythonEvidence?.(evidence);
+      return model(input);
+    }, createLookupExecutor()));
+    const state = await service.readState(scope);
+    const ref = state!.activeRun!.checkpointRefs.find((entry) => entry.operationId.startsWith('python:main:'))!;
+    expect(ref.kind).toBe('tool');
+    expect(JSON.parse((await service.readCheckpoint({ scope, runId: run.runId, operationId: ref.operationId }))!)).toEqual(evidence);
+    const child = JSON.parse((await service.readCheckpoint({ scope, runId: run.runId, operationId: 'chunk:1' }))!);
+    expect(child.pythonOperations).toEqual([]);
+  });
+
+  it('resumes a legacy failed output with its original input and durable lookup evidence', async () => {
+    const run = await prepareRun(1);
+    const lease = await service.acquireLease({ scope, runId: run.runId });
+    const leased = { scope, runId: run.runId, leaseToken: lease!.leaseToken };
+    const lookupKey = 'lookup:1:legacy:lookup-old';
+    await service.checkpoint({ ...leased, operationId: lookupKey, kind: 'tool', payload: JSON.stringify({
+      lookupCallId: 'lookup-old', arguments: { queries: [{ queryId: 'old-query' }] }, result: lookupResult(),
+    }) });
+    const valid = childMarkdown(buildQuotationChunks(orderMarkdown(1))[0]!.sourceRows.map(systemRow));
+    const broken = `${valid}\n| interrupted output`;
+    await service.checkpoint({ ...leased, operationId: 'child-output:1:legacy', kind: 'main', payload: JSON.stringify({
+      markdown: broken, lookupOperations: [lookupKey], pythonOperations: [],
+    }) });
+    await service.interruptRun(leased);
+    const providerInvoke = configureOAuthResponses([
+      new AIMessageChunk({ content: valid, response_metadata: { finish_reason: 'stop' } }),
+      new AIMessageChunk({ content: mainMarkdown(orderMarkdown(1)), response_metadata: { finish_reason: 'stop' } }),
+    ]);
+    const executeLookup = createLookupExecutor();
+    await runQuotationPreflight(runnerInput(invokeQuotationModel, executeLookup));
+    expect(executeLookup).not.toHaveBeenCalled();
+    const resumed = providerInvoke.mock.calls[0]![0];
+    expect(resumed[1].content).toContain('P1');
+    expect(resumed[1].content).toContain('C1');
+    expect(resumed[2].tool_calls[0].args.queries[0].queryId).toBe('old-query');
+    expect(resumed[3].tool_call_id).toBe('lookup-old');
+    expect(resumed[4].content).toBe(broken);
+    expect((await service.readState(scope))?.activeRun?.status).toBe('completed');
   });
 
   async function prepareCustomer(responseId = 'response-1', tier = 'C') {

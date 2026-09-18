@@ -89,6 +89,8 @@ export type SteelNativeActivityEvent =
       message?: string;
       chunkIndex?: number;
       attempt?: string;
+      repairAttempt?: number;
+      maxRepairAttempts?: number;
       toolName?: string;
       providerToolCallId?: string;
       savedCounts?: SteelNativeSavedCounts;

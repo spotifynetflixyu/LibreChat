@@ -147,6 +147,89 @@ describe('useSteelEventHandler', () => {
     ]);
   });
 
+  it('stores distinct repair attempts and preserves their counts', () => {
+    const first: SteelNativeActivityEvent = {
+      type: 'quotation_status',
+      source: 'quotation_preflight',
+      conversationId: 'conversation-1',
+      messageId: 'assistant-repair',
+      index: 3,
+      runId: 'quotation-run-repair',
+      stage: 'chunk_repair_started',
+      status: 'running',
+      completedChunks: 1,
+      totalChunks: 2,
+      chunkIndex: 2,
+      repairAttempt: 1,
+      maxRepairAttempts: 2,
+      savedCounts: { quotation_chunk: 1 },
+    };
+    const second: SteelNativeActivityEvent = {
+      ...first,
+      stage: 'chunk_repair_failed',
+      repairAttempt: 2,
+      message: 'Validator rejected the repaired chunk',
+      savedCounts: { quotation_chunk: 2 },
+    };
+
+    expect([first, second].reduce(appendSteelNativeActivityEvent, [])).toEqual([first, second]);
+    expect(
+      normalizeSteelActivityEvent({
+        event: 'steel_event',
+        data: {
+          ...second,
+          repairAttempt: 2,
+          maxRepairAttempts: 2,
+        },
+      }),
+    ).toEqual(second);
+  });
+
+  it('rejects malformed quotation repair metadata', () => {
+    const base = {
+      event: 'steel_event' as const,
+      data: {
+        type: 'quotation_status' as const,
+        source: 'quotation_preflight' as const,
+        conversationId: 'conversation-1',
+        index: 3,
+        runId: 'quotation-run-repair',
+        stage: 'chunk_repair_started',
+        status: 'running' as const,
+        completedChunks: 1,
+        totalChunks: 2,
+        chunkIndex: 2,
+        repairAttempt: 1,
+        maxRepairAttempts: 2,
+      },
+    };
+
+    expect(
+      normalizeSteelActivityEvent({
+        ...base,
+        data: { ...base.data, repairAttempt: 0 },
+      }),
+    ).toBeNull();
+    expect(
+      normalizeSteelActivityEvent({
+        ...base,
+        data: { ...base.data, maxRepairAttempts: 0 },
+      }),
+    ).toBeNull();
+    expect(
+      normalizeSteelActivityEvent({
+        ...base,
+        data: { ...base.data, repairAttempt: 3, maxRepairAttempts: 2 },
+      }),
+    ).toBeNull();
+    expect(
+      normalizeSteelActivityEvent({
+        ...base,
+        data: { ...base.data, chunkIndex: undefined },
+      }),
+    ).toBeNull();
+  });
+
   it('does not let a delayed active event regress a terminal quotation status', () => {
     const terminal: SteelNativeActivityEvent = {
       type: 'quotation_status',

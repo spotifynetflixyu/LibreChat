@@ -1,4 +1,4 @@
-import { memo, useContext, useMemo, useState } from 'react';
+import { memo, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { AlertTriangle, CheckCircle2, ChevronDown, LoaderCircle } from 'lucide-react';
 import { Button } from '@librechat/client';
 import { useRecoilValue } from 'recoil';
@@ -73,6 +73,44 @@ const savedRecordLabelKeys = new Map<string, LocalizeKey>([
   ['price_evidence', 'com_ui_steel_activity_record_price_evidence'],
   ['working_order_row', 'com_ui_steel_activity_record_working_order_rows'],
 ]);
+const quotationRepairStages = new Set([
+  'chunk_repair_started',
+  'chunk_repair_succeeded',
+  'chunk_repair_failed',
+]);
+
+function isQuotationRepairFailure(event?: SteelNativeActivityEvent): boolean {
+  return event?.type === 'quotation_status' && event.stage === 'chunk_repair_failed';
+}
+
+function getQuotationRepairStatusText(
+  localize: Localize,
+  stage: string | undefined,
+  chunkIndex: number | undefined,
+  repairAttempt: number | undefined,
+  maxRepairAttempts: number | undefined,
+  completedChunks: number,
+  totalChunks: number,
+): string | undefined {
+  if (!stage || !quotationRepairStages.has(stage) || chunkIndex === undefined) {
+    return undefined;
+  }
+
+  const options = {
+    chunkIndex,
+    repairAttempt: repairAttempt ?? '',
+    maxRepairAttempts: maxRepairAttempts ?? '',
+    completedChunks,
+    totalChunks,
+  };
+  if (stage === 'chunk_repair_started') {
+    return localize('com_ui_steel_quote_status_chunk_repair_started', options);
+  }
+  if (stage === 'chunk_repair_succeeded') {
+    return localize('com_ui_steel_quote_status_chunk_repair_succeeded', options);
+  }
+  return localize('com_ui_steel_quote_status_chunk_repair_failed', options);
+}
 
 function isQuotationCancellableStatus(status: SteelQuotationStatus['status']): boolean {
   return (
@@ -104,6 +142,8 @@ function getQuotationStatusText(
   totalChunks: number,
   stage?: string,
   chunkIndex?: number,
+  repairAttempt?: number,
+  maxRepairAttempts?: number,
 ): string {
   if (status === 'aggregating' && stage === 'main_streaming') {
     return localize('com_ui_steel_quote_status_main_responding', {
@@ -115,6 +155,18 @@ function getQuotationStatusText(
     return localize('com_ui_steel_quote_status_queued');
   }
   if (status === 'running') {
+    const repairText = getQuotationRepairStatusText(
+      localize,
+      stage,
+      chunkIndex,
+      repairAttempt,
+      maxRepairAttempts,
+      completedChunks,
+      totalChunks,
+    );
+    if (repairText) {
+      return repairText;
+    }
     if (chunkIndex !== undefined && stage === 'chunk') {
       return localize('com_ui_steel_quote_status_chunk_running', {
         chunkIndex,
@@ -169,8 +221,13 @@ function getQuotationCancelError(error: unknown): string | undefined {
   return message;
 }
 
+function getQuotationRetryError(error: unknown, localize: Localize): string {
+  return getQuotationCancelError(error) ?? localize('com_ui_steel_quote_retry_status_failed');
+}
+
 type SteelQuotationProgressProps = {
   conversationId: string;
+  messageId: string;
   event?: Extract<SteelNativeActivityEvent, { type: 'quotation_status' }>;
   localize: Localize;
   showLoadingDot: boolean;
@@ -178,12 +235,25 @@ type SteelQuotationProgressProps = {
 
 const SteelQuotationProgress = memo(function SteelQuotationProgress({
   conversationId,
+  messageId,
   event,
   localize,
   showLoadingDot,
 }: SteelQuotationProgressProps) {
   const quotationQuery = useGetSteelQuotationStatusQuery(conversationId);
   const cancelMutation = useCancelSteelQuotationMutation(conversationId);
+  const chat = useContext(ChatContext);
+  const [isRetrying, setIsRetrying] = useState(false);
+  const [isRetryDispatched, setIsRetryDispatched] = useState(false);
+  const [retryError, setRetryError] = useState<string | undefined>();
+  const retryInFlightRef = useRef(false);
+  const retryDispatchedRef = useRef(false);
+  const retrySubmissionStartedRef = useRef(false);
+  const retryRunRef = useRef<{ index: number; runId?: string } | null>(null);
+  const currentConversationIdRef = useRef(chat?.conversation?.conversationId);
+  const isSubmittingRef = useRef(chat?.isSubmitting ?? false);
+  currentConversationIdRef.current = chat?.conversation?.conversationId;
+  isSubmittingRef.current = chat?.isSubmitting ?? false;
   const queryData = quotationQuery.data;
   const hasMismatchedQuery = Boolean(
     event &&
@@ -201,6 +271,38 @@ const SteelQuotationProgress = memo(function SteelQuotationProgress({
   if (hasMismatchedQuery || terminalEventWins) {
     status = event;
   }
+  const statusIndex = status?.index;
+  const statusRunId = status?.runId;
+  const statusName = status?.status;
+
+  useEffect(() => {
+    setRetryError(undefined);
+    const retryRun = retryRunRef.current;
+    if (
+      retryRun &&
+      (statusName !== 'interrupted' ||
+        statusIndex !== retryRun.index ||
+        statusRunId !== retryRun.runId)
+    ) {
+      retryDispatchedRef.current = false;
+      setIsRetryDispatched(false);
+      retrySubmissionStartedRef.current = false;
+      retryRunRef.current = null;
+    }
+    if (retryDispatchedRef.current && isSubmittingRef.current) {
+      retrySubmissionStartedRef.current = true;
+    }
+    if (
+      retryDispatchedRef.current &&
+      retrySubmissionStartedRef.current &&
+      !isSubmittingRef.current
+    ) {
+      retryDispatchedRef.current = false;
+      setIsRetryDispatched(false);
+      retrySubmissionStartedRef.current = false;
+      retryRunRef.current = null;
+    }
+  }, [chat?.isSubmitting, statusIndex, statusName, statusRunId]);
 
   if (!status) {
     return null;
@@ -211,6 +313,14 @@ const SteelQuotationProgress = memo(function SteelQuotationProgress({
     !hasMismatchedQuery &&
     !terminalEventWins &&
     (queryData?.canCancel ?? isQuotationCancellableStatus(status.status));
+  const isCurrentConversation = currentConversationIdRef.current === conversationId;
+  const canRetry =
+    isCurrentConversation &&
+    canCancel &&
+    !hasMismatchedQuery &&
+    !terminalEventWins &&
+    status.status === 'interrupted' &&
+    index !== null;
   let cancelError: string | undefined;
   if (!hasMismatchedQuery && !terminalEventWins) {
     cancelError = getQuotationCancelError(cancelMutation.error);
@@ -222,6 +332,8 @@ const SteelQuotationProgress = memo(function SteelQuotationProgress({
     status.totalChunks,
     event?.stage,
     event?.chunkIndex,
+    event?.repairAttempt,
+    event?.maxRepairAttempts,
   );
   const isCanceling = cancelMutation.isLoading;
   const hasError = Boolean(cancelError);
@@ -229,17 +341,89 @@ const SteelQuotationProgress = memo(function SteelQuotationProgress({
     showLoadingDot &&
     !hasMismatchedQuery &&
     isQuotationPreflightWaitingStatus(status.status) &&
+    !isQuotationRepairFailure(event) &&
     (queryData == null || isQuotationPreflightWaitingStatus(queryData.status));
   const isActive = isQuotationActiveStatus(status.status);
+  const repairFailed = isQuotationRepairFailure(event);
   let StatusIcon = AlertTriangle;
   let statusIconClass = 'text-status-error';
-  if (isActive || isCanceling) {
+  if ((isActive && !repairFailed) || isCanceling || isRetrying) {
     StatusIcon = LoaderCircle;
     statusIconClass = 'animate-spin text-text-secondary';
   } else if (status.status === 'completed') {
     StatusIcon = CheckCircle2;
     statusIconClass = 'text-status-success';
   }
+
+  const retryQuotation = async () => {
+    if (
+      !canRetry ||
+      retryInFlightRef.current ||
+      isRetrying ||
+      retryDispatchedRef.current ||
+      isSubmittingRef.current ||
+      !chat ||
+      currentConversationIdRef.current !== conversationId
+    ) {
+      return;
+    }
+
+    retryInFlightRef.current = true;
+    setIsRetrying(true);
+    setRetryError(undefined);
+    try {
+      const expectedIndex = index;
+      const expectedRunId = status.runId ?? event?.runId;
+      const refetchResult = await quotationQuery.refetch();
+      const freshStatus = refetchResult.data;
+      if (refetchResult.isError) {
+        setRetryError(getQuotationRetryError(refetchResult.error, localize));
+        return;
+      }
+      if (
+        !freshStatus ||
+        freshStatus.conversationId !== conversationId ||
+        freshStatus.index !== expectedIndex ||
+        freshStatus.status !== 'interrupted' ||
+        (expectedRunId !== undefined && freshStatus.runId !== expectedRunId) ||
+        currentConversationIdRef.current !== conversationId ||
+        isSubmittingRef.current
+      ) {
+        return;
+      }
+
+      const messages = chat.getMessages(conversationId);
+      const assistantMessage = messages?.find(
+        (message) => message.messageId === messageId && message.isCreatedByUser !== true,
+      );
+      const parentMessage = assistantMessage?.parentMessageId
+        ? messages?.find(
+            (message) =>
+              message.messageId === assistantMessage.parentMessageId &&
+              message.isCreatedByUser === true,
+          )
+        : undefined;
+      if (!assistantMessage || !parentMessage) {
+        return;
+      }
+
+      if (chat.regenerate(assistantMessage) === false) {
+        setRetryError(localize('com_ui_steel_quote_retry_unavailable'));
+        return;
+      }
+      retryDispatchedRef.current = true;
+      setIsRetryDispatched(true);
+      retrySubmissionStartedRef.current = false;
+      retryRunRef.current = { index: expectedIndex, runId: expectedRunId };
+    } catch (error) {
+      setRetryError(getQuotationRetryError(error, localize));
+    } finally {
+      retryInFlightRef.current = false;
+      setIsRetrying(false);
+    }
+  };
+  const retryHasError = Boolean(retryError);
+  const actionError = status.status === 'interrupted' ? retryError : cancelError;
 
   return (
     <>
@@ -254,10 +438,24 @@ const SteelQuotationProgress = memo(function SteelQuotationProgress({
             {event.message}
           </span>
         )}
-        {canCancel &&
+        {!hasMismatchedQuery &&
+          !terminalEventWins &&
+          (status.status === 'interrupted' || canCancel) &&
           index !== null &&
           status.status !== 'completed' &&
-          status.status !== 'cancelled' && (
+          status.status !== 'cancelled' &&
+          (status.status === 'interrupted' ? (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="ms-auto h-7 shrink-0 px-2 py-1"
+              disabled={!canRetry || isRetrying || isRetryDispatched || isSubmittingRef.current}
+              onClick={retryQuotation}
+            >
+              {isRetrying ? localize('com_ui_steel_quote_retrying') : localize('com_ui_retry')}
+            </Button>
+          ) : (
             <Button
               type="button"
               size="sm"
@@ -270,10 +468,15 @@ const SteelQuotationProgress = memo(function SteelQuotationProgress({
                 ? localize('com_ui_steel_quote_canceling')
                 : localize('com_ui_steel_quote_cancel')}
             </Button>
-          )}
-        {hasError && (
+          ))}
+        {(hasError || retryHasError) && actionError && (
           <span className="min-w-0 whitespace-normal break-words text-status-error">
-            {localize('com_ui_steel_quote_cancel_failed', { error: cancelError })}
+            {localize(
+              status.status === 'interrupted'
+                ? 'com_ui_steel_quote_retry_failed'
+                : 'com_ui_steel_quote_cancel_failed',
+              { error: actionError },
+            )}
           </span>
         )}
       </div>
@@ -421,6 +624,8 @@ function getActivityLabel(
       event.totalChunks,
       event.stage,
       event.chunkIndex,
+      event.repairAttempt,
+      event.maxRepairAttempts,
     );
   }
 
@@ -624,7 +829,8 @@ const SteelActivity = memo(function SteelActivity({
   const showQuotationLoadingDot = Boolean(
     latestQuotationEvent &&
       isQuotationPreflightWaitingStatus(latestQuotationEvent.status) &&
-      latestQuotationEvent.stage !== 'main_streaming',
+      latestQuotationEvent.stage !== 'main_streaming' &&
+      !isQuotationRepairFailure(latestQuotationEvent),
   );
   const quotationConversationId =
     conversationId ?? latestQuotationEvent?.conversationId ?? chatConversationId;
@@ -653,6 +859,7 @@ const SteelActivity = memo(function SteelActivity({
       {hasQuotationActivity && quotationConversationId && (
         <SteelQuotationProgress
           conversationId={quotationConversationId}
+          messageId={messageId}
           event={latestQuotationEvent}
           localize={localize}
           showLoadingDot={showQuotationLoadingDot}
@@ -700,7 +907,7 @@ const SteelActivity = memo(function SteelActivity({
         const savedText = getSavedCountText(event, localize);
         const errorMessage = getErrorMessage(event);
         const quotationNote = event.type === 'quotation_status' ? event.message : undefined;
-        const hasError = Boolean(errorMessage);
+        const hasError = Boolean(errorMessage) || isQuotationRepairFailure(event);
         const Icon = hasError ? AlertTriangle : CheckCircle2;
         return (
           <div
@@ -715,7 +922,11 @@ const SteelActivity = memo(function SteelActivity({
               {getActivityLabel(event, localize)}
             </span>
             {quotationNote && (
-              <span className="min-w-0 whitespace-normal break-words text-text-tertiary">
+              <span
+                className={`min-w-0 whitespace-normal break-words ${
+                  isQuotationRepairFailure(event) ? 'text-status-error' : 'text-text-tertiary'
+                }`}
+              >
                 {quotationNote}
               </span>
             )}

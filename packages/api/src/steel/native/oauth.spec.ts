@@ -3186,3 +3186,155 @@ it('captures actual provider Python results for durable quotation validation', a
     type: 'tool-result', toolCallId: 'python-proof', payload: expect.stringContaining('quote_calculations'),
   }));
 });
+
+it('captures provider Python call and result evidence from the normal stream exactly once', async () => {
+  const pythonCall = {
+    type: 'tool-call' as const,
+    toolCallId: 'python-stream',
+    toolName: 'code_interpreter',
+    input: '{"code":"print(2*3)"}',
+    providerExecuted: true as const,
+  };
+  const pythonResult = {
+    type: 'tool-result' as const,
+    toolCallId: 'python-stream',
+    toolName: 'code_interpreter',
+    result: { outputs: [{ type: 'logs', logs: '6' }] },
+  };
+  const evidence = jest.fn().mockResolvedValue(undefined);
+  const doGenerate = jest.fn();
+  const doStream = jest.fn(async () => createStreamResult([
+    pythonCall,
+    pythonResult,
+    { type: 'text-delta', id: 'text_1', delta: 'calculated' },
+    { type: 'finish', usage: createUsage(), finishReason: { unified: 'stop', raw: 'stop' } },
+  ]));
+  const model = createOpenAIOAuthModel({
+    ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+    model: 'gpt-5.5',
+    enableCodeInterpreter: true,
+    onCodeInterpreterEvidence: evidence,
+  });
+
+  const chunks = [];
+  for await (const chunk of await model.stream(quoteMessages('Calculate the chunk'))) {
+    chunks.push(chunk);
+  }
+
+  expect(evidence).toHaveBeenCalledTimes(2);
+  expect(evidence.mock.calls.map(([entry]) => entry.type)).toEqual(['tool-call', 'tool-result']);
+  expect(JSON.parse(evidence.mock.calls[0]![0].payload)).toEqual(pythonCall);
+  expect(JSON.parse(evidence.mock.calls[1]![0].payload)).toEqual(pythonResult);
+  expect(chunks.some((chunk) => (chunk.tool_calls?.length ?? 0) > 0)).toBe(false);
+});
+
+it('captures provider Python call and result evidence from the OCR stream', async () => {
+  const pythonCall = {
+    type: 'tool-call' as const,
+    toolCallId: 'python-ocr-stream',
+    toolName: 'code_interpreter',
+    input: '{"code":"print(1)"}',
+    providerExecuted: true as const,
+  };
+  const pythonResult = {
+    type: 'tool-result' as const,
+    toolCallId: 'python-ocr-stream',
+    toolName: 'code_interpreter',
+    result: { outputs: [{ type: 'logs', logs: '1' }] },
+  };
+  const evidence = jest.fn().mockResolvedValue(undefined);
+  const doGenerate = jest.fn();
+  const doStream = jest.fn(async () => createStreamResult([
+    pythonCall,
+    pythonResult,
+    { type: 'text-delta', id: 'text_1', delta: ocrMarkdown() },
+    { type: 'finish', usage: createUsage(), finishReason: { unified: 'stop', raw: 'stop' } },
+  ]));
+  const model = createOpenAIOAuthModel({
+    ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+    model: 'gpt-5.5',
+    enableCodeInterpreter: true,
+    onCodeInterpreterEvidence: evidence,
+  });
+
+  const chunks = [];
+  for await (const chunk of await model.stream(ocrMessages())) {
+    chunks.push(chunk);
+  }
+
+  expect(evidence).toHaveBeenCalledTimes(2);
+  expect(evidence.mock.calls.map(([entry]) => entry.type)).toEqual(['tool-call', 'tool-result']);
+  expect(JSON.parse(evidence.mock.calls[0]![0].payload)).toEqual(pythonCall);
+  expect(JSON.parse(evidence.mock.calls[1]![0].payload)).toEqual(pythonResult);
+  expect(chunks.some((chunk) => (chunk.tool_calls?.length ?? 0) > 0)).toBe(false);
+});
+
+it('propagates evidence callback failure and cancels the reader', async () => {
+  const callbackError = new Error('evidence storage failed');
+  const evidence = jest.fn().mockRejectedValue(callbackError);
+  const cancel = jest.fn();
+  const doGenerate = jest.fn();
+  const doStream = jest.fn(async () => ({
+    stream: new ReadableStream<LanguageModelV3StreamPart>({
+      start(controller) {
+        controller.enqueue({
+          type: 'tool-call',
+          toolCallId: 'python-failure',
+          toolName: 'code_interpreter',
+          input: '{}',
+          providerExecuted: true,
+        });
+      },
+      cancel,
+    }),
+    warnings: [],
+  }));
+  const model = createOpenAIOAuthModel({
+    ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+    model: 'gpt-5.5',
+    enableCodeInterpreter: true,
+    onCodeInterpreterEvidence: evidence,
+  });
+
+  await expect((async () => {
+    for await (const chunk of await model.stream([new HumanMessage('Calculate the chunk')])) {
+      void chunk;
+    }
+  })()).rejects.toBe(callbackError);
+  expect(cancel).toHaveBeenCalledTimes(1);
+});
+
+it('does not report a client-executed code interpreter result as provider evidence', async () => {
+  const evidence = jest.fn().mockResolvedValue(undefined);
+  const doGenerate = jest.fn();
+  const doStream = jest.fn(async () => createStreamResult([
+    {
+      type: 'tool-call',
+      toolCallId: 'client-python',
+      toolName: 'code_interpreter',
+      input: '{}',
+      providerExecuted: false,
+    },
+    {
+      type: 'tool-result',
+      toolCallId: 'client-python',
+      toolName: 'code_interpreter',
+      result: 'client result',
+    },
+    { type: 'text-delta', id: 'text_1', delta: 'done' },
+  ]));
+  const model = createOpenAIOAuthModel({
+    ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+    model: 'gpt-5.5',
+    enableCodeInterpreter: true,
+    onCodeInterpreterEvidence: evidence,
+  });
+
+  const chunks = [];
+  for await (const chunk of await model.stream([new HumanMessage('Calculate the chunk')])) {
+    chunks.push(chunk);
+  }
+
+  expect(evidence).not.toHaveBeenCalled();
+  expect(chunks.some((chunk) => (chunk.tool_calls?.length ?? 0) > 0)).toBe(true);
+});

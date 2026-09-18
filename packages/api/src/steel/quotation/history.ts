@@ -50,6 +50,7 @@ export function getQuotationHistoryDelta(current: SteelNativeHistory, restored: 
       !current.activityEvents.some((saved) => saved.type === 'quotation_status' && event.type === 'quotation_status' &&
         saved.runId === event.runId && saved.index === event.index && saved.stage === event.stage &&
         saved.status === event.status && saved.chunkIndex === event.chunkIndex && saved.attempt === event.attempt &&
+        saved.repairAttempt === event.repairAttempt && saved.maxRepairAttempts === event.maxRepairAttempts &&
         saved.completedChunks === event.completedChunks && saved.totalChunks === event.totalChunks),
     ),
   };
@@ -102,6 +103,26 @@ export async function readQuotationHistory(input: {
       completedChunks: index + 1,
       message: 'Restored from saved quotation checkpoints',
     }));
+  }
+  const repairs = await Promise.all(run.checkpointRefs
+    .filter((ref) => ref.operationId.startsWith('repair:'))
+    .map(async (ref) => ({
+      operationId: ref.operationId,
+      payload: await service.readCheckpoint({ scope: input.scope, runId: run.runId, operationId: ref.operationId }),
+    })));
+  for (const { operationId, payload } of repairs) {
+    if (!payload) continue;
+    try {
+      const event = JSON.parse(payload);
+      const chunkIndex = Number(operationId.split(':')[1]);
+      if (event.type !== 'quotation_status' || event.conversationId !== input.scope.conversationId ||
+        event.runId !== run.runId || event.index !== run.index || event.chunkIndex !== chunkIndex ||
+        !run.chunks.some((chunk) => chunk.index === chunkIndex)) continue;
+      appendSteelNativeActivityEvent(history, event);
+    } catch {
+      // A malformed historical activity must not prevent resuming valid quotation work.
+      continue;
+    }
   }
   appendSteelNativeActivityEvent(history, buildSteelQuotationStatusEvent({
     ...base,

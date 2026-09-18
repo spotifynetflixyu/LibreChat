@@ -1,11 +1,13 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import type { TMessage } from 'librechat-data-provider';
 import { steelNativeActivityByMessageId } from '~/store/steel';
 import {
   useCancelSteelQuotationMutation,
   useGetSteelQuotationStatusQuery,
 } from '~/data-provider/Steel';
+import { ChatContext } from '~/Providers';
 import SteelActivity from '../SteelActivity';
 
 type LocalizeOptions = {
@@ -18,6 +20,8 @@ type LocalizeOptions = {
   error?: string;
   completedChunks?: number;
   totalChunks?: number;
+  repairAttempt?: number | string;
+  maxRepairAttempts?: number | string;
 };
 
 jest.mock('~/hooks/useLocalize', () => ({
@@ -65,6 +69,9 @@ jest.mock('~/hooks/useLocalize', () => ({
     if (key === 'com_ui_steel_activity_quotation') {
       return 'Quotation progress';
     }
+    if (key === 'com_ui_retry') {
+      return 'Retry';
+    }
     if (key === 'com_ui_steel_quote_cancel') {
       return 'Cancel quotation';
     }
@@ -73,6 +80,18 @@ jest.mock('~/hooks/useLocalize', () => ({
     }
     if (key === 'com_ui_steel_quote_cancel_failed') {
       return `Quotation cancellation failed: ${options?.error ?? ''}`;
+    }
+    if (key === 'com_ui_steel_quote_retrying') {
+      return 'Retrying quotation…';
+    }
+    if (key === 'com_ui_steel_quote_retry_failed') {
+      return `Quotation retry failed: ${options?.error ?? ''}`;
+    }
+    if (key === 'com_ui_steel_quote_retry_status_failed') {
+      return 'Could not verify quotation status for retry.';
+    }
+    if (key === 'com_ui_steel_quote_retry_unavailable') {
+      return 'Quotation retry could not start.';
     }
     if (key === 'com_ui_steel_quote_status_running') {
       return `Quotation in progress (${options?.completedChunks ?? 0}/${options?.totalChunks ?? 0} chunks)`;
@@ -92,6 +111,15 @@ jest.mock('~/hooks/useLocalize', () => ({
     if (key === 'com_ui_steel_quote_status_chunk_saved') {
       return `Quotation chunk ${options?.chunkIndex ?? 0} saved (${options?.completedChunks ?? 0}/${options?.totalChunks ?? 0} chunks)`;
     }
+    if (key === 'com_ui_steel_quote_status_chunk_repair_started') {
+      return `Repairing quotation chunk ${options?.chunkIndex ?? 0} (attempt ${options?.repairAttempt ?? ''}/${options?.maxRepairAttempts ?? ''}; ${options?.completedChunks ?? 0}/${options?.totalChunks ?? 0} chunks)`;
+    }
+    if (key === 'com_ui_steel_quote_status_chunk_repair_succeeded') {
+      return `Quotation chunk ${options?.chunkIndex ?? 0} repair succeeded (attempt ${options?.repairAttempt ?? ''}/${options?.maxRepairAttempts ?? ''}; ${options?.completedChunks ?? 0}/${options?.totalChunks ?? 0} chunks)`;
+    }
+    if (key === 'com_ui_steel_quote_status_chunk_repair_failed') {
+      return `Quotation chunk ${options?.chunkIndex ?? 0} repair failed (attempt ${options?.repairAttempt ?? ''}/${options?.maxRepairAttempts ?? ''}; ${options?.completedChunks ?? 0}/${options?.totalChunks ?? 0} chunks)`;
+    }
     if (key === 'com_ui_steel_quote_status_main_consolidating') {
       return `Quotation main agent consolidating (${options?.completedChunks ?? 0}/${options?.totalChunks ?? 0} chunks)`;
     }
@@ -106,6 +134,9 @@ jest.mock('~/hooks/useLocalize', () => ({
     }
     if (key === 'com_ui_steel_quote_status_completed') {
       return `Quotation completed (${options?.completedChunks ?? 0}/${options?.totalChunks ?? 0} chunks)`;
+    }
+    if (key === 'com_ui_steel_quote_status_interrupted') {
+      return 'Quotation interrupted';
     }
     if (key === 'com_ui_steel_activity_source_count') {
       return `${options?.source ?? ''}: ${options?.count ?? 0}`;
@@ -161,6 +192,17 @@ jest.mock('~/data-provider/Steel', () => ({
 
 const mockUseCancelSteelQuotationMutation = jest.mocked(useCancelSteelQuotationMutation);
 const mockUseGetSteelQuotationStatusQuery = jest.mocked(useGetSteelQuotationStatusQuery);
+type ChatContextValue = NonNullable<React.ContextType<typeof ChatContext>>;
+
+function createChatContext(overrides: Partial<ChatContextValue> = {}): ChatContextValue {
+  return {
+    conversation: { conversationId: 'conversation-1' },
+    getMessages: jest.fn(() => undefined),
+    regenerate: jest.fn(),
+    isSubmitting: false,
+    ...overrides,
+  } as unknown as ChatContextValue;
+}
 
 const quotationStatusEvent = {
   type: 'quotation_status' as const,
@@ -173,6 +215,13 @@ const quotationStatusEvent = {
   status: 'running' as const,
   completedChunks: 1,
   totalChunks: 3,
+};
+
+const interruptedQuotationStatus = {
+  ...quotationStatusEvent,
+  stage: 'interrupted' as const,
+  status: 'interrupted' as const,
+  completedChunks: 2,
 };
 
 beforeEach(() => {
@@ -211,6 +260,348 @@ describe('SteelActivity', () => {
     expect(container.querySelector('.my-3 .animate-spin')).toBeInTheDocument();
     fireEvent.click(cancel);
     expect(mutate).toHaveBeenCalledWith(4);
+  });
+
+  it('retries an interrupted quotation with the original assistant message', async () => {
+    const refetch = jest.fn().mockResolvedValue({
+      data: interruptedQuotationStatus,
+      isError: false,
+    });
+    const regenerate = jest.fn();
+    const parentMessage = {
+      messageId: 'user-quotation',
+      isCreatedByUser: true,
+    } as TMessage;
+    const assistantMessage = {
+      messageId: 'assistant-quotation-retry',
+      parentMessageId: parentMessage.messageId,
+      isCreatedByUser: false,
+    } as TMessage;
+    const getMessages = jest.fn(() => [parentMessage, assistantMessage]);
+    mockUseGetSteelQuotationStatusQuery.mockReturnValue({
+      data: interruptedQuotationStatus,
+      refetch,
+    } as unknown as ReturnType<typeof useGetSteelQuotationStatusQuery>);
+
+    render(
+      <ChatContext.Provider value={createChatContext({ getMessages, regenerate })}>
+        <RecoilRoot
+          initializeState={({ set }) => {
+            set(steelNativeActivityByMessageId(assistantMessage.messageId ?? ''), [
+              { ...interruptedQuotationStatus, messageId: assistantMessage.messageId },
+            ]);
+          }}
+        >
+          <SteelActivity messageId={assistantMessage.messageId ?? ''} isCreatedByUser={false} />
+        </RecoilRoot>
+      </ChatContext.Provider>,
+    );
+
+    const retry = screen.getByRole('button', { name: 'Retry' });
+    fireEvent.click(retry);
+
+    await waitFor(() => expect(regenerate).toHaveBeenCalledWith(assistantMessage));
+    expect(refetch).toHaveBeenCalledTimes(1);
+    expect(mockUseCancelSteelQuotationMutation().mutate).not.toHaveBeenCalled();
+  });
+
+  it('guards an interrupted quotation against duplicate retry clicks', async () => {
+    const refetch = jest.fn().mockResolvedValue({
+      data: interruptedQuotationStatus,
+      isError: false,
+    });
+    const regenerate = jest.fn();
+    const parentMessage = { messageId: 'user-quotation', isCreatedByUser: true } as TMessage;
+    const assistantMessage = {
+      messageId: 'assistant-quotation-double-retry',
+      parentMessageId: parentMessage.messageId,
+      isCreatedByUser: false,
+    } as TMessage;
+    mockUseGetSteelQuotationStatusQuery.mockReturnValue({
+      data: interruptedQuotationStatus,
+      refetch,
+    } as unknown as ReturnType<typeof useGetSteelQuotationStatusQuery>);
+    const getMessages = jest.fn(() => [parentMessage, assistantMessage]);
+
+    render(
+      <ChatContext.Provider value={createChatContext({ getMessages, regenerate })}>
+        <RecoilRoot
+          initializeState={({ set }) => {
+            set(steelNativeActivityByMessageId(assistantMessage.messageId ?? ''), [
+              { ...interruptedQuotationStatus, messageId: assistantMessage.messageId },
+            ]);
+          }}
+        >
+          <SteelActivity messageId={assistantMessage.messageId ?? ''} isCreatedByUser={false} />
+        </RecoilRoot>
+      </ChatContext.Provider>,
+    );
+
+    const retry = screen.getByRole('button', { name: 'Retry' });
+    fireEvent.click(retry);
+    fireEvent.click(retry);
+
+    await waitFor(() => expect(regenerate).toHaveBeenCalledTimes(1));
+    expect(retry).toBeDisabled();
+    fireEvent.click(retry);
+    expect(refetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables retry while another chat submission is active', () => {
+    const refetch = jest.fn();
+    mockUseGetSteelQuotationStatusQuery.mockReturnValue({
+      data: interruptedQuotationStatus,
+      refetch,
+    } as unknown as ReturnType<typeof useGetSteelQuotationStatusQuery>);
+
+    render(
+      <ChatContext.Provider value={createChatContext({ isSubmitting: true })}>
+        <RecoilRoot
+          initializeState={({ set }) => {
+            set(steelNativeActivityByMessageId('assistant-quotation-submitting'), [
+              { ...interruptedQuotationStatus, messageId: 'assistant-quotation-submitting' },
+            ]);
+          }}
+        >
+          <SteelActivity messageId="assistant-quotation-submitting" isCreatedByUser={false} />
+        </RecoilRoot>
+      </ChatContext.Provider>,
+    );
+
+    const retry = screen.getByRole('button', { name: 'Retry' });
+    expect(retry).toBeDisabled();
+    fireEvent.click(retry);
+    expect(refetch).not.toHaveBeenCalled();
+  });
+
+  it('does not regenerate when a fresh status refetch finds a newer run', async () => {
+    const refetch = jest.fn().mockResolvedValue({
+      data: { ...interruptedQuotationStatus, runId: 'quotation-run-new', status: 'running' },
+      isError: false,
+    });
+    const regenerate = jest.fn();
+    const parentMessage = { messageId: 'user-quotation', isCreatedByUser: true } as TMessage;
+    const assistantMessage = {
+      messageId: 'assistant-quotation-stale-retry',
+      parentMessageId: parentMessage.messageId,
+      isCreatedByUser: false,
+    } as TMessage;
+    mockUseGetSteelQuotationStatusQuery.mockReturnValue({
+      data: interruptedQuotationStatus,
+      refetch,
+    } as unknown as ReturnType<typeof useGetSteelQuotationStatusQuery>);
+
+    render(
+      <ChatContext.Provider
+        value={createChatContext({
+          getMessages: jest.fn(() => [parentMessage, assistantMessage]),
+          regenerate,
+        })}
+      >
+        <RecoilRoot
+          initializeState={({ set }) => {
+            set(steelNativeActivityByMessageId(assistantMessage.messageId ?? ''), [
+              { ...interruptedQuotationStatus, messageId: assistantMessage.messageId },
+            ]);
+          }}
+        >
+          <SteelActivity messageId={assistantMessage.messageId ?? ''} isCreatedByUser={false} />
+        </RecoilRoot>
+      </ChatContext.Provider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(refetch).toHaveBeenCalledTimes(1));
+    expect(regenerate).not.toHaveBeenCalled();
+  });
+
+  it('shows a localized retry error when the fresh status refetch fails', async () => {
+    const refetch = jest.fn().mockResolvedValue({
+      data: interruptedQuotationStatus,
+      isError: true,
+      error: new Error('status request failed'),
+    });
+    const regenerate = jest.fn();
+    const parentMessage = { messageId: 'user-quotation', isCreatedByUser: true } as TMessage;
+    const assistantMessage = {
+      messageId: 'assistant-quotation-retry-error',
+      parentMessageId: parentMessage.messageId,
+      isCreatedByUser: false,
+    } as TMessage;
+    mockUseGetSteelQuotationStatusQuery.mockReturnValue({
+      data: interruptedQuotationStatus,
+      refetch,
+    } as unknown as ReturnType<typeof useGetSteelQuotationStatusQuery>);
+
+    render(
+      <ChatContext.Provider
+        value={createChatContext({
+          getMessages: jest.fn(() => [parentMessage, assistantMessage]),
+          regenerate,
+        })}
+      >
+        <RecoilRoot
+          initializeState={({ set }) => {
+            set(steelNativeActivityByMessageId(assistantMessage.messageId ?? ''), [
+              { ...interruptedQuotationStatus, messageId: assistantMessage.messageId },
+            ]);
+          }}
+        >
+          <SteelActivity messageId={assistantMessage.messageId ?? ''} isCreatedByUser={false} />
+        </RecoilRoot>
+      </ChatContext.Provider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    expect(
+      await screen.findByText('Quotation retry failed: status request failed'),
+    ).toBeInTheDocument();
+    expect(regenerate).not.toHaveBeenCalled();
+  });
+
+  it.each(['same', 'changed'])('releases the retry latch after submission ends for a %s run', async (run) => {
+    const firstStatus = { ...interruptedQuotationStatus, runId: 'quotation-run-first' };
+    const secondStatus = {
+      ...interruptedQuotationStatus,
+      runId: run === 'same' ? firstStatus.runId : 'quotation-run-second',
+    };
+    let queryStatus = firstStatus;
+    const refetch = jest.fn().mockImplementation(() =>
+      Promise.resolve({ data: queryStatus, isError: false }),
+    );
+    const regenerate = jest.fn();
+    const parentMessage = { messageId: 'user-quotation', isCreatedByUser: true } as TMessage;
+    const assistantMessage = {
+      messageId: 'assistant-quotation-latch',
+      parentMessageId: parentMessage.messageId,
+      isCreatedByUser: false,
+    } as TMessage;
+    const getMessages = jest.fn(() => [parentMessage, assistantMessage]);
+    mockUseGetSteelQuotationStatusQuery.mockImplementation(
+      () =>
+        ({ data: queryStatus, refetch }) as unknown as ReturnType<
+          typeof useGetSteelQuotationStatusQuery
+        >,
+    );
+    const initialChat = createChatContext({ getMessages, regenerate, isSubmitting: false });
+    const firstEvent = { ...firstStatus, messageId: assistantMessage.messageId };
+    const secondEvent = { ...secondStatus, messageId: assistantMessage.messageId };
+    const { rerender } = render(
+      <ChatContext.Provider value={initialChat}>
+        <RecoilRoot>
+          <SteelActivity
+            messageId={assistantMessage.messageId ?? ''}
+            isCreatedByUser={false}
+            persistedActivityEvents={[firstEvent]}
+          />
+        </RecoilRoot>
+      </ChatContext.Provider>,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry' }));
+    await waitFor(() => expect(regenerate).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole('button', { name: 'Retry' })).toBeDisabled();
+
+    queryStatus = secondStatus;
+    rerender(
+      <ChatContext.Provider value={createChatContext({ getMessages, regenerate, isSubmitting: true })}>
+        <RecoilRoot>
+          <SteelActivity
+            messageId={assistantMessage.messageId ?? ''}
+            isCreatedByUser={false}
+            persistedActivityEvents={[secondEvent]}
+          />
+        </RecoilRoot>
+      </ChatContext.Provider>,
+    );
+    rerender(
+      <ChatContext.Provider value={createChatContext({ getMessages, regenerate, isSubmitting: false })}>
+        <RecoilRoot>
+          <SteelActivity
+            messageId={assistantMessage.messageId ?? ''}
+            isCreatedByUser={false}
+            persistedActivityEvents={[secondEvent]}
+          />
+        </RecoilRoot>
+      </ChatContext.Provider>,
+    );
+
+    const retry = screen.getByRole('button', { name: 'Retry' });
+    expect(retry).toBeEnabled();
+    fireEvent.click(retry);
+    await waitFor(() => expect(regenerate).toHaveBeenCalledTimes(2));
+    expect(refetch).toHaveBeenCalledTimes(2);
+  });
+
+  it('releases the retry latch when regeneration cannot start', async () => {
+    const refetch = jest.fn().mockResolvedValue({
+      data: interruptedQuotationStatus,
+      isError: false,
+    });
+    const regenerate = jest.fn<false | void, Parameters<ChatContextValue['regenerate']>>(() => false);
+    const parentMessage = { messageId: 'user-quotation', isCreatedByUser: true } as TMessage;
+    const assistantMessage = {
+      messageId: 'assistant-quotation-unavailable',
+      parentMessageId: parentMessage.messageId,
+      isCreatedByUser: false,
+    } as TMessage;
+    mockUseGetSteelQuotationStatusQuery.mockReturnValue({
+      data: interruptedQuotationStatus,
+      refetch,
+    } as unknown as ReturnType<typeof useGetSteelQuotationStatusQuery>);
+
+    render(
+      <ChatContext.Provider
+        value={createChatContext({
+          getMessages: jest.fn(() => [parentMessage, assistantMessage]),
+          regenerate,
+        })}
+      >
+        <RecoilRoot
+          initializeState={({ set }) => {
+            set(steelNativeActivityByMessageId(assistantMessage.messageId ?? ''), [
+              { ...interruptedQuotationStatus, messageId: assistantMessage.messageId },
+            ]);
+          }}
+        >
+          <SteelActivity messageId={assistantMessage.messageId ?? ''} isCreatedByUser={false} />
+        </RecoilRoot>
+      </ChatContext.Provider>,
+    );
+
+    const retry = screen.getByRole('button', { name: 'Retry' });
+    fireEvent.click(retry);
+    expect(
+      await screen.findByText('Quotation retry failed: Quotation retry could not start.'),
+    ).toBeInTheDocument();
+    expect(retry).toBeEnabled();
+  });
+
+  it('does not expose retry for an interrupted event from an old run', () => {
+    mockUseGetSteelQuotationStatusQuery.mockReturnValue({
+      data: { ...interruptedQuotationStatus, runId: 'quotation-run-new', status: 'running' },
+    } as unknown as ReturnType<typeof useGetSteelQuotationStatusQuery>);
+
+    render(
+      <ChatContext.Provider value={createChatContext()}>
+        <RecoilRoot
+          initializeState={({ set }) => {
+            set(steelNativeActivityByMessageId('assistant-quotation-old-interrupted'), [
+              {
+                ...interruptedQuotationStatus,
+                messageId: 'assistant-quotation-old-interrupted',
+                runId: 'quotation-run-old',
+              },
+            ]);
+          }}
+        >
+          <SteelActivity messageId="assistant-quotation-old-interrupted" isCreatedByUser={false} />
+        </RecoilRoot>
+      </ChatContext.Provider>,
+    );
+
+    expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Cancel quotation' })).not.toBeInTheDocument();
   });
 
   it('disables duplicate cancellation clicks while cancellation is pending', () => {
@@ -430,6 +821,91 @@ describe('SteelActivity', () => {
 
     expect(screen.getByText('Quotation main agent consolidating (2/2 chunks)')).toBeInTheDocument();
     expect(screen.getAllByText('Quotation main agent responding (2/2 chunks)')).toHaveLength(2);
+  });
+
+  it('renders live quotation repair attempts with distinct progress labels', () => {
+    render(
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(steelNativeActivityByMessageId('assistant-quotation-repair-live'), [
+            {
+              ...quotationStatusEvent,
+              messageId: 'assistant-quotation-repair-live',
+              stage: 'chunk_repair_started',
+              status: 'running' as const,
+              chunkIndex: 2,
+              repairAttempt: 1,
+              maxRepairAttempts: 2,
+              completedChunks: 1,
+              totalChunks: 2,
+            },
+            {
+              ...quotationStatusEvent,
+              messageId: 'assistant-quotation-repair-live',
+              stage: 'chunk_repair_succeeded',
+              status: 'running' as const,
+              chunkIndex: 2,
+              repairAttempt: 2,
+              maxRepairAttempts: 2,
+              completedChunks: 1,
+              totalChunks: 2,
+            },
+          ]);
+        }}
+      >
+        <SteelActivity messageId="assistant-quotation-repair-live" isCreatedByUser={false} />
+      </RecoilRoot>,
+    );
+
+    expect(
+      screen.getByText('Repairing quotation chunk 2 (attempt 1/2; 1/2 chunks)'),
+    ).toBeInTheDocument();
+    expect(
+      screen.getAllByText('Quotation chunk 2 repair succeeded (attempt 2/2; 1/2 chunks)'),
+    ).toHaveLength(2);
+  });
+
+  it('renders persisted quotation repair failure as a warning with its validator error', () => {
+    const { container } = render(
+      <RecoilRoot>
+        <SteelActivity
+          messageId="assistant-quotation-repair-restored"
+          isCreatedByUser={false}
+          persistedActivityEvents={[
+            {
+              ...quotationStatusEvent,
+              messageId: 'assistant-quotation-repair-restored',
+              stage: 'chunk_repair_started',
+              status: 'running' as const,
+              chunkIndex: 1,
+              repairAttempt: 1,
+              maxRepairAttempts: 2,
+              completedChunks: 0,
+              totalChunks: 2,
+            },
+            {
+              ...quotationStatusEvent,
+              messageId: 'assistant-quotation-repair-restored',
+              stage: 'chunk_repair_failed',
+              status: 'running' as const,
+              chunkIndex: 1,
+              repairAttempt: 2,
+              maxRepairAttempts: 2,
+              completedChunks: 0,
+              totalChunks: 2,
+              message: 'Validator rejected the repaired chunk',
+            },
+          ]}
+        />
+      </RecoilRoot>,
+    );
+
+    expect(
+      screen.getAllByText('Quotation chunk 1 repair failed (attempt 2/2; 0/2 chunks)'),
+    ).toHaveLength(2);
+    expect(screen.getAllByText('Validator rejected the repaired chunk')).toHaveLength(2);
+    expect(container.querySelector('.text-status-error')).toBeInTheDocument();
+    expect(container.querySelector('.result-thinking')).not.toBeInTheDocument();
   });
 
   it('keeps a terminal polled status over a stale main streaming event', () => {
@@ -848,7 +1324,9 @@ describe('SteelActivity', () => {
     expect(screen.queryByText('Steel form parsed')).not.toBeInTheDocument();
     expect(screen.getByText('Saved records (Working order rows: 2)')).toBeInTheDocument();
     expect(screen.getByText('Total: Workbook tables: 1, Workbook rows: 2')).toBeInTheDocument();
-    expect(screen.queryByText('This turn: Workbook tables: 1, Workbook rows: 2')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('This turn: Workbook tables: 1, Workbook rows: 2'),
+    ).not.toBeInTheDocument();
   });
 
   it('renders OCR table counts separately from aggregate OCR raw totals', () => {

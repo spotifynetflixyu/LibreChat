@@ -69,6 +69,15 @@ function childInput(
   };
 }
 
+function removeTrailingPipes(markdown: string): string {
+  return markdown.split('\n').map((line) => {
+    const trimmed = line.trimEnd();
+    return trimmed.startsWith('|') && trimmed.endsWith('|')
+      ? trimmed.slice(0, -1)
+      : line;
+  }).join('\n');
+}
+
 const pricedRow = ['ERP-1', '鐵板 6T P1', '黑鐵', 'Kg', '2', '', '2', '12', '2', 'PL', '6', '100', '200', '', '鐵板', ''];
 const blankRow = ['', '鐵板 P1', '', '', '2', '', '', '', '2', '', '6', '100', '200', '', '鐵板', '查無候選，需確認'];
 
@@ -199,6 +208,53 @@ describe('quotation protocol', () => {
       response: `## system_order_chunk\n\n${table(systemHeaders, [pricedRow])}\n| unfinished`,
       lookupEvidence: [successfulLookup()],
     })).toThrow('incomplete Markdown row');
+  });
+
+  it('normalizes complete child tables with missing trailing pipes and renders an idempotent canonical result', () => {
+    const chunk = chunkForRows();
+    const row = [...pricedRow];
+    row[15] = '已確認';
+    const response = `## system_order_chunk\n\n${removeTrailingPipes(table(systemHeaders, [row]))}`;
+    const validated = validateQuotationChildResult({ ...childInput(chunk, row), response });
+    expect(validated.rows).toEqual([row]);
+    expect(validated.markdown).toBe(`## system_order_chunk\n\n${table(systemHeaders, [row])}`);
+    expect(validateQuotationChildResult({ ...childInput(chunk, row), response: validated.markdown })).toEqual(validated);
+  });
+
+  it('preserves escaped internal and terminal pipes while normalizing an escaped trailing delimiter', () => {
+    const chunk = chunkForRows();
+    const escaped = [...pricedRow];
+    escaped[1] = '規格 \\| 特殊';
+    escaped[15] = '末端 \\|';
+    const response = `## system_order_chunk\n\n${removeTrailingPipes(table(systemHeaders, [escaped]))}`;
+    const result = validateQuotationChildResult({ ...childInput(chunk, escaped), response });
+    const expected = [...escaped];
+    expected[1] = '規格 | 特殊';
+    expected[15] = '末端 |';
+    expect(result.rows).toEqual([expected]);
+    expect(result.markdown).toContain('| 規格 \\| 特殊 |');
+    expect(result.markdown).toContain('| 末端 \\| |');
+  });
+
+  it('normalizes a six-column manual review table with missing trailing pipes', () => {
+    const chunk = chunkForRows();
+    const reviewRow = ['ocr_result', 'P1', '單價', '', '查無資料', '報價'];
+    const review = `## manual_reviews_chunk\n\n${removeTrailingPipes(table(reviewHeaders, [reviewRow]))}`;
+    const response = `${removeTrailingPipes(childInput(chunk, blankRow).response!)}\n\n${review}`;
+    const result = validateQuotationChildResult({ ...childInput(chunk, blankRow), response });
+    expect(result.markdown).toBe(`## system_order_chunk\n\n${table(systemHeaders, [blankRow])}\n\n## manual_reviews_chunk\n\n${table(reviewHeaders, [reviewRow])}`);
+  });
+
+  it('rejects wrong-width rows, headers, prose rows, and ambiguous empty final cells instead of padding them', () => {
+    const chunk = chunkForRows();
+    const missingLastCell = removeTrailingPipes(table(systemHeaders, [pricedRow.slice(0, -1)]));
+    const extraCell = removeTrailingPipes(table(systemHeaders, [[...pricedRow, 'extra']]));
+    const wrongHeader = removeTrailingPipes(table(systemHeaders.slice(0, -1), [pricedRow.slice(0, -1)]));
+    const proseRow = `${removeTrailingPipes(table(systemHeaders, [pricedRow]))}\n| prose row`;
+    const ambiguousEmptyFinalCell = removeTrailingPipes(table(systemHeaders, [pricedRow]));
+    for (const response of [missingLastCell, extraCell, wrongHeader, proseRow, ambiguousEmptyFinalCell]) {
+      expect(() => validateQuotationChildResult({ ...childInput(chunk, pricedRow), response: `## system_order_chunk\n\n${response}` })).toThrow();
+    }
   });
 
   it('uses the main table rows after AI correction or reordering and strips legacy controls', () => {

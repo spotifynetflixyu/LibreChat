@@ -753,7 +753,7 @@ export default function useChatFunctions({
     const parentMessage = messages?.find((element) => element.messageId == parentMessageId);
 
     if (parentMessage && parentMessage.isCreatedByUser) {
-      ask(
+      return ask(
         { ...parentMessage },
         {
           isRegenerate: true,
@@ -774,6 +774,7 @@ export default function useChatFunctions({
       console.error(
         'Failed to regenerate the message: parentMessage not found or not created by user.',
       );
+      return false;
     }
   };
 

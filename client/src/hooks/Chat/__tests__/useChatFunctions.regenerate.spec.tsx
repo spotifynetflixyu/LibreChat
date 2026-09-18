@@ -136,6 +136,17 @@ describe('useChatFunctions ask', () => {
     mockRecoilLoadables = {};
   });
 
+  it('returns a refused regeneration so retry callers can release their pending state', () => {
+    const messages = [userMessage('u1'), assistantMessage('a1', 'u1')];
+    const { result, setSubmission } = renderAsk(messages, 'conversation-1', { isSubmitting: true });
+    let accepted: ReturnType<typeof result.current.regenerate>;
+    act(() => {
+      accepted = result.current.regenerate(messages[1]);
+    });
+    expect(accepted!).toBe(false);
+    expect(setSubmission).not.toHaveBeenCalled();
+  });
+
   it('refuses to send to an existing conversation before its history loads', () => {
     const { result, getMessages, setMessages, setSubmission } = renderAsk(undefined);
 

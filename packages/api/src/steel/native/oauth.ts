@@ -49,6 +49,13 @@ type CreateOpenAIOAuthTransport = typeof createOpenAIOAuthTransportType;
 type OpenAICredentials = typeof openaiCredentialsType;
 type LocalOpenAIOAuthOptions = NonNullable<Parameters<OpenAICredentials>[0]>;
 type MessageContentArray = Array<Record<string, unknown>>;
+type CodeInterpreterEvidenceSource =
+  | LanguageModelV3GenerateResult['content'][number]
+  | LanguageModelV3StreamPart;
+type CodeInterpreterEvidencePart = Extract<
+  CodeInterpreterEvidenceSource,
+  { type: 'tool-call' | 'tool-result' }
+>;
 
 export interface OpenAIOAuthProviderOptions {
   authFilePath?: string;
@@ -768,6 +775,39 @@ function isProviderCodeInterpreterToolCall(
   );
 }
 
+function isProviderCodeInterpreterEvidence(
+  part: CodeInterpreterEvidenceSource,
+): part is CodeInterpreterEvidencePart {
+  return (part.type === 'tool-call' || part.type === 'tool-result') &&
+    part.toolName === 'code_interpreter' &&
+    (part.type === 'tool-result' || part.providerExecuted === true);
+}
+
+function createCodeInterpreterEvidenceDispatcher(
+  callback?: OpenAIOAuthModelOptions['onCodeInterpreterEvidence'],
+): (parts: readonly CodeInterpreterEvidenceSource[]) => Promise<void> {
+  const seen = new WeakSet<object>();
+  const clientToolCallIds = new Set<string>();
+
+  return async (parts) => {
+    if (!callback) return;
+    for (const part of parts) {
+      if (part.type === 'tool-call' && part.toolName === 'code_interpreter' && part.providerExecuted !== true) {
+        clientToolCallIds.add(part.toolCallId);
+        continue;
+      }
+      if (!isProviderCodeInterpreterEvidence(part) ||
+        (part.type === 'tool-result' && clientToolCallIds.has(part.toolCallId)) || seen.has(part)) continue;
+      seen.add(part);
+      await callback({
+        type: part.type,
+        toolCallId: part.toolCallId,
+        payload: JSON.stringify(part),
+      });
+    }
+  };
+}
+
 function createSteelCodeInterpreterAuditDispatcher(
   config?: Partial<RunnableConfig>,
 ): (
@@ -926,6 +966,9 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
     const providerModel = await this.getProviderModel();
     const ocrMode = hasOcrCompletionDirective(messages);
     const inspectCodeInterpreter = shouldInspectCodeInterpreter(messages, this.options);
+    const dispatchCodeInterpreterEvidence = createCodeInterpreterEvidenceDispatcher(
+      this.options.onCodeInterpreterEvidence,
+    );
     const dispatchCodeInterpreterAudit = createSteelCodeInterpreterAuditDispatcher(config);
     const result = await providerModel.doGenerate(
       createCallOptions({
@@ -936,18 +979,7 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
       }),
     );
 
-    if (this.options.onCodeInterpreterEvidence) {
-      for (const part of result.content) {
-        if ((part.type === 'tool-call' || part.type === 'tool-result') &&
-          part.toolName === 'code_interpreter' && (part.type === 'tool-result' || part.providerExecuted) === true) {
-          await this.options.onCodeInterpreterEvidence({
-            type: part.type,
-            toolCallId: part.toolCallId,
-            payload: JSON.stringify(part),
-          });
-        }
-      }
-    }
+    await dispatchCodeInterpreterEvidence(result.content);
 
     if (inspectCodeInterpreter) {
       await dispatchCodeInterpreterAudit('stage_1', result.content);
@@ -1025,6 +1057,9 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
 
     const ocrMode = hasOcrCompletionDirective(messages);
     const inspectCodeInterpreter = shouldInspectCodeInterpreter(messages, this.options);
+    const dispatchCodeInterpreterEvidence = createCodeInterpreterEvidenceDispatcher(
+      this.options.onCodeInterpreterEvidence,
+    );
     const dispatchCodeInterpreterAudit = createSteelCodeInterpreterAuditDispatcher(config);
     const reader = result.stream.getReader();
 
@@ -1044,6 +1079,8 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
             completed = true;
             break;
           }
+
+          await dispatchCodeInterpreterEvidence([value]);
 
           if (inspectCodeInterpreter) {
             await dispatchCodeInterpreterAudit('stage_1', [value]);
@@ -1128,6 +1165,8 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
           completed = true;
           break;
         }
+
+        await dispatchCodeInterpreterEvidence([value]);
 
         if (inspectCodeInterpreter) {
           await dispatchCodeInterpreterAudit('stage_1', [value]);
