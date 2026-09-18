@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { AIMessageChunk } from '@librechat/agents/langchain/messages';
+import { createSteelQuotationStateModel, createSteelQuotationArtifactModel } from '@librechat/data-schemas';
 
 import type { SteelQuotationScope, SteelQuotationActiveRun } from '@librechat/data-schemas';
 import { createOpenAIOAuthModel } from '../native/oauth';
@@ -295,6 +296,39 @@ describe('quotation runner integration', () => {
     oauthFactory.mockReset();
   });
 
+  it('runs only one quotation when another retry arrives while its child is active', async () => {
+    const run = await prepareRun(1);
+    const lease = await service.acquireLease({ scope, runId: run.runId });
+    await service.interruptRun({ scope, runId: run.runId, leaseToken: lease!.leaseToken });
+    let releaseChild!: () => void;
+    let childStarted!: () => void;
+    const gate = new Promise<void>((resolve) => { releaseChild = resolve; });
+    const started = new Promise<void>((resolve) => { childStarted = resolve; });
+    const originalModel = createModel();
+    const model = jest.fn(async (input: QuotationModelInput) => {
+      if (input.role === 'child') {
+        childStarted();
+        await gate;
+      }
+      return originalModel(input);
+    });
+    const publishFinal = jest.fn(async () => undefined);
+    const input = runnerInput(model, createLookupExecutor(), { publishFinal });
+    const first = runQuotationPreflight(input);
+    try {
+      await started;
+      const activeLease = (await service.readState(scope))!.activeRun!.leaseToken;
+      await expect(runQuotationPreflight(input)).resolves.toEqual({ status: 'busy' });
+      expect((await service.readState(scope))!.activeRun!.leaseToken).toBe(activeLease);
+      expect(model).toHaveBeenCalledTimes(1);
+    } finally {
+      releaseChild();
+      await first;
+    }
+    expect(publishFinal).toHaveBeenCalledTimes(1);
+    expect((await service.readState(scope))?.activeRun?.status).toBe('completed');
+  });
+
   it('immediately repairs invalid large chunks in durable slices and restarts only the unfinished slice', async () => {
     const run = await prepareRun(61);
     const chunks = buildQuotationChunks(orderMarkdown(61));
@@ -352,32 +386,66 @@ describe('quotation runner integration', () => {
     expect(history.preflightToolCalls).toHaveLength(8);
   });
 
-  it('resumes an exhausted legacy parent directly with a saved recovery plan', async () => {
-    const run = await prepareRun(23);
-    const lease = await service.acquireLease({ scope, runId: run.runId });
-    const leased = { scope, runId: run.runId, leaseToken: lease!.leaseToken };
-    await service.checkpoint({ ...leased, operationId: 'repair:1:legacy:2:chunk_repair_failed', kind: 'main',
-      payload: JSON.stringify({ stage: 'chunk_repair_failed', repairAttempt: 2, maxRepairAttempts: 2 }),
-    });
-    await service.checkpoint({ ...leased, operationId: 'child-output:1:legacy', kind: 'main',
-      payload: JSON.stringify({ markdown: '| incomplete', lookupOperations: [], pythonOperations: [] }),
-    });
-    await service.interruptRun(leased);
-    const model = createModel({ onChild: async (input) => {
-      const plan = JSON.parse((await service.readCheckpoint({ scope, runId: run.runId, operationId: 'split:1' }))!);
-      expect(plan.version).toBe(1);
-      expect(plan.rowsPerSlice).toBe(10);
-      expect(plan.sourceRowIds.map((ids: string[]) => ids.length)).toEqual([10, 10, 3]);
-      expect(input).not.toHaveProperty('continuation');
-      const rows = parseMarkdownTables(JSON.parse(input.input).chunk)[0]!.rows;
-      await input.lookup?.(`lookup-${rows[0]![1]}`, { queries: [] });
-      return { markdown: childMarkdown(rows.map(systemRowFromSourceRow)), lookups: [], pythonEvidence: [] };
-    } });
-    await expect(runQuotationPreflight(runnerInput(model, createLookupExecutor())))
-      .resolves.toEqual(expect.objectContaining({ status: 'completed' }));
-    expect(model.mock.calls.filter(([input]) => input.role === 'child').map(([input]) =>
-      parseMarkdownTables(JSON.parse(input.input).chunk)[0]!.rows.length)).toEqual([10, 10, 3]);
-  });
+  it.each(['new', 'artifact only'])(
+    'resumes an exhausted legacy parent in 10-row slices with heartbeats and a %s recovery plan', async (planState) => {
+      const run = await prepareRun(23);
+      const lease = await service.acquireLease({ scope, runId: run.runId });
+      const leased = { scope, runId: run.runId, leaseToken: lease!.leaseToken };
+      await service.checkpoint({ ...leased, operationId: 'repair:1:legacy:2:chunk_repair_failed', kind: 'main',
+        payload: JSON.stringify({ stage: 'chunk_repair_failed', repairAttempt: 2, maxRepairAttempts: 2 }),
+      });
+      await service.checkpoint({ ...leased, operationId: 'child-output:1:legacy', kind: 'main',
+        payload: JSON.stringify({ markdown: '| incomplete', lookupOperations: [], pythonOperations: [] }),
+      });
+      await service.interruptRun(leased);
+      if (planState === 'artifact only') {
+        const recoveryLease = await service.acquireLease({ scope, runId: run.runId });
+        const rows = buildQuotationChunks(orderMarkdown(23))[0]!.sourceRows;
+        await service.writeArtifact({
+          scope, runId: run.runId, leaseToken: recoveryLease!.leaseToken,
+          operationId: 'split:1', kind: 'main', payload: JSON.stringify({
+            version: 1, rowsPerSlice: 10,
+            sourceRowIds: [rows.slice(0, 10), rows.slice(10, 20), rows.slice(20)]
+              .map((slice) => slice.map((row) => row.sourceRowId)),
+          }),
+        });
+        await service.interruptRun({ scope, runId: run.runId, leaseToken: recoveryLease!.leaseToken });
+      }
+      const State = createSteelQuotationStateModel(mongoose);
+      const update = State.collection.findOneAndUpdate.bind(State.collection);
+      const heartbeat = jest.spyOn(State.collection, 'findOneAndUpdate').mockImplementation(async (...args) => {
+        if (!Array.isArray(args[1]) && args[1].$set?.['activeRun.checkpointRefs']) {
+          const active = (await service.readState(scope))!.activeRun!;
+          await service.heartbeatLease({
+            scope, runId: run.runId, leaseToken: active.leaseToken,
+            now: new Date(Math.max(Date.now(), active.updatedAt.getTime() + 1)),
+          });
+        }
+        return update(...args);
+      });
+      const model = createModel({ onChild: async (input) => {
+        const plan = JSON.parse((await service.readCheckpoint({ scope, runId: run.runId, operationId: 'split:1' }))!);
+        expect(plan.version).toBe(1);
+        expect(plan.rowsPerSlice).toBe(10);
+        expect(plan.sourceRowIds.map((ids: string[]) => ids.length)).toEqual([10, 10, 3]);
+        expect(input).not.toHaveProperty('continuation');
+        const rows = parseMarkdownTables(JSON.parse(input.input).chunk)[0]!.rows;
+        await input.lookup?.(`lookup-${rows[0]![1]}`, { queries: [] });
+        return { markdown: childMarkdown(rows.map(systemRowFromSourceRow)), lookups: [], pythonEvidence: [] };
+      } });
+      try {
+        await expect(runQuotationPreflight(runnerInput(model, createLookupExecutor())))
+          .resolves.toEqual(expect.objectContaining({ status: 'completed' }));
+        expect(model.mock.calls.filter(([input]) => input.role === 'child').map(([input]) =>
+          parseMarkdownTables(JSON.parse(input.input).chunk)[0]!.rows.length)).toEqual([10, 10, 3]);
+        expect(await createSteelQuotationArtifactModel(mongoose).countDocuments({
+          ...scope, runId: run.runId, operationId: 'split:1',
+        })).toBe(1);
+      } finally {
+        heartbeat.mockRestore();
+      }
+    },
+  );
 
   it('rejects a changed recovery source plan before invoking a child', async () => {
     const run = await prepareRun(23);

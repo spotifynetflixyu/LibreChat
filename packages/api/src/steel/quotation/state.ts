@@ -1712,7 +1712,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
         !leaseStatuses.includes(run.status) ||
         run.leaseToken !== input.leaseToken ||
         !run.leaseExpiresAt ||
-        run.leaseExpiresAt.getTime() <= now.getTime()
+        run.leaseExpiresAt.getTime() <= nowOrDefault(input.now).getTime()
       ) {
         return undefined;
       }
@@ -1740,21 +1740,23 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
         activeRun: { ...run, checkpointRefs: nextRefs, chunks: nextChunks },
         pendingMessages: current.pendingMessages,
       });
+      const attemptNow = nowOrDefault(input.now);
       const updated = await State.findOneAndUpdate(
         {
           ...stateFilter(input.scope),
           'activeRun.runId': input.runId,
           'activeRun.leaseToken': input.leaseToken,
           'activeRun.status': { $in: leaseStatuses },
-          'activeRun.leaseExpiresAt': { $gt: now },
-          'activeRun.updatedAt': run.updatedAt,
+          'activeRun.leaseExpiresAt': { $gt: attemptNow },
+          'activeRun.checkpointRefs': run.checkpointRefs,
+          'activeRun.chunks': run.chunks,
         },
         {
           $set: {
             'activeRun.checkpointRefs': nextRefs,
             'activeRun.chunks': nextChunks,
-            'activeRun.updatedAt': now,
-            updatedAt: now,
+            'activeRun.updatedAt': attemptNow,
+            updatedAt: attemptNow,
           },
         },
         {

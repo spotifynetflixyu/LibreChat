@@ -364,6 +364,135 @@ describe('Steel quotation state service', () => {
     );
   });
 
+  it('saves a checkpoint when its lease heartbeat runs before every conditional update', async () => {
+    const { run } = await prepareRun();
+    const now = new Date();
+    const leaseInput = { scope, runId: run.runId, leaseToken: 'heartbeat-checkpoint' };
+    await service.acquireLease({ ...leaseInput, now });
+    const State = createSteelQuotationStateModel(mongoose);
+    const update = State.collection.findOneAndUpdate.bind(State.collection);
+    let heartbeats = 0;
+    const spy = jest.spyOn(State.collection, 'findOneAndUpdate').mockImplementation(async (...args) => {
+      if (!Array.isArray(args[1]) && args[1].$set?.['activeRun.checkpointRefs']) {
+        heartbeats += 1;
+        await service.heartbeatLease({ ...leaseInput, now: new Date(now.getTime() + heartbeats) });
+      }
+      return update(...args);
+    });
+    try {
+      const saved = await service.checkpoint({
+        ...leaseInput,
+        operationId: 'split:1',
+        kind: 'main',
+        payload: JSON.stringify({ rowsPerSlice: 10 }),
+        now,
+      });
+      expect(saved).toBeDefined();
+      expect(heartbeats).toBe(1);
+      expect(saved?.activeRun?.checkpointRefs).toEqual([
+        expect.objectContaining({ operationId: 'split:1' }),
+      ]);
+      expect(saved?.activeRun?.leaseExpiresAt?.getTime()).toBeGreaterThan(now.getTime() + 60_000);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('retains competing checkpoints written at the same timestamp', async () => {
+    const { run } = await prepareRun();
+    const now = new Date();
+    const leaseInput = { scope, runId: run.runId, leaseToken: 'concurrent-checkpoints' };
+    await service.acquireLease({ ...leaseInput, now });
+    const State = createSteelQuotationStateModel(mongoose);
+    const update = State.collection.findOneAndUpdate.bind(State.collection);
+    let interleaved = false;
+    const spy = jest.spyOn(State.collection, 'findOneAndUpdate').mockImplementation(async (...args) => {
+      if (!interleaved && !Array.isArray(args[1]) && args[1].$set?.['activeRun.checkpointRefs']) {
+        interleaved = true;
+        await service.checkpoint({
+          ...leaseInput, operationId: 'chunk:1', kind: 'chunk', payload: 'completed chunk',
+          chunkIndex: 1, now,
+        });
+      }
+      return update(...args);
+    });
+    try {
+      const saved = await service.checkpoint({
+        ...leaseInput, operationId: 'split:1', kind: 'main', payload: 'split plan', now,
+      });
+      expect(saved?.activeRun?.checkpointRefs.map((ref) => ref.operationId).sort())
+        .toEqual(['chunk:1', 'split:1']);
+      expect(saved?.activeRun?.chunks[0]?.status).toBe('completed');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it.each(['cancelled', 'replaced'] as const)(
+    'rejects a checkpoint if its run is %s before the conditional update', async (change) => {
+      const { run } = await prepareRun();
+      const leaseInput = { scope, runId: run.runId, leaseToken: 'old-checkpoint-owner' };
+      await service.acquireLease(leaseInput);
+      const State = createSteelQuotationStateModel(mongoose);
+      const update = State.collection.findOneAndUpdate.bind(State.collection);
+      let interleaved = false;
+      const spy = jest.spyOn(State.collection, 'findOneAndUpdate').mockImplementation(async (...args) => {
+        if (!interleaved && !Array.isArray(args[1]) && args[1].$set?.['activeRun.checkpointRefs']) {
+          interleaved = true;
+          if (change === 'cancelled') {
+            await service.cancelRun(leaseInput);
+          } else {
+            await service.releaseLease(leaseInput);
+            await service.acquireLease({ ...leaseInput, leaseToken: 'new-checkpoint-owner' });
+          }
+        }
+        return update(...args);
+      });
+      try {
+        await expect(service.checkpoint({
+          ...leaseInput, operationId: 'split:1', kind: 'main', payload: 'split plan',
+        })).resolves.toBeUndefined();
+        const state = await service.readState(scope);
+        expect(state?.activeRun?.checkpointRefs).toEqual([]);
+        expect(state?.activeRun?.chunks[0]?.status).toBe('pending');
+        if (change === 'cancelled') expect(state?.activeRun?.status).toBe('cancelled');
+        else expect(state?.activeRun?.leaseToken).toBe('new-checkpoint-owner');
+      } finally {
+        spy.mockRestore();
+      }
+    },
+  );
+
+  it('rejects a checkpoint when its lease expires while the artifact is being saved', async () => {
+    const { run } = await prepareRun();
+    const now = new Date();
+    const leaseInput = { scope, runId: run.runId, leaseToken: 'expiring-checkpoint' };
+    await service.acquireLease({ ...leaseInput, now });
+    const Artifact = createSteelQuotationArtifactModel(mongoose);
+    const insert = Artifact.collection.insertOne.bind(Artifact.collection);
+    const spy = jest.spyOn(Artifact.collection, 'insertOne').mockImplementation(async (...args) => {
+      const result = await insert(...args);
+      jest.setSystemTime(now.getTime() + 60_001);
+      return result;
+    });
+    jest.useFakeTimers({
+      now,
+      doNotFake: [
+        'hrtime', 'nextTick', 'performance', 'queueMicrotask', 'setImmediate',
+        'clearImmediate', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout',
+      ],
+    });
+    try {
+      await expect(service.checkpoint({
+        ...leaseInput, operationId: 'split:1', kind: 'main', payload: 'split plan',
+      })).resolves.toBeUndefined();
+      expect((await service.readState(scope))?.activeRun?.checkpointRefs).toEqual([]);
+    } finally {
+      spy.mockRestore();
+      jest.useRealTimers();
+    }
+  });
+
   it('stores immutable artifacts, reuses checkpoints, and blocks stale writes after cancellation', async () => {
     const prepared = await prepareRun();
     const lease = await service.acquireLease({
