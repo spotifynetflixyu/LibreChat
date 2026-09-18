@@ -173,10 +173,7 @@ export function normalizeSteelActivityEvent(
       (data.repairAttempt !== undefined &&
         data.maxRepairAttempts !== undefined &&
         (data.repairAttempt as number) > (data.maxRepairAttempts as number)) ||
-      (quotationRepairStages.has(data.stage) &&
-        (data.chunkIndex === undefined ||
-          !Number.isSafeInteger(data.chunkIndex) ||
-          (data.chunkIndex as number) < 0))
+      (quotationRepairStages.has(data.stage) && data.chunkIndex === undefined)
     ) {
       return null;
     }

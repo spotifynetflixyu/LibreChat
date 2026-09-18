@@ -278,24 +278,17 @@ const SteelQuotationProgress = memo(function SteelQuotationProgress({
   useEffect(() => {
     setRetryError(undefined);
     const retryRun = retryRunRef.current;
-    if (
+    const hasRunChanged =
       retryRun &&
       (statusName !== 'interrupted' ||
         statusIndex !== retryRun.index ||
-        statusRunId !== retryRun.runId)
-    ) {
-      retryDispatchedRef.current = false;
-      setIsRetryDispatched(false);
-      retrySubmissionStartedRef.current = false;
-      retryRunRef.current = null;
-    }
+        statusRunId !== retryRun.runId);
     if (retryDispatchedRef.current && isSubmittingRef.current) {
       retrySubmissionStartedRef.current = true;
     }
     if (
-      retryDispatchedRef.current &&
-      retrySubmissionStartedRef.current &&
-      !isSubmittingRef.current
+      hasRunChanged ||
+      (retryDispatchedRef.current && retrySubmissionStartedRef.current && !isSubmittingRef.current)
     ) {
       retryDispatchedRef.current = false;
       setIsRetryDispatched(false);
@@ -315,12 +308,7 @@ const SteelQuotationProgress = memo(function SteelQuotationProgress({
     (queryData?.canCancel ?? isQuotationCancellableStatus(status.status));
   const isCurrentConversation = currentConversationIdRef.current === conversationId;
   const canRetry =
-    isCurrentConversation &&
-    canCancel &&
-    !hasMismatchedQuery &&
-    !terminalEventWins &&
-    status.status === 'interrupted' &&
-    index !== null;
+    isCurrentConversation && canCancel && status.status === 'interrupted' && index !== null;
   let cancelError: string | undefined;
   if (!hasMismatchedQuery && !terminalEventWins) {
     cancelError = getQuotationCancelError(cancelMutation.error);
@@ -336,15 +324,14 @@ const SteelQuotationProgress = memo(function SteelQuotationProgress({
     event?.maxRepairAttempts,
   );
   const isCanceling = cancelMutation.isLoading;
-  const hasError = Boolean(cancelError);
+  const repairFailed = isQuotationRepairFailure(event);
   const shouldShowLoadingDot =
     showLoadingDot &&
     !hasMismatchedQuery &&
     isQuotationPreflightWaitingStatus(status.status) &&
-    !isQuotationRepairFailure(event) &&
+    !repairFailed &&
     (queryData == null || isQuotationPreflightWaitingStatus(queryData.status));
   const isActive = isQuotationActiveStatus(status.status);
-  const repairFailed = isQuotationRepairFailure(event);
   let StatusIcon = AlertTriangle;
   let statusIconClass = 'text-status-error';
   if ((isActive && !repairFailed) || isCanceling || isRetrying) {
@@ -422,7 +409,6 @@ const SteelQuotationProgress = memo(function SteelQuotationProgress({
       setIsRetrying(false);
     }
   };
-  const retryHasError = Boolean(retryError);
   const actionError = status.status === 'interrupted' ? retryError : cancelError;
 
   return (
@@ -469,7 +455,7 @@ const SteelQuotationProgress = memo(function SteelQuotationProgress({
                 : localize('com_ui_steel_quote_cancel')}
             </Button>
           ))}
-        {(hasError || retryHasError) && actionError && (
+        {actionError && (
           <span className="min-w-0 whitespace-normal break-words text-status-error">
             {localize(
               status.status === 'interrupted'
