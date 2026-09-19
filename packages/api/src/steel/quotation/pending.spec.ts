@@ -10,6 +10,7 @@ import type { OpenAIOAuthModelOptions } from '../native/oauth';
 import type { QuotationModelInput } from './model';
 
 import { createSteelQuotationStateService } from './state';
+import { createSteelOcrStateService } from '../ocr/state';
 import { defaultQuotationCustomerMarkdown } from './preparation';
 import {
   processQuotationPendingMessages,
@@ -17,7 +18,7 @@ import {
 } from './pending';
 import { invokeQuotationModel } from './model';
 import { buildDefaultSteelGlobalAgentContext } from '../native/context';
-import { createSteelQuotationArtifactModel, createSteelQuotationStateModel } from '@librechat/data-schemas';
+import { createSteelOcrResponseAuditModel, createSteelQuotationArtifactModel, createSteelQuotationStateModel } from '@librechat/data-schemas';
 
 jest.mock('./model', () => ({
   invokeQuotationModel: jest.fn(),
@@ -106,6 +107,8 @@ describe('quotation pending processor', () => {
     expect(state?.nextSignalIndex).toBe(0);
     expect(state?.activeRun).toBeUndefined();
     expect(publish).not.toHaveBeenCalled();
+    const audit = await createSteelOcrResponseAuditModel(mongoose).findOne({ conversationId: scope.conversationId }).lean();
+    expect(audit?.rawResponse).toBe(`${heading}\n\nstart`);
   });
 
   it('journals the model result and recovers after publication failure without invoking the model twice', async () => {
@@ -173,6 +176,39 @@ describe('quotation pending processor', () => {
       userId: scope.userId,
       conversationId: scope.conversationId,
     })).toBe(2);
+  });
+
+  it('keeps the visible delta and retries publication with canonical state and one raw audit', async () => {
+    const ocrService = createSteelOcrStateService(mongoose);
+    const base = '## ocr_result\n\n| 來源 | 零件編號 | 類別 | 數量 |\n| --- | --- | --- | --- |\n| F1 | A-6M74 | 鋼板 | 3 |\n| F1 | P2 | 鋼板 | 5 |';
+    const delta = '已修正\n\n## ocr_result_updates\n\n| 數量 | 來源 | 零件編號 | 類別 |\n| --- | --- | --- | --- |\n| 1 | F1 | A-6M74 | 鋼板 |';
+    const raw = `${delta}\n\n${defaultQuotationCustomerMarkdown}`;
+    const canonical = base.replace('| A-6M74 | 鋼板 | 3 |', '| A-6M74 | 鋼板 | 1 |');
+    const displayed = `${raw}\n\n${canonical}`;
+    await ocrService.upsertCurrentOcrResult({ conversationId: scope.conversationId, generationId: 'base', attemptNumber: 1, markdown: base, messageId: 'base-message' });
+    await service.setOrder({ scope, fullMarkdown: base, revision: 'base', messageId: 'base-message' });
+    await service.enqueuePendingMessage({ scope, sourceMessageId: 'correct-qty', targetMessageId: 'corrected', sourceMessageText: 'A-6M74 數量改為 1，使用 B tier' });
+    invokeMock.mockResolvedValue({ markdown: raw, lookups: [], pythonEvidence: [] });
+    const publish = jest.fn<Promise<void>, [{ messageId: string; parentMessageId: string; markdown: string }]>()
+      .mockImplementationOnce(async () => {
+        expect((await ocrService.readConversationOcrState(scope.conversationId))?.currentOcrResultMarkdown).toBe(canonical);
+        throw new Error('publication unavailable');
+      }).mockResolvedValue(undefined);
+    await expect(processQuotationPendingMessages(processInput(publish))).rejects.toThrow('publication unavailable');
+    await createSteelQuotationStateModel(mongoose).updateOne(
+      { userId: scope.userId, conversationId: scope.conversationId },
+      { $set: { 'pendingMessages.0.claimExpiresAt': new Date(0) } },
+    );
+    await processQuotationPendingMessages(processInput(publish));
+    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(publish.mock.calls.map(([value]) => value.markdown)).toEqual([displayed, displayed]);
+    const current = await service.readState(scope);
+    expect(current?.currentOrder?.markdown).toBe(canonical);
+    expect(current?.currentCustomer?.customerMarkdown).toBe(defaultQuotationCustomerMarkdown);
+    expect((await ocrService.readConversationOcrState(scope.conversationId))?.currentOcrResultMarkdown).toBe(canonical);
+    const audits = await createSteelOcrResponseAuditModel(mongoose).find({ conversationId: scope.conversationId }).lean();
+    expect(audits).toHaveLength(1);
+    expect(audits[0]).toMatchObject({ rawResponse: raw, baseRevision: 'base', messageId: 'corrected', sourceStage: 'pending' });
   });
 
   it('claims pending corrections in FIFO order and carries each stable target message', async () => {
@@ -250,5 +286,41 @@ describe('quotation pending processor', () => {
     expect(await service.claimPendingMessage({ scope, now: new Date(11_501) })).toEqual(expect.objectContaining({
       sourceMessageId: claimed.sourceMessageId,
     }));
+  });
+
+  it('audits a correction, publishes visible updates with the appended full order, and stores canonical markdown', async () => {
+    const ocrService = createSteelOcrStateService(mongoose);
+    const previous = '## ocr_result\n\n| 來源 | 零件編號 | 數量 |\n| --- | --- | --- |\n| F1 | P1 | 2 |';
+    await ocrService.upsertCurrentOcrResult({
+      conversationId: scope.conversationId,
+      generationId: 'previous-generation',
+      attemptNumber: 1,
+      markdown: previous,
+      messageId: 'previous-message',
+    });
+    await service.enqueuePendingMessage({
+      scope,
+      sourceMessageId: 'delta-source',
+      sourceMessageText: '修改數量為 4',
+      targetMessageId: 'delta-target',
+    });
+    const updates = '說明文字\n\n## ocr_result_updates\n\n| 數量 | 零件編號 | 來源 |\n| --- | --- | --- |\n| 4 | P1 | F1 |';
+    invokeMock.mockResolvedValue({ markdown: updates, lookups: [], pythonEvidence: [] });
+    const published: Array<{ messageId: string; parentMessageId: string; markdown: string }> = [];
+
+    await processQuotationPendingMessages(processInput(async (output) => {
+      published.push(output);
+    }));
+
+    expect(published).toHaveLength(1);
+    expect(published[0]?.markdown).toContain('## ocr_result_updates');
+    expect(published[0]?.markdown).toContain('## ocr_result');
+    expect(published[0]?.markdown?.lastIndexOf('## ocr_result')).toBeGreaterThan(
+      published[0]?.markdown?.indexOf('## ocr_result_updates') ?? -1,
+    );
+    const current = await ocrService.readCurrentOcrResult(scope.conversationId);
+    expect(current?.markdown).toContain('| F1 | P1 | 4 |');
+    expect(current?.markdown).not.toContain('ocr_result_updates');
+    expect((await service.readState(scope))?.currentOrder?.markdown).toBe(current?.markdown);
   });
 });

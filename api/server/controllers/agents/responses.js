@@ -44,6 +44,7 @@ const {
   resolveAgentScopedSkillIds,
   extractSteelNativeMarkdownText,
   extractSteelNativeResponseOutputText,
+  parseAssistantMarkdown,
   buildSteelNativeResponseMessageMetadata,
   createSteelNativeHistory,
   // Responses API
@@ -67,6 +68,8 @@ const {
   stripActivityLabelParts,
   CHILD_THREAD_READ_ONLY_ERROR,
   createSteelOcrStateService,
+  createSteelOcrResponseAuditService,
+  SteelOcrResponseAuditPersistenceError,
   finalizeOcrResponse,
   prepareQuotationTurn,
   hasQuotationOrder,
@@ -434,6 +437,86 @@ function replaceResponsesOutputText(response, text) {
   }
 }
 
+async function auditResponsesOcrResponse(req, {
+  rawResponse,
+  state,
+  conversationId,
+  messageId,
+  generationId,
+  delegateRun,
+  delegateContext,
+}) {
+  const userId = req?.user?.id;
+  if (!userId || !conversationId || !messageId || !generationId) {
+    throw new SteelOcrResponseAuditPersistenceError(
+      'OCR audit requires user, conversation, message, and generation scope',
+    );
+  }
+  return createSteelOcrResponseAuditService(mongoose).save({
+    rawResponse,
+    sourceStage: 'responses',
+    userId,
+    tenantId: req?.user?.tenantId,
+    conversationId,
+    messageId,
+    generationId: String(generationId),
+    ...(delegateRun?.agentAttemptToken || delegateContext?.attemptToken
+      ? { attemptId: delegateRun?.agentAttemptToken ?? delegateContext.attemptToken }
+      : {}),
+    attemptNumber: delegateRun?.agentAttemptNumber ?? delegateContext?.agentAttemptNumber ?? 1,
+    ...(state?.currentOcrResultGenerationId
+      ? { baseRevision: state.currentOcrResultGenerationId }
+      : {}),
+    baseResponse: state?.currentOcrResultMarkdown ?? '',
+  });
+}
+
+function replaceInvalidResponsesOcrFinalization(response, state, reason) {
+  const messages = {
+    ambiguous_ocr_update: '訂單更新內容不明確，原訂單未變更。請提供完整且可辨識的修改列。',
+    invalid_ocr_result_table: 'OCR 訂單格式無法確認，原訂單未變更。請重新確認附件。',
+    missing_ocr_base: '訂單更新缺少可用的原訂單，原訂單未變更。請重新確認附件。',
+    conflicting_ocr_sections: '訂單更新格式互相衝突，原訂單未變更。請只提供修改列。',
+    missing_ocr_result: 'OCR 訂單結果缺少完整表格，原訂單未變更。',
+  };
+  const message = messages[reason];
+  if (!message) {
+    return false;
+  }
+  replaceResponsesOutputText(
+    response,
+    state?.currentOcrResultMarkdown ? `${message}\n\n${state.currentOcrResultMarkdown}` : message,
+  );
+  return true;
+}
+
+function getTrustedDelegateOcrFinalization(delegateContext, rawResponseText) {
+  const workflow = delegateContext?.delegateOcrWorkflow ?? delegateContext;
+  const finalized = workflow?.finalizedResponse;
+  if (
+    workflow?.finalizedByBackend !== true ||
+    !finalized ||
+    finalized.ok !== true ||
+    typeof finalized.finalResponse !== 'string' ||
+    typeof finalized.ocrResultMarkdown !== 'string' ||
+    finalized.ocrResultMarkdown.trim() === '' ||
+    finalized.finalResponse !== rawResponseText
+  ) {
+    return null;
+  }
+  return finalized;
+}
+
+function asOcrPersistenceError(error, message) {
+  if (error instanceof SteelOcrResponseAuditPersistenceError) {
+    return error;
+  }
+  return new SteelOcrResponseAuditPersistenceError(
+    message,
+    error instanceof Error ? error : undefined,
+  );
+}
+
 function materializeResponsesTrackerText(tracker, text = tracker?.accumulatedText ?? '') {
   if (!tracker?.currentMessage || !Array.isArray(tracker.currentMessage.content)) {
     return;
@@ -492,12 +575,24 @@ async function saveResponseOutput(
 ) {
   let responseText = extractSteelNativeResponseOutputText(response);
   let ocrFinalization;
-  if (req.steelNativeContext?.quotation?.pendingOrderPersisted !== true &&
-    /^ {0,3}##(?!#)[ \t]+ocr_result[ \t]*$/imu.test(responseText)) {
+  const delegateContext = req.steelNativeContext?.delegateOcrContext;
+  const delegateRun = delegateContext?.delegateOcrRun;
+  const hasOcrResult = parseAssistantMarkdown(responseText).sections.some((section) =>
+    ['ocr_result', 'ocr_result_updates'].includes(section.title.trim()),
+  );
+  const trustedFinalization = getTrustedDelegateOcrFinalization(delegateContext, responseText);
+  const ocrStageActive = delegateRun || req.steelNativeContext?.ocrTurnActive === true;
+  if (
+    req.steelNativeContext?.quotation?.pendingOrderPersisted !== true &&
+    (hasOcrResult || ocrStageActive)
+  ) {
     const stateService = createSteelOcrStateService(mongoose);
-    const state = await stateService.readConversationOcrState(conversationId);
-    const delegateContext = req.steelNativeContext?.delegateOcrContext;
-    const delegateRun = delegateContext?.delegateOcrRun;
+    let state;
+    try {
+      state = await stateService.readConversationOcrState(conversationId);
+    } catch (error) {
+      throw asOcrPersistenceError(error, 'OCR state could not be read before response finalization');
+    }
     const executionLeaseToken =
       delegateContext?.delegateOcrExecutionLease?.executionLeaseToken ??
       delegateRun?.executionLeaseToken;
@@ -506,20 +601,50 @@ async function saveResponseOutput(
       : req.steelNativeContext?.ocrTurnActive === true
         ? 'regular_ocr'
         : 'other';
-    const finalized = finalizeOcrResponse({
-      assistantResponse: responseText,
-      previousOcrMarkdown: state?.currentOcrResultMarkdown,
-      canonicalMapping: (state?.sourceMappings ?? []).map(({ sourceCode, sourceFilename }) => ({
-        sourceCode,
-        sourceFilename,
-      })),
-      delegateSummary: agentKind === 'delegate_ocr',
-      agentKind,
-      currentUserTurn: delegateContext?.currentUserTurnText,
-    });
-    if (finalized.ok) {
-      responseText = finalized.finalResponse;
-      replaceResponsesOutputText(response, responseText);
+    if (!hasOcrResult && !trustedFinalization) {
+      await auditResponsesOcrResponse(req, {
+        rawResponse: responseText,
+        state,
+        conversationId,
+        messageId: responseId,
+        generationId: responseId,
+        delegateRun,
+        delegateContext,
+      });
+      replaceResponsesOutputText(
+        response,
+        state?.currentOcrResultMarkdown
+          ? `OCR 訂單結果缺少完整表格，原訂單未變更。\n\n${state.currentOcrResultMarkdown}`
+          : 'OCR 訂單結果缺少完整表格，原訂單未變更。',
+      );
+      responseText = extractSteelNativeResponseOutputText(response);
+    } else {
+      let finalized = trustedFinalization;
+      if (!finalized) {
+        await auditResponsesOcrResponse(req, {
+          rawResponse: responseText,
+          state,
+          conversationId,
+          messageId: responseId,
+          generationId: responseId,
+          delegateRun,
+          delegateContext,
+        });
+        finalized = finalizeOcrResponse({
+          assistantResponse: responseText,
+          previousOcrMarkdown: state?.currentOcrResultMarkdown,
+          canonicalMapping: (state?.sourceMappings ?? []).map(({ sourceCode, sourceFilename }) => ({
+            sourceCode,
+            sourceFilename,
+          })),
+          delegateSummary: agentKind === 'delegate_ocr',
+          agentKind,
+          currentUserTurn: delegateContext?.currentUserTurnText,
+        });
+      }
+      if (finalized.ok) {
+        responseText = finalized.finalResponse;
+        replaceResponsesOutputText(response, responseText);
       const candidateToken = `${responseId}:${Date.now()}`;
       if (delegateRun?.claimToken) {
         const candidate = await stateService.setDelegateFinalizedCandidate({
@@ -558,12 +683,15 @@ async function saveResponseOutput(
         executionLeaseToken,
         candidateToken,
       };
-    } else if (finalized.reason === 'invalid_ocr_deletion') {
-      responseText = `訂單刪除未通過確認，原訂單未變更。請重新指定要刪除的項目。\n\n${state?.currentOcrResultMarkdown ?? ''}`;
-      replaceResponsesOutputText(response, responseText);
-    } else if (finalized.reason === 'mapping_mismatch') {
-      responseText = '目前 AI model 暫時不可用，建議先切換別的 model。';
-      replaceResponsesOutputText(response, responseText);
+      } else if (finalized.reason === 'invalid_ocr_deletion') {
+        responseText = `訂單刪除未通過確認，原訂單未變更。請重新指定要刪除的項目。\n\n${state?.currentOcrResultMarkdown ?? ''}`;
+        replaceResponsesOutputText(response, responseText);
+      } else if (finalized.reason === 'mapping_mismatch') {
+        responseText = '目前 AI model 暫時不可用，建議先切換別的 model。';
+        replaceResponsesOutputText(response, responseText);
+      } else if (replaceInvalidResponsesOcrFinalization(response, state, finalized.reason)) {
+        responseText = extractSteelNativeResponseOutputText(response);
+      }
     }
   }
 
@@ -634,6 +762,9 @@ async function saveResponseOutput(
         })
         .catch(() => undefined);
     }
+    if (ocrFinalization) {
+      throw asOcrPersistenceError(responseMessageSaveError, 'OCR response message could not be persisted');
+    }
     throw responseMessageSaveError;
   }
   if (ocrFinalization) {
@@ -695,6 +826,12 @@ async function saveResponseOutput(
         }
         await new Promise((resolve) => setTimeout(resolve, 1000));
       }
+    }
+    if (!ocrResultSaved) {
+      throw asOcrPersistenceError(
+        ocrResultSaveError ?? new Error('Responses API OCR result save failed'),
+        'Responses API OCR result could not be persisted',
+      );
     }
     if (ocrFinalization.delegateRun?.claimToken) {
       const runInput = {
@@ -1693,6 +1830,9 @@ const executeResponse = async (envelope, { req, res }) => {
           );
         } catch (saveError) {
           logger.error('[Responses API] Error saving response:', saveError);
+          if (saveError instanceof SteelOcrResponseAuditPersistenceError) {
+            throw saveError;
+          }
           // Don't fail the request if saving fails
         }
       }
@@ -1923,6 +2063,9 @@ const executeResponse = async (envelope, { req, res }) => {
           );
         } catch (saveError) {
           logger.error('[Responses API] Error saving response:', saveError);
+          if (saveError instanceof SteelOcrResponseAuditPersistenceError) {
+            throw saveError;
+          }
           // Don't fail the request if saving fails
         }
       }

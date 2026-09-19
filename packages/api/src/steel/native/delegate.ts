@@ -349,6 +349,8 @@ export type SaveDelegateOcrFailure = (
   input: DelegateOcrFinalizerInput & { reason: string },
 ) => Promise<void>;
 
+export type AuditDelegateOcrResponse = (input: DelegateOcrFinalizerInput) => Promise<void>;
+
 export interface DelegateOcrWorkflowInput {
   enabled?: boolean;
   filesOverride?: readonly DelegateOcrFileInput[];
@@ -364,6 +366,12 @@ export interface DelegateOcrWorkflowInput {
     files: readonly DelegateOcrFileRecord[];
   }) => Promise<string | undefined>;
   finalize?: FinalizeDelegateOcrResponse;
+  auditResponse?: AuditDelegateOcrResponse;
+  /** Backend-only provenance set when this workflow already applied its
+   * finalizer. Controllers may reuse the exact result once, but must never
+   * infer trust from model-authored Markdown section combinations. */
+  finalizedByBackend?: boolean;
+  finalizedResponse?: DelegateOcrFinalizerSuccess;
   saveFailed?: SaveDelegateOcrFailure;
   claimToken?: string;
   generationId?: string;
@@ -1038,7 +1046,7 @@ function hasValidatedCanonicalMappingPrefix(
   canonicalMapping: readonly SourceMappingEntry[],
 ): boolean {
   const match =
-    /^ {0,3}##(?!#)[ \t]+source_file_mapping[ \t]*\r?\n([\s\S]*?)(?=\r?\n {0,3}##(?!#)[ \t]+ocr_result[ \t]*\r?\n)/imu.exec(
+    /^ {0,3}##(?!#)[ \t]+source_file_mapping[ \t]*\r?\n([\s\S]*?)(?=\r?\n {0,3}##(?!#)[ \t]+ocr_result(?:_updates)?[ \t]*\r?\n)/imu.exec(
       markdown,
     );
   if (!match?.[1]) {
@@ -1070,8 +1078,7 @@ export function buildDelegateOcrWorkflowMessages(input: {
         {
           type: 'text',
           text: [
-            'Delegate OCR canonical packet. Use only the backend-authored source mapping and Organizer Markdown below.',
-            'The original user request is intentionally scoped to Organizer and is not included in this packet.',
+            'Delegate OCR canonical packet. Use only the supplied source mapping and Organizer Markdown below.',
             JSON.stringify(packet),
           ].join('\n'),
         },
@@ -1107,6 +1114,10 @@ export async function delegateOcr(input: DelegateOcrInput): Promise<string> {
   }
 
   const workflow = input.workflow;
+  if (workflow) {
+    workflow.finalizedByBackend = false;
+    delete workflow.finalizedResponse;
+  }
   const workflowEnabled = Boolean(
     workflow &&
       (workflow.runPreprocessing ||
@@ -1122,6 +1133,10 @@ export async function delegateOcr(input: DelegateOcrInput): Promise<string> {
   }
   if (workflow?.loadCurrentOcrResult) {
     previousOcrResultMarkdown = await workflow.loadCurrentOcrResult({ files: selectedFiles });
+  }
+
+  if (workflowEnabled && !workflow?.auditResponse) {
+    throw new Error('delegate_ocr audit callback is required for workflow finalization');
   }
 
   const signedBatches: Array<{
@@ -1246,6 +1261,14 @@ export async function delegateOcr(input: DelegateOcrInput): Promise<string> {
             }
           : undefined,
       });
+      await workflow?.auditResponse?.({
+        assistantResponse: answer,
+        canonicalMapping,
+        previousOcrResultMarkdown,
+        suggestedOcrResultColumns,
+        attemptNumber: agentAttempt,
+        attemptToken: attemptInput.attemptToken,
+      });
       if (answer.trim() === '') {
         throw new Error('delegate_ocr model returned an empty answer');
       }
@@ -1285,6 +1308,16 @@ export async function delegateOcr(input: DelegateOcrInput): Promise<string> {
       }
       if (finalized.ok) {
         const accepted = finalized.finalResponse ?? answer;
+        if (workflow) {
+          workflow.finalizedByBackend = true;
+          workflow.finalizedResponse = {
+            ok: true,
+            finalResponse: accepted,
+            ...(typeof finalized.ocrResultMarkdown === 'string'
+              ? { ocrResultMarkdown: finalized.ocrResultMarkdown }
+              : {}),
+          };
+        }
         if (!mappingReleased) {
           await input.onDelta?.(accepted, {
             claimToken: workflow?.claimToken,

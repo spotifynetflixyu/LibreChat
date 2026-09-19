@@ -57,20 +57,23 @@ export function extractSteelNativeMarkdownText({
   text,
   content,
   sectionTitle,
+  sectionTitles,
 }: {
   text?: string | null;
   content?: unknown;
   sectionTitle?: string;
+  sectionTitles?: readonly string[];
 }): string {
   if (typeof text !== 'string' || text.trim().length === 0) {
     return extractContentText(content);
   }
-  if (!sectionTitle) {
+  const titles = sectionTitles ?? (sectionTitle ? [sectionTitle] : []);
+  if (titles.length === 0) {
     return text;
   }
 
   const hasSection = (markdown: string) => parseAssistantMarkdown(markdown).sections
-    .some((section) => section.title === sectionTitle);
+    .some((section) => titles.includes(section.title));
   if (hasSection(text)) {
     return text;
   }

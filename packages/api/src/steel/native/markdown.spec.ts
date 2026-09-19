@@ -40,6 +40,15 @@ describe('Steel native Markdown extraction', () => {
     })).toBe(order);
   });
 
+  it('selects complete correction content when text only contains a summary', () => {
+    const correction = '說明\n\n## ocr_result_updates\n\n| 來源 | 零件編號 | 數量 |\n| --- | --- | --- |\n| F1 | P1 | 1 |\n\n尾註';
+    expect(extractSteelNativeMarkdownText({
+      text: '請確認訂單。',
+      content: [{ type: 'text', text: correction.slice(0, 20) }, { type: 'text', text: correction.slice(20) }],
+      sectionTitles: ['ocr_result_updates', 'ocr_result'],
+    })).toBe(correction);
+  });
+
   it('extracts Open Responses output text parts', () => {
     const response = {
       id: 'resp_1',

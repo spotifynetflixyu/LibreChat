@@ -72,6 +72,8 @@ const mockOcrStateService = {
 };
 const mockCreateSteelOcrStateService = jest.fn(() => mockOcrStateService);
 const mockFinalizeOcrResponse = jest.fn();
+const mockSaveOcrAudit = jest.fn().mockResolvedValue({});
+class MockOcrAuditPersistenceError extends Error {}
 const mockStartupTelemetry = {
   mark: jest.fn(),
   setStreamId: jest.fn(),
@@ -199,6 +201,9 @@ jest.mock('@librechat/api', () => ({
   createSteelOcrStateService: (...args) => mockCreateSteelOcrStateService(...args),
   extractSteelNativeMarkdownText: jest.requireActual('@librechat/api').extractSteelNativeMarkdownText,
   finalizeOcrResponse: (...args) => mockFinalizeOcrResponse(...args),
+  parseAssistantMarkdown: jest.requireActual('@librechat/api').parseAssistantMarkdown,
+  createSteelOcrResponseAuditService: () => ({ save: mockSaveOcrAudit }),
+  SteelOcrResponseAuditPersistenceError: MockOcrAuditPersistenceError,
 }));
 
 jest.mock('~/server/cleanup', () => ({
@@ -330,6 +335,7 @@ describe('ResumableAgentController resume metadata', () => {
     mockSaveMessage.mockResolvedValue({});
     mockDeleteAgentCheckpoint.mockResolvedValue(undefined);
     mockFinalizeOcrResponse.mockReset();
+    mockSaveOcrAudit.mockReset().mockResolvedValue({});
     mockCreateSteelOcrStateService.mockReturnValue(mockOcrStateService);
     mockOcrStateService.readConversationOcrState.mockResolvedValue(null);
     mockOcrStateService.upsertCurrentOcrResult.mockResolvedValue({});
@@ -3455,20 +3461,27 @@ describe('ResumableAgentController resume metadata', () => {
     expect(mockGenerationJobManager.steering.closeAndDrain).not.toHaveBeenCalled();
   });
 
-  it.each(['text', 'empty-text-content', 'missing-text-content', 'split-content', 'summary-text-content'])('reconciles completed OCR response (%s) before saving message and publishing FINAL', async (representation) => {
+  it.each(['text', 'empty-text-content', 'missing-text-content', 'split-content', 'summary-text-content', 'updates', 'audit-failure'])('reconciles completed OCR response (%s) before saving message and publishing FINAL', async (representation) => {
+    const auditFails = representation === 'audit-failure';
+    if (auditFails) mockSaveOcrAudit.mockRejectedValueOnce(new MockOcrAuditPersistenceError('audit unavailable'));
     const userMessage = {
       messageId: 'ocr-user-msg',
       parentMessageId: 'parent-msg',
       conversationId: 'conversation-123',
       text: '整理 OCR 結果。',
     };
-    const rawResponseText =
-      '## source_file_mapping\n\n| 來源 | 檔名 |\n| --- | --- |\n| F1 | BH.pdf |\n\n## ocr_result\n\n| 零件編號 |\n| --- |\n| RAW |';
-    const correctedResponseText =
-      '## source_file_mapping\n\n| 來源 | 檔名 |\n| --- | --- |\n| F1 | BH.pdf |\n\n## ocr_result\n\n| 零件編號 |\n| --- |\n| CORRECTED |';
-    const correctedOcrMarkdown =
-      '## ocr_result\n\n| 零件編號 |\n| --- |\n| CORRECTED |';
-    const previousOcrMarkdown = '## ocr_result\n\n| 零件編號 |\n| --- |\n| PREVIOUS |';
+    const rawResponseText = (representation === 'updates' || auditFails)
+      ? '## ocr_result_updates\n\n| 來源 | 零件編號 | 數量 |\n| --- | --- | --- |\n| F1 | A-6M74 | 1 |'
+      : '## source_file_mapping\n\n| 來源 | 檔名 |\n| --- | --- |\n| F1 | BH.pdf |\n\n## ocr_result\n\n| 零件編號 |\n| --- |\n| RAW |';
+    const correctedResponseText = (representation === 'updates' || auditFails)
+      ? `${rawResponseText}\n\n## ocr_result\n\n| 來源 | 零件編號 | 數量 |\n| --- | --- | --- |\n| F1 | A-6M74 | 1 |\n| F1 | P2 | 5 |`
+      : '## source_file_mapping\n\n| 來源 | 檔名 |\n| --- | --- |\n| F1 | BH.pdf |\n\n## ocr_result\n\n| 零件編號 |\n| --- |\n| CORRECTED |';
+    const correctedOcrMarkdown = (representation === 'updates' || auditFails)
+      ? correctedResponseText.slice(correctedResponseText.indexOf('## ocr_result\n'))
+      : '## ocr_result\n\n| 零件編號 |\n| --- |\n| CORRECTED |';
+    const previousOcrMarkdown = (representation === 'updates' || auditFails)
+      ? correctedOcrMarkdown.replace('| A-6M74 | 1 |', '| A-6M74 | 3 |')
+      : '## ocr_result\n\n| 零件編號 |\n| --- |\n| PREVIOUS |';
     const terminalClaim = {
       streamId: 'conversation-123',
       createdAt: 1000,
@@ -3530,6 +3543,14 @@ describe('ResumableAgentController resume metadata', () => {
       jest.fn().mockResolvedValue({ client }),
       null,
     );
+    if (auditFails) {
+      await waitForExpectation(() => {
+        expect(mockGenerationJobManager.publishTerminalClaim).toHaveBeenCalledWith(terminalClaim, null);
+      });
+      expect(mockFinalizeOcrResponse).not.toHaveBeenCalled();
+      expect(mockOcrStateService.upsertCurrentOcrResult).not.toHaveBeenCalled();
+      return;
+    }
     await waitForExpectation(() => {
       expect(mockGenerationJobManager.publishTerminalClaim).toHaveBeenCalledWith(
         terminalClaim,
@@ -3541,6 +3562,11 @@ describe('ResumableAgentController resume metadata', () => {
     expect(mockOcrStateService.readConversationOcrState).toHaveBeenCalledWith(
       'conversation-123',
     );
+    expect(mockSaveOcrAudit).toHaveBeenCalledWith(expect.objectContaining({
+      rawResponse: rawResponseText, userId: 'user-123', conversationId: 'conversation-123',
+      messageId: 'ocr-response-msg', generationId: '1000',
+    }));
+    expect(mockSaveOcrAudit.mock.invocationCallOrder[0]).toBeLessThan(mockFinalizeOcrResponse.mock.invocationCallOrder[0]);
     expect(mockFinalizeOcrResponse).toHaveBeenCalledWith({
       assistantResponse: rawResponseText,
       previousOcrMarkdown: previousOcrMarkdown,

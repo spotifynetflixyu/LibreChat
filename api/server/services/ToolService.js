@@ -75,6 +75,7 @@ const {
   createMongooseOcrPdfChunkArtifactRepository,
   createSteelContextDependencies,
   createSteelDelegateOcrStateService,
+  createSteelOcrResponseAuditService,
   parseAssistantMarkdown,
   parseOcrResultTable,
   createOpenAIOAuthModel,
@@ -1431,6 +1432,12 @@ function createDelegateOcrExecute({ req, res, streamId = null, signal, agent }) 
     if (workflowRef && !workflow) {
       workflow = workflowRef;
     }
+    if (workflowRef) {
+      // Keep the controller's context pointed at the mutable workflow object
+      // that the delegate executor receives. This carries backend-only
+      // finalization provenance across the tool boundary.
+      delegateContext.delegateOcrWorkflow = workflowRef;
+    }
 
     let delegateRunInitialized = false;
     const triggeringMessageId =
@@ -1602,11 +1609,16 @@ function createDelegateOcrExecute({ req, res, streamId = null, signal, agent }) 
         }
         return stateService.readSourceMappings(conversationId);
       };
+      let previousOcrResultRevision;
       const loadPreviousOcrResult = async () => {
         if (typeof stateService.readCurrentOcrResult !== 'function') {
           return '';
         }
         const result = await stateService.readCurrentOcrResult(conversationId);
+        previousOcrResultRevision =
+          typeof result?.generationId === 'string' && result.generationId.trim() !== ''
+            ? result.generationId
+            : undefined;
         return typeof result?.markdown === 'string' ? result.markdown : '';
       };
       const previousMarkdown = await loadPreviousOcrResult();
@@ -1644,6 +1656,35 @@ function createDelegateOcrExecute({ req, res, streamId = null, signal, agent }) 
           : {}),
         loadSourceMapping: loadSourceMapping ?? loadCanonicalMapping,
         loadCurrentOcrResult: loadCurrentOcrResult ?? loadPreviousOcrResult,
+        ...(previousOcrResultRevision ? { previousOcrResultRevision } : {}),
+        auditResponse: async ({
+          assistantResponse,
+          previousOcrResultMarkdown,
+          attemptNumber,
+          attemptToken,
+        }) => {
+          const auditUserId = req?.user?.id;
+          if (!auditUserId || !conversationId || !triggeringMessageId || !generationId) {
+            throw new Error(
+              'delegate_ocr audit requires user, conversation, message, and generation scope',
+            );
+          }
+          await createSteelOcrResponseAuditService(mongoose).save({
+            rawResponse: assistantResponse,
+            sourceStage: 'delegate',
+            userId: auditUserId,
+            tenantId: req?.user?.tenantId,
+            conversationId,
+            messageId: triggeringMessageId,
+            generationId,
+            attemptId: attemptToken,
+            attemptNumber,
+            ...(typeof previousOcrResultRevision === 'string'
+              ? { baseRevision: previousOcrResultRevision }
+              : {}),
+            baseResponse: previousOcrResultMarkdown ?? previousMarkdown ?? '',
+          });
+        },
         ...(organizerSuggestedColumns.length > 0 && (!Array.isArray(workflowRef.suggestedOcrResultColumns) || workflowRef.suggestedOcrResultColumns.length === 0)
           ? { suggestedOcrResultColumns: organizerSuggestedColumns }
           : {}),
@@ -2134,6 +2175,19 @@ async function executeDelegateOcrResume({
     typeof resume.candidate.markdown === 'string' &&
     ['finalizing', 'save_failed'].includes(resume.run.status)
   ) {
+    const canonicalOcrResultMarkdown =
+      resume.candidate.source === 'backend'
+        ? extractCanonicalDelegateOcrResult(resume.candidate.markdown)
+        : undefined;
+    const workflow = delegateContext?.delegateOcrWorkflow ?? delegateContext;
+    if (workflow && canonicalOcrResultMarkdown) {
+      workflow.finalizedByBackend = true;
+      workflow.finalizedResponse = {
+        ok: true,
+        finalResponse: resume.candidate.markdown,
+        ocrResultMarkdown: canonicalOcrResultMarkdown,
+      };
+    }
     await onDelta?.(resume.candidate.markdown, {
       claimToken: resume.run.claimToken,
       generationId: resume.run.responseGenerationId,
@@ -2165,6 +2219,13 @@ async function executeDelegateOcrResume({
 function getSteelFileId(file) {
   const fileId = file?.fileId ?? file?.file_id ?? file?.id;
   return typeof fileId === 'string' && fileId.trim() !== '' ? fileId : undefined;
+}
+
+function extractCanonicalDelegateOcrResult(markdown) {
+  const sections = parseAssistantMarkdown(markdown).sections.filter(
+    (section) => section.title.trim() === 'ocr_result',
+  );
+  return sections.at(-1)?.raw?.trim() || undefined;
 }
 
 function isPdfSteelFile(file) {
@@ -6293,7 +6354,7 @@ async function executeSteelQuotationWorkflow({
     });
     if (!accepted) return;
     if (accepted.status !== 'completed' && accepted.status !== 'cancelled' &&
-      parseAssistantMarkdown(response).sections.some((section) => section.title.split(/[｜|]/u)[0]?.trim() === 'ocr_result')) {
+      parseAssistantMarkdown(response).sections.some((section) => ['ocr_result', 'ocr_result_updates'].includes(section.title.split(/[｜|]/u)[0]?.trim()))) {
       quotation.pendingOrderPersisted = true;
     }
   }

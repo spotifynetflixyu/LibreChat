@@ -8,6 +8,7 @@ import type { QuotationModelInput } from './model';
 import { invokeQuotationModel } from './model';
 import { createSteelQuotationStateService } from './state';
 import { createSteelOcrStateService } from '../ocr/state';
+import { createSteelOcrResponseAuditService } from '../ocr/audit';
 import { finalizeOcrResponse, parseAssistantMarkdown } from '../ocr/result';
 import { quotationPreparationInstruction } from './preparation';
 import { acceptQuotationResponse } from './runner';
@@ -27,6 +28,20 @@ export interface SteelQuotationPendingInputPreparationResult {
   input: string;
   /** Original user text used when validating a revised OCR result. */
   currentUserTurn?: string;
+}
+
+function hasOcrOrderSection(markdown: string): boolean {
+  return parseAssistantMarkdown(markdown).sections.some((section) =>
+    ['ocr_result', 'ocr_result_updates'].includes(section.title.trim()),
+  );
+}
+
+function extractCanonicalOcrResult(markdown: string): string | undefined {
+  const sections = parseAssistantMarkdown(markdown).sections.filter(
+    (section) => section.title.trim() === 'ocr_result',
+  );
+  const section = sections.at(-1);
+  return section?.raw.trim() || undefined;
 }
 
 /** A queued correction never inherits approval to quote the preceding revision. */
@@ -67,6 +82,11 @@ export async function processQuotationPendingMessages(input: {
         service.hasSystemOrder(input.scope),
       ]);
       let markdown = claim.resultMarkdown;
+      let canonicalOcrResultMarkdown: string | undefined;
+      const needsResultSave = !markdown;
+      if (markdown) {
+        canonicalOcrResultMarkdown = extractCanonicalOcrResult(markdown);
+      }
       if (!markdown) {
         const sourceMessageFiles = claim.sourceMessageFiles ?? [];
         const preparedInput = sourceMessageFiles.length > 0
@@ -88,7 +108,7 @@ export async function processQuotationPendingMessages(input: {
         });
         const result = await invokeQuotationModel({
           role: 'preparation',
-          prompt: `${rules.instructionPrefix}\n\n${quotationPreparationInstruction(previous?.currentOcrResultMarkdown, quotationState?.currentCustomer?.customerMarkdown, hasSystemOrder)}\n\nThe previous quotation is now terminal. Process the queued message below exactly once. For order changes, output the complete revised ocr_result and ask the user to confirm the revised order. When hasSystemOrder is true, do not repeatedly ask whether to quote the current completed system_order; historical results do not count. An explicit default-B choice may emit customer_data. Do not output quote_signal in this response.`,
+          prompt: `${rules.instructionPrefix}\n\n${quotationPreparationInstruction(previous?.currentOcrResultMarkdown, quotationState?.currentCustomer?.customerMarkdown, hasSystemOrder)}\n\nThe previous quotation is now terminal. Process the queued message below exactly once. For a new order, output one complete ## ocr_result table. For a correction, output only changed or newly added rows under ## ocr_result_updates, using the exact saved column names and order. Preserve all unchanged cells in each changed row and never use omission to delete a row. When hasSystemOrder is true, do not repeatedly ask whether to quote the current completed system_order; historical results do not count. An explicit default-B choice may emit customer_data. Do not output quote_signal in this response.`,
           input: preparedInput?.input ?? claim.sourceMessageText ?? '',
           modelOptions: input.modelOptions,
           signal: controller.signal,
@@ -96,10 +116,39 @@ export async function processQuotationPendingMessages(input: {
           onUsage: input.onUsage,
         });
         markdown = result.markdown;
+        const rawPendingResponse = typeof markdown === 'string' ? markdown : '';
+        await createSteelOcrResponseAuditService(mongoose).save({
+          rawResponse: rawPendingResponse,
+          sourceStage: 'pending',
+          userId: input.scope.userId,
+          conversationId: input.scope.conversationId,
+          messageId,
+          generationId: messageId,
+          attemptId: claim.claimToken,
+          attemptNumber: 1,
+          ...(previous?.currentOcrResultGenerationId
+            ? { baseRevision: previous.currentOcrResultGenerationId }
+            : {}),
+          baseResponse: previous?.currentOcrResultMarkdown ?? '',
+        });
         if (parseAssistantMarkdown(markdown).sections.some((section) =>
           ['quote_signal', 'system_order', 'customer_quote'].includes(section.title.split(/[｜|]/u)[0]?.trim()),
         )) {
           throw new Error('Queued corrections require a new order confirmation');
+        }
+        if (hasOcrOrderSection(markdown)) {
+          const finalized = finalizeOcrResponse({
+            assistantResponse: markdown,
+            previousOcrMarkdown: previous?.currentOcrResultMarkdown,
+            canonicalMapping: (previous?.sourceMappings ?? []).map(({ sourceCode, sourceFilename }) => ({ sourceCode, sourceFilename })),
+            agentKind: 'other',
+            currentUserTurn: preparedInput?.currentUserTurn ?? claim.sourceMessageText,
+          });
+          if (!finalized.ok) {
+            throw new Error(`Queued order could not be validated: ${finalized.reason}`);
+          }
+          markdown = finalized.finalResponse;
+          canonicalOcrResultMarkdown = finalized.ocrResultMarkdown;
         }
         await acceptQuotationResponse({
           scope: input.scope,
@@ -110,36 +159,34 @@ export async function processQuotationPendingMessages(input: {
           expectedCustomerPreparationId: quotationState?.currentCustomer?.preparationId,
           finishReason: 'stop',
         });
-        if (/^##\s+ocr_result\s*$/mu.test(markdown)) {
-          const finalized = finalizeOcrResponse({
-            assistantResponse: markdown,
-            previousOcrMarkdown: previous?.currentOcrResultMarkdown,
-            canonicalMapping: (previous?.sourceMappings ?? []).map(({ sourceCode, sourceFilename }) => ({ sourceCode, sourceFilename })),
-            agentKind: 'other',
-            currentUserTurn: preparedInput?.currentUserTurn ?? claim.sourceMessageText,
-          });
-          if (!finalized.ok) throw new Error(`Queued order could not be validated: ${finalized.reason}`);
-          markdown = finalized.finalResponse;
-        }
         await assertActive();
-        if (!await service.savePendingResult({ ...claimInput, markdown, targetMessageId: messageId })) {
-          throw new Error('Queued order result lost its claim');
-        }
       }
       await assertActive();
-      await input.publish({ messageId, parentMessageId: claim.sourceMessageId, markdown });
-      if (/^##\s+ocr_result\s*$/mu.test(markdown)) {
+      if (canonicalOcrResultMarkdown) {
         const saved = await ocrService.upsertCurrentOcrResult({
           conversationId: input.scope.conversationId,
           generationId: messageId,
           attemptNumber: 1,
-          markdown,
+          markdown: canonicalOcrResultMarkdown,
           messageId,
-          ...(previous?.currentOcrResultGenerationId ? { expectedGenerationId: previous.currentOcrResultGenerationId } : {}),
+          ...(previous?.currentOcrResultGenerationId && previous.currentOcrResultGenerationId !== messageId
+            ? { expectedGenerationId: previous.currentOcrResultGenerationId }
+            : {}),
         });
         if (!saved) throw new Error('Queued order persistence failed');
-        await service.setOrder({ scope: input.scope, fullMarkdown: markdown, revision: messageId, messageId });
+        await service.setOrder({
+          scope: input.scope,
+          fullMarkdown: canonicalOcrResultMarkdown,
+          revision: messageId,
+          messageId,
+        });
       }
+      if (needsResultSave) {
+        if (!await service.savePendingResult({ ...claimInput, markdown, targetMessageId: messageId })) {
+          throw new Error('Queued order result lost its claim');
+        }
+      }
+      await input.publish({ messageId, parentMessageId: claim.sourceMessageId, markdown });
       if (!await service.completePendingMessage({ ...claimInput, targetMessageId: messageId })) {
         throw new Error('Queued order completion lost its claim');
       }

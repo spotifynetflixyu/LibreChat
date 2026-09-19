@@ -17,6 +17,7 @@ import {
   steelWorkingOrderMemorySchema,
   steelDelegateOcrRunSchema,
   steelConversationOcrStateSchema,
+  steelOcrResponseAuditSchema,
   steelQuotationStateSchema,
   steelQuotationArtifactSchema,
 } from '~/schema/steel';
@@ -65,6 +66,17 @@ export function createSteelConversationOcrStateModel(
     'SteelConversationOcrState',
     steelConversationOcrStateSchema,
     'steel_conversation_ocr_state',
+  );
+}
+
+export function createSteelOcrResponseAuditModel(
+  mongoose: Mongoose,
+): Model<t.ISteelOcrResponseAudit> {
+  return createSteelModel(
+    mongoose,
+    'SteelOcrResponseAudit',
+    steelOcrResponseAuditSchema,
+    'steel_ocr_response_audits',
   );
 }
 

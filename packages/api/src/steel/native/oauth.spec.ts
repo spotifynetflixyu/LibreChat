@@ -258,6 +258,7 @@ describe('OpenAI OAuth model adapter', () => {
       workflow: {
         canonicalMapping: [{ sourceCode: 'F1', sourceFilename: 'file.pdf' }],
         runPreprocessing: async () => ({ organizerMarkdown: ocrMarkdown() }),
+        auditResponse: async () => undefined,
       },
     });
 

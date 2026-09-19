@@ -55,6 +55,7 @@ import {
   createSteelWorkingOrderMemoryModel,
   createSteelDelegateOcrRunModel,
   createSteelConversationOcrStateModel,
+  createSteelOcrResponseAuditModel,
   createSteelQuotationStateModel,
   createSteelQuotationArtifactModel,
 } from './steel';
@@ -104,6 +105,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
   SteelWorkingOrderMemory: ReturnType<typeof createSteelWorkingOrderMemoryModel>;
   SteelDelegateOcrRun: ReturnType<typeof createSteelDelegateOcrRunModel>;
   SteelConversationOcrState: ReturnType<typeof createSteelConversationOcrStateModel>;
+  SteelOcrResponseAudit: ReturnType<typeof createSteelOcrResponseAuditModel>;
   SteelQuotationState: ReturnType<typeof createSteelQuotationStateModel>;
   SteelQuotationArtifact: ReturnType<typeof createSteelQuotationArtifactModel>;
   SteelAIRun: ReturnType<typeof createSteelAIRunModel>;
@@ -164,6 +166,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
     SteelWorkingOrderMemory: createSteelWorkingOrderMemoryModel(mongoose),
     SteelDelegateOcrRun: createSteelDelegateOcrRunModel(mongoose),
     SteelConversationOcrState: createSteelConversationOcrStateModel(mongoose),
+    SteelOcrResponseAudit: createSteelOcrResponseAuditModel(mongoose),
     SteelQuotationState: createSteelQuotationStateModel(mongoose),
     SteelQuotationArtifact: createSteelQuotationArtifactModel(mongoose),
     SteelAIRun: createSteelAIRunModel(mongoose),
@@ -217,6 +220,7 @@ export {
   createSteelWorkingOrderMemoryModel,
   createSteelDelegateOcrRunModel,
   createSteelConversationOcrStateModel,
+  createSteelOcrResponseAuditModel,
   createSteelQuotationStateModel,
   createSteelQuotationArtifactModel,
 } from './steel';

@@ -29,6 +29,8 @@ const mockPrepareQuotationTurn = jest.fn().mockResolvedValue({
 const mockHasQuotationOrder = jest.fn().mockReturnValue(false);
 const mockExecuteSteelQuotationWorkflow = jest.fn().mockResolvedValue(undefined);
 const mockFinalizeOcrResponse = jest.fn();
+const mockSaveOcrAudit = jest.fn().mockResolvedValue({});
+class MockOcrAuditPersistenceError extends Error {}
 const mockGetBalanceConfig = jest.fn().mockReturnValue({ enabled: true });
 const mockGetTransactionsConfig = jest.fn().mockReturnValue({ enabled: true });
 const mockResolveMemoryAvailability = jest.fn().mockResolvedValue(true);
@@ -203,6 +205,11 @@ jest.mock('@librechat/api', () => ({
   delegateOcrStreamEventName: 'on_delegate_ocr_stream',
   createSteelOcrStateService: (...args) => mockCreateSteelOcrStateService(...args),
   finalizeOcrResponse: (...args) => mockFinalizeOcrResponse(...args),
+  parseAssistantMarkdown: (markdown) => ({
+    sections: [...markdown.matchAll(/^## (ocr_result(?:_updates)?)$/gmu)].map((match) => ({ title: match[1] })),
+  }),
+  createSteelOcrResponseAuditService: () => ({ save: mockSaveOcrAudit }),
+  SteelOcrResponseAuditPersistenceError: MockOcrAuditPersistenceError,
   prepareQuotationTurn: (...args) => mockPrepareQuotationTurn(...args),
   hasQuotationOrder: (...args) => mockHasQuotationOrder(...args),
   /** Pass-through: the controller strips UI-only activity-label parts
@@ -470,6 +477,7 @@ describe('createResponse controller', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockGlobalDiscoveredAgentConfigs = null;
+    mockSaveOcrAudit.mockReset().mockResolvedValue({});
     mockCreateSteelOcrStateService.mockReturnValue(mockResponsesOcrStateService);
     mockResponsesOcrStateService.readConversationOcrState.mockResolvedValue(null);
     mockResponsesOcrStateService.upsertCurrentOcrResult.mockResolvedValue({});
@@ -1188,6 +1196,38 @@ describe('createResponse controller', () => {
       expect(saveMessage.mock.invocationCallOrder.at(-1)).toBeLessThan(
         mockResponsesOcrStateService.upsertCurrentOcrResult.mock.invocationCallOrder[0],
       );
+    });
+
+    it.each([false, true])('keeps general-agent OCR corrections and fails closed on audit failure=%s', async (auditFails) => {
+      const api = require('@librechat/api');
+      const { saveMessage } = require('~/models');
+      const raw = '說明\n\n## ocr_result_updates\n\n| 來源 | 零件編號 | 數量 |\n| --- | --- | --- |\n| F1 | A-6M74 | 1 |';
+      const canonical = '## ocr_result\n\n| 來源 | 零件編號 | 數量 |\n| --- | --- | --- |\n| F1 | A-6M74 | 1 |\n| F1 | P2 | 5 |';
+      const displayed = `${raw}\n\n${canonical}`;
+      api.buildAggregatedResponse.mockReturnValueOnce({
+        id: 'resp_123', status: 'completed',
+        output: [{ id: 'msg_1', type: 'message', role: 'assistant', status: 'completed',
+          content: [{ type: 'output_text', text: raw.slice(0, 20) }, { type: 'output_text', text: raw.slice(20) }],
+        }],
+        usage: { input_tokens: 100, output_tokens: 50, total_tokens: 150 },
+      });
+      mockResponsesOcrStateService.readConversationOcrState.mockResolvedValue({
+        currentOcrResultMarkdown: canonical.replace('| A-6M74 | 1 |', '| A-6M74 | 3 |'), sourceMappings: [],
+      });
+      mockFinalizeOcrResponse.mockReturnValue({ ok: true, finalResponse: displayed, ocrResultMarkdown: canonical });
+      if (auditFails) mockSaveOcrAudit.mockRejectedValueOnce(new MockOcrAuditPersistenceError('audit unavailable'));
+      await createResponse(req, res);
+      expect(mockSaveOcrAudit).toHaveBeenCalledWith(expect.objectContaining({ rawResponse: raw, userId: 'user-123' }));
+      if (auditFails) {
+        expect(mockFinalizeOcrResponse).not.toHaveBeenCalled();
+        expect(mockResponsesOcrStateService.upsertCurrentOcrResult).not.toHaveBeenCalled();
+        expect(saveMessage.mock.calls.some(([, message]) => message?.text === displayed)).toBe(false);
+        return;
+      }
+      expect(mockFinalizeOcrResponse).toHaveBeenCalledWith(expect.objectContaining({ assistantResponse: raw, agentKind: 'other' }));
+      expect(mockSaveOcrAudit.mock.invocationCallOrder[0]).toBeLessThan(mockFinalizeOcrResponse.mock.invocationCallOrder[0]);
+      expect(saveMessage.mock.calls.some(([, message]) => message?.text === displayed)).toBe(true);
+      expect(mockResponsesOcrStateService.upsertCurrentOcrResult).toHaveBeenCalledWith(expect.objectContaining({ markdown: canonical }));
     });
 
     it('does not re-finalize OCR after quotation workflow persisted a pending order', async () => {

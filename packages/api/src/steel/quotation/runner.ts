@@ -107,8 +107,9 @@ export async function acceptQuotationResponse(input: {
   const signal = parseQuotationSignal(input.response);
   const sections = parseAssistantMarkdown(input.response).sections;
   const hasSection = (title: string) => sections.some((section) => section.title.split(/[｜|]/u)[0]?.trim() === title);
+  const hasOrder = hasSection('ocr_result') || hasSection('ocr_result_updates');
   const customer = extractCustomerDataTable(input.response);
-  if (!signal && !hasSection('customer_data') && !hasSection('ocr_result')) return undefined;
+  if (!signal && !hasSection('customer_data') && !hasOrder) return undefined;
   if (hasSection('customer_data') && !customer) {
     throw new Error('Customer data must contain one readable Markdown table');
   }
@@ -118,7 +119,7 @@ export async function acceptQuotationResponse(input: {
   const matchesCustomer = (markdown: string) =>
     JSON.stringify(customer) === JSON.stringify(extractCustomerDataTable(markdown));
   if (isUnfinishedQuotation(state?.activeRun?.status) &&
-    (hasSection('ocr_result') || (customer && !matchesCustomer(state?.currentCustomer?.customerMarkdown ?? '')))) {
+    (hasOrder || (customer && !matchesCustomer(state?.currentCustomer?.customerMarkdown ?? '')))) {
     if (!input.messageId || (input.messageText === undefined && !input.messageFiles?.length) ||
       input.expectedOrderHash !== state?.currentOrder?.sha256 ||
       input.expectedCustomerPreparationId !== state?.currentCustomer?.preparationId) {
@@ -134,7 +135,7 @@ export async function acceptQuotationResponse(input: {
     });
     return state?.activeRun;
   }
-  if (signal && hasSection('ocr_result')) {
+  if (signal && hasOrder) {
     throw new Error('A revised order must be confirmed before issuing a quotation signal');
   }
   if (signal && existingTicket?.acceptedRunId) {

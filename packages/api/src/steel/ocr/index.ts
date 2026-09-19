@@ -1,4 +1,5 @@
 export * from './artifacts';
+export * from './audit';
 export * from './chunks';
 export * from './diagnostics';
 export * from './failures';

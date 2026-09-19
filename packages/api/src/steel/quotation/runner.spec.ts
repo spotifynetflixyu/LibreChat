@@ -1235,7 +1235,7 @@ describe('quotation runner integration', () => {
     for (const invalid of [
       quotationSignal,
       response.replace('| C |', '| A |'),
-      ...['## ocr_result', '  ## ocr_result', '## ocr_result ##'].map((heading) =>
+      ...['## ocr_result', '  ## ocr_result', '## ocr_result ##', '## ocr_result_updates', '  ## ocr_result_updates', '## ocr_result_updates ##'].map((heading) =>
         `${orderMarkdown(1).replace('## ocr_result', heading)}\n\n${response}`),
     ]) {
       await expect(acceptQuotationResponse({ scope, response: invalid, responseId: 'response-1', finishReason: 'stop' })).rejects.toThrow();

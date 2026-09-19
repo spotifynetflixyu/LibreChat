@@ -55,9 +55,9 @@ const quotationChildSystemContract = [
 
 const quotationMainSystemContract = [
   'Quotation main review contract (this instruction overrides earlier or frozen output instructions):',
-  '- The backend supplied system_order in the input and it is authoritative. Never reproduce, rewrite, shorten, or refuse based on its length.',
+  '- The supplied system_order is the quotation table to review. Never reproduce, rewrite, shorten, or refuse based on its length.',
   '- Return one six-column ## manual_reviews Markdown table for actual issues. Optional ## notes must follow manual_reviews. If there are no issues and no notes, return exactly: 無待複核事項。',
-  '- Do not return system_order, customer_quote, or quote_summary. The backend owns these sections and appends the final quotation summary after your notes.',
+  '- Do not return system_order, customer_quote, or quote_summary.',
 ].join('\n');
 
 function quotationRuntimePrompt(role: QuotationModelInput['role'], prompt: string): string {

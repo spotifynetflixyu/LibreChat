@@ -974,6 +974,7 @@ describe('delegate_ocr', () => {
         invokeModel,
         workflow: {
           runPreprocessing: preprocess,
+          auditResponse: async () => undefined,
           canonicalMapping: [{ sourceCode: 'F1', sourceFilename: 'drawing.png' }],
           runStore: { beginAttempt },
         },
@@ -1006,6 +1007,93 @@ describe('delegate_ocr', () => {
       },
     ]);
     expect(poisonedModelOptions.tools).toHaveLength(6);
+  });
+
+  it('audits each raw answer before finalization and exposes trusted backend provenance', async () => {
+    const order: string[] = [];
+    const auditResponse = jest.fn(async () => {
+      order.push('audit-called');
+    });
+    const finalize = jest.fn(async ({ assistantResponse }) => {
+      order.push('finalize-called');
+      return {
+        ok: true as const,
+        finalResponse: `backend:${assistantResponse}`,
+        ocrResultMarkdown: '## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| F1 | A |',
+      };
+    });
+    const workflow = { auditResponse, finalize };
+
+    const result = await runDelegateOcrWorkflow({
+      files: [{ fileKey: 'file:image-1' }],
+      currentUserTurn: '重新核對圖面',
+      modelOptions,
+      ocrRulesText: 'OCR rules',
+      userId: 'user-1',
+      findOwnedFiles: async () => [files[0]],
+      signFile: async () => 'https://fresh.example/drawing.png',
+      invokeModel: async () => 'raw model answer',
+      workflow,
+    });
+
+    expect(result).toBe('backend:raw model answer');
+    expect(auditResponse).toHaveBeenCalledTimes(1);
+    expect(finalize).toHaveBeenCalledTimes(1);
+    expect(order).toEqual(['audit-called', 'finalize-called']);
+    expect(workflow).toMatchObject({
+      finalizedByBackend: true,
+      finalizedResponse: expect.objectContaining({
+        ok: true,
+        finalResponse: 'backend:raw model answer',
+      }),
+    });
+  });
+
+  it('audits empty and retry answers before applying the finalizer', async () => {
+    const emptyAudit = jest.fn(async () => undefined);
+    await expect(
+      runDelegateOcrWorkflow({
+        files: [{ fileKey: 'file:image-1' }],
+        currentUserTurn: '重新核對圖面',
+        modelOptions,
+        ocrRulesText: 'OCR rules',
+        userId: 'user-1',
+        findOwnedFiles: async () => [files[0]],
+        signFile: async () => 'https://fresh.example/drawing.png',
+        invokeModel: async () => '',
+        workflow: { auditResponse: emptyAudit, runStore: {} },
+      }),
+    ).rejects.toThrow('empty answer');
+    expect(emptyAudit).toHaveBeenCalledWith(expect.objectContaining({ assistantResponse: '' }));
+
+    const retryAudit = jest.fn(async () => undefined);
+    const finalize = jest
+      .fn()
+      .mockResolvedValueOnce({ ok: false as const, reason: 'mapping_mismatch', mappingRetryable: true })
+      .mockResolvedValueOnce({ ok: false as const, reason: 'mapping_mismatch', mappingRetryable: true })
+      .mockResolvedValueOnce({
+        ok: true as const,
+        finalResponse: 'backend:retry-3',
+        ocrResultMarkdown: '## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| F1 | A |',
+      });
+    const result = await runDelegateOcrWorkflow({
+      files: [{ fileKey: 'file:image-1' }],
+      currentUserTurn: '重新核對圖面',
+      modelOptions,
+      ocrRulesText: 'OCR rules',
+      userId: 'user-1',
+      findOwnedFiles: async () => [files[0]],
+      signFile: async () => 'https://fresh.example/drawing.png',
+      invokeModel: async ({ attemptNumber }) => `retry-${attemptNumber}`,
+      workflow: { auditResponse: retryAudit, finalize },
+    });
+
+    expect(result).toBe('backend:retry-3');
+    expect(retryAudit.mock.calls.map(([input]) => [input.assistantResponse, input.attemptNumber])).toEqual([
+      ['retry-1', 1],
+      ['retry-2', 2],
+      ['retry-3', 3],
+    ]);
   });
 
   it('suppresses stale delegate stream events through the injected dispatch gate', async () => {

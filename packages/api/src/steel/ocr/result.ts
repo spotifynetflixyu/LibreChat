@@ -7,6 +7,7 @@ const FENCE_START_PATTERN = /^ {0,3}(`{3,}|~{3,})/u;
 const FENCE_END_PATTERN = /^ {0,3}(`{3,}|~{3,})[ \t]*$/u;
 const SOURCE_TITLE = 'source_file_mapping';
 const RESULT_TITLE = 'ocr_result';
+const UPDATES_TITLE = 'ocr_result_updates';
 const REVIEW_TITLE = 'manual_review';
 const SUMMARY_TITLE = 'ocr_update_summary';
 const SOURCE_HEADERS = ['來源', '檔名'] as const;
@@ -112,6 +113,9 @@ export type FinalizationFailureReason =
   | 'invalid_ocr_deletion'
   | 'missing_ocr_result'
   | 'invalid_ocr_result_table'
+  | 'ambiguous_ocr_update'
+  | 'missing_ocr_base'
+  | 'conflicting_ocr_sections'
   | 'mapping_mismatch';
 
 export interface FinalizeOcrResponseFailure {
@@ -264,7 +268,9 @@ function tableFromMarkdown(markdown: string, required: readonly string[], exact:
     visibleLines.push(line);
   }
   const visibleMarkdown = visibleLines.join('\n');
-  let table = parseMarkdownTables(visibleMarkdown)[0];
+  const tables = parseMarkdownTables(visibleMarkdown);
+  if (tables.length > 1) return { ok: false, reason: 'invalid_table' };
+  let table = tables[0];
   if (!table && allowEmpty) {
     const lines = visibleLines.filter((line) => line.trim().length > 0);
     const headers = parsePipeTableRow(lines[0] ?? '');
@@ -433,104 +439,88 @@ export function reconcileOcrResults(
   current: OcrTable,
   deletedKeys: ReadonlySet<string> = new Set(),
 ): OcrReconciliation {
-  const currentHeaders = [...current.headers];
-  const previousHeaders = previous?.headers ?? currentHeaders;
+  const previousHeaders = previous?.headers ?? current.headers;
+  const headers = [...new Set([...previousHeaders, ...current.headers])];
   const previousRows = (previous?.rows ?? []).filter((row) => {
     const key = tableKey(row, previousHeaders);
     return key === undefined || !deletedKeys.has(key);
   });
   const oldCounts = countKeys(previousRows, previousHeaders);
-  const currentCounts = countKeys(current.rows, currentHeaders);
+  const currentCounts = countKeys(current.rows, current.headers);
   const duplicateKeys = [...new Set([
     ...[...oldCounts].filter(([, count]) => count > 1).map(([key]) => key),
     ...[...currentCounts].filter(([, count]) => count > 1).map(([key]) => key),
   ])];
-  const duplicateSet = new Set(duplicateKeys);
-  const currentByKey = new Map<string, readonly string[]>();
-  for (const keyed of keyRows(current.rows, currentHeaders)) {
-    if ((currentCounts.get(keyed.key) ?? 0) === 1) {
-      currentByKey.set(keyed.key, keyed.row);
+  const currentGroups = new Map<string, number[]>();
+  const alignedCurrent = current.rows.map((row, index) => {
+    const key = tableKey(row, current.headers);
+    if (key !== undefined) {
+      const group = currentGroups.get(key) ?? [];
+      group.push(index);
+      currentGroups.set(key, group);
     }
-  }
-
+    return alignRow(row, current.headers, headers);
+  });
+  const providedHeaders = new Set(current.headers);
   const emittedCurrent = new Set<number>();
+  const emittedGroups = new Set<string>();
   const restoredRows: Array<readonly string[]> = [];
   const rows: Array<readonly string[]> = [];
   const matchedKeys: string[] = [];
   const changedKeys: string[] = [];
-  const oldEligible = new Set<string>();
-  for (const keyed of keyRows(previousRows, previousHeaders)) {
-    if ((oldCounts.get(keyed.key) ?? 0) === 1 && !duplicateSet.has(keyed.key)) {
-      oldEligible.add(keyed.key);
+
+  for (const oldRow of previousRows) {
+    const key = tableKey(oldRow, previousHeaders);
+    const restored = alignRow(oldRow, previousHeaders, headers);
+    if (key === undefined) {
+      const sameIndex = alignedCurrent.findIndex((row, index) =>
+        !emittedCurrent.has(index) && tableKey(row, headers) === undefined &&
+        row.every((value, column) => value === restored[column]),
+      );
+      if (sameIndex >= 0) emittedCurrent.add(sameIndex);
+      rows.push(restored);
+      restoredRows.push(restored);
+      continue;
+    }
+    const group = currentGroups.get(key);
+    if (!group) {
+      rows.push(restored);
+      restoredRows.push(restored);
+      continue;
+    }
+    if (emittedGroups.has(key)) continue;
+    emittedGroups.add(key);
+    for (const index of group) {
+      emittedCurrent.add(index);
+      const updated = alignedCurrent[index].map((value, column) =>
+        providedHeaders.has(headers[column]) ? value : restored[column],
+      );
+      rows.push(updated);
+      if (oldCounts.get(key) === 1 && group.length === 1) {
+        matchedKeys.push(key);
+        if (changedCellCount(updated, restored, headers, headers)) changedKeys.push(key);
+      }
     }
   }
 
-  for (const oldKeyed of keyRows(previousRows, previousHeaders)) {
-    const oldCount = oldCounts.get(oldKeyed.key) ?? 0;
-    if (oldCount > 1) {
-      if ((currentCounts.get(oldKeyed.key) ?? 0) === 0) {
-        const restored = alignRow(oldKeyed.row, previousHeaders, currentHeaders);
-        rows.push(restored);
-        restoredRows.push(restored);
-      }
-      continue;
-    }
-    if (oldCount !== 1 || duplicateSet.has(oldKeyed.key)) {
-      continue;
-    }
-    const currentRow = currentByKey.get(oldKeyed.key);
-    if (currentRow) {
-      rows.push([...currentRow]);
-      const currentIndex = current.rows.findIndex((row) => row === currentRow);
-      if (currentIndex >= 0) {
-        emittedCurrent.add(currentIndex);
-      }
-      matchedKeys.push(oldKeyed.key);
-      if (changedCellCount(currentRow, oldKeyed.row, currentHeaders, previousHeaders)) {
-        changedKeys.push(oldKeyed.key);
-      }
-      continue;
-    }
-    const restored = alignRow(oldKeyed.row, previousHeaders, currentHeaders);
-    rows.push(restored);
-    restoredRows.push(restored);
+  const sourceGroups = new Map<string, Array<readonly string[]>>();
+  const newKeys: string[] = [];
+  for (let index = 0; index < alignedCurrent.length; index += 1) {
+    if (emittedCurrent.has(index)) continue;
+    const row = alignedCurrent[index];
+    const source = sourceOf(row, headers);
+    const group = sourceGroups.get(source) ?? [];
+    group.push(row);
+    sourceGroups.set(source, group);
+    const key = tableKey(row, headers);
+    if (key !== undefined && !oldCounts.has(key) && currentCounts.get(key) === 1) newKeys.push(key);
+  }
+  for (const [source, extras] of sourceGroups) {
+    const insertAt = rows.reduce((last, row, index) => sourceOf(row, headers) === source ? index + 1 : last, -1);
+    rows.splice(insertAt < 0 ? rows.length : insertAt, 0, ...extras);
   }
 
-  const currentExtras = current.rows
-    .map((row, index) => ({ row, index, key: tableKey(row, currentHeaders) }))
-    .filter(({ index, key }) => !emittedCurrent.has(index) && (key === undefined || !oldEligible.has(key) || duplicateSet.has(key)));
-  const sourceGroups = new Map<string, Array<{ readonly row: readonly string[]; readonly index: number }>>();
-  const groupOrder: string[] = [];
-  for (const extra of currentExtras) {
-    const source = sourceOf(extra.row, currentHeaders);
-    if (!sourceGroups.has(source)) {
-      sourceGroups.set(source, []);
-      groupOrder.push(source);
-    }
-    sourceGroups.get(source)?.push(extra);
-  }
-  for (const source of groupOrder) {
-    const extras = sourceGroups.get(source) ?? [];
-    const insertAt = rows.reduce((last, row, index) => sourceOf(row, currentHeaders) === source ? index + 1 : last, -1);
-    if (insertAt < 0) {
-      rows.push(...extras.map(({ row }) => [...row]));
-    } else {
-      rows.splice(insertAt, 0, ...extras.map(({ row }) => [...row]));
-    }
-  }
-
-  const newKeys = currentExtras
-    .map(({ key }) => key)
-    .filter((key): key is string => key !== undefined && !duplicateSet.has(key) && !oldEligible.has(key));
-  return {
-    headers: currentHeaders,
-    rows,
-    restoredRows,
-    matchedKeys,
-    newKeys: [...new Set(newKeys)],
-    duplicateKeys,
-    changedKeys,
-  };
+  return { headers, rows, restoredRows, matchedKeys, newKeys, duplicateKeys, changedKeys };
 }
 
 function renderTable(table: OcrTable): string {
@@ -621,7 +611,7 @@ function parsePreviousTable(markdown: string | undefined): OcrTable | undefined 
   }
   const document = parseAssistantMarkdown(markdown);
   const section = getSection(document, RESULT_TITLE);
-  const parsed = parseOcrResultTable(section?.body ?? markdown);
+  const parsed = tableFromMarkdown(section?.body ?? markdown, [], false, true);
   return parsed.ok ? parsed.table : undefined;
 }
 
@@ -644,6 +634,10 @@ function safeOtherText(document: ParsedAssistantMarkdown, used: ReadonlySet<Mark
     }
   }
   return chunks;
+}
+
+export function hasOcrResultUpdates(markdown: string): boolean {
+  return parseAssistantMarkdown(markdown).sections.some((section) => section.title === UPDATES_TITLE);
 }
 
 function renderResultSection(table: OcrTable): string {
@@ -710,7 +704,12 @@ export function finalizeOcrResponse(
 ): FinalizeOcrResponseResult {
   const input = normalizeInput(inputOrResponse, previousOcrMarkdown, canonicalMapping, delegateSummary);
   const document = parseAssistantMarkdown(input.assistantResponse);
-  const resultParsed = tableInSection(document, RESULT_TITLE, (markdown) => tableFromMarkdown(markdown, [], false, true));
+  const updates = document.sections.filter((section) => section.title === UPDATES_TITLE);
+  const isUpdate = updates.length > 0;
+  if (updates.length > 1 || (isUpdate && document.sections.some((section) => section.title === RESULT_TITLE))) {
+    return { ok: false, reason: 'conflicting_ocr_sections' };
+  }
+  const resultParsed = tableInSection(document, isUpdate ? UPDATES_TITLE : RESULT_TITLE, (markdown) => tableFromMarkdown(markdown, [], false, true));
   if (resultParsed.ok === false) {
     return { ok: false, reason: resultParsed.reason === 'missing_table' ? 'missing_ocr_result' : 'invalid_ocr_result_table' };
   }
@@ -747,14 +746,31 @@ export function finalizeOcrResponse(
     : { ok: true, entries: mappingParsed.ok ? mappingEntries(mappingParsed.table) : [] };
 
   const previous = parsePreviousTable(input.previousOcrMarkdown);
+  if (isUpdate && !previous) {
+    return { ok: false, reason: 'missing_ocr_base' };
+  }
   const deletedKeys = explicitDeletionKeys(input, document, previous);
-  if (!deletedKeys || (resultParsed.table.rows.length === 0 && (!previous || deletedKeys.size !== previous.rows.length || deletedKeys.size === 0)) || resultParsed.table.rows.some((row) => {
+  if (!deletedKeys || (resultParsed.table.rows.length === 0 &&
+    (!previous || (!isUpdate && (deletedKeys.size === 0 || deletedKeys.size !== previous.rows.length)))) || resultParsed.table.rows.some((row) => {
     const key = tableKey(row, resultParsed.table.headers);
     return key !== undefined && deletedKeys.has(key);
   })) {
     return { ok: false, reason: 'invalid_ocr_deletion' };
   }
-  const reconciliation = reconcileOcrResults(previous, resultParsed.table, deletedKeys);
+  if (isUpdate && !RESULT_REQUIRED_HEADERS.every((header) =>
+    resultParsed.table.headers.includes(header) && previous?.headers.includes(header))) {
+    return { ok: false, reason: 'invalid_ocr_result_table' };
+  }
+  const oldCounts = countKeys(isUpdate ? previous?.rows ?? [] : [], previous?.headers ?? []);
+  const currentCounts = countKeys(resultParsed.table.rows, resultParsed.table.headers);
+  const missingPreviousColumns = previous?.headers.some((header) => !resultParsed.table.headers.includes(header));
+  for (const [key, count] of oldCounts) {
+    const currentCount = currentCounts.get(key) ?? 0;
+    if (count > 1 && currentCount > 0 && (currentCount < count || missingPreviousColumns)) {
+      return { ok: false, reason: 'ambiguous_ocr_update' };
+    }
+  }
+  const reconciliation = reconcileOcrResults(isUpdate ? previous : undefined, resultParsed.table, deletedKeys);
   const summaryResult = buildOcrUpdateSummary(previous, resultParsed.table, reconciliation);
   const review = getSection(document, REVIEW_TITLE);
   const used = new Set<MarkdownSection>([...document.sections.filter((section) =>
@@ -778,11 +794,17 @@ export function finalizeOcrResponse(
   if (input.delegateSummary) {
     chunks.push(summaryResult.markdown);
   }
-  const finalResponse = joinChunks(chunks, document.newline);
+  const ocrResultMarkdown = renderResultSection({ headers: reconciliation.headers, rows: reconciliation.rows });
+  // Keep the model correction visible; the authoritative full snapshot is appended only after completion.
+  const visibleResponse = document.sections.filter((section) => section.title === 'ocr_deletions')
+    .reduce((text, section) => text.replace(section.raw, ''), input.assistantResponse);
+  const finalResponse = isUpdate
+    ? `${visibleResponse}${document.newline}${document.newline}${input.delegateSummary ? `${summaryResult.markdown}${document.newline}${document.newline}` : ''}${ocrResultMarkdown.replace(/\n/gu, document.newline)}`
+    : joinChunks(chunks, document.newline);
   return {
     ok: true,
     finalResponse,
-    ocrResultMarkdown: renderResultSection({ headers: reconciliation.headers, rows: reconciliation.rows }),
+    ocrResultMarkdown,
     mapping,
     reconciliation,
     summary: input.delegateSummary ? summaryResult.markdown : '',

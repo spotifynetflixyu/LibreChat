@@ -22,6 +22,7 @@ export {
   createSteelWorkingOrderMemoryModel,
   createSteelDelegateOcrRunModel,
   createSteelConversationOcrStateModel,
+  createSteelOcrResponseAuditModel,
   createSteelQuotationStateModel,
   createSteelQuotationArtifactModel,
 } from './models';
