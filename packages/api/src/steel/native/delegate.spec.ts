@@ -944,10 +944,11 @@ describe('delegate_ocr', () => {
   });
 
   it('runs delegate preprocessing once and retries only the canonical agent on mapping mismatch', async () => {
+    const ocrResultChunk = '## ocr_result_chunk\n\n| 來源 | 零件編號 |\n| --- | --- |\n| F1 | A |';
     const preprocess = jest.fn(async ({ currentUserTurn, signedFiles }) => {
       expect(currentUserTurn).toBe('請重新核對圖面');
       expect(signedFiles[0]?.url).toBe('https://fresh.example/drawing.png');
-      return { organizerMarkdown: '## organizer\n\n| 來源 | 零件編號 |\n| --- | --- |\n| F1 | A |' };
+      return { organizerMarkdown: ocrResultChunk };
     });
     const beginAttempt = jest.fn(async ({ attemptNumber }) => ({
       attemptToken: `attempt-${attemptNumber}`,
@@ -987,7 +988,22 @@ describe('delegate_ocr', () => {
       invokeModel.mock.calls[0]?.[0]?.messages?.[1]?.content,
     );
     expect(packet).toContain('drawing.png');
-    expect(packet).toContain('organizer');
+    for (const [invocation] of invokeModel.mock.calls) {
+      const packetText = invocation.messages[1].content[0].text;
+      expect(JSON.parse(packetText.slice(packetText.indexOf('\n') + 1))).toEqual({
+        source_file_mapping: [{ source_code: 'F1', source_filename: 'drawing.png' }],
+        previous_ocr_result_markdown: '',
+        suggested_ocr_result_columns: [],
+        selected_files: [{
+          fileKey: 'file:image-1',
+          fileId: 'image-1',
+          filename: 'drawing.png',
+          mediaType: 'image/png',
+          pageRanges: [{ pageStart: 35, pageEnd: 36 }],
+        }],
+        ocr_result_chunk: [ocrResultChunk],
+      });
+    }
     expect(canonicalPacket).toContain('\\"pageRanges\\":[{\\"pageStart\\":35,\\"pageEnd\\":36}]');
     expect(packet).not.toContain('請重新核對圖面');
     expect(packet).not.toContain('https://fresh.example');

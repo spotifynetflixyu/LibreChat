@@ -1065,11 +1065,14 @@ export function buildDelegateOcrWorkflowMessages(input: {
   organizerMarkdown: readonly string[];
 }): BaseMessage[] {
   const packet = {
-    source_file_mapping: input.canonicalMapping,
+    source_file_mapping: input.canonicalMapping.map(({ sourceCode, sourceFilename }) => ({
+      source_code: sourceCode,
+      source_filename: sourceFilename,
+    })),
     previous_ocr_result_markdown: input.previousOcrResultMarkdown ?? '',
     suggested_ocr_result_columns: input.suggestedOcrResultColumns,
     selected_files: input.selectedFiles,
-    organizer_markdown: input.organizerMarkdown,
+    ocr_result_chunk: input.organizerMarkdown,
   };
   return [
     new SystemMessage(input.ocrRulesText),
@@ -1078,7 +1081,7 @@ export function buildDelegateOcrWorkflowMessages(input: {
         {
           type: 'text',
           text: [
-            'Delegate OCR canonical packet. Use only the supplied source mapping and Organizer Markdown below.',
+            'Use only the supplied source_file_mapping, selected_files, ocr_result_chunk, previous_ocr_result_markdown, and suggested_ocr_result_columns below.',
             JSON.stringify(packet),
           ].join('\n'),
         },

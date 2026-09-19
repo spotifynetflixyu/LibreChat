@@ -1,7 +1,15 @@
 const { v4: uuidv4 } = require('uuid');
+const mongoose = require('mongoose');
+const { createSteelOcrForkService } = require('@librechat/api');
 const { logger, tenantStorage } = require('@librechat/data-schemas');
 const { EModelEndpoint, Constants, ForkOptions } = require('librechat-data-provider');
-const { getConvo, getMessages, getSharedMessages } = require('~/models');
+const {
+  getConvo,
+  getMessages,
+  getSharedMessages,
+  deleteConvos,
+  deleteMessages,
+} = require('~/models');
 const { createImportBatchBuilder } = require('./importBatchBuilder');
 const { getAppConfig } = require('~/server/services/Config');
 const { resolveImportDefaultEndpoint } = require('./defaults');
@@ -97,6 +105,9 @@ async function forkConversation({
 }) {
   try {
     const originalConvo = await getConvo(requestUserId, originalConvoId);
+    if (!originalConvo || String(originalConvo.user) !== String(requestUserId)) {
+      throw new Error('Conversation not found or not owned by the requesting user.');
+    }
     let originalMessages = await getMessages({
       user: requestUserId,
       conversationId: originalConvoId,
@@ -129,14 +140,39 @@ async function forkConversation({
       messagesToClone = getMessagesUpToTargetLevel(originalMessages, targetMessageId);
     }
 
-    cloneMessagesWithTimestamps(messagesToClone, importBatchBuilder);
+    const messageIdMap = cloneMessagesWithTimestamps(messagesToClone, importBatchBuilder);
 
     const result = importBatchBuilder.finishConversation(
       newTitle || originalConvo.title,
       new Date(),
       originalConvo,
     );
-    await importBatchBuilder.saveBatch();
+    const ocrFork = await createSteelOcrForkService(mongoose).prepare({
+      userId: requestUserId,
+      sourceConversationId: originalConvoId,
+      destinationConversationId: result.conversation.conversationId,
+      messages: messagesToClone,
+      targetMessageId,
+      messageIdMap,
+    });
+    await ocrFork.persist();
+    try {
+      await importBatchBuilder.saveBatch();
+    } catch (error) {
+      const conversationId = result.conversation.conversationId;
+      try {
+        if (await getConvo(requestUserId, conversationId)) {
+          await deleteConvos(requestUserId, { conversationId });
+        }
+        if (!(await getConvo(requestUserId, conversationId))) {
+          await deleteMessages({ user: requestUserId, conversationId });
+          await ocrFork.cleanup();
+        }
+      } catch (cleanupError) {
+        logger.error('Error cleaning up an unpublished conversation fork', cleanupError);
+      }
+      throw error;
+    }
     logger.debug(
       `user: ${requestUserId} | New conversation "${
         newTitle || originalConvo.title

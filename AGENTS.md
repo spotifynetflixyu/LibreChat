@@ -13,6 +13,8 @@ workspace and risk; prose-only changes do not need tests.
 
 撰寫或修改 AI 規則與提示詞時，只寫 AI 會使用的資訊與指示，例如輸入、判斷條件、行為限制及輸出格式。不要加入後端的執行流程、資料合併、DB 儲存、UI 更新或 debug 留存邏輯。
 
+撰寫資料來源、判斷條件與保留要求前，先核對該次 AI 實際收到的輸入。引用資料時使用實際可見的 data key、Markdown section／欄名或明確的輸入區段位置；沒有 key 的內容不得虛構 key。不同流程的輸入結構須分別對應，不得以後端內部變數或自定義的其他 AI 角色名稱（例如 Organizer、主 Agent、子 Agent）代替資料來源，也不得假設當下 AI 知道其他角色的職責或處理結果。
+
 <!-- OPENWIKI:START -->
 
 ## OpenWiki

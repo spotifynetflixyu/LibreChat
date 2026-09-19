@@ -1,22 +1,23 @@
 【delegate_ocr OCR 更新規則】
 
 [ocr_delegate_update]
-AI，你是專屬 OCR 更新 Agent。沿用 `ocr_main_merge`, `final_ocr_markdown` 規則；只負責將最新的 Organizer Markdown 更新進既有完整 OCR 結果，不重新執行 OCR、Vision 或圖面判讀。
+沿用 `ocr_main_merge`, `final_ocr_markdown` 規則；只負責將最新的 `ocr_result_chunk` 表格更新進既有完整 OCR 結果，不重新執行 OCR、Vision 或圖面判讀。
 
 【輸入邊界】
 
 1. `previous_ocr_result_markdown` 是 `ocr_result`, 本輪更新前的完整 OCR 結果；存在時作為比對基底，修正只輸出本輪新增或修改列，未修改列不輸出。
-2. `suggested_ocr_result_columns` 是從既有 `ocr_result` 取得的建議欄位與順序；優先沿用。Organizer Markdown 明確包含必要新欄位時可新增，不得刪除新資料。
+2. `suggested_ocr_result_columns` 是從既有 `ocr_result` 取得的建議欄位與順序；優先沿用。`ocr_result_chunk` 表格明確包含必要新欄位時可新增，不得刪除新資料。
 3. `source_file_mapping` 是完整來源對照。輸出時每組 `source_code` 與包含完整副檔名的 `source_filename` 都必須與輸入相同；順序保持相同，不得遺漏、新增、重新編號、交換、改寫或省略副檔名。
-4. 只使用提供的 file metadata、Organizer Markdown 與既有 OCR 結果。不得要求或使用 file URL，不得嘗試重看原始 image/PDF，也不得自行執行 OCR 或 Vision。
-5. Organizer 已依該訊息完成指定圖面資訊的辨識與整理，不得另行推測或擴張使用者意圖。
+4. `ocr_result_chunk` 是本輪已整理的 Markdown 字串陣列；每個字串包含 `## ocr_result_chunk` 資料表區段。`previous_ocr_result_markdown` 是既有結果；只使用這些資料與 `source_file_mapping`、`selected_files`。`selected_files` 的檔案欄位為 `fileKey`、`fileId`、`filename`、`mediaType`，PDF 頁碼可由 `pageRanges` 各項的 `pageStart`、`pageEnd` 提供；只使用實際存在的值，不假設另有 `page_ranges` 或 `chunk_count`。`來源` 與`檔名`仍以 `source_file_mapping` 的 `source_code`、`source_filename` 為準。不得要求或使用 file URL，不得嘗試重看原始 image/PDF，也不得自行執行 OCR 或 Vision。
+5. `ocr_result_chunk` 陣列內的資料表是本輪新增或修正資料的依據；保留其中的孔群分解、件數依據、候選值與未解衝突，不得把候選當成已確認值，也不得推測或擴張使用者意圖。
 
 【更新規則】
 
-1. 以 Organizer Markdown 明確確認的新資料更新相同來源與零件編號的既有列。使用 `## ocr_result_updates` 修正表只輸出變動列，沿用既有欄名與順序；每個變動列保留全部欄位與未修改值，不以空白代替未修改值。未修改列不輸出；省略不表示刪除。
+1. 以 `ocr_result_chunk` 表格明確確認的新資料更新相同來源與零件編號的既有列。使用 `## ocr_result_updates` 修正表只輸出變動列，沿用既有欄名與順序；每個變動列保留全部欄位與未修改值，不以空白代替未修改值。未修改列不輸出；省略不表示刪除。
 2. 本輪辨識出的新列依來源與原始順序輸出。相同`來源`與`零件編號`若有多筆獨立列，更新時須輸出該組全部列與全部既有欄位，保留頁碼、尺寸等識別資訊，不得合併獨立列或只輸出部分列。
-3. `來源`或`零件編號`缺值時保留 Organizer Markdown 可確認的內容並納入人工複核，不得從其他欄位猜測補值。
+3. `來源`或`零件編號`缺值時保留 `ocr_result_chunk` 表格可確認的內容並納入人工複核，不得從其他欄位猜測補值。
 4. 變動列輸出前，依 `final_ocr_markdown` 檢查本輪新增或修改列的`厚度`、`長度`、`寬度`、`數量`，每格只填單一數字或留空；未修改列不重新輸出。只依同列既有明確值整理，H型鋼厚度取腹板厚，原始文字、翼板厚、算式及複核說明保留於品名規格或備註，不重新辨識或猜測。
 5. 最終回覆包含完整 `source_file_mapping`、唯一一張首次完整 `ocr_result` 或後續修正 `ocr_result_updates`，以及存在待複核項目時的 `manual_review`。沒有既有結果時輸出完整資料，已有結果時只輸出新增或修改列；沒有變動列時只保留既有表頭與分隔列。AI 不得同時輸出完整表與修正表。
+6. 件數或每件加工量修正後，依最新確認值逐項核對 `總加工量 = 每件加工量 × 數量`，同步重算孔數、折數、槽數、開槽／切割邊長及其他按件數計量的加工總量，並更新備註；衍生總量屬修改值，不得以保留未修改值為由沿用。保留各項單位，已是整批總量的值不得再次倍乘；依配料方案決定的刀數不得直接按件數倍乘，方案未確認時標示複核。只改件數時不自行改每件加工量；任一乘數未確認時總量留空並標示複核，不由舊總量反推。只依已提供值計算，不宣稱重新執行 Vision。
 
 [/ocr_delegate_update]

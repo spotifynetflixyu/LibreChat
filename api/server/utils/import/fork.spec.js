@@ -1,5 +1,10 @@
 const { Constants, ForkOptions } = require('librechat-data-provider');
 
+jest.mock('@librechat/api', () => ({
+  ...jest.requireActual('@librechat/api'),
+  createSteelOcrForkService: jest.fn(),
+}));
+
 jest.mock('~/models', () => ({
   getConvo: jest.fn(),
   bulkSaveConvos: jest.fn(),
@@ -7,6 +12,8 @@ jest.mock('~/models', () => ({
   bulkSaveMessages: jest.fn(),
   bulkIncrementTagCounts: jest.fn(),
   getSharedMessages: jest.fn(),
+  deleteConvos: jest.fn(),
+  deleteMessages: jest.fn(),
 }));
 
 jest.mock('~/server/controllers/ModelController', () => ({
@@ -43,7 +50,10 @@ const {
   getMessages,
   bulkSaveMessages,
   getSharedMessages,
+  deleteConvos,
+  deleteMessages,
 } = require('~/models');
+const { createSteelOcrForkService } = require('@librechat/api');
 const { getModelsConfig } = require('~/server/controllers/ModelController');
 const { createImportBatchBuilder } = require('./importBatchBuilder');
 const BaseClient = require('~/app/clients/BaseClient');
@@ -95,9 +105,13 @@ const mockMessages = [
   { messageId: '8', parentMessageId: '7', text: 'Child of 7', createdAt: '2021-01-07' },
 ];
 
-const mockConversation = { convoId: 'abc123', title: 'Original Title' };
+const mockConversation = { convoId: 'abc123', title: 'Original Title', user: 'user1' };
 
 describe('forkConversation', () => {
+  let prepare;
+  let persist;
+  let cleanup;
+
   beforeEach(() => {
     jest.clearAllMocks();
     mockIdCounter = 0;
@@ -105,6 +119,132 @@ describe('forkConversation', () => {
     getMessages.mockResolvedValue(mockMessages);
     bulkSaveConvos.mockResolvedValue(null);
     bulkSaveMessages.mockResolvedValue(null);
+    bulkIncrementTagCounts.mockResolvedValue(undefined);
+    persist = jest.fn().mockResolvedValue(undefined);
+    cleanup = jest.fn().mockResolvedValue(undefined);
+    prepare = jest.fn().mockResolvedValue({ persist, cleanup });
+    createSteelOcrForkService.mockReturnValue({ prepare });
+    deleteConvos.mockResolvedValue({ deletedCount: 1 });
+    deleteMessages.mockResolvedValue({ deletedCount: 1 });
+  });
+
+  test('persists selected OCR context with mapped message IDs before publishing the fork', async () => {
+    const result = await forkConversation({
+      originalConvoId: 'abc123',
+      targetMessageId: '3',
+      requestUserId: 'user1',
+      option: ForkOptions.INCLUDE_BRANCHES,
+    });
+    const input = prepare.mock.calls[0][0];
+    expect(input).toEqual(
+      expect.objectContaining({
+        userId: 'user1',
+        sourceConversationId: 'abc123',
+        destinationConversationId: result.conversation.conversationId,
+        targetMessageId: '3',
+      }),
+    );
+    for (const message of input.messages) {
+      expect(result.messages).toContainEqual(
+        expect.objectContaining({
+          messageId: input.messageIdMap.get(message.messageId),
+          text: message.text,
+        }),
+      );
+    }
+    expect(persist.mock.invocationCallOrder[0]).toBeLessThan(
+      bulkSaveConvos.mock.invocationCallOrder[0],
+    );
+    expect(cleanup).not.toHaveBeenCalled();
+  });
+
+  test('passes the split boundary and selected continuation to OCR preparation', async () => {
+    await forkConversation({
+      originalConvoId: 'abc123',
+      targetMessageId: '3',
+      latestMessageId: '8',
+      requestUserId: 'user1',
+      option: ForkOptions.DIRECT_PATH,
+      splitAtTarget: true,
+    });
+    const input = prepare.mock.calls[0][0];
+    expect(input.targetMessageId).toBe('8');
+    expect(input.messages.map((message) => message.messageId)).toEqual(
+      expect.arrayContaining(['3', '7', '8']),
+    );
+    expect(input.messages.some((message) => message.messageId === '1')).toBe(false);
+  });
+
+  test.each([null, { ...mockConversation, user: 'another-user' }])(
+    'does not read or clone private state without exact conversation ownership',
+    async (conversation) => {
+      getConvo.mockResolvedValue(conversation);
+      await expect(
+        forkConversation({
+          originalConvoId: 'abc123',
+          targetMessageId: '3',
+          requestUserId: 'user1',
+        }),
+      ).rejects.toThrow('not owned');
+      expect(getMessages).not.toHaveBeenCalled();
+      expect(prepare).not.toHaveBeenCalled();
+      expect(bulkSaveConvos).not.toHaveBeenCalled();
+    },
+  );
+
+  test('never publishes when OCR persistence fails', async () => {
+    persist.mockRejectedValue(new Error('OCR persistence failed'));
+    await expect(
+      forkConversation({
+        originalConvoId: 'abc123',
+        targetMessageId: '3',
+        requestUserId: 'user1',
+      }),
+    ).rejects.toThrow('OCR persistence failed');
+    expect(bulkSaveConvos).not.toHaveBeenCalled();
+    expect(bulkSaveMessages).not.toHaveBeenCalled();
+  });
+
+  test('waits for publication writes before removing a failed fork and its OCR state', async () => {
+    const events = [];
+    bulkSaveConvos.mockImplementation(async () => {
+      await new Promise((resolve) => setImmediate(resolve));
+      events.push('conversation-write-settled');
+    });
+    bulkSaveMessages.mockRejectedValue(new Error('message write failed'));
+    getConvo
+      .mockResolvedValueOnce(mockConversation)
+      .mockResolvedValueOnce({ ...mockConversation, conversationId: '1' })
+      .mockResolvedValueOnce(null);
+    deleteConvos.mockImplementation(async () => {
+      events.push('delete-conversation');
+    });
+    cleanup.mockImplementation(async () => {
+      events.push('cleanup-steel');
+    });
+    await expect(
+      forkConversation({
+        originalConvoId: 'abc123',
+        targetMessageId: '3',
+        requestUserId: 'user1',
+      }),
+    ).rejects.toThrow('message write failed');
+    expect(events).toEqual(['conversation-write-settled', 'delete-conversation', 'cleanup-steel']);
+    expect(deleteConvos).toHaveBeenCalledWith('user1', { conversationId: '1' });
+    expect(deleteMessages).toHaveBeenCalledWith({ user: 'user1', conversationId: '1' });
+  });
+
+  test('preserves backing OCR state when failed conversation cleanup cannot remove the fork', async () => {
+    bulkSaveMessages.mockRejectedValue(new Error('message write failed'));
+    deleteConvos.mockRejectedValue(new Error('cleanup unavailable'));
+    await expect(
+      forkConversation({
+        originalConvoId: 'abc123',
+        targetMessageId: '3',
+        requestUserId: 'user1',
+      }),
+    ).rejects.toThrow('message write failed');
+    expect(cleanup).not.toHaveBeenCalled();
   });
 
   test('should fork conversation without branches', async () => {
@@ -430,6 +570,7 @@ describe('forkSharedConversation', () => {
 
     expect(result).toBeTruthy();
     expect(bulkSaveMessages).toHaveBeenCalled();
+    expect(createSteelOcrForkService).not.toHaveBeenCalled();
   });
 
   test('should clone shared messages into a conversation owned by the requesting user', async () => {

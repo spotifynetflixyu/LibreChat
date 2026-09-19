@@ -1,26 +1,35 @@
 【search_price_candidates 查價規則】
 
+【輸入資料與用語】
+
+- 訂單來源列指當次輸入 `chunk` 或 `order` 內的一筆材料明細；`來源`、`零件編號`、尺寸與數量均取自該列，不指查價結果中的候選列。
+- 材料候選是 `search_price_candidates` 回傳 `data.queryResults[].candidates[]` 的項目；獨立加工候選是 `data.processingPrice.queryResults[].groups[].items[]` 的項目。依 `queryId`、`category`／`processingCategory` 對應查詢，不把材料與加工結果混用。候選識別使用 `erpItemCode`，品名使用 `productName`。
+- 材料及獨立加工的「明示單價」指 `priceSource="tier_price"` 時，`tierPrices` 中客戶等級對應的值；`priceSource="price_ratio"` 表示換算價格，只能依適用類別規則及 `quoteUnit` 計價，不自行把倍率當成其他單位的單價。採價仍須符合 `quoteEligible=true` 與所需等級價格有值。
+- 切工價格列指 `data.cuttingPrices[].prices[]` 的項目；依群組的 `sourceCategories`、`queryIds` 與該列 `itemName`、`specText`、尺寸欄位核對適用材料。切工基本單價取該列 `tierPrices` 中客戶等級對應的值，計價單位取 `unit`。
+- 材質／表面的「合法標準值」指本規則允許、且該類別的 `availableMaterials`／`availableWhiteSteelSurfaces` 支援的值；多類別查詢依 `categoryMaterialOptions` 分別核對。不是材料代號、鋼種代碼或模型自行取的別名。
+- 「缺價替代價格」指客戶等級出現在同一候選的 `fallbackTiers` 時，該等級在 `tierPrices` 回傳的值；不表示可改用其他候選、加工方式或客戶等級。
+
 一、批次與查詢
 
 1. 每次報價的首查把所有材料與加工 query item 放在同一個頂層 `queries` array。材料 item 形為 `{"categories":[...], ...}`；加工 item 形為 `{"categories":[...],"processingCategories":[...], ...}`。只有 `defaultMaterial`、材質／表面與其他參數條件相同才合併材料類別；不同預設材質群組必須分開。不為每個品項重複送 query。
-2. 材料首查預設只用 `categories`。`materials` 只有個別鋼材規則或先前工具結果已確認該 category 的 `defaultMaterial` 與可用選項，且訂單自然語意明確要求不同於 default、同時受 `availableMaterials`／`availableWhiteSteelSurfaces` 支援的 canonical 合法值時才加入；預設與可用選項尚未確認時仍省略。合法材質族只有 `黑鐵`、`白鐵`、`錏`、`鋁`、`鋅`、`鎢`、`塑膠`，合法白鐵表面只有 `ST`、`2B`、`NO1`、`HL`、`BA`。同 `defaultMaterial` 省略；未明示或不支援不得猜測，由結果的 `defaultMaterial` 判讀。「訂單明示」只認訂單自然語意中的上述合法材質族／白鐵表面，不認表單欄名 `材質`、`材料代號`、`材質編號`、`鋼種`、`material` 或欄位內代號。單一需求只傳單一 canonical 值；只有訂單明確要求多個材質／表面 alternatives 才傳多值 OR，不串接值。所有表單材料／鋼種／等級代號與查價無關，例如但不限於 `SN490B`、`SN400B`、`STKR400`、`ST50` 及同類英數代號；只原樣保留，不得進 `search_price_candidates` 任一參數（含 `materials`／`keyword`）、拆 query、retry、候選選擇或推導材質族／表面，也不得因代號不同拆分其他條件相同的 query。
+2. 材料首查預設只用 `categories`。`materials` 只有個別鋼材規則或先前工具結果已確認該 category 的 `defaultMaterial` 與可用選項，且訂單自然語意明確要求不同於預設值、同時受 `availableMaterials`／`availableWhiteSteelSurfaces` 支援的合法標準值時才加入；預設與可用選項尚未確認時仍省略。合法材質族只有 `黑鐵`、`白鐵`、`錏`、`鋁`、`鋅`、`鎢`、`塑膠`，合法白鐵表面只有 `ST`、`2B`、`NO1`、`HL`、`BA`。同 `defaultMaterial` 省略；未明示或不支援不得猜測，由結果的 `defaultMaterial` 判讀。「訂單明示」只認訂單自然語意中的上述合法材質族／白鐵表面，不認表單欄名 `材質`、`材料代號`、`材質編號`、`鋼種`、`material` 或欄位內代號。單一需求只傳單一合法標準值；只有訂單明確要求多個材質／表面 可替代選項時才傳多值，表示任一選項皆可，不串接值。所有表單材料／鋼種／等級代號與查價無關，例如但不限於 `SN490B`、`SN400B`、`STKR400`、`ST50` 及同類英數代號；只原樣保留，不得進 `search_price_candidates` 任一參數（含 `materials`／`keyword`）、拆 query、retry、候選選擇或推導材質族／表面，也不得因代號不同拆分其他條件相同的 query。
 3. 加工首查只傳工件主類別 `categories` 與 `processingCategories`，省略 `keyword` 與材料 filters。材料和加工 item 集中同一批查詢；例：`{"queries":[{"categories":["鐵板"]},{"categories":["鐵板"],"processingCategories":["加工/孔"]}]}`。
-4. 首查先套用本規則的預設 query shape，再依已判定的個別鋼材規則加入該類允許且已確認的參數；不得把某類特例套到其他類別。`categories` 仍不明時列人工複核，不猜類別或參數。返回 direct `candidates` 後，直接依完整規格、材質、單位與價格欄位選用精確可報價候選。
-5. 材料結果回傳 `defaultMaterial`、粗材質族 `availableMaterials`、`defaultWhiteSteelSurface` 與白鐵表面 `availableWhiteSteelSurfaces` 時，`availableMaterials` 中白鐵只列一次；白鐵表面固定依 `[ST, 2B, NO1, HL, BA]` 顯示，不列為獨立材質族。多類別 query 依 `categoryMaterialOptions` 逐類別判讀預設材質、可用材質與白鐵表面，不把某類別的選項套用到其他類別。訂單明示白鐵／不鏽鋼但未明示表面時，依回傳 `defaultWhiteSteelSurface`，並在輸出說明已用該表面及可用表面選項；是否傳 `materials` 仍依前項非預設且 supported 條件。若同批預設材質不同，分開 query，依回傳 `defaultMaterialGroups` 分組。候選輸出 `material` 仍是結果欄位，不是查詢輸入。
+4. 首查先套用本規則的預設 查詢參數格式，再依已判定的個別鋼材規則加入該類允許且已確認的參數；不得把某類特例套到其他類別。`categories` 仍不明時列人工複核，不猜類別或參數。收到 `data.queryResults[].candidates` 後，直接依完整規格、材質、單位與價格欄位選用精確可報價候選。
+5. 材料結果回傳 `defaultMaterial`、粗材質族 `availableMaterials`、`defaultWhiteSteelSurface` 與白鐵表面 `availableWhiteSteelSurfaces` 時，`availableMaterials` 中白鐵只列一次；白鐵表面固定依 `[ST, 2B, NO1, HL, BA]` 顯示，不列為獨立材質族。多類別 query 依 `categoryMaterialOptions` 逐類別判讀預設材質、可用材質與白鐵表面，不把某類別的選項套用到其他類別。訂單明示白鐵／不鏽鋼但未明示表面時，依回傳 `defaultWhiteSteelSurface`，並在輸出說明已用該表面及可用表面選項；是否傳 `materials` 仍依前項非預設且該類別回傳選項支援的條件。若同批預設材質不同，分開 query，依回傳 `defaultMaterialGroups` 分組。候選輸出 `material` 仍是結果欄位，不是查詢輸入。
 6. 已確認訂單厚度、且材料或加工依厚度選價時，先從已確認訂單／OCR 來源列凍結來源厚度，並只把明示板厚正規化為數字 mm（例如 `PL15*300` => 15、`15T` => 15）；不得從 candidate 反推來源厚度，也不得把無關尺寸當厚度。無法確認時沿用既有缺資料／人工複核流程。對每筆已知厚度來源列，先篩選數字 `thicknessMinMm` <= 來源厚度 <= 數字 `thicknessMaxMm` 的 candidates；缺少或不可比較的界限不算涵蓋。只有在厚度篩選後，才比較其他已確認規格、材質、單位與可報價條件。首次結果未涵蓋全部已確認厚度時，依相同的有效查詢條件分組，只將各組去重後的缺漏厚度放入 `thicknessMm`，並且最多另呼叫一次 `search_price_candidates`；該次頂層 `queries` 每個 item 只保留受影響組的 `categories`、必要的 `processingCategories`、原本已合法使用的 filters 與缺漏 `thicknessMm`，不夾帶已涵蓋厚度、已完成 item、候選 `productName` 或猜測參數。補查後必須再逐筆驗證厚度涵蓋。
 7. 查詢沒有候選時，視為目前沒有資料，不重送相同 query，也不使用 `availableMaterials` 或 `availableWhiteSteelSurfaces` 猜測。第6條的單次缺漏厚度補查完成後，仍未涵蓋的厚度立即視為無資料，不得再查、改寫參數、更換關鍵字或形成 retry loop。除第6條與第8條外，只有首查缺少必要識別資料，且其後由使用者／來源確認，才另送只含受影響品項與新確認 `subcategory`、`materials`、`unit`、`thicknessMm`、`stockLengthMm` 或最短 `keyword` 的 query；不得夾帶已完成 item、複製候選 `productName` 或重複查詢。所有表單材料／鋼種／等級代號只原樣保留，不得作任何查價參數或 retry 條件。
-8. 截斷時先報價、後補查：任一結果 `truncated=true` 或整體 `responseTruncated=true` 時，先逐筆檢查已回傳候選；已有相符可用的材料就必須先輸出本輪 `system_order` 報價，不得因截斷、其他材料或加工缺價而略過可用材料，或先補查而延遲報價。缺漏品項與加工仍保留列，未知欄位留空並列入 `manual_review`。完成本輪報價後，後續回合才可針對仍缺候選的品項重新 query；這是所有材料類別共用的截斷例外，優先於第6、7條、Agent 通用規則與個別類別規則的重查限制，不需重新確認來源中已有的資料。補查只用缺漏品項已確認且該類別允許的參數縮小範圍，例如縮小 `categories` 或只保留缺漏品項所需的 `stockLengthMm`；不得夾帶已完成品項、重送相同 query 或整批查詢、猜測參數、改寫分隔符或輪流嘗試關鍵字。沒有合法且能縮小範圍的條件時不重查；補查未取得新增可用候選時停止，保留缺價列與人工複核，不形成 retry loop。後續報價保留先前已確認的材料價。
+8. 截斷時先報價、後補查：任一結果 `truncated=true` 或整體 `responseTruncated=true` 時，先逐筆檢查已回傳候選；已有相符可用的材料就必須先輸出本輪 `system_order` 報價，不得因截斷、其他材料或加工缺價而略過可用材料，或先補查而延遲報價。缺漏品項與加工仍保留列，未知欄位留空並列入 `manual_reviews`。完成本輪報價後，後續回合才可針對仍缺候選的品項重新 query；這是所有材料類別共用的截斷例外，優先於第6、7條、Steel 通用規則與個別類別規則的重查限制，不需重新確認來源中已有的資料。補查只用缺漏品項已確認且該類別允許的參數縮小範圍，例如縮小 `categories` 或只保留缺漏品項所需的 `stockLengthMm`；不得夾帶已完成品項、重送相同 query 或整批查詢、猜測參數、改寫分隔符或輪流嘗試關鍵字。沒有合法且能縮小範圍的條件時不重查；補查未取得新增可用候選時停止，保留缺價列與人工複核，不形成 retry loop。後續報價保留先前已確認的材料價。
 9. 查詢返回後依下節逐筆選價；批次查詢只共用候選資料，不合併訂單／OCR來源材料，也不代表整批必須一起有價或一起缺價。
 
 參數使用情境與範例：
 
-`materials` 是材料族／表面的 OR 篩選；同一 array 可混合不同材質族與表面，但只傳訂單明確要求且 category-supported 的 canonical 值。單一非預設材質例：`{"queries":[{"categories":["鐵板"],"materials":["白鐵"]}]}`。多個明確白鐵表面 alternatives 例：`{"queries":[{"categories":["鐵板"],"materials":["ST","2B"]}]}`。混合材質族與表面 alternatives 例：`{"queries":[{"categories":["鐵板"],"materials":["白鐵","2B"]}]}`。
+`materials` 是材料族／表面的 OR 篩選；同一 array 可混合不同材質族與表面，但只傳訂單明確要求且該類別回傳選項支援的合法標準值。單一非預設材質例：`{"queries":[{"categories":["鐵板"],"materials":["白鐵"]}]}`。多個明確白鐵表面可替代選項範例：`{"queries":[{"categories":["鐵板"],"materials":["ST","2B"]}]}`。混合材質族與表面可替代選項範例：`{"queries":[{"categories":["鐵板"],"materials":["白鐵","2B"]}]}`。
 
-1. 一般材料首查：預設傳 `categories`；已確認訂單所需供料／母材長度且該長度影響查價時，同一 item 加 `stockLengthMm`；訂單明確要求非預設合法材質／表面時才加 canonical `materials` array。
+1. 一般材料首查：預設傳 `categories`；已確認訂單所需供料／母材長度且該長度影響查價時，同一 item 加 `stockLengthMm`；訂單明確要求非預設合法材質／表面時才在 `materials` 陣列填入合法標準值。
 2. 加工首查：`categories` 放工件主類別，`processingCategories` 放加工類別；相同需求合併。例：`{"queries":[{"categories":["鐵板"],"processingCategories":["加工/孔","加工/折工"]}]}`。
 3. 材料參數只放已確認值：
    - `subcategory`：需要排除同主類別的其他次類別時使用。例：`{"queries":[{"categories":["網"],"subcategory":"菱形"}]}`。
-   - `materials`：只有訂單明確要求且 category-supported、不同於 `defaultMaterial` 的 canonical 材質族／白鐵表面才傳；同 default 省略。單一需求一值，明確 alternatives 才多值 OR；各類別的預設材質與例外依個別鋼材規則。
+   - `materials`：只有訂單明確要求且該類別回傳選項支援、不同於 `defaultMaterial` 的合法標準材質族／白鐵表面才傳；同預設值省略。單一需求一值，只有明確要求多個可替代選項時才傳多值，表示任一選項皆可；各類別的預設材質與例外依個別鋼材規則。
    - `unit`：需求明確限定報價單位時使用。例：`{"queries":[{"categories":["鐵板"],"unit":"Kg"}]}`。
    - `thicknessMm`：需要以材料厚度縮小候選時使用；一次放同類需求所有去重厚度字串，不放成品長度。例：`{"queries":[{"categories":["鐵板"],"thicknessMm":["10","12"]}]}`。
    - `stockLengthMm`：普遍用訂單已確認、且個別類別規則認定會影響查價的所需供料／母材長度；array 放母材長度的 mm 字串。成品裁切長度只有同時就是訂單要求的供料長度時才能傳。一般單一母材長度例：`{"queries":[{"categories":["圓管"],"stockLengthMm":["6000"]}]}`；是否使用、多長度規劃與限制依個別類別規則。
@@ -38,8 +47,8 @@
 2. 配對候選：先依全部來源材料的類別、完整規格與合法材質／表面整理相同規格群組，依本規則的厚度篩選與個別類別規則，逐組核對全部已回傳材料候選，建立相符候選對照。材料／鋼種／等級代號仍不作分組或候選選擇條件。不同母材長度、報價單位與價格的候選分別保留，再依每筆來源的供料條件、適用單位與可報價欄位選用，不因同斷面就共用同一價格。未指定厚度時，在其他條件相符且可報價候選中採最小厚度；無法確認唯一產品則優先以標準的報價，類別或加工規則明示的例外優先。同規格來源共用配對結果，同一候選可供多筆相符來源分別計價，不會因已被一筆採用而失效；不得對部分來源採用候選，卻對其他符合相同條件的來源宣告缺候選。分組只用於候選配對，不改變查詢限制或合併來源報價列。
 3. 填入材料單價：有精確相符且 `quoteEligible=true`、所需等級 `tierPrices` 有值的候選，就採該候選的有效報價單位與價格。本輪沒有客戶等級時預設 B；`計價基準`依 A=1、B=2、C=3、D=4、E=5、F=6 對應。`單價`只能複製同一已選 candidate 的對應 tier 價格，不得透過公式推導；候選標示不可報價時不得使用。
 4. 計算該筆計價量：依個別類別規則，使用該筆來源尺寸、數量與同一已選 candidate 換算 `單重`、精確且未四捨五入的 `總數`；Kg、M、件數、支數、刀數、孔數或其他計價量不得混用通用公式。已確認材料單價但缺換算資料時，保留單價，未知重量或計價量留空並列人工複核，不把缺換算資料寫成缺材料報價。材質、規格、unit、配料、計重或加工的類別明示例外優先。
-5. 隔離缺漏：某筆缺候選、孔加工或切工缺價，只影響該筆缺漏欄位、該加工列及相關方案總價比較；其他已確認材料價照常保留。材料單價留空前，須完成第2、3步，核對該來源的全部相符候選，並在 `manual_review` 寫明實際原因與依據，例如未返回相符斷面／規格、合法材質／表面不符、母材長度不足、報價單位不適用、`quoteEligible=false`、所需等級價格缺值或來源規格尚未確認；不得只寫「未取得可用候選」或以整批候選不足概括。已返回相符斷面／規格時，不得寫「未取得完整斷面候選」，應指出尚未符合的具體條件及相關候選 `erpItemCode`，沒有候選時不得虛構料號。已確認材料單價但缺重量、配料結果、數量或加工價格時，保留材料單價，只將受影響欄位留空；若配料未定仍影響候選選擇，則明寫尚缺的供料條件，不把它寫成無材料報價。有 `truncated=true` 或 `responseTruncated=true` 時，依前節第8條先報價、後補查，不把已回傳的可用候選判成失效。缺價為未知，不是0；仍保留該筆材料與加工列，未知欄位留空。
-6. 核對完整性：以完整訂單的全部來源材料為清單，逐筆核對 `system_order` 材料列一對一、來源順序一致、各自數量不變、所屬加工需求全部分列，且每筆精確可用候選的材料單價均已填入。不得只核對本輪提及或修正的品項，也不得把先前不完整的 AI 報價當成來源清單；缺列先補齊再宣告完成。不得漏列、跨來源合併、以件號範圍列代替多筆材料，或用 `manual_review` 取代報價列。
+5. 隔離缺漏：某筆缺候選、孔加工或切工缺價，只影響該筆缺漏欄位、該加工列及相關方案總價比較；其他已確認材料價照常保留。材料單價留空前，須完成第2、3步，核對該來源的全部相符候選，並在 `manual_reviews` 寫明實際原因與依據，例如未返回相符斷面／規格、合法材質／表面不符、母材長度不足、報價單位不適用、`quoteEligible=false`、所需等級價格缺值或來源規格尚未確認；不得只寫「未取得可用候選」或以整批候選不足概括。已返回相符斷面／規格時，不得寫「未取得完整斷面候選」，應指出尚未符合的具體條件及相關候選 `erpItemCode`，沒有候選時不得虛構料號。已確認材料單價但缺重量、配料結果、數量或加工價格時，保留材料單價，只將受影響欄位留空；若配料未定仍影響候選選擇，則明寫尚缺的供料條件，不把它寫成無材料報價。有 `truncated=true` 或 `responseTruncated=true` 時，依前節第8條先報價、後補查，不把已回傳的可用候選判成失效。缺價為未知，不是0；仍保留該筆材料與加工列，未知欄位留空。
+6. 核對完整性：以完整訂單的全部來源材料為清單，逐筆核對 `system_order` 材料列一對一、來源順序一致、各自數量不變、所屬加工需求全部分列，且每筆精確可用候選的材料單價均已填入。不得只核對本輪提及或修正的品項，也不得把先前不完整的 AI 報價當成來源清單；缺列先補齊再宣告完成。不得漏列、跨來源合併、以件號範圍列代替多筆材料，或用 `manual_reviews` 取代報價列。
 
 三、切工
 
@@ -54,7 +63,7 @@
 
 五、類別索引
 
-下列只列可用次類別與規則 owner；沒有列出或不確定次類別時省略。
+下列只列可用次類別與適用規則標題；沒有列出或不確定次類別時省略。
 
 ## 加工/切工
 次類別=[鐵板|H型鋼|I型鋼/工字鐵|圓條|圓管|平鐵|方管|方鐵|槽鐵|角鐵]

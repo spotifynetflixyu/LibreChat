@@ -2,8 +2,8 @@
 
 1. Query
 - 首查併入一般材料 item，只傳 `categories: ["網"]`。例：`{"queries":[{"categories":["網"]}]}`。
-- 首查預設省略 `materials`，依回傳 `defaultMaterial`（黑鐵）判讀；只有訂單自然語意明確要求且 category-supported、不同於黑鐵的 canonical 材質族／白鐵表面時才加入，單一需求一值，明確 alternatives 才多值 OR。欄名與材料／鋼種代號不算明示。訂單已確認非 Kg 計價所需的供料／母材長度時，依【search_price_candidates 查價規則】首查加 `stockLengthMm`，明示「不切清」亦同；`subcategory`、`unit` 與 `keyword` 由返回候選判斷。首查缺少必要識別資料且其後由使用者／來源確認時，才另送只含受影響網類 item 與新確認參數的 query。
-- AI依候選的 structured fields 與完整 `productName` 判斷線徑、孔目、孔型、材質、整片／整捲尺寸、可拉長度與是否足夠裁切；預設不切清。
+- 首查預設省略 `materials`，依回傳 `defaultMaterial`（黑鐵）判讀；只有訂單自然語意明確要求且該類別回傳選項支援、不同於黑鐵的合法標準材質族／白鐵表面時才加入，單一需求一值，只有明確要求多個可替代選項時才傳多值，表示任一選項皆可。欄名與材料／鋼種代號不算明示。訂單已確認非 Kg 計價所需的供料／母材長度時，依【search_price_candidates 查價規則】首查加 `stockLengthMm`，明示「不切清」亦同；`subcategory`、`unit` 與 `keyword` 由返回候選判斷。首查缺少必要識別資料且其後由使用者／來源確認時，才另送只含受影響網類 item 與新確認參數的 query。
+- AI依候選實際提供的 `material`、`unit`、`widthMm`、`lengthMm`、`sheetWidthMm`、`sheetLengthMm` 與完整 `productName` 判斷線徑、孔目、孔型、材質、整片／整捲尺寸、可拉長度與是否足夠裁切；預設不切清。
 - `kg`、`尺`、`inch`、`mm`、`ST304` 等單位、鋼種或代號不得轉成 `keyword` 或其他 `search_price_candidates` 參數；只原樣保留。
 
 2. 品名判讀
@@ -17,9 +17,9 @@
 
 3. Unit與計價
 - 訂單中的 m2 先正規化為 `㎡`；㎡、才、捲、卷、丸、張、片、只只供取得候選後的計價判斷，不作價格 query filter。
-- 全部預設不切清，只採direct tier。AI從全部候選中選擇足夠裁切且成本合適的材料。
+- 全部預設不切清，只採 `priceSource="tier_price"` 的明示單價。AI從全部候選中選擇足夠裁切且成本合適的材料。
 - `㎡` 是唯一可按實際小數數量計價的單位：需求面積㎡直接乘每㎡單價。
-- `才`：以1才=0.091809㎡換算，無條件進位成整才後乘direct單價。
+- `才`：以1才=0.091809㎡換算，無條件進位成整才後乘明示單價。
 - `丸`：依候選整捲可用長度計算捲數，不足一捲仍按一整丸，不按使用長度比例拆價。
 - `片`：依候選整片尺寸配料並進位成整片；`只`按整數配件數。
-- 網類目前沒有可安全套用的ratio-only公式；沒有direct價時送人工複核。
+- 網類沒有適用於 `priceSource="price_ratio"` 的計價公式；沒有 `priceSource="tier_price"` 且客戶等級 `tierPrices` 有值的候選時送人工複核。
