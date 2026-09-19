@@ -181,3 +181,38 @@ it('ignores repair payloads whose canonical operation and event disagree', async
   });
   expect(history.activityEvents).not.toContainEqual(expect.objectContaining({ stage: 'chunk_repair_started' }));
 });
+
+it('rehydrates v2 tree leaves with flattened ordinals and aggregate counts', async () => {
+  mockService.readState.mockResolvedValue({
+    activeRun: quotationRun({
+      chunks: [
+        { index: 1, sourceRowCount: 24, status: 'pending' },
+        { index: 2, sourceRowCount: 24, status: 'pending' },
+      ],
+      checkpointRefs: [
+        ref('leaf-v2:1:r', 'chunk'),
+        ref('split-v2:2:r', 'main'),
+        ref('split-v2:2:r.2', 'main'),
+        ref('split-v2:2:r.2.1', 'main'),
+        ref('leaf-v2:2:r.1', 'chunk'),
+        ref('leaf-v2:2:r.2.1.1', 'chunk'),
+        ref('leaf-v2:2:r.2.2', 'chunk'),
+      ],
+    }),
+  });
+  const historyModule = await import('./history');
+  const history = await historyModule.readQuotationHistory({
+    scope: { userId: 'owner', conversationId: 'conversation' },
+    runId: 'run-1',
+  });
+  const statusEvents = history.activityEvents.filter((event) => event.type === 'quotation_status');
+  expect(statusEvents.filter((event) => event.stage === 'chunk_saved')).toEqual([
+    expect.objectContaining({ chunkIndex: 1, completedChunks: 1, totalChunks: 5 }),
+    expect.objectContaining({ chunkIndex: 2, completedChunks: 2, totalChunks: 5 }),
+    expect.objectContaining({ chunkIndex: 3, completedChunks: 3, totalChunks: 5 }),
+    expect.objectContaining({ chunkIndex: 5, completedChunks: 4, totalChunks: 5 }),
+  ]);
+  expect(statusEvents[statusEvents.length - 1]).toEqual(expect.objectContaining({
+    stage: 'interrupted', completedChunks: 4, totalChunks: 5,
+  }));
+});

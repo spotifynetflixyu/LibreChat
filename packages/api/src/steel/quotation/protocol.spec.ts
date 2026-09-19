@@ -1,9 +1,11 @@
 import {
   buildQuotationSystemOrder,
   buildQuotationChunks,
+  buildQuotationFailureMarkdown,
   extractCustomerDataTable,
   finalizeQuotationMainResponse,
   parseQuotationSignal,
+  restoreQuotationChunks,
   splitQuotationChunk,
   mergeQuotationChildResults,
   validateQuotationChildResult,
@@ -30,6 +32,10 @@ function table(headers: readonly string[], rows: readonly (readonly string[])[])
 
 function ocr(rows: readonly (readonly string[])[]): string {
   return `## ocr_result\n\n${table(ocrHeaders, rows)}`;
+}
+
+function ocrWithHeaders(headers: readonly string[], rows: readonly (readonly string[])[]): string {
+  return `## ocr_result\n\n${table(headers, rows)}`;
 }
 
 function chunkForRows(rows: readonly (readonly string[])[] = [['F1', 'P1', '鐵板', '2', '6', '100', '200']]): QuotationChunk {
@@ -85,6 +91,19 @@ function removeTrailingPipes(markdown: string): string {
 const pricedRow = ['ERP-1', '鐵板 6T P1', '黑鐵', 'Kg', '2', '', '2', '12', '2', 'PL', '6', '100', '200', '', '鐵板', ''];
 const blankRow = ['', '鐵板 P1', '', '', '2', '', '', '', '2', '', '6', '100', '200', '', '鐵板', '查無候選，需確認'];
 
+function rowsForChunk(chunk: QuotationChunk): readonly (readonly string[])[] {
+  return chunk.sourceRows.map((source) => {
+    const row = [...pricedRow];
+    row[1] = `${source.cells[2]} ${source.cells[1]}`;
+    row[4] = source.cells[3] ?? '';
+    row[10] = source.cells[4] ?? '';
+    row[11] = source.cells[5] ?? '';
+    row[12] = source.cells[6] ?? '';
+    row[14] = source.cells[2] ?? '';
+    return row;
+  });
+}
+
 describe('quotation protocol', () => {
   it('splits recovery source rows exactly once and merges complete material, processing and review tables', () => {
     const parent = chunkForRows(Array.from({ length: 23 }, (_, index) =>
@@ -93,15 +112,15 @@ describe('quotation protocol', () => {
     expect(slices.map((slice) => slice.sourceRows.length)).toEqual([10, 10, 3]);
     expect(slices.flatMap((slice) => slice.sourceRows)).toEqual(parent.sourceRows);
     const children = slices.map((chunk) => ({
-      ...childInput(chunk, pricedRow),
-      response: `${childInput(chunk, pricedRow).response}\n\n## manual_reviews_chunk\n\n${table(reviewHeaders, [
+      ...childInput(chunk, rowsForChunk(chunk)[0]!),
+      response: `## system_order_chunk\n\n${table(systemHeaders, rowsForChunk(chunk))}\n\n## manual_reviews_chunk\n\n${table(reviewHeaders, [
         ['ocr_result', chunk.sourceRows[0]!.cells[1]!, '單價', '', '需確認', '報價'],
       ])}`,
     }));
     const merged = mergeQuotationChildResults(parent, children);
     expect(merged.match(/## system_order_chunk/g)).toHaveLength(1);
     expect(merged.match(/## manual_reviews_chunk/g)).toHaveLength(1);
-    expect(validateQuotationChildResult({ ...childInput(parent, pricedRow), response: merged }).rows).toHaveLength(3);
+    expect(validateQuotationChildResult({ ...childInput(parent, rowsForChunk(parent)[0]!), response: merged }).rows).toHaveLength(23);
     expect(merged.indexOf('P1 |')).toBeLessThan(merged.indexOf('P11 |'));
     expect(merged.indexOf('P11 |')).toBeLessThan(merged.indexOf('P21 |'));
     expect(() => mergeQuotationChildResults(parent, children.slice(1))).toThrow('source');
@@ -130,7 +149,7 @@ describe('quotation protocol', () => {
 
   it('groups categories into chunks while keeping source identity in backend state', () => {
     const rows = Array.from({ length: 62 }, (_, index) => ['F1', `P${index + 1}`, index % 2 === 0 ? '鐵板' : 'H型鋼', '1', '6', '100', '200']);
-    const chunks = buildQuotationChunks(ocr(rows));
+    const chunks = buildQuotationChunks(ocr(rows), 30);
     expect(chunks.map((chunk) => chunk.sourceRows.length)).toEqual([30, 1, 30, 1]);
     expect(chunks.map((chunk) => chunk.category)).toEqual(['鐵板', '鐵板', 'H型鋼', 'H型鋼']);
     expect(chunks.map((chunk) => chunk.chunkIndex)).toEqual([1, 2, 3, 4]);
@@ -144,6 +163,45 @@ describe('quotation protocol', () => {
     expect(chunks.every((chunk) => !chunk.markdown.includes('source-row-'))).toBe(true);
   });
 
+  it('uses 24 source rows per default chunk and supports exact saved-root restoration', () => {
+    const rows = Array.from({ length: 49 }, (_, index) => ['F1', `P${index + 1}`, '鐵板', '1', '6', '100', '200']);
+    const chunks = buildQuotationChunks(ocr(rows));
+    expect(chunks.map((chunk) => chunk.sourceRows.length)).toEqual([24, 24, 1]);
+    expect(chunks.map((chunk) => chunk.chunkCount)).toEqual([3, 3, 3]);
+
+    const categoryRows = Array.from({ length: 62 }, (_, index) => ['F1', `P${index + 1}`, index % 2 === 0 ? '鐵板' : 'H型鋼', '1', '6', '100', '200']);
+    const snapshot = ocr(categoryRows);
+    const restored = restoreQuotationChunks(snapshot, [
+      { index: 1, sourceRowCount: 30 },
+      { index: 2, sourceRowCount: 1 },
+      { index: 3, sourceRowCount: 30 },
+      { index: 4, sourceRowCount: 1 },
+    ]);
+    expect(restored.map((chunk) => chunk.sourceRows.length)).toEqual([30, 1, 30, 1]);
+    expect(restored.flatMap((chunk) => chunk.sourceRows.map((row) => row.sourceRowId)))
+      .toEqual(buildQuotationChunks(snapshot, 30).flatMap((chunk) => chunk.sourceRows.map((row) => row.sourceRowId)));
+    expect(restored.map((chunk) => chunk.category)).toEqual(['鐵板', '鐵板', 'H型鋼', 'H型鋼']);
+    expect(() => restoreQuotationChunks(snapshot, [
+      { index: 1, sourceRowCount: 30 },
+      { index: 2, sourceRowCount: 2 },
+      { index: 3, sourceRowCount: 29 },
+      { index: 4, sourceRowCount: 1 },
+    ])).toThrow('category boundary');
+    expect(() => restoreQuotationChunks(snapshot, [
+      { index: 1, sourceRowCount: 30 },
+      { index: 3, sourceRowCount: 1 },
+    ])).toThrow('contiguous');
+  });
+
+  it('splits a recovered root at each requested slice size', () => {
+    const parent = chunkForRows(Array.from({ length: 23 }, (_, index) =>
+      ['F1', `P${index + 1}`, '鐵板', '2', '6', '100', '200']));
+    expect(splitQuotationChunk(parent, 12).map((chunk) => chunk.sourceRows.length)).toEqual([12, 11]);
+    expect(splitQuotationChunk(parent, 6).map((chunk) => chunk.sourceRows.length)).toEqual([6, 6, 6, 5]);
+    expect(splitQuotationChunk(parent, 3).map((chunk) => chunk.sourceRows.length)).toEqual([3, 3, 3, 3, 3, 3, 3, 2]);
+    expect(() => splitQuotationChunk(parent, 0)).toThrow('rowsPerSlice');
+  });
+
   it('accepts a Markdown-only child with a structured failed lookup as a reviewable no-data row', () => {
     const result = validateQuotationChildResult(childInput(chunkForRows(), blankRow, [failedLookup()]));
     expect(result.rows).toEqual([blankRow]);
@@ -152,6 +210,60 @@ describe('quotation protocol', () => {
 
   it('accepts a priced child without candidate or Python evidence because those are AI-owned decisions', () => {
     expect(validateQuotationChildResult(childInput(chunkForRows(), pricedRow))).toEqual(expect.objectContaining({ rows: [pricedRow] }));
+  });
+
+  it('builds and accepts the deterministic OCR fallback with canonical alias precedence', () => {
+    const headers = ['來源', '零件編號', '類別', '品名規格', '品名／規格', '品名', '規格', '數量', '厚度(mm)', '厚度', '寬度(mm)', '長度(mm)', '頁碼', '加工需求'];
+    const source = ocrWithHeaders(headers, [['F-01', 'P-01', '鐵板', 'canonical', 'historical', 'name', 'spec', '2', '6', '99', '100', '200', '7', '折彎']]);
+    const chunk = buildQuotationChunks(source)[0]!;
+    const backendFailure = { retryDepth: 3 as const, reason: 'all candidate lookups failed' };
+    const fallback = buildQuotationFailureMarkdown(chunk, backendFailure.reason);
+    const rows = parseMarkdownTables(fallback)[0]!.rows;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]![1]).toBe('canonical');
+    expect(rows[0]![4]).toBe('2');
+    expect(rows[0]![10]).toBe('99');
+    expect(rows[0]![11]).toBe('100');
+    expect(rows[0]![12]).toBe('200');
+    expect(rows[0]![0]).toBe('');
+    expect(rows[0]![2]).toBe('');
+    expect(rows[0]![7]).toBe('');
+    expect(rows[0]![15]).toContain('來源=F-01');
+    expect(rows[0]![15]).toContain('頁碼=7');
+    expect(rows[0]![15]).toContain('零件編號=P-01');
+    expect(rows[0]![15]).toContain('加工需求=折彎');
+    expect(rows[0]![15]).toContain('重試3次');
+    expect(rows[0]![15]).toContain(backendFailure.reason);
+    expect(validateQuotationChildResult({
+      chunk,
+      response: fallback,
+      lookupEvidence: [],
+      backendFailure,
+    }).rows).toEqual(rows);
+    expect(() => validateQuotationChildResult({
+      chunk,
+      response: fallback.replace('canonical', 'forged'),
+      lookupEvidence: [],
+      backendFailure,
+    })).toThrow('deterministic OCR fallback');
+    expect(() => validateQuotationChildResult({
+      chunk,
+      response: fallback,
+      lookupEvidence: [],
+      backendFailure: { retryDepth: 2 as 3, reason: backendFailure.reason },
+    })).toThrow('retryDepth 3');
+
+    const aliasHeaders = ['來源', '零件編號', '類別', '品名規格', '品名／規格', '數量', '厚度', '寬度', '長度', '孔數'];
+    const aliasChunk = buildQuotationChunks(ocrWithHeaders(aliasHeaders, [['F-02', 'P-02', '鐵板', '', 'fallback name', '1', '3', '40', '50', '2']]))[0]!;
+    const aliasRows = parseMarkdownTables(buildQuotationFailureMarkdown(aliasChunk, 'reason'))[0]!.rows;
+    expect(aliasRows[0]![1]).toBe('fallback name');
+    expect(aliasRows[0]![15]).toContain('孔數=2');
+  });
+
+  it('rejects an ordinary no-evidence child even when it resembles the fallback contract', () => {
+    const chunk = chunkForRows();
+    const fallback = buildQuotationFailureMarkdown(chunk, 'lookup exhausted');
+    expect(() => validateQuotationChildResult({ chunk, response: fallback, lookupEvidence: [] })).toThrow('search_price_candidates attempt');
   });
 
   it('retains optional child reviews together with the order table', () => {
@@ -365,7 +477,10 @@ describe('quotation protocol', () => {
       ['F1', 'P1', '鐵板', '2', '6', '100', '200'],
       ['F1', 'P2', '鐵板', '1', '8', '100', '200'],
     ]);
-    const child = childInput(chunk, pricedRow);
+    const child = {
+      ...childInput(chunk, rowsForChunk(chunk)[0]!),
+      response: `## system_order_chunk\n\n${table(systemHeaders, rowsForChunk(chunk))}`,
+    };
     const corrected = [...pricedRow];
     corrected[1] = '鐵板 8T P2';
     corrected[4] = '1';

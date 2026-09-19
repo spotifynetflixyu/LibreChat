@@ -9,7 +9,7 @@ import type {
 } from '@librechat/data-schemas';
 import type { OpenAIOAuthModelOptions } from '../native/oauth';
 import type { SteelToolJsonObject, SteelToolResult } from '../tools/results';
-import type { QuotationChildResultInput, QuotationLookupEvidence, QuotationPythonEvidence } from './protocol';
+import type { QuotationBackendFailure, QuotationChildResultInput, QuotationLookupEvidence, QuotationPythonEvidence } from './protocol';
 import type { QuotationModelInput, QuotationRepairProgress } from './model';
 import type { SteelNativeHistory } from '../native/events';
 import type { SavedQuotationLookup } from './history';
@@ -24,7 +24,7 @@ import { createSteelPostgresPool } from '../postgres';
 import { executeSteelTool, createSteelToolRunState } from '../tools/execute';
 import { invokeQuotationModel } from './model';
 import { readQuotationHistory } from './history';
-import { getQuotationProgress } from './progress';
+import { getQuotationProgress, QUOTATION_V2_SPLIT_SIZES, QUOTATION_V2_MAX_DEPTH } from './progress';
 import { buildSteelQuotationStatusEvent } from '../native/events';
 import {
   buildQuotationChunks,
@@ -38,13 +38,23 @@ import {
   validateQuotationChildResult,
   finalizeQuotationMainResponse,
   buildQuotationSystemOrder,
+  buildQuotationFailureMarkdown,
+  restoreQuotationChunks,
 } from './protocol';
 
+class QuotationChildFailure extends Error {}
+
 interface SavedQuotationChild {
+  backendFailure?: QuotationBackendFailure;
   markdown: string;
   sourceRowIds?: string[];
   lookupOperations: string[];
   pythonOperations: string[];
+}
+
+interface LoadedQuotationChild extends QuotationChildResultInput {
+  lookupOperations: readonly string[];
+  pythonOperations: readonly string[];
 }
 
 export interface QuotationProgress {
@@ -248,9 +258,17 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     }).catch((error: Error) => controller.abort(error));
   }, 3000);
   heartbeat.unref();
+  const operational = async <T>(action: () => Promise<T>): Promise<T> => {
+    try {
+      return await action();
+    } catch (error) {
+      controller.abort(error);
+      throw error;
+    }
+  };
   const assertActive = async () => {
     controller.signal.throwIfAborted();
-    const state = await service.readState(scope);
+    const state = await operational(() => service.readState(scope));
     const active = state?.activeRun;
     if (!active || active.runId !== runId || active.leaseToken !== lease.leaseToken ||
       active.status === 'cancelled' || active.status === 'completed' ||
@@ -261,18 +279,23 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     }
     return active;
   };
-  const progress = async (chunkIndex?: number, attempt?: string, stage?: QuotationProgress['stage'], sliceIndex?: number) => {
+  const progress = async (chunkIndex?: number, attempt?: string, stage?: QuotationProgress['stage'], sliceIndex?: number, recoveryPath?: string) => {
     const active = await assertActive();
     await input.onProgress?.({
       run: active,
-      ...getQuotationProgress(active, chunkIndex, sliceIndex),
+      ...getQuotationProgress(active, chunkIndex, sliceIndex, recoveryPath),
       attempt: attempt ?? executionAttempt,
       ...(stage ? { stage } : {}),
     });
   };
   const checkpoint = async (operationId: string, kind: 'chunk' | 'tool' | 'main' | 'final', payload: string, chunkIndex?: number) => {
-    const saved = await service.checkpoint({ ...leaseInput, operationId, kind, payload, chunkIndex });
-    if (!saved) throw new Error('Quotation checkpoint lost its execution lease');
+    try {
+      const saved = await service.checkpoint({ ...leaseInput, operationId, kind, payload, chunkIndex });
+      if (!saved) throw new Error('Quotation checkpoint lost its execution lease');
+    } catch (error) {
+      controller.abort(error);
+      throw error;
+    }
   };
   let interruptedChunkIndex: number | undefined;
   try {
@@ -281,116 +304,66 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     const payload = await service.readArtifact({ scope, ref: run.snapshotRef });
     if (!payload) throw new Error('Quotation input snapshot is missing');
     const snapshot = JSON.parse(payload) as SteelQuotationSnapshotPayload;
-    const chunks = buildQuotationChunks(snapshot.orderMarkdown);
+    const chunks = restoreQuotationChunks(snapshot.orderMarkdown, run.chunks);
     const results: QuotationChildResultInput[] = [];
+    const recoveryPolicy = await readCheckpoint('recovery-policy');
+    if (!recoveryPolicy) {
+      await checkpoint('recovery-policy', 'main', JSON.stringify({ version: 2, retrySizes: QUOTATION_V2_SPLIT_SIZES }));
+    }
     await progress(undefined, undefined, 'started');
     for (const chunk of chunks) {
       interruptedChunkIndex = chunk.chunkIndex;
       const operationId = `chunk:${chunk.chunkIndex}`;
-      let stored = await service.readCheckpoint({ scope, runId, operationId });
-      const splitOperation = `split:${chunk.chunkIndex}`;
-      const splitPayload = await service.readCheckpoint({ scope, runId, operationId: splitOperation });
-      let leafResults: QuotationChildResultInput[] | undefined;
-      if (!stored) {
-        const parentOutputRef = run.checkpointRefs.filter((ref) =>
-          ref.operationId.startsWith(`child-output:${chunk.chunkIndex}:`) &&
-          !ref.operationId.split(':')[2]!.startsWith('slice-')).pop();
-        let rejectedParent = run.interruption?.reason === 'error' &&
-          run.interruption.chunkIndex === chunk.chunkIndex;
-        if (!splitPayload && !rejectedParent && run.interruption?.reason !== 'paused' && parentOutputRef) {
-          const previousOutput = await service.readCheckpoint({ scope, runId, operationId: parentOutputRef.operationId });
-          if (!previousOutput) throw new Error('Quotation output evidence is missing');
-          try {
-            validateQuotationChildResult(await loadChild(chunk, previousOutput));
-          } catch (error) {
-            if (!(error instanceof QuotationProtocolError) || error.code !== 'invalid_child_result') throw error;
-            rejectedParent = true;
-          }
-        }
-        if (!splitPayload && !rejectedParent) {
-          try {
-            stored = await generateChild(chunk);
-          } catch (error) {
-            await assertActive();
-            if (!(error instanceof QuotationProtocolError) || error.code !== 'invalid_child_result') throw error;
-          }
-        }
-        if (!stored) {
-          const slices = splitQuotationChunk(chunk);
-          const sourceRowIds = slices.map((slice) => slice.sourceRows.map((row) => row.sourceRowId));
-          if (splitPayload) {
-            const plan = JSON.parse(splitPayload) as { version: number; rowsPerSlice: number; sourceRowIds: string[][] };
-            if (plan.version !== 1 || plan.rowsPerSlice !== 10 ||
-              JSON.stringify(plan.sourceRowIds) !== JSON.stringify(sourceRowIds)) {
-              throw new Error('Saved quotation recovery plan does not match its source rows');
-            }
-            if (!run.checkpointRefs.some((ref) => ref.operationId === splitOperation)) {
-              await checkpoint(splitOperation, 'main', splitPayload);
-            }
-          } else {
-            await checkpoint(splitOperation, 'main', JSON.stringify({
-              version: 1,
-              rowsPerSlice: 10,
-              sourceRowIds,
-              reason: 'AI repair requires fresh pricing within each planned slice and the frozen customer tier.',
-            }));
-          }
-          const children: QuotationChildResultInput[] = [];
-          const lookupOperations: string[] = [];
-          const pythonOperations: string[] = [];
-          for (let index = 0; index < slices.length; index += 1) {
-            await assertActive();
-            const slice = slices[index]!;
-            const sliceOperation = `slice:${chunk.chunkIndex}:${index + 1}`;
-            let saved = await service.readCheckpoint({ scope, runId, operationId: sliceOperation });
-            if (!saved) {
-              saved = await generateChild(slice, index + 1);
-              await checkpoint(sliceOperation, 'chunk', saved);
-            }
-            const loaded = await loadChild(slice, saved);
-            validateQuotationChildResult(loaded);
-            await progress(chunk.chunkIndex, undefined, 'chunk_saved', index + 1);
-            children.push(loaded);
-            const evidence = JSON.parse(saved) as SavedQuotationChild;
-            lookupOperations.push(...evidence.lookupOperations);
-            pythonOperations.push(...evidence.pythonOperations);
-          }
-          leafResults = children;
-          stored = JSON.stringify({
-            markdown: mergeQuotationChildResults(chunk, children), lookupOperations, pythonOperations,
-            sourceRowIds: chunk.sourceRows.map((row) => row.sourceRowId),
-          });
-        }
-        await checkpoint(operationId, 'chunk', stored, chunk.chunkIndex);
-      }
-      if (!leafResults && splitPayload) {
-        const slices = splitQuotationChunk(chunk);
-        const plan = JSON.parse(splitPayload) as { version: number; rowsPerSlice: number; sourceRowIds: string[][] };
+      const stored = await readCheckpoint(operationId);
+      const legacySplit = await readCheckpoint(`split:${chunk.chunkIndex}`);
+      const treeSplit = await readCheckpoint(`split-v2:${chunk.chunkIndex}:r`);
+      const children: LoadedQuotationChild[] = [];
+      if (legacySplit) {
+        const slices = splitQuotationChunk(chunk, 10);
+        const plan = JSON.parse(legacySplit) as { version: number; rowsPerSlice: number; sourceRowIds: string[][] };
         if (plan.version !== 1 || plan.rowsPerSlice !== 10 || JSON.stringify(plan.sourceRowIds) !==
           JSON.stringify(slices.map((slice) => slice.sourceRows.map((row) => row.sourceRowId)))) {
           throw new Error('Saved quotation recovery plan does not match its source rows');
         }
-        leafResults = [];
-        for (let index = 0; index < slices.length; index += 1) {
-          const saved = await service.readCheckpoint({ scope, runId, operationId: `slice:${chunk.chunkIndex}:${index + 1}` });
-          if (!saved) throw new Error('Completed quotation recovery slice is missing');
-          const loaded = await loadChild(slices[index]!, saved);
-          validateQuotationChildResult(loaded);
-          leafResults.push(loaded);
-          await progress(chunk.chunkIndex, undefined, 'chunk_saved', index + 1);
+        if (!run.checkpointRefs.some((ref) => ref.operationId === `split:${chunk.chunkIndex}`)) {
+          await checkpoint(`split:${chunk.chunkIndex}`, 'main', legacySplit);
         }
+        for (let index = 0; index < slices.length; index += 1) {
+          const saved = await readCheckpoint(`slice:${chunk.chunkIndex}:${index + 1}`);
+          children.push(...await recoverChild(slices[index]!, `s${index + 1}`, 1, saved));
+        }
+      } else if (stored && !treeSplit) {
+        children.push(await loadChild(chunk, stored));
+        await progress(chunk.chunkIndex, undefined, 'chunk_saved');
+      } else {
+        const rejectedParent = !recoveryPolicy && !treeSplit && run.interruption?.reason === 'error' &&
+          run.interruption.chunkIndex === chunk.chunkIndex;
+        children.push(...await recoverChild(chunk, 'r', 0, undefined, rejectedParent));
       }
-      for (const loaded of leafResults ?? [await loadChild(chunk, stored)]) {
-        const validated = validateQuotationChildResult(loaded);
-        results.push({ ...loaded, response: validated.markdown, markdown: validated.markdown });
+      if (!stored) {
+        const lookupOperations = children.flatMap((child) => child.lookupOperations);
+        const pythonOperations = children.flatMap((child) => child.pythonOperations);
+        await checkpoint(operationId, 'chunk', JSON.stringify({
+          markdown: mergeQuotationChildResults(chunk, children), lookupOperations, pythonOperations,
+          sourceRowIds: chunk.sourceRows.map((row) => row.sourceRowId),
+          ...(children.length === 1 && children[0]!.backendFailure ? { backendFailure: children[0]!.backendFailure } : {}),
+        }), chunk.chunkIndex);
       }
-      if (!leafResults) await progress(chunk.chunkIndex, undefined, 'chunk_saved');
+      for (const child of children) {
+        const validated = validateQuotationChildResult(child);
+        results.push({ ...child, response: validated.markdown, markdown: validated.markdown });
+      }
     }
     interruptedChunkIndex = undefined;
     await service.transitionRun({ ...leaseInput, status: 'aggregating' });
     await progress();
-    const systemOrder = buildQuotationSystemOrder({ fullOcrResult: snapshot.orderMarkdown, childResults: results });
-    await checkpoint('system-order', 'main', systemOrder);
+    const final = finalizeQuotationMainResponse({
+      fullOcrResult: snapshot.orderMarkdown,
+      mainResponse: buildQuotationSystemOrder({ fullOcrResult: snapshot.orderMarkdown, childResults: results }),
+      childResults: results,
+    });
+    const systemOrder = final.systemOrderMarkdown;
+    await checkpoint('system-order:normalized', 'main', systemOrder);
     if (input.onTextDelta) {
       await progress(undefined, undefined, 'main_streaming');
       await input.onTextDelta(systemOrder);
@@ -418,7 +391,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
           modelOptions: input.modelOptions,
           signal: controller.signal,
           assertActive: async () => { await assertActive(); },
-          onUsage: input.onUsage,
+          onUsage: input.onUsage ? (usage) => operational(() => input.onUsage!(usage)) : undefined,
           onPythonEvidence: async (evidence) => {
             await assertActive();
             await checkpoint(`python:main:${mainAttempt}:${evidence.toolCallId}:${evidence.type}`, 'tool', JSON.stringify(evidence));
@@ -431,11 +404,6 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     }
     await service.transitionRun({ ...leaseInput, status: 'finalizing' });
     await progress();
-    const final = finalizeQuotationMainResponse({
-      fullOcrResult: snapshot.orderMarkdown,
-      mainResponse: systemOrder,
-      childResults: results,
-    });
     // Review prose is model-owned. Counting display rows never gates the saved quotation.
     const reviews = reviewOutput.trim() === '無待複核事項。' ? '' : reviewOutput.trim();
     const reviewDocument = parseAssistantMarkdown(reviews);
@@ -448,14 +416,18 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
       .filter((section) => ['manual_reviews', 'manual_review'].includes(section.title))
       .flatMap((section) => parseMarkdownTables(section.body))
       .reduce((count, table) => count + table.rows.length, 0);
+    const failedMaterialCount = results.reduce((count, child) =>
+      count + (child.backendFailure ? child.chunk.sourceRows.length : 0), 0);
     const completion = reviewCount > 0
       ? `查價輸出完成：共 ${final.rows.length} 筆 system_order、${reviewCount} 項待複核事項。`
-      : reviews ? `查價輸出完成：共 ${final.rows.length} 筆 system_order。` : final.summary;
+      : reviews || failedMaterialCount > 0 ? `查價輸出完成：共 ${final.rows.length} 筆 system_order。` : final.summary;
     const categoryColumn = quotationSystemOrderColumns.indexOf('類別');
     const materialCount = final.rows.filter((row) => !row[categoryColumn]?.trim().startsWith('加工/')).length;
     const sourceCount = chunks.reduce((count, chunk) => count + chunk.sourceRows.length, 0);
     const processingCount = final.rows.length - materialCount;
-    const summary = `${completion}\n\n項次核對：材料項次 ${materialCount}／原始訂單 ${sourceCount} 項；加工列 ${processingCount} 筆。`;
+    const failureSummary = failedMaterialCount > 0
+      ? `\n\n${failedMaterialCount} 個材料項次報價失敗，已保留 OCR 原值及空白報價欄位，需人工複核。` : '';
+    const summary = `${completion}\n\n項次核對：材料項次 ${materialCount}／原始訂單 ${sourceCount} 項；加工列 ${processingCount} 筆。${failureSummary}`;
     const completedResponse = [final.systemOrderMarkdown, final.customerQuoteMarkdown, reviewDisplay, `## quote_summary\n\n${summary}`]
       .filter(Boolean).join('\n\n');
     await checkpoint('final', 'final', completedResponse);
@@ -472,85 +444,179 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     await input.onProgress?.({ run: completed, ...getQuotationProgress(completed) });
     return publish(completedResponse, completed);
 
+    async function readCheckpoint(operationId: string): Promise<string | undefined> {
+      try {
+        return await service.readCheckpoint({ scope, runId, operationId });
+      } catch (error) {
+        controller.abort(error);
+        throw error;
+      }
+    }
+
+    async function recoverChild(
+      chunk: ReturnType<typeof buildQuotationChunks>[number],
+      path: string,
+      depth: number,
+      legacyOutput?: string,
+      rejectedParent = false,
+    ): Promise<LoadedQuotationChild[]> {
+      await assertActive();
+      const leafOperation = `leaf-v2:${chunk.chunkIndex}:${path}`;
+      const splitOperation = `split-v2:${chunk.chunkIndex}:${path}`;
+      const [saved, split] = await Promise.all([readCheckpoint(leafOperation), readCheckpoint(splitOperation)]);
+      if ((saved || legacyOutput) && !split) {
+        const loaded = await loadChild(chunk, (saved ?? legacyOutput)!);
+        validateQuotationChildResult(loaded);
+        if (saved && !run.checkpointRefs.some((ref) => ref.operationId === leafOperation)) {
+          await checkpoint(leafOperation, 'chunk', saved);
+        }
+        await progress(chunk.chunkIndex, undefined, 'chunk_saved', undefined, path);
+        return [loaded];
+      }
+      let failureReason = '報價子 Agent 未能產出有效結果';
+      if (!split && !rejectedParent) {
+        let output: string;
+        try {
+          output = await generateChild(chunk, path);
+        } catch (error) {
+          await assertActive();
+          if (!(error instanceof QuotationChildFailure)) throw error;
+          failureReason = error.message;
+          output = '';
+        }
+        if (output) {
+          await checkpoint(leafOperation, 'chunk', output);
+          const loaded = await loadChild(chunk, output);
+          await progress(chunk.chunkIndex, undefined, 'chunk_saved', undefined, path);
+          return [loaded];
+        }
+      }
+      if (depth === QUOTATION_V2_MAX_DEPTH) {
+        if (split) throw new Error('Quotation recovery exceeds its retry limit');
+        const backendFailure: QuotationBackendFailure = { retryDepth: 3, reason: failureReason };
+        const output = JSON.stringify({
+          markdown: buildQuotationFailureMarkdown(chunk, failureReason), backendFailure,
+          sourceRowIds: chunk.sourceRows.map((row) => row.sourceRowId), lookupOperations: [], pythonOperations: [],
+        });
+        await checkpoint(leafOperation, 'chunk', output);
+        const loaded = await loadChild(chunk, output);
+        validateQuotationChildResult(loaded);
+        await progress(chunk.chunkIndex, undefined, 'chunk_saved', undefined, path);
+        return [loaded];
+      }
+      const rowsPerSlice = QUOTATION_V2_SPLIT_SIZES[depth as 0 | 1 | 2]!;
+      const slices = splitQuotationChunk(chunk, rowsPerSlice);
+      const sourceRowIds = slices.map((slice) => slice.sourceRows.map((row) => row.sourceRowId));
+      if (split) {
+        const plan = JSON.parse(split) as { version: number; depth: number; rowsPerSlice: number; sourceRowIds: string[][] };
+        if (plan.version !== 2 || plan.depth !== depth || plan.rowsPerSlice !== rowsPerSlice ||
+          JSON.stringify(plan.sourceRowIds) !== JSON.stringify(sourceRowIds)) {
+          throw new Error('Saved quotation recovery plan does not match its source rows');
+        }
+        if (!run.checkpointRefs.some((ref) => ref.operationId === splitOperation)) {
+          await checkpoint(splitOperation, 'main', split);
+        }
+      } else {
+        await checkpoint(splitOperation, 'main', JSON.stringify({ version: 2, depth, rowsPerSlice, sourceRowIds }));
+      }
+      const children: LoadedQuotationChild[] = [];
+      for (let index = 0; index < slices.length; index += 1) {
+        children.push(...await recoverChild(slices[index]!, `${path}.${index + 1}`, depth + 1));
+      }
+      return children;
+    }
+
     async function generateChild(
       chunk: ReturnType<typeof buildQuotationChunks>[number],
-      sliceIndex?: number,
+      recoveryPath: string,
     ): Promise<string> {
-      const attemptPrefix = sliceIndex === undefined ? '' : `slice-${sliceIndex}-`;
-      const attempt = `${attemptPrefix}${randomUUID()}`;
-      await progress(chunk.chunkIndex, attempt, 'chunk_started', sliceIndex);
+      const attempt = `node-${recoveryPath}-${randomUUID()}`;
+      await progress(chunk.chunkIndex, attempt, 'chunk_started', undefined, recoveryPath);
       const lookupOperations: string[] = [];
       const pythonOperations: string[] = [];
       const toolState = createSteelToolRunState(120);
       let revision = 0;
       let historyRevision = 0;
-      const generated = await (input.invokeModel ?? invokeQuotationModel)({
-        role: 'child',
-        maxChildRepairAttempts: sliceIndex === undefined ? 0 : 1,
-        prompt: snapshot.prompts.child,
-        input: JSON.stringify({
-          chunk: chunk.markdown,
-          customer: snapshot.customerMarkdown,
-        }),
-        modelOptions: input.modelOptions,
-        signal: controller.signal,
-        assertActive: async () => { await assertActive(); },
-        onUsage: input.onUsage,
-        onChildMessages: async (messages) => {
-          await checkpoint(`child-history:${chunk.chunkIndex}:${attempt}:${historyRevision++}`, 'main', JSON.stringify(messages));
-        },
-        onChildRepair: async (repair) => {
-          const active = await assertActive();
-          const event = buildSteelQuotationStatusEvent({
-            ...repair,
-            conversationId: scope.conversationId,
-            runId, index: active.index, status: active.status,
-            ...getQuotationProgress(active),
-            chunkIndex: chunk.chunkIndex, attempt,
-          });
-          await checkpoint(`repair:${chunk.chunkIndex}:${attempt}:${repair.repairAttempt}:${repair.stage}`, 'main', JSON.stringify(event));
-          await input.onProgress?.({
-            ...event, ...getQuotationProgress(active, chunk.chunkIndex, sliceIndex),
-            stage: repair.stage, run: active,
-          });
-        },
-        validateChildOutput: async (markdown) => {
-          await assertActive();
-          const output = JSON.stringify({ markdown, lookupOperations, pythonOperations,
-            sourceRowIds: chunk.sourceRows.map((row) => row.sourceRowId) });
-          await checkpoint(`child-output:${chunk.chunkIndex}:${attempt}:${revision++}`, 'main', output);
-          validateQuotationChildResult({ ...await loadChild(chunk, output), allowManualReviews: false });
-        },
-        onPythonEvidence: async (evidence) => {
-          const key = `python:${chunk.chunkIndex}:${attempt}:${evidence.toolCallId}:${evidence.type}`;
-          await checkpoint(key, 'tool', JSON.stringify(evidence));
-          pythonOperations.push(key);
-        },
-        lookup: async (id, args) => {
-          await assertActive();
-          await input.onTool?.({ run, id, chunkIndex: chunk.chunkIndex, attempt, arguments: args });
-          const result = input.executeLookup
-            ? await input.executeLookup(args, id)
-            : await executeSteelTool({
-              client: pool ??= createSteelPostgresPool(),
-              toolName: 'search_price_candidates',
-              arguments: args,
-              providerToolCallId: id,
-              runState: toolState,
+      let generated: Awaited<ReturnType<typeof invokeQuotationModel>>;
+      try {
+        generated = await (input.invokeModel ?? invokeQuotationModel)({
+          role: 'child',
+          maxChildRepairAttempts: 0,
+          prompt: snapshot.prompts.child,
+          input: JSON.stringify({
+            chunk: chunk.markdown,
+            customer: snapshot.customerMarkdown,
+          }),
+          modelOptions: input.modelOptions,
+          signal: controller.signal,
+          assertActive: async () => { await assertActive(); },
+          onUsage: input.onUsage ? (usage) => operational(() => input.onUsage!(usage)) : undefined,
+          onChildMessages: async (messages) => {
+            await checkpoint(`child-history:${chunk.chunkIndex}:${attempt}:${historyRevision++}`, 'main', JSON.stringify(messages));
+          },
+          onChildRepair: async (repair) => {
+            const active = await assertActive();
+            const event = buildSteelQuotationStatusEvent({
+              ...repair,
+              conversationId: scope.conversationId,
+              runId, index: active.index, status: active.status,
+              ...getQuotationProgress(active),
+              chunkIndex: chunk.chunkIndex, attempt,
             });
-          await assertActive();
-          const key = `lookup:${chunk.chunkIndex}:${attempt}:${id}`;
-          await checkpoint(key, 'tool', JSON.stringify({ lookupCallId: id, arguments: args, result }));
-          lookupOperations.push(key);
-          await input.onTool?.({ run, id, chunkIndex: chunk.chunkIndex, attempt, arguments: args, result });
-          return result;
-        },
-      });
+            await checkpoint(`repair:${chunk.chunkIndex}:${attempt}:${repair.repairAttempt}:${repair.stage}`, 'main', JSON.stringify(event));
+            await operational(async () => input.onProgress?.({
+              ...event, ...getQuotationProgress(active, chunk.chunkIndex, undefined, recoveryPath),
+              stage: repair.stage, run: active,
+            }));
+          },
+          validateChildOutput: async (markdown) => {
+            await assertActive();
+            const output = JSON.stringify({ markdown, lookupOperations, pythonOperations,
+              sourceRowIds: chunk.sourceRows.map((row) => row.sourceRowId) });
+            await checkpoint(`child-output:${chunk.chunkIndex}:${attempt}:${revision++}`, 'main', output);
+            validateQuotationChildResult({ ...await loadChild(chunk, output), allowManualReviews: false });
+          },
+          onPythonEvidence: async (evidence) => {
+            const key = `python:${chunk.chunkIndex}:${attempt}:${evidence.toolCallId}:${evidence.type}`;
+            await checkpoint(key, 'tool', JSON.stringify(evidence));
+            pythonOperations.push(key);
+          },
+          lookup: async (id, args) => {
+            await assertActive();
+            await operational(async () => input.onTool?.({ run, id, chunkIndex: chunk.chunkIndex, attempt, arguments: args }));
+            const result = input.executeLookup
+              ? await input.executeLookup(args, id)
+              : await executeSteelTool({
+                client: pool ??= createSteelPostgresPool(),
+                toolName: 'search_price_candidates',
+                arguments: args,
+                providerToolCallId: id,
+                runState: toolState,
+              });
+            await assertActive();
+            const key = `lookup:${chunk.chunkIndex}:${attempt}:${id}`;
+            await checkpoint(key, 'tool', JSON.stringify({ lookupCallId: id, arguments: args, result }));
+            lookupOperations.push(key);
+            await operational(async () => input.onTool?.({ run, id, chunkIndex: chunk.chunkIndex, attempt, arguments: args, result }));
+            return result;
+          },
+        });
+      } catch (error) {
+        await assertActive();
+        throw new QuotationChildFailure(error instanceof QuotationProtocolError
+          ? '報價表格不完整或格式無效' : '報價子 Agent 執行失敗');
+      }
       const sourceRowIds = chunk.sourceRows.map((row) => row.sourceRowId);
       let stored = JSON.stringify({ markdown: generated.markdown, lookupOperations, pythonOperations, sourceRowIds });
       await checkpoint(`child-output:${chunk.chunkIndex}:${attempt}`, 'main', stored);
       const candidate = await loadChild(chunk, stored);
-      const validated = validateQuotationChildResult({ ...candidate, allowManualReviews: false });
+      let validated: ReturnType<typeof validateQuotationChildResult>;
+      try {
+        validated = validateQuotationChildResult({ ...candidate, allowManualReviews: false });
+      } catch (error) {
+        if (!(error instanceof QuotationProtocolError)) throw error;
+        throw new QuotationChildFailure('報價表格不完整或格式無效');
+      }
       stored = JSON.stringify({ markdown: validated.markdown, lookupOperations, pythonOperations, sourceRowIds });
       return stored;
     }
@@ -558,34 +624,43 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     async function loadChild(
       chunk: ReturnType<typeof buildQuotationChunks>[number],
       serialized: string,
-    ): Promise<QuotationChildResultInput> {
-      const saved = JSON.parse(serialized) as SavedQuotationChild;
-      if (saved.sourceRowIds && JSON.stringify(saved.sourceRowIds) !==
-        JSON.stringify(chunk.sourceRows.map((row) => row.sourceRowId))) {
-        throw new Error('Saved quotation chunk does not match its source rows');
-      }
-      const lookupEvidence: QuotationLookupEvidence[] = [];
-      for (const key of saved.lookupOperations) {
-        const evidence = await service.readCheckpoint({ scope, runId, operationId: key });
-        if (!evidence) throw new Error('Quotation lookup evidence is missing');
-        const lookup = JSON.parse(evidence) as SavedQuotationLookup;
-        if (lookup.result.toolName !== 'search_price_candidates') {
-          throw new Error('Quotation lookup evidence is for an unauthorized tool');
+    ): Promise<LoadedQuotationChild> {
+      try {
+        const saved = JSON.parse(serialized) as SavedQuotationChild;
+        if (saved.sourceRowIds && JSON.stringify(saved.sourceRowIds) !==
+          JSON.stringify(chunk.sourceRows.map((row) => row.sourceRowId))) {
+          throw new Error('Saved quotation chunk does not match its source rows');
         }
-        lookupEvidence.push({ lookupCallId: lookup.lookupCallId, persisted: true, result: lookup.result });
+        const lookupEvidence: QuotationLookupEvidence[] = [];
+        for (const key of saved.lookupOperations) {
+          const evidence = await readCheckpoint(key);
+          if (!evidence) throw new Error('Quotation lookup evidence is missing');
+          const lookup = JSON.parse(evidence) as SavedQuotationLookup;
+          if (lookup.result.toolName !== 'search_price_candidates') {
+            throw new Error('Quotation lookup evidence is for an unauthorized tool');
+          }
+          lookupEvidence.push({ lookupCallId: lookup.lookupCallId, persisted: true, result: lookup.result });
+        }
+        const pythonEvidence: QuotationPythonEvidence[] = [];
+        for (const key of saved.pythonOperations) {
+          const payload = await readCheckpoint(key);
+          if (!payload) throw new Error('Quotation Python evidence is missing');
+          const parsed = JSON.parse(payload) as QuotationPythonEvidence;
+          pythonEvidence.push(parsed);
+        }
+        return {
+          chunk,
+          response: stripLegacyQuotationChildSidecars(saved.markdown),
+          lookupEvidence,
+          pythonEvidence,
+          lookupOperations: saved.lookupOperations,
+          pythonOperations: saved.pythonOperations,
+          ...(saved.backendFailure ? { backendFailure: saved.backendFailure } : {}),
+        };
+      } catch (error) {
+        controller.abort(error);
+        throw error;
       }
-      const pythonEvidence: QuotationPythonEvidence[] = [];
-      for (const key of saved.pythonOperations) {
-        const payload = await service.readCheckpoint({ scope, runId, operationId: key });
-        if (!payload) throw new Error('Quotation Python evidence is missing');
-        pythonEvidence.push(JSON.parse(payload) as QuotationPythonEvidence);
-      }
-      return {
-        chunk,
-        response: stripLegacyQuotationChildSidecars(saved.markdown),
-        lookupEvidence,
-        pythonEvidence,
-      };
     }
   } catch (error) {
     const current = await service.readState(scope);

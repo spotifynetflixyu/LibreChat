@@ -4,6 +4,7 @@ import { buildCustomerQuoteFromMarkdown } from '../markdown/quote';
 import { normalizeSystemOrderMarkdown } from '../markdown/order';
 import { parseAssistantMarkdown, parseOcrResultTable } from '../ocr/result';
 
+import type { SteelQuotationChunkState } from '@librechat/data-schemas';
 import type { SteelToolResult } from '../tools/results';
 
 export const quotationSystemOrderColumns = [
@@ -79,6 +80,12 @@ export interface QuotationLookupEvidence {
   readonly result: SteelToolResult;
 }
 
+/** Durable marker written by the backend only after all bounded lookup retries. */
+export interface QuotationBackendFailure {
+  readonly retryDepth: 3;
+  readonly reason: string;
+}
+
 export interface QuotationChildResultInput {
   readonly chunk: QuotationChunk;
   readonly response?: string;
@@ -86,6 +93,7 @@ export interface QuotationChildResultInput {
   readonly lookupEvidence: readonly QuotationLookupEvidence[];
   readonly pythonEvidence?: readonly QuotationPythonEvidence[];
   readonly customerTier?: 'A' | 'B' | 'C' | 'D' | 'E' | 'F';
+  readonly backendFailure?: QuotationBackendFailure;
   /**
    * New quotation runs keep review details in the row remarks. Omitted keeps
    * the legacy reader permissive so saved manual_reviews_chunk artifacts can
@@ -265,8 +273,16 @@ function readOcrResultTable(fullOcrResult: string): QuotationChunkTable {
   return { headers: [...parsed.table.headers], rows: parsed.table.rows.map((row) => [...row]) };
 }
 
-export function buildQuotationChunks(fullOcrResult: string): readonly QuotationChunk[] {
-  const table = readOcrResultTable(fullOcrResult);
+function isPositiveSafeInteger(value: number): boolean {
+  return Number.isSafeInteger(value) && value > 0;
+}
+
+interface QuotationCategoryRows {
+  readonly category: string;
+  readonly rows: readonly QuotationSourceRow[];
+}
+
+function quotationCategoryRows(table: QuotationChunkTable): readonly QuotationCategoryRows[] {
   const categoryIndex = table.headers.indexOf('類別');
   if (categoryIndex < 0) protocolError('invalid_ocr_result', 'ocr_result must contain a 類別 column for quotation chunking.');
 
@@ -287,43 +303,180 @@ export function buildQuotationChunks(fullOcrResult: string): readonly QuotationC
       cells: [...cells],
     });
   });
+  return categories;
+}
+
+function quotationChunkFromRows(
+  headers: readonly string[],
+  sourceRows: readonly QuotationSourceRow[],
+  metadata: Omit<QuotationChunk, 'sourceRows' | 'table' | 'markdown'>,
+): QuotationChunk {
+  const table: QuotationChunkTable = {
+    headers: [...headers],
+    rows: sourceRows.map((row) => [...row.cells]),
+  };
+  return {
+    ...metadata,
+    sourceRows,
+    table,
+    markdown: renderQuotationChunkTable(table),
+  };
+}
+
+export function buildQuotationChunks(fullOcrResult: string, rowsPerChunk = 24): readonly QuotationChunk[] {
+  if (!isPositiveSafeInteger(rowsPerChunk)) {
+    protocolError('invalid_ocr_result', 'rowsPerChunk must be a positive safe integer.');
+  }
+  const table = readOcrResultTable(fullOcrResult);
+  const categories = quotationCategoryRows(table);
 
   const chunks: QuotationChunk[] = [];
-  const chunkCount = categories.reduce((count, entry) => count + Math.ceil(entry.rows.length / 30), 0);
+  const chunkCount = categories.reduce((count, entry) => count + Math.ceil(entry.rows.length / rowsPerChunk), 0);
   let chunkIndex = 0;
   categories.forEach((entry, categoryIndex) => {
-    const categoryChunkCount = Math.ceil(entry.rows.length / 30);
-    for (let offset = 0; offset < entry.rows.length; offset += 30) {
-      const sourceRows = entry.rows.slice(offset, offset + 30);
+    const categoryChunkCount = Math.ceil(entry.rows.length / rowsPerChunk);
+    for (let offset = 0; offset < entry.rows.length; offset += rowsPerChunk) {
+      const sourceRows = entry.rows.slice(offset, offset + rowsPerChunk);
       chunkIndex += 1;
-      const chunkTable: QuotationChunkTable = {
-        headers: [...table.headers],
-        rows: sourceRows.map((row) => [...row.cells]),
-      };
-      chunks.push({
+      chunks.push(quotationChunkFromRows(table.headers, sourceRows, {
         chunkIndex,
         chunkCount,
         categoryIndex,
-        categoryChunkIndex: Math.floor(offset / 30) + 1,
+        categoryChunkIndex: Math.floor(offset / rowsPerChunk) + 1,
         categoryChunkCount,
         category: entry.category,
-        sourceRows,
-        table: chunkTable,
-        markdown: renderQuotationChunkTable(chunkTable),
-      });
+      }));
     }
   });
   return chunks;
 }
 
-export function splitQuotationChunk(chunk: QuotationChunk): readonly QuotationChunk[] {
+/** Rebuild persisted roots using their saved boundaries rather than a current chunk-size guess. */
+export function restoreQuotationChunks(
+  fullOcrResult: string,
+  savedChunks: readonly Pick<SteelQuotationChunkState, 'index' | 'sourceRowCount'>[],
+): readonly QuotationChunk[] {
+  if (savedChunks.length === 0) {
+    protocolError('incomplete_aggregate', 'Quotation recovery requires at least one saved chunk.');
+  }
+  const ordered = [...savedChunks].sort((left, right) => left.index - right.index);
+  ordered.forEach((saved, position) => {
+    if (!isPositiveSafeInteger(saved.index) || saved.index !== position + 1) {
+      protocolError('incomplete_aggregate', 'Saved quotation chunk indexes must be contiguous starting at 1.');
+    }
+    if (!isPositiveSafeInteger(saved.sourceRowCount)) {
+      protocolError('incomplete_aggregate', 'Saved quotation chunk sourceRowCount must be a positive safe integer.');
+    }
+  });
+
+  const table = readOcrResultTable(fullOcrResult);
+  const categories = quotationCategoryRows(table);
+  const chunks: Array<{ categoryIndex: number; category: string; sourceRows: readonly QuotationSourceRow[]; chunkIndex: number; categoryChunkIndex: number }> = [];
+  let savedPosition = 0;
+  categories.forEach((entry, categoryIndex) => {
+    let offset = 0;
+    let categoryChunkIndex = 0;
+    while (offset < entry.rows.length) {
+      const saved = ordered[savedPosition];
+      if (!saved) protocolError('incomplete_aggregate', 'Saved quotation chunks do not cover the complete OCR snapshot.');
+      const remaining = entry.rows.length - offset;
+      if (saved.sourceRowCount > remaining) {
+        protocolError('incomplete_aggregate', 'A saved quotation chunk crosses an OCR category boundary.');
+      }
+      categoryChunkIndex += 1;
+      chunks.push({
+        categoryIndex,
+        category: entry.category,
+        sourceRows: entry.rows.slice(offset, offset + saved.sourceRowCount),
+        chunkIndex: saved.index,
+        categoryChunkIndex,
+      });
+      offset += saved.sourceRowCount;
+      savedPosition += 1;
+    }
+  });
+  if (savedPosition !== ordered.length) {
+    protocolError('incomplete_aggregate', 'Saved quotation chunks contain rows outside the complete OCR snapshot.');
+  }
+
+  const categoryCounts = new Map<number, number>();
+  chunks.forEach((chunk) => categoryCounts.set(chunk.categoryIndex, (categoryCounts.get(chunk.categoryIndex) ?? 0) + 1));
+  return chunks.map((chunk) => quotationChunkFromRows(table.headers, chunk.sourceRows, {
+    chunkIndex: chunk.chunkIndex,
+    chunkCount: ordered.length,
+    categoryIndex: chunk.categoryIndex,
+    categoryChunkIndex: chunk.categoryChunkIndex,
+    categoryChunkCount: categoryCounts.get(chunk.categoryIndex) ?? 0,
+    category: chunk.category,
+  }));
+}
+
+export function splitQuotationChunk(chunk: QuotationChunk, rowsPerSlice = 10): readonly QuotationChunk[] {
+  if (!isPositiveSafeInteger(rowsPerSlice)) {
+    protocolError('invalid_child_result', 'rowsPerSlice must be a positive safe integer.');
+  }
   const slices: QuotationChunk[] = [];
-  for (let offset = 0; offset < chunk.sourceRows.length; offset += 10) {
-    const sourceRows = chunk.sourceRows.slice(offset, offset + 10);
+  for (let offset = 0; offset < chunk.sourceRows.length; offset += rowsPerSlice) {
+    const sourceRows = chunk.sourceRows.slice(offset, offset + rowsPerSlice);
     const table = { headers: chunk.table.headers, rows: sourceRows.map((row) => row.cells) };
     slices.push({ ...chunk, sourceRows, table, markdown: renderQuotationChunkTable(table) });
   }
   return slices;
+}
+
+function sourceCell(
+  chunk: QuotationChunk,
+  sourceRow: QuotationSourceRow,
+  aliases: readonly string[],
+): string {
+  for (const alias of aliases) {
+    const index = chunk.table.headers.indexOf(alias);
+    const value = index >= 0 ? sourceRow.cells[index]?.trim() ?? '' : '';
+    if (value) return value;
+  }
+  return '';
+}
+
+/** Build the only child table accepted when the backend has exhausted its retries. */
+export function buildQuotationFailureMarkdown(chunk: QuotationChunk, reason: string): string {
+  const trimmedReason = reason.trim();
+  if (!trimmedReason) protocolError('invalid_child_result', 'Quotation backend failure requires a reason.');
+  const rows = chunk.sourceRows.map((sourceRow) => {
+    const category = sourceCell(chunk, sourceRow, ['類別']) || sourceRow.category;
+    const processing = chunk.table.headers.flatMap((header, index) => {
+      if (!/(?:加工|處理|processing|process|孔數|切角|斜切|折邊|折彎|開槽|鑽孔|攻牙|焊接|打磨|倒角|開孔)/iu.test(header)) return [];
+      const value = sourceRow.cells[index]?.trim() ?? '';
+      return value ? [`${header}=${value}`] : [];
+    });
+    if (category.startsWith('加工/')) processing.unshift(`類別=${category}`);
+    const remarkParts = [
+      sourceCell(chunk, sourceRow, ['來源']) ? `來源=${sourceCell(chunk, sourceRow, ['來源'])}` : '',
+      sourceCell(chunk, sourceRow, ['頁碼', '頁', 'page', 'Page'])
+        ? `頁碼=${sourceCell(chunk, sourceRow, ['頁碼', '頁', 'page', 'Page'])}` : '',
+      sourceCell(chunk, sourceRow, ['零件編號']) ? `零件編號=${sourceCell(chunk, sourceRow, ['零件編號'])}` : '',
+      processing.length ? `來源處理資訊：${processing.join('；')}` : '',
+      `後端重試3次失敗：${trimmedReason}`,
+    ].filter(Boolean);
+    return [
+      '',
+      sourceCell(chunk, sourceRow, ['品名規格', '品名／規格', '品名', '規格']),
+      '',
+      '',
+      sourceCell(chunk, sourceRow, ['數量']),
+      '',
+      '',
+      '',
+      '',
+      '',
+      sourceCell(chunk, sourceRow, ['厚度', '厚度(mm)']),
+      sourceCell(chunk, sourceRow, ['寬度', '寬度(mm)']),
+      sourceCell(chunk, sourceRow, ['長度', '長度(mm)']),
+      '',
+      category,
+      remarkParts.join('；'),
+    ];
+  });
+  return renderQuotationChunkTable({ headers: quotationSystemOrderColumns, rows });
 }
 
 export function mergeQuotationChildResults(
@@ -397,6 +550,7 @@ export function buildQuotationSystemOrder(input: BuildQuotationSystemOrderInput)
   }
 
   const expectedById = new Map(expected.map((sourceRow) => [sourceRow.sourceRowId, sourceRow]));
+  const expectedPositionById = new Map(expected.map((sourceRow, index) => [sourceRow.sourceRowId, index]));
   const seen = new Set<string>();
   const groups: QuotationSystemOrderGroup[] = [];
   for (const child of input.childResults) {
@@ -409,6 +563,12 @@ export function buildQuotationSystemOrder(input: BuildQuotationSystemOrderInput)
       }
       if (seen.has(sourceRow.sourceRowId)) {
         protocolError('incomplete_aggregate', `Quotation source row ${sourceRow.sourceRowId} is duplicated.`);
+      }
+      const expectedPosition = expectedPositionById.get(sourceRow.sourceRowId);
+      const previousPosition = index > 0 ? expectedPositionById.get(sourceRows[index - 1]!.sourceRowId) : undefined;
+      if (expectedPosition === undefined || (index > 0 && previousPosition === undefined) ||
+        (index > 0 && expectedPosition !== previousPosition! + 1)) {
+        protocolError('incomplete_aggregate', 'Quotation child source rows must remain in their confirmed contiguous chunk boundary.');
       }
       if (index > 0 && sourceRows[index - 1]!.sourceRowIndex >= sourceRow.sourceRowIndex) {
         protocolError('incomplete_aggregate', 'Quotation child source rows must remain in canonical source order.');
@@ -482,6 +642,10 @@ function evidenceIsPersistedSearch(evidence: readonly QuotationLookupEvidence[])
     entry.persisted === true && entry.lookupCallId.trim() !== '' && entry.result.toolName === 'search_price_candidates');
 }
 
+function hasValidBackendFailureMarker(value: QuotationChildResultInput['backendFailure']): value is QuotationBackendFailure {
+  return typeof value?.reason === 'string' && value.reason.trim() !== '' && value.retryDepth === 3;
+}
+
 function validateChildTable(input: QuotationChildResultInput): ValidatedQuotationChildResult {
   const response = input.response ?? input.markdown;
   if (!response) protocolError('invalid_child_result', 'Quotation child result is empty.');
@@ -523,17 +687,25 @@ function validateChildTable(input: QuotationChildResultInput): ValidatedQuotatio
   if (reviewSection && !reviewTable) {
     protocolError('invalid_child_result', 'Child result has an invalid manual_reviews_chunk table.');
   }
-  if (input.allowManualReviews === false) {
-    try {
-      childSystemOrderGroups(input, table);
-    } catch (error) {
-      if (error instanceof QuotationProtocolError && error.code === 'incomplete_aggregate') {
-        protocolError('invalid_child_result', error.message);
-      }
-      throw error;
+  try {
+    childSystemOrderGroups(input, table);
+  } catch (error) {
+    if (error instanceof QuotationProtocolError && error.code === 'incomplete_aggregate') {
+      protocolError('invalid_child_result', error.message);
     }
+    throw error;
   }
-  if (!evidenceIsPersistedSearch(input.lookupEvidence)) {
+  if (input.backendFailure !== undefined && !hasValidBackendFailureMarker(input.backendFailure)) {
+    protocolError('invalid_child_result', 'Quotation backend failure marker must use retryDepth 3 and a non-empty reason.');
+  }
+  if (input.backendFailure) {
+    if (reviewTable || renderQuotationChunkTable(table) !== buildQuotationFailureMarkdown(input.chunk, input.backendFailure.reason)) {
+      protocolError('invalid_child_result', 'Backend failure output must exactly match the deterministic OCR fallback table.');
+    }
+    if (input.lookupEvidence.length > 0 && !evidenceIsPersistedSearch(input.lookupEvidence)) {
+      protocolError('invalid_child_result', 'Quotation backend failure evidence must contain only persisted search_price_candidates attempts.');
+    }
+  } else if (!evidenceIsPersistedSearch(input.lookupEvidence)) {
     protocolError('invalid_child_result', 'Child result requires a persisted search_price_candidates attempt.');
   }
   return {
