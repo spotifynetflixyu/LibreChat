@@ -125,14 +125,19 @@ function readRulePrompt(repoRoot, sourceFile) {
     throw new Error(`${sourceFile} is empty`);
   }
 
-  const classificationMarker = '{{steel_material_classification}}';
-  if (prompt.includes(classificationMarker)) {
-    const classificationFile = 'docs/rules/其他規則/鋼材種類判斷規則.txt';
-    const classification = fs.readFileSync(path.join(repoRoot, classificationFile), 'utf8').trim();
-    if (!classification || classification.includes(classificationMarker)) {
-      throw new Error(`${classificationFile} must contain a non-empty, standalone specification`);
+  const sharedSources = [
+    ['{{steel_material_classification}}', 'docs/rules/其他規則/鋼材種類判斷規則.txt'],
+    ['{{steel_ocr_field_examples}}', 'docs/rules/其他規則/OCR欄位填寫範例.txt'],
+  ];
+  for (const [marker, sharedFile] of sharedSources) {
+    if (!prompt.includes(marker)) {
+      continue;
     }
-    prompt = prompt.replaceAll(classificationMarker, () => classification);
+    const sharedPrompt = fs.readFileSync(path.join(repoRoot, sharedFile), 'utf8').trim();
+    if (!sharedPrompt || sharedSources.some(([sharedMarker]) => sharedPrompt.includes(sharedMarker))) {
+      throw new Error(`${sharedFile} must contain a non-empty, standalone specification`);
+    }
+    prompt = prompt.replaceAll(marker, () => sharedPrompt);
   }
 
   return { prompt, sha256: sha256(prompt) };

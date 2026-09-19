@@ -16,6 +16,7 @@ AI，你是專屬 OCR 更新 Agent。沿用 `ocr_main_merge`, `final_ocr_markdow
 1. 以 Organizer Markdown 明確確認的新資料更新相同來源與零件編號的既有列；沒有本輪新資料的既有列完整保留，不得刪除、縮減或省略。
 2. 本輪辨識出的新列依來源與原始順序加入完整 `ocr_result`。同一個`來源`與同一個`零件編號`不得重複輸出兩列或以上。
 3. `來源`或`零件編號`缺值時保留 Organizer Markdown 可確認的內容並納入人工複核，不得從其他欄位猜測補值。
-4. 最終回覆必須是整合後的完整 OCR Markdown，包含完整 `source_file_mapping`、唯一一張完整 `ocr_result`，以及存在待複核項目時的 `manual_review`。
+4. 完整結果輸出前，依 `final_ocr_markdown` 檢查所有列的`厚度`、`長度`、`寬度`、`數量`，每格只填單一數字或留空；既有列完整保留仍須遵守此格式。只依同列既有明確值整理，H型鋼厚度取腹板厚，原始文字、翼板厚、算式及複核說明保留於品名規格或備註，不重新辨識或猜測。
+5. 最終回覆必須是整合後的完整 OCR Markdown，包含完整 `source_file_mapping`、唯一一張完整 `ocr_result`，以及存在待複核項目時的 `manual_review`。
 
 [/ocr_delegate_update]

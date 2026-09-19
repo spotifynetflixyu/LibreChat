@@ -12,5 +12,7 @@
 9. 明顯 OCR 字元誤判可依欄位脈絡修正，但須在備註保留原辨識值、修正值與原因；operand 或公式結果不清時不得自行補齊。
 10. 加工欄位只能保留 OCR text 明確出現的內容；本共同規則不依圖形補推、不做幾何判斷或加工計量。未確認資料留空並標示複核。
 
+{{steel_ocr_field_examples}}
+
 {{steel_material_classification}}
 [/ocr_shared]

@@ -46,6 +46,7 @@ const rulesDir = path.join(repoRoot, 'docs/rules');
 const categoryRulesDir = path.join(rulesDir, '類別規則');
 const syncScript = path.join(repoRoot, 'packages/api/scripts/sync-steel-rules.cjs');
 const classificationSource = 'docs/rules/其他規則/鋼材種類判斷規則.txt';
+const fieldExamplesSource = 'docs/rules/其他規則/OCR欄位填寫範例.txt';
 const migrationSql = fs.readFileSync(
   path.join(repoRoot, 'supabase/migration/20260828053235_remove_steel_rule_source_refs.sql'),
   'utf8',
@@ -200,7 +201,9 @@ describe('Steel rule sources', () => {
     const sourceFiles = summary.rules.map((rule) => rule.sourceFile);
     expect(summary.mode).toBe('dry-run');
     expect(summary.rules).toHaveLength(21);
-    expect([...sourceFiles, classificationSource].sort()).toEqual(listRuleFiles(rulesDir).sort());
+    expect([...sourceFiles, classificationSource, fieldExamplesSource].sort()).toEqual(
+      listRuleFiles(rulesDir).sort(),
+    );
     expect(new Set(sourceFiles).size).toBe(sourceFiles.length);
     expect(summary.rules.every((rule) => rule.promptLength > 0)).toBe(true);
     expect(summary.rules.filter((rule) => rule.factType === 'category_rule').at(0)?.slug).toBe(
@@ -387,14 +390,18 @@ describe('Steel rule sources', () => {
     expect(agentRule?.source.sourceFile).toBe('docs/rules/agent規則.txt');
   });
 
-  it('delivers the shared classification source through both runtime prompt extractors', () => {
+  it.each([
+    [classificationSource, '{{steel_material_classification}}'],
+    [fieldExamplesSource, '{{steel_ocr_field_examples}}'],
+  ])('delivers shared source %s through both runtime prompt extractors', (source, marker) => {
     const rules = ruleSync.buildRules(repoRoot);
-    const classification = fs.readFileSync(path.join(repoRoot, classificationSource), 'utf8').trim();
+    const sharedText = fs.readFileSync(path.join(repoRoot, source), 'utf8').trim();
     const shared = rules.find((rule) => rule.slug === 'steel-drawing-ocr-policy')!;
     const organizer = rules.find((rule) => rule.slug === 'steel-ocr-subagent-organizer-policy')!;
     const main = rules.find((rule) => rule.slug === 'steel-ocr-main-agent-organizer-policy')!;
     const organizerPrompt = resolveOcrOrganizerRulesText(`${shared.prompt}\n\n${organizer.prompt}`);
-    expect(organizerPrompt).toContain(classification);
+    expect(organizerPrompt).toContain(sharedText);
+    expect(organizerPrompt).not.toContain(marker);
 
     const mainRule: SteelAgentRule = {
       id: 1,
@@ -451,21 +458,45 @@ describe('Steel rule sources', () => {
     };
     for (const mode of ['ocr', 'delegate_ocr'] as const) {
       const { instructionPrefix } = buildSteelNativeInstructionPrefix({ runtimeContext, mode });
-      expect(instructionPrefix).toContain(classification);
-      expect(instructionPrefix).not.toContain('{{steel_material_classification}}');
+      expect(instructionPrefix).toContain(sharedText);
+      expect(instructionPrefix).not.toContain(marker);
     }
     for (const rule of [shared, main]) {
       expect(rule.source.sha256).toBe(createHash('sha256').update(rule.prompt).digest('hex'));
-      expect(rule.prompt.split(classification)).toHaveLength(2);
+      expect(rule.prompt.split(sharedText)).toHaveLength(2);
     }
   });
 
-  it('rejects an empty shared classification source before publication', () => {
-    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'steel-rule-classification-'));
+  it.each([classificationSource, fieldExamplesSource])(
+    'rejects an empty shared source %s before publication',
+    (source) => {
+      const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'steel-rule-shared-'));
+      try {
+        fs.cpSync(rulesDir, path.join(tempRoot, 'docs/rules'), { recursive: true });
+        fs.writeFileSync(path.join(tempRoot, source), '  \n');
+        expect(() => ruleSync.buildRules(tempRoot)).toThrow('non-empty, standalone specification');
+      } finally {
+        fs.rmSync(tempRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it('updates dependent prompt hashes when the field examples change', () => {
+    const tempRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'steel-rule-examples-'));
     try {
       fs.cpSync(rulesDir, path.join(tempRoot, 'docs/rules'), { recursive: true });
-      fs.writeFileSync(path.join(tempRoot, classificationSource), '  \n');
-      expect(() => ruleSync.buildRules(tempRoot)).toThrow('non-empty, standalone specification');
+      const before = new Map(
+        ruleSync.buildRules(tempRoot).map((rule) => [rule.slug, rule.source.sha256]),
+      );
+      fs.appendFileSync(path.join(tempRoot, fieldExamplesSource), '\nExample revision.\n');
+      const changed = ruleSync
+        .buildRules(tempRoot)
+        .filter((rule) => rule.source.sha256 !== before.get(rule.slug))
+        .map((rule) => rule.slug);
+      expect(changed).toEqual([
+        'steel-drawing-ocr-policy',
+        'steel-ocr-main-agent-organizer-policy',
+      ]);
     } finally {
       fs.rmSync(tempRoot, { recursive: true, force: true });
     }
