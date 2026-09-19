@@ -29,6 +29,7 @@ interface ToolMeta {
   name: string;
   iconName: string;
   hasOutput: boolean;
+  id?: string;
 }
 
 function getToolMeta(part: TMessageContentParts): ToolMeta | null {
@@ -51,7 +52,7 @@ function getToolMeta(part: TMessageContentParts): ToolMeta | null {
     const completed = !!tc.output || tc.progress === 1;
     const name = tc.name ?? '';
     const iconName = isBashProgrammaticToolCall(name, tc.args) ? Tools.bash_tool : name;
-    return { name, iconName, hasOutput: completed };
+    return { name, iconName, hasOutput: completed, id: tc.id };
   }
 
   if (toolCall.type === ToolCallTypes.CODE_INTERPRETER) {
@@ -153,6 +154,12 @@ export default function ToolCallGroup({
   );
   const toolNames = useMemo(() => toolMetadata.map((m) => m.name), [toolMetadata]);
   const iconToolNames = useMemo(() => toolMetadata.map((m) => m.iconName), [toolMetadata]);
+  /** Steel quotation lookups are generated with stable `quotation:` tool
+   *  IDs. Keep those implementation details scoped to quotation batches so
+   *  the user's global auto-expand preference and ordinary tool groups retain
+   *  their existing behavior. */
+  const isQuotationGroup =
+    count > 0 && toolMetadata.every((metadata) => metadata.id?.startsWith('quotation:') === true);
 
   /** Subagent tool calls get their own label verb ("Running/Ran N agents")
    *  since "Used N tools" reads oddly when the "tools" are actually child
@@ -210,7 +217,7 @@ export default function ToolCallGroup({
     !autoExpand && !isSubmitting && allCompleted && (count >= 2 || activityLabelText.length > 0);
   const initialState = initialExpansionState?.userOverride === true ? initialExpansionState : null;
   const [isExpanded, setIsExpanded] = useState(
-    initialState?.isExpanded ?? (autoExpand || !autoCollapse),
+    initialState?.isExpanded ?? (isQuotationGroup ? false : autoExpand || !autoCollapse),
   );
   const [userOverride, setUserOverride] = useState(initialState != null);
   const [shouldRenderBody, setShouldRenderBody] = useState(isExpanded);
@@ -241,6 +248,12 @@ export default function ToolCallGroup({
       setIsExpanded(false);
     }
   }, [autoCollapse, userOverride]);
+
+  useEffect(() => {
+    if (isQuotationGroup && !userOverride && !hasPendingApproval) {
+      setIsExpanded(false);
+    }
+  }, [hasPendingApproval, isQuotationGroup, userOverride]);
 
   const handleToggle = useCallback(() => {
     const nextExpanded = !isExpanded;
@@ -323,11 +336,11 @@ export default function ToolCallGroup({
   );
 
   useEffect(() => {
-    if (hasActiveToolCall && !userOverride) {
+    if (hasActiveToolCall && !userOverride && (!isQuotationGroup || hasPendingApproval)) {
       setShouldRenderBody(true);
       setIsExpanded(true);
     }
-  }, [hasActiveToolCall, userOverride]);
+  }, [hasActiveToolCall, hasPendingApproval, isQuotationGroup, userOverride]);
 
   return (
     <div className="mb-2 mt-1" ref={rootRef}>

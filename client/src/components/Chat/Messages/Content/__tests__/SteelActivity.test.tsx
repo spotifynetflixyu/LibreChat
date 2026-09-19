@@ -123,6 +123,9 @@ jest.mock('~/hooks/useLocalize', () => ({
     if (key === 'com_ui_steel_quote_status_main_consolidating') {
       return `Quotation main agent consolidating (${options?.completedChunks ?? 0}/${options?.totalChunks ?? 0} chunks)`;
     }
+    if (key === 'com_ui_steel_quote_status_main_review_started') {
+      return `Quotation main agent waiting for review (${options?.completedChunks ?? 0}/${options?.totalChunks ?? 0} chunks)`;
+    }
     if (key === 'com_ui_steel_quote_status_main_responding') {
       return `Quotation main agent responding (${options?.completedChunks ?? 0}/${options?.totalChunks ?? 0} chunks)`;
     }
@@ -800,6 +803,15 @@ describe('SteelActivity', () => {
               ...quotationStatusEvent,
               messageId: 'assistant-quotation-main',
               runId: 'quotation-run-main',
+              stage: 'main_review_started',
+              status: 'aggregating' as const,
+              completedChunks: 2,
+              totalChunks: 2,
+            },
+            {
+              ...quotationStatusEvent,
+              messageId: 'assistant-quotation-main',
+              runId: 'quotation-run-main',
               stage: 'aggregating',
               status: 'aggregating' as const,
               completedChunks: 2,
@@ -819,6 +831,9 @@ describe('SteelActivity', () => {
       </RecoilRoot>,
     );
 
+    expect(
+      screen.getByText('Quotation main agent waiting for review (2/2 chunks)'),
+    ).toBeInTheDocument();
     expect(screen.getByText('Quotation main agent consolidating (2/2 chunks)')).toBeInTheDocument();
     expect(screen.getAllByText('Quotation main agent responding (2/2 chunks)')).toHaveLength(2);
   });
@@ -1015,7 +1030,7 @@ describe('SteelActivity', () => {
     expect(container.querySelector('.my-3 .animate-spin')).not.toBeInTheDocument();
   });
 
-  it('shows the loading dot only for live preflight before main streaming', () => {
+  it('shows the loading dot through live quotation aggregation and hides it after termination', () => {
     const live = render(
       <RecoilRoot
         initializeState={({ set }) => {
@@ -1062,6 +1077,28 @@ describe('SteelActivity', () => {
     expect(restored.container.querySelector('.result-thinking')).toBeInTheDocument();
     restored.unmount();
 
+    const mainReviewStarted = render(
+      <RecoilRoot>
+        <SteelActivity
+          messageId="assistant-main-review-started"
+          isCreatedByUser={false}
+          persistedActivityEvents={[
+            {
+              ...quotationStatusEvent,
+              messageId: 'assistant-main-review-started',
+              runId: 'quotation-run-live',
+              stage: 'main_review_started',
+              status: 'aggregating' as const,
+              completedChunks: 2,
+              totalChunks: 2,
+            },
+          ]}
+        />
+      </RecoilRoot>,
+    );
+    expect(mainReviewStarted.container.querySelector('.result-thinking')).toBeInTheDocument();
+    mainReviewStarted.unmount();
+
     const mainStreaming = render(
       <RecoilRoot
         initializeState={({ set }) => {
@@ -1081,7 +1118,7 @@ describe('SteelActivity', () => {
         <SteelActivity messageId="assistant-main-streaming" isCreatedByUser={false} />
       </RecoilRoot>,
     );
-    expect(mainStreaming.container.querySelector('.result-thinking')).not.toBeInTheDocument();
+    expect(mainStreaming.container.querySelector('.result-thinking')).toBeInTheDocument();
     mainStreaming.unmount();
 
     const finalizing = render(

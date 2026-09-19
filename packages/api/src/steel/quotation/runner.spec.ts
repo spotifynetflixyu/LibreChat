@@ -174,11 +174,11 @@ function createModel(
     if (input.role === 'main') {
       options.onMainInput?.(input.input);
       if (options.streamMain) {
-        await input.onTextDelta?.('## system_order\n');
-        await input.onTextDelta?.('preview row\n');
+        await input.onTextDelta?.('## manual_reviews\n\n');
+        await input.onTextDelta?.('需人工複核。');
       }
       return {
-        markdown: '無待複核事項。',
+        markdown: options.streamMain ? '## manual_reviews\n\n需人工複核。' : '無待複核事項。',
         lookups: [],
         pythonEvidence: [],
       };
@@ -731,8 +731,8 @@ describe('quotation runner integration', () => {
       const payload = JSON.parse(input.input);
       expect(payload).not.toHaveProperty('chunks');
       expect(parseMarkdownTables(payload.system_order)[0]!.rows).toHaveLength(31);
-      expect(onTextDelta).toHaveBeenCalledWith(payload.system_order);
-      expect(input.onTextDelta).toBeUndefined();
+      expect(onTextDelta.mock.calls[0]![0]).toContain(payload.system_order + '\n\n## customer_quote');
+      expect(input.onTextDelta).toEqual(expect.any(Function));
       return { markdown: '無待複核事項。', lookups: [], pythonEvidence: [] };
     });
     await runQuotationPreflight(runnerInput(model, createLookupExecutor(), { onTextDelta, publishFinal }));
@@ -755,7 +755,8 @@ describe('quotation runner integration', () => {
     let reviewedOrder = '';
     const baseModel = createModel({ onMainInput: (input) => {
       reviewedOrder = JSON.parse(input).system_order;
-      expect(previews).toEqual([reviewedOrder]);
+      expect(previews).toHaveLength(1);
+      expect(previews[0]).toContain(reviewedOrder + '\n\n## customer_quote');
       const rows = parseMarkdownTables(reviewedOrder)[0]!.rows;
       expect(rows).toHaveLength(25);
       for (const row of rows) {
@@ -834,9 +835,9 @@ describe('quotation runner integration', () => {
     await prepareRun(1);
     const progress: QuotationProgress[] = [];
     const publishFinal = jest.fn(async () => undefined);
-    const onTextDelta = jest.fn(async () => {
+    const onTextDelta = jest.fn(async (text: string) => {
       const state = await service.readState(scope);
-      expect(state?.activeRun?.status).toBe('aggregating');
+      expect(state?.activeRun?.status).toBe(text.includes('## quote_summary') ? 'finalizing' : 'aggregating');
       expect(state?.activeRun?.chunks.every((chunk) => chunk.status === 'completed')).toBe(true);
       expect(publishFinal).not.toHaveBeenCalled();
     });
@@ -844,11 +845,77 @@ describe('quotation runner integration', () => {
       ...runnerInput(createModel({ streamMain: true }), createLookupExecutor(), { publishFinal, onTextDelta }),
       onProgress: async (value) => { progress.push(value); },
     });
-    expect(onTextDelta.mock.calls).toHaveLength(1);
+    expect(onTextDelta.mock.calls).toHaveLength(4);
     expect(progress.filter((value) => value.stage === 'main_streaming')).toHaveLength(1);
     expect(publishFinal).toHaveBeenCalledWith(expect.objectContaining({ markdown: expect.stringContaining('## customer_quote') }));
     expect(publishFinal).toHaveBeenCalledTimes(1);
   });
+  it('awaits delayed review delivery before its next delta, summary, and final replacement', async () => {
+    await prepareRun(1);
+    let release!: () => void;
+    let started!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const entered = new Promise<void>((resolve) => { started = resolve; });
+    const delivered: string[] = [];
+    const baseModel = createModel();
+    const reviewParts = ['## manual_reviews\n\n需確認', '尺寸。\n\n## notes\n\n備註。'];
+    const model = async (input: QuotationModelInput) => {
+      if (input.role !== 'main') return baseModel(input);
+      expect(delivered[0]).toContain('## customer_quote');
+      const first = input.onTextDelta!(reviewParts[0]!);
+      const second = input.onTextDelta!(reviewParts[1]!);
+      await Promise.all([first, second]);
+      return { markdown: reviewParts.join(''), lookups: [], pythonEvidence: [] };
+    };
+    const publishFinal = jest.fn(async ({ markdown }: { markdown: string }) => {
+      expect(delivered.at(-1)).toContain('## quote_summary');
+      expect(delivered.join('')).toBe(markdown);
+    });
+    const execution = runQuotationPreflight(runnerInput(model, createLookupExecutor(), {
+      publishFinal,
+      onTextDelta: async (text) => {
+        if (text.includes('## manual_reviews')) { started(); await gate; }
+        delivered.push(text);
+      },
+    }));
+    await entered;
+    try {
+      expect(delivered).toHaveLength(1);
+      expect(publishFinal).not.toHaveBeenCalled();
+    } finally { release(); }
+    await expect(execution).resolves.toEqual(expect.objectContaining({ status: 'completed' }));
+    expect(delivered).toHaveLength(4);
+    expect(delivered[1]).toBe('\n\n' + reviewParts[0]);
+    expect(delivered[2]).toBe(reviewParts[1]);
+    expect(publishFinal).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['cancel', 'transport failure'])('does not save a partial review on %s and resumes without repeating child lookup', async (failure) => {
+    const run = await prepareRun(1);
+    const controller = new AbortController();
+    const executeLookup = createLookupExecutor();
+    const publishFinal = jest.fn(async () => undefined);
+    await expect(runQuotationPreflight(runnerInput(createModel({ streamMain: true }), executeLookup, {
+      signal: controller.signal, publishFinal,
+      onTextDelta: async (text) => {
+        if (!text.includes('## manual_reviews')) return;
+        if (failure === 'cancel') controller.abort(new Error('review cancelled'));
+        else throw new Error('review transport failed');
+      },
+    }))).rejects.toThrow(failure === 'cancel' ? 'review cancelled' : 'review transport failed');
+    expect(await service.readCheckpoint({ scope, runId: run.runId, operationId: 'main-reviews' })).toBeUndefined();
+    expect(await service.readCheckpoint({ scope, runId: run.runId, operationId: 'final' })).toBeUndefined();
+    expect(publishFinal).not.toHaveBeenCalled();
+    const delivered: string[] = [];
+    await runQuotationPreflight(runnerInput(createModel({ streamMain: true }), executeLookup, {
+      publishFinal, onTextDelta: async (text) => { delivered.push(text); },
+    }));
+    expect(executeLookup).toHaveBeenCalledTimes(1);
+    expect(delivered[0]).toContain('## customer_quote');
+    expect(delivered.join('').match(/## manual_reviews/g)).toHaveLength(1);
+    expect(delivered.at(-1)).toContain('## quote_summary');
+  });
+
   it('resumes after backend table delivery fails without repeating child work', async () => {
     const run = await prepareRun(1);
     const executeLookup = createLookupExecutor();
@@ -884,6 +951,7 @@ describe('quotation runner integration', () => {
       ['chunk_started', 'running', 2, 1],
       ['chunk_saved', 'running', 2, 2],
       ['aggregating', 'aggregating', undefined, 2],
+      ['main_review_started', 'aggregating', undefined, 2],
       ['finalizing', 'finalizing', undefined, 2],
       ['completed', 'completed', undefined, 2],
     ]);

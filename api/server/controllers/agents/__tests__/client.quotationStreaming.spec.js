@@ -24,8 +24,17 @@ describe('quotation text streaming', () => {
     const wiring = AgentClient.prototype.buildQuotationTextWiring.call(client, {
       configurable: { hide_sequential_outputs: true },
     });
-    await wiring.onText('## system_order\n');
-    await wiring.onText('first complete row\n');
+    const deltas = [
+      '## system_order\norder table\n\n## customer_quote\ncustomer table',
+      '\n\n## manual_reviews\n\n',
+      '| partial review',
+      ' row |\n\n## notes\nreview note',
+      '\n\n## quote_summary\ncomplete',
+    ];
+    for (let index = 0; index < deltas.length; index += 1) {
+      await wiring.onText(deltas[index]);
+      expect(contentParts[0].text).toBe(deltas.slice(0, index + 1).join(''));
+    }
     const events = streamId
       ? emitChunk.mock.calls.map(([, event]) => event)
       : res.write.mock.calls
@@ -33,7 +42,7 @@ describe('quotation text streaming', () => {
         .filter((chunk) => chunk.startsWith('data: '))
         .map((chunk) => JSON.parse(chunk.slice(6).trim()));
     expect(events.map(({ event }) => event)).toEqual([
-      'on_run_step', 'on_message_delta', 'on_message_delta',
+      'on_run_step', ...deltas.map(() => 'on_message_delta'),
     ]);
     expect(events[0].data).toMatchObject({
       id: 'quotation:quote-response', runId: 'quote-response', index: 0,
@@ -41,7 +50,9 @@ describe('quotation text streaming', () => {
     });
     expect(events[1].data.id).toBe(events[0].data.id);
     expect(events[2].data.id).toBe(events[0].data.id);
-    expect(contentParts[0].text).toBe('## system_order\nfirst complete row\n');
+    await wiring.onFinalText(deltas.join(''));
+    expect(contentParts[0].text).toBe(deltas.join(''));
+    expect(contentParts[0].text.match(/## system_order/g)).toHaveLength(1);
   });
 
   function setup(withHandlers = true) {

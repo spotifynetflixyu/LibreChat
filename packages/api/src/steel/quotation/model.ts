@@ -14,7 +14,6 @@ import type { SteelToolJsonObject, SteelToolResult } from '../tools/results';
 
 import { createOpenAIOAuthModel } from '../native/oauth';
 import { createSteelNativeTool, mergeSteelToolDefinitions } from '../native/tools';
-import { createSystemOrderNormalizer } from '../markdown/order';
 import { QuotationProtocolError } from './protocol';
 
 export interface QuotationModelLookup {
@@ -149,7 +148,7 @@ export async function invokeQuotationModel(input: QuotationModelInput): Promise<
     let response: AIMessageChunk;
     if (input.role === 'main' && input.onTextDelta) {
       let combined: AIMessageChunk | undefined;
-      const normalizer = createSystemOrderNormalizer();
+      let lastActiveCheck = Date.now();
       const stream = await model.stream(messages, { signal: input.signal });
       for await (const part of stream) {
         input.signal.throwIfAborted();
@@ -157,9 +156,12 @@ export async function invokeQuotationModel(input: QuotationModelInput): Promise<
         if (combined.tool_calls?.length || combined.tool_call_chunks?.length) {
           throw new Error('Quotation main model cannot execute tools');
         }
-        const text = normalizer.append(quotationMessageText(part));
+        const text = quotationMessageText(part);
         if (text) {
-          await input.assertActive();
+          if (Date.now() - lastActiveCheck >= 3000) {
+            await input.assertActive();
+            lastActiveCheck = Date.now();
+          }
           input.signal.throwIfAborted();
           await input.onTextDelta(text);
         }
@@ -167,13 +169,6 @@ export async function invokeQuotationModel(input: QuotationModelInput): Promise<
       input.signal.throwIfAborted();
       if (!combined) throw new Error('Quotation model did not complete its output');
       await input.assertActive();
-      if (combined.response_metadata.finish_reason === 'stop') {
-        const tail = normalizer.finish();
-        if (tail) {
-          input.signal.throwIfAborted();
-          await input.onTextDelta(tail);
-        }
-      }
       response = combined;
     } else {
       const invokeConfig = child

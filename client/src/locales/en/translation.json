@@ -2430,6 +2430,7 @@
   "com_ui_steel_quote_status_chunk_repair_succeeded": "Quotation chunk {{chunkIndex}} repair succeeded (attempt {{repairAttempt}}/{{maxRepairAttempts}}; {{completedChunks}}/{{totalChunks}} chunks)",
   "com_ui_steel_quote_status_chunk_repair_failed": "Quotation chunk {{chunkIndex}} repair failed (attempt {{repairAttempt}}/{{maxRepairAttempts}}; {{completedChunks}}/{{totalChunks}} chunks)",
   "com_ui_steel_quote_status_main_consolidating": "Quotation main agent consolidating ({{completedChunks}}/{{totalChunks}} chunks)",
+  "com_ui_steel_quote_status_main_review_started": "Quotation main agent waiting for review ({{completedChunks}}/{{totalChunks}} chunks)",
   "com_ui_steel_quote_status_main_responding": "Quotation main agent responding ({{completedChunks}}/{{totalChunks}} chunks)",
   "com_ui_steel_quote_status_aggregating": "Aggregating quotation ({{completedChunks}}/{{totalChunks}} chunks)",
   "com_ui_steel_quote_status_finalizing": "Finalizing quotation ({{completedChunks}}/{{totalChunks}} chunks)",

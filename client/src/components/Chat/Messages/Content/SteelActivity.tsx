@@ -145,6 +145,12 @@ function getQuotationStatusText(
   repairAttempt?: number,
   maxRepairAttempts?: number,
 ): string {
+  if (status === 'aggregating' && stage === 'main_review_started') {
+    return localize('com_ui_steel_quote_status_main_review_started', {
+      completedChunks,
+      totalChunks,
+    });
+  }
   if (status === 'aggregating' && stage === 'main_streaming') {
     return localize('com_ui_steel_quote_status_main_responding', {
       completedChunks,
@@ -823,7 +829,6 @@ const SteelActivity = memo(function SteelActivity({
   const showQuotationLoadingDot = Boolean(
     latestQuotationEvent &&
       isQuotationPreflightWaitingStatus(latestQuotationEvent.status) &&
-      latestQuotationEvent.stage !== 'main_streaming' &&
       !isQuotationRepairFailure(latestQuotationEvent),
   );
   const quotationConversationId =

@@ -105,7 +105,12 @@ const getResponse = (messages: TMessage[]): TMessage | undefined =>
   messages.find((message) => message.messageId === responseId);
 
 describe('quotation final response reconciliation', () => {
-  it('replaces streamed provisional text once and ignores a stale delta frame', () => {
+  it.each([
+    { name: 'partial draft', preview: 'draft-', finalReview: '' },
+    { name: 'no-review sentinel', preview: '無待複核事項。', finalReview: '' },
+    { name: 'notes before reviews', preview: '## notes\n\n補充。\n\n## manual_reviews\n\n需複核。',
+      finalReview: '## manual_reviews\n\n需複核。\n\n## notes\n\n補充。\n\n' },
+  ])('replaces $name once and ignores a stale delta frame', ({ preview, finalReview }) => {
     const userMessage = createUserMessage();
     const initialResponse = createResponseMessage();
     let messages = [userMessage, initialResponse];
@@ -184,7 +189,7 @@ describe('quotation final response reconciliation', () => {
         submission,
       );
       result.current.stepHandler(
-        { event: StepEvents.ON_MESSAGE_DELTA, data: createMessageDelta('draft-') },
+        { event: StepEvents.ON_MESSAGE_DELTA, data: createMessageDelta(preview) },
         submission,
       );
     });
@@ -195,7 +200,7 @@ describe('quotation final response reconciliation', () => {
     const firstFrame = pendingFrames[0];
     expect(firstFrame).toBeDefined();
     act(() => firstFrame?.(0));
-    expect(getText(getResponse(messages))).toBe('draft-');
+    expect(getText(getResponse(messages))).toBe(preview);
 
     act(() => {
       result.current.stepHandler(
@@ -206,7 +211,7 @@ describe('quotation final response reconciliation', () => {
     expect(pendingFrames).toHaveLength(2);
     const staleFrame = pendingFrames[1];
     expect(staleFrame).toBeDefined();
-    expect(getText(getResponse(messages))).toBe('draft-');
+    expect(getText(getResponse(messages))).toBe(preview);
 
     const toolCall: TMessageContentParts = {
       type: ContentTypes.TOOL_CALL,
@@ -220,7 +225,8 @@ describe('quotation final response reconciliation', () => {
       },
     };
     const authoritativeText =
-      '## system_order\n\n| 品名規格 | 總數 | 小計 |\n| --- | ---: | ---: |\n| A | 1 | 100 |\n\n## customer_quote\n\n| 項目 | 金額 |\n| --- | ---: |\n| 合計 | 100 |\n\n## quote_summary\n\n查價輸出完成：共 1 筆 system_order，無待複核事項。';
+      '## system_order\n\n| 品名規格 | 總數 | 小計 |\n| --- | ---: | ---: |\n| A | 1 | 100 |\n\n## customer_quote\n\n| 項目 | 金額 |\n| --- | ---: |\n| 合計 | 100 |\n\n' +
+      finalReview + '## quote_summary\n\n查價輸出完成：共 1 筆 system_order。';
     const authoritativeContent: TMessageContentParts[] = [
       toolCall,
       { type: ContentTypes.TEXT, text: authoritativeText },

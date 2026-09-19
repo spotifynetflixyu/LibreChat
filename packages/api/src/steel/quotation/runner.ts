@@ -59,7 +59,7 @@ interface LoadedQuotationChild extends QuotationChildResultInput {
 
 export interface QuotationProgress {
   run: SteelQuotationActiveRun;
-  stage?: 'started' | 'chunk_started' | 'chunk_saved' | 'main_streaming' | QuotationRepairProgress['stage'];
+  stage?: 'started' | 'chunk_started' | 'chunk_saved' | 'main_review_started' | 'main_streaming' | QuotationRepairProgress['stage'];
   completedChunks: number;
   totalChunks: number;
   chunkIndex?: number;
@@ -279,6 +279,15 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     }
     return active;
   };
+  let streamDelivery = Promise.resolve();
+  const deliverText = (action: () => Promise<void>): Promise<void> => {
+    streamDelivery = streamDelivery.then(() => operational(async () => {
+      controller.signal.throwIfAborted();
+      await action();
+      controller.signal.throwIfAborted();
+    }));
+    return streamDelivery;
+  };
   const progress = async (chunkIndex?: number, attempt?: string, stage?: QuotationProgress['stage'], sliceIndex?: number, recoveryPath?: string) => {
     const active = await assertActive();
     await input.onProgress?.({
@@ -365,9 +374,9 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     const systemOrder = final.systemOrderMarkdown;
     await checkpoint('system-order:normalized', 'main', systemOrder);
     if (input.onTextDelta) {
-      await progress(undefined, undefined, 'main_streaming');
-      await input.onTextDelta(systemOrder);
+      await deliverText(async () => input.onTextDelta!(`${systemOrder}\n\n${final.customerQuoteMarkdown}`));
     }
+    let mainStreamStarted = false;
     let reviewOutput = await service.readCheckpoint({ scope, runId, operationId: 'main-reviews' });
     if (!reviewOutput) {
       // A previously validated main checkpoint can be resumed without asking the model again.
@@ -380,8 +389,20 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
           .join('\n\n') || '無待複核事項。';
       } else {
         const mainAttempt = randomUUID();
+        await progress(undefined, undefined, 'main_review_started');
         const output = await (input.invokeModel ?? invokeQuotationModel)({
           role: 'main',
+          onTextDelta: input.onTextDelta ? (text) => {
+            if (!text) return Promise.resolve();
+            return deliverText(async () => {
+              const prefix = mainStreamStarted ? '' : '\n\n';
+              if (!mainStreamStarted) {
+                mainStreamStarted = true;
+                await progress(undefined, undefined, 'main_streaming');
+              }
+              await input.onTextDelta!(`${prefix}${text}`);
+            });
+          } : undefined,
           prompt: snapshot.prompts.main,
           input: JSON.stringify({
             order: snapshot.orderMarkdown,
@@ -397,6 +418,8 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
             await checkpoint(`python:main:${mainAttempt}:${evidence.toolCallId}:${evidence.type}`, 'tool', JSON.stringify(evidence));
           },
         });
+        await streamDelivery;
+        await assertActive();
         reviewOutput = output.markdown || '無待複核事項。';
         await checkpoint(`main-output:${randomUUID()}`, 'main', reviewOutput);
       }
@@ -412,6 +435,9 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
       ...reviewSections.filter((section) => section.title !== 'notes').map((section) => section.raw.trim()),
       ...reviewSections.filter((section) => section.title === 'notes').map((section) => section.raw.trim()),
     ].filter(Boolean).join('\n\n');
+    if (input.onTextDelta && !mainStreamStarted && reviewDisplay) {
+      await deliverText(async () => input.onTextDelta!(`\n\n${reviewDisplay}`));
+    }
     const reviewCount = reviewSections
       .filter((section) => ['manual_reviews', 'manual_review'].includes(section.title))
       .flatMap((section) => parseMarkdownTables(section.body))
@@ -431,6 +457,10 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     const completedResponse = [final.systemOrderMarkdown, final.customerQuoteMarkdown, reviewDisplay, `## quote_summary\n\n${summary}`]
       .filter(Boolean).join('\n\n');
     await checkpoint('final', 'final', completedResponse);
+    if (input.onTextDelta) {
+      await deliverText(async () => input.onTextDelta!(`\n\n## quote_summary\n\n${summary}`));
+    }
+    await streamDelivery;
     const state = await assertActive();
     const finalPointer = state.checkpointRefs.find((entry) => entry.operationId === 'final');
     if (!finalPointer) throw new Error('Quotation final checkpoint is missing');

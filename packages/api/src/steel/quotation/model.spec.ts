@@ -20,14 +20,14 @@ it('streams main text before completion and collects the complete result and usa
   const onUsage = jest.fn();
   const usage = { input_tokens: 10, output_tokens: 5, total_tokens: 15 };
   stream.mockImplementationOnce(async function* () {
-    yield new AIMessageChunk({ content: '## system_order\n' });
-    expect(onTextDelta).toHaveBeenCalledWith('## system_order\n');
+    yield new AIMessageChunk({ content: '## manual_reviews\n' });
+    expect(onTextDelta).toHaveBeenCalledWith('## manual_reviews\n');
     yield new AIMessageChunk({ content: 'table' });
     yield new AIMessageChunk({ content: '', response_metadata: { finish_reason: 'stop' }, usage_metadata: usage });
   });
   const result = await invokeQuotationModel({ ...base(), role: 'main', onTextDelta, onUsage });
-  expect(result.markdown).toBe('## system_order\ntable');
-  expect(onTextDelta.mock.calls).toEqual([['## system_order\n'], ['table']]);
+  expect(result.markdown).toBe('## manual_reviews\ntable');
+  expect(onTextDelta.mock.calls).toEqual([['## manual_reviews\n'], ['table']]);
   expect(onUsage).toHaveBeenCalledWith(expect.objectContaining(usage));
   expect(invoke).not.toHaveBeenCalled();
 });
@@ -48,29 +48,36 @@ it('rejects truncated or cancelled main streams without treating partial text as
   await expect(invokeQuotationModel({ ...base(), role: 'main', signal: controller.signal, onTextDelta })).rejects.toThrow();
   expect(onTextDelta.mock.calls).toEqual([['before cancellation\n']]);
 });
-it('buffers split order rows and reuses numeric normalization before emitting them', async () => {
+it('forwards incomplete review lines immediately without altering model-owned values', async () => {
   const onTextDelta = jest.fn();
-  const header = '## system_order\n| 數量 | 單價 | 計價基準 |\n| --- | --- | --- |\n';
+  const parts = ['## manual_reviews\n\n| 問題 | 目前判斷 |\n| --- | --- |\n| 數量 | 2', '支，單價 1,234.', '50元 |'];
   stream.mockImplementationOnce(async function* () {
-    yield new AIMessageChunk({ content: `${header}| 2支 | 1,234.` });
-    expect(onTextDelta.mock.calls).toEqual([[header]]);
-    yield new AIMessageChunk({ content: '50元 | B |\n| 3' });
-    expect(onTextDelta.mock.calls).toEqual([[header], ['| 2 | 1234.50 | 2 |\n']]);
-    yield new AIMessageChunk({ content: '支 | 4元 | B |', response_metadata: { finish_reason: 'stop' } });
+    for (let index = 0; index < parts.length; index += 1) {
+      yield new AIMessageChunk({ content: parts[index] });
+      expect(onTextDelta.mock.calls.flat()).toEqual(parts.slice(0, index + 1));
+    }
+    yield new AIMessageChunk({ content: '', response_metadata: { finish_reason: 'stop' } });
   });
-  await invokeQuotationModel({ ...base(), role: 'main', onTextDelta });
-  expect(onTextDelta.mock.calls).toEqual([[header], ['| 2 | 1234.50 | 2 |\n'], ['| 3 | 4 | 2 |']]);
+  const input = base();
+  const result = await invokeQuotationModel({ ...input, role: 'main', onTextDelta });
+  expect(result.markdown).toBe(parts.join(''));
+  expect(input.assertActive).toHaveBeenCalledTimes(3);
 });
-it('stops emitting normalized rows immediately when the execution lease is lost', async () => {
+it('stops emitting when a periodic execution lease check fails', async () => {
   const onTextDelta = jest.fn();
-  const assertActive = jest.fn().mockResolvedValueOnce(undefined).mockResolvedValueOnce(undefined)
-    .mockRejectedValue(new Error('execution lease lost'));
+  const assertActive = jest.fn().mockResolvedValueOnce(undefined).mockRejectedValue(new Error('execution lease lost'));
+  const now = jest.spyOn(Date, 'now').mockReturnValue(1000);
   stream.mockImplementationOnce(async function* () {
-    yield new AIMessageChunk({ content: 'first line\n' });
-    yield new AIMessageChunk({ content: 'second line\n' });
+    yield new AIMessageChunk({ content: 'first line' });
+    now.mockReturnValue(4001);
+    yield new AIMessageChunk({ content: 'second line' });
   });
-  await expect(invokeQuotationModel({ ...base(), role: 'main', assertActive, onTextDelta })).rejects.toThrow('execution lease lost');
-  expect(onTextDelta.mock.calls).toEqual([['first line\n']]);
+  try {
+    await expect(invokeQuotationModel({ ...base(), role: 'main', assertActive, onTextDelta })).rejects.toThrow('execution lease lost');
+    expect(onTextDelta.mock.calls).toEqual([['first line']]);
+  } finally {
+    now.mockRestore();
+  }
 });
 it('binds price lookup and Python only for item pricing, then accepts a completed attempt', async () => {
   invoke.mockResolvedValueOnce(new AIMessageChunk({ content: '', tool_calls: [{ name: 'search_price_candidates', id: 'lookup', args: { queries: [{ queryId: 'q1', text: 'plate' }] } }], response_metadata: { finish_reason: 'tool_calls' } }))

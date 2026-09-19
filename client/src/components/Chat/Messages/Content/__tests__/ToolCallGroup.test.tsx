@@ -4,6 +4,7 @@ import { Tools, Constants, ContentTypes } from 'librechat-data-provider';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { TAttachment, TMessageContentParts } from 'librechat-data-provider';
 import { scheduleMessageContentLayoutReconcile } from '~/hooks';
+import store from '~/store';
 import ToolCallGroup from '../ToolCallGroup';
 
 jest.mock('~/hooks', () => ({
@@ -107,6 +108,12 @@ const makeApprovalPart = (id: string, output = ''): TMessageContentParts =>
     },
   }) as unknown as TMessageContentParts;
 
+const makeQuotationParts = (output = 'done') =>
+  Array.from({ length: 12 }, (_, idx) => ({
+    part: makePart(`quotation:run-1:1:${idx + 1}`, output, 'search_price_candidates'),
+    idx,
+  }));
+
 const makeSubagentPart = (
   id: string,
   subagentContent: TMessageContentParts[],
@@ -202,6 +209,65 @@ describe('ToolCallGroup image hoisting', () => {
   it('does not reconcile layout for an initially collapsed completed group', () => {
     renderGroup(baseProps);
     expect(mockScheduleMessageContentLayoutReconcile).not.toHaveBeenCalled();
+  });
+
+  it('keeps quotation lookup groups collapsed even when tools auto-expand', () => {
+    render(
+      <RecoilRoot initializeState={({ set }) => set(store.autoExpandTools, true)}>
+        <ToolCallGroup
+          {...baseProps}
+          parts={makeQuotationParts()}
+          lastContentIdx={11}
+          renderPart={(_part, idx) => <div data-testid={`quotation-inner-${idx}`} key={idx} />}
+        />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Used 12 tools' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    expect(screen.queryByTestId('quotation-inner-0')).not.toBeInTheDocument();
+  });
+
+  it('keeps live quotation lookup groups collapsed while a lookup is pending', () => {
+    render(
+      <RecoilRoot initializeState={({ set }) => set(store.autoExpandTools, true)}>
+        <ToolCallGroup
+          {...baseProps}
+          parts={makeQuotationParts('')}
+          isSubmitting
+          lastContentIdx={11}
+          renderPart={(_part, idx) => <div data-testid={`live-quotation-inner-${idx}`} key={idx} />}
+        />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Used 12 tools' })).toHaveAttribute(
+      'aria-expanded',
+      'false',
+    );
+    expect(screen.queryByTestId('live-quotation-inner-0')).not.toBeInTheDocument();
+  });
+
+  it('honors a manual quotation expansion across restored rendering', () => {
+    render(
+      <RecoilRoot initializeState={({ set }) => set(store.autoExpandTools, true)}>
+        <ToolCallGroup
+          {...baseProps}
+          parts={makeQuotationParts()}
+          lastContentIdx={11}
+          initialExpansionState={{ isExpanded: true, userOverride: true }}
+          renderPart={(_part, idx) => <div data-testid={`restored-quotation-inner-${idx}`} key={idx} />}
+        />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByRole('button', { name: 'Used 12 tools' })).toHaveAttribute(
+      'aria-expanded',
+      'true',
+    );
+    expect(screen.getByTestId('restored-quotation-inner-0')).toBeInTheDocument();
   });
 
   /** A settled label proves the batch finished — a void tool's legitimate
