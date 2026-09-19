@@ -1,4 +1,5 @@
 import {
+  buildQuotationSystemOrder,
   buildQuotationChunks,
   extractCustomerDataTable,
   finalizeQuotationMainResponse,
@@ -10,6 +11,7 @@ import {
 
 import type { QuotationChildResultInput, QuotationChunk, QuotationLookupEvidence } from './protocol';
 import type { SteelToolResult } from '../tools/results';
+import { parseMarkdownTables } from '../markdown/table';
 
 const ocrHeaders = ['來源', '零件編號', '類別', '數量', '厚度', '寬度', '長度'];
 const systemHeaders = [
@@ -162,6 +164,79 @@ describe('quotation protocol', () => {
       ...child,
       response: `${child.response}\n\n${reviews.replace('## manual_reviews_chunk', '## manual_reviews_chunk\n\n以下項目待確認。')}\n\n請確認以上事項。`,
     }).markdown).toContain(reviews);
+  });
+
+  it('rejects a new strict child review sidecar while keeping the legacy default readable', () => {
+    const chunk = chunkForRows();
+    const review = `## manual_reviews_chunk\n\n${table(reviewHeaders, [['ocr_result', 'P1', '單價', '', '查無資料', '報價']])}`;
+    const input = { ...childInput(chunk, blankRow), response: `${childInput(chunk, blankRow).response}\n\n${review}` };
+    expect(validateQuotationChildResult(input).reviewTable).toBeDefined();
+    expect(() => validateQuotationChildResult({ ...input, allowManualReviews: false }))
+      .toThrow('system_order 備註');
+  });
+
+  it('rejects a strict child that omits a material group before it can be checkpointed', () => {
+    const chunk = chunkForRows([
+      ['F1', 'P1', '鐵板', '2', '6', '100', '200'],
+      ['F1', 'P2', '鐵板', '1', '8', '100', '200'],
+    ]);
+    expect(() => validateQuotationChildResult({
+      ...childInput(chunk, pricedRow),
+      allowManualReviews: false,
+    })).toThrow('material rows');
+  });
+
+  it('builds one authoritative source ordered system_order from complete child tables', () => {
+    const order = ocr([
+      ['F1', 'P1', '鐵板', '2', '6', '100', '200'],
+      ['F1', 'P2', 'H型鋼', '1', '8', '100', '200'],
+      ['F1', 'P3', '鐵板', '3', '10', '100', '200'],
+    ]);
+    const chunks = buildQuotationChunks(order);
+    const rowsFor = (chunk: QuotationChunk, category: string) => chunk.sourceRows.flatMap((source) => {
+      const material = [...pricedRow];
+      material[1] = `${category} ${source.cells[1]}`;
+      material[14] = category;
+      const processing = [...material];
+      processing[1] = `${category} 加工 ${source.cells[1]}`;
+      processing[14] = '加工/孔';
+      return [material, processing];
+    });
+    const children = chunks.map((chunk) => ({
+      ...childInput(chunk, rowsFor(chunk, chunk.category)[0]!),
+      response: `## system_order_chunk\n\n${table(systemHeaders, rowsFor(chunk, chunk.category))}`,
+    })).reverse();
+    const built = buildQuotationSystemOrder({ fullOcrResult: order, childResults: children });
+    const rows = parseMarkdownTables(built)[0]!.rows;
+    expect(rows.map((row) => row[1])).toEqual([
+      '鐵板 P1', '鐵板 加工 P1', 'H型鋼 P2', 'H型鋼 加工 P2', '鐵板 P3', '鐵板 加工 P3',
+    ]);
+  });
+
+  it('rejects duplicate, missing, leading processing, and non-material-count child coverage', () => {
+    const order = ocr([
+      ['F1', 'P1', '鐵板', '2', '6', '100', '200'],
+      ['F1', 'P2', '鐵板', '1', '8', '100', '200'],
+    ]);
+    const chunks = buildQuotationChunks(order);
+    const child = (chunk: QuotationChunk, rows: readonly (readonly string[])[]) => ({
+      ...childInput(chunk, rows[0]!),
+      response: `## system_order_chunk\n\n${table(systemHeaders, rows)}`,
+    });
+    const rows = chunks[0]!.sourceRows.map((source) => {
+      const row = [...pricedRow];
+      row[1] = `鐵板 ${source.cells[1]}`;
+      return row;
+    });
+    expect(() => buildQuotationSystemOrder({ fullOcrResult: order, childResults: [child(chunks[0]!, rows.slice(0, 1))] }))
+      .toThrow('material rows');
+    expect(() => buildQuotationSystemOrder({ fullOcrResult: order, childResults: [child(chunks[0]!, [
+      [...rows[0]!, 'extra'],
+    ])] })).toThrow();
+    const processing = [...rows[0]!];
+    processing[14] = '加工/孔';
+    expect(() => buildQuotationSystemOrder({ fullOcrResult: order, childResults: [child(chunks[0]!, [processing, rows[0]!])] }))
+      .toThrow('cannot start');
   });
 
   it('rejects malformed, empty or duplicate child review sections', () => {

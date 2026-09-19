@@ -47,6 +47,26 @@ export interface QuotationModelInput {
   maxChildRepairAttempts?: 0 | 1;
 }
 
+const quotationChildSystemContract = [
+  'Quotation child output contract (this instruction overrides earlier or frozen output instructions):',
+  '- Return exactly one complete 16-column ## system_order_chunk Markdown table.',
+  '- Keep every required material and processing row; put any issue or missing-value explanation in the row 備註 cell.',
+  '- Do not emit manual_reviews_chunk, system_order, customer_quote, quote_summary, control JSON, or prose outside the table.',
+].join('\n');
+
+const quotationMainSystemContract = [
+  'Quotation main review contract (this instruction overrides earlier or frozen output instructions):',
+  '- The backend supplied system_order in the input and it is authoritative. Never reproduce, rewrite, shorten, or refuse based on its length.',
+  '- Return one six-column ## manual_reviews Markdown table for actual issues. Optional ## notes must follow manual_reviews. If there are no issues and no notes, return exactly: 無待複核事項。',
+  '- Do not return system_order, customer_quote, or quote_summary. The backend owns these sections and appends the final quotation summary after your notes.',
+].join('\n');
+
+function quotationRuntimePrompt(role: QuotationModelInput['role'], prompt: string): string {
+  if (role === 'child') return `${prompt}\n\n${quotationChildSystemContract}`;
+  if (role === 'main') return `${prompt}\n\n${quotationMainSystemContract}`;
+  return prompt;
+}
+
 export interface QuotationModelResult {
   markdown: string;
   lookups: QuotationModelLookup[];
@@ -80,6 +100,7 @@ function childProviderMessages(messages: BaseMessage[]): BaseMessage[] {
 
 export async function invokeQuotationModel(input: QuotationModelInput): Promise<QuotationModelResult> {
   const child = input.role === 'child';
+  const runtimePrompt = quotationRuntimePrompt(input.role, input.prompt);
   const enablePython = child || input.role === 'main';
   const maxChildRepairAttempts = input.maxChildRepairAttempts ?? 1;
   const definitions = child
@@ -98,7 +119,7 @@ export async function invokeQuotationModel(input: QuotationModelInput): Promise<
       await input.onPythonEvidence?.(evidence);
     } : undefined,
   });
-  const messages: BaseMessage[] = [new SystemMessage(input.prompt), new HumanMessage(input.input)];
+  const messages: BaseMessage[] = [new SystemMessage(runtimePrompt), new HumanMessage(input.input)];
   let providerMessages: BaseMessage[] = [...messages];
   const persistMessages = async () => {
     if (child && input.onChildMessages) {
@@ -208,7 +229,7 @@ export async function invokeQuotationModel(input: QuotationModelInput): Promise<
           }
           repairs += 1;
           lookupBaseline = lookups.length;
-          providerMessages = [new SystemMessage(input.prompt), new HumanMessage(input.input)];
+          providerMessages = [new SystemMessage(runtimePrompt), new HumanMessage(input.input)];
           await persistMessages();
           await input.onChildRepair?.({ stage: 'chunk_repair_started', repairAttempt: repairs,
             maxRepairAttempts: maxChildRepairAttempts, message: error.message });

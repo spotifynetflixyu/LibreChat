@@ -53,6 +53,23 @@ it('injects fresh saved customer and system-order presence into each ordinary tu
   expect(mockHasSystemOrder).toHaveBeenCalledTimes(2);
 });
 
+it.each(['old-response', 'rerun-response'])(
+  'keeps completed quotation state independent of response %s', async (responseId) => {
+    mockRead.mockResolvedValue({ currentOrder: { markdown: order, sha256: 'order-hash' },
+      currentCustomer: { customerMarkdown: 'saved customer' }, tickets: [], pendingMessages: [],
+      activeRun: { runId: 'finished', status: 'completed', triggerMessageId: 'quote-user', targetMessageId: 'old-response' } });
+    mockArtifact.mockResolvedValue({ operationId: 'published' });
+    mockHasSystemOrder.mockResolvedValue(true);
+    const prepared = await prepareQuotationTurn({
+      scope, messageId: 'quote-user', responseId, text: '依目前 OCR 彙整表開始報價',
+    });
+    expect(prepared.resume).toBe(false);
+    expect(prepared.instruction).toContain(JSON.stringify({ hasOcrResult: true, hasCustomerData: true, hasSystemOrder: true, shouldAskToQuote: false }));
+    expect(prepared.instruction).not.toContain('hasSystemOrderForCurrentResponse');
+    expect(mockEnqueue).not.toHaveBeenCalled();
+  },
+);
+
 it('clears a prior-turn customer when a new lookup is unresolved', async () => {
   mockRead.mockResolvedValue({ currentOrder: { markdown: order, sha256: 'order-hash' },
     currentCustomer: { preparationId: 'prior-customer', responseId: 'old-response' }, pendingMessages: [] });
@@ -89,12 +106,25 @@ it('rejects customer lookup without saved OCR', async () => {
   mockRead.mockResolvedValue({ pendingMessages: [] });
   await expect(bindQuotationCustomerResult({ expectedOrderHash: 'order-hash', scope, messageId: 'confirm', responseId: 'response-1', result: success([]) })).rejects.toThrow('saved order');
 });
-it('queues a correction and resumes before reading or updating the order', async () => {
-  mockRead.mockResolvedValue({ activeRun: { runId: 'r1', status: 'interrupted', triggerMessageId: 'old' }, pendingMessages: [] });
-  const result = await prepareQuotationTurn({ scope, messageId: 'new', responseId: 'a2', text: '數量改成 3' });
-  expect(result.resume).toBe(true);
-  expect(mockEnqueue).toHaveBeenCalledWith(expect.objectContaining({ sourceMessageId: 'new', sourceMessageText: '數量改成 3', targetMessageId: 'a2', preserveExistingTarget: true }));
+it.each(['queued', 'running', 'aggregating', 'finalizing', 'interrupted'])('runs AI before resuming unfinished %s quotation', async (status) => {
+  const activeRun = { runId: 'r1', status, triggerMessageId: 'old' };
+  mockRead.mockResolvedValue({
+    currentOrder: { markdown: order, sha256: 'order-hash' },
+    currentCustomer: { customerMarkdown: 'saved customer' }, activeRun, pendingMessages: [],
+  });
+  const result = await prepareQuotationTurn({
+    scope, messageId: 'new', responseId: 'a2', text: '數量改成 3',
+    files: [{ fileId: 'file-1', filename: 'order.pdf' }],
+  });
+  expect(result.resume).toBe(false);
+  expect(result.messageText).toBe('數量改成 3');
+  expect(result.messageFiles).toEqual([{ fileId: 'file-1', filename: 'order.pdf' }]);
+  expect(result.instruction).toContain(order);
+  expect(result.instruction).toContain('saved customer');
+  expect(result.instruction).toContain(JSON.stringify({ hasOcrResult: true, hasCustomerData: true, hasSystemOrder: false, shouldAskToQuote: true }));
+  expect(mockEnqueue).not.toHaveBeenCalled();
   expect(mockReadOcr).not.toHaveBeenCalled();
+  expect(mockSetOrder).not.toHaveBeenCalled();
 });
 it('recovers completed but unpublished quotations before a new turn', async () => {
   mockRead.mockResolvedValue({ activeRun: { runId: 'r1', status: 'completed', triggerMessageId: 'old' }, pendingMessages: [] });
@@ -107,10 +137,29 @@ it('resumes the original quotation request without enqueuing it as a new message
   const result = await prepareQuotationTurn({
     scope, messageId: 'confirm', responseId: 'original-response', text: '確認，開始報價',
   });
-  expect(result.resume).toBe(true);
+  expect(result.resume).toBe(false);
+  expect(result.messageText).toBe('確認，開始報價');
   expect(result.state.activeRun).toEqual(activeRun);
   expect(mockEnqueue).not.toHaveBeenCalled();
   expect(mockSetOrder).not.toHaveBeenCalled();
+  expect(mockReadOcr).not.toHaveBeenCalled();
+});
+
+it('enqueues pending input for terminal recovery and returns the original message', async () => {
+  mockRead.mockResolvedValue({
+    currentOrder: { markdown: order, sha256: 'order-hash' }, pendingMessages: [{ status: 'pending' }],
+  });
+  const result = await prepareQuotationTurn({
+    scope, messageId: 'new', responseId: 'a2', text: '重新報價',
+    files: [{ fileId: 'file-2' }],
+  });
+  expect(result.resume).toBe(true);
+  expect(result.messageText).toBe('重新報價');
+  expect(result.messageFiles).toEqual([{ fileId: 'file-2' }]);
+  expect(mockEnqueue).toHaveBeenCalledWith(expect.objectContaining({
+    sourceMessageId: 'new', sourceMessageText: '重新報價', sourceMessageFiles: [{ fileId: 'file-2' }],
+    targetMessageId: 'a2', preserveExistingTarget: true,
+  }));
   expect(mockReadOcr).not.toHaveBeenCalled();
 });
 

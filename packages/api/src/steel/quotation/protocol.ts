@@ -86,6 +86,12 @@ export interface QuotationChildResultInput {
   readonly lookupEvidence: readonly QuotationLookupEvidence[];
   readonly pythonEvidence?: readonly QuotationPythonEvidence[];
   readonly customerTier?: 'A' | 'B' | 'C' | 'D' | 'E' | 'F';
+  /**
+   * New quotation runs keep review details in the row remarks. Omitted keeps
+   * the legacy reader permissive so saved manual_reviews_chunk artifacts can
+   * still be recovered.
+   */
+  readonly allowManualReviews?: boolean;
 }
 
 export interface ValidatedQuotationChildResult {
@@ -339,6 +345,90 @@ export function mergeQuotationChildResults(
   ].join('\n\n');
 }
 
+interface QuotationSystemOrderGroup {
+  readonly sourceRow: QuotationSourceRow;
+  readonly rows: readonly (readonly string[])[];
+}
+
+function childSystemOrderGroups(
+  child: QuotationChildResultInput,
+  table: QuotationChunkTable,
+): readonly QuotationSystemOrderGroup[] {
+  const groups: Array<{ sourceRow: QuotationSourceRow; rows: Array<readonly string[]> }> = [];
+  for (const row of table.rows) {
+    const category = row[quotationSystemOrderColumns.indexOf('類別')]?.trim() ?? '';
+    if (category.startsWith('加工/')) {
+      const previous = groups[groups.length - 1];
+      if (!previous) {
+        protocolError('incomplete_aggregate', 'Quotation system_order cannot start with a processing row.');
+      }
+      previous.rows.push(row);
+      continue;
+    }
+    const sourceRow = child.chunk.sourceRows[groups.length];
+    if (!sourceRow) {
+      protocolError('incomplete_aggregate', 'Quotation child output contains more material rows than its source rows.');
+    }
+    groups.push({ sourceRow, rows: [row] });
+  }
+  if (groups.length !== child.chunk.sourceRows.length) {
+    protocolError('incomplete_aggregate', `Quotation child output has ${groups.length} material rows for ${child.chunk.sourceRows.length} source rows.`);
+  }
+  return groups;
+}
+
+function sameQuotationSourceRow(actual: QuotationSourceRow, expected: QuotationSourceRow): boolean {
+  return actual.sourceRowId === expected.sourceRowId &&
+    actual.sourceRowIndex === expected.sourceRowIndex &&
+    actual.category === expected.category &&
+    JSON.stringify(actual.cells) === JSON.stringify(expected.cells);
+}
+
+export interface BuildQuotationSystemOrderInput {
+  readonly fullOcrResult: string;
+  readonly childResults: readonly QuotationChildResultInput[];
+}
+
+/** Build the authoritative system_order directly from validated child rows. */
+export function buildQuotationSystemOrder(input: BuildQuotationSystemOrderInput): string {
+  const expected = buildQuotationChunks(input.fullOcrResult).flatMap((chunk) => chunk.sourceRows);
+  if (expected.length === 0 || input.childResults.length === 0) {
+    protocolError('incomplete_aggregate', 'Quotation system_order requires complete child coverage.');
+  }
+
+  const expectedById = new Map(expected.map((sourceRow) => [sourceRow.sourceRowId, sourceRow]));
+  const seen = new Set<string>();
+  const groups: QuotationSystemOrderGroup[] = [];
+  for (const child of input.childResults) {
+    const sourceRows = child.chunk.sourceRows;
+    for (let index = 0; index < sourceRows.length; index += 1) {
+      const sourceRow = sourceRows[index]!;
+      const expectedRow = expectedById.get(sourceRow.sourceRowId);
+      if (!expectedRow || !sameQuotationSourceRow(sourceRow, expectedRow)) {
+        protocolError('incomplete_aggregate', `Quotation child source row ${sourceRow.sourceRowId} does not match the confirmed OCR order.`);
+      }
+      if (seen.has(sourceRow.sourceRowId)) {
+        protocolError('incomplete_aggregate', `Quotation source row ${sourceRow.sourceRowId} is duplicated.`);
+      }
+      if (index > 0 && sourceRows[index - 1]!.sourceRowIndex >= sourceRow.sourceRowIndex) {
+        protocolError('incomplete_aggregate', 'Quotation child source rows must remain in canonical source order.');
+      }
+      seen.add(sourceRow.sourceRowId);
+    }
+    const validated = validateChildTable(child);
+    groups.push(...childSystemOrderGroups(child, validated.table));
+  }
+  if (seen.size !== expected.length || expected.some((sourceRow) => !seen.has(sourceRow.sourceRowId))) {
+    protocolError('incomplete_aggregate', 'Quotation child results do not cover every confirmed OCR source row exactly once.');
+  }
+
+  groups.sort((left, right) => left.sourceRow.sourceRowIndex - right.sourceRow.sourceRowIndex);
+  return `## system_order\n\n${renderTable({
+    headers: quotationSystemOrderColumns,
+    rows: groups.flatMap((group) => group.rows),
+  })}`;
+}
+
 function isQuoteControlFence(language: string, content: string): boolean {
   if (/^(?:json|application\/json)$/iu.test(language.trim())) {
     try {
@@ -404,6 +494,9 @@ function validateChildTable(input: QuotationChildResultInput): ValidatedQuotatio
   const document = parseAssistantMarkdown(sanitizedResponse);
   const section = exactSection(document, 'system_order_chunk');
   const reviewSection = exactSection(document, 'manual_reviews_chunk');
+  if (input.allowManualReviews === false && reviewSection) {
+    protocolError('invalid_child_result', 'Quotation child review details must be kept in system_order 備註 for this execution.');
+  }
   if (!section || section.title !== 'system_order_chunk' ||
     document.sections[0] !== section ||
     document.sections.length !== (reviewSection ? 2 : 1) ||
@@ -429,6 +522,16 @@ function validateChildTable(input: QuotationChildResultInput): ValidatedQuotatio
   const reviewTable = normalizedReviewBody && parseExactTable(normalizedReviewBody, quotationManualReviewColumns);
   if (reviewSection && !reviewTable) {
     protocolError('invalid_child_result', 'Child result has an invalid manual_reviews_chunk table.');
+  }
+  if (input.allowManualReviews === false) {
+    try {
+      childSystemOrderGroups(input, table);
+    } catch (error) {
+      if (error instanceof QuotationProtocolError && error.code === 'incomplete_aggregate') {
+        protocolError('invalid_child_result', error.message);
+      }
+      throw error;
+    }
   }
   if (!evidenceIsPersistedSearch(input.lookupEvidence)) {
     protocolError('invalid_child_result', 'Child result requires a persisted search_price_candidates attempt.');

@@ -6279,16 +6279,23 @@ async function executeSteelQuotationWorkflow({
     const messages = run?.getRunMessages?.() ?? [];
     const last = [...messages].reverse().find((message) => message.getType?.() === 'ai' || message._getType?.() === 'ai');
     if (!last || last.tool_calls?.length || signal.aborted || run?.interrupt) return;
+    const response = quotationMessageText(last);
     const accepted = await acceptQuotationResponse({
       scope,
-      response: quotationMessageText(last),
+      response,
       responseId: context.requestId,
       messageId: quotation.messageId,
+      messageText: quotation.messageText,
+      messageFiles: quotation.messageFiles,
       expectedOrderHash: quotation.state?.currentOrder?.sha256,
       expectedCustomerPreparationId: quotation.state?.currentCustomer?.preparationId,
       finishReason: last.response_metadata?.finish_reason,
     });
     if (!accepted) return;
+    if (accepted.status !== 'completed' && accepted.status !== 'cancelled' &&
+      parseAssistantMarkdown(response).sections.some((section) => section.title.split(/[｜|]/u)[0]?.trim() === 'ocr_result')) {
+      quotation.pendingOrderPersisted = true;
+    }
   }
   const modelOptions = context.delegateOcrContext?.modelOptions;
   if (!modelOptions) throw new Error('Quotation requires resolved model options');
@@ -6402,7 +6409,7 @@ async function executeSteelQuotationWorkflow({
     }),
   });
   if (result.status === 'busy') {
-    await onText('\n\n報價正在處理中，這則訊息已保存，完成後會自動處理。');
+    await onText('\n\n報價正在處理中，將接續同一個報價進程。');
     return;
   }
   if (result.status === 'cancelled') await onText('\n\n報價已取消。');

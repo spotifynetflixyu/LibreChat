@@ -53,12 +53,36 @@ export async function prepareQuotationTurn(input: {
   responseId: string;
   text: string;
   files?: readonly SteelQuotationPendingMessageFile[];
-}): Promise<{ scope: SteelQuotationScope; state: ISteelQuotationState; instruction: string; resume: boolean }> {
+}): Promise<{
+  scope: SteelQuotationScope;
+  state: ISteelQuotationState;
+  instruction: string;
+  resume: boolean;
+  messageText: string;
+  messageFiles?: readonly SteelQuotationPendingMessageFile[];
+}> {
   const service = createSteelQuotationStateService(mongoose);
   let state = await service.ensureState(input.scope);
+  const originalMessage = {
+    messageText: input.text,
+    ...(input.files ? { messageFiles: input.files } : {}),
+  };
+  if (isUnfinishedQuotation(state.activeRun?.status)) {
+    return {
+      scope: input.scope,
+      state,
+      resume: false,
+      instruction: quotationPreparationInstruction(
+        state.currentOrder?.markdown,
+        state.currentCustomer?.customerMarkdown,
+        false,
+      ),
+      ...originalMessage,
+    };
+  }
   const unpublished = state.activeRun?.status === 'completed' &&
     !await service.getArtifact({ scope: input.scope, runId: state.activeRun.runId, operationId: 'published' });
-  if (isUnfinishedQuotation(state.activeRun?.status) || unpublished || state.pendingMessages.some((entry) => entry.status !== 'completed')) {
+  if (unpublished || state.pendingMessages.some((entry) => entry.status !== 'completed')) {
     if (input.messageId !== state.activeRun?.triggerMessageId) {
       await service.enqueuePendingMessage({
         scope: input.scope,
@@ -69,7 +93,7 @@ export async function prepareQuotationTurn(input: {
         preserveExistingTarget: true,
       });
     }
-    return { scope: input.scope, state, instruction: '', resume: true };
+    return { scope: input.scope, state, instruction: '', resume: true, ...originalMessage };
   }
   const [ocr, hasSystemOrder] = await Promise.all([
     createSteelOcrStateService(mongoose).readConversationOcrState(input.scope.conversationId),
@@ -88,18 +112,23 @@ export async function prepareQuotationTurn(input: {
     scope: input.scope,
     state,
     resume: false,
+    ...originalMessage,
     instruction: quotationPreparationInstruction(
       state.currentOrder?.markdown, state.currentCustomer?.customerMarkdown, hasSystemOrder,
     ),
   };
 }
 
-export function quotationPreparationInstruction(order?: string, customer?: string, hasSystemOrder = false): string {
+export function quotationPreparationInstruction(
+  order?: string,
+  customer?: string,
+  hasSystemOrder = false,
+): string {
   const status = quotationPreparationStatus(order, customer, hasSystemOrder);
   return [
     '# Saved quotation state for this turn',
     JSON.stringify(status),
-    'These flags report saved data, not user consent. hasSystemOrder is true only for the latest accepted quotation whose run is completed and whose full final result is saved. Older system_order results do not count; a new unfinished, interrupted, or cancelled quotation has hasSystemOrder=false. When shouldAskToQuote is true, ask whether to start quoting only if the user has not already clearly authorized the current order and customer/tier. When hasSystemOrder is true, do not repeatedly ask whether to quote; handle the current request. A new signal still requires an explicit request to quote again, and order changes still require confirmation of the updated order.',
+    'These flags report saved data, not user consent. hasSystemOrder is true only for the latest accepted quotation whose run is completed and whose full final result is saved. A completed result may belong to a previous user turn. Earlier archived results do not make this flag true if the latest accepted quotation is unfinished, interrupted, or cancelled. When shouldAskToQuote is true, ask whether to start quoting only if the user has not already clearly authorized the current order and customer/tier. hasSystemOrder describes saved quotation state, not whether the current request has been fulfilled. An explicit current request to quote, requote, or resubmit the unchanged confirmed order and customer/tier is fresh start consent even when hasSystemOrder=true. Ordinary inquiries about an old quotation do not authorize a new quote_signal. The backend alone decides whether an accepted signal resumes an unfinished quotation or starts a new run; do not resume or start a run in the AI response.',
     '# Current quotation preparation workflow',
     'When preparing a new or revised order, present one complete ## ocr_result table for the user to confirm. Reuse an unchanged saved order rather than presenting it again on every turn. Text orders use the same complete table; use stable 來源=文字訂單 and stable 零件編號 for new text rows.',
     'The ocr_result table must contain 來源, 零件編號, 類別, and the available specification/quantity fields. Preserve existing columns and all user-provided material, size, unit, quantity, and notes; leave unknown facts blank. Keep dimensions in explicitly labeled mm columns where applicable.',

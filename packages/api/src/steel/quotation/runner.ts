@@ -3,6 +3,7 @@ import mongoose from 'mongoose';
 
 import type {
   SteelQuotationActiveRun,
+  SteelQuotationPendingMessageFile,
   SteelQuotationScope,
   SteelQuotationSnapshotPayload,
 } from '@librechat/data-schemas';
@@ -14,8 +15,9 @@ import type { SteelNativeHistory } from '../native/events';
 import type { SavedQuotationLookup } from './history';
 
 import { createSteelQuotationStateService } from './state';
-import { defaultQuotationCustomerMarkdown, hasQuotationOrder } from './preparation';
+import { defaultQuotationCustomerMarkdown, hasQuotationOrder, isUnfinishedQuotation } from './preparation';
 import { parseAssistantMarkdown } from '../ocr/result';
+import { parseMarkdownTables } from '../markdown/table';
 import { registerQuotationExecution } from './control';
 import { buildDefaultSteelGlobalAgentContext } from '../native/context';
 import { createSteelPostgresPool } from '../postgres';
@@ -26,6 +28,7 @@ import { getQuotationProgress } from './progress';
 import { buildSteelQuotationStatusEvent } from '../native/events';
 import {
   buildQuotationChunks,
+  quotationSystemOrderColumns,
   splitQuotationChunk,
   mergeQuotationChildResults,
   QuotationProtocolError,
@@ -34,10 +37,12 @@ import {
   stripLegacyQuotationChildSidecars,
   validateQuotationChildResult,
   finalizeQuotationMainResponse,
+  buildQuotationSystemOrder,
 } from './protocol';
 
 interface SavedQuotationChild {
   markdown: string;
+  sourceRowIds?: string[];
   lookupOperations: string[];
   pythonOperations: string[];
 }
@@ -82,6 +87,8 @@ export async function acceptQuotationResponse(input: {
   response: string;
   responseId: string;
   messageId?: string;
+  messageText?: string;
+  messageFiles?: readonly SteelQuotationPendingMessageFile[];
   expectedOrderHash?: string;
   expectedCustomerPreparationId?: string;
   finishReason?: string;
@@ -91,18 +98,35 @@ export async function acceptQuotationResponse(input: {
   const sections = parseAssistantMarkdown(input.response).sections;
   const hasSection = (title: string) => sections.some((section) => section.title.split(/[｜|]/u)[0]?.trim() === title);
   const customer = extractCustomerDataTable(input.response);
-  if (!signal && !hasSection('customer_data')) return undefined;
+  if (!signal && !hasSection('customer_data') && !hasSection('ocr_result')) return undefined;
   if (hasSection('customer_data') && !customer) {
     throw new Error('Customer data must contain one readable Markdown table');
-  }
-  if (signal && hasSection('ocr_result')) {
-    throw new Error('A revised order must be confirmed before issuing a quotation signal');
   }
   const service = createSteelQuotationStateService(mongoose);
   let state = await service.readState(input.scope);
   const existingTicket = state?.tickets.find((entry) => entry.responseId === input.responseId);
   const matchesCustomer = (markdown: string) =>
     JSON.stringify(customer) === JSON.stringify(extractCustomerDataTable(markdown));
+  if (isUnfinishedQuotation(state?.activeRun?.status) &&
+    (hasSection('ocr_result') || (customer && !matchesCustomer(state?.currentCustomer?.customerMarkdown ?? '')))) {
+    if (!input.messageId || (input.messageText === undefined && !input.messageFiles?.length) ||
+      input.expectedOrderHash !== state?.currentOrder?.sha256 ||
+      input.expectedCustomerPreparationId !== state?.currentCustomer?.preparationId) {
+      throw new Error('Queued quotation correction is based on missing or stale preparation data');
+    }
+    await service.enqueuePendingMessage({
+      scope: input.scope,
+      sourceMessageId: input.messageId,
+      sourceMessageText: input.messageText,
+      sourceMessageFiles: input.messageFiles,
+      targetMessageId: input.responseId,
+      preserveExistingTarget: true,
+    });
+    return state?.activeRun;
+  }
+  if (signal && hasSection('ocr_result')) {
+    throw new Error('A revised order must be confirmed before issuing a quotation signal');
+  }
   if (signal && existingTicket?.acceptedRunId) {
     if (customer && !matchesCustomer(existingTicket.customerMarkdown)) {
       throw new Error('Quotation replay customer data does not match the saved run');
@@ -151,6 +175,7 @@ export async function acceptQuotationResponse(input: {
       input.expectedCustomerPreparationId !== preparedCustomer.preparationId))) {
     throw new Error('Quotation signal is based on stale preparation data');
   }
+  if (isUnfinishedQuotation(state.activeRun?.status)) return state.activeRun;
   const chunks = buildQuotationChunks(state.currentOrder.markdown);
   const conversation = { requestId: input.responseId, conversationId: input.scope.conversationId, activeHistory: [] };
   const [child, main] = await Promise.all([
@@ -211,6 +236,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
   const lease = await service.acquireLease({ scope, runId });
   if (!lease) return { status: 'busy' };
   const leaseInput = { scope, runId, leaseToken: lease.leaseToken };
+  const executionAttempt = randomUUID();
   const registration = registerQuotationExecution(scope, runId);
   const controller = registration.controller;
   const abort = () => controller.abort(input.signal.reason);
@@ -240,7 +266,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     await input.onProgress?.({
       run: active,
       ...getQuotationProgress(active, chunkIndex, sliceIndex),
-      attempt,
+      attempt: attempt ?? executionAttempt,
       ...(stage ? { stage } : {}),
     });
   };
@@ -262,9 +288,10 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
       interruptedChunkIndex = chunk.chunkIndex;
       const operationId = `chunk:${chunk.chunkIndex}`;
       let stored = await service.readCheckpoint({ scope, runId, operationId });
+      const splitOperation = `split:${chunk.chunkIndex}`;
+      const splitPayload = await service.readCheckpoint({ scope, runId, operationId: splitOperation });
+      let leafResults: QuotationChildResultInput[] | undefined;
       if (!stored) {
-        const splitOperation = `split:${chunk.chunkIndex}`;
-        const splitPayload = await service.readCheckpoint({ scope, runId, operationId: splitOperation });
         const parentOutputRef = run.checkpointRefs.filter((ref) =>
           ref.operationId.startsWith(`child-output:${chunk.chunkIndex}:`) &&
           !ref.operationId.split(':')[2]!.startsWith('slice-')).pop();
@@ -328,62 +355,110 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
             lookupOperations.push(...evidence.lookupOperations);
             pythonOperations.push(...evidence.pythonOperations);
           }
+          leafResults = children;
           stored = JSON.stringify({
             markdown: mergeQuotationChildResults(chunk, children), lookupOperations, pythonOperations,
+            sourceRowIds: chunk.sourceRows.map((row) => row.sourceRowId),
           });
         }
         await checkpoint(operationId, 'chunk', stored, chunk.chunkIndex);
       }
-      const loaded = await loadChild(chunk, stored);
-      const validated = validateQuotationChildResult(loaded);
-      results.push({
-        ...loaded,
-        response: validated.markdown,
-        markdown: validated.markdown,
-      });
-      await progress(chunk.chunkIndex, undefined, 'chunk_saved');
+      if (!leafResults && splitPayload) {
+        const slices = splitQuotationChunk(chunk);
+        const plan = JSON.parse(splitPayload) as { version: number; rowsPerSlice: number; sourceRowIds: string[][] };
+        if (plan.version !== 1 || plan.rowsPerSlice !== 10 || JSON.stringify(plan.sourceRowIds) !==
+          JSON.stringify(slices.map((slice) => slice.sourceRows.map((row) => row.sourceRowId)))) {
+          throw new Error('Saved quotation recovery plan does not match its source rows');
+        }
+        leafResults = [];
+        for (let index = 0; index < slices.length; index += 1) {
+          const saved = await service.readCheckpoint({ scope, runId, operationId: `slice:${chunk.chunkIndex}:${index + 1}` });
+          if (!saved) throw new Error('Completed quotation recovery slice is missing');
+          const loaded = await loadChild(slices[index]!, saved);
+          validateQuotationChildResult(loaded);
+          leafResults.push(loaded);
+          await progress(chunk.chunkIndex, undefined, 'chunk_saved', index + 1);
+        }
+      }
+      for (const loaded of leafResults ?? [await loadChild(chunk, stored)]) {
+        const validated = validateQuotationChildResult(loaded);
+        results.push({ ...loaded, response: validated.markdown, markdown: validated.markdown });
+      }
+      if (!leafResults) await progress(chunk.chunkIndex, undefined, 'chunk_saved');
     }
     interruptedChunkIndex = undefined;
     await service.transitionRun({ ...leaseInput, status: 'aggregating' });
     await progress();
-    let main = await service.readCheckpoint({ scope, runId, operationId: 'main' });
-    if (!main) {
-      let mainStreaming = false;
-      const mainAttempt = randomUUID();
-      const output = await (input.invokeModel ?? invokeQuotationModel)({
-        role: 'main',
-        prompt: snapshot.prompts.main,
-        input: JSON.stringify({
-          order: snapshot.orderMarkdown,
-          customer: snapshot.customerMarkdown,
-          chunks: results.map((result) => result.response ?? result.markdown ?? ''),
-        }),
-        modelOptions: input.modelOptions,
-        signal: controller.signal,
-        assertActive: async () => { await assertActive(); },
-        onUsage: input.onUsage,
-        onPythonEvidence: async (evidence) => {
-          await assertActive();
-          await checkpoint(`python:main:${mainAttempt}:${evidence.toolCallId}:${evidence.type}`, 'tool', JSON.stringify(evidence));
-        },
-        onTextDelta: input.onTextDelta ? async (text) => {
-          controller.signal.throwIfAborted();
-          if (!mainStreaming) {
-            mainStreaming = true;
-            await progress(undefined, undefined, 'main_streaming');
-          }
-          await input.onTextDelta?.(text);
-        } : undefined,
-      });
-      main = output.markdown;
-      await checkpoint(`main-output:${randomUUID()}`, 'main', main);
-      finalizeQuotationMainResponse({ fullOcrResult: snapshot.orderMarkdown, mainResponse: main, childResults: results });
-      await checkpoint('main', 'main', main);
+    const systemOrder = buildQuotationSystemOrder({ fullOcrResult: snapshot.orderMarkdown, childResults: results });
+    await checkpoint('system-order', 'main', systemOrder);
+    if (input.onTextDelta) {
+      await progress(undefined, undefined, 'main_streaming');
+      await input.onTextDelta(systemOrder);
+    }
+    let reviewOutput = await service.readCheckpoint({ scope, runId, operationId: 'main-reviews' });
+    if (!reviewOutput) {
+      // A previously validated main checkpoint can be resumed without asking the model again.
+      const legacyMain = await service.readCheckpoint({ scope, runId, operationId: 'main' });
+      if (legacyMain) {
+        const sections = parseAssistantMarkdown(legacyMain).sections.filter((section) =>
+          ['manual_reviews', 'manual_review', 'notes'].includes(section.title));
+        reviewOutput = sections.map((section) =>
+          `## ${section.title === 'notes' ? 'notes' : 'manual_reviews'}\n\n${section.body.trim()}`)
+          .join('\n\n') || '無待複核事項。';
+      } else {
+        const mainAttempt = randomUUID();
+        const output = await (input.invokeModel ?? invokeQuotationModel)({
+          role: 'main',
+          prompt: snapshot.prompts.main,
+          input: JSON.stringify({
+            order: snapshot.orderMarkdown,
+            customer: snapshot.customerMarkdown,
+            system_order: systemOrder,
+          }),
+          modelOptions: input.modelOptions,
+          signal: controller.signal,
+          assertActive: async () => { await assertActive(); },
+          onUsage: input.onUsage,
+          onPythonEvidence: async (evidence) => {
+            await assertActive();
+            await checkpoint(`python:main:${mainAttempt}:${evidence.toolCallId}:${evidence.type}`, 'tool', JSON.stringify(evidence));
+          },
+        });
+        reviewOutput = output.markdown || '無待複核事項。';
+        await checkpoint(`main-output:${randomUUID()}`, 'main', reviewOutput);
+      }
+      await checkpoint('main-reviews', 'main', reviewOutput);
     }
     await service.transitionRun({ ...leaseInput, status: 'finalizing' });
     await progress();
-    const final = finalizeQuotationMainResponse({ fullOcrResult: snapshot.orderMarkdown, mainResponse: main, childResults: results });
-    await checkpoint('final', 'final', final.response);
+    const final = finalizeQuotationMainResponse({
+      fullOcrResult: snapshot.orderMarkdown,
+      mainResponse: systemOrder,
+      childResults: results,
+    });
+    // Review prose is model-owned. Counting display rows never gates the saved quotation.
+    const reviews = reviewOutput.trim() === '無待複核事項。' ? '' : reviewOutput.trim();
+    const reviewDocument = parseAssistantMarkdown(reviews);
+    const reviewSections = reviewDocument.sections;
+    const reviewDisplay = [reviewDocument.preamble.trim(),
+      ...reviewSections.filter((section) => section.title !== 'notes').map((section) => section.raw.trim()),
+      ...reviewSections.filter((section) => section.title === 'notes').map((section) => section.raw.trim()),
+    ].filter(Boolean).join('\n\n');
+    const reviewCount = reviewSections
+      .filter((section) => ['manual_reviews', 'manual_review'].includes(section.title))
+      .flatMap((section) => parseMarkdownTables(section.body))
+      .reduce((count, table) => count + table.rows.length, 0);
+    const completion = reviewCount > 0
+      ? `查價輸出完成：共 ${final.rows.length} 筆 system_order、${reviewCount} 項待複核事項。`
+      : reviews ? `查價輸出完成：共 ${final.rows.length} 筆 system_order。` : final.summary;
+    const categoryColumn = quotationSystemOrderColumns.indexOf('類別');
+    const materialCount = final.rows.filter((row) => !row[categoryColumn]?.trim().startsWith('加工/')).length;
+    const sourceCount = chunks.reduce((count, chunk) => count + chunk.sourceRows.length, 0);
+    const processingCount = final.rows.length - materialCount;
+    const summary = `${completion}\n\n項次核對：材料項次 ${materialCount}／原始訂單 ${sourceCount} 項；加工列 ${processingCount} 筆。`;
+    const completedResponse = [final.systemOrderMarkdown, final.customerQuoteMarkdown, reviewDisplay, `## quote_summary\n\n${summary}`]
+      .filter(Boolean).join('\n\n');
+    await checkpoint('final', 'final', completedResponse);
     const state = await assertActive();
     const finalPointer = state.checkpointRefs.find((entry) => entry.operationId === 'final');
     if (!finalPointer) throw new Error('Quotation final checkpoint is missing');
@@ -395,7 +470,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     if (!completed) throw new Error('Quotation completion lost its execution lease');
     clearInterval(heartbeat);
     await input.onProgress?.({ run: completed, ...getQuotationProgress(completed) });
-    return publish(final.response, completed);
+    return publish(completedResponse, completed);
 
     async function generateChild(
       chunk: ReturnType<typeof buildQuotationChunks>[number],
@@ -441,9 +516,10 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
         },
         validateChildOutput: async (markdown) => {
           await assertActive();
-          const output = JSON.stringify({ markdown, lookupOperations, pythonOperations });
+          const output = JSON.stringify({ markdown, lookupOperations, pythonOperations,
+            sourceRowIds: chunk.sourceRows.map((row) => row.sourceRowId) });
           await checkpoint(`child-output:${chunk.chunkIndex}:${attempt}:${revision++}`, 'main', output);
-          validateQuotationChildResult(await loadChild(chunk, output));
+          validateQuotationChildResult({ ...await loadChild(chunk, output), allowManualReviews: false });
         },
         onPythonEvidence: async (evidence) => {
           const key = `python:${chunk.chunkIndex}:${attempt}:${evidence.toolCallId}:${evidence.type}`;
@@ -470,11 +546,12 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
           return result;
         },
       });
-      let stored = JSON.stringify({ markdown: generated.markdown, lookupOperations, pythonOperations });
+      const sourceRowIds = chunk.sourceRows.map((row) => row.sourceRowId);
+      let stored = JSON.stringify({ markdown: generated.markdown, lookupOperations, pythonOperations, sourceRowIds });
       await checkpoint(`child-output:${chunk.chunkIndex}:${attempt}`, 'main', stored);
       const candidate = await loadChild(chunk, stored);
-      const validated = validateQuotationChildResult(candidate);
-      stored = JSON.stringify({ markdown: validated.markdown, lookupOperations, pythonOperations });
+      const validated = validateQuotationChildResult({ ...candidate, allowManualReviews: false });
+      stored = JSON.stringify({ markdown: validated.markdown, lookupOperations, pythonOperations, sourceRowIds });
       return stored;
     }
 
@@ -483,6 +560,10 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
       serialized: string,
     ): Promise<QuotationChildResultInput> {
       const saved = JSON.parse(serialized) as SavedQuotationChild;
+      if (saved.sourceRowIds && JSON.stringify(saved.sourceRowIds) !==
+        JSON.stringify(chunk.sourceRows.map((row) => row.sourceRowId))) {
+        throw new Error('Saved quotation chunk does not match its source rows');
+      }
       const lookupEvidence: QuotationLookupEvidence[] = [];
       for (const key of saved.lookupOperations) {
         const evidence = await service.readCheckpoint({ scope, runId, operationId: key });

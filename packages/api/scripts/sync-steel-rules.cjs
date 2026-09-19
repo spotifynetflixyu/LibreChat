@@ -402,7 +402,7 @@ function buildRules(repoRoot) {
     unifiedRule({
       slug: 'steel-quote-main-agent-policy',
       ruleKind: 'agent',
-      title: 'Steel 報價合併與核對工作規則',
+      title: 'Steel 報價核對工作規則',
       ruleSections: ['quote_main', 'quotation_aggregation', 'quotation_review'],
       selectors: {
         appliesTo: ['steel_quote_main'],
@@ -415,7 +415,7 @@ function buildRules(repoRoot) {
         forbiddenTools: ['search_price_candidates', 'OpenAI Python'],
       },
       outputPolicy: {
-        activeSheets: ['system_order', 'manual_reviews'],
+        activeSheets: ['manual_reviews'],
         forbidCustomerQuote: true,
         forbidCompletionSummary: true,
         forbidControlSidecars: true,
@@ -423,7 +423,7 @@ function buildRules(repoRoot) {
       priority: 11,
       source: ruleSource(
         'docs/rules/報價主Agent規則.txt',
-        'Steel 報價合併與核對工作規則',
+        'Steel 報價核對工作規則',
         'steel-quote-main-agent-policy',
         quoteMain.sha256,
         'agent_rule',
@@ -445,7 +445,7 @@ function buildRules(repoRoot) {
         availableTools: ['search_price_candidates', 'OpenAI Python'],
       },
       outputPolicy: {
-        activeSheets: ['system_order_chunk', 'manual_reviews_chunk'],
+        activeSheets: ['system_order_chunk'],
         forbidCustomerQuote: true,
         forbidCompletionSummary: true,
       },

@@ -7054,6 +7054,7 @@ describe('quotation transport bridge', () => {
     req: { user: { id: 'owner' }, steelNativeContext: {
       requestId: 'response-1', conversationId: 'conversation-1',
       quotation: { scope: { userId: 'owner', conversationId: 'conversation-1' }, resume,
+        messageText: '請繼續報價', messageFiles: [{ fileId: 'original-file', filename: 'order.pdf' }],
         messageId: 'confirm-user', state: { currentOrder: { sha256: 'order-hash' }, currentCustomer: { preparationId: 'customer-preparation' } },
       },
       delegateOcrContext: { modelOptions: { model: 'test-model' } },
@@ -7075,6 +7076,7 @@ describe('quotation transport bridge', () => {
     await executeSteelQuotationWorkflow(input);
     expect(mockAcceptQuotation).toHaveBeenCalledWith(expect.objectContaining({ response: '## quote_signal', finishReason: 'stop',
       messageId: 'confirm-user', expectedOrderHash: 'order-hash', expectedCustomerPreparationId: 'customer-preparation',
+      messageText: '請繼續報價', messageFiles: [{ fileId: 'original-file', filename: 'order.pdf' }],
     }));
     expect(mockRunQuotation).toHaveBeenCalledTimes(1);
     expect(mockProcessQuotationPending).toHaveBeenCalledTimes(1);
@@ -7101,6 +7103,16 @@ describe('quotation transport bridge', () => {
   it('does not process pending messages while another owner holds the run lease', async () => {
     mockRunQuotation.mockResolvedValue({ status: 'busy' });
     await executeSteelQuotationWorkflow(makeInput(true));
+    expect(mockProcessQuotationPending).not.toHaveBeenCalled();
+  });
+  it('keeps queued OCR corrections out of the ordinary finalizer while another owner finishes the frozen run', async () => {
+    mockAcceptQuotation.mockResolvedValue({ runId: 'run-1', status: 'running' });
+    mockRunQuotation.mockResolvedValue({ status: 'busy' });
+    const input = makeInput();
+    input.run.getRunMessages = () => [{ getType: () => 'ai', content: '## ocr_result\n\nrevised order',
+      response_metadata: { finish_reason: 'stop' } }];
+    await executeSteelQuotationWorkflow(input);
+    expect(input.req.steelNativeContext.quotation.pendingOrderPersisted).toBe(true);
     expect(mockProcessQuotationPending).not.toHaveBeenCalled();
   });
   it('persists every queued correction but emits only the latest OCR revision for the parent finalizer', async () => {

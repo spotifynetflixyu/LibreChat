@@ -1,5 +1,9 @@
-import { upsertQuotationToolContent } from './history';
-import type { SteelNativePreflightToolCall } from '../native/events';
+import { getQuotationHistoryDelta, upsertQuotationToolContent } from './history';
+import type {
+  SteelNativeHistory,
+  SteelNativePreflightToolCall,
+  SteelNativeQuotationStatusEvent,
+} from '../native/events';
 import { createSteelQuotationStateService } from './state';
 
 jest.mock('./state', () => ({
@@ -43,6 +47,27 @@ const quotationRun = (overrides: Record<string, unknown> = {}) => ({
   ...overrides,
 });
 
+const quotationStatusEvent = (
+  overrides: Partial<SteelNativeQuotationStatusEvent> = {},
+): SteelNativeQuotationStatusEvent => ({
+  type: 'quotation_status',
+  source: 'quotation_preflight',
+  conversationId: 'conversation',
+  runId: 'run-1',
+  index: 1,
+  stage: 'chunk_saved',
+  status: 'running',
+  completedChunks: 4,
+  totalChunks: 8,
+  chunkIndex: 4,
+  ...overrides,
+});
+
+const quotationHistory = (event: SteelNativeQuotationStatusEvent): SteelNativeHistory => ({
+  activityEvents: [event],
+  preflightToolCalls: [],
+});
+
 beforeEach(() => {
   jest.clearAllMocks();
   mockService = {
@@ -74,6 +99,25 @@ it('reserves stable tool slots after existing signal text and before final quota
   expect(upsertQuotationToolContent(parts, { ...call, output, progress: 1 })).toBe(1);
   expect(parts).toHaveLength(4);
   expect(parts[3]).toEqual({ type: 'text', text: '## system_order\ncomplete' });
+});
+
+it('deduplicates a restored chunk progress event from the same execution', () => {
+  const currentEvent = quotationStatusEvent({ attempt: 'execution-before-pause', message: 'live' });
+  const restoredEvent = quotationStatusEvent({ attempt: 'execution-before-pause', message: 'restored' });
+
+  expect(getQuotationHistoryDelta(quotationHistory(currentEvent), quotationHistory(restoredEvent)).activityEvents)
+    .toEqual([]);
+});
+
+it('retains resumed chunk progress when the execution attempt changes', () => {
+  const currentEvent = quotationStatusEvent({ attempt: 'execution-before-pause' });
+  const resumedEvent = quotationStatusEvent({
+    attempt: 'execution-after-resume',
+    message: 'Restored from saved quotation checkpoints',
+  });
+
+  expect(getQuotationHistoryDelta(quotationHistory(currentEvent), quotationHistory(resumedEvent)).activityEvents)
+    .toEqual([resumedEvent]);
 });
 
 it('rehydrates flattened progress from durable split checkpoints after interruption', async () => {

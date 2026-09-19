@@ -11,7 +11,7 @@ import type { QuotationChunk } from './protocol';
 import type { QuotationModelInput, QuotationModelResult } from './model';
 
 import { createSteelQuotationStateService } from './state';
-import { buildQuotationChunks, quotationSignal } from './protocol';
+import { buildQuotationChunks, splitQuotationChunk, quotationSignal } from './protocol';
 import { parseMarkdownTables } from '../markdown/table';
 import { invokeQuotationModel } from './model';
 import { quotationStatus } from './routes';
@@ -155,10 +155,6 @@ function childMarkdown(rows: readonly (readonly string[])[]): string {
   ].join('\n');
 }
 
-function mainMarkdown(order: string): string {
-  const rows = buildQuotationChunks(order).flatMap((chunk) => chunk.sourceRows.map(systemRow));
-  return `## system_order\n\n${markdownTable(systemHeaders, rows)}`;
-}
 
 function createLookupExecutor(): (args: SteelToolJsonObject, callId: string) => Promise<SteelToolResult> {
   return jest.fn(async () => lookupResult());
@@ -182,7 +178,7 @@ function createModel(
         await input.onTextDelta?.('preview row\n');
       }
       return {
-        markdown: mainMarkdown((JSON.parse(input.input) as { order: string }).order),
+        markdown: '無待複核事項。',
         lookups: [],
         pythonEvidence: [],
       };
@@ -391,7 +387,8 @@ describe('quotation runner integration', () => {
     const prepared = await prepareQuotationTurn({
       scope, messageId: 'resume-message', responseId: 'resume-response', text: '接續報價',
     });
-    expect(prepared.resume).toBe(true);
+    expect(prepared.resume).toBe(false);
+    expect((await service.readState(scope))?.pendingMessages).toHaveLength(0);
     const resumed = createModel();
     const events: QuotationProgress[] = [];
     await runQuotationPreflight({
@@ -401,6 +398,10 @@ describe('quotation runner integration', () => {
     expect(resumed.mock.calls.filter(([input]) => input.role === 'child')
       .map(([input]) => parseMarkdownTables(JSON.parse(input.input).chunk)[0]!.rows.length))
       .toEqual([10, 10, 30, 13]);
+    expect(events.filter((event) => event.stage === 'chunk_saved').map((event) => event.chunkIndex))
+      .toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(events.find((event) => event.stage === 'chunk_saved' && event.chunkIndex === 4)?.attempt)
+      .toEqual(expect.any(String));
     expect(events.filter((event) => event.stage === 'chunk_started')
       .map(({ chunkIndex, completedChunks, totalChunks }) => [chunkIndex, completedChunks, totalChunks]))
       .toEqual([[5, 4, 8], [6, 5, 8], [7, 6, 8], [8, 7, 8]]);
@@ -419,21 +420,17 @@ describe('quotation runner integration', () => {
       { name: 'search_price_candidates', id, args: { queries: [{ queryId: id }] } },
     ], response_metadata: { finish_reason: 'tool_calls' } });
     const middle = chunks[1]!;
-    const review = `## manual_reviews_chunk\n\n${markdownTable(
-      ['來源表格', '來源件號 / 項次', '問題欄位', '目前判斷', '需確認內容', '影響範圍'],
-      [['F1', 'P31', '單價', '', '確認價格', '報價']],
-    )}`;
     const broken = `${child(middle.sourceRows.slice(0, 5))}\n| \u3011\u3010\uff1a\u3011\u3010\u201c\u3011\u3010analysis code`;
     const providerInvoke = configureOAuthResponses([
       lookup('first'), response(child(chunks[0]!.sourceRows)),
       lookup('large'), response(broken),
-      lookup('slice-1'), response(`${child(middle.sourceRows.slice(0, 10))}\n\n${review}`),
+      lookup('slice-1'), response(child(middle.sourceRows.slice(0, 10))),
       lookup('slice-2'), response(broken),
       lookup('slice-2-repair-1'), response(broken),
       lookup('slice-2-resumed'), response(child(middle.sourceRows.slice(10, 20))),
       lookup('slice-3'), response(child(middle.sourceRows.slice(20))),
       lookup('last'), response(child(chunks[2]!.sourceRows)),
-      response(mainMarkdown(orderMarkdown(61))),
+      response('無待複核事項。'),
     ]);
     const executeLookup = createLookupExecutor();
     const publishFinal = jest.fn(async () => undefined);
@@ -445,7 +442,7 @@ describe('quotation runner integration', () => {
     const splitPlan = await service.readCheckpoint({ scope, runId: run.runId, operationId: 'split:2' });
     expect(JSON.parse(splitPlan!).rowsPerSlice).toBe(10);
     const firstSlice = await service.readCheckpoint({ scope, runId: run.runId, operationId: 'slice:2:1' });
-    expect(JSON.parse(firstSlice!).markdown).toContain(review);
+    expect(JSON.parse(firstSlice!).markdown).not.toContain('manual_reviews_chunk');
     expect(executeLookup).toHaveBeenCalledTimes(5);
     expect(publishFinal).not.toHaveBeenCalled();
     const calls = providerInvoke.mock.calls.length;
@@ -457,7 +454,7 @@ describe('quotation runner integration', () => {
     expect(parseMarkdownTables(resumedInput.chunk)[0]!.rows.map((row) => row[1]))
       .toEqual(Array.from({ length: 10 }, (_, i) => `P${i + 41}`));
     const saved = JSON.parse((await service.readCheckpoint({ scope, runId: run.runId, operationId: 'chunk:2' }))!);
-    expect(saved.markdown).toContain(review);
+    expect(saved.markdown).not.toContain('manual_reviews_chunk');
     expect(parseMarkdownTables(saved.markdown)[0]!.rows.map((row) => row[1]))
       .toEqual(middle.sourceRows.map((row) => systemRow(row)[1]));
     expect(await service.readCheckpoint({ scope, runId: run.runId, operationId: 'slice:2:1' })).toBe(firstSlice);
@@ -583,7 +580,133 @@ describe('quotation runner integration', () => {
     },
   );
 
-  it('forwards main text during aggregation once chunks are saved and publishes only the finalized order', async () => {
+  it('uses all saved recovery slices after a main failure and excludes legacy child review tables', async () => {
+    const run = await prepareRun(163);
+    const lease = (await service.acquireLease({ scope, runId: run.runId }))!;
+    const leased = { scope, runId: run.runId, leaseToken: lease.leaseToken };
+    await service.checkpoint({ ...leased, operationId: 'lookup:legacy', kind: 'tool',
+      payload: JSON.stringify({ lookupCallId: 'legacy', arguments: {}, result: lookupResult() }) });
+    const reviews = `## manual_reviews_chunk\n\n${markdownTable(
+      ['來源表格', '來源件號 / 項次', '問題欄位', '目前判斷', '需確認內容', '影響範圍'],
+      [['F1', 'P91', '單价', '', '確認價格', '報價']],
+    )}`;
+    const serialize = (markdown: string) => JSON.stringify({
+      markdown, lookupOperations: ['lookup:legacy'], pythonOperations: [],
+    });
+    for (const chunk of buildQuotationChunks(orderMarkdown(163))) {
+      let markdown = childMarkdown(chunk.sourceRows.map(systemRow));
+      if (chunk.chunkIndex === 4) {
+        const slices = splitQuotationChunk(chunk);
+        await service.checkpoint({ ...leased, operationId: 'split:4', kind: 'main', payload: JSON.stringify({
+          version: 1, rowsPerSlice: 10, sourceRowIds: slices.map((slice) => slice.sourceRows.map((row) => row.sourceRowId)),
+        }) });
+        for (let index = 0; index < slices.length; index += 1) {
+          await service.checkpoint({ ...leased, operationId: `slice:4:${index + 1}`, kind: 'chunk',
+            payload: serialize(`${childMarkdown(slices[index]!.sourceRows.map(systemRow))}\n\n${reviews}`) });
+        }
+        markdown = markdown.replaceAll('| 12 |', '| 999 |');
+      }
+      await service.checkpoint({ ...leased, operationId: `chunk:${chunk.chunkIndex}`, kind: 'chunk',
+        chunkIndex: chunk.chunkIndex, payload: serialize(markdown) });
+    }
+    await service.interruptRun({ ...leased, interruption: { reason: 'error' } });
+    const model = createModel({ onMainInput: (input) => {
+      const payload = JSON.parse(input);
+      expect(Object.keys(payload).sort()).toEqual(['customer', 'order', 'system_order']);
+      expect(parseMarkdownTables(payload.system_order)[0]!.rows).toHaveLength(163);
+      expect(payload.system_order).not.toContain('999');
+      expect(payload.system_order).not.toContain('manual_reviews_chunk');
+    } });
+    const progress: QuotationProgress[] = [];
+    await runQuotationPreflight({ ...runnerInput(model, createLookupExecutor()),
+      onProgress: async (event) => { progress.push(event); } });
+    expect(model).toHaveBeenCalledTimes(1);
+    expect(model.mock.calls[0]![0].role).toBe('main');
+    expect(progress.filter((event) => event.stage === 'chunk_saved').map((event) => event.chunkIndex))
+      .toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+    expect(progress[progress.length - 1]).toEqual(expect.objectContaining({ totalChunks: 8, completedChunks: 8 }));
+  });
+
+  it('preserves notes from a legacy completed main checkpoint without rerunning the model', async () => {
+    const run = await prepareRun(1);
+    const lease = (await service.acquireLease({ scope, runId: run.runId }))!;
+    const leased = { scope, runId: run.runId, leaseToken: lease.leaseToken };
+    const chunk = buildQuotationChunks(orderMarkdown(1))[0]!;
+    await service.checkpoint({ ...leased, operationId: 'lookup:legacy', kind: 'tool',
+      payload: JSON.stringify({ lookupCallId: 'legacy', result: lookupResult() }) });
+    const markdown = childMarkdown(chunk.sourceRows.map(systemRow));
+    await service.checkpoint({ ...leased, operationId: 'chunk:1', kind: 'chunk', chunkIndex: 1,
+      payload: JSON.stringify({ markdown, lookupOperations: ['lookup:legacy'], pythonOperations: [] }) });
+    await service.checkpoint({ ...leased, operationId: 'main', kind: 'main',
+      payload: markdown.replace('system_order_chunk', 'system_order') + '\n\n## notes\n\n已保存的主 agent 補充。' });
+    await service.interruptRun(leased);
+    const model = createModel();
+    const result = await runQuotationPreflight(runnerInput(model, createLookupExecutor()));
+    expect(model).not.toHaveBeenCalled();
+    expect(result.markdown).toContain('## notes\n\n已保存的主 agent 補充。');
+    expect(result.markdown!.indexOf('## notes')).toBeLessThan(result.markdown!.indexOf('## quote_summary'));
+  });
+
+  it('publishes the complete backend table before asking main for review-only output', async () => {
+    await prepareRun(31);
+    const onTextDelta = jest.fn(async (_text: string) => undefined);
+    const publishFinal = jest.fn(async (_result: { markdown: string }) => undefined);
+    const baseModel = createModel();
+    const model = jest.fn(async (input: QuotationModelInput) => {
+      if (input.role !== 'main') return baseModel(input);
+      const payload = JSON.parse(input.input);
+      expect(payload).not.toHaveProperty('chunks');
+      expect(parseMarkdownTables(payload.system_order)[0]!.rows).toHaveLength(31);
+      expect(onTextDelta).toHaveBeenCalledWith(payload.system_order);
+      expect(input.onTextDelta).toBeUndefined();
+      return { markdown: '無待複核事項。', lookups: [], pythonEvidence: [] };
+    });
+    await runQuotationPreflight(runnerInput(model, createLookupExecutor(), { onTextDelta, publishFinal }));
+    const final = publishFinal.mock.calls[0]![0] as unknown as { markdown: string };
+    expect(final.markdown.match(/## system_order/g)).toHaveLength(1);
+    expect(parseMarkdownTables(final.markdown)[0]!.rows).toHaveLength(31);
+    expect(final.markdown).toContain('## customer_quote');
+    expect(final.markdown).not.toContain('manual_reviews_chunk');
+  });
+
+  it('keeps main review text unchecked, places notes after reviews, and appends the backend summary last', async () => {
+    await prepareRun(1);
+    const baseModel = createModel();
+    const raw = '## notes\n\n主 agent 補充。\n\n## manual_reviews\n\n保留這段未使用表格的模型輸出。';
+    const model = jest.fn(async (input: QuotationModelInput) => input.role === 'main'
+      ? { markdown: raw, lookups: [], pythonEvidence: [] } : baseModel(input));
+    const result = await runQuotationPreflight(runnerInput(model, createLookupExecutor()));
+    expect(result.status).toBe('completed');
+    expect(model.mock.calls.filter(([input]) => input.role === 'main')).toHaveLength(1);
+    expect(model.mock.calls.find(([input]) => input.role === 'main')![0]).not.toHaveProperty('validateMainOutput');
+    const markdown = result.markdown!;
+    const headings = [...markdown.matchAll(/^## (.+)$/gm)].map((match) => match[1]);
+    expect(headings).toEqual(['system_order', 'customer_quote', 'manual_reviews', 'notes', 'quote_summary']);
+    expect(markdown).toContain('保留這段未使用表格的模型輸出。');
+    expect(markdown).toContain('主 agent 補充。');
+    expect(markdown).toContain('查價輸出完成：共 1 筆 system_order。');
+    expect(markdown.endsWith('項次核對：材料項次 1／原始訂單 1 項；加工列 0 筆。')).toBe(true);
+  });
+
+  it('counts non-processing items against the original order separately from processing rows in the backend summary', async () => {
+    await prepareRun(2);
+    const baseModel = createModel();
+    const model = jest.fn(async (input: QuotationModelInput) => {
+      const result = await baseModel(input);
+      if (input.role !== 'child') return result;
+      const rows = parseMarkdownTables(result.markdown)[0]!.rows;
+      const processing = Array.from({ length: systemHeaders.length }, () => '');
+      processing[systemHeaders.indexOf('類別')] = '加工/孔';
+      processing[systemHeaders.indexOf('備註')] = 'F1／P1；查無加工價格';
+      return { ...result, markdown: childMarkdown([rows[0]!, processing, processing, rows[1]!]) };
+    });
+    const result = await runQuotationPreflight(runnerInput(model, createLookupExecutor()));
+    const summary = result.markdown!.split('## quote_summary\n\n')[1];
+    expect(summary).toContain('共 4 筆 system_order');
+    expect(summary).toContain('材料項次 2／原始訂單 2 項；加工列 2 筆');
+  });
+
+  it('streams the backend table during aggregation and publishes the finalized review result', async () => {
     await prepareRun(1);
     const progress: QuotationProgress[] = [];
     const publishFinal = jest.fn(async () => undefined);
@@ -597,16 +720,16 @@ describe('quotation runner integration', () => {
       ...runnerInput(createModel({ streamMain: true }), createLookupExecutor(), { publishFinal, onTextDelta }),
       onProgress: async (value) => { progress.push(value); },
     });
-    expect(onTextDelta.mock.calls).toHaveLength(2);
+    expect(onTextDelta.mock.calls).toHaveLength(1);
     expect(progress.filter((value) => value.stage === 'main_streaming')).toHaveLength(1);
     expect(publishFinal).toHaveBeenCalledWith(expect.objectContaining({ markdown: expect.stringContaining('## customer_quote') }));
     expect(publishFinal).toHaveBeenCalledTimes(1);
   });
-  it('keeps streamed partial main output out of checkpoints and resumes without repeating child work', async () => {
+  it('resumes after backend table delivery fails without repeating child work', async () => {
     const run = await prepareRun(1);
     const executeLookup = createLookupExecutor();
     const publishFinal = jest.fn(async () => undefined);
-    const onTextDelta = jest.fn().mockResolvedValueOnce(undefined).mockRejectedValue(new Error('stream disconnected'));
+    const onTextDelta = jest.fn().mockRejectedValue(new Error('stream disconnected'));
     await expect(runQuotationPreflight(runnerInput(createModel({ streamMain: true }), executeLookup, {
       publishFinal, onTextDelta,
     }))).rejects.toThrow('stream disconnected');
@@ -652,7 +775,7 @@ describe('quotation runner integration', () => {
       new AIMessageChunk({ content: malformed, response_metadata: { finish_reason: 'stop' } }),
       new AIMessageChunk({ content: '', tool_calls: [{ name: 'search_price_candidates', id: 'lookup-repair', args: { queries: [{ queryId: 'q1' }] } }], response_metadata: { finish_reason: 'tool_calls' } }),
       new AIMessageChunk({ content: valid, response_metadata: { finish_reason: 'stop' } }),
-      new AIMessageChunk({ content: mainMarkdown(orderMarkdown(1)), response_metadata: { finish_reason: 'stop' } }),
+      new AIMessageChunk({ content: '無待複核事項。', response_metadata: { finish_reason: 'stop' } }),
     ]);
     const executeLookup = createLookupExecutor();
     const progress: QuotationProgress[] = [];
@@ -695,7 +818,7 @@ describe('quotation runner integration', () => {
     const providerInvoke = configureOAuthResponses([
       new AIMessageChunk({ content: '', tool_calls: [{ name: 'search_price_candidates', id: 'lookup-format', args: {} }], response_metadata: { finish_reason: 'tool_calls' } }),
       new AIMessageChunk({ content: missingDelimiter, response_metadata: { finish_reason: 'stop' } }),
-      new AIMessageChunk({ content: mainMarkdown(orderMarkdown(1)), response_metadata: { finish_reason: 'stop' } }),
+      new AIMessageChunk({ content: '無待複核事項。', response_metadata: { finish_reason: 'stop' } }),
     ]);
     await runQuotationPreflight(runnerInput(invokeQuotationModel, createLookupExecutor()));
     expect(providerInvoke).toHaveBeenCalledTimes(3);
@@ -740,7 +863,7 @@ describe('quotation runner integration', () => {
     const providerInvoke = configureOAuthResponses([
       new AIMessageChunk({ content: '', tool_calls: [{ name: 'search_price_candidates', id: 'lookup-new', args: { queries: [{ queryId: 'fresh-query' }] } }], response_metadata: { finish_reason: 'tool_calls' } }),
       new AIMessageChunk({ content: valid, response_metadata: { finish_reason: 'stop' } }),
-      new AIMessageChunk({ content: mainMarkdown(orderMarkdown(1)), response_metadata: { finish_reason: 'stop' } }),
+      new AIMessageChunk({ content: '無待複核事項。', response_metadata: { finish_reason: 'stop' } }),
     ]);
     const executeLookup = createLookupExecutor();
     await runQuotationPreflight(runnerInput(invokeQuotationModel, executeLookup));
@@ -780,6 +903,72 @@ describe('quotation runner integration', () => {
       expectedCustomerPreparationId: state?.currentCustomer?.preparationId, finishReason: 'stop' });
     expect(run?.index).toBe(1);
     expect(run?.triggerMessageId).toBe('confirmation-user');
+  });
+
+  it('accepts a fresh signal for a resubmitted quotation request after completion and keeps replay idempotent', async () => {
+    const response = await prepareCustomer();
+    const first = (await acceptQuotationResponse({ scope, response, responseId: 'response-1', finishReason: 'stop' }))!;
+    await runQuotationPreflight(runnerInput(createModel(), createLookupExecutor()));
+    expect(await service.hasSystemOrder(scope)).toBe(true);
+    const prepared = await prepareQuotationTurn({
+      scope, messageId: first.triggerMessageId!, responseId: 'rerun-response', text: '依目前 OCR 彙整表開始報價',
+    });
+    expect(prepared.resume).toBe(false);
+    expect(prepared.instruction).toContain(JSON.stringify({ hasOcrResult: true, hasCustomerData: true,
+      hasSystemOrder: true, shouldAskToQuote: false }));
+    const request = { scope, response: quotationSignal, responseId: 'rerun-response',
+      messageId: first.triggerMessageId, expectedOrderHash: prepared.state.currentOrder?.sha256,
+      expectedCustomerPreparationId: prepared.state.currentCustomer?.preparationId, finishReason: 'stop' };
+    const next = (await acceptQuotationResponse(request))!;
+    expect(next.runId).not.toBe(first.runId);
+    expect(next.index).toBe(first.index + 1);
+    expect(next.chunks.every((chunk) => chunk.status === 'pending')).toBe(true);
+    expect(await service.hasSystemOrder(scope)).toBe(false);
+    expect((await acceptQuotationResponse(request))?.runId).toBe(next.runId);
+  });
+
+  it('waits for an AI signal and resumes the same interrupted run without issuing another ticket', async () => {
+    const response = await prepareCustomer();
+    const first = (await acceptQuotationResponse({ scope, response, responseId: 'response-1', finishReason: 'stop' }))!;
+    const lease = await service.acquireLease({ scope, runId: first.runId });
+    await service.interruptRun({ scope, runId: first.runId, leaseToken: lease!.leaseToken,
+      interruption: { reason: 'paused' } });
+    const prepared = await prepareQuotationTurn({ scope, messageId: 'continue-user',
+      responseId: 'continue-response', text: '請繼續處理這份報價' });
+    expect(prepared.resume).toBe(false);
+    const request = { scope, responseId: 'continue-response', messageId: 'continue-user',
+      expectedOrderHash: prepared.state.currentOrder?.sha256,
+      expectedCustomerPreparationId: prepared.state.currentCustomer?.preparationId, finishReason: 'stop' };
+    await expect(acceptQuotationResponse({ ...request, response: '這份報價尚未完成。' })).resolves.toBeUndefined();
+    await expect(acceptQuotationResponse({ ...request, response: quotationSignal,
+      expectedOrderHash: 'stale' })).rejects.toThrow('stale preparation');
+    const accepted = await Promise.all([1, 2].map(() => acceptQuotationResponse({ ...request, response: quotationSignal })));
+    expect(accepted.map((run) => run?.runId)).toEqual([first.runId, first.runId]);
+    const state = await service.readState(scope);
+    expect(state?.nextSignalIndex).toBe(first.index);
+    expect(state?.tickets).toHaveLength(1);
+    expect(state?.pendingMessages).toHaveLength(0);
+    expect(state?.activeRun?.interruption?.reason).toBe('paused');
+    const concurrent = await Promise.all([1, 2].map(() => service.acquireLease({ scope, runId: first.runId })));
+    expect(concurrent.filter(Boolean)).toHaveLength(1);
+  });
+
+  it.each([false, true])('durably queues changed inputs before continuing a frozen run (mixed signal=%s)', async (mixedSignal) => {
+    const response = await prepareCustomer();
+    const first = (await acceptQuotationResponse({ scope, response, responseId: 'response-1', finishReason: 'stop' }))!;
+    const state = await service.readState(scope);
+    const files = [{ fileId: 'original-file', filename: 'revision.pdf', mediaType: 'application/pdf' }];
+    const accepted = await acceptQuotationResponse({ scope,
+      response: `${orderMarkdown(2)}${mixedSignal ? `\n\n${quotationSignal}` : ''}`,
+      responseId: 'correction-response', messageId: 'correction-user', messageText: '改用附件的訂單', messageFiles: files,
+      expectedOrderHash: state?.currentOrder?.sha256,
+      expectedCustomerPreparationId: state?.currentCustomer?.preparationId, finishReason: 'stop' });
+    expect(accepted?.runId).toBe(first.runId);
+    const after = await service.readState(scope);
+    expect(after?.currentOrder?.sha256).toBe(state?.currentOrder?.sha256);
+    expect(after?.nextSignalIndex).toBe(first.index);
+    expect(after?.pendingMessages).toEqual([expect.objectContaining({ sourceMessageId: 'correction-user',
+      sourceMessageText: '改用附件的訂單', sourceMessageFiles: files, targetMessageId: 'correction-response' })]);
   });
 
   it('persists explicit default-B Markdown before OCR and retains it for later quotation', async () => {
@@ -915,10 +1104,6 @@ describe('quotation runner integration', () => {
   it('reuses completed chunks after an interrupted child and runs only the pending chunk', async () => {
     const run = await prepareRun(31);
     let failSecondChunk = true;
-    const reviews = `## manual_reviews_chunk\n\n${markdownTable(
-      ['來源表格', '來源件號 / 項次', '問題欄位', '目前判斷', '需確認內容', '影響範圍'],
-      [['F1', 'P1', '單價', '', '確認 P1 價格', '報價']],
-    )}`;
     const mainInputs: string[] = [];
     const invokeModel = createModel({
       onMainInput: (input) => mainInputs.push(input),
@@ -926,7 +1111,7 @@ describe('quotation runner integration', () => {
         const rows = parseMarkdownTables((JSON.parse(input.input) as { chunk: string }).chunk)[0]!.rows;
         await input.lookup?.(`lookup-${rows[0]![1]}`, { queries: [] });
         return {
-          markdown: childMarkdown(rows.map(systemRowFromSourceRow)) + (rows[0]![1] === 'P1' ? `\n\n${reviews}` : ''),
+          markdown: childMarkdown(rows.map(systemRowFromSourceRow)),
           lookups: [],
           pythonEvidence: [],
         };
@@ -943,7 +1128,7 @@ describe('quotation runner integration', () => {
     expect(interrupted?.activeRun?.status).toBe('interrupted');
     expect(interrupted?.activeRun?.chunks.map((chunk) => chunk.status)).toEqual(['completed', 'pending']);
     const saved = await service.readCheckpoint({ scope, runId: run.runId, operationId: 'chunk:1' });
-    expect((JSON.parse(saved!) as { markdown: string }).markdown).toContain(reviews);
+    expect((JSON.parse(saved!) as { markdown: string }).markdown).not.toContain('manual_reviews_chunk');
     const callsAfterFailure = invokeModel.mock.calls.length;
 
     const completed = await runQuotationPreflight(runnerInput(invokeModel, executeLookup));
@@ -962,13 +1147,11 @@ describe('quotation runner integration', () => {
     ]);
     expect(childInputs.every((payload) => payload.customer === customerMarkdown)).toBe(true);
     expect(mainInputs).toHaveLength(1);
-    const mainInput = JSON.parse(mainInputs[0]!) as { order: string; customer: string; chunks: string[] };
+    const mainInput = JSON.parse(mainInputs[0]!) as { order: string; customer: string; system_order: string };
     expect(mainInput.order).toBe(orderMarkdown(31));
     expect(mainInput.customer).toBe(customerMarkdown);
-    const chunks = mainInput.chunks;
-    expect(chunks).toHaveLength(2);
-    expect(chunks.filter((chunk) => chunk.includes(reviews))).toHaveLength(1);
-    expect(chunks.join('\n').match(/## manual_reviews_chunk/g)).toHaveLength(1);
+    expect(parseMarkdownTables(mainInput.system_order)[0]!.rows).toHaveLength(31);
+    expect(mainInput.system_order).not.toContain('manual_reviews_chunk');
     expect(executeLookup).toHaveBeenCalledTimes(2);
   });
 
@@ -988,7 +1171,7 @@ describe('quotation runner integration', () => {
     );
     const interrupted = await service.readState(scope);
     expect(interrupted?.activeRun?.status).toBe('interrupted');
-    expect(interrupted?.activeRun?.checkpointRefs.some((ref) => ref.operationId === 'main')).toBe(true);
+    expect(interrupted?.activeRun?.checkpointRefs.some((ref) => ref.operationId === 'main-reviews')).toBe(true);
     const callsAfterFailure = invokeModel.mock.calls.length;
 
     const completed = await runQuotationPreflight(runnerInput(invokeModel, executeLookup, { onProgress }));
@@ -1008,7 +1191,8 @@ describe('quotation runner integration', () => {
     expect(mainInputs).toHaveLength(1);
     expect(mainInputs[0]).not.toContain('quote_lineage');
     expect(mainInputs[0]).not.toContain('sourceRowId');
-    expect(mainInputs[0]).toContain('## system_order_chunk');
+    expect(mainInputs[0]).toContain('## system_order');
+    expect(mainInputs[0]).not.toContain('system_order_chunk');
   });
 
   it('cancels a child execution and does not publish a late final response', async () => {
