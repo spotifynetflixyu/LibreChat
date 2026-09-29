@@ -116,9 +116,9 @@ it('gives consolidation Python but no Steel tools and prevents an invented clien
 
 const childHeaders = [
   '型號', '品名規格', '材質編號', '單位', '數量', '單重', '總數', '單價',
-  '計價基準', '公式編號', '厚度', '寬度', '長度', '肚', '類別', '備註',
+  '計價基準', '公式編號', '厚度', '寬度', '長度', '肚', '類別', '零件編號', '備註',
 ];
-const childRow = ['ERP-1', '鐵板 6T P1', '黑鐵', 'Kg', '2', '', '2', '12', '2', 'PL', '6', '100', '200', '', '鐵板', 'F1 P1'];
+const childRow = ['ERP-1', '鐵板 6T P1', '黑鐵', 'Kg', '2', '', '2', '12', '2', 'PL', '6', '100', '200', '', '鐵板', 'P1', 'F1 P1'];
 const childOrder = buildQuotationChunks([
   '## ocr_result',
   '',

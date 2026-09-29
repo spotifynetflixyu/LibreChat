@@ -132,6 +132,7 @@ const MessageRender = memo(function MessageRender({
 
   const { hasParallelContent } = useContentMetadata(msg);
   const messageId = msg?.messageId ?? '';
+  const messageTimestamp = getMessageTimestampSource(msg);
   const messageContextValue = useMemo(
     () => ({
       messageId,
@@ -139,8 +140,9 @@ const MessageRender = memo(function MessageRender({
       isExpanded: false as const,
       isSubmitting,
       conversationId: conversation?.conversationId,
+      messageTimestamp,
     }),
-    [messageId, conversation?.conversationId, isSubmitting, isLatestMessage],
+    [messageId, conversation?.conversationId, isSubmitting, isLatestMessage, messageTimestamp],
   );
 
   if (!msg) {
@@ -158,7 +160,7 @@ const MessageRender = memo(function MessageRender({
         msg.model,
         conversation?.model,
       )}
-      timestamp={getMessageTimestampSource(msg)}
+      timestamp={messageTimestamp}
       processingStartedAt={getMessageProcessingStartedAt(msg)}
       processingDurationMs={!msg.isCreatedByUser ? msg.processingDurationMs : undefined}
       isSubmitting={isSubmitting}

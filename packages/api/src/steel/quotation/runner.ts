@@ -37,7 +37,7 @@ import {
   stripLegacyQuotationChildSidecars,
   validateQuotationChildResult,
   finalizeQuotationMainResponse,
-  buildQuotationSystemOrder,
+  buildQuotationSystemOrderForReview,
   buildQuotationFailureMarkdown,
   restoreQuotationChunks,
 } from './protocol';
@@ -367,9 +367,13 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     interruptedChunkIndex = undefined;
     await service.transitionRun({ ...leaseInput, status: 'aggregating' });
     await progress();
+    const aggregate = buildQuotationSystemOrderForReview({
+      fullOcrResult: snapshot.orderMarkdown,
+      childResults: results,
+    });
     const final = finalizeQuotationMainResponse({
       fullOcrResult: snapshot.orderMarkdown,
-      mainResponse: buildQuotationSystemOrder({ fullOcrResult: snapshot.orderMarkdown, childResults: results }),
+      mainResponse: aggregate.systemOrderMarkdown,
       childResults: results,
     });
     const systemOrder = final.systemOrderMarkdown;
@@ -409,6 +413,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
             order: snapshot.orderMarkdown,
             customer: snapshot.customerMarkdown,
             system_order: systemOrder,
+            review_remarks: aggregate.reviewRemarks,
           }),
           modelOptions: input.modelOptions,
           signal: controller.signal,

@@ -48,7 +48,8 @@ export interface QuotationModelInput {
 
 const quotationChildSystemContract = [
   'Quotation child output contract (this instruction overrides earlier or frozen output instructions):',
-  '- Return exactly one complete 16-column ## system_order_chunk Markdown table.',
+  '- Return exactly one complete 17-column ## system_order_chunk Markdown table with 零件編號 immediately before 備註.',
+  '- Set each material and processing row 零件編號 from the corresponding chunk row when known; leave it blank when unavailable. Keep review explanations in 備註.',
   '- Keep every required material and processing row; put any issue or missing-value explanation in the row 備註 cell.',
   '- Do not emit manual_reviews_chunk, system_order, customer_quote, quote_summary, control JSON, or prose outside the table.',
 ].join('\n');
@@ -56,6 +57,7 @@ const quotationChildSystemContract = [
 const quotationMainSystemContract = [
   'Quotation main review contract (this instruction overrides earlier or frozen output instructions):',
   '- The supplied system_order is the quotation table to review. Never reproduce, rewrite, shorten, or refuse based on its length.',
+  '- review_remarks contains one complete 17-column ## system_order_chunk table, including 零件編號 and 備註. Use it with order and system_order to identify actual issues for manual_reviews.',
   '- Return one six-column ## manual_reviews Markdown table for actual issues. Optional ## notes must follow manual_reviews. If there are no issues and no notes, return exactly: 無待複核事項。',
   '- Do not return system_order, customer_quote, or quote_summary.',
 ].join('\n');

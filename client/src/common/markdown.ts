@@ -3,8 +3,10 @@ export type MarkdownTableComment = {
   conversationId: string;
   messageId: string;
   messageTimestampLabel: string;
+  messageTimestamp?: string;
   markdownIndex: number;
   markdownLabel: string;
+  markdownTitle?: string;
   tableFingerprint: string;
   rowIndex: number;
   columnIndex: number;
@@ -25,7 +27,7 @@ type MarkdownTableCommentRecord = Partial<Record<keyof MarkdownTableComment, unk
 
 const markdownTableCommentsStoragePrefix = 'librechat.pendingMarkdownTableComments.';
 const markdownTableCommentsInstruction =
-  '請依照以上 comments，分別輸出每個 Markdown 的完整新表格；不要只輸出修改過的 cell 或 row。';
+  '請依照以上 comments，分別輸出每個表格修改後的 row；每個 row 保留完整欄位，不要輸出未修改的 row 或整張表格。';
 const markdownTableCommentStringFields = [
   'id',
   'conversationId',
@@ -43,16 +45,17 @@ function escapeQuotedValue(value: string): string {
   return value.replace(/"/g, '\\"');
 }
 
+function getTableHeader(tableFingerprint: string): string {
+  return tableFingerprint.split('\n', 1)[0]?.trim() ?? '';
+}
+
 function getGroupKey(comment: MarkdownTableComment): string {
   return `${comment.messageId}:${comment.markdownIndex}`;
 }
 
-function getGroupLabel(comment: MarkdownTableComment): string {
-  if (comment.markdownLabel.trim()) {
-    return comment.markdownLabel.trim();
-  }
-
-  return `${comment.messageTimestampLabel || 'Unknown time'} / Markdown ${comment.markdownIndex}`;
+export function getMarkdownTableCommentLabel(comment: MarkdownTableComment): string {
+  const title = comment.markdownTitle?.trim();
+  return title || '原始 Markdown 標題未載入';
 }
 
 function getLocalStorage(): Storage | null {
@@ -93,7 +96,9 @@ function isMarkdownTableComment(value: unknown): value is MarkdownTableComment {
   return (
     hasStringFields(value, markdownTableCommentStringFields) &&
     hasNumberFields(value, markdownTableCommentNumberFields) &&
-    (value.rowLabel === undefined || typeof value.rowLabel === 'string')
+    (value.rowLabel === undefined || typeof value.rowLabel === 'string') &&
+    (value.messageTimestamp === undefined || typeof value.messageTimestamp === 'string') &&
+    (value.markdownTitle === undefined || typeof value.markdownTitle === 'string')
   );
 }
 
@@ -155,7 +160,16 @@ export function writeStoredMarkdownTableComments(
 }
 
 export function formatMarkdownTableComments(comments: readonly MarkdownTableComment[]): string {
-  const groups = new Map<string, { label: string; comments: MarkdownTableComment[] }>();
+  const groups = new Map<
+    string,
+    {
+      label: string;
+      messageId: string;
+      messageTimestamp?: string;
+      markdownIndex: number;
+      comments: MarkdownTableComment[];
+    }
+  >();
 
   for (const comment of comments) {
     const normalizedComment = comment.comment.trim();
@@ -170,11 +184,15 @@ export function formatMarkdownTableComments(comments: readonly MarkdownTableComm
 
     if (group) {
       group.comments.push(nextComment);
+      group.messageTimestamp ??= comment.messageTimestamp;
       continue;
     }
 
     groups.set(key, {
-      label: getGroupLabel(comment),
+      label: getMarkdownTableCommentLabel(comment),
+      messageId: comment.messageId,
+      messageTimestamp: comment.messageTimestamp,
+      markdownIndex: comment.markdownIndex,
       comments: [nextComment],
     });
   }
@@ -185,9 +203,34 @@ export function formatMarkdownTableComments(comments: readonly MarkdownTableComm
 
   const lines = ['Markdown table comments:'];
 
+  const messageOrder = new Map<string, number>();
+  const messageTimes = new Map<string, number>();
   for (const group of groups.values()) {
-    lines.push('', `### ${group.label}`, '');
-    group.comments.forEach((comment, index) => {
+    if (!messageOrder.has(group.messageId)) {
+      messageOrder.set(group.messageId, messageOrder.size);
+    }
+    const time = Date.parse(group.messageTimestamp ?? '');
+    if (Number.isFinite(time)) {
+      messageTimes.set(group.messageId, time);
+    }
+  }
+  const orderedGroups = Array.from(groups.values()).sort((a, b) => {
+    const aTime = messageTimes.get(a.messageId) ?? Infinity;
+    const bTime = messageTimes.get(b.messageId) ?? Infinity;
+    if (aTime !== bTime) {
+      return aTime - bTime;
+    }
+    const messageDifference =
+      (messageOrder.get(a.messageId) ?? 0) - (messageOrder.get(b.messageId) ?? 0);
+    return messageDifference || a.markdownIndex - b.markdownIndex;
+  });
+
+  for (const group of orderedGroups) {
+    lines.push('', `## ${group.label}`, '');
+    const orderedComments = [...group.comments].sort(
+      (a, b) => a.rowIndex - b.rowIndex || a.columnIndex - b.columnIndex,
+    );
+    orderedComments.forEach((comment, index) => {
       if (index > 0) {
         lines.push('');
       }
@@ -202,7 +245,14 @@ export function formatMarkdownTableComments(comments: readonly MarkdownTableComm
     });
   }
 
-  lines.push('', markdownTableCommentsInstruction);
+  lines.push('', markdownTableCommentsInstruction, '', '各表格完整欄位參考（依原表格順序）：');
+
+  for (const group of orderedGroups) {
+    const header = getTableHeader(group.comments[0].tableFingerprint);
+    if (header) {
+      lines.push('', `### ${group.label}`, '', header);
+    }
+  }
 
   return lines.join('\n');
 }

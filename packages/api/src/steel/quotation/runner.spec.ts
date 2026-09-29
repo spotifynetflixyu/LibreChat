@@ -51,6 +51,7 @@ const systemHeaders = [
   '長度',
   '肚',
   '類別',
+  '零件編號',
   '備註',
 ];
 const customerMarkdown = [
@@ -143,6 +144,7 @@ function systemRow(source: QuotationChunk['sourceRows'][number]): readonly strin
     source.cells[6] ?? '',
     '',
     '鐵板',
+    source.cells[1] ?? '',
     '',
   ];
 }
@@ -208,7 +210,7 @@ function systemRowFromSourceRow(row: readonly string[]): readonly string[] {
     'ERP-PLATE',
     row[1] ? `鐵板 6T ${row[1]}` : '鐵板 6T',
     '黑鐵', 'Kg', row[3] ?? '', '', row[3] ?? '', '12', '2', 'PL',
-    row[4] ?? '', row[5] ?? '', row[6] ?? '', '', '鐵板', '',
+    row[4] ?? '', row[5] ?? '', row[6] ?? '', '', '鐵板', row[1] ?? '', '',
   ];
 }
 
@@ -686,7 +688,7 @@ describe('quotation runner integration', () => {
     await service.interruptRun({ ...leased, interruption: { reason: 'error' } });
     const model = createModel({ onMainInput: (input) => {
       const payload = JSON.parse(input);
-      expect(Object.keys(payload).sort()).toEqual(['customer', 'order', 'system_order']);
+      expect(Object.keys(payload).sort()).toEqual(['customer', 'order', 'review_remarks', 'system_order']);
       expect(parseMarkdownTables(payload.system_order)[0]!.rows).toHaveLength(163);
       expect(payload.system_order).not.toContain('999');
       expect(payload.system_order).not.toContain('manual_reviews_chunk');
@@ -815,7 +817,10 @@ describe('quotation runner integration', () => {
 
   it('counts non-processing items against the original order separately from processing rows in the backend summary', async () => {
     await prepareRun(2);
-    const baseModel = createModel();
+    let reviewPayload: { system_order: string; review_remarks: string } | undefined;
+    const baseModel = createModel({ onMainInput: (input) => {
+      reviewPayload = JSON.parse(input) as { system_order: string; review_remarks: string };
+    } });
     const model = jest.fn(async (input: QuotationModelInput) => {
       const result = await baseModel(input);
       if (input.role !== 'child') return result;
@@ -829,6 +834,15 @@ describe('quotation runner integration', () => {
     const summary = result.markdown!.split('## quote_summary\n\n')[1];
     expect(summary).toContain('共 4 筆 system_order');
     expect(summary).toContain('材料項次 2／原始訂單 2 項；加工列 2 筆');
+    expect(parseMarkdownTables(reviewPayload!.system_order)[0]!.rows.map((row) => row[15]))
+      .toEqual(['P1', '', '', 'P2']);
+    const reviewTable = parseMarkdownTables(reviewPayload!.review_remarks)[0]!;
+    expect(reviewTable.headers).toEqual(systemHeaders);
+    expect(reviewTable.rows.map((row) => row[15])).toEqual(['P1', '', '', 'P2']);
+    expect(reviewTable.rows.map((row) => row[16])).toEqual([
+      '', 'F1／P1；查無加工價格', 'F1／P1；查無加工價格', '',
+    ]);
+    expect(result.markdown).not.toContain('查無加工價格');
   });
 
   it('streams the backend table during aggregation and publishes the finalized review result', async () => {
@@ -1004,7 +1018,7 @@ describe('quotation runner integration', () => {
   it('saves a canonical chunk without another AI generation when only its closing delimiter is missing', async () => {
     const run = await prepareRun(1);
     const row = [...systemRow(buildQuotationChunks(orderMarkdown(1), 30)[0]!.sourceRows[0]!)];
-    row[15] = 'F1 P1';
+    row[16] = 'F1 P1';
     const valid = childMarkdown([row]);
     const missingDelimiter = valid.slice(0, -1);
     const providerInvoke = configureOAuthResponses([
@@ -1375,7 +1389,7 @@ describe('quotation runner integration', () => {
     expect(executeLookup).toHaveBeenCalledTimes(1);
   });
 
-  it('completes a no-data child after a failed structured lookup and gives main only table chunks', async () => {
+  it('completes a no-data child after a failed structured lookup and gives main the merged child table', async () => {
     await prepareRun(1);
     const mainInputs: string[] = [];
     const invokeModel = createModel({ onMainInput: (input) => mainInputs.push(input) });
@@ -1386,8 +1400,9 @@ describe('quotation runner integration', () => {
     expect(mainInputs).toHaveLength(1);
     expect(mainInputs[0]).not.toContain('quote_lineage');
     expect(mainInputs[0]).not.toContain('sourceRowId');
-    expect(mainInputs[0]).toContain('## system_order');
-    expect(mainInputs[0]).not.toContain('system_order_chunk');
+    const mainInput = JSON.parse(mainInputs[0]!) as { system_order: string; review_remarks: string };
+    expect(mainInput.system_order).toContain('## system_order');
+    expect(mainInput.review_remarks).toContain('## system_order_chunk');
   });
 
   it('cancels a child execution and does not publish a late final response', async () => {

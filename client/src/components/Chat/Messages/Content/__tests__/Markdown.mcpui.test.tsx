@@ -1,9 +1,10 @@
 import React from 'react';
-import { act, fireEvent, render, screen, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import Markdown from '../Markdown';
 import MarkdownLite from '../MarkdownLite';
 import { RecoilRoot, useRecoilValue } from 'recoil';
 import type { TConversation } from 'librechat-data-provider';
+import { readStoredMarkdownTableComments, writeStoredMarkdownTableComments } from '~/common';
 import type { MarkdownTableComment } from '~/common';
 import { UI_RESOURCE_MARKER } from '~/components/MCPUIResource/plugin';
 import {
@@ -138,7 +139,12 @@ function renderMarkdownWithMessageContext({
           } as any
         }
       >
-        <Markdown content={content} isLatestMessage={false} />
+        <div className="message-render" id="msg-table">
+          <h2>Assistant</h2>
+          <div className="message-content">
+            <Markdown content={content} isLatestMessage={false} />
+          </div>
+        </div>
       </MessageContext.Provider>
       {children}
     </RecoilRoot>,
@@ -226,6 +232,7 @@ describe('Markdown table rendering', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    localStorage.clear();
     document.documentElement.classList.remove('dark', 'light');
     document.documentElement.removeAttribute('data-theme');
     mockUseLocalize.mockReturnValue(((key: string) => key) as any);
@@ -516,6 +523,55 @@ describe('Markdown table rendering', () => {
     firstCommentButton = within(modal).getAllByLabelText(commentLabel)[0];
     expect(firstCommentButton).not.toHaveClass('markdown-table-cell-comment-button-active');
     expect(firstCommentButton).not.toHaveAttribute('title');
+  });
+
+  it('captures the preceding Markdown level-two title for a table comment', () => {
+    const observedComments: MarkdownTableComment[][] = [];
+
+    renderMarkdownWithMessageContext({
+      content: `## 報價明細\n\n${tableMarkdown}`,
+      children: (
+        <PendingCommentsProbe
+          conversationId="conv1"
+          onChange={(comments) => observedComments.push(comments)}
+        />
+      ),
+    });
+
+    fireEvent.click(screen.getByLabelText('com_ui_expand_table'));
+    fireEvent.click(within(screen.getByRole('dialog')).getAllByLabelText('com_ui_markdown_table_cell_comment')[0]);
+    fireEvent.change(screen.getByRole('textbox', { name: 'com_ui_markdown_table_cell_comment' }), {
+      target: { value: '改成 12' },
+    });
+    fireEvent.keyDown(screen.getByRole('textbox', { name: 'com_ui_markdown_table_cell_comment' }), {
+      key: 'Enter',
+    });
+
+    expect(observedComments.at(-1)?.[0].markdownTitle).toBe('報價明細');
+  });
+
+  it('fills the Markdown title on a pending comment saved before titles were captured', async () => {
+    const legacyComment: MarkdownTableComment = {
+      id: 'msg-table:1:1:0',
+      conversationId: 'conv1',
+      messageId: 'msg-table',
+      messageTimestampLabel: '2026-06-27 14:32',
+      markdownIndex: 1,
+      markdownLabel: '2026-06-27 14:32 / Markdown 1',
+      tableFingerprint: tableMarkdown,
+      rowIndex: 1,
+      columnIndex: 0,
+      columnHeader: 'Alpha',
+      oldValue: 'one',
+      comment: '改成 12',
+    };
+    writeStoredMarkdownTableComments('conv1', [legacyComment]);
+
+    renderMarkdownWithMessageContext({ content: `## 報價明細\n\n${tableMarkdown}` });
+
+    await waitFor(() =>
+      expect(readStoredMarkdownTableComments('conv1')[0].markdownTitle).toBe('報價明細'),
+    );
   });
 
   it('closes the expanded table modal with Escape', () => {

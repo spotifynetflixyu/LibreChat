@@ -1,5 +1,6 @@
 import {
   buildQuotationSystemOrder,
+  buildQuotationSystemOrderForReview,
   buildQuotationChunks,
   buildQuotationFailureMarkdown,
   extractCustomerDataTable,
@@ -18,8 +19,9 @@ import { parseMarkdownTables } from '../markdown/table';
 const ocrHeaders = ['來源', '零件編號', '類別', '數量', '厚度', '寬度', '長度'];
 const systemHeaders = [
   '型號', '品名規格', '材質編號', '單位', '數量', '單重', '總數', '單價',
-  '計價基準', '公式編號', '厚度', '寬度', '長度', '肚', '類別', '備註',
+  '計價基準', '公式編號', '厚度', '寬度', '長度', '肚', '類別', '零件編號', '備註',
 ];
+const finalHeaders = systemHeaders.filter((header) => header !== '零件編號');
 const reviewHeaders = ['來源表格', '來源件號 / 項次', '問題欄位', '目前判斷', '需確認內容', '影響範圍'];
 
 function table(headers: readonly string[], rows: readonly (readonly string[])[]): string {
@@ -88,8 +90,12 @@ function removeTrailingPipes(markdown: string): string {
   }).join('\n');
 }
 
-const pricedRow = ['ERP-1', '鐵板 6T P1', '黑鐵', 'Kg', '2', '', '2', '12', '2', 'PL', '6', '100', '200', '', '鐵板', ''];
-const blankRow = ['', '鐵板 P1', '', '', '2', '', '', '', '2', '', '6', '100', '200', '', '鐵板', '查無候選，需確認'];
+const pricedRow = ['ERP-1', '鐵板 6T P1', '黑鐵', 'Kg', '2', '', '2', '12', '2', 'PL', '6', '100', '200', '', '鐵板', 'P1', ''];
+const blankRow = ['', '鐵板 P1', '', '', '2', '', '', '', '2', '', '6', '100', '200', '', '鐵板', 'P1', '查無候選，需確認'];
+
+function finalRow(row: readonly string[]): string[] {
+  return row.filter((_, index) => index !== systemHeaders.indexOf('零件編號'));
+}
 
 function rowsForChunk(chunk: QuotationChunk): readonly (readonly string[])[] {
   return chunk.sourceRows.map((source) => {
@@ -100,6 +106,7 @@ function rowsForChunk(chunk: QuotationChunk): readonly (readonly string[])[] {
     row[11] = source.cells[5] ?? '';
     row[12] = source.cells[6] ?? '';
     row[14] = source.cells[2] ?? '';
+    row[15] = source.cells[1] ?? '';
     return row;
   });
 }
@@ -212,6 +219,44 @@ describe('quotation protocol', () => {
     expect(validateQuotationChildResult(childInput(chunkForRows(), pricedRow))).toEqual(expect.objectContaining({ rows: [pricedRow] }));
   });
 
+  it('accepts a blank child part code and leaves the final remark blank', () => {
+    const childRow = [...pricedRow];
+    childRow[15] = '';
+    childRow[16] = '需確認來源件號';
+    const chunk = chunkForRows();
+    const child = { ...childInput(chunk, childRow), allowManualReviews: false };
+    expect(validateQuotationChildResult(child).rows[0]![15]).toBe('');
+    const result = buildQuotationSystemOrderForReview({
+      fullOcrResult: ocr([['F1', 'P1', '鐵板', '2', '6', '100', '200']]),
+      childResults: [child],
+    });
+    expect(parseMarkdownTables(result.systemOrderMarkdown)[0]!.rows[0]![15]).toBe('');
+    expect(parseMarkdownTables(result.reviewRemarks)[0]!.rows[0]).toEqual(childRow);
+  });
+
+  it('does not reject a child part code that differs from OCR', () => {
+    const row = [...pricedRow];
+    row[15] = 'Q9';
+    const child = { ...childInput(chunkForRows(), row), allowManualReviews: false };
+    const result = buildQuotationSystemOrderForReview({
+      fullOcrResult: ocr([['F1', 'P1', '鐵板', '2', '6', '100', '200']]),
+      childResults: [child],
+    });
+    expect(parseMarkdownTables(result.systemOrderMarkdown)[0]!.rows[0]![15]).toBe('Q9');
+  });
+
+  it('upgrades saved 16-column child output while requiring 17 columns for new output', () => {
+    const chunk = chunkForRows();
+    const legacy = `## system_order_chunk\n\n${table(finalHeaders, [finalRow(blankRow)])}`;
+    const input = { chunk, response: legacy, lookupEvidence: [successfulLookup()] };
+    const restored = validateQuotationChildResult(input);
+    expect(restored.rows[0]![15]).toBe('P1');
+    expect(restored.rows[0]![16]).toBe('查無候選，需確認');
+    expect(restored.markdown).toContain('| 類別 | 零件編號 | 備註 |');
+    expect(() => validateQuotationChildResult({ ...input, allowManualReviews: false }))
+      .toThrow('invalid system_order_chunk');
+  });
+
   it('builds and accepts the deterministic OCR fallback with canonical alias precedence', () => {
     const headers = ['來源', '零件編號', '類別', '品名規格', '品名／規格', '品名', '規格', '數量', '厚度(mm)', '厚度', '寬度(mm)', '長度(mm)', '頁碼', '加工需求'];
     const source = ocrWithHeaders(headers, [['F-01', 'P-01', '鐵板', 'canonical', 'historical', 'name', 'spec', '2', '6', '99', '100', '200', '7', '折彎']]);
@@ -228,12 +273,13 @@ describe('quotation protocol', () => {
     expect(rows[0]![0]).toBe('');
     expect(rows[0]![2]).toBe('');
     expect(rows[0]![7]).toBe('');
-    expect(rows[0]![15]).toContain('來源=F-01');
-    expect(rows[0]![15]).toContain('頁碼=7');
-    expect(rows[0]![15]).toContain('零件編號=P-01');
-    expect(rows[0]![15]).toContain('加工需求=折彎');
-    expect(rows[0]![15]).toContain('重試3次');
-    expect(rows[0]![15]).toContain(backendFailure.reason);
+    expect(rows[0]![15]).toBe('P-01');
+    expect(rows[0]![16]).toContain('來源=F-01');
+    expect(rows[0]![16]).toContain('頁碼=7');
+    expect(rows[0]![16]).toContain('零件編號=P-01');
+    expect(rows[0]![16]).toContain('加工需求=折彎');
+    expect(rows[0]![16]).toContain('重試3次');
+    expect(rows[0]![16]).toContain(backendFailure.reason);
     expect(validateQuotationChildResult({
       chunk,
       response: fallback,
@@ -257,7 +303,7 @@ describe('quotation protocol', () => {
     const aliasChunk = buildQuotationChunks(ocrWithHeaders(aliasHeaders, [['F-02', 'P-02', '鐵板', '', 'fallback name', '1', '3', '40', '50', '2']]))[0]!;
     const aliasRows = parseMarkdownTables(buildQuotationFailureMarkdown(aliasChunk, 'reason'))[0]!.rows;
     expect(aliasRows[0]![1]).toBe('fallback name');
-    expect(aliasRows[0]![15]).toContain('孔數=2');
+    expect(aliasRows[0]![16]).toContain('孔數=2');
   });
 
   it('rejects an ordinary no-evidence child even when it resembles the fallback contract', () => {
@@ -309,6 +355,7 @@ describe('quotation protocol', () => {
       const material = [...pricedRow];
       material[1] = `${category} ${source.cells[1]}`;
       material[14] = category;
+      material[15] = source.cells[1] ?? '';
       const processing = [...material];
       processing[1] = `${category} 加工 ${source.cells[1]}`;
       processing[14] = '加工/孔';
@@ -325,6 +372,36 @@ describe('quotation protocol', () => {
     ]);
   });
 
+  it('moves child part codes to system_order remarks and preserves the merged child table for review', () => {
+    const order = ocr([
+      ['F1', 'P1', '鐵板', '2', '6', '100', '200'],
+      ['F1', '', '鐵板', '1', '8', '100', '200'],
+    ]);
+    const chunk = buildQuotationChunks(order)[0]!;
+    const material = [...pricedRow];
+    material[16] = 'F1／P1；候選需確認';
+    const processing = [...pricedRow];
+    processing[14] = '加工/孔';
+    processing[16] = '孔加工查無價格';
+    const blankCode = [...pricedRow];
+    blankCode[15] = '';
+    blankCode[16] = '來源件號缺漏';
+    const result = buildQuotationSystemOrderForReview({
+      fullOcrResult: order,
+      childResults: [{
+        ...childInput(chunk, material),
+        response: `## system_order_chunk\n\n${table(systemHeaders, [material, processing, blankCode])}`,
+      }],
+    });
+    expect(parseMarkdownTables(result.systemOrderMarkdown)[0]!.headers).toEqual(finalHeaders);
+    expect(parseMarkdownTables(result.systemOrderMarkdown)[0]!.rows.map((row) => row[15]))
+      .toEqual(['P1', 'P1', '']);
+    expect(result.reviewRemarks).toBe(`## system_order_chunk\n\n${table(systemHeaders, [material, processing, blankCode])}`);
+    expect(parseMarkdownTables(result.reviewRemarks)[0]!.headers).toEqual(systemHeaders);
+    expect(parseMarkdownTables(result.reviewRemarks)[0]!.rows).toEqual([material, processing, blankCode]);
+    expect(result.systemOrderMarkdown).not.toContain('候選需確認');
+  });
+
   it('rejects duplicate, missing, leading processing, and non-material-count child coverage', () => {
     const order = ocr([
       ['F1', 'P1', '鐵板', '2', '6', '100', '200'],
@@ -338,6 +415,7 @@ describe('quotation protocol', () => {
     const rows = chunks[0]!.sourceRows.map((source) => {
       const row = [...pricedRow];
       row[1] = `鐵板 ${source.cells[1]}`;
+      row[15] = source.cells[1] ?? '';
       return row;
     });
     expect(() => buildQuotationSystemOrder({ fullOcrResult: order, childResults: [child(chunks[0]!, rows.slice(0, 1))] }))
@@ -396,7 +474,7 @@ describe('quotation protocol', () => {
     const child = childInput(chunkForRows(), pricedRow);
     expect(() => validateQuotationChildResult({
       ...child, response: `${child.response}\n\n${fence}`,
-    })).toThrow('Child result must contain one 16-column system_order_chunk');
+    })).toThrow('Child result must contain one 17-column system_order_chunk');
   });
 
   it('rejects malformed child tables while retaining escaped Markdown cell parsing', () => {
@@ -410,7 +488,7 @@ describe('quotation protocol', () => {
     }).rows[0]?.[1]).toBe('規格 | 特殊');
     expect(() => validateQuotationChildResult({
       chunk,
-      response: `## system_order_chunk\n\n${table(systemHeaders.slice(0, -1), [pricedRow.slice(0, -1)])}`,
+      response: `## system_order_chunk\n\n${table(systemHeaders.slice(0, -2), [pricedRow.slice(0, -2)])}`,
       lookupEvidence: [successfulLookup()],
     })).toThrow('invalid system_order_chunk');
     expect(validateQuotationChildResult({
@@ -428,7 +506,7 @@ describe('quotation protocol', () => {
   it('normalizes complete child tables with missing trailing pipes and renders an idempotent canonical result', () => {
     const chunk = chunkForRows();
     const row = [...pricedRow];
-    row[15] = '已確認';
+    row[16] = '已確認';
     const response = `## system_order_chunk\n\n${removeTrailingPipes(table(systemHeaders, [row]))}`;
     const validated = validateQuotationChildResult({ ...childInput(chunk, row), response });
     expect(validated.rows).toEqual([row]);
@@ -440,12 +518,12 @@ describe('quotation protocol', () => {
     const chunk = chunkForRows();
     const escaped = [...pricedRow];
     escaped[1] = '規格 \\| 特殊';
-    escaped[15] = '末端 \\|';
+    escaped[16] = '末端 \\|';
     const response = `## system_order_chunk\n\n${removeTrailingPipes(table(systemHeaders, [escaped]))}`;
     const result = validateQuotationChildResult({ ...childInput(chunk, escaped), response });
     const expected = [...escaped];
     expected[1] = '規格 | 特殊';
-    expected[15] = '末端 |';
+    expected[16] = '末端 |';
     expect(result.rows).toEqual([expected]);
     expect(result.markdown).toContain('| 規格 \\| 特殊 |');
     expect(result.markdown).toContain('| 末端 \\| |');
@@ -464,7 +542,7 @@ describe('quotation protocol', () => {
     const chunk = chunkForRows();
     const missingLastCell = removeTrailingPipes(table(systemHeaders, [pricedRow.slice(0, -1)]));
     const extraCell = removeTrailingPipes(table(systemHeaders, [[...pricedRow, 'extra']]));
-    const wrongHeader = removeTrailingPipes(table(systemHeaders.slice(0, -1), [pricedRow.slice(0, -1)]));
+    const wrongHeader = removeTrailingPipes(table(systemHeaders.slice(0, -2), [pricedRow.slice(0, -2)]));
     const proseRow = `${removeTrailingPipes(table(systemHeaders, [pricedRow]))}\n| prose row`;
     const ambiguousEmptyFinalCell = removeTrailingPipes(table(systemHeaders, [pricedRow]));
     for (const response of [missingLastCell, extraCell, wrongHeader, proseRow, ambiguousEmptyFinalCell]) {
@@ -481,7 +559,7 @@ describe('quotation protocol', () => {
       ...childInput(chunk, rowsForChunk(chunk)[0]!),
       response: `## system_order_chunk\n\n${table(systemHeaders, rowsForChunk(chunk))}`,
     };
-    const corrected = [...pricedRow];
+    const corrected = finalRow(pricedRow);
     corrected[1] = '鐵板 8T P2';
     corrected[4] = '1';
     corrected[6] = '1';
@@ -490,7 +568,7 @@ describe('quotation protocol', () => {
       '前置說明',
       '## system_order',
       '',
-      table(systemHeaders, [corrected, pricedRow]),
+      table(finalHeaders, [corrected, finalRow(pricedRow)]),
       '',
       '## notes',
       '',
@@ -503,7 +581,7 @@ describe('quotation protocol', () => {
       '查價輸出完成：共 99 筆 system_order，無待複核事項。',
     ].join('\n');
     const finalized = finalizeQuotationMainResponse({ fullOcrResult: ocr([['F1', 'P1', '鐵板', '2', '6', '100', '200']]), mainResponse, childResults: [child] });
-    expect(finalized.rows).toEqual([corrected, pricedRow]);
+    expect(finalized.rows).toEqual([corrected, finalRow(pricedRow)]);
     expect(finalized.response).toContain('| 鐵板 8T P2 |');
     expect(finalized.response).not.toContain('quote_lineage');
     expect(finalized.response.match(/## customer_quote/g)).toHaveLength(1);
@@ -515,17 +593,17 @@ describe('quotation protocol', () => {
   });
 
   it('normalizes numeric cells before saving the final order and composing the customer quote', () => {
-    const source = [...pricedRow];
+    const source = finalRow(pricedRow);
     source[4] = '2支';
     source[7] = '1,234.50元';
     source[8] = 'B';
-    const expected = [...pricedRow];
+    const expected = finalRow(pricedRow);
     expected[4] = '2';
     expected[7] = '1234.50';
     expected[8] = '2';
     const result = finalizeQuotationMainResponse({
       fullOcrResult: '',
-      mainResponse: `## system_order\n\n${table(systemHeaders, [source])}`,
+      mainResponse: `## system_order\n\n${table(finalHeaders, [source])}`,
       childResults: [childInput(chunkForRows(), pricedRow)],
     });
     expect(result.rows).toEqual([expected]);
@@ -537,7 +615,7 @@ describe('quotation protocol', () => {
     const review = table(reviewHeaders, [['ocr_result', 'P-not-in-source', '單價', '需確認', '由 AI 規則判斷', '備註']]);
     const finalized = finalizeQuotationMainResponse({
       fullOcrResult: ocr([['F1', 'P1', '鐵板', '2', '6', '100', '200']]),
-      mainResponse: `## system_order｜訂單.pdf\n\n${table(systemHeaders, [blankRow])}\n\n## ${title}\n\n${review}\n\n## notes\n\n補充`,
+      mainResponse: `## system_order｜訂單.pdf\n\n${table(finalHeaders, [finalRow(blankRow)])}\n\n## ${title}\n\n${review}\n\n## notes\n\n補充`,
       childResults: [childInput(chunkForRows(), blankRow, [failedLookup()])],
     });
     expect(finalized.summary).toBe('查價輸出完成：共 1 筆 system_order、1 項待複核事項。');
@@ -558,7 +636,7 @@ describe('quotation protocol', () => {
     ]) {
       expect(() => finalizeQuotationMainResponse({
         fullOcrResult: '',
-        mainResponse: `## system_order\n\n${table(systemHeaders, [blankRow])}\n\n${sections}`,
+        mainResponse: `## system_order\n\n${table(finalHeaders, [finalRow(blankRow)])}\n\n${sections}`,
         childResults: [childInput(chunkForRows(), blankRow)],
       })).toThrow('manual_reviews');
     }
@@ -568,12 +646,12 @@ describe('quotation protocol', () => {
     const child = childInput(chunkForRows(), pricedRow);
     expect(() => finalizeQuotationMainResponse({
       fullOcrResult: ocr([['F1', 'P1', '鐵板', '2', '6', '100', '200']]),
-      mainResponse: `## system_order\n\n${table(systemHeaders.slice(1), [pricedRow.slice(1)])}`,
+      mainResponse: `## system_order\n\n${table(finalHeaders.slice(1), [finalRow(pricedRow).slice(1)])}`,
       childResults: [child],
     })).toThrow('16-column system_order');
     expect(() => finalizeQuotationMainResponse({
       fullOcrResult: ocr([['F1', 'P1', '鐵板', '2', '6', '100', '200']]),
-      mainResponse: `## system_order\n\n${table(systemHeaders, [])}`,
+      mainResponse: `## system_order\n\n${table(finalHeaders, [])}`,
       childResults: [child],
     })).toThrow('16-column system_order');
   });

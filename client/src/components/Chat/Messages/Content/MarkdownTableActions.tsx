@@ -89,6 +89,26 @@ function getDownloadFilename(title: string | null | undefined, timestamp?: strin
   return `${safeTitle}_${formatFilenameTimestamp(timestamp)}.csv`;
 }
 
+function getMarkdownTitle(table: HTMLTableElement | null): string | undefined {
+  const container = table?.closest('.markdown-table-container');
+  const message = container?.closest('.message-render');
+  if (!message || !container) {
+    return undefined;
+  }
+
+  let title: string | undefined;
+  for (const element of message.querySelectorAll('.message-content h2, .markdown-table-container')) {
+    if (element === container) {
+      break;
+    }
+    if (element.tagName === 'H2') {
+      title = element.textContent?.trim() || title;
+    }
+  }
+
+  return title;
+}
+
 function readThemeAttributes(): ThemeAttributes {
   if (typeof document === 'undefined') {
     return { className: '' };
@@ -530,6 +550,41 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
 
     return comments;
   }, [canComment, markdownIndex, messageId, pendingComments]);
+  useEffect(() => {
+    if (!canComment || !messageId) {
+      return;
+    }
+
+    const hasPendingComments = pendingComments.some(
+      (entry) => entry.messageId === messageId && entry.markdownIndex === markdownIndex,
+    );
+    if (!hasPendingComments) {
+      return;
+    }
+
+    const title = getMarkdownTitle(tableRef.current);
+    if (!title) {
+      return;
+    }
+
+    const needsTitle = pendingComments.some(
+      (entry) =>
+        entry.messageId === messageId &&
+        entry.markdownIndex === markdownIndex &&
+        entry.markdownTitle !== title,
+    );
+    if (!needsTitle) {
+      return;
+    }
+
+    setPendingComments((current) =>
+      current.map((entry) =>
+        entry.messageId === messageId && entry.markdownIndex === markdownIndex
+          ? { ...entry, markdownTitle: title, ...(messageTimestamp && { messageTimestamp }) }
+          : entry,
+      ),
+    );
+  }, [canComment, markdownIndex, messageId, messageTimestamp, pendingComments, setPendingComments]);
   const getTableFingerprint = useCallback(
     () => tableMatrixToMarkdown(getTableMatrix(tableRef.current)),
     [],
@@ -559,6 +614,7 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
         columnIndex,
       });
       const normalizedComment = comment.trim();
+      const markdownTitle = getMarkdownTitle(tableRef.current);
 
       setPendingComments((current) => {
         const existing = current.find((entry) => entry.id === id);
@@ -569,7 +625,9 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
 
         if (existing) {
           return current.map((entry) =>
-            entry.id === id ? { ...entry, comment: normalizedComment } : entry,
+            entry.id === id
+              ? { ...entry, comment: normalizedComment, ...(markdownTitle && { markdownTitle }) }
+              : entry,
           );
         }
 
@@ -580,8 +638,10 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
             conversationId: commentConversationId,
             messageId,
             messageTimestampLabel,
+            ...(messageTimestamp && { messageTimestamp }),
             markdownIndex,
             markdownLabel,
+            markdownTitle,
             tableFingerprint: getTableFingerprint(),
             rowIndex,
             columnIndex,
@@ -600,6 +660,7 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
       markdownLabel,
       messageId,
       messageTimestampLabel,
+      messageTimestamp,
       setPendingComments,
     ],
   );
