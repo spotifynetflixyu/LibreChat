@@ -1,4 +1,5 @@
 import React from 'react';
+import userEvent from '@testing-library/user-event';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import Markdown from '../Markdown';
 import MarkdownLite from '../MarkdownLite';
@@ -368,6 +369,85 @@ describe('Markdown table rendering', () => {
     expect(revokeObjectURL).not.toHaveBeenCalled();
     jest.advanceTimersByTime(1000);
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:markdown-table');
+  });
+
+  it.each([false, true])('downloads system_order from the menu (expanded: %s)', async (expanded) => {
+    const user = userEvent.setup();
+    renderMarkdownWithMessageContext({
+      content: '## system_order\n\n| 類別 | 厚度 | 零件編號 |\n| --- | --- | --- |\n| 鐵板 | 6 | A |',
+      conversationTitle: 'Order',
+      messageContext: { messageTimestamp: '2026-06-27T14:32:05' },
+    });
+    if (expanded) {
+      await user.click(screen.getByLabelText('com_ui_expand_table'));
+    }
+    const toolbar = expanded ? within(screen.getByRole('dialog')) : screen;
+    await user.click(toolbar.getByLabelText('com_ui_download'));
+    expect(createObjectURL).not.toHaveBeenCalled();
+    expect(screen.getByRole('menuitem', { name: 'com_ui_download_table_by_thickness_zip' }))
+      .not.toHaveAttribute('data-disabled');
+    if (expanded) {
+      expect(screen.getByRole('menu')).toHaveStyle({ zIndex: 1001 });
+      await user.keyboard('{Escape}');
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+      await user.click(toolbar.getByLabelText('com_ui_download'));
+    }
+    await user.click(screen.getByRole('menuitem', { name: 'com_ui_download_table_all_csv' }));
+    expect(downloadedFilename).toBe('Order_2026-06-27_14-32-05.csv');
+    expect((createObjectURL.mock.calls[0][0] as Blob).type).toBe('text/csv;charset=utf-8');
+    await user.click(toolbar.getByLabelText('com_ui_download'));
+    await user.click(screen.getByRole('menuitem', { name: 'com_ui_download_table_by_thickness_zip' }));
+    await waitFor(() => expect(downloadedFilename).toBe('Order_2026-06-27_14-32-05.zip'));
+    expect((createObjectURL.mock.calls[1][0] as Blob).type).toBe('application/zip');
+  });
+
+  it('keeps direct CSV download on other sections with the same columns', () => {
+    renderMarkdownWithMessageContext({
+      content: [
+        '## ocr_result',
+        '',
+        '| 類別 | 厚度 |',
+        '| --- | --- |',
+        '| 鐵板 | 6 |',
+        '',
+        '## system_order',
+        '',
+        '| 類別 | 厚度 |',
+        '| --- | --- |',
+        '| H型鋼 | 9 |',
+      ].join('\n'),
+    });
+    expect(screen.getAllByLabelText('com_ui_download')).toHaveLength(1);
+    fireEvent.click(screen.getByLabelText('com_ui_download_table_csv'));
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+  });
+
+  it('disables grouped download for system_order without a thickness column', async () => {
+    const user = userEvent.setup();
+    renderMarkdownWithMessageContext({
+      content: '## system_order\n\n| 類別 | 零件編號 |\n| --- | --- |\n| 鐵板 | A |',
+    });
+    await user.click(screen.getByLabelText('com_ui_download'));
+    expect(screen.getByRole('menuitem', { name: 'com_ui_download_table_by_thickness_zip' }))
+      .toHaveAttribute('data-disabled');
+    await user.click(screen.getByRole('menuitem', { name: 'com_ui_download_table_all_csv' }));
+    expect(createObjectURL).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows a download error and allows retrying the grouped download', async () => {
+    const user = userEvent.setup();
+    renderMarkdownWithMessageContext({
+      content: '## system_order\n\n| 類別 | 厚度 |\n| --- | --- |\n| 鐵板 | 6 |',
+    });
+    createObjectURL.mockImplementationOnce(() => { throw new Error('Object URL failed'); });
+    await user.click(screen.getByLabelText('com_ui_download'));
+    await user.click(screen.getByRole('menuitem', { name: 'com_ui_download_table_by_thickness_zip' }));
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('com_ui_download_table_error'));
+    expect(screen.getByLabelText('com_ui_download')).not.toBeDisabled();
+    await user.click(screen.getByLabelText('com_ui_download'));
+    await user.click(screen.getByRole('menuitem', { name: 'com_ui_download_table_by_thickness_zip' }));
+    await waitFor(() => expect(downloadedFilename).toMatch(/\.zip$/));
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
   it('uses Longding when the conversation title is empty', () => {

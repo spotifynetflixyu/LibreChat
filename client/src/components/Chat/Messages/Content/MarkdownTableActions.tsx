@@ -1,19 +1,25 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import filenamify from 'filenamify';
 import { createPortal } from 'react-dom';
-import { ControlCombobox } from '@librechat/client';
+import {
+  ControlCombobox,
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@librechat/client';
 import { Check, Copy, Download, Maximize2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useRecoilState, useRecoilValue } from 'recoil';
 import { buildMarkdownTableCommentId } from '~/common';
 import type { MarkdownTableComment } from '~/common';
+import type { TableMatrix } from './table/export';
 import { useMessageContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
 import { getMessageTimestamp, triggerDownload } from '~/utils';
 import store from '~/store';
 import CommentableTableCell, { getReactNodeText } from './table/comments';
-
-type TableMatrix = string[][];
+import { canGroupByThickness, createCsvBlob, createThicknessZip } from './table/export';
 
 type MarkdownTableActionsProps = {
   children: React.ReactNode;
@@ -30,6 +36,7 @@ type TableToolbarProps = {
   copied: boolean;
   downloadFilename: string;
   expanded: boolean;
+  downloadMenu: boolean;
   headerOptions?: readonly TableHeaderOption[];
   onClose?: () => void;
   onCopied: () => void;
@@ -69,8 +76,6 @@ type CommentableTableChildrenInput = {
   }) => void;
 };
 
-const csvMimeType = 'text/csv;charset=utf-8';
-const csvFormulaPrefix = /^[=+\-@\t\r]/;
 const wideColumnTextThreshold = 36;
 
 function formatFilenameTimestamp(timestamp?: string | null): string {
@@ -345,16 +350,6 @@ function tableMatrixToMarkdown(matrix: TableMatrix): string {
     .join('\n');
 }
 
-function escapeCsvCell(value: string): string {
-  const guarded = csvFormulaPrefix.test(value) ? `'${value}` : value;
-  return /[",\r\n]/.test(guarded) ? `"${guarded.replace(/"/g, '""')}"` : guarded;
-}
-
-function createCsvBlob(matrix: TableMatrix): Blob {
-  const csv = matrix.map((row) => row.map(escapeCsvCell).join(',')).join('\r\n');
-  return new Blob(['\uFEFF', csv], { type: csvMimeType });
-}
-
 async function writeClipboardText(text: string): Promise<void> {
   if (navigator.clipboard?.writeText) {
     await navigator.clipboard.writeText(text);
@@ -399,6 +394,7 @@ function TableToolbar({
   copied,
   downloadFilename,
   expanded,
+  downloadMenu,
   headerOptions = [],
   onClose,
   onCopied,
@@ -408,7 +404,10 @@ function TableToolbar({
 }: TableToolbarProps) {
   const localize = useLocalize();
   const copyLabel = localize('com_ui_copy_markdown_table');
-  const downloadLabel = localize('com_ui_download_table_csv');
+  const downloadLabel = localize(downloadMenu ? 'com_ui_download' : 'com_ui_download_table_csv');
+  const [canGroup, setCanGroup] = useState(false);
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [downloadFailed, setDownloadFailed] = useState(false);
   const expandLabel = localize('com_ui_expand_table');
   const closeLabel = localize('com_ui_close_table');
   const showStickyColumnSelector = expanded && headerOptions.length > 0;
@@ -439,6 +438,18 @@ function TableToolbar({
   const handleDownload = useCallback(() => {
     const url = URL.createObjectURL(createCsvBlob(getTableMatrix(tableRef.current)));
     triggerDownload(url, downloadFilename);
+  }, [downloadFilename, tableRef]);
+  const handleGroupedDownload = useCallback(async () => {
+    setIsDownloading(true);
+    setDownloadFailed(false);
+    try {
+      const blob = await createThicknessZip(getTableMatrix(tableRef.current));
+      triggerDownload(URL.createObjectURL(blob), downloadFilename.replace(/\.csv$/, '.zip'));
+    } catch {
+      setDownloadFailed(true);
+    } finally {
+      setIsDownloading(false);
+    }
   }, [downloadFilename, tableRef]);
   const handleStickyColumnChange = useCallback(
     (value: string) => {
@@ -480,9 +491,49 @@ function TableToolbar({
           <Copy className="size-4" aria-hidden="true" />
         )}
       </TableActionButton>
-      <TableActionButton label={downloadLabel} onClick={handleDownload}>
-        <Download className="size-4" aria-hidden="true" />
-      </TableActionButton>
+      {downloadMenu ? (
+        <DropdownMenu
+          onOpenChange={(open) => {
+            if (open) {
+              setCanGroup(canGroupByThickness(getTableMatrix(tableRef.current)));
+            }
+          }}
+        >
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              className="markdown-table-action"
+              aria-label={downloadLabel}
+              title={downloadLabel}
+              disabled={isDownloading}
+              aria-busy={isDownloading}
+            >
+              <Download className="size-4" aria-hidden="true" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="end"
+            style={expanded ? { zIndex: 1001 } : undefined}
+            onEscapeKeyDown={(event) => event.stopPropagation()}
+          >
+            <DropdownMenuItem className="cursor-pointer" onSelect={handleDownload}>
+              {localize('com_ui_download_table_all_csv')}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              className="cursor-pointer data-[disabled]:cursor-default"
+              disabled={!canGroup || isDownloading}
+              onSelect={() => void handleGroupedDownload()}
+            >
+              {localize('com_ui_download_table_by_thickness_zip')}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      ) : (
+        <TableActionButton label={downloadLabel} onClick={handleDownload}>
+          <Download className="size-4" aria-hidden="true" />
+        </TableActionButton>
+      )}
+      {downloadFailed && <span role="alert">{localize('com_ui_download_table_error')}</span>}
       {expanded ? (
         <TableActionButton label={closeLabel} onClick={onClose ?? (() => undefined)}>
           <X className="size-4" aria-hidden="true" />
@@ -505,6 +556,8 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
   const copiedResetTimerRef = useRef<number>();
   const modalCopiedResetTimerRef = useRef<number>();
   const [isExpanded, setIsExpanded] = useState(false);
+  const [downloadMenu, setDownloadMenu] = useState(false);
+
   const [headerOptions, setHeaderOptions] = useState<TableHeaderOption[]>([]);
   const [stickyColumnIndex, setStickyColumnIndex] = useState<number>();
   const [copied, setCopied] = useState(false);
@@ -550,6 +603,9 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
 
     return comments;
   }, [canComment, markdownIndex, messageId, pendingComments]);
+  useEffect(() => {
+    setDownloadMenu(/^system_order(?:\s|$)/i.test(getMarkdownTitle(tableRef.current) ?? ''));
+  }, [children]);
   useEffect(() => {
     if (!canComment || !messageId) {
       return;
@@ -771,6 +827,7 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
         copied={copied}
         downloadFilename={downloadFilename}
         expanded={false}
+        downloadMenu={downloadMenu}
         onCopied={handleCopied}
         onExpand={openModal}
       />
@@ -792,6 +849,7 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
                 copied={modalCopied}
                 downloadFilename={downloadFilename}
                 expanded={true}
+                downloadMenu={downloadMenu}
                 headerOptions={headerOptions}
                 onClose={closeModal}
                 onCopied={handleModalCopied}
