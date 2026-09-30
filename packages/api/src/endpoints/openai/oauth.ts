@@ -1,12 +1,16 @@
 import { EModelEndpoint } from 'librechat-data-provider';
-import type { BaseInitializeParams, InitializeResultBase } from '~/types';
+import type { InitializeResultBase, ProviderInitializeParams } from '~/types';
+import { parseOpenAIConfig } from '~/steel/ai/config';
 
 export async function initializeOpenAIOAuth({
   model_parameters,
-}: BaseInitializeParams): Promise<InitializeResultBase> {
+}: ProviderInitializeParams): Promise<InitializeResultBase> {
   const modelOptions = {
     ...(model_parameters ?? {}),
-    model: model_parameters?.model,
+    model:
+      typeof model_parameters?.model === 'string'
+        ? model_parameters.model
+        : parseOpenAIConfig(process.env).model,
   };
 
   return {

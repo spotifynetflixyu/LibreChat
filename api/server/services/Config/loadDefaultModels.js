@@ -6,6 +6,7 @@ const {
   getBedrockModels,
   getAppConfigOptionsFromUser,
   getOpenAIModels,
+  parseOpenAIConfig,
   getGoogleModels,
 } = require('@librechat/api');
 const { getAppConfig } = require('./app');
@@ -80,7 +81,7 @@ async function loadDefaultModels(req) {
           return [];
         }),
       ]);
-    const defaultOpenAIModel = process.env.OPENAI_DEFAULT_MODEL?.trim();
+    const defaultOpenAIModel = process.env.OPENAI_DEFAULT_MODEL?.trim() || parseOpenAIConfig({}).model;
     const prioritizedOpenAI = prioritizeDefaultModel(openAI, defaultOpenAIModel);
 
     return {

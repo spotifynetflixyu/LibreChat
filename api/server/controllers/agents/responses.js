@@ -2,7 +2,7 @@ const { nanoid } = require('nanoid');
 const mongoose = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
 const { logger } = require('@librechat/data-schemas');
-const { Callback, ToolEndHandler, formatAgentMessages } = require('@librechat/agents');
+const { Callback, formatAgentMessages } = require('@librechat/agents');
 const {
   EModelEndpoint,
   ResourceType,
@@ -14,18 +14,26 @@ const {
   createRun,
   applyContextToAgent,
   buildInitialToolSessions,
-  buildToolSet,
+  buildRunToolSet,
   AgentRunEnvelopeError,
   createAgentRunEnvelope,
+  createAgentExecutionContext,
+  createMCPRuntimeRequestBody,
   buildAgentScopedContext,
   buildInlineMemoryContext,
   buildAgentContextAttachmentsByAgentId,
   buildDefaultSteelGlobalAgentContext,
   delegateOcrStreamEventName,
   prepareLibreChatSteelChatContext,
-  prepareSteelNativeToolConfig,
-  getLatestHumanMessageText,
   stripSteelOcrPartsFromProviderMessages,
+  extractSteelNativeMarkdownText,
+  extractSteelNativeResponseOutputText,
+  parseAssistantMarkdown,
+  buildSteelNativeResponseMessageMetadata,
+  createSteelNativeHistory,
+  prepareSteelNativeToolConfig,
+  prepareQuotationTurn,
+  hasQuotationOrder,
   createSafeUser,
   initializeAgent,
   loadSkillStates,
@@ -36,17 +44,34 @@ const {
   createSubagentUsageSink,
   getTransactionsConfig,
   resolveAgentTokenConfig,
-  findPiiMatchInMessages,
-  discoverConnectedAgents,
   resolveSubagentGraphs,
+  inspectContent,
+  extractAgentContent,
+  extractFileContent,
+  extractMessageContent,
+  extractModelParameterContent,
+  extractSkillContent,
+  extractToolArgumentContent,
+  contentFilterBlockResponse,
+  contentFilterUninspectableResponse,
+  discoverConnectedAgents,
+  getBlockedOpaqueFileField,
+  getContentTraversalFragments,
+  isContentTraversalProtected,
+  isContentTraversalLimitError,
+  prependContentTraversalFragments,
+  assertModelBoundContent,
+  reportLocatorTraversalFailure,
+  hasModelBoundContentProtection,
+  isContentFilterError,
+  getSafeErrorMetadata,
+  getUserFacingProviderError,
+  getAgentErrorMetadata,
   createToolExecuteHandler,
+  createOwnedToolEndHandler,
+  resolveRecursionLimit,
   getRemoteAgentPermissions,
   resolveAgentScopedSkillIds,
-  extractSteelNativeMarkdownText,
-  extractSteelNativeResponseOutputText,
-  parseAssistantMarkdown,
-  buildSteelNativeResponseMessageMetadata,
-  createSteelNativeHistory,
   // Responses API
   writeDone,
   buildResponse,
@@ -60,24 +85,31 @@ const {
   convertInputToMessages,
   validateResponseRequest,
   buildAggregatedResponse,
+  buildResponsesUsage,
   createResponseAggregator,
   sendResponsesErrorResponse,
   createResponsesEventHandlers,
   createAggregatorEventHandlers,
+  createClientToolHandoff,
   getLangfuseTraceMessageFields,
   stripActivityLabelParts,
+  stripUnusableSummaryParts,
   CHILD_THREAD_READ_ONLY_ERROR,
   createSteelOcrStateService,
   createSteelOcrResponseAuditService,
   SteelOcrResponseAuditPersistenceError,
   finalizeOcrResponse,
-  prepareQuotationTurn,
-  hasQuotationOrder,
+  executeAgentRun,
+  waitForAgentExecutionWrites,
+  resolveToolRoleGrants,
+  resolveAdmittedCodeEnvironmentDecision,
+  resolvePersistableCodeEnvironmentDecision,
+  createTerminalRunErrorObserver,
 } = require('@librechat/api');
 const {
   createResponsesToolEndCallback,
   buildSummarizationHandlers,
-  markSummarizationUsage,
+  contextualizeModelUsage,
   createToolEndCallback,
   createDelegateOcrStreamHandler,
   agentLogHandlerObj,
@@ -85,12 +117,12 @@ const {
 const {
   loadAgentTools,
   loadToolsForExecution,
+  isFatalAgentInitializationError,
   resolveDelegateOcrPolicyForRequest,
   runSteelPaddleOcrPreflight,
   prepareDelegateOcrResume,
   executeDelegateOcrResume,
   executeSteelQuotationWorkflow,
-  isFatalAgentInitializationError,
 } = require('~/server/services/ToolService');
 const {
   findAccessibleResources,
@@ -105,9 +137,12 @@ const {
   resolveMemoryAvailability,
   enrichLoadedToolsWithAgentContext,
 } = require('~/server/services/Endpoints/agents/skillDeps');
+const { createProvisionFilesCallback } = require('~/server/services/Files/provisionCallback');
+const { checkSessionsAlive, loadCodeApiKey } = require('~/server/services/Files/provision');
 const { getModelsConfig } = require('~/server/controllers/ModelController');
 const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
 const { resolveConfigServers, getAccessibleMcpServerNames } = require('~/server/services/MCP');
+const { resolveConversationTitle } = require('~/server/services/Endpoints/titlePolicy');
 const { getMCPManager } = require('~/config');
 const { logViolation } = require('~/cache');
 const db = require('~/models');
@@ -115,22 +150,56 @@ const db = require('~/models');
 const filterFilesByRemoteAgentAccess = (params) =>
   filterFilesByAgentAccess({ ...params, resourceType: ResourceType.REMOTE_AGENT });
 
+function handleExecutionError({ error, res, appConfig }) {
+  const protectionEnabled = hasModelBoundContentProtection(
+    appConfig?.filters,
+    appConfig?.messageFilter?.pii,
+  );
+  const errorMessage = getUserFacingProviderError(error, protectionEnabled);
+
+  if (res.headersSent) {
+    writeDone(res);
+    res.end();
+    return;
+  }
+  if (isContentFilterError(error)) {
+    return sendResponsesErrorResponse(
+      res,
+      error.statusCode,
+      error.body.message,
+      'invalid_request',
+      error.body.error,
+    );
+  }
+  const errorMetadata = getAgentErrorMetadata(error);
+  const statusCode = errorMetadata?.status ?? 500;
+  const errorType = statusCode >= 400 && statusCode < 500 ? 'invalid_request' : 'server_error';
+  const errorCode = !protectionEnabled ? errorMetadata?.code : undefined;
+  if (errorCode === undefined) {
+    sendResponsesErrorResponse(res, statusCode, errorMessage, errorType);
+  } else {
+    sendResponsesErrorResponse(res, statusCode, errorMessage, errorType, errorCode);
+  }
+}
+
 /**
  * Creates a tool loader function for the agent.
- * @param {AbortSignal} signal - The abort signal
- * @param {boolean} [definitionsOnly=true] - When true, returns only serializable
+ * @param {Object} runtime - Request-backed tool adapter state
+ * @param {import('express').Request} runtime.req
+ * @param {import('express').Response} runtime.res
+ * @param {AbortSignal} runtime.signal - The abort signal
+ * @param {boolean} [runtime.definitionsOnly=true] - When true, returns only serializable
  *   tool definitions without creating full tool instances (for event-driven mode)
  */
-function createToolLoader(signal, definitionsOnly = true) {
+function createToolLoader({ req, res, signal, definitionsOnly = true }) {
   return async function loadTools({
-    req,
-    res,
     tools,
     model,
     agentId,
     provider,
     tool_options,
     tool_resources,
+    requestBody,
     codeExecutionContext,
     accessibleMcpServerNames,
   }) {
@@ -141,6 +210,7 @@ function createToolLoader(signal, definitionsOnly = true) {
         res,
         agent,
         signal,
+        requestBody,
         tool_resources,
         codeExecutionContext,
         agentResourceType: ResourceType.REMOTE_AGENT,
@@ -149,10 +219,10 @@ function createToolLoader(signal, definitionsOnly = true) {
         streamId: null,
       });
     } catch (error) {
-      if (isFatalAgentInitializationError(error)) {
+      if (isFatalAgentInitializationError(error, { signal }) || isContentFilterError(error)) {
         throw error;
       }
-      logger.error('Error loading tools for agent ' + agentId, error);
+      logger.error('Error loading tools for agent ' + agentId, getSafeErrorMetadata(error));
     }
   };
 }
@@ -180,7 +250,6 @@ function collectSteelNativeFilePartsFromContent(content) {
   if (!Array.isArray(content)) {
     return [];
   }
-
   return content.filter(
     (part) =>
       part != null &&
@@ -190,18 +259,18 @@ function collectSteelNativeFilePartsFromContent(content) {
 }
 
 function addSteelNativeFileReference(filesById, part, conversationId) {
-  const fileId = part.file_id;
+  const fileId = part?.file_id ?? part?.fileId;
   if (typeof fileId !== 'string' || fileId.trim() === '' || filesById.has(fileId)) {
     return;
   }
-
-  const mediaType =
-    typeof part.mediaType === 'string'
-      ? part.mediaType
-      : typeof part.media_type === 'string'
-        ? part.media_type
-        : (parseSteelNativeDataUrlMediaType(part.file_data) ?? 'application/octet-stream');
-
+  let mediaType = parseSteelNativeDataUrlMediaType(part.file_data);
+  if (typeof part.media_type === 'string') {
+    mediaType = part.media_type;
+  }
+  if (typeof part.mediaType === 'string') {
+    mediaType = part.mediaType;
+  }
+  mediaType ??= 'application/octet-stream';
   filesById.set(fileId, {
     fileId,
     mediaType,
@@ -218,7 +287,6 @@ function collectSteelNativeInputFileReferencesFromOpenResponsesInput(input, conv
   if (!Array.isArray(input)) {
     return filesById;
   }
-
   for (const item of input) {
     if (item?.type !== 'message') {
       continue;
@@ -227,33 +295,26 @@ function collectSteelNativeInputFileReferencesFromOpenResponsesInput(input, conv
       addSteelNativeFileReference(filesById, part, conversationId);
     }
   }
-
   return filesById;
 }
 
 function collectSteelNativeInputFileReferencesFromMessages(messages, conversationId) {
   const filesById = new Map();
-
-  for (const message of messages) {
+  for (const message of messages ?? []) {
     if (message?.role !== 'user') {
       continue;
     }
     const fileParts = [...collectSteelNativeFilePartsFromContent(message.content)];
     for (const file of message.files ?? []) {
       const fileId = file?.file_id ?? file?.fileId;
-      if (typeof fileId !== 'string' || fileId.trim() === '') {
-        continue;
+      if (typeof fileId === 'string' && fileId.trim() !== '') {
+        fileParts.push({ ...file, file_id: fileId });
       }
-      fileParts.push({
-        ...file,
-        file_id: fileId,
-      });
     }
     for (const part of fileParts) {
       addSteelNativeFileReference(filesById, part, conversationId);
     }
   }
-
   return filesById;
 }
 
@@ -262,7 +323,6 @@ function collectSteelNativeInputFileReferences({ requestInput, inputMessages, co
     requestInput,
     conversationId,
   );
-
   for (const [fileId, file] of collectSteelNativeInputFileReferencesFromMessages(
     inputMessages,
     conversationId,
@@ -271,19 +331,16 @@ function collectSteelNativeInputFileReferences({ requestInput, inputMessages, co
       filesById.set(fileId, file);
     }
   }
-
   return [...filesById.values()];
 }
 
 function collectSteelNativeResponseMessages(messages, conversationId) {
   const activeHistory = [];
   let currentUserTurn;
-
-  for (const message of messages) {
-    if (!steelNativeResponseRoles.has(message.role)) {
+  for (const message of messages ?? []) {
+    if (!steelNativeResponseRoles.has(message?.role)) {
       continue;
     }
-
     const files =
       message.role === 'user'
         ? [...collectSteelNativeInputFileReferencesFromMessages([message], conversationId).values()]
@@ -299,15 +356,10 @@ function collectSteelNativeResponseMessages(messages, conversationId) {
       currentUserTurn = steelMessage;
     }
   }
-
   return { activeHistory, currentUserTurn };
 }
 
-function buildSharedRunContextWithSteel(
-  inlineMemoryContext,
-  agentScopedContext,
-  steelRuntimeContext,
-) {
+function buildSharedRunContextWithSteel(inlineMemoryContext, agentScopedContext, steelRuntimeContext) {
   return [inlineMemoryContext, agentScopedContext, steelRuntimeContext]
     .map((part) => (typeof part === 'string' ? part.trim() : ''))
     .filter(Boolean)
@@ -329,11 +381,9 @@ async function resolveResponseConversation(responseId, userId) {
   if (directConversation) {
     return { conversationId: responseId, conversation: directConversation };
   }
-
   if (!responseId.startsWith('resp_')) {
     return null;
   }
-
   const responseMessage = await db.getMessage({ user: userId, messageId: responseId });
   const conversationId =
     responseMessage && typeof responseMessage.conversationId === 'string'
@@ -342,9 +392,110 @@ async function resolveResponseConversation(responseId, userId) {
   if (!conversationId || conversationId === responseId) {
     return null;
   }
-
   const conversation = await db.getConvo(userId, conversationId);
   return conversation ? { conversationId, conversation } : null;
+}
+
+/**
+ * Collect file-derived context exactly as it will be exposed to the model.
+ * Dynamic tool context uses the same synthesis as packages/api/src/agents/run.ts.
+ * @param {Array} agents
+ * @returns {Array}
+ */
+function collectModelBoundAgentFiles(agents) {
+  const files = [];
+  const seenFiles = new Set();
+  for (const agent of agents) {
+    for (const attachment of [
+      ...(agent?.attachments ?? []),
+      ...(agent?.requestAttachments ?? []),
+      ...(agent?.agentContextAttachments ?? []),
+    ]) {
+      if (attachment == null || seenFiles.has(attachment)) {
+        continue;
+      }
+      seenFiles.add(attachment);
+      files.push(attachment);
+    }
+
+    const dynamicToolInstructions = Object.values(agent?.dynamicToolContextMap ?? {})
+      .filter((value) => typeof value === 'string' && value !== '')
+      .join('\n')
+      .trim();
+    if (dynamicToolInstructions !== '') {
+      files.push({ content: dynamicToolInstructions });
+    }
+  }
+  return files;
+}
+
+function extractResponseRequestContent(request, messageFragments) {
+  const fragments = [
+    ...extractAgentContent({ instructions: request.instructions }),
+    ...messageFragments,
+  ];
+
+  if (Array.isArray(request.input)) {
+    for (const item of request.input) {
+      if (item?.type !== 'message' || !Array.isArray(item.content)) {
+        continue;
+      }
+      for (const part of item.content) {
+        if (part?.type === 'input_file') {
+          fragments.push(...extractFileContent({ name: part.filename }));
+          continue;
+        }
+        if (
+          part?.type === 'input_image' &&
+          typeof part.image_url === 'string' &&
+          !part.image_url.startsWith('data:')
+        ) {
+          fragments.push(...extractFileContent({ uri: part.image_url }));
+        }
+      }
+    }
+  }
+
+  for (const tool of request.tools ?? []) {
+    if (tool?.type !== 'function') {
+      continue;
+    }
+    fragments.push(
+      ...extractAgentContent({
+        name: tool.name,
+        description: tool.description,
+      }),
+    );
+    try {
+      fragments.push(...extractToolArgumentContent({ arguments: tool.parameters }));
+    } catch (error) {
+      if (isContentTraversalLimitError(error)) {
+        prependContentTraversalFragments(error, fragments);
+      }
+      throw error;
+    }
+  }
+
+  try {
+    fragments.push(
+      ...extractModelParameterContent({
+        metadata: request.metadata,
+        response_format: request.text?.format,
+        additionalModelRequestFields: {
+          user: request.user,
+          tool_choice: request.tool_choice,
+          reasoning: request.reasoning,
+        },
+      }),
+    );
+  } catch (error) {
+    if (isContentTraversalLimitError(error)) {
+      prependContentTraversalFragments(error, fragments);
+    }
+    throw error;
+  }
+
+  return fragments;
 }
 
 /**
@@ -360,37 +511,44 @@ async function loadPreviousMessages(conversationId, userId) {
       return [];
     }
 
-    // Convert stored messages to internal format
     return messages.map((msg) => {
       const internalMsg = {
         role: msg.isCreatedByUser ? 'user' : 'assistant',
         content: '',
         messageId: msg.messageId,
+        isCreatedByUser: msg.isCreatedByUser === true,
+        ...(typeof msg.isUserSubmitted === 'boolean' && {
+          isUserSubmitted: msg.isUserSubmitted,
+        }),
+        ...(Array.isArray(msg.userSubmittedPaths) && {
+          userSubmittedPaths: msg.userSubmittedPaths,
+        }),
+        ...(Array.isArray(msg.userSubmittedMessageFieldPaths) && {
+          userSubmittedMessageFieldPaths: msg.userSubmittedMessageFieldPaths,
+        }),
       };
-
-      // Handle content - could be string or array
       if (typeof msg.text === 'string') {
+        internalMsg.text = msg.text;
+      }
+      if (Array.isArray(msg.content)) {
+        internalMsg.content = msg.content;
+      } else if (typeof msg.text === 'string') {
         try {
           const parsedText = JSON.parse(msg.text);
           internalMsg.content = Array.isArray(parsedText) ? parsedText : msg.text;
         } catch {
           internalMsg.content = msg.text;
         }
-      } else if (Array.isArray(msg.content)) {
-        // Handle content parts
-        internalMsg.content = msg.content;
-      } else if (msg.text) {
+      } else if (msg.text != null) {
         internalMsg.content = String(msg.text);
       }
-
       if (Array.isArray(msg.files)) {
         internalMsg.files = msg.files;
       }
-
       return internalMsg;
     });
   } catch (error) {
-    logger.error('[Responses API] Error loading previous messages:', error);
+    logger.error('[Responses API] Error loading previous messages:', getSafeErrorMetadata(error));
     return [];
   }
 }
@@ -424,6 +582,16 @@ async function saveInputMessages(req, conversationId, inputMessages, agentId) {
   }
 }
 
+/**
+ * Save response output to database
+ * @param {import('express').Request} req
+ * @param {string} conversationId
+ * @param {string} responseId
+ * @param {import('@librechat/api').Response} response
+ * @param {string} agentId
+ * @param {number | undefined} visibleOutputTokens
+ * @returns {Promise<void>}
+ */
 function replaceResponsesOutputText(response, text) {
   let replaced = false;
   for (const output of response.output ?? []) {
@@ -596,11 +764,12 @@ async function saveResponseOutput(
     const executionLeaseToken =
       delegateContext?.delegateOcrExecutionLease?.executionLeaseToken ??
       delegateRun?.executionLeaseToken;
-    const agentKind = delegateRun
-      ? 'delegate_ocr'
-      : req.steelNativeContext?.ocrTurnActive === true
-        ? 'regular_ocr'
-        : 'other';
+    let agentKind = 'other';
+    if (delegateRun) {
+      agentKind = 'delegate_ocr';
+    } else if (req.steelNativeContext?.ocrTurnActive === true) {
+      agentKind = 'regular_ocr';
+    }
     if (!hasOcrResult && !trustedFinalization) {
       await auditResponsesOcrResponse(req, {
         rawResponse: responseText,
@@ -899,23 +1068,34 @@ async function saveResponseOutput(
  * @param {string} conversationId
  * @param {string} agentId
  * @param {object} agent
+ * @param {import('@librechat/api').ConversationCodeEnvironmentDecision} codeEnvironmentDecision
  * @returns {Promise<void>}
  */
-async function saveConversation(req, conversationId, agentId, agent) {
+async function saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision) {
+  const title = resolveConversationTitle(req, agent?.name || 'Open Responses Conversation');
   await db.saveConvo(
     {
       userId: req?.user?.id,
-      isTemporary: req?.body?.isTemporary,
+      isTemporary: req?.resolvedConversation?.isTemporary ?? req?.body?.isTemporary,
+      expiredAt: req?.resolvedConversation?.expiredAt,
       interfaceConfig: req?.config?.interfaceConfig,
     },
     {
       conversationId,
       endpoint: EModelEndpoint.agents,
-      agentId,
-      title: agent?.name || 'Open Responses Conversation',
+      agent_id: agentId,
+      ...resolvePersistableCodeEnvironmentDecision({
+        conversationId,
+        decision: codeEnvironmentDecision,
+        conversation: req.resolvedConversation,
+      }),
+      ...(title != null && { title }),
       model: agent?.model,
     },
-    { context: 'Responses API - save conversation' },
+    {
+      context: 'Responses API - save conversation',
+      initialAgentId: agent?.id === agentId ? agentId : null,
+    },
   );
 }
 
@@ -958,16 +1138,103 @@ function convertMessagesToOutputItems(messages) {
 const executeResponse = async (envelope, { req, res }) => {
   const appConfig = req.config;
   const requestStartTime = envelope.receivedAt;
-  const { principal } = envelope;
   const request = envelope.payload;
-  // The local executor keeps the current Express-dependent initialization path,
-  // but all request-body reads now observe the detached envelope payload.
+  const { principal } = envelope;
+  // Request-backed tool adapters still observe the validated envelope payload;
+  // shared initialization receives the transport-free runtime below.
   req.body = request;
   const requestedStore = request.store;
   const shouldStoreResponse = normalizeSteelNativeResponseStorage(request);
+  req.turnStartedAt = envelope.receivedAt;
+  const agentRuntime = createAgentExecutionContext({
+    user: req.user,
+    appConfig,
+    requestBody: request,
+    turnStartedAt: envelope.receivedAt,
+    conversationCreatedAt: req.conversationCreatedAt,
+    resolvedConversation: req.resolvedConversation,
+    hasResolvedConversation: Object.prototype.hasOwnProperty.call(req, 'resolvedConversation'),
+  });
   const agentId = request.model;
+  const manualSkills = extractManualSkills(req.body);
   const isStreaming = request.stream === true;
   const summarizationConfig = appConfig?.summarization;
+
+  const uninspectableField = getBlockedOpaqueFileField(appConfig?.filters, request.input);
+  if (uninspectableField != null) {
+    const blockResponse = contentFilterUninspectableResponse(uninspectableField);
+    return sendResponsesErrorResponse(
+      res,
+      400,
+      blockResponse.message,
+      'invalid_request',
+      blockResponse.error,
+    );
+  }
+
+  const inputMessages = convertToInternalMessages(
+    typeof request.input === 'string' ? request.input : request.input,
+  );
+  const messageFragments = [];
+  const traversalErrors = [];
+  try {
+    for (const fragment of extractMessageContent(inputMessages)) {
+      messageFragments.push(fragment);
+    }
+  } catch (error) {
+    if (!isContentTraversalLimitError(error)) {
+      throw error;
+    }
+    messageFragments.push(...getContentTraversalFragments(error));
+    traversalErrors.push(error);
+  }
+  let requestFragments;
+  try {
+    requestFragments = extractResponseRequestContent(request, messageFragments);
+  } catch (error) {
+    if (!isContentTraversalLimitError(error)) {
+      throw error;
+    }
+    requestFragments = getContentTraversalFragments(error);
+    traversalErrors.push(error);
+  }
+  const contentFinding = inspectContent(
+    [...requestFragments, ...(manualSkills ?? []).flatMap((name) => extractSkillContent({ name }))],
+    {
+      filters: appConfig?.filters,
+      legacyPii: appConfig?.messageFilter?.pii,
+    },
+  );
+  if (contentFinding != null) {
+    const isLegacyFilter = contentFinding.detectorId === 'legacy-pattern';
+    const blockResponse = contentFilterBlockResponse(contentFinding);
+    return sendResponsesErrorResponse(
+      res,
+      400,
+      isLegacyFilter
+        ? `Message contains a ${contentFinding.label}. Remove it and try again.`
+        : blockResponse.message,
+      'invalid_request',
+      isLegacyFilter ? 'message_filter_pii_block' : blockResponse.error,
+    );
+  }
+  const traversalError = traversalErrors.find((error) =>
+    isContentTraversalProtected({
+      error,
+      filters: appConfig?.filters,
+      legacyPii: appConfig?.messageFilter?.pii,
+      roles: inputMessages.map((message) => message?.role),
+    }),
+  );
+  if (traversalError != null) {
+    return sendResponsesErrorResponse(
+      res,
+      traversalError.statusCode,
+      traversalError.body.message,
+      'invalid_request',
+      traversalError.body.error,
+    );
+  }
 
   // Look up the agent
   const agent = await db.getAgent({ id: agentId });
@@ -983,1124 +1250,1337 @@ const executeResponse = async (envelope, { req, res }) => {
 
   // Generate IDs
   const responseId = generateResponseId();
+  const terminalRunError = createTerminalRunErrorObserver({
+    maxProviderErrorChars: appConfig?.endpoints?.agents?.maxProviderErrorChars,
+    logger,
+    responseMessageId: responseId,
+    source: '[Responses API]',
+    protectionEnabled: hasModelBoundContentProtection(
+      appConfig?.filters,
+      appConfig?.messageFilter?.pii,
+    ),
+  });
   const context = createResponseContext(request, responseId);
 
   logger.debug(
     `[Responses API] Request ${responseId} started for agent ${agentId}, stream: ${isStreaming}`,
   );
 
-  // Set up abort controller
-  const abortController = new AbortController();
-
-  // Handle client disconnect
-  req.on('close', () => {
-    if (!abortController.signal.aborted) {
-      abortController.abort();
-      logger.debug('[Responses API] Client disconnected, aborting');
-    }
-  });
-
-  try {
-    let continuationConversationId = null;
-    if (request.previous_response_id != null) {
-      if (typeof request.previous_response_id !== 'string') {
-        return sendResponsesErrorResponse(
-          res,
-          400,
-          'previous_response_id must be a string',
-          'invalid_request',
-        );
-      }
-      const continuation = await resolveResponseConversation(
-        request.previous_response_id,
-        principal?.userId ?? req.user?.id,
+  let conversationId = uuidv4();
+  if (request.previous_response_id != null) {
+    if (typeof request.previous_response_id !== 'string') {
+      return sendResponsesErrorResponse(
+        res,
+        400,
+        'previous_response_id must be a string',
+        'invalid_request',
       );
-      if (!continuation) {
-        return sendResponsesErrorResponse(res, 404, 'Conversation not found', 'not_found');
-      }
-      if (continuation.conversation.subagentThread != null) {
-        return sendResponsesErrorResponse(
-          res,
-          409,
-          CHILD_THREAD_READ_ONLY_ERROR,
-          'invalid_request',
-          'conversation_read_only',
+    }
+    let continuation;
+    try {
+      continuation = await resolveResponseConversation(request.previous_response_id, principal.userId);
+    } catch (error) {
+      terminalRunError.log(error);
+      return handleExecutionError({ error, res, appConfig });
+    }
+    if (!continuation) {
+      return sendResponsesErrorResponse(res, 404, 'Conversation not found', 'not_found');
+    }
+    if (continuation.conversation.subagentThread != null) {
+      return sendResponsesErrorResponse(
+        res,
+        409,
+        CHILD_THREAD_READ_ONLY_ERROR,
+        'invalid_request',
+        'conversation_read_only',
+      );
+    }
+    conversationId = continuation.conversationId;
+    req.resolvedConversation = continuation.conversation;
+  }
+  /** @type {Promise<import('librechat-data-provider').TAttachment | null>[]} */
+  const artifactPromises = [];
+  let artifactWritesCovered = false;
+  return executeAgentRun({
+    envelope,
+    runId: responseId,
+    conversationId,
+    connection: {
+      isClosed: () => res.destroyed === true && res.writableEnded !== true,
+      onClose: (listener) => {
+        const abortOnResponseClose = () => {
+          if (res.writableEnded !== true) {
+            logger.debug('[Responses API] Client disconnected, aborting');
+            listener();
+          }
+        };
+        res.once('close', abortOnResponseClose);
+        return () => res.off('close', abortOnResponseClose);
+      },
+    },
+    /** Conversation delete-all uses the shared owner-admission fence. Remote
+     * execution must observe it after durable enrollment and before provider work. */
+    isPrincipalActive: db.isSubagentOwnerAdmissible,
+    beforeSettle: (execution) => {
+      if (!artifactWritesCovered && artifactPromises.length > 0) {
+        execution.track(
+          waitForAgentExecutionWrites(artifactPromises).catch((artifactError) => {
+            logger.warn(
+              '[Responses API] Error processing artifacts:',
+              getSafeErrorMetadata(artifactError),
+            );
+          }),
         );
       }
-      continuationConversationId = continuation.conversationId;
-    }
+    },
+    onSettlementError: (error) => {
+      logger.error('[Responses API] Failed to settle execution:', getSafeErrorMetadata(error));
+    },
+    handleExecutionError: (error, signal) => {
+      terminalRunError.log(error, signal);
+      return handleExecutionError({ error, res, appConfig });
+    },
+    execute: async (execution) => {
+      if (request.previous_response_id != null) {
+        if (typeof request.previous_response_id !== 'string') {
+          return sendResponsesErrorResponse(
+            res,
+            400,
+            'previous_response_id must be a string',
+            'invalid_request',
+          );
+        }
+        const previousConversation =
+          req.resolvedConversation ??
+          (await db.getConvo(principal.userId, request.previous_response_id));
+        if (!previousConversation) {
+          return sendResponsesErrorResponse(res, 404, 'Conversation not found', 'not_found');
+        }
+        req.resolvedConversation = previousConversation;
+        if (previousConversation.subagentThread != null) {
+          return sendResponsesErrorResponse(
+            res,
+            409,
+            CHILD_THREAD_READ_ONLY_ERROR,
+            'invalid_request',
+            'conversation_read_only',
+          );
+        }
+      }
 
-    const conversationId = continuationConversationId ?? uuidv4();
-    const parentMessageId = null;
-    const agentsEConfig = appConfig?.endpoints?.[EModelEndpoint.agents];
+      const { decision: codeEnvironmentDecision, conversation: admittedConversation } =
+        await resolveAdmittedCodeEnvironmentDecision({
+          appConfig,
+          conversation: req.resolvedConversation,
+          conversationId,
+          requestedMode: request.code_environment_mode,
+          requestedSelections: request.code_workspaces,
+          readDecision: (id) => db.readAdmittedConvoCodeEnvironmentDecision(principal.userId, id),
+        });
+      req.resolvedConversation = admittedConversation;
+      const parentMessageId = null;
+      const mcpRequestBody = createMCPRuntimeRequestBody({
+        messageId: responseId,
+        conversationId,
+        codeEnvironmentMode: codeEnvironmentDecision.mode,
+        codeWorkspaces: codeEnvironmentDecision.codeWorkspaces,
+      });
+      const agentsEConfig = appConfig?.endpoints?.[EModelEndpoint.agents];
+      const ordinaryToolCancellationEnabled =
+        agentsEConfig?.backgroundTasks?.ordinaryToolCancellation === true;
+      const backgroundCompletionResultMaxChars =
+        agentsEConfig?.backgroundTasks?.completionResultMaxChars;
+      const previousMessages = request.previous_response_id
+        ? await loadPreviousMessages(conversationId, principal.userId)
+        : [];
+      if (request.previous_response_id) {
+        assertModelBoundContent({
+          onTraversalFailure: reportLocatorTraversalFailure,
+          filters: appConfig?.filters,
+          legacyPii: appConfig?.messageFilter?.pii,
+          storedMessages: previousMessages,
+        });
+      }
 
-    // Build allowed providers set
-    const allowedProviders = new Set(agentsEConfig?.allowedProviders);
+      // Build allowed providers set
+      const allowedProviders = new Set(agentsEConfig?.allowedProviders);
 
-    // Create tool loader
-    const loadTools = createToolLoader(abortController.signal);
-    const skillDbMethods = getSkillDbMethods();
+      // Create tool loader
+      const loadTools = createToolLoader({ req, res, signal: execution.signal });
+      const skillDbMethods = getSkillDbMethods();
 
-    // Initialize the agent first to check for disableStreaming
-    const endpointOption = {
-      endpoint: agent.provider,
-      model_parameters: agent.model_parameters ?? {},
-    };
+      // Initialize the agent first to check for disableStreaming
+      const endpointOption = {
+        endpoint: agent.provider,
+        model_parameters: agent.model_parameters ?? {},
+      };
 
-    const dbMethods = {
-      getConvoFiles: db.getConvoFiles,
-      getFiles: db.getFiles,
-      filterFilesByAgentAccess: filterFilesByRemoteAgentAccess,
-      getUserKey: db.getUserKey,
-      getMessages: db.getMessages,
-      getAccessibleMcpServerNames,
-      updateFilesUsage: db.updateFilesUsage,
-      getUserKeyValues: db.getUserKeyValues,
-      getUserCodeFiles: db.getUserCodeFiles,
-      getToolFilesByIds: db.getToolFilesByIds,
-      getCodeGeneratedFiles: db.getCodeGeneratedFiles,
-      listSkillsByAccess: skillDbMethods.listSkillsByAccess,
-      listAlwaysApplySkills: skillDbMethods.listAlwaysApplySkills,
-      getSkillByName: skillDbMethods.getSkillByName,
-    };
+      const dbMethods = {
+        getConvoFiles: db.getConvoFiles,
+        getFiles: db.getFiles,
+        filterFilesByAgentAccess: filterFilesByRemoteAgentAccess,
+        getUserKey: db.getUserKey,
+        getMessages: db.getMessages,
+        getAccessibleMcpServerNames,
+        updateFilesUsage: db.updateFilesUsage,
+        getUserKeyValues: db.getUserKeyValues,
+        getUserCodeFiles: db.getUserCodeFiles,
+        getDeferredProvisionFiles: db.getDeferredProvisionFiles,
+        checkSessionsAlive,
+        loadCodeApiKey,
+        getToolFilesByIds: db.getToolFilesByIds,
+        getCodeGeneratedFiles: db.getCodeGeneratedFiles,
+        listSkillsByAccess: skillDbMethods.listSkillsByAccess,
+        listAlwaysApplySkills: skillDbMethods.listAlwaysApplySkills,
+        getSkillByName: skillDbMethods.getSkillByName,
+        getRoleByName: db.getRoleByName,
+      };
 
-    const enabledCapabilities = new Set(agentsEConfig?.capabilities);
-    const memoryAvailable = await resolveMemoryAvailability({
-      enabledCapabilities,
-      memoryConfig: appConfig?.memory,
-      user: req.user,
-      getRoleByName: db.getRoleByName,
-    });
-    const skillsCapabilityEnabled = enabledCapabilities.has(AgentCapabilities.skills);
-    const ephemeralSkillsToggle = request.ephemeralAgent?.skills === true;
-    const accessibleSkillIds = skillsCapabilityEnabled
-      ? withDeploymentSkillIds(
-          await findAccessibleResources({
+      const enabledCapabilities = new Set(agentsEConfig?.capabilities);
+      const codeCapabilityEnabled = enabledCapabilities.has(AgentCapabilities.execute_code);
+      const fileSearchCapabilityEnabled = enabledCapabilities.has(AgentCapabilities.file_search);
+      /** Started before the memory read rather than awaited on its own line, so
+       *  the role lookup overlaps that query instead of preceding it. Skipped
+       *  when the deployment has both capabilities off — both flags are false
+       *  either way, so the read would be pure load on every request. One
+       *  lookup answers both. */
+      const toolRoleGrants =
+        codeCapabilityEnabled || fileSearchCapabilityEnabled
+          ? resolveToolRoleGrants({ req, getRoleByName: db.getRoleByName })
+          : null;
+      const memoryAvailable = await resolveMemoryAvailability({
+        enabledCapabilities,
+        memoryConfig: appConfig?.memory,
+        user: req.user,
+        getRoleByName: db.getRoleByName,
+      });
+      /** The deployment switch AND the role grant: `initializeAgent` rebuilds
+       *  `bash_tool`, `read_file` and the workspace file tools from this flag,
+       *  and forwards the code-environment context to their handlers. */
+      const codeEnvAvailable = codeCapabilityEnabled && (await toolRoleGrants)?.runCode === true;
+      /** The same pairing for the other gated tool, read only by the resend-file
+       *  priming: `false` skips re-hydrating prior-turn `file_search` files for
+       *  a tool the loader is about to drop. */
+      const fileSearchAvailable =
+        fileSearchCapabilityEnabled && (await toolRoleGrants)?.fileSearch === true;
+      /** Called by `initializeAgent` only when an agent's built provider config
+       *  turns native web search on. It reaches the initializer with `runtime`
+       *  and no `req`, so this is what lets it join the grants memoized on this
+       *  request instead of issuing its own read. */
+      const resolveWebSearchGrant = async () =>
+        (await resolveToolRoleGrants({ req, getRoleByName: db.getRoleByName })).webSearch;
+      const skillsCapabilityEnabled = enabledCapabilities.has(AgentCapabilities.skills);
+      const ephemeralSkillsToggle = request.ephemeralAgent?.skills === true;
+      const accessibleSkillIds = skillsCapabilityEnabled
+        ? withDeploymentSkillIds(
+            await findAccessibleResources({
+              userId: principal.userId,
+              role: principal.role,
+              resourceType: ResourceType.SKILL,
+              requiredPermissions: PermissionBits.VIEW,
+            }),
+          )
+        : [];
+      const editableSkillIds = skillsCapabilityEnabled
+        ? await findAccessibleResources({
             userId: principal.userId,
             role: principal.role,
             resourceType: ResourceType.SKILL,
-            requiredPermissions: PermissionBits.VIEW,
-          }),
-        )
-      : [];
-    const editableSkillIds = skillsCapabilityEnabled
-      ? await findAccessibleResources({
-          userId: principal.userId,
-          role: principal.role,
-          resourceType: ResourceType.SKILL,
-          requiredPermissions: PermissionBits.EDIT,
-        })
-      : [];
-    const skillCreateAllowed = skillsCapabilityEnabled
-      ? await getSkillToolDeps().canCreateSkill({ req })
-      : false;
+            requiredPermissions: PermissionBits.EDIT,
+          })
+        : [];
+      const skillCreateAllowed = skillsCapabilityEnabled
+        ? await getSkillToolDeps().canCreateSkill({ req })
+        : false;
 
-    const { skillStates, defaultActiveOnShare } = await loadSkillStates({
-      userId: principal.userId,
-      appConfig,
-      getUserById: db.getUserById,
-      accessibleSkillIds,
-    });
+      const { skillStates, defaultActiveOnShare } = await loadSkillStates({
+        userId: principal.userId,
+        appConfig,
+        getUserById: db.getUserById,
+        accessibleSkillIds,
+      });
 
-    const manualSkills = extractManualSkills(request);
-
-    const primaryScopedSkillIds = resolveAgentScopedSkillIds({
-      agent,
-      accessibleSkillIds,
-      skillsCapabilityEnabled,
-      ephemeralSkillsToggle,
-    });
-    const primaryScopedEditableSkillIds = resolveAgentScopedSkillIds({
-      agent,
-      accessibleSkillIds: editableSkillIds,
-      skillsCapabilityEnabled,
-      ephemeralSkillsToggle,
-    });
-
-    const primaryConfig = await initializeAgent(
-      {
-        req,
-        res,
-        loadTools,
-        requestFiles: [],
-        conversationId,
-        parentMessageId,
+      const primaryScopedSkillIds = resolveAgentScopedSkillIds({
         agent,
-        endpointOption,
-        allowedProviders,
-        isInitialAgent: true,
-        accessibleSkillIds: primaryScopedSkillIds,
-        skillAuthoringAvailable: canAuthorSkillFiles({
+        accessibleSkillIds,
+        skillsCapabilityEnabled,
+        ephemeralSkillsToggle,
+      });
+      const primaryScopedEditableSkillIds = resolveAgentScopedSkillIds({
+        agent,
+        accessibleSkillIds: editableSkillIds,
+        skillsCapabilityEnabled,
+        ephemeralSkillsToggle,
+      });
+
+      const primaryConfig = await initializeAgent(
+        {
+          runtime: agentRuntime,
+          loadTools,
+          requestFiles: [],
+          conversationId,
+          parentMessageId,
+          requestBody: mcpRequestBody,
           agent,
-          scopedEditableSkillIds: primaryScopedEditableSkillIds,
-          skillCreateAllowed,
-          skillsCapabilityEnabled,
-          ephemeralSkillsToggle,
-        }),
-        codeEnvAvailable: enabledCapabilities.has(AgentCapabilities.execute_code),
-        backgroundToolsAvailable: enabledCapabilities.has(AgentCapabilities.run_in_background),
-        toolIntentsAvailable: enabledCapabilities.has(AgentCapabilities.tool_intents),
-        statefulSessionsAvailable: enabledCapabilities.has(
-          AgentCapabilities.stateful_code_sessions,
-        ),
-        allowedStatefulCodeEnvironments: agentsEConfig?.statefulCodeSessions?.allowedEnvironments,
-        memoryAvailable,
-        skillStates,
-        defaultActiveOnShare,
-        manualSkills,
-      },
-      dbMethods,
-    );
-
-    /**
-     * Per-agent tool-execution context map, keyed by agentId. Ensures the
-     * ON_TOOL_EXECUTE callback routes each sub-agent's tool calls to the
-     * correct toolRegistry / userMCPAuthMap / tool_resources.
-     * @type {Map<string, {
-     *   agent: object,
-     *   toolRegistry?: import('@librechat/agents').LCToolRegistry,
-     *   requestScopedConnections?: import('@librechat/api').RequestScopedMCPConnectionStore,
-     *   userMCPAuthMap?: Record<string, Record<string, string>>,
-     *   tool_resources?: object,
-     *   actionsEnabled?: boolean,
-     * }>}
-     */
-    const agentToolContexts = new Map();
-    agentToolContexts.set(
-      primaryConfig.id,
-      buildAgentToolContext({ agent, config: primaryConfig }),
-    );
-
-    let handoffAgentConfigs = new Map();
-    let discoveredEdges = [];
-    let discoveredMCPAuthMap;
-    const subagentsCapabilityEnabled = enabledCapabilities.has(AgentCapabilities.subagents);
-    const primaryHasGraphSubagents =
-      subagentsCapabilityEnabled &&
-      primaryConfig.subagents?.enabled === true &&
-      (primaryConfig.subagents.graphs?.length ?? 0) > 0;
-    if (primaryConfig.edges?.length || primaryHasGraphSubagents) {
-      const modelsConfig = await getModelsConfig(req);
-      const discoveryParams = {
-        req,
-        res,
-        primaryConfig,
-        endpointOption,
-        allowedProviders,
-        modelsConfig,
-        loadTools,
-        requestFiles: [],
-        conversationId,
-        parentMessageId,
-        resourceType: ResourceType.REMOTE_AGENT,
-        computeAccessibleSkillIds: (handoffAgent) =>
-          resolveAgentScopedSkillIds({
-            agent: handoffAgent,
-            accessibleSkillIds,
-            skillsCapabilityEnabled,
-            ephemeralSkillsToggle,
-          }),
-        computeSkillAuthoringAvailable: (handoffAgent) =>
-          canAuthorSkillFiles({
-            agent: handoffAgent,
-            scopedEditableSkillIds: resolveAgentScopedSkillIds({
-              agent: handoffAgent,
-              accessibleSkillIds: editableSkillIds,
-              skillsCapabilityEnabled,
-              ephemeralSkillsToggle,
-            }),
+          endpointOption,
+          allowedProviders,
+          isInitialAgent: true,
+          accessibleSkillIds: primaryScopedSkillIds,
+          skillAuthoringAvailable: canAuthorSkillFiles({
+            agent,
+            scopedEditableSkillIds: primaryScopedEditableSkillIds,
             skillCreateAllowed,
             skillsCapabilityEnabled,
             ephemeralSkillsToggle,
           }),
-        skillStates,
-        defaultActiveOnShare,
-        codeEnvAvailable: enabledCapabilities.has(AgentCapabilities.execute_code),
-        backgroundToolsAvailable: enabledCapabilities.has(AgentCapabilities.run_in_background),
-        toolIntentsAvailable: enabledCapabilities.has(AgentCapabilities.tool_intents),
-        statefulSessionsAvailable: enabledCapabilities.has(
-          AgentCapabilities.stateful_code_sessions,
-        ),
-        allowedStatefulCodeEnvironments: agentsEConfig?.statefulCodeSessions?.allowedEnvironments,
-        memoryAvailable,
-      };
-      const discoveryDeps = {
-        getAgent: db.getAgent,
-        checkPermission: async ({ userId, role, resourceId, requiredPermission }) => {
-          const permissions = await getRemoteAgentPermissions(
-            { getEffectivePermissions },
-            userId,
-            role,
-            resourceId,
-          );
-          return hasPermissions(permissions, requiredPermission);
-        },
-        logViolation,
-        db: dbMethods,
-        onAgentInitialized: (loadedAgentId, loadedAgent, config) => {
-          agentToolContexts.set(
-            loadedAgentId,
-            buildAgentToolContext({ agent: loadedAgent, config }),
-          );
-        },
-        initializeAgent,
-      };
-      if (primaryConfig.edges?.length) {
-        ({
-          agentConfigs: handoffAgentConfigs,
-          edges: discoveredEdges,
-          userMCPAuthMap: discoveredMCPAuthMap,
-        } = await discoverConnectedAgents(discoveryParams, discoveryDeps));
-      }
-      if (subagentsCapabilityEnabled) {
-        discoveredMCPAuthMap = await resolveSubagentGraphs(
-          {
-            ...discoveryParams,
-            rootConfigs: [primaryConfig, ...handoffAgentConfigs.values()],
-          },
-          discoveryDeps,
-        );
-      }
-    }
-
-    primaryConfig.edges = discoveredEdges;
-    const endpointTokenConfigByAgentId = new Map();
-    for (const [agentId, context] of agentToolContexts) {
-      endpointTokenConfigByAgentId.set(agentId, context.endpointTokenConfig);
-    }
-    const resolveEndpointTokenConfig = (usage) =>
-      resolveAgentTokenConfig({
-        agentId: usage?.agentId,
-        byAgentId: endpointTokenConfigByAgentId,
-        fallback: primaryConfig.endpointTokenConfig,
-      });
-    const runAgents = [primaryConfig, ...handoffAgentConfigs.values()];
-    const initialSessions = buildInitialToolSessions({ agents: runAgents });
-    const contextAgentsById = new Map(runAgents.map((runAgent) => [runAgent.id, runAgent]));
-    for (const runAgent of runAgents) {
-      for (const graph of runAgent.subagentGraphConfigs ?? []) {
-        for (const memberConfig of graph.memberConfigs) {
-          contextAgentsById.set(memberConfig.id, memberConfig);
-        }
-      }
-    }
-    const contextAgents = [...contextAgentsById.values()];
-    const mergedMCPAuthMap = discoveredMCPAuthMap ?? primaryConfig.userMCPAuthMap;
-
-    const agentContextAttachmentsByAgentId = buildAgentContextAttachmentsByAgentId(contextAgents);
-    const agentScopedContext = await buildAgentScopedContext({
-      agentIds: contextAgents.map(({ id }) => id),
-      attachmentsByAgentId: agentContextAttachmentsByAgentId,
-      req,
-    });
-
-    const mcpManager = getMCPManager();
-    const configServers = await resolveConfigServers(req);
-
-    const inlineMemoryContextByAgentId = new Map();
-    await Promise.all(
-      contextAgents.map(async (runAgent) => {
-        const memoryContext = await buildInlineMemoryContext({
-          agent: runAgent,
-          req,
-          userId: principal.userId,
+          codeEnvAvailable,
+          fileSearchAvailable,
+          resolveWebSearchGrant,
+          backgroundToolsAvailable: enabledCapabilities.has(AgentCapabilities.run_in_background),
+          toolIntentsAvailable: enabledCapabilities.has(AgentCapabilities.tool_intents),
+          statefulSessionsAvailable: enabledCapabilities.has(
+            AgentCapabilities.stateful_code_sessions,
+          ),
+          allowedStatefulCodeEnvironments: agentsEConfig?.statefulCodeSessions?.allowedEnvironments,
           memoryAvailable,
-          getFormattedMemories: db.getFormattedMemories,
-        });
-        if (memoryContext) {
-          inlineMemoryContextByAgentId.set(runAgent.id, memoryContext);
-        }
-      }),
-    );
-    // Determine if streaming is enabled (check both request and agent config)
-    const streamingDisabled = !!primaryConfig.model_parameters?.disableStreaming;
-    const actuallyStreaming = isStreaming && !streamingDisabled;
-
-    // Load previous messages if previous_response_id is provided
-    let previousMessages = [];
-    if (request.previous_response_id) {
-      const userId = principal?.userId ?? req.user?.id ?? 'api-user';
-      previousMessages = await loadPreviousMessages(conversationId, userId);
-    }
-
-    // Convert input to internal messages
-    const inputMessages = convertToInternalMessages(request.input);
-    const currentTurnFiles = collectSteelNativeInputFileReferences({
-      requestInput: request.input,
-      inputMessages,
-      conversationId,
-    });
-
-    const piiHit = findPiiMatchInMessages(inputMessages, appConfig?.messageFilter?.pii);
-    if (piiHit != null) {
-      return sendResponsesErrorResponse(
-        res,
-        400,
-        piiHit.misconfigured
-          ? 'Message filtering is misconfigured; contact your administrator.'
-          : `Message contains a ${piiHit.label}. Remove it and try again.`,
-        'invalid_request',
-        'message_filter_pii_block',
+          skillStates,
+          defaultActiveOnShare,
+          manualSkills,
+          signal: execution.signal,
+        },
+        dbMethods,
       );
-    }
 
-    // Merge previous messages with new input
-    const allMessages = [...previousMessages, ...inputMessages];
-    const assistantTurnIndex = allMessages.length;
-    const tracker = actuallyStreaming ? createResponseTracker() : null;
-    const aggregator = actuallyStreaming ? null : createResponseAggregator();
-    const handlerConfig = actuallyStreaming
-      ? {
+      /**
+       * Per-agent tool-execution context map, keyed by agentId. Ensures the
+       * ON_TOOL_EXECUTE callback routes each sub-agent's tool calls to the
+       * correct toolRegistry / userMCPAuthMap / tool_resources.
+       * @type {Map<string, {
+       *   agent: object,
+       *   toolRegistry?: import('@librechat/agents').LCToolRegistry,
+       *   requestScopedConnections?: import('@librechat/api').RequestScopedMCPConnectionStore,
+       *   userMCPAuthMap?: Record<string, Record<string, string>>,
+       *   tool_resources?: object,
+       *   actionsEnabled?: boolean,
+       * }>}
+       */
+      const agentToolContexts = new Map();
+      agentToolContexts.set(
+        primaryConfig.id,
+        buildAgentToolContext({ agent, config: primaryConfig }),
+      );
+
+      let handoffAgentConfigs = new Map();
+      let discoveredEdges = [];
+      let discoveredMCPAuthMap;
+      const subagentsCapabilityEnabled = enabledCapabilities.has(AgentCapabilities.subagents);
+      const primaryHasGraphSubagents =
+        subagentsCapabilityEnabled &&
+        primaryConfig.subagents?.enabled === true &&
+        (primaryConfig.subagents.graphs?.length ?? 0) > 0;
+      if (primaryConfig.edges?.length || primaryHasGraphSubagents) {
+        const modelsConfig = await getModelsConfig(req);
+        const discoveryParams = {
+          req,
           res,
-          context,
-          tracker,
+          signal: execution.signal,
+          primaryConfig,
+          endpointOption,
+          allowedProviders,
+          modelsConfig,
+          loadTools,
+          requestFiles: [],
+          conversationId,
+          parentMessageId,
+          requestBody: mcpRequestBody,
+          resourceType: ResourceType.REMOTE_AGENT,
+          computeAccessibleSkillIds: (handoffAgent) =>
+            resolveAgentScopedSkillIds({
+              agent: handoffAgent,
+              accessibleSkillIds,
+              skillsCapabilityEnabled,
+              ephemeralSkillsToggle,
+            }),
+          computeSkillAuthoringAvailable: (handoffAgent) =>
+            canAuthorSkillFiles({
+              agent: handoffAgent,
+              scopedEditableSkillIds: resolveAgentScopedSkillIds({
+                agent: handoffAgent,
+                accessibleSkillIds: editableSkillIds,
+                skillsCapabilityEnabled,
+                ephemeralSkillsToggle,
+              }),
+              skillCreateAllowed,
+              skillsCapabilityEnabled,
+              ephemeralSkillsToggle,
+            }),
+          skillStates,
+          defaultActiveOnShare,
+          codeEnvAvailable,
+          fileSearchAvailable,
+          resolveWebSearchGrant,
+          backgroundToolsAvailable: enabledCapabilities.has(AgentCapabilities.run_in_background),
+          toolIntentsAvailable: enabledCapabilities.has(AgentCapabilities.tool_intents),
+          statefulSessionsAvailable: enabledCapabilities.has(
+            AgentCapabilities.stateful_code_sessions,
+          ),
+          allowedStatefulCodeEnvironments: agentsEConfig?.statefulCodeSessions?.allowedEnvironments,
+          memoryAvailable,
+        };
+        const discoveryDeps = {
+          getAgent: db.getAgent,
+          checkPermission: async ({ userId, role, resourceId, requiredPermission }) => {
+            const permissions = await getRemoteAgentPermissions(
+              { getEffectivePermissions },
+              userId,
+              role,
+              resourceId,
+            );
+            return hasPermissions(permissions, requiredPermission);
+          },
+          logViolation,
+          db: dbMethods,
+          onAgentInitialized: (loadedAgentId, loadedAgent, config) => {
+            agentToolContexts.set(
+              loadedAgentId,
+              buildAgentToolContext({ agent: loadedAgent, config }),
+            );
+          },
+          initializeAgent,
+        };
+        if (primaryConfig.edges?.length) {
+          ({
+            agentConfigs: handoffAgentConfigs,
+            edges: discoveredEdges,
+            userMCPAuthMap: discoveredMCPAuthMap,
+          } = await discoverConnectedAgents(discoveryParams, discoveryDeps));
         }
-      : null;
+        if (subagentsCapabilityEnabled) {
+          discoveredMCPAuthMap = await resolveSubagentGraphs(
+            {
+              ...discoveryParams,
+              rootConfigs: [primaryConfig, ...handoffAgentConfigs.values()],
+            },
+            discoveryDeps,
+          );
+        }
+      }
 
-    if (handlerConfig) {
-      setupStreamingResponse(res);
-      emitResponseCreated(handlerConfig);
-      emitResponseInProgress(handlerConfig);
-    }
+      primaryConfig.edges = discoveredEdges;
+      const endpointTokenConfigByAgentId = new Map();
+      for (const [agentId, context] of agentToolContexts) {
+        endpointTokenConfigByAgentId.set(agentId, context.endpointTokenConfig);
+      }
+      const resolveEndpointTokenConfig = (usage) =>
+        resolveAgentTokenConfig({
+          agentId: usage?.agentId,
+          byAgentId: endpointTokenConfigByAgentId,
+          fallback: primaryConfig.endpointTokenConfig,
+        });
+      const runAgents = [primaryConfig, ...handoffAgentConfigs.values()];
+      const initialSessions = buildInitialToolSessions({ agents: runAgents });
+      const modelBoundAgentsById = new Map();
+      const pendingModelBoundAgents = [...runAgents];
+      for (let index = 0; index < pendingModelBoundAgents.length; index++) {
+        const runAgent = pendingModelBoundAgents[index];
+        if (!runAgent?.id || modelBoundAgentsById.has(runAgent.id)) {
+          continue;
+        }
+        modelBoundAgentsById.set(runAgent.id, runAgent);
+        for (const subagent of runAgent.subagentAgentConfigs?.values?.() ?? []) {
+          pendingModelBoundAgents.push(subagent);
+        }
+        for (const graph of runAgent.subagentGraphConfigs ?? []) {
+          pendingModelBoundAgents.push(...graph.memberConfigs);
+        }
+      }
+      const modelBoundAgents = [...modelBoundAgentsById.values()];
+      const mergedMCPAuthMap = discoveredMCPAuthMap ?? primaryConfig.userMCPAuthMap;
+      assertModelBoundContent({
+        onTraversalFailure: reportLocatorTraversalFailure,
+        filters: appConfig?.filters,
+        legacyPii: appConfig?.messageFilter?.pii,
+        agents: modelBoundAgents,
+      });
 
-    const steelHistory = createSteelNativeHistory();
-    req.steelNativeContext = {
-      ...(req.steelNativeContext ?? {}),
-      conversationId,
-      requestId: responseId,
-      assistantTurnIndex,
-      memoryCheckpointTurnIndex: Math.max(0, assistantTurnIndex - 1),
-      requestedStore,
-      store: shouldStoreResponse,
-      providerStateMode: 'openai_responses_reconstructed',
-      currentTurnFiles,
-      steelHistory,
-      steelActivityEvents: steelHistory.activityEvents,
-    };
-    const { activeHistory, currentUserTurn } = collectSteelNativeResponseMessages(
-      allMessages,
-      conversationId,
-    );
-    if (currentUserTurn && currentTurnFiles.length > 0) {
-      currentUserTurn.files = currentTurnFiles;
-    }
-    const steelConversation = prepareLibreChatSteelChatContext({
-      conversationId,
-      requestId: responseId,
-      activeHistory,
-      ...(currentUserTurn ? { currentUserTurn } : {}),
-    });
-    const currentUserTurnText = getLatestHumanMessageText(inputMessages);
-    req.steelNativeContext.delegateOcrContext = {
-      ...(req.steelNativeContext.delegateOcrContext ?? {}),
-      currentUserTurnText,
-      steelConversation,
-    };
-    const quotation = await prepareQuotationTurn({
-      scope: { userId: principal?.userId ?? req.user.id, conversationId },
-      messageId: currentUserTurn?.messageId ?? responseId,
-      responseId,
-      text: currentUserTurnText,
-      files: currentTurnFiles,
-    });
-    req.steelNativeContext.quotation = {
-      ...quotation,
-      messageId: currentUserTurn?.messageId ?? responseId,
-    };
-    const delegateOcrResume =
-      !quotation.resume && typeof prepareDelegateOcrResume === 'function'
-        ? await prepareDelegateOcrResume({
-            req,
-            conversationId,
-            triggeringMessageId: currentUserTurn?.messageId,
-            userId: principal?.userId ?? req.user?.id,
-          })
-        : undefined;
-    const paddleOcrPreflight = quotation.resume
-      ? { ocrTurnActive: false }
-      : delegateOcrResume
-      ? { ocrTurnActive: false, delegateOcrResume: true }
-      : await runSteelPaddleOcrPreflight({
+      const agentContextAttachmentsByAgentId =
+        buildAgentContextAttachmentsByAgentId(modelBoundAgents);
+      const agentScopedContext = await buildAgentScopedContext({
+        agentIds: modelBoundAgents.map(({ id }) => id),
+        attachmentsByAgentId: agentContextAttachmentsByAgentId,
+        req,
+        endpoint: primaryConfig.endpoint,
+        endpointsByAgentId: new Map(
+          modelBoundAgents.map((runAgent) => [runAgent.id, { endpoint: runAgent.endpoint }]),
+        ),
+      });
+
+      const mcpManager = getMCPManager();
+      const configServers = await resolveConfigServers(req);
+
+      // Determine if streaming is enabled (check both request and agent config)
+      const streamingDisabled = !!primaryConfig.model_parameters?.disableStreaming;
+      const actuallyStreaming = isStreaming && !streamingDisabled;
+      const tracker = actuallyStreaming ? createResponseTracker() : null;
+      const aggregator = actuallyStreaming ? null : createResponseAggregator();
+      let streamingResponseReady = false;
+
+      // Merge previous messages with new input
+      const allMessages = [...previousMessages, ...inputMessages];
+      const currentTurnFiles = collectSteelNativeInputFileReferences({
+        requestInput: request.input,
+        inputMessages,
+        conversationId,
+      });
+      // A file-bearing turn needs the stream open before OCR preflight emits
+      // tool events. Text-only turns defer opening it until after the second
+      // model-bound content check, so a dynamic instruction block remains
+      // atomic.
+      if (actuallyStreaming && currentTurnFiles.length > 0) {
+        setupStreamingResponse(res);
+        streamingResponseReady = true;
+      }
+      const { activeHistory, currentUserTurn } = collectSteelNativeResponseMessages(
+        allMessages,
+        conversationId,
+      );
+      if (currentUserTurn && currentTurnFiles.length > 0) {
+        currentUserTurn.files = currentTurnFiles;
+      }
+      const steelConversation = prepareLibreChatSteelChatContext({
+        conversationId,
+        requestId: responseId,
+        activeHistory,
+        ...(currentUserTurn ? { currentUserTurn } : {}),
+      });
+      const steelHistory = createSteelNativeHistory();
+      req.steelNativeContext = {
+        ...(req.steelNativeContext ?? {}),
+        conversationId,
+        requestId: responseId,
+        assistantTurnIndex: allMessages.length,
+        memoryCheckpointTurnIndex: Math.max(0, allMessages.length - 1),
+        requestedStore,
+        store: shouldStoreResponse,
+        providerStateMode: 'openai_responses_reconstructed',
+        currentTurnFiles,
+        steelHistory,
+        steelActivityEvents: steelHistory.activityEvents,
+        delegateOcrContext: {
+          ...(req.steelNativeContext?.delegateOcrContext ?? {}),
+          currentUserTurnText: currentUserTurn?.content ?? '',
+          steelConversation,
+        },
+      };
+      const quotation = await prepareQuotationTurn({
+        scope: { userId: principal.userId, conversationId },
+        messageId: currentUserTurn?.messageId ?? responseId,
+        responseId,
+        text: currentUserTurn?.content ?? '',
+        files: currentTurnFiles,
+      });
+      req.steelNativeContext.quotation = {
+        ...quotation,
+        messageId: currentUserTurn?.messageId ?? responseId,
+      };
+      const delegateOcrResume =
+        !quotation.resume && typeof prepareDelegateOcrResume === 'function'
+          ? await prepareDelegateOcrResume({
+              req,
+              conversationId,
+              triggeringMessageId: currentUserTurn?.messageId,
+              userId: principal.userId,
+            })
+          : undefined;
+      let paddleOcrPreflight;
+      if (quotation.resume) {
+        paddleOcrPreflight = { ocrTurnActive: false };
+      } else if (delegateOcrResume) {
+        paddleOcrPreflight = { ocrTurnActive: false, delegateOcrResume: true };
+      } else {
+        paddleOcrPreflight = await runSteelPaddleOcrPreflight({
           req,
           res,
           agent: primaryConfig,
-          signal: abortController.signal,
+          signal: execution.signal,
           streamId: req._resumableStreamId || null,
           userMCPAuthMap: mergedMCPAuthMap,
         });
-    req.steelNativeContext = {
-      ...(req.steelNativeContext ?? {}),
-      paddleOcrPreflight,
-      ocrTurnActive: paddleOcrPreflight?.ocrTurnActive === true,
-    };
-    const delegateOcrPolicy = delegateOcrResume
-      ? { resolved: true, allowed: false, allowedFileKeys: [], reason: 'delegate_ocr_resume' }
-      : await resolveDelegateOcrPolicyForRequest({
-          req,
-          currentUserTurn: currentUserTurnText,
-          ocrTurnActive: paddleOcrPreflight?.ocrTurnActive === true,
-        });
-    req.steelNativeContext.delegateOcrPolicy = delegateOcrPolicy;
-    for (const runAgent of runAgents) {
-      Object.assign(
-        runAgent,
-        prepareSteelNativeToolConfig(runAgent, {
-          quotationRole: 'preparation',
-          hasQuotationOrder: hasQuotationOrder(quotation.state?.currentOrder?.markdown),
-          ocrTurnActive: paddleOcrPreflight?.ocrTurnActive === true,
-          delegateOcrPolicy,
+      }
+      const ocrTurnActive = paddleOcrPreflight?.ocrTurnActive === true;
+      req.steelNativeContext = {
+        ...(req.steelNativeContext ?? {}),
+        paddleOcrPreflight,
+        ocrTurnActive,
+        delegateOcrResume,
+      };
+      const delegateOcrPolicy = delegateOcrResume
+        ? { resolved: true, allowed: false, allowedFileKeys: [], reason: 'delegate_ocr_resume' }
+        : await resolveDelegateOcrPolicyForRequest({
+            req,
+            currentUserTurn: currentUserTurn?.content ?? '',
+            ocrTurnActive,
+          });
+      req.steelNativeContext.delegateOcrPolicy = delegateOcrPolicy;
+      for (const runAgent of runAgents) {
+        Object.assign(
+          runAgent,
+          prepareSteelNativeToolConfig(runAgent, {
+            quotationRole: 'preparation',
+            hasQuotationOrder: hasQuotationOrder(quotation.state?.currentOrder?.markdown),
+            ocrTurnActive,
+            delegateOcrPolicy: delegateOcrResume
+              ? { resolved: true, allowed: false, allowedFileKeys: [], reason: 'delegate_ocr_resume' }
+              : delegateOcrPolicy,
+          }),
+        );
+      }
+      // Keep each request-scoped tool context in step with its agent config.
+      // Delegate resume policy filtering is applied to the registry as well as
+      // the serialized agent definition, so a resumed run cannot re-enable a
+      // hidden delegate tool through the loader context.
+      for (const toolContext of agentToolContexts.values()) {
+        if (toolContext?.agent) {
+          Object.assign(
+            toolContext.agent,
+            prepareSteelNativeToolConfig(toolContext.agent, {
+              quotationRole: 'preparation',
+              hasQuotationOrder: hasQuotationOrder(quotation.state?.currentOrder?.markdown),
+              ocrTurnActive,
+              delegateOcrPolicy,
+            }),
+          );
+        }
+        if (toolContext) {
+          Object.assign(
+            toolContext,
+            prepareSteelNativeToolConfig(toolContext, {
+              quotationRole: 'preparation',
+              hasQuotationOrder: hasQuotationOrder(quotation.state?.currentOrder?.markdown),
+              ocrTurnActive,
+              delegateOcrPolicy,
+            }),
+          );
+        }
+      }
+
+      const attachments = {};
+      if (ocrTurnActive) {
+        if (paddleOcrPreflight?.currentOcrMarkdownResults?.length > 0) {
+          attachments.currentOcrMarkdownResults = paddleOcrPreflight.currentOcrMarkdownResults;
+        }
+        if (paddleOcrPreflight?.currentOcrSourceFileMapping?.length > 0) {
+          attachments.currentOcrSourceFileMapping = paddleOcrPreflight.currentOcrSourceFileMapping;
+        }
+        if (typeof paddleOcrPreflight?.previousOcrResultMarkdown === 'string') {
+          attachments.previousOcrResultMarkdown = paddleOcrPreflight.previousOcrResultMarkdown;
+        }
+      } else if (currentTurnFiles.length > 0) {
+        attachments.currentTurnFiles = currentTurnFiles;
+      }
+      const steelNativeContext = await buildDefaultSteelGlobalAgentContext({
+        conversation: steelConversation,
+        ...(Object.keys(attachments).length > 0 && { attachments }),
+        renderProfile: 'open_responses',
+        mode: ocrTurnActive ? 'ocr' : 'standard',
+      });
+      req.steelNativeContext.contextMetadata = steelNativeContext.metadata;
+      await Promise.all(
+        modelBoundAgents.map(async (runAgent) => {
+          const memoryContext = await buildInlineMemoryContext({
+            agent: runAgent,
+            req,
+            userId: principal.userId,
+            memoryAvailable,
+            getFormattedMemories: db.getFormattedMemories,
+          });
+          return applyContextToAgent({
+            agent: runAgent,
+            agentId: runAgent.id,
+            logger,
+            mcpManager,
+            configServers,
+            globalInstructionPrefix: steelNativeContext.instructionPrefix,
+            sharedRunContext: buildSharedRunContextWithSteel(
+              memoryContext,
+              agentScopedContext.get(runAgent.id),
+              [steelNativeContext.runtimeContextText, !ocrTurnActive && quotation.instruction]
+                .filter(Boolean)
+                .join('\n\n'),
+            ),
+          });
         }),
       );
-    }
-    for (const context of agentToolContexts.values()) {
-      if (context?.agent) {
-        Object.assign(
-          context.agent,
-          prepareSteelNativeToolConfig(context.agent, {
-            quotationRole: 'preparation',
-            hasQuotationOrder: hasQuotationOrder(quotation.state?.currentOrder?.markdown),
-            ocrTurnActive: paddleOcrPreflight?.ocrTurnActive === true,
-            delegateOcrPolicy,
-          }),
-        );
-      }
-      if (context) {
-        Object.assign(
-          context,
-          prepareSteelNativeToolConfig(context, {
-            quotationRole: 'preparation',
-            hasQuotationOrder: hasQuotationOrder(quotation.state?.currentOrder?.markdown),
-            ocrTurnActive: paddleOcrPreflight?.ocrTurnActive === true,
-            delegateOcrPolicy,
-          }),
-        );
-      }
-    }
-    const ocrTurnActive = paddleOcrPreflight?.ocrTurnActive === true;
-    const steelNativeContext = await buildDefaultSteelGlobalAgentContext({
-      conversation: steelConversation,
-      ...(ocrTurnActive
-        ? {
-            attachments: {
-              ...(paddleOcrPreflight?.currentOcrMarkdownResults?.length > 0
-                ? { currentOcrMarkdownResults: paddleOcrPreflight.currentOcrMarkdownResults }
-                : {}),
-              ...(paddleOcrPreflight?.currentOcrSourceFileMapping?.length > 0
-                ? { currentOcrSourceFileMapping: paddleOcrPreflight.currentOcrSourceFileMapping }
-                : {}),
-              ...(typeof paddleOcrPreflight?.previousOcrResultMarkdown === 'string'
-                ? { previousOcrResultMarkdown: paddleOcrPreflight.previousOcrResultMarkdown }
-                : {}),
-              ...(paddleOcrPreflight?.suggestedOcrResultColumns?.length > 0
-                ? { suggestedOcrResultColumns: paddleOcrPreflight.suggestedOcrResultColumns }
-                : {}),
-            },
-          }
-        : currentTurnFiles.length > 0 ||
-            paddleOcrPreflight?.currentOcrMarkdownResults?.length > 0 ||
-            paddleOcrPreflight?.currentPaddleOcrStatuses?.length > 0 ||
-            paddleOcrPreflight?.currentOcrFailures?.length > 0 ||
-            paddleOcrPreflight?.currentOcrSourceFileMapping?.length > 0
-          ? {
-              attachments: {
-                ...(currentTurnFiles.length > 0 ? { currentTurnFiles } : {}),
-                ...(paddleOcrPreflight?.currentPaddleOcrStatuses?.length > 0
-                  ? { currentPaddleOcrStatuses: paddleOcrPreflight.currentPaddleOcrStatuses }
-                  : {}),
-                ...(paddleOcrPreflight?.currentOcrMarkdownResults?.length > 0
-                  ? { currentOcrMarkdownResults: paddleOcrPreflight.currentOcrMarkdownResults }
-                  : {}),
-                ...(paddleOcrPreflight?.currentOcrFailures?.length > 0
-                  ? { currentOcrFailures: paddleOcrPreflight.currentOcrFailures }
-                  : {}),
-                ...(paddleOcrPreflight?.currentOcrSourceFileMapping?.length > 0
-                  ? { currentOcrSourceFileMapping: paddleOcrPreflight.currentOcrSourceFileMapping }
-                  : {}),
-              },
-            }
-          : {}),
-      renderProfile: 'open_responses',
-      mode: ocrTurnActive ? 'ocr' : 'standard',
-    });
-    req.steelNativeContext = {
-      ...(req.steelNativeContext ?? {}),
-      contextMetadata: steelNativeContext.metadata,
-    };
-
-    await Promise.all(
-      contextAgents.map((runAgent) =>
-        applyContextToAgent({
-          agent: runAgent,
-          agentId: runAgent.id,
-          logger,
-          mcpManager,
-          configServers,
-          globalInstructionPrefix: steelNativeContext.instructionPrefix,
-          sharedRunContext: buildSharedRunContextWithSteel(
-            inlineMemoryContextByAgentId.get(runAgent.id),
-            agentScopedContext.get(runAgent.id),
-            [steelNativeContext.runtimeContextText, !ocrTurnActive && quotation.instruction]
-              .filter(Boolean).join('\n\n'),
-          ),
-        }),
-      ),
-    );
-
-    const toolSet = buildToolSet(primaryConfig);
-    const formatted = formatAgentMessages(stripActivityLabelParts(allMessages), {}, toolSet);
-    const formattedMessages = formatted.messages;
-    const initialSummary = formatted.summary;
-    let indexTokenCountMap = formatted.indexTokenCountMap;
-
-    /**
-     * Inject manual + always-apply skill primes so the model sees SKILL.md
-     * bodies for this turn — parity with AgentClient's chat path. The
-     * Responses API uses its own response-builder shape, so LibreChat-
-     * style card SSE events don't apply; only the message-context part
-     * carries over.
-     */
-    const manualSkillPrimes = primaryConfig.manualSkillPrimes;
-    const alwaysApplySkillPrimes = primaryConfig.alwaysApplySkillPrimes;
-    if (
-      (manualSkillPrimes && manualSkillPrimes.length > 0) ||
-      (alwaysApplySkillPrimes && alwaysApplySkillPrimes.length > 0)
-    ) {
-      const primeResult = injectSkillPrimes({
-        initialMessages: formattedMessages,
-        indexTokenCountMap,
-        manualSkillPrimes,
-        alwaysApplySkillPrimes,
+      assertModelBoundContent({
+        onTraversalFailure: reportLocatorTraversalFailure,
+        filters: appConfig?.filters,
+        legacyPii: appConfig?.messageFilter?.pii,
+        submittedMessages: inputMessages,
+        agents: modelBoundAgents,
+        skills: [
+          ...(primaryConfig.manualSkillPrimes ?? []),
+          ...(primaryConfig.alwaysApplySkillPrimes ?? []),
+        ],
+        files: collectModelBoundAgentFiles(modelBoundAgents),
       });
-      indexTokenCountMap = primeResult.indexTokenCountMap;
-      /* Surface the cap-driven always-apply truncation at the controller
+      if (actuallyStreaming && !streamingResponseReady) {
+        setupStreamingResponse(res);
+        streamingResponseReady = true;
+      }
+
+      /** The caller's function tools: declared to the model with no server-side
+       *  executor, handed back when the model calls one, and reported on the
+       *  response as the subset that was actually applied.
+       *
+       *  Built once every agent of the run is known, because the interception
+       *  matches on tool name across the whole graph: a name a subagent owns
+       *  collides exactly as a primary one does. */
+      const clientTools = createClientToolHandoff({
+        tools: request.tools,
+        agentDefinitions: primaryConfig.toolDefinitions,
+        serverDefinitions: modelBoundAgents.flatMap((runAgent) => runAgent.toolDefinitions ?? []),
+        responseId,
+      });
+      if (clientTools.error != null) {
+        return sendResponsesErrorResponse(res, 400, clientTools.error, 'invalid_request');
+      }
+      primaryConfig.toolDefinitions = clientTools.toolDefinitions;
+      context.tools = clientTools.appliedTools;
+
+      const toolSet = buildRunToolSet(
+        primaryConfig,
+        handoffAgentConfigs.values(),
+        undefined,
+        allMessages,
+        true,
+      );
+      const formatted = formatAgentMessages(
+        stripUnusableSummaryParts(stripActivityLabelParts(allMessages)),
+        {},
+        toolSet,
+      );
+      const formattedMessages = formatted.messages;
+      let providerMessages;
+      const initialSummary = formatted.summary;
+      let indexTokenCountMap = formatted.indexTokenCountMap;
+
+      /**
+       * Inject manual + always-apply skill primes so the model sees SKILL.md
+       * bodies for this turn — parity with AgentClient's chat path. The
+       * Responses API uses its own response-builder shape, so LibreChat-
+       * style card SSE events don't apply; only the message-context part
+       * carries over.
+       */
+      const manualSkillPrimes = primaryConfig.manualSkillPrimes;
+      const alwaysApplySkillPrimes = primaryConfig.alwaysApplySkillPrimes;
+      if (
+        (manualSkillPrimes && manualSkillPrimes.length > 0) ||
+        (alwaysApplySkillPrimes && alwaysApplySkillPrimes.length > 0)
+      ) {
+        const primeResult = injectSkillPrimes({
+          initialMessages: formattedMessages,
+          indexTokenCountMap,
+          manualSkillPrimes,
+          alwaysApplySkillPrimes,
+        });
+        indexTokenCountMap = primeResult.indexTokenCountMap;
+        /* Surface the cap-driven always-apply truncation at the controller
          layer too — `injectSkillPrimes` already logs internally, but the
          controller-level warn includes endpoint context so operators can
          tell at a glance which path hit the cap. Mirrors AgentClient's
          warn in `client.js`. */
-      if (primeResult.alwaysApplyDropped > 0) {
-        logger.warn(
-          `[Responses API] Dropped ${primeResult.alwaysApplyDropped} always-apply prime(s) to stay within MAX_PRIMED_SKILLS_PER_TURN.`,
-        );
+        if (primeResult.alwaysApplyDropped > 0) {
+          logger.warn(
+            `[Responses API] Dropped ${primeResult.alwaysApplyDropped} always-apply prime(s) to stay within MAX_PRIMED_SKILLS_PER_TURN.`,
+          );
+        }
       }
-    }
-    const providerMessages = stripSteelOcrPartsFromProviderMessages(
-      formattedMessages,
-      currentTurnFiles,
-    );
-    req.steelNativeContext = {
-      ...(req.steelNativeContext ?? {}),
-      delegateOcrContext: {
-        ...(req.steelNativeContext?.delegateOcrContext ?? {}),
+      providerMessages = stripSteelOcrPartsFromProviderMessages(formattedMessages, currentTurnFiles);
+      req.steelNativeContext.delegateOcrContext = {
+        ...(req.steelNativeContext.delegateOcrContext ?? {}),
         history: formattedMessages,
         steelConversation,
-      },
-    };
+      };
 
-    /* Stable for the turn: the primary prime list is fixed once
+      /* Stable for the turn: the primary prime list is fixed once
        `initializeAgent` resolves and is used as the fallback when a
        specific agent context is unavailable. `codeEnvAvailable` is read
        per-agent from the stored tool context (admin cap AND that
        agent's `tools` list includes `execute_code`) — a skills-only
        agent never gains sandbox access even if the admin enabled the
        capability globally. */
-    if (actuallyStreaming) {
-      // Create event handlers
-      const { handlers: responsesHandlers, finalizeStream } =
-        createResponsesEventHandlers(handlerConfig);
+      // Set up response for streaming
+      if (actuallyStreaming) {
+        if (!streamingResponseReady) {
+          setupStreamingResponse(res);
+        }
 
-      // Collect usage for balance tracking
-      const collectedUsage = [];
+        // Create handler config
+        const handlerConfig = {
+          res,
+          context,
+          tracker,
+          /* The run terminates a caller-executed call's item itself: the server
+             never executes one, so `on_tool_end` cannot. */
+          clientToolNames: clientTools.clientToolNames,
+        };
 
-      // Artifact promises for processing tool outputs
-      /** @type {Promise<import('librechat-data-provider').TAttachment | null>[]} */
-      const artifactPromises = [];
-      // Use Responses API-specific callback that emits librechat:attachment events
-      const toolEndCallback = createResponsesToolEndCallback({
-        req,
-        res,
-        tracker,
-        artifactPromises,
-      });
+        // Emit response.created then response.in_progress per Open Responses spec
+        emitResponseCreated(handlerConfig);
+        emitResponseInProgress(handlerConfig);
 
-      // Create tool execute options for event-driven tool execution
-      const toolExecuteOptions = {
-        loadTools: async (toolNames, agentId) => {
-          const ctx =
-            agentToolContexts.get(agentId) ?? agentToolContexts.get(primaryConfig.id) ?? {};
-          const result = await loadToolsForExecution({
-            req,
-            res,
-            agentResourceType: ResourceType.REMOTE_AGENT,
-            conversationId,
-            toolNames,
-            agent: ctx.agent ?? agent,
-            signal: abortController.signal,
-            toolRegistry: ctx.toolRegistry,
-            backgroundToolNames: ctx.backgroundToolNames,
-            intentToolNames: ctx.intentToolNames,
-            mcpAvailableTools: ctx.mcpAvailableTools,
-            requestScopedConnections: ctx.requestScopedConnections,
-            userMCPAuthMap: ctx.userMCPAuthMap,
-            tool_resources: ctx.tool_resources,
-            actionsEnabled: ctx.actionsEnabled,
-            enableDelegateOcrStreaming: true,
-            accessibleMcpServerNames: ctx.accessibleMcpServerNames,
-          });
-          return enrichLoadedToolsWithAgentContext({
-            result,
-            req,
-            ctx,
-          });
-        },
-        toolEndCallback,
-        ...getSkillToolDeps(),
-      };
+        // Create event handlers
+        const {
+          handlers: responsesHandlers,
+          finalizeStream,
+          emitClientToolDeferral,
+        } = createResponsesEventHandlers(handlerConfig);
 
-      // Combine handlers
-      const handlers = {
-        on_message_delta: responsesHandlers.on_message_delta,
-        on_reasoning_delta: responsesHandlers.on_reasoning_delta,
-        on_run_step: responsesHandlers.on_run_step,
-        on_run_step_delta: responsesHandlers.on_run_step_delta,
-        on_chat_model_end: {
-          handle: (event, data, metadata) => {
-            responsesHandlers.on_chat_model_end.handle(event, data);
-            const usage = data?.output?.usage_metadata;
-            if (usage) {
-              const taggedUsage = markSummarizationUsage(usage, metadata);
-              collectedUsage.push(taggedUsage);
-            }
-          },
-        },
-        on_tool_end: new ToolEndHandler(toolEndCallback, logger),
-        on_run_step_completed: { handle: () => {} },
-        on_chain_stream: { handle: () => {} },
-        on_chain_end: { handle: () => {} },
-        on_agent_update: { handle: () => {} },
-        on_custom_event: { handle: () => {} },
-        on_tool_execute: createToolExecuteHandler(toolExecuteOptions),
-        [delegateOcrStreamEventName]: createDelegateOcrStreamHandler(),
-        on_agent_log: agentLogHandlerObj,
-        ...(summarizationConfig?.enabled !== false
-          ? buildSummarizationHandlers({ isStreaming: actuallyStreaming, res })
-          : {}),
-      };
+        // Collect usage for balance tracking
+        const collectedUsage = [];
 
-      // Create and run the agent
-      const userId = principal.userId;
-      const userMCPAuthMap = mergedMCPAuthMap;
-
-      const run = await createRun({
-        agents: runAgents,
-        messages: providerMessages,
-        indexTokenCountMap,
-        initialSummary,
-        runId: responseId,
-        summarizationConfig,
-        appConfig,
-        signal: abortController.signal,
-        customHandlers: handlers,
-        initialSessions,
-        delegateOcrPolicy: req.steelNativeContext.delegateOcrPolicy,
-        requestBody: {
-          messageId: responseId,
-          conversationId,
-        },
-        user: { id: userId },
-        tenantId: principal?.tenantId ?? req.user?.tenantId,
-        openAIOAuthModelOptionsSink: (modelOptions) => {
-          req.steelNativeContext.delegateOcrContext.modelOptions = modelOptions;
-        },
-        /** Bills subagent child-run model calls (reported outside the
-         *  streamEvents loop) into the same collectedUsage array. */
-        subagentUsageSink: createSubagentUsageSink(collectedUsage, (usage) => {
-          responsesHandlers.on_chat_model_end.handle('on_chat_model_end', {
-            output: { usage_metadata: usage },
-          });
-        }),
-      });
-
-      if (!run) {
-        throw new Error('Failed to create agent run');
-      }
-
-      // Process the stream
-      const config = {
-        runName: 'AgentRun',
-        configurable: {
-          thread_id: conversationId,
-          user_id: userId,
-          user: createSafeUser(req.user),
-          requestBody: {
-            messageId: responseId,
-            conversationId,
-          },
-          ...(userMCPAuthMap != null && { userMCPAuthMap }),
-        },
-        signal: abortController.signal,
-        streamMode: 'values',
-        version: 'v2',
-      };
-
-      const executeQuotation = () => executeSteelQuotationWorkflow({
-        req, res, signal: abortController.signal, agent: primaryConfig, run, userMCPAuthMap,
-        requestScopedConnections: agentToolContexts.get(primaryConfig.id)?.requestScopedConnections,
-        onUsage: async (usage) => { collectedUsage.push(usage); },
-        onText: async (text) => handlers.on_message_delta.handle('on_message_delta', {
-          id: `quotation:${responseId}`, delta: { content: [{ type: 'text', text }] },
-        }),
-      });
-      if (req.steelNativeContext?.quotation?.resume) {
-        await executeQuotation();
-      } else if (delegateOcrResume) {
-        await runPreparedResponsesDelegateOcr({
+        // Artifact promises for processing tool outputs
+        // Use Responses API-specific callback that emits librechat:attachment events
+        const toolEndCallback = createResponsesToolEndCallback({
           req,
           res,
-          signal: abortController.signal,
-          agent: primaryConfig,
-          resume: delegateOcrResume,
-          responseId,
-          messageDeltaHandler: handlers.on_message_delta,
+          tracker,
+          artifactPromises,
         });
-      } else {
-        await run.processStream({ messages: providerMessages }, config, {
-          callbacks: {
-            [Callback.TOOL_ERROR]: (graph, error, toolId) => {
-              logger.error(`[Responses API] Tool Error "${toolId}"`, error);
+
+        // Create tool execute options for event-driven tool execution
+        const toolExecuteOptions = {
+          runSignal: execution.signal,
+          foregroundRunId: responseId,
+          ordinaryToolCancellation: ordinaryToolCancellationEnabled,
+          backgroundCompletionResultMaxChars,
+          provisionFiles: createProvisionFilesCallback({
+            req,
+            agentToolContexts,
+            resolvePrimaryAgentId: () => primaryConfig.id,
+          }),
+          loadTools: async (
+            toolNames,
+            agentId,
+            _configurable,
+            callerCapabilityProjection,
+            runSignal,
+          ) => {
+            const ctx =
+              agentToolContexts.get(agentId) ?? agentToolContexts.get(primaryConfig.id) ?? {};
+            const result = await loadToolsForExecution({
+              req,
+              res,
+              agentResourceType: ResourceType.REMOTE_AGENT,
+              conversationId,
+              requestBody: mcpRequestBody,
+              toolNames,
+              agent: ctx.agent ?? agent,
+              signal: runSignal,
+              toolRegistry: ctx.toolRegistry,
+              callerCapabilityProjection,
+              backgroundToolNames: ctx.backgroundToolNames,
+              intentToolNames: ctx.intentToolNames,
+              mcpAvailableTools: ctx.mcpAvailableTools,
+              requestScopedConnections: ctx.requestScopedConnections,
+              userMCPAuthMap: ctx.userMCPAuthMap,
+              tool_resources: ctx.tool_resources,
+              actionsEnabled: ctx.actionsEnabled,
+              accessibleMcpServerNames: ctx.accessibleMcpServerNames,
+            });
+            return enrichLoadedToolsWithAgentContext({
+              result,
+              req,
+              ctx,
+            });
+          },
+          toolEndCallback,
+          ...getSkillToolDeps(),
+        };
+
+        // Combine handlers
+        const handlers = {
+          on_message_delta: responsesHandlers.on_message_delta,
+          on_reasoning_delta: responsesHandlers.on_reasoning_delta,
+          on_run_step: clientTools.wrapRunStep(responsesHandlers.on_run_step),
+          on_run_step_delta: responsesHandlers.on_run_step_delta,
+          on_chat_model_end: {
+            handle: (event, data, metadata, graph) => {
+              responsesHandlers.on_chat_model_end.handle(event, data);
+              const usage = data?.output?.usage_metadata;
+              if (usage) {
+                const agentContext = graph?.getAgentContext?.(metadata);
+                const taggedUsage = contextualizeModelUsage(usage, metadata, agentContext);
+                collectedUsage.push(taggedUsage);
+              }
             },
           },
+          on_tool_end: createOwnedToolEndHandler(toolEndCallback, logger),
+          on_run_step_completed: { handle: () => {} },
+          on_chain_stream: { handle: () => {} },
+          on_chain_end: { handle: () => {} },
+          on_agent_update: { handle: () => {} },
+          on_custom_event: { handle: () => {} },
+          [delegateOcrStreamEventName]: createDelegateOcrStreamHandler(),
+          /** The deferral answer is emitted as the call's `function_call_output`,
+           *  so a caller can tell an answered call from one handed back to it. */
+          on_tool_execute: clientTools.wrapToolExecute(
+            createToolExecuteHandler(toolExecuteOptions),
+            emitClientToolDeferral,
+          ),
+          on_agent_log: agentLogHandlerObj,
+          ...(summarizationConfig?.enabled !== false
+            ? buildSummarizationHandlers({ isStreaming: actuallyStreaming, res })
+            : {}),
+        };
+
+        // Create and run the agent
+        const userId = principal.userId;
+        const userMCPAuthMap = mergedMCPAuthMap;
+
+        const run = await createRun({
+          agents: runAgents,
+          messages: providerMessages,
+          indexTokenCountMap,
+          initialSummary,
+          runId: responseId,
+          summarizationConfig,
+          appConfig,
+          signal: execution.signal,
+          customHandlers: handlers,
+          delegateOcrPolicy: req.steelNativeContext.delegateOcrPolicy,
+          openAIOAuthModelOptionsSink: (modelOptions) => {
+            req.steelNativeContext.delegateOcrContext.modelOptions = modelOptions;
+          },
+          initialSessions,
+          requestBody: mcpRequestBody,
+          user: { ...createSafeUser(req.user), id: userId },
+          traceContext: { endpoint: EModelEndpoint.agents },
+          tenantId: principal.tenantId,
+          modelCallbacks: [terminalRunError.modelCallback],
+          clientToolNames: clientTools.clientToolNames,
+          /** Bills subagent child-run model calls (reported outside the
+           *  streamEvents loop) into the same collectedUsage array. */
+          subagentUsageSink: createSubagentUsageSink(collectedUsage),
         });
-        await executeQuotation();
-      }
 
-      // Record token usage against balance
-      const balanceConfig = getBalanceConfig(appConfig);
-      const transactionsConfig = getTransactionsConfig(appConfig);
-      recordCollectedUsage(
-        {
-          spendTokens: db.spendTokens,
-          spendStructuredTokens: db.spendStructuredTokens,
-          pricing: { getMultiplier: db.getMultiplier, getCacheMultiplier: db.getCacheMultiplier },
-          bulkWriteOps: { insertMany: db.bulkInsertTransactions, updateBalance: db.updateBalance },
-        },
-        {
-          user: userId,
-          conversationId,
-          collectedUsage,
-          context: 'message',
-          messageId: responseId,
-          balance: balanceConfig,
-          transactions: transactionsConfig,
-          model: primaryConfig.model || agent.model_parameters?.model,
-          endpointTokenConfig: primaryConfig.endpointTokenConfig,
-          resolveEndpointTokenConfig,
-        },
-      ).catch((err) => {
-        logger.error('[Responses API] Error recording usage:', err);
-      });
-
-      if (shouldStoreResponse) {
-        try {
-          // Save conversation
-          await saveConversation(req, conversationId, agentId, agent);
-
-          // Save input messages
-          await saveInputMessages(req, conversationId, inputMessages, agentId);
-
-          // Build response for saving (use tracker with buildResponse for streaming)
-          materializeResponsesTrackerText(tracker);
-          const finalResponse = markSteelNativeResponseStored(
-            buildResponse(context, tracker, 'completed'),
-          );
-          await saveResponseOutput(
-            req,
-            conversationId,
-            responseId,
-            finalResponse,
-            agentId,
-            Math.max(0, Date.now() - requestStartTime),
-          );
-          materializeResponsesTrackerText(
-            tracker,
-            extractSteelNativeResponseOutputText(finalResponse),
-          );
-
-          logger.debug(
-            `[Responses API] Stored response ${responseId} in conversation ${conversationId}`,
-          );
-        } catch (saveError) {
-          logger.error('[Responses API] Error saving response:', saveError);
-          if (saveError instanceof SteelOcrResponseAuditPersistenceError) {
-            throw saveError;
-          }
-          // Don't fail the request if saving fails
+        if (!run) {
+          throw new Error('Failed to create agent run');
         }
-      }
 
-      // Finalize the stream
-      finalizeStream();
-      res.end();
+        // Process the stream
+        const config = {
+          runName: 'AgentRun',
+          configurable: {
+            thread_id: conversationId,
+            user_id: userId,
+            user: createSafeUser(req.user),
+            requestBody: mcpRequestBody,
+            ...(userMCPAuthMap != null && { userMCPAuthMap }),
+          },
+          recursionLimit: resolveRecursionLimit(agentsEConfig, agent),
+          signal: execution.signal,
+          streamMode: 'values',
+          version: 'v2',
+        };
 
-      const duration = Date.now() - requestStartTime;
-      logger.debug(`[Responses API] Request ${responseId} completed in ${duration}ms (streaming)`);
-
-      // Wait for artifact processing after response ends (non-blocking)
-      if (artifactPromises.length > 0) {
-        Promise.all(artifactPromises).catch((artifactError) => {
-          logger.warn('[Responses API] Error processing artifacts:', artifactError);
-        });
-      }
-    } else {
-      const aggregatorHandlers = createAggregatorEventHandlers(aggregator);
-
-      // Collect usage for balance tracking
-      const collectedUsage = [];
-
-      /** @type {Promise<import('librechat-data-provider').TAttachment | null>[]} */
-      const artifactPromises = [];
-      const toolEndCallback = createToolEndCallback({ req, res, artifactPromises, streamId: null });
-
-      const toolExecuteOptions = {
-        loadTools: async (toolNames, agentId) => {
-          const ctx =
-            agentToolContexts.get(agentId) ?? agentToolContexts.get(primaryConfig.id) ?? {};
-          const result = await loadToolsForExecution({
+        const executeQuotation = () =>
+          executeSteelQuotationWorkflow({
             req,
             res,
-            agentResourceType: ResourceType.REMOTE_AGENT,
-            conversationId,
-            toolNames,
-            agent: ctx.agent ?? agent,
-            signal: abortController.signal,
-            toolRegistry: ctx.toolRegistry,
-            backgroundToolNames: ctx.backgroundToolNames,
-            intentToolNames: ctx.intentToolNames,
-            mcpAvailableTools: ctx.mcpAvailableTools,
-            requestScopedConnections: ctx.requestScopedConnections,
-            userMCPAuthMap: ctx.userMCPAuthMap,
-            tool_resources: ctx.tool_resources,
-            actionsEnabled: ctx.actionsEnabled,
-            enableDelegateOcrStreaming: true,
-            accessibleMcpServerNames: ctx.accessibleMcpServerNames,
+            signal: execution.signal,
+            agent: primaryConfig,
+            run,
+            userMCPAuthMap,
+            requestScopedConnections: agentToolContexts.get(primaryConfig.id)
+              ?.requestScopedConnections,
+            onUsage: async (usage) => collectedUsage.push(usage),
+            onText: async (text) =>
+              handlers.on_message_delta.handle('on_message_delta', {
+                id: `quotation:${responseId}`,
+                delta: { content: [{ type: 'text', text }] },
+              }),
           });
-          return enrichLoadedToolsWithAgentContext({
-            result,
+        if (req.steelNativeContext?.quotation?.resume) {
+          await executeQuotation();
+        } else if (delegateOcrResume) {
+          await runPreparedResponsesDelegateOcr({
             req,
-            ctx,
+            res,
+            signal: execution.signal,
+            agent: primaryConfig,
+            resume: delegateOcrResume,
+            responseId,
+            messageDeltaHandler: handlers.on_message_delta,
           });
-        },
-        toolEndCallback,
-        ...getSkillToolDeps(),
-      };
-
-      const handlers = {
-        on_message_delta: aggregatorHandlers.on_message_delta,
-        on_reasoning_delta: aggregatorHandlers.on_reasoning_delta,
-        on_run_step: aggregatorHandlers.on_run_step,
-        on_run_step_delta: aggregatorHandlers.on_run_step_delta,
-        on_chat_model_end: {
-          handle: (event, data, metadata) => {
-            aggregatorHandlers.on_chat_model_end.handle(event, data);
-            const usage = data?.output?.usage_metadata;
-            if (usage) {
-              const taggedUsage = markSummarizationUsage(usage, metadata);
-              collectedUsage.push(taggedUsage);
-            }
-          },
-        },
-        on_tool_end: new ToolEndHandler(toolEndCallback, logger),
-        on_run_step_completed: { handle: () => {} },
-        on_chain_stream: { handle: () => {} },
-        on_chain_end: { handle: () => {} },
-        on_agent_update: { handle: () => {} },
-        on_custom_event: { handle: () => {} },
-        on_tool_execute: createToolExecuteHandler(toolExecuteOptions),
-        [delegateOcrStreamEventName]: createDelegateOcrStreamHandler(),
-        on_agent_log: agentLogHandlerObj,
-        ...(summarizationConfig?.enabled !== false
-          ? buildSummarizationHandlers({ isStreaming: false, res })
-          : {}),
-      };
-
-      const userId = principal.userId;
-      const userMCPAuthMap = mergedMCPAuthMap;
-
-      const run = await createRun({
-        agents: runAgents,
-        messages: providerMessages,
-        indexTokenCountMap,
-        initialSummary,
-        runId: responseId,
-        summarizationConfig,
-        appConfig,
-        signal: abortController.signal,
-        customHandlers: handlers,
-        initialSessions,
-        delegateOcrPolicy: req.steelNativeContext.delegateOcrPolicy,
-        requestBody: {
-          messageId: responseId,
-          conversationId,
-        },
-        user: { id: userId },
-        tenantId: principal?.tenantId ?? req.user?.tenantId,
-        openAIOAuthModelOptionsSink: (modelOptions) => {
-          req.steelNativeContext.delegateOcrContext.modelOptions = modelOptions;
-        },
-        /** Bills subagent child-run model calls (reported outside the
-         *  streamEvents loop) into the same collectedUsage array. */
-        subagentUsageSink: createSubagentUsageSink(collectedUsage, (usage) => {
-          aggregatorHandlers.on_chat_model_end.handle('on_chat_model_end', {
-            output: { usage_metadata: usage },
+        } else {
+          await run.processStream({ messages: providerMessages }, config, {
+            callbacks: {
+              [Callback.TOOL_ERROR]: (graph, error, toolId) => {
+                logger.error(`[Responses API] Tool Error "${toolId}"`, getSafeErrorMetadata(error));
+              },
+            },
           });
-        }),
-      });
+          await executeQuotation();
+        }
 
-      if (!run) {
-        throw new Error('Failed to create agent run');
-      }
+        // Record token usage against balance
+        const balanceConfig = getBalanceConfig(appConfig);
+        const transactionsConfig = getTransactionsConfig(appConfig);
+        execution.track(
+          recordCollectedUsage(
+            {
+              spendTokens: db.spendTokens,
+              spendStructuredTokens: db.spendStructuredTokens,
+              pricing: {
+                getMultiplier: db.getMultiplier,
+                getCacheMultiplier: db.getCacheMultiplier,
+              },
+              bulkWriteOps: {
+                insertMany: db.bulkInsertTransactions,
+                updateBalance: db.updateBalance,
+              },
+            },
+            {
+              user: userId,
+              conversationId,
+              collectedUsage,
+              context: 'message',
+              messageId: responseId,
+              balance: balanceConfig,
+              transactions: transactionsConfig,
+              model: primaryConfig.model || agent.model_parameters?.model,
+              endpointTokenConfig: primaryConfig.endpointTokenConfig,
+              resolveEndpointTokenConfig,
+            },
+          ).catch((err) => {
+            logger.error('[Responses API] Error recording usage:', getSafeErrorMetadata(err));
+          }),
+        );
 
-      const config = {
-        runName: 'AgentRun',
-        configurable: {
-          thread_id: conversationId,
-          user_id: userId,
-          user: createSafeUser(req.user),
-          requestBody: {
-            messageId: responseId,
-            conversationId,
-          },
-          ...(userMCPAuthMap != null && { userMCPAuthMap }),
-        },
-        signal: abortController.signal,
-        streamMode: 'values',
-        version: 'v2',
-      };
+        const usage = buildResponsesUsage(collectedUsage);
 
-      const executeQuotation = () => executeSteelQuotationWorkflow({
-        req, res, signal: abortController.signal, agent: primaryConfig, run, userMCPAuthMap,
-        requestScopedConnections: agentToolContexts.get(primaryConfig.id)?.requestScopedConnections,
-        onUsage: async (usage) => { collectedUsage.push(usage); },
-        onText: async (text) => handlers.on_message_delta.handle('on_message_delta', {
-          id: `quotation:${responseId}`, delta: { content: [{ type: 'text', text }] },
-        }),
-      });
-      if (req.steelNativeContext?.quotation?.resume) {
-        await executeQuotation();
-      } else if (delegateOcrResume) {
-        await runPreparedResponsesDelegateOcr({
+        // Finalize the stream
+        finalizeStream(usage);
+        res.end();
+
+        const duration = Date.now() - requestStartTime;
+        logger.debug(
+          `[Responses API] Request ${responseId} completed in ${duration}ms (streaming)`,
+        );
+
+        // Save to database if store: true
+        if (shouldStoreResponse) {
+          try {
+            // Save conversation
+            await saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision);
+
+            // Save input messages
+            await saveInputMessages(req, conversationId, inputMessages, agentId);
+
+            // Build response for saving (use tracker with buildResponse for streaming)
+            materializeResponsesTrackerText(tracker);
+            const finalResponse = markSteelNativeResponseStored(
+              buildResponse(context, tracker, 'completed'),
+            );
+            await saveResponseOutput(
+              req,
+              conversationId,
+              responseId,
+              finalResponse,
+              agentId,
+              Math.max(0, Date.now() - requestStartTime),
+            );
+
+            logger.debug(
+              `[Responses API] Stored response ${responseId} in conversation ${conversationId}`,
+            );
+          } catch (saveError) {
+            logger.error('[Responses API] Error saving response:', getSafeErrorMetadata(saveError));
+            // Don't fail the request if saving fails
+          }
+        }
+
+        // The HTTP response is complete, while destructive cleanup still waits for artifacts.
+        if (artifactPromises.length > 0) {
+          execution.track(
+            waitForAgentExecutionWrites(artifactPromises).catch((artifactError) => {
+              logger.warn(
+                '[Responses API] Error processing artifacts:',
+                getSafeErrorMetadata(artifactError),
+              );
+            }),
+          );
+          artifactWritesCovered = true;
+        }
+      } else {
+        const aggregatorHandlers = createAggregatorEventHandlers(aggregator);
+
+        // Collect usage for balance tracking
+        const collectedUsage = [];
+
+        const toolEndCallback = createToolEndCallback({
           req,
           res,
-          signal: abortController.signal,
-          agent: primaryConfig,
-          resume: delegateOcrResume,
-          responseId,
-          messageDeltaHandler: handlers.on_message_delta,
+          artifactPromises,
+          streamId: null,
         });
-      } else {
-        await run.processStream({ messages: providerMessages }, config, {
-          callbacks: {
-            [Callback.TOOL_ERROR]: (graph, error, toolId) => {
-              logger.error(`[Responses API] Tool Error "${toolId}"`, error);
+
+        const toolExecuteOptions = {
+          runSignal: execution.signal,
+          foregroundRunId: responseId,
+          ordinaryToolCancellation: ordinaryToolCancellationEnabled,
+          backgroundCompletionResultMaxChars,
+          provisionFiles: createProvisionFilesCallback({
+            req,
+            agentToolContexts,
+            resolvePrimaryAgentId: () => primaryConfig.id,
+          }),
+          loadTools: async (
+            toolNames,
+            agentId,
+            _configurable,
+            callerCapabilityProjection,
+            runSignal,
+          ) => {
+            const ctx =
+              agentToolContexts.get(agentId) ?? agentToolContexts.get(primaryConfig.id) ?? {};
+            const result = await loadToolsForExecution({
+              req,
+              res,
+              agentResourceType: ResourceType.REMOTE_AGENT,
+              conversationId,
+              requestBody: mcpRequestBody,
+              toolNames,
+              agent: ctx.agent ?? agent,
+              signal: runSignal,
+              toolRegistry: ctx.toolRegistry,
+              callerCapabilityProjection,
+              backgroundToolNames: ctx.backgroundToolNames,
+              intentToolNames: ctx.intentToolNames,
+              mcpAvailableTools: ctx.mcpAvailableTools,
+              requestScopedConnections: ctx.requestScopedConnections,
+              userMCPAuthMap: ctx.userMCPAuthMap,
+              tool_resources: ctx.tool_resources,
+              actionsEnabled: ctx.actionsEnabled,
+              accessibleMcpServerNames: ctx.accessibleMcpServerNames,
+            });
+            return enrichLoadedToolsWithAgentContext({
+              result,
+              req,
+              ctx,
+            });
+          },
+          toolEndCallback,
+          ...getSkillToolDeps(),
+        };
+
+        const handlers = {
+          on_message_delta: aggregatorHandlers.on_message_delta,
+          on_reasoning_delta: aggregatorHandlers.on_reasoning_delta,
+          on_run_step: clientTools.wrapRunStep(aggregatorHandlers.on_run_step),
+          on_run_step_delta: aggregatorHandlers.on_run_step_delta,
+          on_chat_model_end: {
+            handle: (event, data, metadata, graph) => {
+              aggregatorHandlers.on_chat_model_end.handle(event, data);
+              const usage = data?.output?.usage_metadata;
+              if (usage) {
+                const agentContext = graph?.getAgentContext?.(metadata);
+                const taggedUsage = contextualizeModelUsage(usage, metadata, agentContext);
+                collectedUsage.push(taggedUsage);
+              }
             },
           },
+          on_tool_end: createOwnedToolEndHandler(toolEndCallback, logger),
+          on_run_step_completed: { handle: () => {} },
+          on_chain_stream: { handle: () => {} },
+          on_chain_end: { handle: () => {} },
+          on_agent_update: { handle: () => {} },
+          on_custom_event: { handle: () => {} },
+          [delegateOcrStreamEventName]: createDelegateOcrStreamHandler(),
+          on_tool_execute: clientTools.wrapToolExecute(
+            createToolExecuteHandler(toolExecuteOptions),
+            (callId, output) => aggregator.toolOutputs.set(callId, output),
+          ),
+          on_agent_log: agentLogHandlerObj,
+          ...(summarizationConfig?.enabled !== false
+            ? buildSummarizationHandlers({ isStreaming: false, res })
+            : {}),
+        };
+
+        const userId = principal.userId;
+        const userMCPAuthMap = mergedMCPAuthMap;
+
+        const run = await createRun({
+          agents: runAgents,
+          messages: providerMessages,
+          indexTokenCountMap,
+          initialSummary,
+          runId: responseId,
+          summarizationConfig,
+          appConfig,
+          signal: execution.signal,
+          customHandlers: handlers,
+          delegateOcrPolicy: req.steelNativeContext.delegateOcrPolicy,
+          openAIOAuthModelOptionsSink: (modelOptions) => {
+            req.steelNativeContext.delegateOcrContext.modelOptions = modelOptions;
+          },
+          initialSessions,
+          requestBody: mcpRequestBody,
+          user: { ...createSafeUser(req.user), id: userId },
+          traceContext: { endpoint: EModelEndpoint.agents },
+          tenantId: principal.tenantId,
+          modelCallbacks: [terminalRunError.modelCallback],
+          clientToolNames: clientTools.clientToolNames,
+          /** Bills subagent child-run model calls (reported outside the
+           *  streamEvents loop) into the same collectedUsage array. */
+          subagentUsageSink: createSubagentUsageSink(collectedUsage),
         });
-        await executeQuotation();
-      }
 
-      // Record token usage against balance
-      const balanceConfig = getBalanceConfig(appConfig);
-      const transactionsConfig = getTransactionsConfig(appConfig);
-      recordCollectedUsage(
-        {
-          spendTokens: db.spendTokens,
-          spendStructuredTokens: db.spendStructuredTokens,
-          pricing: { getMultiplier: db.getMultiplier, getCacheMultiplier: db.getCacheMultiplier },
-          bulkWriteOps: { insertMany: db.bulkInsertTransactions, updateBalance: db.updateBalance },
-        },
-        {
-          user: userId,
-          conversationId,
-          collectedUsage,
-          context: 'message',
-          messageId: responseId,
-          balance: balanceConfig,
-          transactions: transactionsConfig,
-          model: primaryConfig.model || agent.model_parameters?.model,
-          endpointTokenConfig: primaryConfig.endpointTokenConfig,
-          resolveEndpointTokenConfig,
-        },
-      ).catch((err) => {
-        logger.error('[Responses API] Error recording usage:', err);
-      });
-
-      if (artifactPromises.length > 0) {
-        try {
-          await Promise.all(artifactPromises);
-        } catch (artifactError) {
-          logger.warn('[Responses API] Error processing artifacts:', artifactError);
+        if (!run) {
+          throw new Error('Failed to create agent run');
         }
-      }
 
-      const response = markSteelNativeResponseStored(buildAggregatedResponse(context, aggregator));
+        const config = {
+          runName: 'AgentRun',
+          configurable: {
+            thread_id: conversationId,
+            user_id: userId,
+            user: createSafeUser(req.user),
+            requestBody: mcpRequestBody,
+            ...(userMCPAuthMap != null && { userMCPAuthMap }),
+          },
+          recursionLimit: resolveRecursionLimit(agentsEConfig, agent),
+          signal: execution.signal,
+          streamMode: 'values',
+          version: 'v2',
+        };
 
-      if (shouldStoreResponse) {
-        try {
-          await saveConversation(req, conversationId, agentId, agent);
-
-          await saveInputMessages(req, conversationId, inputMessages, agentId);
-
-          await saveResponseOutput(
+        const executeQuotation = () =>
+          executeSteelQuotationWorkflow({
             req,
-            conversationId,
+            res,
+            signal: execution.signal,
+            agent: primaryConfig,
+            run,
+            userMCPAuthMap,
+            requestScopedConnections: agentToolContexts.get(primaryConfig.id)
+              ?.requestScopedConnections,
+            onUsage: async (usage) => collectedUsage.push(usage),
+            onText: async (text) =>
+              handlers.on_message_delta.handle('on_message_delta', {
+                id: `quotation:${responseId}`,
+                delta: { content: [{ type: 'text', text }] },
+              }),
+          });
+        if (req.steelNativeContext?.quotation?.resume) {
+          await executeQuotation();
+        } else if (delegateOcrResume) {
+          await runPreparedResponsesDelegateOcr({
+            req,
+            res,
+            signal: execution.signal,
+            agent: primaryConfig,
+            resume: delegateOcrResume,
             responseId,
-            response,
-            agentId,
-            Math.max(0, Date.now() - requestStartTime),
-          );
-
-          logger.debug(
-            `[Responses API] Stored response ${responseId} in conversation ${conversationId}`,
-          );
-        } catch (saveError) {
-          logger.error('[Responses API] Error saving response:', saveError);
-          if (saveError instanceof SteelOcrResponseAuditPersistenceError) {
-            throw saveError;
-          }
-          // Don't fail the request if saving fails
+            messageDeltaHandler: handlers.on_message_delta,
+          });
+        } else {
+          await run.processStream({ messages: providerMessages }, config, {
+            callbacks: {
+              [Callback.TOOL_ERROR]: (graph, error, toolId) => {
+                logger.error(`[Responses API] Tool Error "${toolId}"`, getSafeErrorMetadata(error));
+              },
+            },
+          });
+          await executeQuotation();
         }
+
+        // Record token usage against balance
+        const balanceConfig = getBalanceConfig(appConfig);
+        const transactionsConfig = getTransactionsConfig(appConfig);
+        execution.track(
+          recordCollectedUsage(
+            {
+              spendTokens: db.spendTokens,
+              spendStructuredTokens: db.spendStructuredTokens,
+              pricing: {
+                getMultiplier: db.getMultiplier,
+                getCacheMultiplier: db.getCacheMultiplier,
+              },
+              bulkWriteOps: {
+                insertMany: db.bulkInsertTransactions,
+                updateBalance: db.updateBalance,
+              },
+            },
+            {
+              user: userId,
+              conversationId,
+              collectedUsage,
+              context: 'message',
+              messageId: responseId,
+              balance: balanceConfig,
+              transactions: transactionsConfig,
+              model: primaryConfig.model || agent.model_parameters?.model,
+              endpointTokenConfig: primaryConfig.endpointTokenConfig,
+              resolveEndpointTokenConfig,
+            },
+          ).catch((err) => {
+            logger.error('[Responses API] Error recording usage:', getSafeErrorMetadata(err));
+          }),
+        );
+
+        if (artifactPromises.length > 0) {
+          try {
+            await waitForAgentExecutionWrites(artifactPromises);
+          } catch (artifactError) {
+            logger.warn(
+              '[Responses API] Error processing artifacts:',
+              getSafeErrorMetadata(artifactError),
+            );
+          }
+          artifactWritesCovered = true;
+        }
+
+        const response = markSteelNativeResponseStored(buildAggregatedResponse(
+          context,
+          aggregator,
+          buildResponsesUsage(collectedUsage),
+        ));
+
+        if (shouldStoreResponse) {
+          try {
+            await saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision);
+
+            await saveInputMessages(req, conversationId, inputMessages, agentId);
+
+            await saveResponseOutput(
+              req,
+              conversationId,
+              responseId,
+              response,
+              agentId,
+              Math.max(0, Date.now() - requestStartTime),
+            );
+
+            logger.debug(
+              `[Responses API] Stored response ${responseId} in conversation ${conversationId}`,
+            );
+          } catch (saveError) {
+            logger.error('[Responses API] Error saving response:', getSafeErrorMetadata(saveError));
+            // Don't fail the request if saving fails
+          }
+        }
+
+        res.json(response);
+
+        const duration = Date.now() - requestStartTime;
+        logger.debug(
+          `[Responses API] Request ${responseId} completed in ${duration}ms (non-streaming)`,
+        );
       }
-
-      res.json(response);
-
-      const duration = Date.now() - requestStartTime;
-      logger.debug(
-        `[Responses API] Request ${responseId} completed in ${duration}ms (non-streaming)`,
-      );
-    }
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : 'An error occurred';
-    logger.error('[Responses API] Error:', error);
-
-    // Check if we already started streaming (headers sent)
-    if (res.headersSent) {
-      // Headers already sent, write error event and close
-      writeDone(res);
-      res.end();
-    } else {
-      // Forward upstream provider status codes (e.g., Anthropic 400s) instead of masking as 500
-      const statusCode =
-        typeof error?.status === 'number' && error.status >= 400 && error.status < 600
-          ? error.status
-          : 500;
-      const errorType = statusCode >= 400 && statusCode < 500 ? 'invalid_request' : 'server_error';
-      const errorCode = typeof error?.code === 'string' ? error.code : undefined;
-      if (errorCode === undefined) {
-        sendResponsesErrorResponse(res, statusCode, errorMessage, errorType);
-      } else {
-        sendResponsesErrorResponse(res, statusCode, errorMessage, errorType, errorCode);
-      }
-    }
-  }
+    },
+  });
 };
 
 /**
@@ -2125,7 +2605,7 @@ const createResponse = async (req, res) => {
       protocol: 'responses',
       requestId: req.requestId ?? req.id ?? `agent-run-${nanoid()}`,
       receivedAt,
-      principal: req.user,
+      principal: req.tenantId == null ? req.user : { ...req.user, tenantId: req.tenantId },
       payload: validation.request,
     });
   } catch (error) {
@@ -2186,7 +2666,7 @@ const listModels = async (req, res) => {
       data: models,
     });
   } catch (error) {
-    logger.error('[Responses API] Error listing models:', error);
+    logger.error('[Responses API] Error listing models:', getSafeErrorMetadata(error));
     sendResponsesErrorResponse(
       res,
       500,
@@ -2289,7 +2769,7 @@ const getResponse = async (req, res) => {
 
     res.json(response);
   } catch (error) {
-    logger.error('[Responses API] Error getting response:', error);
+    logger.error('[Responses API] Error getting response:', getSafeErrorMetadata(error));
     sendResponsesErrorResponse(
       res,
       500,

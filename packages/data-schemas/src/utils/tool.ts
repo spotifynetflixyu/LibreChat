@@ -219,6 +219,20 @@ export function compactToolCallResults(content: unknown): unknown {
       return part;
     }
     const toolCall = part.tool_call;
+    const result = typeof toolCall.output === 'string' ? parseResult(toolCall.output) : undefined;
+    if (
+      toolCall.backgroundTask != null ||
+      (typeof result?.background_task_id === 'string' &&
+        result.background_task_id.length > 0 &&
+        typeof result.tool === 'string' &&
+        result.tool.length > 0 &&
+        result.status === 'running' &&
+        result.subagent_type == null &&
+        typeof toolCall.output === 'string' &&
+        toolCall.output.length <= 4_096)
+    ) {
+      return part;
+    }
     if (toolCall.output === undefined) {
       return part;
     }

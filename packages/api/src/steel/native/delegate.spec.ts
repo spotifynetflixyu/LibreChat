@@ -825,7 +825,7 @@ describe('delegate_ocr', () => {
     expect(result).toBeInstanceOf(ToolMessage);
     expect(result.content).toBe('firstsecond');
     expect(result.artifact).toEqual(delegateOcrStreamedArtifact);
-    expect(events).toEqual([
+    expect(events.filter((event) => event.name === delegateOcrStreamEventName)).toEqual([
       {
         name: delegateOcrStreamEventName,
         payload: {
@@ -858,7 +858,7 @@ describe('delegate_ocr', () => {
     );
     expect(unscoped.content).toBe('firstsecond');
     expect(unscoped.artifact).toBeUndefined();
-    expect(events).toEqual([]);
+    expect(events.filter((event) => event.name === delegateOcrStreamEventName)).toEqual([]);
   });
 
   it('emits an error phase and rethrows after partial streaming', async () => {
@@ -886,8 +886,10 @@ describe('delegate_ocr', () => {
         callbacks: new CallbackManager('parent-run-abort', {
           handlers: [
             {
-              handleCustomEvent(_name: string, payload: unknown): void {
-                events.push(payload);
+              handleCustomEvent(name: string, payload: unknown): void {
+                if (name === delegateOcrStreamEventName) {
+                  events.push(payload);
+                }
               },
             },
           ],

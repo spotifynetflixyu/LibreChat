@@ -35,6 +35,7 @@ import {
 } from './oauth';
 import {
   createDelegateOcrTool,
+  delegateOcrStreamEventName,
   delegateOcrStreamedArtifact,
   delegateOcrToolName,
   runDelegateOcrWorkflow,
@@ -748,8 +749,10 @@ describe('OpenAI OAuth model adapter', () => {
         callbacks: new CallbackManager('delegate-parent-run', {
           handlers: [
             {
-              handleCustomEvent(_eventName: string, payload: unknown): void {
-                streamedEvents.push(payload);
+              handleCustomEvent(eventName: string, payload: unknown): void {
+                if (eventName === delegateOcrStreamEventName) {
+                  streamedEvents.push(payload);
+                }
               },
             },
           ],

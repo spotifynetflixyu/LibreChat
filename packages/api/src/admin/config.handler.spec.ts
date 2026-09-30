@@ -521,6 +521,25 @@ describe('createAdminConfigHandlers', () => {
       expect(savedOverrides.interface).toEqual({ modelSelect: false });
     });
 
+    it('collapses an explicit schedules disable to the boolean form in overrides', async () => {
+      const { handlers, deps } = createHandlers({
+        upsertConfig: jest.fn().mockResolvedValue({ _id: 'c1', configVersion: 1 }),
+      });
+      const req = mockReq({
+        params: { principalType: 'role', principalId: 'admin' },
+        body: {
+          overrides: { interface: { schedules: { use: false, maxPerUser: 2 } } },
+        },
+      });
+      const res = mockRes();
+
+      await handlers.upsertConfigOverrides(req, res);
+
+      expect(res.statusCode).toBe(201);
+      const savedOverrides = deps.upsertConfig.mock.calls[0][3];
+      expect(savedOverrides.interface).toEqual({ schedules: false });
+    });
+
     it('preserves skillSync sections in admin overrides', async () => {
       const { handlers, deps } = createHandlers({
         upsertConfig: jest.fn().mockResolvedValue({ _id: 'c1', configVersion: 1 }),
@@ -994,6 +1013,21 @@ describe('createAdminConfigHandlers', () => {
       expect(deps.tombstoneConfigField).not.toHaveBeenCalled();
     });
 
+    it('ignores tombstones for base-only filter policy', async () => {
+      const { handlers, deps } = createHandlers();
+      const req = mockReq({
+        params: { principalType: 'role', principalId: 'admin' },
+        body: { fieldPath: 'filters.messages.pii' },
+      });
+      const res = mockRes();
+
+      await handlers.tombstoneConfigField(req, res);
+
+      expect(res.statusCode).toBe(200);
+      expect(res.body!.message).toBeDefined();
+      expect(deps.tombstoneConfigField).not.toHaveBeenCalled();
+    });
+
     it('rejects unsafe field paths', async () => {
       const { handlers, deps } = createHandlers();
       const req = mockReq({
@@ -1077,6 +1111,43 @@ describe('createAdminConfigHandlers', () => {
       const patchedFields = deps.patchConfigFields.mock.calls[0][3];
       expect(patchedFields['interface.modelSelect']).toBe(false);
       expect(patchedFields['interface.prompts']).toBeUndefined();
+    });
+
+    /** `use` is both a permission bit and the runtime disable for dual-purpose fields.
+     *  Stripping it alone leaves an object, which `getLimits` reads as ENABLED — so an
+     *  override meant to stop scheduled billing would start it. */
+    it('collapses an explicit schedules disable to the boolean form in patches', async () => {
+      const { handlers, deps } = createHandlers();
+      const req = mockReq({
+        params: { principalType: 'role', principalId: 'admin' },
+        body: {
+          entries: [{ fieldPath: 'interface.schedules', value: { use: false, maxPerUser: 2 } }],
+        },
+      });
+      const res = mockRes();
+
+      await handlers.patchConfigField(req, res);
+
+      expect(res.statusCode).toBe(200);
+      const patchedFields = deps.patchConfigFields.mock.calls[0][3];
+      expect(patchedFields['interface.schedules']).toBe(false);
+    });
+
+    it('keeps a schedules object that only narrows limits', async () => {
+      const { handlers, deps } = createHandlers();
+      const req = mockReq({
+        params: { principalType: 'role', principalId: 'admin' },
+        body: {
+          entries: [{ fieldPath: 'interface.schedules', value: { maxPerUser: 2 } }],
+        },
+      });
+      const res = mockRes();
+
+      await handlers.patchConfigField(req, res);
+
+      expect(res.statusCode).toBe(200);
+      const patchedFields = deps.patchConfigFields.mock.calls[0][3];
+      expect(patchedFields['interface.schedules']).toEqual({ maxPerUser: 2 });
     });
 
     it('preserves skillSync field entries in patches', async () => {
@@ -1417,7 +1488,8 @@ describe('createAdminConfigHandlers', () => {
       expect(res.statusCode).toBe(200);
       const [, , , , priorityArg] = deps.patchConfigFields.mock.calls[0];
       expect(priorityArg).toBe(999);
-      expect(deps.findConfigByPrincipal).not.toHaveBeenCalled();
+      /** Read once to validate the write on top of the stored fields, not for its priority. */
+      expect(deps.findConfigByPrincipal).toHaveBeenCalledTimes(1);
     });
 
     it('preserves priority 0 when broad caller supplies it', async () => {
@@ -2394,6 +2466,148 @@ describe('createAdminConfigHandlers', () => {
         expect(res.statusCode).toBe(200);
         expect(getAppConfig).toHaveBeenCalledWith(expect.objectContaining({ baseOnly: false }));
       }
+    });
+  });
+
+  describe('override validation against configSchema', () => {
+    it('rejects a whole-document write with an invalid field and stores nothing', async () => {
+      const { handlers, deps } = createHandlers();
+      const req = mockReq({
+        params: { principalType: 'role', principalId: 'admin' },
+        body: {
+          overrides: { registration: { oauthStateTtlMs: 5 }, interface: { modelSelect: false } },
+        },
+      });
+      const res = mockRes();
+
+      await handlers.upsertConfigOverrides(req, res);
+
+      expect(res.statusCode).toBe(400);
+      expect(res.body).toEqual({
+        error: 'Invalid config override',
+        code: 'CONFIG_OVERRIDE_INVALID',
+        issues: [{ path: 'registration.oauthStateTtlMs', code: 'too_small' }],
+      });
+      expect(deps.upsertConfig).not.toHaveBeenCalled();
+    });
+
+    it('validates a whole-document write on the base its retained tombstones leave', async () => {
+      const base = {
+        config: {
+          cloudfront: { domain: 'https://cdn.example.com', imageSigning: 'cookies' },
+        },
+      };
+      const body = { overrides: { cloudfront: { requireSignedAccess: true } } };
+      const params = { principalType: 'role', principalId: 'admin' };
+
+      const kept = createHandlers({ getAppConfig: jest.fn().mockResolvedValue(base) });
+      const keptRes = mockRes();
+      await kept.handlers.upsertConfigOverrides(mockReq({ params, body }), keptRes);
+      expect(keptRes.statusCode).toBe(201);
+
+      const tombstoned = createHandlers({
+        getAppConfig: jest.fn().mockResolvedValue(base),
+        findConfigByPrincipal: jest
+          .fn()
+          .mockResolvedValue({ overrides: {}, tombstones: ['cloudfront.imageSigning'] }),
+      });
+      const tombstonedRes = mockRes();
+      await tombstoned.handlers.upsertConfigOverrides(mockReq({ params, body }), tombstonedRes);
+      expect(tombstonedRes.statusCode).toBe(400);
+      expect(tombstonedRes.body?.issues).toEqual([
+        expect.objectContaining({ path: 'cloudfront.requireSignedAccess' }),
+      ]);
+      expect(tombstoned.deps.upsertConfig).not.toHaveBeenCalled();
+    });
+
+    it('accepts a partial section whose provided fields are valid', async () => {
+      const { handlers, deps } = createHandlers();
+      const req = mockReq({
+        params: { principalType: 'role', principalId: 'admin' },
+        body: {
+          overrides: {
+            registration: { oauthStateTtlMs: 120_000 },
+            mcpServers: { github: { timeout: 5000 } },
+            endpoints: { custom: [{ name: 'groq', apiKey: 'sk-test' }] },
+          },
+        },
+      });
+      const res = mockRes();
+
+      await handlers.upsertConfigOverrides(req, res);
+
+      expect(res.statusCode).toBe(201);
+      expect(deps.upsertConfig).toHaveBeenCalledTimes(1);
+    });
+
+    it('rejects a field patch with an invalid value and writes no entry', async () => {
+      const { handlers, deps } = createHandlers();
+      const req = mockReq({
+        params: { principalType: 'role', principalId: 'admin' },
+        body: {
+          entries: [
+            { fieldPath: 'interface.customWelcome', value: 'hi' },
+            { fieldPath: 'registration.oauthStateTtlMs', value: 'soon' },
+          ],
+        },
+      });
+      const res = mockRes();
+
+      await handlers.patchConfigField(req, res);
+
+      expect(res.statusCode).toBe(400);
+      expect(res.body?.issues).toEqual([
+        expect.objectContaining({ path: 'registration.oauthStateTtlMs' }),
+      ]);
+      expect(deps.patchConfigFields).not.toHaveBeenCalled();
+    });
+
+    it('validates an object patch as a partial of the addressed section', async () => {
+      const { handlers, deps } = createHandlers();
+      const req = mockReq({
+        params: { principalType: 'role', principalId: 'admin' },
+        body: { entries: [{ fieldPath: 'interface.schedules', value: { maxPerUser: 'x' } }] },
+      });
+      const res = mockRes();
+
+      await handlers.patchConfigField(req, res);
+
+      expect(res.statusCode).toBe(400);
+      expect(res.body?.issues).toEqual([
+        expect.objectContaining({ path: 'interface.schedules.maxPerUser' }),
+      ]);
+      expect(deps.patchConfigFields).not.toHaveBeenCalled();
+    });
+
+    it('rejects a patch that addresses a custom endpoint by index', async () => {
+      const { handlers, deps } = createHandlers();
+      const req = mockReq({
+        params: { principalType: 'role', principalId: 'admin' },
+        body: { entries: [{ fieldPath: 'endpoints.custom.0.models', value: { default: ['m'] } }] },
+      });
+      const res = mockRes();
+
+      await handlers.patchConfigField(req, res);
+
+      expect(res.statusCode).toBe(400);
+      expect(res.body?.issues).toEqual([
+        { path: 'endpoints.custom', code: 'indexed_merge_key_write' },
+      ]);
+      expect(deps.patchConfigFields).not.toHaveBeenCalled();
+    });
+
+    it('accepts a secret field cleared with a non-string value', async () => {
+      const { handlers, deps } = createHandlers();
+      const req = mockReq({
+        params: { principalType: 'role', principalId: 'admin' },
+        body: { entries: [{ fieldPath: 'ocr.apiKey', value: null }] },
+      });
+      const res = mockRes();
+
+      await handlers.patchConfigField(req, res);
+
+      expect(res.statusCode).toBe(200);
+      expect(deps.patchConfigFields).toHaveBeenCalledTimes(1);
     });
   });
 });

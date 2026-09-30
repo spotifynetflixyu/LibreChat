@@ -10,10 +10,16 @@ export * from './Memories';
 export * from './Messages';
 export * from './Misc';
 export * from './Projects';
+/* Scheduled chats */
+export * from './Schedules';
+export * from './Subagents';
+export * from './BackgroundTasks';
 export * from './Tools';
 export * from './Steel';
+export * from './Traces';
 export * from './connection';
 export * from './Favorites';
+export * from './CodeEnvironments';
 export * from './mutations';
 export * from './prompts';
 export * from './queries';

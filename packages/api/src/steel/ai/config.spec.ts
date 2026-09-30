@@ -1,11 +1,11 @@
 import { resolveOpenAIOAuthAuthFilePath, OpenAIConfigError, parseOpenAIConfig } from './config';
 
 describe('OpenAI runtime config', () => {
-  it('defaults to OAuth, gpt-5.6-luna, and medium reasoning effort', () => {
+  it('defaults to OAuth, gpt-6.1-sol, and high reasoning effort', () => {
     expect(parseOpenAIConfig({})).toEqual({
       provider: 'OAUTH',
-      model: 'gpt-5.6-luna',
-      reasoningEffort: 'medium',
+      model: 'gpt-6.1-sol',
+      reasoningEffort: 'high',
     });
   });
 
@@ -31,7 +31,7 @@ describe('OpenAI runtime config', () => {
     ).toEqual({
       provider: 'OAUTH',
       model: 'gpt-5.6-luna',
-      reasoningEffort: 'medium',
+      reasoningEffort: 'high',
     });
   });
 

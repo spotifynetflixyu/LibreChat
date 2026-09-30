@@ -14,6 +14,7 @@ import type {
   TAnthropicEndpoint,
   SummarizationConfig,
   SkillSyncConfig,
+  FiltersConfig,
 } from 'librechat-data-provider';
 
 export type JsonSchemaType = {
@@ -65,6 +66,8 @@ export interface AppConfig {
   summarization?: SummarizationConfig;
   /** Web search configuration */
   webSearch?: TCustomConfig['webSearch'];
+  /** Source-scoped content filter configuration */
+  filters?: FiltersConfig;
   /** Message filter configuration (PII and future filter types) */
   messageFilter?: TCustomConfig['messageFilter'];
   /** Langfuse tracing configuration */
@@ -103,7 +106,7 @@ export interface AppConfig {
   mcpSettings?: TCustomConfig['mcpSettings'] | null;
   /** File configuration */
   fileConfig?: TFileConfig;
-  /** Secure image links configuration */
+  /** Secure image links configuration, enabled unless explicitly disabled */
   secureImageLinks?: TCustomConfig['secureImageLinks'];
   /** Processed model specifications */
   modelSpecs?: TCustomConfig['modelSpecs'];

@@ -3,6 +3,7 @@
 // @ts-nocheck
 const path = require('path');
 const mongoose = require('mongoose');
+const { randomUUID } = require('node:crypto');
 const { createModels, createMethods, runAsSystem } = require('@librechat/data-schemas');
 const {
   Key,
@@ -33,9 +34,11 @@ require('module-alias')({ base: path.resolve(__dirname, '..', 'api') });
 const {
   GenerationJobManager,
   createStreamServices,
+  revokeUserCodeEnvironmentWorkers,
   waitForKeyvRedisClient,
 } = require('@librechat/api');
 const getLogStores = require('~/cache/getLogStores');
+const { getAppConfig } = require('~/server/services/Config');
 const { askQuestion, silentExit } = require('./helpers');
 const connect = require('./connect');
 
@@ -118,6 +121,7 @@ async function gracefulExit(code = 0) {
   }
 
   let deletionFence;
+  let scheduleSuspensionToken;
   let userDeleted = false;
 
   try {
@@ -158,6 +162,13 @@ async function gracefulExit(code = 0) {
       await runAsSystem(() =>
         methods.prepareAgentTriggerUserPurge(uid, deletionFence, user.tenantId),
       );
+      // Reversible, token-fenced suspension (the same protocol the HTTP controller uses):
+      // an attempt that does not commit restores exactly these rows in the finally block,
+      // rather than leaving a surviving account with disabled, erasure-eligible schedules.
+      scheduleSuspensionToken = randomUUID();
+      await runAsSystem(() =>
+        methods.suspendUserSchedulesForDeletion(uid, scheduleSuspensionToken),
+      );
       if (hasSharedGenerationStore) {
         const deadline = Date.now() + TRIGGER_DRAIN_TIMEOUT_MS;
         while (
@@ -184,6 +195,8 @@ async function gracefulExit(code = 0) {
         ),
       );
     }
+
+    const deletionAppConfig = await getAppConfig({ baseOnly: true });
 
     // 5) Build and run deletion tasks
     const tasks = [
@@ -214,6 +227,7 @@ async function gracefulExit(code = 0) {
     }
 
     await Promise.all(tasks);
+    await runAsSystem(() => methods.deleteSchedulesByUser(uid));
 
     // 6) Remove user from all groups
     await Group.updateMany({ memberIds: uid }, { $pullAll: { memberIds: [uid] } });
@@ -224,8 +238,40 @@ async function gracefulExit(code = 0) {
       throw new Error('User disappeared before account deletion could commit');
     }
     userDeleted = true;
+    let codeEnvironmentCleanupSafe = true;
+    try {
+      await revokeUserCodeEnvironmentWorkers({
+        mongoose,
+        userId: uid,
+        appConfig: deletionAppConfig,
+      });
+    } catch (error) {
+      codeEnvironmentCleanupSafe = false;
+      console.error('Failed to revoke code environment workers after account deletion:', error);
+    }
+    if (codeEnvironmentCleanupSafe) {
+      await runAsSystem(() => methods.deleteUserCodeEnvironments(uid)).catch((error) =>
+        console.error('Failed to delete code environment records after account deletion:', error),
+      );
+    }
     await runAsSystem(() => methods.deleteAgentTriggerDeliveriesByUser(uid));
   } finally {
+    // RESTORE BEFORE RELEASING THE FENCE. While the user-deletion fence is still armed, new
+    // schedule writes/claims are refused, so this restore cannot race an owner PATCH nor be
+    // superseded by a second deletion attempt re-suspending these rows under a new token.
+    if (scheduleSuspensionToken != null && !userDeleted) {
+      // Retried inside the method; the fence is still released below on purpose, since
+      // retaining it would block the retry that is the convergence path. Print the token
+      // so a restore that never converges stays recoverable by hand.
+      await runAsSystem(() =>
+        methods.restoreUserSchedulesFromDeletion(uid, scheduleSuspensionToken),
+      ).catch((error) =>
+        console.error(
+          `Failed to restore suspended schedules; they remain disabled for user ${uid} under suspension token ${scheduleSuspensionToken}:`,
+          error,
+        ),
+      );
+    }
     if (deletionFence != null && !userDeleted) {
       await runAsSystem(() => methods.cancelAgentTriggerUserPurge(uid, deletionFence)).catch(
         (error) => console.error('Failed to disarm trigger purge recovery:', error),

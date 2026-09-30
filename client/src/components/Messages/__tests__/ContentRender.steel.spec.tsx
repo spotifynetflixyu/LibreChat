@@ -135,6 +135,7 @@ const chatContext = {
   latestMessageDepth: 0,
   handleContinue: jest.fn(),
   isSubmitting: false,
+  feedbackEnabled: false,
 } as TMessageChatContext;
 
 describe('ContentRender Steel history hydration', () => {

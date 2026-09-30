@@ -52,6 +52,7 @@ const renderRow = ({
   timestamp,
   processingStartedAt,
   processingDurationMs,
+  systemLabel,
 }: {
   isCreatedByUser: boolean;
   hasParallelContent?: boolean;
@@ -61,6 +62,7 @@ const renderRow = ({
   timestamp?: string;
   processingStartedAt?: string;
   processingDurationMs?: number;
+  systemLabel?: string;
 }) =>
   render(
     <MessageRow
@@ -80,14 +82,31 @@ const renderRow = ({
       hasParallelContent={hasParallelContent}
       fullWidth={fullWidth}
       isEditing={isEditing}
+      systemLabel={systemLabel}
     >
       <p>{MESSAGE_BODY}</p>
     </MessageRow>,
   );
 
 describe('MessageRow', () => {
-  it('renders user content with a right-aligned hover timestamp and no visible avatar', () => {
-    renderRow({ isCreatedByUser: true, timestamp: '2026-08-18T12:00:00.000Z' });
+  it('renders a system row on the user side as an outlined bubble under a visible heading', () => {
+    renderRow({ isCreatedByUser: true, systemLabel: 'System' });
+
+    const row = screen.getByLabelText('User message');
+    const messageSurface = screen.getByText(MESSAGE_BODY).parentElement;
+    const heading = screen.getByRole('heading', { name: 'System' });
+
+    expect(row).toHaveClass('justify-end');
+    expect(row.querySelector('.user-turn')).toHaveClass('items-end');
+    expect(messageSurface).toHaveClass('border', 'border-border-medium', 'rounded-theme-surface');
+    expect(messageSurface).not.toHaveClass('bg-surface-tertiary');
+    expect(heading).not.toHaveClass('sr-only');
+    expect(screen.queryByText('You')).not.toBeInTheDocument();
+    expect(screen.getByTestId('message-actions')).toBeInTheDocument();
+  });
+
+  it('renders user content as a right-aligned semantic surface without a visible avatar', () => {
+    renderRow({ isCreatedByUser: true });
 
     const row = screen.getByLabelText('User message');
     const userTurn = row.querySelector('.user-turn');

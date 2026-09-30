@@ -1,4 +1,5 @@
 import { useTranslation } from 'react-i18next';
+import useClockFormat from '~/hooks/useClockFormat';
 import { cn, getMessageTimestamp } from '~/utils';
 import useTimeTick from '~/hooks/useTimeTick';
 import { formatElapsedTime } from './MessageElapsedTimer';
@@ -43,12 +44,14 @@ function TimestampText({
 function RecentTimestamp({
   value,
   language,
+  hour12,
   className,
   revealOnHover,
   processingDurationMs,
 }: {
   value?: string | null;
   language: string;
+  hour12: boolean;
   className?: string;
   revealOnHover?: boolean;
   processingDurationMs?: number;
@@ -56,7 +59,7 @@ function RecentTimestamp({
   const parsedTime = value ? Date.parse(value) : Number.NaN;
   const age = Date.now() - parsedTime;
   const now = useTimeTick(Number.isFinite(age) && age >= 0 && age < MINUTE ? SECOND : MINUTE);
-  const timestamp = getMessageTimestamp(value, language, now);
+  const timestamp = getMessageTimestamp(value, language, now, hour12);
 
   if (!timestamp) {
     return null;
@@ -91,7 +94,8 @@ export default function MessageTimestamp({
   processingDurationMs?: number;
 }) {
   const { i18n } = useTranslation();
-  const timestamp = getMessageTimestamp(value, i18n.language);
+  const hour12 = useClockFormat();
+  const timestamp = getMessageTimestamp(value, i18n.language, hour12);
 
   if (!timestamp) {
     return null;
@@ -102,6 +106,7 @@ export default function MessageTimestamp({
       <RecentTimestamp
         value={value}
         language={i18n.language}
+        hour12={hour12}
         className={className}
         revealOnHover={revealOnHover}
         processingDurationMs={processingDurationMs}

@@ -62,7 +62,10 @@ export function processModelSpecs(
       );
       continue;
     }
-    if (EModelEndpoint[currentEndpoint] && currentEndpoint !== EModelEndpoint.custom) {
+    if (
+      Object.values(EModelEndpoint).includes(currentEndpoint) &&
+      currentEndpoint !== EModelEndpoint.custom
+    ) {
       modelSpecs.push(spec);
       continue;
     } else if (currentEndpoint === EModelEndpoint.custom) {

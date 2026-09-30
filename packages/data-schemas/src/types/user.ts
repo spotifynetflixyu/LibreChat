@@ -55,11 +55,19 @@ export interface IUser extends Document {
   termsAcceptedAt?: Date | null;
   /** Internal fence that prevents agent-trigger admission during account deletion. */
   agentTriggerDeletionStartedAt?: Date;
+  /** Expiring fences closing subagent admission while bulk deletions drain. */
+  subagentAdmissionFences?: Array<{
+    token: string;
+    expiresAt: Date;
+  }>;
   personalization?: {
     memories?: boolean;
     statefulCodeEnvironment?: StatefulCodeEnvironment;
   };
   favorites?: TUserFavorite[];
+  /** Display order for the sidebar's Pinned section: favorite and pinned-chat
+   *  entry keys interleaved (`agent:`, `spec:`, `model:`, `convo:` prefixes). */
+  pinnedOrder?: string[];
   /** Per-skill active/inactive overrides. Key = skillId, value = active state. */
   skillStates?: Record<string, boolean>;
   createdAt?: Date;
@@ -85,6 +93,7 @@ export interface BalanceConfig {
   refillIntervalValue?: number;
   refillIntervalUnit?: RefillIntervalUnit;
   refillAmount?: number;
+  reservationTtlMs?: number;
 }
 
 export interface CreateUserRequest extends Partial<IUser> {

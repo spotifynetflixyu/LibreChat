@@ -1,13 +1,22 @@
 import { z } from 'zod';
 import {
+  CODE_WORKSPACE_ID_PATTERN,
   MemoryScope,
-  MAX_SUBAGENTS,
+  SkillsScope,
+  getMaxSubagents,
+  agentGitIdentitySchema,
+  resolveModelCatalogKey,
   ViolationTypes,
   ErrorTypes,
   MAX_SUBAGENT_GRAPH_NODES,
   MAX_GRAPH_SUBAGENT_MEMBERS,
 } from 'librechat-data-provider';
-import type { Agent, TModelsConfig, AgentSubagentsConfig } from 'librechat-data-provider';
+import type {
+  Agent,
+  AgentGitIdentity,
+  TModelsConfig,
+  AgentSubagentsConfig,
+} from 'librechat-data-provider';
 import type { Request, Response } from 'express';
 
 /**
@@ -16,6 +25,11 @@ import type { Request, Response } from 'express';
  * (see `~/types/http`), whose `params` type is widened to `unknown`.
  */
 type LooseRequest = Request<unknown, unknown, unknown>;
+
+const agentCodeWorkspaceIdSchema: z.ZodUnion<[z.ZodLiteral<''>, z.ZodString]> = z.union([
+  z.literal(''),
+  z.string().regex(CODE_WORKSPACE_ID_PATTERN),
+]);
 
 /** Avatar schema shared between create and update */
 export const agentAvatarSchema: z.ZodObject<
@@ -181,10 +195,12 @@ export const agentToolOptionsSchema: z.ZodOptional<
 > = z.record(z.string(), toolOptionsSchema).optional();
 
 /**
- * Subagent spawning configuration for an agent. `agent_ids` is capped at
- * `Constants.MAX_SUBAGENTS` so a crafted API request cannot trigger hundreds
- * of `processAgent` calls (DB lookup + permission check + tool loading).
- * The UI enforces the same cap, so legitimate payloads never hit the bound.
+ * Subagent spawning configuration for an agent. `agent_ids` and `graphs` are
+ * capped at the effective subagents limit (10 by default, configurable via
+ * `endpoints.agents.maxSubagents`) so a crafted API request cannot trigger
+ * hundreds of `processAgent` calls (DB lookup + permission check + tool
+ * loading). The UI enforces the same cap, so legitimate payloads never hit
+ * the bound.
  */
 const graphSubagentEdgeSchema = z
   .object({
@@ -346,10 +362,26 @@ export const agentSubagentsSchema: z.ZodOptional<z.ZodType<AgentSubagentsConfig>
   .object({
     enabled: z.boolean().optional(),
     allowSelf: z.boolean().optional(),
-    agent_ids: z.array(z.string()).max(MAX_SUBAGENTS).optional(),
-    graphs: z.array(graphSubagentSchema).max(MAX_SUBAGENTS).optional(),
+    shareFiles: z.boolean().optional(),
+    agent_ids: z.array(z.string()).optional(),
+    graphs: z.array(graphSubagentSchema).optional(),
   })
   .superRefine((subagents, ctx) => {
+    const maxSubagents = getMaxSubagents();
+    if ((subagents.agent_ids?.length ?? 0) > maxSubagents) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['agent_ids'],
+        message: `agent_ids must contain at most ${maxSubagents} item(s)`,
+      });
+    }
+    if ((subagents.graphs?.length ?? 0) > maxSubagents) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['graphs'],
+        message: `graphs must contain at most ${maxSubagents} item(s)`,
+      });
+    }
     const reservedTypes = new Set(subagents.agent_ids ?? []);
     const configuredAgentIds = new Set(subagents.agent_ids ?? []);
     if (subagents.allowSelf !== false) {
@@ -382,6 +414,10 @@ export const agentSubagentsSchema: z.ZodOptional<z.ZodType<AgentSubagentsConfig>
   .optional();
 
 /** Base agent schema with all common fields */
+const agentCodeEnvironmentIdSchema = z.string().regex(/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/);
+const agentGitIdentityUpdateSchema: z.ZodType<AgentGitIdentity | null | undefined> =
+  agentGitIdentitySchema.nullable();
+
 export const agentBaseSchema: z.ZodObject<
   {
     name: z.ZodOptional<z.ZodNullable<z.ZodString>>;
@@ -411,6 +447,8 @@ export const agentBaseSchema: z.ZodObject<
     tools: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
     skills: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
     skills_enabled: z.ZodOptional<z.ZodBoolean>;
+    skill_authoring_enabled: z.ZodOptional<z.ZodBoolean>;
+    skills_scope: z.ZodOptional<z.ZodNativeEnum<typeof SkillsScope>>;
     memory_scope: z.ZodOptional<z.ZodNativeEnum<typeof MemoryScope>>;
     /** @deprecated Use edges instead */
     agent_ids: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
@@ -468,6 +506,10 @@ export const agentBaseSchema: z.ZodObject<
     hide_sequential_outputs: z.ZodOptional<z.ZodBoolean>;
     stateful_code_sessions: z.ZodOptional<z.ZodBoolean>;
     stateful_code_environment: z.ZodOptional<z.ZodEnum<['user', 'agent-user', 'conversation']>>;
+    code_environment_id: z.ZodOptional<z.ZodString>;
+    code_workspace_id: z.ZodOptional<typeof agentCodeWorkspaceIdSchema>;
+    repositoryInstructions: z.ZodOptional<z.ZodEnum<['prefer', 'defer', 'off']>>;
+    git_identity: typeof agentGitIdentitySchema;
     artifacts: z.ZodOptional<z.ZodString>;
     recursion_limit: z.ZodOptional<z.ZodNumber>;
     conversation_starters: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
@@ -532,6 +574,8 @@ export const agentBaseSchema: z.ZodObject<
   tools: z.array(z.string()).optional(),
   skills: z.array(z.string()).optional(),
   skills_enabled: z.boolean().optional(),
+  skill_authoring_enabled: z.boolean().optional(),
+  skills_scope: z.nativeEnum(SkillsScope).optional(),
   memory_scope: z.nativeEnum(MemoryScope).optional(),
   /** @deprecated Use edges instead */
   agent_ids: z.array(z.string()).optional(),
@@ -540,6 +584,10 @@ export const agentBaseSchema: z.ZodObject<
   hide_sequential_outputs: z.boolean().optional(),
   stateful_code_sessions: z.boolean().optional(),
   stateful_code_environment: z.enum(['user', 'agent-user', 'conversation']).optional(),
+  code_environment_id: agentCodeEnvironmentIdSchema.optional(),
+  code_workspace_id: agentCodeWorkspaceIdSchema.optional(),
+  repositoryInstructions: z.enum(['prefer', 'defer', 'off']).optional(),
+  git_identity: agentGitIdentitySchema,
   artifacts: z.string().optional(),
   recursion_limit: z.number().optional(),
   conversation_starters: z.array(z.string()).optional(),
@@ -579,6 +627,8 @@ export const agentCreateSchema: z.ZodObject<
     model_parameters: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodUnknown>>;
     skills: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
     skills_enabled: z.ZodOptional<z.ZodBoolean>;
+    skill_authoring_enabled: z.ZodOptional<z.ZodBoolean>;
+    skills_scope: z.ZodOptional<z.ZodNativeEnum<typeof SkillsScope>>;
     memory_scope: z.ZodOptional<z.ZodNativeEnum<typeof MemoryScope>>;
     agent_ids: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
     edges: z.ZodOptional<
@@ -635,6 +685,10 @@ export const agentCreateSchema: z.ZodObject<
     hide_sequential_outputs: z.ZodOptional<z.ZodBoolean>;
     stateful_code_sessions: z.ZodOptional<z.ZodBoolean>;
     stateful_code_environment: z.ZodOptional<z.ZodEnum<['user', 'agent-user', 'conversation']>>;
+    code_environment_id: z.ZodOptional<z.ZodString>;
+    git_identity: typeof agentGitIdentitySchema;
+    code_workspace_id: z.ZodOptional<typeof agentCodeWorkspaceIdSchema>;
+    repositoryInstructions: z.ZodOptional<z.ZodEnum<['prefer', 'defer', 'off']>>;
     artifacts: z.ZodOptional<z.ZodString>;
     recursion_limit: z.ZodOptional<z.ZodNumber>;
     conversation_starters: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
@@ -710,6 +764,8 @@ export const agentUpdateSchema: z.ZodObject<
     tools: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
     skills: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
     skills_enabled: z.ZodOptional<z.ZodBoolean>;
+    skill_authoring_enabled: z.ZodOptional<z.ZodBoolean>;
+    skills_scope: z.ZodOptional<z.ZodNativeEnum<typeof SkillsScope>>;
     memory_scope: z.ZodOptional<z.ZodNativeEnum<typeof MemoryScope>>;
     agent_ids: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
     edges: z.ZodOptional<
@@ -766,6 +822,10 @@ export const agentUpdateSchema: z.ZodObject<
     hide_sequential_outputs: z.ZodOptional<z.ZodBoolean>;
     stateful_code_sessions: z.ZodOptional<z.ZodBoolean>;
     stateful_code_environment: z.ZodOptional<z.ZodEnum<['user', 'agent-user', 'conversation']>>;
+    code_environment_id: z.ZodOptional<z.ZodNullable<z.ZodString>>;
+    code_workspace_id: z.ZodOptional<typeof agentCodeWorkspaceIdSchema>;
+    repositoryInstructions: z.ZodOptional<z.ZodEnum<['prefer', 'defer', 'off']>>;
+    git_identity: typeof agentGitIdentityUpdateSchema;
     artifacts: z.ZodOptional<z.ZodString>;
     recursion_limit: z.ZodOptional<z.ZodNumber>;
     conversation_starters: z.ZodOptional<z.ZodArray<z.ZodString, 'many'>>;
@@ -849,6 +909,10 @@ export const agentUpdateSchema: z.ZodObject<
   'strip'
 > = agentBaseSchema.extend({
   avatar: z.union([agentAvatarSchema, z.null()]).optional(),
+  code_environment_id: agentCodeEnvironmentIdSchema.nullable().optional(),
+  code_workspace_id: agentCodeWorkspaceIdSchema.optional(),
+  repositoryInstructions: z.enum(['prefer', 'defer', 'off']).optional(),
+  git_identity: agentGitIdentityUpdateSchema,
   provider: z.string().optional(),
   model: z.string().nullable().optional(),
 });
@@ -906,7 +970,7 @@ export async function validateAgentModel(
     };
   }
 
-  const availableModels = modelsConfig[endpoint];
+  const availableModels = modelsConfig[resolveModelCatalogKey(endpoint, modelsConfig)];
   if (!availableModels) {
     return {
       isValid: false,

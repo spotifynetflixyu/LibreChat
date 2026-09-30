@@ -5,6 +5,7 @@ import Markdown from '../Markdown';
 import MarkdownLite from '../MarkdownLite';
 import { RecoilRoot, useRecoilValue } from 'recoil';
 import type { TConversation } from 'librechat-data-provider';
+import type { TMessage } from 'librechat-data-provider';
 import { readStoredMarkdownTableComments, writeStoredMarkdownTableComments } from '~/common';
 import type { MarkdownTableComment } from '~/common';
 import { UI_RESOURCE_MARKER } from '~/components/MCPUIResource/plugin';
@@ -72,6 +73,12 @@ jest.mock('@librechat/client', () => {
     },
   };
 });
+import { useConversationUIResources } from '~/hooks/Messages/useConversationUIResources';
+
+// Mock specific leaf hook rather than barrel exports to avoid circular module evaluation in Jest
+jest.mock('~/hooks/Messages/useConversationUIResources', () => ({
+  useConversationUIResources: jest.fn(),
+}));
 
 // Mock @mcp-ui/client to render identifiable elements for assertions
 jest.mock('@mcp-ui/client', () => ({
@@ -86,10 +93,11 @@ const mockUseMessagesConversation = useOptionalMessagesConversation as jest.Mock
 const mockUseMessagesOperations = useOptionalMessagesOperations as jest.MockedFunction<
   typeof useOptionalMessagesOperations
 >;
-const mockUseGetMessagesByConvoId = useGetMessagesByConvoId as jest.MockedFunction<
-  typeof useGetMessagesByConvoId
->;
 const mockUseLocalize = useLocalize as jest.MockedFunction<typeof useLocalize>;
+const mockUseConversationUIResources = useConversationUIResources as jest.MockedFunction<
+  typeof useConversationUIResources
+>;
+let currentTestMessages: TMessage[] = [];
 
 function PendingCommentsProbe({
   conversationId,
@@ -153,8 +161,6 @@ function renderMarkdownWithMessageContext({
 }
 
 describe('Markdown with MCP UI markers (resource IDs)', () => {
-  let currentTestMessages: any[] = [];
-
   beforeEach(() => {
     jest.clearAllMocks();
     currentTestMessages = [];
@@ -185,17 +191,11 @@ describe('Markdown with MCP UI markers (resource IDs)', () => {
       text: '<div>NYC Weather</div>',
     };
 
-    currentTestMessages = [
-      {
-        messageId: 'msg-weather',
-        attachments: [
-          { type: 'ui_resources', ui_resources: [paris] },
-          { type: 'ui_resources', ui_resources: [nyc] },
-        ],
-      },
-    ];
-
-    mockUseGetMessagesByConvoId.mockReturnValue({ data: currentTestMessages } as any);
+    const resourceMap = new Map<string, any>([
+      ['abc123', paris],
+      ['def456', nyc],
+    ]);
+    mockUseConversationUIResources.mockReturnValue(resourceMap as any);
 
     const content = [
       'Here are the current weather conditions for both Paris and New York:',
