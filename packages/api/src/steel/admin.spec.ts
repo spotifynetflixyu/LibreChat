@@ -1,4 +1,9 @@
 import type { Request, Response } from 'express';
+import type {
+  OpenAIOAuthTokenLoginStatus,
+  OpenAIOAuthTokenLogoutStatus,
+  OpenAIOAuthTokenStatus,
+} from 'librechat-data-provider';
 
 jest.mock('./native/credentials', () => ({
   loadOpenAIOAuthTokens: jest.fn(),
@@ -7,12 +12,10 @@ jest.mock('./native/credentials', () => ({
 import { createSteelAdminHandlers } from './admin';
 
 function createResponse(): Response {
-  const response = {
-    json: jest.fn(),
-    status: jest.fn(),
-  };
-  response.status.mockReturnValue(response);
-  return response as Response;
+  const response = Object.create(null) as Response;
+  response.json = jest.fn();
+  response.status = jest.fn().mockReturnValue(response);
+  return response;
 }
 
 describe('Steel OpenAI OAuth admin handlers', () => {
@@ -58,17 +61,17 @@ describe('Steel OpenAI OAuth admin handlers', () => {
   it('invalidates usage after refresh, completed login, and logout', async () => {
     const invalidateUsageCache = jest.fn();
     const handlers = createSteelAdminHandlers({
-      getCodexLoginStatus: jest.fn(() => ({
+      getCodexLoginStatus: jest.fn((): OpenAIOAuthTokenLoginStatus => ({
         status: 'succeeded',
         startedAt: '2026-07-11T14:00:00.000Z',
         updatedAt: '2026-07-11T14:00:01.000Z',
       })),
       invalidateUsageCache,
-      logoutToken: jest.fn(async () => ({
+      logoutToken: jest.fn(async (): Promise<OpenAIOAuthTokenLogoutStatus> => ({
         status: 'succeeded',
         fetchedAt: '2026-07-11T14:00:00.000Z',
       })),
-      refreshToken: jest.fn(async () => ({
+      refreshToken: jest.fn(async (): Promise<OpenAIOAuthTokenStatus> => ({
         provider: 'openai_oauth_responses',
         status: 'available',
         fetchedAt: '2026-07-11T14:00:00.000Z',
@@ -79,10 +82,9 @@ describe('Steel OpenAI OAuth admin handlers', () => {
     });
 
     await handlers.refreshOpenAIOAuthToken({} as Request, createResponse());
-    await handlers.readOpenAIOAuthCodexLoginStatus(
-      { params: { sessionId: 'session_1' } } as Request,
-      createResponse(),
-    );
+    const request = Object.create(null) as Request;
+    request.params = { sessionId: 'session_1' };
+    await handlers.readOpenAIOAuthCodexLoginStatus(request, createResponse());
     await handlers.logoutOpenAIOAuthToken({} as Request, createResponse());
 
     expect(invalidateUsageCache).toHaveBeenCalledTimes(3);

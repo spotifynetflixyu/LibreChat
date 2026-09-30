@@ -487,7 +487,8 @@ function getFilenameExtension(filename: string | undefined): string | undefined 
   if (!filename) {
     return undefined;
   }
-  const basename = filename.split(/[\\/]/).at(-1) ?? filename;
+  const pathParts = filename.split(/[\\/]/);
+  const basename = pathParts[pathParts.length - 1] ?? filename;
   const extensionIndex = basename.lastIndexOf('.');
   if (extensionIndex <= 0 || extensionIndex === basename.length - 1) {
     return undefined;
@@ -845,7 +846,7 @@ export function isDelegateOcrQuoteOnlyTurn(currentUserTurn: string | undefined):
     const chineseNegators = [
       ...clausePrefix.matchAll(/不要|不用|不需(?:要)?|無需|无需|暫不|暂不|先不|不想|別|别/gu),
     ];
-    const lastChineseNegator = chineseNegators.at(-1);
+    const lastChineseNegator = chineseNegators[chineseNegators.length - 1];
     const chineseNegated =
       lastChineseNegator != null &&
       !inspectionTerms.test(
@@ -856,7 +857,7 @@ export function isDelegateOcrQuoteOnlyTurn(currentUserTurn: string | undefined):
         /don't|dont|do\s+not|no\s+need(?:\s+to|\s+for)?|not\s+now|without/giu,
       ),
     ];
-    const lastEnglishNegator = englishNegators.at(-1);
+    const lastEnglishNegator = englishNegators[englishNegators.length - 1];
     const englishNegated =
       lastEnglishNegator != null &&
       !inspectionTerms.test(

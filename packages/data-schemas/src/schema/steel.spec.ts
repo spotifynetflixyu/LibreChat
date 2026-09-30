@@ -40,7 +40,7 @@ describe('Steel Mongo schemas', () => {
     expect(SteelOcrPdfChunkArtifact.schema.path('pageEnd')).toBeDefined();
     expect(SteelOcrPdfChunkArtifact.schema.path('chunkSizePages')).toBeDefined();
     expect(SteelOcrPdfChunkArtifact.schema.path('supersededByRanges')).toBeDefined();
-    expect(SteelOcrPdfChunkArtifact.schema.path('supersededByRanges')?.defaultValue).toBeUndefined();
+    expect(SteelOcrPdfChunkArtifact.schema.path('supersededByRanges')?.options.default).toBeUndefined();
     expect(SteelOcrPdfChunkArtifact.schema.path('supersededAt')).toBeDefined();
     expect(SteelOcrPdfChunkArtifact.schema.path('artifact.storageKey')).toBeDefined();
     expect(SteelOcrPdfChunkArtifact.schema.path('conversationId')).toBeUndefined();

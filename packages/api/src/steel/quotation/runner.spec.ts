@@ -430,7 +430,7 @@ describe('quotation runner integration', () => {
     expect(rows.every((row, index) => row[15]!.includes(`P${index + 1}`))).toBe(true);
     expect(result.markdown).toContain('24 個材料項次報價失敗');
     expect(result.markdown).not.toContain('無待複核事項');
-    expect(events.at(-1)).toEqual(expect.objectContaining({ completedChunks: 8, totalChunks: 8 }));
+    expect(events[events.length - 1]).toEqual(expect.objectContaining({ completedChunks: 8, totalChunks: 8 }));
     const state = await service.readState(scope);
     expect(state?.activeRun?.status).toBe('completed');
     expect(state?.activeRun?.checkpointRefs.filter((ref) => ref.operationId.startsWith('leaf-v2:'))).toHaveLength(8);
@@ -500,7 +500,7 @@ describe('quotation runner integration', () => {
     expect(counts.slice(first.length)).toEqual([3]);
     expect(parseMarkdownTables(resumed.markdown!)[0]!.rows).toHaveLength(24);
     const restored = await readQuotationHistory({ scope, runId: run.runId });
-    expect(restored.activityEvents.at(-1)).toEqual(expect.objectContaining({ completedChunks: 4, totalChunks: 4 }));
+    expect(restored.activityEvents[restored.activityEvents.length - 1]).toEqual(expect.objectContaining({ completedChunks: 4, totalChunks: 4 }));
   });
 
   it.each(['checkpointed', 'artifact only'])(
@@ -882,7 +882,7 @@ describe('quotation runner integration', () => {
       return { markdown: reviewParts.join(''), lookups: [], pythonEvidence: [] };
     };
     const publishFinal = jest.fn(async ({ markdown }: { markdown: string }) => {
-      expect(delivered.at(-1)).toContain('## quote_summary');
+      expect(delivered[delivered.length - 1]).toContain('## quote_summary');
       expect(delivered.join('')).toBe(markdown);
     });
     const execution = runQuotationPreflight(runnerInput(model, createLookupExecutor(), {
@@ -927,7 +927,7 @@ describe('quotation runner integration', () => {
     expect(executeLookup).toHaveBeenCalledTimes(1);
     expect(delivered[0]).toContain('## customer_quote');
     expect(delivered.join('').match(/## manual_reviews/g)).toHaveLength(1);
-    expect(delivered.at(-1)).toContain('## quote_summary');
+      expect(delivered[delivered.length - 1]).toContain('## quote_summary');
   });
 
   it('resumes after backend table delivery fails without repeating child work', async () => {

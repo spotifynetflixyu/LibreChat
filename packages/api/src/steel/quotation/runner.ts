@@ -503,7 +503,8 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
       if ((saved || legacyOutput) && !split) {
         const loaded = await loadChild(chunk, (saved ?? legacyOutput)!);
         validateQuotationChildResult(loaded);
-        if (saved && !run.checkpointRefs.some((ref) => ref.operationId === leafOperation)) {
+        const active = await assertActive();
+        if (saved && !active.checkpointRefs.some((ref) => ref.operationId === leafOperation)) {
           await checkpoint(leafOperation, 'chunk', saved);
         }
         await progress(chunk.chunkIndex, undefined, 'chunk_saved', undefined, path);
@@ -549,7 +550,8 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
           JSON.stringify(plan.sourceRowIds) !== JSON.stringify(sourceRowIds)) {
           throw new Error('Saved quotation recovery plan does not match its source rows');
         }
-        if (!run.checkpointRefs.some((ref) => ref.operationId === splitOperation)) {
+        const active = await assertActive();
+        if (!active.checkpointRefs.some((ref) => ref.operationId === splitOperation)) {
           await checkpoint(splitOperation, 'main', split);
         }
       } else {
@@ -618,8 +620,8 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
             pythonOperations.push(key);
           },
           lookup: async (id, args) => {
-            await assertActive();
-            await operational(async () => input.onTool?.({ run, id, chunkIndex: chunk.chunkIndex, attempt, arguments: args }));
+            const active = await assertActive();
+            await operational(async () => input.onTool?.({ run: active, id, chunkIndex: chunk.chunkIndex, attempt, arguments: args }));
             const result = input.executeLookup
               ? await input.executeLookup(args, id)
               : await executeSteelTool({
@@ -629,11 +631,11 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
                 providerToolCallId: id,
                 runState: toolState,
               });
-            await assertActive();
+            const activeAfterLookup = await assertActive();
             const key = `lookup:${chunk.chunkIndex}:${attempt}:${id}`;
             await checkpoint(key, 'tool', JSON.stringify({ lookupCallId: id, arguments: args, result }));
             lookupOperations.push(key);
-            await operational(async () => input.onTool?.({ run, id, chunkIndex: chunk.chunkIndex, attempt, arguments: args, result }));
+            await operational(async () => input.onTool?.({ run: activeAfterLookup, id, chunkIndex: chunk.chunkIndex, attempt, arguments: args, result }));
             return result;
           },
         });

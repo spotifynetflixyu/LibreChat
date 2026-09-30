@@ -102,14 +102,16 @@ describe('createMCPToolCacheService', () => {
       expect(getAllServerConfigs).not.toHaveBeenCalled();
     });
 
-    it('returns empty object for empty tools array', async () => {
+    it('caches an authoritative empty catalog for an empty tools array', async () => {
       const deps = createMockDeps();
       const { updateMCPServerTools } = createMCPToolCacheService(deps);
 
       const result = await updateMCPServerTools({ userId: 'u1', serverName: 'srv', tools: [] });
 
       expect(result).toEqual({});
-      expect(deps.setCachedTools).not.toHaveBeenCalled();
+      expect(deps.setCachedTools).toHaveBeenCalledWith({}, {
+        userId: 'u1', serverName: 'srv', configGeneration: undefined,
+      });
     });
 
     it('constructs tool names with mcp_delimiter and caches them', async () => {
@@ -124,6 +126,9 @@ describe('createMCPToolCacheService', () => {
       ];
 
       const result = await updateMCPServerTools({ userId: 'u1', serverName: 'brave', tools });
+      if (result === null) {
+        throw new Error('Expected the MCP tools to be cached');
+      }
 
       const expectedKey = `search${Constants.mcp_delimiter}brave`;
       expect(result[expectedKey]).toBeDefined();
@@ -136,7 +141,7 @@ describe('createMCPToolCacheService', () => {
       });
     });
 
-    it('uses provider-safe tool names while caching by raw MCP server name', async () => {
+    it('uses canonical tool names while caching by raw MCP server name', async () => {
       const deps = createMockDeps();
       const { updateMCPServerTools } = createMCPToolCacheService(deps);
       const tools: MCPToolInput[] = [
@@ -149,24 +154,38 @@ describe('createMCPToolCacheService', () => {
 
       const result = await updateMCPServerTools({
         userId: 'u1',
-        serverName: 'PaddleOCR-VL-1.6',
+        serverName: 'PaddleOCR-VL/1.6',
         tools,
       });
+      if (result === null) {
+        throw new Error('Expected the PaddleOCR tools to be cached');
+      }
 
-      const expectedKey = `paddleocr_vl${Constants.mcp_delimiter}PaddleOCR-VL-1_6`;
-      const rawKey = `paddleocr_vl${Constants.mcp_delimiter}PaddleOCR-VL-1.6`;
+      const expectedKey = toolName('paddleocr_vl', 'PaddleOCR-VL/1.6');
+      const rawKey = `paddleocr_vl${Constants.mcp_delimiter}PaddleOCR-VL/1.6`;
 
       expect(result[expectedKey]).toBeDefined();
       expect(result[rawKey]).toBeUndefined();
       expect(result[expectedKey]['function'].name).toBe(expectedKey);
-      expect(result[expectedKey]['function'].name).toMatch(/^[a-zA-Z0-9_-]+$/);
+      expect(result[expectedKey]['function'].name).toMatch(/^[a-zA-Z0-9_.-]+$/);
       expect(deps.setCachedTools).toHaveBeenCalledWith(result, {
         userId: 'u1',
-        serverName: 'PaddleOCR-VL-1.6',
+        serverName: 'PaddleOCR-VL/1.6',
       });
     });
 
     it('builds tool names without caching when the resolved config is request-scoped', async () => {
+      const deps = createMockDeps({
+        getServerConfig: jest.fn().mockResolvedValue(requestScopedConfig),
+      });
+      const result = await createMCPToolCacheService(deps).updateMCPServerTools({
+        userId: 'u1', serverName: 'scoped', tools: [{ name: 'search' }],
+      });
+      expect(result).toEqual({ [toolName('search', 'scoped')]: makeTool(toolName('search', 'scoped')) });
+      expect(deps.setCachedTools).not.toHaveBeenCalled();
+      expect(deps.setCachedAppServerTools).not.toHaveBeenCalled();
+    });
+
     it('removes legacy MCP entries from the shared global catalog during rollout', async () => {
       const alphaConfig = { ...cacheableConfig, toolFunctions: {} };
       const builtin = 'code_interpreter';
@@ -671,5 +690,4 @@ describe('createMCPToolCacheService', () => {
       ).resolves.toBeNull();
     });
   });
-});
 });

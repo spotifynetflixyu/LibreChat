@@ -10,7 +10,7 @@ import type { OpenAIOAuthModelOptions } from './oauth';
 import { resolveOpenAIOAuthAuthFilePath } from '../ai/config';
 import { createOpenAIOAuthModel } from './oauth';
 
-const OPENAI_TITLE_MODEL = 'gpt-5.6-luna';
+const DEFAULT_OPENAI_TITLE_MODEL = 'gpt-6-luna';
 const OPENAI_TITLE_REASONING_EFFORT = 'none';
 
 export interface OpenAIOAuthTitleContentPart {
@@ -219,20 +219,34 @@ function isOpenAIProvider({
   return provider === Providers.OPENAI || provider === EModelEndpoint.openAI;
 }
 
+function getTitleSettings(): { model: string; reasoningEffort: string } {
+  const model = process.env.OPENAI_TITLE_MODEL?.trim();
+  const reasoningEffort = process.env.OPENAI_TITLE_REASONING_EFFORT?.trim();
+  return {
+    model: model || DEFAULT_OPENAI_TITLE_MODEL,
+    reasoningEffort: reasoningEffort || OPENAI_TITLE_REASONING_EFFORT,
+  };
+}
+
 function getTitleClientOptions(
   request: Pick<GenerateTitleInput, 'endpoint' | 'provider'>,
   clientOptions: ClientOptions | undefined,
+  settings: { model: string; reasoningEffort: string },
 ): ClientOptions | undefined {
   if (!isOpenAIProvider(request)) {
     return clientOptions;
   }
 
-  const titleClientOptions = { ...clientOptions };
-  delete titleClientOptions.temperature;
+  const titleClientOptions = {
+    ...clientOptions,
+    model: settings.model,
+    reasoning_effort: settings.reasoningEffort,
+  };
+  if ('temperature' in titleClientOptions) {
+    delete titleClientOptions.temperature;
+  }
   return {
     ...titleClientOptions,
-    model: OPENAI_TITLE_MODEL,
-    reasoning_effort: OPENAI_TITLE_REASONING_EFFORT,
   };
 }
 
@@ -327,7 +341,10 @@ async function generateResponsesTitle({
   openaiCredentials,
   titlePrompt,
   titlePromptTemplate,
-}: GenerateTitleInput): Promise<GenerateTitleResult> {
+  settings,
+}: GenerateTitleInput & {
+  settings: { model: string; reasoningEffort: string };
+}): Promise<GenerateTitleResult> {
   const conversation = createConversationText({
     inputText,
     titlePromptTemplate,
@@ -342,9 +359,10 @@ async function generateResponsesTitle({
     createOpenAIOAuth,
     createOpenAIOAuthTransport,
     maxOutputTokens: 64,
-    model: OPENAI_TITLE_MODEL,
+    enableCodeInterpreter: false,
+    model: settings.model,
     openaiCredentials,
-    reasoningEffort: OPENAI_TITLE_REASONING_EFFORT,
+    reasoningEffort: settings.reasoningEffort,
   });
   const message = await titleModel.invoke(
     [new SystemMessage('Generate only a concise conversation title.'), new HumanMessage(prompt)],
@@ -352,22 +370,23 @@ async function generateResponsesTitle({
   );
 
   return {
-    model: OPENAI_TITLE_MODEL,
+    model: settings.model,
     title: getMessageText(message),
     usage: getUsage(message),
   };
 }
 
 export async function generateTitle(input: GenerateTitleInput): Promise<GenerateTitleResult> {
+  const settings = getTitleSettings();
   if (isOpenAIOAuthTitleRequest(input)) {
-    return generateResponsesTitle(input);
+    return generateResponsesTitle({ ...input, settings });
   }
 
   const conversation = createConversationText({
     inputText: input.inputText,
     titlePromptTemplate: input.titlePromptTemplate,
   });
-  const clientOptions = getTitleClientOptions(input, input.clientOptions);
+  const clientOptions = getTitleClientOptions(input, input.clientOptions, settings);
   const model = initializeModel({
     provider: input.provider as Providers,
     clientOptions,

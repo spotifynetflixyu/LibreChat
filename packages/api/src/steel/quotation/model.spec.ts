@@ -197,7 +197,7 @@ it('repairs a malformed row through the real validator while preserving lookup, 
   const freshMessages = invoke.mock.calls[3]?.[0] as BaseMessage[];
   const freshCall = freshMessages.find((message) => message.getType() === 'ai' &&
     (message as AIMessage).tool_calls?.some((call) => call.id === 'fresh-lookup')) as AIMessage;
-  expect(freshCall.tool_calls[0].args).toEqual(expect.any(Object));
+  expect(freshCall.tool_calls?.[0]?.args).toEqual(expect.any(Object));
   expect(freshMessages.some((message) => message.getType() === 'tool' &&
     (message as ToolMessage).tool_call_id === 'fresh-lookup')).toBe(true);
   expect(onChildMessages.mock.calls.flatMap(([saved]) => saved)
@@ -240,7 +240,7 @@ it('filters a failed draft from provider history while preserving raw output and
   const repairedHistory = invoke.mock.calls[2]![0] as BaseMessage[];
   expect(repairedHistory.some((message) => String(message.content).includes(leaked))).toBe(false);
   expect(repairedHistory.some((message) => message.getType() === 'ai')).toBe(false);
-  expect(onChildMessages.mock.calls.at(-1)![0].some((message: { data: { content: unknown } }) => message.data.content === leaked)).toBe(true);
+  expect(onChildMessages.mock.calls[onChildMessages.mock.calls.length - 1]![0].some((message: { data: { content: unknown } }) => message.data.content === leaked)).toBe(true);
   expect(onChildRepair.mock.calls.map(([event]) => [event.stage, event.repairAttempt])).toEqual([
     ['chunk_repair_started', 1], ['chunk_repair_succeeded', 1],
   ]);
@@ -258,7 +258,7 @@ it('preserves actual tool calls and results while sanitizing leaked invocation p
     } });
   const resumed = invoke.mock.calls[1]![0] as BaseMessage[];
   const toolTurn = resumed.find((message) => message.getType() === 'ai') as AIMessage;
-  expect(toolTurn.tool_calls[0].id).toBe('lookup-1');
+  expect(toolTurn.tool_calls?.[0]?.id).toBe('lookup-1');
   expect(toolTurn.content).toBe('');
   expect(resumed.some((message) => message.getType() === 'tool' &&
     (message as ToolMessage).tool_call_id === 'lookup-1')).toBe(true);
@@ -362,7 +362,7 @@ it('does not locally repair when maxChildRepairAttempts is zero', async () => {
   })).rejects.toThrow('incomplete Markdown row');
   expect(invoke).toHaveBeenCalledTimes(1);
   expect(onChildRepair).not.toHaveBeenCalled();
-  expect(onChildMessages.mock.calls.at(-1)![0].at(-1).data.content).toBe(malformedChild);
+  expect(onChildMessages.mock.calls[onChildMessages.mock.calls.length - 1]![0][onChildMessages.mock.calls[onChildMessages.mock.calls.length - 1]![0].length - 1].data.content).toBe(malformedChild);
 });
 
 it('repairs a length-finished child even when the candidate validates', async () => {
@@ -435,7 +435,7 @@ it('preserves the exhausted final response and stops when transcript persistence
   const onChildMessages = jest.fn();
   const validateChildOutput = jest.fn(async () => { throw new QuotationProtocolError('invalid_child_result', 'bad row'); });
   await expect(invokeQuotationModel({ ...childInput(), onChildMessages, validateChildOutput })).rejects.toThrow('bad row');
-  expect(onChildMessages.mock.calls.at(-1)![0].at(-1).data.content).toBe(malformedChild);
+  expect(onChildMessages.mock.calls[onChildMessages.mock.calls.length - 1]![0][onChildMessages.mock.calls[onChildMessages.mock.calls.length - 1]![0].length - 1].data.content).toBe(malformedChild);
   invoke.mockClear();
   onChildMessages.mockRejectedValueOnce(new Error('transcript storage failed'));
   await expect(invokeQuotationModel({ ...childInput(), onChildMessages, validateChildOutput })).rejects.toThrow('transcript storage failed');

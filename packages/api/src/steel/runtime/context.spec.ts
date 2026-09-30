@@ -2,6 +2,7 @@ import { prepareSteelRuntimeContext } from './context';
 
 import type {
   PrepareSteelRuntimeContextInput,
+  SteelRuntimeOcrSourceFileMapping,
   SteelRuntimeContextDependencies,
 } from './context';
 import type { SteelAgentRule } from '../repositories/rules';
@@ -50,7 +51,7 @@ function createDependencies(): SteelRuntimeContextDependencies {
 function createInput(
   dependencies: SteelRuntimeContextDependencies,
   currentOcrMarkdownResults: Record<string, string>[] = [],
-  currentOcrSourceFileMapping = [],
+  currentOcrSourceFileMapping: SteelRuntimeOcrSourceFileMapping[] = [],
 ): PrepareSteelRuntimeContextInput {
   return {
     conversation: { requestId: 'request_1' },

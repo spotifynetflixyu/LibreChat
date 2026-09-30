@@ -220,12 +220,10 @@ describe('Steel price candidate repository', () => {
     expect(serializedQueries[0]).toEqual(
       expect.objectContaining({
         material_terms: ['錏'],
-        material_terms: ['錏'],
       }),
     );
     expect(serializedQueries[1]).toEqual(
       expect.objectContaining({
-        material_terms: ['鋅'],
         material_terms: ['鋅'],
       }),
     );

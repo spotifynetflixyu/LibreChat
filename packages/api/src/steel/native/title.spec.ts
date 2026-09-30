@@ -1,9 +1,9 @@
 import type { LanguageModelV3, LanguageModelV3GenerateResult } from '@ai-sdk/provider';
-import type { createOpenAIOAuth as createOpenAIOAuthType } from '@openai-oauth/ai-sdk';
 import type { createOpenAIOAuthTransport as createOpenAIOAuthTransportType } from '@openai-oauth/core';
 import type { openaiCredentials as openaiCredentialsType } from '@openai-oauth/local';
 import { Providers, initializeModel } from '@librechat/agents';
 import { EModelEndpoint } from 'librechat-data-provider';
+import { RunnableLambda } from '@librechat/agents/langchain/runnables';
 import { generateTitle } from './title';
 
 jest.mock('@librechat/agents', () => ({
@@ -38,9 +38,17 @@ function createFakeOpenAIOAuthDependencies(doGenerate: jest.Mock) {
         modelId,
         supportedUrls: {},
         doGenerate,
+        doStream: async () => { throw new Error('Title generation must not stream'); },
       }) satisfies LanguageModelV3;
-    return modelFactory;
-  }) as typeof createOpenAIOAuthType;
+    const unsupportedModel = (): never => { throw new Error('Unsupported title model kind'); };
+    return Object.assign(modelFactory, {
+      specificationVersion: 'v3' as const,
+      languageModel: modelFactory,
+      embeddingModel: unsupportedModel,
+      image: unsupportedModel,
+      imageModel: unsupportedModel,
+    });
+  });
   const transport = {
     kind: 'openai-compatible' as const,
     provider: 'chatgpt-codex' as const,
@@ -70,8 +78,18 @@ function createFakeOpenAIOAuthDependencies(doGenerate: jest.Mock) {
 }
 
 describe('generateTitle', () => {
+  const originalModel = process.env.OPENAI_TITLE_MODEL;
+  const originalEffort = process.env.OPENAI_TITLE_REASONING_EFFORT;
+  afterAll(() => {
+    if (originalModel === undefined) delete process.env.OPENAI_TITLE_MODEL;
+    else process.env.OPENAI_TITLE_MODEL = originalModel;
+    if (originalEffort === undefined) delete process.env.OPENAI_TITLE_REASONING_EFFORT;
+    else process.env.OPENAI_TITLE_REASONING_EFFORT = originalEffort;
+  });
   beforeEach(() => {
     mockInitializeModel.mockReset();
+    delete process.env.OPENAI_TITLE_MODEL;
+    delete process.env.OPENAI_TITLE_REASONING_EFFORT;
   });
 
   it('generates a user-message-only title through OpenAI OAuth without tools or Steel runtime context', async () => {
@@ -107,7 +125,7 @@ describe('generateTitle', () => {
     const callOptions = doGenerate.mock.calls[0][0];
     const promptText = JSON.stringify(callOptions.prompt);
 
-    expect(result.model).toBe('gpt-5.6-luna');
+    expect(result.model).toBe('gpt-6-luna');
     expect(result.title).toBe('PL OCR Review');
     expect(result.usage).toEqual({
       input_tokens: 21,
@@ -133,12 +151,10 @@ describe('generateTitle', () => {
     ['provider-only fallback', { provider: Providers.OPENAI }],
     ['explicit OpenAI endpoint', { endpoint: EModelEndpoint.openAI, provider: Providers.OPENAI }],
   ])(
-    'uses fixed title options for the OpenAI API through %s without mutating the selected client options',
+    'uses fallback title options for the OpenAI API through %s without mutating the selected client options',
     async (_requestName, request) => {
-      const model = {
-        invoke: jest.fn().mockResolvedValue({ content: 'OpenAI API title' }),
-      };
-      mockInitializeModel.mockReturnValue(model as ReturnType<typeof initializeModel>);
+      const model = RunnableLambda.from(async () => ({ content: 'OpenAI API title' }));
+      mockInitializeModel.mockReturnValue(model);
       const clientOptions = {
         model: 'selected-chat-model',
         temperature: 0.4,
@@ -153,7 +169,7 @@ describe('generateTitle', () => {
       expect(mockInitializeModel).toHaveBeenCalledWith({
         provider: Providers.OPENAI,
         clientOptions: {
-          model: 'gpt-5.6-luna',
+          model: 'gpt-6-luna',
           reasoning_effort: 'none',
         },
       });
@@ -161,15 +177,13 @@ describe('generateTitle', () => {
         model: 'selected-chat-model',
         temperature: 0.4,
       });
-      expect(result.model).toBe('gpt-5.6-luna');
+      expect(result.model).toBe('gpt-6-luna');
     },
   );
 
   it('preserves selected client options for a custom endpoint using Providers.OPENAI', async () => {
-    const model = {
-      invoke: jest.fn().mockResolvedValue({ content: 'Custom provider title' }),
-    };
-    mockInitializeModel.mockReturnValue(model as ReturnType<typeof initializeModel>);
+    const model = RunnableLambda.from(async () => ({ content: 'Custom provider title' }));
+    mockInitializeModel.mockReturnValue(model);
     const clientOptions = {
       model: 'custom-selected-model',
       temperature: 0.4,
@@ -190,10 +204,8 @@ describe('generateTitle', () => {
   });
 
   it('preserves selected client options for Azure OpenAI using Providers.OPENAI', async () => {
-    const model = {
-      invoke: jest.fn().mockResolvedValue({ content: 'Azure OpenAI title' }),
-    };
-    mockInitializeModel.mockReturnValue(model as ReturnType<typeof initializeModel>);
+    const model = RunnableLambda.from(async () => ({ content: 'Azure OpenAI title' }));
+    mockInitializeModel.mockReturnValue(model);
     const clientOptions = {
       model: 'azure-selected-model',
       temperature: 0.4,
@@ -214,10 +226,8 @@ describe('generateTitle', () => {
   });
 
   it('preserves client options for non-OpenAI providers', async () => {
-    const model = {
-      invoke: jest.fn().mockResolvedValue({ content: 'Anthropic title' }),
-    };
-    mockInitializeModel.mockReturnValue(model as ReturnType<typeof initializeModel>);
+    const model = RunnableLambda.from(async () => ({ content: 'Anthropic title' }));
+    mockInitializeModel.mockReturnValue(model);
     const clientOptions = {
       model: 'claude-selected-model',
       temperature: 0.4,
@@ -271,7 +281,7 @@ describe('generateTitle', () => {
     const promptText = JSON.stringify(callOptions.prompt);
 
     expect(result).toEqual({
-      model: 'gpt-5.6-luna',
+      model: 'gpt-6-luna',
       title: 'PL.pdf 內容核對',
       usage: {
         input_tokens: 21,
@@ -282,4 +292,51 @@ describe('generateTitle', () => {
     expect(promptText).toContain('include the file name');
     expect(promptText).toContain('OCR檔案內容，逐一列表給我核對。');
   });
+
+  it.each([
+    ['custom env', ' custom-title-model ', ' low ', 'custom-title-model', 'low'],
+    ['blank env', '  ', '  ', 'gpt-6-luna', 'none'],
+  ])('uses %s for OAuth titles', async (_label, modelEnv, effortEnv, model, effort) => {
+    process.env.OPENAI_TITLE_MODEL = modelEnv;
+    process.env.OPENAI_TITLE_REASONING_EFFORT = effortEnv;
+    const doGenerate = jest.fn().mockResolvedValue({
+      content: [{ type: 'text', text: 'Configured title' }],
+      finishReason: { unified: 'stop', raw: 'stop' },
+      usage: createUsage(),
+      warnings: [],
+    } satisfies LanguageModelV3GenerateResult);
+    const dependencies = createFakeOpenAIOAuthDependencies(doGenerate);
+    const result = await generateTitle({
+      endpoint: EModelEndpoint.openAIOAuth,
+      provider: Providers.OPENAI,
+      inputText: 'Title this conversation.',
+      ...dependencies.options,
+    });
+    expect(result.model).toBe(model);
+    expect(doGenerate.mock.calls[0][0].providerOptions).toEqual({
+      openai: { reasoningEffort: effort },
+    });
+  });
+
+  it('uses env title options for the OpenAI API without mutating chat options', async () => {
+    process.env.OPENAI_TITLE_MODEL = ' custom-title-model ';
+    process.env.OPENAI_TITLE_REASONING_EFFORT = ' low ';
+    mockInitializeModel.mockReturnValue(
+      RunnableLambda.from(async () => ({ content: 'Configured API title' })),
+    );
+    const clientOptions = { model: 'chat-model', temperature: 0.4 };
+    const result = await generateTitle({
+      endpoint: EModelEndpoint.openAI,
+      provider: Providers.OPENAI,
+      clientOptions,
+      inputText: 'Title this conversation.',
+    });
+    expect(mockInitializeModel).toHaveBeenCalledWith({
+      provider: Providers.OPENAI,
+      clientOptions: { model: 'custom-title-model', reasoning_effort: 'low' },
+    });
+    expect(result.model).toBe('custom-title-model');
+    expect(clientOptions).toEqual({ model: 'chat-model', temperature: 0.4 });
+  });
+
 });

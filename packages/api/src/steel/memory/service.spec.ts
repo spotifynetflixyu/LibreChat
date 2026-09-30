@@ -2,6 +2,16 @@ import mongoose from 'mongoose';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { createSteelWorkingOrderMemoryModel } from '@librechat/data-schemas';
 
+import type {
+  SteelWorkingOrderMemorySourceRef,
+  SteelJsonValue,
+} from '@librechat/data-schemas';
+
+type SteelMemoryRead = {
+  payload?: SteelJsonValue;
+  sourceRefs?: SteelWorkingOrderMemorySourceRef[];
+};
+
 import { createMongooseSteelWorkingOrderMemoryWriter } from './service';
 
 let mongoServer: MongoMemoryServer;
@@ -76,7 +86,7 @@ describe('Steel working-order memory writer', () => {
       totalTableCounts: {},
     });
 
-    const document = await SteelWorkingOrderMemory.findOne({ memoryKind: 'price_evidence' }).lean();
+    const document = await SteelWorkingOrderMemory.findOne({ memoryKind: 'price_evidence' }).lean<SteelMemoryRead>();
     expect(document?.payload).toEqual(
       expect.objectContaining({
         productName: '錏輕型鋼',
@@ -89,7 +99,7 @@ describe('Steel working-order memory writer', () => {
     ]);
     const customerDocument = await SteelWorkingOrderMemory.findOne({
       memoryKind: 'customer_fact',
-    }).lean();
+    }).lean<Pick<SteelMemoryRead, 'sourceRefs'>>();
     expect(customerDocument?.sourceRefs).toEqual([
       expect.objectContaining({ sourceKind: 'tool_result', sourceId: 'call_customer' }),
     ]);
@@ -162,7 +172,7 @@ describe('Steel working-order memory writer', () => {
 
     const rawDocument = await SteelWorkingOrderMemory.findOne({
       memoryKind: 'paddleocr_preflight',
-    }).lean();
+    }).lean<SteelMemoryRead>();
     expect(rawDocument).not.toHaveProperty('sourceRefs');
     expect(rawDocument?.payload).toEqual(
       expect.objectContaining({
@@ -198,7 +208,7 @@ describe('Steel working-order memory writer', () => {
 
     const organizedDocument = await SteelWorkingOrderMemory.findOne({
       memoryKind: 'ocr_extract',
-    }).lean();
+    }).lean<SteelMemoryRead>();
     expect(organizedDocument).not.toHaveProperty('sourceRefs');
     expect(organizedDocument?.payload).toEqual(
       expect.objectContaining({
@@ -333,7 +343,7 @@ describe('Steel working-order memory writer', () => {
     const document = await SteelWorkingOrderMemory.findOne({
       conversationId: 'conversation_whole_ocr',
       memoryKind: 'paddleocr_preflight',
-    }).lean();
+    }).lean<SteelMemoryRead>();
     expect(document).not.toHaveProperty('sourceRefs');
     expect(document?.payload).toEqual(
       expect.objectContaining({
@@ -490,7 +500,7 @@ describe('Steel working-order memory writer', () => {
 
     const documents = await SteelWorkingOrderMemory.find({
       conversationId: 'conversation-delegate',
-    }).lean();
+    }).lean<SteelMemoryRead[]>();
     expect(documents).toHaveLength(4);
     expect(documents).toEqual(
       expect.arrayContaining([

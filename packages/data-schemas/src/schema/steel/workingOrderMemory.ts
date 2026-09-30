@@ -46,8 +46,13 @@ const steelWorkingOrderMemorySourceRefSchema: Schema<SteelWorkingOrderMemorySour
     { _id: false },
   );
 
+type SteelWorkingOrderMemorySchemaPayload = object | string | number | boolean | null;
+type SteelWorkingOrderMemorySchemaDefinition = Omit<ISteelWorkingOrderMemory, 'payload'> & {
+  payload?: SteelWorkingOrderMemorySchemaPayload;
+};
+
 const steelWorkingOrderMemorySchema: Schema<ISteelWorkingOrderMemory> =
-  new Schema<ISteelWorkingOrderMemory>(
+  new Schema<SteelWorkingOrderMemorySchemaDefinition>(
     {
       conversationId: {
         type: String,
@@ -103,7 +108,7 @@ const steelWorkingOrderMemorySchema: Schema<ISteelWorkingOrderMemory> =
       },
     },
     { timestamps: true },
-  );
+  ) as Schema<ISteelWorkingOrderMemory>;
 
 steelWorkingOrderMemorySchema.index({
   conversationId: 1,

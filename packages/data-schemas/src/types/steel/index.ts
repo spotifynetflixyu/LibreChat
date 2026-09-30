@@ -153,7 +153,8 @@ export interface ISteelAIRun extends Document {
   updatedAt?: Date;
 }
 
-export interface ISteelAICapability extends Document {
+/** Exclude Mongoose's model() method because Steel stores a string model id. */
+export interface ISteelAICapability extends Omit<Document, 'model'> {
   provider: SteelProviderId;
   model: string;
   capability: string;

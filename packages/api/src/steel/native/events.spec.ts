@@ -110,7 +110,11 @@ describe('Steel native event mapping', () => {
     expect(history?.activityEvents[0]).not.toHaveProperty('input_data');
     expect(history?.activityEvents[0]).not.toHaveProperty('extras');
     expect(history?.preflightToolCalls[0]).not.toHaveProperty('extras');
-    expect(history?.preflightToolCalls[0]?.args.input_data).toBe(
+    const parsedArgs = history?.preflightToolCalls[0]?.args;
+    if (!parsedArgs || !('input_data' in parsedArgs)) {
+      throw new Error('expected PaddleOCR preflight args');
+    }
+    expect(parsedArgs.input_data).toBe(
       'https://files.example.test/chunk.pdf?X-Amz-Signature=debug-signature-value',
     );
     expect(history?.activityEvents[0]).not.toHaveProperty('missingPageRangesByFileKey');
@@ -336,6 +340,81 @@ describe('Steel native event mapping', () => {
     ).toBe(false);
   });
 
+  it('rejects mismatched preflight argument shapes and cyclic or non-JSON query values', () => {
+    const history = createSteelNativeHistory();
+    const paddleArgs = {
+      input_data: 'https://files.example.test/chunk.pdf',
+      output_mode: 'detailed' as const,
+      return_images: false,
+      use_doc_orientation_classify: true,
+      use_doc_unwarping: true,
+      use_layout_detection: true,
+    };
+    expect(
+      upsertSteelNativePreflightToolCall(history, {
+        type: 'tool_call',
+        id: 'price-with-paddle-args',
+        name: 'steel_search_price_candidates',
+        args: paddleArgs,
+        progress: 0,
+      }),
+    ).toBe(false);
+    const validNestedHistory = createSteelNativeHistory();
+    expect(
+      upsertSteelNativePreflightToolCall(validNestedHistory, {
+        type: 'tool_call',
+        id: 'nested-json',
+        name: 'steel_search_price_candidates',
+        args: {
+          queries: [{ nested: { values: [1, { enabled: true }, null] } }],
+        },
+        progress: 0,
+      }),
+    ).toBe(true);
+    expect(
+      upsertSteelNativePreflightToolCall(history, {
+        type: 'tool_call',
+        id: 'paddle-with-price-args',
+        name: 'paddleocr_vl---PaddleOCR',
+        args: { queries: [{ keyword: 'plate' }] },
+        progress: 0,
+      }),
+    ).toBe(false);
+    expect(
+      upsertSteelNativePreflightToolCall(history, {
+        type: 'tool_call',
+        id: 'nested-symbol',
+        name: 'steel_search_price_candidates',
+        args: { queries: [{ nested: { value: Symbol('not-json') } }] },
+        progress: 0,
+      }),
+    ).toBe(false);
+    const circular: Record<string, unknown> = {};
+    circular.self = circular;
+    expect(() =>
+      upsertSteelNativePreflightToolCall(history, {
+        type: 'tool_call',
+        id: 'cyclic-query',
+        name: 'steel_search_price_candidates',
+        args: { queries: [circular] },
+        progress: 0,
+      }),
+    ).not.toThrow();
+    expect(history.preflightToolCalls).toEqual([]);
+    const circularArray: unknown[] = [];
+    circularArray.push(circularArray);
+    expect(() =>
+      upsertSteelNativePreflightToolCall(history, {
+        type: 'tool_call',
+        id: 'cyclic-array-query',
+        name: 'steel_search_price_candidates',
+        args: { queries: [{ nested: circularArray }] },
+        progress: 0,
+      }),
+    ).not.toThrow();
+    expect(history.preflightToolCalls).toEqual([]);
+  });
+
   it('upgrades legacy activity events without replacing their array', () => {
     const activityEvents = [memoryEvent('legacy')];
     const context: {
@@ -452,7 +531,11 @@ describe('Steel native event mapping', () => {
     expect(upsertSteelNativePreflightToolCall(history, { ...card, progress: 1 })).toBe(true);
     expect(history.preflightToolCalls).toHaveLength(1);
     expect(history.preflightToolCalls[0]?.progress).toBe(1);
-    expect(history.preflightToolCalls[0]?.args.input_data).toBe(
+    const savedArgs = history.preflightToolCalls[0]?.args;
+    if (!savedArgs || !('input_data' in savedArgs)) {
+      throw new Error('expected PaddleOCR preflight args');
+    }
+    expect(savedArgs.input_data).toBe(
       'https://files.example.test/chunk.pdf?signature=full-debug-value',
     );
     expect(JSON.parse(history.preflightToolCalls[0]?.output ?? '')).toEqual({
@@ -500,7 +583,11 @@ describe('Steel native event mapping', () => {
     };
 
     expect(upsertSteelNativePreflightToolCall(history, card)).toBe(true);
-    expect(history.preflightToolCalls[0]?.args.input_data).toBe(inputData);
+    const oversizedArgs = history.preflightToolCalls[0]?.args;
+    if (!oversizedArgs || !('input_data' in oversizedArgs)) {
+      throw new Error('expected PaddleOCR preflight args');
+    }
+    expect(oversizedArgs.input_data).toBe(inputData);
     expect(
       upsertSteelNativePreflightToolCall(history, {
         ...card,
@@ -533,7 +620,12 @@ describe('Steel native event mapping', () => {
     }
 
     expect(history.preflightToolCalls.length).toBeLessThan(13);
-    expect(history.preflightToolCalls.at(-1)?.args.input_data).toBe(`${inputData}12`);
+    const lastCard = history.preflightToolCalls[history.preflightToolCalls.length - 1];
+    const lastArgs = lastCard?.args;
+    if (!lastArgs || !('input_data' in lastArgs)) {
+      throw new Error('expected PaddleOCR preflight args');
+    }
+    expect(lastArgs.input_data).toBe(`${inputData}12`);
     expect(Buffer.byteLength(JSON.stringify(history), 'utf8')).toBeLessThanOrEqual(
       steelNativeHistoryMaxBytes,
     );
@@ -1142,14 +1234,6 @@ describe('Steel native event mapping', () => {
       }),
     ]);
 
-    expect(
-      buildSteelOcrPreprocessingEventEnvelopes({
-        conversationId: 'conversation_1',
-        requestId: 'request_1',
-        ocrFileKey: 'file:file-a',
-        progress: { stage: 'markdown_saved' },
-      }),
-    ).toEqual([]);
   });
 
   it('maps OCR preprocessing failures into UI-visible partial error activity', () => {

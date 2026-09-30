@@ -8,7 +8,7 @@ export interface SteelOcrMissingPageRange {
 export type SteelOcrMissingPageRangesByFileKey = Record<string, SteelOcrMissingPageRange[]>;
 
 function isPageIndex(value: SteelRuntimeJsonObject[string]): value is number {
-  return Number.isSafeInteger(value) && value > 0;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 }
 
 function mergeRanges(ranges: readonly SteelOcrMissingPageRange[]): SteelOcrMissingPageRange[] {

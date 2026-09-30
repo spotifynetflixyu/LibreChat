@@ -5,6 +5,7 @@ import { ocrPreprocessingPipelineVersion } from '../memory/service';
 
 import {
   getOcrPageRangeKey,
+  getOcrPageRangePageCount,
   normalizeOcrPageChunks,
   type OcrPageRange,
   type OcrPreprocessingPageChunk,

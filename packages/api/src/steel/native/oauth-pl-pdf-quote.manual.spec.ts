@@ -289,7 +289,7 @@ function summarizeMessages(messages: readonly BaseMessage[]) {
 }
 
 function isRemovedOcrCall(call: CapturedNativeToolCall): boolean {
-  return call.toolName === 'run_file_ocr';
+  return call.nativeToolName === 'run_file_ocr';
 }
 
 function isPriceLookupCall(call: CapturedNativeToolCall): boolean {
@@ -418,9 +418,7 @@ describeNativePLQuoteLive('OpenAI OAuth PL.pdf quote live smoke', () => {
             runtimeRulesClient: pool,
           }),
         });
-        const ocrTools = mergeSteelToolDefinitions({
-          runtimeContext: ocrContext.runtimeContext,
-        });
+        const ocrTools = mergeSteelToolDefinitions();
         const ocrModel = createOpenAIOAuthModel({
           authFilePath,
           maxOutputTokens,
@@ -454,9 +452,7 @@ describeNativePLQuoteLive('OpenAI OAuth PL.pdf quote live smoke', () => {
             runtimeRulesClient: pool,
           }),
         });
-        const quoteTools = mergeSteelToolDefinitions({
-          runtimeContext: quoteContext.runtimeContext,
-        });
+        const quoteTools = mergeSteelToolDefinitions();
         const quoteModel = createOpenAIOAuthModel({
           authFilePath,
           maxOutputTokens,
@@ -488,13 +484,13 @@ describeNativePLQuoteLive('OpenAI OAuth PL.pdf quote live smoke', () => {
             instructionPrefixLength: ocrContext.instructionPrefix.length,
             runtimeContextTextLength: ocrContext.runtimeContextText.length,
             attachmentReferenceCount: ocrContext.attachmentReferences.length,
-            aiVisibleTools: ocrContext.runtimeContext.toolPolicy.aiVisibleTools,
+            aiVisibleTools: ocrTools.toolDefinitions.map((tool) => tool.name),
           },
           quoteContext: {
             instructionPrefixLength: quoteContext.instructionPrefix.length,
             runtimeContextTextLength: quoteContext.runtimeContextText.length,
             attachmentReferenceCount: quoteContext.attachmentReferences.length,
-            aiVisibleTools: quoteContext.runtimeContext.toolPolicy.aiVisibleTools,
+            aiVisibleTools: quoteTools.toolDefinitions.map((tool) => tool.name),
           },
           ocrMessages: summarizeMessages(ocrInitialMessages),
           quoteMessages: summarizeMessages(quoteInitialMessages),

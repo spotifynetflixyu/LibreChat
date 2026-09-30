@@ -1,6 +1,6 @@
 import type { SteelOcrMissingPageRangesByFileKey } from '../ocr/failures';
 import type { OcrPreprocessingPipelineProgress } from '../ocr/preprocess';
-import type { SteelToolJsonObject } from '../tools/results';
+import type { SteelToolJsonObject, SteelToolJsonValue } from '../tools/results';
 import { isPaddleOcrDiagnosticCode } from '../ocr/diagnostics';
 import type { CaptureSteelNativeToolResultResult } from './tool-result';
 
@@ -390,7 +390,7 @@ export function ensureSteelNativeHistory(context: SteelNativeHistoryContext): St
     if (parsed) {
       for (const key of Object.keys(existingHistory)) {
         if (key !== 'activityEvents' && key !== 'preflightToolCalls') {
-          delete (existingHistory as Record<string, unknown>)[key];
+          Reflect.deleteProperty(existingHistory, key);
         }
       }
       existingHistory.activityEvents.splice(
@@ -671,15 +671,52 @@ function isSteelNativeEventData(value: unknown): value is SteelNativeStreamEvent
   );
 }
 
-function isPriceSearchToolCallArgs(value: Record<string, unknown>): value is SteelNativePriceSearchToolCallArgs {
-  if (Object.keys(value).sort().join(',') !== 'queries') {
+function isSteelToolJsonValue(
+  value: unknown,
+  seen = new WeakSet<object>(),
+): value is SteelToolJsonValue {
+  if (
+    value === null ||
+    typeof value === 'string' ||
+    typeof value === 'number' ||
+    typeof value === 'boolean'
+  ) {
+    return true;
+  }
+  if ((Array.isArray(value) || isRecord(value)) && seen.has(value)) {
+    return false;
+  }
+  if (Array.isArray(value)) {
+    seen.add(value);
+    try {
+      return value.every((entry) => isSteelToolJsonValue(entry, seen));
+    } finally {
+      seen.delete(value);
+    }
+  }
+  if (!isRecord(value)) {
+    return false;
+  }
+  seen.add(value);
+  try {
+    return Object.values(value).every((entry) => isSteelToolJsonValue(entry, seen));
+  } finally {
+    seen.delete(value);
+  }
+}
+
+function isPriceSearchToolCallArgs(value: unknown): value is SteelNativePriceSearchToolCallArgs {
+  if (!isRecord(value) || Object.keys(value).sort().join(',') !== 'queries') {
     return false;
   }
   return (
     Array.isArray(value.queries) &&
     value.queries.length >= 1 &&
     value.queries.length <= 100 &&
-    value.queries.every((query) => isRecord(query))
+    value.queries.every(
+      (query): query is SteelToolJsonObject =>
+        isRecord(query) && Object.values(query).every((entry) => isSteelToolJsonValue(entry)),
+    )
   );
 }
 
@@ -711,6 +748,12 @@ function isPreflightToolCallArgs(value: unknown): value is SteelNativePreflightT
     typeof value.use_doc_unwarping === 'boolean' &&
     typeof value.use_layout_detection === 'boolean'
   );
+}
+
+function isPaddleOcrPreflightToolCallArgs(
+  value: unknown,
+): value is SteelNativePaddleOcrPreflightToolCallArgs {
+  return isPreflightToolCallArgs(value) && !isPriceSearchToolCallArgs(value);
 }
 
 const steelNativePaddleOcrCompactSuccessOutputKeys = [
@@ -1189,7 +1232,9 @@ function canonicalizeSteelNativePreflightToolCall(
     value.id.length === 0 ||
     Buffer.byteLength(value.id, 'utf8') > steelNativePreflightToolCallIdMaxBytes ||
     (!isPaddleOcrToolName(value.name) && !isPriceSearchToolName(value.name)) ||
-    !isPreflightToolCallArgs(value.args) ||
+    (isPriceSearchToolName(value.name)
+      ? !isPriceSearchToolCallArgs(value.args)
+      : !isPaddleOcrPreflightToolCallArgs(value.args)) ||
     (value.progress !== 0 && value.progress !== 1)
   ) {
     return undefined;
@@ -1208,20 +1253,27 @@ function canonicalizeSteelNativePreflightToolCall(
     }
   }
 
+  let args: SteelNativePreflightToolCallArgs;
+  if (isPriceSearchToolName(value.name)) {
+    if (!isPriceSearchToolCallArgs(value.args)) return undefined;
+    args = { queries: value.args.queries.map((query) => ({ ...query })) };
+  } else {
+    if (!isPaddleOcrPreflightToolCallArgs(value.args)) return undefined;
+    args = {
+      ...(value.args.input_data !== undefined ? { input_data: value.args.input_data } : {}),
+      output_mode: value.args.output_mode,
+      return_images: value.args.return_images,
+      use_doc_orientation_classify: value.args.use_doc_orientation_classify,
+      use_doc_unwarping: value.args.use_doc_unwarping,
+      use_layout_detection: value.args.use_layout_detection,
+    };
+  }
+
   const card: Record<string, unknown> = {
     type: 'tool_call',
     id: value.id,
     name: value.name,
-    args: isPriceSearchToolName(value.name)
-      ? { queries: value.args.queries.map((query) => ({ ...query })) }
-      : {
-          ...(value.args.input_data !== undefined ? { input_data: value.args.input_data } : {}),
-          output_mode: value.args.output_mode,
-          return_images: value.args.return_images,
-          use_doc_orientation_classify: value.args.use_doc_orientation_classify,
-          use_doc_unwarping: value.args.use_doc_unwarping,
-          use_layout_detection: value.args.use_layout_detection,
-        },
+    args,
     progress: value.progress,
     ...(output !== undefined ? { output } : {}),
   };
@@ -1275,7 +1327,7 @@ function replaceHistoryEntries(
 function stripHistoryUnknownFields(history: SteelNativeHistory): void {
   for (const key of Object.keys(history)) {
     if (key !== 'activityEvents' && key !== 'preflightToolCalls') {
-      delete (history as Record<string, unknown>)[key];
+      Reflect.deleteProperty(history, key);
     }
   }
 }
@@ -1571,9 +1623,17 @@ export function buildSteelDelegateOcrStatusEvent({
   attemptToken,
   ...input
 }: BuildSteelDelegateOcrStatusEventInput): SteelNativeDelegateOcrStatusEvent {
-  return {
-    type: 'delegate_ocr_status',
+  const eventBase = {
     source: 'delegate_ocr_preflight',
+    ...(input.conversationId ? { conversationId: input.conversationId } : {}),
+    ...(input.requestId ? { requestId: input.requestId } : {}),
+    ...(input.messageId ? { messageId: input.messageId } : {}),
+    ...(input.toolName ? { toolName: input.toolName } : {}),
+    ...(input.providerToolCallId ? { providerToolCallId: input.providerToolCallId } : {}),
+  } as const;
+  return {
+    ...eventBase,
+    type: 'delegate_ocr_status',
     delegateOcrIndex,
     stage,
     status,
@@ -1584,7 +1644,6 @@ export function buildSteelDelegateOcrStatusEvent({
     ...(claimToken !== undefined ? { claimToken } : {}),
     ...(generationId !== undefined ? { generationId } : {}),
     ...(attemptToken !== undefined ? { attemptToken } : {}),
-    ...baseEvent({ ...input, source: 'delegate_ocr_preflight' }),
   };
 }
 

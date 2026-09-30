@@ -14,7 +14,6 @@ import type {
   LanguageModelV3ToolCallPart,
   LanguageModelV3Usage,
 } from '@ai-sdk/provider';
-import type { FetchFunction } from '@ai-sdk/provider-utils';
 import { dispatchCustomEvent } from '@langchain/core/callbacks/dispatch';
 import type { BindToolsInput } from '@librechat/agents/langchain/language_models/chat_models';
 import { AIMessageChunk, type BaseMessage } from '@librechat/agents/langchain/messages';
@@ -26,7 +25,11 @@ import type { openaiCredentials as openaiCredentialsType } from '@openai-oauth/l
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import type { ZodTypeAny } from 'zod';
 
-import type { OpenAIOAuthTokenLoader } from './credentials';
+import {
+  loadOpenAIOAuthTokens,
+  toOpenAIOAuthLibraryFetch,
+} from './credentials';
+import type { OpenAIOAuthFetch, OpenAIOAuthTokenLoader } from './credentials';
 
 import {
   createSystemOrderNormalizer,
@@ -35,7 +38,6 @@ import {
 import { finalizeOcrMarkdown, OCR_COMPLETION_DIRECTIVE_MARKER } from '../markdown/ocr';
 import { buildCustomerQuoteFromMarkdown, createCustomerQuoteParser } from '../markdown/quote';
 import { clearOpenAIOAuthCredentialInvalid, markOpenAIOAuthCredentialInvalid } from './auth-state';
-import { loadOpenAIOAuthTokens } from './credentials';
 import { buildSteelCodeInterpreterAuditEvent, steelNativeStreamEventName } from './events';
 
 const dynamicImportOpenAIOAuth = new Function('specifier', 'return import(specifier)') as (
@@ -62,7 +64,7 @@ export interface OpenAIOAuthProviderOptions {
   createOpenAIOAuth?: CreateOpenAIOAuth;
   createOpenAIOAuthTransport?: CreateOpenAIOAuthTransport;
   ensureFresh?: boolean;
-  fetch?: FetchFunction;
+  fetch?: OpenAIOAuthFetch;
   loadAuthTokens?: OpenAIOAuthTokenLoader;
   openaiCredentials?: OpenAICredentials;
 }
@@ -118,7 +120,7 @@ function createLocalOpenAIOAuthOptions({
   return omitUndefined({
     authFilePath,
     ensureFresh,
-    fetch,
+    fetch: fetch ? toOpenAIOAuthLibraryFetch(fetch) : undefined,
   }) as LocalOpenAIOAuthOptions;
 }
 
@@ -142,10 +144,13 @@ function createLibreChatOpenAIOAuthCredentials({
   };
 }
 
-function createCodexCompatibleFetch(fetchFn: FetchFunction, authFilePath?: string): FetchFunction {
+function createCodexCompatibleFetch(
+  fetchFn: OpenAIOAuthFetch,
+  authFilePath?: string,
+): OpenAIOAuthFetch {
   let clientVersion: string | undefined;
 
-  return async (input, init) => {
+  const compatibleFetch = async (input: Parameters<OpenAIOAuthFetch>[0], init?: RequestInit) => {
     const requestUrl = parseUrl(input instanceof Request ? input.url : String(input));
     const requestedVersion = requestUrl?.searchParams.get('client_version')?.trim();
     if (
@@ -182,6 +187,8 @@ function createCodexCompatibleFetch(fetchFn: FetchFunction, authFilePath?: strin
     }
     return response;
   };
+
+  return Object.assign(compatibleFetch, fetchFn);
 }
 
 export async function createStatelessOpenAIOAuthProvider(
@@ -196,7 +203,9 @@ export async function createStatelessOpenAIOAuthProvider(
   const fetchFn = options.fetch ?? globalThis.fetch;
   const transport = createOpenAIOAuthTransport({
     auth: () => credentials.getSession(),
-    fetch: createCodexCompatibleFetch(fetchFn, options.authFilePath),
+    fetch: toOpenAIOAuthLibraryFetch(
+      createCodexCompatibleFetch(fetchFn, options.authFilePath),
+    ),
     responsesState: false,
   });
   return createOpenAIOAuth(transport);
@@ -335,7 +344,7 @@ function createInputFilePart(part: Record<string, unknown>): LanguageModelV3File
     };
   }
 
-  const fileUrl = parseUrl(part.file_url);
+  const fileUrl = typeof part.file_url === 'string' ? parseUrl(part.file_url) : undefined;
   if (!fileUrl) {
     return undefined;
   }
@@ -760,7 +769,6 @@ function getSteelQuoteAuditEventInput(
       getStringProperty(requestBodyRecord, 'messageId') ??
       getStringProperty(configurable, 'message_id'),
     providerToolCallId: getStringProperty(configurable, 'providerToolCallId'),
-    toolName: getStringProperty(configurable, 'toolName'),
   };
 }
 
@@ -994,7 +1002,6 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
     if (ocrMode) {
       const finalizedText =
         isCompletedTextResult(result.finishReason) &&
-        !result.content.some((part) => part.type === 'error') &&
         !hasClientToolCall(result.content)
           ? finalizeOcrMarkdown(generatedText)
           : generatedText;
@@ -1016,7 +1023,6 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
 
     const normalizedText =
       inspectCodeInterpreter &&
-      !result.content.some((part) => part.type === 'error') &&
       !hasClientToolCall(result.content) &&
       isCompletedTextResult(result.finishReason)
         ? normalizeSystemOrderMarkdown(generatedText)
@@ -1040,7 +1046,7 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
     );
   }
 
-  protected async *_streamIterator(
+  async *_streamIterator(
     messages: BaseMessage[],
     config?: Partial<RunnableConfig>,
   ): AsyncGenerator<AIMessageChunk> {
@@ -1384,7 +1390,7 @@ export class OpenAIOAuthGraphModel extends Runnable<BaseMessage[], AIMessageChun
     }).invoke(preparedMessages, config);
   }
 
-  protected async *_streamIterator(
+  async *_streamIterator(
     messages: BaseMessage[],
     config?: Partial<RunnableConfig>,
   ): AsyncGenerator<AIMessageChunk> {

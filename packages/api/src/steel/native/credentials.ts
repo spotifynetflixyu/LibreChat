@@ -1,10 +1,21 @@
 import type { OpenAIOAuthTokenResponse } from '@openai-oauth/core';
 import type { EffectiveAuth } from '@openai-oauth/local/auth-file';
 
+/** Fetch's callable contract without Bun's non-standard namespace members. */
+export type OpenAIOAuthFetch = (
+  input: Parameters<typeof globalThis.fetch>[0],
+  init?: RequestInit,
+) => Promise<Response>;
+
+type OpenAIOAuthLibraryFetch = typeof globalThis.fetch;
+type OpenAIOAuthFetchWithPreconnect = OpenAIOAuthFetch & {
+  preconnect?: OpenAIOAuthLibraryFetch['preconnect'];
+};
+
 export type OpenAIOAuthTokenLoaderOptions = {
   authFilePath?: string;
   ensureFresh?: boolean;
-  fetch?: typeof fetch;
+  fetch?: OpenAIOAuthFetch;
   now?: () => Date;
 };
 
@@ -28,6 +39,24 @@ type CoreModule = Pick<
   typeof import('@openai-oauth/core'),
   'parseJwtClaims' | 'refreshOpenAIOAuthTokens'
 >;
+
+export function toOpenAIOAuthLibraryFetch(fetchFn: OpenAIOAuthFetch): OpenAIOAuthLibraryFetch {
+  const customPreconnect = (fetchFn as OpenAIOAuthFetchWithPreconnect).preconnect;
+  const preconnect = (...args: Parameters<OpenAIOAuthLibraryFetch['preconnect']>): void => {
+    if (customPreconnect) {
+      customPreconnect(...args);
+      return;
+    }
+    globalThis.fetch.preconnect?.(...args);
+  };
+
+  return Object.assign(
+    (input: Parameters<OpenAIOAuthLibraryFetch>[0], init?: Parameters<OpenAIOAuthLibraryFetch>[1]) =>
+      fetchFn(input, init),
+    fetchFn,
+    { preconnect },
+  );
+}
 
 const dynamicImportLocal = new Function('specifier', 'return import(specifier)') as (
   specifier: string,
@@ -76,7 +105,7 @@ async function runRefresh({
   sourcePath,
 }: {
   core: CoreModule;
-  fetch: typeof globalThis.fetch;
+  fetch: OpenAIOAuthLibraryFetch;
   force: boolean;
   local: LocalModule;
   now: () => Date;
@@ -136,7 +165,7 @@ export async function refreshOpenAIOAuthCredentials(
   options: OpenAIOAuthCredentialRefreshOptions,
 ): Promise<OpenAIOAuthCredentialRefreshResult> {
   const local = await dynamicImportLocal('@openai-oauth/local/auth-file');
-  const fetch = options.fetch ?? globalThis.fetch;
+  const fetch = toOpenAIOAuthLibraryFetch(options.fetch ?? globalThis.fetch);
   const auth = await local.loadAuthTokens({
     authFilePath: options.authFilePath,
     ensureFresh: false,
@@ -170,7 +199,7 @@ export async function loadOpenAIOAuthTokens(
   return local.loadAuthTokens({
     authFilePath: options.authFilePath,
     ensureFresh: false,
-    fetch: options.fetch ?? globalThis.fetch,
+    fetch: toOpenAIOAuthLibraryFetch(options.fetch ?? globalThis.fetch),
     now: options.now,
   });
 }

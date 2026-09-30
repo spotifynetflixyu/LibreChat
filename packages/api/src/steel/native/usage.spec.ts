@@ -6,6 +6,7 @@ import { loadOpenAIOAuthTokens } from './credentials';
 import { getOpenAIOAuthUsageRemaining, invalidateOpenAIOAuthUsageCache } from './usage';
 import { getOpenAIOAuthCredentialKey } from './auth-state';
 
+import type { OpenAIOAuthTokens } from './credentials';
 import type { OpenAIOAuthUsageCache, OpenAIOAuthUsageDeps } from './usage';
 
 const defaultLoadAuthTokens = jest.mocked(loadOpenAIOAuthTokens);
@@ -15,6 +16,22 @@ const weeklyResetAt = 1782975152;
 function createJwt(exp: number): string {
   const payload = Buffer.from(JSON.stringify({ exp })).toString('base64url');
   return `header.${payload}.signature_sensitive`;
+}
+
+function createAuth(overrides: Partial<OpenAIOAuthTokens> = {}): OpenAIOAuthTokens {
+  return {
+    accessToken: 'token_sensitive',
+    accountId: 'acct_sensitive',
+    ...overrides,
+  };
+}
+
+function createResponse(payload: unknown, init: ResponseInit = {}): Response {
+  return new Response(JSON.stringify(payload), {
+    headers: { 'content-type': 'application/json' },
+    status: 200,
+    ...init,
+  });
 }
 
 function createUsagePayload(usedPercent = 20) {
@@ -45,10 +62,9 @@ describe('OpenAI OAuth usage remaining service', () => {
   it('uses the shared credential loader by default', async () => {
     const authFilePath = '/tmp/codex-auth-test/auth.json';
     const fetchImpl = jest.fn(async () => new Response(JSON.stringify(createUsagePayload())));
-    defaultLoadAuthTokens.mockResolvedValueOnce({
-      accessToken: createJwt(1893456000),
-      refreshToken: 'refresh_sensitive',
-    });
+    defaultLoadAuthTokens.mockResolvedValueOnce(
+      createAuth({ accessToken: createJwt(1893456000), refreshToken: 'refresh_sensitive' }),
+    );
 
     const result = await getOpenAIOAuthUsageRemaining({
       authFilePath,
@@ -77,7 +93,7 @@ describe('OpenAI OAuth usage remaining service', () => {
       authFilePath: '/tmp/unauthorized-auth.json',
       cache: {},
       fetch: jest.fn(async () => new Response(null, { status: 401 })),
-      loadAuthTokens: jest.fn(async () => ({ accessToken: 'token_sensitive' })),
+      loadAuthTokens: jest.fn(async () => createAuth()),
       now: () => new Date('2026-06-26T07:00:00.000Z'),
     });
 
@@ -96,7 +112,7 @@ describe('OpenAI OAuth usage remaining service', () => {
       authFilePath: '/tmp/forbidden-auth.json',
       cache: {},
       fetch: jest.fn(async () => new Response(null, { status: 403 })),
-      loadAuthTokens: jest.fn(async () => ({ accessToken: 'token_sensitive' })),
+      loadAuthTokens: jest.fn(async () => createAuth()),
       now: () => new Date('2026-06-26T07:00:00.000Z'),
     });
 
@@ -128,12 +144,9 @@ describe('OpenAI OAuth usage remaining service', () => {
   });
 
   it('fetches ChatGPT OAuth WHAM usage and returns only sanitized remaining windows', async () => {
-    const loadAuthTokens = jest.fn(async () => ({
-      accessToken: 'token_sensitive',
-      accountId: 'acct_sensitive',
-      email: 'person@example.com',
-      refreshToken: 'refresh_sensitive',
-    }));
+    const loadAuthTokens = jest.fn(async () =>
+      createAuth({ refreshToken: 'refresh_sensitive' }),
+    );
     const fetchImpl = jest.fn(async () => new Response(JSON.stringify(createUsagePayload())));
 
     const result = await getOpenAIOAuthUsageRemaining({
@@ -199,7 +212,7 @@ describe('OpenAI OAuth usage remaining service', () => {
     const result = await getOpenAIOAuthUsageRemaining({
       cache: {},
       fetch: jest.fn(async () => new Response(JSON.stringify(payload))),
-      loadAuthTokens: jest.fn(async () => ({ accessToken: 'token_sensitive' })),
+      loadAuthTokens: jest.fn(async () => createAuth()),
       now: () => new Date('2026-06-26T07:00:00.000Z'),
       ttlMs: 60_000,
     });
@@ -233,7 +246,7 @@ describe('OpenAI OAuth usage remaining service', () => {
     const result = await getOpenAIOAuthUsageRemaining({
       cache: {},
       fetch: jest.fn(async () => new Response(JSON.stringify(payload))),
-      loadAuthTokens: jest.fn(async () => ({ accessToken: 'token_sensitive' })),
+      loadAuthTokens: jest.fn(async () => createAuth()),
       now: () => new Date('2026-06-26T07:00:00.000Z'),
     });
 
@@ -251,10 +264,7 @@ describe('OpenAI OAuth usage remaining service', () => {
   it('uses the in-memory cache until the TTL expires', async () => {
     const cache = {};
     let nowMs = Date.parse('2026-06-26T07:00:00.000Z');
-    const loadAuthTokens = jest.fn(async () => ({
-      accessToken: 'token_sensitive',
-      accountId: 'acct_sensitive',
-    }));
+    const loadAuthTokens = jest.fn(async () => createAuth());
     const fetchImpl = jest.fn(async () => new Response(JSON.stringify(createUsagePayload())));
 
     await getOpenAIOAuthUsageRemaining({
@@ -291,8 +301,8 @@ describe('OpenAI OAuth usage remaining service', () => {
     const deps = {
       authFilePath: '/data/openai-oauth/auth.json',
       cache,
-      fetch: fetchImpl as typeof fetch,
-      loadAuthTokens: jest.fn(async () => ({ accessToken: 'token_sensitive' })),
+      fetch: fetchImpl,
+      loadAuthTokens: jest.fn(async () => createAuth()),
       now: () => new Date('2026-06-26T07:00:00.000Z'),
     };
 
@@ -306,9 +316,9 @@ describe('OpenAI OAuth usage remaining service', () => {
 
   it('keeps cached usage separate by auth file path', async () => {
     const cache = {};
-    const loadAuthTokens = jest.fn(async ({ authFilePath }: { authFilePath?: string }) => ({
-      accessToken: `token_sensitive_${authFilePath}`,
-    }));
+    const loadAuthTokens = jest.fn(async ({ authFilePath }: { authFilePath?: string }) =>
+      createAuth({ accessToken: `token_sensitive_${authFilePath}` }),
+    );
     const fetchImpl = jest
       .fn()
       .mockResolvedValueOnce(new Response(JSON.stringify(createUsagePayload(20))))
@@ -350,9 +360,7 @@ describe('OpenAI OAuth usage remaining service', () => {
       resolveFetch = resolve;
     });
     const fetchImpl = jest.fn(() => fetchResponse);
-    const loadAuthTokens = jest.fn(async () => ({
-      accessToken: 'token_sensitive',
-    }));
+    const loadAuthTokens = jest.fn(async () => createAuth());
 
     const first = getOpenAIOAuthUsageRemaining({
       authFilePath: '/tmp/auth-a.json',
@@ -394,10 +402,7 @@ describe('OpenAI OAuth usage remaining service', () => {
       },
       { preconnect: () => undefined },
     );
-    const loadAuthTokens = jest.fn(async () => ({
-      accessToken: 'token_sensitive',
-      accountId: 'acct_sensitive',
-    }));
+    const loadAuthTokens = jest.fn(async () => createAuth());
     const authFilePath = '/tmp/auth-race.json';
     const now = () => new Date('2026-06-26T07:00:00.000Z');
     const deps: OpenAIOAuthUsageDeps = {
@@ -497,10 +502,7 @@ describe('OpenAI OAuth usage remaining service', () => {
     const result = await getOpenAIOAuthUsageRemaining({
       cache: {},
       fetch: jest.fn(async () => new Response(JSON.stringify({ account_id: 'acct_sensitive' }))),
-      loadAuthTokens: jest.fn(async () => ({
-        accessToken: 'token_sensitive',
-        accountId: 'acct_sensitive',
-      })),
+      loadAuthTokens: jest.fn(async () => createAuth()),
       now: () => new Date('2026-06-26T07:00:00.000Z'),
     });
 

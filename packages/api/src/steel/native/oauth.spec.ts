@@ -4,8 +4,8 @@ import type {
   LanguageModelV3GenerateResult,
   LanguageModelV3StreamPart,
 } from '@ai-sdk/provider';
-import type { FetchFunction } from '@ai-sdk/provider-utils';
 import { dispatchCustomEvent } from '@langchain/core/callbacks/dispatch';
+import { BaseCallbackHandler } from '@langchain/core/callbacks/base';
 import { CallbackManager } from '@langchain/core/callbacks/manager';
 import {
   ChatModelStreamHandler,
@@ -14,6 +14,7 @@ import {
   Providers,
   StepTypes,
   ToolNode,
+  type GenericTool,
 } from '@librechat/agents';
 import type { BindToolsInput } from '@librechat/agents/langchain/language_models/chat_models';
 import {
@@ -23,7 +24,7 @@ import {
   ToolMessage,
   type BaseMessage,
 } from '@librechat/agents/langchain/messages';
-import { RunnableLambda } from '@librechat/agents/langchain/runnables';
+import { RunnableLambda, type RunnableConfig } from '@librechat/agents/langchain/runnables';
 import type { createOpenAIOAuth as createOpenAIOAuthType } from '@openai-oauth/ai-sdk';
 import type { createOpenAIOAuthTransport as createOpenAIOAuthTransportType } from '@openai-oauth/core';
 import type { openaiCredentials as openaiCredentialsType } from '@openai-oauth/local';
@@ -38,9 +39,12 @@ import {
   delegateOcrStreamEventName,
   delegateOcrStreamedArtifact,
   delegateOcrToolName,
+  delegateOcrArgsSchema,
   runDelegateOcrWorkflow,
+  type DelegateOcrExecutableTool,
 } from './delegate';
 import { clearOpenAIOAuthCredentialInvalid, isOpenAIOAuthCredentialInvalid } from './auth-state';
+import type { OpenAIOAuthFetch } from './credentials';
 import { prepareSteelNativeToolConfig } from './tools';
 
 jest.mock('@langchain/core/callbacks/dispatch', () => {
@@ -158,8 +162,39 @@ function createFakeOpenAIOAuthDependencies(input: { doGenerate: jest.Mock; doStr
   };
 }
 
+function asToolNodeTool(tool: DelegateOcrExecutableTool): GenericTool {
+  const runnable = new RunnableLambda({
+    func: (input: unknown, config: RunnableConfig) => tool.invoke(input, config),
+  });
+  return runnable.asTool({ name: tool.name, schema: delegateOcrArgsSchema });
+}
+
+class TestCustomEventHandler extends BaseCallbackHandler {
+  name = 'steel-native-test-events';
+
+  constructor(private readonly receive: (name: string, payload: unknown) => void) {
+    super();
+  }
+
+  handleCustomEvent(name: string, payload: unknown): void {
+    this.receive(name, payload);
+  }
+}
+
 function getGenerateCall(doGenerate: jest.Mock): LanguageModelV3CallOptions {
-  return doGenerate.mock.calls[0][0] as LanguageModelV3CallOptions;
+  const firstCall = (doGenerate.mock.calls as Array<[LanguageModelV3CallOptions]>)[0];
+  if (!firstCall) {
+    throw new Error('expected generate call');
+  }
+  return firstCall[0];
+}
+
+function getGenerateCallAt(doGenerate: jest.Mock, index: number): LanguageModelV3CallOptions {
+  const call = (doGenerate.mock.calls as Array<[LanguageModelV3CallOptions]>)[index];
+  if (!call) {
+    throw new Error(`expected generate call ${index}`);
+  }
+  return call[0];
 }
 
 function quoteMessages(userText = '請報價'): BaseMessage[] {
@@ -216,7 +251,11 @@ describe('OpenAI OAuth model adapter', () => {
       type: 'function', name: 'search_price_candidates',
     }));
     await model.invoke([new HumanMessage('完成報價')]);
-    expect(doGenerate.mock.calls[1]![0].toolChoice).toEqual({ type: 'auto' });
+    const secondCall = doGenerate.mock.calls[1];
+    if (!secondCall) {
+      throw new Error('expected second generate call');
+    }
+    expect(getGenerateCallAt(doGenerate, 1).toolChoice).toEqual({ type: 'auto' });
   });
 
   it('keeps Code Interpreter but sends no Steel tools to the delegate merge provider', async () => {
@@ -307,7 +346,7 @@ describe('OpenAI OAuth model adapter', () => {
   });
 
   it('uses the LibreChat credential loader for default provider credentials', async () => {
-    const fetchFn = jest.fn() as unknown as FetchFunction;
+    const fetchFn = jest.fn<ReturnType<OpenAIOAuthFetch>, Parameters<OpenAIOAuthFetch>>();
     const loadAuthTokens = jest.fn(async () => ({
       accessToken: 'access_sensitive',
       accountId: 'account_test',
@@ -320,7 +359,7 @@ describe('OpenAI OAuth model adapter', () => {
       createOpenAIOAuth: dependencies.options.createOpenAIOAuth,
       createOpenAIOAuthTransport: dependencies.options.createOpenAIOAuthTransport,
       ensureFresh: false,
-      fetch: fetchFn,
+      fetch: Object.assign(fetchFn, { preconnect: jest.fn() }),
       loadAuthTokens,
     });
 
@@ -341,10 +380,10 @@ describe('OpenAI OAuth model adapter', () => {
   it('records only an OAuth Chat 401 as invalid credential evidence', async () => {
     const authFilePath = '/tmp/oauth-chat-401-auth.json';
     const fetchFn = jest
-      .fn()
+      .fn<ReturnType<OpenAIOAuthFetch>, Parameters<OpenAIOAuthFetch>>()
       .mockResolvedValueOnce(new Response(null, { status: 403 }))
       .mockResolvedValueOnce(new Response(null, { status: 401 }))
-      .mockResolvedValueOnce(new Response('{}', { status: 200 })) as unknown as FetchFunction;
+      .mockResolvedValueOnce(new Response('{}', { status: 200 }));
     const dependencies = createFakeOpenAIOAuthDependencies({ doGenerate: jest.fn() });
     try {
       await createStatelessOpenAIOAuthProvider({
@@ -354,7 +393,7 @@ describe('OpenAI OAuth model adapter', () => {
       });
       const transportOptions = (
         dependencies.options.createOpenAIOAuthTransport as unknown as jest.Mock
-      ).mock.calls[0][0] as { fetch: FetchFunction };
+      ).mock.calls[0][0] as { fetch: OpenAIOAuthFetch };
 
       await transportOptions.fetch('https://chatgpt.com/backend-api/codex/responses');
       expect(isOpenAIOAuthCredentialInvalid(authFilePath)).toBe(false);
@@ -370,7 +409,7 @@ describe('OpenAI OAuth model adapter', () => {
   });
 
   it('creates a stateless OAuth provider model and converts LangChain messages to AI SDK prompt', async () => {
-    const fetchFn = jest.fn() as unknown as FetchFunction;
+    const fetchFn = jest.fn<ReturnType<OpenAIOAuthFetch>, Parameters<OpenAIOAuthFetch>>();
     const doGenerate = jest.fn(async () =>
       createGenerateResult([
         {
@@ -397,7 +436,7 @@ describe('OpenAI OAuth model adapter', () => {
     expect(dependencies.options.openaiCredentials).toHaveBeenCalledWith({
       authFilePath: '/tmp/auth.json',
       ensureFresh: false,
-      fetch: fetchFn,
+      fetch: expect.any(Function),
     });
     expect(dependencies.options.createOpenAIOAuthTransport).toHaveBeenCalledWith({
       auth: expect.any(Function),
@@ -450,7 +489,15 @@ describe('OpenAI OAuth model adapter', () => {
       refreshSession: jest.fn(),
     };
     const openaiCredentials = jest.fn(() => credentials);
-    const fetchFn = jest.fn(async () => new Response()) as unknown as FetchFunction;
+    const sourceResponse = new Response('upstream', {
+      status: 207,
+      headers: { 'x-upstream-status': 'preserved' },
+    });
+    const customPreconnect = jest.fn();
+    const fetchFn = Object.assign(
+      jest.fn(async (..._args: Parameters<OpenAIOAuthFetch>) => sourceResponse),
+      { customNamespace: 'preserved', preconnect: customPreconnect },
+    );
     const transport = {
       kind: 'openai-compatible' as const,
       provider: 'chatgpt-codex' as const,
@@ -494,13 +541,39 @@ describe('OpenAI OAuth model adapter', () => {
     });
     expect(createOpenAIOAuth).toHaveBeenCalledWith(transport);
 
-    const transportFetch = createOpenAIOAuthTransport.mock.calls[0]?.[0].fetch;
+    const credentialsFetch = (openaiCredentials as jest.Mock).mock.calls[0]?.[0]
+      ?.fetch as OpenAIOAuthFetch & {
+      customNamespace?: string;
+      preconnect?: (origin: string | URL) => void;
+    };
+    expect(credentialsFetch).toEqual(expect.any(Function));
+    expect(credentialsFetch.customNamespace).toBe('preserved');
+    await expect(credentialsFetch('https://chatgpt.com/backend-api/codex/models')).resolves.toBe(
+      sourceResponse,
+    );
+    credentialsFetch.preconnect?.('https://chatgpt.com');
+    expect(customPreconnect).toHaveBeenCalledWith('https://chatgpt.com');
+
+    const transportFetch = (createOpenAIOAuthTransport as jest.Mock).mock.calls[0]?.[0]
+      .fetch as OpenAIOAuthFetch & {
+      customNamespace?: string;
+      preconnect?: (origin: string | URL) => void;
+    };
     expect(transportFetch).toBeDefined();
+    expect(transportFetch.customNamespace).toBe('preserved');
     await transportFetch?.('https://chatgpt.com/backend-api/codex/models?client_version=0.144.1');
-    await transportFetch?.('https://chatgpt.com/backend-api/codex/responses', {
+    const transportResponse = await transportFetch?.('https://chatgpt.com/backend-api/codex/responses', {
       method: 'POST',
     });
-    const responseHeaders = new Headers(fetchFn.mock.calls[1]?.[1]?.headers);
+    expect(transportResponse).toBe(sourceResponse);
+    expect(transportResponse?.status).toBe(207);
+    expect(transportResponse?.headers.get('x-upstream-status')).toBe('preserved');
+    transportFetch.preconnect?.('https://chatgpt.com');
+    expect(customPreconnect).toHaveBeenCalledWith('https://chatgpt.com');
+    const responseRequest = fetchFn.mock.calls.find(([, init]) =>
+      new Headers(init?.headers).has('originator'),
+    );
+    const responseHeaders = new Headers(responseRequest?.[1]?.headers);
     expect(responseHeaders.get('originator')).toBe('codex_cli_rs');
     expect(responseHeaders.get('user-agent')).toBe('codex_cli_rs/0.144.1');
   });
@@ -542,12 +615,13 @@ describe('OpenAI OAuth model adapter', () => {
           headers: { 'content-type': 'text/event-stream' },
         });
       },
-    ) as unknown as FetchFunction;
+    );
     const transport = {
       kind: 'openai-compatible' as const,
       provider: 'chatgpt-codex' as const,
       baseURL: 'https://openai-oauth.local/v1',
-      fetch: fetchFn,
+      fetch: Object.assign(fetchFn, { preconnect: jest.fn() }),
+      preconnect: jest.fn(),
       request: jest.fn(),
       capabilities: {
         responses: true as const,
@@ -733,13 +807,13 @@ describe('OpenAI OAuth model adapter', () => {
     const streamedEvents: unknown[] = [];
     const streamedToolNode = new ToolNode({
       tools: [
-        createDelegateOcrTool({
+        asToolNodeTool(createDelegateOcrTool({
           execute: async ({ onDelta }) => {
             await onDelta?.('## 原始圖面確認\n\n');
             await onDelta?.('開槽連續邊長為 1,400mm。');
             return answer;
           },
-        }),
+        })),
       ],
     });
     const streamedToolMessages = (await streamedToolNode.invoke(
@@ -748,13 +822,11 @@ describe('OpenAI OAuth model adapter', () => {
         configurable: { delegateOcrStreaming: true },
         callbacks: new CallbackManager('delegate-parent-run', {
           handlers: [
-            {
-              handleCustomEvent(eventName: string, payload: unknown): void {
-                if (eventName === delegateOcrStreamEventName) {
-                  streamedEvents.push(payload);
-                }
-              },
-            },
+            new TestCustomEventHandler((eventName, payload) => {
+              if (eventName === delegateOcrStreamEventName) {
+                streamedEvents.push(payload);
+              }
+            }),
           ],
         }),
       },
@@ -805,9 +877,9 @@ describe('OpenAI OAuth model adapter', () => {
 
     const unmarkedToolNode = new ToolNode({
       tools: [
-        createDelegateOcrTool({
+        asToolNodeTool(createDelegateOcrTool({
           execute: async () => answer,
-        }),
+        })),
       ],
     });
     const unmarkedToolMessages = (await unmarkedToolNode.invoke([
@@ -1290,7 +1362,11 @@ describe('OpenAI OAuth model adapter', () => {
     }
 
     expect(chunks.map((chunk) => chunk.content).join('')).toBe(`${stageOne}${draft}`);
-    expect(chunks.findIndex((chunk) => chunk.content.includes('DRAFT'))).toBeLessThan(
+    expect(
+      chunks.findIndex(
+        (chunk) => typeof chunk.content === 'string' && chunk.content.includes('DRAFT'),
+      ),
+    ).toBeLessThan(
       chunks.findIndex((chunk) => chunk.tool_calls?.[0]?.name === 'search_price_candidates'),
     );
     expect(chunks[chunks.length - 1]?.usage_metadata).toEqual({

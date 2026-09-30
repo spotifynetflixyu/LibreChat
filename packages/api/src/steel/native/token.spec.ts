@@ -88,6 +88,13 @@ function createAppServer(responses: Record<string, CodexAppServerJsonValue | Err
 }
 
 describe('OpenAI OAuth token status service', () => {
+  let defaultTempDir: string;
+  beforeAll(async () => {
+    defaultTempDir = await mkdtemp(path.join(os.tmpdir(), 'codex-token-fixture-'));
+  });
+  afterAll(async () => {
+    await rm(defaultTempDir, { force: true, recursive: true });
+  });
   it('uses the shared credential loader by default', async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), 'codex-auth-test-'));
     const authFilePath = path.join(tempDir, 'auth.json');
@@ -95,6 +102,7 @@ describe('OpenAI OAuth token status service', () => {
       'account/read': { account: { type: 'chatgpt' }, requiresOpenaiAuth: true },
     });
     defaultLoadAuthTokens.mockResolvedValueOnce({
+      accountId: 'account_test',
       accessToken: createJwt(1783562400),
       refreshToken: 'refresh_sensitive',
     });
@@ -131,6 +139,7 @@ describe('OpenAI OAuth token status service', () => {
       'account/read': { account: { type: 'chatgpt' }, requiresOpenaiAuth: true },
     });
     const loadAuthTokens = jest.fn(async () => ({
+      accountId: 'account_test',
       accessToken: createJwt(1783562400),
       refreshToken: 'refresh_sensitive',
     }));
@@ -173,6 +182,7 @@ describe('OpenAI OAuth token status service', () => {
       'account/read': new CodexAppServerRequestError('unauthorized'),
     });
     const loadAuthTokens = jest.fn(async () => ({
+      accountId: 'account_test',
       accessToken: createJwt(1783562400),
       refreshToken: 'refresh_sensitive',
     }));
@@ -215,6 +225,7 @@ describe('OpenAI OAuth token status service', () => {
       const result = await getOpenAIOAuthTokenStatus({
         authFilePath: path.join(tempDir, 'auth.json'),
         loadAuthTokens: jest.fn(async () => ({
+          accountId: 'account_test',
           accessToken: createJwt(1783562400),
           refreshToken: 'refresh_sensitive',
         })),
@@ -243,7 +254,7 @@ describe('OpenAI OAuth token status service', () => {
     try {
       const result = await getOpenAIOAuthTokenStatus({
         authFilePath: path.join(tempDir, 'auth.json'),
-        loadAuthTokens: jest.fn(async () => ({ accessToken: createJwt(1783470000) })),
+        loadAuthTokens: jest.fn(async () => ({ accountId: 'account_test', accessToken: createJwt(1783470000) })),
         now: () => new Date('2026-07-08T02:34:02.000Z'),
         runCodexCommand: workingCodexCommand,
         startAppServerClient: appServer.startAppServerClient,
@@ -270,7 +281,7 @@ describe('OpenAI OAuth token status service', () => {
     try {
       const result = await getOpenAIOAuthTokenStatus({
         authFilePath,
-        loadAuthTokens: jest.fn(async () => ({ accessToken: createJwt(1783562400) })),
+        loadAuthTokens: jest.fn(async () => ({ accountId: 'account_test', accessToken: createJwt(1783562400) })),
         now: () => new Date('2026-07-08T02:34:02.000Z'),
         runCodexCommand: workingCodexCommand,
         startAppServerClient: appServer.startAppServerClient,
@@ -297,7 +308,7 @@ describe('OpenAI OAuth token status service', () => {
       try {
         const result = await getOpenAIOAuthTokenStatus({
           authFilePath: path.join(tempDir, 'auth.json'),
-          loadAuthTokens: jest.fn(async () => ({ accessToken: createJwt(1783562400) })),
+          loadAuthTokens: jest.fn(async () => ({ accountId: 'account_test', accessToken: createJwt(1783562400) })),
           runCodexCommand: workingCodexCommand,
           startAppServerClient: appServer.startAppServerClient,
         });
@@ -343,13 +354,14 @@ describe('OpenAI OAuth token status service', () => {
       'account/read': { account: { type: 'chatgpt' }, requiresOpenaiAuth: true },
     });
     const loadAuthTokens: OpenAIOAuthTokenLoader = jest.fn(async () => ({
+      accountId: 'account_test',
       accessToken: createJwt(1783562400),
       refreshToken: 'refresh_sensitive',
     }));
     const refreshCredentials = jest.fn(async () => ({
       auth: {
-        accessToken: createJwt(1783562400),
         accountId: 'account_test',
+        accessToken: createJwt(1783562400),
       },
       refreshed: true,
     }));
@@ -474,6 +486,7 @@ describe('OpenAI OAuth token status service', () => {
       },
     });
     const loadAuthTokens: OpenAIOAuthTokenLoader = jest.fn(async () => ({
+      accountId: 'account_test',
       accessToken: createJwt(1783562400),
       refreshToken: 'refresh_sensitive',
     }));
@@ -525,6 +538,7 @@ describe('OpenAI OAuth token status service', () => {
       'account/login/start': new Error('token_sensitive /data/auth.json'),
     });
     const result = await startOpenAIOAuthCodexLogin({
+      authFilePath: path.join(defaultTempDir, 'auth.json'),
       runCodexCommand: workingCodexCommand,
       startAppServerClient: appServer.startAppServerClient,
     });
@@ -548,6 +562,7 @@ describe('OpenAI OAuth token status service', () => {
       },
     });
     await startOpenAIOAuthCodexLogin({
+      authFilePath: path.join(defaultTempDir, 'auth.json'),
       idFactory: () => 'session_timeout',
       loginStore: store,
       loginTimeoutMs: 30_000,
@@ -583,6 +598,7 @@ describe('OpenAI OAuth token status service', () => {
       },
     });
     await startOpenAIOAuthCodexLogin({
+      authFilePath: path.join(defaultTempDir, 'auth.json'),
       idFactory: () => 'session_back',
       loginStore: store,
       loginTimeoutMs: 60_000,
@@ -605,6 +621,7 @@ describe('OpenAI OAuth token status service', () => {
   it('logs out through app-server and returns the sanitized current token status', async () => {
     const appServer = createAppServer({ 'account/logout': {} });
     const result = await logoutOpenAIOAuthToken({
+      authFilePath: path.join(defaultTempDir, 'auth.json'),
       loadAuthTokens: jest.fn(async () => {
         throw new Error('auth removed');
       }),

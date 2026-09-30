@@ -19,6 +19,7 @@ import type {
 import type {
   OpenAIOAuthCredentialRefreshOptions,
   OpenAIOAuthCredentialRefreshResult,
+  OpenAIOAuthFetch,
   OpenAIOAuthTokenLoader as CredentialsLoader,
   OpenAIOAuthTokens,
 } from './credentials';
@@ -89,7 +90,7 @@ export type OpenAIOAuthCodexLoginStore = Map<string, OpenAIOAuthCodexLoginRecord
 export type OpenAIOAuthTokenStatusDeps = {
   authFilePath?: string;
   env?: OpenAIOAuthTokenEnv;
-  fetch?: typeof fetch;
+  fetch?: OpenAIOAuthFetch;
   loadAuthTokens?: OpenAIOAuthTokenLoader;
   now?: () => Date;
   refreshCredentials?: (

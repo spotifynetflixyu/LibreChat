@@ -40,7 +40,7 @@ function extractCanonicalOcrResult(markdown: string): string | undefined {
   const sections = parseAssistantMarkdown(markdown).sections.filter(
     (section) => section.title.trim() === 'ocr_result',
   );
-  const section = sections.at(-1);
+  const section = sections[sections.length - 1];
   return section?.raw.trim() || undefined;
 }
 

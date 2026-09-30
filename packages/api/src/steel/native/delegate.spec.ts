@@ -1,5 +1,7 @@
 import { CallbackManager } from '@langchain/core/callbacks/manager';
-import { ToolNode } from '@librechat/agents';
+import { BaseCallbackHandler } from '@langchain/core/callbacks/base';
+import { RunnableLambda, type RunnableConfig } from '@librechat/agents/langchain/runnables';
+import { ToolNode, type GenericTool } from '@librechat/agents';
 import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from '@librechat/agents/langchain/messages';
 
 import {
@@ -18,6 +20,10 @@ import {
   resolveDelegateOcrPolicy,
   resolveDelegateOcrFileKeys,
   type DelegateOcrFileRecord,
+  type DelegateOcrExecute,
+  type DelegateOcrExecutableTool,
+  type AuditDelegateOcrResponse,
+  type InvokeDelegateOcrModel,
 } from './delegate';
 
 const modelOptions = {
@@ -56,6 +62,34 @@ const files: DelegateOcrFileRecord[] = [
     storageKey: 'uploads/user/pdf-1__quote.pdf',
   },
 ];
+
+type InvokeModelMock = jest.Mock<ReturnType<InvokeDelegateOcrModel>, Parameters<InvokeDelegateOcrModel>>;
+
+function createInvokeModelMock(
+  implementation: (...args: Parameters<InvokeDelegateOcrModel>) => ReturnType<InvokeDelegateOcrModel> =
+    async () => '',
+): InvokeModelMock {
+  return jest.fn<ReturnType<InvokeDelegateOcrModel>, Parameters<InvokeDelegateOcrModel>>(implementation);
+}
+
+function asToolNodeTool(tool: DelegateOcrExecutableTool): GenericTool {
+  const runnable = new RunnableLambda({
+    func: (input: unknown, config: RunnableConfig) => tool.invoke(input, config),
+  });
+  return runnable.asTool({ name: tool.name, schema: delegateOcrArgsSchema });
+}
+
+class TestCustomEventHandler extends BaseCallbackHandler {
+  name = 'steel-native-test-events';
+
+  constructor(private readonly receive: (name: string, payload: unknown) => void) {
+    super();
+  }
+
+  handleCustomEvent(name: string, payload: unknown): void {
+    this.receive(name, payload);
+  }
+}
 
 describe('delegate_ocr', () => {
   it('resolves delegate_ocr backend availability from preflight, quote, and attachments', () => {
@@ -197,7 +231,7 @@ describe('delegate_ocr', () => {
   });
 
   it('sends only the exact current turn and omits older provider history', async () => {
-    const invokeModel = jest.fn(async () => '已完成。');
+    const invokeModel = createInvokeModelMock(async () => '已完成。');
 
     await delegateOcr({
       files: [{ fileKey: 'file:image-1' }],
@@ -241,7 +275,7 @@ describe('delegate_ocr', () => {
         },
       ];
     });
-    const invokeModel = jest.fn(async () => '孔數為 4。');
+    const invokeModel = createInvokeModelMock(async () => '孔數為 4。');
 
     await delegateOcr({
       files: [
@@ -277,8 +311,7 @@ describe('delegate_ocr', () => {
       .mockResolvedValueOnce('https://old.example/quote.pdf')
       .mockResolvedValueOnce('https://fresh.example/image.png')
       .mockResolvedValueOnce('https://fresh.example/quote.pdf');
-    const invokeModel = jest
-      .fn()
+    const invokeModel = createInvokeModelMock()
       .mockRejectedValueOnce(new Error('RequestExpired'))
       .mockResolvedValueOnce('Recovered OCR');
 
@@ -322,7 +355,7 @@ describe('delegate_ocr', () => {
   it('does not retry an expired signed URL after streaming a delta', async () => {
     const signFile = jest.fn(async (file: DelegateOcrFileRecord) => file.filepath ?? '');
     const onDelta = jest.fn();
-    const invokeModel = jest.fn(async ({ onDelta: emitDelta }) => {
+    const invokeModel = createInvokeModelMock(async ({ onDelta: emitDelta }) => {
       await emitDelta?.('partial');
       throw new Error('RequestExpired');
     });
@@ -364,7 +397,7 @@ describe('delegate_ocr', () => {
         signFile: async (file: DelegateOcrFileRecord) => file.filepath ?? '',
         range,
       }));
-    const invokeModel = jest.fn(async ({ messages }) => {
+    const invokeModel = createInvokeModelMock(async ({ messages }) => {
       const text = JSON.stringify(messages);
       const range = text.match(/(1-50|51-100|101-106)/)?.[1] ?? '';
       order.push(range);
@@ -408,7 +441,7 @@ describe('delegate_ocr', () => {
         signFile: async (file: DelegateOcrFileRecord) => file.filepath ?? '',
       }));
     const deltas: string[] = [];
-    const invokeModel = jest.fn(async ({ onDelta }) => {
+    const invokeModel = createInvokeModelMock(async ({ onDelta }) => {
       await onDelta?.('batch');
       return 'batch';
     });
@@ -424,7 +457,9 @@ describe('delegate_ocr', () => {
       signFile: async () => 'unused',
       prepareBatches,
       invokeModel,
-      onDelta: (delta) => deltas.push(delta),
+      onDelta: (delta) => {
+        deltas.push(delta);
+      },
     });
 
     expect(deltas).toEqual(['batch', '\n\n', 'batch']);
@@ -542,7 +577,7 @@ describe('delegate_ocr', () => {
     };
     const getOwnedFileRecords = jest.fn(async () => [storedFile]);
     const signStoredFile = jest.fn(async () => 'https://fresh.example/quote.pdf?expires=43200');
-    const invokeModel = jest.fn(async () => '原始 PDF 已重新確認。');
+    const invokeModel = createInvokeModelMock(async () => '原始 PDF 已重新確認。');
     const execute = createDelegateOcrRequestExecute({
       history,
       policy: { resolved: true, allowed: true, allowedFileKeys: ['file:pdf-1'] },
@@ -581,7 +616,7 @@ describe('delegate_ocr', () => {
     };
     const getOwnedFileRecords = jest.fn(async () => [storedFile]);
     const signStoredFile = jest.fn(async () => 'https://fresh.example/PL.pdf');
-    const invokeModel = jest.fn(async () => '已依原始圖面完成 Vision 判讀。');
+    const invokeModel = createInvokeModelMock(async () => '已依原始圖面完成 Vision 判讀。');
     const execute = createDelegateOcrRequestExecute({
       history: [new HumanMessage('看一下圖面切工')],
       policy: { resolved: true, allowed: true, allowedFileKeys: [`file:${fileId}`] },
@@ -659,7 +694,7 @@ describe('delegate_ocr', () => {
     const getOwnedFileRecords = jest.fn(async () => []);
     const signStoredFile = jest.fn(async () => 'unused');
     const loadOcrRules = jest.fn(async () => 'OCR rules');
-    const invokeModel = jest.fn(async () => 'unused');
+    const invokeModel = createInvokeModelMock(async () => 'unused');
     const execute = createDelegateOcrRequestExecute({
       history: [new HumanMessage('重新確認原始圖面')],
       currentUserTurn: '重新確認原始圖面',
@@ -695,7 +730,7 @@ describe('delegate_ocr', () => {
     const signFile = jest.fn(async (file: DelegateOcrFileRecord) => {
       return `https://fresh.example/${file.storageKey}?expires=43200`;
     });
-    const invokeModel = jest.fn(async () => '開槽連續邊長為 1,400mm。');
+    const invokeModel = createInvokeModelMock(async () => '開槽連續邊長為 1,400mm。');
 
     const result = await delegateOcr({
       files: [{ fileKey: 'file:image-1' }, { fileKey: 'file:pdf-1' }],
@@ -724,7 +759,7 @@ describe('delegate_ocr', () => {
     expect(invocation?.messages[0]).toBeInstanceOf(SystemMessage);
     expect(invocation?.messages[0]?.content).toBe('OCR_RULE\nVISION_RULE\nOCR_MAIN_RULE');
 
-    const sourceMessage = invocation?.messages.at(-1);
+    const sourceMessage = invocation?.messages[invocation.messages.length - 1];
     expect(sourceMessage).toBeInstanceOf(HumanMessage);
     expect(JSON.stringify(sourceMessage?.content)).toContain(
       'https://fresh.example/images/user/image-1__drawing.png?expires=43200',
@@ -787,14 +822,16 @@ describe('delegate_ocr', () => {
 
   it('streams only under the scoped flag and returns the marker only after a delta', async () => {
     const events: Array<{ name: string; payload: unknown }> = [];
-    const execute = jest.fn(async ({ onDelta }: { onDelta?: (delta: string) => Promise<void> }) => {
+    const execute = jest.fn<ReturnType<DelegateOcrExecute>, Parameters<DelegateOcrExecute>>(
+      async ({ onDelta }) => {
       await onDelta?.('first');
       await onDelta?.('');
       await onDelta?.('second');
       return 'firstsecond';
-    });
+      },
+    );
     const tool = createDelegateOcrTool({ execute });
-    const node = new ToolNode({ tools: [tool] });
+    const node = new ToolNode({ tools: [asToolNodeTool(tool)] });
     const message = (id: string) =>
       new AIMessage({
         content: '',
@@ -810,11 +847,9 @@ describe('delegate_ocr', () => {
       configurable: { delegateOcrStreaming: true },
       callbacks: new CallbackManager('parent-run', {
         handlers: [
-          {
-            handleCustomEvent(name: string, payload: unknown): void {
-              events.push({ name, payload });
-            },
-          },
+          new TestCustomEventHandler((name, payload) => {
+            events.push({ name, payload });
+          }),
         ],
       }),
       toolCall: { id: 'call_streamed' },
@@ -863,12 +898,14 @@ describe('delegate_ocr', () => {
 
   it('emits an error phase and rethrows after partial streaming', async () => {
     const events: unknown[] = [];
-    const execute = jest.fn(async ({ onDelta }: { onDelta?: (delta: string) => Promise<void> }) => {
+    const execute = jest.fn<ReturnType<DelegateOcrExecute>, Parameters<DelegateOcrExecute>>(
+      async ({ onDelta }) => {
       await onDelta?.('partial');
       throw new DOMException('The operation was aborted', 'AbortError');
-    });
+      },
+    );
     const tool = createDelegateOcrTool({ execute });
-    const node = new ToolNode({ tools: [tool], handleToolErrors: false });
+    const node = new ToolNode({ tools: [asToolNodeTool(tool)], handleToolErrors: false });
     const message = new AIMessage({
       content: '',
       tool_calls: [
@@ -885,13 +922,11 @@ describe('delegate_ocr', () => {
         configurable: { delegateOcrStreaming: true },
         callbacks: new CallbackManager('parent-run-abort', {
           handlers: [
-            {
-              handleCustomEvent(name: string, payload: unknown): void {
-                if (name === delegateOcrStreamEventName) {
-                  events.push(payload);
-                }
-              },
-            },
+            new TestCustomEventHandler((name, payload) => {
+              if (name === delegateOcrStreamEventName) {
+                events.push(payload);
+              }
+            }),
           ],
         }),
       }),
@@ -919,7 +954,7 @@ describe('delegate_ocr', () => {
         return 'streamed answer';
       },
     });
-    const node = new ToolNode({ tools: [tool] });
+    const node = new ToolNode({ tools: [asToolNodeTool(tool)] });
     const message = new AIMessage({
       content: '',
       tool_calls: [
@@ -957,8 +992,7 @@ describe('delegate_ocr', () => {
     }));
     const wrongMapping =
       '## source_file_mapping\n\n| 來源 | 檔名 |\n| --- | --- |\n| F2 | wrong.png |\n\n## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| F1 | A |';
-    const invokeModel = jest
-      .fn()
+    const invokeModel = createInvokeModelMock()
       .mockResolvedValueOnce(wrongMapping)
       .mockResolvedValueOnce(wrongMapping)
       .mockResolvedValueOnce(wrongMapping);
@@ -991,7 +1025,18 @@ describe('delegate_ocr', () => {
     );
     expect(packet).toContain('drawing.png');
     for (const [invocation] of invokeModel.mock.calls) {
-      const packetText = invocation.messages[1].content[0].text;
+      const contentPart = invocation.messages[1]?.content;
+      if (
+        !Array.isArray(contentPart) ||
+        contentPart.length === 0 ||
+        typeof contentPart[0] !== 'object' ||
+        contentPart[0] === null ||
+        !('text' in contentPart[0]) ||
+        typeof contentPart[0].text !== 'string'
+      ) {
+        throw new Error('expected delegate OCR context text part');
+      }
+      const packetText = contentPart[0].text;
       expect(JSON.parse(packetText.slice(packetText.indexOf('\n') + 1))).toEqual({
         source_file_mapping: [{ source_code: 'F1', source_filename: 'drawing.png' }],
         previous_ocr_result_markdown: '',
@@ -1084,7 +1129,10 @@ describe('delegate_ocr', () => {
     ).rejects.toThrow('empty answer');
     expect(emptyAudit).toHaveBeenCalledWith(expect.objectContaining({ assistantResponse: '' }));
 
-    const retryAudit = jest.fn(async () => undefined);
+    const retryAudit = jest.fn<
+      ReturnType<AuditDelegateOcrResponse>,
+      Parameters<AuditDelegateOcrResponse>
+    >(async () => undefined);
     const finalize = jest
       .fn()
       .mockResolvedValueOnce({ ok: false as const, reason: 'mapping_mismatch', mappingRetryable: true })
@@ -1131,7 +1179,9 @@ describe('delegate_ocr', () => {
           delegateOcrGenerationId: 'generation-1',
           delegateOcrAttemptToken: 'attempt-1',
           canDispatchEvent: async () => false,
-          hostCustomEventDispatcher: async (_name, payload) => events.push(payload),
+          hostCustomEventDispatcher: async (_name, payload) => {
+            events.push(payload);
+          },
         },
       },
     );

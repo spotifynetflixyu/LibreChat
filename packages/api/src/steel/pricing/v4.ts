@@ -384,7 +384,7 @@ function parseFlatBarNameAttributes(source: string | null): ParsedNameAttributes
   const widthMm = fractionWidth?.diameterMm ?? Number(spec[1]);
   const thicknessMm = Number(spec[2]);
   const weights = [...text.matchAll(/\(\s*(\d+(?:\.\d+)?)\s*\)/gu)];
-  const weight = weights.at(-1)?.[1];
+  const weight = weights[weights.length - 1]?.[1];
 
   return {
     widthMm,
@@ -423,7 +423,7 @@ function parseSquareBarNameAttributes(source: string | null): ParsedNameAttribut
   }
 
   const weights = [...spec.matchAll(/\(\s*(\d+(?:\.\d+)?)\s*\)/gu)];
-  const weight = weights.at(-1)?.[1];
+  const weight = weights[weights.length - 1]?.[1];
   const lengthMm = parseExplicitLongMaterialLengthMm(text);
   return {
     widthMm: sideMm,

@@ -1,4 +1,5 @@
 import { createSteelNativeTool } from './tools';
+import type { SteelToolResult } from '../tools/results';
 
 describe('native direct candidate compaction', () => {
   it('keeps flat fields and trims whole serialized response under 200k', async () => {
@@ -347,7 +348,7 @@ describe('native direct candidate compaction', () => {
   });
 
   it('preserves structured split and unsupported-category guidance', async () => {
-    const execute = async () => ({
+    const execute = async (): Promise<SteelToolResult> => ({
       ok: true as const,
       toolName: 'search_price_candidates' as const,
       data: {

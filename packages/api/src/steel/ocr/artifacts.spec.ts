@@ -651,6 +651,7 @@ describe('OCR PDF chunk artifacts', () => {
       upsert: jest.fn(async (artifact) => {
         rows.set(`${artifact.chunkIndex}`, artifact);
       }),
+      compareAndSetArtifactFilepath: jest.fn(async ({ filepath }) => filepath),
     };
     const storage = {
       source: 'cloudfront' as const,
@@ -766,6 +767,16 @@ describe('OCR PDF chunk artifacts', () => {
         artifactRows: [
           {
             ...defaults[0],
+            sourcePdfKey: 's3://bucket/original.pdf',
+            pipelineVersion: 1,
+            artifact: {
+              source: 's3',
+              storageKey: 'chunks/parent.pdf',
+              filepath: 'https://cdn.example/chunks/parent.pdf',
+              filename: 'parent.pdf',
+              bytes: 100,
+              contentType: 'application/pdf',
+            },
             supersededByRanges: [
               { pageStart: 1, pageEnd: 25 },
               { pageStart: 26, pageEnd: 50 },
@@ -863,7 +874,7 @@ describe('OCR PDF chunk artifacts', () => {
       [1, 25],
       [26, 50],
     ]);
-    expect(events.at(-1)).toBe('commit-marker');
+    expect(events[events.length - 1]).toBe('commit-marker');
     expect(repository.upsert).toHaveBeenCalledTimes(2);
     expect(repository.compareAndSetSupersededByRanges).toHaveBeenCalledWith(
       expect.objectContaining({

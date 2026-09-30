@@ -8,8 +8,6 @@ import {
   SteelOcrResponseAuditPersistenceError,
 } from './audit';
 
-type SteelOcrAuditModel = ReturnType<typeof createSteelOcrResponseAuditModel>;
-
 let mongoServer: MongoMemoryServer;
 
 beforeAll(async () => {
@@ -103,7 +101,7 @@ describe('Steel OCR response audit', () => {
         throw new Error('mongo unavailable');
       },
       findOne: () => ({ exec: async () => null }),
-    } as SteelOcrAuditModel);
+    });
 
     await expect(
       service.save({

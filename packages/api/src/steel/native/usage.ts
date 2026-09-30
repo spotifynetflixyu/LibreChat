@@ -4,7 +4,7 @@ import type {
   OpenAIOAuthUsageWindow,
   OpenAIOAuthUsageWindowKey,
 } from 'librechat-data-provider';
-import type { OpenAIOAuthTokenLoader, OpenAIOAuthTokens } from './credentials';
+import type { OpenAIOAuthFetch, OpenAIOAuthTokenLoader, OpenAIOAuthTokens } from './credentials';
 
 import {
   clearOpenAIOAuthCredentialInvalid,
@@ -32,7 +32,7 @@ export type OpenAIOAuthUsageDeps = {
   authFilePath?: string;
   cache?: OpenAIOAuthUsageCache;
   ensureFresh?: boolean;
-  fetch?: typeof fetch;
+  fetch?: OpenAIOAuthFetch;
   loadAuthTokens?: OpenAIOAuthTokenLoader;
   now?: () => Date;
   ttlMs?: number;

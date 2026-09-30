@@ -5,6 +5,7 @@ import { runOcrPreprocessingBatchPipeline, runOcrPreprocessingPipeline } from '.
 import { parseMarkdownTables } from '../markdown/table';
 
 import type { OcrPreprocessingState } from '../memory/service';
+import type { OcrPreprocessingPageChunk } from './chunks';
 import type { OcrOrganizer } from './organizer';
 
 function emptyState(input: {
@@ -1325,8 +1326,10 @@ describe('OCR preprocessing orchestrator', () => {
       }),
     );
     expect(memory).not.toHaveProperty('captureOfficialOcrMarkdown');
-    expect(result.markdown).toContain('organized 2');
     expect(result.status).toBe('completed');
+    if (result.status === 'completed') {
+      expect(result.markdown).toContain('organized 2');
+    }
   });
 
   it('resumes an 18-chunk file from PaddleOCR 17/18 and Organizer 9/18', async () => {
@@ -1401,7 +1404,9 @@ describe('OCR preprocessing orchestrator', () => {
       memory,
       organizer,
       paddleOcr,
-      onProgress: (event) => progress.push(event),
+      onProgress: (event) => {
+        progress.push(event);
+      },
     });
 
     expect(paddleOcr.runChunk.mock.calls.map(([input]) => input.chunk.chunkIndex)).toEqual([18]);
@@ -1609,7 +1614,9 @@ describe('OCR preprocessing orchestrator', () => {
     expect(memory.readOcrPreprocessingState).toHaveBeenCalledTimes(3);
     expect(memory.capturePaddleOcrChunkResult).toHaveBeenCalledTimes(6);
     expect(memory.captureOcrPreprocessingChunkMarkdown).toHaveBeenCalledTimes(6);
-    expect(result.markdown).toContain('| 6 | 251-251 |');
+    if (result.status === 'completed') {
+      expect(result.markdown).toContain('| 6 | 251-251 |');
+    }
     expect(progress).toEqual([
       { stage: 'pdf_chunks_ready', pageCount: 251, chunkCount: 6, source: 'uploaded' },
       { stage: 'paddleocr_chunk_started', chunkIndex: 1, chunkCount: 6 },
@@ -1842,6 +1849,7 @@ describe('OCR preprocessing orchestrator', () => {
         })),
         {
           ...chunks[1]!,
+          rawSaved: false,
           organizedSaved: true,
           organizedMarkdown: '| item | value |\n|---|---|\n| stale failed | 2 |',
         },
@@ -2096,14 +2104,14 @@ describe('OCR preprocessing orchestrator', () => {
         }),
       };
       const artifacts = {
-        ensurePdfChunkArtifacts: jest.fn(async ({ chunks }) =>
+        ensurePdfChunkArtifacts: jest.fn(async ({ chunks }: { chunks: readonly OcrPreprocessingPageChunk[] }) =>
           chunks.map((chunk) => ({
             ...chunk,
             filepath: `https://cdn.example/${rangeKey(chunk)}.pdf`,
             storageKey: `chunks/${rangeKey(chunk)}.pdf`,
           })),
         ),
-        commitPdfChunkSplit: jest.fn(async ({ chunks }) => {
+        commitPdfChunkSplit: jest.fn(async ({ chunks }: { chunks: readonly OcrPreprocessingPageChunk[] }) => {
           effectiveChunks = [...chunks];
           return chunks.map((chunk) => ({
             ...chunk,
@@ -2207,14 +2215,14 @@ describe('OCR preprocessing orchestrator', () => {
       }),
     };
     const artifacts = {
-      ensurePdfChunkArtifacts: jest.fn(async ({ chunks }) =>
+        ensurePdfChunkArtifacts: jest.fn(async ({ chunks }: { chunks: readonly OcrPreprocessingPageChunk[] }) =>
         chunks.map((chunk) => ({
           ...chunk,
           filepath: `https://cdn.example/${rangeKey(chunk)}.pdf`,
           storageKey: `chunks/${rangeKey(chunk)}.pdf`,
         })),
       ),
-      commitPdfChunkSplit: jest.fn(async ({ chunks }) => {
+        commitPdfChunkSplit: jest.fn(async ({ chunks }: { chunks: readonly OcrPreprocessingPageChunk[] }) => {
         effectiveChunks = [...chunks];
         return chunks.map((chunk) => ({
           ...chunk,
@@ -2345,10 +2353,10 @@ describe('OCR preprocessing orchestrator', () => {
       }),
     };
     const artifacts = {
-      ensurePdfChunkArtifacts: jest.fn(async ({ chunks }) =>
+      ensurePdfChunkArtifacts: jest.fn(async ({ chunks }: { chunks: readonly OcrPreprocessingPageChunk[] }) =>
         chunks.map((chunk) => ({ ...chunk, filepath: `https://cdn/${rangeKey(chunk)}.pdf`, storageKey: rangeKey(chunk) })),
       ),
-      commitPdfChunkSplit: jest.fn(async ({ chunks }) => {
+      commitPdfChunkSplit: jest.fn(async ({ chunks }: { chunks: readonly OcrPreprocessingPageChunk[] }) => {
         effectiveChunks = [...chunks];
         return chunks.map((chunk) => ({ ...chunk, filepath: `https://cdn/${rangeKey(chunk)}.pdf`, storageKey: rangeKey(chunk) }));
       }),
@@ -2381,7 +2389,12 @@ describe('OCR preprocessing orchestrator', () => {
         failures: [expect.objectContaining({ pageStart: 26, pageEnd: 50 })],
       }),
     );
-    expect(result.files[0]?.failures).not.toEqual(
+    const failedFile = result.files[0];
+    expect(failedFile?.status).toBe('failed');
+    if (failedFile?.status !== 'failed') {
+      throw new Error('Expected split child failure');
+    }
+    expect(failedFile.failures).not.toEqual(
       expect.arrayContaining([expect.objectContaining({ pageStart: 1, pageEnd: 50 })]),
     );
   });
@@ -2468,7 +2481,9 @@ describe('OCR preprocessing orchestrator', () => {
       chunkCount: 1,
       pageRanges: [{ pageStart: 1, pageEnd: 1 }],
     });
-    expect(result.markdown).not.toContain('raw OCR text');
+    if (result.status === 'completed') {
+      expect(result.markdown).not.toContain('raw OCR text');
+    }
   });
 
   it('returns one ranged organizer failure after both organizer attempts fail', async () => {

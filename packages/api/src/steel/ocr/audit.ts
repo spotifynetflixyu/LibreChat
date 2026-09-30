@@ -5,7 +5,28 @@ import { createSteelOcrResponseAuditModel } from '@librechat/data-schemas';
 import type { ISteelOcrResponseAudit, SteelOcrResponseAuditStage } from '@librechat/data-schemas';
 
 type Mongoose = typeof import('mongoose');
-type SteelOcrResponseAuditModel = ReturnType<typeof createSteelOcrResponseAuditModel>;
+type SteelOcrResponseAuditRecord = Pick<
+  ISteelOcrResponseAudit,
+  | 'userId'
+  | 'tenantId'
+  | 'conversationId'
+  | 'messageId'
+  | 'generationId'
+  | 'attemptId'
+  | 'attemptNumber'
+  | 'sourceStage'
+  | 'baseRevision'
+  | 'baseHash'
+  | 'rawResponse'
+  | 'rawResponseHash'
+  | 'idempotencyKey'
+>;
+type SteelOcrResponseAuditModel = {
+  create(record: SteelOcrResponseAuditRecord): Promise<ISteelOcrResponseAudit>;
+  findOne(filter: { idempotencyKey: string }): {
+    exec(): Promise<ISteelOcrResponseAudit | null>;
+  };
+};
 
 export interface SaveSteelOcrResponseAuditInput {
   rawResponse: string;
@@ -99,7 +120,7 @@ function buildIdempotencyKey({
   );
 }
 
-function buildRecord(input: SaveSteelOcrResponseAuditInput) {
+function buildRecord(input: SaveSteelOcrResponseAuditInput): SteelOcrResponseAuditRecord {
   if (typeof input.rawResponse !== 'string') {
     throw new TypeError('OCR audit rawResponse must be a string');
   }
@@ -119,11 +140,11 @@ function buildRecord(input: SaveSteelOcrResponseAuditInput) {
   const baseRevision = getOptionalString(input.baseRevision);
 
   return {
-    ...(userId ? { userId } : {}),
+    userId,
     ...(tenantId ? { tenantId } : {}),
-    ...(conversationId ? { conversationId } : {}),
-    ...(messageId ? { messageId } : {}),
-    ...(generationId ? { generationId } : {}),
+    conversationId,
+    messageId,
+    generationId,
     ...(attemptId ? { attemptId } : {}),
     attemptNumber,
     sourceStage: input.sourceStage,

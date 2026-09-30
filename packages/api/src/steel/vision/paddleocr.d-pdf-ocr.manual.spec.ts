@@ -20,6 +20,16 @@ const repoRoot = path.resolve(__dirname, '../../../../../');
 
 type PaddleOcrToolResult = Awaited<ReturnType<Client['callTool']>>;
 
+interface PaddleOcrTextPart {
+  type: 'text';
+  text: string;
+}
+
+function isPaddleOcrTextPart(value: unknown): value is PaddleOcrTextPart {
+  return typeof value === 'object' && value !== null && !Array.isArray(value) &&
+    'type' in value && value.type === 'text' && 'text' in value && typeof value.text === 'string';
+}
+
 function getInheritedEnv() {
   return Object.fromEntries(
     Object.entries(process.env).filter((entry): entry is [string, string] => {
@@ -45,10 +55,9 @@ function getPaddleOcrEnv() {
 }
 
 function extractText(result: PaddleOcrToolResult) {
-  return result.content
-    .filter((part): part is Extract<(typeof result.content)[number], { type: 'text' }> => {
-      return part.type === 'text';
-    })
+  const content: unknown[] = Array.isArray(result.content) ? result.content : [];
+  return content
+    .filter(isPaddleOcrTextPart)
     .map((part) => part.text)
     .join('\n')
     .trim();
@@ -101,10 +110,7 @@ async function renderPdfPageToPng({
   const canvas = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
   const context = canvas.getContext('2d');
 
-  await pdfPage.render({
-    canvasContext: context,
-    viewport,
-  }).promise;
+  await Reflect.apply(pdfPage.render, pdfPage, [{ canvasContext: context, viewport }]).promise;
 
   const outputPath = path.join(outputDir, `d-page-${page}.png`);
   await writeFile(outputPath, canvas.toBuffer('image/png'));

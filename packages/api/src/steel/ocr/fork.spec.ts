@@ -71,7 +71,11 @@ it('reconstructs the selected order, copies independent evidence, and supplies i
   expect(saved?.activeDelegateClaim).toBeUndefined();
   expect(saved?.nextDelegateOcrIndex).toBe(0);
   expect(saved?.sourceMappings).toHaveLength(1);
-  const evidence = await Memory.find({ conversationId: 'fork' }).lean();
+  const evidence = await Memory.find({ conversationId: 'fork' }).lean<Array<{
+    _id: mongoose.Types.ObjectId;
+    requestId?: string;
+    payload?: Record<string, unknown>;
+  }>>();
   expect(evidence).toHaveLength(1);
   expect(String(evidence[0]._id)).not.toBe(String(sourceMemory._id));
   expect(evidence[0].requestId).toBe('fork-a1');
@@ -130,7 +134,11 @@ it('copies completed delegate evidence only with selected generation provenance 
   await Memory.create(memory('gen-1', { preflightMode: 'delegate', delegateOcrIndex: 1, targetMessageId: 'a1', generationId: 'gen-1', ocrPreprocessing: { preflightMode: 'delegate', delegateOcrIndex: 1 } }));
   await Memory.create(memory('active-gen', { preflightMode: 'delegate', delegateOcrIndex: 2 }));
   await (await createSteelOcrForkService(mongoose).prepare(input(messages.slice(0, 2)))).persist();
-  const evidence = await Memory.find({ conversationId: 'fork' }).lean();
+  const evidence = await Memory.find({ conversationId: 'fork' }).lean<Array<{
+    _id: mongoose.Types.ObjectId;
+    requestId?: string;
+    payload?: Record<string, unknown>;
+  }>>();
   expect(evidence).toHaveLength(1);
   expect(evidence[0].requestId).not.toBe('gen-1');
   expect(evidence[0].payload).toEqual(expect.objectContaining({ targetMessageId: 'fork-a1', generationId: evidence[0].requestId }));

@@ -3,7 +3,13 @@ import path from 'path';
 import { promises as fsPromises } from 'fs';
 import { mkdtemp, readFile, rm, writeFile } from 'fs/promises';
 
-import { loadOpenAIOAuthTokens, refreshOpenAIOAuthCredentials } from './credentials';
+import {
+  loadOpenAIOAuthTokens,
+  refreshOpenAIOAuthCredentials,
+  toOpenAIOAuthLibraryFetch,
+} from './credentials';
+
+import type { OpenAIOAuthFetch } from './credentials';
 
 function createJwtPayload(payload: {
   exp?: number | string;
@@ -18,6 +24,42 @@ function createJwt(exp: number): string {
 }
 
 describe('OpenAI OAuth credential loader', () => {
+  it('adapts injected fetch calls without changing responses or fetch properties', async () => {
+    const response = new Response('provider response', {
+      headers: { 'x-provider-status': 'ready' },
+      status: 207,
+    });
+    const input = 'https://example.test/usage';
+    const init: RequestInit = {
+      body: 'request body',
+      headers: { Authorization: 'Bearer token_sensitive' },
+      method: 'POST',
+    };
+    const calls: Array<{ input: Parameters<OpenAIOAuthFetch>[0]; init?: RequestInit }> = [];
+    const preconnect = jest.fn();
+    const sourceFetch = Object.assign(
+      async (requestInput: Parameters<OpenAIOAuthFetch>[0], requestInit?: RequestInit) => {
+        calls.push({ input: requestInput, init: requestInit });
+        return response;
+      },
+      { customProperty: 'preserved', preconnect },
+    );
+
+    const adaptedFetch = toOpenAIOAuthLibraryFetch(sourceFetch);
+    const adaptedResponse = await adaptedFetch(input, init);
+
+    expect(calls).toEqual([{ input, init }]);
+    expect(adaptedResponse).toBe(response);
+    expect(adaptedResponse.status).toBe(207);
+    expect(adaptedResponse.headers.get('x-provider-status')).toBe('ready');
+    expect(Object.getOwnPropertyDescriptor(adaptedFetch, 'customProperty')?.value).toBe(
+      'preserved',
+    );
+
+    adaptedFetch.preconnect?.('https://example.test');
+    expect(preconnect).toHaveBeenCalledWith('https://example.test');
+  });
+
   it('loads Codex auth.json through the installed local OAuth package', async () => {
     const tempDir = await mkdtemp(path.join(os.tmpdir(), 'codex-auth-test-'));
     const authFilePath = path.join(tempDir, 'auth.json');
