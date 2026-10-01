@@ -11,7 +11,7 @@ Configure `librechat.yaml`:
 oauthCompaction:
   enabled: true
   triggerRatio: 0.85
-  maxContextTokens: 196608
+  maxContextTokens: 258400
   outputReserveTokens: 8192
   timeoutMs: 300000
   maxResponseBytes: 8388608
@@ -19,7 +19,11 @@ oauthCompaction:
 ```
 
 Omitting the section or setting `enabled: false` preserves existing behavior. Configure
-`maxContextTokens` below the selected model's context capacity. The host also respects the
+`maxContextTokens` below the selected model's context capacity. The default 258,400-token
+budget matches the Codex OAuth `gpt-6.1-sol` catalog's 272,000-token context window
+at 95% effective capacity (verified 2026-10-01). With the default 85% trigger ratio,
+automatic compaction starts at an estimated 219,640 tokens, including the output
+reserve. Explicit host budgets remain supported. The host also respects the
 agent's smaller context budget and reserves at least its selected output limit.
 
 The module uses the agents SDK's public provider registration interface. Root, multi-agent,

@@ -2919,7 +2919,7 @@ export const oauthCompactionConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
     triggerRatio: z.number().finite().min(0.1).max(0.9).default(0.85),
-    maxContextTokens: z.number().int().min(4096).max(2_000_000).default(196_608),
+    maxContextTokens: z.number().int().min(4096).max(2_000_000).default(258_400),
     outputReserveTokens: z.number().int().min(1024).max(131_072).default(8192),
     timeoutMs: z.number().int().min(1000).max(1_200_000).default(300_000),
     maxResponseBytes: z.number().int().min(1024).max(8_388_608).default(8_388_608),
