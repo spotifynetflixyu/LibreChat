@@ -152,6 +152,24 @@ describe('compaction semantic index continuation projection', () => {
 const completedBoundary = { messageId: 'step_summary', contentIndex: 0 };
 
 describe('markCompactionOutcome', () => {
+  it('marks a completed private native compact without making it a textual checkpoint', () => {
+    const parts: TMessageContentParts[] = [
+      {
+        type: ContentTypes.SUMMARY,
+        content: [],
+        nativeCompaction: {
+          id: 'compact',
+          agentId: 'agent',
+          runId: 'run',
+          executionId: 'main',
+          phase: 'completed',
+        },
+      },
+    ];
+    markCompactionOutcome(parts);
+    expect(parts[0]).toMatchObject({ initiatedBy: 'user' });
+    expect(findCheckpointSummaryPart(parts)).toBeNull();
+  });
   const summary = (
     text: string,
     overrides: Partial<SummaryContentPart> = {},

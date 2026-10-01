@@ -113,6 +113,30 @@ const renderTokenUsage = (
 };
 
 describe('useTokenUsage — post-snapshot output', () => {
+  it('uses native compaction input directly without adding output or retained tail tokens', () => {
+    const nativeSnapshot = {
+      ...tailSnapshot,
+      contextBudget: 196608,
+      remainingContextTokens: 1000,
+      completedOutputTokens: 20000,
+      retainedToolTokens: 7000,
+      oauthCompaction: { inputTokens: 12345, isEstimate: true },
+      breakdown: {
+        ...tailSnapshot.breakdown,
+        instructionTokens: 4000,
+        messageTokens: 160000,
+        toolMessageTokens: 12000,
+      },
+    } as ContextSnapshot;
+    const { result } = renderTokenUsage(undefined, { snapshot: nativeSnapshot });
+
+    expect(result.current.usedTokens).toBe(12345);
+    expect(result.current.maxTokens).toBe(196608);
+    expect(result.current.isEstimate).toBe(true);
+    expect(result.current.oauthCompaction).toEqual({ inputTokens: 12345, isEstimate: true });
+    expect(result.current.liveTokens).toBe(0);
+  });
+
   it('charges the finalized output against the runway projection', () => {
     const { result } = renderTokenUsage();
 
@@ -316,6 +340,28 @@ describe('useTokenUsage — post-snapshot output', () => {
 
     expect(result.current.snapshot?.anchorMessageId).toBe('a2');
     expect(result.current.usedTokens).toBe(57 + 11 + 2 + 5);
+  });
+
+  it('restores native compaction input from a persisted snapshot without re-adding output', () => {
+    const saved = {
+      ...tailSnapshot,
+      anchorMessageId: 'a2',
+      oauthCompaction: { inputTokens: 12345, isEstimate: false },
+      completedOutputTokens: 20000,
+      retainedToolTokens: 7000,
+    } as ContextSnapshot;
+    const { result } = renderTokenUsage(new Map(), {
+      snapshot: { ...tailSnapshot, anchorMessageId: 'unrelated-branch' },
+      messages: messages.map((message) =>
+        message.messageId === 'a2'
+          ? ({ ...message, metadata: { contextUsage: saved } } as TMessage)
+          : message,
+      ),
+    });
+
+    expect(result.current.usedTokens).toBe(12345);
+    expect(result.current.isEstimate).toBe(false);
+    expect(result.current.oauthCompaction).toEqual({ inputTokens: 12345, isEstimate: false });
   });
 
   it('excludes the retained latest tool result from compaction savings', () => {

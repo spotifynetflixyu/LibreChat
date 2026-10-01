@@ -20,9 +20,6 @@ import Error from '../Error';
 let mockEndpointsData: Record<string, Record<string, unknown>> | undefined = {
   openAI: { userProvide: true },
 };
-let mockStartupData: { compactionEnabled: boolean; interface?: { contextUsage?: boolean } } = {
-  compactionEnabled: false,
-};
 let mockAccess: Record<string, boolean> = {};
 
 /** Keep this unit spec independent of query providers while exercising the real renderer hooks. */
@@ -54,7 +51,6 @@ jest.mock('~/hooks', () => ({
 
 jest.mock('~/data-provider', () => ({
   useGetEndpointsQuery: jest.fn(() => ({ data: mockEndpointsData })),
-  useGetStartupConfig: jest.fn(() => ({ data: mockStartupData })),
 }));
 
 jest.mock('~/components/Input/SetKeyDialog', () => ({
@@ -149,7 +145,6 @@ const dateTimeFormat = new Intl.DateTimeFormat(undefined, {
 
 beforeEach(() => {
   mockEndpointsData = { openAI: { userProvide: true } };
-  mockStartupData = { compactionEnabled: false };
   mockAccess = {};
 });
 
@@ -817,18 +812,13 @@ describe('Error — token balance and context budget', () => {
     expect(screen.getByText(catalog.com_error_context_next_steps)).toBeInTheDocument();
   });
 
-  it('never suggests compaction for a message that alone exceeds the limit', () => {
-    mockStartupData = { compactionEnabled: true };
+  it('uses the standard next steps for a message that alone exceeds the limit', () => {
     renderError({ type: ErrorTypes.INPUT_LENGTH, info: '214500 / 128000' }, providerMessage);
 
     expect(screen.getByText(catalog.com_error_context_next_steps)).toBeInTheDocument();
-    expect(
-      screen.queryByText(catalog.com_error_context_next_steps_compact),
-    ).not.toBeInTheDocument();
   });
 
-  it('formats final overflow numbers and uses compaction next steps when available', () => {
-    mockStartupData = { compactionEnabled: true };
+  it('formats final overflow numbers and uses the standard next steps', () => {
     renderError(
       {
         type: ErrorTypes.FINAL_CONTEXT_OVERFLOW,
@@ -848,13 +838,10 @@ describe('Error — token balance and context budget', () => {
         ),
       ),
     ).toBeInTheDocument();
-    expect(screen.getByText(catalog.com_error_context_next_steps_compact)).toBeInTheDocument();
+    expect(screen.getByText(catalog.com_error_context_next_steps)).toBeInTheDocument();
   });
 
-  /** The compact action lives in the context usage popover, which that setting removes. */
-  /** Search results read a cached startup config, but only the chat composer can compact. */
-  it('does not suggest compaction outside a chat', () => {
-    mockStartupData = { compactionEnabled: true };
+  it('uses the standard next steps outside a chat', () => {
     renderError(
       {
         type: ErrorTypes.FINAL_CONTEXT_OVERFLOW,
@@ -865,13 +852,9 @@ describe('Error — token balance and context budget', () => {
     );
 
     expect(screen.getByText(catalog.com_error_context_next_steps)).toBeInTheDocument();
-    expect(
-      screen.queryByText(catalog.com_error_context_next_steps_compact),
-    ).not.toBeInTheDocument();
   });
 
-  it('does not suggest compaction where the context usage indicator is hidden', () => {
-    mockStartupData = { compactionEnabled: true, interface: { contextUsage: false } };
+  it('uses the standard next steps when context usage is unavailable', () => {
     renderError(
       {
         type: ErrorTypes.FINAL_CONTEXT_OVERFLOW,
@@ -883,9 +866,6 @@ describe('Error — token balance and context budget', () => {
     );
 
     expect(screen.getByText(catalog.com_error_context_next_steps)).toBeInTheDocument();
-    expect(
-      screen.queryByText(catalog.com_error_context_next_steps_compact),
-    ).not.toBeInTheDocument();
   });
 
   it('renders empty-message context copy and formatted budget detail', () => {

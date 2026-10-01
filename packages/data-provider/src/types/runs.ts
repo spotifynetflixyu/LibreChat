@@ -48,6 +48,7 @@ export enum StepEvents {
   ON_SUMMARIZE_START = 'on_summarize_start',
   ON_SUMMARIZE_DELTA = 'on_summarize_delta',
   ON_SUMMARIZE_COMPLETE = 'on_summarize_complete',
+  ON_CONTEXT_COMPACTION = 'on_context_compaction',
   ON_SUBAGENT_UPDATE = 'on_subagent_update',
   ON_SANDBOX_STARTING = 'on_sandbox_starting',
   ON_PTC_TOOL_CALL = 'on_ptc_tool_call',
@@ -275,6 +276,11 @@ export type TContextUsageEvent = {
   runId?: string;
   agentId?: string;
   breakdown: TTokenBudgetBreakdown;
+  /** Native OAuth compaction's projected or provider-confirmed total input. */
+  oauthCompaction?: {
+    inputTokens: number;
+    isEstimate: boolean;
+  };
   /** Usable budget this call: maxContextTokens minus output reserve */
   contextBudget?: number;
   /** Calibrated instruction overhead actually applied this call */
@@ -529,14 +535,47 @@ export const outputTokensFromUsage = (event: TTokenUsageEvent): number => {
 export const reconcileContextUsageFromEvent = (
   snapshot: TContextUsageEvent,
   event: TTokenUsageEvent,
-): TContextUsageEvent => ({
-  ...reconcileContextUsage(snapshot, promptTokensFromUsage(event)),
-  model: event.model,
-  provider: event.provider,
-  completedOutputTokens: outputTokensFromUsage(event),
-  cacheRead: finiteNonNegativeInteger(event.input_token_details?.cache_read) ?? 0,
-  cacheWrite: finiteNonNegativeInteger(event.input_token_details?.cache_creation) ?? 0,
-});
+): TContextUsageEvent => {
+  const reconciled = {
+    ...reconcileContextUsage(snapshot, promptTokensFromUsage(event)),
+    model: event.model,
+    provider: event.provider,
+    completedOutputTokens: outputTokensFromUsage(event),
+    cacheRead: finiteNonNegativeInteger(event.input_token_details?.cache_read) ?? 0,
+    cacheWrite: finiteNonNegativeInteger(event.input_token_details?.cache_creation) ?? 0,
+  };
+
+  if (snapshot.oauthCompaction == null) {
+    return reconciled;
+  }
+
+  const inputTokens = promptTokensFromUsage(event);
+  if (inputTokens <= 0) {
+    return reconciled;
+  }
+  const nativeBreakdown = {
+    ...reconciled.breakdown,
+    instructionTokens: 0,
+    systemMessageTokens: 0,
+    dynamicInstructionTokens: 0,
+    toolSchemaTokens: 0,
+    summaryTokens: 0,
+    toolCount: 0,
+    messageCount: 0,
+    messageTokens: inputTokens,
+    availableForMessages: reconciled.contextBudget ?? reconciled.breakdown.maxContextTokens,
+  };
+  delete nativeBreakdown.toolTokenCounts;
+  delete nativeBreakdown.deferredToolNames;
+  delete nativeBreakdown.toolMessageTokens;
+  delete nativeBreakdown.toolMessageTokenCounts;
+
+  return {
+    ...reconciled,
+    oauthCompaction: { inputTokens, isEstimate: false },
+    breakdown: nativeBreakdown,
+  };
+};
 
 /** Lifecycle phase carried on subagent-progress envelopes (mirrors SDK SubagentUpdatePhase). */
 export type SubagentUpdatePhase =

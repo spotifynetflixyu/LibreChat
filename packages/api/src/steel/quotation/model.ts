@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   AIMessage,
   HumanMessage,
@@ -6,14 +7,13 @@ import {
   mapChatMessagesToStoredMessages,
   mapStoredMessagesToChatMessages,
 } from '@librechat/agents/langchain/messages';
-
 import type { AIMessageChunk, BaseMessage, StoredMessage } from '@librechat/agents/langchain/messages';
-import type { QuotationPythonEvidence } from './protocol';
-import type { OpenAIOAuthModelOptions } from '../native/oauth';
 import type { SteelToolJsonObject, SteelToolResult } from '../tools/results';
-
-import { createOpenAIOAuthModel } from '../native/oauth';
+import type { OpenAIOAuthModelOptions } from '../native/oauth';
+import type { QuotationPythonEvidence } from './protocol';
 import { createSteelNativeTool, mergeSteelToolDefinitions } from '../native/tools';
+import { scopeOAuthCompaction } from '~/providers/openai/compaction/scope';
+import { createOpenAIOAuthModel } from '../native/oauth';
 import { QuotationProtocolError } from './protocol';
 
 export interface QuotationModelLookup {
@@ -30,6 +30,7 @@ export interface QuotationRepairProgress {
 }
 
 export interface QuotationModelInput {
+  executionId?: string;
   role: 'child' | 'main' | 'preparation';
   prompt: string;
   input: string;
@@ -111,7 +112,11 @@ export async function invokeQuotationModel(input: QuotationModelInput): Promise<
   const pythonEvidence: QuotationPythonEvidence[] = [];
   const lookups: QuotationModelLookup[] = [];
   const model = createOpenAIOAuthModel({
-    ...input.modelOptions,
+    ...scopeOAuthCompaction(
+      input.modelOptions,
+      input.executionId ??
+        `quotation:${input.role}:${createHash('sha256').update(input.input).digest('hex')}`,
+    ),
     enableCodeInterpreter: enablePython,
     tools: definitions,
     onCodeInterpreterEvidence: enablePython ? async (evidence) => {

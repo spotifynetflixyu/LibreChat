@@ -723,7 +723,18 @@ export namespace Agents {
     summary?: SummaryContentPart;
     error?: string;
   }
+
+  export type OAuthCompactionEvent = {
+    id: string;
+    runId: string;
+    agentId: string;
+    executionId: string;
+    phase: 'started' | 'completed' | 'failed' | 'cancelled';
+    code?: string;
+  };
 }
+
+export type OAuthCompactionEvent = Agents.OAuthCompactionEvent;
 
 export type ToolCallResult = {
   user: string;

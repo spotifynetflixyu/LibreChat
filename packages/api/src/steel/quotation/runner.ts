@@ -1,31 +1,17 @@
-import { createHash, randomUUID } from 'node:crypto';
 import mongoose from 'mongoose';
-
+import { createHash, randomUUID } from 'node:crypto';
 import type {
   SteelQuotationActiveRun,
   SteelQuotationPendingMessageFile,
   SteelQuotationScope,
   SteelQuotationSnapshotPayload,
 } from '@librechat/data-schemas';
-import type { OpenAIOAuthModelOptions } from '../native/oauth';
-import type { SteelToolJsonObject, SteelToolResult } from '../tools/results';
 import type { QuotationBackendFailure, QuotationChildResultInput, QuotationLookupEvidence, QuotationPythonEvidence } from './protocol';
+import type { SteelToolJsonObject, SteelToolResult } from '../tools/results';
 import type { QuotationModelInput, QuotationRepairProgress } from './model';
+import type { OpenAIOAuthModelOptions } from '../native/oauth';
 import type { SteelNativeHistory } from '../native/events';
 import type { SavedQuotationLookup } from './history';
-
-import { createSteelQuotationStateService } from './state';
-import { defaultQuotationCustomerMarkdown, hasQuotationOrder, isUnfinishedQuotation } from './preparation';
-import { parseAssistantMarkdown } from '../ocr/result';
-import { parseMarkdownTables } from '../markdown/table';
-import { registerQuotationExecution } from './control';
-import { buildDefaultSteelGlobalAgentContext } from '../native/context';
-import { createSteelPostgresPool } from '../postgres';
-import { executeSteelTool, createSteelToolRunState } from '../tools/execute';
-import { invokeQuotationModel } from './model';
-import { readQuotationHistory } from './history';
-import { getQuotationProgress, QUOTATION_V2_SPLIT_SIZES, QUOTATION_V2_MAX_DEPTH } from './progress';
-import { buildSteelQuotationStatusEvent } from '../native/events';
 import {
   buildQuotationChunks,
   quotationSystemOrderColumns,
@@ -41,6 +27,22 @@ import {
   buildQuotationFailureMarkdown,
   restoreQuotationChunks,
 } from './protocol';
+import {
+  defaultQuotationCustomerMarkdown,
+  hasQuotationOrder,
+  isUnfinishedQuotation,
+} from './preparation';
+import { getQuotationProgress, QUOTATION_V2_SPLIT_SIZES, QUOTATION_V2_MAX_DEPTH } from './progress';
+import { executeSteelTool, createSteelToolRunState } from '../tools/execute';
+import { buildDefaultSteelGlobalAgentContext } from '../native/context';
+import { buildSteelQuotationStatusEvent } from '../native/events';
+import { createSteelQuotationStateService } from './state';
+import { parseMarkdownTables } from '../markdown/table';
+import { parseAssistantMarkdown } from '../ocr/result';
+import { registerQuotationExecution } from './control';
+import { createSteelPostgresPool } from '../postgres';
+import { readQuotationHistory } from './history';
+import { invokeQuotationModel } from './model';
 
 class QuotationChildFailure extends Error {}
 
@@ -397,6 +399,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
         await progress(undefined, undefined, 'main_review_started');
         const output = await (input.invokeModel ?? invokeQuotationModel)({
           role: 'main',
+          executionId: `quotation:${runId}:main`,
           onTextDelta: input.onTextDelta ? (text) => {
             if (!text) return Promise.resolve();
             return deliverText(async () => {
@@ -579,6 +582,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
       try {
         generated = await (input.invokeModel ?? invokeQuotationModel)({
           role: 'child',
+          executionId: `quotation:${runId}:child:${chunk.chunkIndex}:${recoveryPath}`,
           maxChildRepairAttempts: 0,
           prompt: snapshot.prompts.child,
           input: JSON.stringify({

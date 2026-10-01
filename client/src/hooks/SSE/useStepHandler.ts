@@ -78,6 +78,7 @@ type TStepEvent =
   | { event: StepEvents.ON_SUMMARIZE_START; data: Agents.SummarizeStartEvent }
   | { event: StepEvents.ON_SUMMARIZE_DELTA; data: Agents.SummarizeDeltaEvent }
   | { event: StepEvents.ON_SUMMARIZE_COMPLETE; data: Agents.SummarizeCompleteEvent }
+  | { event: StepEvents.ON_CONTEXT_COMPACTION; data: Agents.OAuthCompactionEvent }
   | { event: StepEvents.ON_SUBAGENT_UPDATE; data: SubagentUpdateEvent }
   | { event: StepEvents.ON_SANDBOX_STARTING; data: SandboxStartingEvent }
   | { event: StepEvents.ON_PTC_TOOL_CALL; data: PtcToolCallEvent };
@@ -500,6 +501,18 @@ export default function useStepHandler({
       const targetIndex = serverIndex + editPrefixOffset;
       const existingPart = existingContent?.[targetIndex];
       const existingType = existingPart?.type;
+      if (existingPart?.type === ContentTypes.SUMMARY && existingPart.nativeCompaction) {
+        for (let index = targetIndex + 1; index < (existingContent?.length ?? 0); index++) {
+          const candidate = existingContent?.[index];
+          if (
+            isCompatibleContentType(candidate?.type, incomingContentType) &&
+            !(candidate?.type === ContentTypes.SUMMARY && candidate.nativeCompaction)
+          ) {
+            return index;
+          }
+        }
+        return existingContent?.length ?? targetIndex + 1;
+      }
       if (isOAuthToolCallContent(existingPart)) {
         return targetIndex;
       }
@@ -893,6 +906,75 @@ export default function useStepHandler({
         lastAnnouncementTimeRef.current = currentTime;
       }
 
+      if (stepEvent.event === StepEvents.ON_CONTEXT_COMPACTION) {
+        const compaction = stepEvent.data;
+        let responseMessageId = compaction.runId;
+        if (responseMessageId === Constants.USE_PRELIM_RESPONSE_MESSAGE_ID) {
+          responseMessageId = submission?.initialResponse?.messageId ?? '';
+        }
+        if (!responseMessageId) {
+          return;
+        }
+
+        const response =
+          messageMap.current.get(responseMessageId) ??
+          messages.find((message) => message.messageId === responseMessageId);
+        if (!response) {
+          return;
+        }
+
+        const content = [...(response.content ?? [])];
+        const existingIndex = content.findIndex(
+          (part) =>
+            part?.type === ContentTypes.SUMMARY &&
+            part.nativeCompaction?.id === compaction.id &&
+            part.nativeCompaction.agentId === compaction.agentId &&
+            part.nativeCompaction.runId === compaction.runId,
+        );
+
+        if (existingIndex < 0) {
+          /** A terminal event without its start marker is an out-of-order
+           * replay. Persisted markers are already present in the response on
+           * resume, so do not synthesize a misleading status card here. */
+          if (compaction.phase !== 'started') {
+            return;
+          }
+          content.push({
+            type: ContentTypes.SUMMARY,
+            content: [],
+            nativeCompaction: compaction,
+            agentId: compaction.agentId,
+          });
+        } else {
+          const existing = content[existingIndex];
+          if (existing?.type !== ContentTypes.SUMMARY || !existing.nativeCompaction) {
+            return;
+          }
+          /** A terminal marker is final. Late starts and conflicting terminal
+           * phases must not regress a completed, failed, or cancelled card. */
+          if (
+            existing.nativeCompaction.phase !== 'started' &&
+            compaction.phase !== existing.nativeCompaction.phase
+          ) {
+            return;
+          }
+          content[existingIndex] = {
+            ...existing,
+            nativeCompaction: compaction,
+          };
+        }
+
+        const updatedResponse = { ...response, content };
+        messageMap.current.set(responseMessageId, updatedResponse);
+        const currentMessages = submission.isRegenerate ? messages : getMessages() || messages;
+        setMessages(
+          mergeResponseMessage(currentMessages, updatedResponse, responseMessageId, {
+            ensureUserMessage: true,
+          }),
+        );
+        return;
+      }
+
       /**
        * Index offset for an edited resubmission: the server indexes only the
        * NEW content, so incoming indices shift past the prefix the client
@@ -935,9 +1017,6 @@ export default function useStepHandler({
         }
 
         stepMap.current.set(runStep.id, runStep);
-
-        // Calculate content index - use server index, offset by the retained edit prefix
-        const contentIndex = runStep.index + editPrefixOffset;
 
         let response = messageMap.current.get(responseMessageId);
 
@@ -1018,7 +1097,12 @@ export default function useStepHandler({
               },
             };
 
-            // Use the pre-calculated contentIndex which handles parallel agent indexing
+            const contentIndex = calculateContentIndex(
+              runStep.index,
+              editPrefixOffset,
+              ContentTypes.TOOL_CALL,
+              updatedResponse.content,
+            );
             updatedResponse = updateContent(
               updatedResponse,
               contentIndex,
@@ -1046,6 +1130,12 @@ export default function useStepHandler({
           };
 
           let updatedResponse = { ...(messageMap.current.get(responseMessageId) ?? response) };
+          const contentIndex = calculateContentIndex(
+            runStep.index,
+            editPrefixOffset,
+            ContentTypes.SUMMARY,
+            updatedResponse.content,
+          );
           updatedResponse = updateContent(
             updatedResponse,
             contentIndex,
@@ -1083,8 +1173,12 @@ export default function useStepHandler({
 
         const response = messageMap.current.get(responseMessageId);
         if (response) {
-          // Agent updates don't need index adjustment
-          const currentIndex = agent_update.index + editPrefixOffset;
+          const currentIndex = calculateContentIndex(
+            agent_update.index,
+            editPrefixOffset,
+            ContentTypes.AGENT_UPDATE,
+            response.content,
+          );
           // Agent updates carry their own agentId - use default groupId if agentId is present
           const agentUpdateMeta: ContentMetadata | undefined = agent_update.agentId
             ? { agentId: agent_update.agentId, groupId: 1 }
@@ -1273,7 +1367,12 @@ export default function useStepHandler({
             ? (submission.initialResponse?.messageId ?? '')
             : runStep.runId;
         const response = messageMap.current.get(responseId);
-        const contentIndex = runStep.index + editPrefixOffset;
+        const contentIndex = calculateContentIndex(
+          runStep.index,
+          editPrefixOffset,
+          ContentTypes.TOOL_CALL,
+          response?.content,
+        );
         const part = response?.content?.[contentIndex];
         if (
           !response ||
@@ -1379,7 +1478,12 @@ export default function useStepHandler({
             }
 
             // Use server's index, offset by the retained edit prefix
-            const currentIndex = runStep.index + editPrefixOffset;
+            const currentIndex = calculateContentIndex(
+              runStep.index,
+              editPrefixOffset,
+              ContentTypes.TOOL_CALL,
+              updatedResponse.content,
+            );
             updatedResponse = updateContent(
               updatedResponse,
               currentIndex,
@@ -1412,7 +1516,12 @@ export default function useStepHandler({
               ? (submission.initialResponse?.messageId ?? '')
               : runStep.runId;
           const response = messageMap.current.get(responseId);
-          const index = runStep.index + editPrefixOffset;
+          const index = calculateContentIndex(
+            runStep.index,
+            editPrefixOffset,
+            ContentTypes.TOOL_CALL,
+            response?.content,
+          );
           const part = response?.content?.[index];
           if (
             !response ||
@@ -1472,7 +1581,12 @@ export default function useStepHandler({
           };
 
           // Use server's index, offset by the retained edit prefix
-          const currentIndex = runStep.index + editPrefixOffset;
+          const currentIndex = calculateContentIndex(
+            runStep.index,
+            editPrefixOffset,
+            ContentTypes.TOOL_CALL,
+            response.content,
+          );
           updatedResponse = updateContent(
             updatedResponse,
             currentIndex,
@@ -1511,7 +1625,12 @@ export default function useStepHandler({
           return;
         }
 
-        const currentIndex = runStep.index + editPrefixOffset;
+        const currentIndex = calculateContentIndex(
+          runStep.index,
+          editPrefixOffset,
+          ContentTypes.TOOL_CALL,
+          response.content,
+        );
         const existing = response.content?.[currentIndex];
         /**
          * Only tool calls render a running state, so only they need the
@@ -1622,7 +1741,12 @@ export default function useStepHandler({
             summarizing: true,
           };
 
-          const contentIndex = runStep.index + editPrefixOffset;
+          const contentIndex = calculateContentIndex(
+            runStep.index,
+            editPrefixOffset,
+            ContentTypes.SUMMARY,
+            response.content,
+          );
           const updatedResponse = updateContent(
             response,
             contentIndex,
@@ -1663,7 +1787,14 @@ export default function useStepHandler({
          * finalizing every in-flight part.
          */
         const completeIndex =
-          completeRunStep != null ? completeRunStep.index + editPrefixOffset : -1;
+          completeRunStep != null
+            ? calculateContentIndex(
+                completeRunStep.index,
+                editPrefixOffset,
+                ContentTypes.SUMMARY,
+                targetMessage.content,
+              )
+            : -1;
         let didFinalize = false;
         const updatedContent = targetMessage.content.map((part, index) => {
           if (part?.type !== ContentTypes.SUMMARY || !(part as SummaryContentPart).summarizing) {

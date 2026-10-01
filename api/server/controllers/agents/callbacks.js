@@ -38,6 +38,7 @@ const {
   captureSubagentIdentity,
   collectToolCallIds,
   createToolTimingAdapter,
+  createOAuthCompactionEventHandler,
 } = require('@librechat/api');
 const { processFileCitations } = require('~/server/services/Files/Citations');
 const { processCodeOutput, runPreviewFinalize } = require('~/server/services/Files/Code/process');
@@ -864,6 +865,8 @@ function getDefaultHandlers({
       await emitForJob({ event, data });
     },
   };
+
+  handlers.on_context_compaction = createOAuthCompactionEventHandler({ contentParts, emitForJob });
 
   if (summarizationOptions?.enabled !== false) {
     handlers[GraphEvents.ON_SUMMARIZE_START] = {

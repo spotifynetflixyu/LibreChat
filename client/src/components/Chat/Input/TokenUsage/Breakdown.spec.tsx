@@ -469,16 +469,27 @@ describe('TokenUsage Breakdown', () => {
       expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '50');
     });
 
-    it('hides the compaction hint when the operation is unavailable', async () => {
+    it('shows native compaction as one aggregate context-input row', async () => {
       renderBreakdown({
-        view: { ...toolSplitView, runwayTurns: 2, compactionReclaim: 90000 },
-        compactionAvailable: false,
+        view: {
+          ...snapshotView,
+          usedTokens: 1300,
+          percent: 65,
+          oauthCompaction: { inputTokens: 1300, isEstimate: false },
+        },
       });
       await userEvent.click(toggle());
-      await userEvent.click(screen.getByTestId('context-insights-toggle'));
-      const hints = await screen.findByTestId('context-hints');
-      expect(hints.textContent).toContain('com_ui_context_runway');
-      expect(hints.textContent).not.toContain('com_ui_context_compaction');
+
+      const breakdown = screen.getByTestId('context-breakdown');
+      expect(
+        within(breakdown).getByText('com_ui_context_input').parentElement?.parentElement,
+      ).toHaveTextContent('1.3K');
+      expect(within(breakdown).queryByText('com_ui_context_messages')).toBeNull();
+      expect(within(breakdown).queryByText('com_ui_context_system')).toBeNull();
+      expect(within(breakdown).queryByText('com_ui_context_tools')).toBeNull();
+      expect(within(breakdown).queryByText('com_ui_context_summary')).toBeNull();
+      expect(screen.queryByTestId('context-insights-toggle')).toBeNull();
+      expect(screen.getByRole('progressbar')).toHaveAttribute('aria-valuenow', '65');
     });
 
     it('warns under pressure inline, with insights behind the ⓘ button', async () => {
@@ -492,7 +503,7 @@ describe('TokenUsage Breakdown', () => {
       pressured.runwayTurns = 2;
       pressured.compactionReclaim = 90000;
 
-      renderBreakdown({ view: pressured, compactionAvailable: true });
+      renderBreakdown({ view: pressured });
       await userEvent.click(toggle());
 
       /** Pressure warns inline; insights stay hidden until the ⓘ is hovered */
@@ -504,7 +515,7 @@ describe('TokenUsage Breakdown', () => {
       const hints = await screen.findByTestId('context-hints');
       expect(hints.textContent).toContain('com_ui_context_largest_tool');
       expect(hints.textContent).toContain('com_ui_context_runway');
-      expect(hints.textContent).toContain('com_ui_context_compaction');
+      expect(hints.textContent).not.toContain('com_ui_context_compaction');
 
       await userEvent.keyboard('{Escape}');
       await waitFor(() => expect(screen.queryByTestId('context-hints')).toBeNull());

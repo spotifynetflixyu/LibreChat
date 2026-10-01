@@ -64,6 +64,7 @@ export interface AppConfig {
   memory?: TMemoryConfig;
   /** Summarization configuration */
   summarization?: SummarizationConfig;
+  oauthCompaction?: TCustomConfig['oauthCompaction'];
   /** Web search configuration */
   webSearch?: TCustomConfig['webSearch'];
   /** Source-scoped content filter configuration */

@@ -1,3 +1,7 @@
+import { zodToJsonSchema } from 'zod-to-json-schema';
+import { dispatchCustomEvent } from '@langchain/core/callbacks/dispatch';
+import { Runnable, type RunnableConfig } from '@librechat/agents/langchain/runnables';
+import { AIMessageChunk, type BaseMessage } from '@librechat/agents/langchain/messages';
 import type {
   JSONValue,
   LanguageModelV3,
@@ -14,31 +18,24 @@ import type {
   LanguageModelV3ToolCallPart,
   LanguageModelV3Usage,
 } from '@ai-sdk/provider';
-import { dispatchCustomEvent } from '@langchain/core/callbacks/dispatch';
-import type { BindToolsInput } from '@librechat/agents/langchain/language_models/chat_models';
-import { AIMessageChunk, type BaseMessage } from '@librechat/agents/langchain/messages';
-import type { ToolCall } from '@librechat/agents/langchain/messages/tool';
-import { Runnable, type RunnableConfig } from '@librechat/agents/langchain/runnables';
-import type { createOpenAIOAuth as createOpenAIOAuthType } from '@openai-oauth/ai-sdk';
 import type { createOpenAIOAuthTransport as createOpenAIOAuthTransportType } from '@openai-oauth/core';
+import type { BindToolsInput } from '@librechat/agents/langchain/language_models/chat_models';
+import type { createOpenAIOAuth as createOpenAIOAuthType } from '@openai-oauth/ai-sdk';
 import type { openaiCredentials as openaiCredentialsType } from '@openai-oauth/local';
-import { zodToJsonSchema } from 'zod-to-json-schema';
+import type { ToolCall } from '@librechat/agents/langchain/messages/tool';
 import type { ZodTypeAny } from 'zod';
-
-import {
-  loadOpenAIOAuthTokens,
-  toOpenAIOAuthLibraryFetch,
-} from './credentials';
+import type { OAuthCompactionOptions } from '~/providers/openai/compaction/runtime';
 import type { OpenAIOAuthFetch, OpenAIOAuthTokenLoader } from './credentials';
-
+import { clearOpenAIOAuthCredentialInvalid, markOpenAIOAuthCredentialInvalid } from './auth-state';
 import {
   createSystemOrderNormalizer,
   normalizeSystemOrderMarkdown,
 } from '../markdown/order';
-import { finalizeOcrMarkdown, OCR_COMPLETION_DIRECTIVE_MARKER } from '../markdown/ocr';
 import { buildCustomerQuoteFromMarkdown, createCustomerQuoteParser } from '../markdown/quote';
-import { clearOpenAIOAuthCredentialInvalid, markOpenAIOAuthCredentialInvalid } from './auth-state';
 import { buildSteelCodeInterpreterAuditEvent, steelNativeStreamEventName } from './events';
+import { finalizeOcrMarkdown, OCR_COMPLETION_DIRECTIVE_MARKER } from '../markdown/ocr';
+import { createOAuthCompactionFetch } from '~/providers/openai/compaction/gateway';
+import { loadOpenAIOAuthTokens, toOpenAIOAuthLibraryFetch } from './credentials';
 
 const dynamicImportOpenAIOAuth = new Function('specifier', 'return import(specifier)') as (
   specifier: string,
@@ -60,6 +57,7 @@ type CodeInterpreterEvidencePart = Extract<
 >;
 
 export interface OpenAIOAuthProviderOptions {
+  compaction?: OAuthCompactionOptions;
   authFilePath?: string;
   createOpenAIOAuth?: CreateOpenAIOAuth;
   createOpenAIOAuthTransport?: CreateOpenAIOAuthTransport;
@@ -201,10 +199,14 @@ export async function createStatelessOpenAIOAuthProvider(
     ? options.openaiCredentials(createLocalOpenAIOAuthOptions(options))
     : createLibreChatOpenAIOAuthCredentials(options);
   const fetchFn = options.fetch ?? globalThis.fetch;
+  const compatibleFetch = createCodexCompatibleFetch(fetchFn, options.authFilePath);
+  const providerFetch = options.compaction
+    ? createOAuthCompactionFetch({ ...options.compaction, fetch: compatibleFetch })
+    : compatibleFetch;
   const transport = createOpenAIOAuthTransport({
     auth: () => credentials.getSession(),
     fetch: toOpenAIOAuthLibraryFetch(
-      createCodexCompatibleFetch(fetchFn, options.authFilePath),
+      providerFetch,
     ),
     responsesState: false,
   });

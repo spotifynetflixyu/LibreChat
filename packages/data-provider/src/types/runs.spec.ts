@@ -1,5 +1,10 @@
 import type { TContextUsageEvent, TTokenUsageEvent } from './runs';
-import { promptTokensFromUsage, outputTokensFromUsage, reconcileContextUsage } from './runs';
+import {
+  promptTokensFromUsage,
+  outputTokensFromUsage,
+  reconcileContextUsage,
+  reconcileContextUsageFromEvent,
+} from './runs';
 
 describe('promptTokensFromUsage', () => {
   it('adds cache reads/writes for additive providers (Bedrock)', () => {
@@ -301,5 +306,49 @@ describe('reconcileContextUsage', () => {
     const result = reconcileContextUsage(followupSnapshot, promptTokensFromUsage(usage));
     expect(237500 - (result.remainingContextTokens ?? 0)).toBe(9875);
     expect(result.breakdown.messageTokens).toBe(9875 - 4205 - 1938);
+  });
+
+  it('reconciles native compaction to the exact input without granular shares', () => {
+    const snapshot: TContextUsageEvent = {
+      ...inflatedSnapshot,
+      oauthCompaction: { inputTokens: 120000, isEstimate: true },
+      breakdown: {
+        ...inflatedSnapshot.breakdown,
+        toolTokenCounts: { read_file: 4000 },
+        toolMessageTokens: 2000,
+        toolMessageTokenCounts: { read_file: 2000 },
+      },
+    };
+    const result = reconcileContextUsageFromEvent(snapshot, {
+      input_tokens: 55773,
+      output_tokens: 300,
+      provider: 'openAI',
+    });
+
+    expect(result.oauthCompaction).toEqual({ inputTokens: 55773, isEstimate: false });
+    expect(result.breakdown).toMatchObject({
+      instructionTokens: 0,
+      systemMessageTokens: 0,
+      dynamicInstructionTokens: 0,
+      toolSchemaTokens: 0,
+      summaryTokens: 0,
+      toolCount: 0,
+      messageCount: 0,
+      messageTokens: 55773,
+      availableForMessages: 237500,
+    });
+    expect(result.breakdown.toolTokenCounts).toBeUndefined();
+    expect(result.breakdown.toolMessageTokens).toBeUndefined();
+    expect(result.completedOutputTokens).toBe(300);
+  });
+
+  it('keeps a native estimate when the primary usage event has no input count', () => {
+    const snapshot: TContextUsageEvent = {
+      ...inflatedSnapshot,
+      oauthCompaction: { inputTokens: 120000, isEstimate: true },
+    };
+    const result = reconcileContextUsageFromEvent(snapshot, { provider: 'openAI' });
+
+    expect(result.oauthCompaction).toEqual({ inputTokens: 120000, isEstimate: true });
   });
 });

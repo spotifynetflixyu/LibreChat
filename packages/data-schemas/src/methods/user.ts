@@ -5,10 +5,17 @@ import {
   type RefillIntervalUnit,
   type StatefulCodeEnvironment,
 } from 'librechat-data-provider';
-import type { IUser, BalanceConfig, CreateUserRequest, UserDeleteResult } from '~/types';
-import type { CacheStore } from '~/types';
+import type {
+  BalanceConfig,
+  CacheStore,
+  CreateUserRequest,
+  OAuthCompactionStore,
+  IUser,
+  UserDeleteResult,
+} from '~/types';
 import { escapeRegExp } from '~/utils/string';
 import { signPayload } from '~/crypto';
+import logger from '~/config/winston';
 
 /** Default JWT session expiry: 15 minutes in milliseconds */
 export const DEFAULT_SESSION_EXPIRY: number = 1000 * 60 * 15;
@@ -19,6 +26,7 @@ const MAX_SUBAGENT_ADMISSION_FENCES = 32;
 
 interface UserMethodDeps {
   getCache?: (key: string) => CacheStore | undefined;
+  deleteOAuthCompaction?: OAuthCompactionStore['deleteOAuthCompaction'];
 }
 
 function isAuthUserDocCacheEnabled(): boolean {
@@ -417,7 +425,13 @@ export function createUserMethods(
       if (result.deletedCount === 0) {
         return { deletedCount: 0, message: 'No user found with that ID.' };
       }
-      await invalidateAuthUserDocCache(userId);
+      try {
+        await deps.deleteOAuthCompaction?.({ userId: String(userId) });
+      } catch {
+        logger.error('[deleteUserById] OAuth compaction cleanup failed');
+      } finally {
+        await invalidateAuthUserDocCache(userId);
+      }
       return { deletedCount: result.deletedCount, message: 'User was deleted successfully.' };
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';

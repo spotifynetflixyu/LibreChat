@@ -185,6 +185,7 @@ const Part = memo(function Part({
         initiatedBy={part.initiatedBy}
         summarizing={part.summarizing}
         failed={part.failed}
+        nativeCompaction={part.nativeCompaction}
       />
     );
   } else if (part.type === ContentTypes.ACTIVITY_LABEL) {

@@ -2139,6 +2139,7 @@ const executeResponse = async (envelope, { req, res }) => {
         const userMCPAuthMap = mergedMCPAuthMap;
 
         const run = await createRun({
+          oauthCompactionStore: db,
           agents: runAgents,
           messages: providerMessages,
           indexTokenCountMap,
@@ -2412,6 +2413,7 @@ const executeResponse = async (envelope, { req, res }) => {
         const userMCPAuthMap = mergedMCPAuthMap;
 
         const run = await createRun({
+          oauthCompactionStore: db,
           agents: runAgents,
           messages: providerMessages,
           indexTokenCountMap,

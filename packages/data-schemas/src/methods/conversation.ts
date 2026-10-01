@@ -23,6 +23,7 @@ import type {
   IConversation,
   ISharedLink,
   ISubagentThreadReservation,
+  OAuthCompactionStore,
 } from '~/types';
 import type { SchemaWithMeiliMethods } from '~/models/plugins/mongoMeili';
 import type { MessageMethods } from './message';
@@ -559,6 +560,7 @@ export interface ConversationMethods {
 
 export interface ConversationMethodDeps
   extends Pick<MessageMethods, 'getMessages' | 'deleteMessages'> {
+  deleteOAuthCompaction?: OAuthCompactionStore['deleteOAuthCompaction'];
   searchMessages?: MessageMethods['searchMessages'];
   deleteAgentQueuedTurns?: (
     user: string,
@@ -3414,6 +3416,29 @@ export function createConversationMethods(
             .select('conversationId tenantId chatProjectId tags')
             .lean<DeletionConversation[]>(),
         );
+      }
+
+      if (deps?.deleteOAuthCompaction && deletedConversations.length > 0) {
+        const cleanupByTenant = new Map<string | undefined, string[]>();
+        for (const conversation of deletedConversations) {
+          const tenantId = conversation.tenantId;
+          const ids = cleanupByTenant.get(tenantId) ?? [];
+          ids.push(conversation.conversationId);
+          cleanupByTenant.set(tenantId, ids);
+        }
+        try {
+          await Promise.all(
+            [...cleanupByTenant].map(([tenantId, conversationIds]) =>
+              deps.deleteOAuthCompaction?.({
+                userId: String(user),
+                conversationIds,
+                ...(tenantId !== undefined && { tenantId }),
+              }),
+            ),
+          );
+        } catch {
+          logger.error('[deleteConvos] Conversations deleted but OAuth compaction cleanup failed');
+        }
       }
 
       const conversationIds = [

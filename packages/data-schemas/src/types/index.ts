@@ -8,6 +8,24 @@ export * from './user';
 export * from './token';
 export * from './refreshTokenBridge';
 export * from './openidRefreshFlight';
+export {
+  MAX_OAUTH_COMPACTION_HASHES,
+  MAX_OAUTH_COMPACTION_IDENTIFIER_LENGTH,
+  MAX_OAUTH_COMPACTION_OPAQUE_BYTES,
+  OAUTH_COMPACTION_SHA256_PATTERN,
+  isOAuthCompactionOpaque,
+  isOAuthCompactionSha256,
+} from './oauthCompaction';
+export type {
+  OAuthCompactionAcquireInput,
+  OAuthCompactionAcquireResult,
+  OAuthCompactionDeleteInput,
+  OAuthCompactionSaveInput,
+  OAuthCompactionScope,
+  OAuthCompactionState,
+  OAuthCompactionStore,
+  OAuthCompactionUsage,
+} from './oauthCompaction';
 export * from './convo';
 export * from './chatProject';
 export * from './session';

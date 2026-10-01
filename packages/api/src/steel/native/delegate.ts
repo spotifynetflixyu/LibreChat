@@ -1,6 +1,6 @@
 import { z } from 'zod';
-import { zodToJsonSchema } from 'zod-to-json-schema';
 import { randomUUID } from 'node:crypto';
+import { zodToJsonSchema } from 'zod-to-json-schema';
 import { dispatchCustomEvent } from '@langchain/core/callbacks/dispatch';
 import {
   HumanMessage,
@@ -8,19 +8,19 @@ import {
   ToolMessage,
 } from '@librechat/agents/langchain/messages';
 import type { RunnableConfig } from '@librechat/agents/langchain/runnables';
-
-import type { JsonSchemaType, LCTool } from '@librechat/agents';
 import type { BaseMessage } from '@librechat/agents/langchain/messages';
+import type { JsonSchemaType, LCTool } from '@librechat/agents';
+import type { SourceMappingEntry } from '../ocr/result';
 import type { OpenAIOAuthModelOptions } from './oauth';
-import { isExpiredSignedUrlError } from '../../storage/url';
-import { createOpenAIOAuthModel } from './oauth';
 import {
   finalizeOcrResponse,
   parseSourceMappingTable,
   validateSourceMapping,
 } from '../ocr/result';
-import type { SourceMappingEntry } from '../ocr/result';
+import { scopeOAuthCompaction } from '~/providers/openai/compaction/scope';
+import { isExpiredSignedUrlError } from '../../storage/url';
 import { isSteelToolName } from '../tools/registry';
+import { createOpenAIOAuthModel } from './oauth';
 
 export const delegateOcrToolName = 'delegate_ocr' as const;
 export const delegateOcrStreamEventName = 'on_delegate_ocr_stream' as const;
@@ -1240,7 +1240,10 @@ export async function delegateOcr(input: DelegateOcrInput): Promise<string> {
       let mappingReleased = false;
       const answer = await (input.invokeModel ?? invokeNativeOcrModel)({
         messages,
-        modelOptions: delegateModelOptions,
+        modelOptions: scopeOAuthCompaction(
+          delegateModelOptions,
+          `ocr:${attemptInput.attemptToken ?? randomUUID()}`,
+        ),
         signal: input.signal,
         attemptNumber: agentAttempt,
         attemptToken: attemptInput.attemptToken,
@@ -1388,7 +1391,7 @@ export async function delegateOcr(input: DelegateOcrInput): Promise<string> {
       try {
         answer = await (input.invokeModel ?? invokeNativeOcrModel)({
           messages,
-          modelOptions: delegateModelOptions,
+          modelOptions: scopeOAuthCompaction(delegateModelOptions, `ocr:${attemptToken}`),
           signal: input.signal,
           attemptNumber: 1,
           attemptToken,

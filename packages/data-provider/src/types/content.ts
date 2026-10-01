@@ -210,6 +210,8 @@ export type TextData = (Text & PartMetadata) | undefined;
 export type SummaryContentPart = {
   type: ContentTypes.SUMMARY;
   content?: Array<{ type: ContentTypes.TEXT; text: string }>;
+  /** Private UI marker for a native OAuth context compaction lifecycle. */
+  nativeCompaction?: Agents.OAuthCompactionEvent;
   tokenCount?: number;
   summarizing?: boolean;
   /** A summarize round that ended in error. Partial deltas already streamed

@@ -5,6 +5,7 @@ import { ScrollText, ChevronDown, ChevronUp } from 'lucide-react';
 import { Button, MorphIcon, TooltipAnchor } from '@librechat/client';
 import type { SummaryContentPart } from 'librechat-data-provider';
 import type { MouseEvent, FocusEvent } from 'react';
+import NativeCompaction from './NativeCompaction';
 import { fontSizeAtom } from '~/store/fontSize';
 import { useMessageContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
@@ -12,7 +13,14 @@ import { cn } from '~/utils';
 
 type SummaryProps = Pick<
   SummaryContentPart,
-  'content' | 'model' | 'provider' | 'tokenCount' | 'summarizing' | 'failed' | 'initiatedBy'
+  | 'content'
+  | 'model'
+  | 'provider'
+  | 'tokenCount'
+  | 'summarizing'
+  | 'failed'
+  | 'initiatedBy'
+  | 'nativeCompaction'
 >;
 
 function useCopyToClipboard(content?: string) {
@@ -204,13 +212,23 @@ const FloatingSummaryBar = memo(
 );
 
 const Summary = memo(
-  ({ content, model, provider, tokenCount, summarizing, failed, initiatedBy }: SummaryProps) => {
+  ({
+    content,
+    model,
+    provider,
+    tokenCount,
+    summarizing,
+    failed,
+    initiatedBy,
+    nativeCompaction,
+  }: SummaryProps) => {
     const contentId = useId();
     const localize = useLocalize();
     const [isExpanded, setIsExpanded] = useState(false);
     const [isBarVisible, setIsBarVisible] = useState(false);
     const containerRef = useRef<HTMLDivElement>(null);
     const { isSubmitting, isLatestMessage } = useMessageContext();
+    const effectiveIsSubmitting = isLatestMessage ? isSubmitting : false;
 
     const text = useMemo(
       () =>
@@ -239,7 +257,6 @@ const Summary = memo(
       }
     }, []);
 
-    const effectiveIsSubmitting = isLatestMessage ? isSubmitting : false;
     const isActivelyStreaming = !!summarizing && !!effectiveIsSubmitting;
 
     const meta = useMemo(() => {
@@ -266,6 +283,10 @@ const Summary = memo(
         ? localize('com_ui_context_compacted_by_you')
         : localize('com_ui_conversation_summarized');
     }, [isActivelyStreaming, failed, initiatedBy, localize]);
+
+    if (nativeCompaction) {
+      return <NativeCompaction event={nativeCompaction} isSubmitting={!!effectiveIsSubmitting} />;
+    }
 
     if (!summarizing && !text) {
       return null;

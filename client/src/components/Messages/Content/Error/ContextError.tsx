@@ -1,14 +1,7 @@
 import { ErrorTypes } from 'librechat-data-provider';
 import type { ErrorRendererProps } from './parts';
 import type { TranslationKeys } from '~/hooks';
-import {
-  ErrorBody,
-  ErrorDetails,
-  formatNumber,
-  readNumber,
-  readString,
-  useErrorEndpoint,
-} from './parts';
+import { ErrorBody, ErrorDetails, formatNumber, readNumber, readString } from './parts';
 import { useLocalize } from '~/hooks';
 
 const emptyMessagesBoilerplate = [
@@ -84,13 +77,10 @@ function hasTextBeyondNumbers(
   return parsed == null || parsed[0] !== projected || parsed[1] !== available;
 }
 
-export default function ContextError({ json, message }: ErrorRendererProps) {
+export default function ContextError({ json }: ErrorRendererProps) {
   const localize = useLocalize();
-  const { compactionAvailable } = useErrorEndpoint(message);
   const errorType = readString(json, 'type');
-  const nextSteps = localize(
-    compactionAvailable ? 'com_error_context_next_steps_compact' : 'com_error_context_next_steps',
-  );
+  const nextSteps = localize('com_error_context_next_steps');
 
   if (errorType === ErrorTypes.INPUT_LENGTH) {
     const info = readString(json, 'info');

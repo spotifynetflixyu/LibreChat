@@ -19,10 +19,9 @@ import type {
 } from 'librechat-data-provider';
 import type { ErrorSource } from './source';
 import { isUserProvidedEndpointConfig } from '~/components/Nav/SettingsTabs/ProviderKeys/utils';
-import { useGetEndpointsQuery, useGetStartupConfig } from '~/data-provider';
-import { supportsCompaction } from '~/hooks/Chat/useCompactConversation';
 import { useAgentsMapContext } from '~/Providers/AgentsMapContext';
 import { useExpandCollapse, useLocalize } from '~/hooks';
+import { useGetEndpointsQuery } from '~/data-provider';
 import { ChatContext } from '~/Providers/ChatContext';
 import { cn } from '~/utils';
 
@@ -95,12 +94,6 @@ export type ErrorEndpoint = {
    * Undefined where no endpoint configuration is available to this viewer, as on a shared link.
    */
   userProvidesCredentials?: boolean;
-  /**
-   * Manual context compaction can be triggered for this conversation. It is only offered from the
-   * chat composer's context usage popover, so neither a surface outside the chat (search, a shared
-   * link) nor a deployment that hides that indicator has compaction to suggest.
-   */
-  compactionAvailable: boolean;
   endpointsConfig?: TEndpointsConfig;
 };
 
@@ -183,15 +176,13 @@ function resolveCredentialOwnership(
  * request ran against the agent's own provider and model, so those are what identity, key
  * ownership and the key dialog resolve against; after a handoff, that is the agent the handoff
  * made active, and in a parallel run, the agent of the error's own lane. An endpoint named by the
- * payload itself outranks all of them. Compaction is a
- * conversation action, so it stays keyed to the row's endpoint.
+ * payload itself outranks all of them.
  */
 export function useErrorEndpoint(source?: ErrorSource, payloadEndpoint?: string): ErrorEndpoint {
   const chat = useContext(ChatContext);
   const agentsMap = useAgentsMapContext();
   const inChat = chat != null;
   const { data: endpointsConfig } = useGetEndpointsQuery({ enabled: inChat });
-  const { data: startupConfig } = useGetStartupConfig({ enabled: inChat });
 
   /**
    * A row's own identity is authoritative even where it lacks a field: borrowing the conversation's
@@ -224,15 +215,9 @@ export function useErrorEndpoint(source?: ErrorSource, payloadEndpoint?: string)
       model: agentRow ? agentIdentity?.model : rowModel,
       agent: agentIdentity?.agent,
       userProvidesCredentials: resolveCredentialOwnership(endpointsConfig, endpoint),
-      compactionAvailable:
-        inChat &&
-        startupConfig?.compactionEnabled === true &&
-        startupConfig.interface?.contextUsage !== false &&
-        supportsCompaction(rowEndpoint),
       endpointsConfig,
     };
   }, [
-    inChat,
     rowEndpoint,
     rowModel,
     conversationAgentId,
@@ -240,8 +225,6 @@ export function useErrorEndpoint(source?: ErrorSource, payloadEndpoint?: string)
     payloadEndpoint,
     agentsMap,
     endpointsConfig,
-    startupConfig?.compactionEnabled,
-    startupConfig?.interface?.contextUsage,
   ]);
 }
 

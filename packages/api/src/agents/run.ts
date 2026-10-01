@@ -1,5 +1,7 @@
 import { randomUUID } from 'crypto';
 import { logger } from '@librechat/data-schemas';
+import { ensureHandler } from '@langchain/core/callbacks/manager';
+import { oauthCompactionConfigSchema } from 'librechat-data-provider';
 import {
   Run,
   Providers,
@@ -7,7 +9,6 @@ import {
   HookRegistry,
   resolveLocalToolsForBinding,
 } from '@librechat/agents';
-import { ensureHandler } from '@langchain/core/callbacks/manager';
 import {
   KnownEndpoints,
   EModelEndpoint,
@@ -53,7 +54,12 @@ import type {
   ReasoningResponseKey,
   SummarizationConfig,
 } from 'librechat-data-provider';
-import type { AppConfig, IAgentFadingTier, IUser } from '@librechat/data-schemas';
+import type {
+  AppConfig,
+  IAgentFadingTier,
+  IUser,
+  OAuthCompactionStore,
+} from '@librechat/data-schemas';
 import type { CallbackHandlerMethods } from '@langchain/core/callbacks/base';
 import type { BaseMessage } from '@librechat/agents/langchain/messages';
 import type { Callbacks } from '@langchain/core/callbacks/manager';
@@ -61,13 +67,14 @@ import type { ModelBoundChatModelCallback } from '~/middleware/modelBoundContent
 import type { ModelErrorTrackerCallback } from '~/agents/failures/tracker';
 import type { ToolInputValidationError } from '~/agents/toolValidation';
 import type { ResolvedToolApprovalHook } from '~/agents/hitl/hooks';
+import type { OpenAIOAuthModelOptions } from '~/steel/native/oauth';
 import type { TerminalSteerHook } from '~/agents/steering/runtime';
+import type { DelegateOcrPolicy } from '~/steel/native/delegate';
 import type { LangfuseTraceContext } from '~/langfuse/identity';
 import type { ResolvedAlwaysApplySkill } from '~/agents/skills';
 import type { CodeExecutionContext } from '~/agents/execution';
 import type { MCPToolAlias } from '~/tools/classification';
 import type { SubagentUsageEvent } from '~/agents/usage';
-import type { OpenAIOAuthModelOptions } from '~/steel/native/oauth';
 import type { RunFileSession } from './files/session';
 import type { RunFadingTiers } from './fading';
 import type * as t from '~/types';
@@ -106,6 +113,20 @@ import {
   exemptAskUserQuestionFromApproval,
 } from '~/agents/hitl/policy';
 import {
+  delegateOcrToolName,
+  isDelegateOcrQuoteOnlyTurn,
+  normalizeDelegateOcrChunk,
+} from '~/steel/native/delegate';
+import {
+  parseOpenAIConfig,
+  resolveOpenAIOAuthAuthFilePath,
+  type OpenAIReasoningEffort,
+} from '~/steel/ai/config';
+import {
+  oauthCompactionProvider,
+  registerOAuthCompactionProvider,
+} from '~/providers/openai/compaction/model';
+import {
   ASK_USER_QUESTION_TOOL_NAME,
   createAskUserQuestionTool,
 } from '~/agents/hitl/askUserQuestionTool';
@@ -123,6 +144,8 @@ import { CREATE_FILE_TOOL_NAME, EDIT_FILE_TOOL_NAME } from '~/agents/tools';
 import { buildAgentInitialToolSessions } from '~/agents/codeFilesSession';
 import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
 import { getAzureCredentials, constructAzureURL } from '~/utils/azure';
+import { prepareSteelNativeToolConfig } from '~/steel/native/tools';
+import { createOpenAIOAuthGraphModel } from '~/steel/native/oauth';
 import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
 import { getProviderConfig } from '~/endpoints/config/providers';
 import { buildToolApprovalHooks } from '~/agents/hitl/hooks';
@@ -134,19 +157,6 @@ import { buildHITLRunWiring } from '~/agents/hitl/runtime';
 import { buildLangfuseConfig } from '~/langfuse/config';
 import { applyTestRunHook } from '~/agents/testHook';
 import { isUserProvided } from '~/utils/common';
-import {
-  parseOpenAIConfig,
-  resolveOpenAIOAuthAuthFilePath,
-  type OpenAIReasoningEffort,
-} from '~/steel/ai/config';
-import { createOpenAIOAuthGraphModel } from '~/steel/native/oauth';
-import {
-  delegateOcrToolName,
-  isDelegateOcrQuoteOnlyTurn,
-  normalizeDelegateOcrChunk,
-} from '~/steel/native/delegate';
-import type { DelegateOcrPolicy } from '~/steel/native/delegate';
-import { prepareSteelNativeToolConfig } from '~/steel/native/tools';
 import { createSafeUser } from '~/utils/env';
 
 /** Expected shape of JSON tool search results */
@@ -1578,10 +1588,14 @@ function withModelCallbacks<T extends object>(
   } as T & CallbackClientOptions;
 
   if (Array.isArray(callbackOptions.fallbacks)) {
-    withCallbacks.fallbacks = callbackOptions.fallbacks.map((fallback) => ({
-      ...fallback,
-      clientOptions: withModelCallbacks({ ...(fallback.clientOptions ?? {}) }, modelCallbacks),
-    }));
+    withCallbacks.fallbacks = callbackOptions.fallbacks.map((fallback) => {
+      const next: FallbackConfig = { ...fallback };
+      next.clientOptions = withModelCallbacks(
+        { ...(fallback.clientOptions ?? {}) },
+        modelCallbacks,
+      );
+      return next;
+    });
   }
 
   return withCallbacks;
@@ -2275,6 +2289,7 @@ export async function createRun({
   subagentUsageSink,
   openAIOAuthReasoningEffortOverride,
   openAIOAuthModelOptionsSink,
+  oauthCompactionStore,
   subagentTasks,
   runFiles,
   steering,
@@ -2299,6 +2314,7 @@ export async function createRun({
   requestBody?: t.RequestBody;
   openAIOAuthReasoningEffortOverride?: OpenAIReasoningEffort;
   openAIOAuthModelOptionsSink?: (options: OpenAIOAuthModelOptions) => void;
+  oauthCompactionStore?: OAuthCompactionStore;
   codeApprovalMode?: CodeApprovalMode;
   user?: IUser;
   tenantId?: string;
@@ -2716,7 +2732,7 @@ export async function createRun({
     }
 
     const reasoningKey = getReasoningKey(provider, llmConfig, agent.endpoint, agent.reasoningKey);
-    const agentInput: AgentInputs = {
+    let agentInput: AgentInputs = {
       provider,
       endpoint: agent.endpoint ?? provider,
       reasoningKey,
@@ -2741,6 +2757,75 @@ export async function createRun({
       initialSessions: buildAgentInitialToolSessions(agent, initialSessions),
       codeSessionKey: agent.codeSessionKey,
     };
+    if (appConfig?.oauthCompaction?.enabled === true && isOpenAIOAuthAgent(agent)) {
+      if (!oauthCompactionStore || !user?.id || !(conversationId ?? requestBody?.conversationId)) {
+        throw new Error('oauth_compaction_missing_scope');
+      }
+      registerOAuthCompactionProvider();
+      const config = oauthCompactionConfigSchema.parse(appConfig.oauthCompaction);
+      const maxContextTokens = Math.min(
+        config.maxContextTokens,
+        effectiveMaxContextTokens ?? config.maxContextTokens,
+      );
+      const selectedModelOptions = getOpenAIOAuthModelOptions(
+        agentInput,
+        openAIOAuthReasoningEffortOverride,
+      );
+      const outputReserveTokens = Math.max(
+        config.outputReserveTokens,
+        selectedModelOptions.maxOutputTokens ?? 0,
+      );
+      if (outputReserveTokens >= maxContextTokens) {
+        throw new Error('oauth_compaction_invalid_budget');
+      }
+      const modelOptions: OpenAIOAuthModelOptions = {
+        ...selectedModelOptions,
+        compaction: {
+          compactOnly: summarizeOnly && !isSubagent && agent === agents[0],
+          store: oauthCompactionStore,
+          config: { ...config, maxContextTokens, outputReserveTokens },
+          scope: {
+            tenantId: tenantId ?? user.tenantId ?? '',
+            userId: user.id,
+            conversationId: (conversationId ?? requestBody?.conversationId)!,
+            agentId: agent.id,
+            executionId: isSubagent ? 'child' : 'main',
+          },
+          onContextUsage: (event, metadata) =>
+            customHandlers?.['on_context_usage']?.handle(
+              'on_context_usage',
+              { ...event, runId: event.runId ?? resolvedRunId },
+              metadata,
+            ),
+          onStatus: (event, metadata) =>
+            customHandlers?.['on_context_compaction']?.handle(
+              'on_context_compaction',
+              { input: { ...event, runId: event.runId ?? resolvedRunId } },
+              metadata,
+            ),
+        },
+      };
+      agentInput = {
+        ...agentInput,
+        provider: oauthCompactionProvider,
+        clientOptions: withModelCallbacks(
+          {
+            model: modelOptions.model,
+            streaming,
+            oauth: modelOptions,
+            oauthSubagent: isSubagent,
+            oauthRunId: resolvedRunId,
+          },
+          modelCallbacks,
+        ),
+      };
+      // Native wire admission owns the compacted window; canonical graph messages stay intact.
+      agentInput.maxContextTokens = undefined;
+      agentInput.contextPruningConfig = { enabled: false };
+      agentInput.summarizationEnabled = false;
+      agentInput.initialSummary = undefined;
+      if (!isSubagent && agent === agents[0]) openAIOAuthModelOptionsSink?.(modelOptions);
+    }
     if (runFilesActive && runFiles != null && (isSubagent || agent.subagents?.enabled === true)) {
       graphTools = [...(graphTools ?? []), ...createRunFileTools(runFiles, agent.id, signal)];
     }
@@ -2801,7 +2886,7 @@ export async function createRun({
   }
   for (const agent of agents) {
     const agentInput = buildAgentInput(agent);
-    if (summarizeOnly && agent === agents[0]) {
+    if (summarizeOnly && agent === agents[0] && agentInput.provider !== oauthCompactionProvider) {
       agentInput.summarizeOnly = true;
     }
     const subagentConfigs = buildSubagentConfigs(
@@ -2838,7 +2923,8 @@ export async function createRun({
     openAIOAuthModelOptionsSink &&
     agentInputs.length > 0 &&
     agents.length > 0 &&
-    isOpenAIOAuthAgent(agents[0])
+    isOpenAIOAuthAgent(agents[0]) &&
+    appConfig?.oauthCompaction?.enabled !== true
   ) {
     openAIOAuthModelOptionsSink(
       getOpenAIOAuthModelOptions(agentInputs[0], openAIOAuthReasoningEffortOverride),
@@ -3194,12 +3280,14 @@ export async function createRun({
   };
   const run = await Run.create(runConfig);
 
-  applyOpenAIOAuthGraphOverride({
-    agentInput: agentInputs.length === 1 ? agentInputs[0] : undefined,
-    openAIOAuthReasoningEffortOverride,
-    run,
-    sourceAgent: agents.length === 1 ? agents[0] : undefined,
-  });
+  if (appConfig?.oauthCompaction?.enabled !== true) {
+    applyOpenAIOAuthGraphOverride({
+      agentInput: agentInputs.length === 1 ? agentInputs[0] : undefined,
+      openAIOAuthReasoningEffortOverride,
+      run,
+      sourceAgent: agents.length === 1 ? agents[0] : undefined,
+    });
+  }
 
   applyCustomHandoffPromptKeyCompatibility(run, runConfig.graphConfig);
   applyTestRunHook(run, {

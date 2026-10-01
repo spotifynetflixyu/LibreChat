@@ -57,6 +57,8 @@ export interface TokenUsageView {
   totalUsage: BranchUsage;
   /** Whether any usage is available to display (branch has token usage) */
   hasUsage: boolean;
+  /** Native OAuth compaction input, when the active snapshot uses that gauge. */
+  oauthCompaction?: NonNullable<ContextSnapshot['oauthCompaction']>;
   /** Authoritative branch cost; the cost row is gated on `interface.contextCost` at render */
   branchCost: number;
   /** Authoritative cost across all branches (shown when it differs from branch) */
@@ -306,6 +308,7 @@ export default function useTokenUsage({
     if (effective != null) {
       const breakdown = effective.breakdown;
       const maxTokens = normalizeTokenCount(effective.contextBudget ?? breakdown.maxContextTokens);
+      const nativeCompaction = effective.oauthCompaction;
       const instructionTokens = normalizeTokenCount(
         effective.effectiveInstructionTokens ?? breakdown.instructionTokens,
       );
@@ -329,22 +332,25 @@ export default function useTokenUsage({
        *  `completedOutputTokens`, and retained tool results on
        *  `retainedToolTokens`. */
       const usedTokens = normalizeTokenCount(
-        Math.max(0, baseUsed) + liveOutput + completedOutput + retainedToolTokens,
+        nativeCompaction
+          ? nativeCompaction.inputTokens
+          : Math.max(0, baseUsed) + liveOutput + completedOutput + retainedToolTokens,
       );
       return {
         usedTokens,
         maxTokens,
         percent: maxTokens > 0 ? Math.min((usedTokens / maxTokens) * 100, 100) : 0,
-        isEstimate: false,
+        isEstimate: nativeCompaction?.isEstimate ?? false,
         snapshot: effective,
         snapshotActive: true,
         branchTotals,
         branchUsage,
         totalUsage,
         hasUsage,
+        oauthCompaction: nativeCompaction,
         branchCost: branchUsage.cost,
         totalCost: totalUsage.cost,
-        liveTokens: liveOutput,
+        liveTokens: nativeCompaction ? 0 : liveOutput,
         estimatedTokens: 0,
         overheadTokens: 0,
         messageTokens: 0,
@@ -353,7 +359,7 @@ export default function useTokenUsage({
          *  reported tool-call share without clipping it back to that pre-invoke
          *  total. Keep older snapshots unsplit when no split was reported. */
         toolCallTokens:
-          breakdown.toolMessageTokens != null
+          nativeCompaction == null && breakdown.toolMessageTokens != null
             ? Math.min(
                 normalizeTokenCount(breakdown.toolMessageTokens),
                 normalizeTokenCount(breakdown.messageTokens),
@@ -362,7 +368,7 @@ export default function useTokenUsage({
         cacheRead: normalizeTokenCount(effective.cacheRead),
         cacheWrite: normalizeTokenCount(effective.cacheWrite),
         toolMessageTokenCounts: breakdown.toolMessageTokenCounts,
-        runwayTurns,
+        runwayTurns: nativeCompaction == null ? runwayTurns : undefined,
         /** Both sides are measured after the tail call: `breakdown.messageTokens`
          *  is pre-invoke, so add the finalized output that `latestExchangeTokens`
          *  already counts in the exchange a summarization would keep, and hand it
@@ -375,18 +381,20 @@ export default function useTokenUsage({
          *  final result, down to zero. While a response streams, `completedOutput`
          *  is 0 and the in-flight tail is excluded from both sides (it rides on
          *  `liveTokens`). */
-        compactionReclaim: Math.max(
-          0,
-          normalizeTokenCount(breakdown.messageTokens) +
-            completedOutput +
-            retainedToolTokens -
-            latestExchangeTokens(
-              conversationKey,
-              tailId,
-              liveTokens > 0,
-              normalizeTokenCount(breakdown.summaryTokens),
+        compactionReclaim: nativeCompaction
+          ? 0
+          : Math.max(
+              0,
+              normalizeTokenCount(breakdown.messageTokens) +
+                completedOutput +
+                retainedToolTokens -
+                latestExchangeTokens(
+                  conversationKey,
+                  tailId,
+                  liveTokens > 0,
+                  normalizeTokenCount(breakdown.summaryTokens),
+                ),
             ),
-        ),
         subagentUsage,
         rates: limits.rates,
       };

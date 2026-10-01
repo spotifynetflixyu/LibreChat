@@ -2194,6 +2194,29 @@ describe('buildPersistedContextUsage', () => {
     expect(buildPersistedContextUsage(baseSnapshot, []).completedOutputTokens).toBeUndefined();
   });
 
+  it('persists native OAuth input usage without the raw history estimate', () => {
+    const snapshot: TContextUsageEvent = {
+      ...baseSnapshot,
+      oauthCompaction: { inputTokens: 5400, isEstimate: true },
+    };
+    const result = buildPersistedContextUsage(
+      snapshot,
+      [
+        {
+          runId: baseSnapshot.runId,
+          provider: 'openAI',
+          input_tokens: 80,
+          output_tokens: 5,
+        },
+      ],
+      { retainedToolTokens: 2000 },
+    );
+    expect(result.oauthCompaction).toEqual({ inputTokens: 80, isEstimate: false });
+    expect(JSON.parse(JSON.stringify(result)).oauthCompaction.inputTokens).toBe(80);
+    expect(result.breakdown.messageTokens).toBe(80);
+    expect(result.breakdown.instructionTokens).toBe(0);
+  });
+
   it('reconciles the inflated estimate to the final call’s real prompt tokens', () => {
     /** Real web-search + summarization turn: calibration pinned at 5 inflated
      *  messageTokens to 187471 (used 213375), but the answer call's true prompt was

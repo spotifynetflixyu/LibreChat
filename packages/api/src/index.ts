@@ -5,6 +5,14 @@ export * from './acl/middleware';
 export * from './acl/principals';
 export * from './acl/search';
 export * from './credentials';
+export { runOpenAIOAuthCompactionCommand } from './providers/openai/compaction/command';
+export { createOAuthCompactionEventHandler } from './providers/openai/compaction/events';
+export { registerOAuthCompactionProvider } from './providers/openai/compaction/model';
+export { createOAuthCompactionFetch } from './providers/openai/compaction/gateway';
+export type {
+  OAuthCompactionOptions,
+  OAuthCompactionStatus,
+} from './providers/openai/compaction/runtime';
 /* Artifacts */
 export * from './artifacts';
 /* Admin */

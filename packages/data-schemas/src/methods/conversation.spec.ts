@@ -2513,6 +2513,25 @@ describe('Conversation Operations', () => {
   });
 
   describe('deleteConvos', () => {
+    test('cleans legacy conversation compaction across tenant variants with user isolation', async () => {
+      await Conversation.create({
+        conversationId: 'legacy-private',
+        user: 'user123',
+        title: 'Legacy',
+        endpoint: EModelEndpoint.agents,
+      });
+      const deleteOAuthCompaction = jest.fn(async () => 1);
+      const scopedMethods = createConversationMethods(mongoose, {
+        getMessages,
+        deleteMessages,
+        deleteOAuthCompaction,
+      });
+      await scopedMethods.deleteConvos('user123', { conversationId: 'legacy-private' });
+      expect(deleteOAuthCompaction).toHaveBeenCalledWith({
+        userId: 'user123',
+        conversationIds: ['legacy-private'],
+      });
+    });
     it('retires queued-turn work before each conversation deletion wave', async () => {
       const conversationId = uuidv4();
       await Conversation.create({

@@ -5182,3 +5182,109 @@ describe('summarizeOnly resolution', () => {
     expect(agents[1].summarizeOnly).toBeUndefined();
   });
 });
+
+describe('native OAuth compaction provider integration', () => {
+  const store: import('@librechat/data-schemas').OAuthCompactionStore = {
+    acquireOAuthCompaction: async () => {
+      throw new Error('unexpected storage access during construction');
+    },
+    saveOAuthCompaction: async () => false,
+    releaseOAuthCompaction: async () => undefined,
+    deleteOAuthCompaction: async () => 0,
+  };
+  it('registers only actual OAuth agents and leaves canonical context intact', async () => {
+    const { oauthCompactionConfigSchema } = await import('librechat-data-provider');
+    const sink = jest.fn();
+    const contextUsage = jest.fn();
+    await createRun({
+      agents: [
+        makeAgent({
+          id: 'oauth',
+          provider: 'openai_oauth_responses',
+          endpoint: 'openai_oauth_responses',
+          model: 'gpt-6.1-sol',
+          model_parameters: { model: 'gpt-6.1-sol', maxOutputTokens: 12000 },
+        }),
+        makeAgent({ id: 'api-key' }),
+      ] as never,
+      appConfig: {
+        ...makeAppConfig([]),
+        oauthCompaction: oauthCompactionConfigSchema.parse({ enabled: true }),
+      },
+      user: { id: 'user', tenantId: 'tenant' } as IUser,
+      conversationId: 'conversation',
+      oauthCompactionStore: store,
+      openAIOAuthModelOptionsSink: sink,
+      customHandlers: { on_context_usage: { handle: contextUsage } },
+      signal: new AbortController().signal,
+      streaming: true,
+      streamUsage: true,
+    });
+    const inputs = (Run.create as jest.Mock).mock.calls[0][0].graphConfig.agents as AgentInputs[];
+    const snapshot = { agentId: 'oauth', oauthCompaction: { inputTokens: 80, isEstimate: false } };
+    await sink.mock.calls[0][0].compaction.onContextUsage(snapshot, {
+      langgraph_node: 'oauth',
+    });
+    expect(contextUsage).toHaveBeenCalledWith(
+      'on_context_usage',
+      expect.objectContaining(snapshot),
+      { langgraph_node: 'oauth' },
+    );
+    expect(inputs[0].provider).toBe('librechat_openai_oauth');
+    expect(inputs[0].maxContextTokens).toBeUndefined();
+    expect(inputs[0].summarizationEnabled).toBe(false);
+    expect(inputs[0].contextPruningConfig).toEqual({ enabled: false });
+    expect(inputs[1].provider).toBe('openAI');
+    expect(inputs[1].maxContextTokens).toBe(100000);
+    expect(sink.mock.calls[0][0].compaction.config.outputReserveTokens).toBe(12000);
+    expect(sink.mock.calls[0][0].compaction.scope).toEqual({
+      tenantId: 'tenant',
+      userId: 'user',
+      conversationId: 'conversation',
+      agentId: 'oauth',
+      executionId: 'main',
+    });
+  });
+  it('routes the manual compact action through native OAuth without SDK text summarization', async () => {
+    const { oauthCompactionConfigSchema } = await import('librechat-data-provider');
+    await createRun({
+      agents: [
+        makeAgent({ provider: 'openai_oauth_responses', endpoint: 'openai_oauth_responses' }),
+      ] as never,
+      appConfig: {
+        ...makeAppConfig([]),
+        oauthCompaction: oauthCompactionConfigSchema.parse({ enabled: true }),
+      },
+      user: { id: 'user' } as IUser,
+      conversationId: 'conversation',
+      oauthCompactionStore: store,
+      summarizeOnly: true,
+      signal: new AbortController().signal,
+      streaming: true,
+      streamUsage: true,
+    });
+    const input = (Run.create as jest.Mock).mock.calls[0][0].graphConfig.agents[0];
+    expect(input.summarizeOnly).toBeUndefined();
+    expect(input.summarizationEnabled).toBe(false);
+    expect(input.clientOptions.oauth.compaction.compactOnly).toBe(true);
+  });
+  it('fails closed when configured without private persistence dependencies', async () => {
+    const { oauthCompactionConfigSchema } = await import('librechat-data-provider');
+    await expect(
+      createRun({
+        agents: [
+          makeAgent({ provider: 'openai_oauth_responses', endpoint: 'openai_oauth_responses' }),
+        ] as never,
+        appConfig: {
+          ...makeAppConfig([]),
+          oauthCompaction: oauthCompactionConfigSchema.parse({ enabled: true }),
+        },
+        user: { id: 'user' } as IUser,
+        conversationId: 'conversation',
+        signal: new AbortController().signal,
+        streaming: true,
+        streamUsage: true,
+      }),
+    ).rejects.toThrow('oauth_compaction_missing_scope');
+  });
+});

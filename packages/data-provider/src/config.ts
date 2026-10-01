@@ -2909,6 +2909,23 @@ export const summarizationConfigSchema = z.object({
 
 export type SummarizationConfig = z.infer<typeof summarizationConfigSchema>;
 
+export const oauthCompactionConfigSchema = z
+  .object({
+    enabled: z.boolean().default(false),
+    triggerRatio: z.number().finite().min(0.1).max(0.9).default(0.75),
+    maxContextTokens: z.number().int().min(4096).max(2_000_000).default(196_608),
+    outputReserveTokens: z.number().int().min(1024).max(131_072).default(8192),
+    timeoutMs: z.number().int().min(1000).max(1_200_000).default(300_000),
+    maxResponseBytes: z.number().int().min(1024).max(8_388_608).default(8_388_608),
+    retentionDays: z.number().int().min(1).max(365).default(30),
+  })
+  .refine((config) => config.outputReserveTokens < config.maxContextTokens, {
+    message: 'Output reserve must be smaller than the context limit',
+    path: ['outputReserveTokens'],
+  });
+
+export type OAuthCompactionConfig = z.infer<typeof oauthCompactionConfigSchema>;
+
 const customEndpointsSchema = z.array(endpointSchema.partial()).optional();
 
 /**
@@ -3130,6 +3147,7 @@ export const configSchema = z.object({
   langfuse: langfuseConfigSchema.optional(),
   memory: memorySchema.optional(),
   summarization: summarizationConfigSchema.optional(),
+  oauthCompaction: oauthCompactionConfigSchema.optional(),
   skillSync: skillSyncConfigSchema,
   secureImageLinks: z.boolean().optional(),
   imageOutputType: z.nativeEnum(EImageOutputType).default(EImageOutputType.PNG),

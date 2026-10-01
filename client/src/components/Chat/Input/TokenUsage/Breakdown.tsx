@@ -103,7 +103,6 @@ function Row({
 interface BreakdownProps {
   view: TokenUsageView;
   showCost: boolean;
-  compactionAvailable?: boolean;
   currency?: CurrencyConfig;
   langfuseSessionUrl?: string;
 }
@@ -111,7 +110,6 @@ interface BreakdownProps {
 export default function Breakdown({
   view,
   showCost,
-  compactionAvailable = false,
   currency,
   langfuseSessionUrl,
 }: BreakdownProps) {
@@ -130,6 +128,7 @@ export default function Breakdown({
     percent = Math.min(Math.max(view.percent, 0), 100);
   }
   const { snapshot, snapshotActive, branchUsage, hasUsage } = view;
+  const nativeCompaction = view.oauthCompaction;
   /** Show the all-branches total only when it (a) exceeds the active branch —
    *  epsilon guards against float summation order surfacing a spurious row in an
    *  unbranched conversation — and (b) has COMPLETE cost coverage, so a sibling
@@ -150,7 +149,7 @@ export default function Breakdown({
     normalizeTokenCount(view.subagentUsage?.cacheRead) +
     normalizeTokenCount(view.subagentUsage?.cacheWrite);
 
-  const breakdown = snapshotActive ? snapshot?.breakdown : undefined;
+  const breakdown = nativeCompaction == null && snapshotActive ? snapshot?.breakdown : undefined;
   const instructionTokens = normalizeTokenCount(
     snapshot?.effectiveInstructionTokens ?? breakdown?.instructionTokens,
   );
@@ -243,11 +242,6 @@ export default function Breakdown({
   if (runwayTurns != null && runwayTurns <= 25) {
     insights.push(localize('com_ui_context_runway', { 0: String(runwayTurns) }));
   }
-  const compactionReclaim = normalizeTokenCount(view.compactionReclaim);
-  if (compactionAvailable && compactionReclaim > 0) {
-    insights.push(localize('com_ui_context_compaction', { 0: formatTokens(compactionReclaim) }));
-  }
-
   const groups =
     breakdown?.toolTokenCounts != null
       ? groupToolTokens(breakdown.toolTokenCounts, breakdown.deferredToolNames)
@@ -445,9 +439,12 @@ export default function Breakdown({
             )}
             <div
               className="space-y-1.5"
-              data-testid={breakdown ? 'context-breakdown' : 'context-estimate'}
+              data-testid={nativeCompaction || breakdown ? 'context-breakdown' : 'context-estimate'}
             >
-              {breakdown ? (
+              {nativeCompaction && (
+                <Row label={localize('com_ui_context_input')} value={usedTokens} max={maxTokens} />
+              )}
+              {!nativeCompaction && breakdown && (
                 <>
                   {segments.map(({ id, label, value, ...segment }) => {
                     const shouldRender =
@@ -535,7 +532,8 @@ export default function Breakdown({
                     />
                   )}
                 </>
-              ) : (
+              )}
+              {!nativeCompaction && breakdown == null && (
                 <>
                   {normalizeTokenCount(view.branchTotals.summaryBaseline) > 0 && (
                     <Row

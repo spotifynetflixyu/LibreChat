@@ -1,5 +1,6 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
+import type { OAuthCompactionEvent } from 'librechat-data-provider';
 import Summary from '../Summary';
 
 jest.mock('~/hooks', () => ({
@@ -13,6 +14,13 @@ jest.mock('~/Providers', () => ({
 }));
 
 const partialSummary = [{ type: 'text', text: 'Half a summary before the error' }] as never;
+const nativeCompaction: OAuthCompactionEvent = {
+  id: 'compaction-1',
+  runId: 'response-1',
+  agentId: 'agent-1',
+  executionId: 'execution-1',
+  phase: 'completed',
+};
 
 describe('Summary', () => {
   beforeEach(() => {
@@ -46,5 +54,12 @@ describe('Summary', () => {
     const { container } = render(<Summary content={[]} summarizing={false} failed />);
 
     expect(container).toBeEmptyDOMElement();
+  });
+
+  it('renders native compaction as a non-expandable status marker', () => {
+    render(<Summary content={[]} nativeCompaction={nativeCompaction} />);
+
+    expect(screen.getByRole('status')).toHaveTextContent('com_ui_native_compaction_completed');
+    expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 });

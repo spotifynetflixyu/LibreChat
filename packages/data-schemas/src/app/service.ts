@@ -7,6 +7,7 @@ import {
   langfuseConfigSchema,
   skillSyncConfigSchema,
   summarizationConfigSchema,
+  oauthCompactionConfigSchema,
 } from 'librechat-data-provider';
 import type {
   FileSources,
@@ -138,6 +139,9 @@ export const AppService = async (params?: {
   const webSearch = loadWebSearchConfig(config.webSearch);
   const memory = loadMemoryConfig(config.memory);
   const summarization = loadSummarizationConfig(config);
+  const oauthCompaction = config.oauthCompaction
+    ? oauthCompactionConfigSchema.parse(config.oauthCompaction)
+    : undefined;
   const skillSync = loadSkillSyncConfig(config);
   const filteredTools = config.filteredTools;
   const includedTools = config.includedTools;
@@ -191,6 +195,7 @@ export const AppService = async (params?: {
     langfuse,
     messageFilter,
     summarization,
+    oauthCompaction,
     availableTools,
     imageOutputType,
     interfaceConfig,

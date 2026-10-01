@@ -3460,6 +3460,201 @@ describe('useStepHandler', () => {
     });
   });
 
+  describe('native OAuth compaction', () => {
+    const createCompactionEvent = (
+      id: string,
+      phase: Agents.OAuthCompactionEvent['phase'],
+      agentId = 'agent-1',
+    ): Agents.OAuthCompactionEvent => ({
+      id,
+      runId: 'response-msg-1',
+      agentId,
+      executionId: `execution-${id}`,
+      phase,
+    });
+
+    it('appends a marker on start and settles the exact agent marker', () => {
+      const responseMessage = createResponseMessage();
+      mockGetMessages.mockReturnValue([responseMessage]);
+      const { result } = renderHook(() => useStepHandler(createHookParams()));
+      const submission = createSubmission();
+
+      act(() => {
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_CONTEXT_COMPACTION,
+            data: createCompactionEvent('compaction-1', 'started'),
+          },
+          submission,
+        );
+      });
+
+      const startedMessage = mockSetMessages.mock.calls.at(-1)?.[0] as TMessage[];
+      const startedResponse = startedMessage.find(
+        (message) => message.messageId === 'response-msg-1',
+      );
+      const startedPart = startedResponse?.content?.[0] as SummaryContentPart;
+      expect(startedPart).toMatchObject({
+        type: ContentTypes.SUMMARY,
+        content: [],
+        nativeCompaction: { id: 'compaction-1', phase: 'started' },
+        agentId: 'agent-1',
+      });
+
+      act(() => {
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_CONTEXT_COMPACTION,
+            data: createCompactionEvent('compaction-1', 'completed'),
+          },
+          submission,
+        );
+      });
+
+      const completedMessage = mockSetMessages.mock.calls.at(-1)?.[0] as TMessage[];
+      const completedResponse = completedMessage.find(
+        (message) => message.messageId === 'response-msg-1',
+      );
+      expect(completedResponse?.content?.[0]).toMatchObject({
+        nativeCompaction: { id: 'compaction-1', phase: 'completed' },
+      });
+    });
+
+    it('ignores a terminal event that arrives before its start marker', () => {
+      const responseMessage = createResponseMessage();
+      mockGetMessages.mockReturnValue([responseMessage]);
+      const { result } = renderHook(() => useStepHandler(createHookParams()));
+      const submission = createSubmission();
+
+      act(() => {
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_CONTEXT_COMPACTION,
+            data: createCompactionEvent('compaction-early', 'completed'),
+          },
+          submission,
+        );
+      });
+
+      expect(mockSetMessages).not.toHaveBeenCalled();
+    });
+
+    it('keeps parallel compaction ids and agent lanes independent', () => {
+      const responseMessage = createResponseMessage();
+      mockGetMessages.mockReturnValue([responseMessage]);
+      const { result } = renderHook(() => useStepHandler(createHookParams()));
+      const submission = createSubmission();
+
+      act(() => {
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_CONTEXT_COMPACTION,
+            data: createCompactionEvent('compaction-a', 'started', 'agent-a'),
+          },
+          submission,
+        );
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_CONTEXT_COMPACTION,
+            data: createCompactionEvent('compaction-b', 'started', 'agent-b'),
+          },
+          submission,
+        );
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_CONTEXT_COMPACTION,
+            data: createCompactionEvent('compaction-a', 'failed', 'agent-a'),
+          },
+          submission,
+        );
+      });
+
+      const latestMessage = mockSetMessages.mock.calls.at(-1)?.[0] as TMessage[];
+      const latestResponse = latestMessage.find(
+        (message) => message.messageId === 'response-msg-1',
+      );
+      expect(latestResponse?.content).toEqual([
+        expect.objectContaining({
+          nativeCompaction: expect.objectContaining({ id: 'compaction-a', phase: 'failed' }),
+          agentId: 'agent-a',
+        }),
+        expect.objectContaining({
+          nativeCompaction: expect.objectContaining({ id: 'compaction-b', phase: 'started' }),
+          agentId: 'agent-b',
+        }),
+      ]);
+    });
+
+    it('keeps a native marker from occupying the next run-step slot', () => {
+      const responseMessage = createResponseMessage();
+      mockGetMessages.mockReturnValue([responseMessage]);
+      const { result } = renderHook(() => useStepHandler(createHookParams()));
+      const submission = createSubmission();
+
+      act(() => {
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_CONTEXT_COMPACTION,
+            data: createCompactionEvent('compaction-slot', 'started'),
+          },
+          submission,
+        );
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_RUN_STEP,
+            data: createToolCallRunStep({ id: 'step-after-compaction' }),
+          },
+          submission,
+        );
+      });
+
+      const latestMessage = mockSetMessages.mock.calls.at(-1)?.[0] as TMessage[];
+      const latestResponse = latestMessage.find(
+        (message) => message.messageId === 'response-msg-1',
+      );
+      expect(latestResponse?.content?.[0]).toMatchObject({
+        nativeCompaction: { id: 'compaction-slot', phase: 'started' },
+      });
+      expect(latestResponse?.content?.[1]).toMatchObject({ type: ContentTypes.TOOL_CALL });
+    });
+
+    it('settles a persisted marker when resume replay starts at completion', () => {
+      const persisted = createCompactionEvent('compaction-resume', 'completed');
+      const responseMessage = createResponseMessage({
+        content: [
+          {
+            type: ContentTypes.SUMMARY,
+            content: [],
+            nativeCompaction: persisted,
+            agentId: persisted.agentId,
+          },
+        ],
+      });
+      mockGetMessages.mockReturnValue([responseMessage]);
+      const { result } = renderHook(() => useStepHandler(createHookParams()));
+      const submission = createSubmission();
+
+      act(() => {
+        result.current.stepHandler(
+          {
+            event: StepEvents.ON_CONTEXT_COMPACTION,
+            data: persisted,
+          },
+          submission,
+        );
+      });
+
+      expect(mockSetMessages).toHaveBeenCalled();
+      const latestMessage = mockSetMessages.mock.calls.at(-1)?.[0] as TMessage[];
+      const latestResponse = latestMessage.find(
+        (message) => message.messageId === 'response-msg-1',
+      );
+      expect(latestResponse?.content?.[0]).toMatchObject({
+        nativeCompaction: { id: 'compaction-resume', phase: 'completed' },
+      });
+    });
+  });
+
   describe('edge cases', () => {
     it('should handle empty messages array', () => {
       mockGetMessages.mockReturnValue([]);

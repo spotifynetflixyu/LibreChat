@@ -738,6 +738,23 @@ describe('User Methods - Database Tests', () => {
   });
 
   describe('deleteUserById', () => {
+    test('reports successful deletion even when private compaction cleanup fails', async () => {
+      const user = await User.create({
+        name: 'Cleanup',
+        email: 'cleanup@example.com',
+        provider: 'local',
+      });
+      const scopedMethods = createUserMethods(mongoose, {
+        deleteOAuthCompaction: async () => {
+          throw new Error('sensitive diagnostic');
+        },
+      });
+      await expect(scopedMethods.deleteUserById(String(user._id))).resolves.toEqual({
+        deletedCount: 1,
+        message: 'User was deleted successfully.',
+      });
+      expect(await User.findById(user._id)).toBeNull();
+    });
     test('should delete user by ID', async () => {
       const user = await User.create({
         name: 'To Delete',

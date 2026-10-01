@@ -6,6 +6,7 @@ export * from './schema';
 export * from './utils';
 export { createModels } from './models';
 export {
+  createOAuthCompactionModel,
   createSteelAICapabilityModel,
   createSteelAIRunModel,
   createSteelAdminImportSessionModel,
@@ -64,6 +65,7 @@ export {
   setAgentEventActorReceiptMetricObserver,
   MCPAuthorityProofError,
   createMCPAuthorizationFenceRetryStorage,
+  createOAuthCompactionMethods,
   MAX_MCP_AUTHORITY_TARGETS,
   createMCPAuthorityBootRevision,
   createMCPAuthorityConfigSourceRevision,

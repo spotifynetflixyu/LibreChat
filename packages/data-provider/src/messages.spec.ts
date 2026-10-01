@@ -200,6 +200,28 @@ describe('buildTree', () => {
 });
 
 describe('isCompactedLeaf', () => {
+  it.each(['started', 'completed', 'failed', 'cancelled'] as const)(
+    'recognizes only completed native compact markers (%s)',
+    (phase) => {
+      expect(
+        isCompactedLeaf({
+          content: [
+            {
+              type: ContentTypes.SUMMARY,
+              content: [],
+              nativeCompaction: {
+                id: 'compact',
+                agentId: 'agent',
+                runId: 'run',
+                executionId: 'main',
+                phase,
+              },
+            },
+          ],
+        }),
+      ).toBe(phase === 'completed');
+    },
+  );
   const summary = (overrides: Record<string, unknown> = {}) => ({
     type: ContentTypes.SUMMARY,
     content: [{ type: ContentTypes.TEXT, text: 'checkpoint' }],

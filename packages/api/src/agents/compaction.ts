@@ -174,6 +174,13 @@ export function markCompactionOutcome(
   contentParts: TMessageContentParts[],
   { aborted = false }: { aborted?: boolean } = {},
 ): void {
+  const native = contentParts.find(
+    (part) => part?.type === ContentTypes.SUMMARY && part.nativeCompaction?.phase === 'completed',
+  );
+  if (native?.type === ContentTypes.SUMMARY) {
+    native.initiatedBy = 'user';
+    return;
+  }
   const summary = contentParts.find(isUsableSummaryPart);
   if (summary != null) {
     summary.initiatedBy = 'user';

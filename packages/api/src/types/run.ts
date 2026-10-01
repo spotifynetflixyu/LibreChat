@@ -1,4 +1,4 @@
-import type { Providers, ClientOptions } from '@librechat/agents';
+import type { Providers, BuiltInClientOptions } from '@librechat/agents';
 import type { AgentModelParameters } from 'librechat-data-provider';
 import type { OpenAIConfiguration } from './openai';
 
@@ -9,4 +9,4 @@ export type RunLLMConfig = {
   usage?: boolean;
   configuration?: OpenAIConfiguration;
 } & AgentModelParameters &
-  ClientOptions;
+  BuiltInClientOptions;

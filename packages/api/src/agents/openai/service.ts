@@ -22,6 +22,7 @@ import type { LocatorTraversalReporter } from '../../protection/diagnostics';
 import { nanoid } from 'nanoid';
 import { AgentCapabilities, EModelEndpoint } from 'librechat-data-provider';
 import type {
+  OAuthCompactionConfig,
   FiltersConfig,
   MessageFilterConfig,
   MessageFilterPiiConfig,
@@ -86,6 +87,7 @@ import { createSafeUser } from '~/utils';
  * Dependencies for the chat completion service
  */
 export interface ChatCompletionDependencies {
+  oauthCompactionStore?: import('@librechat/data-schemas').OAuthCompactionStore;
   readonly onTraversalFailure?: LocatorTraversalReporter;
   /** Get agent by ID */
   getAgent: (params: { id: string }) => Promise<Agent | null>;
@@ -273,7 +275,10 @@ type LoadToolsFn = (params: {
 /**
  * Create run function type
  */
-type CreateRunAppConfig = Pick<AppConfig, 'endpoints' | 'filters' | 'langfuse' | 'messageFilter'>;
+type CreateRunAppConfig = Pick<
+  AppConfig,
+  'endpoints' | 'filters' | 'langfuse' | 'messageFilter' | 'oauthCompaction'
+>;
 
 type CreateRunFn = (params: {
   agents: unknown[];
@@ -286,6 +291,7 @@ type CreateRunFn = (params: {
   traceContext?: LangfuseTraceContext;
   tenantId?: string;
   appConfig?: CreateRunAppConfig;
+  oauthCompactionStore?: import('@librechat/data-schemas').OAuthCompactionStore;
   tokenCounter?: (message: unknown) => number;
 }) => Promise<{
   Graph?: unknown;
@@ -300,6 +306,7 @@ type CreateRunFn = (params: {
  * App config type
  */
 interface AppConfig {
+  oauthCompaction?: OAuthCompactionConfig;
   endpoints?: Record<string, unknown>;
   filters?: FiltersConfig;
   langfuse?: Record<string, unknown>;
@@ -318,6 +325,7 @@ function selectCreateRunAppConfig(
     ...(appConfig.filters !== undefined && { filters: appConfig.filters }),
     ...(appConfig.langfuse !== undefined && { langfuse: appConfig.langfuse }),
     ...(appConfig.messageFilter !== undefined && { messageFilter: appConfig.messageFilter }),
+    ...(appConfig.oauthCompaction !== undefined && { oauthCompaction: appConfig.oauthCompaction }),
   };
 }
 
@@ -870,6 +878,7 @@ export async function createAgentChatCompletion(
        */
       const safeUser: Record<string, unknown> = { ...createSafeUser(reqUser), id: userId };
       const run = await deps.createRun({
+        oauthCompactionStore: deps.oauthCompactionStore,
         agents: [initializedAgent],
         messages,
         runId: requestId,

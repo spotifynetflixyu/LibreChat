@@ -1,12 +1,15 @@
+import type { OAuthCompactionMethods } from './oauthCompaction';
 import type { RoleMethods, RoleDeps } from './role';
 import {
   createOpenIDRefreshFlightMethods,
   type OpenIDRefreshFlightMethods,
 } from './openidRefreshFlight';
+import { createOAuthCompactionMethods } from './oauthCompaction';
 export {
   createMCPAuthorizationFenceRetryStorage,
   type MCPAuthorizationFenceRetryStorage,
 } from './mcpAuthorizationFenceRetry';
+export { createOAuthCompactionMethods };
 import {
   createRefreshTokenBridgeMethods,
   type RefreshTokenBridgeMethods,
@@ -230,6 +233,7 @@ export type AllMethods = UserMethods &
   TokenMethods &
   RefreshTokenBridgeMethods &
   OpenIDRefreshFlightMethods &
+  OAuthCompactionMethods &
   RoleMethods &
   KeyMethods &
   FileMethods &
@@ -302,6 +306,7 @@ export function createMethods(
     matchModelName: deps.matchModelName ?? (() => undefined),
     findMatchingPattern: deps.findMatchingPattern ?? (() => undefined),
   };
+  const oauthCompactionMethods = createOAuthCompactionMethods(mongoose);
   const txMethods = createTxMethods(mongoose, txDeps);
 
   // Tier 3: transaction methods need tx's getMultiplier/getCacheMultiplier
@@ -334,6 +339,7 @@ export function createMethods(
       agentTriggerDeliveryMethods.eraseAgentTriggerDeliveryConversationResults,
     prepareAgentTriggerConversationResultErasure:
       agentTriggerDeliveryMethods.prepareAgentTriggerConversationResultErasure,
+    deleteOAuthCompaction: oauthCompactionMethods.deleteOAuthCompaction,
     deleteAgentQueuedTurns: async (user, conversations) => {
       /** Queued-turn ownership is ObjectId-backed. Conversation methods also
        * support synthetic/non-ObjectId owners in embedded integrations and
@@ -455,11 +461,15 @@ export function createMethods(
   };
   const agentMethods = createAgentMethods(mongoose, agentDeps);
   return {
-    ...createUserMethods(mongoose, { getCache: deps.getCache }),
+    ...createUserMethods(mongoose, {
+      getCache: deps.getCache,
+      deleteOAuthCompaction: oauthCompactionMethods.deleteOAuthCompaction,
+    }),
     ...createSessionMethods(mongoose),
     ...createTokenMethods(mongoose),
     ...createRefreshTokenBridgeMethods(mongoose),
     ...createOpenIDRefreshFlightMethods(mongoose),
+    ...oauthCompactionMethods,
     ...roleMethods,
     ...createKeyMethods(mongoose),
     ...createFileMethods(mongoose),
@@ -516,6 +526,7 @@ export type {
   TokenMethods,
   RefreshTokenBridgeMethods,
   OpenIDRefreshFlightMethods,
+  OAuthCompactionMethods,
   RoleMethods,
   KeyMethods,
   FileMethods,

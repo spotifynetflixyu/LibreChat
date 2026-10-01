@@ -1,3 +1,24 @@
+import {
+  createSteelAICapabilityModel,
+  createSteelAIRunModel,
+  createSteelAdminImportSessionModel,
+  createSteelAdminMappingProfileModel,
+  createSteelAdminMergeTableModel,
+  createSteelExcelExportModel,
+  createSteelMemoryCandidateModel,
+  createSteelMemoryModel,
+  createSteelOcrPdfChunkArtifactModel,
+  createSteelProjectModel,
+  createSteelProjectSourceModel,
+  createSteelSourceVersionModel,
+  createSteelToolCallModel,
+  createSteelWorkingOrderMemoryModel,
+  createSteelDelegateOcrRunModel,
+  createSteelConversationOcrStateModel,
+  createSteelOcrResponseAuditModel,
+  createSteelQuotationStateModel,
+  createSteelQuotationArtifactModel,
+} from './steel';
 import { createAgentQueuedTurnModel, createAgentQueuedTurnSequenceModel } from './queuedTurn';
 import { createAgentTriggerLaneSequenceModel } from './triggerLaneSequence';
 import { createScheduleModel, createScheduleRunModel } from './schedule';
@@ -7,6 +28,7 @@ import { createOpenIDRefreshFlightModel } from './openidRefreshFlight';
 import { createAgentTriggerUserPurgeModel } from './triggerUserPurge';
 import { createRefreshTokenBridgeModel } from './refreshTokenBridge';
 import { createAgentTriggerDeliveryModel } from './triggerDelivery';
+import { createOAuthCompactionModel } from './oauthCompaction';
 import { createSkillSyncStatusModel } from './skillSyncStatus';
 import { createConversationTagModel } from './conversationTag';
 import { createCodeEnvironmentModel } from './codeEnvironment';
@@ -44,28 +66,9 @@ import { createUserModel } from './user';
 import { createRoleModel } from './role';
 import { createFileModel } from './file';
 import { createKeyModel } from './key';
-import {
-  createSteelAICapabilityModel,
-  createSteelAIRunModel,
-  createSteelAdminImportSessionModel,
-  createSteelAdminMappingProfileModel,
-  createSteelAdminMergeTableModel,
-  createSteelExcelExportModel,
-  createSteelMemoryCandidateModel,
-  createSteelMemoryModel,
-  createSteelOcrPdfChunkArtifactModel,
-  createSteelProjectModel,
-  createSteelProjectSourceModel,
-  createSteelSourceVersionModel,
-  createSteelToolCallModel,
-  createSteelWorkingOrderMemoryModel,
-  createSteelDelegateOcrRunModel,
-  createSteelConversationOcrStateModel,
-  createSteelOcrResponseAuditModel,
-  createSteelQuotationStateModel,
-  createSteelQuotationArtifactModel,
-} from './steel';
 import logger from '~/config/winston';
+
+export { createOAuthCompactionModel } from './oauthCompaction';
 
 /**
  * Creates all database models for all collections
@@ -137,6 +140,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
   ScheduleRun: ReturnType<typeof createScheduleRunModel>;
   RefreshTokenBridge: ReturnType<typeof createRefreshTokenBridgeModel>;
   OpenIDRefreshFlight: ReturnType<typeof createOpenIDRefreshFlightModel>;
+  OAuthCompaction: ReturnType<typeof createOAuthCompactionModel>;
 } {
   const models = {
     User: createUserModel(mongoose),
@@ -205,6 +209,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
     ScheduleRun: createScheduleRunModel(mongoose),
     RefreshTokenBridge: createRefreshTokenBridgeModel(mongoose),
     OpenIDRefreshFlight: createOpenIDRefreshFlightModel(mongoose),
+    OAuthCompaction: createOAuthCompactionModel(mongoose),
   };
   /**
    * Background index builds fail silently unless an 'index' listener is
