@@ -1,5 +1,8 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
+import { getElapsedDurationLabels } from '~/utils/runStepDuration';
 import { useOptionalMessagesOperations } from '~/Providers';
+import useLocalize from '~/hooks/useLocalize';
 import useTimeTick from '~/hooks/useTimeTick';
 import { isValidTimestamp } from '~/utils';
 
@@ -9,6 +12,7 @@ type MessageElapsedTimerProps = {
   isCreatedByUser?: boolean;
   isSubmitting?: boolean;
   startedAt?: TimerTimestamp;
+  submissionStartedAt?: number | null;
   parentMessageId?: string | null;
   timerKey?: string | null;
 };
@@ -40,9 +44,12 @@ export default function MessageElapsedTimer({
   isCreatedByUser,
   isSubmitting = false,
   startedAt,
+  submissionStartedAt,
   parentMessageId,
   timerKey,
 }: MessageElapsedTimerProps) {
+  const localize = useLocalize();
+  const { i18n } = useTranslation();
   const { getMessages } = useOptionalMessagesOperations();
   const parentStartedAt = useMemo(() => {
     if (!parentMessageId) {
@@ -56,14 +63,15 @@ export default function MessageElapsedTimer({
 
   const parentStartedAtMs = parseTimestampMs(parentStartedAt);
   const responseStartedAtMs = parseTimestampMs(startedAt);
-  const resolvedStartedAt = responseStartedAtMs ?? parentStartedAtMs;
+  const submissionStartedAtMs = parseTimestampMs(submissionStartedAt);
+  const resolvedStartedAt = submissionStartedAtMs ?? responseStartedAtMs ?? parentStartedAtMs;
   const keyRef = useRef<string | null | undefined>(timerKey);
   const resolvedStartedAtRef = useRef<number | null>(resolvedStartedAt);
   const hasStartedRef = useRef(isCreatedByUser !== true && isSubmitting);
   const wasSubmittingRef = useRef(isSubmitting);
   const [startAtMs, setStartAtMs] = useState(() => resolvedStartedAt ?? Date.now());
   const [completedAtMs, setCompletedAtMs] = useState<number | null>(null);
-  const nowMs = useTimeTick(1_000);
+  useTimeTick(1_000);
 
   useLayoutEffect(() => {
     const keyChanged = keyRef.current !== timerKey;
@@ -80,13 +88,13 @@ export default function MessageElapsedTimer({
       setCompletedAtMs(null);
     } else if (resolvedStartedAt !== null) {
       setStartAtMs((current) => {
-        if (!hasStartedRef.current) {
+        if (submissionStartedAtMs !== null || !hasStartedRef.current) {
           return resolvedStartedAt;
         }
         return Math.min(current, resolvedStartedAt);
       });
     }
-  }, [isCreatedByUser, isSubmitting, resolvedStartedAt, timerKey]);
+  }, [isCreatedByUser, isSubmitting, resolvedStartedAt, submissionStartedAtMs, timerKey]);
 
   useEffect(() => {
     if (isCreatedByUser === true) {
@@ -104,27 +112,39 @@ export default function MessageElapsedTimer({
     const isRestarting = !wasSubmittingRef.current;
     wasSubmittingRef.current = true;
     if (isRestarting) {
-      setStartAtMs(Date.now());
+      setStartAtMs(submissionStartedAtMs ?? Date.now());
     }
     hasStartedRef.current = true;
     setCompletedAtMs(null);
-  }, [isCreatedByUser, isSubmitting]);
+  }, [isCreatedByUser, isSubmitting, submissionStartedAtMs]);
 
   if (isCreatedByUser === true || !hasStartedRef.current) {
     return null;
   }
 
-  const endAtMs = isSubmitting ? nowMs : completedAtMs;
+  const endAtMs = isSubmitting ? Date.now() : completedAtMs;
   if (endAtMs == null) {
     return null;
   }
 
+  const durationMs = Math.max(0, Math.floor((endAtMs - startAtMs) / 1000)) * 1000;
+  const labels = getElapsedDurationLabels(durationMs, i18n.language);
+  const values = { ...labels.values };
+  if (durationMs >= 60_000) {
+    const seconds = Math.floor(durationMs / 1000) % 60;
+    try {
+      values[1] = new Intl.NumberFormat(i18n.language, { minimumIntegerDigits: 2 }).format(seconds);
+    } catch {
+      values[1] = String(seconds).padStart(2, '0');
+    }
+  }
   return (
     <span
       data-testid="message-elapsed-timer"
+      aria-label={localize(labels.announcedKey, labels.announcedValues)}
       className="ml-2 text-xs font-normal tabular-nums text-text-secondary"
     >
-      {formatElapsedTime(endAtMs - startAtMs)}
+      {localize(labels.key, values)}
     </span>
   );
 }

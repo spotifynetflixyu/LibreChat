@@ -30,28 +30,25 @@ import {
   lastCursorContentIdx,
   getActivityLabelText,
 } from '~/utils/activityLabels';
+import { hasAcceptedQuotationPreflight, hideQuoteSignalFromContent } from './hideQuoteSignal';
 import WorkspaceChanges, { partitionWorkspaceChanges } from './Parts/WorkspaceChanges';
 import { ParallelContentRenderer, type PartWithIndex } from './ParallelContent';
 import { MediaContext, MessageContext, SearchContext } from '~/Providers';
 import MemoryArtifacts, { hasMemoryArtifacts } from './MemoryArtifacts';
+import SteelActivity, { useSteelActivityEvents } from './SteelActivity';
 import { hasParallelLanes, parallelLaneGroups } from '~/utils/lanes';
-import PendingSkillCall from './Parts/PendingSkillCall';
-import { EmptyText, AgentUpdate } from './Parts';
 import { splitMarkdownIntoBlocks } from './splitMarkdown';
+import PendingSkillCall from './Parts/PendingSkillCall';
 import ActivityPhaseGroup from './ActivityPhaseGroup';
 import { hasPendingApprovalInPart } from '~/utils';
 import EditContentParts from './EditContentParts';
+import { EmptyText, AgentUpdate } from './Parts';
 import ApprovalProvider from './ApprovalContext';
 import Sources from '~/components/Web/Sources';
 import ToolCallGroup from './ToolCallGroup';
-import SteelActivity, { useSteelActivityEvents } from './SteelActivity';
 import { blocksLiveFold } from './live';
 import Container from './Container';
 import Part from './Part';
-import {
-  hasAcceptedQuotationPreflight,
-  hideQuoteSignalFromContent,
-} from './hideQuoteSignal';
 
 /** An empty TEXT part — the placeholder some endpoints seed in
  * `initialResponse.content` before the model produces anything. */
@@ -477,8 +474,8 @@ const ContentPartsBody = memo(function ContentPartsBody({
     () =>
       nestedActivityPhase
         ? undefined
-        : groupActivityPhases(content, messageLaneGroups, foldsLiveTail),
-    [nestedActivityPhase, content, messageLaneGroups, foldsLiveTail],
+        : groupActivityPhases(displayContent, messageLaneGroups, foldsLiveTail),
+    [nestedActivityPhase, displayContent, messageLaneGroups, foldsLiveTail],
   );
   /** Every file a phase's parts produced, in transcript order, deduplicated
    *  across parts that share a tool call. */
@@ -1307,9 +1304,9 @@ const ContentPartsBody = memo(function ContentPartsBody({
         </Container>
       )}
       {!showEmptyCursor && (phaseContent ?? renderGroups(groupedParts, lastContentIdx))}
-        {!nestedActivityPhase && renderSteelActivity()}
-        {!nestedActivityPhase && <WorkspaceChanges attachments={workspaceChanges} />}
-      </SearchContext.Provider>
+      {!nestedActivityPhase && renderSteelActivity()}
+      {!nestedActivityPhase && <WorkspaceChanges attachments={workspaceChanges} />}
+    </SearchContext.Provider>
   );
   if (nestedActivityPhase) {
     return sequentialContent;

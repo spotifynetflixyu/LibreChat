@@ -218,16 +218,61 @@ beforeEach(() => {
 });
 
 describe('ContentParts — accepted quotation signal', () => {
+  it('hides an accepted signal adjacent to a completed activity phase', () => {
+    jest.mocked(useSteelActivityEvents).mockReturnValue([
+      {
+        type: 'quotation_status',
+        source: 'quotation_preflight',
+        conversationId: 'c1',
+        messageId: 'msg-1',
+        index: 1,
+        stage: 'chunk_started',
+        status: 'running',
+        completedChunks: 0,
+        totalChunks: 2,
+      },
+    ]);
+    const content: TMessageContentParts[] = [
+      { type: ContentTypes.TEXT, text: '## quote_signal\n\nstart' },
+      { type: ContentTypes.TEXT, text: 'Price search' },
+      {
+        type: ContentTypes.ACTIVITY_LABEL,
+        activity_label: 'Price search completed',
+        activity_label_type: 'phase',
+        activity_start_index: 1,
+        activity_count: 1,
+        pending: false,
+      },
+    ];
+    render(<ContentParts {...baseProps} content={content} />);
+    expect(screen.getAllByTestId('real-part-text')).toHaveLength(1);
+    expect(screen.getByTestId('real-part-text')).toHaveAttribute('data-index', '1');
+  });
+
   it('hides the accepted signal without adding a cursor or moving later parts', () => {
-    const signal: TMessageContentParts = { type: ContentTypes.TEXT, text: '## quote_signal\n\nstart' };
-    const content = [signal, { type: ContentTypes.TEXT, text: '## system_order\n\nrow' } as TMessageContentParts];
+    const signal: TMessageContentParts = {
+      type: ContentTypes.TEXT,
+      text: '## quote_signal\n\nstart',
+    };
+    const content = [
+      signal,
+      { type: ContentTypes.TEXT, text: '## system_order\n\nrow' } as TMessageContentParts,
+    ];
     const { rerender } = render(<ContentParts {...baseProps} content={content} isSubmitting />);
     expect(screen.getAllByTestId('real-part-text')).toHaveLength(2);
-    jest.mocked(useSteelActivityEvents).mockReturnValue([{
-      type: 'quotation_status', source: 'quotation_preflight', conversationId: 'c1',
-      messageId: 'msg-1', index: 1, stage: 'started', status: 'running',
-      completedChunks: 0, totalChunks: 1,
-    }]);
+    jest.mocked(useSteelActivityEvents).mockReturnValue([
+      {
+        type: 'quotation_status',
+        source: 'quotation_preflight',
+        conversationId: 'c1',
+        messageId: 'msg-1',
+        index: 1,
+        stage: 'started',
+        status: 'running',
+        completedChunks: 0,
+        totalChunks: 1,
+      },
+    ]);
     rerender(<ContentParts {...baseProps} content={[...content]} isSubmitting />);
     expect(screen.getAllByTestId('real-part-text')).toHaveLength(1);
     expect(screen.getByTestId('real-part-text')).toHaveAttribute('data-index', '1');
@@ -240,15 +285,42 @@ describe('ContentParts — accepted quotation signal', () => {
   });
 });
 
+describe('ContentParts — native compaction visibility', () => {
+  it('keeps a compaction marker outside collapsed quotation activity with thinking hidden', () => {
+    const content: TMessageContentParts[] = [
+      { type: ContentTypes.TEXT, text: 'Price search' },
+      {
+        type: ContentTypes.ACTIVITY_LABEL,
+        activity_label: 'Price search completed',
+        activity_label_type: 'phase',
+        activity_start_index: 0,
+        activity_count: 1,
+        pending: false,
+      },
+      {
+        type: ContentTypes.SUMMARY,
+        content: [],
+        nativeCompaction: {
+          id: 'compact-1',
+          runId: 'msg-1',
+          agentId: 'agent-1',
+          executionId: 'quotation:child:1',
+          phase: 'started',
+        },
+      },
+    ];
+    render(<ContentParts {...baseProps} content={content} isSubmitting isLatestMessage />);
+
+    const marker = screen.getByTestId('real-part-summary');
+    expect(marker).toHaveAttribute('data-index', '2');
+    expect(screen.getByTestId('activity-phase-group')).not.toContainElement(marker);
+  });
+});
+
 describe('ContentParts — interim skill cards', () => {
   it('passes persisted Steel activity events to the primary activity renderer', () => {
     mockSteelActivity.mockClear();
-    render(
-      <ContentParts
-        {...baseProps}
-        persistedActivityEvents={[{ type: 'memory_saved' }]}
-      />,
-    );
+    render(<ContentParts {...baseProps} persistedActivityEvents={[{ type: 'memory_saved' }]} />);
 
     expect(mockSteelActivity).toHaveBeenCalledWith(
       expect.objectContaining({

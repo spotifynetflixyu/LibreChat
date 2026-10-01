@@ -1,8 +1,8 @@
 import { createElement, type ReactNode } from 'react';
-import { act, renderHook } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { RecoilRoot } from 'recoil';
+import { MemoryRouter } from 'react-router-dom';
+import { act, renderHook } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { ContentTypes, StepEvents, StepTypes, ToolCallTypes } from 'librechat-data-provider';
 import type {
   Agents,
@@ -22,6 +22,7 @@ jest.mock('~/data-provider', () => ({
   markTitleGenerationProcessed: jest.fn(),
   queueTitleGeneration: jest.fn(),
   startupConfigKey: jest.fn(() => ['startup-config']),
+  useReconcileConversationCodeEnvironmentMutation: () => ({ mutate: jest.fn() }),
 }));
 
 jest.mock('~/hooks/Agents', () => ({
@@ -108,14 +109,17 @@ describe('quotation final response reconciliation', () => {
   it.each([
     { name: 'partial draft', preview: 'draft-', finalReview: '' },
     { name: 'no-review sentinel', preview: '無待複核事項。', finalReview: '' },
-    { name: 'notes before reviews', preview: '## notes\n\n補充。\n\n## manual_reviews\n\n需複核。',
-      finalReview: '## manual_reviews\n\n需複核。\n\n## notes\n\n補充。\n\n' },
+    {
+      name: 'notes before reviews',
+      preview: '## notes\n\n補充。\n\n## manual_reviews\n\n需複核。',
+      finalReview: '## manual_reviews\n\n需複核。\n\n## notes\n\n補充。\n\n',
+    },
   ])('replaces $name once and ignores a stale delta frame', ({ preview, finalReview }) => {
     const userMessage = createUserMessage();
     const initialResponse = createResponseMessage();
     let messages = [userMessage, initialResponse];
     let completed = new Set<unknown>();
-    let submitting = false;
+    let submitting = true;
     let conversationState: TConversation | null = {
       conversationId,
       endpoint: 'openAI',
@@ -226,7 +230,8 @@ describe('quotation final response reconciliation', () => {
     };
     const authoritativeText =
       '## system_order\n\n| 品名規格 | 總數 | 小計 |\n| --- | ---: | ---: |\n| A | 1 | 100 |\n\n## customer_quote\n\n| 項目 | 金額 |\n| --- | ---: |\n| 合計 | 100 |\n\n' +
-      finalReview + '## quote_summary\n\n查價輸出完成：共 1 筆 system_order。';
+      finalReview +
+      '## quote_summary\n\n查價輸出完成：共 1 筆 system_order。';
     const authoritativeContent: TMessageContentParts[] = [
       toolCall,
       { type: ContentTypes.TEXT, text: authoritativeText },

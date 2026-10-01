@@ -5,6 +5,17 @@ import { getElapsedDurationLabels } from '~/utils';
 import { useLocalize } from '~/hooks';
 import store from '~/store';
 
+/**
+ * Merge decision (2026-10-01): message rows use ui/MessageElapsedTimer as their
+ * single header timer. It preserves our timestamp fallbacks, remount/restart
+ * handling and frozen duration, while adopting the upstream submissionStartFamily
+ * baseline (including resume restoration), localized labels and shouldShowElapsed.
+ * The main chat FINAL lifecycle still owns completion; quotation chunk completion
+ * does not stop the timer. Do not restore the footer Elapsed in message rows:
+ * removing those render sites was intentional consolidation, not lost functionality.
+ * Keep these exports for upstream compatibility and other elapsed-time surfaces.
+ */
+
 const elapsedSeconds = (start: number): number =>
   Math.max(0, Math.floor((Date.now() - start) / 1000));
 
@@ -17,12 +28,12 @@ type ElapsedVisibility = {
 };
 
 /**
- * Whether the elapsed indicator belongs under a row: the latest assistant row
+ * Whether the elapsed indicator belongs to a row: the latest assistant row
  * while its generation streams — but only at the newest sibling position.
  * `latestMessageId` follows the SELECTED branch, so during a regeneration a
  * settled older sibling the reader paged to mid-stream would otherwise satisfy
  * the same latest+submitting gate the withheld hover actions use, and a
- * counting timer under settled content misleads in a way hidden buttons don't.
+ * counting timer on settled content misleads in a way hidden buttons don't.
  */
 export const shouldShowElapsed = ({
   isSubmitting,

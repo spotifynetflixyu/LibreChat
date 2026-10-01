@@ -10,7 +10,7 @@ Configure `librechat.yaml`:
 ```yaml
 oauthCompaction:
   enabled: true
-  triggerRatio: 0.75
+  triggerRatio: 0.85
   maxContextTokens: 196608
   outputReserveTokens: 8192
   timeoutMs: 300000

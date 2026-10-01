@@ -50,6 +50,29 @@ describe('MessageElapsedTimer', () => {
     expect(screen.getByTestId('message-elapsed-timer')).toHaveTextContent('15s');
   });
 
+  it('uses the restored submission baseline ahead of message timestamps', () => {
+    jest.setSystemTime(120_000);
+    const { unmount } = render(
+      <MessageElapsedTimer isSubmitting startedAt={100_000} submissionStartedAt={0} />,
+    );
+    expect(screen.getByTestId('message-elapsed-timer')).toHaveTextContent('2m 00s');
+    unmount();
+    jest.setSystemTime(125_000);
+    render(<MessageElapsedTimer isSubmitting startedAt={100_000} submissionStartedAt={0} />);
+    expect(screen.getByTestId('message-elapsed-timer')).toHaveTextContent('2m 05s');
+  });
+
+  it('uses a new submission baseline when the same response restarts', () => {
+    jest.setSystemTime(12_000);
+    const { rerender } = render(
+      <MessageElapsedTimer isSubmitting startedAt={0} submissionStartedAt={0} />,
+    );
+    rerender(<MessageElapsedTimer startedAt={0} submissionStartedAt={0} />);
+    jest.setSystemTime(100_000);
+    rerender(<MessageElapsedTimer isSubmitting startedAt={0} submissionStartedAt={90_000} />);
+    expect(screen.getByTestId('message-elapsed-timer')).toHaveTextContent('10s');
+  });
+
   it('restarts from zero when a completed response is regenerated', () => {
     jest.setSystemTime(0);
     const { rerender } = render(

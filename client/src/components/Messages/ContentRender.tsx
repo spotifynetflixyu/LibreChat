@@ -23,9 +23,9 @@ import { useLocalize, useAttachments, useMessageActions, useContentMetadata } fr
 import ResumeAuthorHeader from '~/components/Chat/Messages/Content/Parts/ResumeAuthorHeader';
 import ToolCallLimitNotice from '~/components/Chat/Messages/Content/ToolCallLimitNotice';
 import { ErrorSourceProvider } from '~/components/Messages/Content/Error/source';
-import Elapsed, { shouldShowElapsed } from '~/components/Chat/Messages/Elapsed';
 import { getHeaderHoverLabel } from '~/components/Chat/Messages/ui/HeaderLabel';
 import ContentParts from '~/components/Chat/Messages/Content/ContentParts';
+import { shouldShowElapsed } from '~/components/Chat/Messages/Elapsed';
 import SiblingSwitch from '~/components/Chat/Messages/SiblingSwitch';
 import HoverButtons from '~/components/Chat/Messages/HoverButtons';
 import MessageRow from '~/components/Chat/Messages/ui/MessageRow';
@@ -127,6 +127,7 @@ const ContentRender = memo(function ContentRender({
     setCurrentEditId,
     chatContext,
   });
+  const submissionStartedAt = useRecoilValue(store.submissionStartFamily(index));
   const maximizeChatSpace = useRecoilValue(store.maximizeChatSpace);
   const autoExpandTools = useRecoilValue(store.autoExpandTools);
   const showThinking = useAtomValue(showThinkingAtom);
@@ -204,7 +205,14 @@ const ContentRender = memo(function ContentRender({
       timestamp={getMessageTimestampSource(msg)}
       processingStartedAt={getMessageProcessingStartedAt(msg)}
       processingDurationMs={!msg.isCreatedByUser ? msg.processingDurationMs : undefined}
-      isSubmitting={isSubmitting}
+      isSubmitting={shouldShowElapsed({
+        isSubmitting,
+        isLatestMessage,
+        isCreatedByUser: msg.isCreatedByUser,
+        siblingIdx,
+        siblingCount,
+      })}
+      submissionStartedAt={submissionStartedAt}
       parentMessageId={msg.parentMessageId}
       ariaLabel={getMessageAriaLabel(msg, localize)}
       headerPrefix={getHeaderPrefixForScreenReader(msg, localize)}
@@ -214,17 +222,6 @@ const ContentRender = memo(function ContentRender({
       isEditing={edit}
       footer={
         <SubRow classes={cn(messageFooterClasses, msg.isCreatedByUser && 'justify-end')}>
-          {/* The reading holds the column start: it takes over the slot the streaming
-              dot vacates, so the retry navigation beside it — whose width the footer
-              reserves whether or not hover has revealed it — must never push the
-              timer inboard of that column. */}
-          {shouldShowElapsed({
-            isSubmitting,
-            isLatestMessage,
-            isCreatedByUser: msg.isCreatedByUser,
-            siblingIdx,
-            siblingCount,
-          }) && <Elapsed index={index} />}
           {/* While the answer is generating every other action is withheld, which
               would otherwise leave this counter sitting alone under a half-written
               response. It reveals on hover there, like the actions it sits with. */}

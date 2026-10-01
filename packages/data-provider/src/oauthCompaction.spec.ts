@@ -4,7 +4,7 @@ it('keeps native OAuth compaction opt-in with bounded defaults', () => {
   expect(configSchema.parse({ version: '1.3.1' }).oauthCompaction).toBeUndefined();
   expect(oauthCompactionConfigSchema.parse({})).toEqual({
     enabled: false,
-    triggerRatio: 0.75,
+    triggerRatio: 0.85,
     maxContextTokens: 196608,
     outputReserveTokens: 8192,
     timeoutMs: 300000,

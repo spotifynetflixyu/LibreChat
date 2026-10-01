@@ -186,6 +186,16 @@ describe('MessageRow', () => {
     expect(screen.queryByTestId('message-timestamp')).not.toBeInTheDocument();
   });
 
+  it('keeps one timer above parallel response lanes while submitting', () => {
+    renderRow({ isCreatedByUser: false, isSubmitting: true, hasParallelContent: true });
+
+    const timer = screen.getByTestId('message-elapsed-timer');
+    expect(screen.getAllByTestId('message-elapsed-timer')).toHaveLength(1);
+    expect(timer.parentElement).toHaveClass('justify-end');
+    expect(screen.getByTestId('message-body')).not.toContainElement(timer);
+    expect(screen.queryByTestId('message-icon')).not.toBeInTheDocument();
+  });
+
   it('does not use display timestamp as elapsed timer start for pending assistant', () => {
     renderRow({
       isCreatedByUser: false,

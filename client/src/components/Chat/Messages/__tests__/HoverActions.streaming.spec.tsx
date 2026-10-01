@@ -330,36 +330,34 @@ describe('streaming hover actions', () => {
   });
 
   /**
-   * The elapsed-time indicator fills the footer slot the withheld actions leave
-   * empty, but only under the response that is actively generating.
+   * The elapsed-time indicator lives in the active response header.
    */
   it.each([
     ['a plain text', false],
     ['a structured', true],
-  ])('shows the elapsed timer under %s streaming response', (_label, structured) => {
+  ])('shows one elapsed timer in the header of %s streaming response', (_label, structured) => {
     renderStreamingRow(structured);
 
-    expect(screen.getByTestId('stream-elapsed')).toBeInTheDocument();
+    expect(screen.getAllByTestId('message-elapsed-timer')).toHaveLength(1);
+    expect(screen.queryByTestId('stream-elapsed')).not.toBeInTheDocument();
+    expect(screen.getByTestId('message-elapsed-timer').closest('h2')).not.toBeNull();
   });
 
-  /**
-   * The retry navigation holds its width in the footer whether or not hover has
-   * revealed it, so a row with siblings would otherwise indent the timer past the
-   * column the streaming dot just vacated. The reading stays at the column start.
-   */
+  /** All response render paths share the header timer. */
   it.each([
     ['a plain text', Message],
     ['a structured', StructuredMessage],
     ['a flat-thread', MessageParts],
-  ])('keeps the elapsed reading left-most in %s streaming footer', (_label, row) => {
+  ])('keeps the elapsed reading in the header of %s streaming row', (_label, row) => {
     renderStreamingRow(false, true, 1, row);
 
-    const timer = screen.getByTestId('stream-elapsed');
+    const timer = screen.getByTestId('message-elapsed-timer');
     const footer = screen.getByRole('navigation', {
       name: 'com_ui_sibling_navigation',
     }).parentElement;
 
-    expect(footer?.firstElementChild).toContainElement(timer);
+    expect(timer.closest('h2')).not.toBeNull();
+    expect(footer).not.toContainElement(timer);
   });
 
   /** An error content part renders without its message, so its row supplies the identity. */
@@ -382,7 +380,7 @@ describe('streaming hover actions', () => {
   it('renders no elapsed timer once the row is not submitting', () => {
     renderStreamingRow(false, false);
 
-    expect(screen.queryByTestId('stream-elapsed')).toBeNull();
+    expect(screen.queryByTestId('message-elapsed-timer')).toBeNull();
   });
 
   /**
@@ -391,10 +389,10 @@ describe('streaming hover actions', () => {
    * The timer additionally requires the newest sibling position — a counting
    * timer under settled content misleads in a way withheld buttons don't.
    */
-  it('renders no elapsed timer under an older sibling selected mid-stream', () => {
+  it('renders no elapsed timer on an older sibling selected mid-stream', () => {
     renderStreamingRow(false, true, 0);
 
-    expect(screen.queryByTestId('stream-elapsed')).toBeNull();
+    expect(screen.queryByTestId('message-elapsed-timer')).toBeNull();
     expect(screen.getByTestId('hover-buttons')).toBeInTheDocument();
   });
 
@@ -415,7 +413,7 @@ describe('streaming hover actions', () => {
         jest.advanceTimersByTime(5_000);
       });
 
-      expect(screen.getByTestId('stream-elapsed')).toBeInTheDocument();
+      expect(screen.getByTestId('message-elapsed-timer')).toBeInTheDocument();
       expect(mockHoverButtonsRenderCount).toBe(hoverRenders);
       expect(mockContentRenderCount).toBe(contentRenders);
     } finally {

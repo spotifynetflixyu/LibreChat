@@ -56,6 +56,20 @@ describe('Summary', () => {
     expect(container).toBeEmptyDOMElement();
   });
 
+  it('shows ongoing native compaction even without summary text', () => {
+    mockMessageContext.current = { isSubmitting: true, isLatestMessage: true };
+    const { rerender } = render(
+      <Summary content={[]} nativeCompaction={{ ...nativeCompaction, phase: 'started' }} />,
+    );
+
+    expect(screen.getByRole('status')).toHaveTextContent('com_ui_native_compaction_active');
+    expect(screen.getByRole('status')).toHaveAttribute('aria-busy', 'true');
+
+    rerender(<Summary content={[]} nativeCompaction={nativeCompaction} />);
+    expect(screen.getByRole('status')).toHaveTextContent('com_ui_native_compaction_completed');
+    expect(screen.getByRole('status')).not.toHaveAttribute('aria-busy');
+  });
+
   it('renders native compaction as a non-expandable status marker', () => {
     render(<Summary content={[]} nativeCompaction={nativeCompaction} />);
 

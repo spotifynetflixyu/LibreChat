@@ -1,7 +1,7 @@
 import { Zap } from 'lucide-react';
 import type { ReactNode } from 'react';
-import MessageTimestamp from './MessageTimestamp';
 import MessageElapsedTimer from './MessageElapsedTimer';
+import MessageTimestamp from './MessageTimestamp';
 import HeaderLabel from './HeaderLabel';
 import { cn } from '~/utils';
 
@@ -14,6 +14,7 @@ type MessageRowProps = {
   footer: ReactNode;
   timestamp?: string | null;
   processingStartedAt?: string | null;
+  submissionStartedAt?: number | null;
   processingDurationMs?: number;
   isSubmitting?: boolean;
   parentMessageId?: string | null;
@@ -51,6 +52,7 @@ export default function MessageRow({
   children,
   timestamp,
   processingStartedAt,
+  submissionStartedAt,
   processingDurationMs,
   ariaLabel,
   className,
@@ -68,6 +70,17 @@ export default function MessageRow({
   const widthClass = getMessageRowWidthClass({ fullWidth, hasParallelContent });
   const isSystem = systemLabel != null && systemLabel !== '';
   const isUserSide = isCreatedByUser || isSystem;
+
+  const elapsedTimer = (
+    <MessageElapsedTimer
+      timerKey={id}
+      startedAt={processingStartedAt}
+      submissionStartedAt={submissionStartedAt}
+      parentMessageId={parentMessageId}
+      isSubmitting
+      isCreatedByUser={isCreatedByUser}
+    />
+  );
 
   return (
     <div
@@ -124,15 +137,7 @@ export default function MessageRow({
               <span className="sr-only">{headerPrefix}</span>
               <HeaderLabel label={label} hoverLabel={hoverLabel} />
               {isSubmitting ? (
-                <span className="ml-auto shrink-0">
-                  <MessageElapsedTimer
-                    timerKey={id}
-                    startedAt={processingStartedAt}
-                    parentMessageId={parentMessageId}
-                    isSubmitting
-                    isCreatedByUser={isCreatedByUser}
-                  />
-                </span>
+                <span className="ml-auto shrink-0">{elapsedTimer}</span>
               ) : (
                 <MessageTimestamp
                   value={timestamp}
@@ -142,6 +147,10 @@ export default function MessageRow({
               )}
             </h2>
           ))}
+
+        {hasParallelContent && isSubmitting && !isUserSide && (
+          <div className="mb-1 flex min-h-7 w-full items-center justify-end">{elapsedTimer}</div>
+        )}
 
         <div className={cn('flex w-full flex-col gap-1', isUserSide && 'items-end')}>
           <div
