@@ -1293,6 +1293,7 @@
   "com_ui_native_compaction_active": "Compacting context · This can take a few minutes",
   "com_ui_native_compaction_completed": "Context compacted",
   "com_ui_native_compaction_failed": "Context compaction failed",
+  "com_ui_native_compaction_context_too_large": "Context exceeds the available capacity. Shorten the message or start a new chat.",
   "com_ui_context_cost": "Cost",
   "com_ui_context_cost_branch": "Cost (this branch)",
   "com_ui_context_cost_total": "All branches",

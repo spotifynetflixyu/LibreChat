@@ -4,7 +4,10 @@ import type { OAuthCompactionEvent } from 'librechat-data-provider';
 import NativeCompaction from '../NativeCompaction';
 
 jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
+  useLocalize: () => (key: string) =>
+    key === 'com_ui_native_compaction_context_too_large'
+      ? 'Context exceeds the available capacity. Shorten the message or start a new chat.'
+      : key,
 }));
 
 const event = (phase: OAuthCompactionEvent['phase']): OAuthCompactionEvent => ({
@@ -34,6 +37,19 @@ describe('NativeCompaction', () => {
 
     expect(screen.getByRole('status')).toHaveTextContent(label);
     expect(screen.getByRole('status')).not.toHaveAttribute('aria-busy');
+  });
+
+  it('shows an accessible capacity hint for a context-too-large failure', () => {
+    render(
+      <NativeCompaction
+        event={{ ...event('failed'), code: 'context_too_large' }}
+        isSubmitting={false}
+      />,
+    );
+
+    const status = screen.getByRole('status');
+    expect(status).toHaveAttribute('aria-live', 'polite');
+    expect(screen.getByText(/Context exceeds the available capacity/)).toBeVisible();
   });
 
   it('hides cancelled compaction markers', () => {

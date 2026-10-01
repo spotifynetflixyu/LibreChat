@@ -12,6 +12,8 @@ import type {
 } from 'librechat-data-provider';
 import type { JSONObject, JSONArray, JSONValue } from '@ai-sdk/provider';
 import type { OpenAIOAuthFetch } from '~/steel/native/credentials';
+import type { TextTokenCounter } from './budget';
+import { estimateTokens } from './budget';
 
 export type OAuthCompactionConfig = DataProviderOAuthCompactionConfig;
 
@@ -285,22 +287,15 @@ async function emitStatus(
   await callback?.(status);
 }
 
-export function estimateInputBytes(input: JSONArray): number {
-  return new TextEncoder().encode(JSON.stringify(input)).byteLength;
-}
-
-export function estimateContextTokens(input: JSONArray, outputReserveTokens: number): number {
-  let estimate = outputReserveTokens;
-  for (const item of input) {
-    const itemBytes = estimateInputBytes([item]);
-    const compacted = isJSONObject(item) && stringProperty(item, 'type') === 'compaction';
-    estimate += (compacted ? Math.ceil(itemBytes / 4) : itemBytes) + 32;
-  }
-  return estimate;
-}
-
-function estimateRequestEnvelope(body: JSONObject): number {
-  return estimateInputBytes([normalizedShaping(body)]) + 32;
+export function estimateContextTokens(
+  input: JSONArray,
+  outputReserveTokens: number,
+  countText: TextTokenCounter,
+): number {
+  return input.reduce<number>(
+    (tokens, item) => tokens + estimateTokens(item, countText).knownTokens,
+    outputReserveTokens,
+  );
 }
 
 function hasClosedFunctionCalls(input: JSONArray): boolean {
@@ -432,20 +427,32 @@ function restoreInput(input: JSONArray, state: OAuthCompactionState): JSONArray 
   return restoreInputWithCoverage(input, state)?.input ?? null;
 }
 
-function eligiblePrefix(input: JSONArray, maxBytes: number): JSONArray {
-  let candidate: JSONArray = [];
-  let closed: JSONArray = [];
-  for (const item of input) {
-    const next = [...candidate, item];
-    if (estimateInputBytes(next) > maxBytes) {
-      break;
+function eligiblePrefix(input: JSONArray, costs: readonly number[], maxTokens: number): JSONArray {
+  const calls = new Set<string>();
+  const outputs = new Set<string>();
+  let tokens = 0;
+  let closedLength = 0;
+  let firstClosedLength = 0;
+  for (let index = 0; index < input.length; index++) {
+    tokens += costs[index];
+    const item = input[index];
+    if (isJSONObject(item)) {
+      const id = stringProperty(item, 'call_id');
+      if (id !== undefined && item.type === 'function_call') {
+        if (!outputs.delete(id)) calls.add(id);
+      }
+      if (id !== undefined && item.type === 'function_call_output') {
+        if (!calls.delete(id)) outputs.add(id);
+      }
     }
-    candidate = next;
-    if (hasClosedFunctionCalls(candidate)) {
-      closed = candidate;
-    }
+    if (calls.size !== 0 || outputs.size !== 0) continue;
+    firstClosedLength ||= index + 1;
+    if (tokens > maxTokens) break;
+    closedLength = index + 1;
   }
-  return closed;
+  // Estimates cannot prove admission. Let the provider check the shortest
+  // complete group when none appears to fit, including opaque/media context.
+  return input.slice(0, closedLength || firstClosedLength);
 }
 
 function coveredPrefixLength(
@@ -517,6 +524,7 @@ export function createOAuthCompactionRuntime(
       },
     ) => Response;
   },
+  getTokenCounter: () => Promise<TextTokenCounter>,
 ): OAuthCompactionRuntime {
   validateOAuthCompactionConfig(options.config);
   const passthrough = async (
@@ -626,14 +634,17 @@ export function createOAuthCompactionRuntime(
         storedUsage.shapingHash === parsed.shapingHash &&
         restored !== null &&
         matchingPrefix(restored, storedUsage.inputHashes) === storedUsage.inputHashes.length;
-      const requestEnvelopeBytes = estimateRequestEnvelope(body);
+      const countText = await getTokenCounter();
+      const requestEnvelopeTokens = estimateTokens(normalizedShaping(body), countText).knownTokens;
+      const estimateInput = (input: JSONArray, reserve = 0) =>
+        estimateContextTokens(input, reserve, countText);
       const inputEstimate =
         usageBaselineMatches && restored !== null
           ? (storedUsage?.inputTokens ?? 0) +
-            estimateContextTokens(restored.slice(storedUsage?.inputHashes.length ?? 0), 0) +
+            estimateInput(restored.slice(storedUsage?.inputHashes.length ?? 0)) +
             config.outputReserveTokens
-          : estimateContextTokens(restored ?? parsed.input, config.outputReserveTokens) +
-            requestEnvelopeBytes;
+          : estimateInput(restored ?? parsed.input, config.outputReserveTokens) +
+            requestEnvelopeTokens;
       if (restored !== null) {
         currentInput = restored;
         currentCoverage = restoredWithCoverage?.coverage ?? currentCoverage;
@@ -644,13 +655,14 @@ export function createOAuthCompactionRuntime(
         if (!hasClosedFunctionCalls(currentInput)) {
           throw new OAuthCompactionError('unsupported_request');
         }
-        const maxBytes = Math.max(
-          1024,
-          config.maxContextTokens - config.outputReserveTokens - requestEnvelopeBytes,
+        const maxTokens = Math.max(
+          0,
+          config.maxContextTokens - config.outputReserveTokens - requestEnvelopeTokens,
         );
-        let prefix = eligiblePrefix(currentInput, maxBytes);
+        const costs = currentInput.map((item) => estimateTokens(item, countText).knownTokens);
+        let prefix = eligiblePrefix(currentInput, costs, maxTokens);
         if (prefix.length === 0) {
-          throw new OAuthCompactionError('context_too_large');
+          throw new OAuthCompactionError('unsupported_request');
         }
         if (!statusStarted) {
           await emitStatus(options.onStatus, statusEvent(scope, 'started', eventId));
@@ -701,10 +713,7 @@ export function createOAuthCompactionRuntime(
             throw error;
           }
           contextRecoveryUsed = true;
-          const retryPrefix = eligiblePrefix(
-            currentInput,
-            Math.max(1024, Math.floor(maxBytes / 2)),
-          );
+          const retryPrefix = eligiblePrefix(currentInput, costs, Math.floor(maxTokens / 2));
           if (retryPrefix.length === 0 || retryPrefix.length >= prefix.length) {
             throw error;
           }
@@ -777,8 +786,8 @@ export function createOAuthCompactionRuntime(
           ? currentInput.slice(baseline.inputHashes.length)
           : currentInput;
         const inputTokens = baselineMatches
-          ? baseline.inputTokens + estimateContextTokens(tail, 0)
-          : estimateContextTokens(currentInput, 0) + requestEnvelopeBytes;
+          ? baseline.inputTokens + estimateInput(tail)
+          : estimateInput(currentInput) + requestEnvelopeTokens;
         const contextBudget = config.maxContextTokens - config.outputReserveTokens;
         await options.onContextUsage({
           agentId: scope.agentId,
@@ -813,8 +822,8 @@ export function createOAuthCompactionRuntime(
         if (controller.signal.aborted) {
           throw new OAuthCompactionError('aborted');
         }
-        if (retryableStatus && isRetryableContextError(errorBody) && !contextRecoveryUsed) {
-          if (compactionCompleted) {
+        if (retryableStatus && isRetryableContextError(errorBody)) {
+          if (contextRecoveryUsed || compactionCompleted) {
             throw new OAuthCompactionError('context_too_large');
           }
           await compactAndPersist();
@@ -826,8 +835,16 @@ export function createOAuthCompactionRuntime(
           const retryRequest = requestWithBody(requestInput, requestInit, body, controller.signal);
           normalResponse = await fetch(retryRequest.input, retryRequest.init);
           if (!normalResponse.ok || normalResponse.body === null) {
+            const contextStatus = normalResponse.status === 400 || normalResponse.status === 413;
+            const retryError = contextStatus
+              ? await stream.readError(normalResponse, controller.signal, config.maxResponseBytes)
+              : null;
             await normalResponse.body?.cancel().catch(() => undefined);
-            throw new OAuthCompactionError('provider_unavailable');
+            throw new OAuthCompactionError(
+              contextStatus && isRetryableContextError(retryError)
+                ? 'context_too_large'
+                : 'provider_unavailable',
+            );
           }
         } else {
           throw new OAuthCompactionError('provider_unavailable');
@@ -898,10 +915,15 @@ export function createOAuthCompactionRuntime(
       } else {
         code = 'provider_unavailable';
       }
-      if (statusStarted && !compactionCompleted) {
+      if ((statusStarted && !compactionCompleted) || code === 'context_too_large') {
         await emitStatus(
           options.onStatus,
-          statusEvent(scope, code === 'aborted' ? 'cancelled' : 'failed', eventId, code),
+          statusEvent(
+            scope,
+            code === 'aborted' ? 'cancelled' : 'failed',
+            compactionCompleted ? statusId() : eventId,
+            code,
+          ),
         );
       }
       throw error instanceof OAuthCompactionError ? error : new OAuthCompactionError(code);

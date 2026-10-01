@@ -60,17 +60,25 @@ treated as a text summary checkpoint.
 
 ## Admission and failures
 
-Budget estimates use verified provider input usage only when the exact shaping and projected
-prefix match, plus UTF-8 byte bounds for appended plaintext and an output reserve. Without
-verified usage, plaintext is conservatively estimated; opaque context uses a coarse estimate,
-not ciphertext text tokenization. Estimates trigger compaction but cannot prove provider
-admission. No calibration generation is sent. Native compaction operates only at closed
-function-call/result boundaries.
+Budget estimates use verified provider input usage only when the account, model, instructions,
+tools, request options and projected prefix match. Only new tail items are added to that count.
+Otherwise the gateway initializes the bounded `o200k_base` budgeting counter. Estimate v1 counts
+serialized plaintext and request structure, with 32 tokens of framing headroom per item and
+envelope, plus the configured output reserve. This approximates native OAuth usage; it is not
+an exact provider count. Encrypted compaction items and native media payloads have unknown costs
+and are not tokenized as plaintext. UTF-8 byte limits apply to stream parsing, not context admission.
+
+Both automatic compaction and prefix selection use this token estimate. Native compaction operates
+only at closed function-call/result boundaries. If no complete group appears to fit, the shortest
+complete group is sent for provider confirmation. Estimates alone never produce `context_too_large`;
+that code requires a recognized provider context-length error. No calibration generation is sent.
 
 A busy lease, failed persistence, cancellation, malformed stream or provider failure stops the
 request rather than resending raw history. A smaller-prefix retry is allowed once only for a
 pre-stream HTTP 400/413 with the recognized structured context-length code. Errors after
-streaming starts, timeouts, quota errors and arbitrary provider messages are not retried.
+streaming starts, timeouts, quota errors and arbitrary provider messages are not retried. Repeated
+recognized context-length failures stop with `context_too_large`; the UI displays capacity guidance
+separately from a generic compaction failure.
 
 This prevents refresh from inflating context with already compacted tool history. It cannot
 promise every input fits: very large retained user messages, a single oversized tool group,

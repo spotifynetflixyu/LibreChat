@@ -730,7 +730,7 @@ export namespace Agents {
     agentId: string;
     executionId: string;
     phase: 'started' | 'completed' | 'failed' | 'cancelled';
-    code?: string;
+    code?: 'context_too_large';
   };
 }
 

@@ -24,6 +24,7 @@ function readEvent(value: unknown): OAuthCompactionEvent | null {
     return null;
   }
   const { id, runId, agentId, executionId, phase } = value;
+  const code = 'code' in value ? value.code : undefined;
   if (
     typeof id !== 'string' ||
     typeof runId !== 'string' ||
@@ -37,6 +38,9 @@ function readEvent(value: unknown): OAuthCompactionEvent | null {
   }
   if (phase !== 'started' && phase !== 'completed' && phase !== 'failed' && phase !== 'cancelled') {
     return null;
+  }
+  if (phase === 'failed' && code === 'context_too_large') {
+    return { id, runId, agentId, executionId, phase, code };
   }
   return { id, runId, agentId, executionId, phase };
 }

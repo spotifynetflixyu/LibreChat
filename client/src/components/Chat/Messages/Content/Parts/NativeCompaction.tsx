@@ -18,6 +18,9 @@ const NativeCompaction = memo(({ event, isSubmitting }: NativeCompactionProps) =
   }
 
   let label = localize('com_ui_native_compaction_failed');
+  if (event.phase === 'failed' && event.code === 'context_too_large') {
+    label = localize('com_ui_native_compaction_context_too_large');
+  }
   if (event.phase === 'started') label = localize('com_ui_native_compaction_active');
   if (event.phase === 'completed') label = localize('com_ui_native_compaction_completed');
 

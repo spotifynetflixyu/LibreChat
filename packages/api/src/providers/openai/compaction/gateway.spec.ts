@@ -251,6 +251,7 @@ describe('OAuth compaction gateway', () => {
     const store = new MemoryStore();
     const first = createFetch(store, [compactResponse('opaque-projected'), normalResponse()], [], {
       maxContextTokens: 2000,
+      triggerRatio: 0.15,
     });
     await (await first.fetch(URL, requestInput('A'.repeat(1600), true))).text();
 
@@ -305,7 +306,7 @@ describe('OAuth compaction gateway', () => {
         maxContextTokens: proactive ? 50 : 2000,
       });
       await expect(fetch(URL, requestInput('A'.repeat(1600), true))).rejects.toMatchObject({
-        code: proactive ? 'context_too_large' : 'provider_unavailable',
+        code: 'context_too_large',
       });
       expect(calls).toHaveLength(proactive ? 2 : 3);
       expect(store.releases).toBe(1);
@@ -426,4 +427,153 @@ describe('OAuth compaction gateway', () => {
     await new Promise<void>((resolve) => setTimeout(resolve, 0));
     expect(cancelled).toBe(true);
   });
+});
+import { oauthCompactionConfigSchema } from 'librechat-data-provider';
+
+it('admits a 260KB low-token first message with production defaults', async () => {
+  const defaults = oauthCompactionConfigSchema.parse({ enabled: true });
+  const input = requestInput('A'.repeat(260000));
+  const { fetch, calls } = createFetch(new MemoryStore(), [normalResponse()], [], defaults);
+  await (await fetch(URL, input)).text();
+  expect(calls).toHaveLength(1);
+  expect(calls[0].body).toBe(input.body);
+});
+
+it('compacts at 85 percent before generation and emits both lifecycle markers', async () => {
+  const statuses: Array<{ phase: string; code?: string }> = [];
+  const { fetch, calls } = createFetch(
+    new MemoryStore(),
+    [compactResponse('opaque-budget'), normalResponse()],
+    statuses,
+    oauthCompactionConfigSchema.parse({ enabled: true }),
+  );
+  await (await fetch(URL, requestInput('word '.repeat(215000)))).text();
+  expect(calls).toHaveLength(2);
+  expect(JSON.parse(String(calls[0].body)).input.at(-1)).toEqual({ type: 'compaction_trigger' });
+  expect(statuses.map((status) => status.phase)).toEqual(['started', 'completed']);
+});
+
+it('lets the provider confirm an oversized indivisible group before stopping', async () => {
+  const statuses: Array<{ phase: string; code?: string }> = [];
+  const store = new MemoryStore();
+  const { fetch, calls } = createFetch(
+    store,
+    [
+      Response.json(
+        { type: 'invalid_request_error', code: 'context_length_exceeded' },
+        { status: 413 },
+      ),
+    ],
+    statuses,
+    { maxContextTokens: 100 },
+  );
+  await expect(fetch(URL, requestInput('word '.repeat(1000)))).rejects.toMatchObject({
+    code: 'context_too_large',
+  });
+  expect(calls).toHaveLength(1);
+  expect(JSON.parse(String(calls[0].body)).input[0].content[0].text).toBe('word '.repeat(1000));
+  expect(statuses[statuses.length - 1]).toMatchObject({
+    phase: 'failed',
+    code: 'context_too_large',
+  });
+  expect(store.releases).toBe(1);
+});
+
+it('includes instructions, tool schemas and output reserve in the compact trigger', async () => {
+  const { fetch, calls } = createFetch(
+    new MemoryStore(),
+    [compactResponse('opaque'), normalResponse()],
+    [],
+    { maxContextTokens: 2000, outputReserveTokens: 1000 },
+  );
+  const request = requestInput('Hi');
+  request.body = JSON.stringify({
+    ...JSON.parse(String(request.body)),
+    instructions: 'word '.repeat(500),
+    tools: [
+      {
+        type: 'function',
+        name: 'lookup',
+        description: 'word '.repeat(500),
+        parameters: { type: 'object' },
+      },
+    ],
+  });
+  await (await fetch(URL, request)).text();
+  expect(calls).toHaveLength(2);
+  expect(JSON.parse(String(calls[0].body)).tools).toEqual(JSON.parse(String(request.body)).tools);
+});
+
+it('selects a compact prefix only at complete function-call/result boundaries', async () => {
+  const pair = (id: string, size: number) => [
+    { type: 'function_call', call_id: id, name: 'lookup', arguments: '{}' },
+    { type: 'function_call_output', call_id: id, output: 'word '.repeat(size) },
+  ];
+  const input = [...pair('first', 100), ...pair('second', 1000)];
+  const { fetch, calls } = createFetch(
+    new MemoryStore(),
+    [compactResponse('opaque'), normalResponse()],
+    [],
+    { maxContextTokens: 500 },
+  );
+  await (
+    await fetch(URL, {
+      method: 'POST',
+      headers: { 'chatgpt-account-id': ACCOUNT },
+      body: body(input),
+    })
+  ).text();
+  expect(JSON.parse(String(calls[0].body)).input).toEqual([
+    ...input.slice(0, 2),
+    { type: 'compaction_trigger' },
+  ]);
+  expect(JSON.parse(String(calls[1].body)).input).toEqual([
+    { type: 'compaction', encrypted_content: 'opaque' },
+    ...input.slice(2),
+  ]);
+});
+
+it.each(['instructions', 'tools', 'model'])(
+  'invalidates verified usage when %s changes',
+  async (key) => {
+    const store = new MemoryStore();
+    const first = createFetch(store, [compactResponse('opaque-old'), normalResponse()]);
+    await (await first.fetch(URL, requestInput())).text();
+    const request = requestInput();
+    request.body = JSON.stringify({
+      ...JSON.parse(String(request.body)),
+      [key]: key === 'tools' ? [{ type: 'function', name: 'changed' }] : 'changed',
+    });
+    const next = createFetch(store, [compactResponse('opaque-new'), normalResponse()]);
+    await (await next.fetch(URL, request)).text();
+    expect(next.calls).toHaveLength(2);
+    expect(JSON.stringify(JSON.parse(String(next.calls[0].body)).input)).not.toContain(
+      'opaque-old',
+    );
+  },
+);
+
+it('preserves confirmed overflow after a smaller-prefix compact retry succeeds', async () => {
+  const statuses: Array<{ phase: string; code?: string; id?: string }> = [];
+  const contextError = () =>
+    Response.json(
+      { type: 'invalid_request_error', code: 'context_length_exceeded' },
+      { status: 400 },
+    );
+  const { fetch, calls } = createFetch(
+    new MemoryStore(),
+    [contextError(), compactResponse('opaque'), contextError()],
+    statuses,
+    { maxContextTokens: 2000 },
+  );
+  await expect(fetch(URL, requestInput('word '.repeat(3000), true))).rejects.toMatchObject({
+    code: 'context_too_large',
+  });
+  expect(calls).toHaveLength(3);
+  expect(JSON.parse(String(calls[1].body)).input.length).toBeLessThan(
+    JSON.parse(String(calls[0].body)).input.length,
+  );
+  expect(statuses.map((status) => status.phase)).toEqual(['started', 'completed', 'failed']);
+  expect(statuses[2]).toMatchObject({ code: 'context_too_large' });
+  expect(statuses[2].id).not.toBe(statuses[1].id);
 });

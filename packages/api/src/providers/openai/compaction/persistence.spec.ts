@@ -6,8 +6,10 @@ import type { OAuthCompactionStore } from '@librechat/data-schemas';
 import type { TContextUsageEvent } from 'librechat-data-provider';
 import type { JSONObject, JSONArray } from '@ai-sdk/provider';
 import type { OpenAIOAuthFetch } from '~/steel/native/credentials';
+import type { TextTokenCounter } from './budget';
 import { createOAuthCompactionFetch } from './gateway';
 import { estimateContextTokens } from './runtime';
+import Tokenizer from '~/utils/tokenizer';
 
 const url = 'https://oauth.example/responses';
 const opaque = { type: 'compaction', encrypted_content: 'private-state', id: 'cmp-1' };
@@ -27,7 +29,7 @@ const scope = {
 const history: JSONArray = [
   { role: 'user', content: [{ type: 'input_text', text: 'Please calculate.' }] },
   { type: 'function_call', call_id: 'call-1', name: 'calculate', arguments: '{}' },
-  { type: 'function_call_output', call_id: 'call-1', output: '42 '.repeat(1800) },
+  { type: 'function_call_output', call_id: 'call-1', output: '42 '.repeat(3000) },
 ];
 const event = (data: JSONObject): string => `data: ${JSON.stringify(data)}\n\n`;
 const completed = event({
@@ -68,10 +70,12 @@ const provider: OpenAIOAuthFetch = async (_input, init) => {
     ? compactResponse()
     : normalResponse();
 };
+let countText: TextTokenCounter;
 let mongo: MongoMemoryServer;
 let store: OAuthCompactionStore;
 let model: ReturnType<typeof createOAuthCompactionModel>;
 beforeAll(async () => {
+  countText = await Tokenizer.createExactTokenCounter('o200k_base');
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
   model = createOAuthCompactionModel(mongoose);
@@ -132,9 +136,11 @@ it('restores after a fresh service instance and only appends the new tail', asyn
   expect(sent[2]).toEqual([history[0], opaque, tail]);
   expect(phases).toEqual(['started', 'completed']);
   expect(snapshots).toHaveLength(2);
-  expect(snapshots[0].oauthCompaction?.inputTokens).toBeLessThan(estimateContextTokens(history, 0));
+  expect(snapshots[0].oauthCompaction?.inputTokens).toBeLessThan(
+    estimateContextTokens(history, 0, countText),
+  );
   expect(snapshots[1].oauthCompaction).toEqual({
-    inputTokens: 80 + estimateContextTokens([tail], 0),
+    inputTokens: 80 + estimateContextTokens([tail], 0, countText),
     isEstimate: true,
   });
   expect(snapshots[1].contextBudget).toBe(7168);
@@ -339,7 +345,7 @@ it('constructs the OAuth model through the real SDK registry, including isolated
       content: '',
       tool_calls: [{ id: 'call-1', name: 'calculate', args: {} }],
     }),
-    new ToolMessage({ tool_call_id: 'call-1', content: '42 '.repeat(1800) }),
+    new ToolMessage({ tool_call_id: 'call-1', content: '42 '.repeat(3000) }),
   ];
   const model = initializeModel({ provider: oauthCompactionProvider, clientOptions: options });
   const snapshots: TContextUsageEvent[] = [];
