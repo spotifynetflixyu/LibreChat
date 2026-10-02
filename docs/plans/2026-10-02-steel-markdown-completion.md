@@ -171,3 +171,5 @@ Rules 可以要求 AI 使用實際提供的來源代碼／頁碼對照 Markdown�
 已完成真實 Mongo 聚焦測試、API 與 data-schemas typecheck、API build、Lighthouse；LCP 中位數 3,750 ms，低於 4,500 ms 門檻。DEV rules 已依腳本 dry-run、apply 及 readback，21 個管理項目皆 active、reviewed 且 SHA 相符。PROD 已完成 dry-run，將於新後端部署後 apply／readback。獨立審查已完成；正式部署與 PDF UI 驗收結果於發布完成後補記。
 
 已驗證跨 request 的已接受訊號重試、OCR／報價更新重試、版本變更拒絕、多段訊息換行及完整報價恢復。已完成且標記 published 的報價會從 scoped immutable final artifact 恢復完整呈現；每個 request 的投遞 projector 保存後才顯示，成功後防重複，失敗可重試，不重新呼叫模型或改寫 publication artifact。
+
+首次正式部署 `bc0383518` 的 Actions、health／readyz 與 build commit 核對通過，PROD 21 個規則已 apply／readback。原 PL.pdf 對話的實際 `delegate_ocr` 驗收暴露套件邊界缺漏：共同收尾模組未從 `packages/api/src/index.ts` 公開，控制器無法呼叫收尾函式。已補上公開 export；新增以實際套件入口核對控制器依賴的驗證，避免只測內部模組或 mock 而漏掉發布邊界。修正後須重新部署並重跑同一對話驗收。

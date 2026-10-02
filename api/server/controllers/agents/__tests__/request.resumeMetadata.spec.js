@@ -460,6 +460,21 @@ function nextTick() {
 }
 
 describe('ResumableAgentController resume metadata', () => {
+  it('exposes shared Steel completion APIs through the public package entry', () => {
+    const api = jest.requireActual('@librechat/api');
+    const completionExports = [
+      'createSteelMarkdownCompletionServices',
+      'registerSteelMarkdownPublication',
+      'shouldDeferSteelMarkdownPersistence',
+      'createQuotationPublicationProjector',
+      'clearSteelMarkdownPublication',
+    ];
+
+    for (const exportName of completionExports) {
+      expect(api[exportName]).toEqual(expect.any(Function));
+    }
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
     mockMarkdownFinalize.mockReset().mockImplementation(async (input) => {

@@ -133,6 +133,7 @@ export { memoryDiagnostics } from './utils/memory';
 export * from './steel/access';
 export * from './steel/admin';
 export * from './steel/ai/config';
+export * from './steel/markdown/completion';
 export * from './steel/memory/service';
 export * from './steel/models';
 export * from './steel/native';
