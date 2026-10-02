@@ -5,11 +5,11 @@ import { Alert, DelayedRender } from '@librechat/client';
 import type { TMessage } from 'librechat-data-provider';
 import type { TMessageContentProps, TDisplayProps } from '~/common';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
+import EmptyText, { useCursorVisibility } from './Parts/EmptyText';
 import Error from '~/components/Messages/Content/Error';
 import ToolCallLimitNotice from './ToolCallLimitNotice';
 import CollapsibleText from './Parts/CollapsibleText';
 import { useMessageContext } from '~/Providers';
-import EmptyText from './Parts/EmptyText';
 import MarkdownLite from './MarkdownLite';
 import EditMessage from './EditMessage';
 import Thinking from './Parts/Thinking';
@@ -102,12 +102,17 @@ const DisplayMessage = ({ text, isCreatedByUser, message, showCursor }: TDisplay
   const enableUserMsgMarkdown = useRecoilValue(store.enableUserMsgMarkdown);
   const collapseLongUserMessages = useRecoilValue(store.collapseLongUserMessages);
   const smoothStreaming = useSmoothStreaming();
+  const cursorVisible = useCursorVisibility();
 
   // The word fade itself indicates streaming, so the trailing block cursor
   // only shows when the fade is unavailable (setting off or reduced motion).
   const showCursorState = useMemo(
-    () => showCursor === true && isSubmitting && !(smoothStreaming && !isCreatedByUser),
-    [showCursor, isSubmitting, smoothStreaming, isCreatedByUser],
+    () =>
+      cursorVisible &&
+      showCursor === true &&
+      isSubmitting &&
+      !(smoothStreaming && !isCreatedByUser),
+    [cursorVisible, showCursor, isSubmitting, smoothStreaming, isCreatedByUser],
   );
 
   const content = useMemo(() => {

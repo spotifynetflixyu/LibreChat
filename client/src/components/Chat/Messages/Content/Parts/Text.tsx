@@ -3,6 +3,7 @@ import { useRecoilValue } from 'recoil';
 import MarkdownLite from '~/components/Chat/Messages/Content/MarkdownLite';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import Markdown from '~/components/Chat/Messages/Content/Markdown';
+import { useCursorVisibility } from './EmptyText';
 import CollapsibleText from './CollapsibleText';
 import { useMessageContext } from '~/Providers';
 import { cn } from '~/utils';
@@ -24,11 +25,12 @@ const TextPart = memo(function TextPart({ text, isCreatedByUser, showCursor }: T
   const enableUserMsgMarkdown = useRecoilValue(store.enableUserMsgMarkdown);
   const collapseLongUserMessages = useRecoilValue(store.collapseLongUserMessages);
   const smoothStreaming = useSmoothStreaming();
+  const cursorVisible = useCursorVisibility();
   // The word fade itself indicates streaming, so the trailing block cursor
   // only shows when the fade is unavailable (setting off or reduced motion).
   const showCursorState = useMemo(
-    () => showCursor && isSubmitting && !(smoothStreaming && !isCreatedByUser),
-    [showCursor, isSubmitting, smoothStreaming, isCreatedByUser],
+    () => cursorVisible && showCursor && isSubmitting && !(smoothStreaming && !isCreatedByUser),
+    [cursorVisible, showCursor, isSubmitting, smoothStreaming, isCreatedByUser],
   );
 
   const content: ContentType = useMemo(() => {

@@ -1,6 +1,6 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
-import { Provider, useSetAtom } from 'jotai';
+import { createStore, Provider, useSetAtom } from 'jotai';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { ContentTypes, Tools, Constants, ToolCallTypes } from 'librechat-data-provider';
@@ -10,7 +10,10 @@ import type {
   TMessageContentParts,
   SearchResultData,
 } from 'librechat-data-provider';
+import type { SteelNativeQuotationStatus } from '~/store/steel';
+import EmptyText, { CursorVisibilityContext } from '../Parts/EmptyText';
 import { resolveAskUserQuestionPart } from '~/utils/approval';
+import { smoothStreamingAtom } from '~/store/smoothStreaming';
 import { sandboxStartingByToolCallId } from '~/store';
 import ContentParts from '../ContentParts';
 import { getLiveActivity } from '../live';
@@ -158,6 +161,88 @@ const mount = (
       </RecoilRoot>
     </QueryClientProvider>,
   );
+
+describe('one message-level streaming cursor', () => {
+  it.each([true, false])('owns the only cursor with smooth streaming=%s', (smoothStreaming) => {
+    const atomStore = createStore();
+    atomStore.set(smoothStreamingAtom, smoothStreaming);
+    const queryClient = new QueryClient();
+    const view = (
+      content: TMessageContentParts[],
+      submitting = true,
+      status?: SteelNativeQuotationStatus,
+    ) => (
+      <QueryClientProvider client={queryClient}>
+        <Provider store={atomStore}>
+          <RecoilRoot initializeState={({ set }) => set(store.queriesEnabled, false)}>
+            <CursorVisibilityContext.Provider value={{ visible: submitting, owner: 'message' }}>
+              <ContentParts
+                content={content}
+                messageId="cursor-response"
+                isCreatedByUser={false}
+                isLast
+                isLatestMessage
+                isSubmitting={submitting}
+                showThinking={false}
+                persistedActivityEvents={
+                  status
+                    ? [
+                        {
+                          type: 'quotation_status',
+                          source: 'quotation_preflight',
+                          conversationId: 'cursor-conversation',
+                          index: 0,
+                          runId: 'cursor-quotation',
+                          stage: status,
+                          status,
+                          completedChunks: 2,
+                          totalChunks: 2,
+                        },
+                      ]
+                    : undefined
+                }
+              />
+              <EmptyText owner="message" />
+            </CursorVisibilityContext.Provider>
+          </RecoilRoot>
+        </Provider>
+      </QueryClientProvider>
+    );
+    const scenarios: TMessageContentParts[][] = [
+      [],
+      [{ type: ContentTypes.TEXT, text: '' }],
+      [{ type: ContentTypes.TEXT, text: '## ocr_result\n\n| 數量 |\n| --- |\n| 2 |' }],
+      [{ type: ContentTypes.TEXT, text: '## system_order\n\nWaiting for quotation completion' }],
+      [
+        toPart({ name: 'lookup', output: 'done' }),
+        {
+          type: ContentTypes.ACTIVITY_LABEL,
+          activity_label: 'Looked up prices',
+          activity_label_type: 'phase',
+          activity_start_index: 0,
+          activity_end_index: 1,
+        },
+      ],
+      [toPart({ name: 'lookup', output: '' })],
+      [
+        { type: ContentTypes.TEXT, text: '', agentId: 'a', groupId: 0 },
+        { type: ContentTypes.TEXT, text: '', agentId: 'b', groupId: 0 },
+      ],
+    ];
+    const result = render(view(scenarios[0]));
+    for (const content of scenarios) {
+      result.rerender(view(content));
+      expect(result.container.querySelectorAll('.result-thinking')).toHaveLength(1);
+      expect(result.container.querySelectorAll('.result-streaming')).toHaveLength(0);
+    }
+    for (const status of ['queued', 'running', 'aggregating', 'finalizing', 'completed'] as const) {
+      result.rerender(view(scenarios[3], true, status));
+      expect(result.container.querySelectorAll('.result-thinking')).toHaveLength(1);
+    }
+    result.rerender(view(scenarios[3], false));
+    expect(result.container.querySelectorAll('.result-thinking')).toHaveLength(0);
+  });
+});
 
 /** What the real card says, read the way a user would, in the real English
  *  strings: `ProgressText` appends "failed" on `failed`, swaps in the stop

@@ -3,6 +3,7 @@ import { useRecoilValue } from 'recoil';
 import { getRemarkPlugins, getRehypePlugins, getMarkdownComponents } from './markdownConfig';
 import useSmoothStreaming from '~/hooks/Messages/useSmoothStreaming';
 import MarkdownErrorBoundary from './MarkdownErrorBoundary';
+import { useCursorVisibility } from './Parts/EmptyText';
 import { FADE_HYDRATION_THRESHOLD } from './animate';
 import { useMessageContext } from '~/Providers';
 import MarkdownBlocks from './MarkdownBlocks';
@@ -16,6 +17,7 @@ type TContentProps = {
 const Markdown = memo(function Markdown({ content = '', isLatestMessage }: TContentProps) {
   const { isSubmitting = false } = useMessageContext() ?? {};
   const smoothStreaming = useSmoothStreaming();
+  const cursorVisible = useCursorVisibility();
   const LaTeXParsing = useRecoilValue<boolean>(store.LaTeXParsing);
   const { markdownTableBaseIndex = 0 } = useMessageContext() ?? {};
   const isInitializing = content === '';
@@ -41,6 +43,9 @@ const Markdown = memo(function Markdown({ content = '', isLatestMessage }: TCont
   }, [animate]);
 
   if (isInitializing) {
+    if (!cursorVisible) {
+      return null;
+    }
     return (
       <div className="absolute">
         <p className="relative">

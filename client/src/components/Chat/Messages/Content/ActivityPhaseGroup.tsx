@@ -28,6 +28,7 @@ import { AttachmentGroup, StreamingThoughtPeek } from './Parts';
 import { useMCPIconMap, useMCPServerNames } from '~/hooks/MCP';
 import { getActivityLabelText } from '~/utils/activityLabels';
 import { getOutcomeStatus, summarizeSpan } from './outcome';
+import { useCursorVisibility } from './Parts/EmptyText';
 import { sandboxStartingByToolCallId } from '~/store';
 import useClockFormat from '~/hooks/useClockFormat';
 import { cn, getMessageTimestamp } from '~/utils';
@@ -548,6 +549,7 @@ export default function ActivityPhaseGroup({
   spanParts?: ReadonlyArray<TMessageContentParts | undefined>;
   onExpansionChange?: (expanded: boolean) => void;
 }) {
+  const cursorVisible = useCursorVisibility();
   const isLive = liveParts != null;
   const label = getActivityLabelText(labelPart);
   const hasFailure = labelPart.status === 'failed' || labelPart.status === 'partial';
@@ -737,7 +739,7 @@ export default function ActivityPhaseGroup({
   const thoughtPeek =
     streamingThought.trim() !== '' ? <StreamingThoughtPeek text={streamingThought} /> : null;
   const cursor =
-    showCursor && thoughtPeek == null ? (
+    cursorVisible && showCursor && thoughtPeek == null ? (
       <div className={TOOL_ROW_CLASSES} data-testid="activity-phase-cursor">
         <span className={cn(ROW_GLYPH_SLOT, 'submitting')} aria-hidden="true">
           <span className="result-thinking block after:!static" />

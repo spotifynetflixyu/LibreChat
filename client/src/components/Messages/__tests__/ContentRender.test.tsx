@@ -1,5 +1,6 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
+import { ContentTypes } from 'librechat-data-provider';
 import { render, screen, within } from '@testing-library/react';
 import type { Agent, TConversation, TMessage } from 'librechat-data-provider';
 import type { TMessageChatContext } from '~/common';
@@ -166,5 +167,110 @@ describe('ContentRender resume author header', () => {
     renderRow({ ...assistantMessage, messageId: 'user-2', isCreatedByUser: true });
 
     expect(screen.getByTestId('parts')).toBeEmptyDOMElement();
+  });
+});
+
+describe('ContentRender generation indicator', () => {
+  const view = ({
+    message = assistantMessage,
+    isSubmitting = true,
+    latestMessageId = message.messageId,
+    siblingIdx = 0,
+    siblingCount = 1,
+  }: {
+    message?: TMessage;
+    isSubmitting?: boolean;
+    latestMessageId?: string;
+    siblingIdx?: number;
+    siblingCount?: number;
+  } = {}) => (
+    <RecoilRoot>
+      <ContentRender
+        message={message}
+        chatContext={chatContext}
+        isSubmitting={isSubmitting}
+        latestMessageId={latestMessageId}
+        siblingIdx={siblingIdx}
+        siblingCount={siblingCount}
+        setSiblingIdx={setSiblingIdx}
+        currentEditId={null}
+        setCurrentEditId={setCurrentEditId}
+      />
+    </RecoilRoot>
+  );
+
+  it('keeps a pulsing status while text pauses and the backend appends the next step', () => {
+    const result = render(view());
+    const status = screen.getByRole('status', { name: 'com_ui_generating' });
+    expect(status).toHaveTextContent('com_ui_generating');
+    expect(status.querySelector('.result-thinking')).toBeInTheDocument();
+    expect(status.querySelector('.result-thinking')?.parentElement).toHaveClass('submitting');
+
+    result.rerender(view({ message: { ...assistantMessage } }));
+    expect(screen.getByRole('status', { name: 'com_ui_generating' })).toBe(status);
+
+    result.rerender(
+      view({
+        message: {
+          ...assistantMessage,
+          content: [{ type: ContentTypes.TEXT, text: 'Done.\n\n**下一步：**請確認訂單。' }],
+        },
+      }),
+    );
+    expect(screen.getByRole('status', { name: 'com_ui_generating' })).toBe(status);
+
+    result.rerender(view({ isSubmitting: false }));
+    expect(screen.queryByRole('status', { name: 'com_ui_generating' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the indicator when an optimistic response gets its server message id', () => {
+    const result = render(view({ message: { ...assistantMessage, messageId: 'assistant-1_' } }));
+    expect(screen.getByRole('status', { name: 'com_ui_generating' })).toBeInTheDocument();
+    result.rerender(view());
+    expect(screen.getByRole('status', { name: 'com_ui_generating' })).toBeInTheDocument();
+  });
+
+  it('keeps the quotation indicator through chunk completion and finalization until the turn ends', () => {
+    const result = render(view());
+    for (const status of ['running', 'aggregating', 'finalizing', 'completed'] as const) {
+      result.rerender(
+        view({
+          message: {
+            ...assistantMessage,
+            content: [{ type: ContentTypes.TEXT, text: '## system_order\n\nQuotation output' }],
+            metadata: {
+              steel: {
+                activityEvents: [
+                  {
+                    type: 'quotation_status',
+                    source: 'quotation_preflight',
+                    conversationId: conversation.conversationId,
+                    index: 0,
+                    runId: 'quote-1',
+                    stage: status,
+                    status,
+                    completedChunks: 2,
+                    totalChunks: 2,
+                  },
+                ],
+              },
+            },
+          },
+        }),
+      );
+      expect(screen.getByRole('status', { name: 'com_ui_generating' })).toBeInTheDocument();
+    }
+    result.rerender(view({ isSubmitting: false }));
+    expect(screen.queryByRole('status', { name: 'com_ui_generating' })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    { isSubmitting: false },
+    { latestMessageId: 'another-response' },
+    { message: { ...assistantMessage, isCreatedByUser: true } },
+    { siblingIdx: 0, siblingCount: 2 },
+  ])('hides the indicator outside the active assistant response: %p', (options) => {
+    render(view(options));
+    expect(screen.queryByRole('status', { name: 'com_ui_generating' })).not.toBeInTheDocument();
   });
 });

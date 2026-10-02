@@ -18,6 +18,9 @@ import {
   getPersistedSteelPreflightToolCallParts,
   prependPersistedSteelPreflightToolCallParts,
 } from '~/utils/steel';
+import EmptyText, {
+  CursorVisibilityContext,
+} from '~/components/Chat/Messages/Content/Parts/EmptyText';
 import { revealOnRowHoverClasses, messageFooterClasses } from '~/components/Chat/Messages/styles';
 import { useLocalize, useAttachments, useMessageActions, useContentMetadata } from '~/hooks';
 import ResumeAuthorHeader from '~/components/Chat/Messages/Content/Parts/ResumeAuthorHeader';
@@ -185,106 +188,123 @@ const ContentRender = memo(function ContentRender({
   );
 
   const { hasParallelContent } = useContentMetadata(msg);
+  const cursorVisibility = useMemo(
+    () => ({
+      visible: shouldShowElapsed({
+        isSubmitting,
+        isLatestMessage,
+        isCreatedByUser: msg?.isCreatedByUser,
+        siblingIdx,
+        siblingCount,
+      }),
+      owner: 'message' as const,
+    }),
+    [isSubmitting, isLatestMessage, msg?.isCreatedByUser, siblingIdx, siblingCount],
+  );
 
   if (!msg) {
     return null;
   }
 
+  const isResponseInProgress = cursorVisibility.visible;
+
   return (
-    <MessageRow
-      id={msg.messageId}
-      icon={author.icon}
-      label={author.label}
-      hoverLabel={getHeaderHoverLabel(
-        hasConfiguredSender,
-        agent?.model,
-        assistant?.model,
-        msg.model,
-        conversation?.model,
-      )}
-      timestamp={getMessageTimestampSource(msg)}
-      processingStartedAt={getMessageProcessingStartedAt(msg)}
-      processingDurationMs={!msg.isCreatedByUser ? msg.processingDurationMs : undefined}
-      isSubmitting={shouldShowElapsed({
-        isSubmitting,
-        isLatestMessage,
-        isCreatedByUser: msg.isCreatedByUser,
-        siblingIdx,
-        siblingCount,
-      })}
-      submissionStartedAt={submissionStartedAt}
-      parentMessageId={msg.parentMessageId}
-      ariaLabel={getMessageAriaLabel(msg, localize)}
-      headerPrefix={getHeaderPrefixForScreenReader(msg, localize)}
-      isCreatedByUser={msg.isCreatedByUser === true}
-      hasParallelContent={hasParallelContent}
-      fullWidth={maximizeChatSpace}
-      isEditing={edit}
-      footer={
-        <SubRow classes={cn(messageFooterClasses, msg.isCreatedByUser && 'justify-end')}>
-          {/* While the answer is generating every other action is withheld, which
-              would otherwise leave this counter sitting alone under a half-written
-              response. It reveals on hover there, like the actions it sits with. */}
-          <SiblingSwitch
-            siblingIdx={siblingIdx}
-            siblingCount={siblingCount}
-            setSiblingIdx={setSiblingIdx}
-            className={cn(isSubmitting && isLatestMessage && revealOnRowHoverClasses)}
-          />
-          <HoverButtons
-            index={index}
-            message={msg}
-            isEditing={edit}
-            enterEdit={enterEdit}
-            conversation={conversation ?? null}
-            regenerate={handleRegenerateMessage}
-            copyToClipboard={copyToClipboard}
-            getCanCopy={getCanCopy}
-            handleContinue={handleContinue}
-            latestMessageId={latestMessageId}
-            getLatestMessageId={getLatestMessageId}
-            handleFeedback={handleFeedback}
-            isLast={isLast}
-          />
-        </SubRow>
-      }
-    >
-      <AuthorContext.Provider value={author}>
-        <ErrorSourceProvider message={msg}>
-          <ContentParts
-            edit={edit}
-            isLast={isLast}
-            enterEdit={enterEdit}
-            siblingIdx={siblingIdx}
-            messageId={msg.messageId}
-            attachments={attachments}
-            searchResults={searchResults}
-            manualSkills={msg.manualSkills}
-            authorHeader={msg.isCreatedByUser === true ? undefined : RESUME_AUTHOR_HEADER}
-            setSiblingIdx={setSiblingIdx}
-            isLatestMessage={isLatestMessage}
-            isSubmitting={isSubmitting}
-            isCreatedByUser={msg.isCreatedByUser}
-            createdAt={getMessageTimestampSource(msg)}
-            processingDurationMs={!msg.isCreatedByUser ? msg.processingDurationMs : undefined}
-            persistedActivityEvents={persistedActivityEvents}
-            foldLiveActivity={!autoExpandTools}
-            showThinking={showThinking}
-            conversationId={conversation?.conversationId}
-            content={contentWithPersistedPreflight}
-          />
-        </ErrorSourceProvider>
-      </AuthorContext.Provider>
-      {/** A turn that ran out of agent steps is incomplete, not broken. Rendered
-       *   here rather than inside `ContentParts` because it is a message-level
-       *   outcome, and `ContentParts` also serves surfaces (subagent panels,
-       *   search) that have no message row behind them. */}
-      {msg.unfinished === true &&
-        !isSubmitting &&
-        msg.finish_reason === Constants.TOOL_CALL_LIMIT_FINISH_REASON && (
-          <ToolCallLimitNotice message={msg} />
+    <CursorVisibilityContext.Provider value={cursorVisibility}>
+      <MessageRow
+        id={msg.messageId}
+        icon={author.icon}
+        label={author.label}
+        hoverLabel={getHeaderHoverLabel(
+          hasConfiguredSender,
+          agent?.model,
+          assistant?.model,
+          msg.model,
+          conversation?.model,
         )}
-    </MessageRow>
+        timestamp={getMessageTimestampSource(msg)}
+        processingStartedAt={getMessageProcessingStartedAt(msg)}
+        processingDurationMs={!msg.isCreatedByUser ? msg.processingDurationMs : undefined}
+        isSubmitting={isResponseInProgress}
+        submissionStartedAt={submissionStartedAt}
+        parentMessageId={msg.parentMessageId}
+        ariaLabel={getMessageAriaLabel(msg, localize)}
+        headerPrefix={getHeaderPrefixForScreenReader(msg, localize)}
+        isCreatedByUser={msg.isCreatedByUser === true}
+        hasParallelContent={hasParallelContent}
+        fullWidth={maximizeChatSpace}
+        isEditing={edit}
+        footer={
+          <SubRow classes={cn(messageFooterClasses, msg.isCreatedByUser && 'justify-end')}>
+            {/* While the answer is generating every other action is withheld, which
+                would otherwise leave this counter sitting alone under a half-written
+                response. It reveals on hover there, like the actions it sits with. */}
+            <SiblingSwitch
+              siblingIdx={siblingIdx}
+              siblingCount={siblingCount}
+              setSiblingIdx={setSiblingIdx}
+              className={cn(isSubmitting && isLatestMessage && revealOnRowHoverClasses)}
+            />
+            <HoverButtons
+              index={index}
+              message={msg}
+              isEditing={edit}
+              enterEdit={enterEdit}
+              conversation={conversation ?? null}
+              regenerate={handleRegenerateMessage}
+              copyToClipboard={copyToClipboard}
+              getCanCopy={getCanCopy}
+              handleContinue={handleContinue}
+              latestMessageId={latestMessageId}
+              getLatestMessageId={getLatestMessageId}
+              handleFeedback={handleFeedback}
+              isLast={isLast}
+            />
+          </SubRow>
+        }
+      >
+        <AuthorContext.Provider value={author}>
+          <ErrorSourceProvider message={msg}>
+            <ContentParts
+              edit={edit}
+              isLast={isLast}
+              enterEdit={enterEdit}
+              siblingIdx={siblingIdx}
+              messageId={msg.messageId}
+              attachments={attachments}
+              searchResults={searchResults}
+              manualSkills={msg.manualSkills}
+              authorHeader={msg.isCreatedByUser === true ? undefined : RESUME_AUTHOR_HEADER}
+              setSiblingIdx={setSiblingIdx}
+              isLatestMessage={isLatestMessage}
+              isSubmitting={isSubmitting}
+              isCreatedByUser={msg.isCreatedByUser}
+              createdAt={getMessageTimestampSource(msg)}
+              processingDurationMs={!msg.isCreatedByUser ? msg.processingDurationMs : undefined}
+              persistedActivityEvents={persistedActivityEvents}
+              foldLiveActivity={!autoExpandTools}
+              showThinking={showThinking}
+              conversationId={conversation?.conversationId}
+              content={contentWithPersistedPreflight}
+            />
+          </ErrorSourceProvider>
+        </AuthorContext.Provider>
+        {isResponseInProgress && (
+          <div role="status" aria-label={localize('com_ui_generating')} className="mt-2">
+            <EmptyText owner="message" />
+            <span className="sr-only">{localize('com_ui_generating')}</span>
+          </div>
+        )}
+        {/** A turn that ran out of agent steps is incomplete, not broken. Rendered
+         *   here rather than inside `ContentParts` because it is a message-level
+         *   outcome, and `ContentParts` also serves surfaces (subagent panels,
+         *   search) that have no message row behind them. */}
+        {msg.unfinished === true &&
+          !isSubmitting &&
+          msg.finish_reason === Constants.TOOL_CALL_LIMIT_FINISH_REASON && (
+            <ToolCallLimitNotice message={msg} />
+          )}
+      </MessageRow>
+    </CursorVisibilityContext.Provider>
   );
 }, areContentRenderPropsEqual);
 ContentRender.displayName = 'ContentRender';
