@@ -173,3 +173,5 @@ Rules 可以要求 AI 使用實際提供的來源代碼／頁碼對照 Markdown�
 已驗證跨 request 的已接受訊號重試、OCR／報價更新重試、版本變更拒絕、多段訊息換行及完整報價恢復。已完成且標記 published 的報價會從 scoped immutable final artifact 恢復完整呈現；每個 request 的投遞 projector 保存後才顯示，成功後防重複，失敗可重試，不重新呼叫模型或改寫 publication artifact。
 
 首次正式部署 `bc0383518` 的 Actions、health／readyz 與 build commit 核對通過，PROD 21 個規則已 apply／readback。原 PL.pdf 對話的實際 `delegate_ocr` 驗收暴露套件邊界缺漏：共同收尾模組未從 `packages/api/src/index.ts` 公開，控制器無法呼叫收尾函式。已補上公開 export；新增以實際套件入口核對控制器依賴的驗證，避免只測內部模組或 mock 而漏掉發布邊界。修正後須重新部署並重跑同一對話驗收。
+
+公開 export 修正 `a084f16dc` 部署後，原 PL.pdf 重新生成已確認完整 OCR、state 及完成訊息保存，AI 原始 audit 無 footer，完成訊息恰有一次英文 Next steps，重新載入後可见。即時完成事件另暴露對話 metadata 缺漏：BaseClient 延後保存回傳的 `persistenceSkipped` 不含 conversation，完成事件不能只從該結果取得對話。`resolvePersistedTurnConversation` 改由本輪已載入對話、使用者訊息保存結果及回覆保存結果組成相符 scope 的快照，保證正確 conversationId，保留既有 metadata，且不增加 DB 查詢。回歸測試必須使用真實的 `{ persistenceSkipped: true }` 形狀，並驗證最終事件的對話 ID、完整訊息及補文。

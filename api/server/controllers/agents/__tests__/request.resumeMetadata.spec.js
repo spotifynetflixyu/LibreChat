@@ -262,6 +262,7 @@ jest.mock('@librechat/api', () => ({
     finalize: (...args) => mockMarkdownFinalize(...args),
   })),
   shouldDeferSteelMarkdownPersistence: (...args) => mockShouldDeferSteelMarkdownPersistence(...args),
+  resolvePersistedTurnConversation: jest.requireActual('@librechat/api').resolvePersistedTurnConversation,
   getSteerRecoveryFailure: jest.requireActual(
     '../../../../../packages/api/src/stream/SteerRecovery',
   ).getSteerRecoveryFailure,
@@ -468,6 +469,7 @@ describe('ResumableAgentController resume metadata', () => {
       'shouldDeferSteelMarkdownPersistence',
       'createQuotationPublicationProjector',
       'clearSteelMarkdownPublication',
+      'resolvePersistedTurnConversation',
     ];
 
     for (const exportName of completionExports) {
@@ -4476,6 +4478,12 @@ describe('ResumableAgentController resume metadata', () => {
 
   it('claims terminal ownership then defers managed Steel persistence to the shared finalizer', async () => {
     mockShouldDeferSteelMarkdownPersistence.mockReturnValueOnce(true);
+    mockMarkdownFinalize.mockImplementationOnce(async (input) => {
+      const markdown = `${input.markdown}\n\nSaved footer`;
+      input.applyMarkdown(markdown);
+      await input.persistMarkdown();
+      return { markdown };
+    });
     const userMessage = {
       messageId: 'user-msg',
       parentMessageId: 'parent-msg',
@@ -4507,11 +4515,17 @@ describe('ResumableAgentController resume metadata', () => {
           conversationId: 'conversation-123',
           content: [{ type: 'text', text: '## ocr_result\n\n| source | value |\n| --- | --- |\n| F1 | P1 |' }],
         };
+        options.getReqData({
+          userMessagePromise: Promise.resolve({
+            message: { _id: 'user-row-id' },
+            conversation: { conversationId: 'conversation-123', title: 'Recovered title' },
+          }),
+        });
         observedHookResult = await options.beforeResponsePersistence(response);
         repeatedHookResult = await options.beforeResponsePersistence(response);
         response.databasePromise = observedHookResult
           ? completedResponseWrite()
-          : Promise.resolve({ persistenceSkipped: true, conversation: { conversationId: 'conversation-123' } });
+          : Promise.resolve({ persistenceSkipped: true });
         return response;
       }),
     };
@@ -4550,6 +4564,11 @@ describe('ResumableAgentController resume metadata', () => {
       expect.objectContaining({ messageId: 'response-msg' }),
       expect.any(Object),
     );
+    const finalEvent = mockGenerationJobManager.publishTerminalClaim.mock.calls.at(-1)?.[1];
+    expect(finalEvent.conversation).toEqual(
+      expect.objectContaining({ conversationId: 'conversation-123', title: 'Recovered title' }),
+    );
+    expect(finalEvent.responseMessage.content[0].text).toContain('Saved footer');
   });
 
   it('passes provisional completion state through the terminal response save callback', async () => {

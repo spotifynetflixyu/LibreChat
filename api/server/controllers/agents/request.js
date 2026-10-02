@@ -33,6 +33,7 @@ const {
   deleteAgentCheckpoint,
   getAttachmentTitleText,
   extractSteelAgentResponseMarkdown,
+  resolvePersistedTurnConversation,
   createSteelOcrStateService,
   createSteelQuotationStateService,
   createSteelMarkdownCompletionServices,
@@ -2251,6 +2252,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
     }
 
     let userMessage;
+    let userMessageWrite;
     let responseMessageId = preliminaryResponseMessageId;
     let liveResponseMessageId = preallocatedResponseMessageId;
 
@@ -2266,6 +2268,9 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
       }
       if (data.responseMessageId) {
         liveResponseMessageId = data.responseMessageId;
+      }
+      if (data.userMessagePromise) {
+        userMessageWrite = data.userMessagePromise;
       }
       /** The user-message write upserts the conversation, so its result is the
        *  earliest proof the title's row exists. Waiting for the turn to end
@@ -3083,7 +3088,12 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
          *  whether the conversation already references what it just re-saved. */
         convoSignal.observeMessageWrite(databasePromise);
         const { conversation: convoData = {} } = await databasePromise;
-        const conversation = { ...convoData };
+        const conversation = await resolvePersistedTurnConversation({
+          conversationId,
+          responseConversation: convoData,
+          loadedConversation: req.resolvedConversation,
+          userMessageWrite,
+        });
         conversation.title =
           conversation && !conversation.title ? null : conversation?.title || 'New Chat';
 

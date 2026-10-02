@@ -1,4 +1,42 @@
-import { createConvoPersistenceSignal } from './convoPersistence';
+import { createConvoPersistenceSignal, resolvePersistedTurnConversation } from './convoPersistence';
+
+describe('resolvePersistedTurnConversation', () => {
+  it('uses the saved user conversation when the response write was deferred', async () => {
+    await expect(resolvePersistedTurnConversation({
+      conversationId: 'new-convo',
+      responseConversation: {},
+      userMessageWrite: Promise.resolve({ conversation: {
+        conversationId: 'new-convo', title: 'Material order', model: 'test-model',
+      } }),
+    })).resolves.toEqual({
+      conversationId: 'new-convo', title: 'Material order', model: 'test-model',
+    });
+  });
+
+  it('preserves loaded metadata on regeneration without a new user write', async () => {
+    await expect(resolvePersistedTurnConversation({
+      conversationId: 'existing',
+      loadedConversation: { conversationId: 'existing', title: 'Original PDF' },
+    })).resolves.toEqual({ conversationId: 'existing', title: 'Original PDF' });
+  });
+
+  it('prefers the matching response metadata and ignores other conversations', async () => {
+    await expect(resolvePersistedTurnConversation({
+      conversationId: 'current',
+      loadedConversation: { conversationId: 'other', title: 'Unrelated', model: 'wrong-model' },
+      userMessageWrite: Promise.resolve({ conversation: { conversationId: 'current', title: 'Earlier' } }),
+      responseConversation: { conversationId: 'current', title: 'Latest' },
+    })).resolves.toEqual({ conversationId: 'current', title: 'Latest' });
+  });
+
+  it('keeps the scoped identity when the user write needs caller recovery', async () => {
+    await expect(resolvePersistedTurnConversation({
+      conversationId: 'current',
+      userMessageWrite: Promise.reject(new Error('Write failed')),
+      responseConversation: { conversationId: 'other', title: 'Unrelated' },
+    })).resolves.toEqual({ conversationId: 'current' });
+  });
+});
 
 /** Resolves to true only if the gate is already open at this microtask depth. */
 const isOpen = async (ready: Promise<void>): Promise<boolean> => {

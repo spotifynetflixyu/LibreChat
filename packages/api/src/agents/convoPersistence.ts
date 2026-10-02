@@ -1,3 +1,5 @@
+import type { TConversation } from 'librechat-data-provider';
+
 /**
  * What a turn's message writes reported about the conversation row.
  *
@@ -47,8 +49,36 @@ export interface ConvoPersistenceSignal {
 /** What a message write resolves with once it has saved the row and the conversation. */
 type MessageWriteResult = {
   message?: { _id?: unknown } | null;
-  conversation?: { conversationId?: string | null } | null;
+  conversation?: Partial<TConversation> | null;
 };
+
+export interface PersistedTurnConversationInput {
+  conversationId: string;
+  responseConversation?: Partial<TConversation> | null;
+  loadedConversation?: Partial<TConversation> | null;
+  userMessageWrite?: PromiseLike<MessageWriteResult | null | undefined> | null;
+}
+
+/** Resolves display metadata only; the caller still owns required persistence and recovery. */
+export async function resolvePersistedTurnConversation(
+  input: PersistedTurnConversationInput,
+): Promise<Partial<TConversation> & { conversationId: string }> {
+  // A failed user write is recovered by the controller before final publication.
+  const userWrite = await input.userMessageWrite?.then(asResult, () => undefined);
+  const conversation: Partial<TConversation> & { conversationId: string } = {
+    conversationId: input.conversationId,
+  };
+  for (const snapshot of [
+    input.loadedConversation,
+    userWrite?.conversation,
+    input.responseConversation,
+  ]) {
+    if (snapshot?.conversationId === input.conversationId) {
+      Object.assign(conversation, snapshot);
+    }
+  }
+  return conversation;
+}
 
 const asResult = (value: unknown): MessageWriteResult | undefined =>
   value != null && typeof value === 'object' ? (value as MessageWriteResult) : undefined;
