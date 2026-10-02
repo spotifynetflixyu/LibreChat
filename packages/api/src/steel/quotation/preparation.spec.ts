@@ -4,7 +4,9 @@ import { bindQuotationCustomerResult, hasQuotationOrder, parseQuotationTierSelec
 
 const mockRead = jest.fn();
 const mockSave = jest.fn();
+const mockSaveEvidence = jest.fn();
 const mockClear = jest.fn();
+const mockClearEvidence = jest.fn();
 const mockEnqueue = jest.fn();
 const mockSetOrder = jest.fn();
 const mockReadOcr = jest.fn();
@@ -15,6 +17,7 @@ const mockReadCheckpoint = jest.fn();
 const mockSaveCurrentSystemOrder = jest.fn();
 jest.mock('./state', () => ({ createSteelQuotationStateService: () => ({
   ensureState: mockRead, readState: mockRead, saveCustomer: mockSave, clearCustomer: mockClear,
+  saveCustomerLookupEvidence: mockSaveEvidence, clearCustomerLookupEvidence: mockClearEvidence,
   enqueuePendingMessage: mockEnqueue, setOrder: mockSetOrder, getArtifact: mockArtifact,
   hasSystemOrder: mockHasSystemOrder, readCurrentSystemOrder: mockReadCurrentSystemOrder,
   readCheckpoint: mockReadCheckpoint, saveCurrentSystemOrder: mockSaveCurrentSystemOrder,
@@ -28,6 +31,8 @@ beforeEach(() => {
   jest.clearAllMocks();
   mockRead.mockResolvedValue({ currentOrder: { markdown: order, sha256: 'order-hash' }, tickets: [], pendingMessages: [] });
   mockSave.mockResolvedValue({ preparationId: 'saved-customer' });
+  mockSaveEvidence.mockImplementation(async ({ evidence }: { evidence: unknown }) => evidence);
+  mockClearEvidence.mockResolvedValue({ currentOrder: { markdown: order, sha256: 'order-hash' }, tickets: [], pendingMessages: [] });
   mockReadOcr.mockResolvedValue(null);
   mockArtifact.mockResolvedValue(null);
   mockHasSystemOrder.mockResolvedValue(false);
@@ -253,6 +258,7 @@ it('clears a prior-turn customer when a new lookup is unresolved', async () => {
   await bindQuotationCustomerResult({ expectedOrderHash: 'order-hash', scope, messageId: 'u1', responseId: 'new-response', expectedCustomerPreparationId: 'prior-customer', result: success([{ id: 1 }, { id: 2 }]) });
   expect(mockClear).toHaveBeenCalledWith({ scope, responseId: 'new-response', preparationId: 'prior-customer', orderHash: 'order-hash' });
   expect(mockSave).not.toHaveBeenCalled();
+  expect(mockSaveEvidence).toHaveBeenCalledWith(expect.objectContaining({ expectedOrderHash: 'order-hash' }));
 });
 it('requires the exact saved OCR section and actual rows', () => {
   expect(hasQuotationOrder(order)).toBe(true);
@@ -263,21 +269,27 @@ it('does not issue customer data or a signal for multiple matches', async () => 
   const result = await bindQuotationCustomerResult({ expectedOrderHash: 'order-hash', scope, messageId: 'confirm', responseId: 'response-1', result: success([{ id: 1 }, { id: 2 }]) });
   expect(mockSave).not.toHaveBeenCalled();
   expect(mockClear).not.toHaveBeenCalled();
+  expect(mockSaveEvidence).toHaveBeenCalledWith(expect.objectContaining({
+    evidence: expect.objectContaining({ customers: [{ id: 1 }, { id: 2 }] }),
+  }));
   expect(result.ok && result.data.quotationSelectionRequired).toBe(true);
   expect(result.ok && result.data.customerDataMarkdown).toBeUndefined();
 });
 it('binds no-match to a disclosed saved B-tier customer and customer context before admission', async () => {
   const result = await bindQuotationCustomerResult({ expectedOrderHash: 'order-hash', scope, messageId: 'confirm', responseId: 'response-1', result: success([]) });
-  expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({ customerIdentity: 'no-match:default-B',
-    triggeringMessageId: 'confirm', customerMarkdown: expect.stringContaining('使用預設 B tier') }));
-  expect(result.ok && result.data.quoteSignal).toBe('## quote_signal\n\nstart');
-  expect(mockSave).toHaveBeenCalledWith(expect.objectContaining({ responseId: 'response-1', orderHash: 'order-hash' }));
+  expect(mockSave).not.toHaveBeenCalled();
+  expect(mockSaveEvidence).toHaveBeenCalledWith(expect.objectContaining({
+    evidence: expect.objectContaining({ orderHash: 'order-hash', customerMarkdown: expect.stringContaining('|  | 未指定客戶 | B |') }),
+  }));
+  expect(result.ok && result.data.quoteSignal).toBeUndefined();
+  expect(result.ok && result.data.customerLookupEvidence).toEqual(expect.objectContaining({ orderHash: 'order-hash' }));
 });
 it('does not turn lookup errors into a default customer', async () => {
   const result = { ok: false, toolName: 'search_customers', errorCategory: 'repository_error', errorSummary: 'offline', durationMs: 1, redactionVersion: 1 } as const;
   expect(await bindQuotationCustomerResult({ expectedOrderHash: 'order-hash', scope, messageId: 'confirm', responseId: 'response-1', result })).toBe(result);
   expect(mockSave).not.toHaveBeenCalled();
   expect(mockClear).not.toHaveBeenCalled();
+  expect(mockClearEvidence).toHaveBeenCalledWith({ scope, responseId: 'response-1', orderHash: 'order-hash' });
 });
 it('rejects customer lookup without saved OCR', async () => {
   mockRead.mockResolvedValue({ pendingMessages: [] });

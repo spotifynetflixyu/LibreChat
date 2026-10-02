@@ -2,14 +2,10 @@ import { appendSteelNextStep, hasSteelCustomerTier } from './next';
 
 const order = '## ocr_result\n\n| 來源 | 零件編號 | 類別 | 數量 |\n| --- | --- | --- | --- |\n| F1 | P1 | 鋼板 | 2 |';
 const customer = '## customer_data\n\n| 客戶名稱 | 價格等級 |\n| --- | --- |\n| 未指定客戶 | B |';
-const base = { markdown: customer, mode: 'standard', completed: true };
+const base = { markdown: customer, completed: true };
 
 it.each(['', 'Hello **world**', '1. Confirm order', '```markdown\n## customer_data\n```'])('does not treat plain or fenced text as named data: %s', (markdown) => {
   expect(appendSteelNextStep({ ...base, markdown, order, customer })).toBe(markdown);
-});
-
-it.each(['ocr', 'delegate_ocr', 'quote_main', 'quote_child', undefined])('does not append to %s flow output', (mode) => {
-  expect(appendSteelNextStep({ ...base, mode, order })).toBe(customer);
 });
 
 it('uses the saved order and valid tier for the three states in each language', () => {
@@ -38,4 +34,9 @@ it('suppresses unfinished responses, system orders and signals', () => {
 it('does not duplicate the backend footer on retry', () => {
   const once = appendSteelNextStep({ ...base, order, customer });
   expect(appendSteelNextStep({ ...base, markdown: once, order, customer })).toBe(once);
+});
+
+it('preserves trailing streamed whitespace when appending the footer', () => {
+  const markdown = `${customer}\n\n`;
+  expect(appendSteelNextStep({ ...base, markdown, order, customer }).startsWith(markdown)).toBe(true);
 });

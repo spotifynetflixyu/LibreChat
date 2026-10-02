@@ -1,17 +1,18 @@
 import type { ResponseTracker, StreamHandlerConfig } from '../../agents/responses/handlers';
-import type { SteelResponseRequest, SteelResponseCompletionFactory } from './completion';
 import type { Response } from '../../agents/responses/types';
-import { finishSteelAgentResponse, isStandardSteelResponse, SteelResponseCompletionError } from './completion';
+import type { SteelResponseRequest } from './completion';
 import { emitOutputTextDelta, emitResponseFailed } from '../../agents/responses/handlers';
 import { extractSteelNativeResponseOutputText } from '../native/markdown';
+import { SteelResponseCompletionError } from './completion';
+import { parseQuotationSignal } from './protocol';
 import { hasSteelDataMarkdown } from './next';
 
 function requiresSteelPersistence(req: SteelResponseRequest, markdown: string): boolean {
   const context = req.steelNativeContext;
   const delegate = context?.delegateOcrContext;
-  return hasSteelDataMarkdown(markdown) || context?.ocrTurnActive === true ||
+  return hasSteelDataMarkdown(markdown) || Boolean(parseQuotationSignal(markdown)) || context?.ocrTurnActive === true ||
     delegate?.didExecute === true || Boolean(delegate?.activeRun || delegate?.delegateOcrRun) ||
-    context?.quotation?.resume === true || context?.quotation?.pendingOrderPersisted === true;
+    context?.quotation?.resume === true;
 }
 
 export function replaceSteelResponsesMarkdown(response: Response, markdown: string): void {
@@ -47,12 +48,10 @@ export async function finalizeSteelResponsesTurn(
     saveConversation(): Promise<void>;
     saveInput(): Promise<void>;
     saveOutput(): Promise<void>;
-    saveOrderWithoutMessage(): Promise<void>;
     onPersistenceFailure?(): void;
     tracker?: ResponseTracker;
     streamConfig?: StreamHandlerConfig;
   },
-  dependencies: SteelResponseCompletionFactory,
 ): Promise<void> {
   const original = extractSteelNativeResponseOutputText(input.response);
   try {
@@ -61,19 +60,7 @@ export async function finalizeSteelResponsesTurn(
       await input.saveInput();
       await input.saveOutput();
     } else {
-      if (input.req.steelNativeContext?.quotation?.scope && isStandardSteelResponse(input.req)) {
-        await input.saveOrderWithoutMessage();
-      }
-      await finishSteelAgentResponse(
-        {
-          req: input.req,
-          responseId: input.responseId,
-          markdown: extractSteelNativeResponseOutputText(input.response),
-          completed: input.response.status === 'completed',
-          applyMarkdown: (markdown) => replaceSteelResponsesMarkdown(input.response, markdown),
-        },
-        dependencies,
-      );
+      await input.saveOutput();
     }
   } catch (error) {
     if (!requiresSteelPersistence(input.req, original)) {

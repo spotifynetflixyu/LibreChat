@@ -1,17 +1,19 @@
 import mongoose from 'mongoose';
 import { createHash, randomUUID } from 'node:crypto';
 import type {
+  ISteelQuotationState,
   SteelQuotationActiveRun,
   SteelQuotationPendingMessageFile,
   SteelQuotationScope,
   SteelQuotationSnapshotPayload,
+  SteelQuotationTicket,
+  SteelQuotationTicketCompletionReceipt,
 } from '@librechat/data-schemas';
 import type { QuotationBackendFailure, QuotationChildResultInput, QuotationLookupEvidence, QuotationPythonEvidence } from './protocol';
 import type { SteelToolJsonObject, SteelToolResult } from '../tools/results';
 import type { QuotationModelInput, QuotationRepairProgress } from './model';
 import type { OpenAIOAuthModelOptions } from '../native/oauth';
 import type { SteelNativeHistory } from '../native/events';
-import type { QuotationCustomerTier } from './preparation';
 import type { SavedQuotationLookup } from './history';
 import {
   buildQuotationChunks,
@@ -29,15 +31,15 @@ import {
   restoreQuotationChunks,
 } from './protocol';
 import {
+  commitQuotationCustomerResponse,
   hasQuotationOrder,
   isUnfinishedQuotation,
-  parseQuotationTierSelection,
-  renderQuotationCustomerMarkdown,
 } from './preparation';
 import { getQuotationProgress, QUOTATION_V2_SPLIT_SIZES, QUOTATION_V2_MAX_DEPTH } from './progress';
 import { executeSteelTool, createSteelToolRunState } from '../tools/execute';
 import { buildDefaultSteelGlobalAgentContext } from '../native/context';
 import { buildSteelQuotationStatusEvent } from '../native/events';
+import { normalizeSteelChunkMarkdown } from '../markdown/chunk';
 import { createSteelQuotationStateService } from './state';
 import { parseMarkdownTables } from '../markdown/table';
 import { parseAssistantMarkdown } from '../ocr/result';
@@ -45,6 +47,8 @@ import { registerQuotationExecution } from './control';
 import { createSteelPostgresPool } from '../postgres';
 import { readQuotationHistory } from './history';
 import { invokeQuotationModel } from './model';
+
+export { commitQuotationCustomerResponse, prepareQuotationCustomerResponse } from './preparation';
 
 class QuotationChildFailure extends Error {}
 
@@ -88,6 +92,7 @@ export interface QuotationRunnerInput {
     result?: SteelToolResult;
   }): Promise<void>;
   publishFinal(input: { run: SteelQuotationActiveRun; markdown: string }): Promise<void>;
+  projectFinal?(input: { run: SteelQuotationActiveRun; markdown: string }): Promise<void>;
   onUsage?: QuotationModelInput['onUsage'];
   onTextDelta?: QuotationModelInput['onTextDelta'];
   invokeModel?: typeof invokeQuotationModel;
@@ -96,37 +101,41 @@ export interface QuotationRunnerInput {
 
 let pool: ReturnType<typeof createSteelPostgresPool> | undefined;
 
-const quotationCustomerHeaders = ['客戶編號', '客戶名稱', '價格等級', '說明'] as const;
-
-interface QuotationCustomerRow {
-  customerCode: string;
-  customerName: string;
-  tier: QuotationCustomerTier;
-  description: string;
-}
-
-function readQuotationCustomerRow(table: ReturnType<typeof extractCustomerDataTable>): QuotationCustomerRow | undefined {
-  if (!table || table.headers.length !== quotationCustomerHeaders.length ||
-    table.headers.some((header, index) => header !== quotationCustomerHeaders[index]) || table.rows.length !== 1) {
-    return undefined;
-  }
-  const row = table.rows[0];
-  if (!row || row.length !== quotationCustomerHeaders.length) return undefined;
-  const tier = row[2]?.toUpperCase() as QuotationCustomerTier | undefined;
-  if (!tier || !/^[A-F]$/u.test(tier)) return undefined;
-  return {
-    customerCode: row[0] ?? '',
-    customerName: row[1] ?? '',
-    tier,
-    description: row[3] ?? '',
+export function createQuotationPublicationProjector(
+  publish: (input: { run: SteelQuotationActiveRun; markdown: string }) => Promise<void>,
+): (input: { run: SteelQuotationActiveRun; markdown: string }) => Promise<void> {
+  let projectedRunId: string | undefined;
+  let projectedMarkdownHash: string | undefined;
+  return async (input) => {
+    const markdownHash = createHash('sha256').update(input.markdown).digest('hex');
+    if (projectedRunId === input.run.runId && projectedMarkdownHash === markdownHash) return;
+    await publish(input);
+    projectedRunId = input.run.runId;
+    projectedMarkdownHash = markdownHash;
   };
 }
 
-function isResolvedNamedCustomer(customer: {
-  customerIdentity: string;
-}): boolean {
-  return !customer.customerIdentity.startsWith('explicit-default:') &&
-    !customer.customerIdentity.startsWith('no-match:');
+function validateCompletionReceiptReplay(
+  state: ISteelQuotationState | null | undefined,
+  ticket: SteelQuotationTicket,
+  response: string,
+): void {
+  const receipt = ticket.completionReceipt;
+  if (!receipt) return;
+  const matchesInput = createHash('sha256').update(response).digest('hex') === receipt.inputHash;
+  if (!matchesInput && response !== receipt.markdown) {
+    throw new Error('Quotation completion receipt does not match the response');
+  }
+  if (!state?.activeRun || state.activeRun.runId !== ticket.acceptedRunId) {
+    throw new Error('Quotation completion receipt run is stale');
+  }
+  const customer = state.currentCustomer;
+  if (state.currentOrder?.sha256 !== ticket.orderHash ||
+    !customer || customer.preparationId !== ticket.preparationId ||
+    customer.customerIdentity !== ticket.customerIdentity ||
+    customer.customerMarkdown !== ticket.customerMarkdown) {
+    throw new Error('Quotation completion receipt preparation is stale');
+  }
 }
 
 export async function acceptQuotationResponse(input: {
@@ -138,7 +147,9 @@ export async function acceptQuotationResponse(input: {
   messageFiles?: readonly SteelQuotationPendingMessageFile[];
   expectedOrderHash?: string;
   expectedCustomerPreparationId?: string;
+  completionReceipt?: SteelQuotationTicketCompletionReceipt;
   finishReason?: string;
+  service?: ReturnType<typeof createSteelQuotationStateService>;
 }): Promise<SteelQuotationActiveRun | undefined> {
   if (input.finishReason !== 'stop') return undefined;
   const signal = parseQuotationSignal(input.response);
@@ -151,15 +162,38 @@ export async function acceptQuotationResponse(input: {
   if (hasCustomerSection && !customer) {
     throw new Error('Customer data must contain one readable Markdown table');
   }
-  const service = createSteelQuotationStateService(mongoose);
-  let state = await service.readState(input.scope);
-  const existingTicket = state?.tickets.find((entry) => entry.responseId === input.responseId);
-  const resolvedCustomerThisResponse = state?.currentCustomer?.responseId === input.responseId && !existingTicket?.acceptedRunId;
-  if (signal && (hasCustomerSection || hasOrder || resolvedCustomerThisResponse)) {
-    throw new Error('Customer or order data must be confirmed before issuing a quotation signal');
-  }
+  const service = input.service ?? createSteelQuotationStateService(mongoose);
+  const state = await service.readState(input.scope);
   const matchesCustomer = (markdown: string) =>
     JSON.stringify(customer) === JSON.stringify(extractCustomerDataTable(markdown));
+  const acceptedTicket = state?.tickets.find((ticket) => ticket.responseId === input.responseId && ticket.acceptedRunId);
+  if (acceptedTicket) {
+    if (acceptedTicket.completionReceipt) {
+      validateCompletionReceiptReplay(state, acceptedTicket, input.response);
+      if (!signal) return undefined;
+      return acceptQuotationSignal({ ...input, service });
+    }
+    if (hasCustomerSection) {
+      const customerSections = sections.filter((section) => section.title.split(/[｜|]/u)[0]?.trim() === 'customer_data');
+      if (customerSections.length !== 1 || customerSections[0]?.title !== 'customer_data' ||
+        !customer || !matchesCustomer(acceptedTicket.customerMarkdown)) {
+        throw new Error('Accepted quotation replay customer data does not match the saved ticket');
+      }
+    }
+    if (hasOrder) {
+      const orderSections = sections.filter((section) => ['ocr_result', 'ocr_result_updates', 'system_order_updates']
+        .includes(section.title.split(/[｜|]/u)[0]?.trim() ?? ''));
+      const orderSection = orderSections.length === 1 && orderSections[0]?.title === 'ocr_result'
+        ? orderSections[0]
+        : undefined;
+      const orderMarkdown = orderSection ? `## ${orderSection.title}\n\n${orderSection.body}` : undefined;
+      if (!orderMarkdown || createHash('sha256').update(orderMarkdown).digest('hex') !== acceptedTicket.orderHash) {
+        throw new Error('Accepted quotation replay order data does not match the saved ticket');
+      }
+    }
+    if (!signal) return undefined;
+    return acceptQuotationSignal({ ...input, service });
+  }
   if (isUnfinishedQuotation(state?.activeRun?.status) &&
     (hasOrder || (customer && !matchesCustomer(state?.currentCustomer?.customerMarkdown ?? '')))) {
     if (!input.messageId || (input.messageText === undefined && !input.messageFiles?.length) ||
@@ -177,13 +211,31 @@ export async function acceptQuotationResponse(input: {
     });
     return state?.activeRun;
   }
-  if (signal && hasOrder) {
-    throw new Error('A revised order must be confirmed before issuing a quotation signal');
-  }
-  if (signal && existingTicket?.acceptedRunId) {
-    if (customer && !matchesCustomer(existingTicket.customerMarkdown)) {
-      throw new Error('Quotation replay customer data does not match the saved run');
-    }
+  const committedCustomer = await commitQuotationCustomerResponse({ ...input, service });
+  return acceptQuotationSignal({
+    ...input,
+    ...(committedCustomer ? { expectedCustomerPreparationId: committedCustomer.preparationId } : {}),
+    service,
+  });
+}
+
+export async function acceptQuotationSignal(input: {
+  scope: SteelQuotationScope;
+  response: string;
+  responseId: string;
+  messageId?: string;
+  expectedOrderHash?: string;
+  expectedCustomerPreparationId?: string;
+  completionReceipt?: SteelQuotationTicketCompletionReceipt;
+  finishReason?: string;
+  service?: ReturnType<typeof createSteelQuotationStateService>;
+}): Promise<SteelQuotationActiveRun | undefined> {
+  if (input.finishReason !== 'stop' || !parseQuotationSignal(input.response)) return undefined;
+  const service = input.service ?? createSteelQuotationStateService(mongoose);
+  const state = await service.readState(input.scope);
+  const existingTicket = state?.tickets.find((entry) => entry.responseId === input.responseId);
+  if (existingTicket?.acceptedRunId) {
+    validateCompletionReceiptReplay(state, existingTicket, input.response);
     return service.acceptSignal({
       scope: input.scope,
       index: existingTicket.index,
@@ -196,66 +248,12 @@ export async function acceptQuotationResponse(input: {
       targetMessageId: input.responseId,
     });
   }
-  if (customer) {
-    const tierSelection = parseQuotationTierSelection(input.messageText);
-    if (tierSelection.status === 'invalid') {
-      throw new Error('Customer tier selection is ambiguous or unrelated to the current user message');
-    }
-    const currentCustomer = state?.currentCustomer;
-    const currentCustomerRow = readQuotationCustomerRow(currentCustomer
-      ? extractCustomerDataTable(currentCustomer.customerMarkdown) : undefined);
-    if (tierSelection.status === 'selected') {
-      const selectedTier = tierSelection.tier;
-      const targetMarkdown = currentCustomer && isResolvedNamedCustomer(currentCustomer) && currentCustomerRow
-        ? renderQuotationCustomerMarkdown({
-          tier: selectedTier,
-          customerCode: currentCustomerRow.customerCode,
-          customerName: currentCustomerRow.customerName,
-          description: currentCustomerRow.description,
-        })
-        : renderQuotationCustomerMarkdown({ tier: selectedTier });
-      const targetTable = extractCustomerDataTable(targetMarkdown);
-      const receivedRow = readQuotationCustomerRow(customer);
-      const targetRow = readQuotationCustomerRow(targetTable);
-      if (!receivedRow || !targetRow || receivedRow.tier !== selectedTier ||
-        JSON.stringify(receivedRow) !== JSON.stringify(targetRow)) {
-        throw new Error('Customer data does not match the current user tier selection');
-      }
-      const orderHash = state?.currentOrder?.sha256;
-      if (!input.messageId || (orderHash !== undefined && input.expectedOrderHash !== orderHash) ||
-        currentCustomer?.preparationId !== input.expectedCustomerPreparationId) {
-        throw new Error('Customer tier selection is based on stale preparation data');
-      }
-      if (!currentCustomer || currentCustomer.customerMarkdown !== targetMarkdown ||
-        currentCustomer.customerIdentity !== (currentCustomer && isResolvedNamedCustomer(currentCustomer)
-          ? currentCustomer.customerIdentity : `explicit-default:${selectedTier}`)) {
-        await service.saveCustomer({
-          scope: input.scope,
-          customerMarkdown: targetMarkdown,
-          customerIdentity: currentCustomer && isResolvedNamedCustomer(currentCustomer)
-            ? currentCustomer.customerIdentity : `explicit-default:${selectedTier}`,
-          triggeringMessageId: input.messageId,
-          responseId: input.responseId,
-          ...(orderHash !== undefined ? { orderHash } : {}),
-          expectedPreparationId: input.expectedCustomerPreparationId ?? null,
-          selectionProvenance: { method: 'default_tier', selectionMessageId: input.messageId },
-        });
-        state = await service.readState(input.scope);
-      }
-    } else if (!currentCustomer || !matchesCustomer(currentCustomer.customerMarkdown)) {
-      throw new Error('Customer Markdown does not match the saved customer lookup');
-    }
-  }
-  if (!signal) return undefined;
   const preparedCustomer = state?.currentCustomer;
   if (!state?.currentOrder || !hasQuotationOrder(state.currentOrder.markdown) || !preparedCustomer) {
     throw new Error('Quotation signal requires a saved complete order and customer');
   }
-  const customerResolvedThisResponse = preparedCustomer.responseId === input.responseId &&
-    preparedCustomer.orderHash === state.currentOrder.sha256 && customer !== undefined;
-  if ((input.expectedOrderHash !== undefined && input.expectedOrderHash !== state.currentOrder.sha256) ||
-    (!customerResolvedThisResponse && (input.expectedOrderHash !== state.currentOrder.sha256 ||
-      input.expectedCustomerPreparationId !== preparedCustomer.preparationId))) {
+  if (input.expectedOrderHash !== state.currentOrder.sha256 ||
+    input.expectedCustomerPreparationId !== preparedCustomer.preparationId) {
     throw new Error('Quotation signal is based on stale preparation data');
   }
   if (isUnfinishedQuotation(state.activeRun?.status)) return state.activeRun;
@@ -274,6 +272,7 @@ export async function acceptQuotationResponse(input: {
     customerIdentity: preparedCustomer.customerIdentity,
     triggeringMessageId: input.messageId ?? preparedCustomer.triggeringMessageId,
     selectionProvenance: preparedCustomer.selectionProvenance,
+    completionReceipt: input.completionReceipt,
   });
   return service.acceptSignal({
     scope: input.scope,
@@ -308,6 +307,8 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
       await input.publishFinal({ run: completedRun, markdown });
       const marked = await service.markPublished({ scope, runId, targetMessageId: completedRun.targetMessageId, finalSha256: createHash('sha256').update(markdown).digest('hex') });
       if (!marked) throw new Error('Quotation publication was superseded');
+    } else if (input.projectFinal) {
+      await input.projectFinal({ run: completedRun, markdown });
     }
     return { status: 'completed' as const, markdown };
   };
@@ -683,7 +684,8 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
           },
           validateChildOutput: async (markdown) => {
             await assertActive();
-            const output = JSON.stringify({ markdown, lookupOperations, pythonOperations,
+            const normalizedMarkdown = normalizeSteelChunkMarkdown('system_order_chunk', markdown);
+            const output = JSON.stringify({ markdown: normalizedMarkdown, lookupOperations, pythonOperations,
               sourceRowIds: chunk.sourceRows.map((row) => row.sourceRowId) });
             await checkpoint(`child-output:${chunk.chunkIndex}:${attempt}:${revision++}`, 'main', output);
             validateQuotationChildResult({ ...await loadChild(chunk, output), allowManualReviews: false });
@@ -719,7 +721,8 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
           ? '報價表格不完整或格式無效' : '報價子 Agent 執行失敗');
       }
       const sourceRowIds = chunk.sourceRows.map((row) => row.sourceRowId);
-      let stored = JSON.stringify({ markdown: generated.markdown, lookupOperations, pythonOperations, sourceRowIds });
+      const normalizedMarkdown = normalizeSteelChunkMarkdown('system_order_chunk', generated.markdown);
+      let stored = JSON.stringify({ markdown: normalizedMarkdown, lookupOperations, pythonOperations, sourceRowIds });
       await checkpoint(`child-output:${chunk.chunkIndex}:${attempt}`, 'main', stored);
       const candidate = await loadChild(chunk, stored);
       let validated: ReturnType<typeof validateQuotationChildResult>;
@@ -762,7 +765,10 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
         }
         return {
           chunk,
-          response: stripLegacyQuotationChildSidecars(saved.markdown),
+          response: normalizeSteelChunkMarkdown(
+            'system_order_chunk',
+            stripLegacyQuotationChildSidecars(saved.markdown),
+          ),
           lookupEvidence,
           pythonEvidence,
           lookupOperations: saved.lookupOperations,

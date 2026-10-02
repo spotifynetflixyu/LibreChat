@@ -69,6 +69,8 @@ const mockFilterPersistableAbortContent = jest.fn((content) =>
 const mockGetConvo = jest.fn();
 const mockGetMessages = jest.fn();
 const mockSaveMessage = jest.fn();
+const mockMarkdownFinalize = jest.fn();
+const mockShouldDeferSteelMarkdownPersistence = jest.fn();
 const mockSaveConvo = jest.fn();
 const mockAppendConvoMessageReference = jest.fn();
 const mockIsAgentTriggerPrincipalActive = jest.fn();
@@ -252,8 +254,14 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
-  finishSteelAgentResponse: jest.requireActual('@librechat/api').finishSteelAgentResponse,
   extractSteelAgentResponseMarkdown: jest.requireActual('@librechat/api').extractSteelAgentResponseMarkdown,
+  createSteelOcrStateService: jest.fn(() => ({})),
+  createSteelQuotationStateService: jest.fn(() => ({})),
+  createSteelOcrResponseAuditService: jest.fn(() => ({})),
+  createSteelMarkdownCompletionServices: jest.fn(() => ({
+    finalize: (...args) => mockMarkdownFinalize(...args),
+  })),
+  shouldDeferSteelMarkdownPersistence: (...args) => mockShouldDeferSteelMarkdownPersistence(...args),
   getSteerRecoveryFailure: jest.requireActual(
     '../../../../../packages/api/src/stream/SteerRecovery',
   ).getSteerRecoveryFailure,
@@ -454,6 +462,12 @@ function nextTick() {
 describe('ResumableAgentController resume metadata', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockMarkdownFinalize.mockReset().mockImplementation(async (input) => {
+      input.applyMarkdown(input.markdown);
+      await input.persistMarkdown();
+      return { markdown: input.markdown };
+    });
+    mockShouldDeferSteelMarkdownPersistence.mockReset().mockReturnValue(false);
     mockMCPContexts = new WeakMap();
     mockCheckAndIncrementPendingRequest.mockResolvedValue({ allowed: true });
     mockDecrementPendingRequest.mockResolvedValue(undefined);
@@ -4443,6 +4457,147 @@ describe('ResumableAgentController resume metadata', () => {
     );
     expect(mockGenerationJobManager.completeJob).not.toHaveBeenCalled();
     expect(mockGenerationJobManager.steering.closeAndDrain).not.toHaveBeenCalled();
+  });
+
+  it('claims terminal ownership then defers managed Steel persistence to the shared finalizer', async () => {
+    mockShouldDeferSteelMarkdownPersistence.mockReturnValueOnce(true);
+    const userMessage = {
+      messageId: 'user-msg',
+      parentMessageId: 'parent-msg',
+      conversationId: 'conversation-123',
+      text: 'Finish the Steel order.',
+    };
+    const terminalClaim = {
+      streamId: 'conversation-123',
+      createdAt: 1000,
+      status: 'complete',
+      persistencePending: true,
+      drainedSteers: [],
+    };
+    mockGenerationJobManager.claimTerminalJob.mockResolvedValue(terminalClaim);
+    const completedResponseWrite = jest.fn(() =>
+      Promise.resolve({ conversation: { conversationId: 'conversation-123' } }),
+    );
+    let observedHookResult;
+    let repeatedHookResult;
+    const client = {
+      options: {},
+      savedMessageIds: new Set(),
+      skipSaveUserMessage: false,
+      sendMessage: jest.fn(async (_text, options) => {
+        options.onStart(userMessage, 'response-msg');
+        const response = {
+          messageId: 'response-msg',
+          parentMessageId: userMessage.messageId,
+          conversationId: 'conversation-123',
+          content: [{ type: 'text', text: '## ocr_result\n\n| source | value |\n| --- | --- |\n| F1 | P1 |' }],
+        };
+        observedHookResult = await options.beforeResponsePersistence(response);
+        repeatedHookResult = await options.beforeResponsePersistence(response);
+        response.databasePromise = observedHookResult
+          ? completedResponseWrite()
+          : Promise.resolve({ persistenceSkipped: true, conversation: { conversationId: 'conversation-123' } });
+        return response;
+      }),
+    };
+    const req = {
+      user: { id: 'user-123' },
+      body: {
+        text: userMessage.text,
+        messageId: userMessage.messageId,
+        parentMessageId: userMessage.parentMessageId,
+        conversationId: 'conversation-123',
+        endpointOption: { endpoint: 'agents', modelOptions: { model: 'gpt-4.1' } },
+      },
+      config: {},
+    };
+
+    await AgentController(
+      req,
+      createResumableResponse(),
+      jest.fn(),
+      jest.fn().mockResolvedValue({ client }),
+      null,
+    );
+    await nextTick();
+
+    expect(observedHookResult).toBe(false);
+    expect(repeatedHookResult).toBe(false);
+    expect(completedResponseWrite).not.toHaveBeenCalled();
+    expect(mockShouldDeferSteelMarkdownPersistence).toHaveBeenCalledWith(
+      req,
+      expect.stringContaining('## ocr_result'),
+    );
+    expect(mockGenerationJobManager.claimTerminalJob).toHaveBeenCalledTimes(1);
+    expect(mockGenerationJobManager.finishTerminalJob).toHaveBeenCalledWith(terminalClaim);
+    expect(mockSaveMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'user-123' }),
+      expect.objectContaining({ messageId: 'response-msg' }),
+      expect.any(Object),
+    );
+  });
+
+  it('passes provisional completion state through the terminal response save callback', async () => {
+    mockShouldDeferSteelMarkdownPersistence.mockReturnValueOnce(true);
+    mockSaveMessage.mockImplementation(async (_req, message) => ({ ...message }));
+    mockMarkdownFinalize.mockImplementationOnce(async (input) => {
+      input.applyMarkdown(input.markdown);
+      await input.persistMarkdown({ completed: false });
+      await input.persistMarkdown({ completed: true });
+      return { markdown: input.markdown };
+    });
+    const userMessage = {
+      messageId: 'user-msg',
+      parentMessageId: 'parent-msg',
+      conversationId: 'conversation-123',
+      text: 'Persist Steel completion state.',
+    };
+    const client = {
+      options: {},
+      savedMessageIds: new Set(),
+      skipSaveUserMessage: false,
+      sendMessage: jest.fn(async (_text, options) => {
+        options.onStart(userMessage, 'response-msg');
+        const response = {
+          messageId: 'response-msg',
+          parentMessageId: userMessage.messageId,
+          conversationId: 'conversation-123',
+          content: [{ type: 'text', text: 'Done.' }],
+        };
+        const ownsTerminalPersistence = await options.beforeResponsePersistence(response);
+        response.databasePromise = ownsTerminalPersistence
+          ? Promise.resolve({ conversation: { conversationId: 'conversation-123', title: 'Existing' } })
+          : Promise.resolve({ persistenceSkipped: true, conversation: { conversationId: 'conversation-123' } });
+        return response;
+      }),
+    };
+    const req = {
+      user: { id: 'user-123' },
+      body: {
+        text: userMessage.text,
+        messageId: userMessage.messageId,
+        parentMessageId: userMessage.parentMessageId,
+        conversationId: 'conversation-123',
+        endpointOption: { endpoint: 'agents', modelOptions: { model: 'gpt-4.1' } },
+      },
+      config: {},
+    };
+
+    await AgentController(
+      req,
+      createResumableResponse(),
+      jest.fn(),
+      jest.fn().mockResolvedValue({ client }),
+      null,
+    );
+    await nextTick();
+
+    const responseWrites = mockSaveMessage.mock.calls
+      .map(([, message]) => message)
+      .filter((message) => message?.messageId === 'response-msg');
+    expect(responseWrites).toHaveLength(2);
+    expect(responseWrites[0]).toEqual(expect.objectContaining({ unfinished: true }));
+    expect(responseWrites[1]).toEqual(expect.objectContaining({ unfinished: false }));
   });
 
   it.each([

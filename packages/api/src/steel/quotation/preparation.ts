@@ -1,13 +1,21 @@
 import mongoose from 'mongoose';
 import { createHash } from 'node:crypto';
-import type { ISteelQuotationState, SteelQuotationPendingMessageFile, SteelQuotationScope } from '@librechat/data-schemas';
+import type {
+  ISteelQuotationState,
+  SteelQuotationCustomerLookupCandidate,
+  SteelQuotationCustomerLookupEvidence,
+  SteelQuotationCustomerPreparation,
+  SteelQuotationPendingMessageFile,
+  SteelQuotationScope,
+} from '@librechat/data-schemas';
 import type { SteelToolJsonObject, SteelToolJsonValue, SteelToolResult } from '../tools/results';
+import type { SteelQuotationSaveCustomerInput, SteelQuotationStateService } from './state';
 import { createSystemOrderRevisionService, formatSystemOrderRevisionInstruction, isCurrentSystemOrderRun } from './revision';
 import { parseAssistantMarkdown, parseOcrResultTable } from '../ocr/result';
+import { extractCustomerDataTable, quotationSignal } from './protocol';
 import { escapeMarkdownTableCell } from '../markdown/row-codec';
 import { createSteelQuotationStateService } from './state';
 import { createSteelOcrStateService } from '../ocr/state';
-import { quotationSignal } from './protocol';
 
 export type QuotationCustomerTier = 'A' | 'B' | 'C' | 'D' | 'E' | 'F';
 
@@ -124,6 +132,7 @@ export async function prepareQuotationTurn(input: {
   files?: readonly SteelQuotationPendingMessageFile[];
 }): Promise<{
   scope: SteelQuotationScope;
+  messageId: string;
   state: ISteelQuotationState;
   instruction: string;
   resume: boolean;
@@ -139,6 +148,7 @@ export async function prepareQuotationTurn(input: {
   if (isUnfinishedQuotation(state.activeRun?.status)) {
     return {
       scope: input.scope,
+      messageId: input.messageId,
       state,
       resume: false,
       instruction: quotationPreparationInstruction(
@@ -162,7 +172,7 @@ export async function prepareQuotationTurn(input: {
         preserveExistingTarget: true,
       });
     }
-    return { scope: input.scope, state, instruction: '', resume: true, ...originalMessage };
+    return { scope: input.scope, messageId: input.messageId, state, instruction: '', resume: true, ...originalMessage };
   }
   const [ocr, hasSavedSystemOrder] = await Promise.all([
     createSteelOcrStateService(mongoose).readConversationOcrState(input.scope.conversationId),
@@ -175,6 +185,7 @@ export async function prepareQuotationTurn(input: {
       fullMarkdown: markdown,
       revision: ocr.currentOcrResultGenerationId,
       messageId: ocr.currentOcrResultMessageId,
+      expectedOrderHash: state.currentOrder?.sha256 ?? null,
     });
   }
   const hasSystemOrder = hasSavedSystemOrder && isCurrentSystemOrderRun(state);
@@ -188,6 +199,7 @@ export async function prepareQuotationTurn(input: {
     : undefined;
   return {
     scope: input.scope,
+    messageId: input.messageId,
     state,
     resume: false,
     ...originalMessage,
@@ -238,6 +250,41 @@ function cell(value: SteelToolJsonValue | undefined): string {
     ? escapeMarkdownTableCell(String(value)) : '';
 }
 
+function customerLookupCandidate(value: SteelToolJsonValue | undefined): SteelQuotationCustomerLookupCandidate | undefined {
+  const candidate = object(value);
+  if (!candidate || typeof candidate.id !== 'number' || !Number.isSafeInteger(candidate.id) || candidate.id < 0) {
+    return undefined;
+  }
+  const customerTier = typeof candidate.customerTier === 'string' && /^[A-F]$/u.test(candidate.customerTier)
+    ? candidate.customerTier.toUpperCase() as SteelQuotationCustomerLookupCandidate['customerTier']
+    : undefined;
+  return {
+    id: candidate.id,
+    ...(typeof candidate.erpCustomerCode === 'string' ? { erpCustomerCode: candidate.erpCustomerCode } : {}),
+    ...(typeof candidate.displayName === 'string' ? { displayName: candidate.displayName } : {}),
+    ...(customerTier ? { customerTier } : {}),
+  };
+}
+
+function customerMarkdownForCandidate(candidate: SteelQuotationCustomerLookupCandidate | undefined): string {
+  const tier = candidate?.customerTier ?? 'B';
+  return renderQuotationCustomerMarkdown({
+    tier,
+    ...(candidate
+      ? { customerCode: candidate.erpCustomerCode, customerName: candidate.displayName, description: '' }
+      : {}),
+  });
+}
+
+function isResolvedCustomer(customer: SteelQuotationCustomerPreparation): boolean {
+  return !customer.customerIdentity.startsWith('explicit-default:') &&
+    !customer.customerIdentity.startsWith('no-match:');
+}
+
+function sameCustomerData(left: string, right: string): boolean {
+  return JSON.stringify(extractCustomerDataTable(left)) === JSON.stringify(extractCustomerDataTable(right));
+}
+
 export async function bindQuotationCustomerResult(input: {
   scope: SteelQuotationScope;
   messageId: string;
@@ -265,55 +312,187 @@ export async function bindQuotationCustomerResult(input: {
   };
   if (!input.result.ok) {
     await clearPrevious();
+    await service.clearCustomerLookupEvidence({ scope: input.scope, responseId: input.responseId,
+      orderHash: input.expectedOrderHash });
     return input.result;
   }
   const customers = input.result.data.customers;
   if (!Array.isArray(customers)) {
     throw new Error('Customer lookup returned an invalid customer list');
   }
-  if (customers.length > 1) {
-    await clearPrevious();
-    return {
-      ...input.result,
-      data: { ...input.result.data, quotationSelectionRequired: true },
-    };
-  }
-  const customer = customers.length === 1 ? object(customers[0]) : undefined;
-  if (customers.length === 1 && (!customer || typeof customer.id !== 'number')) {
+  const candidates = customers.map(customerLookupCandidate);
+  if (candidates.some((candidate) => candidate === undefined)) {
     throw new Error('Customer lookup returned an invalid identity');
   }
-  const tier = typeof customer?.customerTier === 'string' && /^[A-F]$/.test(customer.customerTier)
-    ? customer.customerTier : 'B';
-  const identity = customer ? String(customer.id) : 'no-match:default-B';
-  const markdown = [
-    '## customer_data',
-    '',
-    '| 客戶編號 | 客戶名稱 | 價格等級 | 說明 |',
-    '| --- | --- | --- | --- |',
-    `| ${cell(customer?.erpCustomerCode)} | ${customer ? cell(customer.displayName) : '查無客戶'} | ${tier} | ${!customer || !/^[A-F]$/.test(String(customer.customerTier)) ? '使用預設 B tier' : ''} |`,
-  ].join('\n');
-  await service.saveCustomer({
-    scope: input.scope,
-    customerMarkdown: markdown,
-    customerIdentity: identity,
+  const safeCandidates = candidates as SteelQuotationCustomerLookupCandidate[];
+  const customer = safeCandidates.length === 1 ? safeCandidates[0] : undefined;
+  const markdown = customerMarkdownForCandidate(customer);
+  const evidence: SteelQuotationCustomerLookupEvidence = {
     responseId: input.responseId,
+    lookupMessageId: input.messageId,
     orderHash: state.currentOrder.sha256,
-    expectedPreparationId: input.expectedCustomerPreparationId ?? null,
-    triggeringMessageId: input.messageId,
-    selectionProvenance: {
-      method: customer ? 'unique' : 'default_tier',
-      lookupMessageId: input.messageId,
-      selectedCustomerId: customer ? identity : undefined,
-    },
+    ...(input.expectedCustomerPreparationId
+      ? { customerPreparationId: input.expectedCustomerPreparationId }
+      : {}),
+    customers: safeCandidates,
+    ...(safeCandidates.length <= 1 ? { customerMarkdown: markdown } : {}),
+  };
+  await service.saveCustomerLookupEvidence({
+    scope: input.scope,
+    evidence,
+    expectedOrderHash: input.expectedOrderHash,
+    expectedCustomerPreparationId: input.expectedCustomerPreparationId,
   });
+  const serializedEvidence: SteelToolJsonObject = {
+    responseId: evidence.responseId,
+    lookupMessageId: evidence.lookupMessageId,
+    orderHash: evidence.orderHash,
+    ...(evidence.customerPreparationId ? { customerPreparationId: evidence.customerPreparationId } : {}),
+    customers: evidence.customers.map((candidate) => ({
+      id: candidate.id,
+      ...(candidate.erpCustomerCode ? { erpCustomerCode: candidate.erpCustomerCode } : {}),
+      ...(candidate.displayName ? { displayName: candidate.displayName } : {}),
+      ...(candidate.customerTier ? { customerTier: candidate.customerTier } : {}),
+    })),
+    ...(evidence.customerMarkdown ? { customerMarkdown: evidence.customerMarkdown } : {}),
+  };
+  if (safeCandidates.length > 1) {
+    await clearPrevious();
+  }
   return {
     ...input.result,
     data: {
       ...input.result.data,
-      customerDataMarkdown: markdown,
-      quoteSignal: renderQuotationSignal(),
+      customerLookupEvidence: serializedEvidence,
+      ...(safeCandidates.length === 1 || safeCandidates.length === 0
+        ? { customerDataMarkdown: markdown }
+        : { quotationSelectionRequired: true }),
     },
   };
+}
+
+export type PreparedQuotationCustomerResponse =
+  | { kind: 'unchanged'; customer: SteelQuotationCustomerPreparation }
+  | { kind: 'save'; input: SteelQuotationSaveCustomerInput };
+
+export async function prepareQuotationCustomerResponse(input: {
+  scope: SteelQuotationScope;
+  response: string;
+  responseId: string;
+  messageId?: string;
+  messageText?: string;
+  messageFiles?: readonly SteelQuotationPendingMessageFile[];
+  expectedOrderHash?: string;
+  expectedCustomerPreparationId?: string;
+  service?: SteelQuotationStateService;
+  finishReason?: string;
+}): Promise<PreparedQuotationCustomerResponse | undefined> {
+  const sections = parseAssistantMarkdown(input.response).sections;
+  const hasCustomerSection = sections.some((section) => section.title.split(/[｜|]/u)[0]?.trim() === 'customer_data');
+  if (!hasCustomerSection) return undefined;
+  const customer = extractCustomerDataTable(input.response);
+  if (!customer) {
+    throw new Error('Customer data must contain one readable Markdown table');
+  }
+  const service = input.service ?? createSteelQuotationStateService(mongoose);
+  const state = await service.readState(input.scope);
+  const orderHash = state?.currentOrder?.sha256;
+  if (input.expectedOrderHash !== orderHash) {
+    throw new Error('Customer data is based on stale preparation data');
+  }
+  const currentCustomer = state?.currentCustomer;
+  if (currentCustomer && currentCustomer.responseId === input.responseId &&
+    sameCustomerData(currentCustomer.customerMarkdown, input.response)) {
+    return { kind: 'unchanged', customer: currentCustomer };
+  }
+  if ((state?.currentCustomer?.preparationId ?? undefined) !== input.expectedCustomerPreparationId) {
+    throw new Error('Customer data customer preparation is stale');
+  }
+  const tierSelection = parseQuotationTierSelection(input.messageText);
+  if (tierSelection.status === 'invalid') {
+    throw new Error('Customer tier selection is ambiguous or unrelated to the current user message');
+  }
+  if (!input.messageId && tierSelection.status === 'none' && currentCustomer &&
+    sameCustomerData(currentCustomer.customerMarkdown, input.response)) {
+    return { kind: 'unchanged', customer: currentCustomer };
+  }
+  if (!input.messageId) {
+    throw new Error('Customer data requires the original user message id');
+  }
+  let targetMarkdown: string;
+  let customerIdentity: string;
+  let selectionProvenance: SteelQuotationCustomerPreparation['selectionProvenance'];
+  if (tierSelection.status === 'selected') {
+    const currentRow = currentCustomer
+      ? extractCustomerDataTable(currentCustomer.customerMarkdown)
+      : undefined;
+    const currentValues = currentRow?.rows.length === 1 ? currentRow.rows[0] : undefined;
+    targetMarkdown = renderQuotationCustomerMarkdown({
+      tier: tierSelection.tier,
+      ...(currentCustomer && isResolvedCustomer(currentCustomer) && currentValues
+        ? { customerCode: currentValues[0], customerName: currentValues[1], description: currentValues[3] }
+        : {}),
+    });
+    customerIdentity = currentCustomer && isResolvedCustomer(currentCustomer)
+      ? currentCustomer.customerIdentity
+      : `explicit-default:${tierSelection.tier}`;
+    selectionProvenance = {
+      method: 'default_tier',
+      selectionMessageId: input.messageId,
+    };
+  } else if (currentCustomer && sameCustomerData(currentCustomer.customerMarkdown, input.response)) {
+    return { kind: 'unchanged', customer: currentCustomer };
+  } else {
+    const evidence = state?.customerLookupEvidence;
+    if (!evidence || evidence.responseId !== input.responseId || evidence.orderHash !== orderHash ||
+      (evidence.customerPreparationId ?? undefined) !== input.expectedCustomerPreparationId ||
+      evidence.customers.length !== 1 && evidence.customers.length !== 0 ||
+      !evidence.customerMarkdown || !sameCustomerData(evidence.customerMarkdown, input.response)) {
+      throw new Error('Customer data does not match trusted customer lookup evidence');
+    }
+    const candidate = evidence.customers[0];
+    targetMarkdown = evidence.customerMarkdown;
+    customerIdentity = candidate ? String(candidate.id) : 'no-match:default-B';
+    selectionProvenance = {
+      method: candidate ? 'unique' : 'default_tier',
+      lookupMessageId: evidence.lookupMessageId,
+      ...(candidate ? { selectedCustomerId: String(candidate.id) } : {}),
+    };
+  }
+  if (!sameCustomerData(targetMarkdown, input.response)) {
+    throw new Error('Customer data does not match trusted current customer or tier selection');
+  }
+  return {
+    kind: 'save',
+    input: {
+      scope: input.scope,
+      customerMarkdown: targetMarkdown,
+      customerIdentity,
+      triggeringMessageId: input.messageId,
+      responseId: input.responseId,
+      ...(orderHash !== undefined ? { orderHash } : {}),
+      expectedPreparationId: input.expectedCustomerPreparationId ?? null,
+      selectionProvenance,
+    },
+  };
+}
+
+export async function commitQuotationCustomerResponse(input: {
+  scope: SteelQuotationScope;
+  response: string;
+  responseId: string;
+  messageId?: string;
+  messageText?: string;
+  messageFiles?: readonly SteelQuotationPendingMessageFile[];
+  expectedOrderHash?: string;
+  expectedCustomerPreparationId?: string;
+  service?: SteelQuotationStateService;
+  finishReason?: string;
+}): Promise<SteelQuotationCustomerPreparation | undefined> {
+  const prepared = await prepareQuotationCustomerResponse(input);
+  if (!prepared || prepared.kind === 'unchanged') return prepared?.customer;
+  const service = input.service ?? createSteelQuotationStateService(mongoose);
+  return service.saveCustomer(prepared.input);
 }
 
 export function renderQuotationSignal(): string {

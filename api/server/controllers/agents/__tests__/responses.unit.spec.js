@@ -30,6 +30,7 @@ const mockHasQuotationOrder = jest.fn().mockReturnValue(false);
 const mockExecuteSteelQuotationWorkflow = jest.fn().mockResolvedValue(undefined);
 const mockFinalizeOcrResponse = jest.fn();
 const mockSaveOcrAudit = jest.fn().mockResolvedValue({});
+const mockMarkdownFinalize = jest.fn();
 class MockOcrAuditPersistenceError extends Error {}
 const mockGetBalanceConfig = jest.fn().mockReturnValue({ enabled: true });
 const mockGetTransactionsConfig = jest.fn().mockReturnValue({ enabled: true });
@@ -290,12 +291,14 @@ jest.mock('@librechat/agents', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
-  finishSteelAgentResponse: jest.requireActual('@librechat/api').finishSteelAgentResponse,
   finalizeSteelResponsesTurn: jest.requireActual('@librechat/api').finalizeSteelResponsesTurn,
-  applySteelResponsesCompletionMarkdown: jest.requireActual('@librechat/api').applySteelResponsesCompletionMarkdown,
   replaceSteelResponsesMarkdown: jest.requireActual('@librechat/api').replaceSteelResponsesMarkdown,
   delegateOcrStreamEventName: 'on_delegate_ocr_stream',
   createSteelOcrStateService: (...args) => mockCreateSteelOcrStateService(...args),
+  createSteelQuotationStateService: jest.fn(() => ({})),
+  createSteelMarkdownCompletionServices: jest.fn(() => ({
+    finalize: (...args) => mockMarkdownFinalize(...args),
+  })),
   finalizeOcrResponse: (...args) => mockFinalizeOcrResponse(...args),
   parseAssistantMarkdown: (markdown) => ({
     sections: [...markdown.matchAll(/^## (ocr_result(?:_updates)?)$/gmu)].map((match) => ({ title: match[1] })),
@@ -353,11 +356,13 @@ jest.mock('@librechat/api', () => ({
   getLatestHumanMessageText: jest.fn((messages) => {
     const latest = [...(messages ?? [])].reverse().find((message) => message?.getType?.() === 'human');
     const content = latest?.content;
-    return typeof content === 'string'
-      ? content
-      : Array.isArray(content)
-        ? content.map((part) => part?.text ?? '').join('')
-        : '';
+    if (typeof content === 'string') {
+      return content;
+    }
+    if (Array.isArray(content)) {
+      return content.map((part) => part?.text ?? '').join('');
+    }
+    return '';
   }),
   stripPaddleOcrToolsForMainAgent: (config) => config,
   stripSteelToolsForOcrTurn: jest.fn((config) => config),
@@ -723,7 +728,58 @@ describe('createResponse controller', () => {
     jest.clearAllMocks();
     resetMockExecution();
     mockGlobalDiscoveredAgentConfigs = null;
+    mockFinalizeOcrResponse.mockReset();
     mockSaveOcrAudit.mockReset().mockResolvedValue({});
+    mockMarkdownFinalize.mockReset().mockImplementation(async (input) => {
+      let finalMarkdown = input.markdown;
+      let ocrResultMarkdown;
+      const hasOcrUpdate = /(^|\n)## ocr_result_updates\s*$/mu.test(input.markdown);
+      const hasOcrResult = /(^|\n)## ocr_result\s*$/mu.test(input.markdown);
+      if (hasOcrUpdate) {
+        await mockSaveOcrAudit({
+          rawResponse: input.markdown,
+          userId: input.req?.user?.id,
+        });
+        const result = mockFinalizeOcrResponse({
+          assistantResponse: input.markdown,
+          agentKind: 'other',
+        });
+        if (result?.finalResponse) {
+          finalMarkdown = result.finalResponse;
+        }
+        ocrResultMarkdown = result?.ocrResultMarkdown;
+      } else if (hasOcrResult && mockFinalizeOcrResponse.getMockImplementation()) {
+        const result = mockFinalizeOcrResponse({ assistantResponse: input.markdown });
+        if (result?.finalResponse) {
+          finalMarkdown = result.finalResponse;
+        }
+        ocrResultMarkdown = result?.ocrResultMarkdown;
+      }
+      const delegateRun = input.req?.steelNativeContext?.delegateOcrContext?.delegateOcrRun;
+      const executionLeaseToken =
+        input.req?.steelNativeContext?.delegateOcrContext?.delegateOcrExecutionLease
+          ?.executionLeaseToken;
+      if (delegateRun?.claimToken && executionLeaseToken) {
+        const transitioned = await mockResponsesOcrStateService.transitionDelegateOcrRun({
+          claimToken: delegateRun.claimToken,
+          executionLeaseToken,
+          status: 'completed',
+          currentStage: 'completed',
+        });
+        if (transitioned == null) {
+          throw new Error('Steel response could not be finalized');
+        }
+      }
+      input.applyMarkdown(finalMarkdown);
+      await input.persistMarkdown();
+      if (ocrResultMarkdown) {
+        await mockResponsesOcrStateService.upsertCurrentOcrResult({
+          markdown: ocrResultMarkdown,
+          messageId: input.responseId,
+        });
+      }
+      return { markdown: finalMarkdown };
+    });
     mockCreateSteelOcrStateService.mockReturnValue(mockResponsesOcrStateService);
     mockResponsesOcrStateService.readConversationOcrState.mockResolvedValue(null);
     mockResponsesOcrStateService.upsertCurrentOcrResult.mockResolvedValue({});
@@ -2743,7 +2799,7 @@ describe('createResponse controller', () => {
       expect(mockResponsesOcrStateService.upsertCurrentOcrResult).toHaveBeenCalledWith(expect.objectContaining({ markdown: canonical }));
     });
 
-    it('does not re-finalize OCR after quotation workflow persisted a pending order', async () => {
+    it('runs the shared finalizer once after quotation workflow output', async () => {
       const api = require('@librechat/api');
       const { saveMessage } = require('~/models');
       const raw =
@@ -2763,14 +2819,22 @@ describe('createResponse controller', () => {
         usage: { input_tokens: 100, output_tokens: 50, total_tokens: 150 },
       });
       mockExecuteSteelQuotationWorkflow.mockImplementationOnce(async ({ onText }) => {
-        req.steelNativeContext.quotation.pendingOrderPersisted = true;
         await onText(raw);
       });
 
       await createResponse(req, res);
 
       expect(mockFinalizeOcrResponse).not.toHaveBeenCalled();
-      expect(mockCreateSteelOcrStateService).not.toHaveBeenCalled();
+      expect(mockCreateSteelOcrStateService).toHaveBeenCalledTimes(1);
+      expect(mockMarkdownFinalize).toHaveBeenCalledWith(
+        expect.objectContaining({
+          stage: 'ui',
+          responseId: 'resp_mock-123',
+          markdown: raw,
+          applyMarkdown: expect.any(Function),
+          persistMarkdown: expect.any(Function),
+        }),
+      );
       expect(saveMessage).toHaveBeenCalledWith(
         expect.any(Object),
         expect.objectContaining({
@@ -2780,6 +2844,41 @@ describe('createResponse controller', () => {
         }),
         expect.any(Object),
       );
+    });
+
+    it('propagates provisional and completed persistence state to the response save', async () => {
+      const api = require('@librechat/api');
+      const db = require('~/models');
+      const responseSnapshots = [];
+      const raw =
+        '## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| 文字訂單 | PENDING |';
+      api.buildAggregatedResponse.mockReturnValueOnce({
+        id: 'resp_123',
+        status: 'completed',
+        output: [{
+          id: 'msg_1', type: 'message', role: 'assistant', status: 'completed',
+          content: [{ type: 'output_text', text: raw }],
+        }],
+        usage: { input_tokens: 100, output_tokens: 50, total_tokens: 150 },
+      });
+      mockMarkdownFinalize.mockImplementationOnce(async (input) => {
+        input.applyMarkdown(input.markdown);
+        await input.persistMarkdown({ completed: false });
+        await input.persistMarkdown({ completed: true });
+        return { markdown: input.markdown };
+      });
+      db.saveMessage.mockImplementation(async (_req, message) => {
+        responseSnapshots.push({ ...message });
+        return {};
+      });
+
+      await createResponse(req, res);
+
+      const responseWrites = responseSnapshots
+        .filter((message) => message?.messageId === 'resp_mock-123');
+      expect(responseWrites).toHaveLength(2);
+      expect(responseWrites[0]).toEqual(expect.objectContaining({ unfinished: true }));
+      expect(responseWrites[1]).toEqual(expect.objectContaining({ unfinished: false }));
     });
 
     it('does not clear a resumed delegate claim when the completion lease is stale', async () => {

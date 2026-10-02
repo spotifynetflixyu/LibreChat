@@ -8,6 +8,8 @@ import type {
   SteelQuotationCheckpointRef,
   SteelQuotationChunkState,
   SteelQuotationCustomerPreparation,
+  SteelQuotationCustomerLookupEvidence,
+  SteelQuotationCustomerLookupCandidate,
   SteelQuotationCurrentSystemOrder,
   SteelQuotationOrder,
   SteelQuotationPendingMessage,
@@ -70,6 +72,39 @@ const steelQuotationCustomerPreparationSchema = new Schema<SteelQuotationCustome
   { _id: false },
 );
 
+const steelQuotationCustomerLookupCandidateSchema = new Schema<SteelQuotationCustomerLookupCandidate>(
+  {
+    id: { type: Number, required: true },
+    erpCustomerCode: { type: String },
+    displayName: { type: String },
+    customerTier: { type: String, enum: ['A', 'B', 'C', 'D', 'E', 'F'] },
+  },
+  { _id: false },
+);
+
+const steelQuotationCustomerLookupEvidenceSchema = new Schema<SteelQuotationCustomerLookupEvidence>(
+  {
+    responseId: { type: String, required: true },
+    lookupMessageId: { type: String, required: true },
+    orderHash: { type: String, required: true },
+    customerPreparationId: { type: String },
+    customers: { type: [steelQuotationCustomerLookupCandidateSchema], required: true, default: [] },
+    customerMarkdown: { type: String },
+  },
+  { _id: false },
+);
+
+const steelQuotationTicketCompletionReceiptSchema = new Schema(
+  {
+    inputHash: { type: String, required: true },
+    markdown: { type: String, required: true },
+    ocrGeneration: { type: String },
+    ocrHash: { type: String },
+    systemOrderHash: { type: String },
+  },
+  { _id: false },
+);
+
 const steelQuotationTicketSchema = new Schema<SteelQuotationTicket>(
   {
     index: { type: Number, required: true },
@@ -86,6 +121,7 @@ const steelQuotationTicketSchema = new Schema<SteelQuotationTicket>(
     preparationId: { type: String },
     responseId: { type: String },
     acceptedRunId: { type: String },
+    completionReceipt: { type: steelQuotationTicketCompletionReceiptSchema },
   },
   { _id: false },
 );
@@ -213,6 +249,7 @@ const steelQuotationStateSchema: Schema<ISteelQuotationState> = new Schema<IStee
     currentOrder: { type: steelQuotationOrderSchema },
     currentSystemOrder: { type: steelQuotationCurrentSystemOrderSchema },
     currentCustomer: { type: steelQuotationCustomerPreparationSchema },
+    customerLookupEvidence: { type: steelQuotationCustomerLookupEvidenceSchema },
     nextSignalIndex: { type: Number, required: true, default: 0 },
     tickets: { type: [steelQuotationTicketSchema], required: true, default: [] },
     activeRun: { type: steelQuotationActiveRunSchema },

@@ -6,6 +6,7 @@ import {
   createSteelQuotationStateModel,
 } from '@librechat/data-schemas';
 import type { SteelQuotationScope } from '@librechat/data-schemas';
+import type { SystemOrderRevisionDependencies } from './revision';
 import {
   createSystemOrderRevisionService,
   formatSystemOrderRevisionInstruction,
@@ -89,12 +90,15 @@ async function prepareCompletedRun(
   return { runId: run.runId, final };
 }
 
-function createRevisionService() {
+function createRevisionService(
+  saveCurrentSystemOrder: SystemOrderRevisionDependencies['saveCurrentSystemOrder'] =
+    stateService.saveCurrentSystemOrder,
+) {
   return createSystemOrderRevisionService({
     read: stateService.readState,
     readCurrentSystemOrder: stateService.readCurrentSystemOrder,
     readCheckpoint: stateService.readCheckpoint,
-    saveCurrentSystemOrder: stateService.saveCurrentSystemOrder,
+    saveCurrentSystemOrder,
   });
 }
 
@@ -209,6 +213,64 @@ describe('Steel system-order revisions', () => {
     expect((await createSteelQuotationArtifactModel(mongoose).countDocuments({ ...scope, runId }))).toBe(2);
   });
 
+  it('prepares the canonical revision without writing until its commit is called', async () => {
+    await prepareCompletedRun();
+    const original = await readSnapshot();
+    let saveCount = 0;
+    const service = createRevisionService(async (input) => {
+      saveCount += 1;
+      return stateService.saveCurrentSystemOrder(input);
+    });
+
+    const prepared = await service.prepareSystemOrderUpdates({
+      scope,
+      response: updates(original),
+      responseId: 'prepared-revision',
+    });
+    expect(prepared.ok).toBe(true);
+    expect(saveCount).toBe(0);
+    expect((await stateService.readState(scope))?.currentSystemOrder).toBeUndefined();
+    if (!prepared.ok) return;
+
+    expect(prepared.snapshot.responseId).toBe('prepared-revision');
+    expect(prepared.markdown).toContain('| A | 2 | 3 | 10 |');
+    const committed = await prepared.commit();
+    expect(committed.ok).toBe(true);
+    expect(saveCount).toBe(1);
+    expect((await stateService.readState(scope))?.currentSystemOrder?.responseId).toBe(
+      'prepared-revision',
+    );
+  });
+
+  it('uses the preparation fences when a customer changes before commit', async () => {
+    await prepareCompletedRun();
+    const original = await readSnapshot();
+    const service = createRevisionService();
+    const prepared = await service.prepareSystemOrderUpdates({
+      scope,
+      response: updates(original),
+      responseId: 'fenced-prepared-revision',
+    });
+    expect(prepared.ok).toBe(true);
+    if (!prepared.ok) return;
+
+    const state = await stateService.readState(scope);
+    await stateService.saveCustomer({
+      scope,
+      customerIdentity: 'explicit-default:B',
+      customerMarkdown: '## customer_data\n\n| 價格等級 |\n| --- |\n| B |',
+      triggeringMessageId: 'tier-change',
+      responseId: 'tier-change-response',
+      orderHash: state?.currentOrder?.sha256,
+      expectedPreparationId: state?.currentCustomer?.preparationId,
+      selectionProvenance: { method: 'default_tier', selectionMessageId: 'tier-change' },
+    });
+
+    expect(await prepared.commit()).toEqual({ ok: false, code: 'concurrent_change' });
+    expect((await stateService.readState(scope))?.currentSystemOrder).toBeUndefined();
+    expect(await service.readCurrentSystemOrder(scope)).toBeUndefined();
+  });
+
   it('merges valid updates, rebuilds the deterministic customer quote, and leaves the final artifact immutable', async () => {
     const { runId, final } = await prepareCompletedRun();
     const snapshot = await readSnapshot();
@@ -263,6 +325,12 @@ describe('Steel system-order revisions', () => {
       response: duplicate,
       responseId: 'revision-response-duplicate',
     })).toEqual({ ok: false, code: 'duplicate_row_index' });
+
+    expect(await service.prepareSystemOrderUpdates({
+      scope,
+      response: `${order}\n\n${updates(snapshot)}`,
+      responseId: 'revision-response-full-order',
+    })).toEqual({ ok: false, code: 'invalid_revision' });
 
   });
 

@@ -28,7 +28,6 @@ const {
   stripSteelOcrPartsFromProviderMessages,
   extractSteelNativeMarkdownText,
   extractSteelNativeResponseOutputText,
-  parseAssistantMarkdown,
   buildSteelNativeResponseMessageMetadata,
   createSteelNativeHistory,
   prepareSteelNativeToolConfig,
@@ -97,14 +96,10 @@ const {
   CHILD_THREAD_READ_ONLY_ERROR,
   createSteelOcrStateService,
   createSteelQuotationStateService,
-  createSteelAgentCompletionServices,
-  finishSteelAgentResponse,
+  createSteelMarkdownCompletionServices,
   finalizeSteelResponsesTurn,
-  applySteelResponsesCompletionMarkdown,
   replaceSteelResponsesMarkdown,
   createSteelOcrResponseAuditService,
-  SteelOcrResponseAuditPersistenceError,
-  finalizeOcrResponse,
   executeAgentRun,
   waitForAgentExecutionWrites,
   resolveToolRoleGrants,
@@ -598,90 +593,6 @@ async function saveInputMessages(req, conversationId, inputMessages, agentId) {
  * @param {number | undefined} visibleOutputTokens
  * @returns {Promise<void>}
  */
-function replaceResponsesOutputText(response, text) {
-  replaceSteelResponsesMarkdown(response, text);
-}
-
-async function auditResponsesOcrResponse(req, {
-  rawResponse,
-  state,
-  conversationId,
-  messageId,
-  generationId,
-  delegateRun,
-  delegateContext,
-}) {
-  const userId = req?.user?.id;
-  if (!userId || !conversationId || !messageId || !generationId) {
-    throw new SteelOcrResponseAuditPersistenceError(
-      'OCR audit requires user, conversation, message, and generation scope',
-    );
-  }
-  return createSteelOcrResponseAuditService(mongoose).save({
-    rawResponse,
-    sourceStage: 'responses',
-    userId,
-    tenantId: req?.user?.tenantId,
-    conversationId,
-    messageId,
-    generationId: String(generationId),
-    ...(delegateRun?.agentAttemptToken || delegateContext?.attemptToken
-      ? { attemptId: delegateRun?.agentAttemptToken ?? delegateContext.attemptToken }
-      : {}),
-    attemptNumber: delegateRun?.agentAttemptNumber ?? delegateContext?.agentAttemptNumber ?? 1,
-    ...(state?.currentOcrResultGenerationId
-      ? { baseRevision: state.currentOcrResultGenerationId }
-      : {}),
-    baseResponse: state?.currentOcrResultMarkdown ?? '',
-  });
-}
-
-function replaceInvalidResponsesOcrFinalization(response, state, reason) {
-  const messages = {
-    ambiguous_ocr_update: '訂單更新內容不明確，原訂單未變更。請提供完整且可辨識的修改列。',
-    invalid_ocr_result_table: 'OCR 訂單格式無法確認，原訂單未變更。請重新確認附件。',
-    missing_ocr_base: '訂單更新缺少可用的原訂單，原訂單未變更。請重新確認附件。',
-    conflicting_ocr_sections: '訂單更新格式互相衝突，原訂單未變更。請只提供修改列。',
-    missing_ocr_result: 'OCR 訂單結果缺少完整表格，原訂單未變更。',
-  };
-  const message = messages[reason];
-  if (!message) {
-    return false;
-  }
-  replaceResponsesOutputText(
-    response,
-    state?.currentOcrResultMarkdown ? `${message}\n\n${state.currentOcrResultMarkdown}` : message,
-  );
-  return true;
-}
-
-function getTrustedDelegateOcrFinalization(delegateContext, rawResponseText) {
-  const workflow = delegateContext?.delegateOcrWorkflow ?? delegateContext;
-  const finalized = workflow?.finalizedResponse;
-  if (
-    workflow?.finalizedByBackend !== true ||
-    !finalized ||
-    finalized.ok !== true ||
-    typeof finalized.finalResponse !== 'string' ||
-    typeof finalized.ocrResultMarkdown !== 'string' ||
-    finalized.ocrResultMarkdown.trim() === '' ||
-    finalized.finalResponse !== rawResponseText
-  ) {
-    return null;
-  }
-  return finalized;
-}
-
-function asOcrPersistenceError(error, message) {
-  if (error instanceof SteelOcrResponseAuditPersistenceError) {
-    return error;
-  }
-  return new SteelOcrResponseAuditPersistenceError(
-    message,
-    error instanceof Error ? error : undefined,
-  );
-}
-
 function materializeResponsesTrackerText(tracker, text = tracker?.accumulatedText ?? '') {
   if (!tracker?.currentMessage || !Array.isArray(tracker.currentMessage.content)) {
     return;
@@ -739,128 +650,6 @@ async function saveResponseOutput(
   processingDurationMs,
 ) {
   let responseText = extractSteelNativeResponseOutputText(response);
-  let ocrFinalization;
-  const delegateContext = req.steelNativeContext?.delegateOcrContext;
-  const delegateRun = delegateContext?.delegateOcrRun;
-  const hasOcrResult = parseAssistantMarkdown(responseText).sections.some((section) =>
-    ['ocr_result', 'ocr_result_updates'].includes(section.title.trim()),
-  );
-  const trustedFinalization = getTrustedDelegateOcrFinalization(delegateContext, responseText);
-  const ocrStageActive = delegateRun || req.steelNativeContext?.ocrTurnActive === true;
-  if (
-    req.steelNativeContext?.quotation?.pendingOrderPersisted !== true &&
-    (hasOcrResult || ocrStageActive)
-  ) {
-    const stateService = createSteelOcrStateService(mongoose);
-    let state;
-    try {
-      state = await stateService.readConversationOcrState(conversationId);
-    } catch (error) {
-      throw asOcrPersistenceError(error, 'OCR state could not be read before response finalization');
-    }
-    const executionLeaseToken =
-      delegateContext?.delegateOcrExecutionLease?.executionLeaseToken ??
-      delegateRun?.executionLeaseToken;
-    let agentKind = 'other';
-    if (delegateRun) {
-      agentKind = 'delegate_ocr';
-    } else if (req.steelNativeContext?.ocrTurnActive === true) {
-      agentKind = 'regular_ocr';
-    }
-    if (!hasOcrResult && !trustedFinalization) {
-      await auditResponsesOcrResponse(req, {
-        rawResponse: responseText,
-        state,
-        conversationId,
-        messageId: responseId,
-        generationId: responseId,
-        delegateRun,
-        delegateContext,
-      });
-      replaceResponsesOutputText(
-        response,
-        state?.currentOcrResultMarkdown
-          ? `OCR 訂單結果缺少完整表格，原訂單未變更。\n\n${state.currentOcrResultMarkdown}`
-          : 'OCR 訂單結果缺少完整表格，原訂單未變更。',
-      );
-      responseText = extractSteelNativeResponseOutputText(response);
-    } else {
-      let finalized = trustedFinalization;
-      if (!finalized) {
-        await auditResponsesOcrResponse(req, {
-          rawResponse: responseText,
-          state,
-          conversationId,
-          messageId: responseId,
-          generationId: responseId,
-          delegateRun,
-          delegateContext,
-        });
-        finalized = finalizeOcrResponse({
-          assistantResponse: responseText,
-          previousOcrMarkdown: state?.currentOcrResultMarkdown,
-          canonicalMapping: (state?.sourceMappings ?? []).map(({ sourceCode, sourceFilename }) => ({
-            sourceCode,
-            sourceFilename,
-          })),
-          delegateSummary: agentKind === 'delegate_ocr',
-          agentKind,
-          currentUserTurn: delegateContext?.currentUserTurnText,
-        });
-      }
-      if (finalized.ok) {
-        responseText = finalized.finalResponse;
-        replaceResponsesOutputText(response, responseText);
-      const candidateToken = `${responseId}:${Date.now()}`;
-      if (delegateRun?.claimToken) {
-        const candidate = await stateService.setDelegateFinalizedCandidate({
-          claimToken: delegateRun.claimToken,
-          ...(executionLeaseToken ? { executionLeaseToken } : {}),
-          candidate: {
-            token: candidateToken,
-            markdown: finalized.finalResponse,
-            source: 'backend',
-            generationId: responseId,
-            targetMessageId: responseId,
-            createdAt: new Date(),
-          },
-        });
-        if (!candidate) {
-          throw new Error('delegate_ocr finalization lease is stale');
-        }
-        const journal = await stateService.updateDelegateFinalizationJournal({
-            claimToken: delegateRun.claimToken,
-            ...(executionLeaseToken ? { executionLeaseToken } : {}),
-            candidateToken,
-            journal: {
-              candidateValidated: true,
-              candidateValidatedToken: candidateToken,
-            },
-          });
-        if (!journal) {
-          throw new Error('delegate_ocr finalization journal lease is stale');
-        }
-      }
-      ocrFinalization = {
-        stateService,
-        state,
-        finalized,
-        delegateRun,
-        executionLeaseToken,
-        candidateToken,
-      };
-      } else if (finalized.reason === 'invalid_ocr_deletion') {
-        responseText = `訂單刪除未通過確認，原訂單未變更。請重新指定要刪除的項目。\n\n${state?.currentOcrResultMarkdown ?? ''}`;
-        replaceResponsesOutputText(response, responseText);
-      } else if (finalized.reason === 'mapping_mismatch') {
-        responseText = '目前 AI model 暫時不可用，建議先切換別的 model。';
-        replaceResponsesOutputText(response, responseText);
-      } else if (replaceInvalidResponsesOcrFinalization(response, state, finalized.reason)) {
-        responseText = extractSteelNativeResponseOutputText(response);
-      }
-    }
-  }
-
   const langfuseTraceFields = await getLangfuseTraceMessageFields(req.config, responseId);
 
   // Save the assistant message
@@ -871,6 +660,7 @@ async function saveResponseOutput(
       isCreatedByUser: false,
       ...langfuseTraceFields,
       text: responseText,
+      unfinished: false,
       sender: 'Agent',
       endpoint: EModelEndpoint.agents,
       model: agentId,
@@ -895,180 +685,52 @@ async function saveResponseOutput(
         preflightToolCalls: req.steelNativeContext?.steelHistory?.preflightToolCalls,
       }),
     };
-  const saveMessageOperation = () =>
-    db.saveMessage(req, responseMessage, { context: 'Responses API - save assistant response' });
-  let savedMessage;
-  let responseMessageSaveError;
-  for (let attempt = 1; attempt <= (ocrFinalization ? 3 : 1); attempt += 1) {
-    try {
-      savedMessage = await saveMessageOperation();
-      if (!savedMessage) {
-        throw new Error('Responses API OCR message save returned no document');
-      }
-      break;
-    } catch (error) {
-      if (attempt >= 3 || !ocrFinalization) {
-        responseMessageSaveError = error;
-        break;
-      }
-      await new Promise((resolve) => setTimeout(resolve, 1000));
+  const saveMessageOperation = async (options = {}) => {
+    responseMessage.text = responseText;
+    responseMessage.unfinished = options.completed === false;
+    const saved = await db.saveMessage(req, responseMessage, {
+      context: 'Responses API - save assistant response',
+    });
+    if (!saved) {
+      throw new Error('Responses API assistant response could not be persisted');
     }
-  }
-  if (responseMessageSaveError) {
-    if (ocrFinalization?.delegateRun?.claimToken) {
-      await ocrFinalization.stateService
-        .transitionDelegateOcrRun({
-          claimToken: ocrFinalization.delegateRun.claimToken,
-          ...(ocrFinalization.executionLeaseToken
-            ? { executionLeaseToken: ocrFinalization.executionLeaseToken }
-            : {}),
-          status: 'save_failed',
-          currentStage: 'failed',
-          failureKind: 'persistence',
-        })
-        .catch(() => undefined);
-    }
-    if (ocrFinalization) {
-      throw asOcrPersistenceError(responseMessageSaveError, 'OCR response message could not be persisted');
-    }
-    throw responseMessageSaveError;
-  }
-  if (ocrFinalization) {
-    if (ocrFinalization.delegateRun?.claimToken) {
-      const journal = await ocrFinalization.stateService.updateDelegateFinalizationJournal({
-        claimToken: ocrFinalization.delegateRun.claimToken,
-        ...(ocrFinalization.executionLeaseToken
-          ? { executionLeaseToken: ocrFinalization.executionLeaseToken }
-          : {}),
-        candidateToken: ocrFinalization.candidateToken,
-        journal: {
-          messagePersisted: true,
-          messagePersistedToken: ocrFinalization.candidateToken,
-        },
-      });
-      if (!journal) {
-        throw new Error('delegate_ocr message journal lease is stale');
-      }
-    }
-    const saveOcrResult = () =>
-      ocrFinalization.stateService.upsertCurrentOcrResult({
-        conversationId,
-        generationId: responseId,
-        attemptNumber: ocrFinalization.delegateRun?.agentAttemptNumber ?? 1,
-        markdown: ocrFinalization.finalized.ocrResultMarkdown,
-        messageId: responseId,
-        ...(ocrFinalization.delegateRun?.claimToken
-          ? { claimToken: ocrFinalization.delegateRun.claimToken }
-          : {}),
-        ...(ocrFinalization.executionLeaseToken
-          ? { executionLeaseToken: ocrFinalization.executionLeaseToken }
-          : {}),
-        ...(ocrFinalization.delegateRun?.delegateOcrIndex !== undefined
-          ? { delegateOcrIndex: ocrFinalization.delegateRun.delegateOcrIndex }
-          : {}),
-        ...(ocrFinalization.state?.currentOcrResultGenerationId
-          ? { expectedGenerationId: ocrFinalization.state.currentOcrResultGenerationId }
-          : {}),
-      });
-    let ocrResultSaved = false;
-    let ocrResultSaveError;
-    for (let attempt = 1; attempt <= 3; attempt += 1) {
-      try {
-        const saved = await saveOcrResult();
-        if (!saved) {
-          throw new Error('Responses API OCR result save returned no document');
-        }
-        ocrResultSaved = true;
-        break;
-      } catch (error) {
-        ocrResultSaveError = error;
-        if (attempt >= 3) {
-          logger.error('[Responses API] Corrected message saved but OCR result state failed', {
-            conversationId,
-            responseId,
-            error: error?.message,
-          });
-          break;
-        }
-        await new Promise((resolve) => setTimeout(resolve, 1000));
-      }
-    }
-    if (!ocrResultSaved) {
-      throw asOcrPersistenceError(
-        ocrResultSaveError ?? new Error('Responses API OCR result save failed'),
-        'Responses API OCR result could not be persisted',
-      );
-    }
-    if (ocrFinalization.delegateRun?.claimToken) {
-      const runInput = {
-        claimToken: ocrFinalization.delegateRun.claimToken,
-        ...(ocrFinalization.executionLeaseToken
-          ? { executionLeaseToken: ocrFinalization.executionLeaseToken }
-          : {}),
-      };
-      if (ocrResultSaved) {
-        await ocrFinalization.stateService.updateDelegateFinalizationJournal({
-          ...runInput,
-          candidateToken: ocrFinalization.candidateToken,
-          journal: {
-            resultPersisted: true,
-            resultPersistedToken: ocrFinalization.candidateToken,
-          },
-        });
-        const completedRun = await ocrFinalization.stateService.transitionDelegateOcrRun({
-          ...runInput,
-          status: 'completed',
-          currentStage: 'completed',
-        });
-        if (!completedRun) {
-          throw new Error('delegate_ocr completion lease is stale');
-        }
-        const clearedClaim = await ocrFinalization.stateService.clearCompletedDelegateClaim({
-          conversationId,
-          claimToken: ocrFinalization.delegateRun.claimToken,
-          delegateOcrIndex: ocrFinalization.delegateRun.delegateOcrIndex,
-          ...(ocrFinalization.executionLeaseToken
-            ? { executionLeaseToken: ocrFinalization.executionLeaseToken }
-            : {}),
-        });
-        if (!clearedClaim) {
-          throw new Error('delegate_ocr completed claim lease is stale');
-        }
-        await ocrFinalization.stateService.updateDelegateFinalizationJournal({
-          ...runInput,
-          candidateToken: ocrFinalization.candidateToken,
-          journal: {
-            claimCleared: true,
-            claimClearedToken: ocrFinalization.candidateToken,
-          },
-        });
-      } else {
-        await ocrFinalization.stateService.transitionDelegateOcrRun({
-          ...runInput,
-          status: 'save_failed',
-          currentStage: 'failed',
-          failureKind: 'persistence',
-        });
-        logger.error('[Responses API] Delegate OCR final save failed', {
-          conversationId,
-          responseId,
-          error: ocrResultSaveError?.message,
-        });
-      }
-    }
-  }
-  await finishSteelAgentResponse({
-    req,
-    responseId,
-    markdown: extractSteelNativeResponseOutputText(response),
-    completed: response.status === 'completed',
-    ocrSucceeded: !hasOcrResult || ocrFinalization !== undefined,
-    applyMarkdown: (markdown) => applySteelResponsesCompletionMarkdown(response, responseMessage, markdown),
-    persistMarkdown: saveMessageOperation,
-  }, () => createSteelAgentCompletionServices({
+    return saved;
+  };
+  let persistedMessage;
+  let responseMessagePersisted = false;
+  const persistMarkdown = async (options) => {
+    const saved = await saveMessageOperation(options);
+    responseMessagePersisted = true;
+    persistedMessage = saved;
+    return saved;
+  };
+  const markdownCompletion = createSteelMarkdownCompletionServices({
     ocr: createSteelOcrStateService(mongoose),
     quotation: createSteelQuotationStateService(mongoose),
-  }).dependencies);
+    audit: createSteelOcrResponseAuditService(mongoose),
+  });
+  const completion = await markdownCompletion.finalize({
+    req,
+    responseId,
+    generationId: responseId,
+    markdown: responseText,
+    completed: response.status === 'completed',
+    stage: 'ui',
+    applyMarkdown: (markdown) => {
+      responseText = markdown;
+      replaceSteelResponsesMarkdown(response, markdown);
+      responseMessage.text = markdown;
+    },
+    persistMarkdown,
+  });
+  responseText = completion.markdown;
+  responseMessage.text = responseText;
+  if (!responseMessagePersisted) {
+    await persistMarkdown();
+  }
+  if (!persistedMessage) {
+    throw new Error('Responses API assistant response could not be persisted');
+  }
 }
 
 /**
@@ -2274,19 +1936,14 @@ const executeResponse = async (envelope, { req, res }) => {
         const finalResponse = markSteelNativeResponseStored(
           buildResponse(context, tracker, 'completed'),
         );
-        const completionServices = () => createSteelAgentCompletionServices({
-          ocr: createSteelOcrStateService(mongoose),
-          quotation: createSteelQuotationStateService(mongoose),
-        });
         await finalizeSteelResponsesTurn({
           req, response: finalResponse, responseId, store: shouldStoreResponse,
           saveConversation: () => saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision),
           saveInput: () => saveInputMessages(req, conversationId, inputMessages, agentId),
           saveOutput: () => saveResponseOutput(req, conversationId, responseId, finalResponse, agentId, Math.max(0, Date.now() - requestStartTime)),
-          saveOrderWithoutMessage: () => completionServices().saveOrderWithoutMessage({ req, response: finalResponse, responseId }),
           onPersistenceFailure: () => logger.error('[Responses API] Could not save ordinary response'),
           tracker, streamConfig: handlerConfig,
-        }, () => completionServices().dependencies);
+        });
         finalizeStream(usage);
         res.end();
 
@@ -2543,18 +2200,13 @@ const executeResponse = async (envelope, { req, res }) => {
           buildResponsesUsage(collectedUsage),
         ));
 
-        const completionServices = () => createSteelAgentCompletionServices({
-          ocr: createSteelOcrStateService(mongoose),
-          quotation: createSteelQuotationStateService(mongoose),
-        });
         await finalizeSteelResponsesTurn({
           req, response, responseId, store: shouldStoreResponse,
           saveConversation: () => saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision),
           saveInput: () => saveInputMessages(req, conversationId, inputMessages, agentId),
           saveOutput: () => saveResponseOutput(req, conversationId, responseId, response, agentId, Math.max(0, Date.now() - requestStartTime)),
-          saveOrderWithoutMessage: () => completionServices().saveOrderWithoutMessage({ req, response, responseId }),
           onPersistenceFailure: () => logger.error('[Responses API] Could not save ordinary response'),
-        }, () => completionServices().dependencies);
+        });
 
         res.json(response);
 

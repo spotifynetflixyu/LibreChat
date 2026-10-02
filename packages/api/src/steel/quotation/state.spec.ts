@@ -101,6 +101,39 @@ afterAll(async () => {
 });
 
 describe('Steel quotation state service', () => {
+  it('fences order replacement and stores lookup evidence separately from canonical customer data', async () => {
+    const order = await service.setOrder({ scope, fullMarkdown: '# order' });
+    await expect(service.setOrder({ scope, fullMarkdown: '# stale', expectedOrderHash: 'wrong' })).rejects.toThrow('order changed');
+    await expect(service.setOrder({ scope, fullMarkdown: '# stale', expectedOrderHash: null })).rejects.toThrow('order changed');
+    const evidence = {
+      responseId: 'lookup-response',
+      lookupMessageId: 'lookup-message',
+      orderHash: order.currentOrder!.sha256,
+      customers: [{ id: 7, erpCustomerCode: 'C7', displayName: 'Customer 7', customerTier: 'C' as const }],
+      customerMarkdown: '## customer_data\n\n| 客戶編號 | 客戶名稱 | 價格等級 | 說明 |\n| --- | --- | --- | --- |\n| C7 | Customer 7 | C |  |',
+    };
+    await service.saveCustomerLookupEvidence({
+      scope,
+      evidence,
+      expectedOrderHash: order.currentOrder!.sha256,
+    });
+    expect((await service.readState(scope))?.currentCustomer).toBeUndefined();
+    expect((await service.readState(scope))?.customerLookupEvidence).toEqual(expect.objectContaining({ responseId: 'lookup-response' }));
+    await service.saveCustomer({
+      scope,
+      customerMarkdown: evidence.customerMarkdown,
+      customerIdentity: '7',
+      triggeringMessageId: 'lookup-message',
+      responseId: 'lookup-response',
+      orderHash: evidence.orderHash,
+      expectedPreparationId: null,
+      selectionProvenance: { method: 'unique', lookupMessageId: 'lookup-message', selectedCustomerId: '7' },
+    });
+    const saved = await service.readState(scope);
+    expect(saved?.currentCustomer?.customerIdentity).toBe('7');
+    expect(saved?.customerLookupEvidence).toBeUndefined();
+  });
+
   it('creates one authority under concurrent first requests', async () => {
     const states = await Promise.all(Array.from({ length: 16 }, () => service.ensureState(scope)));
     expect(new Set(states.map((state) => String(state._id))).size).toBe(1);
@@ -300,6 +333,42 @@ describe('Steel quotation state service', () => {
       orderHash: firstOrderHash,
       expectedPreparationId: first.preparationId,
     })).rejects.toThrow('changed since it was read');
+  });
+
+  it('persists an immutable completion receipt on a response-bound ticket', async () => {
+    const preparation = await prepareCustomer();
+    const orderHash = preparation.orderHash;
+    if (!orderHash) throw new Error('test setup did not save an order hash');
+    const receipt = {
+      inputHash: 'a'.repeat(64),
+      markdown: '## ocr_result_updates\n\n## quote_signal\n\nstart',
+      ocrGeneration: 'ocr-generation-1',
+      ocrHash: 'b'.repeat(64),
+      systemOrderHash: 'c'.repeat(64),
+    };
+    const input = {
+      scope,
+      customerMarkdown: preparation.customerMarkdown,
+      customerIdentity: preparation.customerIdentity,
+      triggeringMessageId: preparation.triggeringMessageId,
+      selectionProvenance: preparation.selectionProvenance,
+      preparationId: preparation.preparationId,
+      responseId: 'receipt-response',
+      orderHash,
+      completionReceipt: receipt,
+    };
+    const first = await service.issueTicket(input);
+    expect(first.completionReceipt).toEqual(receipt);
+    expect((await service.readState(scope))?.tickets[0]?.completionReceipt).toEqual(receipt);
+    await expect(service.issueTicket(input)).resolves.toEqual(first);
+    await expect(service.issueTicket({
+      ...input,
+      completionReceipt: { ...receipt, markdown: `${receipt.markdown}\nchanged` },
+    })).rejects.toThrow('response binding');
+    await expect(service.issueTicket({
+      ...input,
+      completionReceipt: { ...receipt, inputHash: 'd'.repeat(64) },
+    })).rejects.toThrow('response binding');
   });
 
   it('rejects stale and mismatched customer preparations before ticket allocation', async () => {

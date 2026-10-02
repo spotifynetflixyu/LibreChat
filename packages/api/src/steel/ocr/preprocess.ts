@@ -1,7 +1,3 @@
-import { getSavedOcrPreprocessingChunkMarkdowns, mergeChunkMarkdownForFileKey } from './merge';
-import { escapeMarkdownTableCell } from '../markdown/row-codec';
-import { parseMarkdownTables } from '../markdown/table';
-
 import type {
   CaptureOcrPreprocessingChunkMarkdownInput,
   CapturePaddleOcrChunkResultInput,
@@ -10,6 +6,7 @@ import type {
   OcrPreprocessingStateInput,
   SteelOcrFileReference,
 } from '../memory/service';
+import type { OcrOrganizer } from './organizer';
 import {
   getOcrPageRangeKey,
   normalizeOcrPageChunks,
@@ -17,10 +14,13 @@ import {
   type OcrPageRange,
   type OcrPreprocessingPageChunk,
 } from './chunks';
-import { resolveOcrPreprocessingChunkSizePages } from './config';
-import { normalizeOcrOrganizerFileKey } from './organizer';
-import type { OcrOrganizer } from './organizer';
+import { getSavedOcrPreprocessingChunkMarkdowns, mergeChunkMarkdownForFileKey } from './merge';
 import { isPaddleOcrDiagnosticCode, type PaddleOcrDiagnosticCode } from './diagnostics';
+import { resolveOcrPreprocessingChunkSizePages } from './config';
+import { escapeMarkdownTableCell } from '../markdown/row-codec';
+import { normalizeSteelChunkMarkdown } from '../markdown/chunk';
+import { normalizeOcrOrganizerFileKey } from './organizer';
+import { parseMarkdownTables } from '../markdown/table';
 
 export interface OcrPreprocessingFile extends SteelOcrFileReference {
   ocrFileKey: string;
@@ -501,7 +501,8 @@ function normalizeOrganizerMarkdown(markdown: string, artifactUrl?: string): str
     : markdown;
   const redacted = artifactRedacted
     .replace(/data:(?:application\/pdf|image\/[a-z0-9.+-]+);base64,[a-z0-9+/=]+/giu, '[REDACTED_DATA_URL]');
-  const tables = parseMarkdownTables(redacted);
+  const normalized = normalizeSteelChunkMarkdown('ocr_result_chunk', redacted);
+  const tables = parseMarkdownTables(normalized);
   if (tables.length === 0) {
     throw new Error('OCR organizer output must contain at least one Markdown table');
   }
@@ -515,7 +516,7 @@ function normalizeOrganizerMarkdown(markdown: string, artifactUrl?: string): str
       ),
     ].join('\n'))
     .join('\n\n');
-  return `## ocr_result_chunk\n\n${content}`;
+  return normalizeSteelChunkMarkdown('ocr_result_chunk', content);
 }
 
 function getResultPageRanges(

@@ -49,10 +49,10 @@ export interface QuotationModelInput {
 
 const quotationChildSystemContract = [
   'Quotation child output contract (this instruction overrides earlier or frozen output instructions):',
-  '- Return exactly one complete 17-column ## system_order_chunk Markdown table with 零件編號 immediately before 備註.',
+  '- Return exactly one complete 17-column Markdown table with 零件編號 immediately before 備註.',
   '- Set each material and processing row 零件編號 from the corresponding chunk row when known; leave it blank when unavailable. Keep review explanations in 備註.',
   '- Keep every required material and processing row; put any issue or missing-value explanation in the row 備註 cell.',
-  '- Do not emit manual_reviews_chunk, system_order, customer_quote, quote_summary, control JSON, or prose outside the table.',
+  '- Do not emit any data section heading, manual_reviews_chunk, system_order, customer_quote, quote_summary, control JSON, or prose outside the table.',
 ].join('\n');
 
 const quotationMainSystemContract = [

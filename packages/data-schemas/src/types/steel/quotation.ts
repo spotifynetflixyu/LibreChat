@@ -50,6 +50,24 @@ export interface SteelQuotationSelectionProvenance {
   selectedCustomerId?: string;
 }
 
+export type SteelQuotationCustomerTier = 'A' | 'B' | 'C' | 'D' | 'E' | 'F';
+
+export interface SteelQuotationCustomerLookupCandidate {
+  id: number;
+  erpCustomerCode?: string;
+  displayName?: string;
+  customerTier?: SteelQuotationCustomerTier;
+}
+
+export interface SteelQuotationCustomerLookupEvidence {
+  responseId: string;
+  lookupMessageId: string;
+  orderHash: string;
+  customerPreparationId?: string;
+  customers: SteelQuotationCustomerLookupCandidate[];
+  customerMarkdown?: string;
+}
+
 export interface SteelQuotationCustomerPreparation {
   preparationId: string;
   customerMarkdown: string;
@@ -59,6 +77,16 @@ export interface SteelQuotationCustomerPreparation {
   responseId: string;
   selectionProvenance: SteelQuotationSelectionProvenance;
 }
+
+export interface SteelQuotationTicketCompletionReceipt {
+  inputHash: string;
+  markdown: string;
+  ocrGeneration?: string;
+  ocrHash?: string;
+  systemOrderHash?: string;
+}
+
+export type SteelQuotationCompletionReceipt = SteelQuotationTicketCompletionReceipt;
 
 export interface SteelQuotationTicket {
   index: number;
@@ -72,6 +100,7 @@ export interface SteelQuotationTicket {
   preparationId?: string;
   responseId?: string;
   acceptedRunId?: string;
+  completionReceipt?: SteelQuotationTicketCompletionReceipt;
 }
 
 export interface SteelQuotationSnapshotPrompts {
@@ -159,6 +188,7 @@ export interface ISteelQuotationState extends Document, SteelQuotationScope {
   currentOrder?: SteelQuotationOrder;
   currentSystemOrder?: SteelQuotationCurrentSystemOrder;
   currentCustomer?: SteelQuotationCustomerPreparation;
+  customerLookupEvidence?: SteelQuotationCustomerLookupEvidence;
   nextSignalIndex: number;
   tickets: SteelQuotationTicket[];
   activeRun?: SteelQuotationActiveRun;

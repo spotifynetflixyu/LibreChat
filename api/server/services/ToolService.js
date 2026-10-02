@@ -58,11 +58,15 @@ const {
   createSteelToolRunState,
   executeSteelTool,
   bindQuotationCustomerResult,
-  acceptQuotationResponse,
   runQuotationPreflight,
+  createQuotationPublicationProjector,
   processQuotationPendingMessages,
   quotationMessageText,
   buildSteelQuotationStatusEventEnvelope,
+  createSteelMarkdownCompletionServices,
+  registerSteelMarkdownPublication,
+  clearSteelMarkdownPublication,
+  createSteelOcrStateService,
   createSteelQuotationStateService,
   hasQuotationOrder,
   isUnfinishedQuotation,
@@ -6340,27 +6344,52 @@ async function executeSteelQuotationWorkflow({
     const messages = run?.getRunMessages?.() ?? [];
     const last = [...messages].reverse().find((message) => message.getType?.() === 'ai' || message._getType?.() === 'ai');
     if (!last || last.tool_calls?.length || signal.aborted || run?.interrupt) return;
-    const response = quotationMessageText(last);
-    const accepted = await acceptQuotationResponse({
-      scope,
-      response,
+    let response = quotationMessageText(last);
+    const persistWorkflowResponse = async () => {
+      const saved = await db.saveMessage({
+        userId: req.user?.id,
+        isTemporary: req.body?.isTemporary,
+        interfaceConfig: req.config?.interfaceConfig,
+      }, {
+        messageId: context.requestId,
+        conversationId: scope.conversationId,
+        parentMessageId: quotation.messageId ?? null,
+        isCreatedByUser: false,
+        text: response,
+        unfinished: true,
+        sender: agent?.name ?? 'Agent',
+        endpoint: 'agents',
+        model: agent?.id,
+        finish_reason: 'stop',
+        metadata: { steel: { activityEvents: context.steelHistory?.activityEvents, preflightToolCalls: context.steelHistory?.preflightToolCalls } },
+      }, { context: 'Quotation workflow signal durable publication' });
+      if (!saved) throw new Error('Quotation workflow response publication failed');
+      return saved;
+    };
+    const completion = await createSteelMarkdownCompletionServices({
+      ocr: createSteelOcrStateService(mongoose),
+      quotation: service,
+      audit: createSteelOcrResponseAuditService(mongoose),
+    }).finalize({
+      req,
       responseId: context.requestId,
-      messageId: quotation.messageId,
-      messageText: quotation.messageText,
-      messageFiles: quotation.messageFiles,
-      expectedOrderHash: quotation.state?.currentOrder?.sha256,
-      expectedCustomerPreparationId: quotation.state?.currentCustomer?.preparationId,
-      finishReason: last.response_metadata?.finish_reason,
+      generationId: context.requestId,
+      markdown: response,
+      completed: last.response_metadata?.finish_reason === 'stop',
+      stage: 'workflow',
+      assertActive: async () => {
+        if (signal.aborted || run?.interrupt) throw new Error('Quotation workflow was interrupted');
+      },
+      applyMarkdown: (markdown) => {
+        response = markdown;
+      },
+      persistMarkdown: persistWorkflowResponse,
     });
-    if (!accepted) return;
-    if (accepted.status !== 'completed' && accepted.status !== 'cancelled' &&
-      parseAssistantMarkdown(response).sections.some((section) => ['ocr_result', 'ocr_result_updates'].includes(section.title.split(/[｜|]/u)[0]?.trim()))) {
-      quotation.pendingOrderPersisted = true;
-    }
+    if (!completion.acceptedRun) return;
   }
   const modelOptions = context.delegateOcrContext?.modelOptions;
   if (!modelOptions) throw new Error('Quotation requires resolved model options');
-  const persist = async ({ messageId, parentMessageId, markdown }, emit = true) => {
+  const persist = async ({ messageId, parentMessageId, markdown, completed }, emit = true) => {
     const saved = await db.saveMessage({
       userId: req.user?.id,
       isTemporary: req.body?.isTemporary,
@@ -6370,6 +6399,7 @@ async function executeSteelQuotationWorkflow({
       conversationId: scope.conversationId,
       parentMessageId,
       isCreatedByUser: false,
+      unfinished: completed === false,
       text: markdown,
       content: [{ type: 'text', text: markdown }],
       sender: agent?.name ?? 'Agent',
@@ -6380,6 +6410,7 @@ async function executeSteelQuotationWorkflow({
     }, { context: 'Quotation preflight durable publication' });
     if (!saved) throw new Error('Quotation message publication failed');
     if (emit) await (onFinalText ?? onText)(`\n\n${markdown}`);
+    return saved;
   };
   const collectSteers = async (terminal = false) => {
     if (!streamId || !onSteerApplied) return;
@@ -6411,7 +6442,12 @@ async function executeSteelQuotationWorkflow({
     }
   };
   const quotationToolIndexes = new Map();
-  const result = await runQuotationPreflight({
+  const publishFinal = createQuotationPublicationProjector(async ({ run: active, markdown }) => persist({
+    messageId: active.targetMessageId ?? context.requestId,
+    parentMessageId: active.triggerMessageId,
+    markdown,
+  }));
+  const runPreflight = () => runQuotationPreflight({
     scope, modelOptions, signal, onUsage,
     onTextDelta: onFinalText ? onText : undefined,
     onHistory: async (restored) => {
@@ -6463,25 +6499,35 @@ async function executeSteelQuotationWorkflow({
         : [createSteelPaddleOcrRunStepEvent({ requestId: context.requestId, stepId, providerToolCallId, toolName: call.name, index }),
           createSteelPaddleOcrRunStepDeltaEvent({ stepId, providerToolCallId, toolName: call.name, args, index })] });
     },
-    publishFinal: async ({ run: active, markdown }) => persist({
-      messageId: active.targetMessageId ?? context.requestId,
-      parentMessageId: active.triggerMessageId,
-      markdown,
-    }),
+    publishFinal,
+    projectFinal: publishFinal,
   });
+  const result = await runPreflight();
   if (result.status === 'busy') {
     await onText('\n\n報價正在處理中，將接續同一個報價進程。');
     return;
   }
   if (result.status === 'cancelled') await onText('\n\n報價已取消。');
   await collectSteers(true);
-  let pendingDisplay = [];
+  let latestPendingMarkdown;
+  let pendingSignalAccepted = false;
   await processQuotationPendingMessages({
     scope, modelOptions, signal, onUsage,
+    persist: async (output) => persist(output, false),
     publish: async (output) => {
-      await persist(output, false);
-      if (/^ {0,3}##[ \t]+ocr_result[ \t]*$/imu.test(output.markdown)) pendingDisplay = [output.markdown];
-      else pendingDisplay.push(output.markdown);
+      if (output.acceptedRun) {
+        latestPendingMarkdown = undefined;
+        return;
+      }
+      if (output.publication) {
+        registerSteelMarkdownPublication(req, output.publication, context.requestId);
+      }
+      latestPendingMarkdown = output.markdown;
+    },
+    onSignalAccepted: async () => {
+      pendingSignalAccepted = true;
+      latestPendingMarkdown = undefined;
+      clearSteelMarkdownPublication(req);
     },
     preparePendingInput: async ({ sourceMessageId, sourceMessageText, sourceMessageFiles, signal: pendingSignal, assertActive }) => {
       await assertActive();
@@ -6508,10 +6554,18 @@ async function executeSteelQuotationWorkflow({
       }
     },
   });
-  // Emit one final order revision; multiple ocr_result sections in the parent
-  // response would let its ordinary save-finalizer pick an earlier correction.
-  if (pendingDisplay.some((markdown) => /^ {0,3}##[ \t]+ocr_result[ \t]*$/imu.test(markdown))) quotation.pendingOrderPersisted = true;
-  if (pendingDisplay.length) await onText(`\n\n${pendingDisplay.join('\n\n')}`);
+  if (pendingSignalAccepted) {
+    const followup = await runPreflight();
+    if (followup.status === 'busy') {
+      await onText('\n\n報價正在處理中，將接續同一個報價進程。');
+    } else if (followup.status === 'cancelled') {
+      await onText('\n\n報價已取消。');
+    }
+  }
+  if (latestPendingMarkdown) {
+    if (onFinalText) await onFinalText(`\n\n${latestPendingMarkdown}`);
+    else await onText(`\n\n${latestPendingMarkdown}`);
+  }
 }
 
 module.exports = {

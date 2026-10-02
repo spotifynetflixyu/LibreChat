@@ -13,6 +13,7 @@ import type {
   SteelQuotationArtifactRef,
   SteelQuotationCheckpointRef,
   SteelQuotationChunkState,
+  SteelQuotationCustomerLookupEvidence,
   SteelQuotationCustomerPreparation,
   SteelQuotationCurrentSystemOrder,
   SteelQuotationOrder,
@@ -22,6 +23,7 @@ import type {
   SteelQuotationScope,
   SteelQuotationSelectionProvenance,
   SteelQuotationSnapshotPayload,
+  SteelQuotationTicketCompletionReceipt,
   SteelQuotationTicket,
 } from '@librechat/data-schemas';
 
@@ -61,6 +63,7 @@ export interface SteelQuotationOrderInput {
   fullMarkdown: string;
   revision?: string;
   messageId?: string;
+  expectedOrderHash?: string | null;
   now?: Date;
 }
 
@@ -73,6 +76,7 @@ export interface SteelQuotationIssueTicketInput {
   preparationId?: string;
   responseId?: string;
   orderHash?: string;
+  completionReceipt?: SteelQuotationTicketCompletionReceipt;
   now?: Date;
 }
 
@@ -86,6 +90,20 @@ export interface SteelQuotationSaveCustomerInput {
   orderHash?: string;
   expectedPreparationId?: string | null;
   now?: Date;
+}
+
+export interface SteelQuotationSaveCustomerLookupEvidenceInput {
+  scope: SteelQuotationScope;
+  evidence: SteelQuotationCustomerLookupEvidence;
+  expectedOrderHash: string;
+  expectedCustomerPreparationId?: string;
+  now?: Date;
+}
+
+export interface SteelQuotationClearCustomerLookupEvidenceInput {
+  scope: SteelQuotationScope;
+  responseId?: string;
+  orderHash?: string;
 }
 
 export interface SteelQuotationSaveCurrentSystemOrderInput {
@@ -276,6 +294,12 @@ export interface SteelQuotationStateService {
     input: SteelQuotationSaveCurrentSystemOrderInput,
   ): Promise<SteelQuotationCurrentSystemOrder | undefined>;
   saveCustomer(input: SteelQuotationSaveCustomerInput): Promise<SteelQuotationCustomerPreparation>;
+  saveCustomerLookupEvidence(
+    input: SteelQuotationSaveCustomerLookupEvidenceInput,
+  ): Promise<SteelQuotationCustomerLookupEvidence>;
+  clearCustomerLookupEvidence(
+    input: SteelQuotationClearCustomerLookupEvidenceInput,
+  ): Promise<ISteelQuotationState>;
   clearCustomer(input: SteelQuotationClearCustomerInput): Promise<ISteelQuotationState>;
   issueTicket(input: SteelQuotationIssueTicketInput): Promise<SteelQuotationTicket>;
   acceptSignal(input: SteelQuotationAcceptSignalInput): Promise<SteelQuotationActiveRun>;
@@ -369,6 +393,68 @@ function validateSelectionProvenance(selectionProvenance: SteelQuotationSelectio
   }
 }
 
+function validateCustomerLookupEvidence(evidence: SteelQuotationCustomerLookupEvidence): void {
+  validateText(evidence.responseId, 'customerLookupEvidence.responseId', 300);
+  validateText(evidence.lookupMessageId, 'customerLookupEvidence.lookupMessageId', 1_000);
+  validateText(evidence.orderHash, 'customerLookupEvidence.orderHash', 128);
+  if (evidence.customerPreparationId !== undefined) {
+    validateText(evidence.customerPreparationId, 'customerLookupEvidence.customerPreparationId', 200);
+  }
+  if (evidence.customerMarkdown !== undefined) {
+    validateText(evidence.customerMarkdown, 'customerLookupEvidence.customerMarkdown', MAX_QUOTATION_CUSTOMER_BYTES);
+  }
+  if (!Array.isArray(evidence.customers)) {
+    throw new Error('customerLookupEvidence.customers must be an array');
+  }
+  for (const [index, customer] of evidence.customers.entries()) {
+    if (!Number.isSafeInteger(customer.id) || customer.id < 0) {
+      throw new Error(`customerLookupEvidence.customers[${index}].id must be a safe integer`);
+    }
+    for (const [name, value] of [
+      ['erpCustomerCode', customer.erpCustomerCode],
+      ['displayName', customer.displayName],
+    ] as const) {
+      if (value !== undefined) {
+        validateText(value, `customerLookupEvidence.customers[${index}].${name}`, MAX_QUOTATION_CUSTOMER_BYTES);
+      }
+    }
+    if (customer.customerTier !== undefined && !/^[A-F]$/.test(customer.customerTier)) {
+      throw new Error(`customerLookupEvidence.customers[${index}].customerTier is invalid`);
+    }
+  }
+}
+
+function validateHash(value: string, field: string): void {
+  if (!/^[a-f0-9]{64}$/u.test(value)) {
+    throw new Error(`${field} must be a lowercase SHA-256 hash`);
+  }
+}
+
+function validateCompletionReceipt(receipt: SteelQuotationTicketCompletionReceipt): void {
+  validateHash(receipt.inputHash, 'completionReceipt.inputHash');
+  validateText(receipt.markdown, 'completionReceipt.markdown', MAX_QUOTATION_ARTIFACT_BYTES);
+  if (receipt.ocrGeneration !== undefined) {
+    validateText(receipt.ocrGeneration, 'completionReceipt.ocrGeneration', 300);
+  }
+  if (receipt.ocrHash !== undefined) {
+    validateHash(receipt.ocrHash, 'completionReceipt.ocrHash');
+  }
+  if (receipt.systemOrderHash !== undefined) {
+    validateHash(receipt.systemOrderHash, 'completionReceipt.systemOrderHash');
+  }
+}
+
+function sameCompletionReceipt(
+  left: SteelQuotationTicketCompletionReceipt | undefined,
+  right: SteelQuotationTicketCompletionReceipt | undefined,
+): boolean {
+  return left?.inputHash === right?.inputHash &&
+    left?.markdown === right?.markdown &&
+    left?.ocrGeneration === right?.ocrGeneration &&
+    left?.ocrHash === right?.ocrHash &&
+    left?.systemOrderHash === right?.systemOrderHash;
+}
+
 function validatePositiveIndex(value: number, field: string): void {
   if (!Number.isSafeInteger(value) || value < 1) {
     throw new Error(`${field} must be a positive safe integer`);
@@ -437,6 +523,7 @@ function authorityByteLength(state: SteelQuotationStateLike): number {
       currentOrder: state.currentOrder,
       currentSystemOrder: state.currentSystemOrder,
       currentCustomer: state.currentCustomer,
+      customerLookupEvidence: state.customerLookupEvidence,
       nextSignalIndex: state.nextSignalIndex,
       tickets: state.tickets,
       activeRun: state.activeRun,
@@ -452,6 +539,7 @@ interface SteelQuotationStateLike {
   currentOrder?: SteelQuotationOrder;
   currentSystemOrder?: SteelQuotationCurrentSystemOrder;
   currentCustomer?: SteelQuotationCustomerPreparation;
+  customerLookupEvidence?: SteelQuotationCustomerLookupEvidence;
   nextSignalIndex: number;
   tickets: SteelQuotationTicket[];
   activeRun?: SteelQuotationActiveRun;
@@ -661,6 +749,9 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
   async function setOrder(input: SteelQuotationOrderInput): Promise<ISteelQuotationState> {
     validateScope(input.scope);
     validateText(input.fullMarkdown, 'fullMarkdown', MAX_QUOTATION_ORDER_BYTES);
+    if (input.expectedOrderHash !== undefined && input.expectedOrderHash !== null) {
+      validateText(input.expectedOrderHash, 'expectedOrderHash', 128);
+    }
     const now = nowOrDefault(input.now);
     const sha256 = hashText(input.fullMarkdown);
     const nextOrder: SteelQuotationOrder = {
@@ -675,6 +766,10 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
       const current = await readState(input.scope);
       if (!current) {
         continue;
+      }
+      if (input.expectedOrderHash !== undefined &&
+        (current.currentOrder?.sha256 ?? null) !== input.expectedOrderHash) {
+        throw new Error('quotation order changed since it was read');
       }
       if (isUnfinished(current.activeRun?.status)) {
         throw new Error('cannot set quotation order while a run is unfinished');
@@ -695,12 +790,14 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
       const update = orderChanged
         ? {
             $set: { currentOrder: nextOrder, tickets: retainedTickets, updatedAt: now },
+            $unset: { customerLookupEvidence: 1 },
           }
         : { $set: { currentOrder: nextOrder, updatedAt: now } };
       assertAuthorityBounds({
         ...current,
         currentOrder: nextOrder,
         tickets: orderChanged ? retainedTickets : current.tickets,
+        ...(orderChanged ? { customerLookupEvidence: undefined } : {}),
       });
       const updated = await State.findOneAndUpdate(filter, update, { new: true }).lean<ISteelQuotationState>();
       if (updated) {
@@ -858,11 +955,14 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
         ...current,
         currentCustomer: preparation,
       });
-      const preparationFilter = input.expectedPreparationId !== undefined
-        ? input.expectedPreparationId === null
-          ? { currentCustomer: { $exists: false } }
-          : { 'currentCustomer.preparationId': input.expectedPreparationId }
-        : { 'currentCustomer.responseId': { $ne: input.responseId } };
+      let preparationFilter: Record<string, unknown>;
+      if (input.expectedPreparationId === undefined) {
+        preparationFilter = { 'currentCustomer.responseId': { $ne: input.responseId } };
+      } else if (input.expectedPreparationId === null) {
+        preparationFilter = { currentCustomer: { $exists: false } };
+      } else {
+        preparationFilter = { 'currentCustomer.preparationId': input.expectedPreparationId };
+      }
       const updated = await State.findOneAndUpdate(
         {
           ...stateFilter(input.scope),
@@ -877,6 +977,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
         },
         {
           $set: { currentCustomer: preparation, updatedAt: now },
+          $unset: { customerLookupEvidence: 1 },
         },
         { new: true },
       ).lean<ISteelQuotationState>();
@@ -886,6 +987,86 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
       }
     }
     throw new Error('customer preparation changed concurrently; retry the operation');
+  }
+
+  async function saveCustomerLookupEvidence(
+    input: SteelQuotationSaveCustomerLookupEvidenceInput,
+  ): Promise<SteelQuotationCustomerLookupEvidence> {
+    validateScope(input.scope);
+    validateText(input.expectedOrderHash, 'expectedOrderHash', 128);
+    validateCustomerLookupEvidence(input.evidence);
+    if (input.evidence.orderHash !== input.expectedOrderHash) {
+      throw new Error('customer lookup evidence order is stale');
+    }
+    if ((input.evidence.customerPreparationId ?? undefined) !== input.expectedCustomerPreparationId) {
+      throw new Error('customer lookup evidence preparation is stale');
+    }
+    const now = nowOrDefault(input.now);
+    await ensureState(input.scope);
+
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      const current = await readState(input.scope);
+      if (!current || current.currentOrder?.sha256 !== input.expectedOrderHash ||
+        current.currentCustomer?.preparationId !== input.expectedCustomerPreparationId) {
+        throw new Error('customer lookup evidence is based on stale preparation data');
+      }
+      if (isUnfinished(current.activeRun?.status)) {
+        throw new Error('cannot save customer lookup evidence while a run is unfinished');
+      }
+      const existing = current.customerLookupEvidence;
+      if (existing && JSON.stringify(existing) === JSON.stringify(input.evidence)) {
+        return existing;
+      }
+      assertAuthorityBounds({ ...current, customerLookupEvidence: input.evidence });
+      const updated = await State.findOneAndUpdate(
+        {
+          ...stateFilter(input.scope),
+          'currentOrder.sha256': input.expectedOrderHash,
+          ...(input.expectedCustomerPreparationId === undefined
+            ? { currentCustomer: { $exists: false } }
+            : { 'currentCustomer.preparationId': input.expectedCustomerPreparationId }),
+        },
+        { $set: { customerLookupEvidence: input.evidence, updatedAt: now } },
+        { new: true },
+      ).lean<ISteelQuotationState>();
+      if (updated && updated.customerLookupEvidence?.responseId === input.evidence.responseId) {
+        assertAuthorityBounds(updated);
+        return updated.customerLookupEvidence;
+      }
+    }
+    throw new Error('customer lookup evidence changed concurrently; retry the operation');
+  }
+
+  async function clearCustomerLookupEvidence(
+    input: SteelQuotationClearCustomerLookupEvidenceInput,
+  ): Promise<ISteelQuotationState> {
+    validateScope(input.scope);
+    if (input.responseId !== undefined) validateText(input.responseId, 'responseId', 300);
+    if (input.orderHash !== undefined) validateText(input.orderHash, 'orderHash', 128);
+    const current = await ensureState(input.scope);
+    if (!current.customerLookupEvidence ||
+      (input.responseId !== undefined && current.customerLookupEvidence.responseId !== input.responseId) ||
+      (input.orderHash !== undefined && current.customerLookupEvidence.orderHash !== input.orderHash)) {
+      return current;
+    }
+    const updated = await State.findOneAndUpdate(
+      {
+        ...stateFilter(input.scope),
+        ...(input.responseId !== undefined
+          ? { 'customerLookupEvidence.responseId': input.responseId }
+          : {}),
+        ...(input.orderHash !== undefined
+          ? { 'customerLookupEvidence.orderHash': input.orderHash }
+          : {}),
+      },
+      { $unset: { customerLookupEvidence: 1 }, $set: { updatedAt: new Date() } },
+      { new: true },
+    ).lean<ISteelQuotationState>();
+    if (updated) {
+      assertAuthorityBounds(updated);
+      return updated;
+    }
+    return (await readState(input.scope)) ?? current;
   }
 
   async function clearCustomer(
@@ -942,6 +1123,12 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
     if (hasBinding && (input.preparationId === undefined || input.responseId === undefined || input.orderHash === undefined)) {
       throw new Error('quotation ticket binding requires preparationId, responseId and orderHash');
     }
+    if (input.completionReceipt !== undefined) {
+      if (!input.responseId) {
+        throw new Error('completion receipt requires a responseId');
+      }
+      validateCompletionReceipt(input.completionReceipt);
+    }
     if (hasBinding) {
       validateText(input.preparationId!, 'preparationId', 200);
       validateText(input.responseId!, 'responseId', 300);
@@ -961,7 +1148,8 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
             existing.orderHash !== input.orderHash ||
             existing.preparationId !== input.preparationId ||
             existing.triggeringMessageId !== input.triggeringMessageId ||
-            !sameSelectionProvenance(existing.selectionProvenance, input.selectionProvenance)
+            !sameSelectionProvenance(existing.selectionProvenance, input.selectionProvenance) ||
+            !sameCompletionReceipt(existing.completionReceipt, input.completionReceipt)
           ) {
             throw new Error('quotation ticket response binding is immutable');
           }
@@ -997,6 +1185,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
         ...(hasBinding
           ? { preparationId: input.preparationId, responseId: input.responseId }
           : {}),
+        ...(input.completionReceipt ? { completionReceipt: input.completionReceipt } : {}),
       };
       assertAuthorityBounds({
         ...current,
@@ -2453,6 +2642,8 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
     setOrder,
     saveCurrentSystemOrder,
     saveCustomer,
+    saveCustomerLookupEvidence,
+    clearCustomerLookupEvidence,
     clearCustomer,
     issueTicket,
     acceptSignal,

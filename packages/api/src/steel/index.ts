@@ -14,3 +14,4 @@ export * from './schema/mapping';
 export * from './tools';
 export * from './runtime/types';
 export * from './vision/service';
+export * from './markdown/completion';

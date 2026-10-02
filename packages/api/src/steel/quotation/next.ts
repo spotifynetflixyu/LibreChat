@@ -23,7 +23,6 @@ export interface SteelNextStepInput {
   language?: string;
   order?: string;
   customer?: string;
-  mode?: string;
   completed: boolean;
 }
 
@@ -44,7 +43,7 @@ export function hasSteelCustomerTier(markdown?: string): boolean {
 }
 
 export function appendSteelNextStep(input: SteelNextStepInput): string {
-  if (!input.completed || input.mode !== 'standard' || !hasSteelDataMarkdown(input.markdown)) {
+  if (!input.completed || !hasSteelDataMarkdown(input.markdown)) {
     return input.markdown;
   }
   const sections = parseAssistantMarkdown(input.markdown).sections;
@@ -70,6 +69,5 @@ export function appendSteelNextStep(input: SteelNextStepInput): string {
       ? '**下一步：**已收到材料訂單與客戶等級，請確認資料後回覆「報價」。'
       : '**Next step:** The material order and customer tier are available. Please confirm the details, then reply “Quote”.';
   }
-  const markdown = input.markdown.trimEnd();
-  return markdown.endsWith(footer) ? input.markdown : `${markdown}\n\n${footer}`;
+  return input.markdown.trimEnd().endsWith(footer) ? input.markdown : `${input.markdown}\n\n${footer}`;
 }

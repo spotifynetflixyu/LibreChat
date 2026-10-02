@@ -1,9 +1,9 @@
 import type { Response as ServerResponse } from 'express';
-import type { SteelResponseCompletionDependencies } from './completion';
 import type { ResponseEvent } from '../../agents/responses/types';
 import { buildResponse, createResponseTracker, emitOutputTextDone } from '../../agents/responses/handlers';
 import { finalizeSteelResponsesTurn, replaceSteelResponsesMarkdown } from './transport';
 import { extractSteelNativeResponseOutputText } from '../native/markdown';
+import { appendSteelNextStep } from './next';
 
 const order = '## ocr_result\n\n| 來源 | 零件編號 | 類別 | 數量 |\n| --- | --- | --- | --- |\n| F1 | P1 | 鋼板 | 2 |';
 const customer = '## customer_data\n\n| 價格等級 |\n| --- |\n| B |';
@@ -17,30 +17,23 @@ function setup(store: boolean) {
   const response = buildResponse({ responseId: 'response', model: 'agent', createdAt: 0 }, tracker, 'completed');
   const req = { user: { id: 'user' }, headers: { 'accept-language': 'en-US,en;q=0.9' },
     steelNativeContext: { quotation: { scope: { userId: 'user', conversationId: 'conversation' } } } };
-  const dependencies: SteelResponseCompletionDependencies = {
-    readOrder: async () => order, readCustomer: async () => customer,
-    reviseOrder: async () => ({ ok: false, code: 'invalid' }),
-  };
   return {
-    response, tracker, req, responseId: 'response', store, dependencies,
+    response, tracker, req, responseId: 'response', store,
     saveConversation: jest.fn(async () => {}), saveInput: jest.fn(async () => {}),
-    saveOutput: jest.fn(async () => {}), saveOrderWithoutMessage: jest.fn(async () => {}),
+    saveOutput: jest.fn(async () => {
+      replaceSteelResponsesMarkdown(response, appendSteelNextStep({ markdown: extractSteelNativeResponseOutputText(response),
+        order, customer, completed: true, language: 'en-US' }));
+    }),
   };
 }
 
-it('finishes data persistence before decorating store=false wire output', async () => {
+it('uses the sole output persistence owner for store=false before wire publication', async () => {
   const input = setup(false);
-  let persisted = false;
-  input.saveOrderWithoutMessage.mockImplementation(async () => { persisted = true; });
-  input.dependencies.readOrder = async () => {
-    expect(persisted).toBe(true);
-    return order;
-  };
-  await finalizeSteelResponsesTurn(input, input.dependencies);
+  await finalizeSteelResponsesTurn(input);
   expect(extractSteelNativeResponseOutputText(input.response)).toContain('reply “Quote”');
   expect(input.tracker.accumulatedText).toBe(extractSteelNativeResponseOutputText(input.response));
   expect(input.saveConversation).not.toHaveBeenCalled();
-  expect(input.saveOutput).not.toHaveBeenCalled();
+  expect(input.saveOutput).toHaveBeenCalledTimes(1);
 });
 
 it('publishes the saved decorated output for stored responses', async () => {
@@ -48,18 +41,17 @@ it('publishes the saved decorated output for stored responses', async () => {
   input.saveOutput.mockImplementation(async () => {
     replaceSteelResponsesMarkdown(input.response, `${customer}\n\nSaved footer`);
   });
-  await finalizeSteelResponsesTurn(input, input.dependencies);
+  await finalizeSteelResponsesTurn(input);
   expect(input.saveConversation).toHaveBeenCalledTimes(1);
   expect(input.saveInput).toHaveBeenCalledTimes(1);
   expect(input.saveOutput).toHaveBeenCalledTimes(1);
-  expect(input.saveOrderWithoutMessage).not.toHaveBeenCalled();
   expect(input.tracker.accumulatedText).toContain('Saved footer');
 });
 
 it('propagates persistence failures instead of publishing a success response', async () => {
   const input = setup(true);
   input.saveOutput.mockRejectedValue(new Error('database unavailable'));
-  await expect(finalizeSteelResponsesTurn(input, input.dependencies)).rejects.toMatchObject({ code: 'response_save_failed' });
+  await expect(finalizeSteelResponsesTurn(input)).rejects.toMatchObject({ code: 'response_save_failed' });
   expect(input.tracker.accumulatedText).toBe(customer);
 });
 
@@ -68,7 +60,7 @@ it('logs an ordinary persistence failure and preserves the model response', asyn
   replaceSteelResponsesMarkdown(input.response, 'Hello');
   input.saveOutput.mockRejectedValue(new Error('database unavailable'));
   const onPersistenceFailure = jest.fn();
-  await expect(finalizeSteelResponsesTurn({ ...input, onPersistenceFailure }, input.dependencies)).resolves.toBeUndefined();
+  await expect(finalizeSteelResponsesTurn({ ...input, onPersistenceFailure })).resolves.toBeUndefined();
   expect(onPersistenceFailure).toHaveBeenCalledTimes(1);
   expect(extractSteelNativeResponseOutputText(input.response)).toBe('Hello');
 });
@@ -82,7 +74,7 @@ it('emits a sanitized failed event when streamed Steel persistence fails', async
     return true;
   } } as ServerResponse;
   const streamConfig = { res, tracker: input.tracker, context: { responseId: 'response', model: 'agent', createdAt: 0 } };
-  await expect(finalizeSteelResponsesTurn({ ...input, streamConfig }, input.dependencies)).rejects.toMatchObject({ code: 'response_save_failed' });
+  await expect(finalizeSteelResponsesTurn({ ...input, streamConfig })).rejects.toMatchObject({ code: 'response_save_failed' });
   expect(events).toHaveLength(1);
   expect(events[0]).toMatchObject({ type: 'response.failed', response: {
     status: 'failed', error: { type: 'server_error', message: 'Steel response could not be finalized.', code: 'response_save_failed' },
@@ -90,10 +82,10 @@ it('emits a sanitized failed event when streamed Steel persistence fails', async
   expect(JSON.stringify(events)).not.toContain('secret provider payload');
 });
 
-it('keeps flow output and non-data replies unchanged', async () => {
+it('keeps an already finalized flow output unchanged', async () => {
   const input = setup(false);
-  input.req.steelNativeContext.quotation = { ...input.req.steelNativeContext.quotation, ...{ resume: true } };
-  await finalizeSteelResponsesTurn(input, input.dependencies);
+  input.saveOutput.mockImplementation(async () => {});
+  await finalizeSteelResponsesTurn(input);
   expect(extractSteelNativeResponseOutputText(input.response)).toBe(customer);
 });
 
@@ -110,7 +102,7 @@ it('keeps the footer on the final message across a completed tool boundary', asy
     return true;
   } } as ServerResponse;
   const streamConfig = { res, tracker: input.tracker, context: { responseId: 'response', model: 'agent', createdAt: 0 } };
-  await finalizeSteelResponsesTurn({ ...input, streamConfig }, input.dependencies);
+  await finalizeSteelResponsesTurn({ ...input, streamConfig });
   emitOutputTextDone(streamConfig);
   expect(intro.content[0]?.text).toBe('Checking customer.\n\n');
   const delta = events.find((event) => event.type === 'response.output_text.delta');

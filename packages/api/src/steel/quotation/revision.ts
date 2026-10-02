@@ -44,6 +44,16 @@ export interface SystemOrderRevisionSuccess {
 
 export type SystemOrderRevisionResult = SystemOrderRevisionSuccess | SystemOrderRevisionFailure;
 
+export interface PreparedSystemOrderRevisionSuccess extends SystemOrderRevisionSuccess {
+  commit(): Promise<SystemOrderRevisionResult>;
+}
+
+export type SystemOrderRevisionPreparation =
+  | PreparedSystemOrderRevisionSuccess
+  | SystemOrderRevisionFailure;
+
+export type SystemOrderRevisionPreparedSuccess = PreparedSystemOrderRevisionSuccess;
+
 export interface SystemOrderRevisionState {
   currentOrder?: { sha256: string };
   currentCustomer?: { customerIdentity: string; customerMarkdown: string };
@@ -108,6 +118,9 @@ export interface SystemOrderRevisionService {
     preloadedState?: SystemOrderRevisionState | null,
   ): Promise<SteelQuotationCurrentSystemOrder | undefined>;
   formatSystemOrderRevisionInstruction(snapshot: SteelQuotationCurrentSystemOrder): string;
+  prepareSystemOrderUpdates(
+    input: SystemOrderRevisionFinalizeInput,
+  ): Promise<SystemOrderRevisionPreparation>;
   finalizeSystemOrderUpdates(
     input: SystemOrderRevisionFinalizeInput,
   ): Promise<SystemOrderRevisionResult>;
@@ -314,9 +327,9 @@ export function createSystemOrderRevisionService(
     };
   }
 
-  async function finalizeSystemOrderUpdates(
+  async function prepareSystemOrderUpdates(
     input: SystemOrderRevisionFinalizeInput,
-  ): Promise<SystemOrderRevisionResult> {
+  ): Promise<SystemOrderRevisionPreparation> {
     normalizeScope(input.scope);
     if (!input.responseId || bytes(input.responseId) > MAX_RESPONSE_ID_BYTES) {
       throw new Error('responseId must not be empty and must fit the response id limit');
@@ -331,6 +344,9 @@ export function createSystemOrderRevisionService(
       (section) => sectionBaseName(section.title) === 'system_order_updates',
     );
     if (!hasRevision) return fail('no_revision');
+    if (responseSections.some((section) => sectionBaseName(section.title) === 'system_order')) {
+      return fail('invalid_revision');
+    }
 
     const state = await dependencies.read(input.scope);
     if (state?.activeRun && state.activeRun.status !== 'completed') {
@@ -339,11 +355,15 @@ export function createSystemOrderRevisionService(
     const current = await readCurrentSystemOrder(input.scope, state);
     if (!current) return fail('missing_current_system_order');
     if (current.responseId === input.responseId) {
-      return {
+      const result: SystemOrderRevisionSuccess = {
         ok: true,
         markdown: revisionResponse(current),
         snapshot: current,
         customerQuoteMarkdown: current.customerQuoteMarkdown ?? '',
+      };
+      return {
+        ...result,
+        commit: async () => result,
       };
     }
 
@@ -386,7 +406,7 @@ export function createSystemOrderRevisionService(
       customerQuoteMarkdown: quote.markdown,
       updatedAt: now,
     };
-    const saved = await dependencies.saveCurrentSystemOrder({
+    const saveInput: SystemOrderRevisionSaveInput = {
       scope: input.scope,
       snapshot,
       expectedRunId: current.runId,
@@ -399,30 +419,54 @@ export function createSystemOrderRevisionService(
         ? { expectedCurrentSystemOrderSha256: state.currentSystemOrder.sha256 }
         : {}),
       expectedCurrentSystemOrderPresent: state?.currentSystemOrder !== undefined,
-    });
-    if (!saved) {
+    };
+    let committed: SystemOrderRevisionResult | undefined;
+    const commit = async (): Promise<SystemOrderRevisionResult> => {
+      if (committed) return committed;
+      const saved = await dependencies.saveCurrentSystemOrder(saveInput);
+      if (saved) {
+        committed = {
+          ok: true,
+          markdown: revisionResponse(saved),
+          snapshot: saved,
+          customerQuoteMarkdown: saved.customerQuoteMarkdown ?? quote.markdown,
+        };
+        return committed;
+      }
+
       const raced = await readCurrentSystemOrder(input.scope);
       if (raced?.responseId === input.responseId) {
-        return {
+        committed = {
           ok: true,
           markdown: revisionResponse(raced),
           snapshot: raced,
           customerQuoteMarkdown: raced.customerQuoteMarkdown ?? '',
         };
+        return committed;
       }
       return fail('concurrent_change');
-    }
+    };
     return {
       ok: true,
-      markdown: revisionResponse(saved),
-      snapshot: saved,
+      markdown: revisionResponse(snapshot),
+      snapshot,
       customerQuoteMarkdown: quote.markdown,
+      commit,
     };
+  }
+
+  async function finalizeSystemOrderUpdates(
+    input: SystemOrderRevisionFinalizeInput,
+  ): Promise<SystemOrderRevisionResult> {
+    const prepared = await prepareSystemOrderUpdates(input);
+    if (!prepared.ok) return prepared;
+    return prepared.commit();
   }
 
   return {
     readCurrentSystemOrder,
     formatSystemOrderRevisionInstruction,
+    prepareSystemOrderUpdates,
     finalizeSystemOrderUpdates,
   };
 }

@@ -1,9 +1,11 @@
 # Steel agent 下一步提示與 Markdown 保存計劃
 
+> 本文件保留前一版設計與驗證紀錄。最新的 UI 最終回覆收尾範圍、chunk 排除及舊入口移除計畫，以 [統一收尾架構](2026-10-02-steel-markdown-completion.md) 為準；先前的 agent／flow 排除條件已被後續決定取代。
+
 ## 已確認規格
 
 - 只有一般 agent 本輪輸出具名資料區段時，後端才在回覆結尾補一次下一步；一般文字、粗體、清單與單獨 quote_signal 不觸發。
-- OCR／報價 flow 的主、子 agent 都不補下一步。一般 agent 收到 flow 結果時也不能對 flow 結果補下一步。
+- OCR／報價 flow 的主、子 agent 都不補下一步。一般 agent 上傳附件後的最終 OCR 回覆仍補下一步；OCR 輸入模式不代表該回覆由 flow 擁有。delegate flow 結果與報價 flow 回覆仍不補。
 - 本輪有 system_order 時不補下一步，保留目前自動生成 customer_quote／結論的邏輯；歷史 system_order 不影響本輪判斷。
 - 依系統語系輸出中文或英文，machine title 不翻譯。
 - 使用合併及保存成功後的資料判斷提示；失敗、取消、未完成或等待核准的回覆不得補成功導向提示。
