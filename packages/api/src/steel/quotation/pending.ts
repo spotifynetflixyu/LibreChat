@@ -5,14 +5,15 @@ import type {
   SteelQuotationScope,
 } from '@librechat/data-schemas';
 import type { QuotationModelInput } from './model';
-import { invokeQuotationModel } from './model';
+import { createSystemOrderRevisionService, formatSystemOrderRevisionInstruction } from './revision';
+import { finalizeOcrResponse, parseAssistantMarkdown } from '../ocr/result';
+import { buildDefaultSteelGlobalAgentContext } from '../native/context';
+import { createSteelOcrResponseAuditService } from '../ocr/audit';
+import { quotationPreparationInstruction } from './preparation';
 import { createSteelQuotationStateService } from './state';
 import { createSteelOcrStateService } from '../ocr/state';
-import { createSteelOcrResponseAuditService } from '../ocr/audit';
-import { finalizeOcrResponse, parseAssistantMarkdown } from '../ocr/result';
-import { quotationPreparationInstruction } from './preparation';
 import { acceptQuotationResponse } from './runner';
-import { buildDefaultSteelGlobalAgentContext } from '../native/context';
+import { invokeQuotationModel } from './model';
 
 export interface SteelQuotationPendingInputPreparationInput {
   scope: SteelQuotationScope;
@@ -57,6 +58,12 @@ export async function processQuotationPendingMessages(input: {
 }): Promise<void> {
   const service = createSteelQuotationStateService(mongoose);
   const ocrService = createSteelOcrStateService(mongoose);
+  const revisionService = createSystemOrderRevisionService({
+    read: service.readState,
+    readCurrentSystemOrder: service.readCurrentSystemOrder,
+    readCheckpoint: service.readCheckpoint,
+    saveCurrentSystemOrder: service.saveCurrentSystemOrder,
+  });
   for (let count = 0; count < 64; count += 1) {
     input.signal.throwIfAborted();
     const claim = await service.claimPendingMessage({ scope: input.scope, leaseDurationMs: 60_000 });
@@ -84,6 +91,11 @@ export async function processQuotationPendingMessages(input: {
       let markdown = claim.resultMarkdown;
       let canonicalOcrResultMarkdown: string | undefined;
       const needsResultSave = !markdown;
+      const hasCurrentSystemOrder = hasSystemOrder && (!previous?.currentOcrResultMarkdown ||
+        previous.currentOcrResultMarkdown === quotationState?.currentOrder?.markdown);
+      const systemOrder = hasCurrentSystemOrder
+        ? await revisionService.readCurrentSystemOrder(input.scope, quotationState) : undefined;
+      const revisionInstruction = systemOrder ? formatSystemOrderRevisionInstruction(systemOrder) : '';
       if (markdown) {
         canonicalOcrResultMarkdown = extractCanonicalOcrResult(markdown);
       }
@@ -108,7 +120,7 @@ export async function processQuotationPendingMessages(input: {
         });
         const result = await invokeQuotationModel({
           role: 'preparation',
-          prompt: `${rules.instructionPrefix}\n\n${quotationPreparationInstruction(previous?.currentOcrResultMarkdown, quotationState?.currentCustomer?.customerMarkdown, hasSystemOrder)}\n\nThe previous quotation is now terminal. Process the queued message below exactly once. For a new order, output one complete ## ocr_result table. For a correction, output only changed or newly added rows under ## ocr_result_updates, using the exact saved column names and order. Preserve all unchanged cells in each changed row and never use omission to delete a row. When hasSystemOrder is true, do not repeatedly ask whether to quote the current completed system_order; historical results do not count. An explicit default-B choice may emit customer_data. Do not output quote_signal in this response.`,
+          prompt: `${rules.instructionPrefix}\n\n${quotationPreparationInstruction(previous?.currentOcrResultMarkdown, quotationState?.currentCustomer?.customerMarkdown, hasCurrentSystemOrder)}\n\n${revisionInstruction}\n\nThe previous quotation is now terminal. Process the queued message below exactly once. For a new order, output one complete ## ocr_result table. For a material-order correction, output only changed or newly added rows under ## ocr_result_updates, using the exact saved column names and order. Preserve all unchanged cells in each changed row and never use omission to delete a row. When hasSystemOrder is true, do not repeatedly ask whether to quote the current completed system_order; historical results do not count. An explicit A-F direct tier choice may emit customer_data. Do not output quote_signal in this response.`,
           input: preparedInput?.input ?? claim.sourceMessageText ?? '',
           modelOptions: input.modelOptions,
           signal: controller.signal,
@@ -155,10 +167,18 @@ export async function processQuotationPendingMessages(input: {
           response: markdown,
           responseId: messageId,
           messageId: claim.sourceMessageId,
+          messageText: preparedInput?.currentUserTurn ?? claim.sourceMessageText,
           expectedOrderHash: quotationState?.currentOrder?.sha256,
           expectedCustomerPreparationId: quotationState?.currentCustomer?.preparationId,
           finishReason: 'stop',
         });
+        if (parseAssistantMarkdown(markdown).sections.some((section) => section.title === 'system_order_updates')) {
+          const revised = await revisionService.finalizeSystemOrderUpdates({
+            scope: input.scope, response: markdown, responseId: messageId, messageId,
+          });
+          if (!revised.ok) throw new Error('Queued system order correction could not be validated.');
+          markdown = revised.markdown;
+        }
         await assertActive();
       }
       await assertActive();

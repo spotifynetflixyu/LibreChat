@@ -13,9 +13,20 @@ describe('system_order Markdown normalizer', () => {
         '## system_order｜訂單',
         '| 數量 | 單重 | 總數 | 單價 | 厚度 | 寬度 | 長度 | 肚 | 計價基準 | 其他 |',
         '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
-        '| 2 | 2.5 | 10.2 | 1234.50 | 3 | 4.0 | 5 | 6 | 3 | keep |',
+        '| 2 | 2.5 | 10.2 | 1234.50 | 3 | 4 | 5000 | 6 | 3 | keep |',
       ].join('\n'),
     );
+  });
+
+  it('rounds all dimension columns half up after converting to mm without changing precise weights', () => {
+    const input = '## system_order\n| 厚度 | 寬度 | 長度 | 肚 | 單重 | 總數 |\n| --- | --- | --- | --- | --- | --- |\n| 6.35mm | 6.35mm | 762.5 mm | 0.2mm | 0.942 kg | 1.884 kg |\n| 1.5mm | 2.3mm | 1.25 m | 0.25 inch | 1.25 | 2.5 |';
+    expect(normalizeSystemOrderMarkdown(input)).toContain('| 6 | 6 | 763 | 0 | 0.942 | 1.884 |');
+    expect(normalizeSystemOrderMarkdown(input)).toContain('| 2 | 2 | 1250 | 6 | 1.25 | 2.5 |');
+  });
+
+  it.each(['system_order_chunk', 'system_order_updates'])('cleans %s rows locally', (title) => {
+    const input = `## ${title}\n| 長度 | 數量 |\n| --- | --- |\n| 762.5mm | 2支 |`;
+    expect(normalizeSystemOrderMarkdown(input)).toContain('| 763 | 2 |');
   });
 
   it('maps pricing bases A-F, numeric values, and blanks invalid values', () => {

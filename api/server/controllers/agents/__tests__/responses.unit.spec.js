@@ -290,6 +290,10 @@ jest.mock('@librechat/agents', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  finishSteelAgentResponse: jest.requireActual('@librechat/api').finishSteelAgentResponse,
+  finalizeSteelResponsesTurn: jest.requireActual('@librechat/api').finalizeSteelResponsesTurn,
+  applySteelResponsesCompletionMarkdown: jest.requireActual('@librechat/api').applySteelResponsesCompletionMarkdown,
+  replaceSteelResponsesMarkdown: jest.requireActual('@librechat/api').replaceSteelResponsesMarkdown,
   delegateOcrStreamEventName: 'on_delegate_ocr_stream',
   createSteelOcrStateService: (...args) => mockCreateSteelOcrStateService(...args),
   finalizeOcrResponse: (...args) => mockFinalizeOcrResponse(...args),
@@ -2821,8 +2825,10 @@ describe('createResponse controller', () => {
         currentStage: 'completed',
       });
       expect(mockResponsesOcrStateService.clearCompletedDelegateClaim).not.toHaveBeenCalled();
-      expect(api.sendResponsesErrorResponse).not.toHaveBeenCalled();
-      expect(res.json).toHaveBeenCalled();
+      expect(api.sendResponsesErrorResponse).toHaveBeenCalledWith(
+        res, 500, 'Steel response could not be finalized.', 'server_error', 'response_save_failed',
+      );
+      expect(res.json).not.toHaveBeenCalled();
     });
 
     it('should call recordCollectedUsage after successful non-streaming completion', async () => {
@@ -3545,6 +3551,51 @@ describe('createResponse controller', () => {
       api.validateResponseRequest.mockReturnValue({
         request: { model: 'agent-123', input: 'Hello', stream: true },
       });
+    });
+
+    it('emits a sanitized failure before ending a streamed Steel save failure', async () => {
+      const api = require('@librechat/api');
+      const actual = jest.requireActual('@librechat/api');
+      api.createResponseTracker.mockReturnValueOnce(actual.createResponseTracker());
+      api.buildResponse.mockReturnValueOnce({
+        id: 'resp_123',
+        status: 'completed',
+        output: [{
+          type: 'message', id: 'msg', role: 'assistant', status: 'completed',
+          content: [{ type: 'output_text', text: '## customer_data\n\n| 價格等級 |\n| --- |\n| B |', annotations: [] }],
+        }],
+      });
+      require('~/models').saveConvo.mockRejectedValueOnce(new Error('secret database details'));
+      res.headersSent = true;
+
+      await createResponse(req, res);
+
+      const events = res.write.mock.calls
+        .map(([chunk]) => chunk)
+        .filter((chunk) => chunk.startsWith('data: '))
+        .map((chunk) => JSON.parse(chunk.slice(6)));
+      expect(events).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: 'response.failed', response: expect.objectContaining({
+          status: 'failed', error: {
+            type: 'server_error', message: 'Steel response could not be finalized.', code: 'response_save_failed',
+          },
+        }) }),
+      ]));
+      expect(JSON.stringify(events)).not.toContain('secret database details');
+      expect(api.createResponsesEventHandlers.mock.results.at(-1).value.finalizeStream).not.toHaveBeenCalled();
+      expect(api.writeDone).toHaveBeenCalledWith(res);
+      expect(res.end).toHaveBeenCalled();
+    });
+
+    it('keeps ordinary streamed model output when its optional message save fails', async () => {
+      const api = require('@librechat/api');
+      require('~/models').saveConvo.mockRejectedValueOnce(new Error('database unavailable'));
+
+      await createResponse(req, res);
+
+      expect(api.createResponsesEventHandlers.mock.results.at(-1).value.finalizeStream).toHaveBeenCalled();
+      expect(api.sendResponsesErrorResponse).not.toHaveBeenCalled();
+      expect(res.end).toHaveBeenCalled();
     });
 
     it('uses stripped provider messages for the streaming model input', async () => {

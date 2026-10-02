@@ -1,15 +1,15 @@
 import mongoose from 'mongoose';
-
-import type { Request, Response } from 'express';
 import type { ISteelQuotationState, SteelQuotationScope } from '@librechat/data-schemas';
-
+import type { Request, Response } from 'express';
+import { resolveRequestTenantId } from '../../middleware/tenant';
 import { createSteelQuotationStateService } from './state';
-import { abortQuotationExecution } from './control';
 import { isUnfinishedQuotation } from './preparation';
+import { abortQuotationExecution } from './control';
 import { getQuotationProgress } from './progress';
 
 interface QuotationRequest extends Request {
-  user?: { id?: string };
+  user?: { id?: string; tenantId?: string };
+  tenantId?: string;
 }
 
 export interface QuotationStatus {
@@ -46,7 +46,7 @@ export function createQuotationRouteHandlers(dependencies: {
       res.status(404).json({ message: 'Conversation not found' });
       return undefined;
     }
-    return { userId, conversationId };
+    return { userId, conversationId, tenantId: resolveRequestTenantId(req) };
   }
   return {
     async status(req: QuotationRequest, res: Response) {

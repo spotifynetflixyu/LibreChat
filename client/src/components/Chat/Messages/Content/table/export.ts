@@ -76,7 +76,7 @@ export async function createThicknessZip(matrix: TableMatrix): Promise<Blob> {
   for (const { material, processing } of groupMaterialRows(matrix)) {
     const category = material[columns.category]?.trim() ?? '';
     const thickness = normalizeThickness(material[columns.thickness] ?? '');
-    const key = thickness ? JSON.stringify([category, thickness]) : '';
+    const key = JSON.stringify([category, thickness]);
     let group = groups.get(key);
     if (!group) {
       group = { category, thickness, rows: [header] };
@@ -90,9 +90,7 @@ export async function createThicknessZip(matrix: TableMatrix): Promise<Blob> {
   for (const group of groups.values()) {
     index += 1;
     const category = filenamify(group.category) || 'no-category';
-    const filename = group.thickness
-      ? `${String(index).padStart(2, '0')}_${category}_${group.thickness}.csv`
-      : 'no-thickness.csv';
+    const filename = `${String(index).padStart(2, '0')}_${category}_${group.thickness || 'no-thickness'}.csv`;
     zip.file(filename, createCsv(group.rows));
   }
 

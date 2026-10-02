@@ -1,5 +1,6 @@
-import { bindQuotationCustomerResult, hasQuotationOrder, prepareQuotationTurn, quotationPreparationStatus } from './preparation';
+import { createHash } from 'node:crypto';
 import type { SteelToolResult } from '../tools/results';
+import { bindQuotationCustomerResult, hasQuotationOrder, parseQuotationTierSelection, prepareQuotationTurn, quotationPreparationStatus, renderQuotationCustomerMarkdown } from './preparation';
 
 const mockRead = jest.fn();
 const mockSave = jest.fn();
@@ -9,10 +10,14 @@ const mockSetOrder = jest.fn();
 const mockReadOcr = jest.fn();
 const mockArtifact = jest.fn();
 const mockHasSystemOrder = jest.fn();
+const mockReadCurrentSystemOrder = jest.fn();
+const mockReadCheckpoint = jest.fn();
+const mockSaveCurrentSystemOrder = jest.fn();
 jest.mock('./state', () => ({ createSteelQuotationStateService: () => ({
   ensureState: mockRead, readState: mockRead, saveCustomer: mockSave, clearCustomer: mockClear,
   enqueuePendingMessage: mockEnqueue, setOrder: mockSetOrder, getArtifact: mockArtifact,
-  hasSystemOrder: mockHasSystemOrder,
+  hasSystemOrder: mockHasSystemOrder, readCurrentSystemOrder: mockReadCurrentSystemOrder,
+  readCheckpoint: mockReadCheckpoint, saveCurrentSystemOrder: mockSaveCurrentSystemOrder,
 }) }));
 jest.mock('../ocr/state', () => ({ createSteelOcrStateService: () => ({ readConversationOcrState: mockReadOcr }) }));
 const scope = { userId: 'owner', conversationId: 'conversation' };
@@ -26,7 +31,41 @@ beforeEach(() => {
   mockReadOcr.mockResolvedValue(null);
   mockArtifact.mockResolvedValue(null);
   mockHasSystemOrder.mockResolvedValue(false);
+  mockReadCurrentSystemOrder.mockResolvedValue(undefined);
+  mockReadCheckpoint.mockResolvedValue(undefined);
+  mockSaveCurrentSystemOrder.mockResolvedValue(undefined);
 });
+
+it.each([
+  ['使用預設 B 級進行報價', 'B'],
+  ['用A級', 'A'],
+  ['tier c', 'C'],
+  ['use Tier D', 'D'],
+  ['set tier F', 'F'],
+  ['使用c級', 'C'],
+  ['a', 'A'],
+  ['B tier', 'B'],
+  ['Use default Tier B for the quote', 'B'],
+  ['A-6M74 數量改為 1，使用 B tier', 'B'],
+] as const)('accepts one explicit current-user tier command: %s', (text, tier) => {
+  expect(parseQuotationTierSelection(text)).toEqual({ status: 'selected', tier });
+});
+
+it.each(['用A和B級', 'tier C, tier D', 'use Tier D and F'])('rejects ambiguous direct tier commands: %s', (text) => {
+  expect(parseQuotationTierSelection(text)).toEqual({ status: 'invalid', reason: 'ambiguous' });
+});
+
+it('does not treat an unrelated customer letter as a tier choice', () => {
+  expect(parseQuotationTierSelection('查詢客戶 A 公司')).toEqual({ status: 'none' });
+  expect(parseQuotationTierSelection('使用A公司')).toEqual({ status: 'none' });
+  expect(renderQuotationCustomerMarkdown({ tier: 'E' })).toContain('|  | 未指定客戶 | E | 用戶指定預設 E tier |');
+});
+
+it.each(['使用 A 材料', '選擇 B 型鋼', 'use A steel', 'set C coating'])(
+  'does not treat material instructions as customer tiers: %s', (text) => {
+    expect(parseQuotationTierSelection(text)).toEqual({ status: 'none' });
+  },
+);
 
 it.each([
   [false, false, false], [false, false, true], [false, true, false], [false, true, true],
@@ -41,7 +80,10 @@ it.each([
 it('injects fresh saved customer and system-order presence into each ordinary turn', async () => {
   const customerMarkdown = '## customer_data\n\n| 價格等級 |\n| --- |\n| B |';
   mockRead.mockResolvedValue({ currentOrder: { markdown: order, sha256: 'order-hash' },
-    currentCustomer: { customerMarkdown }, tickets: [], pendingMessages: [] });
+    currentCustomer: { customerIdentity: 'accepted-customer', customerMarkdown },
+    tickets: [{ acceptedRunId: 'accepted-run', orderHash: 'order-hash', customerIdentity: 'accepted-customer', customerMarkdown }],
+    activeRun: { runId: 'accepted-run', status: 'completed' }, pendingMessages: [] });
+  mockArtifact.mockResolvedValue({ operationId: 'published' });
   mockHasSystemOrder.mockResolvedValue(true);
   const first = await prepareQuotationTurn({ scope, messageId: 'u1', responseId: 'a1', text: '你好' });
   expect(first.instruction).toContain(JSON.stringify({ hasOcrResult: true, hasCustomerData: true, hasSystemOrder: true, shouldAskToQuote: false }));
@@ -53,11 +95,146 @@ it('injects fresh saved customer and system-order presence into each ordinary tu
   expect(mockHasSystemOrder).toHaveBeenCalledTimes(2);
 });
 
+it('injects the completed system-order snapshot and exact revision mapping', async () => {
+  const completedSystemOrder = [
+    '## system_order｜報價單',
+    '',
+    '| 品名規格 | 數量 | 總數 | 單價 |',
+    '| --- | --- | --- | --- |',
+    '| A | 2 | 2 | 10 |',
+  ].join('\n');
+  const baseHash = createHash('sha256').update(completedSystemOrder, 'utf8').digest('hex');
+  mockRead.mockResolvedValue({
+    currentOrder: { markdown: order, sha256: 'order-hash' },
+    currentCustomer: { customerIdentity: 'saved-customer', customerMarkdown: 'saved customer' },
+    tickets: [{ acceptedRunId: 'completed-run', orderHash: 'order-hash', customerIdentity: 'saved-customer', customerMarkdown: 'saved customer' }],
+    pendingMessages: [],
+    activeRun: { runId: 'completed-run', status: 'completed', targetMessageId: 'completed-response' },
+  });
+  mockArtifact.mockResolvedValue({ operationId: 'published' });
+  mockHasSystemOrder.mockResolvedValue(true);
+  mockReadCheckpoint.mockResolvedValue(completedSystemOrder);
+
+  const prepared = await prepareQuotationTurn({ scope, messageId: 'u3', responseId: 'a3', text: '修改數量' });
+
+  expect(prepared.instruction).toContain(completedSystemOrder);
+  expect(prepared.instruction).toContain('## system_order_revision');
+  expect(prepared.instruction).toContain(`| ${baseHash} | 1 |`);
+  expect(prepared.instruction).toContain('| base_hash | row_index |');
+  expect(mockReadCheckpoint).toHaveBeenCalledWith({
+    scope,
+    runId: 'completed-run',
+    operationId: 'final',
+  });
+});
+
+it('clears completed quote readiness after OCR changes the current order', async () => {
+  const updatedOrder = order.replace('| 1 | 2 | 鐵板 |', '| 1 | 3 | 鐵板 |');
+  const completedSystemOrder = [
+    '## system_order｜報價單',
+    '',
+    '| 品名規格 | 數量 | 總數 | 單價 |',
+    '| --- | --- | --- | --- |',
+    '| A | 2 | 2 | 10 |',
+  ].join('\n');
+  const updatedState = {
+    currentOrder: { markdown: updatedOrder, sha256: 'new-order-hash' },
+    currentCustomer: { customerIdentity: 'saved-customer', customerMarkdown: 'saved customer' },
+    tickets: [{ acceptedRunId: 'completed-run', orderHash: 'order-hash', customerIdentity: 'saved-customer', customerMarkdown: 'saved customer' }],
+    activeRun: { runId: 'completed-run', status: 'completed', targetMessageId: 'completed-response' },
+    pendingMessages: [],
+  };
+  mockRead.mockResolvedValue({
+    currentOrder: { markdown: order, sha256: 'order-hash' },
+    currentCustomer: { customerIdentity: 'saved-customer', customerMarkdown: 'saved customer' },
+    tickets: [{ acceptedRunId: 'completed-run', orderHash: 'order-hash', customerIdentity: 'saved-customer', customerMarkdown: 'saved customer' }],
+    activeRun: { runId: 'completed-run', status: 'completed', targetMessageId: 'completed-response' },
+    pendingMessages: [],
+  });
+  mockArtifact.mockResolvedValue({ operationId: 'published' });
+  mockHasSystemOrder.mockResolvedValue(true);
+  mockReadOcr.mockResolvedValue({
+    currentOcrResultMarkdown: updatedOrder,
+    currentOcrResultGenerationId: 'ocr-generation-2',
+    currentOcrResultMessageId: 'ocr-message-2',
+  });
+  mockSetOrder.mockResolvedValue(updatedState);
+  mockReadCheckpoint.mockResolvedValue(completedSystemOrder);
+
+  const prepared = await prepareQuotationTurn({ scope, messageId: 'u5', responseId: 'a5', text: '修改數量' });
+
+  expect(mockSetOrder).toHaveBeenCalledWith(expect.objectContaining({
+    fullMarkdown: updatedOrder,
+    revision: 'ocr-generation-2',
+    messageId: 'ocr-message-2',
+  }));
+  expect(prepared.instruction).toContain(JSON.stringify({
+    hasOcrResult: true, hasCustomerData: true, hasSystemOrder: false, shouldAskToQuote: true,
+  }));
+  expect(prepared.instruction).toContain(updatedOrder);
+  expect(prepared.instruction).not.toContain(completedSystemOrder);
+  expect(mockReadCheckpoint).not.toHaveBeenCalled();
+});
+
+it('clears completed quote readiness when the saved customer no longer matches the accepted run', async () => {
+  const completedSystemOrder = [
+    '## system_order｜報價單',
+    '',
+    '| 品名規格 | 數量 | 總數 | 單價 |',
+    '| --- | --- | --- | --- |',
+    '| A | 2 | 2 | 10 |',
+  ].join('\n');
+  mockRead.mockResolvedValue({
+    currentOrder: { markdown: order, sha256: 'order-hash' },
+    currentCustomer: { customerIdentity: 'customer-b', customerMarkdown: 'customer B' },
+    tickets: [{ acceptedRunId: 'completed-run', orderHash: 'order-hash', customerIdentity: 'customer-a', customerMarkdown: 'customer A' }],
+    activeRun: { runId: 'completed-run', status: 'completed', targetMessageId: 'completed-response' },
+    pendingMessages: [],
+  });
+  mockArtifact.mockResolvedValue({ operationId: 'published' });
+  mockHasSystemOrder.mockResolvedValue(true);
+  mockReadCheckpoint.mockResolvedValue(completedSystemOrder);
+
+  const prepared = await prepareQuotationTurn({ scope, messageId: 'u6', responseId: 'a6', text: '重新確認客戶' });
+
+  expect(prepared.instruction).toContain(JSON.stringify({
+    hasOcrResult: true, hasCustomerData: true, hasSystemOrder: false, shouldAskToQuote: true,
+  }));
+  expect(prepared.instruction).toContain('customer B');
+  expect(prepared.instruction).not.toContain(completedSystemOrder);
+  expect(mockReadCheckpoint).not.toHaveBeenCalled();
+});
+
+it('does not inject completed system-order revision data while a quotation is unfinished', async () => {
+  const completedSystemOrder = [
+    '## system_order',
+    '',
+    '| 品名規格 | 數量 |',
+    '| --- | --- |',
+    '| A | 2 |',
+  ].join('\n');
+  mockRead.mockResolvedValue({
+    currentOrder: { markdown: order, sha256: 'order-hash' },
+    currentCustomer: { customerIdentity: 'saved-customer', customerMarkdown: 'saved customer' },
+    tickets: [],
+    pendingMessages: [],
+    activeRun: { runId: 'running-run', status: 'running', targetMessageId: 'running-response' },
+  });
+  mockReadCheckpoint.mockResolvedValue(completedSystemOrder);
+
+  const prepared = await prepareQuotationTurn({ scope, messageId: 'u4', responseId: 'a4', text: '修改數量' });
+
+  expect(prepared.instruction).toContain(order);
+  expect(prepared.instruction).not.toContain(completedSystemOrder);
+  expect(mockReadCheckpoint).not.toHaveBeenCalled();
+});
+
 it.each(['old-response', 'rerun-response'])(
   'keeps completed quotation state independent of response %s', async (responseId) => {
     mockRead.mockResolvedValue({ currentOrder: { markdown: order, sha256: 'order-hash' },
-      currentCustomer: { customerMarkdown: 'saved customer' }, tickets: [], pendingMessages: [],
-      activeRun: { runId: 'finished', status: 'completed', triggerMessageId: 'quote-user', targetMessageId: 'old-response' } });
+    currentCustomer: { customerIdentity: 'saved-customer', customerMarkdown: 'saved customer' }, pendingMessages: [],
+    activeRun: { runId: 'finished', status: 'completed', triggerMessageId: 'quote-user', targetMessageId: 'old-response' },
+      tickets: [{ acceptedRunId: 'finished', orderHash: 'order-hash', customerIdentity: 'saved-customer', customerMarkdown: 'saved customer' }] });
     mockArtifact.mockResolvedValue({ operationId: 'published' });
     mockHasSystemOrder.mockResolvedValue(true);
     const prepared = await prepareQuotationTurn({

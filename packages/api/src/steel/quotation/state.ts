@@ -14,6 +14,7 @@ import type {
   SteelQuotationCheckpointRef,
   SteelQuotationChunkState,
   SteelQuotationCustomerPreparation,
+  SteelQuotationCurrentSystemOrder,
   SteelQuotationOrder,
   SteelQuotationPendingMessage,
   SteelQuotationPendingMessageFile,
@@ -85,6 +86,19 @@ export interface SteelQuotationSaveCustomerInput {
   orderHash?: string;
   expectedPreparationId?: string | null;
   now?: Date;
+}
+
+export interface SteelQuotationSaveCurrentSystemOrderInput {
+  scope: SteelQuotationScope;
+  snapshot: SteelQuotationCurrentSystemOrder;
+  expectedRunId: string;
+  expectedCurrentOrderSha256: string;
+  expectedCustomer?: {
+    customerIdentity: string;
+    customerMarkdown: string;
+  };
+  expectedCurrentSystemOrderSha256?: string;
+  expectedCurrentSystemOrderPresent: boolean;
 }
 
 export interface SteelQuotationClearCustomerInput {
@@ -255,8 +269,12 @@ export interface SteelQuotationDeleteResult {
 export interface SteelQuotationStateService {
   ensureState(scope: SteelQuotationScope): Promise<ISteelQuotationState>;
   readState(scope: SteelQuotationScope): Promise<ISteelQuotationState | null>;
+  readCurrentSystemOrder(scope: SteelQuotationScope): Promise<SteelQuotationCurrentSystemOrder | undefined>;
   hasSystemOrder(scope: SteelQuotationScope): Promise<boolean>;
   setOrder(input: SteelQuotationOrderInput): Promise<ISteelQuotationState>;
+  saveCurrentSystemOrder(
+    input: SteelQuotationSaveCurrentSystemOrderInput,
+  ): Promise<SteelQuotationCurrentSystemOrder | undefined>;
   saveCustomer(input: SteelQuotationSaveCustomerInput): Promise<SteelQuotationCustomerPreparation>;
   clearCustomer(input: SteelQuotationClearCustomerInput): Promise<ISteelQuotationState>;
   issueTicket(input: SteelQuotationIssueTicketInput): Promise<SteelQuotationTicket>;
@@ -321,6 +339,9 @@ function byteLength(value: string): number {
 function validateScope(scope: SteelQuotationScope): void {
   if (!scope.userId || !scope.conversationId) {
     throw new Error('quotation scope requires userId and conversationId');
+  }
+  if (scope.tenantId !== undefined && !scope.tenantId) {
+    throw new Error('quotation scope tenantId must not be empty');
   }
 }
 
@@ -398,7 +419,13 @@ function isTerminal(status: SteelQuotationRunStatus | undefined): boolean {
 }
 
 function stateFilter(scope: SteelQuotationScope) {
-  return { userId: scope.userId, conversationId: scope.conversationId };
+  return {
+    userId: scope.userId,
+    conversationId: scope.conversationId,
+    tenantId: scope.tenantId === undefined
+      ? null
+      : { $in: [scope.tenantId, null] },
+  };
 }
 
 function authorityByteLength(state: SteelQuotationStateLike): number {
@@ -406,7 +433,9 @@ function authorityByteLength(state: SteelQuotationStateLike): number {
     JSON.stringify({
       userId: state.userId,
       conversationId: state.conversationId,
+      tenantId: state.tenantId,
       currentOrder: state.currentOrder,
+      currentSystemOrder: state.currentSystemOrder,
       currentCustomer: state.currentCustomer,
       nextSignalIndex: state.nextSignalIndex,
       tickets: state.tickets,
@@ -419,7 +448,9 @@ function authorityByteLength(state: SteelQuotationStateLike): number {
 interface SteelQuotationStateLike {
   userId: string;
   conversationId: string;
+  tenantId?: string;
   currentOrder?: SteelQuotationOrder;
+  currentSystemOrder?: SteelQuotationCurrentSystemOrder;
   currentCustomer?: SteelQuotationCustomerPreparation;
   nextSignalIndex: number;
   tickets: SteelQuotationTicket[];
@@ -452,7 +483,12 @@ function assertAuthorityBounds(state: SteelQuotationStateLike): void {
 }
 
 function cloneScopeRef(scope: SteelQuotationScope, ref: SteelQuotationArtifactRef): boolean {
-  return ref.userId === scope.userId && ref.conversationId === scope.conversationId;
+  if (ref.userId !== scope.userId || ref.conversationId !== scope.conversationId) {
+    return false;
+  }
+  return scope.tenantId === undefined
+    ? ref.tenantId === undefined
+    : ref.tenantId === undefined || ref.tenantId === scope.tenantId;
 }
 
 function artifactRef(
@@ -466,6 +502,7 @@ function artifactRef(
     artifactId: `${runId}:${operationId}:${sha256}`,
     userId: scope.userId,
     conversationId: scope.conversationId,
+    ...(scope.tenantId !== undefined ? { tenantId: scope.tenantId } : {}),
     runId,
     operationId,
     kind,
@@ -525,6 +562,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
           $setOnInsert: {
             userId: scope.userId,
             conversationId: scope.conversationId,
+            ...(scope.tenantId !== undefined ? { tenantId: scope.tenantId } : {}),
             nextSignalIndex: 0,
             tickets: [],
             pendingMessages: [],
@@ -554,10 +592,50 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
     return state;
   }
 
+  async function readCurrentSystemOrder(
+    scope: SteelQuotationScope,
+  ): Promise<SteelQuotationCurrentSystemOrder | undefined> {
+    const state = await readState(scope);
+    return state?.currentSystemOrder;
+  }
+
   async function hasSystemOrder(scope: SteelQuotationScope): Promise<boolean> {
     validateScope(scope);
     const matches = await State.aggregate<{ exists: boolean }>([
-      { $match: { ...stateFilter(scope), 'activeRun.status': 'completed' } },
+      { $match: {
+        ...stateFilter(scope),
+        'activeRun.status': 'completed',
+        $expr: {
+          $gt: [
+            {
+              $size: {
+                $filter: {
+                  input: '$tickets',
+                  as: 'ticket',
+                  cond: {
+                    $and: [
+                      { $eq: ['$$ticket.acceptedRunId', '$activeRun.runId'] },
+                      { $eq: ['$$ticket.orderHash', '$currentOrder.sha256'] },
+                      {
+                        $or: [
+                          { $eq: [{ $ifNull: ['$currentCustomer', null] }, null] },
+                          {
+                            $and: [
+                              { $eq: ['$$ticket.customerIdentity', '$currentCustomer.customerIdentity'] },
+                              { $eq: ['$$ticket.customerMarkdown', '$currentCustomer.customerMarkdown'] },
+                            ],
+                          },
+                        ],
+                      },
+                    ],
+                  },
+                },
+              },
+            },
+            0,
+          ],
+        },
+      } },
       { $limit: 1 },
       { $lookup: {
         from: Artifact.collection.name,
@@ -620,14 +698,9 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
           }
         : { $set: { currentOrder: nextOrder, updatedAt: now } };
       assertAuthorityBounds({
-        userId: current.userId,
-        conversationId: current.conversationId,
+        ...current,
         currentOrder: nextOrder,
-        currentCustomer: current.currentCustomer,
-        nextSignalIndex: current.nextSignalIndex,
         tickets: orderChanged ? retainedTickets : current.tickets,
-        activeRun: current.activeRun,
-        pendingMessages: current.pendingMessages,
       });
       const updated = await State.findOneAndUpdate(filter, update, { new: true }).lean<ISteelQuotationState>();
       if (updated) {
@@ -636,6 +709,90 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
       }
     }
     throw new Error('quotation order changed concurrently; retry the operation');
+  }
+
+  async function saveCurrentSystemOrder(
+    input: SteelQuotationSaveCurrentSystemOrderInput,
+  ): Promise<SteelQuotationCurrentSystemOrder | undefined> {
+    validateScope(input.scope);
+    validateText(input.expectedRunId, 'expectedRunId', 200);
+    validateText(input.expectedCurrentOrderSha256, 'expectedCurrentOrderSha256', 128);
+    if (input.expectedCustomer) {
+      validateText(input.expectedCustomer.customerIdentity, 'expectedCustomer.customerIdentity', MAX_QUOTATION_CUSTOMER_BYTES);
+      validateText(input.expectedCustomer.customerMarkdown, 'expectedCustomer.customerMarkdown', MAX_QUOTATION_CUSTOMER_BYTES);
+    }
+    validateText(input.snapshot.runId, 'snapshot.runId', 200);
+    validateText(input.snapshot.sha256, 'snapshot.sha256', 128);
+    validateText(input.snapshot.markdown, 'snapshot.markdown', MAX_QUOTATION_ORDER_BYTES);
+    if (input.snapshot.runId !== input.expectedRunId) {
+      throw new Error('current system order snapshot run does not match CAS run');
+    }
+    if (input.expectedCurrentSystemOrderPresent && !input.expectedCurrentSystemOrderSha256) {
+      throw new Error('current system order CAS hash is required');
+    }
+    if (!input.expectedCurrentSystemOrderPresent && input.expectedCurrentSystemOrderSha256 !== undefined) {
+      throw new Error('current system order CAS hash must be absent');
+    }
+
+    const current = await readState(input.scope);
+    const customerMatches = input.expectedCustomer
+      ? current?.currentCustomer?.customerIdentity === input.expectedCustomer.customerIdentity &&
+        current?.currentCustomer?.customerMarkdown === input.expectedCustomer.customerMarkdown
+      : current?.currentCustomer === undefined;
+    if (
+      !current ||
+      current.currentOrder?.sha256 !== input.expectedCurrentOrderSha256 ||
+      !customerMatches ||
+      !current.tickets.some((ticket) =>
+        ticket.acceptedRunId === input.expectedRunId &&
+        ticket.orderHash === input.expectedCurrentOrderSha256 &&
+        (!input.expectedCustomer || (
+          ticket.customerIdentity === input.expectedCustomer.customerIdentity &&
+          ticket.customerMarkdown === input.expectedCustomer.customerMarkdown
+        )),
+      )
+    ) {
+      return undefined;
+    }
+    assertAuthorityBounds({ ...current, currentSystemOrder: input.snapshot });
+
+    const filter = {
+      ...stateFilter(input.scope),
+      'activeRun.runId': input.expectedRunId,
+      'activeRun.status': 'completed',
+      'currentOrder.sha256': input.expectedCurrentOrderSha256,
+      tickets: {
+        $elemMatch: {
+          acceptedRunId: input.expectedRunId,
+          orderHash: input.expectedCurrentOrderSha256,
+          ...(input.expectedCustomer
+            ? {
+                customerIdentity: input.expectedCustomer.customerIdentity,
+                customerMarkdown: input.expectedCustomer.customerMarkdown,
+              }
+            : {}),
+        },
+      },
+      ...(input.expectedCustomer
+        ? {
+            'currentCustomer.customerIdentity': input.expectedCustomer.customerIdentity,
+            'currentCustomer.customerMarkdown': input.expectedCustomer.customerMarkdown,
+          }
+        : { currentCustomer: { $exists: false } }),
+      ...(input.expectedCurrentSystemOrderPresent
+        ? { 'currentSystemOrder.sha256': input.expectedCurrentSystemOrderSha256 }
+        : { currentSystemOrder: { $exists: false } }),
+    };
+    const updated = await State.findOneAndUpdate(
+      filter,
+      { $set: { currentSystemOrder: input.snapshot, updatedAt: input.snapshot.updatedAt } },
+      { new: true },
+    ).lean<ISteelQuotationState>();
+    if (!updated?.currentSystemOrder) {
+      return undefined;
+    }
+    assertAuthorityBounds(updated);
+    return updated.currentSystemOrder;
   }
 
   async function saveCustomer(
@@ -1087,6 +1244,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
       await Artifact.create({
         userId: input.scope.userId,
         conversationId: input.scope.conversationId,
+        ...(input.scope.tenantId !== undefined ? { tenantId: input.scope.tenantId } : {}),
         runId: input.runId,
         operationId: input.operationId,
         kind: input.kind,
@@ -1251,14 +1409,8 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
       updatedAt: now,
     };
     assertAuthorityBounds({
-      userId: current.userId,
-      conversationId: current.conversationId,
-      currentOrder: current.currentOrder,
-      currentCustomer: current.currentCustomer,
-      nextSignalIndex: current.nextSignalIndex,
-      tickets: current.tickets,
+      ...current,
       activeRun: nextRun,
-      pendingMessages: current.pendingMessages,
     });
     await writeArtifact({
       scope: input.scope,
@@ -1654,6 +1806,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
       await Artifact.create({
         userId: scope.userId,
         conversationId: scope.conversationId,
+        ...(scope.tenantId !== undefined ? { tenantId: scope.tenantId } : {}),
         runId,
         operationId: 'published',
         kind: 'final',
@@ -1750,14 +1903,8 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
               : chunk,
           );
       assertAuthorityBounds({
-        userId: current.userId,
-        conversationId: current.conversationId,
-        currentOrder: current.currentOrder,
-        currentCustomer: current.currentCustomer,
-        nextSignalIndex: current.nextSignalIndex,
-        tickets: current.tickets,
+        ...current,
         activeRun: { ...run, checkpointRefs: nextRefs, chunks: nextChunks },
-        pendingMessages: current.pendingMessages,
       });
       const attemptNow = nowOrDefault(input.now);
       const updated = await State.findOneAndUpdate(
@@ -1834,15 +1981,12 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
       enqueuedAt: now,
       updatedAt: now,
     };
+    if (!current) {
+      throw new Error('quotation authority state is unavailable');
+    }
     assertAuthorityBounds({
-      userId: current?.userId ?? input.scope.userId,
-      conversationId: current?.conversationId ?? input.scope.conversationId,
-      currentOrder: current?.currentOrder,
-      currentCustomer: current?.currentCustomer,
-      nextSignalIndex: current?.nextSignalIndex ?? 0,
-      tickets: current?.tickets ?? [],
-      activeRun: current?.activeRun,
-      pendingMessages: [...(current?.pendingMessages ?? []), message],
+      ...current,
+      pendingMessages: [...current.pendingMessages, message],
     });
     const updated = await State.findOneAndUpdate(
       {
@@ -2043,6 +2187,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
       (message) => message.sourceMessageId === input.sourceMessageId,
     );
     if (
+      !current ||
       !existing ||
       existing.status !== 'claimed' ||
       existing.claimToken !== input.claimToken ||
@@ -2076,6 +2221,19 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
         resultRef: existing.resultRef,
       };
     }
+    assertAuthorityBounds({
+      ...current,
+      pendingMessages: current.pendingMessages.map((message) =>
+        message.sourceMessageId === input.sourceMessageId
+          ? {
+              ...message,
+              ...(input.targetMessageId ? { targetMessageId: input.targetMessageId } : {}),
+              resultRef,
+              updatedAt: now,
+            }
+          : message,
+      ),
+    });
     await writePendingArtifact(input.scope, resultRunId, 'result', input.markdown, resultRef, now);
     const updated = await State.findOneAndUpdate(
       {
@@ -2162,6 +2320,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
       await Artifact.create({
         userId: scope.userId,
         conversationId: scope.conversationId,
+        ...(scope.tenantId !== undefined ? { tenantId: scope.tenantId } : {}),
         runId,
         operationId,
         kind: 'main',
@@ -2289,8 +2448,10 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
   return {
     ensureState,
     readState,
+    readCurrentSystemOrder,
     hasSystemOrder,
     setOrder,
+    saveCurrentSystemOrder,
     saveCustomer,
     clearCustomer,
     issueTicket,

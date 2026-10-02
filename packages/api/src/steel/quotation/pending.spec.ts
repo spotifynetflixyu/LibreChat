@@ -1,24 +1,23 @@
 import mongoose from 'mongoose';
 import { createHash } from 'node:crypto';
 import { MongoMemoryServer } from 'mongodb-memory-server';
-
+import { createSteelOcrResponseAuditModel, createSteelQuotationArtifactModel, createSteelQuotationStateModel } from '@librechat/data-schemas';
 import type {
   SteelQuotationPendingMessageFile,
   SteelQuotationScope,
 } from '@librechat/data-schemas';
 import type { OpenAIOAuthModelOptions } from '../native/oauth';
 import type { QuotationModelInput } from './model';
-
-import { createSteelQuotationStateService } from './state';
-import { createSteelOcrStateService } from '../ocr/state';
-import { defaultQuotationCustomerMarkdown } from './preparation';
 import {
   processQuotationPendingMessages,
   type SteelQuotationPendingInputPreparationResult,
 } from './pending';
-import { invokeQuotationModel } from './model';
 import { buildDefaultSteelGlobalAgentContext } from '../native/context';
-import { createSteelOcrResponseAuditModel, createSteelQuotationArtifactModel, createSteelQuotationStateModel } from '@librechat/data-schemas';
+import { defaultQuotationCustomerMarkdown } from './preparation';
+import { createSystemOrderRevisionService } from './revision';
+import { createSteelQuotationStateService } from './state';
+import { createSteelOcrStateService } from '../ocr/state';
+import { invokeQuotationModel } from './model';
 
 jest.mock('./model', () => ({
   invokeQuotationModel: jest.fn(),
@@ -51,6 +50,65 @@ function processInput(
     ...(preparePendingInput ? { preparePendingInput } : {}),
     publish,
   };
+}
+
+async function prepareCompletedSystemOrder() {
+  const order = [
+    '## system_order｜報價單',
+    '',
+    '| 品名規格 | 數量 | 總數 | 單價 |',
+    '| --- | --- | --- | --- |',
+    '| A | 2 | 2 | 10 |',
+  ].join('\n');
+  await service.setOrder({ scope, fullMarkdown: order, revision: 'base', messageId: 'base-message' });
+  const ticket = await service.issueTicket({
+    scope,
+    customerMarkdown: defaultQuotationCustomerMarkdown,
+    customerIdentity: 'explicit-default:B',
+    triggeringMessageId: 'quote-message',
+    selectionProvenance: { method: 'default_tier', selectionMessageId: 'quote-message' },
+  });
+  const run = await service.acceptSignal({
+    scope,
+    index: ticket.index,
+    token: ticket.token,
+    orderHash: ticket.orderHash,
+    customerMarkdown: ticket.customerMarkdown,
+    customerIdentity: ticket.customerIdentity,
+    prompts: { child: 'child', main: 'main' },
+    chunks: [{ index: 1, sourceRowCount: 1 }],
+    targetMessageId: 'quote-response',
+  });
+  const lease = await service.acquireLease({ scope, runId: run.runId, leaseToken: 'lease-1' });
+  if (!lease) throw new Error('test setup did not acquire a lease');
+  const final = `${order}\n\n## customer_quote\n\n| existing |\n| --- |\n| quote |`;
+  await service.checkpoint({
+    scope,
+    runId: run.runId,
+    leaseToken: lease.leaseToken,
+    operationId: 'final',
+    kind: 'final',
+    payload: final,
+  });
+  const checkpointed = await service.readState(scope);
+  const checkpoint = checkpointed?.activeRun?.checkpointRefs.find((ref) => ref.operationId === 'final');
+  if (!checkpoint) throw new Error('test setup did not save a final checkpoint');
+  const completed = await service.completeRun({
+    scope,
+    runId: run.runId,
+    leaseToken: lease.leaseToken,
+    finalRef: { ...scope, runId: run.runId, ...checkpoint, kind: 'final' },
+  });
+  if (!completed) throw new Error('test setup did not complete the run');
+  const revision = createSystemOrderRevisionService({
+    read: service.readState,
+    readCurrentSystemOrder: service.readCurrentSystemOrder,
+    readCheckpoint: service.readCheckpoint,
+    saveCurrentSystemOrder: service.saveCurrentSystemOrder,
+  });
+  const snapshot = await revision.readCurrentSystemOrder(scope);
+  if (!snapshot) throw new Error('test setup did not produce a current system-order snapshot');
+  return { order, snapshot };
 }
 
 beforeAll(async () => {
@@ -187,7 +245,7 @@ describe('quotation pending processor', () => {
     const displayed = `${raw}\n\n${canonical}`;
     await ocrService.upsertCurrentOcrResult({ conversationId: scope.conversationId, generationId: 'base', attemptNumber: 1, markdown: base, messageId: 'base-message' });
     await service.setOrder({ scope, fullMarkdown: base, revision: 'base', messageId: 'base-message' });
-    await service.enqueuePendingMessage({ scope, sourceMessageId: 'correct-qty', targetMessageId: 'corrected', sourceMessageText: 'A-6M74 數量改為 1，使用 B tier' });
+    await service.enqueuePendingMessage({ scope, sourceMessageId: 'correct-qty', targetMessageId: 'corrected', sourceMessageText: '修改數量為 1，使用 B tier' });
     invokeMock.mockResolvedValue({ markdown: raw, lookups: [], pythonEvidence: [] });
     const publish = jest.fn<Promise<void>, [{ messageId: string; parentMessageId: string; markdown: string }]>()
       .mockImplementationOnce(async () => {
@@ -209,6 +267,45 @@ describe('quotation pending processor', () => {
     const audits = await createSteelOcrResponseAuditModel(mongoose).find({ conversationId: scope.conversationId }).lean();
     expect(audits).toHaveLength(1);
     expect(audits[0]).toMatchObject({ rawResponse: raw, baseRevision: 'base', messageId: 'corrected', sourceStage: 'pending' });
+  });
+
+  it('gives the model the live completed system-order revision and publishes the merged correction', async () => {
+    const { snapshot } = await prepareCompletedSystemOrder();
+    const updates = [
+      '## system_order_updates',
+      '',
+      '| base_hash | row_index | 品名規格 | 數量 | 總數 | 單價 |',
+      '| --- | --- | --- | --- | --- | --- |',
+      `| ${snapshot.sha256} | 1 | A | 3 | 3 | 10 |`,
+    ].join('\n');
+    await service.enqueuePendingMessage({
+      scope,
+      sourceMessageId: 'system-order-correction',
+      targetMessageId: 'system-order-corrected',
+      sourceMessageText: 'A 數量改為 3',
+    });
+    invokeMock.mockResolvedValue({ markdown: updates, lookups: [], pythonEvidence: [] });
+    const publish = jest.fn<Promise<void>, [{ messageId: string; parentMessageId: string; markdown: string }]>()
+      .mockResolvedValue(undefined);
+
+    await processQuotationPendingMessages(processInput(publish));
+
+    const modelPrompt = invokeMock.mock.calls[0]?.[0]?.prompt ?? '';
+    expect(modelPrompt).toContain(snapshot.markdown);
+    expect(modelPrompt).toContain('## system_order_revision');
+    expect(modelPrompt).toContain(`| ${snapshot.sha256} | 1 |`);
+    expect(publish).toHaveBeenCalledWith(expect.objectContaining({
+      messageId: 'system-order-corrected',
+      parentMessageId: 'system-order-correction',
+      markdown: expect.stringContaining('| A | 3 | 3 | 10 |'),
+    }));
+    const publishedMarkdown = publish.mock.calls[0]?.[0].markdown ?? '';
+    expect(publishedMarkdown).toContain('## system_order｜報價單');
+    expect(publishedMarkdown).toContain('## customer_quote');
+    expect(publishedMarkdown).not.toContain('## system_order_updates');
+    const state = await service.readState(scope);
+    expect(state?.currentSystemOrder?.responseId).toBe('system-order-corrected');
+    expect(state?.currentSystemOrder?.markdown).toContain('| A | 3 | 3 | 10 |');
   });
 
   it('claims pending corrections in FIFO order and carries each stable target message', async () => {

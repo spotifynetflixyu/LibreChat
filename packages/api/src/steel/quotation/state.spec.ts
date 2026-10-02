@@ -15,6 +15,7 @@ import type {
 import {
   createSteelQuotationStateService as createService,
   MAX_QUOTATION_ARTIFACT_BYTES,
+  MAX_QUOTATION_AUTHORITY_BYTES,
 } from './state';
 
 let mongoServer: MongoMemoryServer;
@@ -104,6 +105,70 @@ describe('Steel quotation state service', () => {
     const states = await Promise.all(Array.from({ length: 16 }, () => service.ensureState(scope)));
     expect(new Set(states.map((state) => String(state._id))).size).toBe(1);
     expect(await createSteelQuotationStateModel(mongoose).countDocuments(scope)).toBe(1);
+  });
+
+  it('rejects an authority expansion before persistence when the current snapshot is near the byte limit', async () => {
+    const State = createSteelQuotationStateModel(mongoose);
+    await service.ensureState(scope);
+    const now = new Date('2026-01-01T00:00:00.000Z');
+    const currentOrderMarkdown = 'o'.repeat(165_000);
+    const customerMarkdown = 'c'.repeat(80_000);
+    const currentSystemOrderMarkdown = 's'.repeat(80_000);
+    const pendingMessages = Array.from({ length: 63 }, (_, index) => ({
+      sourceMessageId: `near-limit-${index}`,
+      sourceMessageText: 'p'.repeat(10_500),
+      status: 'pending' as const,
+      enqueuedAt: now,
+      updatedAt: now,
+    }));
+    await State.updateOne(
+      { userId: scope.userId, conversationId: scope.conversationId },
+      {
+        $set: {
+          currentOrder: { markdown: currentOrderMarkdown, sha256: 'order-hash' },
+          currentCustomer: {
+            preparationId: 'preparation-near-limit',
+            customerMarkdown,
+            customerIdentity: 'customer-near-limit',
+            triggeringMessageId: 'trigger-near-limit',
+            responseId: 'response-near-limit',
+            selectionProvenance: { method: 'unique' },
+          },
+          currentSystemOrder: {
+            runId: 'run-near-limit',
+            sha256: 'snapshot-hash',
+            markdown: currentSystemOrderMarkdown,
+            responseId: 'response-near-limit',
+            updatedAt: now,
+          },
+          pendingMessages,
+        },
+      },
+    );
+    const before = await service.readState(scope);
+    expect(before?.currentOrder?.sha256).toBe('order-hash');
+    expect(before?.currentSystemOrder?.markdown).toHaveLength(currentSystemOrderMarkdown.length);
+    expect(before?.pendingMessages).toHaveLength(63);
+
+    const updateSpy = jest.spyOn(State.collection, 'findOneAndUpdate');
+    try {
+      await expect(service.enqueuePendingMessage({
+        scope,
+        sourceMessageId: 'near-limit-new',
+        sourceMessageText: 'p'.repeat(10_500),
+      })).rejects.toThrow(
+        `quotation authority exceeds ${MAX_QUOTATION_AUTHORITY_BYTES} bytes`,
+      );
+      expect(updateSpy).not.toHaveBeenCalled();
+    } finally {
+      updateSpy.mockRestore();
+    }
+
+    const after = await service.readState(scope);
+    expect(after?.currentOrder?.sha256).toBe('order-hash');
+    expect(after?.currentOrder?.markdown).toBe(currentOrderMarkdown);
+    expect(after?.currentSystemOrder?.markdown).toBe(currentSystemOrderMarkdown);
+    expect(after?.pendingMessages).toHaveLength(63);
   });
 
   it('accepts a signal once under competing delivery and grants one live lease', async () => {
@@ -601,6 +666,160 @@ describe('Steel quotation state service', () => {
     expect(await service.hasSystemOrder(scope)).toBe(true);
     await Artifact.deleteOne({ ...scope, runId: next.run.runId, operationId: 'final' });
     expect(await service.hasSystemOrder(scope)).toBe(false);
+  });
+
+  it('fences completed finals and current snapshots after the order changes', async () => {
+    const prepared = await prepareRun();
+    const lease = await service.acquireLease({ scope, runId: prepared.run.runId });
+    if (!lease) throw new Error('lease missing');
+    const finalRef = await service.writeArtifact({
+      scope,
+      runId: prepared.run.runId,
+      operationId: 'final',
+      kind: 'final',
+      payload: 'complete system order',
+      leaseToken: lease.leaseToken,
+    });
+    await service.checkpoint({
+      scope,
+      runId: prepared.run.runId,
+      leaseToken: lease.leaseToken,
+      operationId: 'final',
+      kind: 'final',
+      artifactRef: finalRef,
+    });
+    await service.completeRun({
+      scope,
+      runId: prepared.run.runId,
+      leaseToken: lease.leaseToken,
+      finalRef,
+    });
+    expect(await service.hasSystemOrder(scope)).toBe(true);
+
+    const originalSnapshot = {
+      runId: prepared.run.runId,
+      sha256: 'current-snapshot-hash',
+      markdown: 'complete system order',
+      responseId: 'original-response',
+      updatedAt: new Date(),
+    };
+    await expect(service.saveCurrentSystemOrder({
+      scope,
+      snapshot: originalSnapshot,
+      expectedRunId: prepared.run.runId,
+      expectedCurrentOrderSha256: prepared.ticket.orderHash,
+      expectedCurrentSystemOrderPresent: false,
+    })).resolves.toEqual(originalSnapshot);
+
+    await service.setOrder({ scope, fullMarkdown: '# changed order' });
+    expect(await service.hasSystemOrder(scope)).toBe(false);
+    await expect(service.saveCurrentSystemOrder({
+      scope,
+      snapshot: {
+        ...originalSnapshot,
+        sha256: 'stale-replacement-hash',
+        markdown: 'stale replacement',
+        responseId: 'stale-response',
+      },
+      expectedRunId: prepared.run.runId,
+      expectedCurrentOrderSha256: prepared.ticket.orderHash,
+      expectedCurrentSystemOrderSha256: originalSnapshot.sha256,
+      expectedCurrentSystemOrderPresent: true,
+    })).resolves.toBeUndefined();
+    expect((await service.readState(scope))?.currentSystemOrder).toEqual(originalSnapshot);
+    expect(await service.readCheckpoint({
+      scope,
+      runId: prepared.run.runId,
+      operationId: 'final',
+    })).toBe('complete system order');
+  });
+
+  it('fences completed finals and snapshots after the customer changes', async () => {
+    const prepared = await prepareRun();
+    const lease = await service.acquireLease({ scope, runId: prepared.run.runId });
+    if (!lease) throw new Error('lease missing');
+    const finalRef = await service.writeArtifact({
+      scope,
+      runId: prepared.run.runId,
+      operationId: 'final',
+      kind: 'final',
+      payload: 'complete system order',
+      leaseToken: lease.leaseToken,
+    });
+    await service.checkpoint({
+      scope,
+      runId: prepared.run.runId,
+      leaseToken: lease.leaseToken,
+      operationId: 'final',
+      kind: 'final',
+      artifactRef: finalRef,
+    });
+    await service.completeRun({
+      scope,
+      runId: prepared.run.runId,
+      leaseToken: lease.leaseToken,
+      finalRef,
+    });
+    const customerA = {
+      customerIdentity: prepared.ticket.customerIdentity,
+      customerMarkdown: prepared.ticket.customerMarkdown,
+    };
+    await service.saveCustomer({
+      scope,
+      ...customerA,
+      triggeringMessageId: 'customer-a-trigger',
+      responseId: 'customer-a-response',
+      selectionProvenance: { method: 'unique' },
+      orderHash: prepared.ticket.orderHash,
+    });
+    expect(await service.hasSystemOrder(scope)).toBe(true);
+
+    const originalSnapshot = {
+      runId: prepared.run.runId,
+      sha256: 'customer-snapshot-hash',
+      markdown: 'complete system order',
+      responseId: 'customer-original-response',
+      updatedAt: new Date(),
+    };
+    await expect(service.saveCurrentSystemOrder({
+      scope,
+      snapshot: originalSnapshot,
+      expectedRunId: prepared.run.runId,
+      expectedCurrentOrderSha256: prepared.ticket.orderHash,
+      expectedCustomer: customerA,
+      expectedCurrentSystemOrderPresent: false,
+    })).resolves.toEqual(originalSnapshot);
+
+    await service.saveCustomer({
+      scope,
+      customerIdentity: 'customer-b',
+      customerMarkdown: '## customer_data\n| name | B |',
+      triggeringMessageId: 'customer-b-trigger',
+      responseId: 'customer-b-response',
+      selectionProvenance: { method: 'unique' },
+      orderHash: prepared.ticket.orderHash,
+    });
+    expect(await service.hasSystemOrder(scope)).toBe(false);
+    await expect(service.saveCurrentSystemOrder({
+      scope,
+      snapshot: {
+        ...originalSnapshot,
+        sha256: 'stale-customer-snapshot-hash',
+        markdown: 'stale customer replacement',
+        responseId: 'stale-customer-response',
+      },
+      expectedRunId: prepared.run.runId,
+      expectedCurrentOrderSha256: prepared.ticket.orderHash,
+      expectedCustomer: customerA,
+      expectedCurrentSystemOrderSha256: originalSnapshot.sha256,
+      expectedCurrentSystemOrderPresent: true,
+    })).resolves.toBeUndefined();
+    expect((await service.readState(scope))?.currentSystemOrder).toEqual(originalSnapshot);
+    expect(await service.readCheckpoint({
+      scope,
+      runId: prepared.run.runId,
+      operationId: 'final',
+    })).toBe('complete system order');
   });
 
   it('keeps cancellation terminal until a new signal creates a fresh run', async () => {

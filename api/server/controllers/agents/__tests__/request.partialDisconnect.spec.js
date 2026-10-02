@@ -47,6 +47,8 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  finishSteelAgentResponse: jest.requireActual('@librechat/api').finishSteelAgentResponse,
+  extractSteelAgentResponseMarkdown: jest.requireActual('@librechat/api').extractSteelAgentResponseMarkdown,
   getAgentErrorMetadata: (...args) =>
     jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),
   sendEvent: jest.fn(),

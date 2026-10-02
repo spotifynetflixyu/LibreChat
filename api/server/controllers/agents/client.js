@@ -3066,7 +3066,11 @@ class AgentClient extends BaseClient {
         },
       };
       const quotation = await prepareQuotationTurn({
-        scope: { userId: this.options.req.user.id, conversationId: this.conversationId },
+        scope: {
+          userId: this.options.req.user.id,
+          conversationId: this.conversationId,
+          tenantId: resolveRequestTenantId(this.options.req),
+        },
         messageId: latestOrdered?.messageId ?? this.responseMessageId,
         responseId: this.responseMessageId,
         text: currentUserTurnText,

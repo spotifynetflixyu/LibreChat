@@ -96,6 +96,12 @@ const {
   stripUnusableSummaryParts,
   CHILD_THREAD_READ_ONLY_ERROR,
   createSteelOcrStateService,
+  createSteelQuotationStateService,
+  createSteelAgentCompletionServices,
+  finishSteelAgentResponse,
+  finalizeSteelResponsesTurn,
+  applySteelResponsesCompletionMarkdown,
+  replaceSteelResponsesMarkdown,
   createSteelOcrResponseAuditService,
   SteelOcrResponseAuditPersistenceError,
   finalizeOcrResponse,
@@ -593,16 +599,7 @@ async function saveInputMessages(req, conversationId, inputMessages, agentId) {
  * @returns {Promise<void>}
  */
 function replaceResponsesOutputText(response, text) {
-  let replaced = false;
-  for (const output of response.output ?? []) {
-    for (const content of output?.content ?? []) {
-      if (typeof content?.text !== 'string') {
-        continue;
-      }
-      content.text = replaced ? '' : text;
-      replaced = true;
-    }
-  }
+  replaceSteelResponsesMarkdown(response, text);
 }
 
 async function auditResponsesOcrResponse(req, {
@@ -1060,6 +1057,18 @@ async function saveResponseOutput(
       }
     }
   }
+  await finishSteelAgentResponse({
+    req,
+    responseId,
+    markdown: extractSteelNativeResponseOutputText(response),
+    completed: response.status === 'completed',
+    ocrSucceeded: !hasOcrResult || ocrFinalization !== undefined,
+    applyMarkdown: (markdown) => applySteelResponsesCompletionMarkdown(response, responseMessage, markdown),
+    persistMarkdown: saveMessageOperation,
+  }, () => createSteelAgentCompletionServices({
+    ocr: createSteelOcrStateService(mongoose),
+    quotation: createSteelQuotationStateService(mongoose),
+  }).dependencies);
 }
 
 /**
@@ -1773,7 +1782,7 @@ const executeResponse = async (envelope, { req, res }) => {
         },
       };
       const quotation = await prepareQuotationTurn({
-        scope: { userId: principal.userId, conversationId },
+        scope: { userId: principal.userId, conversationId, tenantId: principal.tenantId },
         messageId: currentUserTurn?.messageId ?? responseId,
         responseId,
         text: currentUserTurn?.content ?? '',
@@ -2261,7 +2270,23 @@ const executeResponse = async (envelope, { req, res }) => {
 
         const usage = buildResponsesUsage(collectedUsage);
 
-        // Finalize the stream
+        materializeResponsesTrackerText(tracker);
+        const finalResponse = markSteelNativeResponseStored(
+          buildResponse(context, tracker, 'completed'),
+        );
+        const completionServices = () => createSteelAgentCompletionServices({
+          ocr: createSteelOcrStateService(mongoose),
+          quotation: createSteelQuotationStateService(mongoose),
+        });
+        await finalizeSteelResponsesTurn({
+          req, response: finalResponse, responseId, store: shouldStoreResponse,
+          saveConversation: () => saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision),
+          saveInput: () => saveInputMessages(req, conversationId, inputMessages, agentId),
+          saveOutput: () => saveResponseOutput(req, conversationId, responseId, finalResponse, agentId, Math.max(0, Date.now() - requestStartTime)),
+          saveOrderWithoutMessage: () => completionServices().saveOrderWithoutMessage({ req, response: finalResponse, responseId }),
+          onPersistenceFailure: () => logger.error('[Responses API] Could not save ordinary response'),
+          tracker, streamConfig: handlerConfig,
+        }, () => completionServices().dependencies);
         finalizeStream(usage);
         res.end();
 
@@ -2269,38 +2294,6 @@ const executeResponse = async (envelope, { req, res }) => {
         logger.debug(
           `[Responses API] Request ${responseId} completed in ${duration}ms (streaming)`,
         );
-
-        // Save to database if store: true
-        if (shouldStoreResponse) {
-          try {
-            // Save conversation
-            await saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision);
-
-            // Save input messages
-            await saveInputMessages(req, conversationId, inputMessages, agentId);
-
-            // Build response for saving (use tracker with buildResponse for streaming)
-            materializeResponsesTrackerText(tracker);
-            const finalResponse = markSteelNativeResponseStored(
-              buildResponse(context, tracker, 'completed'),
-            );
-            await saveResponseOutput(
-              req,
-              conversationId,
-              responseId,
-              finalResponse,
-              agentId,
-              Math.max(0, Date.now() - requestStartTime),
-            );
-
-            logger.debug(
-              `[Responses API] Stored response ${responseId} in conversation ${conversationId}`,
-            );
-          } catch (saveError) {
-            logger.error('[Responses API] Error saving response:', getSafeErrorMetadata(saveError));
-            // Don't fail the request if saving fails
-          }
-        }
 
         // The HTTP response is complete, while destructive cleanup still waits for artifacts.
         if (artifactPromises.length > 0) {
@@ -2550,29 +2543,18 @@ const executeResponse = async (envelope, { req, res }) => {
           buildResponsesUsage(collectedUsage),
         ));
 
-        if (shouldStoreResponse) {
-          try {
-            await saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision);
-
-            await saveInputMessages(req, conversationId, inputMessages, agentId);
-
-            await saveResponseOutput(
-              req,
-              conversationId,
-              responseId,
-              response,
-              agentId,
-              Math.max(0, Date.now() - requestStartTime),
-            );
-
-            logger.debug(
-              `[Responses API] Stored response ${responseId} in conversation ${conversationId}`,
-            );
-          } catch (saveError) {
-            logger.error('[Responses API] Error saving response:', getSafeErrorMetadata(saveError));
-            // Don't fail the request if saving fails
-          }
-        }
+        const completionServices = () => createSteelAgentCompletionServices({
+          ocr: createSteelOcrStateService(mongoose),
+          quotation: createSteelQuotationStateService(mongoose),
+        });
+        await finalizeSteelResponsesTurn({
+          req, response, responseId, store: shouldStoreResponse,
+          saveConversation: () => saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision),
+          saveInput: () => saveInputMessages(req, conversationId, inputMessages, agentId),
+          saveOutput: () => saveResponseOutput(req, conversationId, responseId, response, agentId, Math.max(0, Date.now() - requestStartTime)),
+          saveOrderWithoutMessage: () => completionServices().saveOrderWithoutMessage({ req, response, responseId }),
+          onPersistenceFailure: () => logger.error('[Responses API] Could not save ordinary response'),
+        }, () => completionServices().dependencies);
 
         res.json(response);
 

@@ -1,11 +1,11 @@
-import { parseMarkdownTables } from '../markdown/table';
-import { escapeMarkdownTableCell, parsePipeTableRow } from '../markdown/row-codec';
-import { buildCustomerQuoteFromMarkdown } from '../markdown/quote';
-import { normalizeSystemOrderMarkdown } from '../markdown/order';
-import { parseAssistantMarkdown, parseOcrResultTable } from '../ocr/result';
-
 import type { SteelQuotationChunkState } from '@librechat/data-schemas';
 import type { SteelToolResult } from '../tools/results';
+import { escapeMarkdownTableCell, parsePipeTableRow } from '../markdown/row-codec';
+import { parseAssistantMarkdown, parseOcrResultTable } from '../ocr/result';
+import { buildCustomerQuoteFromMarkdown } from '../markdown/quote';
+import { normalizeSystemOrderMarkdown } from '../markdown/order';
+import { recalculateSystemOrderWeights } from './weight';
+import { parseMarkdownTables } from '../markdown/table';
 
 export const quotationSystemOrderColumns = [
   '型號',
@@ -706,7 +706,7 @@ function validateChildTable(input: QuotationChildResultInput): ValidatedQuotatio
   if (leakedControlLine >= 0) {
     protocolError('invalid_child_result', `Quotation child result contains model control text on line ${leakedControlLine + 1}. Use actual tool calls for lookups; return only complete Markdown tables, without role or channel markers.`, quotationOutputRequiresFreshLookup(response));
   }
-  const sanitizedResponse = stripLegacyQuotationChildSidecars(response);
+  const sanitizedResponse = normalizeSystemOrderMarkdown(stripLegacyQuotationChildSidecars(response));
   const document = parseAssistantMarkdown(sanitizedResponse);
   const section = exactSection(document, 'system_order_chunk');
   const reviewSection = exactSection(document, 'manual_reviews_chunk');
@@ -839,6 +839,11 @@ export function finalizeQuotationMainResponse(input: FinalizeQuotationMainInput)
   if (input.childResults.length === 0) protocolError('incomplete_aggregate', 'Quotation has no child results.');
   input.childResults.forEach(validateChildTable);
 
+  const rawMain = sectionRows(input.mainResponse, 'system_order');
+  const weighted = rawMain ? recalculateSystemOrderWeights({
+    headers: rawMain.table.headers, rows: rawMain.table.rows,
+    results: input.childResults.flatMap((child) => child.lookupEvidence.map((evidence) => evidence.result)),
+  }) : undefined;
   const mainResponse = normalizeSystemOrderMarkdown(input.mainResponse);
   const main = sectionRows(mainResponse, 'system_order');
   if (!main || main.table.headers.length !== quotationSystemOrderColumns.length ||
@@ -861,7 +866,10 @@ export function finalizeQuotationMainResponse(input: FinalizeQuotationMainInput)
   const sanitized = stripQuoteControls(mainResponse);
   const sanitizedMain = sectionRows(sanitized, 'system_order');
   if (!sanitizedMain) protocolError('invalid_main_result', 'Quotation main system_order disappeared during finalization.');
-  const rows = main.table.rows;
+  const rows = weighted
+    ? sectionRows(normalizeSystemOrderMarkdown(`## system_order\n\n${renderTable({
+      headers: main.table.headers, rows: weighted,
+    })}`), 'system_order')!.table.rows : main.table.rows;
   const systemOrderMarkdown = `## system_order\n\n${renderTable({ headers: quotationSystemOrderColumns, rows })}`;
   const customerQuote = buildCustomerQuoteFromMarkdown(systemOrderMarkdown);
   if (!customerQuote) protocolError('invalid_main_result', 'Quotation system_order cannot produce a customer quote.');

@@ -8,6 +8,7 @@ import type {
   SteelQuotationCheckpointRef,
   SteelQuotationChunkState,
   SteelQuotationCustomerPreparation,
+  SteelQuotationCurrentSystemOrder,
   SteelQuotationOrder,
   SteelQuotationPendingMessage,
   SteelQuotationPendingMessageFile,
@@ -22,6 +23,19 @@ const steelQuotationOrderSchema = new Schema<SteelQuotationOrder>(
     sha256: { type: String, required: true },
     revision: { type: String },
     messageId: { type: String },
+  },
+  { _id: false },
+);
+
+const steelQuotationCurrentSystemOrderSchema = new Schema<SteelQuotationCurrentSystemOrder>(
+  {
+    runId: { type: String, required: true },
+    sha256: { type: String, required: true },
+    markdown: { type: String, required: true },
+    messageId: { type: String },
+    responseId: { type: String },
+    customerQuoteMarkdown: { type: String },
+    updatedAt: { type: Date, required: true },
   },
   { _id: false },
 );
@@ -89,6 +103,7 @@ const steelQuotationArtifactRefSchema = new Schema<SteelQuotationArtifactRef>(
     artifactId: { type: String, required: true },
     userId: { type: String, required: true },
     conversationId: { type: String, required: true },
+    tenantId: { type: String },
     runId: { type: String, required: true },
     operationId: { type: String, required: true },
     kind: {
@@ -194,7 +209,9 @@ const steelQuotationStateSchema: Schema<ISteelQuotationState> = new Schema<IStee
   {
     userId: { type: String, required: true },
     conversationId: { type: String, required: true },
+    tenantId: { type: String },
     currentOrder: { type: steelQuotationOrderSchema },
+    currentSystemOrder: { type: steelQuotationCurrentSystemOrderSchema },
     currentCustomer: { type: steelQuotationCustomerPreparationSchema },
     nextSignalIndex: { type: Number, required: true, default: 0 },
     tickets: { type: [steelQuotationTicketSchema], required: true, default: [] },
@@ -215,6 +232,7 @@ const steelQuotationArtifactSchema: Schema<ISteelQuotationArtifact> =
     {
       userId: { type: String, required: true },
       conversationId: { type: String, required: true },
+      tenantId: { type: String },
       runId: { type: String, required: true },
       operationId: { type: String, required: true },
       kind: {

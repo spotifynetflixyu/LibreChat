@@ -1,3 +1,5 @@
+import { escapeMarkdownTableCell } from './row-codec';
+
 export interface SystemOrderNormalizer {
   append(delta: string): string;
   finish(options?: { raw?: boolean }): string;
@@ -19,6 +21,7 @@ interface RawRow {
   values: string[];
 }
 
+const DIMENSION_HEADERS = new Set(['厚度', '寬度', '長度', '肚']);
 const NUMERIC_HEADERS = new Set(['數量', '單重', '總數', '單價', '厚度', '寬度', '長度', '肚']);
 const DECIMAL_TOKEN = /^(?:\d+(?:\.\d+)?|\d{1,3}(?:,\d{3})+(?:\.\d+)?)$/u;
 
@@ -89,6 +92,7 @@ function getH2Title(line: string): string | undefined {
 }
 
 function isSystemOrderTitle(title: string): boolean {
+  if (title === 'system_order_chunk' || title === 'system_order_updates') return true;
   const separator = title.indexOf('｜');
   if (separator < 0) return title === 'system_order';
   return (
@@ -134,7 +138,38 @@ function cleanDecimal(value: string): string {
   return DECIMAL_TOKEN.test(token) ? token.replace(/,/gu, '') : '';
 }
 
+export function cleanSystemOrderNumber(value: string): string {
+  return cleanDecimal(value);
+}
+
+function dimensionFactor(value: string): { numerator: bigint; denominator: bigint } {
+  const unit = value.toLowerCase().match(/(?:mm|m\/m|毫米|公厘|cm|公分|厘米|inch|in\b|英吋|英寸|吋|"|m\b|公尺|米)/u)?.[0];
+  if (unit && /^(?:cm|公分|厘米)$/u.test(unit)) return { numerator: BigInt(10), denominator: BigInt(1) };
+  if (unit && /^(?:m|公尺|米)$/u.test(unit)) return { numerator: BigInt(1_000), denominator: BigInt(1) };
+  if (unit && /^(?:inch|in|英吋|英寸|吋|")$/u.test(unit)) return { numerator: BigInt(254), denominator: BigInt(10) };
+  return { numerator: BigInt(1), denominator: BigInt(1) };
+}
+
+export function readSystemOrderDimension(value: string): number | undefined {
+  const decimal = cleanDecimal(value);
+  if (!decimal) return undefined;
+  const factor = dimensionFactor(value);
+  const result = Number(decimal) * Number(factor.numerator) / Number(factor.denominator);
+  return Number.isFinite(result) ? result : undefined;
+}
+
+function cleanDimension(value: string): string {
+  const decimal = cleanDecimal(value);
+  if (!decimal) return '';
+  const { numerator, denominator } = dimensionFactor(value);
+  const [integer = '0', fraction = ''] = decimal.split('.');
+  const scale = BigInt('1' + '0'.repeat(fraction.length)) * denominator;
+  const digits = BigInt(integer + fraction) * numerator;
+  return ((digits * BigInt(2) + scale) / (scale * BigInt(2))).toString();
+}
+
 function cleanCell(header: string, value: string): string | undefined {
+  if (DIMENSION_HEADERS.has(header)) return cleanDimension(value);
   if (NUMERIC_HEADERS.has(header)) return cleanDecimal(value);
   if (header !== '計價基準') return undefined;
   const text = value.trim();
@@ -155,10 +190,26 @@ function replaceCell(line: string, cell: RawCell, value: string): string {
 }
 
 function normalizeRow(line: string, row: RawRow, headers: string[]): string {
+  const replacements = row.cells.map((_, index) => cleanCell(headers[index] ?? '', row.values[index] ?? ''));
+  const noteIndex = headers.indexOf('備註');
+  if (noteIndex >= 0) {
+    const originals = headers.flatMap((header, index) => {
+      if (!DIMENSION_HEADERS.has(header)) return [];
+      const original = readSystemOrderDimension(row.values[index] ?? '');
+      const rounded = replacements[index];
+      return original !== undefined && rounded && original !== Number(rounded)
+        ? [`原${header} ${original} mm`] : [];
+    });
+    if (originals.length > 0) {
+      replacements[noteIndex] = escapeMarkdownTableCell(
+        [row.values[noteIndex], ...originals].filter(Boolean).join('；'),
+      );
+    }
+  }
   let result = '';
   let cursor = 0;
   row.cells.forEach((cell, index) => {
-    const replacement = cleanCell(headers[index] ?? '', row.values[index] ?? '');
+    const replacement = replacements[index];
     if (replacement === undefined) return;
     result += line.slice(cursor, cell.start) + replaceCell(line, cell, replacement);
     cursor = cell.end;

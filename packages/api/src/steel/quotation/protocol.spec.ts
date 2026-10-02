@@ -1,3 +1,5 @@
+import type { QuotationChildResultInput, QuotationChunk, QuotationLookupEvidence } from './protocol';
+import type { SteelToolResult } from '../tools/results';
 import {
   buildQuotationSystemOrder,
   buildQuotationSystemOrderForReview,
@@ -11,9 +13,6 @@ import {
   mergeQuotationChildResults,
   validateQuotationChildResult,
 } from './protocol';
-
-import type { QuotationChildResultInput, QuotationChunk, QuotationLookupEvidence } from './protocol';
-import type { SteelToolResult } from '../tools/results';
 import { parseMarkdownTables } from '../markdown/table';
 
 const ocrHeaders = ['來源', '零件編號', '類別', '數量', '厚度', '寬度', '長度'];
@@ -590,6 +589,21 @@ describe('quotation protocol', () => {
     expect(finalized.response).not.toContain('## manual_reviews');
     const repeated = finalizeQuotationMainResponse({ fullOcrResult: '', mainResponse: finalized.response, childResults: [child] });
     expect(repeated.response).toBe(finalized.response);
+  });
+
+  it('recalculates plate weight locally and rounds display dimensions without another model response', () => {
+    const row = [...pricedRow]; row[10] = '6.35mm'; row[5] = '999 kg'; row[6] = '1998 kg';
+    const evidence = lookupEvidence({ ok: true, toolName: 'search_price_candidates', durationMs: 1, redactionVersion: 1,
+      data: { queryResults: [{ candidates: [{ erpItemCode: 'ERP-1', category: '鐵板', density: 7.85 }] }] } });
+    const child = childInput(chunkForRows(), row, [evidence]);
+    const input = { fullOcrResult: '', mainResponse: `## system_order\n\n${table(finalHeaders, [finalRow(row)])}`,
+      childResults: [child] };
+    const output = finalizeQuotationMainResponse(input);
+    expect(output.rows[0]?.[5]).toBe('0.99695');
+    expect(output.rows[0]?.[6]).toBe('1.9939');
+    expect(output.rows[0]?.[10]).toBe('6');
+    expect(output.rows[0]?.[15]).toContain('原厚度 6.35 mm');
+    expect(finalizeQuotationMainResponse({ ...input, mainResponse: output.response }).response).toBe(output.response);
   });
 
   it('normalizes numeric cells before saving the final order and composing the customer quote', () => {

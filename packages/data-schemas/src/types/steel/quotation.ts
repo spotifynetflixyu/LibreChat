@@ -23,6 +23,7 @@ export type SteelQuotationPendingMessageStatus = 'pending' | 'claimed' | 'comple
 export interface SteelQuotationScope {
   userId: string;
   conversationId: string;
+  tenantId?: string;
 }
 
 export interface SteelQuotationOrder {
@@ -30,6 +31,16 @@ export interface SteelQuotationOrder {
   sha256: string;
   revision?: string;
   messageId?: string;
+}
+
+export interface SteelQuotationCurrentSystemOrder {
+  runId: string;
+  sha256: string;
+  markdown: string;
+  messageId?: string;
+  responseId?: string;
+  customerQuoteMarkdown?: string;
+  updatedAt: Date;
 }
 
 export interface SteelQuotationSelectionProvenance {
@@ -80,6 +91,7 @@ export interface SteelQuotationArtifactRef {
   artifactId: string;
   userId: string;
   conversationId: string;
+  tenantId?: string;
   runId: string;
   operationId: string;
   kind: SteelQuotationArtifactKind;
@@ -145,6 +157,7 @@ export interface SteelQuotationPendingMessageFile {
 
 export interface ISteelQuotationState extends Document, SteelQuotationScope {
   currentOrder?: SteelQuotationOrder;
+  currentSystemOrder?: SteelQuotationCurrentSystemOrder;
   currentCustomer?: SteelQuotationCustomerPreparation;
   nextSignalIndex: number;
   tickets: SteelQuotationTicket[];

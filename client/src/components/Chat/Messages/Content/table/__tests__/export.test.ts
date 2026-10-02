@@ -73,12 +73,17 @@ describe('table CSV archive', () => {
         ['D', '6', '格板:隔板'],
       ]),
     );
-    expect(Object.keys(zip.files)).toHaveLength(3);
+    expect(Object.keys(zip.files)).toHaveLength(4);
+    expect(Object.keys(zip.files).slice(0, 2)).toEqual([
+      '01_鐵板_no-thickness.csv',
+      '02_no-category_no-thickness.csv',
+    ]);
     const contents = await Promise.all(
       Object.values(zip.files).map((file) => file.async('string')),
     );
     expect(contents).toEqual([
-      '\uFEFF零件編號,厚度(mm),類別\r\nA,,鐵板\r\nB,,',
+      '\uFEFF零件編號,厚度(mm),類別\r\nA,,鐵板',
+      '\uFEFF零件編號,厚度(mm),類別\r\nB,,',
       '\uFEFF零件編號,厚度(mm),類別\r\nC,6,格板/隔板',
       '\uFEFF零件編號,厚度(mm),類別\r\nD,6,格板:隔板',
     ]);
@@ -108,7 +113,7 @@ describe('table CSV archive', () => {
       '01_鐵板_6.csv',
       '02_H型鋼_6.csv',
       '03_鐵板_9.csv',
-      'no-thickness.csv',
+      '04_鐵板_no-thickness.csv',
     ]);
     expect(await zip.file('01_鐵板_6.csv')?.async('string')).toBe(
       [
@@ -127,12 +132,12 @@ describe('table CSV archive', () => {
     expect(await zip.file('03_鐵板_9.csv')?.async('string')).toBe(
       '\uFEFF類別,厚度,零件編號,品名規格\r\n鐵板,9,B,材料 B\r\n加工/孔,9,B,B 鑽孔',
     );
-    expect(await zip.file('no-thickness.csv')?.async('string')).toBe(
+    expect(await zip.file('04_鐵板_no-thickness.csv')?.async('string')).toBe(
       '\uFEFF類別,厚度,零件編號,品名規格\r\n鐵板,,,材料 E\r\n加工/折工,6,,E 折工',
     );
   });
 
-  it('collects unknown thickness materials across categories with their processing in one file', async () => {
+  it('separates unknown thickness materials by category with their processing', async () => {
     const zip = await readZip(
       await createThicknessZip([
         ['類別', '厚度', '零件編號'],
@@ -145,21 +150,32 @@ describe('table CSV archive', () => {
         ['鐵板', '6～9', 'D'],
         ['加工/折工', '9', 'D'],
         ['槽鐵', '0', 'E'],
+        ['加工/切工', '6', 'E'],
+        ['H型鋼', '', 'F'],
+        ['加工/孔', '9', 'F'],
       ]),
     );
 
-    expect(Object.keys(zip.files)).toEqual(['no-thickness.csv', '02_H型鋼_6.csv']);
-    expect(await zip.file('no-thickness.csv')?.async('string')).toBe(
-      [
-        '\uFEFF類別,厚度,零件編號',
-        '鐵板,,A',
-        '加工/孔,6,A',
-        '方管,不明,C',
-        '加工/孔,3,C',
-        '鐵板,6～9,D',
-        '加工/折工,9,D',
-        '槽鐵,0,E',
-      ].join('\r\n'),
+    expect(Object.keys(zip.files)).toEqual([
+      '01_鐵板_no-thickness.csv',
+      '02_H型鋼_6.csv',
+      '03_方管_no-thickness.csv',
+      '04_槽鐵_no-thickness.csv',
+      '05_H型鋼_no-thickness.csv',
+    ]);
+    expect(await zip.file('01_鐵板_no-thickness.csv')?.async('string')).toBe(
+      ['\uFEFF類別,厚度,零件編號', '鐵板,,A', '加工/孔,6,A', '鐵板,6～9,D', '加工/折工,9,D'].join(
+        '\r\n',
+      ),
+    );
+    expect(await zip.file('03_方管_no-thickness.csv')?.async('string')).toBe(
+      '\uFEFF類別,厚度,零件編號\r\n方管,不明,C\r\n加工/孔,3,C',
+    );
+    expect(await zip.file('04_槽鐵_no-thickness.csv')?.async('string')).toBe(
+      '\uFEFF類別,厚度,零件編號\r\n槽鐵,0,E\r\n加工/切工,6,E',
+    );
+    expect(await zip.file('05_H型鋼_no-thickness.csv')?.async('string')).toBe(
+      '\uFEFF類別,厚度,零件編號\r\nH型鋼,,F\r\n加工/孔,9,F',
     );
     expect(await zip.file('02_H型鋼_6.csv')?.async('string')).toBe(
       '\uFEFF類別,厚度,零件編號\r\nH型鋼,6,B\r\n加工/切工,,B',

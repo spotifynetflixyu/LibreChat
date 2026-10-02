@@ -11,6 +11,7 @@ import type { SteelToolJsonObject, SteelToolResult } from '../tools/results';
 import type { QuotationModelInput, QuotationRepairProgress } from './model';
 import type { OpenAIOAuthModelOptions } from '../native/oauth';
 import type { SteelNativeHistory } from '../native/events';
+import type { QuotationCustomerTier } from './preparation';
 import type { SavedQuotationLookup } from './history';
 import {
   buildQuotationChunks,
@@ -28,9 +29,10 @@ import {
   restoreQuotationChunks,
 } from './protocol';
 import {
-  defaultQuotationCustomerMarkdown,
   hasQuotationOrder,
   isUnfinishedQuotation,
+  parseQuotationTierSelection,
+  renderQuotationCustomerMarkdown,
 } from './preparation';
 import { getQuotationProgress, QUOTATION_V2_SPLIT_SIZES, QUOTATION_V2_MAX_DEPTH } from './progress';
 import { executeSteelTool, createSteelToolRunState } from '../tools/execute';
@@ -94,6 +96,39 @@ export interface QuotationRunnerInput {
 
 let pool: ReturnType<typeof createSteelPostgresPool> | undefined;
 
+const quotationCustomerHeaders = ['客戶編號', '客戶名稱', '價格等級', '說明'] as const;
+
+interface QuotationCustomerRow {
+  customerCode: string;
+  customerName: string;
+  tier: QuotationCustomerTier;
+  description: string;
+}
+
+function readQuotationCustomerRow(table: ReturnType<typeof extractCustomerDataTable>): QuotationCustomerRow | undefined {
+  if (!table || table.headers.length !== quotationCustomerHeaders.length ||
+    table.headers.some((header, index) => header !== quotationCustomerHeaders[index]) || table.rows.length !== 1) {
+    return undefined;
+  }
+  const row = table.rows[0];
+  if (!row || row.length !== quotationCustomerHeaders.length) return undefined;
+  const tier = row[2]?.toUpperCase() as QuotationCustomerTier | undefined;
+  if (!tier || !/^[A-F]$/u.test(tier)) return undefined;
+  return {
+    customerCode: row[0] ?? '',
+    customerName: row[1] ?? '',
+    tier,
+    description: row[3] ?? '',
+  };
+}
+
+function isResolvedNamedCustomer(customer: {
+  customerIdentity: string;
+}): boolean {
+  return !customer.customerIdentity.startsWith('explicit-default:') &&
+    !customer.customerIdentity.startsWith('no-match:');
+}
+
 export async function acceptQuotationResponse(input: {
   scope: SteelQuotationScope;
   response: string;
@@ -109,15 +144,20 @@ export async function acceptQuotationResponse(input: {
   const signal = parseQuotationSignal(input.response);
   const sections = parseAssistantMarkdown(input.response).sections;
   const hasSection = (title: string) => sections.some((section) => section.title.split(/[｜|]/u)[0]?.trim() === title);
-  const hasOrder = hasSection('ocr_result') || hasSection('ocr_result_updates');
+  const hasOrder = hasSection('ocr_result') || hasSection('ocr_result_updates') || hasSection('system_order_updates');
+  const hasCustomerSection = hasSection('customer_data') || hasSection('customer_data_updates');
   const customer = extractCustomerDataTable(input.response);
-  if (!signal && !hasSection('customer_data') && !hasOrder) return undefined;
-  if (hasSection('customer_data') && !customer) {
+  if (!signal && !hasCustomerSection && !hasOrder) return undefined;
+  if (hasCustomerSection && !customer) {
     throw new Error('Customer data must contain one readable Markdown table');
   }
   const service = createSteelQuotationStateService(mongoose);
   let state = await service.readState(input.scope);
   const existingTicket = state?.tickets.find((entry) => entry.responseId === input.responseId);
+  const resolvedCustomerThisResponse = state?.currentCustomer?.responseId === input.responseId && !existingTicket?.acceptedRunId;
+  if (signal && (hasCustomerSection || hasOrder || resolvedCustomerThisResponse)) {
+    throw new Error('Customer or order data must be confirmed before issuing a quotation signal');
+  }
   const matchesCustomer = (markdown: string) =>
     JSON.stringify(customer) === JSON.stringify(extractCustomerDataTable(markdown));
   if (isUnfinishedQuotation(state?.activeRun?.status) &&
@@ -156,25 +196,55 @@ export async function acceptQuotationResponse(input: {
       targetMessageId: input.responseId,
     });
   }
-  if (customer && (!state?.currentCustomer || !matchesCustomer(state.currentCustomer.customerMarkdown))) {
-    if (!matchesCustomer(defaultQuotationCustomerMarkdown)) {
+  if (customer) {
+    const tierSelection = parseQuotationTierSelection(input.messageText);
+    if (tierSelection.status === 'invalid') {
+      throw new Error('Customer tier selection is ambiguous or unrelated to the current user message');
+    }
+    const currentCustomer = state?.currentCustomer;
+    const currentCustomerRow = readQuotationCustomerRow(currentCustomer
+      ? extractCustomerDataTable(currentCustomer.customerMarkdown) : undefined);
+    if (tierSelection.status === 'selected') {
+      const selectedTier = tierSelection.tier;
+      const targetMarkdown = currentCustomer && isResolvedNamedCustomer(currentCustomer) && currentCustomerRow
+        ? renderQuotationCustomerMarkdown({
+          tier: selectedTier,
+          customerCode: currentCustomerRow.customerCode,
+          customerName: currentCustomerRow.customerName,
+          description: currentCustomerRow.description,
+        })
+        : renderQuotationCustomerMarkdown({ tier: selectedTier });
+      const targetTable = extractCustomerDataTable(targetMarkdown);
+      const receivedRow = readQuotationCustomerRow(customer);
+      const targetRow = readQuotationCustomerRow(targetTable);
+      if (!receivedRow || !targetRow || receivedRow.tier !== selectedTier ||
+        JSON.stringify(receivedRow) !== JSON.stringify(targetRow)) {
+        throw new Error('Customer data does not match the current user tier selection');
+      }
+      const orderHash = state?.currentOrder?.sha256;
+      if (!input.messageId || (orderHash !== undefined && input.expectedOrderHash !== orderHash) ||
+        currentCustomer?.preparationId !== input.expectedCustomerPreparationId) {
+        throw new Error('Customer tier selection is based on stale preparation data');
+      }
+      if (!currentCustomer || currentCustomer.customerMarkdown !== targetMarkdown ||
+        currentCustomer.customerIdentity !== (currentCustomer && isResolvedNamedCustomer(currentCustomer)
+          ? currentCustomer.customerIdentity : `explicit-default:${selectedTier}`)) {
+        await service.saveCustomer({
+          scope: input.scope,
+          customerMarkdown: targetMarkdown,
+          customerIdentity: currentCustomer && isResolvedNamedCustomer(currentCustomer)
+            ? currentCustomer.customerIdentity : `explicit-default:${selectedTier}`,
+          triggeringMessageId: input.messageId,
+          responseId: input.responseId,
+          ...(orderHash !== undefined ? { orderHash } : {}),
+          expectedPreparationId: input.expectedCustomerPreparationId ?? null,
+          selectionProvenance: { method: 'default_tier', selectionMessageId: input.messageId },
+        });
+        state = await service.readState(input.scope);
+      }
+    } else if (!currentCustomer || !matchesCustomer(currentCustomer.customerMarkdown)) {
       throw new Error('Customer Markdown does not match the saved customer lookup');
     }
-    if (!input.messageId || state?.currentOrder?.sha256 !== input.expectedOrderHash ||
-      state?.currentCustomer?.preparationId !== input.expectedCustomerPreparationId) {
-      throw new Error('Default customer selection is based on stale preparation data');
-    }
-    await service.saveCustomer({
-      scope: input.scope,
-      customerMarkdown: defaultQuotationCustomerMarkdown,
-      customerIdentity: 'explicit-default:B',
-      triggeringMessageId: input.messageId,
-      responseId: input.responseId,
-      orderHash: state?.currentOrder?.sha256,
-      expectedPreparationId: input.expectedCustomerPreparationId ?? null,
-      selectionProvenance: { method: 'default_tier', selectionMessageId: input.messageId },
-    });
-    state = await service.readState(input.scope);
   }
   if (!signal) return undefined;
   const preparedCustomer = state?.currentCustomer;

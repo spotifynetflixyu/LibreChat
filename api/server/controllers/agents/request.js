@@ -33,6 +33,10 @@ const {
   deleteAgentCheckpoint,
   getAttachmentTitleText,
   createSteelOcrStateService,
+  createSteelQuotationStateService,
+  createSteelAgentCompletionServices,
+  finishSteelAgentResponse,
+  extractSteelAgentResponseMarkdown,
   createSteelOcrResponseAuditService,
   SteelOcrResponseAuditPersistenceError,
   extractSteelNativeMarkdownText,
@@ -3794,6 +3798,19 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
             })
             .catch(() => undefined);
         }
+
+        await finishSteelAgentResponse({
+          req,
+          responseId: response.messageId,
+          markdown: extractSteelAgentResponseMarkdown(response),
+          completed: !responseIsUnfinished,
+          ocrSucceeded: ocrResponseFinalization?.ok !== false,
+          applyMarkdown: (markdown) => replaceResponseMarkdown(response, markdown),
+          persistMarkdown: persistFinalResponseMessage,
+        }, () => createSteelAgentCompletionServices({
+          ocr: createSteelOcrStateService(mongoose),
+          quotation: createSteelQuotationStateService(mongoose),
+        }).dependencies);
 
         // If the user stopped this turn — or an empty preempt boundary truncated
         // it, which persists under the same honest `unfinished` contract — cancel
