@@ -681,4 +681,32 @@ test.describe('Steel managed source review', () => {
     }
   });
 
+  test('an expired clicked message is rejected with or without source mappings', async ({ page }) => {
+    for (const withSource of [false, true]) {
+      const { conversationId, messageId } = await seedCurrent(ocr);
+      conversations.push(conversationId);
+      await withMongo(async (db) => {
+        await db.collection('messages').updateOne({ conversationId, messageId }, {
+          $set: { expiredAt: new Date(Date.now() - 60_000) },
+        });
+        if (!withSource) {
+          await db.collection('steel_conversation_ocr_state').updateOne({ conversationId }, {
+            $set: { sourceMappings: [] },
+          });
+        }
+      });
+      const before = await persistedSnapshot(conversationId);
+      const review = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+      expect(review.status()).toBe(404);
+      const root = `/api/steel/conversations/${conversationId}/review/ocr_result/sources`;
+      const query = new URLSearchParams({ messageId });
+      const list = await page.request.get(`${root}?${query}`, { headers });
+      expect(list.status()).toBe(200);
+      expect(await list.json()).toEqual({ sources: [] });
+      const binary = await page.request.get(`${root}/review-alpha?${query}`, { headers });
+      expect(binary.status()).toBe(404);
+      expect(await persistedSnapshot(conversationId)).toEqual(before);
+    }
+  });
+
 });
