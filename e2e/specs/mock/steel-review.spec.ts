@@ -1060,6 +1060,43 @@ test.describe('Steel managed source review', () => {
   });
 
 
+  test('a known historical OCR message stays read-only through the generic edit endpoint', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const historicalId = randomUUID();
+    await seedMessages(getE2EUser().email, conversationId, [{
+      messageId: historicalId, parentMessageId: '00000000-0000-0000-0000-000000000000',
+      text: ocr, content: [{ type: 'text', text: ocr }], isCreatedByUser: false, sender: 'Assistant',
+    }]);
+    const current = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(current.status()).toBe(200);
+    const { table } = await current.json() as { table: SteelReviewTable };
+    await withMongo(async (db) => {
+      const message = await db.collection('messages').findOne({ conversationId, messageId: historicalId });
+      if (!message) throw new Error('Missing historical message');
+      await db.collection('steel_review_outputs').insertOne({
+        userId: message.user, conversationId, messageId: historicalId,
+        kind: 'ocr_result', tableId: 'ocr_result:1', outputId: 'ocr_result:previous-owner',
+        revision: 'previous-owner-revision', state: 'historical',
+        headers: table.headers, rows: table.rows, aiRawMarkdown: ocr,
+        aiBaselineMarkdown: ocr, effectiveMarkdown: ocr, receipts: [],
+        createdAt: new Date(), updatedAt: new Date(),
+      });
+    });
+    const before = await persistedSnapshot(conversationId);
+    const historical = await page.request.get(readUrl(conversationId, historicalId, 1), { headers });
+    expect(historical.status()).toBe(200);
+    expect(await historical.json()).toMatchObject({ table: { readOnly: true, isLatest: false } });
+    for (const data of [
+      { conversationId, messageId: historicalId, text: 'HISTORY-CORRUPTED' },
+      { conversationId, messageId: historicalId, index: 0, text: 'HISTORY-CORRUPTED' },
+    ]) {
+      const edited = await page.request.put('/api/messages', { headers, data });
+      expect(edited.status()).toBe(409);
+      expect(await persistedSnapshot(conversationId)).toEqual(before);
+    }
+  });
+
   test('failed OCR Save keeps the focused draft and retries through the real backend', async ({ page }) => {
     const { conversationId } = await seedCurrent(ocr);
     conversations.push(conversationId);
