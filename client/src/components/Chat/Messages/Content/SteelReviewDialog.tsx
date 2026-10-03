@@ -111,11 +111,30 @@ function isAuthorizedCurrentTable(
     table.conversationId === prepared.conversationId &&
     table.messageId === prepared.messageId &&
     table.tableId === prepared.tableId &&
+    table.partIndex === prepared.partIndex &&
     table.kind === prepared.kind &&
     table.outputId === prepared.outputId &&
     table.latestOutputId === prepared.outputId &&
     table.isLatest &&
     (table.revision === prepared.revision || table.revision === snapshot.revision),
+  );
+}
+
+function isAuthorizedCurrentNoOpTable(
+  table: SteelReviewTable | null | undefined,
+  prepared: SteelReviewPrepared,
+): boolean {
+  return Boolean(
+    table &&
+    table.conversationId === prepared.conversationId &&
+    table.messageId === prepared.messageId &&
+    table.tableId === prepared.tableId &&
+    table.partIndex === prepared.partIndex &&
+    table.kind === prepared.kind &&
+    table.outputId === prepared.outputId &&
+    table.latestOutputId === prepared.outputId &&
+    table.isLatest &&
+    table.revision === prepared.revision,
   );
 }
 
@@ -223,6 +242,9 @@ export default function SteelReviewDialog({
     enabled: false,
     retry: false,
   });
+  const receiptQueryRefetchRef = useRef(receiptQuery.refetch);
+  receiptQueryRefetchRef.current = receiptQuery.refetch;
+  const refetchReceipt = useCallback(() => receiptQueryRefetchRef.current(), []);
   const {
     selectedFileId,
     pageNumber,
@@ -416,6 +438,20 @@ export default function SteelReviewDialog({
       return rebased;
     });
   }, [identity, queryClient, setDraftState, table?.partIndex]);
+  const applyConfirmedNoOp = useCallback((currentTable: SteelReviewTable, submittedChangeSequence: number) => {
+    exportBaseRowsRef.current = currentTable.rows;
+    const rebasedDraft = rebaseSteelReviewDraftState(
+      latestDraftStateRef.current,
+      currentTable.rows,
+      submittedChangeSequence,
+    );
+    latestDraftStateRef.current = rebasedDraft;
+    setDraftState((current) => {
+      const rebased = rebaseSteelReviewDraftState(current, currentTable.rows, submittedChangeSequence);
+      exportRowsRef.current = applySteelReviewDrafts(currentTable.rows, rebased);
+      return rebased;
+    });
+  }, [setDraftState]);
   const saveChanges = useCallback(async (): Promise<boolean> => {
     const existingPromise = savePromiseRef.current;
     if (existingPromise) {
@@ -453,6 +489,21 @@ export default function SteelReviewDialog({
           setSavePhase('uncertain');
           return false;
         }
+        if (saved.changedRows === 0 && !saved.savedSnapshot) {
+          const currentResult = await refetchCurrentReview();
+          if (currentResult.error || !currentResult.data?.table) {
+            setSavePhase('uncertain');
+            setSaveErrorCode(undefined);
+            return false;
+          }
+          if (!isAuthorizedCurrentNoOpTable(currentResult.data.table, prepared)) {
+            preparedRef.current = undefined;
+            setSavePhase('stale');
+            setSaveErrorCode('REVIEW_CONFLICT');
+            return false;
+          }
+          applyConfirmedNoOp(currentResult.data.table, submittedChangeSequenceRef.current);
+        }
         if (saved.savedSnapshot) {
           const currentResult = await refetchCurrentReview();
           if (currentResult.error || !currentResult.data?.table) {
@@ -478,7 +529,7 @@ export default function SteelReviewDialog({
           preparedRef.current = undefined;
           setSavePhase('stale');
           setSaveErrorCode(code);
-          void query.refetch();
+          void refetchCurrentReview();
         } else if (commitAttempted) {
           setSavePhase('uncertain');
           setSaveErrorCode(undefined);
@@ -497,7 +548,7 @@ export default function SteelReviewDialog({
         savePromiseRef.current = undefined;
       }
     }
-  }, [applyConfirmedSnapshot, canEdit, commitMutation, dirtyRowCount, draftRows, draftState.changeSequence, identity, prepareMutation, refetchCurrentReview, savePhase, table]);
+  }, [applyConfirmedNoOp, applyConfirmedSnapshot, canEdit, commitMutation, dirtyRowCount, draftRows, draftState.changeSequence, identity, prepareMutation, refetchCurrentReview, savePhase, table]);
   const getCurrentReviewTable = useCallback(() => {
     const tableKey = DynamicQueryKeys.steelReview(
       identity.conversationId,
@@ -524,7 +575,7 @@ export default function SteelReviewDialog({
       return false;
     }
     const saved = await saveChanges();
-    if (!saved || !table) {
+    if (!saved) {
       return saved;
     }
     const latestDraft = latestDraftStateRef.current;
@@ -625,7 +676,7 @@ export default function SteelReviewDialog({
       return undefined;
     }
     let active = true;
-    void receiptQuery.refetch().then(async (result) => {
+    void refetchReceipt().then(async (result) => {
       if (!active) {
         return;
       }
@@ -689,7 +740,7 @@ export default function SteelReviewDialog({
     return () => {
       active = false;
     };
-  }, [applyConfirmedSnapshot, discardRequested, finishDiscardAtBoundary, receiptInput, receiptQuery.refetch, refetchCurrentReview, setDraftState, setSelection]);
+  }, [applyConfirmedSnapshot, discardRequested, finishDiscardAtBoundary, receiptInput, refetchCurrentReview, refetchReceipt, setDraftState, setSelection]);
   const saveAndClose = useCallback(async () => {
     const saved = await saveChanges();
     if (!saved || !table) {

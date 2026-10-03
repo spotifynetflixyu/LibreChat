@@ -421,6 +421,217 @@ describe('MarkdownTableActions Steel review entry', () => {
     expect(screen.queryByText('com_ui_steel_review_unsaved_caption')).toBeNull();
   });
 
+  it('rebases a normalized no-op against fresh authority without projecting a snapshot', async () => {
+    const table = {
+      ...reviewIdentity,
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      latestOutputId: 'ocr_result:generation-1',
+      isLatest: true,
+      readOnly: false,
+      headers: ['數量'],
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 數量: { baseline: '2', effective: '2' } },
+      }],
+    };
+    const prepared = {
+      ...reviewIdentity,
+      outputId: table.outputId,
+      revision: table.revision,
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 數量: { baseline: '2', effective: ' 2 ' } },
+      }],
+      operationId: 'operation-normalized-no-op',
+      digest: 'a'.repeat(64),
+      messageSha256: 'b'.repeat(64),
+      target: { start: 0, end: 1, sha256: 'c'.repeat(64) },
+      replacementText: 'replacement',
+      cleanReplacementText: 'replacement',
+      targetText: 'target',
+      headers: table.headers,
+      effectiveMarkdown: 'effective',
+      displayMarkdown: 'display',
+      caption: { kind: reviewIdentity.kind, changedRows: 1, changedRowIds: ['row-1'] },
+    };
+    const prepare = jest.fn().mockResolvedValue(prepared);
+    const commit = jest.fn().mockResolvedValue({ changedRows: 0, changedRowIds: [] });
+    const refetch = jest.fn().mockResolvedValue({ data: { table }, error: null });
+    mockUseGetSteelReviewQuery.mockReturnValue({
+      data: { table },
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch,
+    });
+    mockUsePrepareSteelReviewMutation.mockReturnValue({ mutateAsync: prepare });
+    mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
+
+    const queryClient = new QueryClient();
+    const reviewQueryKey = DynamicQueryKeys.steelReview(
+      reviewIdentity.conversationId,
+      reviewIdentity.kind,
+      reviewIdentity.messageId,
+      reviewIdentity.tableId,
+      undefined,
+    );
+    queryClient.setQueryData(reviewQueryKey, { table });
+    renderDialog(queryClient);
+
+    const input = screen.getByRole('textbox', { name: '數量 row-1' });
+    fireEvent.change(input, { target: { value: ' 2 ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(input).toHaveValue('2'));
+    expect(refetch).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('com_ui_steel_review_unsaved_caption')).toBeNull();
+    expect(screen.queryByText('com_ui_steel_review_updated')).toBeNull();
+    expect(queryClient.getQueryData(reviewQueryKey)).toEqual({ table });
+  });
+
+  it('preserves an edit made after a normalized no-op submit while rereading authority', async () => {
+    const table = {
+      ...reviewIdentity,
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      latestOutputId: 'ocr_result:generation-1',
+      isLatest: true,
+      readOnly: false,
+      headers: ['數量'],
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 數量: { baseline: '2', effective: '2' } },
+      }],
+    };
+    const prepared = {
+      ...reviewIdentity,
+      outputId: table.outputId,
+      revision: table.revision,
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 數量: { baseline: '2', effective: ' 2 ' } },
+      }],
+      operationId: 'operation-normalized-no-op-late-edit',
+      digest: 'd'.repeat(64),
+      messageSha256: 'e'.repeat(64),
+      target: { start: 0, end: 1, sha256: 'f'.repeat(64) },
+      replacementText: 'replacement',
+      cleanReplacementText: 'replacement',
+      targetText: 'target',
+      headers: table.headers,
+      effectiveMarkdown: 'effective',
+      displayMarkdown: 'display',
+      caption: { kind: reviewIdentity.kind, changedRows: 1, changedRowIds: ['row-1'] },
+    };
+    const prepare = jest.fn().mockResolvedValue(prepared);
+    const commit = jest.fn().mockResolvedValue({ changedRows: 0, changedRowIds: [] });
+    let resolveRefetch!: (result: { data: { table: typeof table }; error: null }) => void;
+    const refetch = jest.fn(() => new Promise<{ data: { table: typeof table }; error: null }>((resolve) => {
+      resolveRefetch = resolve;
+    }));
+    mockUseGetSteelReviewQuery.mockReturnValue({
+      data: { table },
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch,
+    });
+    mockUsePrepareSteelReviewMutation.mockReturnValue({ mutateAsync: prepare });
+    mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
+
+    renderDialog();
+    const input = screen.getByRole('textbox', { name: '數量 row-1' });
+    fireEvent.change(input, { target: { value: ' 2 ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    await waitFor(() => expect(refetch).toHaveBeenCalledTimes(1));
+
+    fireEvent.change(input, { target: { value: '10' } });
+    resolveRefetch({ data: { table }, error: null });
+
+    await waitFor(() => {
+      expect(input).toHaveValue('10');
+      expect(screen.getByText('com_ui_steel_review_unsaved_caption')).toBeInTheDocument();
+    });
+  });
+
+  it('keeps a normalized draft when the authority reread fails, then retries safely', async () => {
+    const table = {
+      ...reviewIdentity,
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      latestOutputId: 'ocr_result:generation-1',
+      isLatest: true,
+      readOnly: false,
+      headers: ['數量'],
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 數量: { baseline: '2', effective: '2' } },
+      }],
+    };
+    const prepared = {
+      ...reviewIdentity,
+      outputId: table.outputId,
+      revision: table.revision,
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 數量: { baseline: '2', effective: ' 2 ' } },
+      }],
+      operationId: 'operation-normalized-no-op-retry',
+      digest: 'g'.repeat(64),
+      messageSha256: 'h'.repeat(64),
+      target: { start: 0, end: 1, sha256: 'i'.repeat(64) },
+      replacementText: 'replacement',
+      cleanReplacementText: 'replacement',
+      targetText: 'target',
+      headers: table.headers,
+      effectiveMarkdown: 'effective',
+      displayMarkdown: 'display',
+      caption: { kind: reviewIdentity.kind, changedRows: 1, changedRowIds: ['row-1'] },
+    };
+    const prepare = jest.fn().mockResolvedValue(prepared);
+    const commit = jest.fn().mockResolvedValue({ changedRows: 0, changedRowIds: [] });
+    const refetch = jest.fn()
+      .mockRejectedValueOnce(new Error('authority unavailable'))
+      .mockResolvedValueOnce({ data: { table }, error: null });
+    mockUseGetSteelReviewQuery.mockReturnValue({
+      data: { table },
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch,
+    });
+    mockUsePrepareSteelReviewMutation.mockReturnValue({ mutateAsync: prepare });
+    mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
+
+    renderDialog();
+    const input = screen.getByRole('textbox', { name: '數量 row-1' });
+    fireEvent.change(input, { target: { value: ' 2 ' } });
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+
+    await waitFor(() => {
+      expect(refetch).toHaveBeenCalledTimes(1);
+      expect(input).toHaveValue(' 2 ');
+      expect(screen.getByText('com_ui_steel_review_unsaved_caption')).toBeInTheDocument();
+      expect(screen.getByRole('alert')).toHaveTextContent('com_ui_steel_review_save_uncertain');
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    await waitFor(() => {
+      expect(commit).toHaveBeenCalledTimes(2);
+      expect(refetch).toHaveBeenCalledTimes(2);
+      expect(input).toHaveValue('2');
+      expect(screen.queryByText('com_ui_steel_review_unsaved_caption')).toBeNull();
+    });
+  });
+
   it('preserves an edit made during commit when the confirmed revision changes the atom owner', async () => {
     const queryClient = new QueryClient();
     const reviewQueryKey = DynamicQueryKeys.steelReview(
