@@ -20,6 +20,7 @@ import {
 import { activeExpirationFilter } from '~/utils/retention';
 import { createConversationModel } from '~/models/convo';
 import { createMessageModel } from '~/models/message';
+import { createFileModel } from '~/models/file';
 
 type Mongoose = typeof import('mongoose');
 
@@ -62,8 +63,14 @@ function renderedMessageText(
   message: Pick<IMessage, 'text' | 'content'>,
   requestedPartIndex?: number,
 ): { selected: string; parts: SteelReviewTextPart[]; selectedPartIndex?: number } | undefined {
-  if (typeof message.text !== 'string' || !Array.isArray(message.content)) {
+  if (typeof message.text !== 'string') {
     return undefined;
+  }
+  // Native Responses messages may persist only the rendered text. There is
+  // no part locator to claim in that shape, but the text itself remains the
+  // trusted message boundary.
+  if (!Array.isArray(message.content)) {
+    return requestedPartIndex === undefined ? { selected: message.text, parts: [] } : undefined;
   }
   const parts = message.content.flatMap((part, partIndex) => {
     if (typeof part !== 'object' || part === null || Array.isArray(part)) {
@@ -94,17 +101,45 @@ function renderedMessageText(
   };
 }
 
-function sourceMappings(state: ISteelConversationOcrState): SteelReviewSourceMapping[] {
+interface AuthorizedFile {
+  fileId: string;
+  filename: string;
+}
+
+function sourceMappings(
+  state: ISteelConversationOcrState,
+  authorizedFiles: ReadonlyMap<string, AuthorizedFile>,
+): SteelReviewSourceMapping[] {
   return (state.sourceMappings ?? []).map((mapping) => ({
     fileId: mapping.fileId,
     sourceCode: mapping.sourceCode,
-    sourceFilename: mapping.sourceFilename,
-  }));
+    sourceFilename: authorizedFiles.get(mapping.fileId)?.filename ?? mapping.sourceFilename,
+  })).filter((mapping) => authorizedFiles.has(mapping.fileId));
+}
+
+function sanitizeRows(
+  rows: ISteelReviewOutput['rows'],
+  authorizedFiles: ReadonlyMap<string, AuthorizedFile>,
+): ISteelReviewOutput['rows'] {
+  return rows.map((row) => {
+    if (!row.source || !authorizedFiles.has(row.source.fileId)) {
+      return { ...row, source: null };
+    }
+    const file = authorizedFiles.get(row.source.fileId);
+    return {
+      ...row,
+      source: {
+        ...row.source,
+        ...(file ? { filename: file.filename } : {}),
+      },
+    };
+  });
 }
 
 function sidecarRecord(
   output: Pick<ISteelReviewOutput, 'userId' | 'tenantId' | 'conversationId' | 'kind' | 'messageId' | 'tableId' | 'outputId' | 'revision' | 'state' | 'headers' | 'rows' | 'latestOutputId'>,
   message?: { selected: string; parts: SteelReviewTextPart[]; selectedPartIndex?: number },
+  authorizedFiles: ReadonlyMap<string, AuthorizedFile> = new Map(),
 ): SteelReviewReadRecord {
   return {
     userId: output.userId,
@@ -117,7 +152,7 @@ function sidecarRecord(
     revision: output.revision,
     state: output.state,
     headers: output.headers,
-    rows: output.rows.map((row) => ({
+    rows: sanitizeRows(output.rows, authorizedFiles).map((row) => ({
       ...row,
       values: row.values instanceof Map ? Object.fromEntries(row.values) : row.values,
     })),
@@ -130,6 +165,51 @@ function sidecarRecord(
         }
       : {}),
   };
+}
+
+interface ReviewAuthority {
+  outputId: string;
+  messageId?: string;
+}
+
+function matchesTenantScope(value: unknown, tenantId?: string): boolean {
+  return tenantId === undefined ? value == null : value === tenantId;
+}
+
+function messageFileIds(files: unknown[] | undefined): string[] {
+  return (files ?? []).flatMap((file) => {
+    if (typeof file !== 'object' || file === null || Array.isArray(file)) {
+      return [];
+    }
+    const fileId = (file as { file_id?: unknown }).file_id;
+    return typeof fileId === 'string' && fileId.length > 0 ? [fileId] : [];
+  });
+}
+
+function selectSidecar(
+  candidates: ISteelReviewOutput[],
+  authority: ReviewAuthority | undefined,
+  requestedMessageId: string,
+): ISteelReviewOutput | undefined {
+  if (authority) {
+    const current = authority.messageId === requestedMessageId
+      ? candidates.filter((candidate) => candidate.outputId === authority.outputId)
+      : [];
+    if (current.length === 1) {
+      return current[0];
+    }
+    // Without a proven different target, an old sidecar must not hide current data.
+    if (authority.messageId === undefined || authority.messageId === requestedMessageId) {
+      return undefined;
+    }
+    // A current output bound to another message cannot certify this sidecar as current.
+    if (candidates.some((candidate) => candidate.outputId === authority.outputId)) {
+      return candidates.length === 1 && candidates[0]?.outputId !== authority.outputId
+        ? candidates[0]
+        : undefined;
+    }
+  }
+  return candidates.length === 1 ? candidates[0] : undefined;
 }
 
 function isPublishedFinalArtifact(
@@ -174,21 +254,59 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
   const QuotationState = createSteelQuotationStateModel(mongoose);
   const QuotationArtifact = createSteelQuotationArtifactModel(mongoose);
   const ReviewOutput = createSteelReviewOutputModel(mongoose);
+  const File = createFileModel(mongoose);
+
+  const readAuthorizedFiles = async (
+    input: SteelReviewReadInput,
+    fileIds: readonly string[],
+    attachedFileIds: readonly string[],
+  ): Promise<Map<string, AuthorizedFile>> => {
+    const uniqueFileIds = [...new Set(fileIds.filter((fileId) => fileId.length > 0))];
+    // File.user is an ObjectId. Invalid legacy/test identities cannot authorize a file.
+    if (uniqueFileIds.length === 0 || !mongoose.Types.ObjectId.isValid(input.userId)) {
+      return new Map();
+    }
+    const files = await File.find({
+      $and: [
+        {
+          file_id: { $in: uniqueFileIds },
+          user: input.userId,
+          $or: [
+            { conversationId: input.conversationId },
+            { conversationId: null, messageId: input.messageId },
+            { file_id: { $in: attachedFileIds } },
+          ],
+        },
+        tenantFilter(input.tenantId),
+        activeExpirationFilter(),
+      ],
+    })
+      .select({ file_id: 1, filename: 1 })
+      .lean<Array<{ file_id: string; filename: string }>>();
+    return new Map(files.map((file) => [file.file_id, {
+      fileId: file.file_id,
+      filename: file.filename,
+    }]));
+  };
 
   return {
     async readSteelReview(input) {
-      const [messageRecord, conversation] = await Promise.all([
+      const [messageRecord, conversation, conversationIdentities] = await Promise.all([
         Message.findOne(messageFilter(input))
-          .select({ messageId: 1, text: 1, content: 1 })
-          .lean<Pick<IMessage, 'messageId' | 'text' | 'content'>>(),
+          .select({ messageId: 1, text: 1, content: 1, files: 1 })
+          .lean<Pick<IMessage, 'messageId' | 'text' | 'content' | 'files'>>(),
         Conversation.findOne({
-          user: input.userId,
-          conversationId: input.conversationId,
-          ...tenantFilter(input.tenantId),
-          ...activeExpirationFilter(),
+          $and: [
+            { user: input.userId, conversationId: input.conversationId },
+            tenantFilter(input.tenantId),
+            activeExpirationFilter(),
+          ],
         })
           .select({ conversationId: 1 })
           .lean(),
+        Conversation.find({ conversationId: input.conversationId })
+          .select({ user: 1, tenantId: 1 })
+          .lean<Array<{ user?: string; tenantId?: string | null }>>(),
       ]);
       if (!messageRecord || !conversation) {
         return null;
@@ -197,51 +315,54 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
       if (!message) {
         return null;
       }
-
-      const selected = await ReviewOutput.findOne({
+      const attachedFileIds = messageFileIds(messageRecord.files);
+      const trustedGlobalConversation = conversationIdentities.length === 1 &&
+        conversationIdentities[0]?.user === input.userId &&
+        matchesTenantScope(conversationIdentities[0]?.tenantId, input.tenantId);
+      const sidecarCandidatesPromise = ReviewOutput.find({
         ...scopeFilter(input),
         kind: input.kind,
         messageId: input.messageId,
         tableId: input.tableId,
       })
-        .sort({ updatedAt: -1 })
-        .lean<ISteelReviewOutput>();
-      if (selected) {
-        let resolvedLatestOutputId: string | undefined;
-        if (input.kind === 'ocr_result') {
-          const latest = await OcrState.findOne({ conversationId: input.conversationId })
-            .select({ currentOcrResultGenerationId: 1 })
-            .lean<Pick<ISteelConversationOcrState, 'currentOcrResultGenerationId'>>();
-          if (latest?.currentOcrResultGenerationId) {
-            resolvedLatestOutputId = `ocr_result:${latest.currentOcrResultGenerationId}`;
-          }
-        } else {
-          const latest = await QuotationState.findOne(scopeFilter(input))
-            .select({ 'currentSystemOrder.runId': 1 })
-            .lean<Pick<ISteelQuotationState, 'currentSystemOrder'>>();
-          if (latest?.currentSystemOrder?.runId) {
-            resolvedLatestOutputId = `system_order:${latest.currentSystemOrder.runId}`;
-          }
-        }
-        const { latestOutputId: _ignoredLatestOutputId, ...selectedWithoutLatest } = selected;
-        return sidecarRecord({
-          ...selectedWithoutLatest,
-          ...(resolvedLatestOutputId ? { latestOutputId: resolvedLatestOutputId } : {}),
-        }, message);
-      }
+        .lean<ISteelReviewOutput[]>();
 
       if (input.kind === 'ocr_result') {
-        const [state, historicalRun] = await Promise.all([
-          OcrState.findOne({ conversationId: input.conversationId })
-            .lean<ISteelConversationOcrState>(),
-          OcrRun.findOne({
-            conversationId: input.conversationId,
-            status: { $in: ['completed', 'superseded'] },
-            'finalizedCandidate.targetMessageId': input.messageId,
-          })
-            .sort({ updatedAt: -1 })
-            .lean<ISteelDelegateOcrRun>(),
+        const [sidecarCandidates, ocrData] = await Promise.all([
+          sidecarCandidatesPromise,
+          trustedGlobalConversation
+            ? Promise.all([
+              OcrState.findOne({ conversationId: input.conversationId })
+                .lean<ISteelConversationOcrState>(),
+              OcrRun.findOne({
+                conversationId: input.conversationId,
+                status: 'completed',
+                'finalizedCandidate.targetMessageId': input.messageId,
+              })
+                .sort({ updatedAt: -1 })
+                .lean<ISteelDelegateOcrRun>(),
+            ])
+            : Promise.resolve([undefined, undefined] as const),
         ]);
+        const [state, historicalRun] = ocrData;
+        const authority = state?.currentOcrResultGenerationId
+          ? {
+              outputId: `ocr_result:${state.currentOcrResultGenerationId}`,
+              messageId: state.currentOcrResultMessageId,
+            }
+          : undefined;
+        const selected = selectSidecar(sidecarCandidates, authority, input.messageId);
+        const authorizedFiles = await readAuthorizedFiles(input, [
+          ...(state?.sourceMappings ?? []).map((mapping) => mapping.fileId),
+          ...(selected?.rows ?? []).flatMap((row) => row.source?.fileId ? [row.source.fileId] : []),
+        ], attachedFileIds);
+        if (selected) {
+          const { latestOutputId: _ignoredLatestOutputId, ...selectedWithoutLatest } = selected;
+          return sidecarRecord({
+            ...selectedWithoutLatest,
+            ...(authority ? { latestOutputId: authority.outputId } : {}),
+          }, message, authorizedFiles);
+        }
 
         if (
           state?.currentOcrResultMessageId === input.messageId &&
@@ -259,7 +380,7 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
             revision: state.currentOcrResultGenerationId,
             state: 'current',
             markdown: state.currentOcrResultMarkdown,
-            sourceMappings: sourceMappings(state),
+            sourceMappings: sourceMappings(state, authorizedFiles),
             latestOutputId: `ocr_result:${state.currentOcrResultGenerationId}`,
             messageText: message.selected,
             messageTextParts: message.parts,
@@ -294,8 +415,28 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
         return null;
       }
 
-      const quotation = await QuotationState.findOne(scopeFilter(input))
-        .lean<ISteelQuotationState>();
+      const [sidecarCandidates, quotation] = await Promise.all([
+        sidecarCandidatesPromise,
+        QuotationState.findOne(scopeFilter(input)).lean<ISteelQuotationState>(),
+      ]);
+      const authority = quotation?.currentSystemOrder?.runId
+        ? {
+            outputId: `system_order:${quotation.currentSystemOrder.runId}`,
+            messageId: quotation.currentSystemOrder.messageId,
+          }
+        : undefined;
+      const selected = selectSidecar(sidecarCandidates, authority, input.messageId);
+      const authorizedFiles = await readAuthorizedFiles(input, [
+        ...(selected?.rows ?? []).flatMap((row) => row.source?.fileId ? [row.source.fileId] : []),
+      ], attachedFileIds);
+      if (selected) {
+        const { latestOutputId: _ignoredLatestOutputId, ...selectedWithoutLatest } = selected;
+        return sidecarRecord({
+          ...selectedWithoutLatest,
+          ...(authority ? { latestOutputId: authority.outputId } : {}),
+        }, message, authorizedFiles);
+      }
+
       if (
         quotation?.currentSystemOrder?.messageId === input.messageId &&
         quotation.currentSystemOrder.markdown

@@ -114,6 +114,39 @@ describe('Steel review read service', () => {
     });
   });
 
+  it('does not carry managed authority across another heading level', async () => {
+    const unrelated = [
+      '### ocr_result',
+      '',
+      '| 來源 | 零件編號 |',
+      '| --- | --- |',
+      '| attacker | P-2 |',
+    ].join('\n');
+    const reader = {
+      readSteelReview: jest.fn().mockResolvedValue({
+        userId: 'user-1',
+        conversationId: 'conversation-1',
+        kind: 'ocr_result' as const,
+        messageId: 'message-1',
+        tableId: 'ocr_result:2',
+        outputId: 'ocr_result:generation-1',
+        revision: 'generation-1',
+        state: 'current' as const,
+        markdown: managedMarkdown,
+        messageText: `${managedMarkdown}\n\n${unrelated}`,
+      }),
+    };
+    const service = createSteelReviewService({ reader });
+
+    await expect(service.read({
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result',
+      messageId: 'message-1',
+      tableId: 'ocr_result:2',
+    })).rejects.toMatchObject({ code: 'REVIEW_NOT_FOUND', statusCode: 404 });
+  });
+
   it('requires a sidecar to match one actual managed table in the owned message', async () => {
     const reader = {
       readSteelReview: jest.fn().mockResolvedValue({

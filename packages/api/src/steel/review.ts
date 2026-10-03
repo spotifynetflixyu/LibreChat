@@ -53,6 +53,10 @@ function headingTitle(line: string): string | undefined {
   return match?.[1]?.replace(/[ \t]+#+[ \t]*$/u, '').trim();
 }
 
+function isHeading(line: string): boolean {
+  return /^ {0,3}#{1,6}(?:[ \t]+|$)/u.test(line);
+}
+
 function getFence(line: string): MarkdownFence | undefined {
   const marker = line.match(/^ {0,3}(`{3,}|~{3,})/u)?.[1];
   return marker ? { marker: marker[0] as '`' | '~', length: marker.length } : undefined;
@@ -110,8 +114,10 @@ function collectTables(markdown: string): ReviewTableCandidate[] {
       continue;
     }
     const nextTitle = headingTitle(line);
-    if (nextTitle !== undefined) {
+    if (isHeading(line)) {
       flush();
+      // A managed H2 section ends at every heading level. Do not carry its
+      // authority into an ordinary table below an H1/H3/other section.
       title = nextTitle;
       continue;
     }
