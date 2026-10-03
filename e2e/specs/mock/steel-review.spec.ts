@@ -925,12 +925,39 @@ test.describe('Steel managed source review', () => {
       return { operation, saved: await commit.json() };
     }
     const first = await save('7');
+    const receiptQuery = new URLSearchParams({ messageId, tableId: first.operation.tableId,
+      outputId: first.operation.outputId, operationId: first.operation.operationId, digest: first.operation.digest });
+    const receiptUrl = `${url}/receipt?${receiptQuery}`;
+    const firstState = await persistedSnapshot(conversationId);
+    const committedReceipt = await page.request.get(receiptUrl, { headers });
+    expect(committedReceipt.status()).toBe(200);
+    const receipt = await committedReceipt.json();
+    expect(receipt).toMatchObject({ status: 'committed', snapshot: {
+      operationId: first.operation.operationId, revision: first.saved.revision,
+      effectiveMarkdown: first.saved.effectiveMarkdown, messageSha256: first.saved.messageSha256,
+    } });
+    expect(await persistedSnapshot(conversationId)).toEqual(firstState);
+    const wrongDigest = new URLSearchParams(receiptQuery);
+    wrongDigest.set('digest', '0'.repeat(64));
+    const conflictReceipt = await page.request.get(`${url}/receipt?${wrongDigest}`, { headers });
+    expect(conflictReceipt.status()).toBe(409);
+    expect(await persistedSnapshot(conversationId)).toEqual(firstState);
+    const missingOperation = new URLSearchParams(receiptQuery);
+    missingOperation.set('operationId', randomUUID());
+    const absentReceipt = await page.request.get(`${url}/receipt?${missingOperation}`, { headers });
+    expect(absentReceipt.status()).toBe(200);
+    expect(await absentReceipt.json()).toEqual({ status: 'absent' });
+    expect(await persistedSnapshot(conversationId)).toEqual(firstState);
     const second = await save('8');
     expect(second.saved.revision).not.toBe(first.saved.revision);
     const afterSecond = await persistedSnapshot(conversationId);
     const retry = await page.request.post(`${url}/commit`, { headers, data: first.operation });
     expect(retry.status()).toBe(200);
     expect(await retry.json()).toEqual(first.saved);
+    expect(await persistedSnapshot(conversationId)).toEqual(afterSecond);
+    const historicalReceipt = await page.request.get(receiptUrl, { headers });
+    expect(historicalReceipt.status()).toBe(200);
+    expect(await historicalReceipt.json()).toEqual(receipt);
     expect(await persistedSnapshot(conversationId)).toEqual(afterSecond);
   });
 
