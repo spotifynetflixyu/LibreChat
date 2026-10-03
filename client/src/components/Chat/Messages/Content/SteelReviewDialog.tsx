@@ -78,6 +78,7 @@ export interface SteelReviewDownloadAuthority {
 }
 
 export interface SteelReviewSaveGate {
+  isOpen: boolean;
   ensureSaved: (authority?: SteelReviewDownloadAuthority) => Promise<boolean>;
   getMatrix: () => TableMatrix;
 }
@@ -361,7 +362,8 @@ export default function SteelReviewDialog({
         const ownerDraft = current.ownerKey === draftStateKey
           ? current
           : createSteelReviewDraftState(draftStateKey);
-        const next = setSteelReviewDraftCell(ownerDraft, row, header, value);
+        const baseRow = table.rows.find((candidate) => candidate.rowId === row.rowId) ?? row;
+        const next = setSteelReviewDraftCell(ownerDraft, baseRow, header, value);
         if (pendingSnapshotRef.current) {
           exportRowsRef.current = applySteelReviewDrafts(exportBaseRowsRef.current, next);
         }
@@ -374,15 +376,16 @@ export default function SteelReviewDialog({
   latestDraftStateRef.current = draftState;
   const latestTableRef = useRef(table);
   latestTableRef.current = table;
-  const reviewQueryDataRef = useRef(query.data);
-  reviewQueryDataRef.current = query.data;
   const reviewQueryErrorRef = useRef(query.error);
   reviewQueryErrorRef.current = query.error;
   const reviewQueryRefetchRef = useRef(query.refetch);
   reviewQueryRefetchRef.current = query.refetch;
   const refetchCurrentReview = useCallback(async () => {
     if (typeof reviewQueryRefetchRef.current !== 'function') {
-      return { data: reviewQueryDataRef.current, error: reviewQueryErrorRef.current };
+      return {
+        data: undefined,
+        error: reviewQueryErrorRef.current ?? new Error('Review authority refetch unavailable'),
+      };
     }
     return reviewQueryRefetchRef.current();
   }, []);
@@ -535,11 +538,11 @@ export default function SteelReviewDialog({
     if (!saveGateRef) {
       return undefined;
     }
-    saveGateRef.current = { ensureSaved, getMatrix: getExportMatrix };
+    saveGateRef.current = { isOpen, ensureSaved, getMatrix: getExportMatrix };
     return () => {
       saveGateRef.current = undefined;
     };
-  }, [ensureSaved, getExportMatrix, saveGateRef]);
+  }, [ensureSaved, getExportMatrix, isOpen, saveGateRef]);
   const clearDraftAndClose = useCallback(() => {
     setDraftState(createSteelReviewDraftState(draftStateKey));
     latestDraftStateRef.current = createSteelReviewDraftState(draftStateKey);
