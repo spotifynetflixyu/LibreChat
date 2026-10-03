@@ -13,6 +13,7 @@ import {
   createSteelReviewWriteMethods,
   type SteelReviewCommitInput,
 } from './steelReview';
+import { createFileModel } from '~/models/file';
 import { createModels } from '~/models';
 
 let mongoServer: MongoMemoryReplSet;
@@ -36,6 +37,7 @@ const makeInput = ({
   nextValue,
   changedRows = 1,
   sourceValue = 'A',
+  userId = 'user-1',
   conversationId = 'conversation-1',
   messageId = 'assistant-1',
 }: {
@@ -45,6 +47,7 @@ const makeInput = ({
   nextValue: string;
   changedRows?: number;
   sourceValue?: string;
+  userId?: string;
   conversationId?: string;
   messageId?: string;
 }): SteelReviewCommitInput => {
@@ -64,7 +67,7 @@ const makeInput = ({
     source: null,
   }];
   const base: Omit<SteelReviewCommitInput, 'digest'> = {
-    userId: 'user-1',
+    userId,
     tenantId: 'tenant-1',
     conversationId,
     kind: 'ocr_result',
@@ -710,12 +713,14 @@ describe('Steel review write methods', () => {
     const models = createModels(mongoose);
     const State = createSteelConversationOcrStateModel(mongoose);
     const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const File = createFileModel(mongoose);
+    const userId = new mongoose.Types.ObjectId().toString();
     const conversationId = 'source-metadata-conversation';
     const messageId = 'source-metadata-message';
     const originalMarkdown = markdownFor('P-1');
     await models.Conversation.create({
       conversationId,
-      user: 'user-1',
+      user: userId,
       tenantId: 'tenant-1',
       title: 'Source metadata',
       endpoint: 'openAI',
@@ -723,7 +728,7 @@ describe('Steel review write methods', () => {
     await models.Message.create({
       messageId,
       conversationId,
-      user: 'user-1',
+      user: userId,
       tenantId: 'tenant-1',
       isCreatedByUser: false,
       text: originalMarkdown,
@@ -734,8 +739,22 @@ describe('Steel review write methods', () => {
       currentOcrResultMessageId: messageId,
       currentOcrResultGenerationId: 'generation-1',
     });
+    await File.create({
+      user: userId,
+      tenantId: 'tenant-1',
+      conversationId,
+      file_id: 'source-metadata-file',
+      bytes: 12,
+      filename: 'drawing.pdf',
+      filepath: '/uploads/drawing.pdf',
+      object: 'file',
+      type: 'application/pdf',
+      source: 'local',
+      usage: 0,
+    });
     const writer = createSteelReviewWriteMethods(mongoose);
     await writer.commitSteelReview(makeInput({
+      userId,
       operationId: 'source-metadata-bootstrap',
       revision: 'generation-1',
       previousValue: 'P-1',
@@ -744,7 +763,7 @@ describe('Steel review write methods', () => {
       messageId,
     }));
     const source = {
-      fileId: 'file-1',
+      fileId: 'source-metadata-file',
       pageNumber: 1,
       filename: 'drawing.pdf',
       mediaType: 'application/pdf',
@@ -761,8 +780,9 @@ describe('Steel review write methods', () => {
     };
 
     await expect(writer.commitSteelReview(makeInput({
+      userId,
       operationId: 'source-metadata-forged',
-      revision: 'generation-1',
+      revision: before.output!.revision,
       previousValue: 'P-7',
       nextValue: 'P-8',
       conversationId,
@@ -774,6 +794,175 @@ describe('Steel review write methods', () => {
       message: await models.Message.findOne({ messageId }).lean(),
       state: await State.findOne({ conversationId }).lean(),
     }).toEqual(before);
+  });
+
+  it('allows a business save when an existing source file is no longer available', async () => {
+    const models = createModels(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const File = createFileModel(mongoose);
+    const userId = new mongoose.Types.ObjectId().toString();
+    const conversationId = 'unavailable-source-conversation';
+    const messageId = 'unavailable-source-message';
+    const originalMarkdown = markdownFor('P-1');
+    await models.Conversation.create({
+      conversationId,
+      user: userId,
+      tenantId: 'tenant-1',
+      title: 'Unavailable source',
+      endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId,
+      conversationId,
+      user: userId,
+      tenantId: 'tenant-1',
+      isCreatedByUser: false,
+      text: originalMarkdown,
+    });
+    await State.create({
+      conversationId,
+      currentOcrResultMarkdown: originalMarkdown,
+      currentOcrResultMessageId: messageId,
+      currentOcrResultGenerationId: 'generation-1',
+    });
+    await File.create({
+      user: userId,
+      tenantId: 'tenant-1',
+      conversationId,
+      file_id: 'unavailable-source-file',
+      bytes: 12,
+      filename: 'drawing.pdf',
+      filepath: '/uploads/drawing.pdf',
+      object: 'file',
+      type: 'application/pdf',
+      source: 'local',
+      usage: 0,
+    });
+    const writer = createSteelReviewWriteMethods(mongoose);
+    await writer.commitSteelReview(makeInput({
+      userId,
+      operationId: 'unavailable-source-bootstrap',
+      revision: 'generation-1',
+      previousValue: 'P-1',
+      nextValue: 'P-7',
+      conversationId,
+      messageId,
+    }));
+    const output = await ReviewOutput.findOne({ conversationId }).lean();
+    expect(output).not.toBeNull();
+    const source = {
+      fileId: 'unavailable-source-file',
+      pageNumber: 1,
+      filename: 'drawing.pdf',
+      mediaType: 'application/pdf',
+    };
+    await ReviewOutput.updateOne({ _id: output!._id }, {
+      $set: { rows: output!.rows.map((row) => ({ ...row, source })) },
+    });
+    const beforeOutput = await ReviewOutput.findOne({ conversationId }).lean();
+    const beforeState = await State.findOne({ conversationId }).lean();
+    await File.updateOne({ file_id: 'unavailable-source-file' }, {
+      $set: { expiredAt: new Date(Date.now() - 60_000) },
+    });
+    const noOpBefore = {
+      output: await ReviewOutput.findOne({ conversationId }).lean(),
+      message: await models.Message.findOne({ messageId }).lean(),
+      state: await State.findOne({ conversationId }).lean(),
+    };
+    await expect(writer.commitSteelReview(makeInput({
+      userId,
+      operationId: 'unavailable-source-noop',
+      revision: beforeOutput!.revision,
+      previousValue: 'P-7',
+      nextValue: 'P-7',
+      changedRows: 0,
+      conversationId,
+      messageId,
+    }))).resolves.toMatchObject({ changedRows: 0 });
+    expect({
+      output: await ReviewOutput.findOne({ conversationId }).lean(),
+      message: await models.Message.findOne({ messageId }).lean(),
+      state: await State.findOne({ conversationId }).lean(),
+    }).toEqual(noOpBefore);
+
+    await expect(writer.commitSteelReview(makeInput({
+      userId,
+      operationId: 'unavailable-source-business-save',
+      revision: beforeOutput!.revision,
+      previousValue: 'P-7',
+      nextValue: 'P-8',
+      conversationId,
+      messageId,
+    }))).resolves.toMatchObject({ changedRows: 1 });
+
+    const afterOutput = await ReviewOutput.findOne({ conversationId }).lean();
+    const afterState = await State.findOne({ conversationId }).lean();
+    expect(withoutReviewLockToken(afterState!)).toEqual(withoutReviewLockToken(beforeState!));
+    expect(afterOutput?.rows[0]?.source).toBeNull();
+    expect(afterOutput?.rows[0]?.values.來源).toEqual({ baseline: 'A', effective: 'A' });
+    expect(afterOutput?.aiRawMarkdown).toBe(beforeOutput?.aiRawMarkdown);
+    expect(afterOutput?.aiBaselineMarkdown).toBe(beforeOutput?.aiBaselineMarkdown);
+    expect(afterOutput?.receipts?.[0]).toEqual(beforeOutput?.receipts?.[0]);
+
+    const reattachSource = async () => {
+      const current = await ReviewOutput.findOne({ conversationId }).lean();
+      await ReviewOutput.updateOne({ _id: current!._id }, {
+        $set: { rows: current!.rows.map((row) => ({ ...row, source })) },
+      });
+    };
+    const saveUnavailable = async (operationId: string, previousValue: string, nextValue: string) => {
+      const current = await ReviewOutput.findOne({ conversationId }).lean();
+      return writer.commitSteelReview(makeInput({
+        userId,
+        operationId,
+        revision: current!.revision,
+        previousValue,
+        nextValue,
+        conversationId,
+        messageId,
+      }));
+    };
+
+    await reattachSource();
+    await File.deleteMany({ file_id: 'unavailable-source-file' });
+    const deletedBefore = await ReviewOutput.findOne({ conversationId }).lean();
+    await expect(saveUnavailable('unavailable-source-deleted', 'P-8', 'P-9')).resolves.toMatchObject({ changedRows: 1 });
+    const deletedAfter = await ReviewOutput.findOne({ conversationId }).lean();
+    expect(deletedAfter?.rows[0]?.source).toBeNull();
+    expect(deletedAfter?.receipts?.[0]).toEqual(deletedBefore?.receipts?.[0]);
+
+    await reattachSource();
+    await File.create([{
+      user: userId,
+      tenantId: 'tenant-1',
+      conversationId,
+      file_id: 'unavailable-source-file',
+      bytes: 12,
+      filename: 'drawing-a.pdf',
+      filepath: '/uploads/drawing-a.pdf',
+      object: 'file',
+      type: 'application/pdf',
+      source: 'local',
+      usage: 0,
+    }, {
+      user: userId,
+      tenantId: 'tenant-1',
+      conversationId,
+      file_id: 'unavailable-source-file',
+      bytes: 12,
+      filename: 'drawing-b.pdf',
+      filepath: '/uploads/drawing-b.pdf',
+      object: 'file',
+      type: 'application/pdf',
+      source: 'local',
+      usage: 0,
+    }]);
+    const ambiguousBefore = await ReviewOutput.findOne({ conversationId }).lean();
+    await expect(saveUnavailable('unavailable-source-ambiguous', 'P-9', 'P-10')).resolves.toMatchObject({ changedRows: 1 });
+    const ambiguousAfter = await ReviewOutput.findOne({ conversationId }).lean();
+    expect(ambiguousAfter?.rows[0]?.source).toBeNull();
+    expect(ambiguousAfter?.receipts?.[0]).toEqual(ambiguousBefore?.receipts?.[0]);
   });
 
   it('rolls back sidecar, message metadata, receipt, and quotation stale state on a mid-transaction failure', async () => {
