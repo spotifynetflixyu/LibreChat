@@ -824,6 +824,27 @@ test.describe('Steel managed source review', () => {
     expect(await persistedSnapshot(conversationId)).toEqual(snapshot);
   });
 
+  test('source and page cells cannot bypass the dedicated source association contract', async ({ page }) => {
+    for (const [header, value] of [['來源', 'FORGED-SOURCE'], ['頁碼', '99']]) {
+      const { conversationId, messageId } = await seedCurrent(ocr);
+      conversations.push(conversationId);
+      const before = await persistedSnapshot(conversationId);
+      const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+      expect(read.status()).toBe(200);
+      const { table } = await read.json() as { table: SteelReviewTable };
+      const rows = structuredClone(table.rows);
+      rows[0].values[header].effective = value;
+      const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+      const prepare = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+      if (prepare.status() === 200) {
+        const commit = await page.request.post(`${url}/commit`, { headers, data: await prepare.json() });
+        expect([400, 409]).toContain(commit.status());
+      }
+      expect([400, 409]).toContain(prepare.status());
+      expect(await persistedSnapshot(conversationId)).toEqual(before);
+    }
+  });
+
   test('the backend saves only its exact message target and rejects a second stale prepared operation', async ({ page }) => {
     const markdown = `CAS-PREFIX\n\n${ocr}\n\n## Other data\n| Name | Value |\n| --- | --- |\n| KEEP | 42 |\n\nCAS-SUFFIX`;
     const { conversationId, messageId } = await seedCurrent(markdown);
