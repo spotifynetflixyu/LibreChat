@@ -112,6 +112,9 @@ jest.mock('../Parts', () => ({
 jest.mock('../MemoryArtifacts', () => ({
   __esModule: true,
   default: () => <div data-testid="memory-artifacts" />,
+  hasMemoryArtifacts:
+    jest.requireActual<typeof import('../MemoryArtifacts')>('../MemoryArtifacts')
+      .hasMemoryArtifacts,
 }));
 
 jest.mock('../WebSearch', () => ({
@@ -1174,12 +1177,9 @@ describe('ContentParts — synthesized activity folds', () => {
     expect(foldHeader()).toHaveAttribute('aria-expanded', 'true');
   });
 
-  it('lets the live header stand in for the cursor when a placeholder trails the fold', () => {
-    /** Providers append an empty TEXT slot after visible output. The run's
-     *  tail is inside the card's span, and that trailing slot looks like the
-     *  initial waiting state from inside its own segment. The live header's
-     *  shimmer is the liveness signal: a cursor row under it would be a second
-     *  row, and the segment's `EmptyText` a third. */
+  it('keeps one bottom indicator when a placeholder trails the live fold', () => {
+    /** A trailing provider placeholder must not add another cursor inside
+     *  the activity card; the shared response indicator owns that signal. */
     const { container } = renderContentParts({
       ...baseProps,
       isSubmitting: true,
@@ -1187,7 +1187,10 @@ describe('ContentParts — synthesized activity folds', () => {
     });
 
     expect(container.querySelectorAll('.result-thinking')).toHaveLength(0);
-    expect(screen.queryAllByTestId('empty-text')).toHaveLength(0);
+    expect(screen.queryAllByTestId('empty-text')).toHaveLength(1);
+    expect(screen.getByRole('status', { name: 'com_ui_generating' })).toContainElement(
+      screen.getByTestId('empty-text'),
+    );
     expect(screen.getByTestId('activity-phase-card').querySelector('.shimmer')).not.toBeNull();
   });
 
@@ -1364,6 +1367,35 @@ describe('ContentParts integration: lane groups backed by one agent', () => {
       .map((header) => header.getAttribute('data-agent-id'));
     expect(agentIds).toContain('agent_a');
     expect(agentIds).toContain('agent_b____1');
+  });
+
+  it('keeps all activities ahead of prose across mixed parallel phase segments', () => {
+    const content: TMessageContentParts[] = [
+      makeTextPart('Leading prose'),
+      inLane(makeOwnedToolCall('lookup_a', 'a'), 'agent_a'),
+      inLane(makeTextPart('Primary result'), 'agent_a'),
+      inLane(makeOwnedToolCall('lookup_b', 'b'), 'agent_b____1'),
+      inLane(makeTextPart('Added result'), 'agent_b____1'),
+      makeOwnedToolCall('lookup_tail', 'tail'),
+      {
+        type: ContentTypes.ACTIVITY_LABEL,
+        activity_label: 'Finished tail lookup',
+        activity_label_type: 'phase',
+        activity_start_index: 5,
+        activity_end_index: 6,
+        activity_count: 1,
+        pending: false,
+      },
+    ];
+    renderContentParts({ ...baseProps, content });
+    const leading = screen.getByText('Leading prose');
+    const tail = screen.getByRole('button', { name: 'Finished tail lookup' });
+    expect(tail.compareDocumentPosition(leading) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const transcript = document.body.textContent ?? '';
+    expect(transcript.indexOf('lookup_a')).toBeLessThan(transcript.indexOf('Leading prose'));
+    expect(transcript.indexOf('lookup_b')).toBeLessThan(transcript.indexOf('Leading prose'));
+    expect(transcript.indexOf('Leading prose')).toBeLessThan(transcript.indexOf('Primary result'));
+    expect(transcript.indexOf('Primary result')).toBeLessThan(transcript.indexOf('Added result'));
   });
 
   it('keeps content that runs between two lane groups in transcript order', () => {

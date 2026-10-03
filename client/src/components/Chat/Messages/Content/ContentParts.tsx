@@ -11,6 +11,7 @@ import type { ReactNode, ReactElement } from 'react';
 import type { ReasoningDisclosures, ToolDisclosures } from './disclosure';
 import type { ToolCallGroupExpansionState } from './ToolCallGroup';
 import type { ActivityPhaseSegment } from '~/utils/activityLabels';
+import type { ContentBand } from './ordering';
 import {
   mapAttachments,
   getPartKeyIndex,
@@ -37,6 +38,8 @@ import { MediaContext, MessageContext, SearchContext } from '~/Providers';
 import MemoryArtifacts, { hasMemoryArtifacts } from './MemoryArtifacts';
 import SteelActivity, { useSteelActivityEvents } from './SteelActivity';
 import { hasParallelLanes, parallelLaneGroups } from '~/utils/lanes';
+import { activitiesFirst, isActivityPart } from './ordering';
+import { CursorVisibilityContext } from './Parts/EmptyText';
 import { splitMarkdownIntoBlocks } from './splitMarkdown';
 import PendingSkillCall from './Parts/PendingSkillCall';
 import ActivityPhaseGroup from './ActivityPhaseGroup';
@@ -47,6 +50,7 @@ import ApprovalProvider from './ApprovalContext';
 import Sources from '~/components/Web/Sources';
 import ToolCallGroup from './ToolCallGroup';
 import { blocksLiveFold } from './live';
+import { useLocalize } from '~/hooks';
 import Container from './Container';
 import Part from './Part';
 
@@ -253,7 +257,14 @@ const PartWithContext = memo(function PartWithContext({
   );
 });
 
+type RenderedBlock = { activity: boolean; nodes: ReactElement[] };
+
+const activityBlock = (...nodes: ReactElement[]): RenderedBlock[] => [{ activity: true, nodes }];
+
 type ContentPartsProps = {
+  /** Undefined uses this surface's cursor; null explicitly suppresses it. */
+  responseIndicator?: ReactNode;
+  contentBand?: ContentBand;
   content: Array<TMessageContentParts | undefined> | undefined;
   messageId: string;
   /**
@@ -342,6 +353,8 @@ type ContentPartsProps = {
  * For multi-agent parallel execution, it uses ParallelContentRenderer to show columns.
  */
 const ContentPartsBody = memo(function ContentPartsBody({
+  responseIndicator,
+  contentBand,
   edit,
   isLast,
   content,
@@ -762,8 +775,8 @@ const ContentPartsBody = memo(function ContentPartsBody({
     ],
   );
 
-  /** `postSteerAuthors` marks each part that resumes the response after a
-   *  steer block — where attribution is re-rendered. The value is the ACTIVE
+  /** `postSteerAuthors` marks the first body part after a steer block, keeping
+   *  attribution beside resumed prose when activities move above it. The value is the ACTIVE
    *  agent id when a preceding AGENT_UPDATE handed the run off (the resumed
    *  content belongs to that agent, not the message-level author), undefined
    *  for the top-level `authorHeader`. Read BEFORE applying the current
@@ -782,13 +795,19 @@ const ContentPartsBody = memo(function ContentPartsBody({
         return;
       }
       const idx = absoluteIndexAt(localIdx);
-      if (prevType === ContentTypes.STEER && part.type !== ContentTypes.STEER) {
+      if (
+        prevType === ContentTypes.STEER &&
+        part.type !== ContentTypes.STEER &&
+        !isActivityPart(part)
+      ) {
         authors.set(idx, activeAgentId);
       }
       if (part.type === ContentTypes.AGENT_UPDATE) {
         activeAgentId = part[ContentTypes.AGENT_UPDATE]?.agentId || undefined;
       }
-      prevType = part.type;
+      if (prevType !== ContentTypes.STEER || !isActivityPart(part)) {
+        prevType = part.type;
+      }
       parts.push({ part, idx });
     });
     return { sequentialParts: parts, detectedResumeAuthors: authors };
@@ -865,7 +884,12 @@ const ContentPartsBody = memo(function ContentPartsBody({
 
   // Early return: no content to render AND no pending skill cards
   if (!displayContent && !hasPendingSkills && workspaceChanges.length === 0) {
-    return renderSteelActivity();
+    return (
+      <>
+        {responseIndicator}
+        {renderSteelActivity()}
+      </>
+    );
   }
 
   // Interim skill cards are a mid-stream concern, not relevant in edit mode.
@@ -897,17 +921,18 @@ const ContentPartsBody = memo(function ContentPartsBody({
    *  flows share the gated header-axis nudge. Never solitary mid-stream, so
    *  empty TEXT after real parts keeps its flush in-flow cursor. */
   const solitaryEmptyText = safeContent.length === 1 && isEmptyTextPart(safeContent[0]);
-  const showEmptyCursor =
-    (safeContent.length === 0 || solitaryEmptyText) &&
-    effectiveIsSubmitting &&
-    !cursorOwnedElsewhere;
+  const hasOnlyPlaceholder = safeContent.length === 0 || solitaryEmptyText;
+  const showEmptyCursor = hasOnlyPlaceholder && effectiveIsSubmitting && !cursorOwnedElsewhere;
   /** Skips trailing blank label reservations and empty provider placeholders,
    * keeping the cursor attached to the last visible output. */
   const relativeLastContentIdx = lastCursorContentIdx(safeContent);
   const lastContentIdx = relativeLastContentIdx < 0 ? -1 : absoluteIndexAt(relativeLastContentIdx);
 
-  const renderGroups = (groups: ReturnType<typeof groupParts>, lastContentIdx: number) =>
-    groups.flatMap((group) => {
+  const renderGroupBlocks = (
+    groups: ReturnType<typeof groupParts>,
+    lastContentIdx: number,
+  ): RenderedBlock[] =>
+    groups.map((group) => {
       const first = group.type === 'single' ? group.part : group.parts[0];
       const firstIdx = first?.idx ?? -1;
       const nodes: ReactElement[] = [];
@@ -921,7 +946,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
       if (group.type === 'single') {
         const { part, idx } = group.part;
         nodes.push(renderPart(part, idx, idx === lastContentIdx));
-        return nodes;
+        return { activity: isActivityPart(part), nodes };
       }
       const { groupId } = group;
       nodes.push(
@@ -951,8 +976,16 @@ const ContentPartsBody = memo(function ContentPartsBody({
           parentPhaseOwnsFailurePill={parentPhaseOwnsFailurePill}
         />,
       );
-      return nodes;
+      return { activity: true, nodes };
     });
+
+  const renderBlocks = (blocks: RenderedBlock[]) =>
+    (isCreatedByUser ? blocks : activitiesFirst(blocks, (block) => block.activity)).flatMap(
+      (block) =>
+        contentBand == null || block.activity === (contentBand === 'activity') ? block.nodes : [],
+    );
+  const renderGroups = (groups: ReturnType<typeof groupParts>, cursorIndex: number) =>
+    renderBlocks(renderGroupBlocks(groups, cursorIndex));
 
   /** Legacy parallel responses may carry a group id without agent metadata.
    *  Keep those grouped columns visible while the lane registry still uses
@@ -960,7 +993,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
   const hasParallelContent =
     hasParallelLanes(content, messageLaneGroups) ||
     content?.some((part) => part?.groupId != null && part?.agentId == null) === true;
-  let phaseContent: ReactElement[] | undefined;
+  let phaseContent: RenderedBlock[] | undefined;
   if (phaseSegments != null) {
     /** Segment keys anchor to their first defined part's stable index, never
      *  to the segment's ordinal: hole-only slots form phantom segments while
@@ -1043,6 +1076,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
       segmentStartIndex: number,
       segmentIndices: ReadonlyArray<number>,
       key: string,
+      band?: ContentBand,
       withinPhase = false,
       ownsCursor = false,
       hoisted = false,
@@ -1052,6 +1086,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
       return (
         <ContentPartsBody
           key={key}
+          contentBand={band}
           content={segmentContent}
           messageId={messageId}
           createdAt={createdAt}
@@ -1080,18 +1115,25 @@ const ContentPartsBody = memo(function ContentPartsBody({
           toolGroupExpansionState={expansionState}
           toolGroupOccurrenceByIndex={resolvedToolGroupOccurrences}
           toolCallStepOwnersById={resolvedToolCallStepOwners}
+          markdownTableBaseIndexByPart={markdownTableBaseIndexByPart}
         />
       );
     };
     phaseContent = phaseSegments.flatMap((segment) => {
       if (segment.type !== 'phase') {
         if (hasParallelContent) {
-          return renderSegment(
-            segment.content,
-            absoluteIndexAt(segment.startIndex),
-            segment.contentIndices.map(absoluteIndexAt),
-            `phase-adjacent-${segmentKeyIndex(segment)}`,
-          );
+          return (['activity', 'body'] as const).map((band) => ({
+            activity: band === 'activity',
+            nodes: [
+              renderSegment(
+                segment.content,
+                absoluteIndexAt(segment.startIndex),
+                segment.contentIndices.map(absoluteIndexAt),
+                `phase-adjacent-${segmentKeyIndex(segment)}-${band}`,
+                band,
+              ),
+            ],
+          }));
         }
         /** Unclaimed prose keeps its original parent and part key. A
          * nested body here would remount it whenever a fold appears or
@@ -1102,7 +1144,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
             parts.push({ part, idx: absoluteIndexAt(segment.contentIndices[position]) });
           }
         });
-        return renderGroups(groupParts(parts), lastContentIdx);
+        return renderGroupBlocks(groupParts(parts), lastContentIdx);
       }
       const synthesized = segment.synthesized === true;
       const live = segment.live === true;
@@ -1170,19 +1212,22 @@ const ContentPartsBody = memo(function ContentPartsBody({
         ? keepsThinkingOpen || segment.content.some(blocksLiveFold)
         : hasPendingApproval;
       if (synthesized && awaitsReader) {
-        return renderSegment(
-          segment.content,
-          absoluteIndexAt(segment.startIndex),
-          segmentIndices,
-          `phase-awaiting-${cardKey}`,
-          false,
-          false,
-          false,
-          true,
-          live,
+        return activityBlock(
+          renderSegment(
+            segment.content,
+            absoluteIndexAt(segment.startIndex),
+            segmentIndices,
+            `phase-awaiting-${cardKey}`,
+            undefined,
+            false,
+            false,
+            false,
+            true,
+            live,
+          ),
         );
       }
-      return (
+      return activityBlock(
         <ActivityPhaseGroup
           key={`activity-phase-${cardKey}`}
           labelPart={segment.labelPart}
@@ -1237,6 +1282,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
             absoluteIndexAt(segment.startIndex),
             segmentIndices,
             `phase-content-${cardKey}`,
+            undefined,
             /** Opening a live row should show the calls running, so its
              *  groups keep their own live expansion rather than the
              *  settled-phase default of staying shut. */
@@ -1246,7 +1292,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
             true,
             live,
           )}
-        </ActivityPhaseGroup>
+        </ActivityPhaseGroup>,
       );
     });
   }
@@ -1258,6 +1304,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
       <>
         {renderPendingSkills()}
         <ParallelContentRenderer
+          contentBand={contentBand}
           content={displayContent}
           messageId={messageId}
           createdAt={createdAt}
@@ -1273,8 +1320,9 @@ const ContentPartsBody = memo(function ContentPartsBody({
           contentIndices={contentIndices}
           laneGroups={messageLaneGroups}
         />
-        {!nestedActivityPhase && renderSteelActivity()}
         {!nestedActivityPhase && <WorkspaceChanges attachments={workspaceChanges} />}
+        {!nestedActivityPhase && responseIndicator}
+        {!nestedActivityPhase && renderSteelActivity()}
       </>
     );
     return nestedActivityPhase ? (
@@ -1303,9 +1351,14 @@ const ContentPartsBody = memo(function ContentPartsBody({
           />
         </Container>
       )}
-      {!showEmptyCursor && (phaseContent ?? renderGroups(groupedParts, lastContentIdx))}
-      {!nestedActivityPhase && renderSteelActivity()}
+      {!showEmptyCursor &&
+        !(hasOnlyPlaceholder && cursorOwnedElsewhere) &&
+        (phaseContent != null
+          ? renderBlocks(phaseContent)
+          : renderGroups(groupedParts, lastContentIdx))}
       {!nestedActivityPhase && <WorkspaceChanges attachments={workspaceChanges} />}
+      {!nestedActivityPhase && responseIndicator}
+      {!nestedActivityPhase && renderSteelActivity()}
     </SearchContext.Provider>
   );
   if (nestedActivityPhase) {
@@ -1315,6 +1368,40 @@ const ContentPartsBody = memo(function ContentPartsBody({
 });
 
 const ContentParts = memo(function ContentParts(props: ContentPartsProps) {
+  const localize = useLocalize();
+  const parentCursor = useContext(CursorVisibilityContext);
+  const ownsCursor = !props.isCreatedByUser && !props.nestedActivityPhase;
+  const cursorVisible = Boolean(
+    ownsCursor &&
+      props.isLast &&
+      props.isLatestMessage === true &&
+      props.isSubmitting &&
+      props.edit !== true,
+  );
+  const cursorVisibility = useMemo(
+    () =>
+      !ownsCursor || (props.responseIndicator !== undefined && parentCursor.owner === 'message')
+        ? parentCursor
+        : { visible: cursorVisible, owner: 'message' as const },
+    [ownsCursor, cursorVisible, parentCursor, props.responseIndicator],
+  );
+  const cursorUnderHeader =
+    (props.content == null ||
+      props.content.length === 0 ||
+      (props.content.length === 1 && isEmptyTextPart(props.content[0]))) &&
+    !props.manualSkills?.length &&
+    !hasMemoryArtifacts(props.attachments);
+  const generatingLabel = localize('com_ui_generating');
+  const responseIndicator = useMemo(
+    () =>
+      cursorVisible ? (
+        <div role="status" aria-label={generatingLabel} className="mb-4 mt-2">
+          <EmptyText owner="message" underHeaderIcon={cursorUnderHeader} />
+          <span className="sr-only">{generatingLabel}</span>
+        </div>
+      ) : null,
+    [cursorVisible, generatingLabel, cursorUnderHeader],
+  );
   const { attachments, messageId, conversationId, isSubmitting, isLatestMessage } = props;
   const messageContext = useMemo(
     () => ({
@@ -1372,15 +1459,27 @@ const ContentParts = memo(function ContentParts(props: ContentPartsProps) {
   const attachmentsByName = useMemo(() => buildAttachmentsByName(attachments), [attachments]);
   const media = useMemo(() => ({ attachmentsByName }), [attachmentsByName]);
   return (
-    <MessageContext.Provider value={messageContext}>
-      <MediaContext.Provider value={media}>
-        <ReasoningDisclosureContext.Provider value={reasoningDisclosures}>
-          <ToolDisclosureContext.Provider value={toolDisclosures}>
-            <ContentPartsBody {...props} />
-          </ToolDisclosureContext.Provider>
-        </ReasoningDisclosureContext.Provider>
-      </MediaContext.Provider>
-    </MessageContext.Provider>
+    <CursorVisibilityContext.Provider value={cursorVisibility}>
+      <MessageContext.Provider value={messageContext}>
+        <MediaContext.Provider value={media}>
+          <ReasoningDisclosureContext.Provider value={reasoningDisclosures}>
+            <ToolDisclosureContext.Provider value={toolDisclosures}>
+              <ContentPartsBody
+                {...props}
+                responseIndicator={
+                  ownsCursor && props.responseIndicator === undefined
+                    ? responseIndicator
+                    : props.responseIndicator
+                }
+                cursorOwnedElsewhere={
+                  (ownsCursor && cursorVisibility.visible) || props.cursorOwnedElsewhere
+                }
+              />
+            </ToolDisclosureContext.Provider>
+          </ReasoningDisclosureContext.Provider>
+        </MediaContext.Provider>
+      </MessageContext.Provider>
+    </CursorVisibilityContext.Provider>
   );
 });
 

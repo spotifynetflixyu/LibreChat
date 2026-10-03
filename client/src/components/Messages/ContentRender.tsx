@@ -202,11 +202,22 @@ const ContentRender = memo(function ContentRender({
     [isSubmitting, isLatestMessage, msg?.isCreatedByUser, siblingIdx, siblingCount],
   );
 
+  const isResponseInProgress = cursorVisibility.visible;
+  const generatingLabel = localize('com_ui_generating');
+  const responseIndicator = useMemo(
+    () =>
+      isResponseInProgress ? (
+        <div role="status" aria-label={generatingLabel} className="mb-4 mt-2">
+          <EmptyText owner="message" />
+          <span className="sr-only">{generatingLabel}</span>
+        </div>
+      ) : null,
+    [isResponseInProgress, generatingLabel],
+  );
+
   if (!msg) {
     return null;
   }
-
-  const isResponseInProgress = cursorVisibility.visible;
 
   return (
     <CursorVisibilityContext.Provider value={cursorVisibility}>
@@ -266,6 +277,7 @@ const ContentRender = memo(function ContentRender({
           <ErrorSourceProvider message={msg}>
             <ContentParts
               edit={edit}
+              responseIndicator={responseIndicator}
               isLast={isLast}
               enterEdit={enterEdit}
               siblingIdx={siblingIdx}
@@ -288,12 +300,6 @@ const ContentRender = memo(function ContentRender({
             />
           </ErrorSourceProvider>
         </AuthorContext.Provider>
-        {isResponseInProgress && (
-          <div role="status" aria-label={localize('com_ui_generating')} className="mt-2">
-            <EmptyText owner="message" />
-            <span className="sr-only">{localize('com_ui_generating')}</span>
-          </div>
-        )}
         {/** A turn that ran out of agent steps is incomplete, not broken. Rendered
          *   here rather than inside `ContentParts` because it is a message-level
          *   outcome, and `ContentParts` also serves surfaces (subagent panels,

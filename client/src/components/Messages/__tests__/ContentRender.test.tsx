@@ -16,9 +16,20 @@ jest.mock('~/components/Chat/Messages/Content/ContentParts', () => {
   const { memo } = jest.requireActual<typeof import('react')>('react');
   return {
     __esModule: true,
-    default: memo(function MockContentParts({ authorHeader }: { authorHeader?: React.ReactNode }) {
+    default: memo(function MockContentParts({
+      authorHeader,
+      responseIndicator,
+    }: {
+      authorHeader?: React.ReactNode;
+      responseIndicator?: React.ReactNode;
+    }) {
       mockRenders.parts += 1;
-      return <div data-testid="parts">{authorHeader}</div>;
+      return (
+        <div data-testid="parts">
+          {authorHeader}
+          {responseIndicator}
+        </div>
+      );
     }),
   };
 });
@@ -203,6 +214,7 @@ describe('ContentRender generation indicator', () => {
     const result = render(view());
     const status = screen.getByRole('status', { name: 'com_ui_generating' });
     expect(status).toHaveTextContent('com_ui_generating');
+    expect(screen.getByTestId('parts')).toContainElement(status);
     expect(status.querySelector('.result-thinking')).toBeInTheDocument();
     expect(status.querySelector('.result-thinking')?.parentElement).toHaveClass('submitting');
 

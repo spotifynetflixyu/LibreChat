@@ -141,6 +141,7 @@ const mount = (
   attachments: TAttachment[] | undefined,
   fold: boolean,
   searchResults?: Record<string, SearchResultData>,
+  responseIndicator?: React.ReactNode,
 ) =>
   render(
     <QueryClientProvider client={new QueryClient()}>
@@ -157,10 +158,64 @@ const mount = (
           isSubmitting
           showThinking={false}
           foldLiveActivity={fold}
+          responseIndicator={responseIndicator}
         />
       </RecoilRoot>
     </QueryClientProvider>,
   );
+
+describe('direct assistant and subagent surface cursor', () => {
+  it('preserves the host visibility decision for a supplied message cursor', () => {
+    const result = render(
+      <QueryClientProvider client={new QueryClient()}>
+        <RecoilRoot>
+          <CursorVisibilityContext.Provider value={{ visible: true, owner: 'message' }}>
+            <ContentParts
+              content={[]}
+              messageId="host-cursor"
+              isCreatedByUser={false}
+              isLast={false}
+              isSubmitting={false}
+              showThinking={false}
+              responseIndicator={<EmptyText owner="message" />}
+            />
+          </CursorVisibilityContext.Provider>
+        </RecoilRoot>
+      </QueryClientProvider>,
+    );
+    expect(result.container.querySelectorAll('.result-thinking')).toHaveLength(1);
+  });
+
+  it.each([null, <div key="custom" data-testid="custom-indicator" />])(
+    'suppresses content cursors when a caller supplies an indicator',
+    (responseIndicator) => {
+      const result = mount(
+        [toPart({ name: 'lookup', output: '' })],
+        undefined,
+        false,
+        undefined,
+        responseIndicator,
+      );
+      expect(result.container.querySelectorAll('.result-thinking')).toHaveLength(0);
+      expect(screen.queryByTestId('custom-indicator') != null).toBe(responseIndicator != null);
+    },
+  );
+
+  it('places one fallback cursor below text when a tool arrives later', () => {
+    const content: TMessageContentParts[] = [
+      { type: ContentTypes.TEXT, text: 'Direct surface answer' },
+      toPart({ name: 'lookup', output: '' }),
+    ];
+    const result = mount(content, undefined, false);
+    const answer = result.container.querySelector('.message-content');
+    expect(answer).toHaveTextContent('Direct surface answer');
+    const indicator = screen.getByRole('status', { name: 'Generating...' });
+    expect(result.container.querySelectorAll('.result-thinking')).toHaveLength(1);
+    expect(
+      answer!.compareDocumentPosition(indicator) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+});
 
 describe('one message-level streaming cursor', () => {
   it.each([true, false])('owns the only cursor with smooth streaming=%s', (smoothStreaming) => {
@@ -183,6 +238,7 @@ describe('one message-level streaming cursor', () => {
                 isLast
                 isLatestMessage
                 isSubmitting={submitting}
+                responseIndicator={<EmptyText owner="message" />}
                 showThinking={false}
                 persistedActivityEvents={
                   status
@@ -202,7 +258,6 @@ describe('one message-level streaming cursor', () => {
                     : undefined
                 }
               />
-              <EmptyText owner="message" />
             </CursorVisibilityContext.Provider>
           </RecoilRoot>
         </Provider>
@@ -238,9 +293,102 @@ describe('one message-level streaming cursor', () => {
     for (const status of ['queued', 'running', 'aggregating', 'finalizing', 'completed'] as const) {
       result.rerender(view(scenarios[3], true, status));
       expect(result.container.querySelectorAll('.result-thinking')).toHaveLength(1);
+      const indicator = result.container.querySelector('.result-thinking');
+      const events = result.container.querySelector('[aria-label="Steel activity"]');
+      expect(indicator).not.toBeNull();
+      expect(events).not.toBeNull();
+      expect(
+        indicator!.compareDocumentPosition(events!) & Node.DOCUMENT_POSITION_FOLLOWING,
+      ).toBeTruthy();
     }
     result.rerender(view(scenarios[3], false));
     expect(result.container.querySelectorAll('.result-thinking')).toHaveLength(0);
+  });
+});
+
+describe('quotation flow response ordering', () => {
+  it('keeps activities, streamed quote text, indicator and events ordered through completion and reload', () => {
+    const quoteContent: TMessageContentParts[] = [
+      {
+        type: ContentTypes.TEXT,
+        text: '## system_order\n\n| Material | Quantity |\n| --- | --- |\n| H steel | 3 |',
+      },
+      toPart({ name: 'search_price_candidates', output: 'Quote lookup result' }),
+      { type: ContentTypes.TEXT, text: '## quote_summary\n\nQuotation response text' },
+    ];
+    const checkpoints: Array<{
+      stage: string;
+      status: SteelNativeQuotationStatus;
+      completedChunks: number;
+    }> = [
+      { stage: 'chunk_started', status: 'running', completedChunks: 0 },
+      { stage: 'chunk_saved', status: 'running', completedChunks: 1 },
+      { stage: 'main_review_started', status: 'aggregating', completedChunks: 1 },
+      { stage: 'main_finalizing', status: 'finalizing', completedChunks: 1 },
+      { stage: 'completed', status: 'completed', completedChunks: 1 },
+    ];
+    const view = (checkpoint: number) => (
+      <QueryClientProvider client={new QueryClient()}>
+        <RecoilRoot initializeState={({ set }) => set(store.queriesEnabled, false)}>
+          <ContentParts
+            content={quoteContent}
+            messageId="quotation-order"
+            isCreatedByUser={false}
+            isLast
+            isLatestMessage
+            isSubmitting={checkpoint < checkpoints.length - 1}
+            foldLiveActivity={false}
+            showThinking={false}
+            persistedActivityEvents={checkpoints.slice(0, checkpoint + 1).map((event) => ({
+              type: 'quotation_status',
+              source: 'quotation_preflight',
+              conversationId: 'quotation-order-conversation',
+              runId: 'quotation-order-run',
+              index: 1,
+              totalChunks: 1,
+              ...event,
+            }))}
+          />
+        </RecoilRoot>
+      </QueryClientProvider>
+    );
+    const assertOrder = (container: HTMLElement, submitting: boolean) => {
+      const tool = screen.getByRole('button', { name: /Ran search_price_candidates/ });
+      const order = screen.getByRole('heading', { name: 'system_order' });
+      const summary = screen.getByRole('heading', { name: 'quote_summary' });
+      const events = screen.getByLabelText('Steel activity');
+      const follows = (before: Element, after: Element) =>
+        expect(
+          before.compareDocumentPosition(after) & Node.DOCUMENT_POSITION_FOLLOWING,
+        ).toBeTruthy();
+      follows(tool, order);
+      follows(order, summary);
+      follows(summary, events);
+      if (submitting) {
+        const indicator = screen.getByRole('status', { name: 'Generating...' });
+        follows(summary, indicator);
+        follows(indicator, events);
+        expect(container.querySelectorAll('.result-thinking')).toHaveLength(1);
+      } else {
+        expect(screen.queryByRole('status', { name: 'Generating...' })).toBeNull();
+        expect(container.querySelectorAll('.result-thinking')).toHaveLength(0);
+      }
+      return tool;
+    };
+    const result = render(view(0));
+    fireEvent.click(assertOrder(result.container, true));
+    expect(screen.getByText('Quote lookup result')).toBeInTheDocument();
+    for (let checkpoint = 1; checkpoint < checkpoints.length; checkpoint += 1) {
+      result.rerender(view(checkpoint));
+      expect(assertOrder(result.container, checkpoint < checkpoints.length - 1)).toHaveAttribute(
+        'aria-expanded',
+        'true',
+      );
+    }
+    result.unmount();
+    const restored = render(view(checkpoints.length - 1));
+    assertOrder(restored.container, false);
+    expect(screen.getAllByText('Quotation completed (1/1 chunks)')).not.toHaveLength(0);
   });
 });
 
@@ -1422,7 +1570,8 @@ describe('live activity hardening transitions', () => {
         } as TMessageContentParts,
       ]),
     );
-    expect(screen.getAllByRole('status')).toEqual([announcer]);
+    expect(screen.getAllByTestId('activity-phase-announcer')).toEqual([announcer]);
+    expect(screen.getByRole('status', { name: 'Generating...' })).toBeInTheDocument();
     expect(announcer).toHaveTextContent('Completed lookup');
   });
 });

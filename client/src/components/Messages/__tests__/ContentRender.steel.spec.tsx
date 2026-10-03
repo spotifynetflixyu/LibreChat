@@ -47,6 +47,7 @@ jest.mock('~/store', () => {
   return {
     __esModule: true,
     default: {
+      ...jest.requireActual<typeof import('~/store')>('~/store').default,
       maximizeChatSpace: atom({ key: 'content-render-steel-maximize-chat-space', default: false }),
     },
   };
@@ -57,7 +58,7 @@ jest.mock('~/components/Chat/Messages/Content/Parts/AuthorHeader', () => ({
   default: () => null,
 }));
 jest.mock('~/components/Chat/Messages/ui/HeaderLabel', () => ({
-  getHeaderModelName: () => undefined,
+  ...jest.requireActual('~/components/Chat/Messages/ui/HeaderLabel'),
 }));
 jest.mock('~/components/Chat/Messages/styles', () => ({
   revealOnRowHoverClasses: '',

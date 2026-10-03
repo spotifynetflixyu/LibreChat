@@ -197,7 +197,7 @@ import ContentParts from '../ContentParts';
 import { useSteelActivityEvents } from '../SteelActivity';
 
 const mockSteelActivity = jest.requireMock('../SteelActivity').default as jest.MockedFunction<
-  (_props: { persistedActivityEvents?: readonly unknown[] }) => null
+  (_props: { persistedActivityEvents?: readonly unknown[] }) => React.ReactElement | null
 >;
 
 const baseProps = {
@@ -211,6 +211,7 @@ const baseProps = {
 };
 
 beforeEach(() => {
+  mockSteelActivity.mockImplementation(() => null);
   jest.mocked(useSteelActivityEvents).mockReturnValue([]);
   jest
     .mocked(groupSequentialToolCalls)
@@ -285,6 +286,106 @@ describe('ContentParts — accepted quotation signal', () => {
   });
 });
 
+describe('ContentParts — response layout', () => {
+  const tool: TMessageContentParts = {
+    type: ContentTypes.TOOL_CALL,
+    tool_call: { id: 'lookup', name: 'search_price_candidates', args: '{}', output: 'done' },
+  };
+  const text: TMessageContentParts = {
+    type: ContentTypes.TEXT,
+    text: '| Item |\n| --- |\n| Steel |',
+  };
+  const expectedOrder = [
+    'real-part-tool_call',
+    'real-part-text',
+    'real-part-text',
+    'response-indicator',
+    'steel-events',
+  ];
+
+  it.each([true, false])(
+    'places tools, text, indicator and events in order (streaming: %p)',
+    (live) => {
+      mockSteelActivity.mockImplementation(() => <div data-testid="steel-events" />);
+      const content: TMessageContentParts[] = [
+        text,
+        tool,
+        { type: ContentTypes.TEXT, text: 'Summary' },
+      ];
+      const { container, rerender } = render(
+        <ContentParts
+          {...baseProps}
+          content={content}
+          isLast
+          isSubmitting={live}
+          isLatestMessage={live}
+          responseIndicator={<div data-testid="response-indicator" />}
+        />,
+      );
+      const order = () =>
+        Array.from(
+          container.querySelectorAll(
+            '[data-testid^="real-part-"], [data-testid="response-indicator"], [data-testid="steel-events"]',
+          ),
+        ).map((node) => node.getAttribute('data-testid'));
+      expect(order()).toEqual(expectedOrder);
+      expect(screen.getByTestId('real-part-tool_call')).toHaveAttribute('data-index', '1');
+      expect(screen.getAllByTestId('real-part-text')[1]).toHaveAttribute(
+        'data-table-base-index',
+        '1',
+      );
+      expect(content[0]).toBe(text);
+      rerender(
+        <ContentParts
+          {...baseProps}
+          content={content}
+          isLast
+          responseIndicator={<div data-testid="response-indicator" />}
+        />,
+      );
+      expect(order()).toEqual(expectedOrder);
+    },
+  );
+
+  it('keeps activity phase cards above earlier answer text without changing table indexes', () => {
+    render(
+      <ContentParts
+        {...baseProps}
+        content={[
+          text,
+          tool,
+          {
+            type: ContentTypes.ACTIVITY_LABEL,
+            activity_label: 'Lookup complete',
+            activity_label_type: 'phase',
+            activity_start_index: 1,
+            activity_count: 1,
+            pending: false,
+          },
+          { type: ContentTypes.TEXT, text: 'Summary' },
+        ]}
+      />,
+    );
+    const phase = screen.getByTestId('activity-phase-group');
+    const texts = screen.getAllByTestId('real-part-text');
+    expect(phase.compareDocumentPosition(texts[0]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(texts[0]).toHaveAttribute('data-index', '0');
+    expect(texts[1]).toHaveAttribute('data-index', '3');
+    expect(texts[1]).toHaveAttribute('data-table-base-index', '1');
+  });
+
+  it('preserves user message order', () => {
+    const { container } = render(
+      <ContentParts {...baseProps} content={[text, tool]} isCreatedByUser />,
+    );
+    expect(
+      Array.from(container.querySelectorAll('[data-testid^="real-part-"]')).map((node) =>
+        node.getAttribute('data-index'),
+      ),
+    ).toEqual(['0', '1']);
+  });
+});
+
 describe('ContentParts — native compaction visibility', () => {
   it('keeps a compaction marker outside collapsed quotation activity with thinking hidden', () => {
     const content: TMessageContentParts[] = [
@@ -335,6 +436,7 @@ describe('ContentParts — interim skill cards', () => {
     render(
       <ContentParts
         {...baseProps}
+        isLast
         isSubmitting
         isLatestMessage
         persistedActivityEvents={[{ type: 'parse_status' }]}
@@ -501,7 +603,7 @@ describe('ContentParts — interim skill cards', () => {
 });
 
 describe('ContentParts — thinking-dot header alignment', () => {
-  const submittingProps = { ...baseProps, isSubmitting: true, isLatestMessage: true };
+  const submittingProps = { ...baseProps, isLast: true, isSubmitting: true, isLatestMessage: true };
   const memoryAttachment = {
     type: Tools.memory,
     [Tools.memory]: { type: 'update', key: 'user', value: 'test value' },
@@ -550,8 +652,9 @@ describe('ContentParts — thinking-dot header alignment', () => {
   it('leaves real text content out of the placeholder path', () => {
     const textContent = [{ type: ContentTypes.TEXT, text: 'hello' }] as TMessageContentParts[];
     render(<ContentParts {...submittingProps} content={textContent} />);
-    expect(screen.queryByTestId('empty-text')).toBeNull();
     expect(screen.getByTestId('real-part-text')).toBeInTheDocument();
+    expect(screen.getByRole('status')).toContainElement(screen.getByTestId('empty-text'));
+    expect(screen.getAllByTestId('empty-text')).toHaveLength(1);
   });
 });
 
@@ -590,6 +693,28 @@ describe('ContentParts — post-steer author re-attribution', () => {
     );
     expect(screen.getAllByTestId('author-header')).toHaveLength(1);
   });
+
+  it.each([ContentTypes.THINK, ContentTypes.TOOL_CALL])(
+    'keeps resume attribution below the steer when %s resumes first',
+    (type) => {
+      const activity =
+        type === ContentTypes.THINK
+          ? { type, think: 'thinking' }
+          : { type, tool_call: { id: 'lookup', name: 'lookup', progress: 1 } };
+      render(
+        <ContentParts
+          {...baseProps}
+          content={[textPart('a'), steerPart, activity as TMessageContentParts, textPart('b')]}
+          authorHeader={header}
+        />,
+      );
+      const author = screen.getByTestId('author-header');
+      const steer = screen.getByTestId(`real-part-${ContentTypes.STEER}`);
+      const resumed = screen.getAllByTestId('real-part-text')[1];
+      expect(steer.compareDocumentPosition(author)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+      expect(author.compareDocumentPosition(resumed)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
+    },
+  );
 
   it('skips empty content slots when finding the part that resumes after a steer', () => {
     render(
@@ -659,6 +784,16 @@ describe('ContentParts — post-steer author re-attribution', () => {
     );
     expect(screen.getAllByTestId('author-header')).toHaveLength(1);
     expect(screen.queryByTestId('post-steer-agent-update')).toBeNull();
+    const steer = screen.getByTestId(`real-part-${ContentTypes.STEER}`);
+    const handoff = screen.getByTestId(`real-part-${ContentTypes.AGENT_UPDATE}`);
+    const resumed = screen.getAllByTestId('real-part-text')[1];
+    expect(steer.compareDocumentPosition(screen.getByTestId('author-header'))).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    expect(screen.getByTestId('author-header').compareDocumentPosition(handoff)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING,
+    );
+    expect(handoff.compareDocumentPosition(resumed)).toBe(Node.DOCUMENT_POSITION_FOLLOWING);
   });
 
   it('retains steer attribution when resumed content moves into a phase slice', () => {
@@ -680,10 +815,9 @@ describe('ContentParts — post-steer author re-attribution', () => {
 
     expect(screen.getByTestId('activity-phase-group')).toBeTruthy();
     expect(screen.getAllByTestId('author-header')).toHaveLength(1);
-    expect(screen.getAllByTestId(`real-part-${ContentTypes.TEXT}`)[1]).toHaveAttribute(
-      'data-index',
-      '2',
-    );
+    expect(
+      screen.getByTestId('activity-phase-group').querySelector('[data-index="2"]'),
+    ).toBeInTheDocument();
   });
 });
 

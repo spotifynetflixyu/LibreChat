@@ -1,6 +1,7 @@
 import { memo, useMemo, Fragment } from 'react';
 import { ContentTypes } from 'librechat-data-provider';
 import type { TMessageContentParts, SearchResultData, TAttachment } from 'librechat-data-provider';
+import type { ContentBand } from './ordering';
 import {
   getActivityLabelPart,
   getActivityLabelText,
@@ -12,6 +13,7 @@ import Sources from '~/components/Web/Sources';
 import { cn, getPartKeyIndex } from '~/utils';
 import { SearchContext } from '~/Providers';
 import SiblingHeader from './SiblingHeader';
+import { isActivityPart } from './ordering';
 import { EmptyText } from './Parts';
 import Container from './Container';
 
@@ -26,6 +28,41 @@ export type ParallelSection = {
   groupId: number;
   columns: ParallelColumn[];
 };
+
+type BandParts = Record<ContentBand, PartWithIndex[]>;
+
+type BandedParallelColumn = ParallelColumn & {
+  bands: BandParts;
+};
+
+type BandedParallelSection = {
+  groupId: number;
+  columns: BandedParallelColumn[];
+};
+
+type BandedParallelBlock = {
+  leading: BandParts;
+  section: BandedParallelSection;
+};
+
+type BandedParallelLayout = {
+  blocks: BandedParallelBlock[];
+  trailing: BandParts;
+};
+
+function splitPartBands(parts: ReadonlyArray<PartWithIndex>): BandParts {
+  const bands: BandParts = { activity: [], body: [] };
+  for (const item of parts) {
+    if (
+      item.part.type === ContentTypes.ACTIVITY_LABEL &&
+      getActivityLabelText(getActivityLabelPart(item.part)).length === 0
+    ) {
+      continue;
+    }
+    bands[isActivityPart(item.part) ? 'activity' : 'body'].push(item);
+  }
+  return bands;
+}
 
 /**
  * Groups content parts by groupId for parallel rendering.
@@ -174,7 +211,7 @@ export function groupParallelContent(
 }
 
 type ParallelColumnsProps = {
-  columns: ParallelColumn[];
+  columns: BandedParallelColumn[];
   groupId: number;
   messageId: string;
   createdAt?: string | null;
@@ -182,6 +219,7 @@ type ParallelColumnsProps = {
   isSubmitting: boolean;
   lastContentIdx: number;
   conversationId?: string | null;
+  contentBand?: ContentBand;
   renderPart: (part: TMessageContentParts, idx: number, isLastPart: boolean) => React.ReactNode;
 };
 
@@ -197,24 +235,28 @@ export const ParallelColumns = memo(function ParallelColumns({
   conversationId,
   isSubmitting,
   lastContentIdx,
+  contentBand,
   renderPart,
 }: ParallelColumnsProps) {
+  const visibleColumns = columns.filter(({ parts, bands }) => {
+    if (contentBand == null) {
+      return true;
+    }
+    return bands[contentBand].length > 0 || (contentBand === 'body' && parts.length === 0);
+  });
+
+  if (visibleColumns.length === 0) {
+    return null;
+  }
+
   return (
     <div className={cn('flex w-full flex-col gap-3 md:flex-row', 'sibling-content-group')}>
-      {columns.map(({ agentId, parts: allColumnParts }, colIdx) => {
-        /** Lanes render raw parts, so an activity label cannot become a
-         *  collapsible header here (tracked separately). An UNFILLED one has
-         *  nothing to render at all, and every batch now publishes its
-         *  reservation immediately — so drop empty labels rather than emit a
-         *  blank line into the column while generation is pending. */
-        const columnParts = allColumnParts.filter(
-          ({ part }) =>
-            part?.type !== ContentTypes.ACTIVITY_LABEL ||
-            getActivityLabelText(getActivityLabelPart(part)).length > 0,
-        );
-        const lastColumnCursorIdx = lastParallelColumnCursorIdx(columnParts);
+      {visibleColumns.map(({ agentId, parts: allColumnParts, bands }, colIdx) => {
+        const columnParts = contentBand == null ? allColumnParts : bands[contentBand];
+        const lastColumnCursorIdx = lastParallelColumnCursorIdx(allColumnParts);
         // Show loading cursor if column has no content parts yet (empty array from placeholder)
-        const showLoadingCursor = isSubmitting && columnParts.length === 0;
+        const showLoadingCursor =
+          contentBand === 'body' && isSubmitting && allColumnParts.length === 0;
 
         return (
           <div
@@ -271,6 +313,8 @@ type ParallelContentRendererProps = {
    * carries per-agent identity.
    */
   renderResumeAttribution?: (idx: number, keyIdx?: number) => React.ReactNode;
+  /** Restrict rendering to one presentation band. Omit to render activity then body. */
+  contentBand?: ContentBand;
   showDecorations?: boolean;
   /** Absolute transcript index represented by `content[0]` in a phase slice. */
   contentIndexOffset?: number;
@@ -295,6 +339,7 @@ export const ParallelContentRenderer = memo(function ParallelContentRenderer({
   isSubmitting,
   renderPart,
   renderResumeAttribution,
+  contentBand,
   showDecorations = true,
   contentIndexOffset = 0,
   contentIndices,
@@ -323,10 +368,17 @@ export const ParallelContentRenderer = memo(function ParallelContentRenderer({
    *  interleaves with. Bounding it by the last lane index instead dropped it
    *  from the message entirely, and a placeholder-only section made
    *  `Math.min(...[])` Infinity, which rendered every part twice. */
-  const { blocks, trailing } = useMemo(() => {
-    const laid: Array<{ leading: PartWithIndex[]; section: ParallelSection }> = [];
+  const { blocks, trailing } = useMemo<BandedParallelLayout>(() => {
+    const sections: BandedParallelSection[] = parallelSections.map((section) => ({
+      groupId: section.groupId,
+      columns: section.columns.map((column) => ({
+        ...column,
+        bands: splitPartBands(column.parts),
+      })),
+    }));
+    const laid: BandedParallelBlock[] = [];
     let cursor = 0;
-    for (const section of parallelSections) {
+    for (const section of sections) {
       const indices = section.columns.flatMap((column) => column.parts.map((part) => part.idx));
       const sectionStart = indices.length > 0 ? Math.min(...indices) : Infinity;
       const leading: PartWithIndex[] = [];
@@ -334,9 +386,12 @@ export const ParallelContentRenderer = memo(function ParallelContentRenderer({
         leading.push(sequentialParts[cursor]);
         cursor += 1;
       }
-      laid.push({ leading, section });
+      laid.push({
+        leading: splitPartBands(leading),
+        section,
+      });
     }
-    return { blocks: laid, trailing: sequentialParts.slice(cursor) };
+    return { blocks: laid, trailing: splitPartBands(sequentialParts.slice(cursor)) };
   }, [parallelSections, sequentialParts]);
 
   const renderSequential = ({ part, idx }: PartWithIndex) => {
@@ -345,6 +400,8 @@ export const ParallelContentRenderer = memo(function ParallelContentRenderer({
     return attribution != null ? [attribution, rendered] : [rendered];
   };
 
+  const bandsToRender: readonly ContentBand[] = contentBand ? [contentBand] : ['activity', 'body'];
+
   return (
     <SearchContext.Provider value={{ searchResults }}>
       {showDecorations && <MemoryArtifacts attachments={attachments} />}
@@ -352,26 +409,31 @@ export const ParallelContentRenderer = memo(function ParallelContentRenderer({
         <Sources messageId={messageId} conversationId={conversationId || undefined} />
       )}
 
-      {/* Each section preceded by the sequential content that runs up to it */}
-      {blocks.map(({ leading, section: { groupId, columns } }) => (
-        <Fragment key={`parallel-block-${messageId}-${groupId}`}>
-          {leading.flatMap(renderSequential)}
-          <ParallelColumns
-            columns={columns}
-            groupId={groupId}
-            messageId={messageId}
-            createdAt={createdAt}
-            processingDurationMs={processingDurationMs}
-            renderPart={renderPart}
-            isSubmitting={isSubmitting}
-            conversationId={conversationId}
-            lastContentIdx={lastContentIdx}
-          />
+      {bandsToRender.map((band) => (
+        <Fragment key={`parallel-band-${messageId}-${band}`}>
+          {/* Each section preceded by the sequential content that runs up to it */}
+          {blocks.map(({ leading, section: { groupId, columns } }) => (
+            <Fragment key={`parallel-block-${messageId}-${band}-${groupId}`}>
+              {leading[band].flatMap(renderSequential)}
+              <ParallelColumns
+                columns={columns}
+                groupId={groupId}
+                messageId={messageId}
+                createdAt={createdAt}
+                processingDurationMs={processingDurationMs}
+                renderPart={renderPart}
+                isSubmitting={isSubmitting}
+                conversationId={conversationId}
+                contentBand={band}
+                lastContentIdx={lastContentIdx}
+              />
+            </Fragment>
+          ))}
+
+          {/* Sequential content after the last section */}
+          {trailing[band].flatMap(renderSequential)}
         </Fragment>
       ))}
-
-      {/* Sequential content after the last section */}
-      {trailing.flatMap(renderSequential)}
     </SearchContext.Provider>
   );
 });
