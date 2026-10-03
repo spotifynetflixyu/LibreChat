@@ -1,27 +1,16 @@
-import type { FilterQuery } from 'mongoose';
 import type {
-  IMongoFile,
   SteelReviewSourceMethods,
   SteelReviewSourceReadInput,
   SteelReviewSourceRecord,
-  SteelReviewSourceScope,
 } from '~/types';
-import type { IMessage } from '~/types';
-import { activeExpirationFilter } from '~/utils/retention';
-import { createConversationModel } from '~/models/convo';
-import { createMessageModel } from '~/models/message';
-import { createFileModel } from '~/models/file';
+import {
+  createSteelReviewSourceAuthorization,
+  type SteelReviewAuthorizedFile,
+} from './steelSourceAuthorization';
 
 export type { SteelReviewSourceMethods };
 
 type Mongoose = typeof import('mongoose');
-
-type TenantFilter = { tenantId: string } | { $or: Array<{ tenantId: { $exists: false } } | { tenantId: null }> };
-
-type SteelReviewFile = Pick<
-  IMongoFile,
-  'file_id' | 'filename' | 'type' | 'bytes' | 'source' | 'filepath' | 'storageKey' | 'storageRegion' | 'model'
->;
 
 const imageMediaTypes: Readonly<Record<string, string>> = Object.freeze({
   'image/avif': 'image/avif',
@@ -44,12 +33,6 @@ const imageExtensionMediaTypes: Readonly<Record<string, string>> = Object.freeze
   tiff: 'image/tiff',
   webp: 'image/webp',
 });
-
-function tenantFilter(tenantId?: string): TenantFilter {
-  return tenantId === undefined
-    ? { $or: [{ tenantId: { $exists: false } }, { tenantId: null }] }
-    : { tenantId };
-}
 
 function sourceType(type: string, filename: string): 'pdf' | 'image' | undefined {
   const normalizedType = type.toLowerCase();
@@ -81,20 +64,7 @@ function canonicalMediaType(type: string, filename: string, kind: 'pdf' | 'image
   return imageExtensionMediaTypes[extension ?? ''];
 }
 
-function messageFileIds(files: IMessage['files'] | undefined): string[] {
-  return (files ?? []).flatMap((file) => {
-    if (typeof file !== 'object' || file === null || Array.isArray(file)) {
-      return [];
-    }
-    if (!('file_id' in file)) {
-      return [];
-    }
-    const fileId = file.file_id;
-    return typeof fileId === 'string' && fileId.length > 0 ? [fileId] : [];
-  });
-}
-
-function toRecord(file: SteelReviewFile): SteelReviewSourceRecord | null {
+function toRecord(file: SteelReviewAuthorizedFile): SteelReviewSourceRecord | null {
   const kind = sourceType(file.type, file.filename);
   const mediaType = kind ? canonicalMediaType(file.type, file.filename, kind) : undefined;
   if (!kind || !mediaType) {
@@ -114,87 +84,16 @@ function toRecord(file: SteelReviewFile): SteelReviewSourceRecord | null {
 }
 
 export function createSteelReviewSourceMethods(mongoose: Mongoose): SteelReviewSourceMethods {
-  const Conversation = createConversationModel(mongoose);
-  const Message = createMessageModel(mongoose);
-  const File = createFileModel(mongoose);
-
-  const readScope = async (input: SteelReviewSourceScope) => {
-    const [conversation, messages] = await Promise.all([
-      Conversation.findOne({
-        $and: [
-          { conversationId: input.conversationId, user: input.userId },
-          tenantFilter(input.tenantId),
-          activeExpirationFilter(),
-        ],
-      })
-        .select({ conversationId: 1 })
-        .lean(),
-      Message.find({
-        $and: [
-          {
-            conversationId: input.conversationId,
-            user: input.userId,
-          },
-          tenantFilter(input.tenantId),
-          activeExpirationFilter(),
-        ],
-      })
-        .select({ messageId: 1, files: 1 })
-        .lean<Array<Pick<IMessage, 'messageId' | 'files'>>>(),
-    ]);
-    if (!conversation || !messages.some((message) => message.messageId === input.messageId)) {
-      return null;
-    }
-    const messageIds = messages.map((message) => message.messageId).filter(Boolean);
-    const attachedFileIds = [...new Set(messages.flatMap((message) => messageFileIds(message.files)))];
-    return { messageIds, attachedFileIds };
-  };
+  const authorizeFiles = createSteelReviewSourceAuthorization(mongoose);
 
   const findAuthorized = async (
-    input: SteelReviewSourceScope,
+    input: Parameters<SteelReviewSourceMethods['listSteelReviewSources']>[0],
     fileId?: string,
   ): Promise<SteelReviewSourceRecord[]> => {
-    const scope = await readScope(input);
-    if (!scope) {
-      return [];
-    }
-    const fileFilter: FilterQuery<IMongoFile> = {
-      $and: [
-        { user: input.userId },
-        tenantFilter(input.tenantId),
-        {
-          $or: [
-            { conversationId: input.conversationId },
-            { conversationId: null, messageId: { $in: scope.messageIds } },
-            { conversationId: null, file_id: { $in: scope.attachedFileIds } },
-          ],
-        },
-        activeExpirationFilter(),
-        ...(fileId ? [{ file_id: fileId }] : []),
-      ],
-    };
-    const files = await File.find(fileFilter)
-      .select({
-        file_id: 1,
-        filename: 1,
-        type: 1,
-        bytes: 1,
-        source: 1,
-        filepath: 1,
-        storageKey: 1,
-        storageRegion: 1,
-        model: 1,
-      })
-      .lean<SteelReviewFile[]>();
+    const files = await authorizeFiles(input, fileId ? [fileId] : undefined);
 
     const records = new Map<string, SteelReviewSourceRecord>();
-    const seenFileIds = new Set<string>();
-    for (const file of files) {
-      if (seenFileIds.has(file.file_id)) {
-        records.delete(file.file_id);
-        continue;
-      }
-      seenFileIds.add(file.file_id);
+    for (const file of files.values()) {
       const record = toRecord(file);
       if (!record) {
         continue;

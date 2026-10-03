@@ -1,4 +1,6 @@
 import mongoose from 'mongoose';
+import { steelReviewKinds } from 'librechat-data-provider';
+import type { SteelReviewKind } from 'librechat-data-provider';
 import type { Request, Response } from 'express';
 import type { ServerRequest } from '~/types/http';
 import { createSteelRuleProposalService, SteelRuleProposalValidationError } from './rules/service';
@@ -50,6 +52,16 @@ interface SteelRequest extends Request {
   };
 }
 
+interface SteelReviewRouteScope {
+  userId: string;
+  conversationId: string;
+  kind: SteelReviewKind;
+}
+
+type SteelReviewRouteScopeResult =
+  | { scope: SteelReviewRouteScope }
+  | { status: 401 | 400; message: string };
+
 export interface SteelRouteHandlersDeps {
   env?: OpenAIConfigEnv;
   getModelsConfig: (req: Request) => Promise<ModelsConfig>;
@@ -70,6 +82,24 @@ export interface SteelRouteHandlers {
 
 function getSteelRequestUser(req: SteelRequest) {
   return req.user?.id ? { id: req.user.id, role: req.user.role } : null;
+}
+
+function parseSteelReviewRouteScope(req: SteelRequest, invalidMessage: string): SteelReviewRouteScopeResult {
+  const userId = req.user?.id;
+  const conversationId = req.params.conversationId;
+  const kind = req.params.kind;
+  if (!userId) {
+    return { status: 401, message: 'Authentication required' };
+  }
+  if (typeof conversationId !== 'string' || !conversationId ||
+    !steelReviewKinds.includes(kind as SteelReviewKind)) {
+    return { status: 400, message: invalidMessage };
+  }
+  return { scope: { userId, conversationId, kind: kind as SteelReviewKind } };
+}
+
+function sendSteelReviewRouteScopeError(res: Response, result: Exclude<SteelReviewRouteScopeResult, { scope: SteelReviewRouteScope }>) {
+  res.status(result.status).json({ message: result.message });
 }
 
 function sendRuleProposalError(res: Response, error: unknown) {
@@ -133,18 +163,12 @@ export function createSteelRouteHandlers({
     },
 
     async readReview(req, res) {
-      const userId = req.user?.id;
-      const conversationId = req.params.conversationId;
-      const kind = req.params.kind;
-      if (!userId) {
-        res.status(401).json({ message: 'Authentication required' });
+      const scopeResult = parseSteelReviewRouteScope(req, 'Invalid review table');
+      if (!('scope' in scopeResult)) {
+        sendSteelReviewRouteScopeError(res, scopeResult);
         return;
       }
-      if (typeof conversationId !== 'string' || !conversationId ||
-        (kind !== 'ocr_result' && kind !== 'system_order')) {
-        res.status(400).json({ message: 'Invalid review table' });
-        return;
-      }
+      const { userId, conversationId, kind } = scopeResult.scope;
       try {
         if (!resolvedReviewService) {
           res.status(500).json({ message: 'Steel review read unavailable' });
@@ -169,18 +193,12 @@ export function createSteelRouteHandlers({
     },
 
     async listReviewSources(req, res) {
-      const userId = req.user?.id;
-      const conversationId = req.params.conversationId;
-      const kind = req.params.kind;
-      if (!userId) {
-        res.status(401).json({ message: 'Authentication required' });
+      const scopeResult = parseSteelReviewRouteScope(req, 'Invalid review source query');
+      if (!('scope' in scopeResult)) {
+        sendSteelReviewRouteScopeError(res, scopeResult);
         return;
       }
-      if (typeof conversationId !== 'string' || !conversationId ||
-        (kind !== 'ocr_result' && kind !== 'system_order')) {
-        res.status(400).json({ message: 'Invalid review source query' });
-        return;
-      }
+      const { userId, conversationId, kind } = scopeResult.scope;
       if (!sourceService) {
         res.status(500).json({ message: 'Steel review source unavailable' });
         return;
@@ -207,20 +225,17 @@ export function createSteelRouteHandlers({
     },
 
     async readReviewSource(req, res) {
-      const userId = req.user?.id;
-      const conversationId = req.params.conversationId;
-      const kind = req.params.kind;
       const fileId = req.params.fileId;
-      if (!userId) {
-        res.status(401).json({ message: 'Authentication required' });
+      const scopeResult = parseSteelReviewRouteScope(req, 'Invalid review source query');
+      if (!('scope' in scopeResult)) {
+        sendSteelReviewRouteScopeError(res, scopeResult);
         return;
       }
-      if (typeof conversationId !== 'string' || !conversationId ||
-        typeof fileId !== 'string' || !fileId ||
-        (kind !== 'ocr_result' && kind !== 'system_order')) {
+      if (typeof fileId !== 'string' || !fileId) {
         res.status(400).json({ message: 'Invalid review source query' });
         return;
       }
+      const { userId, conversationId, kind } = scopeResult.scope;
       if (!sourceService) {
         res.status(500).json({ message: 'Steel review source unavailable' });
         return;
