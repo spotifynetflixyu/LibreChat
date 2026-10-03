@@ -2,6 +2,8 @@ import type {
   SteelReviewCaption,
   SteelReviewCell,
   SteelReviewKind,
+  SteelReviewOwnerUpdated,
+  SteelReviewRequoteProvenance,
   SteelReviewRow,
   SteelReviewSource,
 } from 'librechat-data-provider';
@@ -34,6 +36,14 @@ export interface SteelReviewTextPart {
   text: string;
 }
 
+export interface SteelReviewOwnerUpdatedRecord extends Omit<SteelReviewOwnerUpdated, 'updatedAt'> {
+  updatedAt: Date;
+}
+
+export interface SteelReviewRequoteProvenanceRecord extends Omit<SteelReviewRequoteProvenance, 'at'> {
+  at: Date;
+}
+
 /** Plain projection returned by the database boundary; no Mongoose query types escape it. */
 export interface SteelReviewReadRecord extends SteelReviewScope {
   kind: SteelReviewKind;
@@ -56,6 +66,10 @@ export interface SteelReviewReadRecord extends SteelReviewScope {
   humanSavedAt?: Date;
   effectiveMarkdown?: string;
   displayMarkdown?: string;
+  aiUpdatedAt?: Date;
+  ownerUpdated?: SteelReviewOwnerUpdatedRecord;
+  needsRequote?: boolean;
+  requoteProvenance?: SteelReviewRequoteProvenanceRecord;
   lastSave?: SteelReviewReceipt;
 }
 
@@ -80,6 +94,7 @@ export interface ISteelReviewOutput extends Document, SteelReviewScope {
     source: SteelReviewSource | null;
   }>;
   latestOutputId?: string;
+  aiUpdatedAt?: Date;
   aiRawMarkdown?: string;
   aiBaselineMarkdown?: string;
   humanMarkdown?: string;
@@ -112,6 +127,11 @@ export interface SteelReviewSavedSnapshotRecord {
   changedRowIds: string[];
   savedAt: Date;
   messageSha256: string;
+  conversationId: string;
+  messageId: string;
+  messageText: string;
+  messageTextParts?: SteelReviewTextPart[];
   effectiveMarkdown: string;
   displayMarkdown: string;
+  ownerUpdated?: SteelReviewOwnerUpdatedRecord;
 }

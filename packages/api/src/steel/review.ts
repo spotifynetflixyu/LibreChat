@@ -19,6 +19,8 @@ import type {
   SteelReviewPrepared,
   SteelReviewCommit,
   SteelReviewReceiptStatus,
+  SteelReviewReceipt,
+  SteelReviewSavedSnapshot,
 } from 'librechat-data-provider';
 import type {
   SteelReviewCommitInput,
@@ -73,6 +75,29 @@ interface LocatedTable extends ReviewTableCandidate {
   start: number;
   end: number;
   raw: string;
+}
+
+function serializeSavedSnapshot(snapshot: NonNullable<SteelReviewCommitResult['snapshot']>): SteelReviewSavedSnapshot {
+  const { ownerUpdated, savedAt, ...rest } = snapshot;
+  return {
+    ...rest,
+    savedAt: savedAt.toISOString(),
+    ...(ownerUpdated
+      ? { ownerUpdated: { ...ownerUpdated, updatedAt: ownerUpdated.updatedAt.toISOString() } }
+      : {}),
+  };
+}
+
+function serializeReceipt(receipt: SteelReviewReadRecord['lastSave']): SteelReviewReceipt | undefined {
+  if (!receipt) {
+    return undefined;
+  }
+  const { snapshot, savedAt, ...rest } = receipt;
+  return {
+    ...rest,
+    savedAt: savedAt.toISOString(),
+    ...(snapshot ? { snapshot: serializeSavedSnapshot(snapshot) } : {}),
+  };
 }
 
 function appendRenderedText(current: string, next: string): string {
@@ -326,14 +351,20 @@ function projectRecord(
     ...(record.humanSavedAt ? { humanSavedAt: record.humanSavedAt.toISOString() } : {}),
     ...(record.humanSavedAt && isLatest ? { updated: true } : {}),
     ...(record.humanSavedAt && !isLatest ? { previousVersion: true } : {}),
+    ...(record.aiUpdatedAt ? { aiUpdatedAt: record.aiUpdatedAt.toISOString() } : {}),
+    ...(record.ownerUpdated
+      ? { ownerUpdated: { ...record.ownerUpdated, updatedAt: record.ownerUpdated.updatedAt.toISOString() } }
+      : {}),
+    ...(record.needsRequote !== undefined ? { needsRequote: record.needsRequote } : {}),
+    ...(record.requoteProvenance
+      ? { requoteProvenance: { ...record.requoteProvenance, at: record.requoteProvenance.at.toISOString() } }
+      : {}),
     ...(record.aiRawMarkdown ? { aiRawMarkdown: record.aiRawMarkdown } : {}),
     ...(record.aiBaselineMarkdown ? { aiBaselineMarkdown: record.aiBaselineMarkdown } : {}),
     ...(record.humanMarkdown ? { humanMarkdown: record.humanMarkdown } : {}),
     ...(record.effectiveMarkdown ? { effectiveMarkdown: record.effectiveMarkdown } : {}),
     ...(record.displayMarkdown ? { displayMarkdown: record.displayMarkdown } : {}),
-    ...(record.lastSave ? {
-      lastSave: { ...record.lastSave, savedAt: record.lastSave.savedAt.toISOString() },
-    } : {}),
+    ...(record.lastSave ? { lastSave: serializeReceipt(record.lastSave) } : {}),
     headers: table.headers,
     rows,
   };
@@ -401,14 +432,20 @@ function projectSidecar(
     ...(record.humanSavedAt ? { humanSavedAt: record.humanSavedAt.toISOString() } : {}),
     ...(record.humanSavedAt && isLatest ? { updated: true } : {}),
     ...(record.humanSavedAt && !isLatest ? { previousVersion: true } : {}),
+    ...(record.aiUpdatedAt ? { aiUpdatedAt: record.aiUpdatedAt.toISOString() } : {}),
+    ...(record.ownerUpdated
+      ? { ownerUpdated: { ...record.ownerUpdated, updatedAt: record.ownerUpdated.updatedAt.toISOString() } }
+      : {}),
+    ...(record.needsRequote !== undefined ? { needsRequote: record.needsRequote } : {}),
+    ...(record.requoteProvenance
+      ? { requoteProvenance: { ...record.requoteProvenance, at: record.requoteProvenance.at.toISOString() } }
+      : {}),
     ...(record.aiRawMarkdown ? { aiRawMarkdown: record.aiRawMarkdown } : {}),
     ...(record.aiBaselineMarkdown ? { aiBaselineMarkdown: record.aiBaselineMarkdown } : {}),
     ...(record.humanMarkdown ? { humanMarkdown: record.humanMarkdown } : {}),
     ...(record.effectiveMarkdown ? { effectiveMarkdown: record.effectiveMarkdown } : {}),
     ...(record.displayMarkdown ? { displayMarkdown: record.displayMarkdown } : {}),
-    ...(record.lastSave ? {
-      lastSave: { ...record.lastSave, savedAt: record.lastSave.savedAt.toISOString() },
-    } : {}),
+    ...(record.lastSave ? { lastSave: serializeReceipt(record.lastSave) } : {}),
     headers: record.headers,
     rows: record.rows,
   };
@@ -551,7 +588,7 @@ function ownedSection(record: SteelReviewReadRecord, markdown: string): string |
   const headings = [...markdown.matchAll(/^ {0,3}#{1,6}(?:[ \t]+|$).*$/gmu)];
   const heading = headings
     .filter((candidate) => isManagedTitle(record.kind, headingTitle(candidate[0])))
-    .at(-1);
+    [headings.length - 1];
   if (!heading || heading.index === undefined) {
     return markdown;
   }
@@ -777,10 +814,7 @@ export function createSteelReviewService({
     }
     return {
       status: 'committed',
-      snapshot: {
-        ...result.snapshot,
-        savedAt: result.snapshot.savedAt.toISOString(),
-      },
+      snapshot: serializeSavedSnapshot(result.snapshot),
     };
   }
 
@@ -822,7 +856,12 @@ export function createSteelReviewService({
       return buildTrustedPrepared(input, payload, randomUUID());
     },
 
-    async commit(input: SteelReviewCommitRequest): Promise<SteelReviewPrepared & { savedAt: string; changedRows: number; changedRowIds: string[] }> {
+    async commit(input: SteelReviewCommitRequest): Promise<SteelReviewPrepared & {
+      savedAt: string;
+      changedRows: number;
+      changedRowIds: string[];
+      savedSnapshot?: SteelReviewSavedSnapshot;
+    }> {
       if (!writer) {
         throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Steel review save unavailable');
       }
@@ -849,6 +888,7 @@ export function createSteelReviewService({
             savedAt: historical.savedAt.toISOString(),
             changedRows: historical.changedRows,
             changedRowIds: historical.changedRowIds,
+            ...(historical.snapshot ? { savedSnapshot: serializeSavedSnapshot(historical.snapshot) } : {}),
           };
         }
       }
@@ -866,7 +906,11 @@ export function createSteelReviewService({
         throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review operation does not match trusted review state');
       }
       try {
-        const result = await writer.commitSteelReview(trusted);
+        const result = await writer.commitSteelReview({
+          ...trusted,
+          userId: input.userId,
+          ...(input.tenantId !== undefined ? { tenantId: input.tenantId } : {}),
+        });
         return {
           ...trusted,
           revision: result.revision,
@@ -881,6 +925,7 @@ export function createSteelReviewService({
           savedAt: result.savedAt.toISOString(),
           changedRows: result.changedRows,
           changedRowIds: result.changedRowIds,
+          ...(result.snapshot ? { savedSnapshot: serializeSavedSnapshot(result.snapshot) } : {}),
         };
       } catch (error) {
         if (error instanceof SteelReviewWriteError) {

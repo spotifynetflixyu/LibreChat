@@ -1,9 +1,9 @@
 import mongoose from 'mongoose';
+import { SteelReviewWriteError } from '@librechat/data-schemas';
 import { steelReviewKinds, steelReviewReceiptQuerySchema } from 'librechat-data-provider';
 import type { SteelReviewKind } from 'librechat-data-provider';
 import type { Request, Response } from 'express';
 import type { ServerRequest } from '~/types/http';
-import { SteelReviewWriteError } from '@librechat/data-schemas';
 import { createSteelRuleProposalService, SteelRuleProposalValidationError } from './rules/service';
 import {
   parseSteelReviewQuery,
@@ -86,6 +86,10 @@ export interface SteelRouteHandlers {
 
 function getSteelRequestUser(req: SteelRequest) {
   return req.user?.id ? { id: req.user.id, role: req.user.role } : null;
+}
+
+function steelReviewWriteStatus(error: SteelReviewWriteError): 404 | 409 {
+  return error.code === 'REVIEW_NOT_FOUND' ? 404 : 409;
 }
 
 function parseSteelReviewRouteScope(req: SteelRequest, invalidMessage: string): SteelReviewRouteScopeResult {
@@ -223,7 +227,7 @@ export function createSteelRouteHandlers({
         res.status(200).json(result);
       } catch (error) {
         if (error instanceof SteelReviewReadError || error instanceof SteelReviewWriteError) {
-          res.status(error instanceof SteelReviewReadError ? error.statusCode : 409)
+          res.status(error instanceof SteelReviewReadError ? error.statusCode : steelReviewWriteStatus(error))
             .json({ message: error.message, code: error.code });
           return;
         }
@@ -339,7 +343,7 @@ export function createSteelRouteHandlers({
         res.status(200).json(result);
       } catch (error) {
         if (error instanceof SteelReviewReadError || error instanceof SteelReviewWriteError) {
-          res.status(error instanceof SteelReviewReadError ? error.statusCode : 409)
+          res.status(error instanceof SteelReviewReadError ? error.statusCode : steelReviewWriteStatus(error))
             .json({ message: error.message, code: error.code });
           return;
         }
@@ -375,7 +379,7 @@ export function createSteelRouteHandlers({
         res.status(200).json(result);
       } catch (error) {
         if (error instanceof SteelReviewReadError || error instanceof SteelReviewWriteError) {
-          res.status(error instanceof SteelReviewReadError ? error.statusCode : 409)
+          res.status(error instanceof SteelReviewReadError ? error.statusCode : steelReviewWriteStatus(error))
             .json({ message: error.message, code: error.code });
           return;
         }

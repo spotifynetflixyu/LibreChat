@@ -3,6 +3,37 @@ import { z } from 'zod';
 export const steelReviewKinds = ['ocr_result', 'system_order'] as const;
 export type SteelReviewKind = (typeof steelReviewKinds)[number];
 
+export const steelReviewErrorCodeSchema = z.enum([
+  'INVALID_REVIEW_QUERY',
+  'REVIEW_NOT_FOUND',
+  'REVIEW_CONFLICT',
+  'REVIEW_INVALID_OPERATION',
+]);
+export type SteelReviewErrorCode = z.infer<typeof steelReviewErrorCodeSchema>;
+
+export const steelReviewOwnerUpdatedSchema = z.object({
+  version: z.literal(1),
+  kind: z.enum(steelReviewKinds),
+  conversationId: z.string().min(1),
+  messageId: z.string().min(1),
+  tableId: z.string().min(1),
+  outputId: z.string().min(1),
+  revision: z.string().min(1),
+  updatedAt: z.string().datetime(),
+});
+export type SteelReviewOwnerUpdated = z.infer<typeof steelReviewOwnerUpdatedSchema>;
+
+export const steelReviewRequoteProvenanceSchema = z.object({
+  sourceKind: z.literal('ocr_result'),
+  sourceMessageId: z.string().min(1),
+  sourceTableId: z.string().min(1),
+  sourceOutputId: z.string().min(1),
+  sourceRevision: z.string().min(1),
+  changedRows: z.number().int().positive(),
+  at: z.string().datetime(),
+});
+export type SteelReviewRequoteProvenance = z.infer<typeof steelReviewRequoteProvenanceSchema>;
+
 export function getSteelReviewTableId(kind: SteelReviewKind, markdownIndex: number): string {
   return `${kind}:${markdownIndex}`;
 }
@@ -54,6 +85,11 @@ export const steelReviewCaptionSchema = z.object({
   changedRowIds: z.array(z.string().min(1)),
 });
 
+export const steelReviewTextPartSchema = z.object({
+  partIndex: z.number().int().nonnegative(),
+  text: z.string(),
+});
+
 /**
  * The immutable result captured by one successful human save.  This is kept
  * on the receipt rather than read back from the current sidecar so a retry of
@@ -70,8 +106,13 @@ export const steelReviewSavedSnapshotSchema = z.object({
   changedRowIds: z.array(z.string().min(1)),
   savedAt: z.string().datetime(),
   messageSha256: z.string().length(64),
+  conversationId: z.string().min(1),
+  messageId: z.string().min(1),
+  messageText: z.string(),
+  messageTextParts: z.array(steelReviewTextPartSchema).optional(),
   effectiveMarkdown: z.string(),
   displayMarkdown: z.string(),
+  ownerUpdated: steelReviewOwnerUpdatedSchema.optional(),
 });
 
 export const steelReviewReceiptSchema = z.object({
@@ -98,6 +139,10 @@ export const steelReviewTableSchema = z.object({
   humanSavedAt: z.string().datetime().optional(),
   updated: z.boolean().optional(),
   previousVersion: z.boolean().optional(),
+  aiUpdatedAt: z.string().datetime().optional(),
+  ownerUpdated: steelReviewOwnerUpdatedSchema.optional(),
+  needsRequote: z.boolean().optional(),
+  requoteProvenance: steelReviewRequoteProvenanceSchema.optional(),
   aiRawMarkdown: z.string().optional(),
   aiBaselineMarkdown: z.string().optional(),
   humanMarkdown: z.string().optional(),
@@ -141,6 +186,7 @@ export const steelReviewSaveResponseSchema = steelReviewPreparedSchema.extend({
   savedAt: z.string().datetime(),
   changedRows: z.number().int().nonnegative(),
   changedRowIds: z.array(z.string().min(1)),
+  savedSnapshot: steelReviewSavedSnapshotSchema.optional(),
 });
 
 export const steelReviewResponseSchema = z.object({
@@ -151,6 +197,11 @@ export const steelReviewReceiptStatusSchema = z.discriminatedUnion('status', [
   z.object({ status: z.literal('absent') }),
   z.object({ status: z.literal('committed'), snapshot: steelReviewSavedSnapshotSchema }),
 ]);
+
+export const steelReviewErrorResponseSchema = z.object({
+  code: steelReviewErrorCodeSchema,
+  message: z.string(),
+});
 
 export const steelReviewSourceFileSchema = z.object({
   fileId: z.string().min(1),
@@ -178,6 +229,7 @@ export type SteelReviewRow = z.infer<typeof steelReviewRowSchema>;
 export type SteelReviewTable = z.infer<typeof steelReviewTableSchema>;
 export type SteelReviewResponse = z.infer<typeof steelReviewResponseSchema>;
 export type SteelReviewReceiptStatus = z.infer<typeof steelReviewReceiptStatusSchema>;
+export type SteelReviewErrorResponse = z.infer<typeof steelReviewErrorResponseSchema>;
 export type SteelReviewTarget = z.infer<typeof steelReviewTargetSchema>;
 export type SteelReviewCaption = z.infer<typeof steelReviewCaptionSchema>;
 export type SteelReviewSavedSnapshot = z.infer<typeof steelReviewSavedSnapshotSchema>;
