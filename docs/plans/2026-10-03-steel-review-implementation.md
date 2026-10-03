@@ -37,14 +37,29 @@ The current source-review spec, glossary, and ADRs are the acceptance source.
   removed targets. Never use first-heading matches or global text replacement.
 - Clean readers batch-load managed output snapshots for OCR merge, quotation and provider
   inputs, not display strike-through. Historical inputs use their own snapshot.
-- AI merge uses the previous AI complete baseline. A same-lineage new output preserves
-  explicit human overrides and coherent candidate groups in a separate effective review
-  snapshot, adopts untouched AI fields, updates dependent derived results and current
-  display/quote atomically at the new owner, and never refreshes the last human save time.
-  Historical owners do not change. Relevant quotation staleness follows changed OCR source.
+- AI merge uses the previous AI complete baseline. Every successful new AI output starts
+  a fresh effective review snapshot from its own complete AI baseline, with no prior human
+  overrides, added/deleted rows, source markings, candidates, derived values or strikes.
+  Human differences apply only within the output where they were saved. Save the new AI
+  snapshot, current owner/display/quote and necessary staleness atomically; historical owners
+  remain immutable. Never rewrite, reattach, delete or refresh the last human complete save.
+  This supersedes the earlier cross-output human-composition policy.
+- Compare complete saved AI/human snapshots only within the authenticated owner/tenant/
+  conversation/current OCR lineage. Each candidate has immutable snapshot identity, revision,
+  hash and server save time. The last-human reference may point to a historical owner;
+  preserve that reference rather than copying the save into the new owner. Admission atomically
+  validates both candidate versions/hashes and freezes the selected snapshot identity.
+- Allocate a trusted monotonic output sequence at producer-generation admission. Finalization
+  validates that generation, expected current reference/revision and exact new message-part/
+  section/mirrors. Commit AI raw/full, clean effective, AI time, target and references together
+  with CAS current-owner switching; delayed/superseded finalizers cannot regress the sequence.
+  A rows-only update retains its raw evidence and atomically replaces its verified update
+  section with the merged complete clean table, recording the resulting locator/hash. Reject
+  uncertain targets without touching the prior current owner or unrelated message content.
 - Next quote admission compares separately persisted AI/human complete saves and server
   timestamps, validates revisions and freezes source kind/hash/version/timestamps for the run.
-  Resume never reselects. This selection is distinct from the composed comparison display.
+  Resume never reselects. Read the last human complete save even when its owner is historical;
+  resetting the new output UI must not remove it from timestamp-based source selection.
 - Material replacement updates candidate dimensions/price/material derived values but
   preserves all existing processing fields. Separate later input changes retain ordinary
   dependency recomputation. Inputs are decimal strings; use existing exact quote arithmetic.
@@ -71,8 +86,8 @@ where its behavior needs them. Shared plumbing is introduced by the slice using 
 | 09 | Persisted per-piece/batch/confirmed-cutting inputs and processing calculations | 07, 08 |
 | 10 | Material async catalog selection, exact customer tier, candidate dimensions, keep processing | 08 |
 | 11 | Processing async catalog selection and parent applicability | 09, 10 |
-| 12 | AI full/update merge, composed review and human conflict adoption without timestamp pollution | 05, 07, 10, 11 |
-| 13 | Timestamp-based OCR quote admission and immutable resume source | 03 |
+| 12 | AI full/update merge with fresh per-output review and immutable prior human history | 05, 07, 10, 11 |
+| 13 | Timestamp-based OCR quote admission and immutable resume source | 03, 12 |
 | 14 | Independent precise history/standards/spec audit and integrated UI/DB/Lighthouse evidence | 12, 13 |
 
 Save captions are part of every relevant mutation slice, with no extra implementation ticket:
