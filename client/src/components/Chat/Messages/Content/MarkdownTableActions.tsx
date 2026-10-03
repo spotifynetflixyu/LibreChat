@@ -12,8 +12,10 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  Tag,
 } from '@librechat/client';
 import type { SteelReviewKind } from 'librechat-data-provider';
+import type { SteelReviewSaveGate } from './SteelReviewDialog';
 import type { MarkdownTableComment } from '~/common';
 import type { TableMatrix } from './table/export';
 import { canGroupByThickness, createCsvBlob, createThicknessZip } from './table/export';
@@ -51,6 +53,8 @@ type TableToolbarProps = {
   onReview?: () => void;
   reviewRetryLabel?: string;
   onReviewRetry?: () => void;
+  onBeforeDownload?: () => Promise<boolean>;
+  getDownloadMatrix?: () => TableMatrix;
   onStickyColumnChange?: (columnIndex: number | undefined) => void;
   stickyColumnIndex?: number;
 };
@@ -448,6 +452,8 @@ function TableToolbar({
   onReview,
   reviewRetryLabel,
   onReviewRetry,
+  onBeforeDownload,
+  getDownloadMatrix,
 }: TableToolbarProps) {
   const localize = useLocalize();
   const copyLabel = localize('com_ui_copy_markdown_table');
@@ -483,21 +489,46 @@ function TableToolbar({
     void writeClipboardText(tableMatrixToMarkdown(getTableMatrix(tableRef.current))).then(onCopied);
   }, [onCopied, tableRef]);
   const handleDownload = useCallback(() => {
-    const url = URL.createObjectURL(createCsvBlob(getTableMatrix(tableRef.current)));
-    triggerDownload(url, downloadFilename);
-  }, [downloadFilename, tableRef]);
+    const download = async () => {
+      setIsDownloading(true);
+      setDownloadFailed(false);
+      try {
+        if (onBeforeDownload && !(await onBeforeDownload())) {
+          return;
+        }
+        const matrix = getDownloadMatrix?.() ?? getTableMatrix(tableRef.current);
+        if (matrix.length === 0) {
+          return;
+        }
+        const url = URL.createObjectURL(createCsvBlob(matrix));
+        triggerDownload(url, downloadFilename);
+      } catch {
+        setDownloadFailed(true);
+      } finally {
+        setIsDownloading(false);
+      }
+    };
+    void download();
+  }, [downloadFilename, getDownloadMatrix, onBeforeDownload, tableRef]);
   const handleGroupedDownload = useCallback(async () => {
     setIsDownloading(true);
     setDownloadFailed(false);
     try {
-      const blob = await createThicknessZip(getTableMatrix(tableRef.current));
+      if (onBeforeDownload && !(await onBeforeDownload())) {
+        return;
+      }
+      const matrix = getDownloadMatrix?.() ?? getTableMatrix(tableRef.current);
+      if (matrix.length === 0) {
+        return;
+      }
+      const blob = await createThicknessZip(matrix);
       triggerDownload(URL.createObjectURL(blob), downloadFilename.replace(/\.csv$/, '.zip'));
     } catch {
       setDownloadFailed(true);
     } finally {
       setIsDownloading(false);
     }
-  }, [downloadFilename, tableRef]);
+  }, [downloadFilename, getDownloadMatrix, onBeforeDownload, tableRef]);
   const handleStickyColumnChange = useCallback(
     (value: string) => {
       onStickyColumnChange?.(value === '' ? undefined : Number(value));
@@ -552,7 +583,8 @@ function TableToolbar({
         <DropdownMenu
           onOpenChange={(open) => {
             if (open) {
-              setCanGroup(canGroupByThickness(getTableMatrix(tableRef.current)));
+              const matrix = getDownloadMatrix?.() ?? getTableMatrix(tableRef.current);
+              setCanGroup(canGroupByThickness(matrix));
             }
           }}
         >
@@ -619,6 +651,7 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
   const [stickyColumnIndex, setStickyColumnIndex] = useState<number>();
   const [copied, setCopied] = useState(false);
   const [modalCopied, setModalCopied] = useState(false);
+  const saveGateRef = useRef<SteelReviewSaveGate>();
   const [markdownTitle, setMarkdownTitle] = useState<string>();
   const [, setSelection] = useAtom(steelReviewSelectionAtom);
   const localize = useLocalize();
@@ -703,6 +736,13 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
   }, [candidateKey, children, isSubmitting, reviewCandidate, refetchReview]);
   const reviewLabel = localize('com_ui_steel_review_open');
   const reviewRetryLabel = localize('com_ui_steel_review_retry');
+  const reviewTable = reviewQuery.data?.table;
+  let reviewTag: { label: string; variant: 'neutral' | 'success' } | undefined;
+  if (reviewIdentity && reviewTable?.previousVersion) {
+    reviewTag = { label: localize('com_ui_steel_review_previous_version'), variant: 'neutral' };
+  } else if (reviewIdentity && reviewTable?.updated) {
+    reviewTag = { label: localize('com_ui_steel_review_updated'), variant: 'success' };
+  }
   const canComment = isCreatedByUser !== true && !!messageId && !!commentConversationId;
   const commentsByCell = useMemo(() => {
     const comments = new Map<string, MarkdownTableComment>();
@@ -950,6 +990,13 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
 
   return (
     <div className="markdown-table-container" data-markdown-index={markdownIndex}>
+      {reviewTag && (
+        <Tag
+          className="mb-2 w-fit"
+          label={reviewTag.label}
+          variant={reviewTag.variant}
+        />
+      )}
       <TableToolbar
         tableRef={tableRef}
         copied={copied}
@@ -964,6 +1011,8 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
         onReviewRetry={reviewCandidate && reviewRetryAvailable
           ? retryReviewRecognition
           : undefined}
+        onBeforeDownload={reviewIdentity ? () => saveGateRef.current?.ensureSaved() ?? Promise.resolve(false) : undefined}
+        getDownloadMatrix={reviewIdentity ? () => saveGateRef.current?.getMatrix() ?? [] : undefined}
         onCopied={handleCopied}
         onExpand={openModal}
       />
@@ -994,6 +1043,8 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
                 onReviewRetry={reviewCandidate && reviewRetryAvailable
                   ? retryReviewRecognition
                   : undefined}
+                onBeforeDownload={reviewIdentity ? () => saveGateRef.current?.ensureSaved() ?? Promise.resolve(false) : undefined}
+                getDownloadMatrix={reviewIdentity ? () => saveGateRef.current?.getMatrix() ?? [] : undefined}
                 headerOptions={headerOptions}
                 onClose={closeModal}
                 onCopied={handleModalCopied}
@@ -1007,7 +1058,13 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
           </div>,
           document.body,
         )}
-      {reviewIdentity && <SteelReviewDialog identity={reviewIdentity} />}
+      {reviewIdentity && (
+        <SteelReviewDialog
+          identity={reviewIdentity}
+          downloadFilename={downloadFilename}
+          saveGateRef={saveGateRef}
+        />
+      )}
     </div>
   );
 });

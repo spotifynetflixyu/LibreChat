@@ -1,10 +1,14 @@
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAtom } from 'jotai';
 import { Maximize2, Minimize2 } from 'lucide-react';
+import { useQueryClient } from '@tanstack/react-query';
+import {
+  DynamicQueryKeys,
+  QueryKeys,
+} from 'librechat-data-provider';
 import {
   Button,
   OGDialog,
-  OGDialogClose,
   OGDialogContent,
   OGDialogDescription,
   OGDialogHeader,
@@ -15,22 +19,80 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@librechat/client';
-import type { SteelReviewRow, SteelReviewTable } from 'librechat-data-provider';
+import type {
+  SteelReviewCommit,
+  SteelReviewErrorCode,
+  SteelReviewKind,
+  SteelReviewPrepared,
+  SteelReviewReceiptStatus,
+  SteelReviewResponse,
+  SteelReviewRow,
+  SteelReviewSavedSnapshot,
+  SteelReviewTable,
+  TMessage,
+} from 'librechat-data-provider';
+import type { MutableRefObject } from 'react';
+import type { SteelReviewPreviewRows } from './SteelReview/filter';
+import type { SteelReviewSelection } from './SteelReview/state';
+import type { TableMatrix } from './table/export';
+import {
+  applySteelReviewDrafts,
+  areSteelReviewDraftOwnersSame,
+  createSteelReviewDraftState,
+  getSteelReviewDirtyRowIds,
+  getSteelReviewDraftKey,
+  getSteelReviewPrepareInput,
+  rebaseSteelReviewDraftState,
+  setSteelReviewDraftCell,
+} from './SteelReview/session';
+import {
+  useCommitSteelReviewMutation,
+  useGetSteelReviewQuery,
+  useGetSteelReviewReceiptQuery,
+  useGetSteelReviewSourceQuery,
+  useGetSteelReviewSourcesQuery,
+  usePrepareSteelReviewMutation,
+} from '~/data-provider';
 import {
   steelReviewDialogStateFamily,
+  steelReviewDraftStateFamily,
   steelReviewIdentityKey,
   steelReviewSelectionAtom,
   steelReviewSourcePreviewKey,
-  type SteelReviewSelection,
 } from './SteelReview/state';
 import {
-  useGetSteelReviewQuery,
-  useGetSteelReviewSourceQuery,
-  useGetSteelReviewSourcesQuery,
-} from '~/data-provider';
-import { getSteelReviewPreviewRows, type SteelReviewPreviewRows } from './SteelReview/filter';
+  applySteelReviewSnapshotToMessages,
+  applySteelReviewSnapshotToResponse,
+} from './SteelReview/cache';
 import SteelReviewSourcePreview from './SteelReview/SourcePreview';
+import { getSteelReviewPreviewRows } from './SteelReview/filter';
+import SteelReviewEditor from './SteelReview/Editor';
+import { createCsvBlob } from './table/export';
+import { triggerDownload } from '~/utils';
 import { useLocalize } from '~/hooks';
+
+export interface SteelReviewSaveGate {
+  ensureSaved: () => Promise<boolean>;
+  getMatrix: () => TableMatrix;
+}
+
+interface SteelReviewDialogProps {
+  identity: SteelReviewSelection;
+  downloadFilename?: string;
+  saveGateRef?: MutableRefObject<SteelReviewSaveGate | undefined>;
+}
+
+type SavePhase = 'idle' | 'preparing' | 'committing' | 'uncertain' | 'stale' | 'reconciling';
+
+type ReceiptInput = {
+  conversationId: string;
+  kind: SteelReviewKind;
+  messageId: string;
+  tableId: string;
+  outputId: string;
+  operationId: string;
+  digest: string;
+};
 
 function getErrorStatus(error: unknown): number | undefined {
   if (typeof error !== 'object' || error === null || !('response' in error)) {
@@ -43,52 +105,55 @@ function getErrorStatus(error: unknown): number | undefined {
   return typeof response.status === 'number' ? response.status : undefined;
 }
 
-function ReviewTable({
-  table,
-  label,
-  rows = table.rows,
-}: {
-  table: SteelReviewTable;
-  label: string;
-  rows?: readonly SteelReviewRow[];
-}) {
-  return (
-    <div className="max-h-[60vh] overflow-auto rounded-md border border-border-light">
-      <table className="min-w-full border-collapse text-sm" aria-label={label}>
-        <thead className="bg-surface-secondary">
-          <tr>
-            {table.headers.map((header) => (
-              <th key={header} scope="col" className="border-b border-border-light px-3 py-2 text-left font-semibold">
-                {header}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={row.rowId}>
-              {table.headers.map((header) => {
-                const cell = row.values[header];
-                const changed = cell?.baseline !== cell?.effective;
-                return (
-                  <td key={`${row.rowId}-${header}`} className="border-b border-border-light px-3 py-2 align-top">
-                    {changed && cell?.baseline !== null && cell?.baseline !== undefined && (
-                      <del className="mr-2 text-text-secondary">{cell.baseline}</del>
-                    )}
-                    <span>{cell?.effective ?? ''}</span>
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
+function getErrorCode(error: unknown): SteelReviewErrorCode | undefined {
+  if (typeof error !== 'object' || error === null || !('response' in error)) {
+    return undefined;
+  }
+  const response = error.response;
+  if (typeof response !== 'object' || response === null || !('data' in response)) {
+    return undefined;
+  }
+  const data = response.data;
+  if (typeof data !== 'object' || data === null || !('code' in data)) {
+    return undefined;
+  }
+  const code = data.code;
+  return code === 'INVALID_REVIEW_QUERY' || code === 'REVIEW_NOT_FOUND' ||
+    code === 'REVIEW_CONFLICT' || code === 'REVIEW_INVALID_OPERATION'
+    ? code
+    : undefined;
 }
 
-export default function SteelReviewDialog({ identity }: { identity: SteelReviewSelection }) {
+function rowsToMatrix(table: Pick<SteelReviewTable, 'headers'>, rows: readonly SteelReviewRow[]): TableMatrix {
+  return [
+    table.headers,
+    ...rows.map((row) => table.headers.map((header) => row.values[header]?.effective ?? '')),
+  ];
+}
+
+function getSaveErrorKey(phase: SavePhase, code?: SteelReviewErrorCode): string {
+  if (phase === 'uncertain') {
+    return 'com_ui_steel_review_save_uncertain';
+  }
+  if (code === 'REVIEW_CONFLICT') {
+    return 'com_ui_steel_review_save_conflict';
+  }
+  if (code === 'REVIEW_INVALID_OPERATION') {
+    return 'com_ui_steel_review_save_stale';
+  }
+  if (phase === 'reconciling') {
+    return 'com_ui_steel_review_receipt_error';
+  }
+  return 'com_ui_steel_review_save_error';
+}
+
+export default function SteelReviewDialog({
+  identity,
+  downloadFilename = 'steel-review.csv',
+  saveGateRef,
+}: SteelReviewDialogProps) {
   const localize = useLocalize();
+  const queryClient = useQueryClient();
   const [selection, setSelection] = useAtom(steelReviewSelectionAtom);
   const isOpen = selection != null &&
     selection.conversationId === identity.conversationId &&
@@ -101,12 +166,55 @@ export default function SteelReviewDialog({ identity }: { identity: SteelReviewS
   const table = query.data?.table;
   const dialogStateKey = steelReviewIdentityKey(identity);
   const [dialogState, setDialogState] = useAtom(steelReviewDialogStateFamily(dialogStateKey));
+  const draftStateKey = table
+    ? getSteelReviewDraftKey(identity, table)
+    : `pending:${dialogStateKey}`;
+  const [draftState, setDraftState] = useAtom(steelReviewDraftStateFamily(draftStateKey));
+  const [closeRequested, setCloseRequested] = useState(false);
+  const [savePhase, setSavePhase] = useState<SavePhase>('idle');
+  const [saveErrorCode, setSaveErrorCode] = useState<SteelReviewErrorCode>();
+  const [receiptInput, setReceiptInput] = useState<ReceiptInput | null>(null);
+  const [discardRequested, setDiscardRequested] = useState(false);
+  const [receiptFailed, setReceiptFailed] = useState(false);
+  const submittedChangeSequenceRef = useRef(0);
+  const preparedRef = useRef<SteelReviewPrepared>();
+  const exportRowsRef = useRef<readonly SteelReviewRow[]>([]);
+  const exportBaseRowsRef = useRef<readonly SteelReviewRow[]>([]);
+  const pendingSnapshotRef = useRef<{ outputId: string; revision: string }>();
+  const prepareMutation = usePrepareSteelReviewMutation();
+  const commitMutation = useCommitSteelReviewMutation();
+  const receiptQuery = useGetSteelReviewReceiptQuery(receiptInput, {
+    enabled: false,
+    retry: false,
+  });
   const {
     selectedFileId,
     pageNumber,
     pageCount,
     fullScreen,
   } = dialogState;
+  const canEdit = Boolean(table && table.kind === 'ocr_result' && table.isLatest && !table.readOnly);
+  const dirtyRowIds = useMemo(
+    () => (table && canEdit ? getSteelReviewDirtyRowIds(table, draftState) : []),
+    [canEdit, draftState, table],
+  );
+  const dirtyRowCount = dirtyRowIds.length;
+  const draftRows = useMemo(
+    () => (table ? applySteelReviewDrafts(table.rows, draftState) : []),
+    [draftState, table],
+  );
+  useEffect(() => {
+    const pendingSnapshot = pendingSnapshotRef.current;
+    if (pendingSnapshot && (
+      table?.outputId !== pendingSnapshot.outputId ||
+      table.revision !== pendingSnapshot.revision
+    )) {
+      return;
+    }
+    pendingSnapshotRef.current = undefined;
+    exportBaseRowsRef.current = table?.rows ?? [];
+    exportRowsRef.current = draftRows;
+  }, [draftRows, table?.outputId, table?.revision, table?.rows]);
   const sourcesQuery = useGetSteelReviewSourcesQuery(
     isOpen
       ? {
@@ -128,6 +236,21 @@ export default function SteelReviewDialog({ identity }: { identity: SteelReviewS
     () => table?.rows.find((row) => row.source?.fileId === selectedSource?.fileId)?.source?.pageNumber,
     [selectedSource?.fileId, table?.rows],
   );
+  useEffect(() => {
+    if (draftState.ownerKey === draftStateKey) {
+      return;
+    }
+    if (areSteelReviewDraftOwnersSame(draftState.ownerKey, draftStateKey)) {
+      setDraftState((current) => ({ ...current, ownerKey: draftStateKey }));
+      return;
+    }
+    setDraftState(createSteelReviewDraftState(draftStateKey));
+  }, [draftState.ownerKey, draftStateKey, setDraftState]);
+  useEffect(() => {
+    if (!isOpen) {
+      setCloseRequested(false);
+    }
+  }, [isOpen]);
   useEffect(() => {
     setDialogState((state) => {
       if (state.isOpen === isOpen) {
@@ -186,14 +309,269 @@ export default function SteelReviewDialog({ identity }: { identity: SteelReviewS
   );
   const previewRows: SteelReviewPreviewRows = useMemo(
     () => getSteelReviewPreviewRows(
-      table?.rows ?? [],
+      draftRows,
       selectedSource?.fileId,
       pageNumber,
       new Set(sources.map((source) => source.fileId)),
       pageCount,
     ),
-    [pageCount, pageNumber, selectedSource?.fileId, sources, table?.rows],
+    [draftRows, pageCount, pageNumber, selectedSource?.fileId, sources],
   );
+  const onCellChange = useCallback(
+    (row: SteelReviewRow, header: string, value: string) => {
+      if (!table || !canEdit || !row.rowId) {
+        return;
+      }
+      setDraftState((current) => {
+        const ownerDraft = current.ownerKey === draftStateKey
+          ? current
+          : createSteelReviewDraftState(draftStateKey);
+        const next = setSteelReviewDraftCell(ownerDraft, row, header, value);
+        if (pendingSnapshotRef.current) {
+          exportRowsRef.current = applySteelReviewDrafts(exportBaseRowsRef.current, next);
+        }
+        return next;
+      });
+    },
+    [canEdit, draftStateKey, setDraftState, table],
+  );
+  const latestDraftStateRef = useRef(draftState);
+  latestDraftStateRef.current = draftState;
+  const savePromiseRef = useRef<Promise<boolean>>();
+  const applyConfirmedSnapshot = useCallback((snapshot: SteelReviewSavedSnapshot, submittedChangeSequence: number) => {
+    const tableKey = DynamicQueryKeys.steelReview(
+      identity.conversationId,
+      identity.kind,
+      identity.messageId,
+      identity.tableId,
+      table?.partIndex ?? identity.partIndex,
+    );
+    queryClient.setQueryData<SteelReviewResponse>(tableKey, (current) =>
+      applySteelReviewSnapshotToResponse(current, snapshot));
+    queryClient.setQueryData<TMessage[]>(
+      [QueryKeys.messages, identity.conversationId],
+      (current) => applySteelReviewSnapshotToMessages(current, identity.kind, snapshot),
+    );
+    exportBaseRowsRef.current = snapshot.rows;
+    exportRowsRef.current = snapshot.rows;
+    pendingSnapshotRef.current = { outputId: snapshot.outputId, revision: snapshot.revision };
+    setDraftState((current) => {
+      const rebased = rebaseSteelReviewDraftState(current, snapshot.rows, submittedChangeSequence);
+      exportRowsRef.current = applySteelReviewDrafts(snapshot.rows, rebased);
+      return rebased;
+    });
+  }, [identity, queryClient, setDraftState, table?.partIndex]);
+  const saveChanges = useCallback(async (): Promise<boolean> => {
+    const existingPromise = savePromiseRef.current;
+    if (existingPromise) {
+      return existingPromise;
+    }
+    if (!table || !canEdit) {
+      return true;
+    }
+    if (savePhase === 'reconciling') {
+      return false;
+    }
+    if (savePhase === 'uncertain' && dirtyRowCount === 0) {
+      return false;
+    }
+    if (dirtyRowCount === 0) {
+      return true;
+    }
+
+    const promise = (async () => {
+      let commitAttempted = false;
+      if (!preparedRef.current) {
+        submittedChangeSequenceRef.current = draftState.changeSequence;
+      }
+      setSaveErrorCode(undefined);
+      setSavePhase(preparedRef.current ? 'committing' : 'preparing');
+      try {
+        const prepared = preparedRef.current ?? await prepareMutation.mutateAsync(
+          getSteelReviewPrepareInput(identity, table, draftRows),
+        );
+        preparedRef.current = prepared;
+        setSavePhase('committing');
+        commitAttempted = true;
+        const saved = await commitMutation.mutateAsync(prepared as SteelReviewCommit);
+        if (saved.changedRows > 0 && !saved.savedSnapshot) {
+          setSavePhase('uncertain');
+          return false;
+        }
+        if (saved.savedSnapshot) {
+          applyConfirmedSnapshot(saved.savedSnapshot, submittedChangeSequenceRef.current);
+        }
+        preparedRef.current = undefined;
+        setSavePhase('idle');
+        setSaveErrorCode(undefined);
+        return true;
+      } catch (error) {
+        const code = getErrorCode(error);
+        if (code === 'REVIEW_CONFLICT' || code === 'REVIEW_INVALID_OPERATION' || code === 'REVIEW_NOT_FOUND') {
+          preparedRef.current = undefined;
+          setSavePhase('stale');
+          setSaveErrorCode(code);
+          void query.refetch();
+        } else if (commitAttempted) {
+          setSavePhase('uncertain');
+          setSaveErrorCode(undefined);
+        } else {
+          setSavePhase('idle');
+          setSaveErrorCode(code);
+        }
+        return false;
+      }
+    })();
+    savePromiseRef.current = promise;
+    try {
+      return await promise;
+    } finally {
+      if (savePromiseRef.current === promise) {
+        savePromiseRef.current = undefined;
+      }
+    }
+  }, [applyConfirmedSnapshot, canEdit, commitMutation, dirtyRowCount, draftRows, draftState.changeSequence, identity, prepareMutation, query, savePhase, table]);
+  const getExportMatrix = useCallback(
+    () => (table ? rowsToMatrix(table, exportRowsRef.current) : []),
+    [table],
+  );
+  const ensureSaved = useCallback(async () => {
+    if (savePhase === 'uncertain' || savePhase === 'reconciling') {
+      return false;
+    }
+    const saved = await saveChanges();
+    if (!saved || !table) {
+      return saved;
+    }
+    const latestDraft = latestDraftStateRef.current;
+    return getSteelReviewDirtyRowIds(table, latestDraft).length === 0;
+  }, [saveChanges, savePhase, table]);
+  useEffect(() => {
+    if (!saveGateRef) {
+      return undefined;
+    }
+    saveGateRef.current = { ensureSaved, getMatrix: getExportMatrix };
+    return () => {
+      saveGateRef.current = undefined;
+    };
+  }, [ensureSaved, getExportMatrix, saveGateRef]);
+  const clearDraftAndClose = useCallback(() => {
+    setDraftState(createSteelReviewDraftState(draftStateKey));
+    preparedRef.current = undefined;
+    setSavePhase('idle');
+    setSaveErrorCode(undefined);
+    setReceiptFailed(false);
+    setCloseRequested(false);
+    setSelection(null);
+  }, [draftStateKey, setDraftState, setSelection]);
+  const requestReceiptBeforeDiscard = useCallback(() => {
+    const prepared = preparedRef.current;
+    if (!prepared) {
+      clearDraftAndClose();
+      return;
+    }
+    setReceiptFailed(false);
+    setSavePhase('reconciling');
+    setReceiptInput({
+      conversationId: prepared.conversationId,
+      kind: prepared.kind,
+      messageId: prepared.messageId,
+      tableId: prepared.tableId,
+      outputId: prepared.outputId,
+      operationId: prepared.operationId,
+      digest: prepared.digest,
+    });
+    setDiscardRequested(true);
+  }, [clearDraftAndClose]);
+  const discardDraftAndClose = useCallback(() => {
+    if (savePhase === 'uncertain' || savePhase === 'reconciling') {
+      requestReceiptBeforeDiscard();
+      return;
+    }
+    clearDraftAndClose();
+  }, [clearDraftAndClose, requestReceiptBeforeDiscard, savePhase]);
+  const requestClose = useCallback(() => {
+    if (dirtyRowCount > 0 || savePhase === 'preparing' || savePhase === 'committing' ||
+      savePhase === 'uncertain' || savePhase === 'reconciling') {
+      setCloseRequested(true);
+      return;
+    }
+    setSelection(null);
+  }, [dirtyRowCount, savePhase, setSelection]);
+  useEffect(() => {
+    if (!discardRequested || !receiptInput) {
+      return undefined;
+    }
+    let active = true;
+    void receiptQuery.refetch().then((result) => {
+      if (!active) {
+        return;
+      }
+      setDiscardRequested(false);
+      setReceiptInput(null);
+      if (result.error || !result.data) {
+        setSavePhase('reconciling');
+        setSaveErrorCode(getErrorCode(result.error));
+        setReceiptFailed(true);
+        return;
+      }
+      const status: SteelReviewReceiptStatus = result.data;
+      if (status.status === 'committed') {
+        const currentTable = query.data?.table;
+        const prepared = preparedRef.current;
+        if (currentTable && prepared && (
+          currentTable.outputId !== status.snapshot.outputId ||
+          (currentTable.revision !== prepared.revision && currentTable.revision !== status.snapshot.revision)
+        )) {
+          setSavePhase('stale');
+          setSaveErrorCode('REVIEW_CONFLICT');
+          return;
+        }
+        applyConfirmedSnapshot(status.snapshot, submittedChangeSequenceRef.current);
+        clearDraftAndClose();
+        return;
+      }
+      clearDraftAndClose();
+    }).catch(() => {
+      if (active) {
+        setDiscardRequested(false);
+        setReceiptInput(null);
+        setSavePhase('reconciling');
+        setSaveErrorCode(undefined);
+        setReceiptFailed(true);
+      }
+    });
+    return () => {
+      active = false;
+    };
+  }, [applyConfirmedSnapshot, clearDraftAndClose, discardRequested, query.data?.table, receiptInput, receiptQuery.refetch]);
+  const saveAndClose = useCallback(async () => {
+    const saved = await saveChanges();
+    if (!saved || !table) {
+      return;
+    }
+    const latestDraft = latestDraftStateRef.current;
+    if (getSteelReviewDirtyRowIds(table, latestDraft).length === 0) {
+      setCloseRequested(false);
+      setSelection(null);
+    }
+  }, [saveChanges, setSelection, table]);
+  const downloadCsv = useCallback(async () => {
+    if (!(await ensureSaved())) {
+      return;
+    }
+    const matrix = getExportMatrix();
+    if (matrix.length === 0) {
+      return;
+    }
+    triggerDownload(
+      URL.createObjectURL(createCsvBlob(matrix)),
+      downloadFilename,
+    );
+  }, [downloadFilename, ensureSaved, getExportMatrix]);
+  const saveBusy = savePhase === 'preparing' || savePhase === 'committing' || savePhase === 'reconciling';
+  const saveDisabled = !canEdit || dirtyRowCount === 0 || saveBusy;
+  const saveErrorKey = getSaveErrorKey(savePhase, saveErrorCode);
   const onPageCount = useCallback((count: number) => {
     setDialogState((state) => ({
       ...state,
@@ -215,7 +593,7 @@ export default function SteelReviewDialog({ identity }: { identity: SteelReviewS
     <OGDialog
       open={isOpen}
       onOpenChange={(open) => {
-        if (!open && isOpen) setSelection(null);
+        if (!open && isOpen) requestClose();
       }}
     >
       <OGDialogContent
@@ -243,7 +621,7 @@ export default function SteelReviewDialog({ identity }: { identity: SteelReviewS
             {localize('com_ui_steel_review_title')}
           </OGDialogTitle>
           <OGDialogDescription className="text-left">
-            {localize('com_ui_steel_review_readonly')}
+            {localize(canEdit ? 'com_ui_steel_review_editable' : 'com_ui_steel_review_readonly')}
           </OGDialogDescription>
         </OGDialogHeader>
         <div className="flex justify-end">
@@ -365,25 +743,113 @@ export default function SteelReviewDialog({ identity }: { identity: SteelReviewS
               )}
               {selectedSource ? (
                 <>
-                  <ReviewTable table={table} rows={previewRows.located} label={localize('com_ui_steel_review_table_label')} />
+                  <SteelReviewEditor
+                    table={table}
+                    rows={previewRows.located}
+                    draft={draftState}
+                    labels={{
+                      table: localize('com_ui_steel_review_table_label'),
+                      readonly: localize('com_ui_steel_review_cell_readonly'),
+                    }}
+                    onCellChange={onCellChange}
+                  />
                   {previewRows.unlocated.length > 0 && (
                     <div className="space-y-2">
                       <h3 className="text-sm font-semibold">{localize('com_ui_steel_review_unlocated')}</h3>
-                      <ReviewTable table={table} rows={previewRows.unlocated} label={localize('com_ui_steel_review_unlocated')} />
+                      <SteelReviewEditor
+                        table={table}
+                        rows={previewRows.unlocated}
+                        draft={draftState}
+                        labels={{
+                          table: localize('com_ui_steel_review_unlocated'),
+                          readonly: localize('com_ui_steel_review_cell_readonly'),
+                        }}
+                        onCellChange={onCellChange}
+                      />
                     </div>
                   )}
                 </>
               ) : (
-                <ReviewTable table={table} label={localize('com_ui_steel_review_table_label')} />
+                <SteelReviewEditor
+                  table={table}
+                  rows={draftRows}
+                  draft={draftState}
+                  labels={{
+                    table: localize('com_ui_steel_review_table_label'),
+                    readonly: localize('com_ui_steel_review_cell_readonly'),
+                  }}
+                  onCellChange={onCellChange}
+                />
               )}
             </div>
           )}
         </div>
-        <div className="flex justify-end">
-          <OGDialogClose asChild>
-            <Button type="button">{localize('com_ui_close')}</Button>
-          </OGDialogClose>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2" aria-live="polite">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={saveDisabled}
+              aria-busy={saveBusy}
+              onClick={() => void saveChanges()}
+            >
+              {localize('com_ui_steel_review_save')}
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!table || saveBusy}
+              aria-busy={saveBusy}
+              onClick={() => void downloadCsv()}
+            >
+              {localize('com_ui_download_table_csv')}
+            </Button>
+            {dirtyRowCount > 0 && (
+              <span className="text-sm text-text-secondary">
+                {localize('com_ui_steel_review_unsaved_caption', { 0: dirtyRowCount })}
+              </span>
+            )}
+            {saveBusy && (
+              <span role="status">
+                {localize(savePhase === 'reconciling'
+                  ? 'com_ui_steel_review_reconciling'
+                  : 'com_ui_steel_review_saving')}
+              </span>
+            )}
+            {(saveErrorCode || savePhase === 'uncertain' || savePhase === 'stale' ||
+              (savePhase === 'reconciling' && receiptFailed)) && (
+              <span role="alert">{localize(saveErrorKey)}</span>
+            )}
+          </div>
+          <Button type="button" onClick={requestClose}>{localize('com_ui_close')}</Button>
         </div>
+        {closeRequested && (
+          <div className="space-y-3 rounded-md border border-border-light bg-surface-secondary p-3" role="alertdialog" aria-label={localize('com_ui_steel_review_close_confirm')}>
+            <p className="text-sm">{localize('com_ui_steel_review_close_confirm')}</p>
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={saveBusy || !canEdit || dirtyRowCount === 0}
+                aria-busy={saveBusy}
+                onClick={() => void saveAndClose()}
+              >
+                {localize('com_ui_steel_review_save_updates')}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={saveBusy}
+                onClick={discardDraftAndClose}
+              >
+                {localize('com_ui_steel_review_discard_unsaved')}
+              </Button>
+              <Button type="button" onClick={() => setCloseRequested(false)}>
+                {localize('com_ui_steel_review_continue_editing')}
+              </Button>
+            </div>
+          </div>
+        )}
       </OGDialogContent>
     </OGDialog>
   );
