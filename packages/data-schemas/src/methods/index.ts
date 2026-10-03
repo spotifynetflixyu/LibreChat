@@ -11,6 +11,7 @@ export {
 } from './mcpAuthorizationFenceRetry';
 export { createOAuthCompactionMethods };
 export { createSteelReviewReadMethods };
+export { createSteelReviewSourceMethods } from './steelSources';
 import {
   createRefreshTokenBridgeMethods,
   type RefreshTokenBridgeMethods,
@@ -192,6 +193,7 @@ import {
 /* Insights */
 import { createInsightsMethods, type InsightsMethods } from './insights';
 import { createSteelReviewReadMethods, type SteelReviewReadMethods } from './steelReview';
+import { createSteelReviewSourceMethods, type SteelReviewSourceMethods } from './steelSources';
 
 export {
   runAfterTransaction,
@@ -276,7 +278,8 @@ export type AllMethods = UserMethods &
   ConfigMethods &
   MCPAuthorityMethods &
   InsightsMethods &
-  SteelReviewReadMethods;
+  SteelReviewReadMethods &
+  SteelReviewSourceMethods;
 
 /** Dependencies injected from the api layer into createMethods */
 export interface CreateMethodsDeps {
@@ -521,6 +524,7 @@ export function createMethods(
     /* Insights */
     ...createInsightsMethods(mongoose),
     ...createSteelReviewReadMethods(mongoose),
+    ...createSteelReviewSourceMethods(mongoose),
   };
 }
 
@@ -605,6 +609,7 @@ export type {
   MCPAuthorityCredentialSourceDocument,
   InsightsMethods,
   SteelReviewReadMethods,
+  SteelReviewSourceMethods,
 };
 
 export { recordAgentEventActorReceiptMetric, setAgentEventActorReceiptMetricObserver };

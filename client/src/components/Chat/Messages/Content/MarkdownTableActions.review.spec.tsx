@@ -13,6 +13,20 @@ jest.mock('@librechat/client', () => {
   }) => React.createElement('div', props, children);
   const Button = ({ children, ...props }: { children?: React.ReactNode }) =>
     React.createElement('button', props, children);
+  const Select = ({ value, onValueChange, children }: {
+    value?: string;
+    onValueChange?: (value: string) => void;
+    children?: React.ReactNode;
+  }) => React.createElement(
+    'select',
+    { value, onChange: (event: React.ChangeEvent<HTMLSelectElement>) => onValueChange?.(event.target.value) },
+    children,
+  );
+  const SelectContent = ({ children }: { children?: React.ReactNode }) => children;
+  const SelectItem = ({ value, children }: { value: string; children?: React.ReactNode }) =>
+    React.createElement('option', { value }, children);
+  const SelectTrigger = () => null;
+  const SelectValue = () => null;
   const Dialog = ({ open, children }: { open: boolean; children?: React.ReactNode }) =>
     (open ? React.createElement('div', { role: 'dialog' }, children) : null);
   return {
@@ -28,10 +42,14 @@ jest.mock('@librechat/client', () => {
     OGDialogDescription: Pass,
     OGDialogHeader: Pass,
     OGDialogTitle: Pass,
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
   };
 }, { virtual: true });
 
-const mockUseGetSteelReviewQuery = jest.fn();
 let mockMessageContext: {
   conversationId: string;
   isCreatedByUser: boolean;
@@ -46,8 +64,26 @@ let mockMessageContext: {
 };
 
 jest.mock('~/data-provider', () => ({
-  useGetSteelReviewQuery: (...args: unknown[]) => mockUseGetSteelReviewQuery(...args),
+  useGetSteelReviewQuery: jest.fn(),
+  useGetSteelReviewSourcesQuery: jest.fn(() => ({
+    data: { sources: [] },
+    error: null,
+    isError: false,
+    isLoading: false,
+  })),
+  useGetSteelReviewSourceQuery: jest.fn(() => ({
+    data: undefined,
+    error: null,
+    isError: false,
+    isLoading: false,
+    refetch: jest.fn(),
+  })),
 }));
+const {
+  useGetSteelReviewQuery: mockUseGetSteelReviewQuery,
+} = jest.requireMock('~/data-provider') as {
+  useGetSteelReviewQuery: jest.Mock;
+};
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
 }));
