@@ -1085,9 +1085,10 @@ test.describe('Steel managed source review', () => {
   test('a legacy OCR row with initially null source metadata remains saveable', async ({ page }) => {
     const { conversationId, messageId } = await seedCurrent(ocr);
     conversations.push(conversationId);
-    await withMongo((db) => db.collection('steel_conversation_ocr_states').updateOne(
+    const cleared = await withMongo((db) => db.collection('steel_conversation_ocr_state').updateOne(
       { conversationId }, { $set: { sourceMappings: [] } },
     ));
+    expect(cleared.matchedCount).toBe(1);
     const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
     expect(read.status()).toBe(200);
     const { table } = await read.json() as { table: SteelReviewTable };
