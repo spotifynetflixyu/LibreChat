@@ -4,6 +4,7 @@ import type {
   SteelReviewCell,
   SteelReviewRow,
   SteelReviewSource,
+  SteelReviewSourceMapping,
 } from 'librechat-data-provider';
 import type {
   ISteelReviewOutput,
@@ -33,6 +34,16 @@ const steelReviewRowSchema: Schema<SteelReviewRow> = new Schema(
     rowId: { type: String, required: true },
     values: { type: Map, of: steelReviewCellSchema, required: true },
     source: { type: steelReviewSourceSchema, default: null },
+  },
+  { _id: false },
+);
+
+const steelReviewSourceMappingSchema = new Schema<SteelReviewSourceMapping>(
+  {
+    fileId: { type: String, required: true },
+    sourceCode: { type: String, required: true },
+    sourceFilename: { type: String, required: true },
+    mediaType: { type: String },
   },
   { _id: false },
 );
@@ -68,6 +79,7 @@ const steelReviewReceiptSchema = new Schema(
           revision: { type: String, required: true },
           headers: { type: [String], required: true, default: [] },
           rows: { type: [steelReviewRowSchema], required: true, default: [] },
+          sourceMappings: { type: [steelReviewSourceMappingSchema], default: undefined },
           changedRows: { type: Number, required: true, min: 0 },
           changedRowIds: { type: [String], required: true, default: [] },
           savedAt: { type: Date, required: true },
@@ -111,6 +123,7 @@ const steelReviewOutputSchema: Schema<ISteelReviewOutput> = new Schema<ISteelRev
     state: { type: String, enum: ['current', 'historical'], required: true },
     headers: { type: [String], required: true, default: [] },
     rows: { type: [steelReviewRowSchema], required: true, default: [] },
+    sourceMappings: { type: [steelReviewSourceMappingSchema], default: undefined },
     latestOutputId: { type: String },
     aiUpdatedAt: { type: Date },
     aiRawMarkdown: { type: String },

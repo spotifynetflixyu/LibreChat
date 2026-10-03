@@ -92,6 +92,23 @@ export const steelReviewSourceSchema = z.object({
   mediaType: z.string().min(1).optional(),
 });
 
+export const steelReviewSourceIntentSchema = z.object({
+  rowId: z.string().min(1),
+  fileId: z.string().min(1).nullable(),
+  pageNumber: z.number().int().positive().nullable(),
+}).superRefine((intent, context) => {
+  if (intent.fileId === null && intent.pageNumber !== null) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'A cleared source cannot keep a page' });
+  }
+});
+
+export const steelReviewSourceMappingSchema = z.object({
+  fileId: z.string().min(1),
+  sourceCode: z.string().min(1),
+  sourceFilename: z.string().min(1),
+  mediaType: z.string().min(1).optional(),
+});
+
 export const steelReviewCellSchema = z.object({
   baseline: z.string().nullable(),
   effective: z.string().nullable(),
@@ -143,6 +160,7 @@ export const steelReviewSavedSnapshotSchema = z.object({
   messageTextParts: z.array(steelReviewTextPartSchema).optional(),
   effectiveMarkdown: z.string(),
   displayMarkdown: z.string(),
+  sourceMappings: z.array(steelReviewSourceMappingSchema).optional(),
   ownerUpdated: steelReviewOwnerUpdatedSchema.optional(),
 });
 
@@ -182,6 +200,7 @@ export const steelReviewTableSchema = z.object({
   lastSave: steelReviewReceiptSchema.optional(),
   headers: z.array(z.string()),
   rows: z.array(steelReviewRowSchema),
+  sourceMappings: z.array(steelReviewSourceMappingSchema).optional(),
 });
 
 export const steelReviewPrepareSchema = z.object({
@@ -193,6 +212,7 @@ export const steelReviewPrepareSchema = z.object({
   outputId: z.string().min(1),
   revision: z.string().min(1),
   rows: z.array(steelReviewRowSchema),
+  sourceIntents: z.array(steelReviewSourceIntentSchema).optional(),
 });
 
 export const steelReviewPreparedSchema = steelReviewPrepareSchema.extend({
@@ -208,7 +228,15 @@ export const steelReviewPreparedSchema = steelReviewPrepareSchema.extend({
   displayMarkdown: z.string(),
   aiBaselineMarkdown: z.string().optional(),
   aiRawMarkdown: z.string().optional(),
+  sourceMappings: z.array(steelReviewSourceMappingSchema),
   caption: steelReviewCaptionSchema,
+});
+
+// The old 03 commit shape is retained only so the API can validate an
+// already-committed receipt replay without manufacturing a new operation.
+export const steelReviewLegacyCommitSchema = steelReviewPreparedSchema.omit({
+  sourceIntents: true,
+  sourceMappings: true,
 });
 
 export const steelReviewCommitSchema = steelReviewPreparedSchema;
@@ -245,6 +273,10 @@ export const steelReviewSourcesResponseSchema = z.object({
   sources: z.array(steelReviewSourceFileSchema),
 });
 
+export const steelReviewSourcePageCountSchema = z.object({
+  pageCount: z.number().int().positive(),
+});
+
 export const steelReviewSourceQuerySchema = z.object({
   messageId: z.string().trim().min(1).max(300),
   tableId: z.string().trim().min(1).max(300).optional(),
@@ -255,6 +287,8 @@ export const steelReviewSourceBinaryQuerySchema = z.object({
 });
 
 export type SteelReviewSource = z.infer<typeof steelReviewSourceSchema>;
+export type SteelReviewSourceIntent = z.infer<typeof steelReviewSourceIntentSchema>;
+export type SteelReviewSourceMapping = z.infer<typeof steelReviewSourceMappingSchema>;
 export type SteelReviewCell = z.infer<typeof steelReviewCellSchema>;
 export type SteelReviewRow = z.infer<typeof steelReviewRowSchema>;
 export type SteelReviewTable = z.infer<typeof steelReviewTableSchema>;
@@ -269,9 +303,11 @@ export type SteelReviewPrepare = z.infer<typeof steelReviewPrepareSchema>;
 export type SteelReviewPrepared = z.infer<typeof steelReviewPreparedSchema>;
 export type SteelReviewCommit = z.infer<typeof steelReviewCommitSchema>;
 
-export type SteelReviewDigestInput = Omit<SteelReviewPrepared, 'operationId' | 'digest'> & {
+export type SteelReviewDigestInput = Omit<SteelReviewPrepared, 'operationId' | 'digest' | 'sourceIntents' | 'sourceMappings'> & {
   userId: string;
   tenantId?: string | null;
+  sourceIntents?: SteelReviewSourceIntent[];
+  sourceMappings?: SteelReviewSourceMapping[];
 };
 
 export function sameSteelReviewSource(
@@ -306,7 +342,13 @@ export function normalizeSteelReviewRows(rows: readonly SteelReviewRow[]): Steel
 
 /** Keep the wire digest's field order and null semantics in one browser-safe encoder. */
 export function encodeSteelReviewDigest(input: SteelReviewDigestInput): string {
-  return JSON.stringify({
+  const hasSourceIntents = Object.prototype.hasOwnProperty.call(input, 'sourceIntents');
+  const hasSourceMappings = Object.prototype.hasOwnProperty.call(input, 'sourceMappings');
+  if ((hasSourceIntents && !Array.isArray(input.sourceIntents)) ||
+    (hasSourceMappings && !Array.isArray(input.sourceMappings))) {
+    throw new Error('Steel review source digest fields must be arrays when present');
+  }
+  const payload: Record<string, unknown> = {
     userId: input.userId,
     tenantId: input.tenantId ?? null,
     conversationId: input.conversationId,
@@ -317,6 +359,14 @@ export function encodeSteelReviewDigest(input: SteelReviewDigestInput): string {
     outputId: input.outputId,
     revision: input.revision,
     rows: input.rows,
+  };
+  if (hasSourceIntents) {
+    payload.sourceIntents = input.sourceIntents;
+  }
+  if (hasSourceMappings) {
+    payload.sourceMappings = input.sourceMappings;
+  }
+  Object.assign(payload, {
     headers: input.headers,
     messageSha256: input.messageSha256,
     target: input.target,
@@ -329,9 +379,11 @@ export function encodeSteelReviewDigest(input: SteelReviewDigestInput): string {
     aiRawMarkdown: input.aiRawMarkdown ?? null,
     caption: input.caption,
   });
+  return JSON.stringify(payload);
 }
 export type SteelReviewSaveResponse = z.infer<typeof steelReviewSaveResponseSchema>;
 export type SteelReviewSourceFile = z.infer<typeof steelReviewSourceFileSchema>;
 export type SteelReviewSourcesResponse = z.infer<typeof steelReviewSourcesResponseSchema>;
+export type SteelReviewSourcePageCount = z.infer<typeof steelReviewSourcePageCountSchema>;
 export type SteelReviewSourceQuery = z.infer<typeof steelReviewSourceQuerySchema>;
 export type SteelReviewSourceBinaryQuery = z.infer<typeof steelReviewSourceBinaryQuerySchema>;

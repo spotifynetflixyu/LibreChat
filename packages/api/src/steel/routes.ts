@@ -82,6 +82,7 @@ export interface SteelRouteHandlers {
   commitReview(req: SteelRequest, res: Response): Promise<void>;
   listReviewSources(req: SteelRequest, res: Response): Promise<void>;
   readReviewSource(req: SteelRequest, res: Response): Promise<void>;
+  readReviewSourcePageCount(req: SteelRequest, res: Response): Promise<void>;
 }
 
 function getSteelRequestUser(req: SteelRequest) {
@@ -315,6 +316,42 @@ export function createSteelRouteHandlers({
       }
     },
 
+    async readReviewSourcePageCount(req, res) {
+      const fileId = req.params.fileId;
+      const scopeResult = parseSteelReviewRouteScope(req, 'Invalid review source query');
+      if (!('scope' in scopeResult)) {
+        sendSteelReviewRouteScopeError(res, scopeResult);
+        return;
+      }
+      if (typeof fileId !== 'string' || !fileId) {
+        res.status(400).json({ message: 'Invalid review source query' });
+        return;
+      }
+      const { userId, conversationId, kind } = scopeResult.scope;
+      if (!sourceService) {
+        res.status(500).json({ message: 'Steel review source unavailable' });
+        return;
+      }
+      try {
+        const messageId = typeof req.query.messageId === 'string' ? req.query.messageId : '';
+        const result = await sourceService.readPageCount({
+          userId,
+          tenantId: req.tenantId ?? req.user?.tenantId,
+          conversationId,
+          kind,
+          fileId,
+          messageId,
+        }, req as ServerRequest);
+        res.status(200).json({ pageCount: result.pageCount });
+      } catch (error) {
+        if (error instanceof SteelReviewSourceError) {
+          res.status(error.statusCode).json({ message: error.message, code: error.code });
+          return;
+        }
+        res.status(500).json({ message: 'Steel review source page count failed' });
+      }
+    },
+
     async prepareReview(req, res) {
       const userId = req.user?.id;
       const conversationId = req.params.conversationId;
@@ -339,6 +376,7 @@ export function createSteelRouteHandlers({
           tenantId: req.tenantId ?? req.user?.tenantId,
           conversationId,
           kind,
+          sourceRequest: req as ServerRequest,
         });
         res.status(200).json(result);
       } catch (error) {
@@ -375,6 +413,7 @@ export function createSteelRouteHandlers({
           tenantId: req.tenantId ?? req.user?.tenantId,
           conversationId,
           kind,
+          sourceRequest: req as ServerRequest,
         });
         res.status(200).json(result);
       } catch (error) {

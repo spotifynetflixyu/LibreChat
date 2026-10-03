@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { fireEvent, render, screen } from '@testing-library/react';
-import type { SteelReviewTable } from 'librechat-data-provider';
+import type { SteelReviewSourceFile, SteelReviewTable } from 'librechat-data-provider';
 import { createSteelReviewDraftState, setSteelReviewDraftCell } from './session';
 import SteelReviewEditor, { isSteelReviewCellEditable } from './Editor';
 
@@ -83,5 +83,97 @@ describe('Steel review local editor gates', () => {
 
     expect(screen.queryByRole('textbox')).toBeNull();
     expect(screen.getByLabelText('品名規格: Read-only cell')).toHaveTextContent('鋼板');
+  });
+
+  it('offers a source correction action with stable source labels', () => {
+    const onSourceEdit = jest.fn();
+    const sources: SteelReviewSourceFile[] = [{
+      fileId: 'file-1',
+      filename: 'drawing.pdf',
+      mediaType: 'application/pdf',
+    }];
+    render(
+      <SteelReviewEditor
+        table={table}
+        rows={table.rows}
+        draft={createSteelReviewDraftState('owner')}
+        labels={{
+          table: 'Steel review table',
+          readonly: 'Read-only cell',
+          changeSource: 'Change source',
+          sourceFile: 'Source file',
+          sourceActions: 'Source actions',
+        }}
+        sources={sources}
+        onCellChange={jest.fn()}
+        onSourceEdit={onSourceEdit}
+        onSourceChange={jest.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('columnheader', { name: 'Source actions' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Change source row-1' }));
+    expect(onSourceEdit).toHaveBeenCalledWith(table.rows[0]);
+  });
+
+  it('keeps the source selector visible after entering a correction row', () => {
+    render(
+      <SteelReviewEditor
+        table={table}
+        rows={table.rows}
+        draft={createSteelReviewDraftState('owner')}
+        labels={{
+          table: 'Steel review table',
+          readonly: 'Read-only cell',
+          sourceFile: 'Source file',
+          sourcePage: 'Source page',
+          sourceNoPage: 'No page',
+          clearSource: 'Clear source',
+          sourceActions: 'Source actions',
+        }}
+        sources={[{ fileId: 'file-1', filename: 'drawing.png', mediaType: 'image/png' }]}
+        sourceCorrectionRowId="row-1"
+        onCellChange={jest.fn()}
+        onSourceChange={jest.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('columnheader', { name: 'Source actions' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Source file' })).toBeInTheDocument();
+  });
+
+  it('offers a retry when the selected source page count is unavailable', () => {
+    const onSourcePageRetry = jest.fn();
+    const sourceRow = {
+      ...table.rows[0],
+      source: { fileId: 'file-1', pageNumber: null, filename: 'drawing.pdf' },
+    };
+    render(
+      <SteelReviewEditor
+        table={table}
+        rows={[sourceRow]}
+        draft={createSteelReviewDraftState('owner')}
+        labels={{
+          table: 'Steel review table',
+          readonly: 'Read-only cell',
+          sourceFile: 'Source file',
+          sourcePage: 'Source page',
+          sourceNoPage: 'No page',
+          sourceActions: 'Source actions',
+          sourcePageUnavailable: 'Source pages unavailable',
+          sourcePageRetry: 'Retry',
+        }}
+        sources={[{ fileId: 'file-1', filename: 'drawing.pdf', mediaType: 'application/pdf' }]}
+        sourceCorrectionRowId="row-1"
+        sourcePageCountError
+        onSourcePageRetry={onSourcePageRetry}
+        onCellChange={jest.fn()}
+        onSourceChange={jest.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('alert')).toHaveTextContent('Source pages unavailable');
+    fireEvent.click(screen.getByRole('button', { name: /Retry/u }));
+    expect(onSourcePageRetry).toHaveBeenCalledTimes(1);
   });
 });
