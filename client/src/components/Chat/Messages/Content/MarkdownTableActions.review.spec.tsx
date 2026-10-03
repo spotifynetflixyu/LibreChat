@@ -421,6 +421,87 @@ describe('MarkdownTableActions Steel review entry', () => {
     expect(screen.queryByText('com_ui_steel_review_unsaved_caption')).toBeNull();
   });
 
+  it('shows authoritative prepared and confirmed row counts across a delayed commit', async () => {
+    const prepared = {
+      ...reviewIdentity,
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      rows: [],
+      operationId: 'operation-caption',
+      digest: 'j'.repeat(64),
+      messageSha256: 'k'.repeat(64),
+      target: { start: 0, end: 1, sha256: 'l'.repeat(64) },
+      replacementText: 'replacement',
+      cleanReplacementText: 'replacement',
+      targetText: 'target',
+      headers: ['品名'],
+      effectiveMarkdown: 'effective',
+      displayMarkdown: 'display',
+      caption: { kind: reviewIdentity.kind, changedRows: 1, changedRowIds: ['row-1'] },
+    };
+    const authorityTable = {
+      ...reviewIdentity,
+      outputId: prepared.outputId,
+      revision: prepared.revision,
+      latestOutputId: prepared.outputId,
+      isLatest: true,
+      readOnly: false,
+      headers: ['品名'],
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 品名: { baseline: '鋼板', effective: '鋼板' } },
+      }],
+    };
+    const savedSnapshot = {
+      operationId: prepared.operationId,
+      digest: prepared.digest,
+      outputId: prepared.outputId,
+      revision: prepared.revision,
+      headers: authorityTable.headers,
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 品名: { baseline: '鋼板', effective: '鍍鋅鋼板' } },
+      }],
+      changedRows: 1,
+      changedRowIds: ['row-1'],
+      savedAt: '2026-10-03T00:00:00.000Z',
+      messageSha256: 'm'.repeat(64),
+      conversationId: prepared.conversationId,
+      messageId: prepared.messageId,
+      messageText: 'saved',
+      effectiveMarkdown: 'effective',
+      displayMarkdown: 'display',
+    };
+    let resolveCommit!: (value: { changedRows: number; changedRowIds: string[]; savedSnapshot: typeof savedSnapshot }) => void;
+    const prepare = jest.fn().mockResolvedValue(prepared);
+    const commit = jest.fn(() => new Promise<{ changedRows: number; changedRowIds: string[]; savedSnapshot: typeof savedSnapshot }>((resolve) => {
+      resolveCommit = resolve;
+    }));
+    mockUsePrepareSteelReviewMutation.mockReturnValue({ mutateAsync: prepare });
+    mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
+    mockUseGetSteelReviewQuery.mockReturnValue({
+      data: { table: authorityTable },
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: jest.fn().mockResolvedValue({ data: { table: authorityTable }, error: null }),
+    });
+
+    renderDialog();
+    fireEvent.change(screen.getByRole('textbox', { name: '品名 row-1' }), { target: { value: '鍍鋅鋼板' } });
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+    expect(screen.getByText('com_ui_steel_review_save_caption')).toBeInTheDocument();
+    expect(screen.queryByText('com_ui_steel_review_updated_caption')).toBeNull();
+
+    resolveCommit({ changedRows: 1, changedRowIds: ['row-1'], savedSnapshot });
+    await waitFor(() => expect(screen.getByText('com_ui_steel_review_updated_caption')).toBeInTheDocument());
+    expect(screen.queryByText('com_ui_steel_review_save_caption')).toBeNull();
+  });
+
   it('rebases a normalized no-op against fresh authority without projecting a snapshot', async () => {
     const table = {
       ...reviewIdentity,
