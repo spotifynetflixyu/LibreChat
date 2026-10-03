@@ -1,9 +1,16 @@
-import type { SteelReviewRow, SteelReviewTable } from 'librechat-data-provider';
+import type {
+  SteelReviewPrepare,
+  SteelReviewRow,
+  SteelReviewTable,
+} from 'librechat-data-provider';
 import type { SteelReviewSelection } from './state';
 
 export interface SteelReviewDraftState {
   ownerKey: string;
   cells: Record<string, string>;
+  touched: Record<string, string>;
+  cellVersions: Record<string, number>;
+  changeSequence: number;
 }
 
 export function getSteelReviewDraftKey(
@@ -21,12 +28,38 @@ export function getSteelReviewDraftKey(
   });
 }
 
+export function areSteelReviewDraftOwnersSame(left: string, right: string): boolean {
+  if (left === right) {
+    return true;
+  }
+  try {
+    const leftOwner = JSON.parse(left) as Record<string, unknown>;
+    const rightOwner = JSON.parse(right) as Record<string, unknown>;
+    return [
+      'conversationId',
+      'messageId',
+      'kind',
+      'tableId',
+      'partIndex',
+      'outputId',
+    ].every((field) => leftOwner[field] === rightOwner[field]);
+  } catch {
+    return false;
+  }
+}
+
 export function getSteelReviewDraftCellKey(rowId: string, header: string): string {
   return `${rowId}\u0000${header}`;
 }
 
 export function createSteelReviewDraftState(ownerKey: string): SteelReviewDraftState {
-  return { ownerKey, cells: {} };
+  return {
+    ownerKey,
+    cells: {},
+    touched: {},
+    cellVersions: {},
+    changeSequence: 0,
+  };
 }
 
 export function setSteelReviewDraftCell(
@@ -45,15 +78,19 @@ export function setSteelReviewDraftCell(
   }
 
   const cells = { ...draft.cells };
+  const touched = { ...draft.touched, [getSteelReviewDraftCellKey(row.rowId, header)]: value };
+  const cellVersions = { ...draft.cellVersions };
   const key = getSteelReviewDraftCellKey(row.rowId, header);
   const effective = cell.effective ?? '';
+  const changeSequence = draft.changeSequence + 1;
+  cellVersions[key] = changeSequence;
   if (value === effective) {
     delete cells[key];
   } else {
     cells[key] = value;
   }
 
-  return { ...draft, cells };
+  return { ...draft, cells, touched, cellVersions, changeSequence };
 }
 
 export function getSteelReviewDraftCell(
@@ -100,4 +137,50 @@ export function applySteelReviewDrafts(
     );
     return { ...row, values };
   });
+}
+
+export function getSteelReviewPrepareInput(
+  selection: SteelReviewSelection,
+  table: SteelReviewTable,
+  rows: SteelReviewRow[],
+): SteelReviewPrepare {
+  const partIndex = table.partIndex ?? selection.partIndex;
+  return {
+    conversationId: selection.conversationId,
+    messageId: selection.messageId,
+    kind: selection.kind,
+    tableId: selection.tableId,
+    ...(partIndex !== undefined ? { partIndex } : {}),
+    outputId: table.outputId,
+    revision: table.revision,
+    rows,
+  };
+}
+
+export function rebaseSteelReviewDraftState(
+  draft: SteelReviewDraftState,
+  savedRows: readonly SteelReviewRow[],
+  submittedChangeSequence: number,
+): SteelReviewDraftState {
+  const rowsByCell = new Map<string, string>();
+  for (const row of savedRows) {
+    for (const [header, cell] of Object.entries(row.values)) {
+      rowsByCell.set(getSteelReviewDraftCellKey(row.rowId, header), cell.effective ?? '');
+    }
+  }
+
+  const cells = { ...draft.cells };
+  for (const [key, value] of Object.entries(draft.touched)) {
+    if ((draft.cellVersions[key] ?? 0) <= submittedChangeSequence) {
+      delete cells[key];
+      continue;
+    }
+    if (value === rowsByCell.get(key)) {
+      delete cells[key];
+    } else {
+      cells[key] = value;
+    }
+  }
+
+  return { ...draft, cells };
 }

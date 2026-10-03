@@ -4,6 +4,7 @@ import {
   createSteelReviewDraftState,
   getSteelReviewDraftKey,
   getSteelReviewDirtyRowIds,
+  rebaseSteelReviewDraftState,
   setSteelReviewDraftCell,
 } from './session';
 
@@ -114,5 +115,21 @@ describe('Steel review local draft session', () => {
     let draft = createSteelReviewDraftState(getSteelReviewDraftKey(selection, table));
     draft = setSteelReviewDraftCell(draft, { ...table.rows[0], rowId: '' }, '數量', '3');
     expect(draft.cells).toEqual({});
+  });
+
+  it('preserves edits made after a confirmed save while rebasing submitted cells', () => {
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(selection, table));
+    draft = setSteelReviewDraftCell(draft, table.rows[0], '數量', '3');
+    draft = setSteelReviewDraftCell(draft, table.rows[0], '品名', '鍍鋅鋼板');
+    const submittedSequence = draft.changeSequence - 1;
+    draft = setSteelReviewDraftCell(draft, table.rows[0], '數量', '4');
+
+    const savedRows = table.rows.map((row) => row.rowId === 'row-1'
+      ? { ...row, values: { ...row.values, 品名: { ...row.values.品名, effective: '鍍鋅鋼板' } } }
+      : row);
+    const rebased = rebaseSteelReviewDraftState(draft, savedRows, submittedSequence);
+
+    expect(rebased.cells).toEqual({ 'row-1\u0000數量': '4' });
+    expect(rebased.changeSequence).toBe(draft.changeSequence);
   });
 });

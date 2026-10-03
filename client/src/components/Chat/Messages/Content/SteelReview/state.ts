@@ -104,4 +104,7 @@ export const steelReviewPreviewStateFamily = createOwnedStateFamily<SteelReviewP
 export const steelReviewDraftStateFamily = createOwnedStateFamily<SteelReviewDraftState>(() => ({
   ownerKey: '',
   cells: {},
+  touched: {},
+  cellVersions: {},
+  changeSequence: 0,
 }));
