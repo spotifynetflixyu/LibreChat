@@ -743,6 +743,89 @@ test.describe('Steel managed source review', () => {
   });
 
 
+  test('clearing an OCR cell keeps its AI baseline and clean reload does not resurrect the old value', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(read.status()).toBe(200);
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const rows = structuredClone(table.rows);
+    rows[0].values['長度'].effective = null;
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const prepare = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+    expect(prepare.status()).toBe(200);
+    const saved = await page.request.post(`${url}/commit`, { headers, data: await prepare.json() });
+    expect(saved.status()).toBe(200);
+    const snapshot = await persistedSnapshot(conversationId);
+    expect(snapshot.messages.find((message) => message.messageId === messageId)?.text)
+      .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 |  | 2 | 1 |'));
+    const reloaded = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(reloaded.status()).toBe(200);
+    const current = await reloaded.json() as { table: SteelReviewTable };
+    expect(current.table.rows[0].values['長度']).toEqual({ baseline: '1000', effective: null });
+    const noChange = await page.request.post(`${url}/prepare`, { headers, data: current.table });
+    expect(noChange.status()).toBe(200);
+    const noOp = await page.request.post(`${url}/commit`, { headers, data: await noChange.json() });
+    expect(noOp.status()).toBe(200);
+    expect(await persistedSnapshot(conversationId)).toEqual(snapshot);
+  });
+
+  test('the backend saves only its exact message target and rejects a second stale prepared operation', async ({ page }) => {
+    const markdown = `CAS-PREFIX\n\n${ocr}\n\n## Other data\n| Name | Value |\n| --- | --- |\n| KEEP | 42 |\n\nCAS-SUFFIX`;
+    const { conversationId, messageId } = await seedCurrent(markdown);
+    conversations.push(conversationId);
+    const previousMessageId = randomUUID();
+    await seedMessages(getE2EUser().email, conversationId, [{
+      messageId: previousMessageId,
+      parentMessageId: '00000000-0000-0000-0000-000000000000',
+      text: ocr.replace('REVIEW-P1', 'OTHER-MESSAGE-KEEP'),
+      content: [{ type: 'text', text: ocr.replace('REVIEW-P1', 'OTHER-MESSAGE-KEEP') }],
+      isCreatedByUser: false, sender: 'Assistant',
+    }]);
+    await withMongo(async (db) => {
+      await db.collection('messages').updateOne({ conversationId, messageId }, { $set: {
+        text: `${markdown} CAS-SECOND-PART`,
+        content: [{ type: 'text', text: markdown }, { type: 'text', text: 'CAS-SECOND-PART' }],
+      } });
+    });
+    const before = await persistedSnapshot(conversationId);
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(read.status()).toBe(200);
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const operations: SteelReviewPrepared[] = [];
+    for (const quantity of ['7', '8']) {
+      const rows = structuredClone(table.rows);
+      rows[0].values['數量'].effective = quantity;
+      const prepared = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+      expect(prepared.status()).toBe(200);
+      operations.push(await prepared.json() as SteelReviewPrepared);
+    }
+    const saved = await page.request.post(`${url}/commit`, { headers, data: operations[0] });
+    expect(saved.status()).toBe(200);
+    const after = await persistedSnapshot(conversationId);
+    const expected = markdown.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 7 | 1 |');
+    const message = after.messages.find((candidate) => candidate.messageId === messageId);
+    expect(message?.text).toBe(`${expected} CAS-SECOND-PART`);
+    expect(message?.content).toEqual([{ type: 'text', text: expected }, { type: 'text', text: 'CAS-SECOND-PART' }]);
+    expect(after.messages.find((candidate) => candidate.messageId === previousMessageId))
+      .toEqual(before.messages.find((candidate) => candidate.messageId === previousMessageId));
+    const review = after.reviews[0];
+    expect(review?.aiRawMarkdown).toBe(ocr);
+    expect(review?.aiBaselineMarkdown).toBe(ocr);
+    expect(review?.humanMarkdown).toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 7 | 1 |'));
+    expect(review?.effectiveMarkdown).toBe(review?.humanMarkdown);
+    const stale = await page.request.post(`${url}/commit`, { headers, data: operations[1] });
+    expect(stale.status()).toBe(409);
+    expect(await persistedSnapshot(conversationId)).toEqual(after);
+    const reloaded = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(reloaded.status()).toBe(200);
+    expect(await reloaded.json()).toMatchObject({ table: {
+      messageId, isLatest: true, readOnly: false,
+      rows: [{ values: { 數量: { baseline: '2', effective: '7' } } }, { values: { 數量: { baseline: '3', effective: '3' } } }],
+    } });
+  });
+
   test('review commit rejects a client-rehashed target outside the owned OCR table', async ({ page }) => {
     const markdown = `INTEGRITY-PREFIX\n\n${ocr}\n\nINTEGRITY-SUFFIX`;
     const { conversationId, messageId } = await seedCurrent(markdown);
@@ -977,6 +1060,43 @@ test.describe('Steel managed source review', () => {
   });
 
 
+  test('a known historical OCR message stays read-only through the generic edit endpoint', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const historicalId = randomUUID();
+    await seedMessages(getE2EUser().email, conversationId, [{
+      messageId: historicalId, parentMessageId: '00000000-0000-0000-0000-000000000000',
+      text: ocr, content: [{ type: 'text', text: ocr }], isCreatedByUser: false, sender: 'Assistant',
+    }]);
+    const current = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(current.status()).toBe(200);
+    const { table } = await current.json() as { table: SteelReviewTable };
+    await withMongo(async (db) => {
+      const message = await db.collection('messages').findOne({ conversationId, messageId: historicalId });
+      if (!message) throw new Error('Missing historical message');
+      await db.collection('steel_review_outputs').insertOne({
+        userId: message.user, conversationId, messageId: historicalId,
+        kind: 'ocr_result', tableId: 'ocr_result:1', outputId: 'ocr_result:previous-owner',
+        revision: 'previous-owner-revision', state: 'historical',
+        headers: table.headers, rows: table.rows, aiRawMarkdown: ocr,
+        aiBaselineMarkdown: ocr, effectiveMarkdown: ocr, receipts: [],
+        createdAt: new Date(), updatedAt: new Date(),
+      });
+    });
+    const before = await persistedSnapshot(conversationId);
+    const historical = await page.request.get(readUrl(conversationId, historicalId, 1), { headers });
+    expect(historical.status()).toBe(200);
+    expect(await historical.json()).toMatchObject({ table: { readOnly: true, isLatest: false } });
+    for (const data of [
+      { conversationId, messageId: historicalId, text: 'HISTORY-CORRUPTED' },
+      { conversationId, messageId: historicalId, index: 0, text: 'HISTORY-CORRUPTED' },
+    ]) {
+      const edited = await page.request.put('/api/messages', { headers, data });
+      expect(edited.status()).toBe(409);
+      expect(await persistedSnapshot(conversationId)).toEqual(before);
+    }
+  });
+
   test('failed OCR Save keeps the focused draft and retries through the real backend', async ({ page }) => {
     const { conversationId } = await seedCurrent(ocr);
     conversations.push(conversationId);
@@ -1003,6 +1123,30 @@ test.describe('Steel managed source review', () => {
       return snapshot.messages[0]?.text;
     }).toContain('| A | REVIEW-P1 | 1000 | 7 | 1 |');
     await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+  });
+
+  test('discard after an uncommitted failed Save resolves without causing a DB write', async ({ page }) => {
+    const { conversationId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const before = await persistedSnapshot(conversationId);
+    const commitUrl = `**/api/steel/conversations/${conversationId}/review/ocr_result/commit`;
+    await page.route(commitUrl, (route) => route.abort('failed'));
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+    await quantity.fill('7');
+    await dialog.getByRole('button', { name: /^Save/ }).click();
+    await expect(dialog.getByRole('alert')).toBeVisible();
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    await page.unroute(commitUrl);
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: 'Discard unsaved changes', exact: true }).click();
+    await expect(dialog).not.toBeVisible();
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    await expect(quantity).toHaveValue('2');
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
   });
 
   test('a lost committed OCR Save response is reconciled without a second DB mutation', async ({ page }) => {
