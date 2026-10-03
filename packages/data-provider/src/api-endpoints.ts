@@ -334,6 +334,15 @@ export const steelQuotationStatus = (conversationId: string) =>
   `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/quotation`;
 export const steelQuotationCancel = (conversationId: string, index: number) =>
   `${steelQuotationStatus(conversationId)}/${encodeURIComponent(String(index))}/cancel`;
+export const steelReview = (
+  conversationId: string,
+  kind: string,
+  messageId: string,
+  tableId: string,
+) => {
+  const query = new URLSearchParams({ messageId, tableId }).toString();
+  return `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}?${query}`;
+};
 
 export const adminSteelBase = () => `${BASE_URL}/api/admin/steel`;
 export const adminSteelCapabilitySmoke = () => `${adminSteelBase()}/ai/capability-smoke`;

@@ -1,4 +1,5 @@
 import { useRecoilValue } from 'recoil';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   DynamicQueryKeys,
   MutationKeys,
@@ -6,20 +7,21 @@ import {
   dataService,
   isSteelQuotationActiveStatus,
 } from 'librechat-data-provider';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type {
-  QueryObserverResult,
-  UseMutationResult,
-  UseQueryOptions,
-} from '@tanstack/react-query';
 import type {
   OpenAIOAuthTokenLoginStatus,
   OpenAIOAuthTokenLoginMethod,
   OpenAIOAuthTokenLogoutStatus,
   OpenAIOAuthTokenStatus,
   OpenAIOAuthUsageRemaining,
+  SteelReviewKind,
+  SteelReviewResponse,
   SteelQuotationStatus,
 } from 'librechat-data-provider';
+import type {
+  QueryObserverResult,
+  UseMutationResult,
+  UseQueryOptions,
+} from '@tanstack/react-query';
 import store from '~/store';
 
 async function refreshOpenAIOAuthQueries(
@@ -66,6 +68,41 @@ export const useGetSteelQuotationStatusQuery = (
       refetchOnMount: true,
       refetchInterval: (data) =>
         data && isSteelQuotationActiveStatus(data.status) ? 1_000 : false,
+      staleTime: 0,
+      ...config,
+      enabled,
+    },
+  );
+};
+
+export const useGetSteelReviewQuery = (
+  input?: {
+    conversationId: string;
+    kind: SteelReviewKind;
+    messageId: string;
+    tableId: string;
+  } | null,
+  config?: UseQueryOptions<SteelReviewResponse>,
+): QueryObserverResult<SteelReviewResponse> => {
+  const queriesEnabled = useRecoilValue<boolean>(store.queriesEnabled);
+  const enabled = Boolean(input) && (config?.enabled ?? true) && queriesEnabled;
+  return useQuery<SteelReviewResponse>(
+    DynamicQueryKeys.steelReview(
+      input?.conversationId ?? '',
+      input?.kind ?? 'ocr_result',
+      input?.messageId ?? '',
+      input?.tableId ?? '',
+    ),
+    () => dataService.getSteelReview(
+      input?.conversationId ?? '',
+      input?.kind ?? 'ocr_result',
+      input?.messageId ?? '',
+      input?.tableId ?? '',
+    ),
+    {
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: true,
+      refetchOnMount: true,
       staleTime: 0,
       ...config,
       enabled,

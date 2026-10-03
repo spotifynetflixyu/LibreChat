@@ -1,14 +1,18 @@
 import mongoose from 'mongoose';
-import { buildSteelModelOptions } from './models';
-import { createMongooseSteelRuleProposalRepository } from './rules/repository';
+import type { Request, Response } from 'express';
 import { createSteelRuleProposalService, SteelRuleProposalValidationError } from './rules/service';
+import {
+  parseSteelReviewQuery,
+  SteelReviewReadError,
+  type SteelReviewService,
+} from './review';
 import {
   resolveOpenAIOAuthAuthFilePath,
   type OpenAIConfigEnv,
 } from './ai/config';
+import { createMongooseSteelRuleProposalRepository } from './rules/repository';
 import { getOpenAIOAuthUsageRemaining } from './native/usage';
-
-import type { Request, Response } from 'express';
+import { buildSteelModelOptions } from './models';
 
 type ModelsConfig = Record<string, string[] | undefined>;
 
@@ -16,7 +20,9 @@ interface SteelRequest extends Request {
   user?: {
     id?: string;
     role?: string | null;
+    tenantId?: string;
   };
+  tenantId?: string;
   config?: {
     modelSpecs?: {
       list?: Array<{
@@ -44,12 +50,14 @@ export interface SteelRouteHandlersDeps {
   getModelsConfig: (req: Request) => Promise<ModelsConfig>;
   getOpenAIOAuthUsageRemaining?: typeof getOpenAIOAuthUsageRemaining;
   ruleProposalService?: ReturnType<typeof createSteelRuleProposalService>;
+  reviewService?: SteelReviewService;
 }
 
 export interface SteelRouteHandlers {
   listModels(req: SteelRequest, res: Response): Promise<void>;
   readOpenAIOAuthUsage(req: SteelRequest, res: Response): Promise<void>;
   createRuleProposal(req: SteelRequest, res: Response): Promise<void>;
+  readReview(req: SteelRequest, res: Response): Promise<void>;
 }
 
 function getSteelRequestUser(req: SteelRequest) {
@@ -79,8 +87,10 @@ export function createSteelRouteHandlers({
   getModelsConfig,
   getOpenAIOAuthUsageRemaining: readOpenAIOAuthUsageRemaining = getOpenAIOAuthUsageRemaining,
   ruleProposalService,
+  reviewService,
 }: SteelRouteHandlersDeps): SteelRouteHandlers {
   let resolvedRuleProposalService = ruleProposalService;
+  let resolvedReviewService = reviewService;
   const getRuleProposalService = () =>
     (resolvedRuleProposalService ??= createDefaultRuleProposalService());
 
@@ -110,6 +120,42 @@ export function createSteelRouteHandlers({
         res.status(201).json(result);
       } catch (error) {
         sendRuleProposalError(res, error);
+      }
+    },
+
+    async readReview(req, res) {
+      const userId = req.user?.id;
+      const conversationId = req.params.conversationId;
+      const kind = req.params.kind;
+      if (!userId) {
+        res.status(401).json({ message: 'Authentication required' });
+        return;
+      }
+      if (typeof conversationId !== 'string' || !conversationId ||
+        (kind !== 'ocr_result' && kind !== 'system_order')) {
+        res.status(400).json({ message: 'Invalid review table' });
+        return;
+      }
+      try {
+        if (!resolvedReviewService) {
+          res.status(500).json({ message: 'Steel review read unavailable' });
+          return;
+        }
+        const query = parseSteelReviewQuery(req.query as Record<string, unknown>);
+        const result = await resolvedReviewService.read({
+          userId,
+          tenantId: req.tenantId ?? req.user?.tenantId,
+          conversationId,
+          kind,
+          ...query,
+        });
+        res.status(200).json(result);
+      } catch (error) {
+        if (error instanceof SteelReviewReadError) {
+          res.status(error.statusCode).json({ message: error.message, code: error.code });
+          return;
+        }
+        res.status(500).json({ message: 'Steel review read failed' });
       }
     },
   };

@@ -1,0 +1,70 @@
+import { Schema } from 'mongoose';
+
+import type { SteelReviewCell, SteelReviewRow, SteelReviewSource } from 'librechat-data-provider';
+import type { ISteelReviewOutput } from '~/types';
+
+const steelReviewSourceSchema = new Schema<SteelReviewSource>(
+  {
+    fileId: { type: String, required: true },
+    pageNumber: { type: Number, min: 1, default: null },
+    filename: { type: String },
+    mediaType: { type: String },
+  },
+  { _id: false },
+);
+
+const steelReviewCellSchema = new Schema<SteelReviewCell>(
+  {
+    baseline: { type: String, default: null },
+    effective: { type: String, default: null },
+  },
+  { _id: false },
+);
+
+const steelReviewRowSchema: Schema<SteelReviewRow> = new Schema(
+  {
+    rowId: { type: String, required: true },
+    values: { type: Map, of: steelReviewCellSchema, required: true },
+    source: { type: steelReviewSourceSchema, default: null },
+  },
+  { _id: false },
+);
+
+const steelReviewOutputSchema: Schema<ISteelReviewOutput> = new Schema<ISteelReviewOutput>(
+  {
+    userId: { type: String, required: true },
+    tenantId: { type: String },
+    conversationId: { type: String, required: true },
+    kind: { type: String, enum: ['ocr_result', 'system_order'], required: true },
+    messageId: { type: String, required: true },
+    tableId: { type: String, required: true },
+    outputId: { type: String, required: true },
+    revision: { type: String, required: true },
+    state: { type: String, enum: ['current', 'historical'], required: true },
+    headers: { type: [String], required: true, default: [] },
+    rows: { type: [steelReviewRowSchema], required: true, default: [] },
+    latestOutputId: { type: String },
+  },
+  { timestamps: true },
+);
+
+steelReviewOutputSchema.index({
+  userId: 1,
+  tenantId: 1,
+  conversationId: 1,
+  kind: 1,
+  messageId: 1,
+  tableId: 1,
+  outputId: 1,
+}, { unique: true });
+steelReviewOutputSchema.index({
+  userId: 1,
+  tenantId: 1,
+  conversationId: 1,
+  kind: 1,
+  tableId: 1,
+  state: 1,
+  updatedAt: -1,
+});
+
+export default steelReviewOutputSchema;

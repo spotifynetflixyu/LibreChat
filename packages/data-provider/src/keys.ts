@@ -96,6 +96,7 @@ export enum QueryKeys {
   /* Steel */
   steelModels = 'steelModels',
   steelQuotationStatus = 'steelQuotationStatus',
+  steelReview = 'steelReview',
   openAIOAuthUsage = 'openAIOAuthUsage',
   openAIOAuthTokenStatus = 'openAIOAuthTokenStatus',
   openAIOAuthCodexLoginStatus = 'openAIOAuthCodexLoginStatus',
@@ -116,6 +117,8 @@ export const DynamicQueryKeys = {
   agentFiles: (agentId: string) => ['agentFiles', agentId] as const,
   steelQuotationStatus: (conversationId: string) =>
     [QueryKeys.steelQuotationStatus, conversationId] as const,
+  steelReview: (conversationId: string, kind: string, messageId: string, tableId: string) =>
+    [QueryKeys.steelReview, conversationId, kind, messageId, tableId] as const,
   codeEnvironmentStatus: (id: string) => [QueryKeys.codeEnvironments, id, 'status'] as const,
 } as const;
 
