@@ -1,5 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
-import { isSteelReviewSourceAssociationHeader } from 'librechat-data-provider';
+import {
+  encodeSteelReviewDigest,
+  isSteelReviewSourceAssociationHeader,
+  normalizeSteelReviewEffectiveValue,
+} from 'librechat-data-provider';
 import type {
   SteelReviewCell,
   SteelReviewCaption,
@@ -114,6 +118,22 @@ function sameCellProperty(
   const rightHasProperty = hasCellProperty(right, rightProperty);
   return leftHasProperty === rightHasProperty &&
     (!leftHasProperty || left?.[leftProperty] === right?.[rightProperty]);
+}
+
+function normalizeReviewRows(rows: readonly SteelReviewRow[]): SteelReviewRow[] {
+  return rows.map((row) => {
+    const values: Record<string, SteelReviewCell> = {};
+    for (const [header, cell] of Object.entries(row.values)) {
+      values[header] = Object.prototype.hasOwnProperty.call(cell, 'effective')
+        ? { ...cell, effective: normalizeSteelReviewEffectiveValue(cell.effective) }
+        : { ...cell };
+    }
+    return { ...row, values };
+  });
+}
+
+function rowsAreNormalized(rows: readonly SteelReviewRow[]): boolean {
+  return JSON.stringify(normalizeReviewRows(rows)) === JSON.stringify(rows);
 }
 
 function sameSourceAssociationCellAsBaseline(cell: SteelReviewCell | undefined): boolean {
@@ -665,30 +685,7 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
 }
 
 function commitDigest(input: Omit<SteelReviewCommitInput, 'digest'>): string {
-  const canonical = JSON.stringify({
-    userId: input.userId,
-    tenantId: input.tenantId ?? null,
-    conversationId: input.conversationId,
-    kind: input.kind,
-    messageId: input.messageId,
-    tableId: input.tableId,
-    partIndex: input.partIndex ?? null,
-    outputId: input.outputId,
-    revision: input.revision,
-    rows: input.rows,
-    headers: input.headers,
-    messageSha256: input.messageSha256,
-    target: input.target,
-    targetText: input.targetText,
-    replacementText: input.replacementText,
-    cleanReplacementText: input.cleanReplacementText,
-    effectiveMarkdown: input.effectiveMarkdown,
-    displayMarkdown: input.displayMarkdown,
-    aiBaselineMarkdown: input.aiBaselineMarkdown ?? null,
-    aiRawMarkdown: input.aiRawMarkdown ?? null,
-    caption: input.caption,
-  });
-  return createHash('sha256').update(canonical).digest('hex');
+  return createHash('sha256').update(encodeSteelReviewDigest(input)).digest('hex');
 }
 
 type SteelTextPart = { contentIndex?: number; type?: string; text?: string; [key: string]: unknown };
@@ -1071,8 +1068,16 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               'Review source association cell is read-only',
             );
           }
+          if (!rowsAreNormalized(input.rows)) {
+            throw new SteelReviewWriteError(
+              'REVIEW_INVALID_OPERATION',
+              'Review effective cell representation is not canonical',
+            );
+          }
+          const canonicalRows = normalizeReviewRows(input.rows);
+          const canonicalBaselineRows = normalizeReviewRows(baselineRows);
           const previousEffective = new Map(
-            baselineRows.map((row) => [
+            canonicalBaselineRows.map((row) => [
               row.rowId,
               JSON.stringify(output
                 ? row.values
@@ -1082,7 +1087,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
                 ]))),
             ]),
           );
-          const changedRowIds = input.rows
+          const changedRowIds = canonicalRows
             .filter((row) => previousEffective.get(row.rowId) !== JSON.stringify(row.values))
             .map((row) => row.rowId);
           if (changedRowIds.length !== input.caption.changedRows ||
@@ -1156,7 +1161,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               outputId: input.outputId,
               revision: nextRevision,
               headers: input.headers,
-              rows: input.rows,
+              rows: canonicalRows,
               changedRows: changedRowIds.length,
               changedRowIds,
               savedAt,
@@ -1182,7 +1187,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               revision: nextRevision,
               state: 'current' as const,
               headers: input.headers,
-              rows: input.rows,
+              rows: canonicalRows,
               latestOutputId: input.outputId,
               humanMarkdown: input.effectiveMarkdown,
               humanSavedAt: savedAt,

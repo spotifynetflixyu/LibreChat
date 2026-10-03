@@ -1,5 +1,7 @@
 import {
+  encodeSteelReviewDigest,
   isSteelReviewSourceAssociationHeader,
+  normalizeSteelReviewEffectiveValue,
   steelReviewReadQuerySchema,
   steelReviewResponseSchema,
 } from './review';
@@ -62,5 +64,48 @@ describe('Steel review contracts', () => {
       tableId: 'ocr_result:2',
       partIndex: '3',
     }).partIndex).toBe(3);
+  });
+
+  it('normalizes effective whitespace while preserving null', () => {
+    expect(normalizeSteelReviewEffectiveValue('  7\r\n  ')).toBe('7');
+    expect(normalizeSteelReviewEffectiveValue(' A\nB ')).toBe('A B');
+    expect(normalizeSteelReviewEffectiveValue(null)).toBeNull();
+  });
+
+  it('encodes scope, target, and row changes distinctly with stable null defaults', () => {
+    const base = {
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result' as const,
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+      outputId: 'ocr_result:generation-1',
+      revision: 'revision-1',
+      rows: [{
+        rowId: 'row-1',
+        values: { Value: { baseline: '2', effective: '7' } },
+        source: null,
+      }],
+      headers: ['Value'],
+      messageSha256: 'a'.repeat(64),
+      target: { start: 1, end: 3, sha256: 'b'.repeat(64) },
+      targetText: 'old',
+      replacementText: 'new',
+      cleanReplacementText: 'new',
+      effectiveMarkdown: '## ocr_result',
+      displayMarkdown: '## ocr_result',
+      caption: { kind: 'ocr_result' as const, changedRows: 1, changedRowIds: ['row-1'] },
+    };
+    const withoutTenant = encodeSteelReviewDigest(base);
+    expect(encodeSteelReviewDigest({ ...base, tenantId: null })).toBe(withoutTenant);
+    expect(encodeSteelReviewDigest({ ...base, userId: 'user-2' })).not.toBe(withoutTenant);
+    expect(encodeSteelReviewDigest({
+      ...base,
+      target: { ...base.target, start: 2 },
+    })).not.toBe(withoutTenant);
+    expect(encodeSteelReviewDigest({
+      ...base,
+      rows: [{ ...base.rows[0], values: { Value: { baseline: '2', effective: '8' } } }],
+    })).not.toBe(withoutTenant);
   });
 });

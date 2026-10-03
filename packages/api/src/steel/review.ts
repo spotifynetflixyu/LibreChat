@@ -3,7 +3,9 @@ import { randomUUID } from 'node:crypto';
 import { SteelReviewWriteError } from '@librechat/data-schemas';
 import {
   getSteelReviewTableId,
+  encodeSteelReviewDigest,
   isSteelReviewSourceAssociationHeader,
+  normalizeSteelReviewEffectiveValue,
   steelReviewCommitSchema,
   steelReviewPrepareSchema,
   steelReviewReceiptQuerySchema,
@@ -31,6 +33,7 @@ import type {
   SteelReviewReceiptLookup,
 } from '@librechat/data-schemas';
 import { parseMarkdownTables, type SteelMarkdownTable } from './markdown/table';
+import { escapeMarkdownTableCell } from './markdown/row-codec';
 
 export interface SteelReviewReader {
   readSteelReview(input: SteelReviewReadInput): Promise<SteelReviewReadRecord | null>;
@@ -312,6 +315,18 @@ function sameCellProperty(
     (!leftHasProperty || left?.[leftProperty] === right?.[rightProperty]);
 }
 
+function normalizeReviewRows(rows: readonly SteelReviewRow[]): SteelReviewRow[] {
+  return rows.map((row) => {
+    const values: Record<string, SteelReviewCell> = {};
+    for (const [header, cell] of Object.entries(row.values)) {
+      values[header] = hasCellProperty(cell, 'effective')
+        ? { ...cell, effective: normalizeSteelReviewEffectiveValue(cell.effective) }
+        : { ...cell };
+    }
+    return { ...row, values };
+  });
+}
+
 function sourceForRow(
   table: SteelMarkdownTable,
   row: string[],
@@ -573,14 +588,10 @@ function findVerifiedSaveTarget(
   return findVerifiedPhysicalTarget(record, expected, tableId);
 }
 
-function escapeMarkdownCell(value: string): string {
-  return value.replaceAll('|', '\\|').replace(/[\r\n]+/gu, ' ');
-}
-
 function serializeReviewTable(headers: readonly string[], rows: readonly SteelReviewRow[]): string {
-  const header = `| ${headers.map(escapeMarkdownCell).join(' | ')} |`;
+  const header = `| ${headers.map(escapeMarkdownTableCell).join(' | ')} |`;
   const separator = `| ${headers.map(() => '---').join(' | ')} |`;
-  const body = rows.map((row) => `| ${headers.map((name) => escapeMarkdownCell(row.values[name]?.effective ?? '')).join(' | ')} |`);
+  const body = rows.map((row) => `| ${headers.map((name) => escapeMarkdownTableCell(row.values[name]?.effective ?? '')).join(' | ')} |`);
   return [header, separator, ...body].join('\n');
 }
 
@@ -672,30 +683,7 @@ function replaceOwnerTarget(
 }
 
 function operationDigest(input: Omit<SteelReviewCommitInput, 'digest'>): string {
-  const canonical = JSON.stringify({
-    userId: input.userId,
-    tenantId: input.tenantId ?? null,
-    conversationId: input.conversationId,
-    kind: input.kind,
-    messageId: input.messageId,
-    tableId: input.tableId,
-    partIndex: input.partIndex ?? null,
-    outputId: input.outputId,
-    revision: input.revision,
-    rows: input.rows,
-    headers: input.headers,
-    messageSha256: input.messageSha256,
-    target: input.target,
-    targetText: input.targetText,
-    replacementText: input.replacementText,
-    cleanReplacementText: input.cleanReplacementText,
-    effectiveMarkdown: input.effectiveMarkdown,
-    displayMarkdown: input.displayMarkdown,
-    aiBaselineMarkdown: input.aiBaselineMarkdown ?? null,
-    aiRawMarkdown: input.aiRawMarkdown ?? null,
-    caption: input.caption,
-  });
-  return createHash('sha256').update(canonical).digest('hex');
+  return createHash('sha256').update(encodeSteelReviewDigest(input)).digest('hex');
 }
 
 export function createSteelReviewService({
@@ -798,10 +786,12 @@ export function createSteelReviewService({
       headers.some((header) => !Object.prototype.hasOwnProperty.call(row.values, header)))) {
       throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Review columns changed');
     }
-    const changedRowIds = payload.rows
-      .filter((row, index) => JSON.stringify(row.values) !== JSON.stringify(currentRows[index]?.values))
+    const normalizedRows = normalizeReviewRows(payload.rows);
+    const normalizedCurrentRows = normalizeReviewRows(currentRows);
+    const changedRowIds = normalizedRows
+      .filter((row, index) => JSON.stringify(row.values) !== JSON.stringify(normalizedCurrentRows[index]?.values))
       .map((row) => row.rowId);
-    const cleanReplacementText = serializeReviewTable(headers, payload.rows);
+    const cleanReplacementText = serializeReviewTable(headers, normalizedRows);
     const effectiveMarkdown = replaceOwnerTarget(record, cleanReplacementText, target);
     if (!effectiveMarkdown) {
       throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review table target not found');
@@ -820,7 +810,7 @@ export function createSteelReviewService({
       ...(target.partIndex !== undefined ? { partIndex: target.partIndex } : {}),
       outputId: payload.outputId,
       revision: payload.revision,
-      rows: payload.rows,
+      rows: normalizedRows,
       headers,
       operationId,
       messageSha256: createHash('sha256').update(fullText).digest('hex'),

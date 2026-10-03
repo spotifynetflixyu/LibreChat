@@ -268,6 +268,43 @@ export type SteelReviewReceipt = z.infer<typeof steelReviewReceiptSchema>;
 export type SteelReviewPrepare = z.infer<typeof steelReviewPrepareSchema>;
 export type SteelReviewPrepared = z.infer<typeof steelReviewPreparedSchema>;
 export type SteelReviewCommit = z.infer<typeof steelReviewCommitSchema>;
+
+export type SteelReviewDigestInput = Omit<SteelReviewPrepared, 'operationId' | 'digest'> & {
+  userId: string;
+  tenantId?: string | null;
+};
+
+/** Canonicalize one user-editable cell without changing null or baseline data. */
+export function normalizeSteelReviewEffectiveValue(value: string | null): string | null {
+  return value === null ? null : value.trim().replace(/[\r\n]+/g, ' ');
+}
+
+/** Keep the wire digest's field order and null semantics in one browser-safe encoder. */
+export function encodeSteelReviewDigest(input: SteelReviewDigestInput): string {
+  return JSON.stringify({
+    userId: input.userId,
+    tenantId: input.tenantId ?? null,
+    conversationId: input.conversationId,
+    kind: input.kind,
+    messageId: input.messageId,
+    tableId: input.tableId,
+    partIndex: input.partIndex ?? null,
+    outputId: input.outputId,
+    revision: input.revision,
+    rows: input.rows,
+    headers: input.headers,
+    messageSha256: input.messageSha256,
+    target: input.target,
+    targetText: input.targetText,
+    replacementText: input.replacementText,
+    cleanReplacementText: input.cleanReplacementText,
+    effectiveMarkdown: input.effectiveMarkdown,
+    displayMarkdown: input.displayMarkdown,
+    aiBaselineMarkdown: input.aiBaselineMarkdown ?? null,
+    aiRawMarkdown: input.aiRawMarkdown ?? null,
+    caption: input.caption,
+  });
+}
 export type SteelReviewSaveResponse = z.infer<typeof steelReviewSaveResponseSchema>;
 export type SteelReviewSourceFile = z.infer<typeof steelReviewSourceFileSchema>;
 export type SteelReviewSourcesResponse = z.infer<typeof steelReviewSourcesResponseSchema>;

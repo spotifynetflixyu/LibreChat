@@ -714,6 +714,88 @@ describe('Steel review read service', () => {
     }));
   });
 
+  it('canonicalizes effective cells before captioning and serializing a save', async () => {
+    const markdown = [
+      '## ocr_result',
+      '',
+      '| 來源 | 零件編號 |',
+      '| --- | --- |',
+      '| A | P-2 |',
+    ].join('\n');
+    const record = {
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result' as const,
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      state: 'current' as const,
+      markdown,
+      messageText: markdown,
+      headers: ['來源', '零件編號'],
+      rows: [{
+        rowId: 'row-1',
+        values: {
+          來源: { baseline: 'A', effective: 'A' },
+          零件編號: { baseline: 'P-2', effective: 'P-2' },
+        },
+        source: null,
+      }],
+    };
+    const service = createSteelReviewService({
+      reader: { readSteelReview: jest.fn().mockResolvedValue(record) },
+    });
+    const base = {
+      userId: record.userId,
+      conversationId: record.conversationId,
+      kind: record.kind,
+      messageId: record.messageId,
+      tableId: record.tableId,
+      outputId: record.outputId,
+      revision: record.revision,
+    };
+
+    const noOp = await service.prepare({
+      ...base,
+      rows: [{
+        ...record.rows[0],
+        values: {
+          ...record.rows[0].values,
+          零件編號: { baseline: 'P-2', effective: '  P-2\r\n  ' },
+        },
+      }],
+    });
+    expect(noOp.caption).toEqual({ kind: 'ocr_result', changedRows: 0, changedRowIds: [] });
+    expect(noOp.rows[0]?.values.零件編號.effective).toBe('P-2');
+    expect(noOp.cleanReplacementText).toContain('| A | P-2 |');
+
+    const changed = await service.prepare({
+      ...base,
+      rows: [{
+        ...record.rows[0],
+        values: {
+          ...record.rows[0].values,
+          零件編號: { baseline: 'P-2', effective: '  P-7\r\n  ' },
+        },
+      }],
+    });
+    expect(changed.caption).toEqual({ kind: 'ocr_result', changedRows: 1, changedRowIds: ['row-1'] });
+    expect(changed.rows[0]?.values.零件編號.effective).toBe('P-7');
+
+    const escaped = await service.prepare({
+      ...base,
+      rows: [{
+        ...record.rows[0],
+        values: {
+          ...record.rows[0].values,
+          零件編號: { baseline: 'P-2', effective: ' C:\\path|slot ' },
+        },
+      }],
+    });
+    expect(escaped.cleanReplacementText).toContain('C:\\\\path\\|slot');
+  });
+
   it('exposes immutable receipt resolution without a write', async () => {
     const savedAt = new Date('2026-10-03T00:00:00.000Z');
     const readSteelReviewReceipt = jest.fn().mockResolvedValue({
