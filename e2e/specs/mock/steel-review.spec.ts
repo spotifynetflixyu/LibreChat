@@ -1281,6 +1281,7 @@ test.describe('Steel managed source review', () => {
     await expect(row.locator('td').nth(4).locator('del')).toHaveText('1');
     await expect(dialog.getByText('Unsaved changes: 1 rows', { exact: true })).toBeVisible();
     expect(await persistedSnapshot(conversationId)).toEqual(before);
+    await expect(page.getByRole('listbox', { includeHidden: true })).toHaveCount(0);
     await page.keyboard.press('Escape');
     await expect(page.getByRole('button', { name: 'Continue editing', exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Continue editing', exact: true }).click();
