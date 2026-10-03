@@ -18,6 +18,7 @@ import type {
   SteelReviewPrepare,
   SteelReviewPrepared,
   SteelReviewResponse,
+  SteelReviewReceiptStatus,
   SteelReviewSaveResponse,
   SteelReviewSourcesResponse,
   SteelQuotationStatus,
@@ -224,6 +225,50 @@ export const useCommitSteelReviewMutation = (): UseMutationResult<
           ),
         );
       },
+    },
+  );
+};
+
+export const useGetSteelReviewReceiptQuery = (
+  input?: {
+    conversationId: string;
+    kind: SteelReviewKind;
+    messageId: string;
+    tableId: string;
+    outputId: string;
+    operationId: string;
+    digest: string;
+  } | null,
+  config?: UseQueryOptions<SteelReviewReceiptStatus>,
+): QueryObserverResult<SteelReviewReceiptStatus> => {
+  const queriesEnabled = useRecoilValue<boolean>(store.queriesEnabled);
+  const enabled = Boolean(input) && (config?.enabled ?? true) && queriesEnabled;
+  return useQuery<SteelReviewReceiptStatus>(
+    DynamicQueryKeys.steelReviewReceipt(
+      input?.conversationId ?? '',
+      input?.kind ?? 'ocr_result',
+      input?.messageId ?? '',
+      input?.tableId ?? '',
+      input?.outputId ?? '',
+      input?.operationId ?? '',
+      input?.digest ?? '',
+    ),
+    () => dataService.getSteelReviewReceipt(
+      input?.conversationId ?? '',
+      input?.kind ?? 'ocr_result',
+      input?.messageId ?? '',
+      input?.tableId ?? '',
+      input?.outputId ?? '',
+      input?.operationId ?? '',
+      input?.digest ?? '',
+    ),
+    {
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: true,
+      refetchOnMount: true,
+      staleTime: 0,
+      ...config,
+      enabled,
     },
   );
 };

@@ -20,6 +20,15 @@ export interface SteelReviewReadInput extends SteelReviewScope {
   partIndex?: number;
 }
 
+export interface SteelReviewReceiptLookup extends SteelReviewScope {
+  kind: SteelReviewKind;
+  messageId: string;
+  tableId: string;
+  outputId: string;
+  operationId: string;
+  digest: string;
+}
+
 export interface SteelReviewTextPart {
   partIndex: number;
   text: string;
@@ -89,4 +98,20 @@ export interface SteelReviewReceipt {
   changedRows: number;
   changedRowIds: string[];
   savedAt: Date;
+  snapshot?: SteelReviewSavedSnapshotRecord;
+}
+
+export interface SteelReviewSavedSnapshotRecord {
+  operationId: string;
+  digest: string;
+  outputId: string;
+  revision: string;
+  headers: string[];
+  rows: SteelReviewRow[];
+  changedRows: number;
+  changedRowIds: string[];
+  savedAt: Date;
+  messageSha256: string;
+  effectiveMarkdown: string;
+  displayMarkdown: string;
 }

@@ -1,6 +1,10 @@
 import { Schema } from 'mongoose';
 
-import type { SteelReviewCell, SteelReviewRow, SteelReviewSource } from 'librechat-data-provider';
+import type {
+  SteelReviewCell,
+  SteelReviewRow,
+  SteelReviewSource,
+} from 'librechat-data-provider';
 import type { ISteelReviewOutput } from '~/types';
 
 const steelReviewSourceSchema = new Schema<SteelReviewSource>(
@@ -38,6 +42,25 @@ const steelReviewReceiptSchema = new Schema(
     changedRows: { type: Number, required: true, min: 0 },
     changedRowIds: { type: [String], required: true, default: [] },
     savedAt: { type: Date, required: true },
+    snapshot: {
+      type: new Schema(
+        {
+          operationId: { type: String, required: true },
+          digest: { type: String, required: true },
+          outputId: { type: String, required: true },
+          revision: { type: String, required: true },
+          headers: { type: [String], required: true, default: [] },
+          rows: { type: [steelReviewRowSchema], required: true, default: [] },
+          changedRows: { type: Number, required: true, min: 0 },
+          changedRowIds: { type: [String], required: true, default: [] },
+          savedAt: { type: Date, required: true },
+          messageSha256: { type: String, required: true },
+          effectiveMarkdown: { type: String, required: true },
+          displayMarkdown: { type: String, required: true },
+        },
+        { _id: false },
+      ),
+    },
   },
   { _id: false },
 );

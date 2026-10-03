@@ -338,4 +338,130 @@ describe('Steel review read service', () => {
       table: expect.objectContaining({ tableId: 'ocr_result:2', partIndex: 1 }),
     });
   });
+
+  it('rebuilds commit targets from the trusted reader instead of accepting a client rehash', async () => {
+    const markdown = [
+      'prefix',
+      '',
+      '## ocr_result',
+      '',
+      '| 來源 | 零件編號 |',
+      '| --- | --- |',
+      '| A | P-1 |',
+      '',
+      'suffix',
+    ].join('\n');
+    const rows = [{
+      rowId: 'row-1',
+      values: {
+        來源: { baseline: 'A', effective: 'A' },
+        零件編號: { baseline: 'P-1', effective: 'P-9' },
+      },
+      source: null,
+    }];
+    const reader = {
+      readSteelReview: jest.fn().mockResolvedValue({
+        userId: 'user-1',
+        conversationId: 'conversation-1',
+        kind: 'ocr_result' as const,
+        messageId: 'message-1',
+        tableId: 'ocr_result:1',
+        outputId: 'ocr_result:generation-1',
+        revision: 'generation-1',
+        state: 'current' as const,
+        markdown,
+        messageText: markdown,
+        headers: ['來源', '零件編號'],
+        rows,
+      }),
+    };
+    const commitSteelReview = jest.fn();
+    const service = createSteelReviewService({ reader, writer: { commitSteelReview } });
+    const prepared = await service.prepare({
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result',
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      rows,
+    });
+    expect(prepared.effectiveMarkdown).toContain('## ocr_result');
+    expect(prepared.effectiveMarkdown).not.toContain('prefix');
+
+    await expect(service.commit({
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result',
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+      outputId: prepared.outputId,
+      revision: prepared.revision,
+      rows: prepared.rows,
+      operationId: prepared.operationId,
+      digest: 'a'.repeat(64),
+      headers: prepared.headers,
+      messageSha256: prepared.messageSha256,
+      target: { start: 0, end: markdown.length, sha256: 'b'.repeat(64) },
+      targetText: markdown,
+      replacementText: prepared.replacementText,
+      cleanReplacementText: prepared.cleanReplacementText,
+      effectiveMarkdown: `CORRUPTED\n${prepared.effectiveMarkdown}`,
+      displayMarkdown: `CORRUPTED\n${prepared.displayMarkdown}`,
+      aiBaselineMarkdown: prepared.aiBaselineMarkdown,
+      aiRawMarkdown: prepared.aiRawMarkdown,
+      caption: prepared.caption,
+    })).rejects.toMatchObject({ code: 'REVIEW_INVALID_OPERATION' });
+    expect(commitSteelReview).not.toHaveBeenCalled();
+  });
+
+  it('exposes immutable receipt resolution without a write', async () => {
+    const savedAt = new Date('2026-10-03T00:00:00.000Z');
+    const readSteelReviewReceipt = jest.fn().mockResolvedValue({
+      operationId: 'op-1',
+      digest: 'a'.repeat(64),
+      outputId: 'ocr_result:generation-1',
+      revision: 'saved-revision',
+      changedRows: 1,
+      changedRowIds: ['row-1'],
+      savedAt,
+      messageSha256: 'b'.repeat(64),
+      effectiveMarkdown: '## ocr_result\n\n| A | B |',
+      displayMarkdown: '## ocr_result\n\n| A | B |',
+      snapshot: {
+        operationId: 'op-1',
+        digest: 'a'.repeat(64),
+        outputId: 'ocr_result:generation-1',
+        revision: 'saved-revision',
+        headers: ['來源'],
+        rows: [],
+        changedRows: 1,
+        changedRowIds: ['row-1'],
+        savedAt,
+        messageSha256: 'b'.repeat(64),
+        effectiveMarkdown: '## ocr_result\n\n| A | B |',
+        displayMarkdown: '## ocr_result\n\n| A | B |',
+      },
+    });
+    const service = createSteelReviewService({
+      reader: { readSteelReview: jest.fn() },
+      writer: { commitSteelReview: jest.fn(), readSteelReviewReceipt },
+    });
+
+    await expect(service.receipt({
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result',
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+      outputId: 'ocr_result:generation-1',
+      operationId: 'op-1',
+      digest: 'a'.repeat(64),
+    })).resolves.toMatchObject({
+      status: 'committed',
+      snapshot: { revision: 'saved-revision', savedAt: savedAt.toISOString() },
+    });
+    expect(readSteelReviewReceipt).toHaveBeenCalledTimes(1);
+  });
 });

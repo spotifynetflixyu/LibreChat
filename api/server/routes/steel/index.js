@@ -32,6 +32,7 @@ router.get('/ai/models', requireJwtAuth, handlers.listModels);
 router.get('/ai/oauth-usage', requireJwtAuth, handlers.readOpenAIOAuthUsage);
 router.post('/rule-proposals', requireJwtAuth, handlers.createRuleProposal);
 router.get('/conversations/:conversationId/review/:kind', requireJwtAuth, handlers.readReview);
+router.get('/conversations/:conversationId/review/:kind/receipt', requireJwtAuth, handlers.readReviewReceipt);
 router.post('/conversations/:conversationId/review/:kind/prepare', requireJwtAuth, handlers.prepareReview);
 router.post('/conversations/:conversationId/review/:kind/commit', requireJwtAuth, handlers.commitReview);
 router.get('/conversations/:conversationId/review/:kind/sources', requireJwtAuth, handlers.listReviewSources);

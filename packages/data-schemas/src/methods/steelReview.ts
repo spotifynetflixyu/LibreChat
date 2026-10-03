@@ -13,6 +13,8 @@ import type {
   SteelReviewReadInput,
   SteelReviewReadRecord,
   SteelReviewReceipt,
+  SteelReviewReceiptLookup,
+  SteelReviewSavedSnapshotRecord,
   SteelReviewScope,
   SteelReviewSourceMapping,
   SteelReviewTextPart,
@@ -65,10 +67,13 @@ export interface SteelReviewCommitResult {
   messageSha256: string;
   effectiveMarkdown: string;
   displayMarkdown: string;
+  snapshot?: SteelReviewSavedSnapshotRecord;
 }
 
 export interface SteelReviewWriteMethods {
   commitSteelReview(input: SteelReviewCommitInput): Promise<SteelReviewCommitResult>;
+  resolveSteelReviewReceipt(input: SteelReviewCommitInput): Promise<SteelReviewCommitResult | null>;
+  readSteelReviewReceipt(input: SteelReviewReceiptLookup): Promise<SteelReviewCommitResult | null>;
   isManagedSteelReviewMessage(input: SteelReviewScope & { messageId: string }): Promise<boolean>;
 }
 
@@ -653,20 +658,23 @@ function updateAtRange(text: string, start: number, end: number, expected: strin
 
 function resultFromReceipt(
   receipt: SteelReviewReceipt,
-  output: Pick<ISteelReviewOutput, 'outputId' | 'effectiveMarkdown' | 'displayMarkdown'>,
-  messageSha256: string,
 ): SteelReviewCommitResult {
+  if (!receipt.snapshot) {
+    throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review receipt snapshot is unavailable');
+  }
+  const snapshot = receipt.snapshot;
   return {
     operationId: receipt.operationId,
     digest: receipt.digest,
-    outputId: output.outputId,
-    revision: receipt.revision,
-    changedRows: receipt.changedRows,
-    changedRowIds: receipt.changedRowIds,
-    savedAt: receipt.savedAt,
-    messageSha256,
-    effectiveMarkdown: output.effectiveMarkdown ?? '',
-    displayMarkdown: output.displayMarkdown ?? '',
+    outputId: snapshot.outputId,
+    revision: snapshot.revision,
+    changedRows: snapshot.changedRows,
+    changedRowIds: snapshot.changedRowIds,
+    savedAt: snapshot.savedAt,
+    messageSha256: snapshot.messageSha256,
+    effectiveMarkdown: snapshot.effectiveMarkdown,
+    displayMarkdown: snapshot.displayMarkdown,
+    snapshot,
   };
 }
 
@@ -677,6 +685,41 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
   const QuotationState = createSteelQuotationStateModel(mongoose);
   const ReviewOutput = createSteelReviewOutputModel(mongoose);
 
+  const findReceipt = async (
+    input: SteelReviewReceiptLookup,
+  ): Promise<SteelReviewCommitResult | null> => {
+    const prior = await ReviewOutput.findOne({
+      ...scopeFilter(input),
+      kind: input.kind,
+      messageId: input.messageId,
+      tableId: input.tableId,
+      outputId: input.outputId,
+      'receipts.operationId': input.operationId,
+    }).lean<ISteelReviewOutput | null>();
+    if (!prior) {
+      return null;
+    }
+    const receipt = prior.receipts?.find((candidate) => candidate.operationId === input.operationId);
+    if (!receipt) {
+      throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review operation is unavailable');
+    }
+    if (receipt.digest !== input.digest) {
+      throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review operation payload changed');
+    }
+    return resultFromReceipt(receipt);
+  };
+
+  const resolveReceipt = async (input: SteelReviewCommitInput): Promise<SteelReviewCommitResult | null> => {
+    if (input.kind !== 'ocr_result') {
+      throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'This review save is available for OCR results only');
+    }
+    const computedDigest = commitDigest(input);
+    if (computedDigest !== input.digest) {
+      throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review operation digest mismatch');
+    }
+    return findReceipt(input);
+  };
+
   return {
     async isManagedSteelReviewMessage(input) {
         const [output, ocrState, quotation] = await Promise.all([
@@ -685,7 +728,6 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
           ...tenantFilter(input.tenantId),
           conversationId: input.conversationId,
           messageId: input.messageId,
-          state: 'current',
         }),
         OcrState.exists({
           conversationId: input.conversationId,
@@ -705,29 +747,12 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
     },
 
     async commitSteelReview(input) {
-      const computedDigest = commitDigest(input);
-      if (computedDigest !== input.digest) {
-        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review operation digest mismatch');
+      if (input.kind !== 'ocr_result') {
+        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'This review save is available for OCR results only');
       }
-
-      const receiptOwnerFilter = {
-        ...scopeFilter(input),
-        kind: input.kind,
-        messageId: input.messageId,
-        tableId: input.tableId,
-        'receipts.operationId': input.operationId,
-      };
-      const prior = await ReviewOutput.findOne(receiptOwnerFilter)
-        .lean<ISteelReviewOutput | null>();
-      if (prior) {
-        const receipt = prior.receipts?.find((candidate) => candidate.operationId === input.operationId);
-        if (!receipt) {
-          throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review operation is unavailable');
-        }
-        if (receipt.digest !== input.digest) {
-          throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review operation payload changed');
-        }
-        return resultFromReceipt(receipt, prior, input.messageSha256);
+      const resolved = await resolveReceipt(input);
+      if (resolved) {
+        return resolved;
       }
 
       const session = await mongoose.startSession();
@@ -849,7 +874,9 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               const previous = output.rows[index];
               const next = input.rows[index];
               if (!next || previous.rowId !== next.rowId ||
-                JSON.stringify(previous.source) !== JSON.stringify(next.source)) {
+                (previous.source === null && next.source !== null) ||
+                (previous.source !== null && next.source !== null &&
+                  JSON.stringify(previous.source) !== JSON.stringify(next.source))) {
                 throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review row identity changed');
               }
               for (const header of input.headers) {
@@ -904,6 +931,20 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             changedRows: changedRowIds.length,
             changedRowIds,
             savedAt,
+            snapshot: {
+              operationId: input.operationId,
+              digest: input.digest,
+              outputId: input.outputId,
+              revision: nextRevision,
+              headers: input.headers,
+              rows: input.rows,
+              changedRows: changedRowIds.length,
+              changedRowIds,
+              savedAt,
+              messageSha256: createHash('sha256').update(nextText).digest('hex'),
+              effectiveMarkdown: input.effectiveMarkdown,
+              displayMarkdown: input.displayMarkdown,
+            },
           };
           const update = {
             $set: {
@@ -971,6 +1012,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             messageSha256: createHash('sha256').update(nextText).digest('hex'),
             effectiveMarkdown: input.effectiveMarkdown,
             displayMarkdown: input.displayMarkdown,
+            snapshot: receipt.snapshot,
           };
         });
         if (!result) {
@@ -981,5 +1023,8 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
         await session.endSession();
       }
     },
+
+    resolveSteelReviewReceipt: resolveReceipt,
+    readSteelReviewReceipt: findReceipt,
   };
 }

@@ -14,6 +14,15 @@ export const steelReviewReadQuerySchema = z.object({
 });
 export type SteelReviewReadQuery = z.infer<typeof steelReviewReadQuerySchema>;
 
+export const steelReviewReceiptQuerySchema = z.object({
+  messageId: z.string().trim().min(1).max(300),
+  tableId: z.string().trim().min(1).max(300),
+  outputId: z.string().trim().min(1).max(300),
+  operationId: z.string().trim().min(1).max(300),
+  digest: z.string().length(64),
+});
+export type SteelReviewReceiptQuery = z.infer<typeof steelReviewReceiptQuerySchema>;
+
 export const steelReviewSourceSchema = z.object({
   fileId: z.string().min(1),
   pageNumber: z.number().int().positive().nullable(),
@@ -45,6 +54,26 @@ export const steelReviewCaptionSchema = z.object({
   changedRowIds: z.array(z.string().min(1)),
 });
 
+/**
+ * The immutable result captured by one successful human save.  This is kept
+ * on the receipt rather than read back from the current sidecar so a retry of
+ * an older operation cannot accidentally return a later revision.
+ */
+export const steelReviewSavedSnapshotSchema = z.object({
+  operationId: z.string().min(1),
+  digest: z.string().length(64),
+  outputId: z.string().min(1),
+  revision: z.string().min(1),
+  headers: z.array(z.string()),
+  rows: z.array(steelReviewRowSchema),
+  changedRows: z.number().int().nonnegative(),
+  changedRowIds: z.array(z.string().min(1)),
+  savedAt: z.string().datetime(),
+  messageSha256: z.string().length(64),
+  effectiveMarkdown: z.string(),
+  displayMarkdown: z.string(),
+});
+
 export const steelReviewReceiptSchema = z.object({
   operationId: z.string().min(1),
   digest: z.string().length(64),
@@ -52,6 +81,7 @@ export const steelReviewReceiptSchema = z.object({
   changedRows: z.number().int().nonnegative(),
   changedRowIds: z.array(z.string().min(1)),
   savedAt: z.string().datetime(),
+  snapshot: steelReviewSavedSnapshotSchema.optional(),
 });
 
 export const steelReviewTableSchema = z.object({
@@ -117,6 +147,11 @@ export const steelReviewResponseSchema = z.object({
   table: steelReviewTableSchema.nullable(),
 });
 
+export const steelReviewReceiptStatusSchema = z.discriminatedUnion('status', [
+  z.object({ status: z.literal('absent') }),
+  z.object({ status: z.literal('committed'), snapshot: steelReviewSavedSnapshotSchema }),
+]);
+
 export const steelReviewSourceFileSchema = z.object({
   fileId: z.string().min(1),
   filename: z.string().min(1),
@@ -142,8 +177,10 @@ export type SteelReviewCell = z.infer<typeof steelReviewCellSchema>;
 export type SteelReviewRow = z.infer<typeof steelReviewRowSchema>;
 export type SteelReviewTable = z.infer<typeof steelReviewTableSchema>;
 export type SteelReviewResponse = z.infer<typeof steelReviewResponseSchema>;
+export type SteelReviewReceiptStatus = z.infer<typeof steelReviewReceiptStatusSchema>;
 export type SteelReviewTarget = z.infer<typeof steelReviewTargetSchema>;
 export type SteelReviewCaption = z.infer<typeof steelReviewCaptionSchema>;
+export type SteelReviewSavedSnapshot = z.infer<typeof steelReviewSavedSnapshotSchema>;
 export type SteelReviewReceipt = z.infer<typeof steelReviewReceiptSchema>;
 export type SteelReviewPrepare = z.infer<typeof steelReviewPrepareSchema>;
 export type SteelReviewPrepared = z.infer<typeof steelReviewPreparedSchema>;

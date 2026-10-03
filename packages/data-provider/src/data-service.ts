@@ -7,6 +7,7 @@ import type {
   OpenAIOAuthUsageRemaining,
   SteelReviewKind,
   SteelReviewResponse,
+  SteelReviewReceiptStatus,
   SteelReviewPrepare,
   SteelReviewPrepared,
   SteelReviewCommit,
@@ -204,6 +205,26 @@ export function prepareSteelReview(input: SteelReviewPrepare): Promise<SteelRevi
 
 export function commitSteelReview(input: SteelReviewCommit): Promise<SteelReviewSaveResponse> {
   return request.post(endpoints.steelReviewCommit(input.conversationId, input.kind), input);
+}
+
+export function getSteelReviewReceipt(
+  conversationId: string,
+  kind: SteelReviewKind,
+  messageId: string,
+  tableId: string,
+  outputId: string,
+  operationId: string,
+  digest: string,
+): Promise<SteelReviewReceiptStatus> {
+  return request.get(endpoints.steelReviewReceipt(
+    conversationId,
+    kind,
+    messageId,
+    tableId,
+    outputId,
+    operationId,
+    digest,
+  ));
 }
 
 export function getSteelReviewSources(

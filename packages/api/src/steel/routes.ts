@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { steelReviewKinds } from 'librechat-data-provider';
+import { steelReviewKinds, steelReviewReceiptQuerySchema } from 'librechat-data-provider';
 import type { SteelReviewKind } from 'librechat-data-provider';
 import type { Request, Response } from 'express';
 import type { ServerRequest } from '~/types/http';
@@ -77,6 +77,7 @@ export interface SteelRouteHandlers {
   readOpenAIOAuthUsage(req: SteelRequest, res: Response): Promise<void>;
   createRuleProposal(req: SteelRequest, res: Response): Promise<void>;
   readReview(req: SteelRequest, res: Response): Promise<void>;
+  readReviewReceipt(req: SteelRequest, res: Response): Promise<void>;
   prepareReview(req: SteelRequest, res: Response): Promise<void>;
   commitReview(req: SteelRequest, res: Response): Promise<void>;
   listReviewSources(req: SteelRequest, res: Response): Promise<void>;
@@ -192,6 +193,41 @@ export function createSteelRouteHandlers({
           return;
         }
         res.status(500).json({ message: 'Steel review read failed' });
+      }
+    },
+
+    async readReviewReceipt(req, res) {
+      const scopeResult = parseSteelReviewRouteScope(req, 'Invalid review receipt query');
+      if (!('scope' in scopeResult)) {
+        sendSteelReviewRouteScopeError(res, scopeResult);
+        return;
+      }
+      const { userId, conversationId, kind } = scopeResult.scope;
+      try {
+        if (!resolvedReviewService) {
+          res.status(500).json({ message: 'Steel review receipt unavailable' });
+          return;
+        }
+        const query = steelReviewReceiptQuerySchema.safeParse(req.query as Record<string, unknown>);
+        if (!query.success) {
+          res.status(400).json({ message: 'Invalid review receipt query', code: 'INVALID_REVIEW_QUERY' });
+          return;
+        }
+        const result = await resolvedReviewService.receipt({
+          userId,
+          tenantId: req.tenantId ?? req.user?.tenantId,
+          conversationId,
+          kind,
+          ...query.data,
+        });
+        res.status(200).json(result);
+      } catch (error) {
+        if (error instanceof SteelReviewReadError || error instanceof SteelReviewWriteError) {
+          res.status(error instanceof SteelReviewReadError ? error.statusCode : 409)
+            .json({ message: error.message, code: error.code });
+          return;
+        }
+        res.status(500).json({ message: 'Steel review receipt read failed' });
       }
     },
 
