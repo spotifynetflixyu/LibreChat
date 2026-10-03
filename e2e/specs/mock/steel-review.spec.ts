@@ -902,7 +902,8 @@ test.describe('Steel managed source review', () => {
         if (!owner) throw new Error('Missing scoped quotation owner');
         await db.collection('steel_quotation_states').insertOne({
           userId: String(owner.user), conversationId,
-          currentOrder: { markdown: linked ? ocr : 'UNRELATED-OCR', sha256: orderHash },
+          // Preparing a new order must not make an unrelated older quote share its lineage.
+          currentOrder: { markdown: ocr, sha256: createHash('sha256').update(ocr).digest('hex') },
           currentSystemOrder: {
             runId, messageId: randomUUID(), markdown: systemOrder,
             sha256: createHash('sha256').update(systemOrder).digest('hex'),
