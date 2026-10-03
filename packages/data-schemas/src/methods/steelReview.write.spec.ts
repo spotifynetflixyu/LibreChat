@@ -706,6 +706,76 @@ describe('Steel review write methods', () => {
     }))).resolves.toMatchObject({ changedRows: 1 });
   });
 
+  it('rejects persisted source metadata disappearing before any transaction write', async () => {
+    const models = createModels(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const conversationId = 'source-metadata-conversation';
+    const messageId = 'source-metadata-message';
+    const originalMarkdown = markdownFor('P-1');
+    await models.Conversation.create({
+      conversationId,
+      user: 'user-1',
+      tenantId: 'tenant-1',
+      title: 'Source metadata',
+      endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId,
+      conversationId,
+      user: 'user-1',
+      tenantId: 'tenant-1',
+      isCreatedByUser: false,
+      text: originalMarkdown,
+    });
+    await State.create({
+      conversationId,
+      currentOcrResultMarkdown: originalMarkdown,
+      currentOcrResultMessageId: messageId,
+      currentOcrResultGenerationId: 'generation-1',
+    });
+    const writer = createSteelReviewWriteMethods(mongoose);
+    await writer.commitSteelReview(makeInput({
+      operationId: 'source-metadata-bootstrap',
+      revision: 'generation-1',
+      previousValue: 'P-1',
+      nextValue: 'P-7',
+      conversationId,
+      messageId,
+    }));
+    const source = {
+      fileId: 'file-1',
+      pageNumber: 1,
+      filename: 'drawing.pdf',
+      mediaType: 'application/pdf',
+    };
+    const output = await ReviewOutput.findOne({ conversationId }).lean();
+    expect(output).not.toBeNull();
+    await ReviewOutput.updateOne({ _id: output!._id }, {
+      $set: { rows: output!.rows.map((row) => ({ ...row, source })) },
+    });
+    const before = {
+      output: await ReviewOutput.findOne({ conversationId }).lean(),
+      message: await models.Message.findOne({ messageId }).lean(),
+      state: await State.findOne({ conversationId }).lean(),
+    };
+
+    await expect(writer.commitSteelReview(makeInput({
+      operationId: 'source-metadata-forged',
+      revision: 'generation-1',
+      previousValue: 'P-7',
+      nextValue: 'P-8',
+      conversationId,
+      messageId,
+    }))).rejects.toMatchObject({ code: 'REVIEW_CONFLICT' });
+
+    expect({
+      output: await ReviewOutput.findOne({ conversationId }).lean(),
+      message: await models.Message.findOne({ messageId }).lean(),
+      state: await State.findOne({ conversationId }).lean(),
+    }).toEqual(before);
+  });
+
   it('rolls back sidecar, message metadata, receipt, and quotation stale state on a mid-transaction failure', async () => {
     const models = createModels(mongoose);
     const State = createSteelConversationOcrStateModel(mongoose);

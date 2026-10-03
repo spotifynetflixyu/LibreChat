@@ -3,6 +3,7 @@ import {
   isSteelReviewSourceAssociationHeader,
   normalizeSteelReviewEffectiveValue,
   normalizeSteelReviewRows,
+  sameSteelReviewSource,
   steelReviewReadQuerySchema,
   steelReviewResponseSchema,
 } from './review';
@@ -71,6 +72,23 @@ describe('Steel review contracts', () => {
     expect(normalizeSteelReviewEffectiveValue('  7\r\n  ')).toBe('7');
     expect(normalizeSteelReviewEffectiveValue(' A\nB ')).toBe('A B');
     expect(normalizeSteelReviewEffectiveValue(null)).toBeNull();
+  });
+
+  it('compares nullable source metadata without coercing association fields', () => {
+    const source = { fileId: 'file-1', pageNumber: 1, filename: 'drawing.pdf', mediaType: 'application/pdf' };
+    expect(sameSteelReviewSource(null, null)).toBe(true);
+    expect(sameSteelReviewSource(null, source)).toBe(false);
+    expect(sameSteelReviewSource(source, null)).toBe(false);
+    expect(sameSteelReviewSource(source, { ...source })).toBe(true);
+    expect(sameSteelReviewSource(source, { ...source, fileId: 'file-2' })).toBe(false);
+    expect(sameSteelReviewSource(source, { ...source, pageNumber: 0 })).toBe(false);
+    expect(sameSteelReviewSource(source, { ...source, pageNumber: null })).toBe(false);
+    expect(sameSteelReviewSource(source, { ...source, filename: 'other.pdf' })).toBe(false);
+    expect(sameSteelReviewSource(source, { ...source, mediaType: 'image/png' })).toBe(false);
+    expect(sameSteelReviewSource(
+      { fileId: 'file-1', pageNumber: 1 },
+      { fileId: 'file-1', pageNumber: 1, filename: undefined, mediaType: undefined },
+    )).toBe(true);
   });
 
   it('normalizes rows without changing source, baseline, null, or cell properties', () => {

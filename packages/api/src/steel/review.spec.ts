@@ -1,3 +1,5 @@
+import { createHash } from 'node:crypto';
+import { encodeSteelReviewDigest } from 'librechat-data-provider';
 import { createSteelReviewService } from './review';
 
 const managedMarkdown = [
@@ -675,6 +677,57 @@ describe('Steel review read service', () => {
       ...prepared,
       rows: forgedPageRows,
     })).rejects.toMatchObject({ code: 'INVALID_REVIEW_QUERY' });
+    expect(commitSteelReview).not.toHaveBeenCalled();
+  });
+
+  it('rejects source metadata disappearing while association cells stay unchanged', async () => {
+    const trustedRows = associationRowsFor();
+    const reader = {
+      readSteelReview: jest.fn().mockResolvedValue({
+        userId: 'user-1',
+        conversationId: 'conversation-1',
+        kind: 'ocr_result' as const,
+        messageId: 'message-1',
+        tableId: 'ocr_result:1',
+        outputId: 'ocr_result:generation-1',
+        revision: 'generation-1',
+        state: 'current' as const,
+        markdown: associationMarkdownFor(),
+        messageText: associationMarkdownFor(),
+        headers: ['來源', '原始檔案', '原檔頁碼', 'Profile'],
+        rows: trustedRows,
+      }),
+    };
+    const commitSteelReview = jest.fn();
+    const service = createSteelReviewService({ reader, writer: { commitSteelReview } });
+    const base = {
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result' as const,
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+    };
+    const businessRows = associationRowsFor('A', '1', 'P-2');
+    const sourceNullRows = associationRowsFor('A', '1', 'P-2');
+    sourceNullRows[0]!.source = null;
+
+    await expect(service.prepare({ ...base, rows: sourceNullRows })).rejects.toMatchObject({
+      code: 'INVALID_REVIEW_QUERY',
+      statusCode: 400,
+    });
+
+    const prepared = await service.prepare({ ...base, rows: businessRows });
+    const { digest: _digest, ...sourceNullBase } = { ...prepared, rows: sourceNullRows };
+    const digest = createHash('sha256').update(encodeSteelReviewDigest({
+      ...sourceNullBase,
+      userId: 'user-1',
+    })).digest('hex');
+    await expect(service.commit({ userId: 'user-1', ...sourceNullBase, digest })).rejects.toMatchObject({
+      code: 'INVALID_REVIEW_QUERY',
+      statusCode: 400,
+    });
     expect(commitSteelReview).not.toHaveBeenCalled();
   });
 

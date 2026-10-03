@@ -6,6 +6,7 @@ import {
   encodeSteelReviewDigest,
   isSteelReviewSourceAssociationHeader,
   normalizeSteelReviewRows,
+  sameSteelReviewSource,
   steelReviewCommitSchema,
   steelReviewPrepareSchema,
   steelReviewReceiptQuerySchema,
@@ -765,8 +766,7 @@ export function createSteelReviewService({
         !sameCellProperty(current.values[header], 'effective', next?.values[header], 'effective'))) {
         throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Review source association cell changed');
       }
-      if ((current.source === null && next.source !== null) ||
-        (current.source !== null && next.source !== null && JSON.stringify(current.source) !== JSON.stringify(next.source))) {
+      if (!sameSteelReviewSource(current.source, next.source)) {
         throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Review source changed');
       }
     }
