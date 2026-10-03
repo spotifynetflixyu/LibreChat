@@ -11,9 +11,9 @@ Baseline: `056eb076ac0b9f7b7ccaba74672ae1288fab662a`.
 
 | Slice | GitHub ticket | Direct blockers | Integration state |
 | --- | --- | --- | --- |
-| 01 | [Steel 表格唯讀入口與版本資格](https://github.com/spotifynetflixyu/LibreChat/issues/2) | None | In progress |
-| 02 | [多檔單頁原檔預覽](https://github.com/spotifynetflixyu/LibreChat/issues/3) | #2 | Pending |
-| 03 | [OCR 儲存格自動儲存與精準聊天更新](https://github.com/spotifynetflixyu/LibreChat/issues/4) | #2 | Pending |
+| 01 | [Steel 表格唯讀入口與版本資格](https://github.com/spotifynetflixyu/LibreChat/issues/2) | None | Verified (`d58ce51bc`) |
+| 02 | [多檔單頁原檔預覽](https://github.com/spotifynetflixyu/LibreChat/issues/3) | #2 | In progress |
+| 03 | [OCR 儲存格自動儲存與精準聊天更新](https://github.com/spotifynetflixyu/LibreChat/issues/4) | #2 | In progress |
 | 04 | [單一來源 selector 與未定位列補標](https://github.com/spotifynetflixyu/LibreChat/issues/5) | #3, #4 | Pending |
 | 05 | [OCR 列增刪與本次 undo／redo](https://github.com/spotifynetflixyu/LibreChat/issues/6) | #3, #4 | Pending |
 | 06 | [System order 修正與客戶報價原子同步](https://github.com/spotifynetflixyu/LibreChat/issues/7) | #4 | Pending |
@@ -34,3 +34,5 @@ so merging a ticket into the integration branch is not confused with production 
 Ticket bodies are mirrored outside the repository under `/tmp/steel-source-review-tickets/`
 for fresh implementer context; GitHub is the authoritative tracker.
 
+
+Slice01 evidence at `d58ce51bca450f1b7b3de6b36b996a97a3d4a5f9`: 11/11 authenticated browser cases against the real backend and a disposable Mongo replica set; 13/13 focused real-Mongo cases; 7/7 API cases; owning workspace builds/typechecks; exact-head spec and standards repair reviews passed. No DB writes on read/reload. Full-feature Lighthouse and final review remain in slice14.
