@@ -956,7 +956,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
         const revision = candidate?.generationId ?? run.responseGenerationId;
         return Boolean(candidate?.markdown && revision);
       });
-      if (ocrStates.length > 1 || historicalRuns.length > 1) {
+      if (outputs.length > 1 || ocrStates.length > 1 || quotations.length > 1 || historicalRuns.length > 1) {
         return unavailableMessageMutation();
       }
       return {
