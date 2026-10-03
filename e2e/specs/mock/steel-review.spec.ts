@@ -743,6 +743,33 @@ test.describe('Steel managed source review', () => {
   });
 
 
+  test('clearing an OCR cell keeps its AI baseline and clean reload does not resurrect the old value', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(read.status()).toBe(200);
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const rows = structuredClone(table.rows);
+    rows[0].values['長度'].effective = null;
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const prepare = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+    expect(prepare.status()).toBe(200);
+    const saved = await page.request.post(`${url}/commit`, { headers, data: await prepare.json() });
+    expect(saved.status()).toBe(200);
+    const snapshot = await persistedSnapshot(conversationId);
+    expect(snapshot.messages.find((message) => message.messageId === messageId)?.text)
+      .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 |  | 2 | 1 |'));
+    const reloaded = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(reloaded.status()).toBe(200);
+    const current = await reloaded.json() as { table: SteelReviewTable };
+    expect(current.table.rows[0].values['長度']).toEqual({ baseline: '1000', effective: null });
+    const noChange = await page.request.post(`${url}/prepare`, { headers, data: current.table });
+    expect(noChange.status()).toBe(200);
+    const noOp = await page.request.post(`${url}/commit`, { headers, data: await noChange.json() });
+    expect(noOp.status()).toBe(200);
+    expect(await persistedSnapshot(conversationId)).toEqual(snapshot);
+  });
+
   test('the backend saves only its exact message target and rejects a second stale prepared operation', async ({ page }) => {
     const markdown = `CAS-PREFIX\n\n${ocr}\n\n## Other data\n| Name | Value |\n| --- | --- |\n| KEEP | 42 |\n\nCAS-SUFFIX`;
     const { conversationId, messageId } = await seedCurrent(markdown);
