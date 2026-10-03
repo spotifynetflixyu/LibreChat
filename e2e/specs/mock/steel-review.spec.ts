@@ -743,6 +743,39 @@ test.describe('Steel managed source review', () => {
   });
 
 
+  test('an unavailable source stays unlocated without blocking a later business-cell Save', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    for (const quantity of ['7', '8']) {
+      const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+      expect(read.status()).toBe(200);
+      const { table } = await read.json() as { table: SteelReviewTable };
+      if (quantity === '8') expect(table.rows[0].source).toBeNull();
+      const rows = structuredClone(table.rows);
+      rows[0].values['數量'].effective = quantity;
+      const prepare = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+      expect(prepare.status()).toBe(200);
+      const save = await page.request.post(`${url}/commit`, { headers, data: await prepare.json() });
+      expect(save.status()).toBe(200);
+      if (quantity === '7') {
+        await withMongo(async (db) => {
+          await db.collection('files').updateOne({ conversationId, file_id: 'review-alpha' }, {
+            $set: { expiresAt: new Date(Date.now() - 60_000) },
+          });
+        });
+      }
+    }
+    const after = await persistedSnapshot(conversationId);
+    expect(after.messages.find((message) => message.messageId === messageId)?.text)
+      .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 8 | 1 |'));
+    const reloaded = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(reloaded.status()).toBe(200);
+    expect(await reloaded.json()).toMatchObject({ table: {
+      rows: [{ source: null, values: { 數量: { baseline: '2', effective: '8' } } }, { source: null }],
+    } });
+  });
+
   test('clearing an OCR cell keeps its AI baseline and clean reload does not resurrect the old value', async ({ page }) => {
     const { conversationId, messageId } = await seedCurrent(ocr);
     conversations.push(conversationId);
