@@ -1037,6 +1037,45 @@ test.describe('Steel managed source review', () => {
     expect(historicalReceipt.status()).toBe(200);
     expect(await historicalReceipt.json()).toEqual(receipt);
     expect(await persistedSnapshot(conversationId)).toEqual(afterSecond);
+    const newMessageId = randomUUID();
+    await seedMessages(getE2EUser().email, conversationId, [{
+      messageId: newMessageId, parentMessageId: messageId, text: ocr,
+      content: [{ type: 'text', text: ocr }], isCreatedByUser: false, sender: 'Assistant',
+    }]);
+    await withMongo(async (db) => {
+      await db.collection('steel_conversation_ocr_state').updateOne({ conversationId }, { $set: {
+        currentOcrResultMessageId: newMessageId, currentOcrResultGenerationId: 'review-next-generation',
+        currentOcrResultMarkdown: ocr, updatedAt: new Date(),
+      } });
+    });
+    const afterNewAI = await persistedSnapshot(conversationId);
+    const oldOwnerReceipt = await page.request.get(receiptUrl, { headers });
+    expect(oldOwnerReceipt.status()).toBe(200);
+    expect(await oldOwnerReceipt.json()).toEqual(receipt);
+    const oldOwner = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(oldOwner.status()).toBe(200);
+    expect(await oldOwner.json()).toMatchObject({ table: {
+      readOnly: true, isLatest: false, aiUpdatedAt: firstState.ocr?.updatedAt.toISOString(),
+    } });
+    expect(await persistedSnapshot(conversationId)).toEqual(afterNewAI);
+    const unknownOwner = new URLSearchParams(receiptQuery);
+    unknownOwner.set('messageId', randomUUID());
+    const missingMessage = await page.request.get(`${url}/receipt?${unknownOwner}`, { headers });
+    expect(missingMessage.status()).toBe(404);
+    const missingChat = await page.request.get(`/api/steel/conversations/${randomUUID()}/review/ocr_result/receipt?${receiptQuery}`, { headers });
+    expect(missingChat.status()).toBe(404);
+    expect(await persistedSnapshot(conversationId)).toEqual(afterNewAI);
+    await withMongo(async (db) => {
+      await db.collection('messages').updateOne({ conversationId, messageId }, {
+        $set: { expiredAt: new Date(Date.now() - 60_000) },
+      });
+    });
+    const expiredState = await persistedSnapshot(conversationId);
+    const unavailableReceipt = await page.request.get(receiptUrl, { headers });
+    expect(unavailableReceipt.status()).toBe(404);
+    const unavailableReplay = await page.request.post(`${url}/commit`, { headers, data: first.operation });
+    expect(unavailableReplay.status()).toBe(404);
+    expect(await persistedSnapshot(conversationId)).toEqual(expiredState);
   });
 
   test('manual OCR Save changes only the clicked message and chat reload shows clean saved values', async ({ page }) => {
