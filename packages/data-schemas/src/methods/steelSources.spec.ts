@@ -166,6 +166,32 @@ describe('Steel review source methods', () => {
         user: userId,
         tenantId: 'tenant-a',
         conversationId,
+        file_id: 'duplicate-mime-source',
+        bytes: 4,
+        filename: 'duplicate-mime.pdf',
+        filepath: '/uploads/duplicate-mime.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        source: 'local',
+        usage: 0,
+      },
+      {
+        user: userId,
+        tenantId: 'tenant-a',
+        conversationId,
+        file_id: 'duplicate-mime-source',
+        bytes: 4,
+        filename: 'duplicate-mime.txt',
+        filepath: '/uploads/duplicate-mime.txt',
+        object: 'file',
+        type: 'text/plain',
+        source: 'local',
+        usage: 0,
+      },
+      {
+        user: userId,
+        tenantId: 'tenant-a',
+        conversationId,
         file_id: 'duplicate-source',
         bytes: 4,
         filename: 'duplicate-b.pdf',
@@ -228,6 +254,7 @@ describe('Steel review source methods', () => {
       'attached-source',
       'explicit-source',
       'legacy-source',
+      'other-message-source',
       'canonical-pdf-source',
     ]);
     expect(sources.find((source) => source.fileId === 'explicit-source')).toMatchObject({
@@ -241,9 +268,11 @@ describe('Steel review source methods', () => {
     });
     expect(await methods.listSteelReviewSources({ ...input, userId: new mongoose.Types.ObjectId().toString() })).toEqual([]);
     expect(await methods.readSteelReviewSource({ ...input, fileId: 'duplicate-source' })).toBeNull();
+    expect(await methods.readSteelReviewSource({ ...input, fileId: 'duplicate-mime-source' })).toBeNull();
     expect(await methods.readSteelReviewSource({ ...input, fileId: 'explicit-source' })).toMatchObject({
       fileId: 'explicit-source',
       filepath: '/uploads/drawing.pdf',
     });
+    expect(await methods.listSteelReviewSources({ ...input, messageId: 'missing-message' })).toEqual([]);
   });
 });

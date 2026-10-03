@@ -5,6 +5,12 @@ import { steelReviewSelectionAtom } from './SteelReview/state';
 import MarkdownTableActions from './MarkdownTableActions';
 import SteelReviewDialog from './SteelReviewDialog';
 
+jest.mock('pdfjs-dist/build/pdf.worker.mjs?url', () => ({ default: 'pdf-worker.js' }), { virtual: true });
+jest.mock('pdfjs-dist/build/pdf.mjs', () => ({
+  GlobalWorkerOptions: { workerSrc: '' },
+  getDocument: jest.fn(),
+}));
+
 jest.mock('@librechat/client', () => {
   const React = require('react');
   const Pass = ({ children, asChild: _asChild, ...props }: {
@@ -81,8 +87,12 @@ jest.mock('~/data-provider', () => ({
 }));
 const {
   useGetSteelReviewQuery: mockUseGetSteelReviewQuery,
+  useGetSteelReviewSourcesQuery: mockUseGetSteelReviewSourcesQuery,
+  useGetSteelReviewSourceQuery: mockUseGetSteelReviewSourceQuery,
 } = jest.requireMock('~/data-provider') as {
   useGetSteelReviewQuery: jest.Mock;
+  useGetSteelReviewSourcesQuery: jest.Mock;
+  useGetSteelReviewSourceQuery: jest.Mock;
 };
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
@@ -201,6 +211,84 @@ describe('MarkdownTableActions Steel review entry', () => {
     expect(screen.getByText('com_ui_steel_review_empty')).toBeInTheDocument();
     expect(screen.queryByRole('textbox')).toBeNull();
     expect(store.get(steelReviewSelectionAtom)).toEqual(reviewIdentity);
+  });
+
+  it('keeps source rows visible while sources load or fail, then renders an image preview', async () => {
+    const row = {
+      rowId: 'drawing-row',
+      values: { Part: { baseline: 'P-1', effective: 'P-1' } },
+      source: { fileId: 'drawing-a', pageNumber: 1, filename: 'drawing-a.png' },
+    };
+    const table = {
+      ...reviewIdentity,
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      latestOutputId: 'ocr_result:generation-1',
+      isLatest: true,
+      readOnly: true,
+      headers: ['Part'],
+      rows: [row],
+    };
+    const sourceRefetch = jest.fn();
+    const sourceBlob = new Blob(['image'], { type: 'image/png' });
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: jest.fn(() => 'blob:image') });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: jest.fn() });
+    mockUseGetSteelReviewQuery.mockReturnValue({ data: { table }, error: null, isError: false, isLoading: false });
+    mockUseGetSteelReviewSourcesQuery.mockReturnValue({
+      data: undefined,
+      error: null,
+      isError: false,
+      isLoading: true,
+      refetch: sourceRefetch,
+    });
+    mockUseGetSteelReviewSourceQuery.mockReturnValue({
+      data: undefined,
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: jest.fn(),
+    });
+    const { rerender, store } = renderDialog();
+    expect(screen.getByRole('status')).toHaveTextContent('com_ui_steel_review_sources_loading');
+    expect(screen.getByText('P-1')).toBeInTheDocument();
+
+    mockUseGetSteelReviewSourcesQuery.mockReturnValue({
+      data: undefined,
+      error: new Error('source listing failed'),
+      isError: true,
+      isLoading: false,
+      refetch: sourceRefetch,
+    });
+    rerender(
+      <Provider store={store}>
+        <SteelReviewDialog identity={reviewIdentity} />
+      </Provider>,
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent('com_ui_steel_review_sources_error');
+    expect(screen.getByText('P-1')).toBeInTheDocument();
+    screen.getByRole('button', { name: 'com_ui_retry' }).click();
+    expect(sourceRefetch).toHaveBeenCalledTimes(1);
+
+    mockUseGetSteelReviewSourcesQuery.mockReturnValue({
+      data: { sources: [{ fileId: 'drawing-a', filename: 'drawing-a.png', mediaType: 'image/png' }] },
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: sourceRefetch,
+    });
+    mockUseGetSteelReviewSourceQuery.mockReturnValue({
+      data: sourceBlob,
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: jest.fn(),
+    });
+    rerender(
+      <Provider store={store}>
+        <SteelReviewDialog identity={reviewIdentity} />
+      </Provider>,
+    );
+    expect(await screen.findByRole('img', { name: 'com_ui_steel_review_preview_canvas' })).toBeInTheDocument();
   });
 
   it('keeps transient recognition failures retryable without opening ordinary Markdown review', async () => {

@@ -1,13 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
+import { useAtom } from 'jotai';
 import { Button } from '@librechat/client';
 import { ZoomIn, ZoomOut } from 'lucide-react';
+import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import type { SteelReviewSourceFile } from 'librechat-data-provider';
 import type * as pdfjsLib from 'pdfjs-dist/build/pdf.mjs';
-
-interface Pan {
-  x: number;
-  y: number;
-}
+import { steelReviewPreviewStateFamily, type SteelReviewPan } from './state';
 
 export interface SteelReviewSourcePreviewLabels {
   zoomIn: string;
@@ -19,6 +17,7 @@ export interface SteelReviewSourcePreviewLabels {
 }
 
 export interface SteelReviewSourcePreviewProps {
+  stateKey: string;
   source?: SteelReviewSourceFile;
   pageNumber: number;
   blob?: Blob;
@@ -30,6 +29,7 @@ export interface SteelReviewSourcePreviewProps {
 }
 
 export default function SteelReviewSourcePreview({
+  stateKey,
   source,
   pageNumber,
   blob,
@@ -39,25 +39,25 @@ export default function SteelReviewSourcePreview({
   onRetry,
   onPageCount,
 }: SteelReviewSourcePreviewProps) {
+  const [previewState, setPreviewState] = useAtom(steelReviewPreviewStateFamily(stateKey));
+  const { imageUrl, zoom, pan, dragging, renderError } = previewState;
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const imageUrlRef = useRef<string>();
   const renderRef = useRef<{ cancel: () => void } | null>(null);
-  const [imageUrl, setImageUrl] = useState<string>();
-  const [zoom, setZoom] = useState(1);
-  const [pan, setPan] = useState<Pan>({ x: 0, y: 0 });
-  const [dragging, setDragging] = useState(false);
-  const [renderError, setRenderError] = useState(false);
-  const dragRef = useRef<{ x: number; y: number; pan: Pan }>();
+  const dragRef = useRef<{ x: number; y: number; pan: SteelReviewPan }>();
 
   useEffect(() => {
-    setZoom(1);
-    setPan({ x: 0, y: 0 });
-  }, [source?.fileId, pageNumber]);
+    setPreviewState((state) => ({
+      ...state,
+      zoom: 1,
+      pan: { x: 0, y: 0 },
+      dragging: false,
+    }));
+  }, [pageNumber, setPreviewState, source?.fileId]);
 
   useEffect(() => {
     let cancelled = false;
-    let loadingTask:
-      | { destroy: () => Promise<void>; promise: Promise<pdfjsLib.PDFDocumentProxy> }
-      | undefined;
+    let loadingTask: { destroy: () => Promise<void>; promise: Promise<pdfjsLib.PDFDocumentProxy> } | undefined;
     let documentProxy: pdfjsLib.PDFDocumentProxy | undefined;
     let renderTask: { cancel: () => void; promise: Promise<void> } | undefined;
     const canvas = canvasRef.current;
@@ -65,13 +65,11 @@ export default function SteelReviewSourcePreview({
       canvas.width = 0;
       canvas.height = 0;
     }
-    setRenderError(false);
-    setImageUrl((previous) => {
-      if (previous) {
-        URL.revokeObjectURL(previous);
-      }
-      return undefined;
-    });
+    setPreviewState((state) => ({ ...state, imageUrl: undefined, renderError: false }));
+    if (imageUrlRef.current) {
+      URL.revokeObjectURL(imageUrlRef.current);
+      imageUrlRef.current = undefined;
+    }
     onPageCount(0);
 
     if (!source || !blob || loading || error) {
@@ -83,23 +81,27 @@ export default function SteelReviewSourcePreview({
     const mediaType = source.mediaType.toLowerCase();
     if (mediaType.startsWith('image/')) {
       const objectUrl = URL.createObjectURL(blob);
-      setImageUrl(objectUrl);
+      imageUrlRef.current = objectUrl;
+      setPreviewState((state) => ({ ...state, imageUrl: objectUrl }));
       onPageCount(1);
       return () => {
         cancelled = true;
-        URL.revokeObjectURL(objectUrl);
+        if (imageUrlRef.current === objectUrl) {
+          URL.revokeObjectURL(objectUrl);
+          imageUrlRef.current = undefined;
+        }
+        setPreviewState((state) => (
+          state.imageUrl === objectUrl ? { ...state, imageUrl: undefined } : state
+        ));
       };
     }
 
     const renderPdf = async () => {
       try {
-        // PDF.js is browser-only ESM; lazy loading keeps the read-only dialog's
-        // Jest/SSR path CJS-compatible while Vite still emits the worker asset.
-        const [pdfjs, worker] = await Promise.all([
-          import('pdfjs-dist/build/pdf.mjs'),
-          import('pdfjs-dist/build/pdf.worker.mjs?url'),
-        ]);
-        pdfjs.GlobalWorkerOptions.workerSrc = worker.default;
+        // PDF.js is browser-only ESM; load it only for PDF previews so the
+        // dialog's initial chunk stays small while the worker URL remains a Vite asset.
+        const pdfjs = await import('pdfjs-dist/build/pdf.mjs');
+        pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
         const data = new Uint8Array(await blob.arrayBuffer());
         if (cancelled) {
           return;
@@ -135,7 +137,7 @@ export default function SteelReviewSourcePreview({
         await renderHandle.promise;
       } catch {
         if (!cancelled) {
-          setRenderError(true);
+          setPreviewState((state) => ({ ...state, renderError: true }));
           onPageCount(0);
         }
       }
@@ -149,19 +151,22 @@ export default function SteelReviewSourcePreview({
       void loadingTask?.destroy();
       void documentProxy?.destroy();
     };
-  }, [blob, error, loading, onPageCount, pageNumber, source]);
+  }, [blob, error, loading, onPageCount, pageNumber, setPreviewState, source]);
 
   const updateZoom = useCallback((delta: number) => {
-    setZoom((value) => Math.min(4, Math.max(0.5, value + delta)));
-  }, []);
+    setPreviewState((state) => ({
+      ...state,
+      zoom: Math.min(4, Math.max(0.5, state.zoom + delta)),
+    }));
+  }, [setPreviewState]);
 
   const handlePointerDown = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
       event.currentTarget.setPointerCapture(event.pointerId);
       dragRef.current = { x: event.clientX, y: event.clientY, pan };
-      setDragging(true);
+      setPreviewState((state) => ({ ...state, dragging: true }));
     },
-    [pan],
+    [pan, setPreviewState],
   );
 
   const handlePointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
@@ -169,16 +174,19 @@ export default function SteelReviewSourcePreview({
     if (!drag) {
       return;
     }
-    setPan({ x: drag.pan.x + event.clientX - drag.x, y: drag.pan.y + event.clientY - drag.y });
-  }, []);
+    setPreviewState((state) => ({
+      ...state,
+      pan: { x: drag.pan.x + event.clientX - drag.x, y: drag.pan.y + event.clientY - drag.y },
+    }));
+  }, [setPreviewState]);
 
   const handlePointerUp = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (event.currentTarget.hasPointerCapture(event.pointerId)) {
       event.currentTarget.releasePointerCapture(event.pointerId);
     }
     dragRef.current = undefined;
-    setDragging(false);
-  }, []);
+    setPreviewState((state) => ({ ...state, dragging: false }));
+  }, [setPreviewState]);
 
   if (!source) {
     return (
@@ -199,7 +207,7 @@ export default function SteelReviewSourcePreview({
   }
   if (error || renderError || !blob) {
     const retry = () => {
-      setRenderError(false);
+      setPreviewState((state) => ({ ...state, renderError: false }));
       onRetry();
     };
     return (
@@ -257,7 +265,7 @@ export default function SteelReviewSourcePreview({
             alt={labels.canvas}
             className="max-h-[60vh] max-w-full select-none object-contain"
             draggable={false}
-            onError={() => setRenderError(true)}
+            onError={() => setPreviewState((state) => ({ ...state, renderError: true }))}
             style={{ transform }}
           />
         )}

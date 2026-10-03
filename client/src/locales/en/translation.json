@@ -3187,6 +3187,8 @@
   "com_ui_steel_review_zoom_out": "Zoom out",
   "com_ui_steel_review_preview_unavailable": "Source preview unavailable",
   "com_ui_steel_review_preview_loading": "Loading source preview...",
+  "com_ui_steel_review_sources_loading": "Loading source files...",
+  "com_ui_steel_review_sources_error": "Unable to load source files.",
   "com_ui_steel_review_preview_canvas": "Source page preview",
   "com_ui_steel_review_unlocated": "Unlocated rows",
   "com_ui_steel_review_fullscreen": "Enter fullscreen",

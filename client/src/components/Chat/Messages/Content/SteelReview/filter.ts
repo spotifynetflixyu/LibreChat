@@ -9,12 +9,25 @@ export function getSteelReviewPreviewRows(
   rows: readonly SteelReviewRow[],
   fileId: string | undefined,
   pageNumber: number,
+  availableFileIds?: ReadonlySet<string>,
+  pageCount = 0,
 ): SteelReviewPreviewRows {
   const located: SteelReviewRow[] = [];
   const unlocated: SteelReviewRow[] = [];
   for (const row of rows) {
     const source = row.source;
-    if (!source || source.pageNumber === null) {
+    const selectedPageIsUnavailable =
+      source !== null &&
+      source.fileId === fileId &&
+      pageCount > 0 &&
+      source.pageNumber !== null &&
+      source.pageNumber > pageCount;
+    if (
+      !source ||
+      source.pageNumber === null ||
+      (availableFileIds && !availableFileIds.has(source.fileId)) ||
+      selectedPageIsUnavailable
+    ) {
       unlocated.push(row);
       continue;
     }
