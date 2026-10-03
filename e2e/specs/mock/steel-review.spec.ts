@@ -1061,6 +1061,30 @@ test.describe('Steel managed source review', () => {
     await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
   });
 
+  test('discard after an uncommitted failed Save resolves without causing a DB write', async ({ page }) => {
+    const { conversationId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const before = await persistedSnapshot(conversationId);
+    const commitUrl = `**/api/steel/conversations/${conversationId}/review/ocr_result/commit`;
+    await page.route(commitUrl, (route) => route.abort('failed'));
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+    await quantity.fill('7');
+    await dialog.getByRole('button', { name: /^Save/ }).click();
+    await expect(dialog.getByRole('alert')).toBeVisible();
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    await page.unroute(commitUrl);
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: 'Discard unsaved changes', exact: true }).click();
+    await expect(dialog).not.toBeVisible();
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    await expect(quantity).toHaveValue('2');
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+  });
+
   test('a lost committed OCR Save response is reconciled without a second DB mutation', async ({ page }) => {
     const { conversationId } = await seedCurrent(ocr);
     conversations.push(conversationId);
