@@ -8,6 +8,35 @@ const managedMarkdown = [
   '| A | P-1 |',
 ].join('\n');
 
+const associationMarkdownFor = (
+  source: string | null = 'A',
+  page: string | null = '1',
+  profile = 'P-1',
+) => [
+  '## ocr_result',
+  '',
+  '| 來源 | 原始檔案 | 原檔頁碼 | Profile |',
+  '| --- | --- | --- | --- |',
+  `| ${source ?? ''} | ${source ?? ''} | ${page ?? ''} | ${profile} |`,
+].join('\n');
+
+const associationRowsFor = (
+  source: string | null = 'A',
+  page: string | null = '1',
+  profile = 'P-1',
+) => [{
+  rowId: 'row-1',
+  values: {
+    來源: { baseline: source, effective: source },
+    原始檔案: { baseline: source, effective: source },
+    原檔頁碼: { baseline: page, effective: page },
+    Profile: { baseline: 'P-1', effective: profile },
+  },
+  source: source
+    ? { fileId: 'file-1', pageNumber: 1, filename: 'drawing.pdf' }
+    : null,
+}];
+
 describe('Steel review read service', () => {
   it('projects the requested table from the authenticated message identity', async () => {
     const service = createSteelReviewService({
@@ -414,6 +443,88 @@ describe('Steel review read service', () => {
       caption: prepared.caption,
     })).rejects.toMatchObject({ code: 'REVIEW_INVALID_OPERATION' });
     expect(commitSteelReview).not.toHaveBeenCalled();
+  });
+
+  it('rejects source association cell edits while allowing Profile business edits', async () => {
+    const trustedRows = associationRowsFor();
+    const reader = {
+      readSteelReview: jest.fn().mockResolvedValue({
+        userId: 'user-1',
+        conversationId: 'conversation-1',
+        kind: 'ocr_result' as const,
+        messageId: 'message-1',
+        tableId: 'ocr_result:1',
+        outputId: 'ocr_result:generation-1',
+        revision: 'generation-1',
+        state: 'current' as const,
+        markdown: associationMarkdownFor(),
+        messageText: associationMarkdownFor(),
+        headers: ['來源', '原始檔案', '原檔頁碼', 'Profile'],
+        rows: trustedRows,
+      }),
+    };
+    const commitSteelReview = jest.fn();
+    const service = createSteelReviewService({ reader, writer: { commitSteelReview } });
+    const base = {
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result' as const,
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+    };
+    const businessRows = associationRowsFor('A', '1', 'P-2');
+    const prepared = await service.prepare({ ...base, rows: businessRows });
+    expect(prepared.caption.changedRows).toBe(1);
+
+    const forgedSourceRows = associationRowsFor('FORGED-SOURCE', '1', 'P-2');
+    await expect(service.prepare({ ...base, rows: forgedSourceRows })).rejects.toMatchObject({
+      code: 'INVALID_REVIEW_QUERY',
+    });
+    const forgedPageRows = associationRowsFor('A', '2', 'P-2');
+    await expect(service.commit({
+      userId: base.userId,
+      ...prepared,
+      rows: forgedPageRows,
+    })).rejects.toMatchObject({ code: 'INVALID_REVIEW_QUERY' });
+    expect(commitSteelReview).not.toHaveBeenCalled();
+  });
+
+  it('preserves null association cells while preparing a business edit', async () => {
+    const rows = associationRowsFor(null, null, 'P-1');
+    const markdown = associationMarkdownFor(null, null);
+    const service = createSteelReviewService({
+      reader: {
+        readSteelReview: jest.fn().mockResolvedValue({
+          userId: 'user-1',
+          conversationId: 'conversation-1',
+          kind: 'ocr_result' as const,
+          messageId: 'message-1',
+          tableId: 'ocr_result:1',
+          outputId: 'ocr_result:generation-1',
+          revision: 'generation-1',
+          state: 'current' as const,
+          markdown,
+          messageText: markdown,
+          headers: ['來源', '原始檔案', '原檔頁碼', 'Profile'],
+          rows,
+        }),
+      },
+    });
+
+    await expect(service.prepare({
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result',
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      rows: associationRowsFor(null, null, 'P-2'),
+    })).resolves.toEqual(expect.objectContaining({
+      caption: { kind: 'ocr_result', changedRows: 1, changedRowIds: ['row-1'] },
+    }));
   });
 
   it('exposes immutable receipt resolution without a write', async () => {

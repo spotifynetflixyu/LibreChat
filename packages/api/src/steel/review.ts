@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { SteelReviewWriteError } from '@librechat/data-schemas';
 import {
   getSteelReviewTableId,
+  isSteelReviewSourceAssociationHeader,
   steelReviewCommitSchema,
   steelReviewPrepareSchema,
   steelReviewReceiptQuerySchema,
@@ -275,6 +276,22 @@ function parsePageNumber(value: string | undefined): number | null {
   }
   const page = Number(value.trim());
   return Number.isSafeInteger(page) && page > 0 ? page : null;
+}
+
+function hasCellProperty(cell: SteelReviewCell | undefined, property: keyof SteelReviewCell): boolean {
+  return cell !== undefined && Object.prototype.hasOwnProperty.call(cell, property);
+}
+
+function sameCellProperty(
+  left: SteelReviewCell | undefined,
+  leftProperty: keyof SteelReviewCell,
+  right: SteelReviewCell | undefined,
+  rightProperty: keyof SteelReviewCell,
+): boolean {
+  const leftHasProperty = hasCellProperty(left, leftProperty);
+  const rightHasProperty = hasCellProperty(right, rightProperty);
+  return leftHasProperty === rightHasProperty &&
+    (!leftHasProperty || left?.[leftProperty] === right?.[rightProperty]);
 }
 
 function sourceForRow(
@@ -691,6 +708,7 @@ export function createSteelReviewService({
       throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review table target not found');
     }
     const currentRows = record.rows ?? toRows(target, record.outputId, record.sourceMappings);
+    const headers = record.headers ?? target.headers;
     if (currentRows.length !== payload.rows.length ||
       currentRows.some((row, index) => row.rowId !== payload.rows[index]?.rowId)) {
       throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Review rows changed');
@@ -705,12 +723,15 @@ export function createSteelReviewService({
       if (!next || Object.keys(next.values).some((header) => !Object.prototype.hasOwnProperty.call(current.values, header))) {
         throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Review columns changed');
       }
+      if (headers.some((header) => isSteelReviewSourceAssociationHeader(header) &&
+        !sameCellProperty(current.values[header], 'effective', next?.values[header], 'effective'))) {
+        throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Review source association cell changed');
+      }
       if ((current.source === null && next.source !== null) ||
         (current.source !== null && next.source !== null && JSON.stringify(current.source) !== JSON.stringify(next.source))) {
         throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Review source changed');
       }
     }
-    const headers = record.headers ?? target.headers;
     if (payload.rows.some((row) => Object.keys(row.values).length !== headers.length ||
       headers.some((header) => !Object.prototype.hasOwnProperty.call(row.values, header)))) {
       throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Review columns changed');
