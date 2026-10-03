@@ -56,8 +56,7 @@ type OwnedStateFamily<T> = ((key: string) => PrimitiveAtom<T>) & {
 function createOwnedStateFamily<T>(createState: () => T): OwnedStateFamily<T> {
   const cleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
   const mountedOwners = new Map<string, number>();
-  let family: OwnedStateFamily<T>;
-  family = atomFamily<string, PrimitiveAtom<T>>((key) => {
+  const family: OwnedStateFamily<T> = atomFamily<string, PrimitiveAtom<T>>((key) => {
     const state = atom(createState());
     state.onMount = () => {
       const pendingCleanup = cleanupTimers.get(key);

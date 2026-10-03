@@ -106,9 +106,6 @@ export function createSteelReviewSourceAuthorization(mongoose: Mongoose) {
     const uniqueRequestedFileIds = requestedFileIds
       ? [...new Set(requestedFileIds.filter((fileId) => fileId.length > 0))]
       : undefined;
-    if (uniqueRequestedFileIds && uniqueRequestedFileIds.length === 0) {
-      return new Map();
-    }
     if (!mongoose.Types.ObjectId.isValid(input.userId)) {
       return new Map();
     }
@@ -145,6 +142,9 @@ export function createSteelReviewSourceAuthorization(mongoose: Mongoose) {
         .lean<ScopedMessage[]>(),
     ]);
     if (!conversation || clickedMessages.length !== 1) {
+      return new Map();
+    }
+    if (uniqueRequestedFileIds && uniqueRequestedFileIds.length === 0) {
       return new Map();
     }
 

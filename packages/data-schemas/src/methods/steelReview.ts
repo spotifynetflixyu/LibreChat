@@ -44,10 +44,15 @@ function scopeFilter(input: SteelReviewReadInput): Record<string, unknown> {
 
 function messageFilter(input: SteelReviewReadInput): Record<string, unknown> {
   return {
-    messageId: input.messageId,
-    conversationId: input.conversationId,
-    user: input.userId,
-    ...tenantFilter(input.tenantId),
+    $and: [
+      {
+        messageId: input.messageId,
+        conversationId: input.conversationId,
+        user: input.userId,
+      },
+      tenantFilter(input.tenantId),
+      activeExpirationFilter(),
+    ],
   };
 }
 
@@ -260,10 +265,10 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
 
   return {
     async readSteelReview(input) {
-      const [messageRecord, conversation, conversationIdentities] = await Promise.all([
-        Message.findOne(messageFilter(input))
+      const [messageRecords, conversation, conversationIdentities] = await Promise.all([
+        Message.find(messageFilter(input))
           .select({ messageId: 1, text: 1, content: 1, files: 1 })
-          .lean<Pick<IMessage, 'messageId' | 'text' | 'content' | 'files'>>(),
+          .lean<Pick<IMessage, 'messageId' | 'text' | 'content' | 'files'>[]>(),
         Conversation.findOne({
           $and: [
             { user: input.userId, conversationId: input.conversationId },
@@ -277,9 +282,10 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
           .select({ user: 1, tenantId: 1 })
           .lean<Array<{ user?: string; tenantId?: string | null }>>(),
       ]);
-      if (!messageRecord || !conversation) {
+      if (messageRecords.length !== 1 || !conversation) {
         return null;
       }
+      const messageRecord = messageRecords[0];
       const message = renderedMessageText(messageRecord, input.partIndex);
       if (!message) {
         return null;
