@@ -7,6 +7,8 @@ import type {
   ISteelReviewOutput,
   SteelReviewReadInput,
   SteelReviewReadRecord,
+  SteelReviewReceipt,
+  SteelReviewScope,
   SteelReviewSourceMapping,
   SteelReviewTextPart,
 } from '~/types';
@@ -90,6 +92,14 @@ function tenantFilter(tenantId?: string): Record<string, unknown> {
 }
 
 function scopeFilter(input: SteelReviewReadInput): Record<string, unknown> {
+  return {
+    userId: input.userId,
+    ...tenantFilter(input.tenantId),
+    conversationId: input.conversationId,
+  };
+}
+
+function reviewScope(input: SteelReviewScope): Record<string, unknown> {
   return {
     userId: input.userId,
     ...tenantFilter(input.tenantId),
@@ -786,12 +796,13 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
           if (input.partIndex !== undefined && !nextParts) {
             throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review message part changed');
           }
-          const nextContent = input.partIndex === undefined || !nextParts || nextParts.length === 0
+          const safeNextParts = nextParts ?? [];
+          const nextContent = input.partIndex === undefined || safeNextParts.length === 0
             ? message.content
-            : nextParts;
+            : safeNextParts;
           const nextText = input.partIndex === undefined
             ? selectedNext
-            : renderTextParts(nextParts);
+            : renderTextParts(safeNextParts);
 
           const outputFilter = {
             ...reviewScope(input),

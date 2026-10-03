@@ -69,6 +69,7 @@ export {
   createOAuthCompactionMethods,
   createSteelReviewReadMethods,
   createSteelReviewWriteMethods,
+  SteelReviewWriteError,
   createSteelReviewSourceMethods,
   MAX_MCP_AUTHORITY_TARGETS,
   createMCPAuthorityBootRevision,

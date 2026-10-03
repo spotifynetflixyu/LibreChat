@@ -34,6 +34,9 @@ export interface SteelReviewWriter {
   commitSteelReview(input: SteelReviewCommitInput): Promise<SteelReviewCommitResult>;
 }
 
+type SteelReviewPrepareInput = SteelReviewPrepare & SteelReviewReadInput;
+type SteelReviewCommitRequest = SteelReviewCommit & SteelReviewReadInput;
+
 export class SteelReviewReadError extends Error {
   readonly statusCode: 400 | 404;
   readonly code: 'INVALID_REVIEW_QUERY' | 'REVIEW_NOT_FOUND';
@@ -65,6 +68,13 @@ interface LocatedTable extends ReviewTableCandidate {
   start: number;
   end: number;
   raw: string;
+}
+
+function appendRenderedText(current: string, next: string): string {
+  if (current.length > 0 && next.length > 0 && !current.endsWith(' ') && !next.startsWith(' ')) {
+    return `${current} ${next}`;
+  }
+  return `${current}${next}`;
 }
 
 function headingTitle(line: string): string | undefined {
@@ -558,7 +568,7 @@ export function createSteelReviewService({
       return { table: projected };
     },
 
-    async prepare(input: SteelReviewPrepare): Promise<SteelReviewPrepared> {
+    async prepare(input: SteelReviewPrepareInput): Promise<SteelReviewPrepared> {
       const parsed = steelReviewPrepareSchema.safeParse(input);
       if (!parsed.success) {
         throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Invalid review operation');
@@ -598,8 +608,10 @@ export function createSteelReviewService({
         throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review message not found');
       }
       const headers = input.rows.length > 0 ? Object.keys(input.rows[0].values) : target.headers;
+      const operationId = randomUUID();
       const operationBase: Omit<SteelReviewCommitInput, 'digest'> = {
         ...input,
+        operationId,
         ...(target.partIndex !== undefined ? { partIndex: target.partIndex } : {}),
         headers,
         messageSha256: createHash('sha256').update(fullText).digest('hex'),
@@ -629,7 +641,7 @@ export function createSteelReviewService({
       return {
         ...input,
         ...operationBase,
-        operationId: randomUUID(),
+        operationId,
         digest: operationDigest(operationBase),
         messageSha256: operationBase.messageSha256,
         target: operationBase.target,
@@ -645,7 +657,7 @@ export function createSteelReviewService({
       };
     },
 
-    async commit(input: SteelReviewCommit): Promise<SteelReviewPrepared & { savedAt: string; changedRows: number; changedRowIds: string[] }> {
+    async commit(input: SteelReviewCommitRequest): Promise<SteelReviewPrepared & { savedAt: string; changedRows: number; changedRowIds: string[] }> {
       const parsed = steelReviewCommitSchema.safeParse(input);
       if (!parsed.success) {
         throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Invalid review operation');

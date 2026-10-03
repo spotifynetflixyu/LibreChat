@@ -10,7 +10,17 @@ export {
   type MCPAuthorizationFenceRetryStorage,
 } from './mcpAuthorizationFenceRetry';
 export { createOAuthCompactionMethods };
-export { createSteelReviewReadMethods, createSteelReviewWriteMethods };
+export {
+  createSteelReviewReadMethods,
+  createSteelReviewWriteMethods,
+  SteelReviewWriteError,
+} from './steelReview';
+export type {
+  SteelReviewCommitInput,
+  SteelReviewCommitResult,
+  SteelReviewReadMethods,
+  SteelReviewWriteMethods,
+} from './steelReview';
 export { createSteelReviewSourceMethods } from './steelSources';
 import {
   createRefreshTokenBridgeMethods,
