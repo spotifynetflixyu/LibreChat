@@ -211,9 +211,17 @@ describe('dialog Escape', () => {
     render(
       <OGDialog open onOpenChange={onOpenChange}>
         <OGDialogContent>
-          <button type="button" role="combobox" aria-label="Closed select" aria-expanded="false">
+          <button
+            type="button"
+            role="combobox"
+            aria-label="Closed select"
+            aria-controls="closed-select-options"
+            aria-expanded="false"
+            aria-haspopup="listbox"
+          >
             Closed select
           </button>
+          <div id="closed-select-options" role="listbox" hidden />
         </OGDialogContent>
       </OGDialog>,
     );
