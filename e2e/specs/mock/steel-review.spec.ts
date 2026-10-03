@@ -1256,7 +1256,7 @@ test.describe('Steel managed source review', () => {
     expect(response.status()).toBe(200);
     const { table } = await response.json() as { table: SteelReviewTable };
     const rows = structuredClone(table.rows);
-    const literal = 'REVIEW\|PART';
+    const literal = 'REVIEW\\|PART';
     rows[0].values['零件編號'].effective = literal;
     const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
     const prepare = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
