@@ -2,6 +2,7 @@ import { ObjectId } from 'mongodb';
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
+import { encodeSteelReviewDigest } from 'librechat-data-provider';
 import type { SteelReviewPrepared, SteelReviewTable } from 'librechat-data-provider';
 import type { Locator } from '@playwright/test';
 import {
@@ -1023,6 +1024,90 @@ test.describe('Steel managed source review', () => {
     expect(replay.status()).toBe(409);
     expect(await replay.json()).toMatchObject({ code: 'REVIEW_INVALID_OPERATION' });
     expect(await persistedSnapshot(conversationId)).toEqual(before);
+  });
+
+  for (const stage of ['first_save', 'saved_output'] as const) {
+    for (const boundary of ['prepare', 'commit'] as const) {
+      test(`located source metadata cannot be erased through ${boundary}: ${stage}`, async ({ page }) => {
+        const { conversationId, messageId } = await seedCurrent(ocr);
+        conversations.push(conversationId);
+        const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+        expect(read.status()).toBe(200);
+        let { table } = await read.json() as { table: SteelReviewTable };
+        const reviewUrl = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+        if (stage === 'saved_output') {
+          const initialRows = structuredClone(table.rows);
+          initialRows[0].values['數量'].effective = '4';
+          const initialPrepare = await page.request.post(`${reviewUrl}/prepare`, {
+            headers, data: { ...table, rows: initialRows },
+          });
+          expect(initialPrepare.status()).toBe(200);
+          expect((await page.request.post(`${reviewUrl}/commit`, {
+            headers, data: await initialPrepare.json(),
+          })).status()).toBe(200);
+          const savedRead = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+          expect(savedRead.status()).toBe(200);
+          ({ table } = await savedRead.json() as { table: SteelReviewTable });
+        }
+        expect(table.rows[0].source).toMatchObject({ fileId: 'review-alpha', pageNumber: 1 });
+        const rows = structuredClone(table.rows);
+        rows[0].values['數量'].effective = '7';
+        let payload: SteelReviewPrepared | SteelReviewTable;
+        if (boundary === 'commit') {
+          const validPrepare = await page.request.post(`${reviewUrl}/prepare`, {
+            headers, data: { ...table, rows },
+          });
+          expect(validPrepare.status()).toBe(200);
+          const prepared = await validPrepare.json() as SteelReviewPrepared;
+          rows[0].source = null;
+          const forged = { ...prepared, rows };
+          const owner = await withMongo((db) => db.collection('messages').findOne({ conversationId, messageId }));
+          if (!owner) throw new Error('Missing current owner');
+          forged.digest = createHash('sha256').update(encodeSteelReviewDigest({
+            ...forged,
+            userId: String(owner.user),
+            ...(typeof owner.tenantId === 'string' ? { tenantId: owner.tenantId } : {}),
+          })).digest('hex');
+          payload = forged;
+        } else {
+          rows[0].source = null;
+          payload = { ...table, rows };
+        }
+        const before = await persistedSnapshot(conversationId);
+        const rejected = await page.request.post(`${reviewUrl}/${boundary}`, { headers, data: payload });
+        expect(rejected.status()).toBe(400);
+        expect(await rejected.json()).toMatchObject({ code: 'INVALID_REVIEW_QUERY' });
+        expect(await persistedSnapshot(conversationId)).toEqual(before);
+      });
+    }
+  }
+
+  test('a legacy OCR row with initially null source metadata remains saveable', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    await withMongo((db) => db.collection('steel_conversation_ocr_states').updateOne(
+      { conversationId }, { $set: { sourceMappings: [] } },
+    ));
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(read.status()).toBe(200);
+    const { table } = await read.json() as { table: SteelReviewTable };
+    expect(table.rows.every((row) => row.source === null)).toBe(true);
+    const before = await persistedSnapshot(conversationId);
+    const rows = structuredClone(table.rows);
+    rows[0].values['數量'].effective = '7';
+    const reviewUrl = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const prepare = await page.request.post(`${reviewUrl}/prepare`, { headers, data: { ...table, rows } });
+    expect(prepare.status()).toBe(200);
+    const commit = await page.request.post(`${reviewUrl}/commit`, { headers, data: await prepare.json() });
+    expect(commit.status()).toBe(200);
+    const after = await persistedSnapshot(conversationId);
+    expect(after.reviews[0]?.rows).toEqual(rows);
+    expect(after.messages.find((message) => message.messageId === messageId)?.text)
+      .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 7 | 1 |'));
+    expectPreservedAiState(before.ocr, after.ocr);
+    const reopened = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(reopened.status()).toBe(200);
+    expect(await reopened.json()).toMatchObject({ table: { rows } });
   });
 
   test('an OCR Save marks only a quotation with proven OCR lineage as needing requote', async ({ page }) => {
