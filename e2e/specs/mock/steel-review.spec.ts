@@ -3,7 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import { encodeSteelReviewDigest } from 'librechat-data-provider';
-import type { SteelReviewPrepared, SteelReviewTable } from 'librechat-data-provider';
+import type { SteelReviewPrepared, SteelReviewSavedSnapshot, SteelReviewTable } from 'librechat-data-provider';
 import type { Locator } from '@playwright/test';
 import {
   deleteConversations,
@@ -1181,6 +1181,84 @@ test.describe('Steel managed source review', () => {
     const reopened = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
     expect(reopened.status()).toBe(200);
     expect(await reopened.json()).toMatchObject({ table: { rows } });
+  });
+
+  test('an authentic committed 03 operation replays immutably while fresh legacy-shaped writes are refused', async ({ page }) => {
+    const fixture = JSON.parse(await readFile(`${__dirname}/fixtures/steel-review-legacy03.json`, 'utf8')) as {
+      generatedFromCommit: string;
+      realMongo: boolean;
+      prepared: Omit<SteelReviewPrepared, 'sourceMappings' | 'sourceIntents'> & { userId: string };
+      savedSnapshot: SteelReviewSavedSnapshot;
+    };
+    expect(fixture.generatedFromCommit).toBe('1db96bd67f0af7c902c6c0d8556cb56f0d1dbe94');
+    expect(fixture.realMongo).toBe(true);
+    expect(Object.hasOwn(fixture.prepared, 'sourceMappings')).toBe(false);
+    expect(Object.hasOwn(fixture.prepared, 'sourceIntents')).toBe(false);
+    expect(createHash('sha256').update(encodeSteelReviewDigest(fixture.prepared)).digest('hex'))
+      .toBe(fixture.prepared.digest);
+    const { conversationId, messageId } = await seedCurrent(fixture.prepared.aiBaselineMarkdown ?? '');
+    conversations.push(conversationId);
+    const userId = await withMongo(async (db) => {
+      const owner = await db.collection('messages').findOne({ conversationId, messageId });
+      if (!owner) throw new Error('Missing legacy replay owner');
+      return String(owner.user);
+    });
+    const prepared = { ...fixture.prepared, userId, conversationId, messageId };
+    prepared.digest = createHash('sha256').update(encodeSteelReviewDigest(prepared)).digest('hex');
+    const snapshot = { ...fixture.savedSnapshot, conversationId, messageId, digest: prepared.digest,
+      ownerUpdated: fixture.savedSnapshot.ownerUpdated
+        ? { ...fixture.savedSnapshot.ownerUpdated, conversationId, messageId } : undefined };
+    const savedAt = new Date(snapshot.savedAt);
+    const ownerUpdated = snapshot.ownerUpdated ? { ...snapshot.ownerUpdated, updatedAt: savedAt } : undefined;
+    await withMongo(async (db) => {
+      await db.collection('steel_conversation_ocr_state').updateOne({ conversationId }, { $set: {
+        currentOcrResultMarkdown: prepared.aiBaselineMarkdown,
+        currentOcrResultGenerationId: 'legacy-fixture-generation', sourceMappings: [],
+      } });
+      await db.collection('messages').updateOne({ conversationId, messageId }, { $set: {
+        text: snapshot.messageText, content: [{ type: 'text', text: snapshot.messageText }],
+        metadata: { steelReview: { ocr_result: ownerUpdated } },
+      } });
+      await db.collection('steel_review_outputs').insertOne({
+        userId, conversationId, messageId, kind: 'ocr_result', tableId: prepared.tableId,
+        outputId: prepared.outputId, revision: snapshot.revision, state: 'current',
+        latestOutputId: prepared.outputId, rows: snapshot.rows, headers: snapshot.headers,
+        aiRawMarkdown: prepared.aiRawMarkdown, aiBaselineMarkdown: prepared.aiBaselineMarkdown,
+        aiUpdatedAt: new Date('2026-10-03T13:42:29.807Z'),
+        humanMarkdown: snapshot.effectiveMarkdown, humanSavedAt: savedAt,
+        effectiveMarkdown: snapshot.effectiveMarkdown, displayMarkdown: snapshot.displayMarkdown,
+        receipts: [{ operationId: snapshot.operationId, digest: snapshot.digest,
+          revision: snapshot.revision, changedRows: snapshot.changedRows,
+          changedRowIds: snapshot.changedRowIds, savedAt,
+          snapshot: { ...snapshot, savedAt, ownerUpdated } }],
+        createdAt: savedAt, updatedAt: savedAt,
+      });
+    });
+    const before = await persistedSnapshot(conversationId);
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const replay = await page.request.post(`${url}/commit`, { headers, data: prepared });
+    expect(replay.status()).toBe(200);
+    expect(await replay.json()).toMatchObject({ savedSnapshot: snapshot });
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    const tampered = await page.request.post(`${url}/commit`, { headers, data: {
+      ...prepared, cleanReplacementText: prepared.cleanReplacementText.replace('7', '99'),
+    } });
+    expect(tampered.status()).toBe(409);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(read.status()).toBe(200);
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const rows = structuredClone(table.rows);
+    rows[0].values['數量'].effective = '8';
+    const fresh = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+    expect(fresh.status()).toBe(200);
+    const freshPrepared = await fresh.json() as SteelReviewPrepared;
+    const legacy = Object.fromEntries(Object.entries(freshPrepared)
+      .filter(([key]) => key !== 'sourceMappings' && key !== 'sourceIntents')) as Omit<SteelReviewPrepared, 'sourceMappings' | 'sourceIntents'>;
+    legacy.digest = createHash('sha256').update(encodeSteelReviewDigest({ ...legacy, userId })).digest('hex');
+    const downgraded = await page.request.post(`${url}/commit`, { headers, data: legacy });
+    expect(downgraded.status()).toBe(409);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
   });
 
   test('source selector page counts come from actual authorized PDF/image bytes without writes', async ({ page }) => {
