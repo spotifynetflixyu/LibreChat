@@ -46,6 +46,7 @@ export interface ISteelConversationOcrState extends Document {
   currentOcrResultGenerationId?: string;
   currentOcrResultAttemptNumber?: number;
   currentOcrResultProvenance?: SteelConversationOcrResultProvenance;
+  reviewLockToken?: string;
   createdAt?: Date;
   updatedAt?: Date;
 }

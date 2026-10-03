@@ -55,6 +55,7 @@ const makeInput = ({
   revision,
   previousValue,
   nextValue,
+  changedRows = 1,
   conversationId = 'conversation-1',
   messageId = 'assistant-1',
 }: {
@@ -62,6 +63,7 @@ const makeInput = ({
   revision: string;
   previousValue: string;
   nextValue: string;
+  changedRows?: number;
   conversationId?: string;
   messageId?: string;
 }): SteelReviewCommitInput => {
@@ -105,9 +107,14 @@ const makeInput = ({
     displayMarkdown: currentMarkdown.replace(targetText, replacementText),
     aiBaselineMarkdown: markdownFor('P-1'),
     aiRawMarkdown: markdownFor('P-1'),
-    caption: { kind: 'ocr_result', changedRows: 1, changedRowIds: ['row-1'] },
+    caption: { kind: 'ocr_result', changedRows, changedRowIds: changedRows === 0 ? [] : ['row-1'] },
   };
   return { ...base, digest: digestFor(base) };
+};
+
+const withoutReviewLockToken = <T extends { reviewLockToken?: string }>(value: T): Omit<T, 'reviewLockToken'> => {
+  const { reviewLockToken: _reviewLockToken, ...rest } = value;
+  return rest;
 };
 
 beforeAll(async () => {
@@ -171,6 +178,8 @@ describe('Steel review write methods', () => {
       nextValue: 'P-7',
     });
     const firstResult = await writer.commitSteelReview(first);
+    const stateAfterFirst = await State.findOne({ conversationId: 'conversation-1' }).lean();
+    expect(stateAfterFirst?.reviewLockToken).toEqual(expect.any(String));
     const second = makeInput({
       operationId: 'operation-2',
       revision: firstResult.revision,
@@ -178,6 +187,17 @@ describe('Steel review write methods', () => {
       nextValue: 'P-8',
     });
     const secondResult = await writer.commitSteelReview(second);
+    const stateAfterSecond = await State.findOne({ conversationId: 'conversation-1' }).lean();
+    expect(stateAfterSecond?.reviewLockToken).toEqual(expect.any(String));
+    expect(stateAfterSecond?.reviewLockToken).not.toBe(stateAfterFirst?.reviewLockToken);
+    const noop = makeInput({
+      operationId: 'operation-noop',
+      revision: secondResult.revision,
+      previousValue: 'P-8',
+      nextValue: 'P-8',
+      changedRows: 0,
+    });
+    await expect(writer.commitSteelReview(noop)).resolves.toMatchObject({ changedRows: 0 });
     const replay = await writer.commitSteelReview(first);
     const changedPayload = makeInput({
       operationId: 'operation-1',
@@ -208,7 +228,8 @@ describe('Steel review write methods', () => {
       revision: firstResult.revision,
     });
     const stateAfter = await State.findOne({ conversationId: 'conversation-1' }).lean();
-    expect(stateAfter).toEqual(stateBefore);
+    expect(withoutReviewLockToken(stateAfter!)).toEqual(withoutReviewLockToken(stateBefore!));
+    expect(stateAfter?.reviewLockToken).toBe(stateAfterSecond?.reviewLockToken);
     const savedMessage = await models.Message.findOne({ messageId: 'assistant-1' }).lean();
     expect(savedMessage?.metadata?.steel).toEqual({ preserve: true });
     expect(savedMessage?.metadata?.steelReview).toMatchObject({
@@ -434,5 +455,132 @@ describe('Steel review write methods', () => {
     expect(await models.Message.findOne({ messageId }).lean()).toEqual(beforeMessage);
     expect(await State.findOne({ conversationId }).lean()).toEqual(beforeState);
     expect(await QuotationState.findOne({ conversationId }).lean()).toEqual(beforeQuotation);
+  });
+
+  it('rejects a save when a newer AI generation wins after the transactional OCR read', async () => {
+    const models = createModels(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const conversationId = 'generation-race-conversation';
+    const oldMessageId = 'generation-race-old-message';
+    const newMessageId = 'generation-race-new-message';
+    const oldMarkdown = markdownFor('P-1');
+    const newMarkdown = markdownFor('AI-NEXT');
+    await models.Conversation.create({
+      conversationId,
+      user: 'user-1',
+      tenantId: 'tenant-1',
+      title: 'Generation race',
+      endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId: oldMessageId,
+      conversationId,
+      user: 'user-1',
+      tenantId: 'tenant-1',
+      isCreatedByUser: false,
+      text: oldMarkdown,
+    });
+    await State.create({
+      conversationId,
+      currentOcrResultMarkdown: oldMarkdown,
+      currentOcrResultMessageId: oldMessageId,
+      currentOcrResultGenerationId: 'generation-1',
+      currentOcrResultProvenance: {
+        generationId: 'generation-1',
+        attemptNumber: 1,
+        messageId: oldMessageId,
+      },
+    });
+    await models.Message.create({
+      messageId: newMessageId,
+      conversationId,
+      user: 'user-1',
+      tenantId: 'tenant-1',
+      isCreatedByUser: false,
+      text: newMarkdown,
+    });
+
+    let releaseRead: (() => void) | undefined;
+    const reachedRead = new Promise<void>((resolve) => {
+      releaseRead = resolve;
+    });
+    const originalExec = mongoose.Query.prototype.exec;
+    let paused = false;
+    let releaseBarrier: (() => void) | undefined;
+    const continueSave = new Promise<void>((resolve) => {
+      releaseBarrier = resolve;
+    });
+    const execSpy = jest.spyOn(mongoose.Query.prototype, 'exec');
+    execSpy.mockImplementation(async function (this: mongoose.Query<unknown, unknown>) {
+      const value = await originalExec.call(this);
+      if (!paused && this.model.modelName === 'SteelConversationOcrState' &&
+        this.getOptions().session) {
+        paused = true;
+        releaseRead?.();
+        await continueSave;
+      }
+      return value;
+    });
+    const writer = createSteelReviewWriteMethods(mongoose);
+    const pending = writer.commitSteelReview(makeInput({
+      operationId: 'generation-race-operation',
+      revision: 'generation-1',
+      previousValue: 'P-1',
+      nextValue: 'P-7',
+      conversationId,
+      messageId: oldMessageId,
+    })).then(
+      () => ({ ok: true as const }),
+      (error: unknown) => ({
+        ok: false as const,
+        code: error instanceof Error && 'code' in error && typeof error.code === 'string'
+          ? error.code
+          : undefined,
+      }),
+    );
+    try {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        reachedRead,
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error('Generation race barrier was not reached')), 5000);
+        }),
+      ]);
+      if (timer) {
+        clearTimeout(timer);
+      }
+      await State.collection.updateOne(
+        { conversationId },
+        {
+          $set: {
+            currentOcrResultMarkdown: newMarkdown,
+            currentOcrResultMessageId: newMessageId,
+            currentOcrResultGenerationId: 'generation-2',
+            currentOcrResultProvenance: {
+              generationId: 'generation-2',
+              attemptNumber: 1,
+              messageId: newMessageId,
+            },
+          },
+        },
+      );
+      releaseBarrier?.();
+      await expect(pending).resolves.toEqual({ ok: false, code: 'REVIEW_CONFLICT' });
+    } finally {
+      releaseBarrier?.();
+      execSpy.mockRestore();
+    }
+
+    const oldMessage = await models.Message.findOne({ messageId: oldMessageId }).lean();
+    const state = await State.findOne({ conversationId }).lean();
+    expect(oldMessage?.text).toBe(oldMarkdown);
+    expect(await ReviewOutput.countDocuments({ conversationId })).toBe(0);
+    expect(state).toMatchObject({
+      currentOcrResultMarkdown: newMarkdown,
+      currentOcrResultMessageId: newMessageId,
+      currentOcrResultGenerationId: 'generation-2',
+    });
+    expect(state?.reviewLockToken).toBeUndefined();
   });
 });

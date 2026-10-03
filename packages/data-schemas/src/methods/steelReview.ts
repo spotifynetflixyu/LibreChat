@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import type {
   SteelReviewCaption,
   SteelReviewRow,
@@ -1068,6 +1068,24 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               displayMarkdown: output?.displayMarkdown ?? input.displayMarkdown,
             };
             return;
+          }
+
+          if (!ocrState?._id) {
+            throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review output is no longer current');
+          }
+          const reviewLockToken = randomUUID();
+          const fenced = await OcrState.updateOne(
+            {
+              _id: ocrState._id,
+              conversationId: input.conversationId,
+              currentOcrResultMessageId: input.messageId,
+              currentOcrResultGenerationId: input.outputId.replace(/^ocr_result:/u, ''),
+            },
+            { $set: { reviewLockToken } },
+            { session, timestamps: false },
+          );
+          if (fenced.matchedCount !== 1 || fenced.modifiedCount !== 1) {
+            throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review output is no longer current');
           }
 
           const savedAt = new Date();
