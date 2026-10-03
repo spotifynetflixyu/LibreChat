@@ -421,4 +421,94 @@ test.describe('Steel managed source review', () => {
     }
     expect(await persistedSnapshot(conversationId)).toEqual(before);
   });
+
+  test('real multi-PDF/image preview filters independent page rows and never writes the chat', async ({ page }) => {
+    const markdown = [
+      'PREVIEW-KEEP-PREFIX',
+      '## ocr_result',
+      '| 來源 | 零件編號 | 長度 | 數量 | 頁碼 |',
+      '| --- | --- | --- | --- | --- |',
+      '| A | ALPHA-ONE-A | 1000 | 2 | 1 |',
+      '| A | ALPHA-ONE-B | 1000 | 2 | 1 |',
+      '| A | ALPHA-TWO | 2000 | 3 | 2 |',
+      '| B | BETA-ONE | 2000 | 3 | 1 |',
+      '| C | GAMMA-ONE | 3000 | 4 | 1 |',
+      '|  | UNLOCATED-PREVIEW | 4000 | 5 |  |',
+      'PREVIEW-KEEP-SUFFIX',
+    ].join('\n');
+    const { conversationId, messageId } = await seedCurrent(markdown);
+    conversations.push(conversationId);
+    await withMongo(async (db) => {
+      const alpha = await db.collection('files').findOne({ conversationId, file_id: 'review-alpha' });
+      if (!alpha) throw new Error('Missing fixture file');
+      const file = alpha;
+      await db.collection('files').insertMany([
+        { ...file, _id: new ObjectId(), file_id: 'review-beta', filename: 'beta.pdf', filepath: '/tmp/steel-source-review-fixtures/beta.pdf' },
+        { ...file, _id: new ObjectId(), file_id: 'review-gamma', filename: 'gamma.png', filepath: '/tmp/steel-source-review-fixtures/gamma.png', type: 'image/png' },
+        { ...file, _id: new ObjectId(), file_id: 'review-foreign-tenant', filename: 'foreign-tenant.pdf', tenantId: 'different-tenant' },
+      ]);
+      await db.collection('steel_conversation_ocr_state').updateOne({ conversationId }, { $set: {
+        currentOcrResultMarkdown: markdown,
+        sourceMappings: [
+          { fileId: 'review-alpha', sourceCode: 'A', sourceFilename: 'alpha.pdf' },
+          { fileId: 'review-beta', sourceCode: 'B', sourceFilename: 'beta.pdf' },
+          { fileId: 'review-gamma', sourceCode: 'C', sourceFilename: 'gamma.png' },
+        ],
+      } });
+    });
+    const before = await persistedSnapshot(conversationId);
+    const sourcesUrl = `/api/steel/conversations/${conversationId}/review/ocr_result/sources?${new URLSearchParams({ messageId, tableId: 'ocr_result:1' })}`;
+    const sources = await page.request.get(sourcesUrl, { headers });
+    expect(sources.status()).toBe(200);
+    expect(await sources.json()).toMatchObject({ sources: [
+      { fileId: 'review-alpha' }, { fileId: 'review-beta' }, { fileId: 'review-gamma' },
+    ] });
+    const foreign = await page.request.get(`${sourcesUrl.split('?')[0]}/review-foreign-tenant?${new URLSearchParams({ messageId })}`, { headers });
+    expect(foreign.status()).toBe(404);
+    const binary = await page.request.get(`${sourcesUrl.split('?')[0]}/review-alpha?${new URLSearchParams({ messageId })}`, { headers });
+    expect(binary.status()).toBe(200);
+    expect((await binary.body()).subarray(0, 5).toString()).toBe('%PDF-');
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    const canvas = dialog.locator('canvas');
+    await expect.poll(() => canvas.evaluate((element: HTMLCanvasElement) => element.width)).toBeGreaterThan(0);
+    const checksum = () => canvas.evaluate((element: HTMLCanvasElement) => {
+      const context = element.getContext('2d');
+      if (!context) return '';
+      const data = context.getImageData(0, 0, element.width, element.height).data;
+      let value = 0;
+      for (let i = 0; i < data.length; i += 4) value = (value * 31 + data[i]) >>> 0;
+      return `${element.width}:${element.height}:${value}`;
+    });
+    const firstPage = await checksum();
+    await expect(dialog.getByText('ALPHA-ONE-A', { exact: true })).toBeVisible();
+    await expect(dialog.getByText('ALPHA-ONE-B', { exact: true })).toBeVisible();
+    await expect(dialog.getByText('ALPHA-TWO', { exact: true })).toHaveCount(0);
+    await expect(dialog.getByText('UNLOCATED-PREVIEW', { exact: true })).toBeVisible();
+    await dialog.getByRole('button', { name: 'Next page', exact: true }).click();
+    await expect(dialog.getByText('ALPHA-TWO', { exact: true })).toBeVisible();
+    await expect(dialog.getByText('ALPHA-ONE-A', { exact: true })).toHaveCount(0);
+    await expect.poll(checksum).not.toBe(firstPage);
+    await dialog.getByRole('button', { name: 'Next page', exact: true }).click();
+    await dialog.getByLabel('Source file', { exact: true }).selectOption('review-beta');
+    await expect(dialog.getByText('BETA-ONE', { exact: true })).toBeVisible();
+    await expect.poll(() => canvas.evaluate((element: HTMLCanvasElement) => element.width)).toBeGreaterThan(0);
+    await dialog.getByRole('button', { name: 'Zoom in', exact: true }).click();
+    await expect(canvas).toHaveCSS('transform', /1\.25/);
+    await dialog.getByRole('button', { name: 'Enter fullscreen', exact: true }).click();
+    await expect(dialog.getByRole('button', { name: 'Exit fullscreen', exact: true })).toBeVisible();
+    await dialog.getByLabel('Source file', { exact: true }).selectOption('review-gamma');
+    const image = dialog.getByRole('img', { name: 'Source page preview', exact: true });
+    await expect(image).toBeVisible();
+    await expect.poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(800);
+    await expect(dialog.getByText('GAMMA-ONE', { exact: true })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Next page', exact: true })).toBeDisabled();
+    await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeVisible();
+    await page.reload();
+    await expect(page.getByText('PREVIEW-KEEP-PREFIX', { exact: true })).toBeVisible();
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+  });
+
 });
