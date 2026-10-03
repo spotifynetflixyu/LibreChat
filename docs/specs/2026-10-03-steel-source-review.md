@@ -43,7 +43,7 @@
 23. 作為覆核人員，我希望刪除列不再參與有效資料及金額計算，以便避免重複或錯誤報價。
 24. 作為覆核人員，我希望 undo／redo 涵蓋修改、新增、刪除與來源標記並保存到 DB，以便安全恢復操作。
 25. 作為覆核人員，我希望切檔與切頁仍保留待保存操作，以便不中斷連續覆核。
-26. 作為覆核人員，我希望關閉遇到未保存內容時可重試、繼續或明確捨棄，以便自行決定資料去留。
+26. 作為覆核人員，我希望關閉遇到未保存內容時先詢問儲存更新、捨棄未儲存修改或繼續編輯，以便自行決定資料去留。
 27. 作為覆核人員，我希望重新開啟仍看到已保存結果與原版差異，以便延續覆核工作。
 28. 作為覆核人員，我希望累積差異比較目前結果與同一版 AI 基準，以便看見本版完整人工修正而非只有最後一步。
 29. 作為覆核人員，我希望修正後的 OCR Markdown 直接出現在聊天文字，以便重新載入及後續流程取得一致資料。
@@ -76,11 +76,11 @@
 56. 作為覆核人員，我希望 system order 與 customer_quote 的更新列數分別呈現，以便辨識兩張表的影響。
 57. 作為覆核人員，我希望保存成功後顯示已更新數量、失敗時保留待保存摘要，以便不誤判保存狀態。
 58. 作為覆核人員，我希望 DB 分開保留最新 AI 完整基準與人工完整結果，以便比較人工修正且不污染 AI 輸出。
-59. 作為覆核人員，我希望 AI update rows 仍由後端 merge 成完整基準，以便未提及的列不被當作刪除。
+59. 作為覆核人員，我希望 AI 每次只輸出完整 Markdown，以便人工直接保存後不再經過更新列合併。
 60. 作為覆核人員，我希望新 AI 輸出從自己的完整基準重新開始覆核，不帶入過去人工值或刪除線，以便清楚閱讀這次 AI 結果。
 61. 作為覆核人員，我希望無法確認重複列配對時保留對照資料，以便不遺失修正或重複計價。
 62. 作為報價人員，我希望下次報價採更新時間較新的完整 OCR Markdown，以便使用最近保存的訂單。
-63. 作為報價人員，我希望 AI merge 不刷新人工保存時間，以便來源選擇不被自動比較扭曲。
+63. 作為報價人員，我希望新 AI 完整輸出不刷新人工保存時間，以便來源選擇不被自動比較扭曲。
 64. 作為報價人員，我希望報價開始後固定 OCR 輸入版本，以便後續執行及恢復不混用新舊訂單。
 65. 作為覆核人員，我希望網路失敗保留修改並可重試，以便不需重新輸入。
 66. 作為覆核人員，我希望版本衝突拒絕覆蓋並讓我核對新版再套用，以便保護其他視窗及 AI 的成果。
@@ -92,6 +92,7 @@
 72. 作為覆核人員，我希望能在 async selector 手動貼上型號、品名或規格文字，以便快速搜尋後端候選。
 73. 作為覆核人員，我希望完整搜尋結果只有一個候選時自動套用，以便省去再次點選唯一結果。
 74. 作為覆核人員，我希望下載 Markdown 前只在有修正時先自動保存，再下載已保存的新資料，以便下載內容與 DB 一致且不製造假人工更新時間。
+21. 舊 cell comment UI、chips 與 AI prompt 注入全部移除，既有 persisted／queued comments 不送出；人工 save 後 provider 讀正確 owner 的 clean 完整 snapshot，新 AI 只產生完整表且無舊人工差異，歷史與 chunk 流程保留。
 
 ## Implementation Decisions
 
@@ -121,7 +122,7 @@
 - 原版列、新增列與刪除列保存穩定身分，相同內容或件號仍為不同列；不使用視覺列號作永久身分。
 - 修改格呈現有效新值與 AI 基準刪除線舊值；人工刪除保留整列刪除線及刪除標記，但從有效資料排除。新增再刪除不構成 AI 基準刪除差異。
 - undo／redo 限本次彈窗開啟期間；以反向操作保存，不整份覆蓋原版。關閉重開保留原版與結果，重新開始操作歷程。
-- 切頁與切檔保留未保存操作；關閉時完成已提交工作，有失敗或未提交內容則提供重試、繼續與明確捨棄。
+- 切頁與切檔保留未保存操作。所有關閉入口（叉、Esc、點外側）遇到未儲存資料，包含仍在編輯的儲存格及失敗待重試操作，都先詢問「儲存更新／捨棄未儲存修改／繼續編輯」，不得因關閉自動靜默保存或捨棄。儲存選項完成 active edit、既有 queue 與原保存／caption／CAS／receipt，成功才關閉；失敗或版本已被取代則保留彈窗與修改。繼續編輯取消關閉；捨棄只移除尚未提交的本地變更，已成功的 autosave 不回滾，也不把已送出的未知結果當成未提交，先用 receipt 確認。沒有淨未儲存資料可直接關閉；切換全螢幕不算關閉。
 - OCR 與 system order 各自保存，不互相反寫。OCR 業務資料修改只標記依該 OCR 的相關報價過期，保留其內容，重新報價由使用者啟動。
 - system order、綁定 customer_quote、canonical state、人工差異及指定聊天文字同成同敗；成功前不可先回報已保存。
 
@@ -182,11 +183,11 @@
 
 ### AI 基準、人工結果與報價來源
 
-- DB 分開保存歷史 AI 原文、後端 merge 的最新完整 AI 基準、最後成功人工保存的完整 Markdown、人工操作差異及各自服務端成功更新時間。
-- AI 完整／update rows 仍通過後端格式與更新協定驗證並 merge；未提及列不等於刪除。人工保存、計算與顯示差異不污染 AI 基準。
-- 每個成功的新 AI 輸出，包括 update rows 經後端 merge 形成的完整新輸出，都從該次完整 AI 基準重新開始覆核；不帶入舊版人工修正、新增、刪除、來源標記、候選選擇或其衍生值，不與過去人工修改比較，也不顯示過去人工刪除線。只有對本版完成的人工操作才產生相對本版 AI 基準的累積差異。
+- DB 分開保存歷史 AI 原文、每次通過完整格式驗證的最新 AI 基準、最後成功人工保存的完整 Markdown、人工操作差異及各自服務端成功更新時間。
+- AI 未來只輸出完整 `ocr_result` 或依授權流程輸出完整 `system_order`；移除 cell comment → AI 修訂、更新 rows、後端 delta merge 與自動補上完整 Markdown 的流程。人工保存、計算與顯示差異不污染 AI 基準。
+- 每個成功的新 AI 完整輸出，都從該次完整 AI 基準重新開始覆核；不帶入舊版人工修正、新增、刪除、來源標記、候選選擇或其衍生值，不與過去人工修改比較，也不顯示過去人工刪除線。只有對本版完成的人工操作才產生相對本版 AI 基準的累積差異。
 - 新 AI 輸出不改寫、刪除或重新掛接最後人工完整 Markdown，不刷新人工保存時間；舊人工結果與其差異仍保留在原 owner 供歷史唯讀。只有新的人工操作成功保存才更新最後人工完整結果與時間。
-- 新 AI 結果原子保存原文、完整 AI 基準、AI 時間及新 owner 的有效快照與指定聊天範圍；新快照以本次 AI 輸入為準，人工操作差異初始為空，舊 owner 不變。OCR update merge 基底仍是先前完整 AI 基準，不能改用人工有效內容或顯示差異；一般 clean readers 讀所屬輸出的有效快照，下一次報價仍依兩份最後保存時間選 AI／人工完整輸入。
+- 新 AI 結果原子保存原文、完整 AI 基準、AI 時間及新 owner 的有效快照與指定聊天範圍；新快照以本次 AI 輸入為準，人工操作差異初始為空，舊 owner 不變。新 AI 基準只來自本次完整 AI 輸出，不能由舊 delta、人工差異或聊天補全文字拼接；一般 clean readers 讀所屬輸出的有效快照，下一次報價仍依兩份最後保存時間選 AI／人工完整輸入。
 - AI 更新造成選定 OCR 業務來源版本改變時，標記依先前來源的相關報價過期；system order 新結果依本次有效輸入更新其綁定 customer_quote。所有新結果、有效快照、空人工差異、衍生 quote 與指定新訊息 target 同成同敗，人工操作不反寫 AI 原文／基準。
 - 同一版人工選擇保留一致候選欄位組，但不移植到新 AI 輸出。AI 更新僅在可靠對應時延續 AI 列身分；重複列不得猜匹配或把舊人工組與新 AI 組合併計價。舊人工組只留在歷史快照。
 - 下次報價取更新時間較新的完整 OCR：人工時間嚴格大於 AI 才取人工，AI 較新或同時取 AI；僅一份可用取該份，皆不存在沿既有準備流程。
@@ -194,18 +195,22 @@
 - 不同報價 run 或客戶的歷史人工價不自動搬至新報價；舊結果保持其自身快照供閱讀。
 - AI／人工時間比較的查詢範圍固定為同一 authenticated owner／tenant／conversation／後端可信 `ocr_result` lineage；只比較該 lineage 最後成功保存、具 snapshot ID、revision、hash 及 server timestamp 的完整 AI 與完整人工快照。新版可引用歷史人工快照的不可變身分，不得把它複製成自己的人工保存或重新掛接 owner。admission 在同一原子邊界核對兩個候選仍完整且版本與 hash 一致，再固定所選 snapshot 身分及上述來源資料。
 - 新 AI producer generation 在後端 admission 取得可信且單調的輸出序號；完成時必須驗證該 generation、先前 current reference／revision、精準 message-part／section locator 與必要 mirrors。只有同一交易成功保存 AI raw／完整基準／clean effective／AI 時間／新 target／引用，才能 CAS 切換 current owner；延遲、亂序或 superseded finalizer 不得把 current 指回較舊序號。
-- 對只有 update rows 的輸出，後端以先前完整 AI 基準 merge，保留 AI raw 原文，並將已驗證的新訊息 update target 原子轉成所屬種類的完整 clean 表格 target，保存轉換後精準 locator／hash；不把完整內容寫到其他同名表格。找不到可信 target 或 mirrors 不一致時整次拒絕，舊 current owner 不變。這樣新版 UI 與後續人工精準寫回共用同一份完整 target。
+- 新 publication 只接受每種輸出唯一、完整且已授權的表格 target；包含可辨識的 `ocr_result_updates`、`system_order_updates`、revision mapping 或 deletion control 區段時，即使另含完整表也拒絕建立／更新 current owner、canonical 或報價 admission。精準 parser 排除 code fence 與歷史文字；失敗走安全格式／待覆核邊界，不 fallback 至舊 merge，先前 current owner 不變。一般 raw 訊息證據可依既有失敗契約留存，但不成為可編輯 owner。
+- 移除 Markdown cell comment 的入口、暫存狀態、chips 與 chat／queue／steering／regenerate 提示注入；既有 local storage 或排隊註解不得在下一輪偷偷送給 AI，其他文字、quotes、skills 與排隊／steering 行為維持。舊聊天文本與完整 AI／人工 snapshot 不回寫。
+- 保留 OCR chunk 聚合與報價 chunk 組裝；這些不是已退役的人工修訂 delta 協定。舊歷史若必要，可使用隔離且唯讀的 legacy reconstruction；優先使用既有完整 snapshot，不得從新 publication 進入或藉此提升 current owner。
+- tracked AI rules 與實際 preparation／delegate 輸入同步要求完整表格，依實際 AI 可見來源撰寫；使用既有 rule synchronizer 驗證，不隱含套用 PROD。
 
 ### 聊天精準更新與保存邊界
 
 - 每個受管理表格綁定 authenticated user／tenant、聊天、訊息、content part、邏輯結果、表格／區段 owner 與版本；system order 另綁定報價 run、OCR 依據、客戶快照與 customer_quote owner。
+- 保存時讀取目前受管理版本，套用 row 新增／更新／刪除，再於同一原子保存同步 Markdown 與已核對的訊息文字；人工差異不需要等於 AI 原版。版本與 mirror 檢查針對寫入前的既有資料及並發，不阻擋正常人工操作。
 - 後端從已授權 DB 內容核對唯一 target 範圍及預期 hash／revision。只替換該表或其明確綁定衍生表的範圍，前後文字、空白、換行、其他表格、附件、code fences 與非文字 parts 完整保留。
 - 不使用同名標題的第一張表、全域字串替換、client DOM index 或未核對 offset 定位；定位不唯一、owner 被取代、target 消失或 mirror 不一致時回傳衝突，保留修改。
 - 若訊息同時具有 text／content 表示，只同步已核對的 target mirror，不重建整則訊息。customer_quote 缺區段時僅可從可信 owner 重建，無可信位置則拒絕提交。
 - 技術提案：以同一 Mongo 交易及 CAS 保存人工／有效／差異資料、canonical OCR／quotation、必要失效 metadata 與指定訊息文字。使用操作 ID 確保重試不重複增刪；重試仍不得繞過最新結果資格。
 - 冪等身分包含 authenticated owner、表格 lineage、操作 ID 及 canonical 操作 digest。已成功提交的同 payload 重試只回傳保存的提交收據，不再寫入，即使其輸出已成歷史版本；相同 ID 不同 payload 拒絕。從未提交的操作及新的反向／重做操作，每次都核對最後輸出資格與預期 revision。這樣不因回覆遺失而重複寫入，也不讓過期未提交操作繞過唯讀限制。
 - UI、AI finalizer、OCR／quotation 更新及一般 message 編輯碰到受管理表格時，共用版本與精準寫入邊界；既有訊息編輯不得繞過 canonical state 保護。並發增加正文或其他表格不可被舊整則文本覆蓋。
-- 技術提案：對 clean representation 提供一致讀取責任，OCR merge、quotation preparation／runner、Markdown 完成及 Chat／Responses provider 組裝均使用有效值，不能再解析顯示用刪除線。歷史表格保留其自身有效快照，不全部替換為最新結果。
+- 技術提案：對 clean representation 提供一致讀取責任，OCR chunk 聚合、quotation preparation／runner、Markdown 完成及 Chat／Responses provider 組裝均使用所屬 owner 已保存、具 revision／hash 的 clean effective 完整 snapshot，不能再解析顯示用刪除線。歷史表格保留其自身有效快照，不全部替換為最新結果。報價 admission 仍可依時間選擇同可信 lineage 的歷史人工完整 snapshot，runner／resume 只使用該已固定的 clean 輸入；任何不完整／遭拒的 publication 都不能讓 consumer fallback 至 raw、delta 或補全文字。
 - 讀寫維持 user／tenant／conversation 與檔案授權。缺來源是成功資料；過期版本等可處理情況使用穩定安全代碼，operational failure 不偽裝為空值，原始例外、查詢及敏感資料不回傳 UI。
 
 ### 模組責任提案
@@ -238,8 +243,8 @@
 8. 客戶 B tier 的候選只有 A 價時，材料與加工均能選取但 B 單價及小計留空；不套用 A、舊價或 0。後端拒絕偽造 tier／候選，不把查價失敗當空價成功。
 9. Caption 同列多格算一列；材料連動兩筆加工與三筆客戶列時呈現 system order 3、customer_quote 3。跨頁列計入，總計另說明，淨變更為 0 不計假列；caption 與 DB 保存差異一致。
 10. 失敗／衝突不呈現已更新成功；保留本地操作並核對新版，重新準備摘要，不使用過期列數。不重複新增或刪除，不覆蓋並發正文。
-11. AI update 省略列保留，明確刪除沿原協定；AI 2 → 人工 3 → 新 AI 4 時，新版顯示 4 且無過去人工刪除線，舊版人工 3 與時間不變且唯讀；新版再改 5 才與本版 AI 4 比較。不帶入舊人工新增／刪除／來源／候選，不猜重複列匹配或重複計價。
-12. 人工保存較新選人工、AI 較新或同時選 AI；AI merge／比較不刷新人工時間。啟動與並發保存核對版本，resume 保持已固定輸入。
+11. AI 只輸出唯一完整表格，新 delta-only 或完整表混舊 delta／revision／deletion control 皆不得寫 current／canonical／admission，fence 範例不誤判；AI 2 → 人工 3 → 新 AI 4 時，新版顯示 4 且無過去人工刪除線，舊版人工 3 與時間不變且唯讀；新版再改 5 才與本版 AI 4 比較。不帶入舊人工新增／刪除／來源／候選，不猜重複列匹配或重複計價。
+12. 人工保存較新選人工、AI 較新或同時選 AI；新 AI 完整输出／比較不刷新人工時間。啟動與並發保存核對版本，resume 保持已固定輸入。
 13. 顯示刪除線的數字與刪除列不流入計算或 provider 有效輸入；各歷史結果使用其自身 clean snapshot。
 14. 兩個聊天同內容、同聊天多訊息同名表、同訊息重複表、code fence 相似文字與混合 content parts 都只更新可信 target；其餘文字及 parts 完全相同。
 15. 跨 user／tenant／conversation locator、target 移除、owner 失效及 mirror 不一致均拒絕寫入，不部分保存或暴露敏感診斷。

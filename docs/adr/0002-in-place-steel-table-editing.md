@@ -8,9 +8,9 @@ status: accepted
 
 人工修正只允許同一聊天中各自最後輸出的 `ocr_result` 與 `system_order` 結果；舊版只供唯讀對照，不改寫舊版聊天文本。其他 Markdown 不提供本功能，customer_quote 只由其綁定的最後 system order 連動更新。後端在每次寫入時核對最後結果身分及版本，不能只依前端隱藏操作；新結果完成後，舊彈窗的待保存、重試與 undo／redo 均不能再改寫前版。
 
-DB 分開保存 AI 最新完整 Markdown 與人工覆核結果；AI 新完整輸出或只含更新列的 update Markdown 仍由後端判斷 merge，更新完整 AI 基準。依使用者後續修正，每個新 AI 輸出從該次完整基準重新開始覆核，不帶入或比較過去人工修改，也不顯示過去人工刪除線；只有本版之後的人工修正才與本版 AI 比較。此決策取代先前「新 AI 保留過去人工修正供衝突覆核」。人工 UI 儲存不污染 AI 基準，歷史 AI 原版、人工完整結果、差異與時間仍留在原 owner 供唯讀。
+DB 分開保存 AI 最新完整 Markdown 與人工覆核結果；人工修正直接保存完整 Markdown 與聊天訊息；未來 AI 只輸出完整 Markdown。移除舊 cell comment 修訂入口、更新 rows、後端 delta merge 與補上完整表格流程。新 publication 混有舊 updates／revision／deletion control 區段亦拒絕，不能 fallback 至舊 merge；歷史資料保留唯讀，實際 OCR／報價 chunk 組裝維持。此決策取代先前支援 AI update rows 的規格。依使用者後續修正，每個新 AI 輸出從該次完整基準重新開始覆核，不帶入或比較過去人工修改，也不顯示過去人工刪除線；只有本版之後的人工修正才與本版 AI 比較。此決策取代先前「新 AI 保留過去人工修正供衝突覆核」。人工 UI 儲存不污染 AI 基準，歷史 AI 原版、人工完整結果、差異與時間仍留在原 owner 供唯讀。
 
-兩份完整 OCR Markdown 分別保存成功更新時間；下次報價取更新時間較新的版本，人工時間嚴格大於 AI 時間才取人工，AI 較新或同時則取 AI。AI merge 或介面比較不刷新人工時間；報價開始後固定所選版本供執行及 resume，不隨後續修改切換。
+兩份完整 OCR Markdown 分別保存成功更新時間；下次報價取更新時間較新的版本，人工時間嚴格大於 AI 時間才取人工，AI 較新或同時則取 AI。新 AI 完整輸出或介面比較不刷新人工時間；報價開始後固定所選版本供執行及 resume，不隨後續修改切換。
 
 OCR 與 system order 各自更新所屬資料，system order 修改不反寫 OCR；customer_quote 則由最新 system order 自動重算並同步更新聊天 Markdown。OCR 修改保留舊報價並標記過期，重新報價由使用者啟動。資料列來源檔案與頁碼允許缺值，不因缺少來源關聯阻擋編輯或儲存。
 

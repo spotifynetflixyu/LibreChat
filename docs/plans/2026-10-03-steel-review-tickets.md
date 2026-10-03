@@ -22,7 +22,7 @@ Baseline: `056eb076ac0b9f7b7ccaba74672ae1288fab662a`.
 | 09 | [加工計量輸入與 save 前重算](https://github.com/spotifynetflixyu/LibreChat/issues/10) | #8, #9 | Pending |
 | 10 | [材料 async selector 與精確 customer tier 價格](https://github.com/spotifynetflixyu/LibreChat/issues/11) | #9 | Pending |
 | 11 | [加工 async selector 與材料適用性](https://github.com/spotifynetflixyu/LibreChat/issues/12) | #10, #11 | Pending |
-| 12 | [AI 完整／更新基準與每版覆核隔離](https://github.com/spotifynetflixyu/LibreChat/issues/13) | #6, #8, #11, #12 | Pending |
+| 12 | [AI 完整輸出、退役舊編輯與每版覆核隔離](https://github.com/spotifynetflixyu/LibreChat/issues/13) | #6, #8, #11, #12 | Pending |
 | 13 | [更新時間選 OCR 報價輸入與固定 resume](https://github.com/spotifynetflixyu/LibreChat/issues/14) | #4, #13 | Pending |
 | 14 | [聊天精準更新獨立審查與 UI／DB 整體验收](https://github.com/spotifynetflixyu/LibreChat/issues/15) | #13, #14 | Pending |
 

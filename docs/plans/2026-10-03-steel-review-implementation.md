@@ -35,9 +35,15 @@ The current source-review spec, glossary, and ADRs are the acceptance source.
 - Precise section updates validate authorized DB owner, unique range, expected hashes and
   any text/content mirror. Preserve every byte/part outside targets; reject ambiguous or
   removed targets. Never use first-heading matches or global text replacement.
-- Clean readers batch-load managed output snapshots for OCR merge, quotation and provider
+- Clean readers batch-load managed output snapshots for OCR chunk aggregation, quotation and provider
   inputs, not display strike-through. Historical inputs use their own snapshot.
-- AI merge uses the previous AI complete baseline. Every successful new AI output starts
+- AI now emits complete Markdown only. Remove cell-comment editing, pending-comment prompt
+  injection, AI delta sections, backend delta merge and appended complete tables. Reject any
+  new publication with retired update/revision/deletion sections, even mixed with a full table;
+  fenced examples and immutable historical messages are excluded by precise parsing. Keep
+  OCR/quotation chunk assembly and isolated read-only legacy history if required. Consumers
+  read their owner saved clean complete snapshot/revision/hash; rejected or incomplete outputs
+  cannot fall back to raw, delta or reconstructed chat. Every successful new AI output starts
   a fresh effective review snapshot from its own complete AI baseline, with no prior human
   overrides, added/deleted rows, source markings, candidates, derived values or strikes.
   Human differences apply only within the output where they were saved. Save the new AI
@@ -53,9 +59,12 @@ The current source-review spec, glossary, and ADRs are the acceptance source.
   validates that generation, expected current reference/revision and exact new message-part/
   section/mirrors. Commit AI raw/full, clean effective, AI time, target and references together
   with CAS current-owner switching; delayed/superseded finalizers cannot regress the sequence.
-  A rows-only update retains its raw evidence and atomically replaces its verified update
-  section with the merged complete clean table, recording the resulting locator/hash. Reject
-  uncertain targets without touching the prior current owner or unrelated message content.
+  Require a unique complete authorized target and reject retired protocols or uncertain mirrors
+  without touching the prior current owner or unrelated message content. The fresh AI baseline
+  derives solely from this complete AI output. Stored/queued comments must never be sent after
+  retirement. Track the complete-output instruction in actual preparation/delegate inputs and
+  rule sources; do not implicitly apply PROD rules. Slice12 owns retirement after replacement
+  saves exist; slice14 proves UI, prompt absence, rejected mixed protocols and clean consumers.
 - Next quote admission compares separately persisted AI/human complete saves and server
   timestamps, validates revisions and freezes source kind/hash/version/timestamps for the run.
   Resume never reselects. Read the last human complete save even when its owner is historical;
@@ -66,6 +75,9 @@ The current source-review spec, glossary, and ADRs are the acceptance source.
 - The frontend uses shared semantic primitives, Jotai feature state and React Query. PDF
   rendering is controlled single-page, multi-source single selection; one source has many rows.
   Sessions preserve pending operations across pages and support persisted inverse operations.
+  Every close entry checks unsaved active cells/failed drafts and asks Save updates, Discard
+  unsaved changes or Continue editing; save closes only after confirmed success. Discard
+  never rolls back committed autosaves, and unknown in-flight outcomes use their receipt.
 - Managed-table downloads use the same feature-owned save gate: flush the active edit and
   drain pending autosave/prepare/commit, save only net corrections, then download the clicked
   owner's backend-confirmed immutable saved clean snapshot/revision. No-op/history downloads
@@ -93,7 +105,7 @@ where its behavior needs them. Shared plumbing is introduced by the slice using 
 | 09 | Persisted per-piece/batch/confirmed-cutting inputs and processing calculations | 07, 08 |
 | 10 | Material async catalog selection, exact customer tier, candidate dimensions, keep processing | 08 |
 | 11 | Processing async catalog selection and parent applicability | 09, 10 |
-| 12 | AI full/update merge with fresh per-output review and immutable prior human history | 05, 07, 10, 11 |
+| 12 | Full AI output, retire comment/delta editing, per-output review and immutable human history | 05, 07, 10, 11 |
 | 13 | Timestamp-based OCR quote admission and immutable resume source | 03, 12 |
 | 14 | Independent precise history/standards/spec audit and integrated UI/DB/Lighthouse evidence | 12, 13 |
 
