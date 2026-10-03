@@ -1,8 +1,9 @@
 import Papa from 'papaparse';
 import { ObjectId } from 'mongodb';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
+import type { SteelReviewPrepared, SteelReviewTable } from 'librechat-data-provider';
 import {
   deleteConversations,
   deleteMessagesByConversation,
@@ -742,6 +743,76 @@ test.describe('Steel managed source review', () => {
     }
   });
 
+
+  test('review commit rejects a client-rehashed target outside the owned OCR table', async ({ page }) => {
+    const markdown = `INTEGRITY-PREFIX\n\n${ocr}\n\nINTEGRITY-SUFFIX`;
+    const { conversationId, messageId } = await seedCurrent(markdown);
+    conversations.push(conversationId);
+    const before = await persistedSnapshot(conversationId);
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(read.status()).toBe(200);
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const rows = structuredClone(table.rows);
+    rows[0].values['數量'].effective = '9';
+    const prepare = await page.request.post(`/api/steel/conversations/${conversationId}/review/ocr_result/prepare`, {
+      headers, data: { ...table, rows },
+    });
+    expect(prepare.status()).toBe(200);
+    const prepared = await prepare.json() as SteelReviewPrepared;
+    const forged = {
+      ...prepared,
+      target: { ...prepared.target, start: 0, end: markdown.length, sha256: createHash('sha256').update(markdown).digest('hex') },
+      targetText: markdown,
+      replacementText: 'CORRUPTED-PREFIX\n' + prepared.cleanReplacementText,
+      cleanReplacementText: 'CORRUPTED-PREFIX\n' + prepared.cleanReplacementText,
+      effectiveMarkdown: 'CORRUPTED-PREFIX\n' + prepared.cleanReplacementText,
+      displayMarkdown: 'CORRUPTED-PREFIX\n' + prepared.cleanReplacementText,
+      aiBaselineMarkdown: 'FORGED-AI-BASELINE',
+      aiRawMarkdown: 'FORGED-AI-RAW',
+    };
+    const owner = before.messages.find((message) => message.messageId === messageId);
+    forged.digest = createHash('sha256').update(JSON.stringify({
+      userId: String(owner?.user), tenantId: owner?.tenantId ?? null,
+      conversationId, kind: forged.kind, messageId, tableId: forged.tableId,
+      partIndex: forged.partIndex ?? null, outputId: forged.outputId,
+      revision: forged.revision, rows: forged.rows, headers: forged.headers,
+      messageSha256: forged.messageSha256, target: forged.target, targetText: forged.targetText,
+      replacementText: forged.replacementText, cleanReplacementText: forged.cleanReplacementText,
+      effectiveMarkdown: forged.effectiveMarkdown, displayMarkdown: forged.displayMarkdown,
+      aiBaselineMarkdown: forged.aiBaselineMarkdown ?? null, aiRawMarkdown: forged.aiRawMarkdown ?? null,
+      caption: forged.caption,
+    })).digest('hex');
+    const commit = await page.request.post(`/api/steel/conversations/${conversationId}/review/ocr_result/commit`, { headers, data: forged });
+    expect([400, 409]).toContain(commit.status());
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+  });
+
+  test('an earlier committed operation returns its immutable saved snapshot after a later Save', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    async function save(quantity: string) {
+      const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+      expect(read.status()).toBe(200);
+      const { table } = await read.json() as { table: SteelReviewTable };
+      const rows = structuredClone(table.rows);
+      rows[0].values['數量'].effective = quantity;
+      const prepare = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+      expect(prepare.status()).toBe(200);
+      const operation = await prepare.json() as SteelReviewPrepared;
+      const commit = await page.request.post(`${url}/commit`, { headers, data: operation });
+      expect(commit.status()).toBe(200);
+      return { operation, saved: await commit.json() };
+    }
+    const first = await save('7');
+    const second = await save('8');
+    expect(second.saved.revision).not.toBe(first.saved.revision);
+    const afterSecond = await persistedSnapshot(conversationId);
+    const retry = await page.request.post(`${url}/commit`, { headers, data: first.operation });
+    expect(retry.status()).toBe(200);
+    expect(await retry.json()).toEqual(first.saved);
+    expect(await persistedSnapshot(conversationId)).toEqual(afterSecond);
+  });
 
   test('manual OCR Save changes only the clicked message and chat reload shows clean saved values', async ({ page }) => {
     const markdown = [
