@@ -433,6 +433,7 @@ test.describe('Steel managed source review', () => {
       '| A | ALPHA-TWO | 2000 | 3 | 2 |',
       '| B | BETA-ONE | 2000 | 3 | 1 |',
       '| C | GAMMA-ONE | 3000 | 4 | 1 |',
+      '| D | UNPREVIEWABLE-SOURCE | 3000 | 4 | 1 |',
       '|  | UNLOCATED-PREVIEW | 4000 | 5 |  |',
       'PREVIEW-KEEP-SUFFIX',
     ].join('\n');
@@ -445,6 +446,7 @@ test.describe('Steel managed source review', () => {
       await db.collection('files').insertMany([
         { ...file, _id: new ObjectId(), file_id: 'review-beta', filename: 'beta.pdf', filepath: '/tmp/steel-source-review-fixtures/beta.pdf' },
         { ...file, _id: new ObjectId(), file_id: 'review-gamma', filename: 'gamma.png', filepath: '/tmp/steel-source-review-fixtures/gamma.png', type: 'image/png' },
+        { ...file, _id: new ObjectId(), file_id: 'review-unpreviewable', filename: 'delta.heic', type: 'image/heic' },
         { ...file, _id: new ObjectId(), file_id: 'review-foreign-tenant', filename: 'foreign-tenant.pdf', tenantId: 'different-tenant' },
       ]);
       await db.collection('steel_conversation_ocr_state').updateOne({ conversationId }, { $set: {
@@ -453,6 +455,7 @@ test.describe('Steel managed source review', () => {
           { fileId: 'review-alpha', sourceCode: 'A', sourceFilename: 'alpha.pdf' },
           { fileId: 'review-beta', sourceCode: 'B', sourceFilename: 'beta.pdf' },
           { fileId: 'review-gamma', sourceCode: 'C', sourceFilename: 'gamma.png' },
+          { fileId: 'review-unpreviewable', sourceCode: 'D', sourceFilename: 'delta.heic' },
         ],
       } });
     });
@@ -475,7 +478,7 @@ test.describe('Steel managed source review', () => {
     await expect.poll(() => canvas.evaluate((element: HTMLCanvasElement) => element.width)).toBeGreaterThan(0);
     const checksum = () => canvas.evaluate((element: HTMLCanvasElement) => {
       const context = element.getContext('2d');
-      if (!context) return '';
+      if (!context || element.width === 0 || element.height === 0) return '';
       const data = context.getImageData(0, 0, element.width, element.height).data;
       let value = 0;
       let ink = 0;
@@ -491,6 +494,7 @@ test.describe('Steel managed source review', () => {
     await expect(dialog.getByText('ALPHA-ONE-B', { exact: true })).toBeVisible();
     await expect(dialog.getByText('ALPHA-TWO', { exact: true })).toHaveCount(0);
     await expect(dialog.getByText('UNLOCATED-PREVIEW', { exact: true })).toBeVisible();
+    await expect(dialog.getByText('UNPREVIEWABLE-SOURCE', { exact: true })).toBeVisible();
     await dialog.getByRole('button', { name: 'Next page', exact: true }).click();
     await expect(dialog.getByText('ALPHA-TWO', { exact: true })).toBeVisible();
     await expect(dialog.getByText('ALPHA-ONE-A', { exact: true })).toHaveCount(0);
@@ -520,6 +524,54 @@ test.describe('Steel managed source review', () => {
     await expect(dialog).not.toBeVisible();
     await page.reload();
     await expect(page.getByText('PREVIEW-KEEP-PREFIX', { exact: true })).toBeVisible();
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+  });
+
+
+  test('source identity collisions fail closed even when one duplicate is not previewable', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    await withMongo(async (db) => {
+      const file = await db.collection('files').findOne({ conversationId });
+      if (!file) throw new Error('Missing fixture file');
+      await db.collection('files').insertOne({ ...file, _id: new ObjectId(), filename: 'collision.txt', type: 'text/plain' });
+    });
+    const before = await persistedSnapshot(conversationId);
+    const root = `/api/steel/conversations/${conversationId}/review/ocr_result/sources`;
+    const query = new URLSearchParams({ messageId });
+    const list = await page.request.get(`${root}?${query}`, { headers });
+    expect(list.status()).toBe(200);
+    expect(await list.json()).toEqual({ sources: [] });
+    const binary = await page.request.get(`${root}/review-alpha?${query}`, { headers });
+    expect(binary.status()).toBe(404);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+  });
+
+  test('a source-list network failure keeps rows and exposes retry to the real backend', async ({ page }) => {
+    const { conversationId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const before = await persistedSnapshot(conversationId);
+    const isSourceList = (url: URL) => url.pathname === `/api/steel/conversations/${conversationId}/review/ocr_result/sources`;
+    let releaseRequest = () => {};
+    const pending = new Promise<void>((resolve) => { releaseRequest = resolve; });
+    await page.route(isSourceList, async (route) => {
+      await pending;
+      await route.abort('internetdisconnected');
+    });
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    await expect(dialog.getByText('REVIEW-P1', { exact: true })).toBeVisible();
+    await expect(dialog.getByText(/loading.*(source|files)/i)).toBeVisible();
+    releaseRequest();
+    await expect(dialog.getByRole('alert')).toBeVisible();
+    await expect(dialog.getByText('REVIEW-P2', { exact: true })).toBeVisible();
+    await page.unroute(isSourceList);
+    await dialog.getByRole('button', { name: /retry/i }).click();
+    await expect(dialog.getByRole('alert')).toHaveCount(0);
+    await expect.poll(() => dialog.locator('canvas').evaluate((element: HTMLCanvasElement) => element.width)).toBeGreaterThan(0);
+    await expect(dialog.getByText('REVIEW-P1', { exact: true })).toBeVisible();
+    await page.keyboard.press('Escape');
     expect(await persistedSnapshot(conversationId)).toEqual(before);
   });
 
