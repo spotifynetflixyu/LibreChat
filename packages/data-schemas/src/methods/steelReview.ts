@@ -28,6 +28,7 @@ import type {
   SteelReviewOwnerUpdatedRecord,
   SteelReviewRequoteProvenanceRecord,
 } from '~/types';
+import type { SteelReviewAuthorizedFile } from './steelSourceAuthorization';
 import {
   createSteelConversationOcrStateModel,
   createSteelDelegateOcrRunModel,
@@ -277,6 +278,16 @@ function sanitizeRows(
   });
 }
 
+function projectAuthorizedFiles(
+  files: ReadonlyMap<string, SteelReviewAuthorizedFile>,
+): Map<string, AuthorizedFile> {
+  const authorized = new Map<string, AuthorizedFile>();
+  for (const file of files.values()) {
+    authorized.set(file.file_id, { fileId: file.file_id, filename: file.filename });
+  }
+  return authorized;
+}
+
 function sidecarRecord(
   output: Pick<ISteelReviewOutput, 'userId' | 'tenantId' | 'conversationId' | 'kind' | 'messageId' | 'tableId' | 'outputId' | 'revision' | 'state' | 'headers' | 'rows' | 'latestOutputId' | 'aiUpdatedAt' | 'aiRawMarkdown' | 'aiBaselineMarkdown' | 'humanMarkdown' | 'humanSavedAt' | 'effectiveMarkdown' | 'displayMarkdown' | 'receipts'>,
   message?: { selected: string; parts: SteelReviewTextPart[]; selectedPartIndex?: number; ownerUpdated?: SteelReviewOwnerUpdatedRecord },
@@ -413,12 +424,7 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
     input: SteelReviewReadInput,
     fileIds: readonly string[],
   ): Promise<Map<string, AuthorizedFile>> => {
-    const files = await authorizeFiles(input, fileIds);
-    const authorized = new Map<string, AuthorizedFile>();
-    for (const file of files.values()) {
-      authorized.set(file.file_id, { fileId: file.file_id, filename: file.filename });
-    }
-    return authorized;
+    return projectAuthorizedFiles(await authorizeFiles(input, fileIds));
   };
 
   return {
@@ -824,6 +830,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
   const OcrRun = createSteelDelegateOcrRunModel(mongoose);
   const QuotationState = createSteelQuotationStateModel(mongoose);
   const ReviewOutput = createSteelReviewOutputModel(mongoose);
+  const authorizeFiles = createSteelReviewSourceAuthorization(mongoose);
 
   const unavailableMessageMutation = (): SteelReviewMessageMutationCheckResult => ({
     ok: false,
@@ -991,10 +998,20 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               ],
             }).limit(2).session(session).lean(),
             Message.find(messageFilter(input))
-              .select({ messageId: 1, text: 1, content: 1, metadata: 1 })
+              .select({
+                messageId: 1,
+                conversationId: 1,
+                user: 1,
+                tenantId: 1,
+                expiredAt: 1,
+                files: 1,
+                text: 1,
+                content: 1,
+                metadata: 1,
+              })
               .limit(2)
               .session(session)
-              .lean<Array<Pick<IMessage, 'messageId' | 'text' | 'content' | 'metadata'>>>(),
+              .lean<Array<Pick<IMessage, 'messageId' | 'conversationId' | 'user' | 'tenantId' | 'expiredAt' | 'files' | 'text' | 'content' | 'metadata'>>>(),
             input.kind === 'ocr_result'
               ? OcrState.find({ conversationId: input.conversationId })
                 .limit(2)
@@ -1106,6 +1123,28 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
           if (output && (output.state !== 'current' || output.revision !== input.revision)) {
             throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review output is no longer current');
           }
+          const sourceFileIds = output
+            ? [...new Set(output.rows.flatMap((row) => row.source?.fileId ? [row.source.fileId] : []))]
+            : [];
+          const authorizedFiles = sourceFileIds.length > 0
+            ? projectAuthorizedFiles(await authorizeFiles(input, sourceFileIds, session, {
+              conversation: {
+                conversationId: conversation.conversationId,
+                user: conversation.user,
+                tenantId: conversation.tenantId,
+                expiredAt: conversation.expiredAt,
+              },
+              message: {
+                messageId: message.messageId,
+                conversationId: message.conversationId,
+                user: message.user,
+                tenantId: message.tenantId,
+                expiredAt: message.expiredAt,
+                files: message.files,
+              },
+            }))
+            : new Map<string, AuthorizedFile>();
+          const projectedRows = output ? sanitizeRows(output.rows, authorizedFiles) : [];
           const baselineRows = output?.rows ?? input.rows;
           if (output && (output.rows.length !== input.rows.length ||
             JSON.stringify(output.headers) !== JSON.stringify(input.headers))) {
@@ -1115,7 +1154,8 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             for (let index = 0; index < output.rows.length; index += 1) {
               const previous = output.rows[index];
               const next = input.rows[index];
-              if (!next || previous.rowId !== next.rowId || !sameSteelReviewSource(previous.source, next.source)) {
+              if (!next || previous.rowId !== next.rowId ||
+                !sameSteelReviewSource(projectedRows[index]?.source ?? null, next.source)) {
                 throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review row identity changed');
               }
               for (const header of input.headers) {

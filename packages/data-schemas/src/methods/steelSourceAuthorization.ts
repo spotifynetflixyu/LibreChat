@@ -1,4 +1,4 @@
-import type { FilterQuery } from 'mongoose';
+import type { ClientSession, FilterQuery } from 'mongoose';
 import type { IMongoFile, IMessage, SteelReviewSourceScope } from '~/types';
 import { activeExpirationFilter } from '~/utils/retention';
 import { createConversationModel } from '~/models/convo';
@@ -27,7 +27,20 @@ export type SteelReviewAuthorizedFile = Pick<
   messageId?: string;
 };
 
-type ScopedMessage = Pick<IMessage, 'messageId' | 'conversationId' | 'user' | 'files'>;
+type ScopedMessage = Pick<IMessage, 'messageId' | 'conversationId' | 'user' | 'files'> & {
+  tenantId?: string | null;
+  expiredAt?: Date | null;
+};
+
+type SteelReviewSourceOwnerContext = {
+  conversation: {
+    conversationId: string;
+    user?: string;
+    tenantId?: string | null;
+    expiredAt?: Date | null;
+  };
+  message: ScopedMessage;
+};
 
 function tenantFilter(tenantId?: string): TenantFilter {
   return tenantId === undefined
@@ -88,6 +101,29 @@ function hasOnlyRequestedConversation(conversations: ReadonlySet<string>, reques
   return conversations.size > 0 && [...conversations].every((conversationId) => conversationId === requestedConversationId);
 }
 
+function matchesTenantScope(actual: string | null | undefined, expected?: string): boolean {
+  return expected === undefined ? actual == null : actual === expected;
+}
+
+function isActive(expiredAt: Date | null | undefined): boolean {
+  return expiredAt == null || expiredAt > new Date();
+}
+
+function isValidOwnerContext(
+  context: SteelReviewSourceOwnerContext,
+  input: SteelReviewSourceScope,
+): boolean {
+  return context.conversation.conversationId === input.conversationId &&
+    context.conversation.user === input.userId &&
+    matchesTenantScope(context.conversation.tenantId, input.tenantId) &&
+    isActive(context.conversation.expiredAt) &&
+    context.message.messageId === input.messageId &&
+    context.message.conversationId === input.conversationId &&
+    context.message.user === input.userId &&
+    matchesTenantScope(context.message.tenantId, input.tenantId) &&
+    isActive(context.message.expiredAt);
+}
+
 /**
  * Resolves the internal file projection shared by the review row and source
  * readers. Legacy files without a conversationId require one physical record
@@ -102,6 +138,8 @@ export function createSteelReviewSourceAuthorization(mongoose: Mongoose) {
   return async function resolveAuthorizedFiles(
     input: SteelReviewSourceScope,
     requestedFileIds?: readonly string[],
+    session?: ClientSession,
+    ownerContext?: SteelReviewSourceOwnerContext,
   ): Promise<ReadonlyMap<string, SteelReviewAuthorizedFile>> {
     const uniqueRequestedFileIds = requestedFileIds
       ? [...new Set(requestedFileIds.filter((fileId) => fileId.length > 0))]
@@ -132,14 +170,31 @@ export function createSteelReviewSourceAuthorization(mongoose: Mongoose) {
       ],
     };
 
+    const reusableOwnerContext = ownerContext && isValidOwnerContext(ownerContext, input)
+      ? ownerContext
+      : undefined;
+    const conversationQuery = reusableOwnerContext
+      ? undefined
+      : Conversation.findOne(conversationFilter).select({ conversationId: 1 });
+    const scopedMessagesQuery = Message.find(scopedMessageFilter)
+      .select({ messageId: 1, conversationId: 1, user: 1, files: 1 });
+    const clickedMessagesQuery = reusableOwnerContext
+      ? undefined
+      : Message.find(clickedMessageFilter)
+        .select({ messageId: 1, conversationId: 1, user: 1, files: 1 });
+    if (session) {
+      conversationQuery?.session(session);
+      scopedMessagesQuery.session(session);
+      clickedMessagesQuery?.session(session);
+    }
     const [conversation, scopedMessages, clickedMessages] = await Promise.all([
-      Conversation.findOne(conversationFilter).select({ conversationId: 1 }).lean(),
-      Message.find(scopedMessageFilter)
-        .select({ messageId: 1, conversationId: 1, user: 1, files: 1 })
-        .lean<ScopedMessage[]>(),
-      Message.find(clickedMessageFilter)
-        .select({ messageId: 1, conversationId: 1, user: 1, files: 1 })
-        .lean<ScopedMessage[]>(),
+      reusableOwnerContext
+        ? Promise.resolve(reusableOwnerContext.conversation)
+        : conversationQuery!.lean(),
+      scopedMessagesQuery.lean<ScopedMessage[]>(),
+      reusableOwnerContext
+        ? Promise.resolve([reusableOwnerContext.message])
+        : clickedMessagesQuery!.lean<ScopedMessage[]>(),
     ]);
     if (!conversation || clickedMessages.length !== 1) {
       return new Map();
@@ -150,7 +205,7 @@ export function createSteelReviewSourceAuthorization(mongoose: Mongoose) {
 
     const messageIds = [...new Set(scopedMessages.map((message) => message.messageId).filter(Boolean))];
     const attachedFileIds = [...new Set(scopedMessages.flatMap((message) => messageFileIds(message.files)))];
-    const files = await File.find(fileFilter(input, messageIds, attachedFileIds, uniqueRequestedFileIds))
+    const filesQuery = File.find(fileFilter(input, messageIds, attachedFileIds, uniqueRequestedFileIds))
       .select({
         file_id: 1,
         filename: 1,
@@ -163,8 +218,11 @@ export function createSteelReviewSourceAuthorization(mongoose: Mongoose) {
         model: 1,
         conversationId: 1,
         messageId: 1,
-      })
-      .lean<SteelReviewAuthorizedFile[]>();
+      });
+    if (session) {
+      filesQuery.session(session);
+    }
+    const files = await filesQuery.lean<SteelReviewAuthorizedFile[]>();
     const candidateGroups = groupByFileId(files);
     const uniqueCandidates = new Map<string, SteelReviewAuthorizedFile>();
     for (const [fileId, group] of candidateGroups) {
@@ -186,36 +244,40 @@ export function createSteelReviewSourceAuthorization(mongoose: Mongoose) {
     const legacyMessageIds = [...new Set([...uniqueCandidates.values()].flatMap((file) => (
       file.conversationId == null && file.messageId ? [file.messageId] : []
     )))];
+    const globalLegacyFilesQuery = File.find({
+      $and: [
+        { user: input.userId, file_id: { $in: legacyFileIds } },
+        tenantFilter(input.tenantId),
+        activeExpirationFilter(),
+      ],
+    }).select({ file_id: 1, filename: 1, type: 1, bytes: 1, source: 1, filepath: 1, storageKey: 1, storageRegion: 1, model: 1, conversationId: 1, messageId: 1 });
+    const messageAnchorsQuery = legacyMessageIds.length > 0
+      ? Message.find({
+        $and: [
+          { user: input.userId, messageId: { $in: legacyMessageIds } },
+          tenantFilter(input.tenantId),
+          activeExpirationFilter(),
+        ],
+      }).select({ messageId: 1, conversationId: 1, user: 1, files: 1 })
+      : undefined;
+    const attachmentAnchorsQuery = Message.find({
+      $and: [
+        { user: input.userId, 'files.file_id': { $in: legacyFileIds } },
+        tenantFilter(input.tenantId),
+        activeExpirationFilter(),
+      ],
+    }).select({ messageId: 1, conversationId: 1, user: 1, files: 1 });
+    if (session) {
+      globalLegacyFilesQuery.session(session);
+      messageAnchorsQuery?.session(session);
+      attachmentAnchorsQuery.session(session);
+    }
     const [globalLegacyFiles, messageAnchors, attachmentAnchors] = await Promise.all([
-      File.find({
-        $and: [
-          { user: input.userId, file_id: { $in: legacyFileIds } },
-          tenantFilter(input.tenantId),
-          activeExpirationFilter(),
-        ],
-      })
-        .select({ file_id: 1, filename: 1, type: 1, bytes: 1, source: 1, filepath: 1, storageKey: 1, storageRegion: 1, model: 1, conversationId: 1, messageId: 1 })
-        .lean<SteelReviewAuthorizedFile[]>(),
-      legacyMessageIds.length > 0
-        ? Message.find({
-          $and: [
-            { user: input.userId, messageId: { $in: legacyMessageIds } },
-            tenantFilter(input.tenantId),
-            activeExpirationFilter(),
-          ],
-        })
-          .select({ messageId: 1, conversationId: 1, user: 1, files: 1 })
-          .lean<ScopedMessage[]>()
+      globalLegacyFilesQuery.lean<SteelReviewAuthorizedFile[]>(),
+      messageAnchorsQuery
+        ? messageAnchorsQuery.lean<ScopedMessage[]>()
         : Promise.resolve([] as ScopedMessage[]),
-      Message.find({
-        $and: [
-          { user: input.userId, 'files.file_id': { $in: legacyFileIds } },
-          tenantFilter(input.tenantId),
-          activeExpirationFilter(),
-        ],
-      })
-        .select({ messageId: 1, conversationId: 1, user: 1, files: 1 })
-        .lean<ScopedMessage[]>(),
+      attachmentAnchorsQuery.lean<ScopedMessage[]>(),
     ]);
     const globalGroups = groupByFileId(globalLegacyFiles);
     const authorized = new Map<string, SteelReviewAuthorizedFile>();

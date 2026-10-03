@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet, MongoMemoryServer } from 'mongodb-memory-server';
+import { createSteelReviewSourceAuthorization } from './steelSourceAuthorization';
 import { createSteelReviewSourceMethods } from './steelSources';
 import { createConversationModel } from '~/models/convo';
 import { createMessageModel } from '~/models/message';
@@ -274,6 +275,66 @@ describe('Steel review source methods', () => {
       filepath: '/uploads/drawing.pdf',
     });
     expect(await methods.listSteelReviewSources({ ...input, messageId: 'missing-message' })).toEqual([]);
+  });
+
+  it('resolves files written in the supplied transaction session', async () => {
+    const transactionMongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
+    const transactionMongoose = new mongoose.Mongoose();
+    await transactionMongoose.connect(transactionMongo.getUri());
+    const SessionConversation = createConversationModel(transactionMongoose);
+    const SessionMessage = createMessageModel(transactionMongoose);
+    const SessionFile = createFileModel(transactionMongoose);
+    const authorizeFiles = createSteelReviewSourceAuthorization(transactionMongoose);
+    const userId = new transactionMongoose.Types.ObjectId();
+    const conversationId = 'session-source-conversation';
+    const messageId = 'session-source-message';
+    await SessionConversation.create({
+      conversationId,
+      user: userId,
+      tenantId: 'tenant-a',
+      title: 'Session source',
+      endpoint: 'openAI',
+    });
+    await SessionMessage.create({
+      messageId,
+      conversationId,
+      user: userId,
+      tenantId: 'tenant-a',
+      isCreatedByUser: false,
+      text: 'OCR message',
+    });
+    const session = await transactionMongoose.startSession();
+    let resolved: string | undefined;
+    try {
+      await session.withTransaction(async () => {
+        await SessionFile.create([{
+          user: userId,
+          tenantId: 'tenant-a',
+          conversationId,
+          file_id: 'session-source-file',
+          bytes: 12,
+          filename: 'drawing.pdf',
+          filepath: '/uploads/drawing.pdf',
+          object: 'file',
+          type: 'application/pdf',
+          source: 'local',
+          usage: 0,
+        }], { session });
+        const files = await authorizeFiles({
+          userId: userId.toString(),
+          tenantId: 'tenant-a',
+          conversationId,
+          messageId,
+          kind: 'ocr_result',
+        }, ['session-source-file'], session);
+        resolved = files.get('session-source-file')?.filename;
+      });
+    } finally {
+      await session.endSession();
+      await transactionMongoose.disconnect();
+      await transactionMongo.stop();
+    }
+    expect(resolved).toBe('drawing.pdf');
   });
 
   it('requires a unique active legacy provenance anchor for list and read', async () => {
