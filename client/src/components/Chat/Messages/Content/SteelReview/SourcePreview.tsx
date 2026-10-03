@@ -5,7 +5,8 @@ import { ZoomIn, ZoomOut } from 'lucide-react';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import type { SteelReviewSourceFile } from 'librechat-data-provider';
 import type * as pdfjsLib from 'pdfjs-dist/build/pdf.mjs';
-import { steelReviewPreviewStateFamily, type SteelReviewPan } from './state';
+import type { SteelReviewPan } from './state';
+import { steelReviewPreviewStateFamily } from './state';
 
 export interface SteelReviewSourcePreviewLabels {
   zoomIn: string;

@@ -12,7 +12,7 @@ jest.mock('pdfjs-dist/build/pdf.mjs', () => ({
 }));
 
 jest.mock('@librechat/client', () => {
-  const React = require('react');
+  const React = jest.requireActual<typeof import('react')>('react');
   const Pass = ({ children, asChild: _asChild, ...props }: {
     children?: React.ReactNode;
     asChild?: boolean;
@@ -112,6 +112,12 @@ const reviewIdentity = {
   tableId: 'ocr_result:1',
 };
 
+const testHeading = 'ocr_result';
+const sourceHeader = '來源';
+const partHeader = '零件編號';
+const firstPart = 'P-1';
+const secondPart = 'P-2';
+
 function renderDialog() {
   const store = createStore();
   store.set(steelReviewSelectionAtom, reviewIdentity);
@@ -128,13 +134,13 @@ function renderTable() {
     <RecoilRoot>
       <div className="message-render">
         <div className="message-content">
-          <h2>ocr_result</h2>
+          <h2>{testHeading}</h2>
           <MarkdownTableActions markdownIndex={1}>
             <thead>
-              <tr><th>來源</th><th>零件編號</th></tr>
+              <tr><th>{sourceHeader}</th><th>{partHeader}</th></tr>
             </thead>
             <tbody>
-              <tr><td>A</td><td>P-1</td></tr>
+              <tr><td>A</td><td>{firstPart}</td></tr>
             </tbody>
           </MarkdownTableActions>
         </div>
@@ -327,10 +333,10 @@ describe('MarkdownTableActions Steel review entry', () => {
       <RecoilRoot>
         <div className="message-render">
           <div className="message-content">
-            <h2>ocr_result</h2>
+            <h2>{testHeading}</h2>
             <MarkdownTableActions markdownIndex={1}>
-              <thead><tr><th>來源</th><th>零件編號</th></tr></thead>
-              <tbody><tr><td>A</td><td>P-1</td></tr></tbody>
+              <thead><tr><th>{sourceHeader}</th><th>{partHeader}</th></tr></thead>
+              <tbody><tr><td>A</td><td>{firstPart}</td></tr></tbody>
             </MarkdownTableActions>
           </div>
         </div>
@@ -358,10 +364,10 @@ describe('MarkdownTableActions Steel review entry', () => {
       <RecoilRoot>
         <div className="message-render">
           <div className="message-content">
-            <h2>ocr_result</h2>
+            <h2>{testHeading}</h2>
             <MarkdownTableActions markdownIndex={1}>
-              <thead><tr><th>來源</th><th>零件編號</th></tr></thead>
-              <tbody><tr><td>A</td><td>P-2</td></tr></tbody>
+              <thead><tr><th>{sourceHeader}</th><th>{partHeader}</th></tr></thead>
+              <tbody><tr><td>A</td><td>{secondPart}</td></tr></tbody>
             </MarkdownTableActions>
           </div>
         </div>

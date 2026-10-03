@@ -275,4 +275,123 @@ describe('Steel review source methods', () => {
     });
     expect(await methods.listSteelReviewSources({ ...input, messageId: 'missing-message' })).toEqual([]);
   });
+
+  it('requires a unique active legacy provenance anchor for list and read', async () => {
+    const methods = createSteelReviewSourceMethods(mongoose);
+    const userId = new mongoose.Types.ObjectId();
+    const conversationId = 'steel-source-provenance-conversation';
+    await Conversation.create({
+      conversationId,
+      user: userId.toString(),
+      tenantId: 'tenant-a',
+      title: 'Source provenance review',
+      endpoint: 'openAI',
+    });
+    await Message.create([
+      {
+        messageId: 'provenance-clicked',
+        conversationId,
+        user: userId.toString(),
+        tenantId: 'tenant-a',
+        isCreatedByUser: true,
+        text: 'uploaded source',
+        files: [{ file_id: 'anchored-legacy-source' }],
+      },
+      {
+        messageId: 'ambiguous-message',
+        conversationId,
+        user: userId.toString(),
+        tenantId: 'tenant-a',
+        isCreatedByUser: true,
+        text: 'duplicate message anchor',
+      },
+      {
+        messageId: 'ambiguous-message',
+        conversationId: 'other-conversation',
+        user: userId.toString(),
+        tenantId: 'tenant-a',
+        isCreatedByUser: true,
+        text: 'competing message anchor',
+      },
+      {
+        messageId: 'expired-upload',
+        conversationId,
+        user: userId.toString(),
+        tenantId: 'tenant-a',
+        isCreatedByUser: true,
+        text: 'expired attachment',
+        files: [{ file_id: 'expired-legacy-source' }],
+        expiredAt: new Date(Date.now() - 60_000),
+      },
+    ]);
+    await File.create([
+      {
+        user: userId,
+        tenantId: 'tenant-a',
+        file_id: 'anchored-legacy-source',
+        bytes: 4,
+        filename: 'anchored.pdf',
+        filepath: '/uploads/anchored.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        source: 'local',
+        usage: 0,
+      },
+      {
+        user: userId,
+        tenantId: 'tenant-a',
+        file_id: 'unanchored-legacy-source',
+        bytes: 4,
+        filename: 'unanchored.pdf',
+        filepath: '/uploads/unanchored.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        source: 'local',
+        usage: 0,
+      },
+      {
+        user: userId,
+        tenantId: 'tenant-a',
+        messageId: 'ambiguous-message',
+        file_id: 'duplicate-message-source',
+        bytes: 4,
+        filename: 'duplicate-message.pdf',
+        filepath: '/uploads/duplicate-message.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        source: 'local',
+        usage: 0,
+      },
+      {
+        user: userId,
+        tenantId: 'tenant-a',
+        file_id: 'expired-legacy-source',
+        bytes: 4,
+        filename: 'expired-legacy.pdf',
+        filepath: '/uploads/expired-legacy.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        source: 'local',
+        usage: 0,
+      },
+    ]);
+
+    const input = {
+      userId: userId.toString(),
+      tenantId: 'tenant-a',
+      conversationId,
+      messageId: 'provenance-clicked',
+      kind: 'ocr_result' as const,
+    };
+    expect((await methods.listSteelReviewSources(input)).map((source) => source.fileId)).toEqual([
+      'anchored-legacy-source',
+    ]);
+    expect(await methods.readSteelReviewSource({ ...input, fileId: 'anchored-legacy-source' })).toMatchObject({
+      fileId: 'anchored-legacy-source',
+      filename: 'anchored.pdf',
+    });
+    await expect(methods.readSteelReviewSource({ ...input, fileId: 'unanchored-legacy-source' })).resolves.toBeNull();
+    await expect(methods.readSteelReviewSource({ ...input, fileId: 'duplicate-message-source' })).resolves.toBeNull();
+    await expect(methods.readSteelReviewSource({ ...input, fileId: 'expired-legacy-source' })).resolves.toBeNull();
+  });
 });

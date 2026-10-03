@@ -17,10 +17,10 @@ import {
   createSteelQuotationStateModel,
   createSteelReviewOutputModel,
 } from '~/models';
+import { createSteelReviewSourceAuthorization } from './steelSourceAuthorization';
 import { activeExpirationFilter } from '~/utils/retention';
 import { createConversationModel } from '~/models/convo';
 import { createMessageModel } from '~/models/message';
-import { createFileModel } from '~/models/file';
 
 type Mongoose = typeof import('mongoose');
 
@@ -176,16 +176,6 @@ function matchesTenantScope(value: unknown, tenantId?: string): boolean {
   return tenantId === undefined ? value == null : value === tenantId;
 }
 
-function messageFileIds(files: unknown[] | undefined): string[] {
-  return (files ?? []).flatMap((file) => {
-    if (typeof file !== 'object' || file === null || Array.isArray(file)) {
-      return [];
-    }
-    const fileId = (file as { file_id?: unknown }).file_id;
-    return typeof fileId === 'string' && fileId.length > 0 ? [fileId] : [];
-  });
-}
-
 function selectSidecar(
   candidates: ISteelReviewOutput[],
   authority: ReviewAuthority | undefined,
@@ -254,65 +244,26 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
   const QuotationState = createSteelQuotationStateModel(mongoose);
   const QuotationArtifact = createSteelQuotationArtifactModel(mongoose);
   const ReviewOutput = createSteelReviewOutputModel(mongoose);
-  const File = createFileModel(mongoose);
+  const authorizeFiles = createSteelReviewSourceAuthorization(mongoose);
 
   const readAuthorizedFiles = async (
     input: SteelReviewReadInput,
     fileIds: readonly string[],
-    attachedFileIds: readonly string[],
   ): Promise<Map<string, AuthorizedFile>> => {
-    const uniqueFileIds = [...new Set(fileIds.filter((fileId) => fileId.length > 0))];
-    // File.user is an ObjectId. Invalid legacy/test identities cannot authorize a file.
-    if (uniqueFileIds.length === 0 || !mongoose.Types.ObjectId.isValid(input.userId)) {
-      return new Map();
-    }
-    const files = await File.find({
-      $and: [
-        {
-          file_id: { $in: uniqueFileIds },
-          user: input.userId,
-          $or: [
-            { conversationId: input.conversationId },
-            { conversationId: null, messageId: input.messageId },
-            { conversationId: null, file_id: { $in: attachedFileIds } },
-          ],
-        },
-        tenantFilter(input.tenantId),
-        activeExpirationFilter(),
-      ],
-    })
-      .select({ file_id: 1, filename: 1 })
-      .lean<Array<{ file_id: string; filename: string }>>();
+    const files = await authorizeFiles(input, fileIds);
     const authorized = new Map<string, AuthorizedFile>();
-    const ambiguous = new Set<string>();
-    for (const file of files) {
-      if (authorized.has(file.file_id)) {
-        authorized.delete(file.file_id);
-        ambiguous.add(file.file_id);
-        continue;
-      }
-      if (!ambiguous.has(file.file_id)) {
-        authorized.set(file.file_id, { fileId: file.file_id, filename: file.filename });
-      }
+    for (const file of files.values()) {
+      authorized.set(file.file_id, { fileId: file.file_id, filename: file.filename });
     }
     return authorized;
   };
 
   return {
     async readSteelReview(input) {
-      const [messageRecord, conversationMessages, conversation, conversationIdentities] = await Promise.all([
+      const [messageRecord, conversation, conversationIdentities] = await Promise.all([
         Message.findOne(messageFilter(input))
           .select({ messageId: 1, text: 1, content: 1, files: 1 })
           .lean<Pick<IMessage, 'messageId' | 'text' | 'content' | 'files'>>(),
-        Message.find({
-          $and: [
-            { user: input.userId, conversationId: input.conversationId, 'files.0': { $exists: true } },
-            tenantFilter(input.tenantId),
-            activeExpirationFilter(),
-          ],
-        })
-          .select({ files: 1 })
-          .lean<Array<Pick<IMessage, 'files'>>>(),
         Conversation.findOne({
           $and: [
             { user: input.userId, conversationId: input.conversationId },
@@ -333,10 +284,6 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
       if (!message) {
         return null;
       }
-      const attachedFileIds = [
-        ...messageFileIds(messageRecord.files),
-        ...conversationMessages.flatMap((message) => messageFileIds(message.files)),
-      ];
       const trustedGlobalConversation = conversationIdentities.length === 1 &&
         conversationIdentities[0]?.user === input.userId &&
         matchesTenantScope(conversationIdentities[0]?.tenantId, input.tenantId);
@@ -376,7 +323,7 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
         const authorizedFiles = await readAuthorizedFiles(input, [
           ...(state?.sourceMappings ?? []).map((mapping) => mapping.fileId),
           ...(selected?.rows ?? []).flatMap((row) => row.source?.fileId ? [row.source.fileId] : []),
-        ], attachedFileIds);
+        ]);
         if (selected) {
           const { latestOutputId: _ignoredLatestOutputId, ...selectedWithoutLatest } = selected;
           return sidecarRecord({
@@ -449,7 +396,7 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
       const selected = selectSidecar(sidecarCandidates, authority, input.messageId);
       const authorizedFiles = await readAuthorizedFiles(input, [
         ...(selected?.rows ?? []).flatMap((row) => row.source?.fileId ? [row.source.fileId] : []),
-      ], attachedFileIds);
+      ]);
       if (selected) {
         const { latestOutputId: _ignoredLatestOutputId, ...selectedWithoutLatest } = selected;
         return sidecarRecord({
