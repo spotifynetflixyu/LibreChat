@@ -8,7 +8,6 @@ import type {
 import type {
   ISteelReviewOutput,
   SteelReviewOwnerUpdatedRecord,
-  SteelReviewRequoteProvenanceRecord,
 } from '~/types';
 
 const steelReviewSourceSchema = new Schema<SteelReviewSource>(
@@ -48,19 +47,6 @@ const steelReviewOwnerUpdatedSchema = new Schema<SteelReviewOwnerUpdatedRecord>(
     outputId: { type: String, required: true },
     revision: { type: String, required: true },
     updatedAt: { type: Date, required: true },
-  },
-  { _id: false },
-);
-
-const steelReviewRequoteProvenanceSchema = new Schema<SteelReviewRequoteProvenanceRecord>(
-  {
-    sourceKind: { type: String, enum: ['ocr_result'], required: true },
-    sourceMessageId: { type: String, required: true },
-    sourceTableId: { type: String, required: true },
-    sourceOutputId: { type: String, required: true },
-    sourceRevision: { type: String, required: true },
-    changedRows: { type: Number, required: true, min: 1 },
-    at: { type: Date, required: true },
   },
   { _id: false },
 );

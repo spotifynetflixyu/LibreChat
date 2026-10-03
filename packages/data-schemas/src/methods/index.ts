@@ -206,7 +206,6 @@ import {
   createSteelReviewReadMethods,
   createSteelReviewWriteMethods,
   type SteelReviewReadMethods,
-  type SteelReviewWriteMethods,
 } from './steelReview';
 import { createSteelReviewSourceMethods, type SteelReviewSourceMethods } from './steelSources';
 

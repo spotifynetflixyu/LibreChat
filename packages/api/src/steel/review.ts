@@ -382,7 +382,10 @@ function sidecarTarget(
     const value = cell && Object.prototype.hasOwnProperty.call(cell, 'effective')
       ? cell.effective
       : cell?.baseline;
-    return value === null ? '' : typeof value === 'string' ? value : undefined;
+    if (value === null) {
+      return '';
+    }
+    return typeof value === 'string' ? value : undefined;
   }));
   if (rows.some((row) => row.some((value) => value === undefined))) {
     return undefined;
@@ -548,26 +551,6 @@ function serializeReviewTable(headers: readonly string[], rows: readonly SteelRe
   const separator = `| ${headers.map(() => '---').join(' | ')} |`;
   const body = rows.map((row) => `| ${headers.map((name) => escapeMarkdownCell(row.values[name]?.effective ?? '')).join(' | ')} |`);
   return [header, separator, ...body].join('\n');
-}
-
-function replaceTargetText(
-  record: SteelReviewReadRecord,
-  target: LocatedTable,
-  replacement: string,
-): string | undefined {
-  if (record.messageTextParts && record.messageTextParts.length > 0 && target.partIndex !== undefined) {
-    const parts = record.messageTextParts.map((part) => part.text);
-    const selectedIndex = parts.findIndex((_part, index) => record.messageTextParts?.[index]?.partIndex === target.partIndex);
-    if (selectedIndex < 0) {
-      return undefined;
-    }
-    const selected = parts[selectedIndex];
-    const next = `${selected.slice(0, target.start)}${replacement}${selected.slice(target.end)}`;
-    parts[selectedIndex] = next;
-    return parts.reduce((result, part) => appendRenderedText(result, part), '');
-  }
-  const text = fullMessageText(record);
-  return text === undefined ? undefined : `${text.slice(0, target.start)}${replacement}${text.slice(target.end)}`;
 }
 
 function ownerMarkdown(record: SteelReviewReadRecord): string | undefined {
