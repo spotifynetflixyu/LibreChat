@@ -1,5 +1,7 @@
-import { memo, type ChangeEvent, type KeyboardEvent } from 'react';
+import { memo } from 'react';
+import { Input } from '@librechat/client';
 import type { SteelReviewRow, SteelReviewTable } from 'librechat-data-provider';
+import type { ChangeEvent, KeyboardEvent } from 'react';
 import type { SteelReviewDraftState } from './session';
 import { getSteelReviewDraftCell } from './session';
 
@@ -62,9 +64,9 @@ function ReviewCell({
         <del className="mr-2 text-text-secondary">{cell.baseline}</del>
       )}
       {editable ? (
-        <input
+        <Input
           aria-label={`${header} ${row.rowId}`}
-          className="min-w-24 rounded border border-border-light bg-surface-primary px-2 py-1 text-sm text-text-primary"
+          className="min-w-24"
           value={currentValue}
           onChange={(event: ChangeEvent<HTMLInputElement>) =>
             onCellChange(row, header, event.target.value)}

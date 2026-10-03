@@ -8,16 +8,17 @@ export interface SteelReviewDraftState {
 
 export function getSteelReviewDraftKey(
   selection: SteelReviewSelection,
-  table: Pick<SteelReviewTable, 'outputId' | 'revision'>,
+  table: Pick<SteelReviewTable, 'outputId' | 'revision' | 'partIndex'>,
 ): string {
-  return [
-    selection.conversationId,
-    selection.messageId,
-    selection.kind,
-    selection.tableId,
-    table.outputId,
-    table.revision,
-  ].join(':');
+  return JSON.stringify({
+    conversationId: selection.conversationId,
+    messageId: selection.messageId,
+    kind: selection.kind,
+    tableId: selection.tableId,
+    partIndex: selection.partIndex ?? table.partIndex ?? null,
+    outputId: table.outputId,
+    baseRevision: table.revision,
+  });
 }
 
 export function getSteelReviewDraftCellKey(rowId: string, header: string): string {

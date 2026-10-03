@@ -19,6 +19,8 @@ jest.mock('@librechat/client', () => {
   }) => React.createElement('div', props, children);
   const Button = ({ children, ...props }: { children?: React.ReactNode }) =>
     React.createElement('button', props, children);
+  const Input = (props: React.InputHTMLAttributes<HTMLInputElement>) =>
+    React.createElement('input', props);
   const Select = ({ value, onValueChange, children }: {
     value?: string;
     onValueChange?: (value: string) => void;
@@ -37,6 +39,7 @@ jest.mock('@librechat/client', () => {
     (open ? React.createElement('div', { role: 'dialog' }, children) : null);
   return {
     Button,
+    Input,
     ControlCombobox: Pass,
     DropdownMenu: Pass,
     DropdownMenuContent: Pass,

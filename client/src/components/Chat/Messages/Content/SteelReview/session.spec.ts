@@ -47,9 +47,32 @@ const selection = {
 
 describe('Steel review local draft session', () => {
   it('keys drafts by the exact output owner and revision', () => {
-    expect(getSteelReviewDraftKey(selection, table)).toBe(
-      'conversation-1:message-1:ocr_result:ocr_result:1:ocr_result:generation-1:revision-1',
+    expect(getSteelReviewDraftKey(selection, table)).toBe(JSON.stringify({
+      conversationId: 'conversation-1',
+      messageId: 'message-1',
+      kind: 'ocr_result',
+      tableId: 'ocr_result:1',
+      partIndex: null,
+      outputId: 'ocr_result:generation-1',
+      baseRevision: 'revision-1',
+    }));
+  });
+
+  it('keeps delimiter-like owners and actual part scopes distinct', () => {
+    const delimiterLike = getSteelReviewDraftKey(
+      { ...selection, conversationId: 'conversation-1:message-1' },
+      table,
     );
+    const splitOwner = getSteelReviewDraftKey(
+      { ...selection, conversationId: 'conversation-1', messageId: 'message-1:ocr_result' },
+      table,
+    );
+    const textPart = getSteelReviewDraftKey(selection, table);
+    const contentPart = getSteelReviewDraftKey({ ...selection, partIndex: 0 }, table);
+
+    expect(delimiterLike).not.toBe(splitOwner);
+    expect(textPart).not.toBe(contentPart);
+    expect(getSteelReviewDraftKey(selection, { ...table, partIndex: 0 })).toBe(contentPart);
   });
 
   it('counts each changed trusted row once and applies its draft cells', () => {
