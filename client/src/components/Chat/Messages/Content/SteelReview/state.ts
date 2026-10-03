@@ -6,6 +6,7 @@ export type SteelReviewSelection = {
   messageId: string;
   kind: SteelReviewKind;
   tableId: string;
+  partIndex?: number;
 };
 
 export const steelReviewSelectionAtom = atom<SteelReviewSelection | null>(null);

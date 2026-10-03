@@ -16,6 +16,12 @@ export interface SteelReviewReadInput extends SteelReviewScope {
   kind: SteelReviewKind;
   messageId: string;
   tableId: string;
+  partIndex?: number;
+}
+
+export interface SteelReviewTextPart {
+  partIndex: number;
+  text: string;
 }
 
 /** Plain projection returned by the database boundary; no Mongoose query types escape it. */
@@ -32,6 +38,8 @@ export interface SteelReviewReadRecord extends SteelReviewScope {
   sourceMappings?: SteelReviewSourceMapping[];
   latestOutputId?: string;
   messageText?: string;
+  messageTextParts?: SteelReviewTextPart[];
+  messageTextPartIndex?: number;
 }
 
 export interface SteelReviewSourceMapping {

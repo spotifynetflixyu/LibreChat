@@ -67,8 +67,9 @@ export default function SteelReviewDialog({ identity }: { identity: SteelReviewS
     selection.conversationId === identity.conversationId &&
     selection.messageId === identity.messageId &&
     selection.kind === identity.kind &&
-    selection.tableId === identity.tableId;
-  const query = useGetSteelReviewQuery(isOpen ? identity : null);
+    selection.tableId === identity.tableId &&
+    selection.partIndex === identity.partIndex;
+  const query = useGetSteelReviewQuery(isOpen ? identity : null, { retry: false });
   const isNotFound = getErrorStatus(query.error) === 404;
   const table = query.data?.table;
 
@@ -93,7 +94,7 @@ export default function SteelReviewDialog({ identity }: { identity: SteelReviewS
         </OGDialogHeader>
         <div className="min-h-0 flex-1" aria-live="polite">
           {query.isLoading && <p>{localize('com_ui_steel_review_loading')}</p>}
-          {!query.isLoading && (isNotFound || (!query.isError && !table)) && (
+          {!query.isLoading && (isNotFound || (!query.isError && (!table || table.rows.length === 0))) && (
             <p>{localize('com_ui_steel_review_empty')}</p>
           )}
           {!query.isLoading && query.isError && !isNotFound && (

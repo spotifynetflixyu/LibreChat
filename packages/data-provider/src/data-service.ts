@@ -188,8 +188,9 @@ export function getSteelReview(
   kind: SteelReviewKind,
   messageId: string,
   tableId: string,
+  partIndex?: number,
 ): Promise<SteelReviewResponse> {
-  return request.get(endpoints.steelReview(conversationId, kind, messageId, tableId));
+  return request.get(endpoints.steelReview(conversationId, kind, messageId, tableId, partIndex));
 }
 
 export function cancelSteelQuotation(

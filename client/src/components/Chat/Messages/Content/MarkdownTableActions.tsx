@@ -49,6 +49,8 @@ type TableToolbarProps = {
   onExpand?: () => void;
   reviewLabel?: string;
   onReview?: () => void;
+  reviewRetryLabel?: string;
+  onReviewRetry?: () => void;
   onStickyColumnChange?: (columnIndex: number | undefined) => void;
   stickyColumnIndex?: number;
 };
@@ -84,7 +86,30 @@ type CommentableTableChildrenInput = {
   }) => void;
 };
 
+type SteelReviewCandidate = {
+  conversationId: string;
+  messageId: string;
+  kind: SteelReviewKind;
+  tableId: string;
+  partIndex?: number;
+};
+
 const wideColumnTextThreshold = 36;
+
+function getReviewCandidateKey(candidate: SteelReviewCandidate): string {
+  return `${candidate.conversationId}:${candidate.messageId}:${candidate.kind}:${candidate.tableId}:${candidate.partIndex ?? ''}`;
+}
+
+function getReviewErrorStatus(error: unknown): number | undefined {
+  if (typeof error !== 'object' || error === null || !('response' in error)) {
+    return undefined;
+  }
+  const response = error.response;
+  if (typeof response !== 'object' || response === null || !('status' in response)) {
+    return undefined;
+  }
+  return typeof response.status === 'number' ? response.status : undefined;
+}
 
 function formatFilenameTimestamp(timestamp?: string | null): string {
   const parsed = timestamp ? new Date(timestamp) : new Date();
@@ -411,6 +436,8 @@ function TableToolbar({
   stickyColumnIndex,
   reviewLabel,
   onReview,
+  reviewRetryLabel,
+  onReviewRetry,
 }: TableToolbarProps) {
   const localize = useLocalize();
   const copyLabel = localize('com_ui_copy_markdown_table');
@@ -506,6 +533,11 @@ function TableToolbar({
           <FileSearch className="size-4" aria-hidden="true" />
         </TableActionButton>
       )}
+      {!reviewLabel && reviewRetryLabel && onReviewRetry && (
+        <TableActionButton label={reviewRetryLabel} onClick={onReviewRetry}>
+          <FileSearch className="size-4" aria-hidden="true" />
+        </TableActionButton>
+      )}
       {downloadMenu ? (
         <DropdownMenu
           onOpenChange={(open) => {
@@ -582,7 +614,7 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
   const localize = useLocalize();
   const { i18n } = useTranslation();
   const conversation = useRecoilValue(store.conversationByIndex(0));
-  const { conversationId, isCreatedByUser, messageId, messageTimestamp } =
+  const { conversationId, isCreatedByUser, messageId, messageTimestamp, isSubmitting } =
     useMessageContext() ?? {};
   const downloadFilename = useMemo(
     () => getDownloadFilename(conversation?.title, messageTimestamp),
@@ -624,8 +656,43 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
     enabled: reviewCandidate != null,
     retry: false,
   });
-  const reviewIdentity = reviewQuery.data?.table ? reviewCandidate : null;
+  const [recognizedReview, setRecognizedReview] = useState<typeof reviewCandidate>(null);
+  const previousSubmittingRef = useRef(isSubmitting === true);
+  const completionRefreshKeyRef = useRef<string>();
+  const reviewErrorStatus = getReviewErrorStatus(reviewQuery.error);
+  const candidateKey = reviewCandidate ? getReviewCandidateKey(reviewCandidate) : undefined;
+  const reviewIdentity = recognizedReview && candidateKey === getReviewCandidateKey(recognizedReview)
+    ? recognizedReview
+    : reviewQuery.data?.table
+      ? reviewCandidate
+      : null;
+  const reviewRetryAvailable = reviewQuery.isError === true && reviewErrorStatus !== 404 && !reviewIdentity;
+  useEffect(() => {
+    if (!reviewCandidate) {
+      setRecognizedReview(null);
+      completionRefreshKeyRef.current = undefined;
+      return;
+    }
+    if (reviewQuery.data?.table) {
+      setRecognizedReview(reviewCandidate);
+      return;
+    }
+    if (reviewErrorStatus === 404) {
+      setRecognizedReview(null);
+    }
+  }, [candidateKey, reviewCandidate, reviewErrorStatus, reviewQuery.data?.table]);
+  useEffect(() => {
+    const wasSubmitting = previousSubmittingRef.current;
+    previousSubmittingRef.current = isSubmitting === true;
+    if (!wasSubmitting || isSubmitting === true || !reviewCandidate || !candidateKey ||
+      completionRefreshKeyRef.current === candidateKey) {
+      return;
+    }
+    completionRefreshKeyRef.current = candidateKey;
+    void reviewQuery.refetch();
+  }, [candidateKey, isSubmitting, reviewCandidate, reviewQuery.refetch]);
   const reviewLabel = localize('com_ui_steel_review_open');
+  const reviewRetryLabel = localize('com_ui_steel_review_retry');
   const canComment = isCreatedByUser !== true && !!messageId && !!commentConversationId;
   const commentsByCell = useMemo(() => {
     const comments = new Map<string, MarkdownTableComment>();
@@ -794,6 +861,9 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
       setSelection(reviewIdentity);
     }
   }, [reviewIdentity, setSelection]);
+  const retryReviewRecognition = useCallback(() => {
+    void reviewQuery.refetch();
+  }, [reviewQuery.refetch]);
 
   useEffect(() => {
     if (!isExpanded || !modalTableRef.current) {
@@ -878,6 +948,12 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
         downloadMenu={downloadMenu}
         reviewLabel={reviewIdentity ? reviewLabel : undefined}
         onReview={reviewIdentity ? openReview : undefined}
+        reviewRetryLabel={reviewCandidate && reviewRetryAvailable
+          ? reviewRetryLabel
+          : undefined}
+        onReviewRetry={reviewCandidate && reviewRetryAvailable
+          ? retryReviewRecognition
+          : undefined}
         onCopied={handleCopied}
         onExpand={openModal}
       />
@@ -902,6 +978,12 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
                 downloadMenu={downloadMenu}
                 reviewLabel={reviewIdentity ? reviewLabel : undefined}
                 onReview={reviewIdentity ? openReview : undefined}
+                reviewRetryLabel={reviewCandidate && reviewRetryAvailable
+                  ? reviewRetryLabel
+                  : undefined}
+                onReviewRetry={reviewCandidate && reviewRetryAvailable
+                  ? retryReviewRecognition
+                  : undefined}
                 headerOptions={headerOptions}
                 onClose={closeModal}
                 onCopied={handleModalCopied}

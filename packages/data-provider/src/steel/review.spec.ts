@@ -39,4 +39,12 @@ describe('Steel review contracts', () => {
       }),
     ).toThrow();
   });
+
+  it('accepts a concrete rendered content part owner', () => {
+    expect(steelReviewReadQuerySchema.parse({
+      messageId: 'message-1',
+      tableId: 'ocr_result:2',
+      partIndex: '3',
+    }).partIndex).toBe(3);
+  });
 });
