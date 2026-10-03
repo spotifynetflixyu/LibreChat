@@ -356,9 +356,10 @@ export default function SteelReviewDialog({
   const sourceCorrectionDraft = sourceCorrectionRow?.rowId
     ? getSteelReviewDraftSource(draftState, sourceCorrectionRow.rowId)
     : undefined;
-  const sourceCorrection = sourceCorrectionRow?.rowId
-    ? sourceCorrectionDraft === undefined ? sourceCorrectionRow.source : sourceCorrectionDraft
-    : undefined;
+  let sourceCorrection: SteelReviewSource | null | undefined;
+  if (sourceCorrectionRow?.rowId) {
+    sourceCorrection = sourceCorrectionDraft === undefined ? sourceCorrectionRow.source : sourceCorrectionDraft;
+  }
   const sourceCorrectionFile = sourceCorrection?.fileId
     ? sources.find((source) => source.fileId === sourceCorrection.fileId)
     : undefined;
@@ -668,7 +669,7 @@ export default function SteelReviewDialog({
         savePromiseRef.current = undefined;
       }
     }
-  }, [applyConfirmedNoOp, applyConfirmedSnapshot, canEdit, commitMutation, dirtyRowCount, draftRows, draftState.changeSequence, identity, prepareMutation, refetchCurrentReview, savePhase, table]);
+  }, [applyConfirmedNoOp, applyConfirmedSnapshot, canEdit, commitMutation, dirtyRowCount, draftRows, draftState, identity, prepareMutation, refetchCurrentReview, savePhase, table]);
   const getCurrentReviewTable = useCallback(() => {
     const tableKey = DynamicQueryKeys.steelReview(
       identity.conversationId,

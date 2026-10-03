@@ -195,7 +195,7 @@ function appendRenderedText(current: string, next: string): string {
 function renderedMessageText(
   message: Pick<IMessage, 'text' | 'content'>,
   requestedPartIndex?: number,
-): { selected: string; parts: SteelReviewTextPart[]; selectedPartIndex?: number } | undefined {
+): { selected: string; messageText: string; parts: SteelReviewTextPart[]; selectedPartIndex?: number } | undefined {
   if (typeof message.text !== 'string') {
     return undefined;
   }
@@ -203,7 +203,9 @@ function renderedMessageText(
   // no part locator to claim in that shape, but the text itself remains the
   // trusted message boundary.
   if (!Array.isArray(message.content)) {
-    return requestedPartIndex === undefined ? { selected: message.text, parts: [] } : undefined;
+    return requestedPartIndex === undefined
+      ? { selected: message.text, messageText: message.text, parts: [] }
+      : undefined;
   }
   const parts = message.content.flatMap((part, partIndex) => {
     if (typeof part !== 'object' || part === null || Array.isArray(part)) {
@@ -229,6 +231,7 @@ function renderedMessageText(
   }
   return {
     selected: selectedPart?.text ?? message.text,
+    messageText: message.text,
     parts,
     ...(selectedPart ? { selectedPartIndex: selectedPart.partIndex } : {}),
   };
@@ -603,7 +606,7 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
           : undefined;
         const selected = selectSidecar(sidecarCandidates, authority, input.messageId);
         const selectedMappings = selected?.sourceMappings ??
-          (selected ? legacySnapshotMappings(selected, input.kind, message.selected) : undefined);
+          (selected ? legacySnapshotMappings(selected, input.kind, message.messageText) : undefined);
         const authorizedFiles = await readAuthorizedFiles(input, [
           ...(!selected ? (state?.sourceMappings ?? []).map((mapping) => mapping.fileId) : []),
           ...(selectedMappings ?? []).map((mapping) => mapping.fileId),
