@@ -1019,6 +1019,87 @@ test.describe('Steel managed source review', () => {
     expect(await persistedSnapshot(conversationId)).toEqual(before);
   });
 
+  test('prepare cannot overwrite a physical OCR table that drifted from its trusted state', async ({ page }) => {
+    for (const hasHumanSave of [false, true]) {
+      const { conversationId, messageId } = await seedCurrent(ocr);
+      conversations.push(conversationId);
+      const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+      const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+      expect(read.status()).toBe(200);
+      let { table } = await read.json() as { table: SteelReviewTable };
+      if (hasHumanSave) {
+        const rows = structuredClone(table.rows);
+        rows[0].values['數量'].effective = '7';
+        const prepared = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+        expect(prepared.status()).toBe(200);
+        const saved = await page.request.post(`${url}/commit`, { headers, data: await prepared.json() });
+        expect(saved.status()).toBe(200);
+        const reread = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+        table = (await reread.json() as { table: SteelReviewTable }).table;
+      }
+      const drifted = ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 88 | 1 |');
+      await withMongo((db) => db.collection('messages').updateOne({ conversationId, messageId }, {
+        $set: { text: drifted, content: [{ type: 'text', text: drifted }] },
+      }));
+      const before = await persistedSnapshot(conversationId);
+      const invalidRead = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+      expect([200, 404]).toContain(invalidRead.status());
+      if (invalidRead.status() === 200) {
+        expect((await invalidRead.json()).table).toBeNull();
+      }
+      const rows = structuredClone(table.rows);
+      rows[0].values['數量'].effective = '9';
+      if (!hasHumanSave) {
+        rows[0].values['數量'].baseline = '88';
+        rows[0].rowId = createHash('sha256')
+          .update(`${table.outputId}:0:${JSON.stringify(['A', 'REVIEW-P1', '1000', '88', '1'])}`)
+          .digest('hex');
+      }
+      const prepare = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+      if (prepare.status() === 200) {
+        const commit = await page.request.post(`${url}/commit`, { headers, data: await prepare.json() });
+        expect([400, 404, 409]).toContain(commit.status());
+      }
+      expect([400, 404, 409]).toContain(prepare.status());
+      expect(await persistedSnapshot(conversationId)).toEqual(before);
+    }
+  });
+
+  test('an OCR saved snapshot contains only its owned section when AI storage has other headings', async ({ page }) => {
+    const markdown = [
+      'SECTION-KEEP-PREFIX',
+      '## customer_data\n| Customer |\n| --- |\n| SECTION-KEEP-CUSTOMER |',
+      ocr,
+      '## Extra data\n| Name |\n| --- |\n| SECTION-KEEP-EXTRA |',
+      'SECTION-KEEP-SUFFIX',
+    ].join('\n\n');
+    const { conversationId, messageId } = await seedCurrent(markdown);
+    conversations.push(conversationId);
+    await withMongo((db) => db.collection('steel_conversation_ocr_state').updateOne({ conversationId }, {
+      $set: { currentOcrResultMarkdown: markdown },
+    }));
+    const before = await persistedSnapshot(conversationId);
+    const read = await page.request.get(readUrl(conversationId, messageId, 2), { headers });
+    expect(read.status()).toBe(200);
+    const { table } = await read.json() as { table: SteelReviewTable };
+    expect(table).not.toBeNull();
+    const rows = structuredClone(table.rows);
+    rows[0].values['數量'].effective = '7';
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const prepare = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+    expect(prepare.status()).toBe(200);
+    const saved = await page.request.post(`${url}/commit`, { headers, data: await prepare.json() });
+    expect(saved.status()).toBe(200);
+    const body = await saved.json();
+    const expected = ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 7 | 1 |');
+    expect(body.savedSnapshot.effectiveMarkdown).toBe(expected);
+    const after = await persistedSnapshot(conversationId);
+    expect(after.reviews[0]?.effectiveMarkdown).toBe(expected);
+    expect(after.reviews[0]?.humanMarkdown).toBe(expected);
+    expect(after.messages[0]?.text).toBe(markdown.replace(ocr, expected));
+    expectPreservedAiState(before.ocr, after.ocr);
+  });
+
   test('an earlier committed operation returns its immutable saved snapshot after a later Save', async ({ page }) => {
     const { conversationId, messageId } = await seedCurrent(ocr);
     conversations.push(conversationId);
@@ -1408,6 +1489,47 @@ test.describe('Steel managed source review', () => {
     expect(await persistedSnapshot(conversationId)).toEqual(firstCommitted);
   });
 
+
+  test('a draft edited during OCR Save survives the confirmed earlier snapshot', async ({ page }) => {
+    const { conversationId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const commitUrl = `**/api/steel/conversations/${conversationId}/review/ocr_result/commit`;
+    let firstCommitted: Awaited<ReturnType<typeof persistedSnapshot>> | undefined;
+    let releaseResponse: (() => void) | undefined;
+    const responseGate = new Promise<void>((resolve) => { releaseResponse = resolve; });
+    await page.route(commitUrl, async (route) => {
+      const response = await route.fetch();
+      expect(response.status()).toBe(200);
+      firstCommitted = await persistedSnapshot(conversationId);
+      await responseGate;
+      await route.fulfill({ response });
+    });
+    try {
+      await page.goto(`/c/${conversationId}`);
+      await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+      const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+      await quantity.fill('7');
+      await dialog.getByRole('button', { name: /^Save/ }).click();
+      await expect.poll(() => firstCommitted !== undefined).toBe(true);
+      await quantity.fill('10');
+      releaseResponse?.();
+      await expect(dialog.getByRole('button', { name: /^Save/ })).toBeEnabled();
+      await expect(quantity).toHaveValue('10');
+      await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
+      expect(await persistedSnapshot(conversationId)).toEqual(firstCommitted);
+      expect(firstCommitted?.messages[0]?.text).toContain('| A | REVIEW-P1 | 1000 | 7 | 1 |');
+      await page.unroute(commitUrl);
+      await dialog.getByRole('button', { name: /^Save/ }).click();
+      await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).not.toBeVisible();
+      await expect(quantity).toHaveValue('10');
+      expect((await persistedSnapshot(conversationId)).messages[0]?.text)
+        .toContain('| A | REVIEW-P1 | 1000 | 10 | 1 |');
+    } finally {
+      releaseResponse?.();
+      await page.unroute(commitUrl);
+    }
+  });
 
   test('OCR download saves the focused draft and exports the confirmed clean snapshot', async ({ page }) => {
     const { conversationId, messageId } = await seedCurrent(ocr);
