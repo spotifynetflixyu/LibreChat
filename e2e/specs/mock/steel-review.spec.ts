@@ -431,6 +431,7 @@ test.describe('Steel managed source review', () => {
       '| A | ALPHA-ONE-A | 1000 | 2 | 1 |',
       '| A | ALPHA-ONE-B | 1000 | 2 | 1 |',
       '| A | ALPHA-TWO | 2000 | 3 | 2 |',
+      '| B | BETA-TWO | 2000 | 3 | 2 |',
       '| B | BETA-ONE | 2000 | 3 | 1 |',
       '| C | GAMMA-ONE | 3000 | 4 | 1 |',
       '| D | UNPREVIEWABLE-SOURCE | 3000 | 4 | 1 |',
@@ -501,20 +502,27 @@ test.describe('Steel managed source review', () => {
     await expect.poll(checksum).not.toBe('');
     await expect.poll(checksum).not.toBe(firstPage);
     await dialog.getByRole('button', { name: 'Next page', exact: true }).click();
-    await dialog.getByLabel('Source file', { exact: true }).selectOption('review-beta');
+    await dialog.getByRole('combobox', { name: 'Source file', exact: true }).click();
+    await page.getByRole('option', { name: 'beta.pdf', exact: true }).click();
+    await dialog.getByRole('combobox', { name: 'Page', exact: true }).click();
+    await page.getByRole('option', { name: '2', exact: true }).click();
+    await expect(dialog.getByText('BETA-TWO', { exact: true })).toBeVisible();
+    await dialog.getByRole('button', { name: 'Previous page', exact: true }).click();
     await expect(dialog.getByText('BETA-ONE', { exact: true })).toBeVisible();
     await expect.poll(() => canvas.evaluate((element: HTMLCanvasElement) => element.width)).toBeGreaterThan(0);
     await dialog.getByRole('button', { name: 'Zoom in', exact: true }).click();
     await expect(canvas).toHaveCSS('transform', /1\.25/);
     await dialog.getByRole('button', { name: 'Enter fullscreen', exact: true }).click();
     await expect(dialog.getByRole('button', { name: 'Exit fullscreen', exact: true })).toBeVisible();
-    await dialog.getByLabel('Source file', { exact: true }).selectOption('review-gamma');
+    await dialog.getByRole('combobox', { name: 'Source file', exact: true }).click();
+    await page.getByRole('option', { name: 'gamma.png', exact: true }).click();
     const image = dialog.getByRole('img', { name: 'Source page preview', exact: true });
     await expect(image).toBeVisible();
     await expect.poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(800);
     await expect(dialog.getByText('GAMMA-ONE', { exact: true })).toBeVisible();
     await expect(dialog.getByRole('button', { name: 'Next page', exact: true })).toBeDisabled();
-    await dialog.getByLabel('Source file', { exact: true }).selectOption('review-alpha');
+    await dialog.getByRole('combobox', { name: 'Source file', exact: true }).click();
+    await page.getByRole('option', { name: 'alpha.pdf', exact: true }).click();
     await expect.poll(() => canvas.evaluate((element: HTMLCanvasElement) => element.width)).toBeGreaterThan(0);
     await expect(dialog.getByText('ALPHA-ONE-A', { exact: true })).toBeVisible();
     const fullscreenBounds = await dialog.boundingBox();
