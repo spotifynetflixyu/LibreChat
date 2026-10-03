@@ -27,6 +27,11 @@ const rows: SteelReviewRow[] = [
     values: { Part: { baseline: 'E', effective: 'E' } },
     source: null,
   },
+  {
+    rowId: 'unsupported-source',
+    values: { Part: { baseline: 'F', effective: 'F' } },
+    source: { fileId: 'drawing-heic', pageNumber: 1, filename: 'drawing.heic' },
+  },
 ];
 
 describe('Steel review source row filtering', () => {
@@ -38,6 +43,20 @@ describe('Steel review source row filtering', () => {
     expect(getSteelReviewPreviewRows(rows, 'drawing-a', 2)).toEqual({
       located: [rows[2]],
       unlocated: [rows[4]],
+    });
+  });
+
+  it('keeps authorized but unavailable source rows as unlocated evidence', () => {
+    expect(getSteelReviewPreviewRows(rows, 'drawing-a', 1, new Set(['drawing-a']))).toEqual({
+      located: [rows[0], rows[1]],
+      unlocated: [rows[3], rows[4], rows[5]],
+    });
+  });
+
+  it('keeps a selected source row with a known invalid page as unlocated evidence', () => {
+    expect(getSteelReviewPreviewRows(rows, 'drawing-a', 1, new Set(['drawing-a']), 1)).toEqual({
+      located: [rows[0], rows[1]],
+      unlocated: [rows[2], rows[3], rows[4], rows[5]],
     });
   });
 });

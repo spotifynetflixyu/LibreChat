@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { useAtom } from 'jotai';
 import { Maximize2, Minimize2 } from 'lucide-react';
 import {
@@ -17,12 +17,18 @@ import {
 } from '@librechat/client';
 import type { SteelReviewRow, SteelReviewTable } from 'librechat-data-provider';
 import {
+  steelReviewDialogStateFamily,
+  steelReviewIdentityKey,
+  steelReviewSelectionAtom,
+  steelReviewSourcePreviewKey,
+  type SteelReviewSelection,
+} from './SteelReview/state';
+import {
   useGetSteelReviewQuery,
   useGetSteelReviewSourceQuery,
   useGetSteelReviewSourcesQuery,
 } from '~/data-provider';
 import { getSteelReviewPreviewRows, type SteelReviewPreviewRows } from './SteelReview/filter';
-import { steelReviewSelectionAtom, type SteelReviewSelection } from './SteelReview/state';
 import SteelReviewSourcePreview from './SteelReview/SourcePreview';
 import { useLocalize } from '~/hooks';
 
@@ -93,6 +99,14 @@ export default function SteelReviewDialog({ identity }: { identity: SteelReviewS
   const query = useGetSteelReviewQuery(isOpen ? identity : null, { retry: false });
   const isNotFound = getErrorStatus(query.error) === 404;
   const table = query.data?.table;
+  const dialogStateKey = steelReviewIdentityKey(identity);
+  const [dialogState, setDialogState] = useAtom(steelReviewDialogStateFamily(dialogStateKey));
+  const {
+    selectedFileId,
+    pageNumber,
+    pageCount,
+    fullScreen,
+  } = dialogState;
   const sourcesQuery = useGetSteelReviewSourcesQuery(
     isOpen
       ? {
@@ -104,10 +118,6 @@ export default function SteelReviewDialog({ identity }: { identity: SteelReviewS
       : null,
     { enabled: isOpen && !!table },
   );
-  const [selectedFileId, setSelectedFileId] = useState<string>();
-  const [pageNumber, setPageNumber] = useState(1);
-  const [pageCount, setPageCount] = useState(0);
-  const [fullScreen, setFullScreen] = useState(false);
   const sources = useMemo(() => sourcesQuery.data?.sources ?? [], [sourcesQuery.data?.sources]);
   const selectedSource = useMemo(
     () => sources.find((source) => source.fileId === selectedFileId) ?? sources[0],
@@ -119,20 +129,50 @@ export default function SteelReviewDialog({ identity }: { identity: SteelReviewS
     [selectedSource?.fileId, table?.rows],
   );
   useEffect(() => {
-    if (!selectedSource) {
-      setSelectedFileId(undefined);
-      setPageNumber(1);
-      return;
-    }
-    setSelectedFileId((value) => value === selectedSource.fileId ? value : selectedSource.fileId);
-    setPageNumber((value) => selectedSourcePage && value === 1 ? selectedSourcePage : value);
-  }, [selectedSource, selectedSourcePage]);
+    setDialogState((state) => {
+      if (state.isOpen === isOpen) {
+        return state;
+      }
+      return {
+        ...state,
+        isOpen,
+        selectedFileId: undefined,
+        pageNumber: 1,
+        pageCount: 0,
+        fullScreen: false,
+        initializedSourceId: undefined,
+      };
+    });
+  }, [isOpen, setDialogState]);
   useEffect(() => {
-    setPageCount(0);
-    if (!selectedSourceId) {
-      setPageNumber(1);
+    setDialogState((state) => {
+      if (!selectedSourceId) {
+        if (!state.selectedFileId && !state.initializedSourceId && state.pageNumber === 1) {
+          return state;
+        }
+        return {
+          ...state,
+          selectedFileId: undefined,
+          pageNumber: 1,
+          initializedSourceId: undefined,
+        };
+      }
+      if (state.initializedSourceId === selectedSourceId) {
+        return state;
+      }
+      return {
+        ...state,
+        selectedFileId: selectedSourceId,
+        pageNumber: selectedSourcePage ?? 1,
+        initializedSourceId: selectedSourceId,
+      };
+    });
+  }, [selectedSourceId, selectedSourcePage, setDialogState]);
+  useEffect(() => {
+    if (selectedSourceId) {
+      setDialogState((state) => ({ ...state, pageCount: 0 }));
     }
-  }, [selectedSourceId]);
+  }, [selectedSourceId, setDialogState]);
   const sourceQuery = useGetSteelReviewSourceQuery(
     isOpen && selectedSource
       ? {
@@ -145,17 +185,31 @@ export default function SteelReviewDialog({ identity }: { identity: SteelReviewS
     { enabled: isOpen && !!selectedSource },
   );
   const previewRows: SteelReviewPreviewRows = useMemo(
-    () => getSteelReviewPreviewRows(table?.rows ?? [], selectedSource?.fileId, pageNumber),
-    [pageNumber, selectedSource?.fileId, table?.rows],
+    () => getSteelReviewPreviewRows(
+      table?.rows ?? [],
+      selectedSource?.fileId,
+      pageNumber,
+      new Set(sources.map((source) => source.fileId)),
+      pageCount,
+    ),
+    [pageCount, pageNumber, selectedSource?.fileId, sources, table?.rows],
   );
   const onPageCount = useCallback((count: number) => {
-    setPageCount(count);
-    if (count > 0) {
-      setPageNumber((value) => Math.min(value, count));
-    }
-  }, []);
-  const goPrevious = useCallback(() => setPageNumber((value) => Math.max(1, value - 1)), []);
-  const goNext = useCallback(() => setPageNumber((value) => Math.min(pageCount || value + 1, value + 1)), [pageCount]);
+    setDialogState((state) => ({
+      ...state,
+      pageCount: count,
+      pageNumber: count > 0 ? Math.min(state.pageNumber, count) : state.pageNumber,
+    }));
+  }, [setDialogState]);
+  const goPrevious = useCallback(() => {
+    setDialogState((state) => ({ ...state, pageNumber: Math.max(1, state.pageNumber - 1) }));
+  }, [setDialogState]);
+  const goNext = useCallback(() => {
+    setDialogState((state) => ({
+      ...state,
+      pageNumber: Math.min(state.pageCount || state.pageNumber + 1, state.pageNumber + 1),
+    }));
+  }, [setDialogState]);
 
   return (
     <OGDialog
@@ -197,7 +251,7 @@ export default function SteelReviewDialog({ identity }: { identity: SteelReviewS
             type="button"
             variant="outline"
             aria-label={localize(fullScreen ? 'com_ui_steel_review_exit_fullscreen' : 'com_ui_steel_review_fullscreen')}
-            onClick={() => setFullScreen((value) => !value)}
+            onClick={() => setDialogState((state) => ({ ...state, fullScreen: !state.fullScreen }))}
           >
             {fullScreen ? <Minimize2 className="size-4" aria-hidden="true" /> : <Maximize2 className="size-4" aria-hidden="true" />}
           </Button>
@@ -217,21 +271,46 @@ export default function SteelReviewDialog({ identity }: { identity: SteelReviewS
           )}
           {!query.isLoading && !query.isError && table && (
             <div className="space-y-4">
+              {sourcesQuery.isLoading && (
+                <p aria-live="polite" role="status">
+                  {localize('com_ui_steel_review_sources_loading')}
+                </p>
+              )}
+              {sourcesQuery.isError && (
+                <div className="space-y-2" role="alert">
+                  <p>{localize('com_ui_steel_review_sources_error')}</p>
+                  <Button type="button" variant="outline" onClick={() => void sourcesQuery.refetch()}>
+                    {localize('com_ui_retry')}
+                  </Button>
+                </div>
+              )}
               {sources.length > 0 && (
                 <div className="grid gap-3 rounded-md border border-border-light p-3 sm:grid-cols-[minmax(0,1fr)_auto]">
                   <label className="flex min-w-0 flex-col gap-1 text-sm text-text-secondary">
                     <span>{localize('com_ui_steel_review_source')}</span>
-                    <select
-                      aria-label={localize('com_ui_steel_review_source')}
-                      className="rounded-md border border-border-light bg-surface-primary px-2 py-2 text-text-primary"
+                    <Select
                       value={selectedSource?.fileId ?? ''}
-                      onChange={(event) => {
-                        setSelectedFileId(event.target.value || undefined);
-                        setPageNumber(1);
-                      }}
+                      onValueChange={(value) => setDialogState((state) => ({
+                        ...state,
+                        selectedFileId: value || undefined,
+                        pageNumber: 1,
+                        initializedSourceId: undefined,
+                      }))}
                     >
-                      {sources.map((source) => <option key={source.fileId} value={source.fileId}>{source.filename}</option>)}
-                    </select>
+                      <SelectTrigger
+                        aria-label={localize('com_ui_steel_review_source')}
+                        className="w-full"
+                      >
+                        <SelectValue placeholder={localize('com_ui_steel_review_source')} />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {sources.map((source) => (
+                          <SelectItem key={source.fileId} value={source.fileId}>
+                            {source.filename}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
                   </label>
                   <div className="flex items-end gap-2">
                     <Button type="button" variant="outline" aria-label={localize('com_ui_steel_review_previous_page')} onClick={goPrevious} disabled={pageNumber <= 1}>
@@ -241,7 +320,7 @@ export default function SteelReviewDialog({ identity }: { identity: SteelReviewS
                       <span>{localize('com_ui_steel_review_page')}</span>
                       <Select
                         value={String(pageNumber)}
-                        onValueChange={(value) => setPageNumber(Number(value))}
+                        onValueChange={(value) => setDialogState((state) => ({ ...state, pageNumber: Number(value) }))}
                       >
                         <SelectTrigger
                           aria-label={localize('com_ui_steel_review_page')}
@@ -266,6 +345,7 @@ export default function SteelReviewDialog({ identity }: { identity: SteelReviewS
               )}
               {selectedSource && (
                 <SteelReviewSourcePreview
+                  stateKey={steelReviewSourcePreviewKey(identity, selectedSource.fileId)}
                   source={selectedSource}
                   pageNumber={pageNumber}
                   blob={sourceQuery.data}

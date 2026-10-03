@@ -1,3 +1,4 @@
+import type { FilterQuery } from 'mongoose';
 import type {
   IMongoFile,
   SteelReviewSourceMethods,
@@ -15,7 +16,36 @@ export type { SteelReviewSourceMethods };
 
 type Mongoose = typeof import('mongoose');
 
-function tenantFilter(tenantId?: string): Record<string, unknown> {
+type TenantFilter = { tenantId: string } | { $or: Array<{ tenantId: { $exists: false } } | { tenantId: null }> };
+
+type SteelReviewFile = Pick<
+  IMongoFile,
+  'file_id' | 'filename' | 'type' | 'bytes' | 'source' | 'filepath' | 'storageKey' | 'storageRegion' | 'model'
+>;
+
+const imageMediaTypes: Readonly<Record<string, string>> = Object.freeze({
+  'image/avif': 'image/avif',
+  'image/bmp': 'image/bmp',
+  'image/gif': 'image/gif',
+  'image/jpeg': 'image/jpeg',
+  'image/png': 'image/png',
+  'image/tiff': 'image/tiff',
+  'image/webp': 'image/webp',
+});
+
+const imageExtensionMediaTypes: Readonly<Record<string, string>> = Object.freeze({
+  avif: 'image/avif',
+  bmp: 'image/bmp',
+  gif: 'image/gif',
+  jpeg: 'image/jpeg',
+  jpg: 'image/jpeg',
+  png: 'image/png',
+  tif: 'image/tiff',
+  tiff: 'image/tiff',
+  webp: 'image/webp',
+});
+
+function tenantFilter(tenantId?: string): TenantFilter {
   return tenantId === undefined
     ? { $or: [{ tenantId: { $exists: false } }, { tenantId: null }] }
     : { tenantId };
@@ -26,7 +56,7 @@ function sourceType(type: string, filename: string): 'pdf' | 'image' | undefined
   if (normalizedType === 'application/pdf' || normalizedType.endsWith('/pdf')) {
     return 'pdf';
   }
-  if (['image/avif', 'image/bmp', 'image/gif', 'image/jpeg', 'image/png', 'image/tiff', 'image/webp'].includes(normalizedType)) {
+  if (imageMediaTypes[normalizedType]) {
     return 'image';
   }
   const normalizedFilename = filename.toLowerCase();
@@ -44,21 +74,11 @@ function canonicalMediaType(type: string, filename: string, kind: 'pdf' | 'image
     return 'application/pdf';
   }
   const normalizedType = type.toLowerCase();
-  if (['image/avif', 'image/bmp', 'image/gif', 'image/jpeg', 'image/png', 'image/tiff', 'image/webp'].includes(normalizedType)) {
-    return normalizedType;
+  if (imageMediaTypes[normalizedType]) {
+    return imageMediaTypes[normalizedType];
   }
   const extension = filename.toLowerCase().match(/\.([^.]+)$/u)?.[1];
-  return {
-    avif: 'image/avif',
-    bmp: 'image/bmp',
-    gif: 'image/gif',
-    jpeg: 'image/jpeg',
-    jpg: 'image/jpeg',
-    png: 'image/png',
-    tif: 'image/tiff',
-    tiff: 'image/tiff',
-    webp: 'image/webp',
-  }[extension ?? ''];
+  return imageExtensionMediaTypes[extension ?? ''];
 }
 
 function messageFileIds(files: IMessage['files'] | undefined): string[] {
@@ -66,12 +86,15 @@ function messageFileIds(files: IMessage['files'] | undefined): string[] {
     if (typeof file !== 'object' || file === null || Array.isArray(file)) {
       return [];
     }
-    const fileId = (file as { file_id?: unknown }).file_id;
+    if (!('file_id' in file)) {
+      return [];
+    }
+    const fileId = file.file_id;
     return typeof fileId === 'string' && fileId.length > 0 ? [fileId] : [];
   });
 }
 
-function toRecord(file: Pick<IMongoFile, 'file_id' | 'filename' | 'type' | 'bytes' | 'source' | 'filepath' | 'storageKey' | 'storageRegion' | 'model'>): SteelReviewSourceRecord | null {
+function toRecord(file: SteelReviewFile): SteelReviewSourceRecord | null {
   const kind = sourceType(file.type, file.filename);
   const mediaType = kind ? canonicalMediaType(file.type, file.filename, kind) : undefined;
   if (!kind || !mediaType) {
@@ -110,7 +133,6 @@ export function createSteelReviewSourceMethods(mongoose: Mongoose): SteelReviewS
         $and: [
           {
             conversationId: input.conversationId,
-            messageId: input.messageId,
             user: input.userId,
           },
           tenantFilter(input.tenantId),
@@ -120,7 +142,7 @@ export function createSteelReviewSourceMethods(mongoose: Mongoose): SteelReviewS
         .select({ messageId: 1, files: 1 })
         .lean<Array<Pick<IMessage, 'messageId' | 'files'>>>(),
     ]);
-    if (!conversation) {
+    if (!conversation || !messages.some((message) => message.messageId === input.messageId)) {
       return null;
     }
     const messageIds = messages.map((message) => message.messageId).filter(Boolean);
@@ -136,7 +158,7 @@ export function createSteelReviewSourceMethods(mongoose: Mongoose): SteelReviewS
     if (!scope) {
       return [];
     }
-    const fileFilter: Record<string, unknown> = {
+    const fileFilter: FilterQuery<IMongoFile> = {
       $and: [
         { user: input.userId },
         tenantFilter(input.tenantId),
@@ -163,23 +185,21 @@ export function createSteelReviewSourceMethods(mongoose: Mongoose): SteelReviewS
         storageRegion: 1,
         model: 1,
       })
-      .lean<Array<Pick<IMongoFile, 'file_id' | 'filename' | 'type' | 'bytes' | 'source' | 'filepath' | 'storageKey' | 'storageRegion' | 'model'>>>();
+      .lean<SteelReviewFile[]>();
 
     const records = new Map<string, SteelReviewSourceRecord>();
-    const ambiguous = new Set<string>();
+    const seenFileIds = new Set<string>();
     for (const file of files) {
+      if (seenFileIds.has(file.file_id)) {
+        records.delete(file.file_id);
+        continue;
+      }
+      seenFileIds.add(file.file_id);
       const record = toRecord(file);
       if (!record) {
         continue;
       }
-      if (records.has(record.fileId)) {
-        records.delete(record.fileId);
-        ambiguous.add(record.fileId);
-        continue;
-      }
-      if (!ambiguous.has(record.fileId)) {
-        records.set(record.fileId, record);
-      }
+      records.set(record.fileId, record);
     }
     return [...records.values()].sort((left, right) =>
       left.filename.localeCompare(right.filename) || left.fileId.localeCompare(right.fileId));

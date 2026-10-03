@@ -161,7 +161,12 @@ export const useGetSteelReviewSourceQuery = (
   const queriesEnabled = useRecoilValue<boolean>(store.queriesEnabled);
   const enabled = Boolean(input) && (config?.enabled ?? true) && queriesEnabled;
   return useQuery<Blob>(
-    [QueryKeys.steelReview, 'source', input?.conversationId, input?.kind, input?.messageId, input?.fileId],
+    DynamicQueryKeys.steelReviewSource(
+      input?.conversationId ?? '',
+      input?.kind ?? 'ocr_result',
+      input?.messageId ?? '',
+      input?.fileId ?? '',
+    ),
     async () => {
       const response = await dataService.getSteelReviewSource(
         input?.conversationId ?? '',
