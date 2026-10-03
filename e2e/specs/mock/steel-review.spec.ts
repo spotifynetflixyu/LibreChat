@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import type { SteelReviewPrepared, SteelReviewTable } from 'librechat-data-provider';
+import type { Locator } from '@playwright/test';
 import {
   deleteConversations,
   deleteMessagesByConversation,
@@ -91,6 +92,10 @@ async function persistedSnapshot(conversationId: string) {
   }));
 }
 
+function reviewValue(dialog: Locator, value: string) {
+  return dialog.locator(`input[value=${JSON.stringify(value)}]`).or(dialog.getByText(value, { exact: true }));
+}
+
 function readUrl(conversationId: string, messageId: string, tableIndex: number) {
   const query = new URLSearchParams({ messageId, tableId: `ocr_result:${tableIndex}` });
   return `/api/steel/conversations/${conversationId}/review/ocr_result?${query}`;
@@ -151,10 +156,10 @@ test.describe('Steel managed source review', () => {
     await button.click();
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByText('REVIEW-P1', { exact: true })).toBeVisible();
-    await expect(dialog.getByText('REVIEW-P2', { exact: true })).toBeVisible();
-    await expect(dialog.getByText('UNMANAGED', { exact: true })).toHaveCount(0);
-    await expect(dialog.getByRole('textbox')).toHaveCount(0);
+    await expect(reviewValue(dialog, 'REVIEW-P1')).toBeVisible();
+    await expect(reviewValue(dialog, 'REVIEW-P2')).toBeVisible();
+    await expect(reviewValue(dialog, 'UNMANAGED')).toHaveCount(0);
+    await expect(dialog.getByRole('textbox')).toHaveCount(6);
     await page.keyboard.press('Escape');
     await expect(dialog).not.toBeVisible();
     await page.reload();
@@ -210,7 +215,7 @@ test.describe('Steel managed source review', () => {
     await expect(page.getByRole('button', { name: 'Open Steel review', exact: true })).toHaveCount(1);
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
-    await expect(dialog.getByText('REVIEW-P1', { exact: true })).toBeVisible();
+    await expect(reviewValue(dialog, 'REVIEW-P1')).toBeVisible();
     await page.keyboard.press('Escape');
     await page.reload();
     await expect(page.getByRole('button', { name: 'Open Steel review', exact: true })).toHaveCount(1);
@@ -500,15 +505,15 @@ test.describe('Steel managed source review', () => {
     });
     await expect.poll(checksum).not.toBe('');
     const firstPage = await checksum();
-    await expect(dialog.getByText('ALPHA-ONE-A', { exact: true })).toBeVisible();
-    await expect(dialog.getByText('ALPHA-ONE-B', { exact: true })).toBeVisible();
-    await expect(dialog.getByText('ALPHA-TWO', { exact: true })).toHaveCount(0);
-    await expect(dialog.getByText('UNLOCATED-PREVIEW', { exact: true })).toBeVisible();
-    await expect(dialog.getByText('UNPREVIEWABLE-SOURCE', { exact: true })).toBeVisible();
-    await expect(dialog.getByText('OUT-OF-RANGE-PAGE', { exact: true })).toBeVisible();
+    await expect(reviewValue(dialog, 'ALPHA-ONE-A')).toBeVisible();
+    await expect(reviewValue(dialog, 'ALPHA-ONE-B')).toBeVisible();
+    await expect(reviewValue(dialog, 'ALPHA-TWO')).toHaveCount(0);
+    await expect(reviewValue(dialog, 'UNLOCATED-PREVIEW')).toBeVisible();
+    await expect(reviewValue(dialog, 'UNPREVIEWABLE-SOURCE')).toBeVisible();
+    await expect(reviewValue(dialog, 'OUT-OF-RANGE-PAGE')).toBeVisible();
     await dialog.getByRole('button', { name: 'Next page', exact: true }).click();
-    await expect(dialog.getByText('ALPHA-TWO', { exact: true })).toBeVisible();
-    await expect(dialog.getByText('ALPHA-ONE-A', { exact: true })).toHaveCount(0);
+    await expect(reviewValue(dialog, 'ALPHA-TWO')).toBeVisible();
+    await expect(reviewValue(dialog, 'ALPHA-ONE-A')).toHaveCount(0);
     await expect.poll(checksum).not.toBe('');
     await expect.poll(checksum).not.toBe(firstPage);
     await dialog.getByRole('button', { name: 'Next page', exact: true }).click();
@@ -516,9 +521,9 @@ test.describe('Steel managed source review', () => {
     await page.getByRole('option', { name: 'beta.pdf', exact: true }).click();
     await dialog.getByRole('combobox', { name: 'Page', exact: true }).click();
     await page.getByRole('option', { name: '2', exact: true }).click();
-    await expect(dialog.getByText('BETA-TWO', { exact: true })).toBeVisible();
+    await expect(reviewValue(dialog, 'BETA-TWO')).toBeVisible();
     await dialog.getByRole('button', { name: 'Previous page', exact: true }).click();
-    await expect(dialog.getByText('BETA-ONE', { exact: true })).toBeVisible();
+    await expect(reviewValue(dialog, 'BETA-ONE')).toBeVisible();
     await expect.poll(() => canvas.evaluate((element: HTMLCanvasElement) => element.width)).toBeGreaterThan(0);
     await dialog.getByRole('button', { name: 'Zoom in', exact: true }).click();
     await expect(canvas).toHaveCSS('transform', /1\.25/);
@@ -537,12 +542,12 @@ test.describe('Steel managed source review', () => {
     const image = dialog.getByRole('img', { name: 'Source page preview', exact: true });
     await expect(image).toBeVisible();
     await expect.poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(800);
-    await expect(dialog.getByText('GAMMA-ONE', { exact: true })).toBeVisible();
+    await expect(reviewValue(dialog, 'GAMMA-ONE')).toBeVisible();
     await expect(dialog.getByRole('button', { name: 'Next page', exact: true })).toBeDisabled();
     await dialog.getByRole('combobox', { name: 'Source file', exact: true }).click();
     await page.getByRole('option', { name: 'alpha.pdf', exact: true }).click();
     await expect.poll(() => canvas.evaluate((element: HTMLCanvasElement) => element.width)).toBeGreaterThan(0);
-    await expect(dialog.getByText('ALPHA-ONE-A', { exact: true })).toBeVisible();
+    await expect(reviewValue(dialog, 'ALPHA-ONE-A')).toBeVisible();
     const fullscreenBounds = await dialog.boundingBox();
     expect(fullscreenBounds?.x).toBeCloseTo(0, 0);
     expect(fullscreenBounds?.y).toBeCloseTo(0, 0);
@@ -565,7 +570,7 @@ test.describe('Steel managed source review', () => {
       await page.reload();
       await expect(page.locator('html')).toHaveClass(new RegExp(mode));
       await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
-      await expect(dialog.getByText('ALPHA-ONE-A', { exact: true })).toBeVisible();
+      await expect(reviewValue(dialog, 'ALPHA-ONE-A')).toBeVisible();
       await expect.poll(checksum).not.toBe('');
       const narrowBounds = await dialog.boundingBox();
       expect(narrowBounds?.width).toBeLessThanOrEqual(390);
@@ -613,16 +618,16 @@ test.describe('Steel managed source review', () => {
     await page.goto(`/c/${conversationId}`);
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
-    await expect(dialog.getByText('REVIEW-P1', { exact: true })).toBeVisible();
+    await expect(reviewValue(dialog, 'REVIEW-P1')).toBeVisible();
     await expect(dialog.getByText(/loading.*(source|files)/i)).toBeVisible();
     releaseRequest();
     await expect(dialog.getByRole('alert')).toBeVisible();
-    await expect(dialog.getByText('REVIEW-P2', { exact: true })).toBeVisible();
+    await expect(reviewValue(dialog, 'REVIEW-P2')).toBeVisible();
     await page.unroute(isSourceList);
     await dialog.getByRole('button', { name: /retry/i }).click();
     await expect(dialog.getByRole('alert')).toHaveCount(0);
     await expect.poll(() => dialog.locator('canvas').evaluate((element: HTMLCanvasElement) => element.width)).toBeGreaterThan(0);
-    await expect(dialog.getByText('REVIEW-P1', { exact: true })).toBeVisible();
+    await expect(reviewValue(dialog, 'REVIEW-P1')).toBeVisible();
     await page.keyboard.press('Escape');
     expect(await persistedSnapshot(conversationId)).toEqual(before);
   });
@@ -698,8 +703,8 @@ test.describe('Steel managed source review', () => {
       await page.goto(`/c/${current.conversationId}`);
       await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
       const dialog = page.getByRole('dialog', { name: 'Steel source review' });
-      await expect(dialog.getByText('REVIEW-P1', { exact: true })).toBeVisible();
-      await expect(dialog.getByText('REVIEW-P2', { exact: true })).toBeVisible();
+      await expect(reviewValue(dialog, 'REVIEW-P1')).toBeVisible();
+      await expect(reviewValue(dialog, 'REVIEW-P2')).toBeVisible();
       await expect(dialog.getByRole('combobox', { name: 'Source file', exact: true })).toHaveCount(0);
       await page.keyboard.press('Escape');
       await expect(dialog).not.toBeVisible();
@@ -761,7 +766,7 @@ test.describe('Steel managed source review', () => {
       if (quantity === '7') {
         await withMongo(async (db) => {
           await db.collection('files').updateOne({ conversationId, file_id: 'review-alpha' }, {
-            $set: { expiresAt: new Date(Date.now() - 60_000) },
+            $set: { expiredAt: new Date(Date.now() - 60_000) },
           });
         });
       }
@@ -1121,10 +1126,10 @@ test.describe('Steel managed source review', () => {
     expect(historical.status()).toBe(200);
     expect(await historical.json()).toMatchObject({ table: { readOnly: true, isLatest: false } });
     for (const data of [
-      { conversationId, messageId: historicalId, text: 'HISTORY-CORRUPTED' },
-      { conversationId, messageId: historicalId, index: 0, text: 'HISTORY-CORRUPTED' },
+      { text: 'HISTORY-CORRUPTED', model: 'gpt-4o' },
+      { index: 0, text: 'HISTORY-CORRUPTED', model: 'gpt-4o' },
     ]) {
-      const edited = await page.request.put('/api/messages', { headers, data });
+      const edited = await page.request.put(`/api/messages/${conversationId}/${historicalId}`, { headers, data });
       expect(edited.status()).toBe(409);
       expect(await persistedSnapshot(conversationId)).toEqual(before);
     }
