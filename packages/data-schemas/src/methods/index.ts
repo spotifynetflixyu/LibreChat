@@ -10,7 +10,17 @@ export {
   type MCPAuthorizationFenceRetryStorage,
 } from './mcpAuthorizationFenceRetry';
 export { createOAuthCompactionMethods };
-export { createSteelReviewReadMethods };
+export {
+  createSteelReviewReadMethods,
+  createSteelReviewWriteMethods,
+  SteelReviewWriteError,
+} from './steelReview';
+export type {
+  SteelReviewCommitInput,
+  SteelReviewCommitResult,
+  SteelReviewReadMethods,
+  SteelReviewWriteMethods,
+} from './steelReview';
 export { createSteelReviewSourceMethods } from './steelSources';
 import {
   createRefreshTokenBridgeMethods,
@@ -192,7 +202,11 @@ import {
 } from './mcpAuthority';
 /* Insights */
 import { createInsightsMethods, type InsightsMethods } from './insights';
-import { createSteelReviewReadMethods, type SteelReviewReadMethods } from './steelReview';
+import {
+  createSteelReviewReadMethods,
+  createSteelReviewWriteMethods,
+  type SteelReviewReadMethods,
+} from './steelReview';
 import { createSteelReviewSourceMethods, type SteelReviewSourceMethods } from './steelSources';
 
 export {
@@ -524,6 +538,7 @@ export function createMethods(
     /* Insights */
     ...createInsightsMethods(mongoose),
     ...createSteelReviewReadMethods(mongoose),
+    ...createSteelReviewWriteMethods(mongoose),
     ...createSteelReviewSourceMethods(mongoose),
   };
 }
@@ -608,7 +623,6 @@ export type {
   MCPAuthorityConfigSourceDocument,
   MCPAuthorityCredentialSourceDocument,
   InsightsMethods,
-  SteelReviewReadMethods,
   SteelReviewSourceMethods,
 };
 

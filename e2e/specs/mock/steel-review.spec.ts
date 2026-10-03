@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import type { SteelReviewPrepared, SteelReviewTable } from 'librechat-data-provider';
+import type { Locator } from '@playwright/test';
 import {
   deleteConversations,
   deleteMessagesByConversation,
@@ -88,7 +89,26 @@ async function persistedSnapshot(conversationId: string) {
     messages: await db.collection('messages').find({ conversationId }).toArray(),
     ocr: await db.collection('steel_conversation_ocr_state').findOne({ conversationId }),
     reviews: await db.collection('steel_review_outputs').find({ conversationId }).toArray(),
+    quotations: await db.collection('steel_quotation_states').find({ conversationId }).toArray(),
   }));
+}
+
+function expectPreservedAiState(
+  before: Awaited<ReturnType<typeof persistedSnapshot>>['ocr'],
+  after: Awaited<ReturnType<typeof persistedSnapshot>>['ocr'],
+) {
+  expect(before).not.toBeNull();
+  expect(after).not.toBeNull();
+  const { reviewLockToken: previousToken, ...original } = before ?? {};
+  const { reviewLockToken: savedToken, ...saved } = after ?? {};
+  expect(saved).toEqual(original);
+  expect(typeof savedToken).toBe('string');
+  expect(savedToken).not.toBe('');
+  expect(savedToken).not.toBe(previousToken);
+}
+
+function reviewValue(dialog: Locator, value: string) {
+  return dialog.locator(`input[value=${JSON.stringify(value)}]`).or(dialog.getByText(value, { exact: true }));
 }
 
 function readUrl(conversationId: string, messageId: string, tableIndex: number) {
@@ -111,6 +131,7 @@ test.describe('Steel managed source review', () => {
     await withMongo(async (db) => {
       await db.collection('steel_conversation_ocr_state').deleteMany({ conversationId: { $in: ids } });
       await db.collection('steel_review_outputs').deleteMany({ conversationId: { $in: ids } });
+      await db.collection('steel_quotation_states').deleteMany({ conversationId: { $in: ids } });
       await db.collection('files').deleteMany({ conversationId: { $in: ids } });
     });
     await deleteConversations(ids);
@@ -151,10 +172,10 @@ test.describe('Steel managed source review', () => {
     await button.click();
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
     await expect(dialog).toBeVisible();
-    await expect(dialog.getByText('REVIEW-P1', { exact: true })).toBeVisible();
-    await expect(dialog.getByText('REVIEW-P2', { exact: true })).toBeVisible();
-    await expect(dialog.getByText('UNMANAGED', { exact: true })).toHaveCount(0);
-    await expect(dialog.getByRole('textbox')).toHaveCount(0);
+    await expect(reviewValue(dialog, 'REVIEW-P1')).toBeVisible();
+    await expect(reviewValue(dialog, 'REVIEW-P2')).toBeVisible();
+    await expect(reviewValue(dialog, 'UNMANAGED')).toHaveCount(0);
+    await expect(dialog.getByRole('textbox')).toHaveCount(6);
     await page.keyboard.press('Escape');
     await expect(dialog).not.toBeVisible();
     await page.reload();
@@ -210,7 +231,7 @@ test.describe('Steel managed source review', () => {
     await expect(page.getByRole('button', { name: 'Open Steel review', exact: true })).toHaveCount(1);
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
-    await expect(dialog.getByText('REVIEW-P1', { exact: true })).toBeVisible();
+    await expect(reviewValue(dialog, 'REVIEW-P1')).toBeVisible();
     await page.keyboard.press('Escape');
     await page.reload();
     await expect(page.getByRole('button', { name: 'Open Steel review', exact: true })).toHaveCount(1);
@@ -500,15 +521,15 @@ test.describe('Steel managed source review', () => {
     });
     await expect.poll(checksum).not.toBe('');
     const firstPage = await checksum();
-    await expect(dialog.getByText('ALPHA-ONE-A', { exact: true })).toBeVisible();
-    await expect(dialog.getByText('ALPHA-ONE-B', { exact: true })).toBeVisible();
-    await expect(dialog.getByText('ALPHA-TWO', { exact: true })).toHaveCount(0);
-    await expect(dialog.getByText('UNLOCATED-PREVIEW', { exact: true })).toBeVisible();
-    await expect(dialog.getByText('UNPREVIEWABLE-SOURCE', { exact: true })).toBeVisible();
-    await expect(dialog.getByText('OUT-OF-RANGE-PAGE', { exact: true })).toBeVisible();
+    await expect(reviewValue(dialog, 'ALPHA-ONE-A')).toBeVisible();
+    await expect(reviewValue(dialog, 'ALPHA-ONE-B')).toBeVisible();
+    await expect(reviewValue(dialog, 'ALPHA-TWO')).toHaveCount(0);
+    await expect(reviewValue(dialog, 'UNLOCATED-PREVIEW')).toBeVisible();
+    await expect(reviewValue(dialog, 'UNPREVIEWABLE-SOURCE')).toBeVisible();
+    await expect(reviewValue(dialog, 'OUT-OF-RANGE-PAGE')).toBeVisible();
     await dialog.getByRole('button', { name: 'Next page', exact: true }).click();
-    await expect(dialog.getByText('ALPHA-TWO', { exact: true })).toBeVisible();
-    await expect(dialog.getByText('ALPHA-ONE-A', { exact: true })).toHaveCount(0);
+    await expect(reviewValue(dialog, 'ALPHA-TWO')).toBeVisible();
+    await expect(reviewValue(dialog, 'ALPHA-ONE-A')).toHaveCount(0);
     await expect.poll(checksum).not.toBe('');
     await expect.poll(checksum).not.toBe(firstPage);
     await dialog.getByRole('button', { name: 'Next page', exact: true }).click();
@@ -516,9 +537,9 @@ test.describe('Steel managed source review', () => {
     await page.getByRole('option', { name: 'beta.pdf', exact: true }).click();
     await dialog.getByRole('combobox', { name: 'Page', exact: true }).click();
     await page.getByRole('option', { name: '2', exact: true }).click();
-    await expect(dialog.getByText('BETA-TWO', { exact: true })).toBeVisible();
+    await expect(reviewValue(dialog, 'BETA-TWO')).toBeVisible();
     await dialog.getByRole('button', { name: 'Previous page', exact: true }).click();
-    await expect(dialog.getByText('BETA-ONE', { exact: true })).toBeVisible();
+    await expect(reviewValue(dialog, 'BETA-ONE')).toBeVisible();
     await expect.poll(() => canvas.evaluate((element: HTMLCanvasElement) => element.width)).toBeGreaterThan(0);
     await dialog.getByRole('button', { name: 'Zoom in', exact: true }).click();
     await expect(canvas).toHaveCSS('transform', /1\.25/);
@@ -537,12 +558,12 @@ test.describe('Steel managed source review', () => {
     const image = dialog.getByRole('img', { name: 'Source page preview', exact: true });
     await expect(image).toBeVisible();
     await expect.poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(800);
-    await expect(dialog.getByText('GAMMA-ONE', { exact: true })).toBeVisible();
+    await expect(reviewValue(dialog, 'GAMMA-ONE')).toBeVisible();
     await expect(dialog.getByRole('button', { name: 'Next page', exact: true })).toBeDisabled();
     await dialog.getByRole('combobox', { name: 'Source file', exact: true }).click();
     await page.getByRole('option', { name: 'alpha.pdf', exact: true }).click();
     await expect.poll(() => canvas.evaluate((element: HTMLCanvasElement) => element.width)).toBeGreaterThan(0);
-    await expect(dialog.getByText('ALPHA-ONE-A', { exact: true })).toBeVisible();
+    await expect(reviewValue(dialog, 'ALPHA-ONE-A')).toBeVisible();
     const fullscreenBounds = await dialog.boundingBox();
     expect(fullscreenBounds?.x).toBeCloseTo(0, 0);
     expect(fullscreenBounds?.y).toBeCloseTo(0, 0);
@@ -565,7 +586,7 @@ test.describe('Steel managed source review', () => {
       await page.reload();
       await expect(page.locator('html')).toHaveClass(new RegExp(mode));
       await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
-      await expect(dialog.getByText('ALPHA-ONE-A', { exact: true })).toBeVisible();
+      await expect(reviewValue(dialog, 'ALPHA-ONE-A')).toBeVisible();
       await expect.poll(checksum).not.toBe('');
       const narrowBounds = await dialog.boundingBox();
       expect(narrowBounds?.width).toBeLessThanOrEqual(390);
@@ -613,16 +634,16 @@ test.describe('Steel managed source review', () => {
     await page.goto(`/c/${conversationId}`);
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
-    await expect(dialog.getByText('REVIEW-P1', { exact: true })).toBeVisible();
+    await expect(reviewValue(dialog, 'REVIEW-P1')).toBeVisible();
     await expect(dialog.getByText(/loading.*(source|files)/i)).toBeVisible();
     releaseRequest();
     await expect(dialog.getByRole('alert')).toBeVisible();
-    await expect(dialog.getByText('REVIEW-P2', { exact: true })).toBeVisible();
+    await expect(reviewValue(dialog, 'REVIEW-P2')).toBeVisible();
     await page.unroute(isSourceList);
     await dialog.getByRole('button', { name: /retry/i }).click();
     await expect(dialog.getByRole('alert')).toHaveCount(0);
     await expect.poll(() => dialog.locator('canvas').evaluate((element: HTMLCanvasElement) => element.width)).toBeGreaterThan(0);
-    await expect(dialog.getByText('REVIEW-P1', { exact: true })).toBeVisible();
+    await expect(reviewValue(dialog, 'REVIEW-P1')).toBeVisible();
     await page.keyboard.press('Escape');
     expect(await persistedSnapshot(conversationId)).toEqual(before);
   });
@@ -698,8 +719,8 @@ test.describe('Steel managed source review', () => {
       await page.goto(`/c/${current.conversationId}`);
       await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
       const dialog = page.getByRole('dialog', { name: 'Steel source review' });
-      await expect(dialog.getByText('REVIEW-P1', { exact: true })).toBeVisible();
-      await expect(dialog.getByText('REVIEW-P2', { exact: true })).toBeVisible();
+      await expect(reviewValue(dialog, 'REVIEW-P1')).toBeVisible();
+      await expect(reviewValue(dialog, 'REVIEW-P2')).toBeVisible();
       await expect(dialog.getByRole('combobox', { name: 'Source file', exact: true })).toHaveCount(0);
       await page.keyboard.press('Escape');
       await expect(dialog).not.toBeVisible();
@@ -742,6 +763,39 @@ test.describe('Steel managed source review', () => {
     }
   });
 
+
+  test('an unavailable source stays unlocated without blocking a later business-cell Save', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    for (const quantity of ['7', '8']) {
+      const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+      expect(read.status()).toBe(200);
+      const { table } = await read.json() as { table: SteelReviewTable };
+      if (quantity === '8') expect(table.rows[0].source).toBeNull();
+      const rows = structuredClone(table.rows);
+      rows[0].values['數量'].effective = quantity;
+      const prepare = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+      expect(prepare.status()).toBe(200);
+      const save = await page.request.post(`${url}/commit`, { headers, data: await prepare.json() });
+      expect(save.status()).toBe(200);
+      if (quantity === '7') {
+        await withMongo(async (db) => {
+          await db.collection('files').updateOne({ conversationId, file_id: 'review-alpha' }, {
+            $set: { expiredAt: new Date(Date.now() - 60_000) },
+          });
+        });
+      }
+    }
+    const after = await persistedSnapshot(conversationId);
+    expect(after.messages.find((message) => message.messageId === messageId)?.text)
+      .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 8 | 1 |'));
+    const reloaded = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(reloaded.status()).toBe(200);
+    expect(await reloaded.json()).toMatchObject({ table: {
+      rows: [{ source: null, values: { 數量: { baseline: '2', effective: '8' } } }, { source: null }],
+    } });
+  });
 
   test('clearing an OCR cell keeps its AI baseline and clean reload does not resurrect the old value', async ({ page }) => {
     const { conversationId, messageId } = await seedCurrent(ocr);
@@ -786,6 +840,11 @@ test.describe('Steel managed source review', () => {
       await db.collection('messages').updateOne({ conversationId, messageId }, { $set: {
         text: `${markdown} CAS-SECOND-PART`,
         content: [{ type: 'text', text: markdown }, { type: 'text', text: 'CAS-SECOND-PART' }],
+        'metadata.steelReview.system_order': {
+          version: 1, kind: 'system_order', conversationId, messageId,
+          tableId: 'system_order:unrelated', outputId: 'system_order:previous-run',
+          revision: 'UNRELATED-STATUS-KEEP', updatedAt: new Date(Date.now() - 60_000),
+        },
       } });
     });
     const before = await persistedSnapshot(conversationId);
@@ -803,11 +862,26 @@ test.describe('Steel managed source review', () => {
     }
     const saved = await page.request.post(`${url}/commit`, { headers, data: operations[0] });
     expect(saved.status()).toBe(200);
+    const savedBody = await saved.json();
     const after = await persistedSnapshot(conversationId);
     const expected = markdown.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 7 | 1 |');
     const message = after.messages.find((candidate) => candidate.messageId === messageId);
     expect(message?.text).toBe(`${expected} CAS-SECOND-PART`);
     expect(message?.content).toEqual([{ type: 'text', text: expected }, { type: 'text', text: 'CAS-SECOND-PART' }]);
+    expect(savedBody.savedSnapshot).toMatchObject({
+      conversationId, messageId, messageText: `${expected} CAS-SECOND-PART`,
+      messageSha256: createHash('sha256').update(`${expected} CAS-SECOND-PART`).digest('hex'),
+      messageTextParts: [{ partIndex: 0, text: expected }, { partIndex: 1, text: 'CAS-SECOND-PART' }],
+      ownerUpdated: { version: 1, kind: 'ocr_result', conversationId, messageId,
+        tableId: table.tableId, outputId: table.outputId, revision: savedBody.revision },
+    });
+    expect(message?.metadata?.steel).toEqual(before.messages.find((candidate) => candidate.messageId === messageId)?.metadata?.steel);
+    expect(message?.metadata?.steelReview?.system_order).toEqual(before.messages.find((candidate) => candidate.messageId === messageId)?.metadata?.steelReview?.system_order);
+    expect(message?.metadata?.steelReview?.ocr_result).toMatchObject({
+      kind: 'ocr_result', conversationId, messageId, tableId: table.tableId,
+      outputId: table.outputId, revision: savedBody.revision,
+    });
+
     expect(after.messages.find((candidate) => candidate.messageId === previousMessageId))
       .toEqual(before.messages.find((candidate) => candidate.messageId === previousMessageId));
     const review = after.reviews[0];
@@ -815,6 +889,10 @@ test.describe('Steel managed source review', () => {
     expect(review?.aiBaselineMarkdown).toBe(ocr);
     expect(review?.humanMarkdown).toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 7 | 1 |'));
     expect(review?.effectiveMarkdown).toBe(review?.humanMarkdown);
+    // A human Save must not replace the latest AI input or advance its timestamp.
+    expectPreservedAiState(before.ocr, after.ocr);
+    expect(review?.aiUpdatedAt).toEqual(before.ocr?.updatedAt);
+    expect(review?.humanSavedAt.getTime()).toBeGreaterThan(before.ocr?.updatedAt.getTime());
     const stale = await page.request.post(`${url}/commit`, { headers, data: operations[1] });
     expect(stale.status()).toBe(409);
     expect(await persistedSnapshot(conversationId)).toEqual(after);
@@ -824,6 +902,57 @@ test.describe('Steel managed source review', () => {
       messageId, isLatest: true, readOnly: false,
       rows: [{ values: { 數量: { baseline: '2', effective: '7' } } }, { values: { 數量: { baseline: '3', effective: '3' } } }],
     } });
+  });
+
+  test('an OCR Save marks only a quotation with proven OCR lineage as needing requote', async ({ page }) => {
+    for (const linked of [true, false]) {
+      const { conversationId, messageId } = await seedCurrent(ocr);
+      conversations.push(conversationId);
+      const runId = randomUUID();
+      const orderHash = createHash('sha256').update(linked ? ocr : 'UNRELATED-OCR').digest('hex');
+      const systemOrder = '## system_order\n| 型號 | 數量 | 總數 | 單價 |\n| --- | --- | --- | --- |\n| KEEP-ORDER | 2 | 4 | 100 |';
+      await withMongo(async (db) => {
+        const owner = await db.collection('messages').findOne({ conversationId, messageId });
+        if (!owner) throw new Error('Missing scoped quotation owner');
+        await db.collection('steel_quotation_states').insertOne({
+          userId: String(owner.user), conversationId,
+          // Preparing a new order must not make an unrelated older quote share its lineage.
+          currentOrder: { markdown: ocr, sha256: createHash('sha256').update(ocr).digest('hex') },
+          currentSystemOrder: {
+            runId, messageId: randomUUID(), markdown: systemOrder,
+            sha256: createHash('sha256').update(systemOrder).digest('hex'),
+            customerQuoteMarkdown: 'INTERNAL-QUOTE-KEEP', updatedAt: new Date(),
+          },
+          nextSignalIndex: 2, pendingMessages: [],
+          tickets: [{ index: 1, token: randomUUID(), orderHash, customerMarkdown: 'CUSTOMER-KEEP',
+            customerIdentity: 'CUSTOMER-1', triggeringMessageId: messageId,
+            selectionProvenance: { method: 'unique' }, issuedAt: new Date(), acceptedRunId: runId,
+            completionReceipt: { inputHash: 'FROZEN-INPUT', markdown: systemOrder,
+              ocrGeneration: linked ? 'review-proof-generation' : 'unrelated-generation', ocrHash: orderHash },
+          }], createdAt: new Date(), updatedAt: new Date(),
+        });
+      });
+      const before = await persistedSnapshot(conversationId);
+      const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+      expect(read.status()).toBe(200);
+      const { table } = await read.json() as { table: SteelReviewTable };
+      const rows = structuredClone(table.rows);
+      rows[0].values['數量'].effective = '7';
+      const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+      const prepare = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+      expect(prepare.status()).toBe(200);
+      const save = await page.request.post(`${url}/commit`, { headers, data: await prepare.json() });
+      expect(save.status()).toBe(200);
+      const after = await persistedSnapshot(conversationId);
+      const quotation = after.quotations[0];
+      expectPreservedAiState(before.ocr, after.ocr);
+      expect(quotation.currentSystemOrder.markdown).toBe(systemOrder);
+      expect(quotation.currentSystemOrder.customerQuoteMarkdown).toBe('INTERNAL-QUOTE-KEEP');
+      expect(quotation.tickets).toEqual(before.quotations[0].tickets);
+      expect(quotation.currentOrder).toEqual(before.quotations[0].currentOrder);
+      if (linked) expect(quotation.currentSystemOrder.needsRequote).toBe(true);
+      else expect(quotation).toEqual(before.quotations[0]);
+    }
   });
 
   test('review commit rejects a client-rehashed target outside the owned OCR table', async ({ page }) => {
@@ -887,6 +1016,30 @@ test.describe('Steel managed source review', () => {
       return { operation, saved: await commit.json() };
     }
     const first = await save('7');
+    const receiptQuery = new URLSearchParams({ messageId, tableId: first.operation.tableId,
+      outputId: first.operation.outputId, operationId: first.operation.operationId, digest: first.operation.digest });
+    const receiptUrl = `${url}/receipt?${receiptQuery}`;
+    const firstState = await persistedSnapshot(conversationId);
+    const committedReceipt = await page.request.get(receiptUrl, { headers });
+    expect(committedReceipt.status()).toBe(200);
+    const receipt = await committedReceipt.json();
+    expect(receipt.snapshot).toEqual(first.saved.savedSnapshot);
+    expect(receipt).toMatchObject({ status: 'committed', snapshot: {
+      operationId: first.operation.operationId, revision: first.saved.revision,
+      effectiveMarkdown: first.saved.effectiveMarkdown, messageSha256: first.saved.messageSha256,
+    } });
+    expect(await persistedSnapshot(conversationId)).toEqual(firstState);
+    const wrongDigest = new URLSearchParams(receiptQuery);
+    wrongDigest.set('digest', '0'.repeat(64));
+    const conflictReceipt = await page.request.get(`${url}/receipt?${wrongDigest}`, { headers });
+    expect(conflictReceipt.status()).toBe(409);
+    expect(await persistedSnapshot(conversationId)).toEqual(firstState);
+    const missingOperation = new URLSearchParams(receiptQuery);
+    missingOperation.set('operationId', randomUUID());
+    const absentReceipt = await page.request.get(`${url}/receipt?${missingOperation}`, { headers });
+    expect(absentReceipt.status()).toBe(200);
+    expect(await absentReceipt.json()).toEqual({ status: 'absent' });
+    expect(await persistedSnapshot(conversationId)).toEqual(firstState);
     const second = await save('8');
     expect(second.saved.revision).not.toBe(first.saved.revision);
     const afterSecond = await persistedSnapshot(conversationId);
@@ -894,6 +1047,49 @@ test.describe('Steel managed source review', () => {
     expect(retry.status()).toBe(200);
     expect(await retry.json()).toEqual(first.saved);
     expect(await persistedSnapshot(conversationId)).toEqual(afterSecond);
+    const historicalReceipt = await page.request.get(receiptUrl, { headers });
+    expect(historicalReceipt.status()).toBe(200);
+    expect(await historicalReceipt.json()).toEqual(receipt);
+    expect(await persistedSnapshot(conversationId)).toEqual(afterSecond);
+    const newMessageId = randomUUID();
+    await seedMessages(getE2EUser().email, conversationId, [{
+      messageId: newMessageId, parentMessageId: messageId, text: ocr,
+      content: [{ type: 'text', text: ocr }], isCreatedByUser: false, sender: 'Assistant',
+    }]);
+    await withMongo(async (db) => {
+      await db.collection('steel_conversation_ocr_state').updateOne({ conversationId }, { $set: {
+        currentOcrResultMessageId: newMessageId, currentOcrResultGenerationId: 'review-next-generation',
+        currentOcrResultMarkdown: ocr, updatedAt: new Date(),
+      } });
+    });
+    const afterNewAI = await persistedSnapshot(conversationId);
+    const oldOwnerReceipt = await page.request.get(receiptUrl, { headers });
+    expect(oldOwnerReceipt.status()).toBe(200);
+    expect(await oldOwnerReceipt.json()).toEqual(receipt);
+    const oldOwner = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(oldOwner.status()).toBe(200);
+    expect(await oldOwner.json()).toMatchObject({ table: {
+      readOnly: true, isLatest: false, aiUpdatedAt: firstState.ocr?.updatedAt.toISOString(),
+    } });
+    expect(await persistedSnapshot(conversationId)).toEqual(afterNewAI);
+    const unknownOwner = new URLSearchParams(receiptQuery);
+    unknownOwner.set('messageId', randomUUID());
+    const missingMessage = await page.request.get(`${url}/receipt?${unknownOwner}`, { headers });
+    expect(missingMessage.status()).toBe(404);
+    const missingChat = await page.request.get(`/api/steel/conversations/${randomUUID()}/review/ocr_result/receipt?${receiptQuery}`, { headers });
+    expect(missingChat.status()).toBe(404);
+    expect(await persistedSnapshot(conversationId)).toEqual(afterNewAI);
+    await withMongo(async (db) => {
+      await db.collection('messages').updateOne({ conversationId, messageId }, {
+        $set: { expiredAt: new Date(Date.now() - 60_000) },
+      });
+    });
+    const expiredState = await persistedSnapshot(conversationId);
+    const unavailableReceipt = await page.request.get(receiptUrl, { headers });
+    expect(unavailableReceipt.status()).toBe(404);
+    const unavailableReplay = await page.request.post(`${url}/commit`, { headers, data: first.operation });
+    expect(unavailableReplay.status()).toBe(404);
+    expect(await persistedSnapshot(conversationId)).toEqual(expiredState);
   });
 
   test('manual OCR Save changes only the clicked message and chat reload shows clean saved values', async ({ page }) => {
@@ -1088,10 +1284,10 @@ test.describe('Steel managed source review', () => {
     expect(historical.status()).toBe(200);
     expect(await historical.json()).toMatchObject({ table: { readOnly: true, isLatest: false } });
     for (const data of [
-      { conversationId, messageId: historicalId, text: 'HISTORY-CORRUPTED' },
-      { conversationId, messageId: historicalId, index: 0, text: 'HISTORY-CORRUPTED' },
+      { text: 'HISTORY-CORRUPTED', model: 'gpt-4o' },
+      { index: 0, text: 'HISTORY-CORRUPTED', model: 'gpt-4o' },
     ]) {
-      const edited = await page.request.put('/api/messages', { headers, data });
+      const edited = await page.request.put(`/api/messages/${conversationId}/${historicalId}`, { headers, data });
       expect(edited.status()).toBe(409);
       expect(await persistedSnapshot(conversationId)).toEqual(before);
     }

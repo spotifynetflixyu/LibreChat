@@ -14,7 +14,12 @@ import type {
   OpenAIOAuthTokenStatus,
   OpenAIOAuthUsageRemaining,
   SteelReviewKind,
+  SteelReviewCommit,
+  SteelReviewPrepare,
+  SteelReviewPrepared,
   SteelReviewResponse,
+  SteelReviewReceiptStatus,
+  SteelReviewSaveResponse,
   SteelReviewSourcesResponse,
   SteelQuotationStatus,
 } from 'librechat-data-provider';
@@ -182,6 +187,88 @@ export const useGetSteelReviewSourceQuery = (
       staleTime: 0,
       cacheTime: 0,
       ...config,
+    },
+  );
+};
+
+export const usePrepareSteelReviewMutation = (): UseMutationResult<
+  SteelReviewPrepared,
+  unknown,
+  SteelReviewPrepare,
+  unknown
+> => {
+  return useMutation(
+    [MutationKeys.prepareSteelReview],
+    (input: SteelReviewPrepare) => dataService.prepareSteelReview(input),
+  );
+};
+
+export const useCommitSteelReviewMutation = (): UseMutationResult<
+  SteelReviewSaveResponse,
+  unknown,
+  SteelReviewCommit,
+  unknown
+> => {
+  const queryClient = useQueryClient();
+  return useMutation(
+    [MutationKeys.commitSteelReview],
+    (input: SteelReviewCommit) => dataService.commitSteelReview(input),
+    {
+      onSuccess: (_data, input) => {
+        void queryClient.invalidateQueries(
+          DynamicQueryKeys.steelReview(
+            input.conversationId,
+            input.kind,
+            input.messageId,
+            input.tableId,
+            input.partIndex,
+          ),
+        );
+      },
+    },
+  );
+};
+
+export const useGetSteelReviewReceiptQuery = (
+  input?: {
+    conversationId: string;
+    kind: SteelReviewKind;
+    messageId: string;
+    tableId: string;
+    outputId: string;
+    operationId: string;
+    digest: string;
+  } | null,
+  config?: UseQueryOptions<SteelReviewReceiptStatus>,
+): QueryObserverResult<SteelReviewReceiptStatus> => {
+  const queriesEnabled = useRecoilValue<boolean>(store.queriesEnabled);
+  const enabled = Boolean(input) && (config?.enabled ?? true) && queriesEnabled;
+  return useQuery<SteelReviewReceiptStatus>(
+    DynamicQueryKeys.steelReviewReceipt(
+      input?.conversationId ?? '',
+      input?.kind ?? 'ocr_result',
+      input?.messageId ?? '',
+      input?.tableId ?? '',
+      input?.outputId ?? '',
+      input?.operationId ?? '',
+      input?.digest ?? '',
+    ),
+    () => dataService.getSteelReviewReceipt(
+      input?.conversationId ?? '',
+      input?.kind ?? 'ocr_result',
+      input?.messageId ?? '',
+      input?.tableId ?? '',
+      input?.outputId ?? '',
+      input?.operationId ?? '',
+      input?.digest ?? '',
+    ),
+    {
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: true,
+      refetchOnMount: true,
+      staleTime: 0,
+      ...config,
+      enabled,
     },
   );
 };

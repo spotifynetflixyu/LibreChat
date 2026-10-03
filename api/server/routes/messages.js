@@ -594,6 +594,17 @@ router.put('/:conversationId/:messageId', messageMutationMiddleware, async (req,
     if (await rejectSubagentThreadWrite(req, res, message.conversationId)) {
       return;
     }
+    if (typeof db.isManagedSteelReviewMessage === 'function' &&
+      await db.isManagedSteelReviewMessage({
+        userId: req.user.id,
+        tenantId: req.tenantId ?? req.user.tenantId,
+        conversationId,
+        messageId,
+      })) {
+      return res.status(409).json({
+        error: 'Managed Steel review messages must be edited through the review save contract',
+      });
+    }
     const { text, index, model } = req.body;
 
     if (index !== undefined && (typeof index !== 'number' || index < 0)) {

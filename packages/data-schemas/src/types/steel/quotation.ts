@@ -40,7 +40,19 @@ export interface SteelQuotationCurrentSystemOrder {
   messageId?: string;
   responseId?: string;
   customerQuoteMarkdown?: string;
+  needsRequote?: boolean;
+  requoteProvenance?: SteelQuotationRequoteProvenance;
   updatedAt: Date;
+}
+
+export interface SteelQuotationRequoteProvenance {
+  sourceKind: 'ocr_result';
+  sourceMessageId: string;
+  sourceTableId: string;
+  sourceOutputId: string;
+  sourceRevision: string;
+  changedRows: number;
+  at: Date;
 }
 
 export interface SteelQuotationSelectionProvenance {

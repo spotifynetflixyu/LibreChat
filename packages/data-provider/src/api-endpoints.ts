@@ -348,6 +348,22 @@ export const steelReview = (
   }).toString();
   return `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}?${query}`;
 };
+export const steelReviewPrepare = (conversationId: string, kind: string) =>
+  `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}/prepare`;
+export const steelReviewCommit = (conversationId: string, kind: string) =>
+  `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}/commit`;
+export const steelReviewReceipt = (
+  conversationId: string,
+  kind: string,
+  messageId: string,
+  tableId: string,
+  outputId: string,
+  operationId: string,
+  digest: string,
+) => {
+  const query = new URLSearchParams({ messageId, tableId, outputId, operationId, digest }).toString();
+  return `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}/receipt?${query}`;
+};
 export const steelReviewSources = (
   conversationId: string,
   kind: string,
