@@ -1,5 +1,7 @@
+import Papa from 'papaparse';
 import { ObjectId } from 'mongodb';
 import { randomUUID } from 'node:crypto';
+import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import {
   deleteConversations,
@@ -848,6 +850,18 @@ test.describe('Steel managed source review', () => {
     expect(await persistedSnapshot(conversationId)).toEqual(before);
     await page.getByRole('button', { name: 'Continue editing', exact: true }).click();
     await expect(quantity).toHaveValue('8');
+    for (const exit of ['close', 'outside']) {
+      await quantity.focus();
+      if (exit === 'close') {
+        await dialog.getByRole('button', { name: /Close/i }).last().click();
+      } else {
+        await page.mouse.click(5, 5);
+      }
+      await expect(page.getByRole('button', { name: 'Continue editing', exact: true })).toBeVisible();
+      expect(await persistedSnapshot(conversationId)).toEqual(before);
+      await page.getByRole('button', { name: 'Continue editing', exact: true }).click();
+      await expect(quantity).toHaveValue('8');
+    }
     await quantity.press('Escape');
     await page.getByRole('button', { name: 'Discard unsaved changes', exact: true }).click();
     await expect(dialog).not.toBeVisible();
@@ -855,6 +869,12 @@ test.describe('Steel managed source review', () => {
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
     await expect(quantity).toHaveValue('2');
     expect(await persistedSnapshot(conversationId)).toEqual(before);
+    await quantity.fill('11');
+    await quantity.press('Escape');
+    await page.getByRole('button', { name: 'Save updates', exact: true }).click();
+    await expect(dialog).not.toBeVisible();
+    expect((await persistedSnapshot(conversationId)).messages[0]?.text)
+      .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 11 | 1 |'));
   });
 
 
@@ -955,6 +975,39 @@ test.describe('Steel managed source review', () => {
     await page.keyboard.press('Escape');
     await expect(dialog).not.toBeVisible();
     expect(await persistedSnapshot(conversationId)).toEqual(firstCommitted);
+  });
+
+
+  test('OCR download saves the focused draft and exports the confirmed clean snapshot', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+    await quantity.fill('8');
+    const downloadReady = page.waitForEvent('download');
+    await dialog.getByRole('button', { name: /Download.*CSV/i }).click();
+    const download = await downloadReady;
+    expect(download.suggestedFilename()).toMatch(/\.csv$/);
+    const downloadedPath = await download.path();
+    if (!downloadedPath) throw new Error('Missing completed CSV download');
+    const csv = await readFile(downloadedPath, 'utf8');
+    const parsed = Papa.parse<Record<string, string>>(csv, { header: true, skipEmptyLines: true });
+    expect(parsed.errors).toEqual([]);
+    expect(parsed.data).toEqual([
+      { 來源: 'A', 零件編號: 'REVIEW-P1', 長度: '1000', 數量: '8', 頁碼: '1' },
+      { 來源: 'A', 零件編號: 'REVIEW-P2', 長度: '2000', 數量: '3', 頁碼: '1' },
+    ]);
+    expect(csv).not.toMatch(/<del>|~~|Updated|Previous version/);
+    const saved = await persistedSnapshot(conversationId);
+    expect(saved.messages.find((message) => message.messageId === messageId)?.text)
+      .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 8 | 1 |'));
+    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+    const unchangedDownload = page.waitForEvent('download');
+    await dialog.getByRole('button', { name: /Download.*CSV/i }).click();
+    await unchangedDownload;
+    expect(await persistedSnapshot(conversationId)).toEqual(saved);
   });
 
 });
