@@ -348,7 +348,31 @@ export function encodeSteelReviewDigest(input: SteelReviewDigestInput): string {
     (hasSourceMappings && !Array.isArray(input.sourceMappings))) {
     throw new Error('Steel review source digest fields must be arrays when present');
   }
-  const payload: Record<string, unknown> = {
+  const payload: {
+    userId: string;
+    tenantId: string | null;
+    conversationId: string;
+    kind: SteelReviewKind;
+    messageId: string;
+    tableId: string;
+    partIndex: number | null;
+    outputId: string;
+    revision: string;
+    rows: SteelReviewRow[];
+    sourceIntents?: SteelReviewSourceIntent[];
+    sourceMappings?: SteelReviewSourceMapping[];
+    headers?: string[];
+    messageSha256?: string;
+    target?: SteelReviewTarget;
+    targetText?: string;
+    replacementText?: string;
+    cleanReplacementText?: string;
+    effectiveMarkdown?: string;
+    displayMarkdown?: string;
+    aiBaselineMarkdown?: string | null;
+    aiRawMarkdown?: string | null;
+    caption?: SteelReviewCaption;
+  } = {
     userId: input.userId,
     tenantId: input.tenantId ?? null,
     conversationId: input.conversationId,
@@ -366,19 +390,17 @@ export function encodeSteelReviewDigest(input: SteelReviewDigestInput): string {
   if (hasSourceMappings) {
     payload.sourceMappings = input.sourceMappings;
   }
-  Object.assign(payload, {
-    headers: input.headers,
-    messageSha256: input.messageSha256,
-    target: input.target,
-    targetText: input.targetText,
-    replacementText: input.replacementText,
-    cleanReplacementText: input.cleanReplacementText,
-    effectiveMarkdown: input.effectiveMarkdown,
-    displayMarkdown: input.displayMarkdown,
-    aiBaselineMarkdown: input.aiBaselineMarkdown ?? null,
-    aiRawMarkdown: input.aiRawMarkdown ?? null,
-    caption: input.caption,
-  });
+  payload.headers = input.headers;
+  payload.messageSha256 = input.messageSha256;
+  payload.target = input.target;
+  payload.targetText = input.targetText;
+  payload.replacementText = input.replacementText;
+  payload.cleanReplacementText = input.cleanReplacementText;
+  payload.effectiveMarkdown = input.effectiveMarkdown;
+  payload.displayMarkdown = input.displayMarkdown;
+  payload.aiBaselineMarkdown = input.aiBaselineMarkdown ?? null;
+  payload.aiRawMarkdown = input.aiRawMarkdown ?? null;
+  payload.caption = input.caption;
   return JSON.stringify(payload);
 }
 export type SteelReviewSaveResponse = z.infer<typeof steelReviewSaveResponseSchema>;

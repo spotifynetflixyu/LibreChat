@@ -247,6 +247,17 @@ export default function SteelReviewDialog({
   saveGateRef,
 }: SteelReviewDialogProps) {
   const localize = useLocalize();
+  const sourceEditorLabels = useMemo(() => ({
+    changeSource: localize('com_ui_steel_review_change_source'),
+    sourceFile: localize('com_ui_steel_review_source_file'),
+    sourcePage: localize('com_ui_steel_review_source_page'),
+    sourceNoPage: localize('com_ui_steel_review_source_no_page'),
+    clearSource: localize('com_ui_steel_review_clear_source'),
+    sourceActions: localize('com_ui_steel_review_source_actions'),
+    sourcePageLoading: localize('com_ui_steel_review_source_page_loading'),
+    sourcePageUnavailable: localize('com_ui_steel_review_source_page_unavailable'),
+    sourcePageRetry: localize('com_ui_retry'),
+  }), [localize]);
   const queryClient = useQueryClient();
   const [selection, setSelection] = useAtom(steelReviewSelectionAtom);
   const isOpen = selection != null &&
@@ -1066,15 +1077,7 @@ export default function SteelReviewDialog({
                     labels={{
                       table: localize('com_ui_steel_review_table_label'),
                       readonly: localize('com_ui_steel_review_cell_readonly'),
-                      changeSource: localize('com_ui_steel_review_change_source'),
-                      sourceFile: localize('com_ui_steel_review_source_file'),
-                      sourcePage: localize('com_ui_steel_review_source_page'),
-                      sourceNoPage: localize('com_ui_steel_review_source_no_page'),
-                      clearSource: localize('com_ui_steel_review_clear_source'),
-                      sourceActions: localize('com_ui_steel_review_source_actions'),
-                      sourcePageLoading: localize('com_ui_steel_review_source_page_loading'),
-                      sourcePageUnavailable: localize('com_ui_steel_review_source_page_unavailable'),
-                      sourcePageRetry: localize('com_ui_retry'),
+                      ...sourceEditorLabels,
                     }}
                     onCellChange={onCellChange}
                     sourcePageCountError={sourcePageCountQuery.isError}
@@ -1096,15 +1099,7 @@ export default function SteelReviewDialog({
                         labels={{
                           table: localize('com_ui_steel_review_unlocated'),
                           readonly: localize('com_ui_steel_review_cell_readonly'),
-                          changeSource: localize('com_ui_steel_review_change_source'),
-                          sourceFile: localize('com_ui_steel_review_source_file'),
-                          sourcePage: localize('com_ui_steel_review_source_page'),
-                          sourceNoPage: localize('com_ui_steel_review_source_no_page'),
-                          clearSource: localize('com_ui_steel_review_clear_source'),
-                          sourceActions: localize('com_ui_steel_review_source_actions'),
-                          sourcePageLoading: localize('com_ui_steel_review_source_page_loading'),
-                          sourcePageUnavailable: localize('com_ui_steel_review_source_page_unavailable'),
-                          sourcePageRetry: localize('com_ui_retry'),
+                          ...sourceEditorLabels,
                         }}
                         onCellChange={onCellChange}
                         sourcePageCountError={sourcePageCountQuery.isError}
@@ -1127,15 +1122,7 @@ export default function SteelReviewDialog({
                   labels={{
                     table: localize('com_ui_steel_review_table_label'),
                     readonly: localize('com_ui_steel_review_cell_readonly'),
-                    changeSource: localize('com_ui_steel_review_change_source'),
-                    sourceFile: localize('com_ui_steel_review_source_file'),
-                    sourcePage: localize('com_ui_steel_review_source_page'),
-                    sourceNoPage: localize('com_ui_steel_review_source_no_page'),
-                    clearSource: localize('com_ui_steel_review_clear_source'),
-                    sourceActions: localize('com_ui_steel_review_source_actions'),
-                    sourcePageLoading: localize('com_ui_steel_review_source_page_loading'),
-                    sourcePageUnavailable: localize('com_ui_steel_review_source_page_unavailable'),
-                    sourcePageRetry: localize('com_ui_retry'),
+                    ...sourceEditorLabels,
                   }}
                   onCellChange={onCellChange}
                   sourcePageCountError={sourcePageCountQuery.isError}

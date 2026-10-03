@@ -1,7 +1,9 @@
+import { isSteelReviewSourceAssociationHeader } from 'librechat-data-provider';
 import type {
   SteelReviewPrepare,
   SteelReviewRow,
   SteelReviewSource,
+  SteelReviewSourceIntent,
   SteelReviewTable,
 } from 'librechat-data-provider';
 import type { SteelReviewSelection } from './state';
@@ -84,14 +86,17 @@ export function setSteelReviewDraftSource(
   if (!row.rowId) {
     return draft;
   }
+  const normalizedSource = source && row.source?.fileId === source.fileId && row.source.mediaType === undefined
+    ? (({ mediaType: _mediaType, ...legacySource }) => legacySource)(source)
+    : source;
   const sourceDrafts = { ...draft.sourceDrafts };
   const sourceVersions = { ...draft.sourceVersions };
   const changeSequence = draft.changeSequence + 1;
   sourceVersions[row.rowId] = changeSequence;
-  if (JSON.stringify(source) === JSON.stringify(row.source)) {
+  if (JSON.stringify(normalizedSource) === JSON.stringify(row.source)) {
     delete sourceDrafts[row.rowId];
   } else {
-    sourceDrafts[row.rowId] = source;
+    sourceDrafts[row.rowId] = normalizedSource;
   }
   return { ...draft, sourceDrafts, sourceVersions, changeSequence };
 }
@@ -184,7 +189,42 @@ export function applySteelReviewDrafts(
       }),
     );
     const source = getSteelReviewDraftSource(draft, row.rowId);
-    return { ...row, values, ...(source !== undefined ? { source } : {}) };
+    if (source === undefined) {
+      return { ...row, values };
+    }
+    const sourceColumn = Object.keys(values).find((header) => {
+      const normalized = header.trim().toLowerCase().replace(/[\s_]+/gu, '');
+      return normalized === 'source' || normalized === '來源' ||
+        isSteelReviewSourceAssociationHeader(header) &&
+        [
+          'file', 'filename', 'sourcefile', 'sourcefilename', 'originalfile',
+          'originalfilename', '原始檔案', '原始檔名', '來源檔案', '來源檔名',
+        ]
+          .includes(normalized);
+    });
+    const pageColumn = Object.keys(values).find((header) => {
+      const normalized = header.trim().toLowerCase().replace(/[\s_]+/gu, '');
+      return [
+        'page', 'pagenumber', 'sourcepage', 'originalpage', 'originalpagenumber',
+        '頁碼', '原檔頁碼', '原始頁碼', '來源頁碼',
+      ]
+        .includes(normalized);
+    });
+    const projectedValues = { ...values };
+    if (sourceColumn) {
+      const sameFile = source !== null && source.fileId === row.source?.fileId;
+      projectedValues[sourceColumn] = {
+        ...projectedValues[sourceColumn],
+        effective: source === null || !sameFile ? '' : projectedValues[sourceColumn]?.effective ?? '',
+      };
+    }
+    if (pageColumn) {
+      projectedValues[pageColumn] = {
+        ...projectedValues[pageColumn],
+        effective: source?.pageNumber == null ? '' : String(source.pageNumber),
+      };
+    }
+    return { ...row, values: projectedValues, source };
   });
 }
 
@@ -213,7 +253,7 @@ export function getSteelReviewPrepareInput(
 function draftSourceIntents(
   draft: SteelReviewDraftState,
   rows: readonly SteelReviewRow[],
-) {
+): SteelReviewSourceIntent[] {
   const byId = new Map(rows.map((row) => [row.rowId, row]));
   return Object.entries(draft.sourceDrafts)
     .filter(([rowId]) => byId.has(rowId))

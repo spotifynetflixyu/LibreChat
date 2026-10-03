@@ -1,6 +1,6 @@
 import { memo } from 'react';
-import { Button, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@librechat/client';
 import { isSteelReviewSourceAssociationHeader } from 'librechat-data-provider';
+import { Button, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@librechat/client';
 import type { SteelReviewRow, SteelReviewSource, SteelReviewSourceFile, SteelReviewTable } from 'librechat-data-provider';
 import type { ChangeEvent, KeyboardEvent } from 'react';
 import type { SteelReviewDraftState } from './session';
@@ -9,15 +9,15 @@ import { getSteelReviewDraftCell } from './session';
 export interface SteelReviewEditorLabels {
   table: string;
   readonly: string;
-  changeSource?: string;
-  sourceFile?: string;
-  sourcePage?: string;
-  sourceNoPage?: string;
-  clearSource?: string;
-  sourceActions?: string;
-  sourcePageLoading?: string;
-  sourcePageUnavailable?: string;
-  sourcePageRetry?: string;
+  changeSource: string;
+  sourceFile: string;
+  sourcePage: string;
+  sourceNoPage: string;
+  clearSource: string;
+  sourceActions: string;
+  sourcePageLoading: string;
+  sourcePageUnavailable: string;
+  sourcePageRetry: string;
 }
 
 export interface SteelReviewEditorProps {
@@ -98,7 +98,7 @@ function SourceCell({
     return (
       <td className="border-b border-border-light px-3 py-2 align-top">
         <div className="flex min-w-40 items-center gap-2">
-          <span aria-label={`${labels.sourceFile ?? 'Source file'}: ${sourceLabel(source) || labels.readonly}`}>
+          <span aria-label={`${labels.sourceFile}: ${sourceLabel(source) || labels.readonly}`}>
             {sourceLabel(source) || labels.readonly}
           </span>
           {onSourceEdit && row.rowId && table.kind === 'ocr_result' && table.isLatest && !table.readOnly && (
@@ -106,10 +106,10 @@ function SourceCell({
               type="button"
               variant="outline"
               className="shrink-0"
-              aria-label={`${labels.changeSource ?? 'Change source'} ${row.rowId}`}
+              aria-label={`${labels.changeSource} ${row.rowId}`}
               onClick={() => onSourceEdit(row)}
             >
-              {labels.changeSource ?? 'Change source'}
+              {labels.changeSource}
             </Button>
           )}
         </div>
@@ -119,9 +119,9 @@ function SourceCell({
 
   return (
     <td className="border-b border-border-light px-3 py-2 align-top">
-      <div className="flex min-w-64 flex-col gap-2" aria-label={labels.sourceActions ?? 'Source actions'}>
+      <div className="flex min-w-64 flex-col gap-2" aria-label={labels.sourceActions}>
         <label className="flex flex-col gap-1 text-xs text-text-secondary">
-          <span>{labels.sourceFile ?? 'Source file'}</span>
+          <span>{labels.sourceFile}</span>
           <Select
             value={source?.fileId ?? CLEAR_SOURCE_VALUE}
             onValueChange={(value) => {
@@ -141,11 +141,11 @@ function SourceCell({
               });
             }}
           >
-            <SelectTrigger aria-label={labels.sourceFile ?? 'Source file'}>
-              <SelectValue placeholder={labels.sourceFile ?? 'Source file'} />
+            <SelectTrigger aria-label={labels.sourceFile}>
+              <SelectValue placeholder={labels.sourceFile} />
             </SelectTrigger>
             <SelectContent>
-              <SelectItem value={CLEAR_SOURCE_VALUE}>{labels.clearSource ?? 'Clear source'}</SelectItem>
+              <SelectItem value={CLEAR_SOURCE_VALUE}>{labels.clearSource}</SelectItem>
               {sources.map((candidate) => (
                 <SelectItem key={candidate.fileId} value={candidate.fileId}>
                   {candidate.filename}
@@ -156,20 +156,20 @@ function SourceCell({
         </label>
         {source && (
           <label className="flex flex-col gap-1 text-xs text-text-secondary">
-            <span>{labels.sourcePage ?? 'Source page'}</span>
+            <span>{labels.sourcePage}</span>
             {sourcePageCountLoading && !pageCount ? (
-              <span role="status">{labels.sourcePageLoading ?? 'Loading pages…'}</span>
+              <span role="status">{labels.sourcePageLoading}</span>
             ) : sourcePageCountError && !pageCount ? (
               <div className="flex items-center gap-2" role="alert">
-                <span>{labels.sourcePageUnavailable ?? 'Source pages unavailable'}</span>
+                <span>{labels.sourcePageUnavailable}</span>
                 {onSourcePageRetry && (
                   <Button
                     type="button"
                     variant="outline"
-                    aria-label={labels.sourcePageRetry ?? 'Retry'}
+                    aria-label={labels.sourcePageRetry}
                     onClick={onSourcePageRetry}
                   >
-                    {labels.sourcePageRetry ?? 'Retry'}
+                    {labels.sourcePageRetry}
                   </Button>
                 )}
               </div>
@@ -181,11 +181,11 @@ function SourceCell({
                   pageNumber: value === NO_SOURCE_PAGE_VALUE ? null : Number(value),
                 })}
               >
-                <SelectTrigger aria-label={labels.sourcePage ?? 'Source page'}>
-                  <SelectValue placeholder={labels.sourceNoPage ?? 'No page'} />
+                <SelectTrigger aria-label={labels.sourcePage}>
+                  <SelectValue placeholder={labels.sourceNoPage} />
                 </SelectTrigger>
                 <SelectContent>
-                  <SelectItem value={NO_SOURCE_PAGE_VALUE}>{labels.sourceNoPage ?? 'No page'}</SelectItem>
+                  <SelectItem value={NO_SOURCE_PAGE_VALUE}>{labels.sourceNoPage}</SelectItem>
                   {pageValues.map((page) => (
                     <SelectItem key={page} value={String(page)}>{page}</SelectItem>
                   ))}

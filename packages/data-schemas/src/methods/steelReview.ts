@@ -307,9 +307,18 @@ function sanitizeRows(
 }
 
 function legacySnapshotMappings(
-  output: Pick<ISteelReviewOutput, 'conversationId' | 'messageId' | 'outputId' | 'revision' | 'headers' | 'rows' | 'effectiveMarkdown' | 'receipts'>,
+  output: Pick<ISteelReviewOutput, 'conversationId' | 'messageId' | 'tableId' | 'outputId' | 'revision' | 'headers' | 'rows' | 'effectiveMarkdown' | 'receipts'>,
+  expectedKind: SteelReviewReadInput['kind'],
+  currentMessageText: string,
 ): SteelReviewSourceMapping[] | undefined {
-  const snapshots = output.receipts
+  const currentMessageSha256 = createHash('sha256').update(currentMessageText).digest('hex');
+  const snapshots = (Array.isArray(output.receipts) ? output.receipts : [])
+    .filter((receipt) => receipt && typeof receipt === 'object')
+    .filter((receipt) => receipt.revision === output.revision)
+    .filter((receipt) => receipt.snapshot &&
+      receipt.operationId === receipt.snapshot.operationId &&
+      receipt.digest === receipt.snapshot.digest &&
+      receipt.snapshot.revision === receipt.revision)
     .map((receipt) => receipt.snapshot)
     .filter((snapshot): snapshot is SteelReviewSavedSnapshotRecord => Boolean(snapshot))
     .filter((snapshot) => snapshot.conversationId === output.conversationId &&
@@ -318,7 +327,17 @@ function legacySnapshotMappings(
       snapshot.revision === output.revision &&
       JSON.stringify(snapshot.headers) === JSON.stringify(output.headers) &&
       snapshot.effectiveMarkdown === output.effectiveMarkdown &&
-      JSON.stringify(snapshot.rows) === JSON.stringify(output.rows));
+      JSON.stringify(snapshot.rows) === JSON.stringify(output.rows) &&
+      snapshot.messageText === currentMessageText &&
+      snapshot.messageSha256 === currentMessageSha256 &&
+      (!snapshot.ownerUpdated || (
+        snapshot.ownerUpdated.kind === expectedKind &&
+        snapshot.ownerUpdated.conversationId === output.conversationId &&
+        snapshot.ownerUpdated.messageId === output.messageId &&
+        snapshot.ownerUpdated.tableId === output.tableId &&
+        snapshot.ownerUpdated.outputId === output.outputId &&
+        snapshot.ownerUpdated.revision === output.revision
+      )));
   if (snapshots.length !== 1) {
     return undefined;
   }
@@ -574,7 +593,8 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
             }
           : undefined;
         const selected = selectSidecar(sidecarCandidates, authority, input.messageId);
-        const selectedMappings = selected?.sourceMappings ?? (selected ? legacySnapshotMappings(selected) : undefined);
+        const selectedMappings = selected?.sourceMappings ??
+          (selected ? legacySnapshotMappings(selected, input.kind, message.selected) : undefined);
         const authorizedFiles = await readAuthorizedFiles(input, [
           ...(!selected ? (state?.sourceMappings ?? []).map((mapping) => mapping.fileId) : []),
           ...(selectedMappings ?? []).map((mapping) => mapping.fileId),
@@ -1256,6 +1276,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               const priorCode = mappingByCode.get(mapping.sourceCode);
               const priorFile = mappingByFile.get(mapping.fileId);
               if (!file || mapping.sourceFilename !== file.filename ||
+                (mapping.mediaType !== undefined && mapping.mediaType !== file.mediaType) ||
                 (priorCode && JSON.stringify(priorCode) !== JSON.stringify(mapping)) ||
                 (priorFile && JSON.stringify(priorFile) !== JSON.stringify(mapping))) {
                 throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review source mapping is invalid');
@@ -1278,7 +1299,9 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
                   ? next?.source === null
                   : next?.source !== null && next?.source !== undefined &&
                     next.source.fileId === intent.fileId && next.source.pageNumber === intent.pageNumber &&
-                    next.source.filename === authorizedFiles.get(intent.fileId)?.filename)
+                    next.source.filename === authorizedFiles.get(intent.fileId)?.filename &&
+                    (next.source.mediaType === undefined ||
+                      next.source.mediaType === authorizedFiles.get(intent.fileId)?.mediaType))
                 : sameSteelReviewSource(projectedRows[index]?.source ?? null, next?.source ?? null);
               if (!next || previous.rowId !== next.rowId || !sourceMatches) {
                 throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review row identity changed');

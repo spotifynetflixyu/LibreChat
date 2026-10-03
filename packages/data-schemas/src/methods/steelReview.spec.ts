@@ -374,6 +374,7 @@ describe('Steel review read methods', () => {
       revision: 'source-file-generation',
       state: 'current',
       headers: ['來源', '零件編號'],
+      sourceMappings: [{ fileId: 'trusted-file', sourceCode: 'trusted', sourceFilename: 'trusted.pdf' }],
       rows: [
         {
           rowId: 'trusted-row',

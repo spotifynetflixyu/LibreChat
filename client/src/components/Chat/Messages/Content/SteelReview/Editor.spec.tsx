@@ -25,6 +25,18 @@ const table = {
   }],
 } as SteelReviewTable;
 
+const sourceLabels = {
+  changeSource: 'Change source',
+  sourceFile: 'Source file',
+  sourcePage: 'Source page',
+  sourceNoPage: 'No page',
+  clearSource: 'Clear source',
+  sourceActions: 'Source actions',
+  sourcePageLoading: 'Loading pages',
+  sourcePageUnavailable: 'Source pages unavailable',
+  sourcePageRetry: 'Retry',
+};
+
 describe('Steel review local editor gates', () => {
   it('allows only latest editable OCR business cells', () => {
     expect(isSteelReviewCellEditable(table, '品名規格')).toBe(true);
@@ -49,7 +61,7 @@ describe('Steel review local editor gates', () => {
           table={table}
           rows={table.rows}
           draft={draft}
-          labels={{ table: 'Steel review table', readonly: 'Read-only cell' }}
+          labels={{ ...sourceLabels, table: 'Steel review table', readonly: 'Read-only cell' }}
           onCellChange={(row, header, value) => {
             onCellChange(row, header, value);
             setDraft((current) => setSteelReviewDraftCell(current, row, header, value));
@@ -76,7 +88,7 @@ describe('Steel review local editor gates', () => {
         table={{ ...table, kind: 'system_order' }}
         rows={table.rows}
         draft={createSteelReviewDraftState('owner')}
-        labels={{ table: 'Steel review table', readonly: 'Read-only cell' }}
+        labels={{ ...sourceLabels, table: 'Steel review table', readonly: 'Read-only cell' }}
         onCellChange={jest.fn()}
       />,
     );
@@ -98,6 +110,7 @@ describe('Steel review local editor gates', () => {
         rows={table.rows}
         draft={createSteelReviewDraftState('owner')}
         labels={{
+          ...sourceLabels,
           table: 'Steel review table',
           readonly: 'Read-only cell',
           changeSource: 'Change source',
@@ -123,6 +136,7 @@ describe('Steel review local editor gates', () => {
         rows={table.rows}
         draft={createSteelReviewDraftState('owner')}
         labels={{
+          ...sourceLabels,
           table: 'Steel review table',
           readonly: 'Read-only cell',
           sourceFile: 'Source file',
@@ -154,6 +168,7 @@ describe('Steel review local editor gates', () => {
         rows={[sourceRow]}
         draft={createSteelReviewDraftState('owner')}
         labels={{
+          ...sourceLabels,
           table: 'Steel review table',
           readonly: 'Read-only cell',
           sourceFile: 'Source file',
