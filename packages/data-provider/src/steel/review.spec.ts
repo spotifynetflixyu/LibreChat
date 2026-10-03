@@ -1,6 +1,22 @@
-import { steelReviewResponseSchema, steelReviewReadQuerySchema } from './review';
+import {
+  isSteelReviewSourceAssociationHeader,
+  steelReviewReadQuerySchema,
+  steelReviewResponseSchema,
+} from './review';
 
 describe('Steel review contracts', () => {
+  it('classifies exact source association headers without locking business fields', () => {
+    const associationHeaders = [
+      '來源', '頁碼', '原始檔案', '原檔頁碼', 'source', 'source_file', 'Original File',
+      'Original Page Number',
+    ];
+    for (const header of associationHeaders) {
+      expect(isSteelReviewSourceAssociationHeader(header)).toBe(true);
+    }
+    expect(isSteelReviewSourceAssociationHeader('Profile')).toBe(false);
+    expect(isSteelReviewSourceAssociationHeader('source code')).toBe(false);
+  });
+
   it('accepts a readonly managed table with independent rows and nullable sources', () => {
     const result = steelReviewResponseSchema.parse({
       table: {

@@ -1563,5 +1563,81 @@ test.describe('Steel managed source review', () => {
     await unchangedDownload;
     expect(await persistedSnapshot(conversationId)).toEqual(saved);
   });
+  test('closed managed toolbars download confirmed OCR data without creating a human Save', async ({ page }) => {
+    const { conversationId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const before = await persistedSnapshot(conversationId);
+    await page.goto(`/c/${conversationId}`);
+    await expect(page.getByRole('button', { name: 'Open Steel review', exact: true })).toBeVisible();
+    for (const expanded of [false, true]) {
+      if (expanded) await page.getByRole('button', { name: 'Expand table', exact: true }).click();
+      const scope = expanded ? page.getByRole('dialog', { name: 'Expand table' }) : page;
+      const downloadReady = page.waitForEvent('download');
+      await scope.getByRole('button', { name: 'Download table as CSV', exact: true }).click();
+      const download = await downloadReady;
+      const downloadedPath = await download.path();
+      if (!downloadedPath) throw new Error('Missing completed confirmed CSV');
+      const csv = await readFile(downloadedPath, 'utf8');
+      expect(csv).toContain('A,REVIEW-P1,1000,2,1');
+      expect(csv).toContain('A,REVIEW-P2,2000,3,1');
+      expect(csv).not.toMatch(/<del>|~~|Updated|Previous version/);
+      expect(await persistedSnapshot(conversationId)).toEqual(before);
+      if (expanded) await scope.getByRole('button', { name: 'Close table', exact: true }).click();
+    }
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+    await quantity.fill('9');
+    await dialog.getByRole('button', { name: /^Save/ }).click();
+    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeVisible();
+    const saved = await persistedSnapshot(conversationId);
+    const downloadReady = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'Download table as CSV', exact: true }).click();
+    const download = await downloadReady;
+    const downloadedPath = await download.path();
+    if (!downloadedPath) throw new Error('Missing completed saved CSV');
+    expect(await readFile(downloadedPath, 'utf8')).toContain('A,REVIEW-P1,1000,9,1');
+    expect(await persistedSnapshot(conversationId)).toEqual(saved);
+  });
+
+  test('a failed receipt lookup can retry without committing an unsaved OCR draft', async ({ page }) => {
+    const { conversationId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const before = await persistedSnapshot(conversationId);
+    const commitUrl = `**/api/steel/conversations/${conversationId}/review/ocr_result/commit`;
+    let commits = 0;
+    await page.route(commitUrl, async (route) => {
+      commits += 1;
+      await route.abort('failed');
+    });
+    let receiptCalls = 0;
+    await page.route(/\/review\/ocr_result\/receipt\?/, async (route) => {
+      receiptCalls += 1;
+      if (receiptCalls === 1) await route.abort('failed');
+      else await route.continue();
+    });
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+    await quantity.fill('7');
+    await dialog.getByRole('button', { name: /^Save/ }).click();
+    await expect(dialog.getByRole('alert')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: 'Discard unsaved changes', exact: true }).click();
+    await expect.poll(() => receiptCalls).toBe(1);
+    await expect(dialog.getByRole('alert')).toBeVisible();
+    await expect(quantity).toHaveValue('7');
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    const retry = dialog.getByRole('button', { name: /Retry.*receipt|Retry.*lookup/i });
+    if (await retry.count()) await retry.click();
+    else await page.getByRole('button', { name: 'Discard unsaved changes', exact: true }).click();
+    await expect(dialog).not.toBeVisible();
+    expect(receiptCalls).toBe(2);
+    expect(commits).toBe(1);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+  });
 
 });

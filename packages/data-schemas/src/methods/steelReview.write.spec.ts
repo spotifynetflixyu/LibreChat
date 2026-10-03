@@ -15,12 +15,12 @@ import { createModels } from '~/models';
 
 let mongoServer: MongoMemoryReplSet;
 
-const markdownFor = (value: string) => [
+const markdownFor = (value: string, source = 'A') => [
   '## ocr_result',
   '',
   '| 來源 | 零件編號 |',
   '| --- | --- |',
-  `| A | ${value} |`,
+  `| ${source} | ${value} |`,
 ].join('\n');
 
 const digestFor = (input: Omit<SteelReviewCommitInput, 'digest'>): string => {
@@ -56,6 +56,7 @@ const makeInput = ({
   previousValue,
   nextValue,
   changedRows = 1,
+  sourceValue = 'A',
   conversationId = 'conversation-1',
   messageId = 'assistant-1',
 }: {
@@ -64,10 +65,11 @@ const makeInput = ({
   previousValue: string;
   nextValue: string;
   changedRows?: number;
+  sourceValue?: string;
   conversationId?: string;
   messageId?: string;
 }): SteelReviewCommitInput => {
-  const currentMarkdown = markdownFor(previousValue);
+  const currentMarkdown = markdownFor(previousValue, sourceValue);
   const targetText = currentMarkdown.slice(currentMarkdown.indexOf('| 來源 |'));
   const replacementText = [
     '| 來源 | 零件編號 |',
@@ -77,7 +79,7 @@ const makeInput = ({
   const rows: SteelReviewRow[] = [{
     rowId: 'row-1',
     values: {
-      來源: { baseline: 'A', effective: 'A' },
+      來源: { baseline: sourceValue, effective: sourceValue },
       零件編號: { baseline: 'P-1', effective: nextValue },
     },
     source: null,
@@ -105,10 +107,15 @@ const makeInput = ({
     cleanReplacementText: replacementText,
     effectiveMarkdown: currentMarkdown.replace(targetText, replacementText),
     displayMarkdown: currentMarkdown.replace(targetText, replacementText),
-    aiBaselineMarkdown: markdownFor('P-1'),
-    aiRawMarkdown: markdownFor('P-1'),
+    aiBaselineMarkdown: markdownFor('P-1', sourceValue),
+    aiRawMarkdown: markdownFor('P-1', sourceValue),
     caption: { kind: 'ocr_result', changedRows, changedRowIds: changedRows === 0 ? [] : ['row-1'] },
   };
+  return { ...base, digest: digestFor(base) };
+};
+
+const rehashInput = (input: SteelReviewCommitInput): SteelReviewCommitInput => {
+  const { digest: _digest, ...base } = input;
   return { ...base, digest: digestFor(base) };
 };
 
@@ -369,6 +376,129 @@ describe('Steel review write methods', () => {
     });
     const unrelatedAfter = await QuotationState.findOne({ conversationId: 'unrelated-conversation' }).lean();
     expect(unrelatedAfter).toEqual(unrelatedBefore);
+  });
+
+  it('rejects source association cell edits before first and later sidecar writes', async () => {
+    const models = createModels(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const conversationId = 'source-guard-conversation';
+    const messageId = 'source-guard-message';
+    const originalMarkdown = markdownFor('P-1');
+    await models.Conversation.create({
+      conversationId,
+      user: 'user-1',
+      tenantId: 'tenant-1',
+      title: 'Source guard',
+      endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId,
+      conversationId,
+      user: 'user-1',
+      tenantId: 'tenant-1',
+      isCreatedByUser: false,
+      text: originalMarkdown,
+    });
+    await State.create({
+      conversationId,
+      currentOcrResultMarkdown: originalMarkdown,
+      currentOcrResultMessageId: messageId,
+      currentOcrResultGenerationId: 'generation-1',
+    });
+    const writer = createSteelReviewWriteMethods(mongoose);
+    const first = makeInput({
+      operationId: 'source-guard-first',
+      revision: 'generation-1',
+      previousValue: 'P-1',
+      nextValue: 'P-7',
+      conversationId,
+      messageId,
+    });
+    const forgedFirst = rehashInput({
+      ...first,
+      rows: first.rows.map((row) => ({
+        ...row,
+        values: { ...row.values, 來源: { ...row.values.來源, effective: 'FORGED-SOURCE' } },
+      })),
+    });
+    await expect(writer.commitSteelReview(forgedFirst)).rejects.toMatchObject({
+      code: 'REVIEW_INVALID_OPERATION',
+    });
+    expect(await ReviewOutput.findOne({ conversationId }).lean()).toBeNull();
+    expect(await models.Message.findOne({ messageId }).lean()).toMatchObject({ text: originalMarkdown });
+    expect((await State.findOne({ conversationId }).lean())?.reviewLockToken).toBeUndefined();
+
+    const firstResult = await writer.commitSteelReview(first);
+    const second = makeInput({
+      operationId: 'source-guard-second',
+      revision: firstResult.revision,
+      previousValue: 'P-7',
+      nextValue: 'P-8',
+      conversationId,
+      messageId,
+    });
+    await writer.commitSteelReview(second);
+    const savedBeforeForgedLater = await ReviewOutput.findOne({ conversationId }).lean();
+    const tokenBeforeForgedLater = (await State.findOne({ conversationId }).lean())?.reviewLockToken;
+    const later = makeInput({
+      operationId: 'source-guard-forged-later',
+      revision: savedBeforeForgedLater?.revision ?? '',
+      previousValue: 'P-8',
+      nextValue: 'P-9',
+      conversationId,
+      messageId,
+    });
+    const forgedLater = rehashInput({
+      ...later,
+      rows: later.rows.map((row) => ({
+        ...row,
+        values: { ...row.values, 來源: { ...row.values.來源, effective: 'FORGED-SOURCE' } },
+      })),
+    });
+    await expect(writer.commitSteelReview(forgedLater)).rejects.toMatchObject({
+      code: 'REVIEW_INVALID_OPERATION',
+    });
+    expect((await ReviewOutput.findOne({ conversationId }).lean())?.receipts).toHaveLength(2);
+    expect((await State.findOne({ conversationId }).lean())?.reviewLockToken).toBe(tokenBeforeForgedLater);
+  });
+
+  it('allows a business save when the existing source association is blank', async () => {
+    const models = createModels(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const conversationId = 'blank-source-conversation';
+    const messageId = 'blank-source-message';
+    const originalMarkdown = markdownFor('P-1', '');
+    await models.Conversation.create({
+      conversationId,
+      user: 'user-1',
+      tenantId: 'tenant-1',
+      title: 'Blank source',
+      endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId,
+      conversationId,
+      user: 'user-1',
+      tenantId: 'tenant-1',
+      isCreatedByUser: false,
+      text: originalMarkdown,
+    });
+    await State.create({
+      conversationId,
+      currentOcrResultMarkdown: originalMarkdown,
+      currentOcrResultMessageId: messageId,
+      currentOcrResultGenerationId: 'generation-1',
+    });
+    await expect(createSteelReviewWriteMethods(mongoose).commitSteelReview(makeInput({
+      operationId: 'blank-source-save',
+      revision: 'generation-1',
+      previousValue: 'P-1',
+      nextValue: 'P-7',
+      sourceValue: '',
+      conversationId,
+      messageId,
+    }))).resolves.toMatchObject({ changedRows: 1 });
   });
 
   it('rolls back sidecar, message metadata, receipt, and quotation stale state on a mid-transaction failure', async () => {
