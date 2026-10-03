@@ -10,6 +10,7 @@ export function getSteelReviewTableId(kind: SteelReviewKind, markdownIndex: numb
 export const steelReviewReadQuerySchema = z.object({
   messageId: z.string().trim().min(1).max(300),
   tableId: z.string().trim().min(1).max(300),
+  partIndex: z.coerce.number().int().nonnegative().max(10_000).optional(),
 });
 export type SteelReviewReadQuery = z.infer<typeof steelReviewReadQuerySchema>;
 
@@ -35,6 +36,7 @@ export const steelReviewTableSchema = z.object({
   conversationId: z.string().min(1),
   messageId: z.string().min(1),
   tableId: z.string().min(1),
+  partIndex: z.number().int().nonnegative().optional(),
   outputId: z.string().min(1),
   kind: z.enum(steelReviewKinds),
   revision: z.string().min(1),

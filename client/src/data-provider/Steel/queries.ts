@@ -81,6 +81,7 @@ export const useGetSteelReviewQuery = (
     kind: SteelReviewKind;
     messageId: string;
     tableId: string;
+    partIndex?: number;
   } | null,
   config?: UseQueryOptions<SteelReviewResponse>,
 ): QueryObserverResult<SteelReviewResponse> => {
@@ -92,12 +93,14 @@ export const useGetSteelReviewQuery = (
       input?.kind ?? 'ocr_result',
       input?.messageId ?? '',
       input?.tableId ?? '',
+      input?.partIndex,
     ),
     () => dataService.getSteelReview(
       input?.conversationId ?? '',
       input?.kind ?? 'ocr_result',
       input?.messageId ?? '',
       input?.tableId ?? '',
+      input?.partIndex,
     ),
     {
       refetchOnWindowFocus: false,

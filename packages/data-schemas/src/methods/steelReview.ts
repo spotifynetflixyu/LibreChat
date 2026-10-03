@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type {
   IMessage,
   ISteelConversationOcrState,
@@ -7,10 +8,12 @@ import type {
   SteelReviewReadInput,
   SteelReviewReadRecord,
   SteelReviewSourceMapping,
+  SteelReviewTextPart,
 } from '~/types';
 import {
   createSteelConversationOcrStateModel,
   createSteelDelegateOcrRunModel,
+  createSteelQuotationArtifactModel,
   createSteelQuotationStateModel,
   createSteelReviewOutputModel,
 } from '~/models';
@@ -24,20 +27,70 @@ export interface SteelReviewReadMethods {
   readSteelReview(input: SteelReviewReadInput): Promise<SteelReviewReadRecord | null>;
 }
 
-function scopeFilter(input: SteelReviewReadInput): Record<string, string> {
+function tenantFilter(tenantId?: string): Record<string, unknown> {
+  return tenantId === undefined
+    ? { $or: [{ tenantId: { $exists: false } }, { tenantId: null }] }
+    : { tenantId };
+}
+
+function scopeFilter(input: SteelReviewReadInput): Record<string, unknown> {
   return {
     userId: input.userId,
-    ...(input.tenantId ? { tenantId: input.tenantId } : {}),
+    ...tenantFilter(input.tenantId),
     conversationId: input.conversationId,
   };
 }
 
-function messageFilter(input: SteelReviewReadInput): Record<string, string> {
+function messageFilter(input: SteelReviewReadInput): Record<string, unknown> {
   return {
     messageId: input.messageId,
     conversationId: input.conversationId,
     user: input.userId,
-    ...(input.tenantId ? { tenantId: input.tenantId } : {}),
+    ...tenantFilter(input.tenantId),
+  };
+}
+
+function appendRenderedText(current: string, next: string): string {
+  if (current.length > 0 && next.length > 0 &&
+    current[current.length - 1] !== ' ' && next[0] !== ' ') {
+    return `${current} ${next}`;
+  }
+  return `${current}${next}`;
+}
+
+function renderedMessageText(
+  message: Pick<IMessage, 'text' | 'content'>,
+  requestedPartIndex?: number,
+): { selected: string; parts: SteelReviewTextPart[]; selectedPartIndex?: number } | undefined {
+  if (typeof message.text !== 'string' || !Array.isArray(message.content)) {
+    return undefined;
+  }
+  const parts = message.content.flatMap((part, partIndex) => {
+    if (typeof part !== 'object' || part === null || Array.isArray(part)) {
+      return [];
+    }
+    const value = part as { type?: unknown; text?: unknown };
+    return value.type === 'text' && typeof value.text === 'string'
+      ? [{ partIndex, text: value.text }]
+      : [];
+  });
+  if (parts.length === 0) {
+    return undefined;
+  }
+  const selectedPart = requestedPartIndex === undefined
+    ? undefined
+    : parts.find((part) => part.partIndex === requestedPartIndex);
+  if (requestedPartIndex !== undefined && !selectedPart) {
+    return undefined;
+  }
+  const rendered = parts.reduce((result, part) => appendRenderedText(result, part.text), '');
+  if (rendered !== message.text) {
+    return undefined;
+  }
+  return {
+    selected: selectedPart?.text ?? message.text,
+    parts,
+    ...(selectedPart ? { selectedPartIndex: selectedPart.partIndex } : {}),
   };
 }
 
@@ -51,7 +104,7 @@ function sourceMappings(state: ISteelConversationOcrState): SteelReviewSourceMap
 
 function sidecarRecord(
   output: Pick<ISteelReviewOutput, 'userId' | 'tenantId' | 'conversationId' | 'kind' | 'messageId' | 'tableId' | 'outputId' | 'revision' | 'state' | 'headers' | 'rows' | 'latestOutputId'>,
-  messageText?: string,
+  message?: { selected: string; parts: SteelReviewTextPart[]; selectedPartIndex?: number },
 ): SteelReviewReadRecord {
   return {
     userId: output.userId,
@@ -69,8 +122,48 @@ function sidecarRecord(
       values: row.values instanceof Map ? Object.fromEntries(row.values) : row.values,
     })),
     ...(output.latestOutputId ? { latestOutputId: output.latestOutputId } : {}),
-    ...(messageText ? { messageText } : {}),
+    ...(message
+      ? {
+          messageText: message.selected,
+          messageTextParts: message.parts,
+          messageTextPartIndex: message.selectedPartIndex,
+        }
+      : {}),
   };
+}
+
+function isPublishedFinalArtifact(
+  artifact: { sha256: string },
+  publication: { payload: string } | undefined,
+): boolean {
+  if (!publication) {
+    return false;
+  }
+  try {
+    const value: unknown = JSON.parse(publication.payload);
+    return typeof value === 'object' && value !== null &&
+      'finalSha256' in value && value.finalSha256 === artifact.sha256;
+  } catch {
+    return false;
+  }
+}
+
+function archivedRunOwnsMessage(
+  artifact: { runId: string; payload: string },
+  messageId: string,
+): boolean {
+  try {
+    const value: unknown = JSON.parse(artifact.payload);
+    if (typeof value !== 'object' || value === null || !('run' in value) ||
+      typeof value.run !== 'object' || value.run === null) {
+      return false;
+    }
+    const run = value.run as { runId?: unknown; status?: unknown; targetMessageId?: unknown };
+    return run.runId === artifact.runId && run.status === 'completed' &&
+      run.targetMessageId === messageId;
+  } catch {
+    return false;
+  }
 }
 
 export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewReadMethods {
@@ -79,24 +172,29 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
   const OcrState = createSteelConversationOcrStateModel(mongoose);
   const OcrRun = createSteelDelegateOcrRunModel(mongoose);
   const QuotationState = createSteelQuotationStateModel(mongoose);
+  const QuotationArtifact = createSteelQuotationArtifactModel(mongoose);
   const ReviewOutput = createSteelReviewOutputModel(mongoose);
 
   return {
     async readSteelReview(input) {
-      const [message, conversation] = await Promise.all([
+      const [messageRecord, conversation] = await Promise.all([
         Message.findOne(messageFilter(input))
-          .select({ messageId: 1, text: 1 })
-          .lean<IMessage>(),
+          .select({ messageId: 1, text: 1, content: 1 })
+          .lean<Pick<IMessage, 'messageId' | 'text' | 'content'>>(),
         Conversation.findOne({
           user: input.userId,
           conversationId: input.conversationId,
-          ...(input.tenantId ? { tenantId: input.tenantId } : {}),
+          ...tenantFilter(input.tenantId),
           ...activeExpirationFilter(),
         })
           .select({ conversationId: 1 })
           .lean(),
       ]);
-      if (!message || !conversation) {
+      if (!messageRecord || !conversation) {
+        return null;
+      }
+      const message = renderedMessageText(messageRecord, input.partIndex);
+      if (!message) {
         return null;
       }
 
@@ -109,19 +207,27 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
         .sort({ updatedAt: -1 })
         .lean<ISteelReviewOutput>();
       if (selected) {
-        const latest = await ReviewOutput.findOne({
-          ...scopeFilter(input),
-          kind: input.kind,
-          tableId: input.tableId,
-          state: 'current',
-        })
-          .sort({ updatedAt: -1 })
-          .select({ outputId: 1 })
-          .lean<Pick<ISteelReviewOutput, 'outputId'>>();
+        let resolvedLatestOutputId: string | undefined;
+        if (input.kind === 'ocr_result') {
+          const latest = await OcrState.findOne({ conversationId: input.conversationId })
+            .select({ currentOcrResultGenerationId: 1 })
+            .lean<Pick<ISteelConversationOcrState, 'currentOcrResultGenerationId'>>();
+          if (latest?.currentOcrResultGenerationId) {
+            resolvedLatestOutputId = `ocr_result:${latest.currentOcrResultGenerationId}`;
+          }
+        } else {
+          const latest = await QuotationState.findOne(scopeFilter(input))
+            .select({ 'currentSystemOrder.runId': 1 })
+            .lean<Pick<ISteelQuotationState, 'currentSystemOrder'>>();
+          if (latest?.currentSystemOrder?.runId) {
+            resolvedLatestOutputId = `system_order:${latest.currentSystemOrder.runId}`;
+          }
+        }
+        const { latestOutputId: _ignoredLatestOutputId, ...selectedWithoutLatest } = selected;
         return sidecarRecord({
-          ...selected,
-          latestOutputId: selected.latestOutputId ?? latest?.outputId,
-        }, message.text);
+          ...selectedWithoutLatest,
+          ...(resolvedLatestOutputId ? { latestOutputId: resolvedLatestOutputId } : {}),
+        }, message);
       }
 
       if (input.kind === 'ocr_result') {
@@ -155,7 +261,9 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
             markdown: state.currentOcrResultMarkdown,
             sourceMappings: sourceMappings(state),
             latestOutputId: `ocr_result:${state.currentOcrResultGenerationId}`,
-            ...(message.text ? { messageText: message.text } : {}),
+            messageText: message.selected,
+            messageTextParts: message.parts,
+            messageTextPartIndex: message.selectedPartIndex,
           };
         }
 
@@ -178,7 +286,9 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
             ...(state?.currentOcrResultGenerationId
               ? { latestOutputId: `ocr_result:${state.currentOcrResultGenerationId}` }
               : {}),
-            ...(message.text ? { messageText: message.text } : {}),
+            messageText: message.selected,
+            messageTextParts: message.parts,
+            messageTextPartIndex: message.selectedPartIndex,
           };
         }
         return null;
@@ -203,10 +313,64 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
           state: 'current',
           markdown,
           latestOutputId: `system_order:${runId}`,
-          ...(message.text ? { messageText: message.text } : {}),
+          messageText: message.selected,
+          messageTextParts: message.parts,
+          messageTextPartIndex: message.selectedPartIndex,
         };
       }
-      return null;
+
+      const [finalArtifacts, publicationArtifacts, archiveArtifacts] = await Promise.all([
+        QuotationArtifact.find({
+          ...scopeFilter(input),
+          kind: 'final',
+          operationId: 'final',
+        })
+          .sort({ updatedAt: -1 })
+          .lean(),
+        QuotationArtifact.find({
+          ...scopeFilter(input),
+          kind: 'final',
+          operationId: 'published',
+        })
+          .lean(),
+        QuotationArtifact.find({
+          ...scopeFilter(input),
+          kind: 'archive',
+          operationId: 'archive',
+        })
+          .lean(),
+      ]);
+      const historical = finalArtifacts.filter((artifact) => {
+        if (createHash('sha256').update(artifact.payload).digest('hex') !== artifact.sha256) {
+          return false;
+        }
+        const publication = publicationArtifacts.find((candidate) => candidate.runId === artifact.runId);
+        const archive = archiveArtifacts.find((candidate) => candidate.runId === artifact.runId);
+        return isPublishedFinalArtifact(artifact, publication) &&
+          archive !== undefined && archivedRunOwnsMessage(archive, input.messageId);
+      });
+      if (historical.length !== 1) {
+        return null;
+      }
+      const [artifact] = historical;
+      return {
+        userId: input.userId,
+        ...(input.tenantId ? { tenantId: input.tenantId } : {}),
+        conversationId: input.conversationId,
+        kind: input.kind,
+        messageId: input.messageId,
+        tableId: input.tableId,
+        outputId: `system_order:${artifact.runId}`,
+        revision: artifact.sha256,
+        state: 'historical',
+        markdown: artifact.payload,
+        ...(quotation?.currentSystemOrder?.runId
+          ? { latestOutputId: `system_order:${quotation.currentSystemOrder.runId}` }
+          : {}),
+        messageText: message.selected,
+        messageTextParts: message.parts,
+        messageTextPartIndex: message.selectedPartIndex,
+      };
     },
   };
 }

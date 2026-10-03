@@ -40,6 +40,7 @@ export class SteelReviewReadError extends Error {
 interface ReviewTableCandidate extends SteelMarkdownTable {
   index: number;
   title?: string;
+  partIndex?: number;
 }
 
 interface MarkdownFence {
@@ -125,6 +126,23 @@ function collectTables(markdown: string): ReviewTableCandidate[] {
   return tables;
 }
 
+function collectMessageTables(record: SteelReviewReadRecord): ReviewTableCandidate[] {
+  if (!record.messageTextParts || record.messageTextParts.length === 0) {
+    return record.messageText ? collectTables(record.messageText) : [];
+  }
+  let tableOffset = 0;
+  return record.messageTextParts.flatMap((part) => {
+    const localTables = collectTables(part.text);
+    const tables = localTables.map((table) => ({
+      ...table,
+      index: table.index + tableOffset,
+      partIndex: part.partIndex,
+    }));
+    tableOffset += localTables.length;
+    return tables;
+  });
+}
+
 function parsePageNumber(value: string | undefined): number | null {
   if (!value || !/^\d+$/u.test(value.trim())) {
     return null;
@@ -183,7 +201,7 @@ function projectRecord(
   table: ReviewTableCandidate,
   tableId: string,
 ): SteelReviewTable | null {
-  if (!isManagedTitle(record.kind, table.title) || table.rows.length === 0) {
+  if (!isManagedTitle(record.kind, table.title)) {
     return null;
   }
   if (record.kind === 'ocr_result' &&
@@ -191,15 +209,13 @@ function projectRecord(
     return null;
   }
   const rows = toRows(table, record.outputId, record.sourceMappings);
-  if (rows.length === 0) {
-    return null;
-  }
   const latestOutputId = record.latestOutputId ?? record.outputId;
   const isLatest = record.state === 'current' && latestOutputId === record.outputId;
   return {
     conversationId: record.conversationId,
     messageId: record.messageId,
     tableId,
+    ...(table.partIndex !== undefined ? { partIndex: table.partIndex } : {}),
     outputId: record.outputId,
     kind: record.kind,
     revision: record.revision,
@@ -211,16 +227,56 @@ function projectRecord(
   };
 }
 
-function projectSidecar(record: SteelReviewReadRecord): SteelReviewTable | null {
-  if (!record.headers || !record.rows || record.rows.length === 0) {
+function sidecarTarget(
+  record: SteelReviewReadRecord,
+  tableId: string,
+): ReviewTableCandidate | undefined {
+  if (!record.messageText || !record.headers || !record.rows) {
+    return undefined;
+  }
+  const rows = record.rows.map((row) => record.headers!.map((header) => {
+    const value = row.values[header]?.baseline;
+    return typeof value === 'string' ? value : undefined;
+  }));
+  if (rows.some((row) => row.some((value) => value === undefined))) {
+    return undefined;
+  }
+  const expected: SteelMarkdownTable = { headers: record.headers, rows: rows as string[][] };
+  const actualTables = collectMessageTables(record);
+  const requested = actualTables.filter(
+    (candidate) => getSteelReviewTableId(record.kind, candidate.index) === tableId,
+  );
+  if (requested.length !== 1 || !isManagedTitle(record.kind, requested[0]?.title)) {
+    return undefined;
+  }
+  const [target] = requested;
+  if (record.messageTextPartIndex !== undefined && target.partIndex !== record.messageTextPartIndex) {
+    return undefined;
+  }
+  if (!sameTable(target, expected)) {
+    return undefined;
+  }
+  const matches = actualTables.filter(
+    (candidate) => candidate.title === target.title && sameTable(candidate, expected),
+  );
+  return matches.length === 1 ? target : undefined;
+}
+
+function projectSidecar(
+  record: SteelReviewReadRecord,
+  target?: ReviewTableCandidate,
+): SteelReviewTable | null {
+  if (!record.headers || !record.rows) {
     return null;
   }
   const latestOutputId = record.latestOutputId ?? record.outputId;
-  const isLatest = record.state === 'current' && latestOutputId === record.outputId;
+  const isLatest = record.state === 'current' &&
+    record.latestOutputId !== undefined && latestOutputId === record.outputId;
   return {
     conversationId: record.conversationId,
     messageId: record.messageId,
     tableId: record.tableId,
+    ...(target?.partIndex !== undefined ? { partIndex: target.partIndex } : {}),
     outputId: record.outputId,
     kind: record.kind,
     revision: record.revision,
@@ -245,15 +301,21 @@ function findCanonicalTarget(
     return undefined;
   }
   const canonicalTables = collectTables(record.markdown);
-  if (!record.messageText) {
+  if (!record.messageText && !record.messageTextParts) {
     return canonicalTables.find(
       (candidate) => getSteelReviewTableId(record.kind, candidate.index) === tableId,
     );
   }
-  const messageTable = collectTables(record.messageText).find(
+  const messageTables = collectMessageTables(record);
+  const requestedTables = messageTables.filter(
     (candidate) => getSteelReviewTableId(record.kind, candidate.index) === tableId,
   );
-  if (!messageTable || !isManagedTitle(record.kind, messageTable.title)) {
+  if (requestedTables.length !== 1 ||
+    (record.messageTextPartIndex !== undefined && requestedTables[0]?.partIndex !== record.messageTextPartIndex)) {
+    return undefined;
+  }
+  const [messageTable] = requestedTables;
+  if (!isManagedTitle(record.kind, messageTable?.title)) {
     return undefined;
   }
   const canonicalMatches = canonicalTables.filter(
@@ -262,10 +324,17 @@ function findCanonicalTarget(
   if (canonicalMatches.length !== 1) {
     return undefined;
   }
-  const messageMatches = collectTables(record.messageText).filter(
+  const messageMatches = messageTables.filter(
     (candidate) => candidate.title === messageTable.title && sameTable(candidate, messageTable),
   );
-  return messageMatches.length === 1 ? canonicalMatches[0] : undefined;
+  if (messageMatches.length !== 1) {
+    return undefined;
+  }
+  const [canonicalTable] = canonicalMatches;
+  return {
+    ...canonicalTable,
+    ...(messageTable.partIndex !== undefined ? { partIndex: messageTable.partIndex } : {}),
+  };
 }
 
 export function createSteelReviewService({ reader }: { reader: SteelReviewReader }) {
@@ -279,8 +348,9 @@ export function createSteelReviewService({ reader }: { reader: SteelReviewReader
       if (!record) {
         throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review table not found');
       }
-      const sidecar = projectSidecar(record);
-      if (sidecar) {
+      const sidecarTargetCandidate = sidecarTarget(record, input.tableId);
+      const sidecar = projectSidecar(record, sidecarTargetCandidate);
+      if (sidecar && sidecarTargetCandidate) {
         return { table: sidecar };
       }
       if (!record.markdown) {

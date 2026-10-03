@@ -339,8 +339,13 @@ export const steelReview = (
   kind: string,
   messageId: string,
   tableId: string,
+  partIndex?: number,
 ) => {
-  const query = new URLSearchParams({ messageId, tableId }).toString();
+  const query = new URLSearchParams({
+    messageId,
+    tableId,
+    ...(partIndex !== undefined ? { partIndex: String(partIndex) } : {}),
+  }).toString();
   return `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}?${query}`;
 };
 
