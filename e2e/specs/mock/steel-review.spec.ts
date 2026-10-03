@@ -469,6 +469,12 @@ test.describe('Steel managed source review', () => {
     ] });
     const foreign = await page.request.get(`${sourcesUrl.split('?')[0]}/review-foreign-tenant?${new URLSearchParams({ messageId })}`, { headers });
     expect(foreign.status()).toBe(404);
+    const missingOwnerQuery = new URLSearchParams({ messageId: 'missing-review-owner' });
+    const missingOwnerList = await page.request.get(`${sourcesUrl.split('?')[0]}?${missingOwnerQuery}`, { headers });
+    expect(missingOwnerList.status()).toBe(200);
+    expect(await missingOwnerList.json()).toEqual({ sources: [] });
+    const missingOwnerBinary = await page.request.get(`${sourcesUrl.split('?')[0]}/review-alpha?${missingOwnerQuery}`, { headers });
+    expect(missingOwnerBinary.status()).toBe(404);
     const binary = await page.request.get(`${sourcesUrl.split('?')[0]}/review-alpha?${new URLSearchParams({ messageId })}`, { headers });
     expect(binary.status()).toBe(200);
     expect((await binary.body()).subarray(0, 5).toString()).toBe('%PDF-');
