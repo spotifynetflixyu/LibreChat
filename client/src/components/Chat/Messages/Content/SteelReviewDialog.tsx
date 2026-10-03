@@ -101,6 +101,47 @@ type ReceiptInput = {
   digest: string;
 };
 
+type SteelReviewConfirmedSave = {
+  conversationId: string;
+  messageId: string;
+  tableId: string;
+  partIndex?: number;
+  kind: SteelReviewKind;
+  outputId: string;
+  revision: string;
+  changedRows: number;
+};
+
+function isCurrentOwner(
+  table: SteelReviewTable | null | undefined,
+  owner: Omit<SteelReviewConfirmedSave, 'changedRows'>,
+): boolean {
+  return Boolean(
+    table &&
+    table.conversationId === owner.conversationId &&
+    table.messageId === owner.messageId &&
+    table.tableId === owner.tableId &&
+    table.partIndex === owner.partIndex &&
+    table.kind === owner.kind &&
+    table.outputId === owner.outputId &&
+    table.revision === owner.revision &&
+    table.isLatest,
+  );
+}
+
+function getCurrentLastSaveCount(table: SteelReviewTable | null | undefined): number | undefined {
+  const lastSave = table?.lastSave;
+  const snapshot = lastSave?.snapshot;
+  if (!lastSave || !snapshot || lastSave.revision !== table?.revision ||
+    lastSave.changedRows !== snapshot.changedRows ||
+    snapshot.conversationId !== table?.conversationId ||
+    snapshot.messageId !== table?.messageId ||
+    snapshot.outputId !== table?.outputId || snapshot.revision !== table?.revision) {
+    return undefined;
+  }
+  return snapshot.changedRows > 0 ? snapshot.changedRows : undefined;
+}
+
 function isAuthorizedCurrentTable(
   table: SteelReviewTable | null | undefined,
   prepared: SteelReviewPrepared,
@@ -227,6 +268,7 @@ export default function SteelReviewDialog({
   const [closeRequested, setCloseRequested] = useState(false);
   const [savePhase, setSavePhase] = useState<SavePhase>('idle');
   const [saveErrorCode, setSaveErrorCode] = useState<SteelReviewErrorCode>();
+  const [confirmedSave, setConfirmedSave] = useState<SteelReviewConfirmedSave>();
   const [receiptInput, setReceiptInput] = useState<ReceiptInput | null>(null);
   const [discardRequested, setDiscardRequested] = useState(false);
   const [receiptFailed, setReceiptFailed] = useState(false);
@@ -429,6 +471,16 @@ export default function SteelReviewDialog({
     exportBaseRowsRef.current = snapshot.rows;
     exportRowsRef.current = snapshot.rows;
     pendingSnapshotRef.current = { outputId: snapshot.outputId, revision: snapshot.revision };
+    setConfirmedSave({
+      conversationId: snapshot.conversationId,
+      messageId: snapshot.messageId,
+      tableId: identity.tableId,
+      partIndex: table?.partIndex ?? identity.partIndex,
+      kind: identity.kind,
+      outputId: snapshot.outputId,
+      revision: snapshot.revision,
+      changedRows: snapshot.changedRows,
+    });
     const currentDraft = latestDraftStateRef.current;
     const rebasedDraft = rebaseSteelReviewDraftState(currentDraft, snapshot.rows, submittedChangeSequence);
     latestDraftStateRef.current = rebasedDraft;
@@ -437,7 +489,7 @@ export default function SteelReviewDialog({
       exportRowsRef.current = applySteelReviewDrafts(snapshot.rows, rebased);
       return rebased;
     });
-  }, [identity, queryClient, setDraftState, table?.partIndex]);
+  }, [identity, queryClient, setConfirmedSave, setDraftState, table?.partIndex]);
   const applyConfirmedNoOp = useCallback((currentTable: SteelReviewTable, submittedChangeSequence: number) => {
     exportBaseRowsRef.current = currentTable.rows;
     const rebasedDraft = rebaseSteelReviewDraftState(
@@ -768,6 +820,13 @@ export default function SteelReviewDialog({
   const saveBusy = savePhase === 'preparing' || savePhase === 'committing' || savePhase === 'reconciling';
   const saveDisabled = !canEdit || dirtyRowCount === 0 || saveBusy;
   const saveErrorKey = getSaveErrorKey(savePhase, saveErrorCode);
+  const preparedRowCount = saveBusy && preparedRef.current && table &&
+    isCurrentOwner(table, preparedRef.current)
+    ? preparedRef.current.caption.changedRows
+    : undefined;
+  const confirmedRowCount = confirmedSave && isCurrentOwner(table, confirmedSave)
+    ? confirmedSave.changedRows
+    : getCurrentLastSaveCount(table);
   const onPageCount = useCallback((count: number) => {
     setDialogState((state) => ({
       ...state,
@@ -1003,6 +1062,16 @@ export default function SteelReviewDialog({
             {dirtyRowCount > 0 && (
               <span className="text-sm text-text-secondary">
                 {localize('com_ui_steel_review_unsaved_caption', { 0: dirtyRowCount })}
+              </span>
+            )}
+            {preparedRowCount !== undefined && (
+              <span className="text-sm text-text-secondary" role="status">
+                {localize('com_ui_steel_review_save_caption', { 0: preparedRowCount })}
+              </span>
+            )}
+            {confirmedRowCount !== undefined && preparedRowCount === undefined && (
+              <span className="text-sm text-text-secondary" role="status">
+                {localize('com_ui_steel_review_updated_caption', { 0: confirmedRowCount })}
               </span>
             )}
             {saveBusy && (
