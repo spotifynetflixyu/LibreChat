@@ -7,6 +7,22 @@ activation rules of the host; this project does not require a separate agent
 pipeline for routine tasks. Select checks for the affected behavior and risk,
 while completing every project check whose trigger applies.
 
+## Agent skills
+
+### Issue tracker
+
+Issues, specs, and tickets live in GitHub Issues for `spotifynetflixyu/LibreChat`.
+See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Use the five default triage roles. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Use a single-context root `GLOSSARY.md` and `docs/adr/` layout.
+See `docs/agents/domain.md`.
+
 ## Project Overview
 
 LibreChat is a monorepo with the following key workspaces:
