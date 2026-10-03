@@ -784,8 +784,17 @@ test.describe('Steel managed source review', () => {
     await expect(quantity).toHaveValue('2');
     await quantity.fill('9');
     await quantity.press('Enter');
-    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
+    const oneUnsavedRow = dialog.getByText(/Unsaved.*1|1.*unsaved/i);
+    await expect(oneUnsavedRow).toBeVisible();
+    await quantity.fill('10');
+    await quantity.press('Enter');
+    await expect(oneUnsavedRow).toBeVisible();
+    await quantity.fill('2');
+    await quantity.press('Enter');
+    await expect(oneUnsavedRow).toHaveCount(0);
     expect(await persistedSnapshot(conversationId)).toEqual(before);
+    // Save includes the focused value even before Enter or blur.
+    await quantity.fill('9');
     await dialog.getByRole('button', { name: /^Save/ }).click();
     await expect.poll(async () => {
       const snapshot = await persistedSnapshot(conversationId);
