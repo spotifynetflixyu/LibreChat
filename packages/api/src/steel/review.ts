@@ -5,7 +5,7 @@ import {
   getSteelReviewTableId,
   encodeSteelReviewDigest,
   isSteelReviewSourceAssociationHeader,
-  normalizeSteelReviewEffectiveValue,
+  normalizeSteelReviewRows,
   steelReviewCommitSchema,
   steelReviewPrepareSchema,
   steelReviewReceiptQuerySchema,
@@ -313,18 +313,6 @@ function sameCellProperty(
   const rightHasProperty = hasCellProperty(right, rightProperty);
   return leftHasProperty === rightHasProperty &&
     (!leftHasProperty || left?.[leftProperty] === right?.[rightProperty]);
-}
-
-function normalizeReviewRows(rows: readonly SteelReviewRow[]): SteelReviewRow[] {
-  return rows.map((row) => {
-    const values: Record<string, SteelReviewCell> = {};
-    for (const [header, cell] of Object.entries(row.values)) {
-      values[header] = hasCellProperty(cell, 'effective')
-        ? { ...cell, effective: normalizeSteelReviewEffectiveValue(cell.effective) }
-        : { ...cell };
-    }
-    return { ...row, values };
-  });
 }
 
 function sourceForRow(
@@ -786,8 +774,8 @@ export function createSteelReviewService({
       headers.some((header) => !Object.prototype.hasOwnProperty.call(row.values, header)))) {
       throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Review columns changed');
     }
-    const normalizedRows = normalizeReviewRows(payload.rows);
-    const normalizedCurrentRows = normalizeReviewRows(currentRows);
+    const normalizedRows = normalizeSteelReviewRows(payload.rows);
+    const normalizedCurrentRows = normalizeSteelReviewRows(currentRows);
     const changedRowIds = normalizedRows
       .filter((row, index) => JSON.stringify(row.values) !== JSON.stringify(normalizedCurrentRows[index]?.values))
       .map((row) => row.rowId);
@@ -961,34 +949,27 @@ export function createSteelReviewService({
       if (!sameTrustedPayload(candidate, trusted)) {
         throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review operation does not match trusted review state');
       }
-      try {
-        const result = await writer.commitSteelReview({
-          ...trusted,
-          userId: input.userId,
-          ...(input.tenantId !== undefined ? { tenantId: input.tenantId } : {}),
-        });
-        return {
-          ...trusted,
-          revision: result.revision,
-          messageSha256: result.messageSha256,
-          effectiveMarkdown: result.effectiveMarkdown,
-          displayMarkdown: result.displayMarkdown,
-          caption: {
-            ...input.caption,
-            changedRows: result.changedRows,
-            changedRowIds: result.changedRowIds,
-          },
-          savedAt: result.savedAt.toISOString(),
+      const result = await writer.commitSteelReview({
+        ...trusted,
+        userId: input.userId,
+        ...(input.tenantId !== undefined ? { tenantId: input.tenantId } : {}),
+      });
+      return {
+        ...trusted,
+        revision: result.revision,
+        messageSha256: result.messageSha256,
+        effectiveMarkdown: result.effectiveMarkdown,
+        displayMarkdown: result.displayMarkdown,
+        caption: {
+          ...input.caption,
           changedRows: result.changedRows,
           changedRowIds: result.changedRowIds,
-          ...(result.snapshot ? { savedSnapshot: serializeSavedSnapshot(result.snapshot) } : {}),
-        };
-      } catch (error) {
-        if (error instanceof SteelReviewWriteError) {
-          throw error;
-        }
-        throw error;
-      }
+        },
+        savedAt: result.savedAt.toISOString(),
+        changedRows: result.changedRows,
+        changedRowIds: result.changedRowIds,
+        ...(result.snapshot ? { savedSnapshot: serializeSavedSnapshot(result.snapshot) } : {}),
+      };
     },
   };
 }

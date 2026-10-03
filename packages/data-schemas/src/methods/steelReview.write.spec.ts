@@ -297,6 +297,87 @@ describe('Steel review write methods', () => {
     }).lean()).resolves.toBeNull();
   });
 
+  it('creates the exact clicked sidecar when another owner reuses the output id', async () => {
+    const models = createModels(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const conversationId = 'exact-owner-conversation';
+    const messageId = 'exact-owner-message';
+    const originalMarkdown = markdownFor('P-1');
+    await models.Conversation.create({
+      conversationId,
+      user: 'user-1',
+      tenantId: 'tenant-1',
+      title: 'Exact owner',
+      endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId,
+      conversationId,
+      user: 'user-1',
+      tenantId: 'tenant-1',
+      isCreatedByUser: false,
+      text: originalMarkdown,
+    });
+    await State.create({
+      conversationId,
+      currentOcrResultMarkdown: originalMarkdown,
+      currentOcrResultMessageId: messageId,
+      currentOcrResultGenerationId: 'generation-1',
+    });
+    const unrelatedFields = {
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      conversationId,
+      kind: 'ocr_result',
+      messageId: 'other-message',
+      tableId: 'ocr_result:other',
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      state: 'current',
+      headers: ['來源', '零件編號'],
+      rows: [{
+        rowId: 'other-row',
+        values: {
+          來源: { baseline: 'A', effective: 'A' },
+          '零件編號': { baseline: 'OTHER', effective: 'OTHER' },
+        },
+        source: null,
+      }],
+      effectiveMarkdown: markdownFor('OTHER'),
+      displayMarkdown: markdownFor('OTHER'),
+      receipts: [],
+    };
+    await ReviewOutput.create(unrelatedFields);
+    await createSteelReviewWriteMethods(mongoose).commitSteelReview(makeInput({
+      operationId: 'exact-owner-operation',
+      revision: 'generation-1',
+      previousValue: 'P-1',
+      nextValue: 'P-7',
+      conversationId,
+      messageId,
+    }));
+
+    const outputs = await ReviewOutput.find({ conversationId }).lean();
+    expect(outputs).toHaveLength(2);
+    const unrelatedAfter = (await ReviewOutput.find({
+      messageId: 'other-message',
+      tableId: 'ocr_result:other',
+      outputId: 'ocr_result:generation-1',
+    }).lean())[0];
+    expect(unrelatedAfter).toMatchObject(unrelatedFields);
+    expect(await ReviewOutput.findOne({ messageId }).lean()).toMatchObject({
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      conversationId,
+      kind: 'ocr_result',
+      messageId,
+      tableId: 'ocr_result:1',
+      outputId: 'ocr_result:generation-1',
+      state: 'current',
+    });
+  });
+
   it('classifies only an owned message and trusted OCR history as managed', async () => {
     const models = createModels(mongoose);
     const State = createSteelConversationOcrStateModel(mongoose);

@@ -5,6 +5,7 @@ import { useQueryClient } from '@tanstack/react-query';
 import {
   DynamicQueryKeys,
   QueryKeys,
+  steelReviewErrorCodeSchema,
 } from 'librechat-data-provider';
 import {
   Button,
@@ -202,11 +203,8 @@ function getErrorCode(error: unknown): SteelReviewErrorCode | undefined {
   if (typeof data !== 'object' || data === null || !('code' in data)) {
     return undefined;
   }
-  const code = data.code;
-  return code === 'INVALID_REVIEW_QUERY' || code === 'REVIEW_NOT_FOUND' ||
-    code === 'REVIEW_CONFLICT' || code === 'REVIEW_INVALID_OPERATION'
-    ? code
-    : undefined;
+  const parsed = steelReviewErrorCodeSchema.safeParse(data.code);
+  return parsed.success ? parsed.data : undefined;
 }
 
 function rowsToMatrix(table: Pick<SteelReviewTable, 'headers'>, rows: readonly SteelReviewRow[]): TableMatrix {

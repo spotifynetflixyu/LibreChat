@@ -241,8 +241,7 @@ export const useGetSteelReviewReceiptQuery = (
   } | null,
   config?: UseQueryOptions<SteelReviewReceiptStatus>,
 ): QueryObserverResult<SteelReviewReceiptStatus> => {
-  const queriesEnabled = useRecoilValue<boolean>(store.queriesEnabled);
-  const enabled = Boolean(input) && (config?.enabled ?? true) && queriesEnabled;
+  const enabled = Boolean(input) && (config?.enabled ?? true);
   return useQuery<SteelReviewReceiptStatus>(
     DynamicQueryKeys.steelReviewReceipt(
       input?.conversationId ?? '',

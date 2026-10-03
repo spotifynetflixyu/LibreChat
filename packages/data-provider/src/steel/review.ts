@@ -279,6 +279,18 @@ export function normalizeSteelReviewEffectiveValue(value: string | null): string
   return value === null ? null : value.trim().replace(/[\r\n]+/g, ' ');
 }
 
+export function normalizeSteelReviewRows(rows: readonly SteelReviewRow[]): SteelReviewRow[] {
+  return rows.map((row) => {
+    const values: Record<string, SteelReviewCell> = {};
+    for (const [header, cell] of Object.entries(row.values)) {
+      values[header] = Object.prototype.hasOwnProperty.call(cell, 'effective')
+        ? { ...cell, effective: normalizeSteelReviewEffectiveValue(cell.effective) }
+        : { ...cell };
+    }
+    return { ...row, values };
+  });
+}
+
 /** Keep the wire digest's field order and null semantics in one browser-safe encoder. */
 export function encodeSteelReviewDigest(input: SteelReviewDigestInput): string {
   return JSON.stringify({
