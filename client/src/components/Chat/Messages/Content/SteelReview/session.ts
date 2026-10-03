@@ -18,13 +18,22 @@ export function getSteelReviewDraftKey(
   table: Pick<SteelReviewTable, 'outputId' | 'revision' | 'partIndex'>,
 ): string {
   return JSON.stringify({
+    ...JSON.parse(getSteelReviewDraftOwnerKey(selection, table)),
+    baseRevision: table.revision,
+  });
+}
+
+export function getSteelReviewDraftOwnerKey(
+  selection: SteelReviewSelection,
+  table: Pick<SteelReviewTable, 'outputId' | 'partIndex'>,
+): string {
+  return JSON.stringify({
     conversationId: selection.conversationId,
     messageId: selection.messageId,
     kind: selection.kind,
     tableId: selection.tableId,
     partIndex: selection.partIndex ?? table.partIndex ?? null,
     outputId: table.outputId,
-    baseRevision: table.revision,
   });
 }
 
@@ -102,7 +111,7 @@ export function getSteelReviewDraftCell(
 }
 
 export function getSteelReviewDirtyRowIds(
-  table: Pick<SteelReviewTable, 'rows'>,
+  table: { rows: readonly SteelReviewRow[] },
   draft: SteelReviewDraftState,
 ): string[] {
   const trustedRowIds = new Set(table.rows.map((row) => row.rowId).filter(Boolean));

@@ -14,8 +14,8 @@ import {
   DropdownMenuTrigger,
   Tag,
 } from '@librechat/client';
-import type { SteelReviewKind } from 'librechat-data-provider';
-import type { SteelReviewSaveGate } from './SteelReviewDialog';
+import type { SteelReviewKind, SteelReviewTable } from 'librechat-data-provider';
+import type { SteelReviewDownloadAuthority, SteelReviewSaveGate } from './SteelReviewDialog';
 import type { MarkdownTableComment } from '~/common';
 import type { TableMatrix } from './table/export';
 import { canGroupByThickness, createCsvBlob, createThicknessZip } from './table/export';
@@ -223,6 +223,13 @@ function getTableMatrix(table: HTMLTableElement | null): TableMatrix {
   }
 
   return Array.from(table.rows).map((row) => Array.from(row.cells).map(getNormalizedCellText));
+}
+
+function getReviewTableMatrix(table: SteelReviewTable): TableMatrix {
+  return [
+    table.headers,
+    ...table.rows.map((row) => table.headers.map((header) => row.values[header]?.effective ?? '')),
+  ];
 }
 
 function getTableHeaderOptions(table: HTMLTableElement | null): TableHeaderOption[] {
@@ -652,6 +659,11 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
   const [copied, setCopied] = useState(false);
   const [modalCopied, setModalCopied] = useState(false);
   const saveGateRef = useRef<SteelReviewSaveGate>();
+  const reviewTableRef = useRef<SteelReviewTable>();
+  const downloadAuthorityRef = useRef<{
+    authority: SteelReviewDownloadAuthority;
+    gate?: SteelReviewSaveGate;
+  }>();
   const [markdownTitle, setMarkdownTitle] = useState<string>();
   const [, setSelection] = useAtom(steelReviewSelectionAtom);
   const localize = useLocalize();
@@ -737,6 +749,7 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
   const reviewLabel = localize('com_ui_steel_review_open');
   const reviewRetryLabel = localize('com_ui_steel_review_retry');
   const reviewTable = reviewQuery.data?.table;
+  reviewTableRef.current = reviewTable ?? undefined;
   let reviewTag: { label: string; variant: 'neutral' | 'success' } | undefined;
   if (reviewIdentity && reviewTable?.previousVersion) {
     reviewTag = { label: localize('com_ui_steel_review_previous_version'), variant: 'neutral' };
@@ -914,6 +927,43 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
   const retryReviewRecognition = useCallback(() => {
     void refetchReview();
   }, [refetchReview]);
+  const prepareReviewDownload = useCallback(async () => {
+    const currentTable = reviewTableRef.current;
+    if (!currentTable || !reviewIdentity) {
+      return false;
+    }
+    const authority = {
+      outputId: currentTable.outputId,
+      revision: currentTable.revision,
+    };
+    const gate = saveGateRef.current;
+    downloadAuthorityRef.current = { authority, gate };
+    if (gate) {
+      const gateMatrix = gate.getMatrix();
+      if (!(await gate.ensureSaved(authority)) && gateMatrix.length > 0) {
+        return false;
+      }
+    }
+    const latestTable = reviewTableRef.current;
+    if (!latestTable || latestTable.outputId !== authority.outputId) {
+      return false;
+    }
+    if (!gate && latestTable.revision !== authority.revision) {
+      return false;
+    }
+    return true;
+  }, [reviewIdentity]);
+  const getReviewDownloadMatrix = useCallback(() => {
+    const currentTable = reviewTableRef.current;
+    const downloadAuthority = downloadAuthorityRef.current;
+    if (!currentTable || !downloadAuthority || currentTable.outputId !== downloadAuthority.authority.outputId) {
+      return [];
+    }
+    const managedMatrix = downloadAuthority.gate?.getMatrix();
+    return managedMatrix && managedMatrix.length > 0
+      ? managedMatrix
+      : getReviewTableMatrix(currentTable);
+  }, []);
 
   useEffect(() => {
     if (!isExpanded || !modalTableRef.current) {
@@ -1011,8 +1061,8 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
         onReviewRetry={reviewCandidate && reviewRetryAvailable
           ? retryReviewRecognition
           : undefined}
-        onBeforeDownload={reviewIdentity ? () => saveGateRef.current?.ensureSaved() ?? Promise.resolve(false) : undefined}
-        getDownloadMatrix={reviewIdentity ? () => saveGateRef.current?.getMatrix() ?? [] : undefined}
+        onBeforeDownload={reviewIdentity ? prepareReviewDownload : undefined}
+        getDownloadMatrix={reviewIdentity ? getReviewDownloadMatrix : undefined}
         onCopied={handleCopied}
         onExpand={openModal}
       />
@@ -1043,8 +1093,8 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
                 onReviewRetry={reviewCandidate && reviewRetryAvailable
                   ? retryReviewRecognition
                   : undefined}
-                onBeforeDownload={reviewIdentity ? () => saveGateRef.current?.ensureSaved() ?? Promise.resolve(false) : undefined}
-                getDownloadMatrix={reviewIdentity ? () => saveGateRef.current?.getMatrix() ?? [] : undefined}
+                onBeforeDownload={reviewIdentity ? prepareReviewDownload : undefined}
+                getDownloadMatrix={reviewIdentity ? getReviewDownloadMatrix : undefined}
                 headerOptions={headerOptions}
                 onClose={closeModal}
                 onCopied={handleModalCopied}
