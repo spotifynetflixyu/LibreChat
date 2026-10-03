@@ -2,6 +2,7 @@ import {
   encodeSteelReviewDigest,
   isSteelReviewSourceAssociationHeader,
   normalizeSteelReviewEffectiveValue,
+  normalizeSteelReviewRows,
   steelReviewReadQuerySchema,
   steelReviewResponseSchema,
 } from './review';
@@ -70,6 +71,29 @@ describe('Steel review contracts', () => {
     expect(normalizeSteelReviewEffectiveValue('  7\r\n  ')).toBe('7');
     expect(normalizeSteelReviewEffectiveValue(' A\nB ')).toBe('A B');
     expect(normalizeSteelReviewEffectiveValue(null)).toBeNull();
+  });
+
+  it('normalizes rows without changing source, baseline, null, or cell properties', () => {
+    const rows = [{
+      rowId: 'row-1',
+      source: null,
+      values: {
+        Value: { baseline: ' AI ', effective: '  human\r\nvalue  ' },
+        Empty: { baseline: null, effective: null },
+      },
+    }];
+    const normalized = normalizeSteelReviewRows(rows);
+
+    expect(normalized).toEqual([{
+      rowId: 'row-1',
+      source: null,
+      values: {
+        Value: { baseline: ' AI ', effective: 'human value' },
+        Empty: { baseline: null, effective: null },
+      },
+    }]);
+    expect(normalized).not.toBe(rows);
+    expect(normalized[0]?.values).not.toBe(rows[0].values);
   });
 
   it('encodes scope, target, and row changes distinctly with stable null defaults', () => {

@@ -2,7 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   encodeSteelReviewDigest,
   isSteelReviewSourceAssociationHeader,
-  normalizeSteelReviewEffectiveValue,
+  normalizeSteelReviewRows,
 } from 'librechat-data-provider';
 import type {
   SteelReviewCell,
@@ -126,20 +126,8 @@ function sameCellProperty(
     (!leftHasProperty || left?.[leftProperty] === right?.[rightProperty]);
 }
 
-function normalizeReviewRows(rows: readonly SteelReviewRow[]): SteelReviewRow[] {
-  return rows.map((row) => {
-    const values: Record<string, SteelReviewCell> = {};
-    for (const [header, cell] of Object.entries(row.values)) {
-      values[header] = Object.prototype.hasOwnProperty.call(cell, 'effective')
-        ? { ...cell, effective: normalizeSteelReviewEffectiveValue(cell.effective) }
-        : { ...cell };
-    }
-    return { ...row, values };
-  });
-}
-
 function rowsAreNormalized(rows: readonly SteelReviewRow[]): boolean {
-  return JSON.stringify(normalizeReviewRows(rows)) === JSON.stringify(rows);
+  return JSON.stringify(normalizeSteelReviewRows(rows)) === JSON.stringify(rows);
 }
 
 function sameSourceAssociationCellAsBaseline(cell: SteelReviewCell | undefined): boolean {
@@ -815,6 +803,19 @@ function quotationIsLinkedToOcr(
   return receiptLinked;
 }
 
+function matchesReviewOutputOwner(
+  output: Pick<ISteelReviewOutput, 'userId' | 'tenantId' | 'conversationId' | 'kind' | 'messageId' | 'tableId' | 'outputId'>,
+  input: SteelReviewCommitInput,
+): boolean {
+  return output.userId === input.userId &&
+    matchesTenantScope(output.tenantId, input.tenantId) &&
+    output.conversationId === input.conversationId &&
+    output.kind === input.kind &&
+    output.messageId === input.messageId &&
+    output.tableId === input.tableId &&
+    output.outputId === input.outputId;
+}
+
 export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWriteMethods {
   const Message = createMessageModel(mongoose);
   const Conversation = createConversationModel(mongoose);
@@ -1085,6 +1086,9 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
 
           const outputFilter = {
             ...reviewScope(input),
+            kind: input.kind,
+            messageId: input.messageId,
+            tableId: input.tableId,
             outputId: input.outputId,
           };
           const outputs = await ReviewOutput.find(outputFilter)
@@ -1095,6 +1099,9 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review output authority is ambiguous');
           }
           const output = outputs[0];
+          if (output && !matchesReviewOutputOwner(output, input)) {
+            throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review output owner changed');
+          }
           if (output && (output.state !== 'current' || output.revision !== input.revision)) {
             throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review output is no longer current');
           }
@@ -1139,8 +1146,8 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               'Review effective cell representation is not canonical',
             );
           }
-          const canonicalRows = normalizeReviewRows(input.rows);
-          const canonicalBaselineRows = normalizeReviewRows(baselineRows);
+          const canonicalRows = normalizeSteelReviewRows(input.rows);
+          const canonicalBaselineRows = normalizeSteelReviewRows(baselineRows);
           const previousEffective = new Map(
             canonicalBaselineRows.map((row) => [
               row.rowId,
@@ -1277,7 +1284,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
           };
           const updated = await ReviewOutput.findOneAndUpdate(
             output
-              ? { ...outputFilter, state: 'current', revision: input.revision }
+              ? { ...outputFilter, _id: output._id, state: 'current', revision: input.revision }
               : outputFilter,
             update,
             { upsert: !output, new: true, session },
