@@ -117,7 +117,8 @@ test.describe('Steel managed source review', () => {
     await expect(dialog.getByText('REVIEW-P2', { exact: true })).toBeVisible();
     await expect(dialog.getByText('UNMANAGED', { exact: true })).toHaveCount(0);
     await expect(dialog.getByRole('textbox')).toHaveCount(0);
-    await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+    await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeVisible();
     await page.reload();
     await expect(page.getByRole('button', { name: 'Open Steel review', exact: true })).toHaveCount(1);
     expect(await persistedSnapshot(conversationId)).toEqual(before);
