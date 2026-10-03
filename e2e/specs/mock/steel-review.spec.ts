@@ -8,6 +8,7 @@ import {
   withMongo,
 } from './db';
 import { getE2EUser } from '../../setup/user';
+import { getAccessToken } from './helpers';
 
 const ocr = [
   '## ocr_result',
@@ -31,6 +32,21 @@ async function seedCurrent(markdown: string) {
     sender: 'Assistant',
   }]);
   await withMongo(async (db) => {
+    await db.collection('messages').updateOne({ conversationId, messageId }, {
+      $set: { metadata: { steel: { preflightToolCalls: [{
+        type: 'tool_call',
+        id: 'review-proof-paddle',
+        name: 'paddleocr_vl',
+        args: {
+          output_mode: 'detailed',
+          return_images: false,
+          use_doc_orientation_classify: false,
+          use_doc_unwarping: false,
+          use_layout_detection: false,
+        },
+        progress: 1,
+      }] } } },
+    });
     await db.collection('steel_conversation_ocr_state').insertOne({
       conversationId,
       currentOcrResultMarkdown: ocr,
@@ -60,6 +76,12 @@ function readUrl(conversationId: string, messageId: string, tableIndex: number) 
 
 test.describe('Steel managed source review', () => {
   const conversations: string[] = [];
+  let headers: { Authorization: string };
+
+  test.beforeEach(async ({ page }) => {
+    await page.goto('/c/new');
+    headers = { Authorization: `Bearer ${await getAccessToken(page)}` };
+  });
 
   test.afterEach(async () => {
     const ids = conversations.splice(0);
@@ -84,7 +106,7 @@ test.describe('Steel managed source review', () => {
     const { conversationId, messageId } = await seedCurrent(markdown);
     conversations.push(conversationId);
     const before = await persistedSnapshot(conversationId);
-    const target = await page.request.get(readUrl(conversationId, messageId, 2));
+    const target = await page.request.get(readUrl(conversationId, messageId, 2), { headers });
     expect(target.status()).toBe(200);
     expect(await target.json()).toMatchObject({ table: {
       conversationId,
@@ -97,7 +119,7 @@ test.describe('Steel managed source review', () => {
         { source: { fileId: 'review-alpha', pageNumber: 1 } },
       ],
     } });
-    const unbound = await page.request.get(readUrl(conversationId, messageId, 3));
+    const unbound = await page.request.get(readUrl(conversationId, messageId, 3), { headers });
     expect(unbound.status()).toBe(404);
     await page.goto(`/c/${conversationId}`);
     await expect(page.getByText('REVIEW-UNRELATED-SUFFIX', { exact: true })).toBeVisible();
@@ -110,7 +132,8 @@ test.describe('Steel managed source review', () => {
     await expect(dialog.getByText('REVIEW-P2', { exact: true })).toBeVisible();
     await expect(dialog.getByText('UNMANAGED', { exact: true })).toHaveCount(0);
     await expect(dialog.getByRole('textbox')).toHaveCount(0);
-    await dialog.getByRole('button', { name: 'Close', exact: true }).click();
+    await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeVisible();
     await page.reload();
     await expect(page.getByRole('button', { name: 'Open Steel review', exact: true })).toHaveCount(1);
     expect(await persistedSnapshot(conversationId)).toEqual(before);
@@ -125,7 +148,7 @@ test.describe('Steel managed source review', () => {
       });
     });
     const before = await persistedSnapshot(conversationId);
-    const result = await page.request.get(readUrl(conversationId, messageId, 1));
+    const result = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
     expect(result.status()).toBe(404);
     await page.goto(`/c/${conversationId}`);
     await expect(page.getByText('RENDERED-DIFFERENT', { exact: true })).toBeVisible();
@@ -168,7 +191,7 @@ test.describe('Steel managed source review', () => {
       });
     });
     const before = await persistedSnapshot(conversationId);
-    const result = await page.request.get(readUrl(conversationId, messageId, 1));
+    const result = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
     expect(result.status()).toBe(404);
     expect(await persistedSnapshot(conversationId)).toEqual(before);
   });
@@ -178,7 +201,7 @@ test.describe('Steel managed source review', () => {
     conversations.push(conversationId);
     const before = await persistedSnapshot(conversationId);
     for (const tableIndex of [1, 2]) {
-      const result = await page.request.get(readUrl(conversationId, messageId, tableIndex));
+      const result = await page.request.get(readUrl(conversationId, messageId, tableIndex), { headers });
       expect(result.status()).toBe(404);
     }
     expect(await persistedSnapshot(conversationId)).toEqual(before);
