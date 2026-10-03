@@ -175,6 +175,7 @@ export default function SteelReviewDialog({
   const [saveErrorCode, setSaveErrorCode] = useState<SteelReviewErrorCode>();
   const [receiptInput, setReceiptInput] = useState<ReceiptInput | null>(null);
   const [discardRequested, setDiscardRequested] = useState(false);
+  const [receiptFailed, setReceiptFailed] = useState(false);
   const submittedChangeSequenceRef = useRef(0);
   const preparedRef = useRef<SteelReviewPrepared>();
   const exportRowsRef = useRef<readonly SteelReviewRow[]>([]);
@@ -365,7 +366,16 @@ export default function SteelReviewDialog({
     if (existingPromise) {
       return existingPromise;
     }
-    if (!table || !canEdit || dirtyRowCount === 0) {
+    if (!table || !canEdit) {
+      return true;
+    }
+    if (savePhase === 'reconciling') {
+      return false;
+    }
+    if (savePhase === 'uncertain' && dirtyRowCount === 0) {
+      return false;
+    }
+    if (dirtyRowCount === 0) {
       return true;
     }
 
@@ -420,19 +430,22 @@ export default function SteelReviewDialog({
         savePromiseRef.current = undefined;
       }
     }
-  }, [applyConfirmedSnapshot, canEdit, commitMutation, dirtyRowCount, draftRows, draftState.changeSequence, identity, prepareMutation, query, table]);
+  }, [applyConfirmedSnapshot, canEdit, commitMutation, dirtyRowCount, draftRows, draftState.changeSequence, identity, prepareMutation, query, savePhase, table]);
   const getExportMatrix = useCallback(
     () => (table ? rowsToMatrix(table, exportRowsRef.current) : []),
     [table],
   );
   const ensureSaved = useCallback(async () => {
+    if (savePhase === 'uncertain' || savePhase === 'reconciling') {
+      return false;
+    }
     const saved = await saveChanges();
     if (!saved || !table) {
       return saved;
     }
     const latestDraft = latestDraftStateRef.current;
     return getSteelReviewDirtyRowIds(table, latestDraft).length === 0;
-  }, [saveChanges, table]);
+  }, [saveChanges, savePhase, table]);
   useEffect(() => {
     if (!saveGateRef) {
       return undefined;
@@ -447,6 +460,7 @@ export default function SteelReviewDialog({
     preparedRef.current = undefined;
     setSavePhase('idle');
     setSaveErrorCode(undefined);
+    setReceiptFailed(false);
     setCloseRequested(false);
     setSelection(null);
   }, [draftStateKey, setDraftState, setSelection]);
@@ -456,6 +470,7 @@ export default function SteelReviewDialog({
       clearDraftAndClose();
       return;
     }
+    setReceiptFailed(false);
     setSavePhase('reconciling');
     setReceiptInput({
       conversationId: prepared.conversationId,
@@ -497,6 +512,7 @@ export default function SteelReviewDialog({
       if (result.error || !result.data) {
         setSavePhase('reconciling');
         setSaveErrorCode(getErrorCode(result.error));
+        setReceiptFailed(true);
         return;
       }
       const status: SteelReviewReceiptStatus = result.data;
@@ -522,6 +538,7 @@ export default function SteelReviewDialog({
         setReceiptInput(null);
         setSavePhase('reconciling');
         setSaveErrorCode(undefined);
+        setReceiptFailed(true);
       }
     });
     return () => {
@@ -799,7 +816,8 @@ export default function SteelReviewDialog({
                   : 'com_ui_steel_review_saving')}
               </span>
             )}
-            {(saveErrorCode || savePhase === 'uncertain' || savePhase === 'stale' || savePhase === 'reconciling') && (
+            {(saveErrorCode || savePhase === 'uncertain' || savePhase === 'stale' ||
+              (savePhase === 'reconciling' && receiptFailed)) && (
               <span role="alert">{localize(saveErrorKey)}</span>
             )}
           </div>
