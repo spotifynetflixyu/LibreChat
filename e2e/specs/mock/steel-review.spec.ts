@@ -1299,6 +1299,27 @@ test.describe('Steel managed source review', () => {
     expect(await persistedSnapshot(conversationId)).toEqual(before);
   });
 
+  for (const foreignScope of ['owner', 'tenant'] as const) {
+    test(`generic message edit hides foreign ${foreignScope} managed OCR state without writes`, async ({ page }) => {
+      const { conversationId, messageId } = await seedCurrent(ocr);
+      conversations.push(conversationId);
+      await withMongo(async (db) => {
+        const scope = foreignScope === 'owner'
+          ? { user: new ObjectId().toHexString() }
+          : { tenantId: 'foreign-managed-review-tenant' };
+        await db.collection('conversations').updateOne({ conversationId }, { $set: scope });
+        await db.collection('messages').updateOne({ conversationId, messageId }, { $set: scope });
+      });
+      const before = await persistedSnapshot(conversationId);
+      const response = await page.request.put(`/api/messages/${conversationId}/${messageId}`, {
+        headers,
+        data: { text: 'FOREIGN-MANAGED-STATE-MUST-NOT-BE-CHANGED', model: 'gpt-4o-mini' },
+      });
+      expect(response.status()).toBe(404);
+      expect(await persistedSnapshot(conversationId)).toEqual(before);
+    });
+  }
+
   test('manual OCR Save changes only the clicked message and chat reload shows clean saved values', async ({ page }) => {
     const markdown = [
       'SAVE-KEEP-PREFIX',
