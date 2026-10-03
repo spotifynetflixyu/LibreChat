@@ -1,5 +1,5 @@
-import type * as t from '~/types';
 import type { Model, Schema } from 'mongoose';
+import type * as t from '~/types';
 import {
   steelAICapabilitySchema,
   steelAIRunSchema,
@@ -20,6 +20,7 @@ import {
   steelOcrResponseAuditSchema,
   steelQuotationStateSchema,
   steelQuotationArtifactSchema,
+  steelReviewOutputSchema,
 } from '~/schema/steel';
 
 type Mongoose = typeof import('mongoose');
@@ -97,6 +98,15 @@ export function createSteelQuotationArtifactModel(
     'SteelQuotationArtifact',
     steelQuotationArtifactSchema,
     'steel_quotation_artifacts',
+  );
+}
+
+export function createSteelReviewOutputModel(mongoose: Mongoose): Model<t.ISteelReviewOutput> {
+  return createSteelModel(
+    mongoose,
+    'SteelReviewOutput',
+    steelReviewOutputSchema,
+    'steel_review_outputs',
   );
 }
 

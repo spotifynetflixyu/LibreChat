@@ -1,6 +1,11 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useAtom } from 'jotai';
 import filenamify from 'filenamify';
 import { createPortal } from 'react-dom';
+import { useTranslation } from 'react-i18next';
+import { useRecoilState, useRecoilValue } from 'recoil';
+import { getSteelReviewTableId } from 'librechat-data-provider';
+import { Check, Copy, Download, FileSearch, Maximize2, X } from 'lucide-react';
 import {
   ControlCombobox,
   DropdownMenu,
@@ -8,18 +13,19 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@librechat/client';
-import { Check, Copy, Download, Maximize2, X } from 'lucide-react';
-import { useTranslation } from 'react-i18next';
-import { useRecoilState, useRecoilValue } from 'recoil';
-import { buildMarkdownTableCommentId } from '~/common';
+import type { SteelReviewKind } from 'librechat-data-provider';
 import type { MarkdownTableComment } from '~/common';
 import type { TableMatrix } from './table/export';
+import { canGroupByThickness, createCsvBlob, createThicknessZip } from './table/export';
+import CommentableTableCell, { getReactNodeText } from './table/comments';
+import { getMessageTimestamp, triggerDownload } from '~/utils';
+import { steelReviewSelectionAtom } from './SteelReview/state';
+import { useGetSteelReviewQuery } from '~/data-provider';
+import { buildMarkdownTableCommentId } from '~/common';
+import SteelReviewDialog from './SteelReviewDialog';
 import { useMessageContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
-import { getMessageTimestamp, triggerDownload } from '~/utils';
 import store from '~/store';
-import CommentableTableCell, { getReactNodeText } from './table/comments';
-import { canGroupByThickness, createCsvBlob, createThicknessZip } from './table/export';
 
 type MarkdownTableActionsProps = {
   children: React.ReactNode;
@@ -41,6 +47,8 @@ type TableToolbarProps = {
   onClose?: () => void;
   onCopied: () => void;
   onExpand?: () => void;
+  reviewLabel?: string;
+  onReview?: () => void;
   onStickyColumnChange?: (columnIndex: number | undefined) => void;
   stickyColumnIndex?: number;
 };
@@ -401,6 +409,8 @@ function TableToolbar({
   onExpand,
   onStickyColumnChange,
   stickyColumnIndex,
+  reviewLabel,
+  onReview,
 }: TableToolbarProps) {
   const localize = useLocalize();
   const copyLabel = localize('com_ui_copy_markdown_table');
@@ -491,6 +501,11 @@ function TableToolbar({
           <Copy className="size-4" aria-hidden="true" />
         )}
       </TableActionButton>
+      {reviewLabel && onReview && (
+        <TableActionButton label={reviewLabel} onClick={onReview}>
+          <FileSearch className="size-4" aria-hidden="true" />
+        </TableActionButton>
+      )}
       {downloadMenu ? (
         <DropdownMenu
           onOpenChange={(open) => {
@@ -562,6 +577,8 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
   const [stickyColumnIndex, setStickyColumnIndex] = useState<number>();
   const [copied, setCopied] = useState(false);
   const [modalCopied, setModalCopied] = useState(false);
+  const [markdownTitle, setMarkdownTitle] = useState<string>();
+  const [, setSelection] = useAtom(steelReviewSelectionAtom);
   const localize = useLocalize();
   const { i18n } = useTranslation();
   const conversation = useRecoilValue(store.conversationByIndex(0));
@@ -585,6 +602,30 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
     return formatted?.absolute ?? messageTimestamp ?? 'Unknown time';
   }, [i18n.language, messageTimestamp]);
   const markdownLabel = `${messageTimestampLabel} / Markdown ${markdownIndex}`;
+  const reviewKind: SteelReviewKind | undefined =
+    markdownTitle === 'ocr_result'
+      ? 'ocr_result'
+      : markdownTitle === 'system_order' || markdownTitle?.startsWith('system_order｜')
+        ? 'system_order'
+        : undefined;
+  const reviewCandidate = useMemo(
+    () =>
+      reviewKind && messageId && commentConversationId && isCreatedByUser !== true
+        ? {
+            conversationId: commentConversationId,
+            messageId,
+            kind: reviewKind,
+            tableId: getSteelReviewTableId(reviewKind, markdownIndex),
+          }
+        : null,
+    [commentConversationId, isCreatedByUser, markdownIndex, messageId, reviewKind],
+  );
+  const reviewQuery = useGetSteelReviewQuery(reviewCandidate, {
+    enabled: reviewCandidate != null,
+    retry: false,
+  });
+  const reviewIdentity = reviewQuery.data?.table ? reviewCandidate : null;
+  const reviewLabel = localize('com_ui_steel_review_open');
   const canComment = isCreatedByUser !== true && !!messageId && !!commentConversationId;
   const commentsByCell = useMemo(() => {
     const comments = new Map<string, MarkdownTableComment>();
@@ -604,7 +645,9 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
     return comments;
   }, [canComment, markdownIndex, messageId, pendingComments]);
   useEffect(() => {
-    setDownloadMenu(/^system_order(?:\s|$)/i.test(getMarkdownTitle(tableRef.current) ?? ''));
+    const title = getMarkdownTitle(tableRef.current);
+    setMarkdownTitle(title);
+    setDownloadMenu(/^system_order(?:\s|$)/i.test(title ?? ''));
   }, [children]);
   useEffect(() => {
     if (!canComment || !messageId) {
@@ -746,6 +789,11 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
     setStickyColumnIndex(undefined);
     setIsExpanded(true);
   }, []);
+  const openReview = useCallback(() => {
+    if (reviewIdentity) {
+      setSelection(reviewIdentity);
+    }
+  }, [reviewIdentity, setSelection]);
 
   useEffect(() => {
     if (!isExpanded || !modalTableRef.current) {
@@ -828,6 +876,8 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
         downloadFilename={downloadFilename}
         expanded={false}
         downloadMenu={downloadMenu}
+        reviewLabel={reviewIdentity ? reviewLabel : undefined}
+        onReview={reviewIdentity ? openReview : undefined}
         onCopied={handleCopied}
         onExpand={openModal}
       />
@@ -850,6 +900,8 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
                 downloadFilename={downloadFilename}
                 expanded={true}
                 downloadMenu={downloadMenu}
+                reviewLabel={reviewIdentity ? reviewLabel : undefined}
+                onReview={reviewIdentity ? openReview : undefined}
                 headerOptions={headerOptions}
                 onClose={closeModal}
                 onCopied={handleModalCopied}
@@ -863,6 +915,7 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
           </div>,
           document.body,
         )}
+      {reviewIdentity && <SteelReviewDialog identity={reviewIdentity} />}
     </div>
   );
 });

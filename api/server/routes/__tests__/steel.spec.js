@@ -14,10 +14,12 @@ const mockReadOpenAIOAuthUsage = jest.fn((_req, res) =>
 const mockCreateRuleProposal = jest.fn((_req, res) =>
   res.status(201).json({ id: 'proposal_1', status: 'needs_review' }),
 );
+const mockReadReview = jest.fn((_req, res) => res.status(200).json({ table: null }));
 const mockCreateSteelRouteHandlers = jest.fn(() => ({
   createRuleProposal: mockCreateRuleProposal,
   listModels: mockListModels,
   readOpenAIOAuthUsage: mockReadOpenAIOAuthUsage,
+  readReview: mockReadReview,
 }));
 
 const mockCapabilitySmoke = jest.fn((_req, res) =>
@@ -99,6 +101,7 @@ jest.mock('~/models', () => ({ getConvo: jest.fn().mockResolvedValue({ conversat
 
 jest.mock('@librechat/api', () => ({
   createQuotationRouteHandlers: (...args) => mockCreateQuotationHandlers(...args),
+  createSteelReviewService: jest.fn(({ reader }) => ({ read: jest.fn((input) => reader.readSteelReview(input)) })),
   createSteelAdminHandlers: (...args) => mockCreateSteelAdminHandlers(...args),
   createSteelRouteHandlers: (...args) => mockCreateSteelRouteHandlers(...args),
 }));

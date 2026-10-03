@@ -1,5 +1,15 @@
 import type { AxiosResponse } from 'axios';
 import type {
+  OpenAIOAuthTokenLoginStatus,
+  OpenAIOAuthTokenLoginMethod,
+  OpenAIOAuthTokenLogoutStatus,
+  OpenAIOAuthTokenStatus,
+  OpenAIOAuthUsageRemaining,
+  SteelReviewKind,
+  SteelReviewResponse,
+  SteelQuotationStatus,
+} from './steel';
+import type {
   TTracePage,
   TTracePageParams,
   TTraceAvailability,
@@ -10,14 +20,6 @@ import type { TInsightsAccessResponse, TInsightsParams, TInsightsResponse } from
 import type { TFileConfig } from './file-config';
 import type * as tl from './types/tools';
 import type * as t from './types';
-import type {
-  OpenAIOAuthTokenLoginStatus,
-  OpenAIOAuthTokenLoginMethod,
-  OpenAIOAuthTokenLogoutStatus,
-  OpenAIOAuthTokenStatus,
-  OpenAIOAuthUsageRemaining,
-  SteelQuotationStatus,
-} from './steel';
 import * as permissions from './accessPermissions';
 import * as endpoints from './api-endpoints';
 import { uploadEventStream } from './upload';
@@ -179,6 +181,15 @@ export function getOpenAIOAuthUsage(): Promise<OpenAIOAuthUsageRemaining> {
 
 export function getSteelQuotationStatus(conversationId: string): Promise<SteelQuotationStatus> {
   return request.get(endpoints.steelQuotationStatus(conversationId));
+}
+
+export function getSteelReview(
+  conversationId: string,
+  kind: SteelReviewKind,
+  messageId: string,
+  tableId: string,
+): Promise<SteelReviewResponse> {
+  return request.get(endpoints.steelReview(conversationId, kind, messageId, tableId));
 }
 
 export function cancelSteelQuotation(
