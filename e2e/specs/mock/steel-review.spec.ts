@@ -743,6 +743,62 @@ test.describe('Steel managed source review', () => {
   });
 
 
+  test('the backend saves only its exact message target and rejects a second stale prepared operation', async ({ page }) => {
+    const markdown = `CAS-PREFIX\n\n${ocr}\n\n## Other data\n| Name | Value |\n| --- | --- |\n| KEEP | 42 |\n\nCAS-SUFFIX`;
+    const { conversationId, messageId } = await seedCurrent(markdown);
+    conversations.push(conversationId);
+    const previousMessageId = randomUUID();
+    await seedMessages(getE2EUser().email, conversationId, [{
+      messageId: previousMessageId,
+      parentMessageId: '00000000-0000-0000-0000-000000000000',
+      text: ocr.replace('REVIEW-P1', 'OTHER-MESSAGE-KEEP'),
+      content: [{ type: 'text', text: ocr.replace('REVIEW-P1', 'OTHER-MESSAGE-KEEP') }],
+      isCreatedByUser: false, sender: 'Assistant',
+    }]);
+    await withMongo(async (db) => {
+      await db.collection('messages').updateOne({ conversationId, messageId }, { $set: {
+        text: `${markdown} CAS-SECOND-PART`,
+        content: [{ type: 'text', text: markdown }, { type: 'text', text: 'CAS-SECOND-PART' }],
+      } });
+    });
+    const before = await persistedSnapshot(conversationId);
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(read.status()).toBe(200);
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const operations: SteelReviewPrepared[] = [];
+    for (const quantity of ['7', '8']) {
+      const rows = structuredClone(table.rows);
+      rows[0].values['數量'].effective = quantity;
+      const prepared = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+      expect(prepared.status()).toBe(200);
+      operations.push(await prepared.json() as SteelReviewPrepared);
+    }
+    const saved = await page.request.post(`${url}/commit`, { headers, data: operations[0] });
+    expect(saved.status()).toBe(200);
+    const after = await persistedSnapshot(conversationId);
+    const expected = markdown.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 7 | 1 |');
+    const message = after.messages.find((candidate) => candidate.messageId === messageId);
+    expect(message?.text).toBe(`${expected} CAS-SECOND-PART`);
+    expect(message?.content).toEqual([{ type: 'text', text: expected }, { type: 'text', text: 'CAS-SECOND-PART' }]);
+    expect(after.messages.find((candidate) => candidate.messageId === previousMessageId))
+      .toEqual(before.messages.find((candidate) => candidate.messageId === previousMessageId));
+    const review = after.reviews[0];
+    expect(review?.aiRawMarkdown).toBe(ocr);
+    expect(review?.aiBaselineMarkdown).toBe(ocr);
+    expect(review?.humanMarkdown).toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 7 | 1 |'));
+    expect(review?.effectiveMarkdown).toBe(review?.humanMarkdown);
+    const stale = await page.request.post(`${url}/commit`, { headers, data: operations[1] });
+    expect(stale.status()).toBe(409);
+    expect(await persistedSnapshot(conversationId)).toEqual(after);
+    const reloaded = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(reloaded.status()).toBe(200);
+    expect(await reloaded.json()).toMatchObject({ table: {
+      messageId, isLatest: true, readOnly: false,
+      rows: [{ values: { 數量: { baseline: '2', effective: '7' } } }, { values: { 數量: { baseline: '3', effective: '3' } } }],
+    } });
+  });
+
   test('review commit rejects a client-rehashed target outside the owned OCR table', async ({ page }) => {
     const markdown = `INTEGRITY-PREFIX\n\n${ocr}\n\nINTEGRITY-SUFFIX`;
     const { conversationId, messageId } = await seedCurrent(markdown);
