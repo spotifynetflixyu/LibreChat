@@ -1435,6 +1435,42 @@ test.describe('Steel managed source review', () => {
   });
 
 
+  test('OCR Save displays authoritative prepared and confirmed row counts without writing presentation copy into chat', async ({ page }) => {
+    const { conversationId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const before = await persistedSnapshot(conversationId);
+    let resumeCommit: (() => void) | undefined;
+    const commitPaused = new Promise<void>((resolve) => { resumeCommit = resolve; });
+    const commitUrl = `**/api/steel/conversations/${conversationId}/review/ocr_result/commit`;
+    await page.route(commitUrl, async (route) => {
+      await commitPaused;
+      await route.continue();
+    });
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+    await quantity.fill('7');
+    await quantity.press('Enter');
+    await quantity.fill('8');
+    await dialog.getByRole('button', { name: /^Save/ }).click();
+    try {
+      await expect(dialog.getByText('This save will update 1 rows', { exact: true })).toBeVisible();
+      expect(await persistedSnapshot(conversationId)).toEqual(before);
+    } finally {
+      resumeCommit?.();
+    }
+    await expect(dialog.getByText('Updated 1 rows', { exact: true })).toBeVisible();
+    const after = await persistedSnapshot(conversationId);
+    expect(after.messages[0]?.text).toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 8 | 1 |'));
+    expect(after.messages[0]?.content).toEqual([{ type: 'text', text: after.messages[0]?.text }]);
+    expect(after.reviews).toHaveLength(1);
+    expect(after.reviews[0]?.receipts).toMatchObject([{ changedRows: 1 }]);
+    expectPreservedAiState(before.ocr, after.ocr);
+    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+    await expect(dialog.getByText('This save will update 1 rows', { exact: true })).toHaveCount(0);
+  });
+
   test('dirty OCR Escape offers continue and discard without saving the chat', async ({ page }) => {
     const { conversationId } = await seedCurrent(ocr);
     conversations.push(conversationId);
