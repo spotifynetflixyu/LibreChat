@@ -100,6 +100,16 @@ function getReviewCandidateKey(candidate: SteelReviewCandidate): string {
   return `${candidate.conversationId}:${candidate.messageId}:${candidate.kind}:${candidate.tableId}:${candidate.partIndex ?? ''}`;
 }
 
+function getReviewKind(markdownTitle?: string): SteelReviewKind | undefined {
+  if (markdownTitle === 'ocr_result') {
+    return 'ocr_result';
+  }
+  if (markdownTitle === 'system_order' || markdownTitle?.startsWith('system_order｜')) {
+    return 'system_order';
+  }
+  return undefined;
+}
+
 function getReviewErrorStatus(error: unknown): number | undefined {
   if (typeof error !== 'object' || error === null || !('response' in error)) {
     return undefined;
@@ -634,12 +644,7 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
     return formatted?.absolute ?? messageTimestamp ?? 'Unknown time';
   }, [i18n.language, messageTimestamp]);
   const markdownLabel = `${messageTimestampLabel} / Markdown ${markdownIndex}`;
-  const reviewKind: SteelReviewKind | undefined =
-    markdownTitle === 'ocr_result'
-      ? 'ocr_result'
-      : markdownTitle === 'system_order' || markdownTitle?.startsWith('system_order｜')
-        ? 'system_order'
-        : undefined;
+  const reviewKind = getReviewKind(markdownTitle);
   const reviewCandidate = useMemo(
     () =>
       reviewKind && messageId && commentConversationId && isCreatedByUser !== true
@@ -656,17 +661,19 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
     enabled: reviewCandidate != null,
     retry: false,
   });
+  const { refetch: refetchReview } = reviewQuery;
   const [recognizedReview, setRecognizedReview] = useState<typeof reviewCandidate>(null);
   const previousSubmittingRef = useRef(isSubmitting === true);
   const previousChildrenRef = useRef(children);
   const completionRefreshKeyRef = useRef<string>();
   const reviewErrorStatus = getReviewErrorStatus(reviewQuery.error);
   const candidateKey = reviewCandidate ? getReviewCandidateKey(reviewCandidate) : undefined;
-  const reviewIdentity = recognizedReview && candidateKey === getReviewCandidateKey(recognizedReview)
-    ? recognizedReview
-    : reviewQuery.data?.table
-      ? reviewCandidate
-      : null;
+  let reviewIdentity: SteelReviewCandidate | null = null;
+  if (recognizedReview && candidateKey === getReviewCandidateKey(recognizedReview)) {
+    reviewIdentity = recognizedReview;
+  } else if (reviewQuery.data?.table) {
+    reviewIdentity = reviewCandidate;
+  }
   const reviewRetryAvailable = reviewQuery.isError === true && reviewErrorStatus !== 404 && !reviewIdentity;
   useEffect(() => {
     if (!reviewCandidate) {
@@ -692,8 +699,8 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
       return;
     }
     completionRefreshKeyRef.current = candidateKey;
-    void reviewQuery.refetch();
-  }, [candidateKey, children, isSubmitting, reviewCandidate, reviewQuery.refetch]);
+    void refetchReview();
+  }, [candidateKey, children, isSubmitting, reviewCandidate, refetchReview]);
   const reviewLabel = localize('com_ui_steel_review_open');
   const reviewRetryLabel = localize('com_ui_steel_review_retry');
   const canComment = isCreatedByUser !== true && !!messageId && !!commentConversationId;
@@ -865,8 +872,8 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
     }
   }, [reviewIdentity, setSelection]);
   const retryReviewRecognition = useCallback(() => {
-    void reviewQuery.refetch();
-  }, [reviewQuery.refetch]);
+    void refetchReview();
+  }, [refetchReview]);
 
   useEffect(() => {
     if (!isExpanded || !modalTableRef.current) {

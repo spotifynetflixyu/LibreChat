@@ -13,6 +13,15 @@ The current source-review spec, glossary, and ADRs are the acceptance source.
   file/page source, processing parent, candidate/customer snapshots, per-field overrides,
   AI raw/full baseline, last human saved complete Markdown/timestamp, derived effective
   review snapshot, exact message-part/section locators, operation receipts, and revisions.
+- Persisted chat text/content targets contain only saved clean effective complete Markdown,
+  never review strike-through, old values or deleted rows. Review reads return same-owner
+  immutable AI baseline and saved effective Markdown plus stable-ID row projections; popup
+  comparison alone renders differences (including local unsaved drafts). Verify saved effective
+  target hash/revision after a human save rather than requiring equality with AI baseline.
+- The managed chat title renders the shared localized Updated badge from same-owner
+  committed human-save metadata. Reload preserves it; drafts, failures and no-op saves
+  do not create it, and a new AI owner does not inherit it. It never enters Markdown,
+  export, pricing or provider text.
 - The authoritative current-output references select eligibility per kind. Read-only reads
   must not rewrite messages. Historical owner snapshots stay immutable after supersession.
 - TypeScript Steel services receive DB methods, catalog client, config and context from callers.
@@ -29,6 +38,10 @@ The current source-review spec, glossary, and ADRs are the acceptance source.
   payload digest. Identical already-committed retries return their stored receipt without
   writes, even after supersession. Same ID/different payload fails. Never-committed and new
   undo/redo operations recheck latest-output eligibility and revision.
+- Save reuses existing backend field normalization on clean effective values (system order:
+  `packages/api/src/steel/markdown/order.ts`), before building display differences. Preparation
+  and commit use identical validation/normalization/recalculation and final hash/counts; persist
+  and return the same normalized snapshot in DB and exact chat targets. AI originals stay intact.
 - One Mongo transaction/CAS updates review data, canonical OCR/quotation, staleness metadata,
   and precisely identified message targets. system order/customer_quote are atomic. Generic
   message mutation and AI writers must not bypass the managed-table revision boundary.
@@ -47,7 +60,7 @@ The current source-review spec, glossary, and ADRs are the acceptance source.
   a fresh effective review snapshot from its own complete AI baseline, with no prior human
   overrides, added/deleted rows, source markings, candidates, derived values or strikes.
   Human differences apply only within the output where they were saved. Save the new AI
-  snapshot, current owner/display/quote and necessary staleness atomically; historical owners
+  snapshot, current owner/clean chat/quote and necessary staleness atomically; historical owners
   remain immutable. Never rewrite, reattach, delete or refresh the last human complete save.
   This supersedes the earlier cross-output human-composition policy.
 - Compare complete saved AI/human snapshots only within the authenticated owner/tenant/
@@ -72,14 +85,20 @@ The current source-review spec, glossary, and ADRs are the acceptance source.
 - Material replacement updates candidate dimensions/price/material derived values but
   preserves all existing processing fields. Separate later input changes retain ordinary
   dependency recomputation. Inputs are decimal strings; use existing exact quote arithmetic.
+- Manual Save is the only ordinary human commit trigger. Enter/blur, source/CRUD/candidate
+  selection and undo/redo update a feature-owned draft only; page/file switching preserves it.
+  A localized Save button has a persistent net unique unsaved-row caption. Save flushes the
+  active cell, prepares/recalculates all net operations and displays authoritative affected counts
+  before atomic commit; zero net changes do not write or refresh human time. Changes arriving
+  during a save stay in a subsequent draft, never cleared by an earlier receipt.
 - The frontend uses shared semantic primitives, Jotai feature state and React Query. PDF
   rendering is controlled single-page, multi-source single selection; one source has many rows.
-  Sessions preserve pending operations across pages and support persisted inverse operations.
+  Sessions preserve pending operations across pages and stage inverse operations for explicit Save.
   Every close entry checks unsaved active cells/failed drafts and asks Save updates, Discard
   unsaved changes or Continue editing; save closes only after confirmed success. Discard
-  never rolls back committed autosaves, and unknown in-flight outcomes use their receipt.
+  never rolls back committed saves, and unknown in-flight outcomes use their receipt.
 - Managed-table downloads use the same feature-owned save gate: flush the active edit and
-  drain pending autosave/prepare/commit, save only net corrections, then download the clicked
+  drain in-flight prepare/commit, save only net corrections, then download the clicked
   owner's backend-confirmed immutable saved clean snapshot/revision. No-op/history downloads
   do not write or refresh human time. Failures or superseded pending edits block download and
   retain drafts; a lost save response is resolved through the existing idempotent receipt.
@@ -89,6 +108,9 @@ The current source-review spec, glossary, and ADRs are the acceptance source.
 
 ## Task graph
 
+User execution preference: implement tickets in numeric/topological order, one ticket at a time.
+Complete, review and verify a ticket before releasing the next; no parallel ticket implementation.
+
 Each numbered ticket is a demoable vertical slice with schema/API/UI and behavior tests
 where its behavior needs them. Shared plumbing is introduced by the slice using it.
 
@@ -96,7 +118,7 @@ where its behavior needs them. Shared plumbing is introduced by the slice using 
 | --- | --- | --- |
 | 01 | Recognized Steel table read-only entry and per-kind current/history eligibility | none |
 | 02 | Multi-file controlled page/image preview and all corresponding rows | 01 |
-| 03 | OCR cell autosave, baseline/diff, exact atomic chat write, retry/conflict and stale quote | 01 |
+| 03 | OCR cell draft and manual Save, baseline/diff, exact atomic chat write, retry/conflict and stale quote | 01 |
 | 04 | Single nullable source selectors and legacy unlocated labeling | 02, 03 |
 | 05 | OCR add/delete/session undo-redo and stable IDs | 02, 03 |
 | 06 | System order price/quantity correction and atomic customer_quote update | 03 |
@@ -131,3 +153,9 @@ caption includes cascade changes and excludes unchanged processing on material r
 - Retain open tracker issues until actual PR merge permits resolution; draft/ready PR alone
   is not a merged completion. Report branch, head, PR, checks and remaining limitations honestly.
 - Archive completed ticket worktrees after integrating and preserving any necessary ignored files.
+
+## Latest title-status and output revision
+
+Title status applies only to ocr_result, system_order and customer_data. The trusted per-kind current Markdown-bound messageId selects the latest completed message owner, with output/table/generation identity and CAS revision for same-message replacements. Human Save keeps messageId/outputId and records Updated independently; a fresh AI baseline resets manual state. Historical known owners show Previous version, retaining an existing human Updated fact where applicable. Shared noninteractive Tag; en Updated/Previous version, zh-Hant 已更新/歷史版本, zh-Hans 已更新/历史版本. The explicit user language request permits these two narrow Chinese key additions; other new copy remains EN-only. Badge metadata stays outside Markdown and never changes heading/table identity. Customer_data gains status only, no editor. Persist/batch the metadata for reload without serial per-message reads.
+
+Backend delivery stops generating/appending customer_quote Markdown in new streams, cached finals, completion and Save. Keep existing internal quote calculation/snapshots/summary totals atomic with system_order; no CQ chat locator/insertion/mirror is needed and missing CQ section does not block Save. Preserve existing historical CQ text and all unrelated message bytes. Test every delivery path and saved/reloaded representation.

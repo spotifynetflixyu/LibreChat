@@ -1,0 +1,175 @@
+import {
+  steelReviewKinds,
+  steelReviewSourceBinaryQuerySchema,
+  steelReviewSourceQuerySchema,
+} from 'librechat-data-provider';
+import type {
+  SteelReviewSourceMethods,
+  SteelReviewSourceReadInput,
+  SteelReviewSourceRecord,
+} from '@librechat/data-schemas';
+import type {
+  SteelReviewKind,
+  SteelReviewSourceFile,
+  SteelReviewSourceQuery,
+} from 'librechat-data-provider';
+import type { Readable } from 'node:stream';
+import type { ServerRequest } from '~/types/http';
+
+export interface SteelReviewSourceListInput extends SteelReviewSourceQuery {
+  userId: string;
+  tenantId?: string;
+  conversationId: string;
+  kind: SteelReviewKind;
+}
+
+export interface SteelReviewSourceBinaryInput {
+  userId: string;
+  tenantId?: string;
+  conversationId: string;
+  kind: SteelReviewKind;
+  fileId: string;
+  messageId: string;
+}
+
+export interface SteelReviewSourceStreamReader {
+  (request: ServerRequest, source: SteelReviewSourceRecord): Promise<Readable>;
+}
+
+interface SteelReviewStorageStreamReader {
+  (request: ServerRequest, filepath: string): Promise<Readable>;
+}
+
+export interface SteelReviewSourceServiceDeps {
+  reader: SteelReviewSourceMethods;
+  readStream?: SteelReviewSourceStreamReader;
+}
+
+export interface SteelReviewSourceStorageReaderDeps {
+  getStrategy: (source: string) => {
+    getDownloadStream?: SteelReviewStorageStreamReader;
+  };
+  resolvePath: (file: Pick<SteelReviewSourceRecord, 'filepath' | 'storageKey'>) => string;
+}
+
+export interface SteelReviewSourceService {
+  list(input: SteelReviewSourceListInput): Promise<{ sources: SteelReviewSourceFile[] }>;
+  readBinary(
+    input: SteelReviewSourceBinaryInput,
+    request: ServerRequest,
+  ): Promise<{ source: SteelReviewSourceFile; stream: Readable }>;
+}
+
+export class SteelReviewSourceError extends Error {
+  readonly statusCode: 400 | 404 | 501;
+  readonly code:
+    | 'INVALID_REVIEW_SOURCE_QUERY'
+    | 'REVIEW_SOURCE_NOT_FOUND'
+    | 'REVIEW_SOURCE_UNAVAILABLE';
+
+  constructor(
+    code: SteelReviewSourceError['code'],
+    statusCode: SteelReviewSourceError['statusCode'],
+    message: string,
+  ) {
+    super(message);
+    this.name = 'SteelReviewSourceError';
+    this.code = code;
+    this.statusCode = statusCode;
+  }
+}
+
+export function createSteelReviewSourceStorageReader({
+  getStrategy,
+  resolvePath,
+}: SteelReviewSourceStorageReaderDeps): SteelReviewSourceStreamReader {
+  return async (request, source) => {
+    const getDownloadStream = getStrategy(source.storageSource).getDownloadStream;
+    if (!getDownloadStream) {
+      throw new SteelReviewSourceError(
+        'REVIEW_SOURCE_UNAVAILABLE',
+        501,
+        'Review source preview unavailable',
+      );
+    }
+    return getDownloadStream(request, resolvePath(source));
+  };
+}
+
+function publicSource(source: SteelReviewSourceRecord): SteelReviewSourceFile {
+  return {
+    fileId: source.fileId,
+    filename: source.filename,
+    mediaType: source.mediaType,
+    ...(source.bytes !== undefined ? { bytes: source.bytes } : {}),
+  };
+}
+
+function validateScope(input: SteelReviewSourceListInput): SteelReviewSourceQuery {
+  const result = steelReviewSourceQuerySchema.safeParse({
+    messageId: input.messageId,
+    ...(input.tableId !== undefined ? { tableId: input.tableId } : {}),
+  });
+  if (!result.success || !steelReviewKinds.includes(input.kind)) {
+    throw new SteelReviewSourceError(
+      'INVALID_REVIEW_SOURCE_QUERY',
+      400,
+      'Invalid review source query',
+    );
+  }
+  return result.data;
+}
+
+export function createSteelReviewSourceService({
+  reader,
+  readStream,
+}: SteelReviewSourceServiceDeps): SteelReviewSourceService {
+  return {
+    async list(input) {
+      const query = validateScope(input);
+      const sources = await reader.listSteelReviewSources({
+        userId: input.userId,
+        ...(input.tenantId !== undefined ? { tenantId: input.tenantId } : {}),
+        conversationId: input.conversationId,
+        messageId: query.messageId,
+        kind: input.kind,
+        ...(query.tableId !== undefined ? { tableId: query.tableId } : {}),
+      });
+      return { sources: sources.map(publicSource) };
+    },
+
+    async readBinary(input, request) {
+      const query = steelReviewSourceBinaryQuerySchema.safeParse({ messageId: input.messageId });
+      if (!query.success || !steelReviewKinds.includes(input.kind) || !input.fileId) {
+        throw new SteelReviewSourceError(
+          'INVALID_REVIEW_SOURCE_QUERY',
+          400,
+          'Invalid review source query',
+        );
+      }
+      const source = await reader.readSteelReviewSource({
+        userId: input.userId,
+        ...(input.tenantId !== undefined ? { tenantId: input.tenantId } : {}),
+        conversationId: input.conversationId,
+        messageId: query.data.messageId,
+        kind: input.kind,
+        fileId: input.fileId,
+      } satisfies SteelReviewSourceReadInput);
+      if (!source) {
+        throw new SteelReviewSourceError(
+          'REVIEW_SOURCE_NOT_FOUND',
+          404,
+          'Review source not found',
+        );
+      }
+      if (!readStream) {
+        throw new SteelReviewSourceError(
+          'REVIEW_SOURCE_UNAVAILABLE',
+          501,
+          'Review source preview unavailable',
+        );
+      }
+      return { source: publicSource(source), stream: await readStream(request, source) };
+    },
+  };
+}

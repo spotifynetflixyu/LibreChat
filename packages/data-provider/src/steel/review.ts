@@ -78,6 +78,12 @@ export const steelReviewPreparedSchema = steelReviewPrepareSchema.extend({
   target: steelReviewTargetSchema,
   replacementText: z.string(),
   cleanReplacementText: z.string(),
+  targetText: z.string(),
+  headers: z.array(z.string()),
+  effectiveMarkdown: z.string(),
+  displayMarkdown: z.string(),
+  aiBaselineMarkdown: z.string().optional(),
+  aiRawMarkdown: z.string().optional(),
   caption: steelReviewCaptionSchema,
 });
 
@@ -85,6 +91,26 @@ export const steelReviewCommitSchema = steelReviewPreparedSchema;
 
 export const steelReviewResponseSchema = z.object({
   table: steelReviewTableSchema.nullable(),
+});
+
+export const steelReviewSourceFileSchema = z.object({
+  fileId: z.string().min(1),
+  filename: z.string().min(1),
+  mediaType: z.string().min(1),
+  bytes: z.number().int().nonnegative().optional(),
+});
+
+export const steelReviewSourcesResponseSchema = z.object({
+  sources: z.array(steelReviewSourceFileSchema),
+});
+
+export const steelReviewSourceQuerySchema = z.object({
+  messageId: z.string().trim().min(1).max(300),
+  tableId: z.string().trim().min(1).max(300).optional(),
+});
+
+export const steelReviewSourceBinaryQuerySchema = z.object({
+  messageId: z.string().trim().min(1).max(300),
 });
 
 export type SteelReviewSource = z.infer<typeof steelReviewSourceSchema>;
@@ -97,3 +123,7 @@ export type SteelReviewCaption = z.infer<typeof steelReviewCaptionSchema>;
 export type SteelReviewPrepare = z.infer<typeof steelReviewPrepareSchema>;
 export type SteelReviewPrepared = z.infer<typeof steelReviewPreparedSchema>;
 export type SteelReviewCommit = z.infer<typeof steelReviewCommitSchema>;
+export type SteelReviewSourceFile = z.infer<typeof steelReviewSourceFileSchema>;
+export type SteelReviewSourcesResponse = z.infer<typeof steelReviewSourcesResponseSchema>;
+export type SteelReviewSourceQuery = z.infer<typeof steelReviewSourceQuerySchema>;
+export type SteelReviewSourceBinaryQuery = z.infer<typeof steelReviewSourceBinaryQuerySchema>;

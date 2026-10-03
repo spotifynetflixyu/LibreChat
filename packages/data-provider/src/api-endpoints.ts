@@ -352,6 +352,27 @@ export const steelReviewPrepare = (conversationId: string, kind: string) =>
   `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}/prepare`;
 export const steelReviewCommit = (conversationId: string, kind: string) =>
   `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}/commit`;
+export const steelReviewSources = (
+  conversationId: string,
+  kind: string,
+  messageId: string,
+  tableId?: string,
+) => {
+  const query = new URLSearchParams({
+    messageId,
+    ...(tableId !== undefined ? { tableId } : {}),
+  }).toString();
+  return `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}/sources?${query}`;
+};
+export const steelReviewSource = (
+  conversationId: string,
+  kind: string,
+  fileId: string,
+  messageId: string,
+) => {
+  const query = new URLSearchParams({ messageId }).toString();
+  return `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}/sources/${encodeURIComponent(fileId)}?${query}`;
+};
 
 export const adminSteelBase = () => `${BASE_URL}/api/admin/steel`;
 export const adminSteelCapabilitySmoke = () => `${adminSteelBase()}/ai/capability-smoke`;

@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import {
   getSteelReviewTableId,
+  steelReviewCommitSchema,
+  steelReviewPrepareSchema,
   steelReviewReadQuerySchema,
 } from 'librechat-data-provider';
 import type {
@@ -10,15 +13,25 @@ import type {
   SteelReviewRow,
   SteelReviewSource,
   SteelReviewTable,
+  SteelReviewPrepare,
+  SteelReviewPrepared,
+  SteelReviewCommit,
 } from 'librechat-data-provider';
 import type {
+  SteelReviewCommitInput,
+  SteelReviewCommitResult,
   SteelReviewReadInput,
   SteelReviewReadRecord,
 } from '@librechat/data-schemas';
+import { SteelReviewWriteError } from '@librechat/data-schemas';
 import { parseMarkdownTables, type SteelMarkdownTable } from './markdown/table';
 
 export interface SteelReviewReader {
   readSteelReview(input: SteelReviewReadInput): Promise<SteelReviewReadRecord | null>;
+}
+
+export interface SteelReviewWriter {
+  commitSteelReview(input: SteelReviewCommitInput): Promise<SteelReviewCommitResult>;
 }
 
 export class SteelReviewReadError extends Error {
@@ -46,6 +59,12 @@ interface ReviewTableCandidate extends SteelMarkdownTable {
 interface MarkdownFence {
   marker: '`' | '~';
   length: number;
+}
+
+interface LocatedTable extends ReviewTableCandidate {
+  start: number;
+  end: number;
+  raw: string;
 }
 
 function headingTitle(line: string): string | undefined {
@@ -127,6 +146,67 @@ function collectTables(markdown: string): ReviewTableCandidate[] {
     } else {
       flush();
     }
+  }
+  flush();
+  return tables;
+}
+
+function collectLocatedTables(markdown: string): LocatedTable[] {
+  const tables: LocatedTable[] = [];
+  const lines = markdown.match(/[^\r\n]*(?:\r?\n|$)/gu) ?? [];
+  let fence: MarkdownFence | undefined;
+  let title: string | undefined;
+  let block: string[] = [];
+  let blockStart = 0;
+  let blockEnd = 0;
+  let offset = 0;
+  let index = 0;
+
+  const flush = () => {
+    if (block.length === 0) {
+      return;
+    }
+    const parsed = parseMarkdownTables(block.join('\n'));
+    for (const table of parsed) {
+      index += 1;
+      const raw = markdown.slice(blockStart, blockEnd);
+      tables.push({ ...table, index, title, start: blockStart, end: blockEnd, raw });
+    }
+    block = [];
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\r?\n$/u, '');
+    const trimmed = line.trim();
+    const lineStart = offset;
+    offset += rawLine.length;
+    if (fence) {
+      if (closesFence(line, fence)) {
+        fence = undefined;
+      }
+      continue;
+    }
+    const nextFence = getFence(line);
+    if (nextFence) {
+      flush();
+      fence = nextFence;
+      continue;
+    }
+    const nextTitle = headingTitle(line);
+    if (isHeading(line)) {
+      flush();
+      title = nextTitle;
+      continue;
+    }
+    if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
+      if (block.length === 0) {
+        blockStart = lineStart;
+      }
+      blockEnd = lineStart + line.length;
+      block.push(trimmed);
+      continue;
+    }
+    flush();
   }
   flush();
   return tables;
@@ -241,7 +321,8 @@ function sidecarTarget(
     return undefined;
   }
   const rows = record.rows.map((row) => record.headers!.map((header) => {
-    const value = row.values[header]?.baseline;
+    const cell = row.values[header];
+    const value = cell?.effective ?? cell?.baseline;
     return typeof value === 'string' ? value : undefined;
   }));
   if (rows.some((row) => row.some((value) => value === undefined))) {
@@ -343,7 +424,110 @@ function findCanonicalTarget(
   };
 }
 
-export function createSteelReviewService({ reader }: { reader: SteelReviewReader }) {
+function fullMessageText(record: SteelReviewReadRecord): string | undefined {
+  if (record.messageTextParts && record.messageTextParts.length > 0) {
+    return record.messageTextParts
+      .map((part) => part.text)
+      .reduce((result, text) => appendRenderedText(result, text), '');
+  }
+  return record.messageText;
+}
+
+function locateReviewTarget(record: SteelReviewReadRecord, tableId: string): LocatedTable | undefined {
+  if (record.messageTextParts && record.messageTextParts.length > 0) {
+    let tableOffset = 0;
+    for (const part of record.messageTextParts) {
+      const localTables = collectLocatedTables(part.text);
+      const target = localTables.find(
+        (candidate) => getSteelReviewTableId(record.kind, candidate.index + tableOffset) === tableId,
+      );
+      if (target && isManagedTitle(record.kind, target.title)) {
+        return {
+          ...target,
+          index: target.index + tableOffset,
+          partIndex: part.partIndex,
+          raw: part.text.slice(target.start, target.end),
+        };
+      }
+      tableOffset += localTables.length;
+    }
+    return undefined;
+  }
+  const text = record.messageText;
+  if (!text) {
+    return undefined;
+  }
+  const target = collectLocatedTables(text).find(
+    (candidate) => getSteelReviewTableId(record.kind, candidate.index) === tableId,
+  );
+  return target && isManagedTitle(record.kind, target.title) ? target : undefined;
+}
+
+function escapeMarkdownCell(value: string): string {
+  return value.replaceAll('|', '\\|').replace(/[\r\n]+/gu, ' ');
+}
+
+function serializeReviewTable(headers: readonly string[], rows: readonly SteelReviewRow[]): string {
+  const header = `| ${headers.map(escapeMarkdownCell).join(' | ')} |`;
+  const separator = `| ${headers.map(() => '---').join(' | ')} |`;
+  const body = rows.map((row) => `| ${headers.map((name) => escapeMarkdownCell(row.values[name]?.effective ?? '')).join(' | ')} |`);
+  return [header, separator, ...body].join('\n');
+}
+
+function replaceTargetText(
+  record: SteelReviewReadRecord,
+  target: LocatedTable,
+  replacement: string,
+): string | undefined {
+  if (record.messageTextParts && record.messageTextParts.length > 0 && target.partIndex !== undefined) {
+    const parts = record.messageTextParts.map((part) => part.text);
+    const selectedIndex = parts.findIndex((_part, index) => record.messageTextParts?.[index]?.partIndex === target.partIndex);
+    if (selectedIndex < 0) {
+      return undefined;
+    }
+    const selected = parts[selectedIndex];
+    const next = `${selected.slice(0, target.start)}${replacement}${selected.slice(target.end)}`;
+    parts[selectedIndex] = next;
+    return parts.reduce((result, part) => appendRenderedText(result, part), '');
+  }
+  const text = fullMessageText(record);
+  return text === undefined ? undefined : `${text.slice(0, target.start)}${replacement}${text.slice(target.end)}`;
+}
+
+function operationDigest(input: Omit<SteelReviewCommitInput, 'digest'>): string {
+  const canonical = JSON.stringify({
+    userId: input.userId,
+    tenantId: input.tenantId ?? null,
+    conversationId: input.conversationId,
+    kind: input.kind,
+    messageId: input.messageId,
+    tableId: input.tableId,
+    partIndex: input.partIndex ?? null,
+    outputId: input.outputId,
+    revision: input.revision,
+    rows: input.rows,
+    headers: input.headers,
+    messageSha256: input.messageSha256,
+    target: input.target,
+    targetText: input.targetText,
+    replacementText: input.replacementText,
+    cleanReplacementText: input.cleanReplacementText,
+    effectiveMarkdown: input.effectiveMarkdown,
+    displayMarkdown: input.displayMarkdown,
+    aiBaselineMarkdown: input.aiBaselineMarkdown ?? null,
+    aiRawMarkdown: input.aiRawMarkdown ?? null,
+    caption: input.caption,
+  });
+  return createHash('sha256').update(canonical).digest('hex');
+}
+
+export function createSteelReviewService({
+  reader,
+  writer,
+}: {
+  reader: SteelReviewReader;
+  writer?: SteelReviewWriter;
+}) {
   return {
     async read(input: SteelReviewReadInput): Promise<{ table: SteelReviewTable }> {
       const query = steelReviewReadQuerySchema.safeParse(input);
@@ -372,6 +556,130 @@ export function createSteelReviewService({ reader }: { reader: SteelReviewReader
         throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review table not found');
       }
       return { table: projected };
+    },
+
+    async prepare(input: SteelReviewPrepare): Promise<SteelReviewPrepared> {
+      const parsed = steelReviewPrepareSchema.safeParse(input);
+      if (!parsed.success) {
+        throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Invalid review operation');
+      }
+      const record = await reader.readSteelReview(input);
+      if (!record || record.state !== 'current' || (record.latestOutputId ?? record.outputId) !== record.outputId ||
+        record.outputId !== input.outputId || record.revision !== input.revision) {
+        throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review table is no longer current');
+      }
+      const target = locateReviewTarget(record, input.tableId);
+      if (!target || target.partIndex !== input.partIndex && input.partIndex !== undefined) {
+        throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review table target not found');
+      }
+      const currentRows = record.rows ?? toRows(target, record.outputId, record.sourceMappings);
+      if (currentRows.length !== input.rows.length ||
+        currentRows.some((row, index) => row.rowId !== input.rows[index]?.rowId)) {
+        throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Review rows changed');
+      }
+      for (let index = 0; index < currentRows.length; index += 1) {
+        const current = currentRows[index];
+        const next = input.rows[index];
+        if (!next || Object.keys(current.values).some((header) =>
+          (current.values[header]?.baseline ?? null) !== (next.values[header]?.baseline ?? null))) {
+          throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Review AI baseline changed');
+        }
+      }
+      const changedRowIds = input.rows
+        .filter((row, index) => JSON.stringify(row.values) !== JSON.stringify(currentRows[index]?.values))
+        .map((row) => row.rowId);
+      const cleanReplacementText = serializeReviewTable(input.rows.length > 0 ? Object.keys(input.rows[0]?.values ?? {}) : target.headers, input.rows);
+      const effectiveMarkdown = replaceTargetText(record, target, cleanReplacementText);
+      if (!effectiveMarkdown) {
+        throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review table target not found');
+      }
+      const fullText = fullMessageText(record);
+      if (fullText === undefined) {
+        throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review message not found');
+      }
+      const headers = input.rows.length > 0 ? Object.keys(input.rows[0].values) : target.headers;
+      const operationBase: Omit<SteelReviewCommitInput, 'digest'> = {
+        ...input,
+        ...(target.partIndex !== undefined ? { partIndex: target.partIndex } : {}),
+        headers,
+        messageSha256: createHash('sha256').update(fullText).digest('hex'),
+        target: {
+          ...(target.partIndex !== undefined ? { partIndex: target.partIndex } : {}),
+          start: target.start,
+          end: target.end,
+          sha256: createHash('sha256').update(target.raw).digest('hex'),
+        },
+        targetText: target.raw,
+        replacementText: cleanReplacementText,
+        cleanReplacementText,
+        effectiveMarkdown,
+        displayMarkdown: effectiveMarkdown,
+        ...(record.aiBaselineMarkdown || record.markdown
+          ? { aiBaselineMarkdown: record.aiBaselineMarkdown ?? record.markdown }
+          : {}),
+        ...(record.aiRawMarkdown || record.markdown
+          ? { aiRawMarkdown: record.aiRawMarkdown ?? record.markdown }
+          : {}),
+        caption: {
+          kind: input.kind,
+          changedRows: changedRowIds.length,
+          changedRowIds,
+        },
+      };
+      return {
+        ...input,
+        ...operationBase,
+        operationId: randomUUID(),
+        digest: operationDigest(operationBase),
+        messageSha256: operationBase.messageSha256,
+        target: operationBase.target,
+        targetText: operationBase.targetText,
+        replacementText: operationBase.replacementText,
+        cleanReplacementText: operationBase.cleanReplacementText,
+        headers: operationBase.headers,
+        effectiveMarkdown: operationBase.effectiveMarkdown,
+        displayMarkdown: operationBase.displayMarkdown,
+        ...(operationBase.aiBaselineMarkdown ? { aiBaselineMarkdown: operationBase.aiBaselineMarkdown } : {}),
+        ...(operationBase.aiRawMarkdown ? { aiRawMarkdown: operationBase.aiRawMarkdown } : {}),
+        caption: operationBase.caption,
+      };
+    },
+
+    async commit(input: SteelReviewCommit): Promise<SteelReviewPrepared & { savedAt: string; changedRows: number; changedRowIds: string[] }> {
+      const parsed = steelReviewCommitSchema.safeParse(input);
+      if (!parsed.success) {
+        throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Invalid review operation');
+      }
+      if (!writer) {
+        throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Steel review save unavailable');
+      }
+      const expectedDigest = operationDigest(input);
+      if (expectedDigest !== input.digest) {
+        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review operation digest mismatch');
+      }
+      try {
+        const result = await writer.commitSteelReview(input);
+        return {
+          ...input,
+          revision: result.revision,
+          messageSha256: result.messageSha256,
+          effectiveMarkdown: result.effectiveMarkdown,
+          displayMarkdown: result.displayMarkdown,
+          caption: {
+            ...input.caption,
+            changedRows: result.changedRows,
+            changedRowIds: result.changedRowIds,
+          },
+          savedAt: result.savedAt.toISOString(),
+          changedRows: result.changedRows,
+          changedRowIds: result.changedRowIds,
+        };
+      } catch (error) {
+        if (error instanceof SteelReviewWriteError) {
+          throw error;
+        }
+        throw error;
+      }
     },
   };
 }

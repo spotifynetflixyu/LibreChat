@@ -5,14 +5,34 @@ import { steelReviewSelectionAtom } from './SteelReview/state';
 import MarkdownTableActions from './MarkdownTableActions';
 import SteelReviewDialog from './SteelReviewDialog';
 
+jest.mock('pdfjs-dist/build/pdf.worker.mjs?url', () => ({ default: 'pdf-worker.js' }), { virtual: true });
+jest.mock('pdfjs-dist/build/pdf.mjs', () => ({
+  GlobalWorkerOptions: { workerSrc: '' },
+  getDocument: jest.fn(),
+}));
+
 jest.mock('@librechat/client', () => {
-  const React = require('react');
+  const React = jest.requireActual<typeof import('react')>('react');
   const Pass = ({ children, asChild: _asChild, ...props }: {
     children?: React.ReactNode;
     asChild?: boolean;
   }) => React.createElement('div', props, children);
   const Button = ({ children, ...props }: { children?: React.ReactNode }) =>
     React.createElement('button', props, children);
+  const Select = ({ value, onValueChange, children }: {
+    value?: string;
+    onValueChange?: (value: string) => void;
+    children?: React.ReactNode;
+  }) => React.createElement(
+    'select',
+    { value, onChange: (event: React.ChangeEvent<HTMLSelectElement>) => onValueChange?.(event.target.value) },
+    children,
+  );
+  const SelectContent = ({ children }: { children?: React.ReactNode }) => children;
+  const SelectItem = ({ value, children }: { value: string; children?: React.ReactNode }) =>
+    React.createElement('option', { value }, children);
+  const SelectTrigger = () => null;
+  const SelectValue = () => null;
   const Dialog = ({ open, children }: { open: boolean; children?: React.ReactNode }) =>
     (open ? React.createElement('div', { role: 'dialog' }, children) : null);
   return {
@@ -28,10 +48,14 @@ jest.mock('@librechat/client', () => {
     OGDialogDescription: Pass,
     OGDialogHeader: Pass,
     OGDialogTitle: Pass,
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
   };
 }, { virtual: true });
 
-const mockUseGetSteelReviewQuery = jest.fn();
 let mockMessageContext: {
   conversationId: string;
   isCreatedByUser: boolean;
@@ -46,8 +70,30 @@ let mockMessageContext: {
 };
 
 jest.mock('~/data-provider', () => ({
-  useGetSteelReviewQuery: (...args: unknown[]) => mockUseGetSteelReviewQuery(...args),
+  useGetSteelReviewQuery: jest.fn(),
+  useGetSteelReviewSourcesQuery: jest.fn(() => ({
+    data: { sources: [] },
+    error: null,
+    isError: false,
+    isLoading: false,
+  })),
+  useGetSteelReviewSourceQuery: jest.fn(() => ({
+    data: undefined,
+    error: null,
+    isError: false,
+    isLoading: false,
+    refetch: jest.fn(),
+  })),
 }));
+const {
+  useGetSteelReviewQuery: mockUseGetSteelReviewQuery,
+  useGetSteelReviewSourcesQuery: mockUseGetSteelReviewSourcesQuery,
+  useGetSteelReviewSourceQuery: mockUseGetSteelReviewSourceQuery,
+} = jest.requireMock('~/data-provider') as {
+  useGetSteelReviewQuery: jest.Mock;
+  useGetSteelReviewSourcesQuery: jest.Mock;
+  useGetSteelReviewSourceQuery: jest.Mock;
+};
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
 }));
@@ -66,6 +112,12 @@ const reviewIdentity = {
   tableId: 'ocr_result:1',
 };
 
+const testHeading = 'ocr_result';
+const sourceHeader = '來源';
+const partHeader = '零件編號';
+const firstPart = 'P-1';
+const secondPart = 'P-2';
+
 function renderDialog() {
   const store = createStore();
   store.set(steelReviewSelectionAtom, reviewIdentity);
@@ -82,13 +134,13 @@ function renderTable() {
     <RecoilRoot>
       <div className="message-render">
         <div className="message-content">
-          <h2>ocr_result</h2>
+          <h2>{testHeading}</h2>
           <MarkdownTableActions markdownIndex={1}>
             <thead>
-              <tr><th>來源</th><th>零件編號</th></tr>
+              <tr><th>{sourceHeader}</th><th>{partHeader}</th></tr>
             </thead>
             <tbody>
-              <tr><td>A</td><td>P-1</td></tr>
+              <tr><td>A</td><td>{firstPart}</td></tr>
             </tbody>
           </MarkdownTableActions>
         </div>
@@ -167,6 +219,84 @@ describe('MarkdownTableActions Steel review entry', () => {
     expect(store.get(steelReviewSelectionAtom)).toEqual(reviewIdentity);
   });
 
+  it('keeps source rows visible while sources load or fail, then renders an image preview', async () => {
+    const row = {
+      rowId: 'drawing-row',
+      values: { Part: { baseline: 'P-1', effective: 'P-1' } },
+      source: { fileId: 'drawing-a', pageNumber: 1, filename: 'drawing-a.png' },
+    };
+    const table = {
+      ...reviewIdentity,
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      latestOutputId: 'ocr_result:generation-1',
+      isLatest: true,
+      readOnly: true,
+      headers: ['Part'],
+      rows: [row],
+    };
+    const sourceRefetch = jest.fn();
+    const sourceBlob = new Blob(['image'], { type: 'image/png' });
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: jest.fn(() => 'blob:image') });
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: jest.fn() });
+    mockUseGetSteelReviewQuery.mockReturnValue({ data: { table }, error: null, isError: false, isLoading: false });
+    mockUseGetSteelReviewSourcesQuery.mockReturnValue({
+      data: undefined,
+      error: null,
+      isError: false,
+      isLoading: true,
+      refetch: sourceRefetch,
+    });
+    mockUseGetSteelReviewSourceQuery.mockReturnValue({
+      data: undefined,
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: jest.fn(),
+    });
+    const { rerender, store } = renderDialog();
+    expect(screen.getByRole('status')).toHaveTextContent('com_ui_steel_review_sources_loading');
+    expect(screen.getByText('P-1')).toBeInTheDocument();
+
+    mockUseGetSteelReviewSourcesQuery.mockReturnValue({
+      data: undefined,
+      error: new Error('source listing failed'),
+      isError: true,
+      isLoading: false,
+      refetch: sourceRefetch,
+    });
+    rerender(
+      <Provider store={store}>
+        <SteelReviewDialog identity={reviewIdentity} />
+      </Provider>,
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent('com_ui_steel_review_sources_error');
+    expect(screen.getByText('P-1')).toBeInTheDocument();
+    screen.getByRole('button', { name: 'com_ui_retry' }).click();
+    expect(sourceRefetch).toHaveBeenCalledTimes(1);
+
+    mockUseGetSteelReviewSourcesQuery.mockReturnValue({
+      data: { sources: [{ fileId: 'drawing-a', filename: 'drawing-a.png', mediaType: 'image/png' }] },
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: sourceRefetch,
+    });
+    mockUseGetSteelReviewSourceQuery.mockReturnValue({
+      data: sourceBlob,
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: jest.fn(),
+    });
+    rerender(
+      <Provider store={store}>
+        <SteelReviewDialog identity={reviewIdentity} />
+      </Provider>,
+    );
+    expect(await screen.findByRole('img', { name: 'com_ui_steel_review_preview_canvas' })).toBeInTheDocument();
+  });
+
   it('keeps transient recognition failures retryable without opening ordinary Markdown review', async () => {
     const refetch = jest.fn();
     mockUseGetSteelReviewQuery.mockReturnValue({
@@ -203,10 +333,10 @@ describe('MarkdownTableActions Steel review entry', () => {
       <RecoilRoot>
         <div className="message-render">
           <div className="message-content">
-            <h2>ocr_result</h2>
+            <h2>{testHeading}</h2>
             <MarkdownTableActions markdownIndex={1}>
-              <thead><tr><th>來源</th><th>零件編號</th></tr></thead>
-              <tbody><tr><td>A</td><td>P-1</td></tr></tbody>
+              <thead><tr><th>{sourceHeader}</th><th>{partHeader}</th></tr></thead>
+              <tbody><tr><td>A</td><td>{firstPart}</td></tr></tbody>
             </MarkdownTableActions>
           </div>
         </div>
@@ -234,10 +364,10 @@ describe('MarkdownTableActions Steel review entry', () => {
       <RecoilRoot>
         <div className="message-render">
           <div className="message-content">
-            <h2>ocr_result</h2>
+            <h2>{testHeading}</h2>
             <MarkdownTableActions markdownIndex={1}>
-              <thead><tr><th>來源</th><th>零件編號</th></tr></thead>
-              <tbody><tr><td>A</td><td>P-2</td></tr></tbody>
+              <thead><tr><th>{sourceHeader}</th><th>{partHeader}</th></tr></thead>
+              <tbody><tr><td>A</td><td>{secondPart}</td></tr></tbody>
             </MarkdownTableActions>
           </div>
         </div>

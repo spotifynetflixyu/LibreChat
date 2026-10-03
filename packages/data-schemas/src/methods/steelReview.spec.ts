@@ -14,7 +14,9 @@ import { createModels } from '~/models';
 let mongoServer: MongoMemoryServer;
 
 beforeAll(async () => {
-  mongoServer = await MongoMemoryServer.create();
+  mongoServer = await MongoMemoryServer.create({
+    instance: { args: ['--setParameter', 'ttlMonitorEnabled=false'] },
+  });
   await mongoose.connect(mongoServer.getUri());
 });
 
@@ -1143,4 +1145,86 @@ describe('Steel review read methods', () => {
       tableId: 'ocr_result:1',
     })).resolves.toEqual(expect.objectContaining({ outputId: 'ocr_result:generation-tenantless' }));
   });
+
+  it('requires an active unique clicked message before exposing OCR state', async () => {
+    const models = createModels(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const read = createSteelReviewReadMethods(mongoose);
+    const markdown = '## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| A | P-1 |';
+    const userId = 'expired-read-user';
+    const tenantId = 'expired-read-tenant';
+    const conversations = [
+      'expired-empty-conversation',
+      'expired-populated-conversation',
+    ];
+    await models.Conversation.create(conversations.map((conversationId) => ({
+      conversationId,
+      user: userId,
+      tenantId,
+      title: 'Review',
+      endpoint: 'openAI',
+    })));
+    await models.Message.create([
+      {
+        messageId: 'expired-empty-message',
+        conversationId: conversations[0],
+        user: userId,
+        tenantId,
+        isCreatedByUser: false,
+        text: markdown,
+        content: [{ type: 'text', text: markdown }],
+        expiredAt: new Date(Date.now() - 60_000),
+      },
+      {
+        messageId: 'expired-populated-message',
+        conversationId: conversations[1],
+        user: userId,
+        tenantId,
+        isCreatedByUser: false,
+        text: markdown,
+        content: [{ type: 'text', text: markdown }],
+        expiredAt: new Date(Date.now() - 60_000),
+      },
+    ]);
+    await State.create([
+      {
+        conversationId: conversations[0],
+        sourceMappings: [],
+        currentOcrResultMarkdown: markdown,
+        currentOcrResultMessageId: 'expired-empty-message',
+        currentOcrResultGenerationId: 'expired-empty-generation',
+      },
+      {
+        conversationId: conversations[1],
+        sourceMappings: [{ fileId: 'expired-source', sourceCode: 'A', sourceFilename: 'expired.pdf' }],
+        currentOcrResultMarkdown: markdown,
+        currentOcrResultMessageId: 'expired-populated-message',
+        currentOcrResultGenerationId: 'expired-populated-generation',
+      },
+    ]);
+
+    const before = await Promise.all([
+      models.Message.countDocuments(),
+      State.countDocuments(),
+    ]);
+    for (const [conversationId, messageId] of [
+      [conversations[0], 'expired-empty-message'],
+      [conversations[1], 'expired-populated-message'],
+    ] as const) {
+      await expect(read.readSteelReview({
+        userId,
+        tenantId,
+        conversationId,
+        kind: 'ocr_result',
+        messageId,
+        tableId: 'ocr_result:1',
+      })).resolves.toBeNull();
+    }
+    const after = await Promise.all([
+      models.Message.countDocuments(),
+      State.countDocuments(),
+    ]);
+    expect(after).toEqual(before);
+  });
+
 });

@@ -205,4 +205,30 @@ describe('dialog Escape', () => {
 
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
+
+  it('closes the dialog when focus is on a closed combobox trigger', async () => {
+    const onOpenChange = jest.fn();
+    render(
+      <OGDialog open onOpenChange={onOpenChange}>
+        <OGDialogContent>
+          <button
+            type="button"
+            role="combobox"
+            aria-label="Closed select"
+            aria-controls="closed-select-options"
+            aria-expanded="false"
+            aria-haspopup="listbox"
+          >
+            Closed select
+          </button>
+          <div id="closed-select-options" role="listbox" hidden />
+        </OGDialogContent>
+      </OGDialog>,
+    );
+
+    screen.getByRole('combobox', { name: 'Closed select' }).focus();
+    await userEvent.keyboard('{Escape}');
+
+    expect(onOpenChange).toHaveBeenCalledWith(false);
+  });
 });

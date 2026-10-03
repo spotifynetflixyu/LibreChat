@@ -10,6 +10,7 @@ import type {
   SteelReviewPrepare,
   SteelReviewPrepared,
   SteelReviewCommit,
+  SteelReviewSourcesResponse,
   SteelQuotationStatus,
 } from './steel';
 import type {
@@ -202,6 +203,27 @@ export function prepareSteelReview(input: SteelReviewPrepare): Promise<SteelRevi
 
 export function commitSteelReview(input: SteelReviewCommit): Promise<SteelReviewPrepared> {
   return request.post(endpoints.steelReviewCommit(input.conversationId, input.kind), input);
+}
+
+export function getSteelReviewSources(
+  conversationId: string,
+  kind: SteelReviewKind,
+  messageId: string,
+  tableId?: string,
+): Promise<SteelReviewSourcesResponse> {
+  return request.get(endpoints.steelReviewSources(conversationId, kind, messageId, tableId));
+}
+
+export function getSteelReviewSource(
+  conversationId: string,
+  kind: SteelReviewKind,
+  fileId: string,
+  messageId: string,
+): Promise<AxiosResponse<Blob>> {
+  return request.getResponse(endpoints.steelReviewSource(conversationId, kind, fileId, messageId), {
+    responseType: 'blob',
+    headers: { Accept: 'application/octet-stream' },
+  });
 }
 
 export function cancelSteelQuotation(
