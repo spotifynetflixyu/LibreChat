@@ -1,6 +1,8 @@
 import { RecoilRoot } from 'recoil';
 import { createStore, Provider } from 'jotai';
-import { render, screen, waitFor } from '@testing-library/react';
+import { DynamicQueryKeys } from 'librechat-data-provider';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { steelReviewSelectionAtom } from './SteelReview/state';
 import MarkdownTableActions from './MarkdownTableActions';
 import SteelReviewDialog from './SteelReviewDialog';
@@ -19,6 +21,10 @@ jest.mock('@librechat/client', () => {
   }) => React.createElement('div', props, children);
   const Button = ({ children, ...props }: { children?: React.ReactNode }) =>
     React.createElement('button', props, children);
+  const Input = (props: React.InputHTMLAttributes<HTMLInputElement>) =>
+    React.createElement('input', props);
+  const Tag = ({ label, ...props }: { label: string; variant?: string }) =>
+    React.createElement('div', props, label);
   const Select = ({ value, onValueChange, children }: {
     value?: string;
     onValueChange?: (value: string) => void;
@@ -37,6 +43,8 @@ jest.mock('@librechat/client', () => {
     (open ? React.createElement('div', { role: 'dialog' }, children) : null);
   return {
     Button,
+    Input,
+    Tag,
     ControlCombobox: Pass,
     DropdownMenu: Pass,
     DropdownMenuContent: Pass,
@@ -69,6 +77,8 @@ let mockMessageContext: {
   isSubmitting: false,
 };
 
+let activeReviewQueryClient: QueryClient | undefined;
+
 jest.mock('~/data-provider', () => ({
   useGetSteelReviewQuery: jest.fn(),
   useGetSteelReviewSourcesQuery: jest.fn(() => ({
@@ -84,15 +94,30 @@ jest.mock('~/data-provider', () => ({
     isLoading: false,
     refetch: jest.fn(),
   })),
+  usePrepareSteelReviewMutation: jest.fn(() => ({ mutateAsync: jest.fn() })),
+  useCommitSteelReviewMutation: jest.fn(() => ({ mutateAsync: jest.fn() })),
+  useGetSteelReviewReceiptQuery: jest.fn(() => ({
+    data: undefined,
+    error: null,
+    isError: false,
+    isLoading: false,
+    refetch: jest.fn(),
+  })),
 }));
 const {
   useGetSteelReviewQuery: mockUseGetSteelReviewQuery,
   useGetSteelReviewSourcesQuery: mockUseGetSteelReviewSourcesQuery,
   useGetSteelReviewSourceQuery: mockUseGetSteelReviewSourceQuery,
+  usePrepareSteelReviewMutation: mockUsePrepareSteelReviewMutation,
+  useCommitSteelReviewMutation: mockUseCommitSteelReviewMutation,
+  useGetSteelReviewReceiptQuery: mockUseGetSteelReviewReceiptQuery,
 } = jest.requireMock('~/data-provider') as {
   useGetSteelReviewQuery: jest.Mock;
   useGetSteelReviewSourcesQuery: jest.Mock;
   useGetSteelReviewSourceQuery: jest.Mock;
+  usePrepareSteelReviewMutation: jest.Mock;
+  useCommitSteelReviewMutation: jest.Mock;
+  useGetSteelReviewReceiptQuery: jest.Mock;
 };
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
@@ -118,35 +143,41 @@ const partHeader = '零件編號';
 const firstPart = 'P-1';
 const secondPart = 'P-2';
 
-function renderDialog() {
+function renderDialog(queryClient = new QueryClient()) {
   const store = createStore();
   store.set(steelReviewSelectionAtom, reviewIdentity);
   const rendered = render(
-    <Provider store={store}>
-      <SteelReviewDialog identity={reviewIdentity} />
-    </Provider>,
+    <QueryClientProvider client={queryClient}>
+      <Provider store={store}>
+        <SteelReviewDialog identity={reviewIdentity} />
+      </Provider>
+    </QueryClientProvider>,
   );
-  return { ...rendered, store };
+  return { ...rendered, queryClient, store };
 }
 
 function renderTable() {
-  return render(
-    <RecoilRoot>
-      <div className="message-render">
-        <div className="message-content">
-          <h2>{testHeading}</h2>
-          <MarkdownTableActions markdownIndex={1}>
-            <thead>
-              <tr><th>{sourceHeader}</th><th>{partHeader}</th></tr>
-            </thead>
-            <tbody>
-              <tr><td>A</td><td>{firstPart}</td></tr>
-            </tbody>
-          </MarkdownTableActions>
+  const queryClient = new QueryClient();
+  const rendered = render(
+    <QueryClientProvider client={queryClient}>
+      <RecoilRoot>
+        <div className="message-render">
+          <div className="message-content">
+            <h2>{testHeading}</h2>
+            <MarkdownTableActions markdownIndex={1}>
+              <thead>
+                <tr><th>{sourceHeader}</th><th>{partHeader}</th></tr>
+              </thead>
+              <tbody>
+                <tr><td>A</td><td>{firstPart}</td></tr>
+              </tbody>
+            </MarkdownTableActions>
+          </div>
         </div>
-      </div>
-    </RecoilRoot>,
+      </RecoilRoot>
+    </QueryClientProvider>,
   );
+  return { ...rendered, queryClient };
 }
 
 describe('MarkdownTableActions Steel review entry', () => {
@@ -165,6 +196,41 @@ describe('MarkdownTableActions Steel review entry', () => {
     );
   });
 
+  it('exports a recognized confirmed table while the review dialog is closed', async () => {
+    const table = {
+      ...reviewIdentity,
+      kind: 'ocr_result' as const,
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      latestOutputId: 'ocr_result:generation-1',
+      isLatest: true,
+      readOnly: false,
+      headers: ['來源', '零件編號', '數量'],
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: {
+          來源: { baseline: 'A', effective: 'A' },
+          零件編號: { baseline: 'P-1', effective: 'P-1' },
+          數量: { baseline: '2', effective: '2' },
+        },
+      }],
+    };
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: jest.fn(() => 'blob:review-export'),
+    });
+    mockUseGetSteelReviewQuery.mockImplementation((input) => input
+      ? { data: { table }, error: null, isError: false, isLoading: false }
+      : { data: undefined, error: null, isError: false, isLoading: false });
+
+    renderTable();
+
+    const download = await screen.findByRole('button', { name: 'com_ui_download_table_csv' });
+    fireEvent.click(download);
+    await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalledTimes(1));
+  });
+
 
   it('renders loading, empty, and failure states without exposing edit controls', () => {
     mockUseGetSteelReviewQuery.mockReturnValue({
@@ -173,7 +239,7 @@ describe('MarkdownTableActions Steel review entry', () => {
       isError: false,
       isLoading: true,
     });
-    const { rerender, store } = renderDialog();
+    const { queryClient, rerender, store } = renderDialog();
     expect(screen.getByText('com_ui_steel_review_loading')).toBeInTheDocument();
 
     mockUseGetSteelReviewQuery.mockReturnValue({
@@ -183,9 +249,11 @@ describe('MarkdownTableActions Steel review entry', () => {
       isLoading: false,
     });
     rerender(
-      <Provider store={store}>
-        <SteelReviewDialog identity={reviewIdentity} />
-      </Provider>,
+      <QueryClientProvider client={queryClient}>
+        <Provider store={store}>
+          <SteelReviewDialog identity={reviewIdentity} />
+        </Provider>
+      </QueryClientProvider>,
     );
     expect(screen.getByText('com_ui_steel_review_empty')).toBeInTheDocument();
 
@@ -198,9 +266,11 @@ describe('MarkdownTableActions Steel review entry', () => {
       refetch,
     });
     rerender(
-      <Provider store={store}>
-        <SteelReviewDialog identity={reviewIdentity} />
-      </Provider>,
+      <QueryClientProvider client={queryClient}>
+        <Provider store={store}>
+          <SteelReviewDialog identity={reviewIdentity} />
+        </Provider>
+      </QueryClientProvider>,
     );
     expect(screen.getByRole('alert')).toHaveTextContent('com_ui_steel_review_error');
     expect(screen.queryByRole('textbox')).toBeNull();
@@ -217,6 +287,338 @@ describe('MarkdownTableActions Steel review entry', () => {
     expect(screen.getByText('com_ui_steel_review_empty')).toBeInTheDocument();
     expect(screen.queryByRole('textbox')).toBeNull();
     expect(store.get(steelReviewSelectionAtom)).toEqual(reviewIdentity);
+  });
+
+  it('keeps OCR edits local and requires an explicit discard or continue choice on close', () => {
+    mockUseGetSteelReviewQuery.mockReturnValue({
+      data: {
+        table: {
+          ...reviewIdentity,
+          outputId: 'ocr_result:generation-1',
+          revision: 'generation-1',
+          latestOutputId: 'ocr_result:generation-1',
+          isLatest: true,
+          readOnly: false,
+          headers: ['品名'],
+          rows: [{
+            rowId: 'row-1',
+            source: null,
+            values: { 品名: { baseline: '鋼板', effective: '鋼板' } },
+          }],
+        },
+      },
+      error: null,
+      isError: false,
+      isLoading: false,
+    });
+
+    const { store } = renderDialog();
+    const input = screen.getByRole('textbox', { name: '品名 row-1' });
+    fireEvent.change(input, { target: { value: '鍍鋅鋼板' } });
+    expect(screen.getByText('com_ui_steel_review_unsaved_caption')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'com_ui_steel_review_save' })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_close' }));
+    expect(screen.getByRole('alertdialog')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'com_ui_steel_review_save_updates' })).toBeEnabled();
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_continue_editing' }));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(screen.getByRole('textbox', { name: '品名 row-1' })).toHaveValue('鍍鋅鋼板');
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_close' }));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_discard_unsaved' }));
+    expect(store.get(steelReviewSelectionAtom)).toBeNull();
+  });
+
+  it('prepares the focused draft and commits the exact prepared operation', async () => {
+    const prepared = {
+      conversationId: 'conversation-1',
+      messageId: 'message-1',
+      kind: 'ocr_result',
+      tableId: 'ocr_result:1',
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      rows: [],
+      operationId: 'operation-1',
+      digest: 'a'.repeat(64),
+      messageSha256: 'b'.repeat(64),
+      target: { start: 0, end: 1, sha256: 'c'.repeat(64) },
+      replacementText: 'replacement',
+      cleanReplacementText: 'replacement',
+      targetText: 'target',
+      headers: ['品名'],
+      effectiveMarkdown: 'effective',
+      displayMarkdown: 'display',
+      caption: { kind: 'ocr_result', changedRows: 1, changedRowIds: ['row-1'] },
+    };
+    const savedSnapshot = {
+      operationId: prepared.operationId,
+      digest: prepared.digest,
+      outputId: prepared.outputId,
+      revision: 'generation-2',
+      headers: ['品名'],
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 品名: { baseline: '鋼板', effective: '鍍鋅鋼板' } },
+      }],
+      changedRows: 1,
+      changedRowIds: ['row-1'],
+      savedAt: '2026-10-03T00:00:00.000Z',
+      messageSha256: 'd'.repeat(64),
+      conversationId: 'conversation-1',
+      messageId: 'message-1',
+      messageText: 'saved',
+      effectiveMarkdown: 'effective',
+      displayMarkdown: 'display',
+    };
+    const prepare = jest.fn().mockResolvedValue(prepared);
+    const commit = jest.fn().mockResolvedValue({ changedRows: 1, changedRowIds: ['row-1'], savedSnapshot });
+    mockUsePrepareSteelReviewMutation.mockReturnValue({ mutateAsync: prepare });
+    mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
+    mockUseGetSteelReviewQuery.mockReturnValue({
+      data: {
+        table: {
+          ...reviewIdentity,
+          outputId: 'ocr_result:generation-1',
+          revision: 'generation-1',
+          latestOutputId: 'ocr_result:generation-1',
+          isLatest: true,
+          readOnly: false,
+          headers: ['品名'],
+          rows: [{
+            rowId: 'row-1',
+            source: null,
+            values: { 品名: { baseline: '鋼板', effective: '鋼板' } },
+          }],
+        },
+      },
+      error: null,
+      isError: false,
+      isLoading: false,
+    });
+
+    renderDialog();
+    fireEvent.change(screen.getByRole('textbox', { name: '品名 row-1' }), { target: { value: '鍍鋅鋼板' } });
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+    expect(prepare).toHaveBeenCalledWith(expect.objectContaining({
+      conversationId: 'conversation-1',
+      messageId: 'message-1',
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      rows: [expect.objectContaining({
+        rowId: 'row-1',
+        values: { 品名: { baseline: '鋼板', effective: '鍍鋅鋼板' } },
+      })],
+    }));
+    expect(commit).toHaveBeenCalledWith(prepared);
+    expect(screen.queryByText('com_ui_steel_review_unsaved_caption')).toBeNull();
+  });
+
+  it('preserves an edit made during commit when the confirmed revision changes the atom owner', async () => {
+    const queryClient = new QueryClient();
+    const reviewQueryKey = DynamicQueryKeys.steelReview(
+      reviewIdentity.conversationId,
+      reviewIdentity.kind,
+      reviewIdentity.messageId,
+      reviewIdentity.tableId,
+      undefined,
+    );
+    const firstTable = {
+      ...reviewIdentity,
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      latestOutputId: 'ocr_result:generation-1',
+      isLatest: true,
+      readOnly: false,
+      headers: ['品名'],
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 品名: { baseline: '鋼板', effective: '鋼板' } },
+      }],
+    };
+    const savedRows = [{
+      rowId: 'row-1',
+      source: null,
+      values: { 品名: { baseline: '鋼板', effective: '7' } },
+    }];
+    const prepared = {
+      conversationId: reviewIdentity.conversationId,
+      messageId: reviewIdentity.messageId,
+      kind: reviewIdentity.kind,
+      tableId: reviewIdentity.tableId,
+      outputId: firstTable.outputId,
+      revision: firstTable.revision,
+      rows: [firstTable.rows[0]],
+      operationId: 'operation-inflight',
+      digest: 'a'.repeat(64),
+      messageSha256: 'b'.repeat(64),
+      target: { start: 0, end: 1, sha256: 'c'.repeat(64) },
+      replacementText: 'replacement',
+      cleanReplacementText: 'replacement',
+      targetText: 'target',
+      headers: firstTable.headers,
+      effectiveMarkdown: 'effective',
+      displayMarkdown: 'display',
+      caption: { kind: reviewIdentity.kind, changedRows: 1, changedRowIds: ['row-1'] },
+    };
+    const commitResult = {
+      changedRows: 1,
+      changedRowIds: ['row-1'],
+      savedSnapshot: {
+        operationId: prepared.operationId,
+        digest: prepared.digest,
+        outputId: prepared.outputId,
+        revision: 'generation-2',
+        headers: firstTable.headers,
+        rows: savedRows,
+        changedRows: 1,
+        changedRowIds: ['row-1'],
+        savedAt: '2026-10-03T00:00:00.000Z',
+        messageSha256: 'd'.repeat(64),
+        conversationId: reviewIdentity.conversationId,
+        messageId: reviewIdentity.messageId,
+        messageText: 'saved',
+        effectiveMarkdown: 'effective',
+        displayMarkdown: 'display',
+      },
+    };
+    let resolveCommit!: (value: typeof commitResult) => void;
+    const commit = jest.fn(() => new Promise<typeof commitResult>((resolve) => {
+      resolveCommit = resolve;
+    }));
+    mockUseGetSteelReviewQuery.mockImplementation((input) => {
+      const key = DynamicQueryKeys.steelReview(
+        input?.conversationId ?? '',
+        input?.kind ?? 'ocr_result',
+        input?.messageId ?? '',
+        input?.tableId ?? '',
+        input?.partIndex,
+      );
+      return useQuery({
+        queryKey: key,
+        queryFn: () => activeReviewQueryClient?.getQueryData(key) ?? { table: null },
+        enabled: Boolean(input),
+        retry: false,
+      });
+    });
+    mockUsePrepareSteelReviewMutation.mockReturnValue({ mutateAsync: jest.fn().mockResolvedValue(prepared) });
+    mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
+    queryClient.setQueryData(reviewQueryKey, { table: firstTable });
+    activeReviewQueryClient = queryClient;
+    const rendered = renderDialog(queryClient);
+
+    fireEvent.change(screen.getByRole('textbox', { name: '品名 row-1' }), { target: { value: '7' } });
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+    fireEvent.change(screen.getByRole('textbox', { name: '品名 row-1' }), { target: { value: '10' } });
+
+    resolveCommit(commitResult);
+
+    await waitFor(() => {
+      expect(screen.getByRole('textbox', { name: '品名 row-1' })).toHaveValue('10');
+      expect(screen.getByText('com_ui_steel_review_unsaved_caption')).toBeInTheDocument();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(screen.getByRole('textbox', { name: '品名 row-1' })).toHaveValue('10');
+    expect(screen.getByText('com_ui_steel_review_unsaved_caption')).toBeInTheDocument();
+    rendered.unmount();
+    activeReviewQueryClient = undefined;
+  });
+
+  it('retries a failed receipt lookup and preserves edits made after discard starts', async () => {
+    const table = {
+      ...reviewIdentity,
+      kind: 'ocr_result' as const,
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      latestOutputId: 'ocr_result:generation-1',
+      isLatest: true,
+      readOnly: false,
+      headers: ['品名'],
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 品名: { baseline: '鋼板', effective: '鋼板' } },
+      }],
+    };
+    const prepared = {
+      conversationId: reviewIdentity.conversationId,
+      messageId: reviewIdentity.messageId,
+      kind: reviewIdentity.kind,
+      tableId: reviewIdentity.tableId,
+      outputId: table.outputId,
+      revision: table.revision,
+      rows: table.rows,
+      operationId: 'operation-receipt-retry',
+      digest: 'a'.repeat(64),
+      messageSha256: 'b'.repeat(64),
+      target: { start: 0, end: 1, sha256: 'c'.repeat(64) },
+      replacementText: 'replacement',
+      cleanReplacementText: 'replacement',
+      targetText: 'target',
+      headers: table.headers,
+      effectiveMarkdown: 'effective',
+      displayMarkdown: 'display',
+      caption: { kind: reviewIdentity.kind, changedRows: 1, changedRowIds: ['row-1'] },
+    };
+    const reviewRefetch = jest.fn().mockResolvedValue({ data: { table }, error: null });
+    const prepare = jest.fn().mockResolvedValue(prepared);
+    const commit = jest.fn().mockRejectedValue(new Error('connection lost'));
+    mockUseGetSteelReviewQuery.mockReturnValue({
+      data: { table },
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: reviewRefetch,
+    });
+    mockUsePrepareSteelReviewMutation.mockReturnValue({ mutateAsync: prepare });
+    mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
+    let receiptResolve!: (result: { data: { status: 'absent' }; error: null }) => void;
+    let receiptCalls = 0;
+    const receiptRefetch = jest.fn().mockImplementation(() => {
+      receiptCalls += 1;
+      if (receiptCalls === 1) {
+        return Promise.reject(new Error('receipt unavailable'));
+      }
+      return new Promise((resolve) => {
+        receiptResolve = resolve;
+      });
+    });
+    mockUseGetSteelReviewReceiptQuery.mockReturnValue({
+      data: undefined,
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: receiptRefetch,
+    });
+
+    renderDialog();
+    const input = screen.getByRole('textbox', { name: '品名 row-1' });
+    fireEvent.change(input, { target: { value: '7' } });
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_close' }));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_discard_unsaved' }));
+    await waitFor(() => expect(receiptCalls).toBe(1));
+    const retryReceipt = await screen.findByRole('button', { name: 'com_ui_steel_review_receipt_retry' });
+    expect(retryReceipt).toBeEnabled();
+    expect(input).toHaveValue('7');
+
+    fireEvent.click(retryReceipt);
+    await waitFor(() => expect(receiptCalls).toBe(2));
+    fireEvent.change(input, { target: { value: '10' } });
+    receiptResolve({ data: { status: 'absent' }, error: null });
+
+    await waitFor(() => {
+      expect(input).toHaveValue('10');
+      expect(screen.getByText('com_ui_steel_review_unsaved_caption')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'com_ui_steel_review_receipt_retry' })).toBeNull();
+    });
   });
 
   it('keeps source rows visible while sources load or fail, then renders an image preview', async () => {
@@ -254,7 +656,7 @@ describe('MarkdownTableActions Steel review entry', () => {
       isLoading: false,
       refetch: jest.fn(),
     });
-    const { rerender, store } = renderDialog();
+    const { queryClient, rerender, store } = renderDialog();
     expect(screen.getByRole('status')).toHaveTextContent('com_ui_steel_review_sources_loading');
     expect(screen.getByText('P-1')).toBeInTheDocument();
 
@@ -266,9 +668,11 @@ describe('MarkdownTableActions Steel review entry', () => {
       refetch: sourceRefetch,
     });
     rerender(
-      <Provider store={store}>
-        <SteelReviewDialog identity={reviewIdentity} />
-      </Provider>,
+      <QueryClientProvider client={queryClient}>
+        <Provider store={store}>
+          <SteelReviewDialog identity={reviewIdentity} />
+        </Provider>
+      </QueryClientProvider>,
     );
     expect(screen.getByRole('alert')).toHaveTextContent('com_ui_steel_review_sources_error');
     expect(screen.getByText('P-1')).toBeInTheDocument();
@@ -290,9 +694,11 @@ describe('MarkdownTableActions Steel review entry', () => {
       refetch: jest.fn(),
     });
     rerender(
-      <Provider store={store}>
-        <SteelReviewDialog identity={reviewIdentity} />
-      </Provider>,
+      <QueryClientProvider client={queryClient}>
+        <Provider store={store}>
+          <SteelReviewDialog identity={reviewIdentity} />
+        </Provider>
+      </QueryClientProvider>,
     );
     expect(await screen.findByRole('img', { name: 'com_ui_steel_review_preview_canvas' })).toBeInTheDocument();
   });
@@ -330,17 +736,19 @@ describe('MarkdownTableActions Steel review entry', () => {
 
     mockMessageContext = { ...mockMessageContext, isSubmitting: false };
     rendered.rerender(
-      <RecoilRoot>
-        <div className="message-render">
-          <div className="message-content">
-            <h2>{testHeading}</h2>
-            <MarkdownTableActions markdownIndex={1}>
-              <thead><tr><th>{sourceHeader}</th><th>{partHeader}</th></tr></thead>
-              <tbody><tr><td>A</td><td>{firstPart}</td></tr></tbody>
-            </MarkdownTableActions>
+      <QueryClientProvider client={rendered.queryClient}>
+        <RecoilRoot>
+          <div className="message-render">
+            <div className="message-content">
+              <h2>{testHeading}</h2>
+              <MarkdownTableActions markdownIndex={1}>
+                <thead><tr><th>{sourceHeader}</th><th>{partHeader}</th></tr></thead>
+                <tbody><tr><td>A</td><td>{firstPart}</td></tr></tbody>
+              </MarkdownTableActions>
+            </div>
           </div>
-        </div>
-      </RecoilRoot>,
+        </RecoilRoot>
+      </QueryClientProvider>,
     );
 
     await waitFor(() => expect(refetch).toHaveBeenCalledTimes(1));
@@ -361,17 +769,19 @@ describe('MarkdownTableActions Steel review entry', () => {
     const rendered = renderTable();
 
     rendered.rerender(
-      <RecoilRoot>
-        <div className="message-render">
-          <div className="message-content">
-            <h2>{testHeading}</h2>
-            <MarkdownTableActions markdownIndex={1}>
-              <thead><tr><th>{sourceHeader}</th><th>{partHeader}</th></tr></thead>
-              <tbody><tr><td>A</td><td>{secondPart}</td></tr></tbody>
-            </MarkdownTableActions>
+      <QueryClientProvider client={rendered.queryClient}>
+        <RecoilRoot>
+          <div className="message-render">
+            <div className="message-content">
+              <h2>{testHeading}</h2>
+              <MarkdownTableActions markdownIndex={1}>
+                <thead><tr><th>{sourceHeader}</th><th>{partHeader}</th></tr></thead>
+                <tbody><tr><td>A</td><td>{secondPart}</td></tr></tbody>
+              </MarkdownTableActions>
+            </div>
           </div>
-        </div>
-      </RecoilRoot>,
+        </RecoilRoot>
+      </QueryClientProvider>,
     );
 
     await waitFor(() => expect(refetch).toHaveBeenCalledTimes(1));

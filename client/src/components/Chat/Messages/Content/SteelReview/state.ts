@@ -2,6 +2,7 @@ import { atom } from 'jotai';
 import { atomFamily } from 'jotai/utils';
 import type { SteelReviewKind } from 'librechat-data-provider';
 import type { PrimitiveAtom } from 'jotai';
+import type { SteelReviewDraftState } from './session';
 
 export type SteelReviewSelection = {
   conversationId: string;
@@ -98,4 +99,12 @@ export const steelReviewPreviewStateFamily = createOwnedStateFamily<SteelReviewP
   pan: { x: 0, y: 0 },
   dragging: false,
   renderError: false,
+}));
+
+export const steelReviewDraftStateFamily = createOwnedStateFamily<SteelReviewDraftState>(() => ({
+  ownerKey: '',
+  cells: {},
+  touched: {},
+  cellVersions: {},
+  changeSequence: 0,
 }));
