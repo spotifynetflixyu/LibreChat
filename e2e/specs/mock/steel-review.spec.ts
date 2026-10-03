@@ -89,6 +89,7 @@ async function persistedSnapshot(conversationId: string) {
     messages: await db.collection('messages').find({ conversationId }).toArray(),
     ocr: await db.collection('steel_conversation_ocr_state').findOne({ conversationId }),
     reviews: await db.collection('steel_review_outputs').find({ conversationId }).toArray(),
+    quotations: await db.collection('steel_quotation_states').find({ conversationId }).toArray(),
   }));
 }
 
@@ -116,6 +117,7 @@ test.describe('Steel managed source review', () => {
     await withMongo(async (db) => {
       await db.collection('steel_conversation_ocr_state').deleteMany({ conversationId: { $in: ids } });
       await db.collection('steel_review_outputs').deleteMany({ conversationId: { $in: ids } });
+      await db.collection('steel_quotation_states').deleteMany({ conversationId: { $in: ids } });
       await db.collection('files').deleteMany({ conversationId: { $in: ids } });
     });
     await deleteConversations(ids);
@@ -841,11 +843,21 @@ test.describe('Steel managed source review', () => {
     }
     const saved = await page.request.post(`${url}/commit`, { headers, data: operations[0] });
     expect(saved.status()).toBe(200);
+    const savedBody = await saved.json();
     const after = await persistedSnapshot(conversationId);
     const expected = markdown.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 7 | 1 |');
     const message = after.messages.find((candidate) => candidate.messageId === messageId);
     expect(message?.text).toBe(`${expected} CAS-SECOND-PART`);
     expect(message?.content).toEqual([{ type: 'text', text: expected }, { type: 'text', text: 'CAS-SECOND-PART' }]);
+    expect(savedBody.savedSnapshot).toMatchObject({
+      conversationId, messageId, messageText: `${expected} CAS-SECOND-PART`,
+      messageSha256: createHash('sha256').update(`${expected} CAS-SECOND-PART`).digest('hex'),
+      messageTextParts: [{ partIndex: 0, text: expected }, { partIndex: 1, text: 'CAS-SECOND-PART' }],
+      ownerUpdated: { version: 1, kind: 'ocr_result', conversationId, messageId,
+        tableId: table.tableId, outputId: table.outputId, revision: savedBody.revision },
+    });
+    expect(message?.metadata?.steel).toEqual(before.messages.find((candidate) => candidate.messageId === messageId)?.metadata?.steel);
+
     expect(after.messages.find((candidate) => candidate.messageId === previousMessageId))
       .toEqual(before.messages.find((candidate) => candidate.messageId === previousMessageId));
     const review = after.reviews[0];
@@ -853,6 +865,10 @@ test.describe('Steel managed source review', () => {
     expect(review?.aiBaselineMarkdown).toBe(ocr);
     expect(review?.humanMarkdown).toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 7 | 1 |'));
     expect(review?.effectiveMarkdown).toBe(review?.humanMarkdown);
+    // A human Save must not replace the latest AI input or advance its timestamp.
+    expect(after.ocr).toEqual(before.ocr);
+    expect(review?.aiUpdatedAt).toEqual(before.ocr?.updatedAt);
+    expect(review?.humanSavedAt.getTime()).toBeGreaterThan(before.ocr?.updatedAt.getTime());
     const stale = await page.request.post(`${url}/commit`, { headers, data: operations[1] });
     expect(stale.status()).toBe(409);
     expect(await persistedSnapshot(conversationId)).toEqual(after);
@@ -862,6 +878,56 @@ test.describe('Steel managed source review', () => {
       messageId, isLatest: true, readOnly: false,
       rows: [{ values: { 數量: { baseline: '2', effective: '7' } } }, { values: { 數量: { baseline: '3', effective: '3' } } }],
     } });
+  });
+
+  test('an OCR Save marks only a quotation with proven OCR lineage as needing requote', async ({ page }) => {
+    for (const linked of [true, false]) {
+      const { conversationId, messageId } = await seedCurrent(ocr);
+      conversations.push(conversationId);
+      const runId = randomUUID();
+      const orderHash = createHash('sha256').update(linked ? ocr : 'UNRELATED-OCR').digest('hex');
+      const systemOrder = '## system_order\n| 型號 | 數量 | 總數 | 單價 |\n| --- | --- | --- | --- |\n| KEEP-ORDER | 2 | 4 | 100 |';
+      await withMongo(async (db) => {
+        const owner = await db.collection('messages').findOne({ conversationId, messageId });
+        if (!owner) throw new Error('Missing scoped quotation owner');
+        await db.collection('steel_quotation_states').insertOne({
+          userId: String(owner.user), conversationId,
+          currentOrder: { markdown: linked ? ocr : 'UNRELATED-OCR', sha256: orderHash },
+          currentSystemOrder: {
+            runId, messageId: randomUUID(), markdown: systemOrder,
+            sha256: createHash('sha256').update(systemOrder).digest('hex'),
+            customerQuoteMarkdown: 'INTERNAL-QUOTE-KEEP', updatedAt: new Date(),
+          },
+          nextSignalIndex: 2, pendingMessages: [],
+          tickets: [{ index: 1, token: randomUUID(), orderHash, customerMarkdown: 'CUSTOMER-KEEP',
+            customerIdentity: 'CUSTOMER-1', triggeringMessageId: messageId,
+            selectionProvenance: { method: 'unique' }, issuedAt: new Date(), acceptedRunId: runId,
+            completionReceipt: { inputHash: 'FROZEN-INPUT', markdown: systemOrder,
+              ocrGeneration: linked ? 'review-proof-generation' : 'unrelated-generation', ocrHash: orderHash },
+          }], createdAt: new Date(), updatedAt: new Date(),
+        });
+      });
+      const before = await persistedSnapshot(conversationId);
+      const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+      expect(read.status()).toBe(200);
+      const { table } = await read.json() as { table: SteelReviewTable };
+      const rows = structuredClone(table.rows);
+      rows[0].values['數量'].effective = '7';
+      const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+      const prepare = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+      expect(prepare.status()).toBe(200);
+      const save = await page.request.post(`${url}/commit`, { headers, data: await prepare.json() });
+      expect(save.status()).toBe(200);
+      const after = await persistedSnapshot(conversationId);
+      const quotation = after.quotations[0];
+      expect(after.ocr).toEqual(before.ocr);
+      expect(quotation.currentSystemOrder.markdown).toBe(systemOrder);
+      expect(quotation.currentSystemOrder.customerQuoteMarkdown).toBe('INTERNAL-QUOTE-KEEP');
+      expect(quotation.tickets).toEqual(before.quotations[0].tickets);
+      expect(quotation.currentOrder).toEqual(before.quotations[0].currentOrder);
+      if (linked) expect(quotation.currentSystemOrder.needsRequote).toBe(true);
+      else expect(quotation).toEqual(before.quotations[0]);
+    }
   });
 
   test('review commit rejects a client-rehashed target outside the owned OCR table', async ({ page }) => {
@@ -932,6 +998,7 @@ test.describe('Steel managed source review', () => {
     const committedReceipt = await page.request.get(receiptUrl, { headers });
     expect(committedReceipt.status()).toBe(200);
     const receipt = await committedReceipt.json();
+    expect(receipt.snapshot).toEqual(first.saved.savedSnapshot);
     expect(receipt).toMatchObject({ status: 'committed', snapshot: {
       operationId: first.operation.operationId, revision: first.saved.revision,
       effectiveMarkdown: first.saved.effectiveMarkdown, messageSha256: first.saved.messageSha256,
