@@ -962,6 +962,79 @@ test.describe('Steel managed source review', () => {
     });
   }
 
+  for (const proof of ['matching_receipt', 'mismatched_hash', 'mismatched_digest'] as const) {
+    test(`a second-part legacy source requires exact full-message immutable proof: ${proof}`, async ({ page }) => {
+      const { conversationId, messageId } = await seedCurrent(ocr);
+      conversations.push(conversationId);
+      const prefix = 'LEGACY-PART-PREFIX';
+      const suffix = 'LEGACY-PART-SUFFIX';
+      await withMongo(async (db) => {
+        await db.collection('messages').updateOne({ conversationId, messageId }, { $set: {
+          text: `${prefix} ${ocr} ${suffix}`,
+          content: [{ type: 'text', text: prefix }, { type: 'text', text: ocr }, { type: 'text', text: suffix }],
+        } });
+      });
+      const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+      const saveQuantity = async (table: SteelReviewTable, quantity: string) => {
+        const rows = structuredClone(table.rows);
+        rows[0].values['數量'].effective = quantity;
+        const prepare = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+        expect(prepare.status()).toBe(200);
+        const commit = await page.request.post(`${url}/commit`, { headers, data: await prepare.json() });
+        expect(commit.status()).toBe(200);
+      };
+      const initial = await page.request.get(`${readUrl(conversationId, messageId, 1)}&partIndex=1`, { headers });
+      expect(initial.status()).toBe(200);
+      await saveQuantity((await initial.json() as { table: SteelReviewTable }).table, '7');
+      await withMongo(async (db) => {
+        const filter = { conversationId, messageId, kind: 'ocr_result' };
+        const legacy = await db.collection('steel_review_outputs').updateOne(filter, { $unset: {
+          sourceMappings: '',
+          'receipts.$[].snapshot.sourceMappings': '',
+        } });
+        expect(legacy.matchedCount).toBe(1);
+        if (proof === 'mismatched_hash') {
+          await db.collection('steel_review_outputs').updateOne(filter, { $set: {
+            'receipts.0.snapshot.messageSha256': '0'.repeat(64),
+          } });
+        }
+        if (proof === 'mismatched_digest') {
+          await db.collection('steel_review_outputs').updateOne(filter, { $set: {
+            'receipts.0.snapshot.digest': '0'.repeat(64),
+          } });
+        }
+      });
+      const before = await persistedSnapshot(conversationId);
+      const read = await page.request.get(`${readUrl(conversationId, messageId, 1)}&partIndex=1`, { headers });
+      expect(read.status()).toBe(200);
+      const { table } = await read.json() as { table: SteelReviewTable };
+      expect(table.partIndex).toBe(1);
+      expect(table.rows.map((row) => row.source)).toEqual(proof === 'matching_receipt'
+        ? before.reviews[0].rows.map((row: SteelReviewTable['rows'][number]) => row.source)
+        : [null, null]);
+      expect(table.rows[0].values['數量']).toEqual({ baseline: '2', effective: '7' });
+      expect(table.rows[0].values['來源']).toEqual({ baseline: 'A', effective: 'A' });
+      expect(await persistedSnapshot(conversationId)).toEqual(before);
+      await saveQuantity(table, '8');
+      const after = await persistedSnapshot(conversationId);
+      expect(after.messages.find((message) => message.messageId === messageId)?.text)
+        .toBe(`${prefix} ${ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 8 | 1 |')} ${suffix}`);
+      expect(after.messages.find((message) => message.messageId === messageId)?.content).toEqual([
+        { type: 'text', text: prefix },
+        { type: 'text', text: ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 8 | 1 |') },
+        { type: 'text', text: suffix },
+      ]);
+      expectPreservedAiState(before.ocr, after.ocr);
+      expect(after.reviews[0].receipts.slice(0, before.reviews[0].receipts.length))
+        .toEqual(before.reviews[0].receipts);
+      const reopened = await page.request.get(`${readUrl(conversationId, messageId, 1)}&partIndex=1`, { headers });
+      expect(reopened.status()).toBe(200);
+      expect(await reopened.json()).toMatchObject({ table: {
+        rows: [{ values: { 數量: { baseline: '2', effective: '8' } } }, {}],
+      } });
+    });
+  }
+
   test('source and page cells cannot bypass the dedicated source association contract', async ({ page }) => {
     for (const [header, value] of [['來源', 'FORGED-SOURCE'], ['頁碼', '99']]) {
       const { conversationId, messageId } = await seedCurrent(ocr);
