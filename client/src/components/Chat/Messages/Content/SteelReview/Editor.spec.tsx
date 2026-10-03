@@ -28,6 +28,8 @@ const table = {
 describe('Steel review local editor gates', () => {
   it('allows only latest editable OCR business cells', () => {
     expect(isSteelReviewCellEditable(table, '品名規格')).toBe(true);
+    expect(isSteelReviewCellEditable(table, 'Profile')).toBe(true);
+    expect(isSteelReviewCellEditable(table, 'source code')).toBe(true);
     expect(isSteelReviewCellEditable(table, '來源檔案')).toBe(false);
     expect(isSteelReviewCellEditable(table, '頁碼')).toBe(false);
   });

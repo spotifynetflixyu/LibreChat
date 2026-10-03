@@ -1,5 +1,6 @@
 import { memo } from 'react';
 import { Input } from '@librechat/client';
+import { isSteelReviewSourceAssociationHeader } from 'librechat-data-provider';
 import type { SteelReviewRow, SteelReviewTable } from 'librechat-data-provider';
 import type { ChangeEvent, KeyboardEvent } from 'react';
 import type { SteelReviewDraftState } from './session';
@@ -18,15 +19,9 @@ export interface SteelReviewEditorProps {
   onCellChange: (row: SteelReviewRow, header: string, value: string) => void;
 }
 
-function isSourceOrPageHeader(header: string): boolean {
-  const normalized = header.trim().toLocaleLowerCase();
-  return ['file', 'filename', 'page', 'source', '檔案', '頁碼', '來源', '圖片'].some((term) =>
-    normalized.includes(term),
-  );
-}
-
 export function isSteelReviewCellEditable(table: SteelReviewTable, header: string): boolean {
-  return table.kind === 'ocr_result' && table.isLatest && !table.readOnly && !isSourceOrPageHeader(header);
+  return table.kind === 'ocr_result' && table.isLatest && !table.readOnly &&
+    !isSteelReviewSourceAssociationHeader(header);
 }
 
 function displayCellValue(value: string | null | undefined): string {
