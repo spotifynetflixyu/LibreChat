@@ -813,7 +813,7 @@ describe('Steel review read service', () => {
       revision: 'generation-1',
       sourceRequest: {} as never,
       sourceIntents: [{ rowId: 'row-1', fileId: 'file-2', pageNumber: 2 }],
-      rows: [{ ...rows[0]!, source: null, values: {
+      rows: [{ ...rows[0]!, values: {
         ...rows[0]!.values,
         Profile: { baseline: 'P-1', effective: 'P-2' },
       } }],
@@ -1096,7 +1096,7 @@ describe('Steel review read service', () => {
     };
     const commitSteelReview = jest.fn();
     const savedAt = new Date('2026-10-03T01:00:00.000Z');
-    let legacyReceipt: Record<string, unknown> | undefined;
+    const legacyReceipt: Record<string, unknown> = {};
     const resolveSteelReviewReceipt = jest.fn().mockImplementation(async (candidate) => {
       if (!legacyReceipt || candidate.digest !== legacyReceipt.digest) {
         return null;
@@ -1137,7 +1137,7 @@ describe('Steel review read service', () => {
     });
     const { sourceMappings: _sourceMappings, digest: _digest, ...legacyBase } = trustedPrepared;
     const legacyDigest = createHash('sha256').update(encodeSteelReviewDigest({ ...legacyBase, userId: 'user-1' })).digest('hex');
-    legacyReceipt = { ...legacyBase, digest: legacyDigest };
+    Object.assign(legacyReceipt, { ...legacyBase, digest: legacyDigest });
     const readerCallsBeforeCommit = reader.readSteelReview.mock.calls.length;
 
     const result = await service.commit({

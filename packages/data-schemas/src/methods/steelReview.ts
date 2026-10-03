@@ -1321,15 +1321,19 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               const previous = output.rows[index];
               const next = input.rows[index];
               const intent = sourceIntents.get(previous.rowId);
-              const sourceMatches = intent
-                ? (intent.fileId === null
-                  ? next?.source === null
-                  : next?.source !== null && next?.source !== undefined &&
-                    next.source.fileId === intent.fileId && next.source.pageNumber === intent.pageNumber &&
-                    next.source.filename === authorizedFiles.get(intent.fileId)?.filename &&
-                    (next.source.mediaType === undefined ||
-                      next.source.mediaType === authorizedFiles.get(intent.fileId)?.mediaType))
-                : sameSteelReviewSource(projectedRows[index]?.source ?? null, next?.source ?? null);
+              let sourceMatches: boolean;
+              if (!intent) {
+                sourceMatches = sameSteelReviewSource(projectedRows[index]?.source ?? null, next?.source ?? null);
+              } else if (intent.fileId === null) {
+                sourceMatches = next?.source === null;
+              } else {
+                const nextSource = next?.source;
+                const authorizedFile = authorizedFiles.get(intent.fileId);
+                sourceMatches = nextSource !== null && nextSource !== undefined &&
+                  nextSource.fileId === intent.fileId && nextSource.pageNumber === intent.pageNumber &&
+                  nextSource.filename === authorizedFile?.filename &&
+                  (nextSource.mediaType === undefined || nextSource.mediaType === authorizedFile?.mediaType);
+              }
               if (!next || previous.rowId !== next.rowId || !sourceMatches) {
                 throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review row identity changed');
               }

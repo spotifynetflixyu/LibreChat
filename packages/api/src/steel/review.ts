@@ -968,7 +968,8 @@ export function createSteelReviewService({
       if (!metadata) {
         throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review source is unavailable');
       }
-      if (next.source && (next.source.fileId !== metadata.fileId ||
+      const preservesCurrentSource = sameSteelReviewSource(current.source, next.source);
+      if (next.source && !preservesCurrentSource && (next.source.fileId !== metadata.fileId ||
         (next.source.filename !== undefined && next.source.filename !== metadata.filename) ||
         (next.source.mediaType !== undefined && next.source.mediaType !== metadata.mediaType))) {
         throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review source metadata is invalid');

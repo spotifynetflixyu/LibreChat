@@ -2,7 +2,7 @@ import { memo } from 'react';
 import { isSteelReviewSourceAssociationHeader } from 'librechat-data-provider';
 import { Button, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@librechat/client';
 import type { SteelReviewRow, SteelReviewSource, SteelReviewSourceFile, SteelReviewTable } from 'librechat-data-provider';
-import type { ChangeEvent, KeyboardEvent } from 'react';
+import type { ChangeEvent, KeyboardEvent, ReactNode } from 'react';
 import type { SteelReviewDraftState } from './session';
 import { getSteelReviewDraftCell } from './session';
 
@@ -93,6 +93,48 @@ function SourceCell({
   const pageValues = pageCount && pageCount > 0
     ? Array.from({ length: pageCount }, (_, index) => index + 1)
     : [];
+  let pageControl: ReactNode;
+  if (!source) {
+    pageControl = null;
+  } else if (sourcePageCountLoading && !pageCount) {
+    pageControl = <span role="status">{labels.sourcePageLoading}</span>;
+  } else if (sourcePageCountError && !pageCount) {
+    pageControl = (
+      <div className="flex items-center gap-2" role="alert">
+        <span>{labels.sourcePageUnavailable}</span>
+        {onSourcePageRetry && (
+          <Button
+            type="button"
+            variant="outline"
+            aria-label={labels.sourcePageRetry}
+            onClick={onSourcePageRetry}
+          >
+            {labels.sourcePageRetry}
+          </Button>
+        )}
+      </div>
+    );
+  } else {
+    pageControl = (
+      <Select
+        value={source.pageNumber === null ? NO_SOURCE_PAGE_VALUE : String(source.pageNumber)}
+        onValueChange={(value) => onSourceChange?.(row, {
+          ...source,
+          pageNumber: value === NO_SOURCE_PAGE_VALUE ? null : Number(value),
+        })}
+      >
+        <SelectTrigger aria-label={labels.sourcePage}>
+          <SelectValue placeholder={labels.sourceNoPage} />
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value={NO_SOURCE_PAGE_VALUE}>{labels.sourceNoPage}</SelectItem>
+          {pageValues.map((page) => (
+            <SelectItem key={page} value={String(page)}>{page}</SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    );
+  }
 
   if (!editable) {
     return (
@@ -157,41 +199,7 @@ function SourceCell({
         {source && (
           <label className="flex flex-col gap-1 text-xs text-text-secondary">
             <span>{labels.sourcePage}</span>
-            {sourcePageCountLoading && !pageCount ? (
-              <span role="status">{labels.sourcePageLoading}</span>
-            ) : sourcePageCountError && !pageCount ? (
-              <div className="flex items-center gap-2" role="alert">
-                <span>{labels.sourcePageUnavailable}</span>
-                {onSourcePageRetry && (
-                  <Button
-                    type="button"
-                    variant="outline"
-                    aria-label={labels.sourcePageRetry}
-                    onClick={onSourcePageRetry}
-                  >
-                    {labels.sourcePageRetry}
-                  </Button>
-                )}
-              </div>
-            ) : (
-              <Select
-                value={source.pageNumber === null ? NO_SOURCE_PAGE_VALUE : String(source.pageNumber)}
-                onValueChange={(value) => onSourceChange?.(row, {
-                  ...source,
-                  pageNumber: value === NO_SOURCE_PAGE_VALUE ? null : Number(value),
-                })}
-              >
-                <SelectTrigger aria-label={labels.sourcePage}>
-                  <SelectValue placeholder={labels.sourceNoPage} />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value={NO_SOURCE_PAGE_VALUE}>{labels.sourceNoPage}</SelectItem>
-                  {pageValues.map((page) => (
-                    <SelectItem key={page} value={String(page)}>{page}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            )}
+            {pageControl}
           </label>
         )}
       </div>
