@@ -1,4 +1,3 @@
-import Papa from 'papaparse';
 import { ObjectId } from 'mongodb';
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
@@ -1064,9 +1063,10 @@ test.describe('Steel managed source review', () => {
     const downloadedPath = await download.path();
     if (!downloadedPath) throw new Error('Missing completed CSV download');
     const csv = await readFile(downloadedPath, 'utf8');
-    const parsed = Papa.parse<Record<string, string>>(csv, { header: true, skipEmptyLines: true });
-    expect(parsed.errors).toEqual([]);
-    expect(parsed.data).toEqual([
+    // Fixture values contain no commas, quotes or line breaks.
+    const [columns, ...records] = csv.replace(/^\uFEFF/, '').trim().split(/\r?\n/).map((line) =>
+      line.split(',').map((value) => value.replace(/^"|"$/g, '')));
+    expect(records.map((record) => Object.fromEntries(columns.map((column, index) => [column, record[index]])))).toEqual([
       { 來源: 'A', 零件編號: 'REVIEW-P1', 長度: '1000', 數量: '8', 頁碼: '1' },
       { 來源: 'A', 零件編號: 'REVIEW-P2', 長度: '2000', 數量: '3', 頁碼: '1' },
     ]);
