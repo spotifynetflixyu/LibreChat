@@ -10,6 +10,19 @@ export {
   type MCPAuthorizationFenceRetryStorage,
 } from './mcpAuthorizationFenceRetry';
 export { createOAuthCompactionMethods };
+export {
+  createSteelReviewReadMethods,
+  createSteelReviewWriteMethods,
+  SteelReviewWriteError,
+} from './steelReview';
+export type {
+  SteelReviewCommitInput,
+  SteelReviewCommitResult,
+  SteelReviewMessageMutationCheckResult,
+  SteelReviewReadMethods,
+  SteelReviewWriteMethods,
+} from './steelReview';
+export { createSteelReviewSourceMethods } from './steelSources';
 import {
   createRefreshTokenBridgeMethods,
   type RefreshTokenBridgeMethods,
@@ -190,6 +203,12 @@ import {
 } from './mcpAuthority';
 /* Insights */
 import { createInsightsMethods, type InsightsMethods } from './insights';
+import {
+  createSteelReviewReadMethods,
+  createSteelReviewWriteMethods,
+  type SteelReviewReadMethods,
+} from './steelReview';
+import { createSteelReviewSourceMethods, type SteelReviewSourceMethods } from './steelSources';
 
 export {
   runAfterTransaction,
@@ -273,7 +292,9 @@ export type AllMethods = UserMethods &
   AgentMethods &
   ConfigMethods &
   MCPAuthorityMethods &
-  InsightsMethods;
+  InsightsMethods &
+  SteelReviewReadMethods &
+  SteelReviewSourceMethods;
 
 /** Dependencies injected from the api layer into createMethods */
 export interface CreateMethodsDeps {
@@ -517,6 +538,9 @@ export function createMethods(
     ...createMCPAuthorityMethods(mongoose),
     /* Insights */
     ...createInsightsMethods(mongoose),
+    ...createSteelReviewReadMethods(mongoose),
+    ...createSteelReviewWriteMethods(mongoose),
+    ...createSteelReviewSourceMethods(mongoose),
   };
 }
 
@@ -600,6 +624,7 @@ export type {
   MCPAuthorityConfigSourceDocument,
   MCPAuthorityCredentialSourceDocument,
   InsightsMethods,
+  SteelReviewSourceMethods,
 };
 
 export { recordAgentEventActorReceiptMetric, setAgentEventActorReceiptMetricObserver };

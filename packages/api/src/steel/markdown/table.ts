@@ -38,7 +38,7 @@ function isSeparatorRow(cells: readonly string[]): boolean {
 }
 
 function parseMarkdownTable(block: string[]): SteelMarkdownTable | undefined {
-  if (block.length < 3) {
+  if (block.length < 2) {
     return undefined;
   }
 

@@ -96,6 +96,7 @@ export enum QueryKeys {
   /* Steel */
   steelModels = 'steelModels',
   steelQuotationStatus = 'steelQuotationStatus',
+  steelReview = 'steelReview',
   openAIOAuthUsage = 'openAIOAuthUsage',
   openAIOAuthTokenStatus = 'openAIOAuthTokenStatus',
   openAIOAuthCodexLoginStatus = 'openAIOAuthCodexLoginStatus',
@@ -116,6 +117,14 @@ export const DynamicQueryKeys = {
   agentFiles: (agentId: string) => ['agentFiles', agentId] as const,
   steelQuotationStatus: (conversationId: string) =>
     [QueryKeys.steelQuotationStatus, conversationId] as const,
+  steelReview: (conversationId: string, kind: string, messageId: string, tableId: string, partIndex?: number) =>
+    [QueryKeys.steelReview, conversationId, kind, messageId, tableId, partIndex] as const,
+  steelReviewReceipt: (conversationId: string, kind: string, messageId: string, tableId: string, outputId: string, operationId: string, digest: string) =>
+    [QueryKeys.steelReview, 'receipt', conversationId, kind, messageId, tableId, outputId, operationId, digest] as const,
+  steelReviewSources: (conversationId: string, kind: string, messageId: string, tableId?: string) =>
+    [QueryKeys.steelReview, 'sources', conversationId, kind, messageId, tableId] as const,
+  steelReviewSource: (conversationId: string, kind: string, messageId: string, fileId: string) =>
+    [QueryKeys.steelReview, 'source', conversationId, kind, messageId, fileId] as const,
   codeEnvironmentStatus: (id: string) => [QueryKeys.codeEnvironments, id, 'status'] as const,
 } as const;
 
@@ -136,6 +145,8 @@ export enum MutationKeys {
   startOpenAIOAuthCodexLogin = 'startOpenAIOAuthCodexLogin',
   cancelOpenAIOAuthCodexLogin = 'cancelOpenAIOAuthCodexLogin',
   cancelSteelQuotation = 'cancelSteelQuotation',
+  prepareSteelReview = 'prepareSteelReview',
+  commitSteelReview = 'commitSteelReview',
   logoutOpenAIOAuthCodex = 'logoutOpenAIOAuthCodex',
   deleteAgentApiKey = 'deleteAgentApiKey',
   fileUpload = 'fileUpload',

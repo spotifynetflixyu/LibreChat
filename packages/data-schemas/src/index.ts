@@ -26,6 +26,7 @@ export {
   createSteelOcrResponseAuditModel,
   createSteelQuotationStateModel,
   createSteelQuotationArtifactModel,
+  createSteelReviewOutputModel,
 } from './models';
 export {
   createMethods,
@@ -66,6 +67,10 @@ export {
   MCPAuthorityProofError,
   createMCPAuthorizationFenceRetryStorage,
   createOAuthCompactionMethods,
+  createSteelReviewReadMethods,
+  createSteelReviewWriteMethods,
+  SteelReviewWriteError,
+  createSteelReviewSourceMethods,
   MAX_MCP_AUTHORITY_TARGETS,
   createMCPAuthorityBootRevision,
   createMCPAuthorityConfigSourceRevision,

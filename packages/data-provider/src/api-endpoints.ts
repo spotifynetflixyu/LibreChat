@@ -334,6 +334,57 @@ export const steelQuotationStatus = (conversationId: string) =>
   `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/quotation`;
 export const steelQuotationCancel = (conversationId: string, index: number) =>
   `${steelQuotationStatus(conversationId)}/${encodeURIComponent(String(index))}/cancel`;
+export const steelReview = (
+  conversationId: string,
+  kind: string,
+  messageId: string,
+  tableId: string,
+  partIndex?: number,
+) => {
+  const query = new URLSearchParams({
+    messageId,
+    tableId,
+    ...(partIndex !== undefined ? { partIndex: String(partIndex) } : {}),
+  }).toString();
+  return `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}?${query}`;
+};
+export const steelReviewPrepare = (conversationId: string, kind: string) =>
+  `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}/prepare`;
+export const steelReviewCommit = (conversationId: string, kind: string) =>
+  `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}/commit`;
+export const steelReviewReceipt = (
+  conversationId: string,
+  kind: string,
+  messageId: string,
+  tableId: string,
+  outputId: string,
+  operationId: string,
+  digest: string,
+) => {
+  const query = new URLSearchParams({ messageId, tableId, outputId, operationId, digest }).toString();
+  return `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}/receipt?${query}`;
+};
+export const steelReviewSources = (
+  conversationId: string,
+  kind: string,
+  messageId: string,
+  tableId?: string,
+) => {
+  const query = new URLSearchParams({
+    messageId,
+    ...(tableId !== undefined ? { tableId } : {}),
+  }).toString();
+  return `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}/sources?${query}`;
+};
+export const steelReviewSource = (
+  conversationId: string,
+  kind: string,
+  fileId: string,
+  messageId: string,
+) => {
+  const query = new URLSearchParams({ messageId }).toString();
+  return `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}/sources/${encodeURIComponent(fileId)}?${query}`;
+};
 
 export const adminSteelBase = () => `${BASE_URL}/api/admin/steel`;
 export const adminSteelCapabilitySmoke = () => `${adminSteelBase()}/ai/capability-smoke`;

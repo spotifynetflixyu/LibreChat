@@ -1,6 +1,5 @@
-import { createSteelRouteHandlers } from './routes';
-
 import type { Request, Response } from 'express';
+import { createSteelRouteHandlers } from './routes';
 
 function createResponse() {
   const res = {
@@ -13,6 +12,32 @@ function createResponse() {
 }
 
 describe('Steel production route handlers', () => {
+  it('reads a scoped review table through the injected service', async () => {
+    const reviewService = {
+      read: jest.fn(async () => ({ table: { tableId: 'ocr_result:1' } })),
+    } as unknown as NonNullable<Parameters<typeof createSteelRouteHandlers>[0]['reviewService']>;
+    const handlers = createSteelRouteHandlers({ getModelsConfig: jest.fn(), reviewService });
+    const req = {
+      params: { conversationId: 'conversation-1', kind: 'ocr_result' },
+      query: { messageId: 'message-1', tableId: 'ocr_result:1' },
+      tenantId: 'tenant-1',
+      user: { id: 'user-1' },
+    } as unknown as Request;
+    const res = createResponse();
+
+    await handlers.readReview(req, res);
+
+    expect(reviewService.read).toHaveBeenCalledWith({
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result',
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+    });
+    expect(res.status).toHaveBeenCalledWith(200);
+  });
+
   it('lists the preserved Steel model options', async () => {
     const getModelsConfig = jest.fn(async () => ({ openAI: ['gpt-5.6-luna', 'gpt-5.5'] }));
     const handlers = createSteelRouteHandlers({ getModelsConfig });

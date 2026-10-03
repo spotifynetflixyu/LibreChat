@@ -4,6 +4,7 @@ export * from './admin';
 export * from './calculators';
 export * from './routes';
 export * from './memory';
+export * from './messageGuard';
 export * from './native';
 export * from './normalization';
 export * from './ocr';
