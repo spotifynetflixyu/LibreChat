@@ -1447,43 +1447,44 @@ test.describe('Steel managed source review', () => {
     expect(await persistedSnapshot(conversationId)).toEqual(before);
   });
 
-  test('an unproven current source code remains reserved without becoming a file association', async ({ page }) => {
-    const markdown = ocr.replace('| A | REVIEW-P2', '| F7 | REVIEW-P2');
-    const { conversationId, messageId } = await seedCurrent(markdown);
-    conversations.push(conversationId);
-    await seedSelectorFiles(conversationId);
-    await withMongo(async (db) => {
-      await db.collection('steel_conversation_ocr_state').updateOne({ conversationId }, { $set: {
-        currentOcrResultMarkdown: markdown, sourceMappings: [],
+  for (const [reservedCode, nextCode] of [['F7', 'F8'], ['F9007199254740993', 'F9007199254740994']]) {
+    test(`unproven source ${reservedCode} remains reserved without becoming a file association`, async ({ page }) => {
+      const markdown = ocr.replace('| A | REVIEW-P2', `| ${reservedCode} | REVIEW-P2`);
+      const { conversationId, messageId } = await seedCurrent(markdown);
+      conversations.push(conversationId);
+      await seedSelectorFiles(conversationId);
+      await withMongo(async (db) => {
+        await db.collection('steel_conversation_ocr_state').updateOne({ conversationId }, { $set: {
+          currentOcrResultMarkdown: markdown, sourceMappings: [],
+        } });
+      });
+      const before = await persistedSnapshot(conversationId);
+      const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+      expect(read.status()).toBe(200);
+      const { table } = await read.json() as { table: SteelReviewTable };
+      expect(table.rows.map((row) => row.source)).toEqual([null, null]);
+      const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+      const response = await page.request.post(`${url}/prepare`, { headers, data: {
+        ...table, sourceIntents: [{ rowId: table.rows[0].rowId, fileId: 'review-beta', pageNumber: 1 }],
       } });
+      expect(response.status()).toBe(200);
+      const prepared = await response.json() as SteelReviewPrepared;
+      expect(prepared.rows[0].values['來源'].effective).toBe(nextCode);
+      expect(prepared.rows[1]).toEqual(table.rows[1]);
+      expect(await persistedSnapshot(conversationId)).toEqual(before);
+      const commit = await page.request.post(`${url}/commit`, { headers, data: prepared });
+      expect(commit.status()).toBe(200);
+      const after = await persistedSnapshot(conversationId);
+      const reopen = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+      expect(reopen.status()).toBe(200);
+      const reopened = await reopen.json() as { table: SteelReviewTable };
+      expect(reopened.table.rows[0].source).toMatchObject({ fileId: 'review-beta', pageNumber: 1 });
+      expect(reopened.table.rows[1]).toEqual(table.rows[1]);
+      expect(reopened.table.rows[1].source).toBeNull();
+      expectPreservedAiState(before.ocr, after.ocr);
+      expect(await persistedSnapshot(conversationId)).toEqual(after);
     });
-    const before = await persistedSnapshot(conversationId);
-    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
-    expect(read.status()).toBe(200);
-    const { table } = await read.json() as { table: SteelReviewTable };
-    expect(table.rows.map((row) => row.source)).toEqual([null, null]);
-    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
-    const response = await page.request.post(`${url}/prepare`, { headers, data: {
-      ...table, sourceIntents: [{ rowId: table.rows[0].rowId, fileId: 'review-beta', pageNumber: 1 }],
-    } });
-    expect(response.status()).toBe(200);
-    const prepared = await response.json() as SteelReviewPrepared;
-    expect(prepared.rows[0].values['來源'].effective).toBe('F8');
-    expect(prepared.rows[1]).toEqual(table.rows[1]);
-    expect(await persistedSnapshot(conversationId)).toEqual(before);
-    const commit = await page.request.post(`${url}/commit`, { headers, data: prepared });
-    expect(commit.status()).toBe(200);
-    const after = await persistedSnapshot(conversationId);
-    const reopen = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
-    expect(reopen.status()).toBe(200);
-    const reopened = await reopen.json() as { table: SteelReviewTable };
-    expect(reopened.table.rows[0].source).toMatchObject({ fileId: 'review-beta', pageNumber: 1 });
-    expect(reopened.table.rows[1]).toEqual(table.rows[1]);
-    expect(reopened.table.rows[1].source).toBeNull();
-    expectPreservedAiState(before.ocr, after.ocr);
-    expect(await persistedSnapshot(conversationId)).toEqual(after);
-  });
-
+  }
   test('a valid source intent cannot import forged client media into an authentic legacy row', async ({ page }) => {
     const { conversationId, messageId } = await seedCapturedLegacyReview('steel-review-legacy03-sourced');
     conversations.push(conversationId);
