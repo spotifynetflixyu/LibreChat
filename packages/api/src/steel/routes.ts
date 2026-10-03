@@ -1,5 +1,6 @@
 import mongoose from 'mongoose';
 import type { Request, Response } from 'express';
+import type { ServerRequest } from '~/types/http';
 import { createSteelRuleProposalService, SteelRuleProposalValidationError } from './rules/service';
 import {
   parseSteelReviewQuery,
@@ -10,6 +11,10 @@ import {
   resolveOpenAIOAuthAuthFilePath,
   type OpenAIConfigEnv,
 } from './ai/config';
+import {
+  SteelReviewSourceError,
+  type SteelReviewSourceService,
+} from './sources';
 import { createMongooseSteelRuleProposalRepository } from './rules/repository';
 import { getOpenAIOAuthUsageRemaining } from './native/usage';
 import { buildSteelModelOptions } from './models';
@@ -51,6 +56,7 @@ export interface SteelRouteHandlersDeps {
   getOpenAIOAuthUsageRemaining?: typeof getOpenAIOAuthUsageRemaining;
   ruleProposalService?: ReturnType<typeof createSteelRuleProposalService>;
   reviewService?: SteelReviewService;
+  sourceService?: SteelReviewSourceService;
 }
 
 export interface SteelRouteHandlers {
@@ -58,6 +64,8 @@ export interface SteelRouteHandlers {
   readOpenAIOAuthUsage(req: SteelRequest, res: Response): Promise<void>;
   createRuleProposal(req: SteelRequest, res: Response): Promise<void>;
   readReview(req: SteelRequest, res: Response): Promise<void>;
+  listReviewSources(req: SteelRequest, res: Response): Promise<void>;
+  readReviewSource(req: SteelRequest, res: Response): Promise<void>;
 }
 
 function getSteelRequestUser(req: SteelRequest) {
@@ -88,9 +96,10 @@ export function createSteelRouteHandlers({
   getOpenAIOAuthUsageRemaining: readOpenAIOAuthUsageRemaining = getOpenAIOAuthUsageRemaining,
   ruleProposalService,
   reviewService,
+  sourceService,
 }: SteelRouteHandlersDeps): SteelRouteHandlers {
   let resolvedRuleProposalService = ruleProposalService;
-  let resolvedReviewService = reviewService;
+  const resolvedReviewService = reviewService;
   const getRuleProposalService = () =>
     (resolvedRuleProposalService ??= createDefaultRuleProposalService());
 
@@ -156,6 +165,95 @@ export function createSteelRouteHandlers({
           return;
         }
         res.status(500).json({ message: 'Steel review read failed' });
+      }
+    },
+
+    async listReviewSources(req, res) {
+      const userId = req.user?.id;
+      const conversationId = req.params.conversationId;
+      const kind = req.params.kind;
+      if (!userId) {
+        res.status(401).json({ message: 'Authentication required' });
+        return;
+      }
+      if (typeof conversationId !== 'string' || !conversationId ||
+        (kind !== 'ocr_result' && kind !== 'system_order')) {
+        res.status(400).json({ message: 'Invalid review source query' });
+        return;
+      }
+      if (!sourceService) {
+        res.status(500).json({ message: 'Steel review source unavailable' });
+        return;
+      }
+      try {
+        const messageId = typeof req.query.messageId === 'string' ? req.query.messageId : '';
+        const tableId = typeof req.query.tableId === 'string' ? req.query.tableId : undefined;
+        const result = await sourceService.list({
+          userId,
+          tenantId: req.tenantId ?? req.user?.tenantId,
+          conversationId,
+          kind,
+          messageId,
+          ...(tableId !== undefined ? { tableId } : {}),
+        });
+        res.status(200).json(result);
+      } catch (error) {
+        if (error instanceof SteelReviewSourceError) {
+          res.status(error.statusCode).json({ message: error.message, code: error.code });
+          return;
+        }
+        res.status(500).json({ message: 'Steel review source read failed' });
+      }
+    },
+
+    async readReviewSource(req, res) {
+      const userId = req.user?.id;
+      const conversationId = req.params.conversationId;
+      const kind = req.params.kind;
+      const fileId = req.params.fileId;
+      if (!userId) {
+        res.status(401).json({ message: 'Authentication required' });
+        return;
+      }
+      if (typeof conversationId !== 'string' || !conversationId ||
+        typeof fileId !== 'string' || !fileId ||
+        (kind !== 'ocr_result' && kind !== 'system_order')) {
+        res.status(400).json({ message: 'Invalid review source query' });
+        return;
+      }
+      if (!sourceService) {
+        res.status(500).json({ message: 'Steel review source unavailable' });
+        return;
+      }
+      try {
+        const messageId = typeof req.query.messageId === 'string' ? req.query.messageId : '';
+        const result = await sourceService.readBinary({
+          userId,
+          tenantId: req.tenantId ?? req.user?.tenantId,
+          conversationId,
+          kind,
+          fileId,
+          messageId,
+        }, req as ServerRequest);
+        res.setHeader('Content-Type', result.source.mediaType);
+        res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(result.source.filename)}`);
+        res.setHeader('Cache-Control', 'private, no-store');
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Content-Security-Policy', "default-src 'none'; img-src 'self' blob: data:; style-src 'unsafe-inline'; sandbox");
+        result.stream.on('error', () => {
+          if (!res.headersSent) {
+            res.status(500).json({ message: 'Steel review source stream failed' });
+          } else if (!res.writableEnded) {
+            res.destroy();
+          }
+        });
+        result.stream.pipe(res);
+      } catch (error) {
+        if (error instanceof SteelReviewSourceError) {
+          res.status(error.statusCode).json({ message: error.message, code: error.code });
+          return;
+        }
+        res.status(500).json({ message: 'Steel review source preview failed' });
       }
     },
   };

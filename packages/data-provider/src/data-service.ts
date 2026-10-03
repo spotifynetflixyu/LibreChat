@@ -7,6 +7,7 @@ import type {
   OpenAIOAuthUsageRemaining,
   SteelReviewKind,
   SteelReviewResponse,
+  SteelReviewSourcesResponse,
   SteelQuotationStatus,
 } from './steel';
 import type {
@@ -191,6 +192,27 @@ export function getSteelReview(
   partIndex?: number,
 ): Promise<SteelReviewResponse> {
   return request.get(endpoints.steelReview(conversationId, kind, messageId, tableId, partIndex));
+}
+
+export function getSteelReviewSources(
+  conversationId: string,
+  kind: SteelReviewKind,
+  messageId: string,
+  tableId?: string,
+): Promise<SteelReviewSourcesResponse> {
+  return request.get(endpoints.steelReviewSources(conversationId, kind, messageId, tableId));
+}
+
+export function getSteelReviewSource(
+  conversationId: string,
+  kind: SteelReviewKind,
+  fileId: string,
+  messageId: string,
+): Promise<AxiosResponse<Blob>> {
+  return request.getResponse(endpoints.steelReviewSource(conversationId, kind, fileId, messageId), {
+    responseType: 'blob',
+    headers: { Accept: 'application/octet-stream' },
+  });
 }
 
 export function cancelSteelQuotation(

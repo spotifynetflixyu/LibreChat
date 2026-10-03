@@ -15,6 +15,7 @@ import type {
   OpenAIOAuthUsageRemaining,
   SteelReviewKind,
   SteelReviewResponse,
+  SteelReviewSourcesResponse,
   SteelQuotationStatus,
 } from 'librechat-data-provider';
 import type {
@@ -109,6 +110,73 @@ export const useGetSteelReviewQuery = (
       staleTime: 0,
       ...config,
       enabled,
+    },
+  );
+};
+
+export const useGetSteelReviewSourcesQuery = (
+  input?: {
+    conversationId: string;
+    kind: SteelReviewKind;
+    messageId: string;
+    tableId?: string;
+  } | null,
+  config?: UseQueryOptions<SteelReviewSourcesResponse>,
+): QueryObserverResult<SteelReviewSourcesResponse> => {
+  const queriesEnabled = useRecoilValue<boolean>(store.queriesEnabled);
+  const enabled = Boolean(input) && (config?.enabled ?? true) && queriesEnabled;
+  return useQuery<SteelReviewSourcesResponse>(
+    DynamicQueryKeys.steelReviewSources(
+      input?.conversationId ?? '',
+      input?.kind ?? 'ocr_result',
+      input?.messageId ?? '',
+      input?.tableId,
+    ),
+    () => dataService.getSteelReviewSources(
+      input?.conversationId ?? '',
+      input?.kind ?? 'ocr_result',
+      input?.messageId ?? '',
+      input?.tableId,
+    ),
+    {
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: true,
+      refetchOnMount: true,
+      staleTime: 30_000,
+      ...config,
+      enabled,
+    },
+  );
+};
+
+export const useGetSteelReviewSourceQuery = (
+  input?: {
+    conversationId: string;
+    kind: SteelReviewKind;
+    fileId: string;
+    messageId: string;
+  } | null,
+  config?: UseQueryOptions<Blob>,
+): QueryObserverResult<Blob> => {
+  const queriesEnabled = useRecoilValue<boolean>(store.queriesEnabled);
+  const enabled = Boolean(input) && (config?.enabled ?? true) && queriesEnabled;
+  return useQuery<Blob>(
+    [QueryKeys.steelReview, 'source', input?.conversationId, input?.kind, input?.messageId, input?.fileId],
+    async () => {
+      const response = await dataService.getSteelReviewSource(
+        input?.conversationId ?? '',
+        input?.kind ?? 'ocr_result',
+        input?.fileId ?? '',
+        input?.messageId ?? '',
+      );
+      return response.data;
+    },
+    {
+      enabled,
+      retry: false,
+      staleTime: 0,
+      cacheTime: 0,
+      ...config,
     },
   );
 };

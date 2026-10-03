@@ -51,8 +51,32 @@ export const steelReviewResponseSchema = z.object({
   table: steelReviewTableSchema.nullable(),
 });
 
+export const steelReviewSourceFileSchema = z.object({
+  fileId: z.string().min(1),
+  filename: z.string().min(1),
+  mediaType: z.string().min(1),
+  bytes: z.number().int().nonnegative().optional(),
+});
+
+export const steelReviewSourcesResponseSchema = z.object({
+  sources: z.array(steelReviewSourceFileSchema),
+});
+
+export const steelReviewSourceQuerySchema = z.object({
+  messageId: z.string().trim().min(1).max(300),
+  tableId: z.string().trim().min(1).max(300).optional(),
+});
+
+export const steelReviewSourceBinaryQuerySchema = z.object({
+  messageId: z.string().trim().min(1).max(300),
+});
+
 export type SteelReviewSource = z.infer<typeof steelReviewSourceSchema>;
 export type SteelReviewCell = z.infer<typeof steelReviewCellSchema>;
 export type SteelReviewRow = z.infer<typeof steelReviewRowSchema>;
 export type SteelReviewTable = z.infer<typeof steelReviewTableSchema>;
 export type SteelReviewResponse = z.infer<typeof steelReviewResponseSchema>;
+export type SteelReviewSourceFile = z.infer<typeof steelReviewSourceFileSchema>;
+export type SteelReviewSourcesResponse = z.infer<typeof steelReviewSourcesResponseSchema>;
+export type SteelReviewSourceQuery = z.infer<typeof steelReviewSourceQuerySchema>;
+export type SteelReviewSourceBinaryQuery = z.infer<typeof steelReviewSourceBinaryQuerySchema>;

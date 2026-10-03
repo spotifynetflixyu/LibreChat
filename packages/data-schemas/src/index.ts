@@ -68,6 +68,7 @@ export {
   createMCPAuthorizationFenceRetryStorage,
   createOAuthCompactionMethods,
   createSteelReviewReadMethods,
+  createSteelReviewSourceMethods,
   MAX_MCP_AUTHORITY_TARGETS,
   createMCPAuthorityBootRevision,
   createMCPAuthorityConfigSourceRevision,

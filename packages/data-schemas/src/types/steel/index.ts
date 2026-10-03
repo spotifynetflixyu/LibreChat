@@ -49,6 +49,13 @@ export type SteelJsonValue =
   | SteelJsonValue[]
   | { [key: string]: SteelJsonValue };
 
+export type {
+  SteelReviewSourceMethods,
+  SteelReviewSourceReadInput,
+  SteelReviewSourceRecord,
+  SteelReviewSourceScope,
+} from './sources';
+
 export interface SteelRuleProposalSelectorEntry {
   key: string;
   value: SteelRuleProposalParameterValue;

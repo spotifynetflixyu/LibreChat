@@ -119,6 +119,8 @@ export const DynamicQueryKeys = {
     [QueryKeys.steelQuotationStatus, conversationId] as const,
   steelReview: (conversationId: string, kind: string, messageId: string, tableId: string, partIndex?: number) =>
     [QueryKeys.steelReview, conversationId, kind, messageId, tableId, partIndex] as const,
+  steelReviewSources: (conversationId: string, kind: string, messageId: string, tableId?: string) =>
+    [QueryKeys.steelReview, 'sources', conversationId, kind, messageId, tableId] as const,
   codeEnvironmentStatus: (id: string) => [QueryKeys.codeEnvironments, id, 'status'] as const,
 } as const;
 
