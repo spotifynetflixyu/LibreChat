@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import {
   createSteelConversationOcrStateModel,
+  createSteelDelegateOcrRunModel,
   createSteelQuotationArtifactModel,
   createSteelQuotationStateModel,
   createSteelReviewOutputModel,
@@ -104,6 +105,220 @@ describe('Steel review read methods', () => {
       messageId: 'assistant-1',
       tableId: 'ocr_result:2',
     })).toBeNull();
+  });
+
+  it('locates source files only when the file belongs to this user, tenant, and conversation', async () => {
+    const models = createModels(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const read = createSteelReviewReadMethods(mongoose);
+    const userId = new mongoose.Types.ObjectId();
+    const foreignUserId = new mongoose.Types.ObjectId();
+    const conversationId = 'source-file-scope-conversation';
+    const markdown = [
+      '## ocr_result',
+      '',
+      '| 來源 | 零件編號 |',
+      '| --- | --- |',
+      '| trusted | P-1 |',
+      '| cross-chat | P-2 |',
+      '| cross-user | P-3 |',
+      '| cross-tenant | P-4 |',
+      '| missing | P-5 |',
+      '| legacy | P-6 |',
+      '| attached | P-7 |',
+      '| unattached | P-8 |',
+    ].join('\n');
+    await models.Conversation.create({
+      conversationId,
+      user: userId.toString(),
+      tenantId: 'tenant-source',
+      title: 'Review',
+      endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId: 'source-file-message',
+      conversationId,
+      user: userId.toString(),
+      tenantId: 'tenant-source',
+      isCreatedByUser: false,
+      files: [{ file_id: 'attached-file' }],
+      text: markdown,
+      content: [{ type: 'text', text: markdown }],
+    });
+    await models.File.create([
+      {
+        user: userId,
+        tenantId: 'tenant-source',
+        conversationId,
+        file_id: 'trusted-file',
+        bytes: 1,
+        filename: 'trusted.pdf',
+        filepath: '/uploads/trusted.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        source: 'local',
+        usage: 0,
+      },
+      {
+        user: userId,
+        tenantId: 'tenant-source',
+        file_id: 'attached-file',
+        bytes: 1,
+        filename: 'attached.pdf',
+        filepath: '/uploads/attached.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        source: 'local',
+        usage: 0,
+      },
+      {
+        user: userId,
+        tenantId: 'tenant-source',
+        file_id: 'unattached-file',
+        bytes: 1,
+        filename: 'unattached.pdf',
+        filepath: '/uploads/unattached.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        source: 'local',
+        usage: 0,
+      },
+      {
+        user: userId,
+        tenantId: 'tenant-source',
+        conversationId: 'other-conversation',
+        messageId: 'source-file-message',
+        file_id: 'cross-chat-file',
+        bytes: 1,
+        filename: 'cross-chat.pdf',
+        filepath: '/uploads/cross-chat.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        source: 'local',
+        usage: 0,
+      },
+      {
+        user: foreignUserId,
+        tenantId: 'tenant-source',
+        conversationId,
+        file_id: 'cross-user-file',
+        bytes: 1,
+        filename: 'cross-user.pdf',
+        filepath: '/uploads/cross-user.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        source: 'local',
+        usage: 0,
+      },
+      {
+        user: userId,
+        tenantId: 'other-tenant',
+        conversationId,
+        file_id: 'cross-tenant-file',
+        bytes: 1,
+        filename: 'cross-tenant.pdf',
+        filepath: '/uploads/cross-tenant.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        source: 'local',
+        usage: 0,
+      },
+      {
+        user: userId,
+        tenantId: 'tenant-source',
+        messageId: 'source-file-message',
+        file_id: 'legacy-message-file',
+        bytes: 1,
+        filename: 'legacy-message.pdf',
+        filepath: '/uploads/legacy-message.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        source: 'local',
+        usage: 0,
+      },
+    ]);
+    await State.create({
+      conversationId,
+      sourceMappings: [
+        { fileId: 'trusted-file', sourceCode: 'trusted', sourceFilename: 'spoof.pdf' },
+        { fileId: 'cross-chat-file', sourceCode: 'cross-chat', sourceFilename: 'cross-chat.pdf' },
+        { fileId: 'cross-user-file', sourceCode: 'cross-user', sourceFilename: 'cross-user.pdf' },
+        { fileId: 'cross-tenant-file', sourceCode: 'cross-tenant', sourceFilename: 'cross-tenant.pdf' },
+        { fileId: 'missing-file', sourceCode: 'missing', sourceFilename: 'missing.pdf' },
+        { fileId: 'legacy-message-file', sourceCode: 'legacy', sourceFilename: 'legacy.pdf' },
+        { fileId: 'attached-file', sourceCode: 'attached', sourceFilename: 'attached.pdf' },
+        { fileId: 'unattached-file', sourceCode: 'unattached', sourceFilename: 'unattached.pdf' },
+      ],
+      currentOcrResultMarkdown: markdown,
+      currentOcrResultMessageId: 'source-file-message',
+      currentOcrResultGenerationId: 'source-file-generation',
+    });
+
+    const current = await read.readSteelReview({
+      userId: userId.toString(),
+      tenantId: 'tenant-source',
+      conversationId,
+      kind: 'ocr_result',
+      messageId: 'source-file-message',
+      tableId: 'ocr_result:1',
+    });
+    expect(current?.sourceMappings).toEqual([{
+      fileId: 'trusted-file',
+      sourceCode: 'trusted',
+      sourceFilename: 'trusted.pdf',
+    }, {
+      fileId: 'legacy-message-file',
+      sourceCode: 'legacy',
+      sourceFilename: 'legacy-message.pdf',
+    }, {
+      fileId: 'attached-file',
+      sourceCode: 'attached',
+      sourceFilename: 'attached.pdf',
+    }]);
+
+    await ReviewOutput.create({
+      userId: userId.toString(),
+      tenantId: 'tenant-source',
+      conversationId,
+      kind: 'ocr_result',
+      messageId: 'source-file-message',
+      tableId: 'ocr_result:1',
+      outputId: 'ocr_result:source-file-generation',
+      revision: 'source-file-generation',
+      state: 'current',
+      headers: ['來源', '零件編號'],
+      rows: [
+        {
+          rowId: 'trusted-row',
+          values: { 來源: { baseline: 'trusted', effective: 'trusted' } },
+          source: { fileId: 'trusted-file', pageNumber: 1, filename: 'spoof.pdf' },
+        },
+        {
+          rowId: 'foreign-row',
+          values: { 來源: { baseline: 'cross-chat', effective: 'cross-chat' } },
+          source: { fileId: 'cross-chat-file', pageNumber: 1, filename: 'cross-chat.pdf' },
+        },
+        {
+          rowId: 'missing-row',
+          values: { 來源: { baseline: 'missing', effective: 'missing' } },
+          source: { fileId: 'missing-file', pageNumber: 1, filename: 'missing.pdf' },
+        },
+      ],
+    });
+    const sidecar = await read.readSteelReview({
+      userId: userId.toString(),
+      tenantId: 'tenant-source',
+      conversationId,
+      kind: 'ocr_result',
+      messageId: 'source-file-message',
+      tableId: 'ocr_result:1',
+    });
+    expect(sidecar?.rows).toEqual([
+      expect.objectContaining({ source: { fileId: 'trusted-file', pageNumber: 1, filename: 'trusted.pdf' } }),
+      expect.objectContaining({ source: null }),
+      expect.objectContaining({ source: null }),
+    ]);
   });
 
   it('reads an explicitly owned historical sidecar without writing a message', async () => {
@@ -242,6 +457,244 @@ describe('Steel review read methods', () => {
       latestOutputId: 'ocr_result:generation-current',
       state: 'current',
     }));
+  });
+
+  it('chooses the unique sidecar owned by the current OCR generation instead of freshness', async () => {
+    const models = createModels(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const read = createSteelReviewReadMethods(mongoose);
+    const markdown = '## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| A | CURRENT |';
+    await models.Conversation.create({
+      conversationId: 'sidecar-authority-conversation',
+      user: 'user-1',
+      title: 'Review',
+      endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId: 'sidecar-authority-message',
+      conversationId: 'sidecar-authority-conversation',
+      user: 'user-1',
+      isCreatedByUser: false,
+      text: markdown,
+      content: [{ type: 'text', text: markdown }],
+    });
+    await State.create({
+      conversationId: 'sidecar-authority-conversation',
+      sourceMappings: [],
+      currentOcrResultMarkdown: markdown,
+      currentOcrResultMessageId: 'sidecar-authority-message',
+      currentOcrResultGenerationId: 'generation-new',
+    });
+    const sidecar = {
+      userId: 'user-1',
+      conversationId: 'sidecar-authority-conversation',
+      kind: 'ocr_result' as const,
+      messageId: 'sidecar-authority-message',
+      tableId: 'ocr_result:1',
+      revision: 'revision',
+      state: 'current' as const,
+      headers: ['來源', '零件編號'],
+      rows: [],
+    };
+    await ReviewOutput.create([
+      { ...sidecar, outputId: 'ocr_result:generation-old', revision: 'old' },
+      { ...sidecar, outputId: 'ocr_result:generation-new', revision: 'new' },
+    ]);
+    await ReviewOutput.updateOne(
+      { outputId: 'ocr_result:generation-old' },
+      { $set: { updatedAt: new Date(Date.now() + 60_000) } },
+    );
+
+    await expect(read.readSteelReview({
+      userId: 'user-1',
+      conversationId: 'sidecar-authority-conversation',
+      kind: 'ocr_result',
+      messageId: 'sidecar-authority-message',
+      tableId: 'ocr_result:1',
+    })).resolves.toEqual(expect.objectContaining({
+      outputId: 'ocr_result:generation-new',
+      revision: 'new',
+    }));
+  });
+
+  it('supports a native text-only message without inventing a content-part locator', async () => {
+    const models = createModels(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const read = createSteelReviewReadMethods(mongoose);
+    const markdown = '## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| A | P-1 |';
+    await models.Conversation.create({
+      conversationId: 'text-only-conversation',
+      user: 'user-1',
+      title: 'Review',
+      endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId: 'text-only-message',
+      conversationId: 'text-only-conversation',
+      user: 'user-1',
+      isCreatedByUser: false,
+      text: markdown,
+    });
+    await State.create({
+      conversationId: 'text-only-conversation',
+      sourceMappings: [],
+      currentOcrResultMarkdown: markdown,
+      currentOcrResultMessageId: 'text-only-message',
+      currentOcrResultGenerationId: 'text-only-generation',
+    });
+
+    await expect(read.readSteelReview({
+      userId: 'user-1',
+      conversationId: 'text-only-conversation',
+      kind: 'ocr_result',
+      messageId: 'text-only-message',
+      tableId: 'ocr_result:1',
+    })).resolves.toEqual(expect.objectContaining({
+      outputId: 'ocr_result:text-only-generation',
+      messageText: markdown,
+      messageTextParts: [],
+      messageTextPartIndex: undefined,
+    }));
+  });
+
+  it('fails closed for legacy OCR state when the conversation id is shared across owners', async () => {
+    const models = createModels(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const read = createSteelReviewReadMethods(mongoose);
+    const markdown = '## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| A | P-1 |';
+    await models.Conversation.create([
+      {
+        conversationId: 'collision-conversation',
+        user: 'owner-a',
+        tenantId: 'tenant-a',
+        title: 'Review',
+        endpoint: 'openAI',
+      },
+      {
+        conversationId: 'collision-conversation',
+        user: 'owner-b',
+        tenantId: 'tenant-b',
+        title: 'Foreign review',
+        endpoint: 'openAI',
+      },
+      {
+        conversationId: 'tenantless-collision-conversation',
+        user: 'owner-c',
+        title: 'Review',
+        endpoint: 'openAI',
+      },
+      {
+        conversationId: 'tenantless-collision-conversation',
+        user: 'owner-c',
+        tenantId: 'tenant-c',
+        title: 'Foreign tenant review',
+        endpoint: 'openAI',
+      },
+    ]);
+    await models.Message.create([
+      {
+        messageId: 'collision-message',
+        conversationId: 'collision-conversation',
+        user: 'owner-a',
+        tenantId: 'tenant-a',
+        isCreatedByUser: false,
+        text: markdown,
+        content: [{ type: 'text', text: markdown }],
+      },
+      {
+        messageId: 'tenantless-collision-message',
+        conversationId: 'tenantless-collision-conversation',
+        user: 'owner-c',
+        isCreatedByUser: false,
+        text: markdown,
+        content: [{ type: 'text', text: markdown }],
+      },
+    ]);
+    await State.create([
+      {
+        conversationId: 'collision-conversation',
+        sourceMappings: [],
+        currentOcrResultMarkdown: markdown,
+        currentOcrResultMessageId: 'collision-message',
+        currentOcrResultGenerationId: 'foreignable-generation',
+      },
+      {
+        conversationId: 'tenantless-collision-conversation',
+        sourceMappings: [],
+        currentOcrResultMarkdown: markdown,
+        currentOcrResultMessageId: 'tenantless-collision-message',
+        currentOcrResultGenerationId: 'tenantless-foreignable-generation',
+      },
+    ]);
+
+    await expect(read.readSteelReview({
+      userId: 'owner-a',
+      tenantId: 'tenant-a',
+      conversationId: 'collision-conversation',
+      kind: 'ocr_result',
+      messageId: 'collision-message',
+      tableId: 'ocr_result:1',
+    })).resolves.toBeNull();
+    await expect(read.readSteelReview({
+      userId: 'owner-c',
+      conversationId: 'tenantless-collision-conversation',
+      kind: 'ocr_result',
+      messageId: 'tenantless-collision-message',
+      tableId: 'ocr_result:1',
+    })).resolves.toBeNull();
+  });
+
+  it('does not expose an unaccepted superseded OCR candidate as history', async () => {
+    const models = createModels(mongoose);
+    const Run = createSteelDelegateOcrRunModel(mongoose);
+    const read = createSteelReviewReadMethods(mongoose);
+    const markdown = '## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| A | P-1 |';
+    await models.Conversation.create({
+      conversationId: 'superseded-history-conversation',
+      user: 'user-1',
+      title: 'Review',
+      endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId: 'superseded-history-message',
+      conversationId: 'superseded-history-conversation',
+      user: 'user-1',
+      isCreatedByUser: false,
+      text: markdown,
+      content: [{ type: 'text', text: markdown }],
+    });
+    await Run.create({
+      conversationId: 'superseded-history-conversation',
+      delegateOcrIndex: 1,
+      claimToken: 'superseded-claim',
+      triggeringMessageId: 'trigger-message',
+      toolParameters: {},
+      files: [],
+      status: 'superseded',
+      currentStage: 'failed',
+      finalizedCandidate: {
+        token: 'candidate-token',
+        markdown,
+        source: 'agent',
+        generationId: 'unaccepted-generation',
+        targetMessageId: 'superseded-history-message',
+      },
+      finalizationJournal: {
+        candidateValidated: true,
+        resultPersisted: false,
+        messagePersisted: false,
+        claimCleared: true,
+      },
+    });
+
+    await expect(read.readSteelReview({
+      userId: 'user-1',
+      conversationId: 'superseded-history-conversation',
+      kind: 'ocr_result',
+      messageId: 'superseded-history-message',
+      tableId: 'ocr_result:1',
+    })).resolves.toBeNull();
   });
 
   it('reads a published historical system order from its owned quotation run artifact', async () => {
@@ -576,8 +1029,9 @@ describe('Steel review read methods', () => {
       messageId: 'tenant-message',
       tableId: 'ocr_result:1',
     })).resolves.toEqual(expect.objectContaining({
-      outputId: 'tenant-output',
+      outputId: 'ocr_result:generation-tenant',
       latestOutputId: 'ocr_result:generation-tenant',
+      state: 'current',
     }));
     await expect(read.readSteelReview({
       userId: 'user-1',
