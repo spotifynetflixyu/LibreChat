@@ -1,6 +1,7 @@
 import { atom } from 'jotai';
 import { atomFamily } from 'jotai/utils';
 import type { SteelReviewKind } from 'librechat-data-provider';
+import type { PrimitiveAtom } from 'jotai';
 
 export type SteelReviewSelection = {
   conversationId: string;
@@ -48,74 +49,54 @@ export function steelReviewSourcePreviewKey(selection: SteelReviewSelection, fil
   return `${steelReviewIdentityKey(selection)}:${fileId}`;
 }
 
-const dialogCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
-const dialogMountedOwners = new Map<string, number>();
+type OwnedStateFamily<T> = ((key: string) => PrimitiveAtom<T>) & {
+  remove: (key: string) => void;
+};
 
-export const steelReviewDialogStateFamily = atomFamily((key: string) => {
-  const state = atom<SteelReviewDialogState>({
-    isOpen: false,
-    pageNumber: 1,
-    pageCount: 0,
-    fullScreen: false,
-  });
-  state.onMount = () => {
-    const pendingCleanup = dialogCleanupTimers.get(key);
-    if (pendingCleanup) {
-      clearTimeout(pendingCleanup);
-      dialogCleanupTimers.delete(key);
-    }
-    dialogMountedOwners.set(key, (dialogMountedOwners.get(key) ?? 0) + 1);
-    return () => {
-      const ownerCount = (dialogMountedOwners.get(key) ?? 1) - 1;
-      if (ownerCount > 0) {
-        dialogMountedOwners.set(key, ownerCount);
-        return;
+function createOwnedStateFamily<T>(createState: () => T): OwnedStateFamily<T> {
+  const cleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  const mountedOwners = new Map<string, number>();
+  let family: OwnedStateFamily<T>;
+  family = atomFamily<string, PrimitiveAtom<T>>((key) => {
+    const state = atom(createState());
+    state.onMount = () => {
+      const pendingCleanup = cleanupTimers.get(key);
+      if (pendingCleanup) {
+        clearTimeout(pendingCleanup);
+        cleanupTimers.delete(key);
       }
-      dialogMountedOwners.delete(key);
-      const cleanup = setTimeout(() => {
-        dialogCleanupTimers.delete(key);
-        if (!dialogMountedOwners.has(key) && steelReviewDialogStateFamily(key) === state) {
-          steelReviewDialogStateFamily.remove(key);
+      mountedOwners.set(key, (mountedOwners.get(key) ?? 0) + 1);
+      return () => {
+        const ownerCount = (mountedOwners.get(key) ?? 1) - 1;
+        if (ownerCount > 0) {
+          mountedOwners.set(key, ownerCount);
+          return;
         }
-      }, 0);
-      dialogCleanupTimers.set(key, cleanup);
+        mountedOwners.delete(key);
+        const cleanup = setTimeout(() => {
+          cleanupTimers.delete(key);
+          if (!mountedOwners.has(key) && family(key) === state) {
+            family.remove(key);
+          }
+        }, 0);
+        cleanupTimers.set(key, cleanup);
+      };
     };
-  };
-  return state;
-});
-
-const previewCleanupTimers = new Map<string, ReturnType<typeof setTimeout>>();
-const previewMountedOwners = new Map<string, number>();
-
-export const steelReviewPreviewStateFamily = atomFamily((key: string) => {
-  const state = atom<SteelReviewPreviewState>({
-    zoom: 1,
-    pan: { x: 0, y: 0 },
-    dragging: false,
-    renderError: false,
+    return state;
   });
-  state.onMount = () => {
-    const pendingCleanup = previewCleanupTimers.get(key);
-    if (pendingCleanup) {
-      clearTimeout(pendingCleanup);
-      previewCleanupTimers.delete(key);
-    }
-    previewMountedOwners.set(key, (previewMountedOwners.get(key) ?? 0) + 1);
-    return () => {
-      const ownerCount = (previewMountedOwners.get(key) ?? 1) - 1;
-      if (ownerCount > 0) {
-        previewMountedOwners.set(key, ownerCount);
-        return;
-      }
-      previewMountedOwners.delete(key);
-      const cleanup = setTimeout(() => {
-        previewCleanupTimers.delete(key);
-        if (!previewMountedOwners.has(key) && steelReviewPreviewStateFamily(key) === state) {
-          steelReviewPreviewStateFamily.remove(key);
-        }
-      }, 0);
-      previewCleanupTimers.set(key, cleanup);
-    };
-  };
-  return state;
-});
+  return family;
+}
+
+export const steelReviewDialogStateFamily = createOwnedStateFamily<SteelReviewDialogState>(() => ({
+  isOpen: false,
+  pageNumber: 1,
+  pageCount: 0,
+  fullScreen: false,
+}));
+
+export const steelReviewPreviewStateFamily = createOwnedStateFamily<SteelReviewPreviewState>(() => ({
+  zoom: 1,
+  pan: { x: 0, y: 0 },
+  dragging: false,
+  renderError: false,
+}));

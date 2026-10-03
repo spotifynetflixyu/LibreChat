@@ -47,4 +47,24 @@ describe('Steel review scoped state ownership', () => {
     expect(freshAtom).not.toBe(stateAtom);
     expect(store.get(freshAtom).zoom).toBe(1);
   });
+
+  it('retains dialog state across an immediate remount before deferred cleanup', () => {
+    const key = `dialog-remount-${Date.now()}`;
+    const stateAtom = steelReviewDialogStateFamily(key);
+    const store = createStore();
+    store.set(stateAtom, (state) => ({ ...state, pageNumber: 3 }));
+    const unmount = store.sub(stateAtom, () => undefined);
+
+    unmount();
+    const remountedAtom = steelReviewDialogStateFamily(key);
+    const remount = store.sub(remountedAtom, () => undefined);
+    jest.runOnlyPendingTimers();
+
+    expect(remountedAtom).toBe(stateAtom);
+    expect(store.get(remountedAtom).pageNumber).toBe(3);
+
+    remount();
+    jest.runOnlyPendingTimers();
+    expect(steelReviewDialogStateFamily(key)).not.toBe(stateAtom);
+  });
 });
