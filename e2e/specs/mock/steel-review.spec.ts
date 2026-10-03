@@ -826,6 +826,11 @@ test.describe('Steel managed source review', () => {
       await db.collection('messages').updateOne({ conversationId, messageId }, { $set: {
         text: `${markdown} CAS-SECOND-PART`,
         content: [{ type: 'text', text: markdown }, { type: 'text', text: 'CAS-SECOND-PART' }],
+        'metadata.steelReview.system_order': {
+          version: 1, kind: 'system_order', conversationId, messageId,
+          tableId: 'system_order:unrelated', outputId: 'system_order:previous-run',
+          revision: 'UNRELATED-STATUS-KEEP', updatedAt: new Date(Date.now() - 60_000),
+        },
       } });
     });
     const before = await persistedSnapshot(conversationId);
@@ -857,6 +862,11 @@ test.describe('Steel managed source review', () => {
         tableId: table.tableId, outputId: table.outputId, revision: savedBody.revision },
     });
     expect(message?.metadata?.steel).toEqual(before.messages.find((candidate) => candidate.messageId === messageId)?.metadata?.steel);
+    expect(message?.metadata?.steelReview?.system_order).toEqual(before.messages.find((candidate) => candidate.messageId === messageId)?.metadata?.steelReview?.system_order);
+    expect(message?.metadata?.steelReview?.ocr_result).toMatchObject({
+      kind: 'ocr_result', conversationId, messageId, tableId: table.tableId,
+      outputId: table.outputId, revision: savedBody.revision,
+    });
 
     expect(after.messages.find((candidate) => candidate.messageId === previousMessageId))
       .toEqual(before.messages.find((candidate) => candidate.messageId === previousMessageId));
