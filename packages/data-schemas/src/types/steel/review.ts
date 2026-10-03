@@ -57,6 +57,8 @@ export interface SteelReviewReadRecord extends SteelReviewScope {
   rows?: SteelReviewRow[];
   markdown?: string;
   sourceMappings?: SteelReviewSourceMapping[];
+  /** Trusted mapping evidence retained for current-owner files that may be unavailable now. */
+  trustedSourceMappings?: SteelReviewSourceMapping[];
   /** Internal code reservations retained when an old source file is unavailable. */
   sourceMappingReservations?: SteelReviewSourceMapping[];
   latestOutputId?: string;

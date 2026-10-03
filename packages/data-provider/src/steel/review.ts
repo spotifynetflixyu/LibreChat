@@ -203,7 +203,7 @@ export const steelReviewTableSchema = z.object({
   sourceMappings: z.array(steelReviewSourceMappingSchema).optional(),
 });
 
-export const steelReviewPrepareSchema = z.object({
+const steelReviewPrepareBaseSchema = z.object({
   conversationId: z.string().min(1),
   messageId: z.string().min(1),
   tableId: z.string().min(1),
@@ -213,9 +213,26 @@ export const steelReviewPrepareSchema = z.object({
   revision: z.string().min(1),
   rows: z.array(steelReviewRowSchema),
   sourceIntents: z.array(steelReviewSourceIntentSchema).optional(),
-});
+}).strict();
 
-export const steelReviewPreparedSchema = steelReviewPrepareSchema.extend({
+function rejectPresentInvalidSourceFields(
+  value: { sourceIntents?: unknown; sourceMappings?: unknown },
+  context: z.RefinementCtx,
+): void {
+  for (const field of ['sourceIntents', 'sourceMappings'] as const) {
+    if (Object.prototype.hasOwnProperty.call(value, field) && !Array.isArray(value[field])) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [field],
+        message: `${field} must be an array when present`,
+      });
+    }
+  }
+}
+
+export const steelReviewPrepareSchema = steelReviewPrepareBaseSchema.superRefine(rejectPresentInvalidSourceFields);
+
+const steelReviewPreparedBaseSchema = steelReviewPrepareBaseSchema.extend({
   operationId: z.string().min(1),
   digest: z.string().length(64),
   messageSha256: z.string().length(64),
@@ -232,21 +249,23 @@ export const steelReviewPreparedSchema = steelReviewPrepareSchema.extend({
   caption: steelReviewCaptionSchema,
 });
 
+export const steelReviewPreparedSchema = steelReviewPreparedBaseSchema.superRefine(rejectPresentInvalidSourceFields);
+
 // The old 03 commit shape is retained only so the API can validate an
 // already-committed receipt replay without manufacturing a new operation.
-export const steelReviewLegacyCommitSchema = steelReviewPreparedSchema.omit({
+export const steelReviewLegacyCommitSchema = steelReviewPreparedBaseSchema.omit({
   sourceIntents: true,
   sourceMappings: true,
 });
 
 export const steelReviewCommitSchema = steelReviewPreparedSchema;
 
-export const steelReviewSaveResponseSchema = steelReviewPreparedSchema.extend({
+export const steelReviewSaveResponseSchema = steelReviewPreparedBaseSchema.extend({
   savedAt: z.string().datetime(),
   changedRows: z.number().int().nonnegative(),
   changedRowIds: z.array(z.string().min(1)),
   savedSnapshot: steelReviewSavedSnapshotSchema.optional(),
-});
+}).superRefine(rejectPresentInvalidSourceFields);
 
 export const steelReviewResponseSchema = z.object({
   table: steelReviewTableSchema.nullable(),

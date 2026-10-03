@@ -276,6 +276,14 @@ function sourceMappings(
   })).filter((mapping) => authorizedFiles.has(mapping.fileId));
 }
 
+function trustedSourceMappings(state: ISteelConversationOcrState): SteelReviewSourceMapping[] {
+  return (state.sourceMappings ?? []).map((mapping) => ({
+    fileId: mapping.fileId,
+    sourceCode: mapping.sourceCode,
+    sourceFilename: mapping.sourceFilename,
+  }));
+}
+
 function sourceMappingReservations(state: ISteelConversationOcrState): SteelReviewSourceMapping[] {
   return (state.sourceMappings ?? []).map((mapping) => ({
     fileId: mapping.fileId,
@@ -414,6 +422,7 @@ function sidecarRecord(
       values: row.values instanceof Map ? Object.fromEntries(row.values) : row.values,
     })),
     ...(output.sourceMappings ? { sourceMappings: output.sourceMappings } : {}),
+    ...(trustedMappings ? { trustedSourceMappings: [...trustedMappings] } : {}),
     ...(output.latestOutputId ? { latestOutputId: output.latestOutputId } : {}),
     ...(output.aiUpdatedAt ? { aiUpdatedAt: output.aiUpdatedAt } : {}),
     ...(output.aiRawMarkdown ? { aiRawMarkdown: output.aiRawMarkdown } : {}),
@@ -635,6 +644,7 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
             state: 'current',
             markdown: state.currentOcrResultMarkdown,
             sourceMappings: sourceMappings(state, authorizedFiles),
+            trustedSourceMappings: trustedSourceMappings(state),
             sourceMappingReservations: sourceMappingReservations(state),
             latestOutputId: `ocr_result:${state.currentOcrResultGenerationId}`,
             ...(state.currentOcrResultProvenance?.generationId === state.currentOcrResultGenerationId &&
@@ -1259,7 +1269,12 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               },
             }))
             : new Map<string, AuthorizedFile>();
-          const projectedRows = output ? sanitizeRows(output.rows, authorizedFiles) : [];
+          if (output && input.sourceMappings === undefined && output.rows.some((row) =>
+            row.source !== null && authorizedFiles.has(row.source.fileId))) {
+            throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review source metadata changed');
+          }
+          const trustedMappings = input.sourceMappings ?? [];
+          const projectedRows = output ? sanitizeRows(output.rows, authorizedFiles, trustedMappings) : [];
           const baselineRows = output ? projectedRows : input.rows;
           const sourceIntents = new Map<string, SteelReviewSourceIntent>();
           for (const intent of input.sourceIntents ?? []) {
@@ -1271,12 +1286,24 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
           if (input.sourceMappings) {
             const mappingByCode = new Map<string, SteelReviewSourceMapping>();
             const mappingByFile = new Map<string, SteelReviewSourceMapping>();
+            const selectedFileIds = new Set((input.sourceIntents ?? [])
+              .flatMap((intent) => intent.fileId ? [intent.fileId] : []));
+            const currentOwnerMappings = [
+              ...(ocrState?.sourceMappings ?? []),
+              ...(output?.sourceMappings ?? []),
+              ...(output && typeof message.text === 'string'
+                ? legacySnapshotMappings(output, input.kind, message.text) ?? []
+                : []),
+            ];
             for (const mapping of input.sourceMappings) {
               const file = authorizedFiles.get(mapping.fileId);
               const priorCode = mappingByCode.get(mapping.sourceCode);
               const priorFile = mappingByFile.get(mapping.fileId);
-              if (!file || mapping.sourceFilename !== file.filename ||
-                (mapping.mediaType !== undefined && mapping.mediaType !== file.mediaType) ||
+              const retainedUnavailable = !file && !selectedFileIds.has(mapping.fileId) &&
+                currentOwnerMappings.some((candidate) => candidate.fileId === mapping.fileId &&
+                  candidate.sourceCode === mapping.sourceCode && candidate.sourceFilename === mapping.sourceFilename);
+              if ((!file && !retainedUnavailable) || (file && mapping.sourceFilename !== file.filename) ||
+                (file && mapping.mediaType !== undefined && mapping.mediaType !== file.mediaType) ||
                 (priorCode && JSON.stringify(priorCode) !== JSON.stringify(mapping)) ||
                 (priorFile && JSON.stringify(priorFile) !== JSON.stringify(mapping))) {
                 throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review source mapping is invalid');

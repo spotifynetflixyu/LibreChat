@@ -884,6 +884,72 @@ describe('Steel review read service', () => {
     })).rejects.toMatchObject({ code: 'REVIEW_INVALID_OPERATION' });
   });
 
+  it('rejects a present undefined source intent before reading review state', async () => {
+    const readSteelReview = jest.fn();
+    const service = createSteelReviewService({ reader: { readSteelReview } });
+    await expect(service.prepare({
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result',
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      rows: associationRowsFor(),
+      sourceIntents: undefined,
+    } as never)).rejects.toMatchObject({ code: 'INVALID_REVIEW_QUERY', statusCode: 400 });
+    expect(readSteelReview).not.toHaveBeenCalled();
+  });
+
+  it('allocates source suffixes with lossless decimal precision', async () => {
+    const rows = associationRowsFor(null, '1', 'P-1');
+    const markdown = associationMarkdownFor(null, '1');
+    const service = createSteelReviewService({
+      reader: {
+        readSteelReview: jest.fn().mockResolvedValue({
+          userId: 'user-1',
+          conversationId: 'conversation-1',
+          kind: 'ocr_result' as const,
+          messageId: 'message-1',
+          tableId: 'ocr_result:1',
+          outputId: 'ocr_result:generation-1',
+          revision: 'generation-1',
+          state: 'current' as const,
+          markdown,
+          messageText: markdown,
+          headers: ['來源', '原始檔案', '原檔頁碼', 'Profile'],
+          rows,
+          sourceMappings: [{
+            fileId: 'file-1',
+            sourceCode: 'F9007199254740993',
+            sourceFilename: 'drawing.pdf',
+          }],
+        }),
+      },
+      sourceAuthority: {
+        readMetadata: jest.fn().mockResolvedValue({
+          fileId: 'file-2', filename: 'replacement.pdf', mediaType: 'application/pdf',
+        }),
+        readPageCount: jest.fn().mockResolvedValue({ pageCount: 2 }),
+      },
+    });
+    const prepared = await service.prepare({
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result',
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      sourceRequest: {} as never,
+      sourceIntents: [{ rowId: 'row-1', fileId: 'file-2', pageNumber: 1 }],
+      rows,
+    });
+    expect(prepared.sourceMappings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ fileId: 'file-2', sourceCode: 'F9007199254740994' }),
+    ]));
+  });
+
   it('canonicalizes effective cells before captioning and serializing a save', async () => {
     const markdown = [
       '## ocr_result',

@@ -7,6 +7,8 @@ import {
   sameSteelReviewSource,
   steelReviewReadQuerySchema,
   steelReviewResponseSchema,
+  steelReviewPreparedSchema,
+  steelReviewPrepareSchema,
 } from './review';
 
 describe('Steel review contracts', () => {
@@ -202,5 +204,41 @@ describe('Steel review contracts', () => {
     );
     expect(() => encodeSteelReviewDigest({ ...legacy, sourceMappings: null as never })).toThrow();
     expect(() => encodeSteelReviewDigest({ ...legacy, sourceMappings: undefined })).toThrow();
+  });
+
+  it('rejects present undefined or null source intents while accepting an explicit empty array', () => {
+    const base = {
+      conversationId: 'conversation-1',
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+      kind: 'ocr_result' as const,
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      rows: [{
+        rowId: 'row-1',
+        values: { Value: { baseline: '1', effective: '1' } },
+        source: null,
+      }],
+    };
+    expect(steelReviewPrepareSchema.safeParse({ ...base, sourceIntents: undefined }).success).toBe(false);
+    expect(steelReviewPrepareSchema.safeParse({ ...base, sourceIntents: null }).success).toBe(false);
+    expect(steelReviewPrepareSchema.safeParse({ ...base, sourceIntents: [] }).success).toBe(true);
+    expect(steelReviewPrepareSchema.safeParse(base).success).toBe(true);
+    const prepared = { ...base,
+      operationId: 'operation-1',
+      digest: 'a'.repeat(64),
+      messageSha256: 'b'.repeat(64),
+      target: { start: 0, end: 1, sha256: 'c'.repeat(64) },
+      replacementText: 'new',
+      cleanReplacementText: 'new',
+      targetText: 'old',
+      headers: ['Value'],
+      effectiveMarkdown: 'table',
+      displayMarkdown: 'table',
+      caption: { kind: 'ocr_result' as const, changedRows: 0, changedRowIds: [] },
+    };
+    expect(steelReviewPreparedSchema.safeParse({ ...prepared, sourceMappings: undefined }).success).toBe(false);
+    expect(steelReviewPreparedSchema.safeParse({ ...prepared, sourceMappings: null }).success).toBe(false);
+    expect(steelReviewPreparedSchema.safeParse({ ...prepared, sourceMappings: [] }).success).toBe(true);
   });
 });

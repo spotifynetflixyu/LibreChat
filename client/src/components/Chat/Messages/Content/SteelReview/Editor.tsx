@@ -277,7 +277,7 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
             ))}
             {onSourceChange && (
               <th scope="col" className="border-b border-border-light px-3 py-2 text-left font-semibold">
-                {labels.sourceActions ?? 'Source actions'}
+                {labels.sourceActions}
               </th>
             )}
           </tr>

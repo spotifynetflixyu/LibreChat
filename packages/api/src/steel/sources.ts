@@ -140,6 +140,27 @@ export function createSteelReviewSourceService({
   reader,
   readStream,
 }: SteelReviewSourceServiceDeps): SteelReviewSourceService {
+  const readAuthorizedSource = async (
+    input: SteelReviewSourceBinaryInput,
+  ): Promise<SteelReviewSourceRecord | null> => {
+    const query = steelReviewSourceBinaryQuerySchema.safeParse({ messageId: input.messageId });
+    if (!query.success || !steelReviewKinds.includes(input.kind) || !input.fileId) {
+      throw new SteelReviewSourceError(
+        'INVALID_REVIEW_SOURCE_QUERY',
+        400,
+        'Invalid review source query',
+      );
+    }
+    return reader.readSteelReviewSource({
+      userId: input.userId,
+      ...(input.tenantId !== undefined ? { tenantId: input.tenantId } : {}),
+      conversationId: input.conversationId,
+      messageId: query.data.messageId,
+      kind: input.kind,
+      fileId: input.fileId,
+    } satisfies SteelReviewSourceReadInput);
+  };
+
   return {
     async list(input) {
       const query = validateScope(input);
@@ -155,22 +176,7 @@ export function createSteelReviewSourceService({
     },
 
     async readBinary(input, request) {
-      const query = steelReviewSourceBinaryQuerySchema.safeParse({ messageId: input.messageId });
-      if (!query.success || !steelReviewKinds.includes(input.kind) || !input.fileId) {
-        throw new SteelReviewSourceError(
-          'INVALID_REVIEW_SOURCE_QUERY',
-          400,
-          'Invalid review source query',
-        );
-      }
-      const source = await reader.readSteelReviewSource({
-        userId: input.userId,
-        ...(input.tenantId !== undefined ? { tenantId: input.tenantId } : {}),
-        conversationId: input.conversationId,
-        messageId: query.data.messageId,
-        kind: input.kind,
-        fileId: input.fileId,
-      } satisfies SteelReviewSourceReadInput);
+      const source = await readAuthorizedSource(input);
       if (!source) {
         throw new SteelReviewSourceError(
           'REVIEW_SOURCE_NOT_FOUND',
@@ -189,42 +195,12 @@ export function createSteelReviewSourceService({
     },
 
     async readMetadata(input) {
-      const query = steelReviewSourceBinaryQuerySchema.safeParse({ messageId: input.messageId });
-      if (!query.success || !steelReviewKinds.includes(input.kind) || !input.fileId) {
-        throw new SteelReviewSourceError(
-          'INVALID_REVIEW_SOURCE_QUERY',
-          400,
-          'Invalid review source query',
-        );
-      }
-      const source = await reader.readSteelReviewSource({
-        userId: input.userId,
-        ...(input.tenantId !== undefined ? { tenantId: input.tenantId } : {}),
-        conversationId: input.conversationId,
-        messageId: query.data.messageId,
-        kind: input.kind,
-        fileId: input.fileId,
-      });
+      const source = await readAuthorizedSource(input);
       return source ? publicSource(source) : null;
     },
 
     async readPageCount(input, request) {
-      const query = steelReviewSourceBinaryQuerySchema.safeParse({ messageId: input.messageId });
-      if (!query.success || !steelReviewKinds.includes(input.kind) || !input.fileId) {
-        throw new SteelReviewSourceError(
-          'INVALID_REVIEW_SOURCE_QUERY',
-          400,
-          'Invalid review source query',
-        );
-      }
-      const source = await reader.readSteelReviewSource({
-        userId: input.userId,
-        ...(input.tenantId !== undefined ? { tenantId: input.tenantId } : {}),
-        conversationId: input.conversationId,
-        messageId: query.data.messageId,
-        kind: input.kind,
-        fileId: input.fileId,
-      });
+      const source = await readAuthorizedSource(input);
       if (!source) {
         throw new SteelReviewSourceError('REVIEW_SOURCE_NOT_FOUND', 404, 'Review source not found');
       }
