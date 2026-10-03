@@ -1,3 +1,4 @@
+import { ObjectId } from 'mongodb';
 import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 import {
@@ -32,6 +33,25 @@ async function seedCurrent(markdown: string) {
     sender: 'Assistant',
   }]);
   await withMongo(async (db) => {
+    const user = await db.collection('users').findOne({ email });
+    if (!user) {
+      throw new Error('Missing authenticated fixture user');
+    }
+    await db.collection('files').insertOne({
+      user: user._id,
+      conversationId,
+      messageId,
+      file_id: 'review-alpha',
+      filename: 'alpha.pdf',
+      filepath: '/tmp/steel-source-review-fixtures/alpha.pdf',
+      type: 'application/pdf',
+      bytes: 1024,
+      object: 'file',
+      source: 'local',
+      context: 'message_attachment',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
     await db.collection('messages').updateOne({ conversationId, messageId }, {
       $set: { metadata: { steel: { preflightToolCalls: [{
         type: 'tool_call',
@@ -89,6 +109,7 @@ test.describe('Steel managed source review', () => {
     await withMongo(async (db) => {
       await db.collection('steel_conversation_ocr_state').deleteMany({ conversationId: { $in: ids } });
       await db.collection('steel_review_outputs').deleteMany({ conversationId: { $in: ids } });
+      await db.collection('files').deleteMany({ conversationId: { $in: ids } });
     });
     await deleteConversations(ids);
   });
@@ -189,6 +210,49 @@ test.describe('Steel managed source review', () => {
         createdAt: new Date(),
         updatedAt: new Date(),
       });
+    });
+    const before = await persistedSnapshot(conversationId);
+    const result = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(result.status()).toBe(404);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+  });
+
+  test('foreign and missing mapped files leave rows unlocated without exposing source metadata', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    await withMongo(async (db) => {
+      await db.collection('files').updateOne({ conversationId, file_id: 'review-alpha' }, {
+        $set: { user: new ObjectId(), filename: 'PRIVATE-FOREIGN.pdf' },
+      });
+      await db.collection('steel_conversation_ocr_state').updateOne({ conversationId }, {
+        $set: { sourceMappings: [{ fileId: 'review-alpha', sourceCode: 'A', sourceFilename: 'PRIVATE-FOREIGN.pdf' }] },
+      });
+    });
+    const before = await persistedSnapshot(conversationId);
+    const foreign = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(foreign.status()).toBe(200);
+    const foreignBody = await foreign.json();
+    expect(foreignBody).toMatchObject({ table: { rows: [{ source: null }, { source: null }] } });
+    expect(JSON.stringify(foreignBody)).not.toContain('PRIVATE-FOREIGN');
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    await withMongo(async (db) => {
+      await db.collection('files').deleteOne({ conversationId, file_id: 'review-alpha' });
+    });
+    const missing = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(missing.status()).toBe(200);
+    expect(await missing.json()).toMatchObject({ table: { rows: [{ source: null }, { source: null }] } });
+  });
+
+  test('legacy OCR identity shared by another tenant does not expose unscoped current state', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    await withMongo(async (db) => {
+      const own = await db.collection('conversations').findOne({ conversationId });
+      if (!own) {
+        throw new Error('Missing owned fixture conversation');
+      }
+      const { _id: ignoredId, ...foreign } = own;
+      await db.collection('conversations').insertOne({ ...foreign, tenantId: 'review-other-tenant' });
     });
     const before = await persistedSnapshot(conversationId);
     const result = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
