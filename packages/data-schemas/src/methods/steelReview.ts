@@ -10,6 +10,11 @@ import type {
   SteelReviewSourceMapping,
   SteelReviewTextPart,
 } from '~/types';
+import type {
+  SteelReviewCaption,
+  SteelReviewRow,
+  SteelReviewTarget,
+} from 'librechat-data-provider';
 import {
   createSteelConversationOcrStateModel,
   createSteelDelegateOcrRunModel,
@@ -26,6 +31,55 @@ type Mongoose = typeof import('mongoose');
 
 export interface SteelReviewReadMethods {
   readSteelReview(input: SteelReviewReadInput): Promise<SteelReviewReadRecord | null>;
+}
+
+export interface SteelReviewCommitInput extends SteelReviewReadInput {
+  outputId: string;
+  revision: string;
+  operationId: string;
+  digest: string;
+  rows: SteelReviewRow[];
+  headers: string[];
+  messageSha256: string;
+  target: SteelReviewTarget;
+  targetText: string;
+  replacementText: string;
+  cleanReplacementText: string;
+  effectiveMarkdown: string;
+  displayMarkdown: string;
+  aiBaselineMarkdown?: string;
+  aiRawMarkdown?: string;
+  caption: SteelReviewCaption;
+}
+
+export interface SteelReviewCommitResult {
+  operationId: string;
+  digest: string;
+  outputId: string;
+  revision: string;
+  changedRows: number;
+  changedRowIds: string[];
+  savedAt: Date;
+  messageSha256: string;
+  effectiveMarkdown: string;
+  displayMarkdown: string;
+}
+
+export interface SteelReviewWriteMethods {
+  commitSteelReview(input: SteelReviewCommitInput): Promise<SteelReviewCommitResult>;
+}
+
+export class SteelReviewWriteError extends Error {
+  readonly code: 'REVIEW_CONFLICT' | 'REVIEW_NOT_FOUND' | 'REVIEW_INVALID_OPERATION';
+
+  constructor(
+    code: SteelReviewWriteError['code'],
+    message: string,
+  ) {
+    super(message);
+    this.name = 'SteelReviewWriteError';
+    this.code = code;
+  }
 }
 
 function tenantFilter(tenantId?: string): Record<string, unknown> {
@@ -137,7 +191,7 @@ function sanitizeRows(
 }
 
 function sidecarRecord(
-  output: Pick<ISteelReviewOutput, 'userId' | 'tenantId' | 'conversationId' | 'kind' | 'messageId' | 'tableId' | 'outputId' | 'revision' | 'state' | 'headers' | 'rows' | 'latestOutputId'>,
+  output: Pick<ISteelReviewOutput, 'userId' | 'tenantId' | 'conversationId' | 'kind' | 'messageId' | 'tableId' | 'outputId' | 'revision' | 'state' | 'headers' | 'rows' | 'latestOutputId' | 'aiRawMarkdown' | 'aiBaselineMarkdown' | 'humanMarkdown' | 'humanSavedAt' | 'effectiveMarkdown' | 'displayMarkdown'>,
   message?: { selected: string; parts: SteelReviewTextPart[]; selectedPartIndex?: number },
   authorizedFiles: ReadonlyMap<string, AuthorizedFile> = new Map(),
 ): SteelReviewReadRecord {
@@ -157,6 +211,12 @@ function sidecarRecord(
       values: row.values instanceof Map ? Object.fromEntries(row.values) : row.values,
     })),
     ...(output.latestOutputId ? { latestOutputId: output.latestOutputId } : {}),
+    ...(output.aiRawMarkdown ? { aiRawMarkdown: output.aiRawMarkdown } : {}),
+    ...(output.aiBaselineMarkdown ? { aiBaselineMarkdown: output.aiBaselineMarkdown } : {}),
+    ...(output.humanMarkdown ? { humanMarkdown: output.humanMarkdown } : {}),
+    ...(output.humanSavedAt ? { humanSavedAt: output.humanSavedAt } : {}),
+    ...(output.effectiveMarkdown ? { effectiveMarkdown: output.effectiveMarkdown } : {}),
+    ...(output.displayMarkdown ? { displayMarkdown: output.displayMarkdown } : {}),
     ...(message
       ? {
           messageText: message.selected,

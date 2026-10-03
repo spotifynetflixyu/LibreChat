@@ -32,6 +32,19 @@ export const steelReviewRowSchema = z.object({
   source: steelReviewSourceSchema.nullable(),
 });
 
+export const steelReviewTargetSchema = z.object({
+  partIndex: z.number().int().nonnegative().optional(),
+  start: z.number().int().nonnegative(),
+  end: z.number().int().nonnegative(),
+  sha256: z.string().length(64),
+});
+
+export const steelReviewCaptionSchema = z.object({
+  kind: z.enum(steelReviewKinds),
+  changedRows: z.number().int().nonnegative(),
+  changedRowIds: z.array(z.string().min(1)),
+});
+
 export const steelReviewTableSchema = z.object({
   conversationId: z.string().min(1),
   messageId: z.string().min(1),
@@ -47,6 +60,29 @@ export const steelReviewTableSchema = z.object({
   rows: z.array(steelReviewRowSchema),
 });
 
+export const steelReviewPrepareSchema = z.object({
+  conversationId: z.string().min(1),
+  messageId: z.string().min(1),
+  tableId: z.string().min(1),
+  partIndex: z.number().int().nonnegative().optional(),
+  kind: z.enum(steelReviewKinds),
+  outputId: z.string().min(1),
+  revision: z.string().min(1),
+  rows: z.array(steelReviewRowSchema),
+});
+
+export const steelReviewPreparedSchema = steelReviewPrepareSchema.extend({
+  operationId: z.string().min(1),
+  digest: z.string().length(64),
+  messageSha256: z.string().length(64),
+  target: steelReviewTargetSchema,
+  replacementText: z.string(),
+  cleanReplacementText: z.string(),
+  caption: steelReviewCaptionSchema,
+});
+
+export const steelReviewCommitSchema = steelReviewPreparedSchema;
+
 export const steelReviewResponseSchema = z.object({
   table: steelReviewTableSchema.nullable(),
 });
@@ -56,3 +92,8 @@ export type SteelReviewCell = z.infer<typeof steelReviewCellSchema>;
 export type SteelReviewRow = z.infer<typeof steelReviewRowSchema>;
 export type SteelReviewTable = z.infer<typeof steelReviewTableSchema>;
 export type SteelReviewResponse = z.infer<typeof steelReviewResponseSchema>;
+export type SteelReviewTarget = z.infer<typeof steelReviewTargetSchema>;
+export type SteelReviewCaption = z.infer<typeof steelReviewCaptionSchema>;
+export type SteelReviewPrepare = z.infer<typeof steelReviewPrepareSchema>;
+export type SteelReviewPrepared = z.infer<typeof steelReviewPreparedSchema>;
+export type SteelReviewCommit = z.infer<typeof steelReviewCommitSchema>;

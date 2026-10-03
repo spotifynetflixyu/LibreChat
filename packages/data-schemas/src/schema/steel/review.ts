@@ -30,6 +30,18 @@ const steelReviewRowSchema: Schema<SteelReviewRow> = new Schema(
   { _id: false },
 );
 
+const steelReviewReceiptSchema = new Schema(
+  {
+    operationId: { type: String, required: true },
+    digest: { type: String, required: true },
+    revision: { type: String, required: true },
+    changedRows: { type: Number, required: true, min: 0 },
+    changedRowIds: { type: [String], required: true, default: [] },
+    savedAt: { type: Date, required: true },
+  },
+  { _id: false },
+);
+
 const steelReviewOutputSchema: Schema<ISteelReviewOutput> = new Schema<ISteelReviewOutput>(
   {
     userId: { type: String, required: true },
@@ -44,6 +56,13 @@ const steelReviewOutputSchema: Schema<ISteelReviewOutput> = new Schema<ISteelRev
     headers: { type: [String], required: true, default: [] },
     rows: { type: [steelReviewRowSchema], required: true, default: [] },
     latestOutputId: { type: String },
+    aiRawMarkdown: { type: String },
+    aiBaselineMarkdown: { type: String },
+    humanMarkdown: { type: String },
+    humanSavedAt: { type: Date },
+    effectiveMarkdown: { type: String },
+    displayMarkdown: { type: String },
+    receipts: { type: [steelReviewReceiptSchema], required: true, default: [] },
   },
   { timestamps: true },
 );

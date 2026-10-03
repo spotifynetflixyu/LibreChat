@@ -1,4 +1,5 @@
 import type {
+  SteelReviewCaption,
   SteelReviewCell,
   SteelReviewKind,
   SteelReviewRow,
@@ -40,6 +41,13 @@ export interface SteelReviewReadRecord extends SteelReviewScope {
   messageText?: string;
   messageTextParts?: SteelReviewTextPart[];
   messageTextPartIndex?: number;
+  aiRawMarkdown?: string;
+  aiBaselineMarkdown?: string;
+  humanMarkdown?: string;
+  humanSavedAt?: Date;
+  effectiveMarkdown?: string;
+  displayMarkdown?: string;
+  lastSave?: SteelReviewCaption & { savedAt: Date };
 }
 
 export interface SteelReviewSourceMapping {
@@ -63,6 +71,22 @@ export interface ISteelReviewOutput extends Document, SteelReviewScope {
     source: SteelReviewSource | null;
   }>;
   latestOutputId?: string;
+  aiRawMarkdown?: string;
+  aiBaselineMarkdown?: string;
+  humanMarkdown?: string;
+  humanSavedAt?: Date;
+  effectiveMarkdown?: string;
+  displayMarkdown?: string;
+  receipts: SteelReviewReceipt[];
   createdAt?: Date;
   updatedAt?: Date;
+}
+
+export interface SteelReviewReceipt {
+  operationId: string;
+  digest: string;
+  revision: string;
+  changedRows: number;
+  changedRowIds: string[];
+  savedAt: Date;
 }

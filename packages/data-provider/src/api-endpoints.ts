@@ -348,6 +348,10 @@ export const steelReview = (
   }).toString();
   return `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}?${query}`;
 };
+export const steelReviewPrepare = (conversationId: string, kind: string) =>
+  `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}/prepare`;
+export const steelReviewCommit = (conversationId: string, kind: string) =>
+  `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}/commit`;
 
 export const adminSteelBase = () => `${BASE_URL}/api/admin/steel`;
 export const adminSteelCapabilitySmoke = () => `${adminSteelBase()}/ai/capability-smoke`;
