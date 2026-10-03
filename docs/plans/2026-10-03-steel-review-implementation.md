@@ -66,6 +66,13 @@ The current source-review spec, glossary, and ADRs are the acceptance source.
 - The frontend uses shared semantic primitives, Jotai feature state and React Query. PDF
   rendering is controlled single-page, multi-source single selection; one source has many rows.
   Sessions preserve pending operations across pages and support persisted inverse operations.
+- Managed-table downloads use the same feature-owned save gate: flush the active edit and
+  drain pending autosave/prepare/commit, save only net corrections, then download the clicked
+  owner's backend-confirmed immutable saved clean snapshot/revision. No-op/history downloads
+  do not write or refresh human time. Failures or superseded pending edits block download and
+  retain drafts; a lost save response is resolved through the existing idempotent receipt.
+  Slice 03 owns the shared gate, 06 adds system-order/quote atomic completion, and 14 verifies
+  actual downloaded contents against DB/API/reload. Ordinary Markdown gains no save behavior.
 - New limits/timeouts/capabilities go through config schema with compatibility defaults.
 
 ## Task graph
