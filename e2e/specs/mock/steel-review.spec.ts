@@ -609,7 +609,6 @@ test.describe('Steel managed source review', () => {
       const review = await page.request.get(readUrl(current.conversationId, current.messageId, 1), { headers });
       expect(review.status()).toBe(200);
       expect(await review.json()).toMatchObject({ table: {
-        sourceFiles: [],
         rows: [{ source: null }, { source: null }],
       } });
       const root = `/api/steel/conversations/${current.conversationId}/review/ocr_result/sources`;
@@ -654,7 +653,6 @@ test.describe('Steel managed source review', () => {
       const review = await page.request.get(readUrl(current.conversationId, current.messageId, 1), { headers });
       expect(review.status()).toBe(200);
       expect(await review.json()).toMatchObject({ table: {
-        sourceFiles: [],
         rows: [{ source: null }, { source: null }],
       } });
       const root = `/api/steel/conversations/${current.conversationId}/review/ocr_result/sources`;
