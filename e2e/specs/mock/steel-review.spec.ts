@@ -1409,6 +1409,47 @@ test.describe('Steel managed source review', () => {
   });
 
 
+  test('a draft edited during OCR Save survives the confirmed earlier snapshot', async ({ page }) => {
+    const { conversationId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const commitUrl = `**/api/steel/conversations/${conversationId}/review/ocr_result/commit`;
+    let firstCommitted: Awaited<ReturnType<typeof persistedSnapshot>> | undefined;
+    let releaseResponse: (() => void) | undefined;
+    const responseGate = new Promise<void>((resolve) => { releaseResponse = resolve; });
+    await page.route(commitUrl, async (route) => {
+      const response = await route.fetch();
+      expect(response.status()).toBe(200);
+      firstCommitted = await persistedSnapshot(conversationId);
+      await responseGate;
+      await route.fulfill({ response });
+    });
+    try {
+      await page.goto(`/c/${conversationId}`);
+      await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+      const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+      await quantity.fill('7');
+      await dialog.getByRole('button', { name: /^Save/ }).click();
+      await expect.poll(() => firstCommitted !== undefined).toBe(true);
+      await quantity.fill('10');
+      releaseResponse?.();
+      await expect(dialog.getByRole('button', { name: /^Save/ })).toBeEnabled();
+      await expect(quantity).toHaveValue('10');
+      await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
+      expect(await persistedSnapshot(conversationId)).toEqual(firstCommitted);
+      expect(firstCommitted?.messages[0]?.text).toContain('| A | REVIEW-P1 | 1000 | 7 | 1 |');
+      await page.unroute(commitUrl);
+      await dialog.getByRole('button', { name: /^Save/ }).click();
+      await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).not.toBeVisible();
+      await expect(quantity).toHaveValue('10');
+      expect((await persistedSnapshot(conversationId)).messages[0]?.text)
+        .toContain('| A | REVIEW-P1 | 1000 | 10 | 1 |');
+    } finally {
+      releaseResponse?.();
+      await page.unroute(commitUrl);
+    }
+  });
+
   test('OCR download saves the focused draft and exports the confirmed clean snapshot', async ({ page }) => {
     const { conversationId, messageId } = await seedCurrent(ocr);
     conversations.push(conversationId);
