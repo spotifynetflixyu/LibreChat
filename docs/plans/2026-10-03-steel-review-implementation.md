@@ -13,6 +13,15 @@ The current source-review spec, glossary, and ADRs are the acceptance source.
   file/page source, processing parent, candidate/customer snapshots, per-field overrides,
   AI raw/full baseline, last human saved complete Markdown/timestamp, derived effective
   review snapshot, exact message-part/section locators, operation receipts, and revisions.
+- Persisted chat text/content targets contain only saved clean effective complete Markdown,
+  never review strike-through, old values or deleted rows. Review reads return same-owner
+  immutable AI baseline and saved effective Markdown plus stable-ID row projections; popup
+  comparison alone renders differences (including local unsaved drafts). Verify saved effective
+  target hash/revision after a human save rather than requiring equality with AI baseline.
+- The managed chat title renders the shared localized Updated badge from same-owner
+  committed human-save metadata. Reload preserves it; drafts, failures and no-op saves
+  do not create it, and a new AI owner does not inherit it. It never enters Markdown,
+  export, pricing or provider text.
 - The authoritative current-output references select eligibility per kind. Read-only reads
   must not rewrite messages. Historical owner snapshots stay immutable after supersession.
 - TypeScript Steel services receive DB methods, catalog client, config and context from callers.
@@ -51,7 +60,7 @@ The current source-review spec, glossary, and ADRs are the acceptance source.
   a fresh effective review snapshot from its own complete AI baseline, with no prior human
   overrides, added/deleted rows, source markings, candidates, derived values or strikes.
   Human differences apply only within the output where they were saved. Save the new AI
-  snapshot, current owner/display/quote and necessary staleness atomically; historical owners
+  snapshot, current owner/clean chat/quote and necessary staleness atomically; historical owners
   remain immutable. Never rewrite, reattach, delete or refresh the last human complete save.
   This supersedes the earlier cross-output human-composition policy.
 - Compare complete saved AI/human snapshots only within the authenticated owner/tenant/

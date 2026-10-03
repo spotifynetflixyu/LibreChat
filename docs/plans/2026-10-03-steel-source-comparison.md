@@ -128,7 +128,7 @@ undo／redo 以一次完成的改格、來源標記、新增或刪除為一步�
 
 ## 原版、差異與有效資料
 
-保留各版 AI 輸出的原文與通過完整格式驗證的最新 AI Markdown，另保存人工覆核後的有效 Markdown。當前人工累積差異相對最新 AI 完整基準，歷史基準與人工版本保留供舊版閱讀。修改格呈現人工／有效新值與刪除線 AI 基準值；AI 基準列被人工刪除後保留整列刪除線與刪除標記。人工新增列標示新增；新增後再刪除時不形成 AI 基準的刪除差異，但本次 undo 仍可恢復。有效值與最新 AI 基準相同時，對應人工差異消失。
+保留各版 AI 輸出的原文與通過完整格式驗證的最新 AI Markdown，另保存人工覆核後的有效 Markdown。當前人工累積差異相對最新 AI 完整基準，歷史基準與人工版本保留供舊版閱讀。只有對照彈窗的修改格呈現人工／有效新值與刪除線 AI 基準值；AI 基準列被人工刪除後保留整列刪除線與刪除標記。人工新增列標示新增；新增後再刪除時不形成 AI 基準的刪除差異，但本次 undo 仍可恢復。有效值與最新 AI 基準相同時，對應人工差異消失。
 
 AI 回覆與 UI 編輯使用不同的寫入來源：UI 直接保存人工完整 Markdown 與指定聊天訊息，不改 AI 基準；未來 AI 每次只輸出完整 Markdown，通過完整格式、精準 owner 與版本驗證後建立新的完整基準。全部退役 cell comment、更新 rows、後端 delta merge 及聊天補全流程；新輸出含舊更新／revision／deletion control 區段，即使同時含完整表也拒寫 current／canonical／admission，不能 fallback 至舊協定。code fence 與歷史內容不誤判，歷史 owner 保留唯讀，實際 OCR／報價 chunk 組裝維持。
 
@@ -140,7 +140,7 @@ AI 回覆與 UI 編輯使用不同的寫入來源：UI 直接保存人工完整 
 
 AI 更新僅在有可靠對應時延續先前 AI 列的 row ID；重複件號等情況不猜匹配。新輸出不合併舊人工組，避免重複計價；舊人工組只保留在歷史快照。未保存本地操作仍以 revision CAS 保護，舊彈窗轉唯讀且不自動搬移操作至新 owner。
 
-有效資料排除已刪除列及所有刪除線舊值，供 canonical state、customer_quote 計算及後續 AI 使用。聊天訊息文字保存使用者要求的最新 Markdown 與累積差異；兩者由同一次儲存更新，不能把顯示用刪除線 Markdown 再解析成有效數值。
+有效資料排除已刪除列及所有刪除線舊值，供 canonical state、customer_quote 計算及後續 AI 使用。聊天訊息只保存最新 clean 有效 Markdown，不保存刪除線舊值或已刪除列。累積差異只在彈窗取得同 owner 的 AI 原版 Markdown 與最新有效 Markdown 後，以穩定 row ID 比對產生；原版、有效資料及指定聊天 target 同次保存一致，AI 原版不改寫。
 
 OCR 修改同步有效 OCR 狀態與聊天文字，讓以舊 OCR 為依據的報價過期，保留舊報價內容。來源補標不自行改寫尺寸、數量或其他業務值。system order 修改只更新自己的有效報價與聊天文字，不反寫 OCR；save 前先統一重算材料及其綁定加工列的重量／計價總數，再產生 customer_quote，最後保存相關狀態與聊天文字。小計沿用現有向上取整規則；單價或總數缺值保留空白小計，總計沿用現有可計算小計加總方式。
 
@@ -203,7 +203,7 @@ OCR 修改同步有效 OCR 狀態與聊天文字，讓以舊 OCR 為依據的報
 
 同一個 Mongo 交易及 revision CAS 包含編輯原版／有效列／差異狀態、相關 canonical OCR 或 quotation 狀態、失效資訊及所有受影響訊息文字。AI finalizer、OCR／報價更新與專用 UI 操作共用這個版本範圍；AI 工作使用啟動時讀取的有效 revision，提交前檢查是否已被 UI 編輯取代。一般 message PUT 若試圖改動已受管理的表格，必須導入同一版本服務或拒絕該變更，不能繞過 Steel revision。報價正在使用固定輸入時不改寫它的 immutable checkpoint；UI 操作保留為待核對修改，已完成結果才能成為新的可編輯來源。
 
-顯示用聊天 Markdown 與有效資料的邊界要落實於讀取路徑：`steel/ocr/result.ts` 的既有結果與更新基底、quotation preparation／runner 的訂單輸入、`steel/markdown/completion.ts` 的有效表格處理，以及 Chat／Responses 的 provider message 組裝。Chat／Responses caller 以一次批次讀取或已載入的 managed-table 資料，在送入 AI 前用該 lineage 的有效內容代換受管理 section；不逐則增加串行 DB 查詢。歷史 display 內容保留供 UI，但所有目前計算及後續更新都讀 clean representation。
+彈窗比較與 clean 聊天／有效資料的邊界要落實於讀取路徑：`steel/ocr/result.ts` 的既有結果與更新基底、quotation preparation／runner 的訂單輸入、`steel/markdown/completion.ts` 的有效表格處理，以及 Chat／Responses 的 provider message 組裝。Chat／Responses caller 以一次批次讀取或已載入的 managed-table 資料，在送入 AI 前用該 lineage 的有效內容代換受管理 section；不逐則增加串行 DB 查詢。歷史保存快照不回寫；新保存的聊天 target 也是 clean。對照彈窗以所屬 AI 原版與最新結果產生差異，計算及後續更新讀自己的 clean representation。
 
 ### 來源關聯的合法狀態
 
@@ -304,3 +304,5 @@ PDF 預覽需受控單頁渲染，以 selector 決定原檔頁碼；既有 ifram
 ## 最後確認：手動儲存與順序實作
 
 修改先保留本地草稿，儲存按鈕 caption 持續顯示未儲存 N 列，Enter／blur、來源、增刪、候選及 undo／redo 不直接寫 DB。關閉遇到尚未按儲存的淨變更，先詢問儲存／捨棄／繼續編輯。Save 由後端沿既有欄位清理、統一重算與原子保存，回傳同一份已更新 DB／聊天 Markdown 的資料；下載有修正仍先保存。先更新相關 tickets，再依序實作、審查與驗證，不平行推進 tickets。
+
+- 補充：聊天 Markdown 標題後的「已更新」badge 僅代表同版成功人工保存，reload 保留；草稿與失敗不標記，新 AI 版不繼承。badge 不寫入 Markdown 正文；刪除線仍只由彈窗比對 AI 原版與有效結果產生。
