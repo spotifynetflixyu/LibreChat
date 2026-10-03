@@ -298,6 +298,44 @@ test.describe('Steel managed source review', () => {
     expect(await missing.json()).toMatchObject({ table: { rows: [{ source: null }, { source: null }] } });
   });
 
+  test('an attachment cannot certify an explicit other-chat file or choose between duplicate file records', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    await seedMessages(getE2EUser().email, conversationId, [{
+      messageId: randomUUID(),
+      parentMessageId: '00000000-0000-0000-0000-000000000000',
+      text: 'Review uploaded source',
+      isCreatedByUser: true,
+      sender: 'User',
+      files: [{ file_id: 'review-alpha' }],
+    }]);
+    try {
+      await withMongo(async (db) => {
+        await db.collection('files').updateOne({ conversationId, file_id: 'review-alpha' }, {
+          $set: { conversationId: randomUUID(), filename: 'PRIVATE-OTHER-CHAT.pdf' },
+        });
+      });
+      const foreign = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+      expect(foreign.status()).toBe(200);
+      const foreignData = await foreign.json();
+      expect(foreignData).toMatchObject({ table: { rows: [{ source: null }, { source: null }] } });
+      expect(JSON.stringify(foreignData)).not.toContain('PRIVATE-OTHER-CHAT');
+      await withMongo(async (db) => {
+        await db.collection('files').updateOne({ file_id: 'review-alpha' }, { $set: { conversationId } });
+        const original = await db.collection('files').findOne({ conversationId, file_id: 'review-alpha' });
+        if (!original) throw new Error('Missing owned fixture file');
+        await db.collection('files').insertOne({ ...original, _id: new ObjectId(), filename: 'PRIVATE-DUPLICATE.pdf' });
+      });
+      const duplicate = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+      expect(duplicate.status()).toBe(200);
+      expect(await duplicate.json()).toMatchObject({ table: { rows: [{ source: null }, { source: null }] } });
+    } finally {
+      await withMongo(async (db) => {
+        await db.collection('files').updateMany({ file_id: 'review-alpha' }, { $set: { conversationId } });
+      });
+    }
+  });
+
   test('legacy OCR identity shared by another tenant does not expose unscoped current state', async ({ page }) => {
     const { conversationId, messageId } = await seedCurrent(ocr);
     conversations.push(conversationId);
