@@ -926,6 +926,105 @@ test.describe('Steel managed source review', () => {
     } });
   });
 
+  for (const collision of ['other_message', 'other_table', 'two_other_owners'] as const) {
+    test(`first OCR Save preserves unrelated review owners sharing its outputId: ${collision}`, async ({ page }) => {
+      const { conversationId, messageId } = await seedCurrent(ocr);
+      conversations.push(conversationId);
+      const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+      expect(read.status()).toBe(200);
+      const { table } = await read.json() as { table: SteelReviewTable };
+      const foreignMessageIds = [randomUUID(), randomUUID()];
+      await seedMessages(getE2EUser().email, conversationId, foreignMessageIds.map((id) => ({
+        messageId: id,
+        parentMessageId: '00000000-0000-0000-0000-000000000000',
+        text: `UNRELATED-OWNER-PREFIX ${id}\n${ocr}\nUNRELATED-OWNER-SUFFIX`,
+        isCreatedByUser: false,
+        sender: 'Assistant',
+      })));
+      await withMongo(async (db) => {
+        const owner = await db.collection('messages').findOne({ conversationId, messageId });
+        if (!owner) throw new Error('Missing current owner');
+        const scopes = collision === 'two_other_owners'
+          ? foreignMessageIds.map((id) => ({ messageId: id, tableId: 'ocr_result:1' }))
+          : [{
+            messageId: collision === 'other_message' ? foreignMessageIds[0] : messageId,
+            tableId: collision === 'other_table' ? 'ocr_result:99' : 'ocr_result:1',
+          }];
+        await db.collection('steel_review_outputs').insertMany(scopes.map((scope) => ({
+          userId: owner.user,
+          ...(owner.tenantId ? { tenantId: owner.tenantId } : {}),
+          conversationId,
+          ...scope,
+          kind: 'ocr_result',
+          outputId: table.outputId,
+          revision: table.revision,
+          state: 'current',
+          headers: table.headers,
+          rows: table.rows,
+          aiRawMarkdown: ocr,
+          aiBaselineMarkdown: ocr,
+          effectiveMarkdown: ocr,
+          receipts: [],
+          createdAt: new Date(),
+          updatedAt: new Date(),
+        })));
+      });
+      const before = await persistedSnapshot(conversationId);
+      const rows = structuredClone(table.rows);
+      rows[0].values['數量'].effective = '7';
+      const preparedResponse = await page.request.post(`/api/steel/conversations/${conversationId}/review/ocr_result/prepare`, {
+        headers, data: { ...table, rows },
+      });
+      expect(preparedResponse.status()).toBe(200);
+      const prepared = await preparedResponse.json() as SteelReviewPrepared;
+      const committed = await page.request.post(`/api/steel/conversations/${conversationId}/review/ocr_result/commit`, {
+        headers, data: prepared,
+      });
+      expect(committed.status()).toBe(200);
+      const after = await persistedSnapshot(conversationId);
+      expect(after.reviews).toHaveLength(before.reviews.length + 1);
+      for (const original of before.reviews) {
+        expect(after.reviews.find((row) => row._id.equals(original._id))).toEqual(original);
+      }
+      const saved = after.reviews.find((row) => row.messageId === messageId && row.tableId === table.tableId);
+      expect(saved).toMatchObject({ kind: 'ocr_result', outputId: table.outputId, rows });
+      for (const original of before.messages.filter((message) => message.messageId !== messageId)) {
+        expect(after.messages.find((message) => message.messageId === original.messageId)).toEqual(original);
+      }
+      expect(after.messages.find((message) => message.messageId === messageId)?.text)
+        .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 7 | 1 |'));
+      expectPreservedAiState(before.ocr, after.ocr);
+      const reopened = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+      expect(reopened.status()).toBe(200);
+      expect(await reopened.json()).toMatchObject({ table: { messageId, tableId: table.tableId, rows } });
+    });
+  }
+
+  test('committed receipt replay binds cleanReplacementText to its original digest', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(read.status()).toBe(200);
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const rows = structuredClone(table.rows);
+    rows[0].values['數量'].effective = '7';
+    const prepare = await page.request.post(`/api/steel/conversations/${conversationId}/review/ocr_result/prepare`, {
+      headers, data: { ...table, rows },
+    });
+    expect(prepare.status()).toBe(200);
+    const prepared = await prepare.json() as SteelReviewPrepared;
+    const commitUrl = `/api/steel/conversations/${conversationId}/review/ocr_result/commit`;
+    expect((await page.request.post(commitUrl, { headers, data: prepared })).status()).toBe(200);
+    const before = await persistedSnapshot(conversationId);
+    const replay = await page.request.post(commitUrl, {
+      headers,
+      data: { ...prepared, cleanReplacementText: `${prepared.cleanReplacementText}\nUNSIGNED-CLEAN-TEXT` },
+    });
+    expect(replay.status()).toBe(409);
+    expect(await replay.json()).toMatchObject({ code: 'REVIEW_INVALID_OPERATION' });
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+  });
+
   test('an OCR Save marks only a quotation with proven OCR lineage as needing requote', async ({ page }) => {
     for (const linked of [true, false]) {
       const { conversationId, messageId } = await seedCurrent(ocr);
