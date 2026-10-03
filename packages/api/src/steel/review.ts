@@ -438,6 +438,7 @@ function projectRecord(
     ...(record.lastSave ? { lastSave: serializeReceipt(record.lastSave) } : {}),
     headers: table.headers,
     rows,
+    ...(record.sourceMappings ? { sourceMappings: record.sourceMappings } : {}),
   };
 }
 
