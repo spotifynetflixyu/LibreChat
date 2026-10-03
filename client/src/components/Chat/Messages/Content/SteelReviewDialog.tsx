@@ -1,10 +1,9 @@
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useAtom } from 'jotai';
 import { Maximize2, Minimize2 } from 'lucide-react';
 import {
   Button,
   OGDialog,
-  OGDialogClose,
   OGDialogContent,
   OGDialogDescription,
   OGDialogHeader,
@@ -15,14 +14,22 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@librechat/client';
-import type { SteelReviewRow, SteelReviewTable } from 'librechat-data-provider';
+import type { SteelReviewRow } from 'librechat-data-provider';
 import {
   steelReviewDialogStateFamily,
+  steelReviewDraftStateFamily,
   steelReviewIdentityKey,
   steelReviewSelectionAtom,
   steelReviewSourcePreviewKey,
   type SteelReviewSelection,
 } from './SteelReview/state';
+import {
+  applySteelReviewDrafts,
+  createSteelReviewDraftState,
+  getSteelReviewDirtyRowIds,
+  getSteelReviewDraftKey,
+  setSteelReviewDraftCell,
+} from './SteelReview/session';
 import {
   useGetSteelReviewQuery,
   useGetSteelReviewSourceQuery,
@@ -30,6 +37,7 @@ import {
 } from '~/data-provider';
 import { getSteelReviewPreviewRows, type SteelReviewPreviewRows } from './SteelReview/filter';
 import SteelReviewSourcePreview from './SteelReview/SourcePreview';
+import SteelReviewEditor from './SteelReview/Editor';
 import { useLocalize } from '~/hooks';
 
 function getErrorStatus(error: unknown): number | undefined {
@@ -41,50 +49,6 @@ function getErrorStatus(error: unknown): number | undefined {
     return undefined;
   }
   return typeof response.status === 'number' ? response.status : undefined;
-}
-
-function ReviewTable({
-  table,
-  label,
-  rows = table.rows,
-}: {
-  table: SteelReviewTable;
-  label: string;
-  rows?: readonly SteelReviewRow[];
-}) {
-  return (
-    <div className="max-h-[60vh] overflow-auto rounded-md border border-border-light">
-      <table className="min-w-full border-collapse text-sm" aria-label={label}>
-        <thead className="bg-surface-secondary">
-          <tr>
-            {table.headers.map((header) => (
-              <th key={header} scope="col" className="border-b border-border-light px-3 py-2 text-left font-semibold">
-                {header}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {rows.map((row) => (
-            <tr key={row.rowId}>
-              {table.headers.map((header) => {
-                const cell = row.values[header];
-                const changed = cell?.baseline !== cell?.effective;
-                return (
-                  <td key={`${row.rowId}-${header}`} className="border-b border-border-light px-3 py-2 align-top">
-                    {changed && cell?.baseline !== null && cell?.baseline !== undefined && (
-                      <del className="mr-2 text-text-secondary">{cell.baseline}</del>
-                    )}
-                    <span>{cell?.effective ?? ''}</span>
-                  </td>
-                );
-              })}
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
 }
 
 export default function SteelReviewDialog({ identity }: { identity: SteelReviewSelection }) {
@@ -101,12 +65,27 @@ export default function SteelReviewDialog({ identity }: { identity: SteelReviewS
   const table = query.data?.table;
   const dialogStateKey = steelReviewIdentityKey(identity);
   const [dialogState, setDialogState] = useAtom(steelReviewDialogStateFamily(dialogStateKey));
+  const draftStateKey = table
+    ? getSteelReviewDraftKey(identity, table)
+    : `pending:${dialogStateKey}`;
+  const [draftState, setDraftState] = useAtom(steelReviewDraftStateFamily(draftStateKey));
+  const [closeRequested, setCloseRequested] = useState(false);
   const {
     selectedFileId,
     pageNumber,
     pageCount,
     fullScreen,
   } = dialogState;
+  const canEdit = Boolean(table && table.kind === 'ocr_result' && table.isLatest && !table.readOnly);
+  const dirtyRowIds = useMemo(
+    () => (table && canEdit ? getSteelReviewDirtyRowIds(table, draftState) : []),
+    [canEdit, draftState, table],
+  );
+  const dirtyRowCount = dirtyRowIds.length;
+  const draftRows = useMemo(
+    () => (table ? applySteelReviewDrafts(table.rows, draftState) : []),
+    [draftState, table],
+  );
   const sourcesQuery = useGetSteelReviewSourcesQuery(
     isOpen
       ? {
@@ -128,6 +107,17 @@ export default function SteelReviewDialog({ identity }: { identity: SteelReviewS
     () => table?.rows.find((row) => row.source?.fileId === selectedSource?.fileId)?.source?.pageNumber,
     [selectedSource?.fileId, table?.rows],
   );
+  useEffect(() => {
+    if (draftState.ownerKey === draftStateKey) {
+      return;
+    }
+    setDraftState(createSteelReviewDraftState(draftStateKey));
+  }, [draftState.ownerKey, draftStateKey, setDraftState]);
+  useEffect(() => {
+    if (!isOpen) {
+      setCloseRequested(false);
+    }
+  }, [isOpen]);
   useEffect(() => {
     setDialogState((state) => {
       if (state.isOpen === isOpen) {
@@ -186,14 +176,40 @@ export default function SteelReviewDialog({ identity }: { identity: SteelReviewS
   );
   const previewRows: SteelReviewPreviewRows = useMemo(
     () => getSteelReviewPreviewRows(
-      table?.rows ?? [],
+      draftRows,
       selectedSource?.fileId,
       pageNumber,
       new Set(sources.map((source) => source.fileId)),
       pageCount,
     ),
-    [pageCount, pageNumber, selectedSource?.fileId, sources, table?.rows],
+    [draftRows, pageCount, pageNumber, selectedSource?.fileId, sources],
   );
+  const onCellChange = useCallback(
+    (row: SteelReviewRow, header: string, value: string) => {
+      if (!table || !canEdit || !row.rowId) {
+        return;
+      }
+      setDraftState((current) => {
+        const ownerDraft = current.ownerKey === draftStateKey
+          ? current
+          : createSteelReviewDraftState(draftStateKey);
+        return setSteelReviewDraftCell(ownerDraft, row, header, value);
+      });
+    },
+    [canEdit, draftStateKey, setDraftState, table],
+  );
+  const discardDraftAndClose = useCallback(() => {
+    setDraftState(createSteelReviewDraftState(draftStateKey));
+    setCloseRequested(false);
+    setSelection(null);
+  }, [draftStateKey, setDraftState, setSelection]);
+  const requestClose = useCallback(() => {
+    if (dirtyRowCount > 0) {
+      setCloseRequested(true);
+      return;
+    }
+    setSelection(null);
+  }, [dirtyRowCount, setSelection]);
   const onPageCount = useCallback((count: number) => {
     setDialogState((state) => ({
       ...state,
@@ -215,7 +231,7 @@ export default function SteelReviewDialog({ identity }: { identity: SteelReviewS
     <OGDialog
       open={isOpen}
       onOpenChange={(open) => {
-        if (!open && isOpen) setSelection(null);
+        if (!open && isOpen) requestClose();
       }}
     >
       <OGDialogContent
@@ -243,7 +259,7 @@ export default function SteelReviewDialog({ identity }: { identity: SteelReviewS
             {localize('com_ui_steel_review_title')}
           </OGDialogTitle>
           <OGDialogDescription className="text-left">
-            {localize('com_ui_steel_review_readonly')}
+            {localize(canEdit ? 'com_ui_steel_review_editable' : 'com_ui_steel_review_readonly')}
           </OGDialogDescription>
         </OGDialogHeader>
         <div className="flex justify-end">
@@ -365,25 +381,76 @@ export default function SteelReviewDialog({ identity }: { identity: SteelReviewS
               )}
               {selectedSource ? (
                 <>
-                  <ReviewTable table={table} rows={previewRows.located} label={localize('com_ui_steel_review_table_label')} />
+                  <SteelReviewEditor
+                    table={table}
+                    rows={previewRows.located}
+                    draft={draftState}
+                    labels={{
+                      table: localize('com_ui_steel_review_table_label'),
+                      readonly: localize('com_ui_steel_review_cell_readonly'),
+                    }}
+                    onCellChange={onCellChange}
+                  />
                   {previewRows.unlocated.length > 0 && (
                     <div className="space-y-2">
                       <h3 className="text-sm font-semibold">{localize('com_ui_steel_review_unlocated')}</h3>
-                      <ReviewTable table={table} rows={previewRows.unlocated} label={localize('com_ui_steel_review_unlocated')} />
+                      <SteelReviewEditor
+                        table={table}
+                        rows={previewRows.unlocated}
+                        draft={draftState}
+                        labels={{
+                          table: localize('com_ui_steel_review_unlocated'),
+                          readonly: localize('com_ui_steel_review_cell_readonly'),
+                        }}
+                        onCellChange={onCellChange}
+                      />
                     </div>
                   )}
                 </>
               ) : (
-                <ReviewTable table={table} label={localize('com_ui_steel_review_table_label')} />
+                <SteelReviewEditor
+                  table={table}
+                  rows={draftRows}
+                  draft={draftState}
+                  labels={{
+                    table: localize('com_ui_steel_review_table_label'),
+                    readonly: localize('com_ui_steel_review_cell_readonly'),
+                  }}
+                  onCellChange={onCellChange}
+                />
               )}
             </div>
           )}
         </div>
-        <div className="flex justify-end">
-          <OGDialogClose asChild>
-            <Button type="button">{localize('com_ui_close')}</Button>
-          </OGDialogClose>
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2" aria-live="polite">
+            <Button type="button" variant="outline" disabled>
+              {localize('com_ui_steel_review_save')}
+            </Button>
+            {dirtyRowCount > 0 && (
+              <span className="text-sm text-text-secondary">
+                {localize('com_ui_steel_review_unsaved_caption', { 0: dirtyRowCount })}
+              </span>
+            )}
+          </div>
+          <Button type="button" onClick={requestClose}>{localize('com_ui_close')}</Button>
         </div>
+        {closeRequested && (
+          <div className="space-y-3 rounded-md border border-border-light bg-surface-secondary p-3" role="alertdialog" aria-label={localize('com_ui_steel_review_close_confirm')}>
+            <p className="text-sm">{localize('com_ui_steel_review_close_confirm')}</p>
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button type="button" variant="outline" disabled>
+                {localize('com_ui_steel_review_save_updates')}
+              </Button>
+              <Button type="button" variant="outline" onClick={discardDraftAndClose}>
+                {localize('com_ui_steel_review_discard_unsaved')}
+              </Button>
+              <Button type="button" onClick={() => setCloseRequested(false)}>
+                {localize('com_ui_steel_review_continue_editing')}
+              </Button>
+            </div>
+          </div>
+        )}
       </OGDialogContent>
     </OGDialog>
   );

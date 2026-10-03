@@ -1,6 +1,6 @@
 import { RecoilRoot } from 'recoil';
 import { createStore, Provider } from 'jotai';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { steelReviewSelectionAtom } from './SteelReview/state';
 import MarkdownTableActions from './MarkdownTableActions';
 import SteelReviewDialog from './SteelReviewDialog';
@@ -217,6 +217,47 @@ describe('MarkdownTableActions Steel review entry', () => {
     expect(screen.getByText('com_ui_steel_review_empty')).toBeInTheDocument();
     expect(screen.queryByRole('textbox')).toBeNull();
     expect(store.get(steelReviewSelectionAtom)).toEqual(reviewIdentity);
+  });
+
+  it('keeps OCR edits local and requires an explicit discard or continue choice on close', () => {
+    mockUseGetSteelReviewQuery.mockReturnValue({
+      data: {
+        table: {
+          ...reviewIdentity,
+          outputId: 'ocr_result:generation-1',
+          revision: 'generation-1',
+          latestOutputId: 'ocr_result:generation-1',
+          isLatest: true,
+          readOnly: false,
+          headers: ['品名'],
+          rows: [{
+            rowId: 'row-1',
+            source: null,
+            values: { 品名: { baseline: '鋼板', effective: '鋼板' } },
+          }],
+        },
+      },
+      error: null,
+      isError: false,
+      isLoading: false,
+    });
+
+    const { store } = renderDialog();
+    const input = screen.getByRole('textbox', { name: '品名 row-1' });
+    fireEvent.change(input, { target: { value: '鍍鋅鋼板' } });
+    expect(screen.getByText('com_ui_steel_review_unsaved_caption')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'com_ui_steel_review_save' })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_close' }));
+    expect(screen.getByRole('alertdialog')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'com_ui_steel_review_save_updates' })).toBeDisabled();
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_continue_editing' }));
+    expect(screen.queryByRole('alertdialog')).toBeNull();
+    expect(screen.getByRole('textbox', { name: '品名 row-1' })).toHaveValue('鍍鋅鋼板');
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_close' }));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_discard_unsaved' }));
+    expect(store.get(steelReviewSelectionAtom)).toBeNull();
   });
 
   it('keeps source rows visible while sources load or fail, then renders an image preview', async () => {
