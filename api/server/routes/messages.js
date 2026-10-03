@@ -42,7 +42,7 @@ const {
 const db = require('~/models');
 
 const steelReviewMessageMutationMiddleware = createSteelReviewMessageMutationMiddleware({
-  isManagedSteelReviewMessage: db.isManagedSteelReviewMessage,
+  checkSteelReviewMessageMutation: db.checkSteelReviewMessageMutation,
 });
 
 const router = express.Router();

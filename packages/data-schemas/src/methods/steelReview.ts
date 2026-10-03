@@ -45,6 +45,10 @@ export interface SteelReviewReadMethods {
   readSteelReview(input: SteelReviewReadInput): Promise<SteelReviewReadRecord | null>;
 }
 
+export type SteelReviewMessageMutationCheckResult =
+  | { ok: true; value: { managed: boolean } }
+  | { ok: false; error: { code: 'REVIEW_NOT_FOUND' } };
+
 export interface SteelReviewCommitInput extends SteelReviewReadInput {
   outputId: string;
   revision: string;
@@ -82,7 +86,9 @@ export interface SteelReviewWriteMethods {
   commitSteelReview(input: SteelReviewCommitInput): Promise<SteelReviewCommitResult>;
   resolveSteelReviewReceipt(input: SteelReviewCommitInput): Promise<SteelReviewCommitResult | null>;
   readSteelReviewReceipt(input: SteelReviewReceiptLookup): Promise<SteelReviewCommitResult | null>;
-  isManagedSteelReviewMessage(input: SteelReviewScope & { messageId: string }): Promise<boolean>;
+  checkSteelReviewMessageMutation(
+    input: SteelReviewScope & { messageId: string },
+  ): Promise<SteelReviewMessageMutationCheckResult>;
 }
 
 export class SteelReviewWriteError extends Error {
@@ -156,7 +162,9 @@ function reviewScope(input: SteelReviewScope): Record<string, unknown> {
   };
 }
 
-function messageFilter(input: SteelReviewReadInput): Record<string, unknown> {
+function messageFilter(
+  input: Pick<SteelReviewReadInput, 'messageId' | 'conversationId' | 'userId' | 'tenantId'>,
+): Record<string, unknown> {
   return {
     $and: [
       {
@@ -811,8 +819,14 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
   const Message = createMessageModel(mongoose);
   const Conversation = createConversationModel(mongoose);
   const OcrState = createSteelConversationOcrStateModel(mongoose);
+  const OcrRun = createSteelDelegateOcrRunModel(mongoose);
   const QuotationState = createSteelQuotationStateModel(mongoose);
   const ReviewOutput = createSteelReviewOutputModel(mongoose);
+
+  const unavailableMessageMutation = (): SteelReviewMessageMutationCheckResult => ({
+    ok: false,
+    error: { code: 'REVIEW_NOT_FOUND' },
+  });
 
   const assertReceiptScope = async (input: SteelReviewReceiptLookup): Promise<void> => {
     const [conversations, messages] = await Promise.all([
@@ -877,29 +891,80 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
   };
 
   return {
-    async isManagedSteelReviewMessage(input) {
-        const [output, ocrState, quotation] = await Promise.all([
-        ReviewOutput.exists({
-          userId: input.userId,
-          ...tenantFilter(input.tenantId),
-          conversationId: input.conversationId,
+    async checkSteelReviewMessageMutation(input) {
+      const [conversations, messages, conversationIdentities] = await Promise.all([
+        Conversation.find({
+          $and: [
+            { conversationId: input.conversationId, user: input.userId },
+            tenantFilter(input.tenantId),
+            activeExpirationFilter(),
+          ],
+        })
+          .limit(2)
+          .select({ conversationId: 1 })
+          .lean(),
+        Message.find(messageFilter(input))
+          .limit(2)
+          .select({ messageId: 1 })
+          .lean(),
+        Conversation.find({ conversationId: input.conversationId })
+          .limit(2)
+          .select({ user: 1, tenantId: 1 })
+          .lean<Array<{ user?: string; tenantId?: string | null }>>(),
+      ]);
+      if (conversations.length !== 1 || messages.length !== 1 || conversationIdentities.length !== 1) {
+        return unavailableMessageMutation();
+      }
+      if (!matchesTenantScope(conversationIdentities[0]?.tenantId, input.tenantId) ||
+        conversationIdentities[0]?.user !== input.userId) {
+        return unavailableMessageMutation();
+      }
+
+      const [outputs, ocrStates, quotations, historicalRuns] = await Promise.all([
+        ReviewOutput.find({
+          ...reviewScope(input),
           messageId: input.messageId,
-        }),
-        OcrState.exists({
+        })
+          .limit(2)
+          .select({ _id: 1 })
+          .lean(),
+        OcrState.find({
           conversationId: input.conversationId,
           currentOcrResultMessageId: input.messageId,
-        }),
-        (async () => {
-          const QuotationState = createSteelQuotationStateModel(mongoose);
-          return QuotationState.exists({
-            userId: input.userId,
-            ...tenantFilter(input.tenantId),
-            conversationId: input.conversationId,
-            'currentSystemOrder.messageId': input.messageId,
-          });
-        })(),
+        })
+          .limit(2)
+          .select({ _id: 1 })
+          .lean(),
+        QuotationState.find({
+          ...reviewScope(input),
+          'currentSystemOrder.messageId': input.messageId,
+        })
+          .limit(2)
+          .select({ _id: 1 })
+          .lean(),
+        OcrRun.find({
+          conversationId: input.conversationId,
+          status: 'completed',
+          'finalizedCandidate.targetMessageId': input.messageId,
+        })
+          .limit(2)
+          .select({ finalizedCandidate: 1, responseGenerationId: 1 })
+          .lean<Pick<ISteelDelegateOcrRun, 'finalizedCandidate' | 'responseGenerationId'>[]>(),
       ]);
-      return output !== null || ocrState !== null || quotation !== null;
+      const historicalOcr = historicalRuns.some((run) => {
+        const candidate = run.finalizedCandidate;
+        const revision = candidate?.generationId ?? run.responseGenerationId;
+        return Boolean(candidate?.markdown && revision);
+      });
+      if (outputs.length > 1 || ocrStates.length > 1 || quotations.length > 1 || historicalRuns.length > 1) {
+        return unavailableMessageMutation();
+      }
+      return {
+        ok: true,
+        value: {
+          managed: outputs.length > 0 || ocrStates.length > 0 || quotations.length > 0 || historicalOcr,
+        },
+      };
     },
 
     async commitSteelReview(input) {

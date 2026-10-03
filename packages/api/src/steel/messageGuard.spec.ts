@@ -15,14 +15,14 @@ function response() {
 describe('Steel review message mutation guard', () => {
   it('requires the typed managed-message checker at factory construction', () => {
     expect(() => createSteelReviewMessageMutationMiddleware(undefined as never)).toThrow(
-      'requires an injected managed-message checker',
+      'requires an injected mutation checker',
     );
   });
 
   it('rejects a managed message with the stable conflict response', async () => {
-    const checker = jest.fn().mockResolvedValue(true);
+    const checker = jest.fn().mockResolvedValue({ ok: true, value: { managed: true } });
     const middleware = createSteelReviewMessageMutationMiddleware({
-      isManagedSteelReviewMessage: checker,
+      checkSteelReviewMessageMutation: checker,
     });
     const res = response();
     const next = jest.fn();
@@ -45,9 +45,9 @@ describe('Steel review message mutation guard', () => {
   });
 
   it('passes an unmanaged message and propagates checker failures', async () => {
-    const checker = jest.fn().mockResolvedValue(false);
+    const checker = jest.fn().mockResolvedValue({ ok: true, value: { managed: false } });
     const middleware = createSteelReviewMessageMutationMiddleware({
-      isManagedSteelReviewMessage: checker,
+      checkSteelReviewMessageMutation: checker,
     });
     const res = response();
     const next = jest.fn();
@@ -63,5 +63,23 @@ describe('Steel review message mutation guard', () => {
     checker.mockRejectedValueOnce(failure);
     await middleware(request as never, res as never, next);
     expect(next).toHaveBeenLastCalledWith(failure);
+  });
+
+  it('hides unavailable ownership before the legacy message handler', async () => {
+    const checker = jest.fn().mockResolvedValue({ ok: false, error: { code: 'REVIEW_NOT_FOUND' } });
+    const middleware = createSteelReviewMessageMutationMiddleware({
+      checkSteelReviewMessageMutation: checker,
+    });
+    const res = response();
+    const next = jest.fn();
+
+    await middleware({
+      user: { id: 'user-1' },
+      params: { conversationId: 'conversation-1', messageId: 'message-1' },
+    } as never, res as never, next);
+
+    expect(res.status).toHaveBeenCalledWith(404);
+    expect(res.json).toHaveBeenCalledWith({ error: 'Message not found' });
+    expect(next).not.toHaveBeenCalled();
   });
 });

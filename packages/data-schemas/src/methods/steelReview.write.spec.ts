@@ -5,6 +5,7 @@ import { encodeSteelReviewDigest } from 'librechat-data-provider';
 import type { SteelReviewRow } from 'librechat-data-provider';
 import {
   createSteelConversationOcrStateModel,
+  createSteelDelegateOcrRunModel,
   createSteelQuotationStateModel,
   createSteelReviewOutputModel,
 } from '~/models/steel';
@@ -294,6 +295,99 @@ describe('Steel review write methods', () => {
       messageId: 'assistant-1',
       tableId: 'ocr_result:1',
     }).lean()).resolves.toBeNull();
+  });
+
+  it('classifies only an owned message and trusted OCR history as managed', async () => {
+    const models = createModels(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const Run = createSteelDelegateOcrRunModel(mongoose);
+    const conversationId = 'conversation-guard';
+    const messageId = 'assistant-guard';
+    await models.Conversation.create({
+      conversationId,
+      user: 'user-1',
+      tenantId: 'tenant-1',
+      title: 'Review',
+      endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId,
+      conversationId,
+      user: 'user-1',
+      tenantId: 'tenant-1',
+      isCreatedByUser: false,
+      text: markdownFor('P-1'),
+    });
+    const writer = createSteelReviewWriteMethods(mongoose);
+    const scope = {
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      conversationId,
+      messageId,
+    };
+
+    await expect(writer.checkSteelReviewMessageMutation(scope)).resolves.toEqual({
+      ok: true,
+      value: { managed: false },
+    });
+    await State.create({
+      conversationId,
+      currentOcrResultMarkdown: markdownFor('P-1'),
+      currentOcrResultMessageId: messageId,
+      currentOcrResultGenerationId: 'generation-current',
+    });
+    await expect(writer.checkSteelReviewMessageMutation(scope)).resolves.toEqual({
+      ok: true,
+      value: { managed: true },
+    });
+    await State.deleteMany({ conversationId });
+    await Run.create({
+      conversationId,
+      delegateOcrIndex: 1,
+      claimToken: 'guard-history-claim',
+      triggeringMessageId: 'trigger-message',
+      toolParameters: {},
+      files: [],
+      status: 'completed',
+      currentStage: 'completed',
+      responseGenerationId: 'generation-history',
+      finalizedCandidate: {
+        token: 'guard-history-token',
+        markdown: markdownFor('P-1'),
+        source: 'agent',
+        generationId: 'generation-history',
+        targetMessageId: messageId,
+      },
+      finalizationJournal: {
+        candidateValidated: true,
+        resultPersisted: true,
+        messagePersisted: true,
+        claimCleared: true,
+      },
+    });
+    await expect(writer.checkSteelReviewMessageMutation(scope)).resolves.toEqual({
+      ok: true,
+      value: { managed: true },
+    });
+    await expect(writer.checkSteelReviewMessageMutation({
+      ...scope,
+      userId: 'foreign-user',
+    })).resolves.toEqual({ ok: false, error: { code: 'REVIEW_NOT_FOUND' } });
+    await expect(writer.checkSteelReviewMessageMutation({
+      ...scope,
+      tenantId: 'foreign-tenant',
+    })).resolves.toEqual({ ok: false, error: { code: 'REVIEW_NOT_FOUND' } });
+    await models.Conversation.create({
+      conversationId,
+      user: 'foreign-user',
+      tenantId: 'foreign-tenant',
+      title: 'Ambiguous identity',
+      endpoint: 'openAI',
+    });
+    await expect(writer.checkSteelReviewMessageMutation(scope)).resolves.toEqual({
+      ok: false,
+      error: { code: 'REVIEW_NOT_FOUND' },
+    });
   });
 
   it('marks only a quotation with trusted OCR lineage stale in the same transaction', async () => {
