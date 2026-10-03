@@ -740,4 +740,141 @@ test.describe('Steel managed source review', () => {
     }
   });
 
+
+  test('manual OCR Save changes only the clicked message and chat reload shows clean saved values', async ({ page }) => {
+    const markdown = [
+      'SAVE-KEEP-PREFIX',
+      ocr,
+      '## Keep this table\n| Label | Value |\n| --- | --- |\n| Unrelated | 4242 |',
+      'SAVE-KEEP-SUFFIX',
+    ].join('\n\n');
+    const { conversationId, messageId } = await seedCurrent(markdown);
+    conversations.push(conversationId);
+    const previousMessageId = randomUUID();
+    const previousMarkdown = ocr.replace('REVIEW-P1', 'PREVIOUS-SAME-TITLE').replace('| 1000 | 2 |', '| 1000 | 97 |');
+    await seedMessages(getE2EUser().email, conversationId, [{
+      messageId: previousMessageId,
+      parentMessageId: '00000000-0000-0000-0000-000000000000',
+      text: previousMarkdown,
+      content: [{ type: 'text', text: previousMarkdown }],
+      isCreatedByUser: false,
+      sender: 'Assistant',
+    }]);
+    await withMongo(async (db) => {
+      await db.collection('messages').updateOne({ conversationId, messageId }, { $set: {
+        parentMessageId: previousMessageId,
+        text: `${markdown} SAVE-SECOND-PART-KEEP`,
+        content: [{ type: 'text', text: markdown }, { type: 'text', text: 'SAVE-SECOND-PART-KEEP' }],
+      } });
+      await db.collection('messages').updateOne({ conversationId, messageId: previousMessageId }, {
+        $set: { createdAt: new Date(Date.now() - 60_000), updatedAt: new Date(Date.now() - 60_000) },
+      });
+    });
+    const otherChat = await seedCurrent(ocr.replace('REVIEW-P1', 'OTHER-CHAT-SAME-TITLE'));
+    conversations.push(otherChat.conversationId);
+    const before = await persistedSnapshot(conversationId);
+    const otherBefore = await persistedSnapshot(otherChat.conversationId);
+    const previousBefore = before.messages.find((message) => message.messageId === previousMessageId);
+    const recognized = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(recognized.status()).toBe(200);
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).last().click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+    await expect(quantity).toHaveValue('2');
+    await quantity.fill('9');
+    await quantity.press('Enter');
+    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    await dialog.getByRole('button', { name: /^Save/ }).click();
+    await expect.poll(async () => {
+      const snapshot = await persistedSnapshot(conversationId);
+      return snapshot.messages.find((message) => message.messageId === messageId)?.text;
+    }).toContain('| A | REVIEW-P1 | 1000 | 9 | 1 |');
+    const after = await persistedSnapshot(conversationId);
+    const savedMessage = after.messages.find((message) => message.messageId === messageId);
+    const expectedMarkdown = markdown.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 9 | 1 |');
+    expect(savedMessage?.text).toBe(`${expectedMarkdown} SAVE-SECOND-PART-KEEP`);
+    expect(savedMessage?.content).toEqual([
+      { type: 'text', text: expectedMarkdown },
+      { type: 'text', text: 'SAVE-SECOND-PART-KEEP' },
+    ]);
+    expect(after.messages.find((message) => message.messageId === previousMessageId)).toEqual(previousBefore);
+    expect(await persistedSnapshot(otherChat.conversationId)).toEqual(otherBefore);
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(read.status()).toBe(200);
+    expect(await read.json()).toMatchObject({ table: {
+      messageId,
+      isLatest: true,
+      readOnly: false,
+      rows: [
+        { values: { 數量: { baseline: '2', effective: '9' } } },
+        { values: { 數量: { baseline: '3', effective: '3' } } },
+      ],
+    } });
+    await expect(dialog.locator('del').filter({ hasText: /^2$/ })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeVisible();
+    await expect(page.getByText('Updated', { exact: true })).toBeVisible();
+    await page.reload();
+    await expect(page.getByText('Updated', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).last().click();
+    await expect(quantity).toHaveValue('9');
+    await expect(dialog.locator('del').filter({ hasText: /^2$/ })).toBeVisible();
+    expect((await persistedSnapshot(conversationId)).messages.find((message) => message.messageId === previousMessageId)).toEqual(previousBefore);
+  });
+
+
+  test('dirty OCR Escape offers continue and discard without saving the chat', async ({ page }) => {
+    const { conversationId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const before = await persistedSnapshot(conversationId);
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+    await quantity.fill('8');
+    await quantity.press('Escape');
+    await expect(page.getByRole('button', { name: 'Continue editing', exact: true })).toBeVisible();
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    await page.getByRole('button', { name: 'Continue editing', exact: true }).click();
+    await expect(quantity).toHaveValue('8');
+    await quantity.press('Escape');
+    await page.getByRole('button', { name: 'Discard unsaved changes', exact: true }).click();
+    await expect(dialog).not.toBeVisible();
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    await expect(quantity).toHaveValue('2');
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+  });
+
+
+  test('ordinary message edits cannot bypass the managed OCR Save contract', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const ordinaryMessageId = randomUUID();
+    await seedMessages(getE2EUser().email, conversationId, [{
+      messageId: ordinaryMessageId,
+      parentMessageId: '00000000-0000-0000-0000-000000000000',
+      text: 'ORDINARY-BEFORE',
+      isCreatedByUser: true,
+      sender: 'User',
+    }]);
+    const ordinary = await page.request.put(`/api/messages/${conversationId}/${ordinaryMessageId}`, {
+      headers,
+      data: { text: 'ORDINARY-AFTER', model: 'gpt-4o' },
+    });
+    expect(ordinary.status()).toBe(200);
+    const before = await persistedSnapshot(conversationId);
+    expect(before.messages.find((message) => message.messageId === ordinaryMessageId)?.text).toBe('ORDINARY-AFTER');
+    const recognized = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(recognized.status()).toBe(200);
+    const replacement = ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 99 | 1 |');
+    for (const data of [{ text: replacement, model: 'gpt-4o' }, { text: replacement, index: 0, model: 'gpt-4o' }]) {
+      const response = await page.request.put(`/api/messages/${conversationId}/${messageId}`, { headers, data });
+      expect(response.status()).toBe(409);
+      expect(await persistedSnapshot(conversationId)).toEqual(before);
+    }
+  });
+
 });
