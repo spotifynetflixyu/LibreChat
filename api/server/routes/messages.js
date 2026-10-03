@@ -17,6 +17,7 @@ const {
   CHILD_THREAD_READ_ONLY_ERROR,
   isSubagentThreadWriteBlocked,
   createContentFilter,
+  createSteelReviewMessageMutationMiddleware,
   extractFeedbackContent,
   extractStoredMessageContent,
   assertStoredMessageMutationAllowed,
@@ -40,6 +41,10 @@ const {
 } = require('~/server/middleware');
 const db = require('~/models');
 
+const steelReviewMessageMutationMiddleware = createSteelReviewMessageMutationMiddleware({
+  isManagedSteelReviewMessage: db.isManagedSteelReviewMessage,
+});
+
 const router = express.Router();
 const filterStoredMessageContent = createContentFilter({
   messageCount: 1,
@@ -55,7 +60,11 @@ const filterFeedbackContent = createContentFilter({
   getFilters: (req) => req.config?.filters,
   extract: (req) => extractFeedbackContent(req.body),
 });
-const messageMutationMiddleware = [validateMessageReq, configMiddleware];
+const messageMutationMiddleware = [
+  validateMessageReq,
+  configMiddleware,
+  steelReviewMessageMutationMiddleware,
+];
 const storedMessageMutationMiddleware = [
   validateMessageReq,
   configMiddleware,
@@ -593,17 +602,6 @@ router.put('/:conversationId/:messageId', messageMutationMiddleware, async (req,
     }
     if (await rejectSubagentThreadWrite(req, res, message.conversationId)) {
       return;
-    }
-    if (typeof db.isManagedSteelReviewMessage === 'function' &&
-      await db.isManagedSteelReviewMessage({
-        userId: req.user.id,
-        tenantId: req.tenantId ?? req.user.tenantId,
-        conversationId,
-        messageId,
-      })) {
-      return res.status(409).json({
-        error: 'Managed Steel review messages must be edited through the review save contract',
-      });
     }
     const { text, index, model } = req.body;
 

@@ -8,6 +8,7 @@ jest.mock('@librechat/agents', () => ({ sleep: jest.fn() }));
 jest.mock('@librechat/api', () => ({
   withoutTraceRefs: jest.fn((message) => message),
   createContentFilter: jest.fn(() => (_req, _res, next) => next()),
+  createSteelReviewMessageMutationMiddleware: jest.fn(() => (_req, _res, next) => next()),
   unescapeLaTeX: jest.fn((value) => value),
   countTokens: jest.fn().mockResolvedValue(1),
   sendFeedbackScore: jest.fn().mockResolvedValue(undefined),

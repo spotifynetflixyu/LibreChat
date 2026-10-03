@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import { createHash } from 'node:crypto';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
+import { encodeSteelReviewDigest } from 'librechat-data-provider';
 import type { SteelReviewRow } from 'librechat-data-provider';
 import {
   createSteelConversationOcrStateModel,
@@ -24,30 +25,7 @@ const markdownFor = (value: string, source = 'A') => [
 ].join('\n');
 
 const digestFor = (input: Omit<SteelReviewCommitInput, 'digest'>): string => {
-  const canonical = JSON.stringify({
-    userId: input.userId,
-    tenantId: input.tenantId ?? null,
-    conversationId: input.conversationId,
-    kind: input.kind,
-    messageId: input.messageId,
-    tableId: input.tableId,
-    partIndex: input.partIndex ?? null,
-    outputId: input.outputId,
-    revision: input.revision,
-    rows: input.rows,
-    headers: input.headers,
-    messageSha256: input.messageSha256,
-    target: input.target,
-    targetText: input.targetText,
-    replacementText: input.replacementText,
-    cleanReplacementText: input.cleanReplacementText,
-    effectiveMarkdown: input.effectiveMarkdown,
-    displayMarkdown: input.displayMarkdown,
-    aiBaselineMarkdown: input.aiBaselineMarkdown ?? null,
-    aiRawMarkdown: input.aiRawMarkdown ?? null,
-    caption: input.caption,
-  });
-  return createHash('sha256').update(canonical).digest('hex');
+  return createHash('sha256').update(encodeSteelReviewDigest(input)).digest('hex');
 };
 
 const makeInput = ({
@@ -264,6 +242,58 @@ describe('Steel review write methods', () => {
       operationId: 'operation-1',
       digest: first.digest,
     })).rejects.toMatchObject({ code: 'REVIEW_NOT_FOUND' });
+  });
+
+  it('rejects a noncanonical effective cell before claiming or writing state', async () => {
+    const models = createModels(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    await models.Conversation.create({
+      conversationId: 'conversation-1',
+      user: 'user-1',
+      tenantId: 'tenant-1',
+      title: 'Review',
+      endpoint: 'openAI',
+    });
+    const markdown = markdownFor('P-1');
+    await models.Message.create({
+      messageId: 'assistant-1',
+      conversationId: 'conversation-1',
+      user: 'user-1',
+      tenantId: 'tenant-1',
+      isCreatedByUser: false,
+      text: markdown,
+    });
+    await State.create({
+      conversationId: 'conversation-1',
+      currentOcrResultMarkdown: markdown,
+      currentOcrResultMessageId: 'assistant-1',
+      currentOcrResultGenerationId: 'generation-1',
+    });
+    const stateBefore = await State.findOne({ conversationId: 'conversation-1' }).lean();
+    const messageBefore = await models.Message.findOne({ messageId: 'assistant-1' }).lean();
+    const writer = createSteelReviewWriteMethods(mongoose);
+    const noncanonical = makeInput({
+      operationId: 'operation-noncanonical',
+      revision: 'generation-1',
+      previousValue: 'P-1',
+      nextValue: '  P-7  ',
+    });
+
+    await expect(writer.commitSteelReview(noncanonical)).rejects.toMatchObject({
+      code: 'REVIEW_INVALID_OPERATION',
+    });
+    const stateAfter = await State.findOne({ conversationId: 'conversation-1' }).lean();
+    const messageAfter = await models.Message.findOne({ messageId: 'assistant-1' }).lean();
+    expect(withoutReviewLockToken(stateAfter!)).toEqual(withoutReviewLockToken(stateBefore!));
+    expect(stateAfter?.reviewLockToken).toBeUndefined();
+    expect(messageAfter?.text).toBe(messageBefore?.text);
+    await expect(ReviewOutput.findOne({
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      messageId: 'assistant-1',
+      tableId: 'ocr_result:1',
+    }).lean()).resolves.toBeNull();
   });
 
   it('marks only a quotation with trusted OCR lineage stale in the same transaction', async () => {
