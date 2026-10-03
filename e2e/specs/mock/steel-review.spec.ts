@@ -435,6 +435,7 @@ test.describe('Steel managed source review', () => {
       '| B | BETA-ONE | 2000 | 3 | 1 |',
       '| C | GAMMA-ONE | 3000 | 4 | 1 |',
       '| D | UNPREVIEWABLE-SOURCE | 3000 | 4 | 1 |',
+      '| A | OUT-OF-RANGE-PAGE | 3000 | 4 | 99 |',
       '|  | UNLOCATED-PREVIEW | 4000 | 5 |  |',
       'PREVIEW-KEEP-SUFFIX',
     ].join('\n');
@@ -502,6 +503,7 @@ test.describe('Steel managed source review', () => {
     await expect(dialog.getByText('ALPHA-TWO', { exact: true })).toHaveCount(0);
     await expect(dialog.getByText('UNLOCATED-PREVIEW', { exact: true })).toBeVisible();
     await expect(dialog.getByText('UNPREVIEWABLE-SOURCE', { exact: true })).toBeVisible();
+    await expect(dialog.getByText('OUT-OF-RANGE-PAGE', { exact: true })).toBeVisible();
     await dialog.getByRole('button', { name: 'Next page', exact: true }).click();
     await expect(dialog.getByText('ALPHA-TWO', { exact: true })).toBeVisible();
     await expect(dialog.getByText('ALPHA-ONE-A', { exact: true })).toHaveCount(0);
@@ -518,6 +520,14 @@ test.describe('Steel managed source review', () => {
     await expect.poll(() => canvas.evaluate((element: HTMLCanvasElement) => element.width)).toBeGreaterThan(0);
     await dialog.getByRole('button', { name: 'Zoom in', exact: true }).click();
     await expect(canvas).toHaveCSS('transform', /1\.25/);
+    const canvasBounds = await canvas.boundingBox();
+    if (!canvasBounds) throw new Error('Missing rendered PDF canvas');
+    const panStart = { x: canvasBounds.x + canvasBounds.width / 2, y: canvasBounds.y + canvasBounds.height / 2 };
+    await page.mouse.move(panStart.x, panStart.y);
+    await page.mouse.down();
+    await page.mouse.move(panStart.x + 30, panStart.y + 20);
+    await page.mouse.up();
+    await expect(canvas).toHaveCSS('transform', /30, 20\)$/);
     await dialog.getByRole('button', { name: 'Enter fullscreen', exact: true }).click();
     await expect(dialog.getByRole('button', { name: 'Exit fullscreen', exact: true })).toBeVisible();
     await dialog.getByRole('combobox', { name: 'Source file', exact: true }).click();
@@ -536,6 +546,9 @@ test.describe('Steel managed source review', () => {
     expect(fullscreenBounds?.y).toBeCloseTo(0, 0);
     await dialog.getByRole('combobox', { name: 'Source file', exact: true }).click();
     await expect(page.getByRole('listbox')).toBeVisible();
+    // Radix positions and focuses the selected item after opening its portal.
+    // Exercise Escape after the menu's observable keyboard readiness.
+    await expect(page.getByRole('option', { name: 'alpha.pdf', exact: true })).toBeFocused();
     await page.keyboard.press('Escape');
     await expect(page.getByRole('listbox')).toHaveCount(0);
     await expect(dialog).toBeVisible();
@@ -543,6 +556,24 @@ test.describe('Steel managed source review', () => {
     await expect(dialog).not.toBeVisible();
     await page.reload();
     await expect(page.getByText('PREVIEW-KEEP-PREFIX', { exact: true })).toBeVisible();
+    await page.setViewportSize({ width: 390, height: 844 });
+    const themeColors: string[] = [];
+    for (const mode of ['light', 'dark']) {
+      await page.evaluate((value) => localStorage.setItem('color-theme', value), mode);
+      await page.reload();
+      await expect(page.locator('html')).toHaveClass(new RegExp(mode));
+      await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+      await expect(dialog.getByText('ALPHA-ONE-A', { exact: true })).toBeVisible();
+      await expect.poll(checksum).not.toBe('');
+      const narrowBounds = await dialog.boundingBox();
+      expect(narrowBounds?.width).toBeLessThanOrEqual(390);
+      await expect(dialog.getByRole('combobox', { name: 'Source file', exact: true })).toBeVisible();
+      themeColors.push(await dialog.evaluate((element) => getComputedStyle(element).backgroundColor));
+      await dialog.getByRole('combobox', { name: 'Source file', exact: true }).focus();
+      await page.keyboard.press('Escape');
+      await expect(dialog).not.toBeVisible();
+    }
+    expect(themeColors[0]).not.toBe(themeColors[1]);
     expect(await persistedSnapshot(conversationId)).toEqual(before);
   });
 
