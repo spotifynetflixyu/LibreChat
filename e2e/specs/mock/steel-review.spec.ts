@@ -116,6 +116,63 @@ test.describe('Steel managed source review', () => {
     expect(await persistedSnapshot(conversationId)).toEqual(before);
   });
 
+  test('a stale rendered content mirror is rejected without changing either message representation', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    await withMongo(async (db) => {
+      await db.collection('messages').updateOne({ conversationId, messageId }, {
+        $set: { content: [{ type: 'text', text: ocr.replace('REVIEW-P1', 'RENDERED-DIFFERENT') }] },
+      });
+    });
+    const before = await persistedSnapshot(conversationId);
+    const result = await page.request.get(readUrl(conversationId, messageId, 1));
+    expect(result.status()).toBe(404);
+    await page.goto(`/c/${conversationId}`);
+    await expect(page.getByText('RENDERED-DIFFERENT', { exact: true })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Open Steel review', exact: true })).toHaveCount(0);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+  });
+
+  test('a registered review cannot expose a table removed from the message', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent('REVIEW-REMOVED-TARGET');
+    conversations.push(conversationId);
+    await withMongo(async (db) => {
+      const message = await db.collection('messages').findOne({ conversationId, messageId });
+      if (!message) {
+        throw new Error('Missing seeded review message');
+      }
+      await db.collection('steel_review_outputs').insertOne({
+        userId: message.user,
+        conversationId,
+        messageId,
+        kind: 'ocr_result',
+        tableId: 'ocr_result:1',
+        outputId: 'review-registered-output',
+        revision: 'review-registered-revision',
+        state: 'current',
+        latestOutputId: 'review-registered-output',
+        headers: ['來源', '零件編號', '長度', '數量', '頁碼'],
+        rows: [{
+          rowId: 'registered-row',
+          source: null,
+          values: {
+            '來源': { baseline: 'A', effective: 'A' },
+            '零件編號': { baseline: 'REVIEW-P1', effective: 'REVIEW-P1' },
+            '長度': { baseline: '1000', effective: '1000' },
+            '數量': { baseline: '2', effective: '2' },
+            '頁碼': { baseline: '1', effective: '1' },
+          },
+        }],
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+    });
+    const before = await persistedSnapshot(conversationId);
+    const result = await page.request.get(readUrl(conversationId, messageId, 1));
+    expect(result.status()).toBe(404);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+  });
+
   test('identical duplicate tables are ambiguous and get no managed target', async ({ page }) => {
     const { conversationId, messageId } = await seedCurrent(`${ocr}\n\n${ocr}`);
     conversations.push(conversationId);
