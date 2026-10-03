@@ -522,6 +522,7 @@ function projectSidecar(
     ...(record.lastSave ? { lastSave: serializeReceipt(record.lastSave) } : {}),
     headers: record.headers,
     rows: record.rows,
+    ...(record.sourceMappings ? { sourceMappings: record.sourceMappings } : {}),
   };
 }
 
