@@ -274,6 +274,19 @@ export type SteelReviewDigestInput = Omit<SteelReviewPrepared, 'operationId' | '
   tenantId?: string | null;
 };
 
+export function sameSteelReviewSource(
+  left: SteelReviewSource | null,
+  right: SteelReviewSource | null,
+): boolean {
+  if (left === null || right === null) {
+    return left === right;
+  }
+  return left.fileId === right.fileId &&
+    left.pageNumber === right.pageNumber &&
+    left.filename === right.filename &&
+    left.mediaType === right.mediaType;
+}
+
 /** Canonicalize one user-editable cell without changing null or baseline data. */
 export function normalizeSteelReviewEffectiveValue(value: string | null): string | null {
   return value === null ? null : value.trim().replace(/[\r\n]+/g, ' ');

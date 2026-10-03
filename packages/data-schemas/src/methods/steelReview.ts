@@ -3,6 +3,7 @@ import {
   encodeSteelReviewDigest,
   isSteelReviewSourceAssociationHeader,
   normalizeSteelReviewRows,
+  sameSteelReviewSource,
 } from 'librechat-data-provider';
 import type {
   SteelReviewCell,
@@ -1114,10 +1115,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             for (let index = 0; index < output.rows.length; index += 1) {
               const previous = output.rows[index];
               const next = input.rows[index];
-              if (!next || previous.rowId !== next.rowId ||
-                (previous.source === null && next.source !== null) ||
-                (previous.source !== null && next.source !== null &&
-                  JSON.stringify(previous.source) !== JSON.stringify(next.source))) {
+              if (!next || previous.rowId !== next.rowId || !sameSteelReviewSource(previous.source, next.source)) {
                 throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review row identity changed');
               }
               for (const header of input.headers) {
