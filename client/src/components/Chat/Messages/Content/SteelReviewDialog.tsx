@@ -155,7 +155,14 @@ function rowsToMatrix(table: Pick<SteelReviewTable, 'headers'>, rows: readonly S
   ];
 }
 
-function getSaveErrorKey(phase: SavePhase, code?: SteelReviewErrorCode): string {
+type SteelReviewSaveErrorKey =
+  | 'com_ui_steel_review_save_uncertain'
+  | 'com_ui_steel_review_save_conflict'
+  | 'com_ui_steel_review_save_stale'
+  | 'com_ui_steel_review_receipt_error'
+  | 'com_ui_steel_review_save_error';
+
+function getSaveErrorKey(phase: SavePhase, code?: SteelReviewErrorCode): SteelReviewSaveErrorKey {
   if (phase === 'uncertain') {
     return 'com_ui_steel_review_save_uncertain';
   }

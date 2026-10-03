@@ -111,7 +111,7 @@ export function getSteelReviewDraftCell(
 }
 
 export function getSteelReviewDirtyRowIds(
-  table: Pick<SteelReviewTable, 'rows'>,
+  table: { rows: readonly SteelReviewRow[] },
   draft: SteelReviewDraftState,
 ): string[] {
   const trustedRowIds = new Set(table.rows.map((row) => row.rowId).filter(Boolean));

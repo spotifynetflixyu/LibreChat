@@ -749,7 +749,7 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
   const reviewLabel = localize('com_ui_steel_review_open');
   const reviewRetryLabel = localize('com_ui_steel_review_retry');
   const reviewTable = reviewQuery.data?.table;
-  reviewTableRef.current = reviewTable;
+  reviewTableRef.current = reviewTable ?? undefined;
   let reviewTag: { label: string; variant: 'neutral' | 'success' } | undefined;
   if (reviewIdentity && reviewTable?.previousVersion) {
     reviewTag = { label: localize('com_ui_steel_review_previous_version'), variant: 'neutral' };

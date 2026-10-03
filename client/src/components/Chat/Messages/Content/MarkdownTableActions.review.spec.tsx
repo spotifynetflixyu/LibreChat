@@ -424,7 +424,7 @@ describe('MarkdownTableActions Steel review entry', () => {
       reviewIdentity.kind,
       reviewIdentity.messageId,
       reviewIdentity.tableId,
-      reviewIdentity.partIndex,
+      undefined,
     );
     const firstTable = {
       ...reviewIdentity,
