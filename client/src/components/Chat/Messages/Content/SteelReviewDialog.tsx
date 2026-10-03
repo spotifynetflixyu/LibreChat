@@ -72,8 +72,13 @@ import { createCsvBlob } from './table/export';
 import { triggerDownload } from '~/utils';
 import { useLocalize } from '~/hooks';
 
+export interface SteelReviewDownloadAuthority {
+  outputId: string;
+  revision: string;
+}
+
 export interface SteelReviewSaveGate {
-  ensureSaved: () => Promise<boolean>;
+  ensureSaved: (authority?: SteelReviewDownloadAuthority) => Promise<boolean>;
   getMatrix: () => TableMatrix;
 }
 
@@ -94,6 +99,24 @@ type ReceiptInput = {
   operationId: string;
   digest: string;
 };
+
+function isAuthorizedCurrentTable(
+  table: SteelReviewTable | null | undefined,
+  prepared: SteelReviewPrepared,
+  snapshot: SteelReviewSavedSnapshot,
+): boolean {
+  return Boolean(
+    table &&
+    table.conversationId === prepared.conversationId &&
+    table.messageId === prepared.messageId &&
+    table.tableId === prepared.tableId &&
+    table.kind === prepared.kind &&
+    table.outputId === prepared.outputId &&
+    table.latestOutputId === prepared.outputId &&
+    table.isLatest &&
+    (table.revision === prepared.revision || table.revision === snapshot.revision),
+  );
+}
 
 function getErrorStatus(error: unknown): number | undefined {
   if (typeof error !== 'object' || error === null || !('response' in error)) {
@@ -181,6 +204,7 @@ export default function SteelReviewDialog({
   const [discardRequested, setDiscardRequested] = useState(false);
   const [receiptFailed, setReceiptFailed] = useState(false);
   const submittedChangeSequenceRef = useRef(0);
+  const discardBoundaryRef = useRef<number>();
   const preparedRef = useRef<SteelReviewPrepared>();
   const exportRowsRef = useRef<readonly SteelReviewRow[]>([]);
   const exportBaseRowsRef = useRef<readonly SteelReviewRow[]>([]);
@@ -341,6 +365,20 @@ export default function SteelReviewDialog({
   );
   const latestDraftStateRef = useRef(draftState);
   latestDraftStateRef.current = draftState;
+  const latestTableRef = useRef(table);
+  latestTableRef.current = table;
+  const reviewQueryDataRef = useRef(query.data);
+  reviewQueryDataRef.current = query.data;
+  const reviewQueryErrorRef = useRef(query.error);
+  reviewQueryErrorRef.current = query.error;
+  const reviewQueryRefetchRef = useRef(query.refetch);
+  reviewQueryRefetchRef.current = query.refetch;
+  const refetchCurrentReview = useCallback(async () => {
+    if (typeof reviewQueryRefetchRef.current !== 'function') {
+      return { data: reviewQueryDataRef.current, error: reviewQueryErrorRef.current };
+    }
+    return reviewQueryRefetchRef.current();
+  }, []);
   const savePromiseRef = useRef<Promise<boolean>>();
   const applyConfirmedSnapshot = useCallback((snapshot: SteelReviewSavedSnapshot, submittedChangeSequence: number) => {
     const tableKey = DynamicQueryKeys.steelReview(
@@ -359,6 +397,9 @@ export default function SteelReviewDialog({
     exportBaseRowsRef.current = snapshot.rows;
     exportRowsRef.current = snapshot.rows;
     pendingSnapshotRef.current = { outputId: snapshot.outputId, revision: snapshot.revision };
+    const currentDraft = latestDraftStateRef.current;
+    const rebasedDraft = rebaseSteelReviewDraftState(currentDraft, snapshot.rows, submittedChangeSequence);
+    latestDraftStateRef.current = rebasedDraft;
     setDraftState((current) => {
       const rebased = rebaseSteelReviewDraftState(current, snapshot.rows, submittedChangeSequence);
       exportRowsRef.current = applySteelReviewDrafts(snapshot.rows, rebased);
@@ -403,6 +444,18 @@ export default function SteelReviewDialog({
           return false;
         }
         if (saved.savedSnapshot) {
+          const currentResult = await refetchCurrentReview();
+          if (currentResult.error || !currentResult.data?.table) {
+            setSavePhase('uncertain');
+            setSaveErrorCode(undefined);
+            return false;
+          }
+          if (!isAuthorizedCurrentTable(currentResult.data.table, prepared, saved.savedSnapshot)) {
+            preparedRef.current = undefined;
+            setSavePhase('stale');
+            setSaveErrorCode('REVIEW_CONFLICT');
+            return false;
+          }
           applyConfirmedSnapshot(saved.savedSnapshot, submittedChangeSequenceRef.current);
         }
         preparedRef.current = undefined;
@@ -434,12 +487,29 @@ export default function SteelReviewDialog({
         savePromiseRef.current = undefined;
       }
     }
-  }, [applyConfirmedSnapshot, canEdit, commitMutation, dirtyRowCount, draftRows, draftState.changeSequence, identity, prepareMutation, query, savePhase, table]);
+  }, [applyConfirmedSnapshot, canEdit, commitMutation, dirtyRowCount, draftRows, draftState.changeSequence, identity, prepareMutation, refetchCurrentReview, savePhase, table]);
+  const getCurrentReviewTable = useCallback(() => {
+    const tableKey = DynamicQueryKeys.steelReview(
+      identity.conversationId,
+      identity.kind,
+      identity.messageId,
+      identity.tableId,
+      latestTableRef.current?.partIndex ?? identity.partIndex,
+    );
+    return queryClient.getQueryData<SteelReviewResponse>(tableKey)?.table ?? latestTableRef.current;
+  }, [identity, queryClient]);
   const getExportMatrix = useCallback(
-    () => (table ? rowsToMatrix(table, exportRowsRef.current) : []),
-    [table],
+    () => {
+      const currentTable = getCurrentReviewTable();
+      return currentTable ? rowsToMatrix(currentTable, exportRowsRef.current) : [];
+    },
+    [getCurrentReviewTable],
   );
-  const ensureSaved = useCallback(async () => {
+  const ensureSaved = useCallback(async (authority?: SteelReviewDownloadAuthority) => {
+    const initialTable = getCurrentReviewTable();
+    if (authority && (!initialTable || initialTable.outputId !== authority.outputId || initialTable.revision !== authority.revision)) {
+      return false;
+    }
     if (savePhase === 'uncertain' || savePhase === 'reconciling') {
       return false;
     }
@@ -448,8 +518,12 @@ export default function SteelReviewDialog({
       return saved;
     }
     const latestDraft = latestDraftStateRef.current;
-    return getSteelReviewDirtyRowIds(table, latestDraft).length === 0;
-  }, [saveChanges, savePhase, table]);
+    const currentTable = getCurrentReviewTable();
+    if (!currentTable || (authority && currentTable.outputId !== authority.outputId)) {
+      return false;
+    }
+    return getSteelReviewDirtyRowIds(currentTable, latestDraft).length === 0;
+  }, [getCurrentReviewTable, saveChanges, savePhase]);
   useEffect(() => {
     if (!saveGateRef) {
       return undefined;
@@ -461,19 +535,44 @@ export default function SteelReviewDialog({
   }, [ensureSaved, getExportMatrix, saveGateRef]);
   const clearDraftAndClose = useCallback(() => {
     setDraftState(createSteelReviewDraftState(draftStateKey));
+    latestDraftStateRef.current = createSteelReviewDraftState(draftStateKey);
     preparedRef.current = undefined;
+    discardBoundaryRef.current = undefined;
     setSavePhase('idle');
     setSaveErrorCode(undefined);
     setReceiptFailed(false);
+    setReceiptInput(null);
+    setDiscardRequested(false);
     setCloseRequested(false);
     setSelection(null);
   }, [draftStateKey, setDraftState, setSelection]);
+  const finishDiscardAtBoundary = useCallback((rows: readonly SteelReviewRow[]) => {
+    const boundary = discardBoundaryRef.current ?? latestDraftStateRef.current.changeSequence;
+    const rebased = rebaseSteelReviewDraftState(latestDraftStateRef.current, rows, boundary);
+    latestDraftStateRef.current = rebased;
+    setDraftState(rebased);
+    preparedRef.current = undefined;
+    discardBoundaryRef.current = undefined;
+    setReceiptFailed(false);
+    setReceiptInput(null);
+    setDiscardRequested(false);
+    setSaveErrorCode(undefined);
+    setSavePhase('idle');
+    const remainingDirtyRows = getSteelReviewDirtyRowIds({ rows }, rebased);
+    if (remainingDirtyRows.length === 0) {
+      setCloseRequested(false);
+      setSelection(null);
+      return;
+    }
+    setCloseRequested(false);
+  }, [setDraftState, setSelection]);
   const requestReceiptBeforeDiscard = useCallback(() => {
     const prepared = preparedRef.current;
     if (!prepared) {
       clearDraftAndClose();
       return;
     }
+    discardBoundaryRef.current = latestDraftStateRef.current.changeSequence;
     setReceiptFailed(false);
     setSavePhase('reconciling');
     setReceiptInput({
@@ -494,6 +593,15 @@ export default function SteelReviewDialog({
     }
     clearDraftAndClose();
   }, [clearDraftAndClose, requestReceiptBeforeDiscard, savePhase]);
+  const retryReceiptLookup = useCallback(() => {
+    if (!receiptInput) {
+      return;
+    }
+    setReceiptFailed(false);
+    setSaveErrorCode(undefined);
+    setSavePhase('reconciling');
+    setDiscardRequested(true);
+  }, [receiptInput]);
   const requestClose = useCallback(() => {
     if (dirtyRowCount > 0 || savePhase === 'preparing' || savePhase === 'committing' ||
       savePhase === 'uncertain' || savePhase === 'reconciling') {
@@ -507,12 +615,11 @@ export default function SteelReviewDialog({
       return undefined;
     }
     let active = true;
-    void receiptQuery.refetch().then((result) => {
+    void receiptQuery.refetch().then(async (result) => {
       if (!active) {
         return;
       }
       setDiscardRequested(false);
-      setReceiptInput(null);
       if (result.error || !result.data) {
         setSavePhase('reconciling');
         setSaveErrorCode(getErrorCode(result.error));
@@ -520,26 +627,50 @@ export default function SteelReviewDialog({
         return;
       }
       const status: SteelReviewReceiptStatus = result.data;
-      if (status.status === 'committed') {
-        const currentTable = query.data?.table;
-        const prepared = preparedRef.current;
-        if (currentTable && prepared && (
-          currentTable.outputId !== status.snapshot.outputId ||
-          (currentTable.revision !== prepared.revision && currentTable.revision !== status.snapshot.revision)
-        )) {
-          setSavePhase('stale');
-          setSaveErrorCode('REVIEW_CONFLICT');
-          return;
-        }
-        applyConfirmedSnapshot(status.snapshot, submittedChangeSequenceRef.current);
-        clearDraftAndClose();
+      const currentResult = await refetchCurrentReview();
+      if (currentResult.error || !currentResult.data?.table) {
+        setSavePhase('reconciling');
+        setSaveErrorCode(undefined);
+        setReceiptFailed(true);
         return;
       }
-      clearDraftAndClose();
+      if (status.status === 'committed') {
+        const prepared = preparedRef.current;
+        if (!prepared || !isAuthorizedCurrentTable(currentResult.data.table, prepared, status.snapshot)) {
+          preparedRef.current = undefined;
+          setSavePhase('stale');
+          setSaveErrorCode('REVIEW_CONFLICT');
+          setReceiptInput(null);
+          setReceiptFailed(false);
+          return;
+        }
+        const boundary = discardBoundaryRef.current ?? submittedChangeSequenceRef.current;
+        applyConfirmedSnapshot(status.snapshot, boundary);
+        const rebased = rebaseSteelReviewDraftState(
+          latestDraftStateRef.current,
+          status.snapshot.rows,
+          boundary,
+        );
+        latestDraftStateRef.current = rebased;
+        setDraftState(rebased);
+        preparedRef.current = undefined;
+        discardBoundaryRef.current = undefined;
+        setReceiptInput(null);
+        setReceiptFailed(false);
+        setSaveErrorCode(undefined);
+        setSavePhase('idle');
+        if (getSteelReviewDirtyRowIds({ rows: status.snapshot.rows }, rebased).length === 0) {
+          setCloseRequested(false);
+          setSelection(null);
+        } else {
+          setCloseRequested(false);
+        }
+        return;
+      }
+      finishDiscardAtBoundary(currentResult.data.table.rows);
     }).catch(() => {
       if (active) {
         setDiscardRequested(false);
-        setReceiptInput(null);
         setSavePhase('reconciling');
         setSaveErrorCode(undefined);
         setReceiptFailed(true);
@@ -548,7 +679,7 @@ export default function SteelReviewDialog({
     return () => {
       active = false;
     };
-  }, [applyConfirmedSnapshot, clearDraftAndClose, discardRequested, query.data?.table, receiptInput, receiptQuery.refetch]);
+  }, [applyConfirmedSnapshot, discardRequested, finishDiscardAtBoundary, receiptInput, receiptQuery.refetch, refetchCurrentReview, setDraftState, setSelection]);
   const saveAndClose = useCallback(async () => {
     const saved = await saveChanges();
     if (!saved || !table) {
@@ -823,6 +954,11 @@ export default function SteelReviewDialog({
             {(saveErrorCode || savePhase === 'uncertain' || savePhase === 'stale' ||
               (savePhase === 'reconciling' && receiptFailed)) && (
               <span role="alert">{localize(saveErrorKey)}</span>
+            )}
+            {receiptFailed && receiptInput && (
+              <Button type="button" variant="outline" onClick={retryReceiptLookup}>
+                {localize('com_ui_steel_review_receipt_retry')}
+              </Button>
             )}
           </div>
           <Button type="button" onClick={requestClose}>{localize('com_ui_close')}</Button>

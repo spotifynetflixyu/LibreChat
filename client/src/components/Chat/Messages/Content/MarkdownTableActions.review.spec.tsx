@@ -110,12 +110,14 @@ const {
   useGetSteelReviewSourceQuery: mockUseGetSteelReviewSourceQuery,
   usePrepareSteelReviewMutation: mockUsePrepareSteelReviewMutation,
   useCommitSteelReviewMutation: mockUseCommitSteelReviewMutation,
+  useGetSteelReviewReceiptQuery: mockUseGetSteelReviewReceiptQuery,
 } = jest.requireMock('~/data-provider') as {
   useGetSteelReviewQuery: jest.Mock;
   useGetSteelReviewSourcesQuery: jest.Mock;
   useGetSteelReviewSourceQuery: jest.Mock;
   usePrepareSteelReviewMutation: jest.Mock;
   useCommitSteelReviewMutation: jest.Mock;
+  useGetSteelReviewReceiptQuery: jest.Mock;
 };
 jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
@@ -192,6 +194,41 @@ describe('MarkdownTableActions Steel review entry', () => {
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: 'com_ui_steel_review_open' })).toBeNull(),
     );
+  });
+
+  it('exports a recognized confirmed table while the review dialog is closed', async () => {
+    const table = {
+      ...reviewIdentity,
+      kind: 'ocr_result' as const,
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      latestOutputId: 'ocr_result:generation-1',
+      isLatest: true,
+      readOnly: false,
+      headers: ['來源', '零件編號', '數量'],
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: {
+          來源: { baseline: 'A', effective: 'A' },
+          零件編號: { baseline: 'P-1', effective: 'P-1' },
+          數量: { baseline: '2', effective: '2' },
+        },
+      }],
+    };
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: jest.fn(() => 'blob:review-export'),
+    });
+    mockUseGetSteelReviewQuery.mockImplementation((input) => input
+      ? { data: { table }, error: null, isError: false, isLoading: false }
+      : { data: undefined, error: null, isError: false, isLoading: false });
+
+    renderTable();
+
+    const download = await screen.findByRole('button', { name: 'com_ui_download_table_csv' });
+    fireEvent.click(download);
+    await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalledTimes(1));
   });
 
 
@@ -490,6 +527,98 @@ describe('MarkdownTableActions Steel review entry', () => {
     expect(screen.getByText('com_ui_steel_review_unsaved_caption')).toBeInTheDocument();
     rendered.unmount();
     activeReviewQueryClient = undefined;
+  });
+
+  it('retries a failed receipt lookup and preserves edits made after discard starts', async () => {
+    const table = {
+      ...reviewIdentity,
+      kind: 'ocr_result' as const,
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      latestOutputId: 'ocr_result:generation-1',
+      isLatest: true,
+      readOnly: false,
+      headers: ['品名'],
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 品名: { baseline: '鋼板', effective: '鋼板' } },
+      }],
+    };
+    const prepared = {
+      conversationId: reviewIdentity.conversationId,
+      messageId: reviewIdentity.messageId,
+      kind: reviewIdentity.kind,
+      tableId: reviewIdentity.tableId,
+      outputId: table.outputId,
+      revision: table.revision,
+      rows: table.rows,
+      operationId: 'operation-receipt-retry',
+      digest: 'a'.repeat(64),
+      messageSha256: 'b'.repeat(64),
+      target: { start: 0, end: 1, sha256: 'c'.repeat(64) },
+      replacementText: 'replacement',
+      cleanReplacementText: 'replacement',
+      targetText: 'target',
+      headers: table.headers,
+      effectiveMarkdown: 'effective',
+      displayMarkdown: 'display',
+      caption: { kind: reviewIdentity.kind, changedRows: 1, changedRowIds: ['row-1'] },
+    };
+    const reviewRefetch = jest.fn().mockResolvedValue({ data: { table }, error: null });
+    const prepare = jest.fn().mockResolvedValue(prepared);
+    const commit = jest.fn().mockRejectedValue(new Error('connection lost'));
+    mockUseGetSteelReviewQuery.mockReturnValue({
+      data: { table },
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: reviewRefetch,
+    });
+    mockUsePrepareSteelReviewMutation.mockReturnValue({ mutateAsync: prepare });
+    mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
+    let receiptResolve!: (result: { data: { status: 'absent' }; error: null }) => void;
+    let receiptCalls = 0;
+    const receiptRefetch = jest.fn().mockImplementation(() => {
+      receiptCalls += 1;
+      if (receiptCalls === 1) {
+        return Promise.reject(new Error('receipt unavailable'));
+      }
+      return new Promise((resolve) => {
+        receiptResolve = resolve;
+      });
+    });
+    mockUseGetSteelReviewReceiptQuery.mockReturnValue({
+      data: undefined,
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: receiptRefetch,
+    });
+
+    renderDialog();
+    const input = screen.getByRole('textbox', { name: '品名 row-1' });
+    fireEvent.change(input, { target: { value: '7' } });
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_close' }));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_discard_unsaved' }));
+    await waitFor(() => expect(receiptCalls).toBe(1));
+    const retryReceipt = await screen.findByRole('button', { name: 'com_ui_steel_review_receipt_retry' });
+    expect(retryReceipt).toBeEnabled();
+    expect(input).toHaveValue('7');
+
+    fireEvent.click(retryReceipt);
+    await waitFor(() => expect(receiptCalls).toBe(2));
+    fireEvent.change(input, { target: { value: '10' } });
+    receiptResolve({ data: { status: 'absent' }, error: null });
+
+    await waitFor(() => {
+      expect(input).toHaveValue('10');
+      expect(screen.getByText('com_ui_steel_review_unsaved_caption')).toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'com_ui_steel_review_receipt_retry' })).toBeNull();
+    });
   });
 
   it('keeps source rows visible while sources load or fail, then renders an image preview', async () => {

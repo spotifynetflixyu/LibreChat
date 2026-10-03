@@ -3208,6 +3208,7 @@
   "com_ui_steel_review_save_stale": "This review is no longer current. Reload it before saving again.",
   "com_ui_steel_review_save_uncertain": "The save may have completed. Verify it before discarding changes.",
   "com_ui_steel_review_receipt_error": "Could not verify the save. Keep your changes and try again.",
+  "com_ui_steel_review_receipt_retry": "Retry saved review check",
   "com_ui_steel_review_saving": "Saving review...",
   "com_ui_steel_review_reconciling": "Checking saved review...",
   "com_ui_close_table": "Close table",
