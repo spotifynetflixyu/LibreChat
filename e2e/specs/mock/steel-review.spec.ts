@@ -1453,7 +1453,9 @@ test.describe('Steel managed source review', () => {
     conversations.push(conversationId);
     await seedSelectorFiles(conversationId);
     await withMongo(async (db) => {
-      await db.collection('steel_conversation_ocr_state').updateOne({ conversationId }, { $set: { sourceMappings: [] } });
+      await db.collection('steel_conversation_ocr_state').updateOne({ conversationId }, { $set: {
+        currentOcrResultMarkdown: markdown, sourceMappings: [],
+      } });
     });
     const before = await persistedSnapshot(conversationId);
     const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
@@ -1573,7 +1575,7 @@ test.describe('Steel managed source review', () => {
     const image = dialog.getByRole('img', { name: 'Source page preview', exact: true });
     await expect(image).toBeVisible();
     await expect.poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(800);
-    await page.keyboard.press('Escape');
+    await dialog.getByRole('button', { name: 'Close', exact: true }).first().click();
     await expect(dialog).not.toBeVisible();
     expect(await persistedSnapshot(conversationId)).toEqual(saved);
   });
