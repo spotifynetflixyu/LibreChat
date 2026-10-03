@@ -131,6 +131,7 @@ describe('Steel review read methods', () => {
       '| other-user | P-9 |',
       '| other-tenant | P-10 |',
       '| expired | P-11 |',
+      '| duplicate | P-12 |',
     ].join('\n');
     await models.Conversation.create({
       conversationId,
@@ -157,9 +158,11 @@ describe('Steel review read methods', () => {
       text: 'Review uploaded source',
       files: [
         { file_id: 'attached-file' },
+        { file_id: 'cross-chat-file' },
         { file_id: 'other-user-file' },
         { file_id: 'other-tenant-file' },
         { file_id: 'expired-file' },
+        { file_id: 'duplicate-file' },
       ],
     });
     await models.File.create([
@@ -240,6 +243,30 @@ describe('Steel review read methods', () => {
       {
         user: userId,
         tenantId: 'tenant-source',
+        file_id: 'duplicate-file',
+        bytes: 1,
+        filename: 'duplicate-a.pdf',
+        filepath: '/uploads/duplicate-a.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        source: 'local',
+        usage: 0,
+      },
+      {
+        user: userId,
+        tenantId: 'tenant-source',
+        file_id: 'duplicate-file',
+        bytes: 1,
+        filename: 'duplicate-b.pdf',
+        filepath: '/uploads/duplicate-b.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        source: 'local',
+        usage: 0,
+      },
+      {
+        user: userId,
+        tenantId: 'tenant-source',
         conversationId: 'other-conversation',
         messageId: 'source-file-message',
         file_id: 'cross-chat-file',
@@ -305,6 +332,7 @@ describe('Steel review read methods', () => {
         { fileId: 'other-user-file', sourceCode: 'other-user', sourceFilename: 'other-user.pdf' },
         { fileId: 'other-tenant-file', sourceCode: 'other-tenant', sourceFilename: 'other-tenant.pdf' },
         { fileId: 'expired-file', sourceCode: 'expired', sourceFilename: 'expired.pdf' },
+        { fileId: 'duplicate-file', sourceCode: 'duplicate', sourceFilename: 'duplicate.pdf' },
       ],
       currentOcrResultMarkdown: markdown,
       currentOcrResultMessageId: 'source-file-message',
