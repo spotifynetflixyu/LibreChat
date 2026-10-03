@@ -1,4 +1,5 @@
 import { ObjectId } from 'mongodb';
+import { join } from 'node:path';
 import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
@@ -47,7 +48,7 @@ async function seedCurrent(markdown: string) {
       messageId,
       file_id: 'review-alpha',
       filename: 'alpha.pdf',
-      filepath: '/tmp/steel-source-review-fixtures/alpha.pdf',
+      filepath: join(__dirname, 'fixtures', 'alpha.pdf'),
       type: 'application/pdf',
       bytes: 1024,
       object: 'file',
@@ -144,9 +145,9 @@ async function seedSelectorFiles(conversationId: string) {
     if (!alpha) throw new Error('Missing selector fixture file');
     await db.collection('files').insertMany([
       { ...alpha, _id: new ObjectId(), file_id: 'review-beta', filename: 'beta.pdf',
-        filepath: '/tmp/steel-source-review-fixtures/beta.pdf' },
+        filepath: join(__dirname, 'fixtures', 'beta.pdf') },
       { ...alpha, _id: new ObjectId(), file_id: 'review-gamma', filename: 'gamma.png',
-        filepath: '/tmp/steel-source-review-fixtures/gamma.png', type: 'image/png' },
+        filepath: join(__dirname, 'fixtures', 'gamma.png'), type: 'image/png' },
       { ...alpha, _id: new ObjectId(), file_id: 'review-foreign-selector', tenantId: 'foreign-selector-tenant' },
       { ...alpha, _id: new ObjectId(), file_id: 'review-expired-selector', expiredAt: new Date(0) },
     ]);
@@ -539,8 +540,8 @@ test.describe('Steel managed source review', () => {
       if (!alpha) throw new Error('Missing fixture file');
       const file = alpha;
       await db.collection('files').insertMany([
-        { ...file, _id: new ObjectId(), file_id: 'review-beta', filename: 'beta.pdf', filepath: '/tmp/steel-source-review-fixtures/beta.pdf' },
-        { ...file, _id: new ObjectId(), file_id: 'review-gamma', filename: 'gamma.png', filepath: '/tmp/steel-source-review-fixtures/gamma.png', type: 'image/png' },
+        { ...file, _id: new ObjectId(), file_id: 'review-beta', filename: 'beta.pdf', filepath: join(__dirname, 'fixtures', 'beta.pdf') },
+        { ...file, _id: new ObjectId(), file_id: 'review-gamma', filename: 'gamma.png', filepath: join(__dirname, 'fixtures', 'gamma.png'), type: 'image/png' },
         { ...file, _id: new ObjectId(), file_id: 'review-unpreviewable', filename: 'delta.heic', type: 'image/heic' },
         { ...file, _id: new ObjectId(), file_id: 'review-foreign-tenant', filename: 'foreign-tenant.pdf', tenantId: 'different-tenant' },
       ]);
