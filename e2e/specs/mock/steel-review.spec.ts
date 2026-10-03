@@ -534,6 +534,11 @@ test.describe('Steel managed source review', () => {
     const fullscreenBounds = await dialog.boundingBox();
     expect(fullscreenBounds?.x).toBeCloseTo(0, 0);
     expect(fullscreenBounds?.y).toBeCloseTo(0, 0);
+    await dialog.getByRole('combobox', { name: 'Source file', exact: true }).click();
+    await expect(page.getByRole('listbox')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('listbox')).toHaveCount(0);
+    await expect(dialog).toBeVisible();
     await page.keyboard.press('Escape');
     await expect(dialog).not.toBeVisible();
     await page.reload();
@@ -587,6 +592,95 @@ test.describe('Steel managed source review', () => {
     await expect(dialog.getByText('REVIEW-P1', { exact: true })).toBeVisible();
     await page.keyboard.press('Escape');
     expect(await persistedSnapshot(conversationId)).toEqual(before);
+  });
+
+  test('legacy source identity cannot reuse a same-user file ID claimed by another chat', async ({ page }) => {
+    const current = await seedCurrent(ocr);
+    const other = await seedCurrent(ocr);
+    conversations.push(current.conversationId, other.conversationId);
+    await withMongo(async (db) => {
+      await db.collection('files').updateOne({ conversationId: current.conversationId }, {
+        $unset: { conversationId: '' },
+      });
+    });
+    try {
+      const before = await persistedSnapshot(current.conversationId);
+      const otherBefore = await persistedSnapshot(other.conversationId);
+      const review = await page.request.get(readUrl(current.conversationId, current.messageId, 1), { headers });
+      expect(review.status()).toBe(200);
+      expect(await review.json()).toMatchObject({ table: {
+        sourceFiles: [],
+        rows: [{ source: null }, { source: null }],
+      } });
+      const root = `/api/steel/conversations/${current.conversationId}/review/ocr_result/sources`;
+      const query = new URLSearchParams({ messageId: current.messageId });
+      const list = await page.request.get(`${root}?${query}`, { headers });
+      expect(list.status()).toBe(200);
+      expect(await list.json()).toEqual({ sources: [] });
+      const binary = await page.request.get(`${root}/review-alpha?${query}`, { headers });
+      expect(binary.status()).toBe(404);
+      expect(await persistedSnapshot(current.conversationId)).toEqual(before);
+      expect(await persistedSnapshot(other.conversationId)).toEqual(otherBefore);
+    } finally {
+      await withMongo(async (db) => {
+        await db.collection('files').updateOne({ messageId: current.messageId }, {
+          $set: { conversationId: current.conversationId },
+        });
+      });
+    }
+  });
+
+  test('legacy source attachment provenance shared with another chat stays unlocated and unreadable', async ({ page }) => {
+    const current = await seedCurrent(ocr);
+    const otherConversationId = randomUUID();
+    conversations.push(current.conversationId, otherConversationId);
+    await seedConversations(getE2EUser().email, [{ conversationId: otherConversationId, title: 'Competing legacy attachment' }]);
+    await seedMessages(getE2EUser().email, otherConversationId, [{
+      messageId: randomUUID(),
+      parentMessageId: '00000000-0000-0000-0000-000000000000',
+      text: 'Earlier upload claim',
+      isCreatedByUser: true,
+      sender: 'User',
+      files: [{ file_id: 'review-alpha' }],
+    }]);
+    await withMongo(async (db) => {
+      await db.collection('files').updateOne({ conversationId: current.conversationId }, {
+        $unset: { conversationId: '' },
+      });
+    });
+    try {
+      const before = await persistedSnapshot(current.conversationId);
+      const otherBefore = await persistedSnapshot(otherConversationId);
+      const review = await page.request.get(readUrl(current.conversationId, current.messageId, 1), { headers });
+      expect(review.status()).toBe(200);
+      expect(await review.json()).toMatchObject({ table: {
+        sourceFiles: [],
+        rows: [{ source: null }, { source: null }],
+      } });
+      const root = `/api/steel/conversations/${current.conversationId}/review/ocr_result/sources`;
+      const query = new URLSearchParams({ messageId: current.messageId });
+      const list = await page.request.get(`${root}?${query}`, { headers });
+      expect(list.status()).toBe(200);
+      expect(await list.json()).toEqual({ sources: [] });
+      const binary = await page.request.get(`${root}/review-alpha?${query}`, { headers });
+      expect(binary.status()).toBe(404);
+      await page.goto(`/c/${current.conversationId}`);
+      await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+      await expect(dialog.getByText('REVIEW-P1', { exact: true })).toBeVisible();
+      await expect(dialog.getByText('REVIEW-P2', { exact: true })).toBeVisible();
+      await expect(dialog.getByRole('combobox', { name: 'Source file', exact: true })).toHaveCount(0);
+      await page.keyboard.press('Escape');
+      await expect(dialog).not.toBeVisible();
+      expect(await persistedSnapshot(current.conversationId)).toEqual(before);
+      expect(await persistedSnapshot(otherConversationId)).toEqual(otherBefore);
+    } finally {
+      await withMongo(async (db) => {
+        await db.collection('files').updateOne({ messageId: current.messageId }, {
+          $set: { conversationId: current.conversationId },
+        });
+      });
+    }
   });
 
 });
