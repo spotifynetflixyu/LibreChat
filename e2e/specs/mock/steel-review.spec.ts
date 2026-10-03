@@ -251,12 +251,70 @@ test.describe('Steel managed source review', () => {
       if (!own) {
         throw new Error('Missing owned fixture conversation');
       }
-      const { _id: ignoredId, ...foreign } = own;
-      await db.collection('conversations').insertOne({ ...foreign, tenantId: 'review-other-tenant' });
+      await db.collection('conversations').insertOne({ ...own, _id: new ObjectId(), tenantId: 'review-other-tenant' });
     });
     const before = await persistedSnapshot(conversationId);
     const result = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
     expect(result.status()).toBe(404);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+  });
+
+  test('ordinary tables after other heading levels do not inherit an OCR section identity', async ({ page }) => {
+    for (const heading of ['# unrelated', '### unrelated']) {
+      const markdown = `${ocr}\n\n${heading}\n${ocr.split('\n').slice(1).join('\n').replaceAll('REVIEW-P', 'UNMANAGED-P')}`;
+      const { conversationId, messageId } = await seedCurrent(markdown);
+      conversations.push(conversationId);
+      await withMongo(async (db) => {
+        await db.collection('steel_conversation_ocr_state').updateOne({ conversationId }, {
+          $set: { currentOcrResultMarkdown: markdown },
+        });
+      });
+      const before = await persistedSnapshot(conversationId);
+      const result = await page.request.get(readUrl(conversationId, messageId, 2), { headers });
+      expect(result.status()).toBe(404);
+      expect(await persistedSnapshot(conversationId)).toEqual(before);
+    }
+  });
+
+  test('a historical sidecar updated later cannot mask the authoritative current output', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    await withMongo(async (db) => {
+      const message = await db.collection('messages').findOne({ conversationId, messageId });
+      if (!message) {
+        throw new Error('Missing fixture message');
+      }
+      const rows = [
+        ['A', 'REVIEW-P1', '1000', '2', '1'],
+        ['A', 'REVIEW-P2', '2000', '3', '1'],
+      ].map((values, i) => ({
+        rowId: `identity-row-${i}`,
+        source: null,
+        values: Object.fromEntries(['來源', '零件編號', '長度', '數量', '頁碼'].map((key, j) => [key, {
+          baseline: values[j], effective: values[j],
+        }])),
+      }));
+      const owner = {
+        userId: message.user,
+        conversationId,
+        messageId,
+        kind: 'ocr_result',
+        tableId: 'ocr_result:1',
+        headers: ['來源', '零件編號', '長度', '數量', '頁碼'],
+        rows,
+        createdAt: new Date(),
+      };
+      await db.collection('steel_review_outputs').insertMany([
+        { ...owner, outputId: 'ocr_result:review-proof-generation', revision: 'current-sidecar', state: 'current', updatedAt: new Date(1) },
+        { ...owner, outputId: 'ocr_result:historical-generation', revision: 'historical-sidecar', state: 'historical', updatedAt: new Date() },
+      ]);
+    });
+    const before = await persistedSnapshot(conversationId);
+    const result = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(result.status()).toBe(200);
+    expect(await result.json()).toMatchObject({ table: {
+      outputId: 'ocr_result:review-proof-generation', revision: 'current-sidecar', isLatest: true, readOnly: false,
+    } });
     expect(await persistedSnapshot(conversationId)).toEqual(before);
   });
 
