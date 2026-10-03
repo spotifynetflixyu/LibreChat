@@ -7,6 +7,11 @@ import type {
   OpenAIOAuthUsageRemaining,
   SteelReviewKind,
   SteelReviewResponse,
+  SteelReviewReceiptStatus,
+  SteelReviewPrepare,
+  SteelReviewPrepared,
+  SteelReviewCommit,
+  SteelReviewSaveResponse,
   SteelReviewSourcesResponse,
   SteelQuotationStatus,
 } from './steel';
@@ -192,6 +197,34 @@ export function getSteelReview(
   partIndex?: number,
 ): Promise<SteelReviewResponse> {
   return request.get(endpoints.steelReview(conversationId, kind, messageId, tableId, partIndex));
+}
+
+export function prepareSteelReview(input: SteelReviewPrepare): Promise<SteelReviewPrepared> {
+  return request.post(endpoints.steelReviewPrepare(input.conversationId, input.kind), input);
+}
+
+export function commitSteelReview(input: SteelReviewCommit): Promise<SteelReviewSaveResponse> {
+  return request.post(endpoints.steelReviewCommit(input.conversationId, input.kind), input);
+}
+
+export function getSteelReviewReceipt(
+  conversationId: string,
+  kind: SteelReviewKind,
+  messageId: string,
+  tableId: string,
+  outputId: string,
+  operationId: string,
+  digest: string,
+): Promise<SteelReviewReceiptStatus> {
+  return request.get(endpoints.steelReviewReceipt(
+    conversationId,
+    kind,
+    messageId,
+    tableId,
+    outputId,
+    operationId,
+    digest,
+  ));
 }
 
 export function getSteelReviewSources(

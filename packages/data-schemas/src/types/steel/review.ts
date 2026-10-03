@@ -1,6 +1,9 @@
 import type {
+  SteelReviewCaption,
   SteelReviewCell,
   SteelReviewKind,
+  SteelReviewOwnerUpdated,
+  SteelReviewRequoteProvenance,
   SteelReviewRow,
   SteelReviewSource,
 } from 'librechat-data-provider';
@@ -19,9 +22,26 @@ export interface SteelReviewReadInput extends SteelReviewScope {
   partIndex?: number;
 }
 
+export interface SteelReviewReceiptLookup extends SteelReviewScope {
+  kind: SteelReviewKind;
+  messageId: string;
+  tableId: string;
+  outputId: string;
+  operationId: string;
+  digest: string;
+}
+
 export interface SteelReviewTextPart {
   partIndex: number;
   text: string;
+}
+
+export interface SteelReviewOwnerUpdatedRecord extends Omit<SteelReviewOwnerUpdated, 'updatedAt'> {
+  updatedAt: Date;
+}
+
+export interface SteelReviewRequoteProvenanceRecord extends Omit<SteelReviewRequoteProvenance, 'at'> {
+  at: Date;
 }
 
 /** Plain projection returned by the database boundary; no Mongoose query types escape it. */
@@ -40,6 +60,17 @@ export interface SteelReviewReadRecord extends SteelReviewScope {
   messageText?: string;
   messageTextParts?: SteelReviewTextPart[];
   messageTextPartIndex?: number;
+  aiRawMarkdown?: string;
+  aiBaselineMarkdown?: string;
+  humanMarkdown?: string;
+  humanSavedAt?: Date;
+  effectiveMarkdown?: string;
+  displayMarkdown?: string;
+  aiUpdatedAt?: Date;
+  ownerUpdated?: SteelReviewOwnerUpdatedRecord;
+  needsRequote?: boolean;
+  requoteProvenance?: SteelReviewRequoteProvenanceRecord;
+  lastSave?: SteelReviewReceipt;
 }
 
 export interface SteelReviewSourceMapping {
@@ -63,6 +94,44 @@ export interface ISteelReviewOutput extends Document, SteelReviewScope {
     source: SteelReviewSource | null;
   }>;
   latestOutputId?: string;
+  aiUpdatedAt?: Date;
+  aiRawMarkdown?: string;
+  aiBaselineMarkdown?: string;
+  humanMarkdown?: string;
+  humanSavedAt?: Date;
+  effectiveMarkdown?: string;
+  displayMarkdown?: string;
+  receipts: SteelReviewReceipt[];
   createdAt?: Date;
   updatedAt?: Date;
+}
+
+export interface SteelReviewReceipt {
+  operationId: string;
+  digest: string;
+  revision: string;
+  changedRows: number;
+  changedRowIds: string[];
+  savedAt: Date;
+  snapshot?: SteelReviewSavedSnapshotRecord;
+}
+
+export interface SteelReviewSavedSnapshotRecord {
+  operationId: string;
+  digest: string;
+  outputId: string;
+  revision: string;
+  headers: string[];
+  rows: SteelReviewRow[];
+  changedRows: number;
+  changedRowIds: string[];
+  savedAt: Date;
+  messageSha256: string;
+  conversationId: string;
+  messageId: string;
+  messageText: string;
+  messageTextParts?: SteelReviewTextPart[];
+  effectiveMarkdown: string;
+  displayMarkdown: string;
+  ownerUpdated?: SteelReviewOwnerUpdatedRecord;
 }
