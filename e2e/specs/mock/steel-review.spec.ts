@@ -85,6 +85,21 @@ async function seedCurrent(markdown: string) {
   return { conversationId, messageId };
 }
 
+async function seedSelectorFiles(conversationId: string) {
+  await withMongo(async (db) => {
+    const alpha = await db.collection('files').findOne({ conversationId, file_id: 'review-alpha' });
+    if (!alpha) throw new Error('Missing selector fixture file');
+    await db.collection('files').insertMany([
+      { ...alpha, _id: new ObjectId(), file_id: 'review-beta', filename: 'beta.pdf',
+        filepath: '/tmp/steel-source-review-fixtures/beta.pdf' },
+      { ...alpha, _id: new ObjectId(), file_id: 'review-gamma', filename: 'gamma.png',
+        filepath: '/tmp/steel-source-review-fixtures/gamma.png', type: 'image/png' },
+      { ...alpha, _id: new ObjectId(), file_id: 'review-foreign-selector', tenantId: 'foreign-selector-tenant' },
+      { ...alpha, _id: new ObjectId(), file_id: 'review-expired-selector', expiresAt: new Date(0) },
+    ]);
+  });
+}
+
 async function persistedSnapshot(conversationId: string) {
   return withMongo(async (db) => ({
     messages: await db.collection('messages').find({ conversationId }).toArray(),
@@ -1166,6 +1181,158 @@ test.describe('Steel managed source review', () => {
     const reopened = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
     expect(reopened.status()).toBe(200);
     expect(await reopened.json()).toMatchObject({ table: { rows } });
+  });
+
+  test('source selector page counts come from actual authorized PDF/image bytes without writes', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    await seedSelectorFiles(conversationId);
+    const before = await persistedSnapshot(conversationId);
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result/sources`;
+    for (const [fileId, pageCount] of [['review-alpha', 3], ['review-beta', 2], ['review-gamma', 1]] as const) {
+      const response = await page.request.get(`${url}/${fileId}/page-count?${new URLSearchParams({ messageId })}`, { headers });
+      expect(response.status()).toBe(200);
+      expect(await response.json()).toEqual({ pageCount });
+    }
+    for (const fileId of ['review-foreign-selector', 'review-expired-selector', 'missing-selector-file']) {
+      const response = await page.request.get(`${url}/${fileId}/page-count?${new URLSearchParams({ messageId })}`, { headers });
+      expect(response.status()).toBe(404);
+    }
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+  });
+
+  test('a source-only Save freezes trusted mapping and updates only the clicked message without staling its quote', async ({ page }) => {
+    const markdown = `SELECTOR-PREFIX\n\n${ocr}\n\nSELECTOR-SUFFIX`;
+    const { conversationId, messageId } = await seedCurrent(markdown);
+    conversations.push(conversationId);
+    await seedSelectorFiles(conversationId);
+    const otherMessageId = randomUUID();
+    await seedMessages(getE2EUser().email, conversationId, [{
+      messageId: otherMessageId, parentMessageId: messageId, text: ocr,
+      content: [{ type: 'text', text: ocr }], isCreatedByUser: false, sender: 'Assistant',
+    }]);
+    const runId = randomUUID();
+    const orderHash = createHash('sha256').update(ocr).digest('hex');
+    await withMongo(async (db) => {
+      const owner = await db.collection('messages').findOne({ conversationId, messageId });
+      if (!owner) throw new Error('Missing selector quotation owner');
+      await db.collection('steel_quotation_states').insertOne({
+        userId: String(owner.user), conversationId,
+        currentOrder: { markdown: ocr, sha256: orderHash },
+        currentSystemOrder: { runId, messageId: randomUUID(), markdown: 'ORDER-UNCHANGED',
+          sha256: createHash('sha256').update('ORDER-UNCHANGED').digest('hex'),
+          customerQuoteMarkdown: 'INTERNAL-QUOTE-UNCHANGED', updatedAt: new Date() },
+        nextSignalIndex: 2, pendingMessages: [],
+        tickets: [{ index: 1, token: randomUUID(), orderHash, customerMarkdown: 'CUSTOMER-UNCHANGED',
+          customerIdentity: 'CUSTOMER-1', triggeringMessageId: messageId,
+          selectionProvenance: { method: 'unique' }, issuedAt: new Date(), acceptedRunId: runId,
+          completionReceipt: { inputHash: 'FROZEN-INPUT', markdown: 'ORDER-UNCHANGED',
+            ocrGeneration: 'review-proof-generation', ocrHash: orderHash } }],
+        createdAt: new Date(), updatedAt: new Date(),
+      });
+    });
+    const before = await persistedSnapshot(conversationId);
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(read.status()).toBe(200);
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const response = await page.request.post(`${url}/prepare`, { headers, data: {
+      ...table, sourceIntents: [{ rowId: table.rows[0].rowId, fileId: 'review-beta', pageNumber: 2 }],
+    } });
+    expect(response.status()).toBe(200);
+    const prepared = await response.json() as SteelReviewPrepared;
+    expect(prepared.caption.changedRowIds).toEqual([table.rows[0].rowId]);
+    expect(prepared.caption.changedRows).toBe(1);
+    expect(prepared.rows[0].source).toMatchObject({ fileId: 'review-beta', pageNumber: 2, filename: 'beta.pdf' });
+    expect(prepared.rows[0].values['來源'].effective).toMatch(/^F\d+$/u);
+    expect(prepared.rows[0].values['頁碼']).toEqual({ baseline: '1', effective: '2' });
+    for (const header of ['零件編號', '長度', '數量']) expect(prepared.rows[0].values[header]).toEqual(table.rows[0].values[header]);
+    expect(prepared.rows[1]).toEqual(table.rows[1]);
+    const mapping = { fileId: 'review-beta', sourceCode: prepared.rows[0].values['來源'].effective, sourceFilename: 'beta.pdf' };
+    expect(prepared).toMatchObject({ sourceMappings: expect.arrayContaining([expect.objectContaining(mapping)]) });
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    const commit = await page.request.post(`${url}/commit`, { headers, data: prepared });
+    expect(commit.status()).toBe(200);
+    const saved = await commit.json();
+    expect(saved.savedSnapshot).toMatchObject({ rows: prepared.rows,
+      sourceMappings: expect.arrayContaining([expect.objectContaining(mapping)]) });
+    const after = await persistedSnapshot(conversationId);
+    const sourceCode = prepared.rows[0].values['來源'].effective;
+    const clean = markdown.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', `| ${sourceCode} | REVIEW-P1 | 1000 | 2 | 2 |`);
+    const clicked = after.messages.find((message) => message.messageId === messageId);
+    expect(clicked?.text).toBe(clean);
+    expect(clicked?.content).toEqual([{ type: 'text', text: clean }]);
+    expect(after.messages.find((message) => message.messageId === otherMessageId))
+      .toEqual(before.messages.find((message) => message.messageId === otherMessageId));
+    expect(after.quotations).toEqual(before.quotations);
+    expectPreservedAiState(before.ocr, after.ocr);
+    expect(after.reviews[0]).toMatchObject({ rows: prepared.rows,
+      sourceMappings: expect.arrayContaining([expect.objectContaining(mapping)]) });
+    const reopened = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(reopened.status()).toBe(200);
+    expect(await reopened.json()).toMatchObject({ table: { rows: prepared.rows,
+      sourceMappings: expect.arrayContaining([expect.objectContaining(mapping)]) } });
+    expect(await persistedSnapshot(conversationId)).toEqual(after);
+  });
+
+  test('new source choices reject foreign expired missing multi-source and out-of-range pages before writes', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    await seedSelectorFiles(conversationId);
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(read.status()).toBe(200);
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const before = await persistedSnapshot(conversationId);
+    for (const intent of [
+      { fileId: 'review-foreign-selector', pageNumber: 1 },
+      { fileId: 'review-expired-selector', pageNumber: 1 },
+      { fileId: 'missing-selector-file', pageNumber: 1 },
+      { fileId: 'review-beta', pageNumber: 3 },
+      { fileId: 'review-gamma', pageNumber: 2 },
+      { fileId: ['review-alpha', 'review-beta'], pageNumber: 1 },
+      { fileId: 'review-alpha', pageNumber: [1, 2] },
+      { fileId: null, pageNumber: 1 },
+    ]) {
+      const response = await page.request.post(`/api/steel/conversations/${conversationId}/review/ocr_result/prepare`, {
+        headers, data: { ...table, sourceIntents: [{ rowId: table.rows[0].rowId, ...intent }] },
+      });
+      expect(response.status()).toBeGreaterThanOrEqual(400);
+      expect(response.status()).toBeLessThan(500);
+      expect(await persistedSnapshot(conversationId)).toEqual(before);
+    }
+  });
+
+  test('source commit reauthorizes selected file and a new receipt cannot be downgraded to legacy shape', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    await seedSelectorFiles(conversationId);
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(read.status()).toBe(200);
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const response = await page.request.post(`${url}/prepare`, { headers, data: {
+      ...table, sourceIntents: [{ rowId: table.rows[0].rowId, fileId: 'review-beta', pageNumber: 2 }],
+    } });
+    expect(response.status()).toBe(200);
+    const prepared = await response.json() as SteelReviewPrepared;
+    await withMongo(async (db) => {
+      await db.collection('files').updateOne({ conversationId, file_id: 'review-beta' }, { $set: { expiresAt: new Date(0) } });
+    });
+    const before = await persistedSnapshot(conversationId);
+    const refused = await page.request.post(`${url}/commit`, { headers, data: prepared });
+    expect(refused.status()).toBeGreaterThanOrEqual(400);
+    expect(refused.status()).toBeLessThan(500);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    await withMongo(async (db) => {
+      await db.collection('files').updateOne({ conversationId, file_id: 'review-beta' }, { $unset: { expiresAt: '' } });
+    });
+    const committed = await page.request.post(`${url}/commit`, { headers, data: prepared });
+    expect(committed.status()).toBe(200);
+    const saved = await persistedSnapshot(conversationId);
+    const legacy = Object.fromEntries(Object.entries(prepared).filter(([key]) => key !== 'sourceMappings' && key !== 'sourceIntents'));
+    const downgraded = await page.request.post(`${url}/commit`, { headers, data: legacy });
+    expect(downgraded.status()).toBe(409);
+    expect(await persistedSnapshot(conversationId)).toEqual(saved);
   });
 
   test('an OCR Save marks only a quotation with proven OCR lineage as needing requote', async ({ page }) => {
