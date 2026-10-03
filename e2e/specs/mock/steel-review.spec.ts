@@ -32,6 +32,21 @@ async function seedCurrent(markdown: string) {
     sender: 'Assistant',
   }]);
   await withMongo(async (db) => {
+    await db.collection('messages').updateOne({ conversationId, messageId }, {
+      $set: { metadata: { steel: { preflightToolCalls: [{
+        type: 'tool_call',
+        id: 'review-proof-paddle',
+        name: 'paddleocr_vl',
+        args: {
+          output_mode: 'detailed',
+          return_images: false,
+          use_doc_orientation_classify: false,
+          use_doc_unwarping: false,
+          use_layout_detection: false,
+        },
+        progress: 1,
+      }] } } },
+    });
     await db.collection('steel_conversation_ocr_state').insertOne({
       conversationId,
       currentOcrResultMarkdown: ocr,
