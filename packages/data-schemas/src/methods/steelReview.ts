@@ -173,7 +173,8 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
             revision,
             state: 'historical',
             markdown: candidate.markdown,
-            sourceMappings: state ? sourceMappings(state) : [],
+            // Historical runs do not carry a trusted source-code-to-file owner; keep rows unlocated.
+            sourceMappings: [],
             ...(state?.currentOcrResultGenerationId
               ? { latestOutputId: `ocr_result:${state.currentOcrResultGenerationId}` }
               : {}),
