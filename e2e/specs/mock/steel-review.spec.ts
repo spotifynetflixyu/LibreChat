@@ -131,6 +131,7 @@ test.describe('Steel managed source review', () => {
     await withMongo(async (db) => {
       await db.collection('steel_conversation_ocr_state').deleteMany({ conversationId: { $in: ids } });
       await db.collection('steel_review_outputs').deleteMany({ conversationId: { $in: ids } });
+      await db.collection('steel_delegate_ocr_runs').deleteMany({ conversationId: { $in: ids } });
       await db.collection('steel_quotation_states').deleteMany({ conversationId: { $in: ids } });
       await db.collection('files').deleteMany({ conversationId: { $in: ids } });
     });
@@ -1539,6 +1540,49 @@ test.describe('Steel managed source review', () => {
       const edited = await page.request.put(`/api/messages/${conversationId}/${historicalId}`, { headers, data });
       expect(edited.status()).toBe(409);
       expect(await persistedSnapshot(conversationId)).toEqual(before);
+    }
+  });
+
+  test('a completed historical OCR without a human sidecar cannot bypass the generic edit guard', async ({ page }) => {
+    const { conversationId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const historicalId = randomUUID();
+    await seedMessages(getE2EUser().email, conversationId, [{
+      messageId: historicalId,
+      parentMessageId: '00000000-0000-0000-0000-000000000000',
+      text: ocr,
+      content: [{ type: 'text', text: ocr }],
+      isCreatedByUser: false,
+      sender: 'Assistant',
+    }]);
+    await withMongo(async (db) => {
+      await db.collection('steel_delegate_ocr_runs').insertOne({
+        conversationId,
+        status: 'completed',
+        responseGenerationId: 'previous-completed-ocr',
+        finalizedCandidate: {
+          targetMessageId: historicalId,
+          generationId: 'previous-completed-ocr',
+          markdown: ocr,
+        },
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      });
+    });
+    const before = await persistedSnapshot(conversationId);
+    const runBefore = await withMongo((db) => db.collection('steel_delegate_ocr_runs').findOne({ conversationId }));
+    const historical = await page.request.get(readUrl(conversationId, historicalId, 1), { headers });
+    expect(historical.status()).toBe(200);
+    expect(await historical.json()).toMatchObject({ table: { readOnly: true, isLatest: false } });
+    expect(before.reviews).toHaveLength(0);
+    for (const data of [
+      { text: 'COMPLETED-HISTORY-MUST-NOT-BE-CHANGED', model: 'gpt-4o' },
+      { index: 0, text: 'COMPLETED-HISTORY-MUST-NOT-BE-CHANGED', model: 'gpt-4o' },
+    ]) {
+      const edited = await page.request.put(`/api/messages/${conversationId}/${historicalId}`, { headers, data });
+      expect(edited.status()).toBe(409);
+      expect(await persistedSnapshot(conversationId)).toEqual(before);
+      expect(await withMongo((db) => db.collection('steel_delegate_ocr_runs').findOne({ conversationId }))).toEqual(runBefore);
     }
   });
 
