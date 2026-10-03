@@ -5,6 +5,8 @@ import type {
   SteelReviewRequoteProvenance,
   SteelReviewRow,
   SteelReviewSource,
+  SteelReviewSourceIntent,
+  SteelReviewSourceMapping,
 } from 'librechat-data-provider';
 import type { Document } from 'mongoose';
 
@@ -55,6 +57,8 @@ export interface SteelReviewReadRecord extends SteelReviewScope {
   rows?: SteelReviewRow[];
   markdown?: string;
   sourceMappings?: SteelReviewSourceMapping[];
+  /** Internal code reservations retained when an old source file is unavailable. */
+  sourceMappingReservations?: SteelReviewSourceMapping[];
   latestOutputId?: string;
   messageText?: string;
   messageTextParts?: SteelReviewTextPart[];
@@ -72,13 +76,6 @@ export interface SteelReviewReadRecord extends SteelReviewScope {
   lastSave?: SteelReviewReceipt;
 }
 
-export interface SteelReviewSourceMapping {
-  fileId: string;
-  sourceCode: string;
-  sourceFilename: string;
-  mediaType?: string;
-}
-
 export interface ISteelReviewOutput extends Document, SteelReviewScope {
   kind: SteelReviewKind;
   messageId: string;
@@ -92,6 +89,7 @@ export interface ISteelReviewOutput extends Document, SteelReviewScope {
     values: Record<string, SteelReviewCell>;
     source: SteelReviewSource | null;
   }>;
+  sourceMappings?: SteelReviewSourceMapping[];
   latestOutputId?: string;
   aiUpdatedAt?: Date;
   aiRawMarkdown?: string;
@@ -122,6 +120,7 @@ export interface SteelReviewSavedSnapshotRecord {
   revision: string;
   headers: string[];
   rows: SteelReviewRow[];
+  sourceMappings?: SteelReviewSourceMapping[];
   changedRows: number;
   changedRowIds: string[];
   savedAt: Date;

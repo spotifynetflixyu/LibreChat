@@ -442,6 +442,7 @@ describe('Steel review read service', () => {
       displayMarkdown: `CORRUPTED\n${prepared.displayMarkdown}`,
       aiBaselineMarkdown: prepared.aiBaselineMarkdown,
       aiRawMarkdown: prepared.aiRawMarkdown,
+      sourceMappings: prepared.sourceMappings,
       caption: prepared.caption,
     })).rejects.toMatchObject({ code: 'REVIEW_INVALID_OPERATION' });
     expect(commitSteelReview).not.toHaveBeenCalled();
@@ -767,6 +768,122 @@ describe('Steel review read service', () => {
     }));
   });
 
+  it('derives a trusted F source mapping and validates a selected PDF page', async () => {
+    const rows = associationRowsFor('A', '1', 'P-1');
+    const markdown = associationMarkdownFor('A', '1');
+    const reader = {
+      readSteelReview: jest.fn().mockResolvedValue({
+        userId: 'user-1',
+        conversationId: 'conversation-1',
+        kind: 'ocr_result' as const,
+        messageId: 'message-1',
+        tableId: 'ocr_result:1',
+        outputId: 'ocr_result:generation-1',
+        revision: 'generation-1',
+        state: 'current' as const,
+        markdown,
+        messageText: markdown,
+        headers: ['來源', '原始檔案', '原檔頁碼', 'Profile'],
+        rows,
+        sourceMappings: [{
+          fileId: 'file-1',
+          sourceCode: 'A',
+          sourceFilename: 'drawing.pdf',
+          mediaType: 'application/pdf',
+        }],
+      }),
+    };
+    const readMetadata = jest.fn().mockResolvedValue({
+      fileId: 'file-2',
+      filename: 'replacement.pdf',
+      mediaType: 'application/pdf',
+    });
+    const readPageCount = jest.fn().mockResolvedValue({ pageCount: 3 });
+    const service = createSteelReviewService({
+      reader,
+      sourceAuthority: { readMetadata, readPageCount },
+    });
+    const prepared = await service.prepare({
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result',
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      sourceRequest: {} as never,
+      sourceIntents: [{ rowId: 'row-1', fileId: 'file-2', pageNumber: 2 }],
+      rows: [{ ...rows[0]!, source: null, values: {
+        ...rows[0]!.values,
+        Profile: { baseline: 'P-1', effective: 'P-2' },
+      } }],
+    });
+
+    expect(readMetadata).toHaveBeenCalledWith(expect.objectContaining({ fileId: 'file-2' }));
+    expect(readPageCount).toHaveBeenCalledWith(expect.objectContaining({ fileId: 'file-2' }), {});
+    expect(prepared.sourceMappings).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        fileId: 'file-2',
+        sourceCode: 'F1',
+        sourceFilename: 'replacement.pdf',
+        mediaType: 'application/pdf',
+      }),
+    ]));
+    expect(prepared.rows[0]?.source).toEqual({
+      fileId: 'file-2',
+      pageNumber: 2,
+      filename: 'replacement.pdf',
+      mediaType: 'application/pdf',
+    });
+    expect(prepared.rows[0]?.values.來源?.effective).toBe('F1');
+    expect(prepared.rows[0]?.values.原檔頁碼?.effective).toBe('2');
+    expect(prepared.caption.changedRows).toBe(1);
+  });
+
+  it('rejects a selected source page outside the server-owned PDF page count', async () => {
+    const rows = associationRowsFor('A', '1', 'P-1');
+    const markdown = associationMarkdownFor('A', '1');
+    const service = createSteelReviewService({
+      reader: {
+        readSteelReview: jest.fn().mockResolvedValue({
+          userId: 'user-1',
+          conversationId: 'conversation-1',
+          kind: 'ocr_result' as const,
+          messageId: 'message-1',
+          tableId: 'ocr_result:1',
+          outputId: 'ocr_result:generation-1',
+          revision: 'generation-1',
+          state: 'current' as const,
+          markdown,
+          messageText: markdown,
+          headers: ['來源', '原始檔案', '原檔頁碼', 'Profile'],
+          rows,
+        }),
+      },
+      sourceAuthority: {
+        readMetadata: jest.fn().mockResolvedValue({
+          fileId: 'file-2',
+          filename: 'replacement.pdf',
+          mediaType: 'application/pdf',
+        }),
+        readPageCount: jest.fn().mockResolvedValue({ pageCount: 2 }),
+      },
+    });
+
+    await expect(service.prepare({
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result',
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      sourceRequest: {} as never,
+      sourceIntents: [{ rowId: 'row-1', fileId: 'file-2', pageNumber: 3 }],
+      rows,
+    })).rejects.toMatchObject({ code: 'REVIEW_INVALID_OPERATION' });
+  });
+
   it('canonicalizes effective cells before captioning and serializing a save', async () => {
     const markdown = [
       '## ocr_result',
@@ -847,6 +964,148 @@ describe('Steel review read service', () => {
       }],
     });
     expect(escaped.cleanReplacementText).toContain('C:\\\\path\\|slot');
+  });
+
+  it('rejects an uncommitted legacy-shaped commit without a receipt', async () => {
+    const reader = {
+      readSteelReview: jest.fn().mockResolvedValue({
+        userId: 'user-1',
+        conversationId: 'conversation-1',
+        kind: 'ocr_result' as const,
+        messageId: 'message-1',
+        tableId: 'ocr_result:1',
+        outputId: 'ocr_result:generation-1',
+        revision: 'generation-1',
+        state: 'current' as const,
+        markdown: managedMarkdown,
+        messageText: managedMarkdown,
+      }),
+    };
+    const resolveSteelReviewReceipt = jest.fn().mockResolvedValue(null);
+    const commitSteelReview = jest.fn();
+    const service = createSteelReviewService({
+      reader,
+      writer: { resolveSteelReviewReceipt, commitSteelReview },
+    });
+    const current = await service.read({
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result',
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+    });
+    const trustedPrepared = await service.prepare({
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result',
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+      outputId: current.table.outputId,
+      revision: current.table.revision,
+      rows: current.table.rows,
+    });
+    const legacy = { ...trustedPrepared } as Record<string, unknown>;
+    delete legacy.sourceMappings;
+    await expect(service.commit(legacy as never)).rejects.toMatchObject({
+      code: 'REVIEW_INVALID_OPERATION',
+    });
+    expect(resolveSteelReviewReceipt).toHaveBeenCalledTimes(1);
+    expect(commitSteelReview).not.toHaveBeenCalled();
+  });
+
+  it('replays an authenticated committed legacy receipt without rebuilding or writing', async () => {
+    const reader = {
+      readSteelReview: jest.fn().mockResolvedValue({
+        userId: 'user-1',
+        conversationId: 'conversation-1',
+        kind: 'ocr_result' as const,
+        messageId: 'message-1',
+        tableId: 'ocr_result:1',
+        outputId: 'ocr_result:generation-1',
+        revision: 'generation-1',
+        state: 'current' as const,
+        markdown: managedMarkdown,
+        messageText: managedMarkdown,
+      }),
+    };
+    const commitSteelReview = jest.fn();
+    const savedAt = new Date('2026-10-03T01:00:00.000Z');
+    let legacyReceipt: Record<string, unknown> | undefined;
+    const resolveSteelReviewReceipt = jest.fn().mockImplementation(async (candidate) => {
+      if (!legacyReceipt || candidate.digest !== legacyReceipt.digest) {
+        return null;
+      }
+      return {
+        operationId: candidate.operationId,
+        digest: candidate.digest,
+        outputId: candidate.outputId,
+        revision: 'saved-revision',
+        changedRows: 1,
+        changedRowIds: ['row-1'],
+        savedAt,
+        messageSha256: candidate.messageSha256,
+        effectiveMarkdown: candidate.effectiveMarkdown,
+        displayMarkdown: candidate.displayMarkdown,
+      };
+    });
+    const service = createSteelReviewService({
+      reader,
+      writer: { resolveSteelReviewReceipt, commitSteelReview },
+    });
+    const current = await service.read({
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result',
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+    });
+    const trustedPrepared = await service.prepare({
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result',
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+      outputId: current.table.outputId,
+      revision: current.table.revision,
+      rows: current.table.rows,
+    });
+    const { sourceMappings: _sourceMappings, digest: _digest, ...legacyBase } = trustedPrepared;
+    const legacyDigest = createHash('sha256').update(encodeSteelReviewDigest({ ...legacyBase, userId: 'user-1' })).digest('hex');
+    legacyReceipt = { ...legacyBase, digest: legacyDigest };
+    const readerCallsBeforeCommit = reader.readSteelReview.mock.calls.length;
+
+    const result = await service.commit({
+      userId: 'user-1',
+      ...legacyReceipt,
+      digest: legacyDigest,
+    } as never);
+
+    expect(resolveSteelReviewReceipt).toHaveBeenCalledTimes(1);
+    expect(reader.readSteelReview).toHaveBeenCalledTimes(readerCallsBeforeCommit);
+    expect(commitSteelReview).not.toHaveBeenCalled();
+    expect(result).toEqual(expect.objectContaining({
+      revision: 'saved-revision',
+      changedRows: 1,
+      changedRowIds: ['row-1'],
+      savedAt: savedAt.toISOString(),
+    }));
+    expect(Object.prototype.hasOwnProperty.call(result, 'sourceMappings')).toBe(false);
+    expect(Object.prototype.hasOwnProperty.call(result, 'sourceIntents')).toBe(false);
+
+    await expect(service.commit({
+      userId: 'user-1',
+      ...legacyReceipt,
+      digest: legacyDigest,
+      sourceMappings: undefined,
+    } as never)).rejects.toMatchObject({ code: 'INVALID_REVIEW_QUERY' });
+    await expect(service.commit({
+      userId: 'user-1',
+      ...legacyReceipt,
+      digest: legacyDigest,
+      sourceIntents: undefined,
+    } as never)).rejects.toMatchObject({ code: 'INVALID_REVIEW_QUERY' });
+    expect(resolveSteelReviewReceipt).toHaveBeenCalledTimes(1);
+    expect(commitSteelReview).not.toHaveBeenCalled();
   });
 
   it('exposes immutable receipt resolution without a write', async () => {

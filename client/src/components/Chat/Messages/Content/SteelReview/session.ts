@@ -1,6 +1,7 @@
 import type {
   SteelReviewPrepare,
   SteelReviewRow,
+  SteelReviewSource,
   SteelReviewTable,
 } from 'librechat-data-provider';
 import type { SteelReviewSelection } from './state';
@@ -10,6 +11,8 @@ export interface SteelReviewDraftState {
   cells: Record<string, string>;
   touched: Record<string, string>;
   cellVersions: Record<string, number>;
+  sourceDrafts: Record<string, SteelReviewSource | null>;
+  sourceVersions: Record<string, number>;
   changeSequence: number;
 }
 
@@ -67,8 +70,39 @@ export function createSteelReviewDraftState(ownerKey: string): SteelReviewDraftS
     cells: {},
     touched: {},
     cellVersions: {},
+    sourceDrafts: {},
+    sourceVersions: {},
     changeSequence: 0,
   };
+}
+
+export function setSteelReviewDraftSource(
+  draft: SteelReviewDraftState,
+  row: SteelReviewRow,
+  source: SteelReviewSource | null,
+): SteelReviewDraftState {
+  if (!row.rowId) {
+    return draft;
+  }
+  const sourceDrafts = { ...draft.sourceDrafts };
+  const sourceVersions = { ...draft.sourceVersions };
+  const changeSequence = draft.changeSequence + 1;
+  sourceVersions[row.rowId] = changeSequence;
+  if (JSON.stringify(source) === JSON.stringify(row.source)) {
+    delete sourceDrafts[row.rowId];
+  } else {
+    sourceDrafts[row.rowId] = source;
+  }
+  return { ...draft, sourceDrafts, sourceVersions, changeSequence };
+}
+
+export function getSteelReviewDraftSource(
+  draft: SteelReviewDraftState,
+  rowId: string,
+): SteelReviewSource | null | undefined {
+  return Object.prototype.hasOwnProperty.call(draft.sourceDrafts, rowId)
+    ? draft.sourceDrafts[rowId]
+    : undefined;
 }
 
 export function setSteelReviewDraftCell(
@@ -126,6 +160,11 @@ export function getSteelReviewDirtyRowIds(
       rowIds.add(rowId);
     }
   }
+  for (const rowId of Object.keys(draft.sourceDrafts)) {
+    if (trustedRowIds.has(rowId)) {
+      rowIds.add(rowId);
+    }
+  }
   return table.rows.map((row) => row.rowId).filter((rowId) => rowIds.has(rowId));
 }
 
@@ -144,13 +183,15 @@ export function applySteelReviewDrafts(
         return [header, value === undefined ? cell : { ...cell, effective: value }];
       }),
     );
-    return { ...row, values };
+    const source = getSteelReviewDraftSource(draft, row.rowId);
+    return { ...row, values, ...(source !== undefined ? { source } : {}) };
   });
 }
 
 export function getSteelReviewPrepareInput(
   selection: SteelReviewSelection,
   table: SteelReviewTable,
+  draft: SteelReviewDraftState,
   rows: SteelReviewRow[],
 ): SteelReviewPrepare {
   const partIndex = table.partIndex ?? selection.partIndex;
@@ -163,7 +204,24 @@ export function getSteelReviewPrepareInput(
     outputId: table.outputId,
     revision: table.revision,
     rows,
+    ...(Object.entries(draftSourceIntents(draft, table.rows)).length > 0
+      ? { sourceIntents: draftSourceIntents(draft, table.rows) }
+      : {}),
   };
+}
+
+function draftSourceIntents(
+  draft: SteelReviewDraftState,
+  rows: readonly SteelReviewRow[],
+) {
+  const byId = new Map(rows.map((row) => [row.rowId, row]));
+  return Object.entries(draft.sourceDrafts)
+    .filter(([rowId]) => byId.has(rowId))
+    .map(([rowId, source]) => ({
+      rowId,
+      fileId: source?.fileId ?? null,
+      pageNumber: source?.pageNumber ?? null,
+    }));
 }
 
 export function rebaseSteelReviewDraftState(
@@ -191,5 +249,17 @@ export function rebaseSteelReviewDraftState(
     }
   }
 
-  return { ...draft, cells };
+  const sourceDrafts = { ...draft.sourceDrafts };
+  for (const [rowId, source] of Object.entries(sourceDrafts)) {
+    if ((draft.sourceVersions[rowId] ?? 0) <= submittedChangeSequence) {
+      delete sourceDrafts[rowId];
+      continue;
+    }
+    const savedSource = savedRows.find((row) => row.rowId === rowId)?.source ?? null;
+    if (JSON.stringify(source) === JSON.stringify(savedSource)) {
+      delete sourceDrafts[rowId];
+    }
+  }
+
+  return { ...draft, cells, sourceDrafts };
 }

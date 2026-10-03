@@ -1,7 +1,7 @@
 import { memo } from 'react';
-import { Input } from '@librechat/client';
+import { Button, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@librechat/client';
 import { isSteelReviewSourceAssociationHeader } from 'librechat-data-provider';
-import type { SteelReviewRow, SteelReviewTable } from 'librechat-data-provider';
+import type { SteelReviewRow, SteelReviewSource, SteelReviewSourceFile, SteelReviewTable } from 'librechat-data-provider';
 import type { ChangeEvent, KeyboardEvent } from 'react';
 import type { SteelReviewDraftState } from './session';
 import { getSteelReviewDraftCell } from './session';
@@ -9,6 +9,15 @@ import { getSteelReviewDraftCell } from './session';
 export interface SteelReviewEditorLabels {
   table: string;
   readonly: string;
+  changeSource?: string;
+  sourceFile?: string;
+  sourcePage?: string;
+  sourceNoPage?: string;
+  clearSource?: string;
+  sourceActions?: string;
+  sourcePageLoading?: string;
+  sourcePageUnavailable?: string;
+  sourcePageRetry?: string;
 }
 
 export interface SteelReviewEditorProps {
@@ -17,6 +26,14 @@ export interface SteelReviewEditorProps {
   draft: SteelReviewDraftState;
   labels: SteelReviewEditorLabels;
   onCellChange: (row: SteelReviewRow, header: string, value: string) => void;
+  sources?: readonly SteelReviewSourceFile[];
+  sourceCorrectionRowId?: string;
+  sourcePageCount?: number;
+  sourcePageCountLoading?: boolean;
+  sourcePageCountError?: boolean;
+  onSourcePageRetry?: () => void;
+  onSourceEdit?: (row: SteelReviewRow) => void;
+  onSourceChange?: (row: SteelReviewRow, source: SteelReviewSource | null) => void;
 }
 
 export function isSteelReviewCellEditable(table: SteelReviewTable, header: string): boolean {
@@ -26,6 +43,160 @@ export function isSteelReviewCellEditable(table: SteelReviewTable, header: strin
 
 function displayCellValue(value: string | null | undefined): string {
   return value ?? '';
+}
+
+const CLEAR_SOURCE_VALUE = '__steel_review_clear_source__';
+const NO_SOURCE_PAGE_VALUE = '__steel_review_no_source_page__';
+
+function sourceLabel(source: SteelReviewSource | null | undefined): string {
+  return source?.filename ?? source?.fileId ?? '';
+}
+
+function SourceCell({
+  table,
+  row,
+  labels,
+  sources,
+  sourceCorrectionRowId,
+  sourcePageCount,
+  sourcePageCountLoading,
+  sourcePageCountError,
+  onSourcePageRetry,
+  onSourceEdit,
+  onSourceChange,
+}: {
+  table: SteelReviewTable;
+  row: SteelReviewRow;
+  labels: SteelReviewEditorLabels;
+  sources: readonly SteelReviewSourceFile[];
+  sourceCorrectionRowId?: string;
+  sourcePageCount?: number;
+  sourcePageCountLoading?: boolean;
+  sourcePageCountError?: boolean;
+  onSourcePageRetry?: () => void;
+  onSourceEdit?: (row: SteelReviewRow) => void;
+  onSourceChange?: (row: SteelReviewRow, source: SteelReviewSource | null) => void;
+}) {
+  const editable = Boolean(
+    row.rowId &&
+    sourceCorrectionRowId === row.rowId &&
+    table.kind === 'ocr_result' &&
+    table.isLatest &&
+    !table.readOnly &&
+    onSourceChange,
+  );
+  const source = row.source;
+  const selectedFile = source ? sources.find((candidate) => candidate.fileId === source.fileId) : undefined;
+  const pageCount = selectedFile?.mediaType.startsWith('image/')
+    ? 1
+    : sourcePageCount;
+  const pageValues = pageCount && pageCount > 0
+    ? Array.from({ length: pageCount }, (_, index) => index + 1)
+    : [];
+
+  if (!editable) {
+    return (
+      <td className="border-b border-border-light px-3 py-2 align-top">
+        <div className="flex min-w-40 items-center gap-2">
+          <span aria-label={`${labels.sourceFile ?? 'Source file'}: ${sourceLabel(source) || labels.readonly}`}>
+            {sourceLabel(source) || labels.readonly}
+          </span>
+          {onSourceEdit && row.rowId && table.kind === 'ocr_result' && table.isLatest && !table.readOnly && (
+            <Button
+              type="button"
+              variant="outline"
+              className="shrink-0"
+              aria-label={`${labels.changeSource ?? 'Change source'} ${row.rowId}`}
+              onClick={() => onSourceEdit(row)}
+            >
+              {labels.changeSource ?? 'Change source'}
+            </Button>
+          )}
+        </div>
+      </td>
+    );
+  }
+
+  return (
+    <td className="border-b border-border-light px-3 py-2 align-top">
+      <div className="flex min-w-64 flex-col gap-2" aria-label={labels.sourceActions ?? 'Source actions'}>
+        <label className="flex flex-col gap-1 text-xs text-text-secondary">
+          <span>{labels.sourceFile ?? 'Source file'}</span>
+          <Select
+            value={source?.fileId ?? CLEAR_SOURCE_VALUE}
+            onValueChange={(value) => {
+              if (value === CLEAR_SOURCE_VALUE) {
+                onSourceChange?.(row, null);
+                return;
+              }
+              const next = sources.find((candidate) => candidate.fileId === value);
+              if (!next) {
+                return;
+              }
+              onSourceChange?.(row, {
+                fileId: next.fileId,
+                pageNumber: null,
+                filename: next.filename,
+                mediaType: next.mediaType,
+              });
+            }}
+          >
+            <SelectTrigger aria-label={labels.sourceFile ?? 'Source file'}>
+              <SelectValue placeholder={labels.sourceFile ?? 'Source file'} />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value={CLEAR_SOURCE_VALUE}>{labels.clearSource ?? 'Clear source'}</SelectItem>
+              {sources.map((candidate) => (
+                <SelectItem key={candidate.fileId} value={candidate.fileId}>
+                  {candidate.filename}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </label>
+        {source && (
+          <label className="flex flex-col gap-1 text-xs text-text-secondary">
+            <span>{labels.sourcePage ?? 'Source page'}</span>
+            {sourcePageCountLoading && !pageCount ? (
+              <span role="status">{labels.sourcePageLoading ?? 'Loading pages…'}</span>
+            ) : sourcePageCountError && !pageCount ? (
+              <div className="flex items-center gap-2" role="alert">
+                <span>{labels.sourcePageUnavailable ?? 'Source pages unavailable'}</span>
+                {onSourcePageRetry && (
+                  <Button
+                    type="button"
+                    variant="outline"
+                    aria-label={labels.sourcePageRetry ?? 'Retry'}
+                    onClick={onSourcePageRetry}
+                  >
+                    {labels.sourcePageRetry ?? 'Retry'}
+                  </Button>
+                )}
+              </div>
+            ) : (
+              <Select
+                value={source.pageNumber === null ? NO_SOURCE_PAGE_VALUE : String(source.pageNumber)}
+                onValueChange={(value) => onSourceChange?.(row, {
+                  ...source,
+                  pageNumber: value === NO_SOURCE_PAGE_VALUE ? null : Number(value),
+                })}
+              >
+                <SelectTrigger aria-label={labels.sourcePage ?? 'Source page'}>
+                  <SelectValue placeholder={labels.sourceNoPage ?? 'No page'} />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={NO_SOURCE_PAGE_VALUE}>{labels.sourceNoPage ?? 'No page'}</SelectItem>
+                  {pageValues.map((page) => (
+                    <SelectItem key={page} value={String(page)}>{page}</SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            )}
+          </label>
+        )}
+      </div>
+    </td>
+  );
 }
 
 function ReviewCell({
@@ -85,6 +256,14 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
   draft,
   labels,
   onCellChange,
+  sources = [],
+  sourceCorrectionRowId,
+  sourcePageCount,
+  sourcePageCountLoading = false,
+  sourcePageCountError = false,
+  onSourcePageRetry,
+  onSourceEdit,
+  onSourceChange,
 }: SteelReviewEditorProps) {
   return (
     <div className="max-h-[60vh] overflow-auto rounded-md border border-border-light">
@@ -96,6 +275,11 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
                 {header}
               </th>
             ))}
+            {onSourceChange && (
+              <th scope="col" className="border-b border-border-light px-3 py-2 text-left font-semibold">
+                {labels.sourceActions ?? 'Source actions'}
+              </th>
+            )}
           </tr>
         </thead>
         <tbody>
@@ -112,6 +296,21 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
                   onCellChange={onCellChange}
                 />
               ))}
+              {onSourceChange && (
+                <SourceCell
+                  table={table}
+                  row={row}
+                  labels={labels}
+                  sources={sources}
+                  sourceCorrectionRowId={sourceCorrectionRowId}
+                  sourcePageCount={sourcePageCount}
+                  sourcePageCountLoading={sourcePageCountLoading}
+                  sourcePageCountError={sourcePageCountError}
+                  onSourcePageRetry={onSourcePageRetry}
+                  onSourceEdit={onSourceEdit}
+                  onSourceChange={onSourceChange}
+                />
+              )}
             </tr>
           ))}
         </tbody>

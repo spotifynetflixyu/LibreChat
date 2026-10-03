@@ -29,6 +29,7 @@ import type {
   SteelReviewResponse,
   SteelReviewRow,
   SteelReviewSavedSnapshot,
+  SteelReviewSource,
   SteelReviewTable,
   TMessage,
 } from 'librechat-data-provider';
@@ -43,15 +44,18 @@ import {
   getSteelReviewDirtyRowIds,
   getSteelReviewDraftKey,
   getSteelReviewDraftOwnerKey,
+  getSteelReviewDraftSource,
   getSteelReviewPrepareInput,
   rebaseSteelReviewDraftState,
   setSteelReviewDraftCell,
+  setSteelReviewDraftSource,
 } from './SteelReview/session';
 import {
   useCommitSteelReviewMutation,
   useGetSteelReviewQuery,
   useGetSteelReviewReceiptQuery,
   useGetSteelReviewSourceQuery,
+  useGetSteelReviewSourcePageCountQuery,
   useGetSteelReviewSourcesQuery,
   usePrepareSteelReviewMutation,
 } from '~/data-provider';
@@ -334,6 +338,35 @@ export default function SteelReviewDialog({
     () => table?.rows.find((row) => row.source?.fileId === selectedSource?.fileId)?.source?.pageNumber,
     [selectedSource?.fileId, table?.rows],
   );
+  const sourceCorrectionRow = useMemo(
+    () => table?.rows.find((row) => row.rowId === dialogState.sourceCorrectionRowId),
+    [dialogState.sourceCorrectionRowId, table?.rows],
+  );
+  const sourceCorrectionDraft = sourceCorrectionRow?.rowId
+    ? getSteelReviewDraftSource(draftState, sourceCorrectionRow.rowId)
+    : undefined;
+  const sourceCorrection = sourceCorrectionRow?.rowId
+    ? sourceCorrectionDraft === undefined ? sourceCorrectionRow.source : sourceCorrectionDraft
+    : undefined;
+  const sourceCorrectionFile = sourceCorrection?.fileId
+    ? sources.find((source) => source.fileId === sourceCorrection.fileId)
+    : undefined;
+  const sourcePageCountQuery = useGetSteelReviewSourcePageCountQuery(
+    isOpen && canEdit && sourceCorrection?.fileId && sourceCorrectionFile?.mediaType !== undefined &&
+      !sourceCorrectionFile.mediaType.startsWith('image/')
+      ? {
+          conversationId: identity.conversationId,
+          kind: identity.kind,
+          messageId: identity.messageId,
+          fileId: sourceCorrection.fileId,
+        }
+      : null,
+    {
+      enabled: isOpen && canEdit && !!sourceCorrection?.fileId &&
+        sourceCorrectionFile?.mediaType !== undefined &&
+        !sourceCorrectionFile.mediaType.startsWith('image/'),
+    },
+  );
   useEffect(() => {
     if (draftState.ownerKey === draftStateKey) {
       return;
@@ -362,6 +395,7 @@ export default function SteelReviewDialog({
         pageCount: 0,
         fullScreen: false,
         initializedSourceId: undefined,
+        sourceCorrectionRowId: undefined,
       };
     });
   }, [isOpen, setDialogState]);
@@ -426,6 +460,31 @@ export default function SteelReviewDialog({
           : createSteelReviewDraftState(draftStateKey);
         const baseRow = table.rows.find((candidate) => candidate.rowId === row.rowId) ?? row;
         const next = setSteelReviewDraftCell(ownerDraft, baseRow, header, value);
+        if (pendingSnapshotRef.current) {
+          exportRowsRef.current = applySteelReviewDrafts(exportBaseRowsRef.current, next);
+        }
+        return next;
+      });
+    },
+    [canEdit, draftStateKey, setDraftState, table],
+  );
+  const onSourceEdit = useCallback((row: SteelReviewRow) => {
+    if (!canEdit || !row.rowId) {
+      return;
+    }
+    setDialogState((state) => ({ ...state, sourceCorrectionRowId: row.rowId }));
+  }, [canEdit, setDialogState]);
+  const onSourceChange = useCallback(
+    (row: SteelReviewRow, source: SteelReviewSource | null) => {
+      if (!table || !canEdit || !row.rowId) {
+        return;
+      }
+      setDraftState((current) => {
+        const ownerDraft = current.ownerKey === draftStateKey
+          ? current
+          : createSteelReviewDraftState(draftStateKey);
+        const baseRow = table.rows.find((candidate) => candidate.rowId === row.rowId) ?? row;
+        const next = setSteelReviewDraftSource(ownerDraft, baseRow, source);
         if (pendingSnapshotRef.current) {
           exportRowsRef.current = applySteelReviewDrafts(exportBaseRowsRef.current, next);
         }
@@ -529,7 +588,7 @@ export default function SteelReviewDialog({
       setSavePhase(preparedRef.current ? 'committing' : 'preparing');
       try {
         const prepared = preparedRef.current ?? await prepareMutation.mutateAsync(
-          getSteelReviewPrepareInput(identity, table, draftRows),
+          getSteelReviewPrepareInput(identity, table, draftState, draftRows),
         );
         preparedRef.current = prepared;
         setSavePhase('committing');
@@ -1000,11 +1059,28 @@ export default function SteelReviewDialog({
                     table={table}
                     rows={previewRows.located}
                     draft={draftState}
+                    sources={sources}
+                    sourceCorrectionRowId={dialogState.sourceCorrectionRowId}
+                    sourcePageCount={sourcePageCountQuery.data?.pageCount}
+                    sourcePageCountLoading={sourcePageCountQuery.isLoading}
                     labels={{
                       table: localize('com_ui_steel_review_table_label'),
                       readonly: localize('com_ui_steel_review_cell_readonly'),
+                      changeSource: localize('com_ui_steel_review_change_source'),
+                      sourceFile: localize('com_ui_steel_review_source_file'),
+                      sourcePage: localize('com_ui_steel_review_source_page'),
+                      sourceNoPage: localize('com_ui_steel_review_source_no_page'),
+                      clearSource: localize('com_ui_steel_review_clear_source'),
+                      sourceActions: localize('com_ui_steel_review_source_actions'),
+                      sourcePageLoading: localize('com_ui_steel_review_source_page_loading'),
+                      sourcePageUnavailable: localize('com_ui_steel_review_source_page_unavailable'),
+                      sourcePageRetry: localize('com_ui_retry'),
                     }}
                     onCellChange={onCellChange}
+                    sourcePageCountError={sourcePageCountQuery.isError}
+                    onSourcePageRetry={() => void sourcePageCountQuery.refetch()}
+                    onSourceEdit={canEdit ? onSourceEdit : undefined}
+                    onSourceChange={canEdit ? onSourceChange : undefined}
                   />
                   {previewRows.unlocated.length > 0 && (
                     <div className="space-y-2">
@@ -1013,11 +1089,28 @@ export default function SteelReviewDialog({
                         table={table}
                         rows={previewRows.unlocated}
                         draft={draftState}
+                        sources={sources}
+                        sourceCorrectionRowId={dialogState.sourceCorrectionRowId}
+                        sourcePageCount={sourcePageCountQuery.data?.pageCount}
+                        sourcePageCountLoading={sourcePageCountQuery.isLoading}
                         labels={{
                           table: localize('com_ui_steel_review_unlocated'),
                           readonly: localize('com_ui_steel_review_cell_readonly'),
+                          changeSource: localize('com_ui_steel_review_change_source'),
+                          sourceFile: localize('com_ui_steel_review_source_file'),
+                          sourcePage: localize('com_ui_steel_review_source_page'),
+                          sourceNoPage: localize('com_ui_steel_review_source_no_page'),
+                          clearSource: localize('com_ui_steel_review_clear_source'),
+                          sourceActions: localize('com_ui_steel_review_source_actions'),
+                          sourcePageLoading: localize('com_ui_steel_review_source_page_loading'),
+                          sourcePageUnavailable: localize('com_ui_steel_review_source_page_unavailable'),
+                          sourcePageRetry: localize('com_ui_retry'),
                         }}
                         onCellChange={onCellChange}
+                        sourcePageCountError={sourcePageCountQuery.isError}
+                        onSourcePageRetry={() => void sourcePageCountQuery.refetch()}
+                        onSourceEdit={canEdit ? onSourceEdit : undefined}
+                        onSourceChange={canEdit ? onSourceChange : undefined}
                       />
                     </div>
                   )}
@@ -1027,11 +1120,28 @@ export default function SteelReviewDialog({
                   table={table}
                   rows={draftRows}
                   draft={draftState}
+                  sources={sources}
+                  sourceCorrectionRowId={dialogState.sourceCorrectionRowId}
+                  sourcePageCount={sourcePageCountQuery.data?.pageCount}
+                  sourcePageCountLoading={sourcePageCountQuery.isLoading}
                   labels={{
                     table: localize('com_ui_steel_review_table_label'),
                     readonly: localize('com_ui_steel_review_cell_readonly'),
+                    changeSource: localize('com_ui_steel_review_change_source'),
+                    sourceFile: localize('com_ui_steel_review_source_file'),
+                    sourcePage: localize('com_ui_steel_review_source_page'),
+                    sourceNoPage: localize('com_ui_steel_review_source_no_page'),
+                    clearSource: localize('com_ui_steel_review_clear_source'),
+                    sourceActions: localize('com_ui_steel_review_source_actions'),
+                    sourcePageLoading: localize('com_ui_steel_review_source_page_loading'),
+                    sourcePageUnavailable: localize('com_ui_steel_review_source_page_unavailable'),
+                    sourcePageRetry: localize('com_ui_retry'),
                   }}
                   onCellChange={onCellChange}
+                  sourcePageCountError={sourcePageCountQuery.isError}
+                  onSourcePageRetry={() => void sourcePageCountQuery.refetch()}
+                  onSourceEdit={canEdit ? onSourceEdit : undefined}
+                  onSourceChange={canEdit ? onSourceChange : undefined}
                 />
               )}
             </div>

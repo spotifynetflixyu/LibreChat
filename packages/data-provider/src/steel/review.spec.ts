@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   encodeSteelReviewDigest,
   isSteelReviewSourceAssociationHeader,
@@ -149,5 +150,57 @@ describe('Steel review contracts', () => {
       ...base,
       rows: [{ ...base.rows[0], values: { Value: { baseline: '2', effective: '8' } } }],
     })).not.toBe(withoutTenant);
+  });
+
+  it('preserves the exact 03 digest shape when both new source fields are absent', () => {
+    const legacy = {
+      userId: 'legacy-fixture-user',
+      conversationId: 'legacy-fixture-chat',
+      kind: 'ocr_result' as const,
+      messageId: 'legacy-fixture-message',
+      tableId: 'ocr_result:1',
+      outputId: 'ocr_result:legacy-fixture-generation',
+      revision: 'legacy-fixture-generation',
+      rows: [{
+        rowId: '31c389e1916d78f3aeb367b3074d9943ccc1d85c2e58bdf04ceea976fade3d57',
+        values: {
+          來源: { baseline: 'A', effective: 'A' },
+          零件編號: { baseline: 'LEGACY-P1', effective: 'LEGACY-P1' },
+          數量: { baseline: '2', effective: '7' },
+          頁碼: { baseline: '1', effective: '1' },
+        },
+        source: null,
+      }],
+      headers: ['來源', '零件編號', '數量', '頁碼'],
+      messageSha256: '0f3a1e4577ead7ba2a756ce420d5c18e4ffa227977ae803018a30021c6819fdd',
+      target: {
+        start: 14,
+        end: 89,
+        sha256: 'e4261ad7e949a37e0adc326b9bb35cc9058c944a96c1b708ea421a45b5d7a299',
+      },
+      targetText: '| 來源 | 零件編號 | 數量 | 頁碼 |\n| --- | --- | --- | --- |\n| A | LEGACY-P1 | 2 | 1 |',
+      replacementText: '| 來源 | 零件編號 | 數量 | 頁碼 |\n| --- | --- | --- | --- |\n| A | LEGACY-P1 | 7 | 1 |',
+      cleanReplacementText: '| 來源 | 零件編號 | 數量 | 頁碼 |\n| --- | --- | --- | --- |\n| A | LEGACY-P1 | 7 | 1 |',
+      effectiveMarkdown: '## ocr_result\n| 來源 | 零件編號 | 數量 | 頁碼 |\n| --- | --- | --- | --- |\n| A | LEGACY-P1 | 7 | 1 |',
+      displayMarkdown: '## ocr_result\n| 來源 | 零件編號 | 數量 | 頁碼 |\n| --- | --- | --- | --- |\n| A | LEGACY-P1 | 7 | 1 |',
+      aiBaselineMarkdown: '## ocr_result\n| 來源 | 零件編號 | 數量 | 頁碼 |\n| --- | --- | --- | --- |\n| A | LEGACY-P1 | 2 | 1 |',
+      aiRawMarkdown: '## ocr_result\n| 來源 | 零件編號 | 數量 | 頁碼 |\n| --- | --- | --- | --- |\n| A | LEGACY-P1 | 2 | 1 |',
+      caption: {
+        kind: 'ocr_result' as const,
+        changedRows: 1,
+        changedRowIds: ['31c389e1916d78f3aeb367b3074d9943ccc1d85c2e58bdf04ceea976fade3d57'],
+      },
+    };
+    expect(createHash('sha256').update(encodeSteelReviewDigest(legacy)).digest('hex')).toBe(
+      '530790f7a97b4b48f1a6f6a0a86ea71f5ace91cc8d52714d0a00d39f8112d2eb',
+    );
+    expect(encodeSteelReviewDigest({ ...legacy, sourceMappings: [] })).not.toBe(
+      encodeSteelReviewDigest(legacy),
+    );
+    expect(encodeSteelReviewDigest({ ...legacy, sourceIntents: [] })).not.toBe(
+      encodeSteelReviewDigest(legacy),
+    );
+    expect(() => encodeSteelReviewDigest({ ...legacy, sourceMappings: null as never })).toThrow();
+    expect(() => encodeSteelReviewDigest({ ...legacy, sourceMappings: undefined })).toThrow();
   });
 });

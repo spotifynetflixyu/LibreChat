@@ -1,4 +1,5 @@
 import { Readable } from 'node:stream';
+import { PDFDocument } from 'pdf-lib';
 import type { SteelReviewSourceMethods, SteelReviewSourceRecord } from '@librechat/data-schemas';
 import type { SteelReviewSourceFile } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types/http';
@@ -138,6 +139,78 @@ describe('Steel review source service', () => {
     await expect(readStream({} as ServerRequest, source)).rejects.toMatchObject<Partial<SteelReviewSourceError>>({
       code: 'REVIEW_SOURCE_UNAVAILABLE',
       statusCode: 501,
+    });
+  });
+
+  it('returns one page for an authorized image without reading its bytes', async () => {
+    const image = { ...source, filename: 'drawing.png', mediaType: 'image/png' };
+    const readSteelReviewSource = jest.fn().mockResolvedValue(image);
+    const readStream = jest.fn();
+    const service = createSteelReviewSourceService({
+      reader: {
+        listSteelReviewSources: jest.fn(),
+        readSteelReviewSource,
+      },
+      readStream,
+    });
+
+    await expect(service.readPageCount({
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result',
+      fileId: image.fileId,
+      messageId: 'message-1',
+    }, {} as ServerRequest)).resolves.toEqual({
+      source: expect.objectContaining({ fileId: image.fileId, mediaType: 'image/png' }),
+      pageCount: 1,
+    });
+    expect(readStream).not.toHaveBeenCalled();
+  });
+
+  it('returns a safe unavailable error when an authorized PDF cannot be parsed', async () => {
+    const service = createSteelReviewSourceService({
+      reader: {
+        listSteelReviewSources: jest.fn(),
+        readSteelReviewSource: jest.fn().mockResolvedValue(source),
+      },
+      readStream: jest.fn().mockResolvedValue(Readable.from(Buffer.from('not-a-pdf'))),
+    });
+
+    await expect(service.readPageCount({
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result',
+      fileId: source.fileId,
+      messageId: 'message-1',
+    }, {} as ServerRequest)).rejects.toMatchObject<Partial<SteelReviewSourceError>>({
+      code: 'REVIEW_SOURCE_UNAVAILABLE',
+      statusCode: 501,
+    });
+  });
+
+  it('counts pages from the authorized PDF bytes', async () => {
+    const pdf = await PDFDocument.create();
+    pdf.addPage();
+    pdf.addPage();
+    const bytes = await pdf.save();
+    const readStream = jest.fn().mockResolvedValue(Readable.from(Buffer.from(bytes)));
+    const service = createSteelReviewSourceService({
+      reader: {
+        listSteelReviewSources: jest.fn(),
+        readSteelReviewSource: jest.fn().mockResolvedValue(source),
+      },
+      readStream,
+    });
+
+    await expect(service.readPageCount({
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result',
+      fileId: source.fileId,
+      messageId: 'message-1',
+    }, {} as ServerRequest)).resolves.toEqual({
+      source: expect.objectContaining({ fileId: source.fileId }),
+      pageCount: 2,
     });
   });
 });

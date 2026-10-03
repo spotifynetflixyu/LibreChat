@@ -21,6 +21,7 @@ import type {
   SteelReviewReceiptStatus,
   SteelReviewSaveResponse,
   SteelReviewSourcesResponse,
+  SteelReviewSourcePageCount,
   SteelQuotationStatus,
 } from 'librechat-data-provider';
 import type {
@@ -186,6 +187,39 @@ export const useGetSteelReviewSourceQuery = (
       retry: false,
       staleTime: 0,
       cacheTime: 0,
+      ...config,
+    },
+  );
+};
+
+export const useGetSteelReviewSourcePageCountQuery = (
+  input?: {
+    conversationId: string;
+    kind: SteelReviewKind;
+    fileId: string;
+    messageId: string;
+  } | null,
+  config?: UseQueryOptions<SteelReviewSourcePageCount>,
+): QueryObserverResult<SteelReviewSourcePageCount> => {
+  const queriesEnabled = useRecoilValue<boolean>(store.queriesEnabled);
+  const enabled = Boolean(input) && (config?.enabled ?? true) && queriesEnabled;
+  return useQuery<SteelReviewSourcePageCount>(
+    DynamicQueryKeys.steelReviewSourcePageCount(
+      input?.conversationId ?? '',
+      input?.kind ?? 'ocr_result',
+      input?.messageId ?? '',
+      input?.fileId ?? '',
+    ),
+    () => dataService.getSteelReviewSourcePageCount(
+      input?.conversationId ?? '',
+      input?.kind ?? 'ocr_result',
+      input?.fileId ?? '',
+      input?.messageId ?? '',
+    ),
+    {
+      enabled,
+      retry: false,
+      staleTime: 30_000,
       ...config,
     },
   );

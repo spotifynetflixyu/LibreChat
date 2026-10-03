@@ -9,6 +9,8 @@ import type {
   SteelReviewCell,
   SteelReviewCaption,
   SteelReviewRow,
+  SteelReviewSourceIntent,
+  SteelReviewSourceMapping,
   SteelReviewTarget,
 } from 'librechat-data-provider';
 import type {
@@ -23,7 +25,6 @@ import type {
   SteelReviewReceiptLookup,
   SteelReviewSavedSnapshotRecord,
   SteelReviewScope,
-  SteelReviewSourceMapping,
   SteelReviewTextPart,
   SteelReviewOwnerUpdatedRecord,
   SteelReviewRequoteProvenanceRecord,
@@ -68,6 +69,8 @@ export interface SteelReviewCommitInput extends SteelReviewReadInput {
   aiBaselineMarkdown?: string;
   aiRawMarkdown?: string;
   caption: SteelReviewCaption;
+  sourceIntents?: SteelReviewSourceIntent[];
+  sourceMappings?: SteelReviewSourceMapping[];
 }
 
 export interface SteelReviewCommitResult {
@@ -134,6 +137,19 @@ function rowsAreNormalized(rows: readonly SteelReviewRow[]): boolean {
 
 function sameSourceAssociationCellAsBaseline(cell: SteelReviewCell | undefined): boolean {
   return sameCellProperty(cell, 'effective', cell, 'baseline');
+}
+
+function businessValues(
+  row: SteelReviewRow,
+  headers: readonly string[],
+  useBaseline = false,
+): Record<string, SteelReviewCell> {
+  return Object.fromEntries(headers
+    .filter((header) => !isSteelReviewSourceAssociationHeader(header))
+    .map((header) => {
+      const cell = row.values[header];
+      return [header, useBaseline ? { ...cell, effective: cell.baseline } : cell];
+    }));
 }
 
 function scopeFilter(input: SteelReviewReadInput): Record<string, unknown> {
@@ -246,6 +262,7 @@ function readOwnerUpdated(
 interface AuthorizedFile {
   fileId: string;
   filename: string;
+  mediaType?: string;
 }
 
 function sourceMappings(
@@ -259,12 +276,23 @@ function sourceMappings(
   })).filter((mapping) => authorizedFiles.has(mapping.fileId));
 }
 
+function sourceMappingReservations(state: ISteelConversationOcrState): SteelReviewSourceMapping[] {
+  return (state.sourceMappings ?? []).map((mapping) => ({
+    fileId: mapping.fileId,
+    sourceCode: mapping.sourceCode,
+    sourceFilename: mapping.sourceFilename,
+  }));
+}
+
 function sanitizeRows(
   rows: ISteelReviewOutput['rows'],
   authorizedFiles: ReadonlyMap<string, AuthorizedFile>,
+  trustedMappings?: readonly SteelReviewSourceMapping[],
 ): ISteelReviewOutput['rows'] {
+  const trustedFileIds = trustedMappings ? new Set(trustedMappings.map((mapping) => mapping.fileId)) : undefined;
   return rows.map((row) => {
-    if (!row.source || !authorizedFiles.has(row.source.fileId)) {
+    if (!row.source || !authorizedFiles.has(row.source.fileId) ||
+      (trustedFileIds && !trustedFileIds.has(row.source.fileId))) {
       return { ...row, source: null };
     }
     const file = authorizedFiles.get(row.source.fileId);
@@ -278,22 +306,77 @@ function sanitizeRows(
   });
 }
 
+function legacySnapshotMappings(
+  output: Pick<ISteelReviewOutput, 'conversationId' | 'messageId' | 'outputId' | 'revision' | 'headers' | 'rows' | 'effectiveMarkdown' | 'receipts'>,
+): SteelReviewSourceMapping[] | undefined {
+  const snapshots = output.receipts
+    .map((receipt) => receipt.snapshot)
+    .filter((snapshot): snapshot is SteelReviewSavedSnapshotRecord => Boolean(snapshot))
+    .filter((snapshot) => snapshot.conversationId === output.conversationId &&
+      snapshot.messageId === output.messageId &&
+      snapshot.outputId === output.outputId &&
+      snapshot.revision === output.revision &&
+      JSON.stringify(snapshot.headers) === JSON.stringify(output.headers) &&
+      snapshot.effectiveMarkdown === output.effectiveMarkdown &&
+      JSON.stringify(snapshot.rows) === JSON.stringify(output.rows));
+  if (snapshots.length !== 1) {
+    return undefined;
+  }
+  const [snapshot] = snapshots;
+  const sourceColumn = output.headers.find((header) => header === '來源') ?? output.headers.find((header) => header.toLowerCase() === 'source');
+  if (!sourceColumn) {
+    return undefined;
+  }
+  const byCode = new Map<string, SteelReviewSourceMapping>();
+  const byFile = new Map<string, SteelReviewSourceMapping>();
+  for (const row of snapshot.rows) {
+    const source = row.source;
+    const sourceCode = row.values[sourceColumn]?.effective?.trim();
+    if (!source || !sourceCode) {
+      continue;
+    }
+    const mapping: SteelReviewSourceMapping = {
+      fileId: source.fileId,
+      sourceCode,
+      sourceFilename: source.filename ?? '',
+      ...(source.mediaType ? { mediaType: source.mediaType } : {}),
+    };
+    if (!mapping.sourceFilename) {
+      return undefined;
+    }
+    const existingCode = byCode.get(sourceCode);
+    const existingFile = byFile.get(source.fileId);
+    if ((existingCode && JSON.stringify(existingCode) !== JSON.stringify(mapping)) ||
+      (existingFile && JSON.stringify(existingFile) !== JSON.stringify(mapping))) {
+      return undefined;
+    }
+    byCode.set(sourceCode, mapping);
+    byFile.set(source.fileId, mapping);
+  }
+  return byCode.size > 0 ? [...byCode.values()] : undefined;
+}
+
 function projectAuthorizedFiles(
   files: ReadonlyMap<string, SteelReviewAuthorizedFile>,
 ): Map<string, AuthorizedFile> {
   const authorized = new Map<string, AuthorizedFile>();
   for (const file of files.values()) {
-    authorized.set(file.file_id, { fileId: file.file_id, filename: file.filename });
+    authorized.set(file.file_id, {
+      fileId: file.file_id,
+      filename: file.filename,
+      ...(file.type ? { mediaType: file.type } : {}),
+    });
   }
   return authorized;
 }
 
 function sidecarRecord(
-  output: Pick<ISteelReviewOutput, 'userId' | 'tenantId' | 'conversationId' | 'kind' | 'messageId' | 'tableId' | 'outputId' | 'revision' | 'state' | 'headers' | 'rows' | 'latestOutputId' | 'aiUpdatedAt' | 'aiRawMarkdown' | 'aiBaselineMarkdown' | 'humanMarkdown' | 'humanSavedAt' | 'effectiveMarkdown' | 'displayMarkdown' | 'receipts'>,
+  output: Pick<ISteelReviewOutput, 'userId' | 'tenantId' | 'conversationId' | 'kind' | 'messageId' | 'tableId' | 'outputId' | 'revision' | 'state' | 'headers' | 'rows' | 'sourceMappings' | 'latestOutputId' | 'aiUpdatedAt' | 'aiRawMarkdown' | 'aiBaselineMarkdown' | 'humanMarkdown' | 'humanSavedAt' | 'effectiveMarkdown' | 'displayMarkdown' | 'receipts'>,
   message?: { selected: string; parts: SteelReviewTextPart[]; selectedPartIndex?: number; ownerUpdated?: SteelReviewOwnerUpdatedRecord },
   authorizedFiles: ReadonlyMap<string, AuthorizedFile> = new Map(),
   aiUpdatedAt?: Date,
   requote?: { needsRequote?: boolean; requoteProvenance?: SteelReviewRequoteProvenanceRecord },
+  trustedMappings?: readonly SteelReviewSourceMapping[],
 ): SteelReviewReadRecord {
   const lastSave = output.receipts?.[output.receipts.length - 1];
   return {
@@ -307,10 +390,11 @@ function sidecarRecord(
     revision: output.revision,
     state: output.state,
     headers: output.headers,
-    rows: sanitizeRows(output.rows, authorizedFiles).map((row) => ({
+    rows: sanitizeRows(output.rows, authorizedFiles, trustedMappings).map((row) => ({
       ...row,
       values: row.values instanceof Map ? Object.fromEntries(row.values) : row.values,
     })),
+    ...(output.sourceMappings ? { sourceMappings: output.sourceMappings } : {}),
     ...(output.latestOutputId ? { latestOutputId: output.latestOutputId } : {}),
     ...(output.aiUpdatedAt ? { aiUpdatedAt: output.aiUpdatedAt } : {}),
     ...(output.aiRawMarkdown ? { aiRawMarkdown: output.aiRawMarkdown } : {}),
@@ -490,9 +574,11 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
             }
           : undefined;
         const selected = selectSidecar(sidecarCandidates, authority, input.messageId);
+        const selectedMappings = selected?.sourceMappings ?? (selected ? legacySnapshotMappings(selected) : undefined);
         const authorizedFiles = await readAuthorizedFiles(input, [
-          ...(state?.sourceMappings ?? []).map((mapping) => mapping.fileId),
-          ...(selected?.rows ?? []).flatMap((row) => row.source?.fileId ? [row.source.fileId] : []),
+          ...(!selected ? (state?.sourceMappings ?? []).map((mapping) => mapping.fileId) : []),
+          ...(selectedMappings ?? []).map((mapping) => mapping.fileId),
+          ...(!selectedMappings ? [] : (selected?.rows ?? []).flatMap((row) => row.source?.fileId ? [row.source.fileId] : [])),
         ]);
         if (selected) {
           const { latestOutputId: _ignoredLatestOutputId, ...selectedWithoutLatest } = selected;
@@ -503,12 +589,13 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
           return sidecarRecord({
             ...selectedWithoutLatest,
             ...(authority ? { latestOutputId: authority.outputId } : {}),
+            ...(selectedMappings && selectedMappings.length > 0 ? { sourceMappings: selectedMappings } : {}),
           }, {
             ...message,
             ...(readOwnerUpdated(messageRecord.metadata, input.kind)
               ? { ownerUpdated: readOwnerUpdated(messageRecord.metadata, input.kind) }
               : {}),
-          }, authorizedFiles, aiUpdatedAt);
+          }, authorizedFiles, aiUpdatedAt, undefined, selectedMappings ?? []);
         }
 
         if (
@@ -528,6 +615,7 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
             state: 'current',
             markdown: state.currentOcrResultMarkdown,
             sourceMappings: sourceMappings(state, authorizedFiles),
+            sourceMappingReservations: sourceMappingReservations(state),
             latestOutputId: `ocr_result:${state.currentOcrResultGenerationId}`,
             ...(state.currentOcrResultProvenance?.generationId === state.currentOcrResultGenerationId &&
               (state.currentOcrResultProvenance.updatedAt ?? state.updatedAt)
@@ -1124,8 +1212,15 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review output is no longer current');
           }
           const sourceFileIds = output
-            ? [...new Set(output.rows.flatMap((row) => row.source?.fileId ? [row.source.fileId] : []))]
-            : [];
+            ? [...new Set([
+              ...output.rows.flatMap((row) => row.source?.fileId ? [row.source.fileId] : []),
+              ...(input.sourceIntents ?? []).flatMap((intent) => intent.fileId ? [intent.fileId] : []),
+              ...(input.sourceMappings ?? []).map((mapping) => mapping.fileId),
+            ])]
+            : [...new Set([
+              ...(input.sourceIntents ?? []).flatMap((intent) => intent.fileId ? [intent.fileId] : []),
+              ...(input.sourceMappings ?? []).map((mapping) => mapping.fileId),
+            ])];
           const authorizedFiles = sourceFileIds.length > 0
             ? projectAuthorizedFiles(await authorizeFiles(input, sourceFileIds, session, {
               conversation: {
@@ -1145,7 +1240,30 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             }))
             : new Map<string, AuthorizedFile>();
           const projectedRows = output ? sanitizeRows(output.rows, authorizedFiles) : [];
-          const baselineRows = output?.rows ?? input.rows;
+          const baselineRows = output ? projectedRows : input.rows;
+          const sourceIntents = new Map<string, SteelReviewSourceIntent>();
+          for (const intent of input.sourceIntents ?? []) {
+            if (sourceIntents.has(intent.rowId)) {
+              throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review source intent is duplicated');
+            }
+            sourceIntents.set(intent.rowId, intent);
+          }
+          if (input.sourceMappings) {
+            const mappingByCode = new Map<string, SteelReviewSourceMapping>();
+            const mappingByFile = new Map<string, SteelReviewSourceMapping>();
+            for (const mapping of input.sourceMappings) {
+              const file = authorizedFiles.get(mapping.fileId);
+              const priorCode = mappingByCode.get(mapping.sourceCode);
+              const priorFile = mappingByFile.get(mapping.fileId);
+              if (!file || mapping.sourceFilename !== file.filename ||
+                (priorCode && JSON.stringify(priorCode) !== JSON.stringify(mapping)) ||
+                (priorFile && JSON.stringify(priorFile) !== JSON.stringify(mapping))) {
+                throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review source mapping is invalid');
+              }
+              mappingByCode.set(mapping.sourceCode, mapping);
+              mappingByFile.set(mapping.fileId, mapping);
+            }
+          }
           if (output && (output.rows.length !== input.rows.length ||
             JSON.stringify(output.headers) !== JSON.stringify(input.headers))) {
             throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review rows changed');
@@ -1154,15 +1272,22 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             for (let index = 0; index < output.rows.length; index += 1) {
               const previous = output.rows[index];
               const next = input.rows[index];
-              if (!next || previous.rowId !== next.rowId ||
-                !sameSteelReviewSource(projectedRows[index]?.source ?? null, next.source)) {
+              const intent = sourceIntents.get(previous.rowId);
+              const sourceMatches = intent
+                ? (intent.fileId === null
+                  ? next?.source === null
+                  : next?.source !== null && next?.source !== undefined &&
+                    next.source.fileId === intent.fileId && next.source.pageNumber === intent.pageNumber &&
+                    next.source.filename === authorizedFiles.get(intent.fileId)?.filename)
+                : sameSteelReviewSource(projectedRows[index]?.source ?? null, next?.source ?? null);
+              if (!next || previous.rowId !== next.rowId || !sourceMatches) {
                 throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review row identity changed');
               }
               for (const header of input.headers) {
                 if ((previous.values[header]?.baseline ?? null) !== (next.values[header]?.baseline ?? null)) {
                   throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review AI baseline changed');
                 }
-                if (isSteelReviewSourceAssociationHeader(header) &&
+                if (!intent && isSteelReviewSourceAssociationHeader(header) &&
                   !sameCellProperty(previous.values[header], 'effective', next.values[header], 'effective')) {
                   throw new SteelReviewWriteError(
                     'REVIEW_INVALID_OPERATION',
@@ -1171,7 +1296,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
                 }
               }
             }
-          } else if (input.headers.some((header) => isSteelReviewSourceAssociationHeader(header) &&
+          } else if ((input.sourceIntents ?? []).length === 0 && input.headers.some((header) => isSteelReviewSourceAssociationHeader(header) &&
             input.rows.some((row) => !sameSourceAssociationCellAsBaseline(row.values[header])))) {
             throw new SteelReviewWriteError(
               'REVIEW_INVALID_OPERATION',
@@ -1189,16 +1314,27 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
           const previousEffective = new Map(
             canonicalBaselineRows.map((row) => [
               row.rowId,
-              JSON.stringify(output
-                ? row.values
-                : Object.fromEntries(Object.entries(row.values).map(([header, cell]) => [
-                  header,
-                  { ...cell, effective: cell.baseline },
-                ]))),
+              JSON.stringify({
+                values: output
+                  ? row.values
+                  : Object.fromEntries(Object.entries(row.values).map(([header, cell]) => [
+                    header,
+                    { ...cell, effective: cell.baseline },
+                  ])),
+                source: row.source,
+              }),
             ]),
           );
           const changedRowIds = canonicalRows
-            .filter((row) => previousEffective.get(row.rowId) !== JSON.stringify(row.values))
+            .filter((row) => previousEffective.get(row.rowId) !== JSON.stringify({ values: row.values, source: row.source }))
+            .map((row) => row.rowId);
+          const businessChangedRowIds = canonicalRows
+            .filter((row) => {
+              const previous = canonicalBaselineRows.find((candidate) => candidate.rowId === row.rowId);
+              return previous !== undefined &&
+                JSON.stringify(businessValues(previous, input.headers, !output)) !==
+                JSON.stringify(businessValues(row, input.headers));
+            })
             .map((row) => row.rowId);
           if (changedRowIds.length !== input.caption.changedRows ||
             changedRowIds.some((rowId) => !input.caption.changedRowIds.includes(rowId))) {
@@ -1272,6 +1408,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               revision: nextRevision,
               headers: input.headers,
               rows: canonicalRows,
+              ...(input.sourceMappings ? { sourceMappings: input.sourceMappings } : {}),
               changedRows: changedRowIds.length,
               changedRowIds,
               savedAt,
@@ -1298,6 +1435,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               state: 'current' as const,
               headers: input.headers,
               rows: canonicalRows,
+              ...(input.sourceMappings ? { sourceMappings: input.sourceMappings } : {}),
               latestOutputId: input.outputId,
               humanMarkdown: input.effectiveMarkdown,
               humanSavedAt: savedAt,
@@ -1347,14 +1485,14 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
           if (messageUpdate.matchedCount !== 1) {
             throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review message changed');
           }
-          if (input.kind === 'ocr_result' && changedRowIds.length > 0 && quotationIsLinkedToOcr(quotation, input, output)) {
+          if (input.kind === 'ocr_result' && businessChangedRowIds.length > 0 && quotationIsLinkedToOcr(quotation, input, output)) {
             const requoteProvenance = {
               sourceKind: 'ocr_result' as const,
               sourceMessageId: input.messageId,
               sourceTableId: input.tableId,
               sourceOutputId: input.outputId,
               sourceRevision: nextRevision,
-              changedRows: changedRowIds.length,
+              changedRows: businessChangedRowIds.length,
               at: savedAt,
             };
             const quotationUpdate = await QuotationState.updateOne(

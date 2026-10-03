@@ -21,6 +21,7 @@ export interface SteelReviewDialogState {
   pageCount: number;
   fullScreen: boolean;
   initializedSourceId?: string;
+  sourceCorrectionRowId?: string;
 }
 
 export interface SteelReviewPan {
@@ -106,5 +107,7 @@ export const steelReviewDraftStateFamily = createOwnedStateFamily<SteelReviewDra
   cells: {},
   touched: {},
   cellVersions: {},
+  sourceDrafts: {},
+  sourceVersions: {},
   changeSequence: 0,
 }));

@@ -13,6 +13,7 @@ import type {
   SteelReviewCommit,
   SteelReviewSaveResponse,
   SteelReviewSourcesResponse,
+  SteelReviewSourcePageCount,
   SteelQuotationStatus,
 } from './steel';
 import type {
@@ -246,6 +247,15 @@ export function getSteelReviewSource(
     responseType: 'blob',
     headers: { Accept: 'application/octet-stream' },
   });
+}
+
+export function getSteelReviewSourcePageCount(
+  conversationId: string,
+  kind: SteelReviewKind,
+  fileId: string,
+  messageId: string,
+): Promise<SteelReviewSourcePageCount> {
+  return request.get(endpoints.steelReviewSourcePageCount(conversationId, kind, fileId, messageId));
 }
 
 export function cancelSteelQuotation(

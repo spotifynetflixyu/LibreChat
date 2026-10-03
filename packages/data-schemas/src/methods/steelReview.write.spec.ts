@@ -96,9 +96,8 @@ const makeInput = ({
   return { ...base, digest: digestFor(base) };
 };
 
-const rehashInput = (input: SteelReviewCommitInput): SteelReviewCommitInput => {
-  const { digest: _digest, ...base } = input;
-  return { ...base, digest: digestFor(base) };
+const rehashInput = (input: Omit<SteelReviewCommitInput, 'digest'>): SteelReviewCommitInput => {
+  return { ...input, digest: digestFor(input) };
 };
 
 const withoutReviewLockToken = <T extends { reviewLockToken?: string }>(value: T): Omit<T, 'reviewLockToken'> => {
@@ -707,6 +706,141 @@ describe('Steel review write methods', () => {
       conversationId,
       messageId,
     }))).resolves.toMatchObject({ changedRows: 1 });
+  });
+
+  it('persists a source-only correction without marking the quotation stale', async () => {
+    const models = createModels(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const QuotationState = createSteelQuotationStateModel(mongoose);
+    const File = createFileModel(mongoose);
+    const userId = new mongoose.Types.ObjectId().toString();
+    const conversationId = 'source-only-conversation';
+    const messageId = 'source-only-message';
+    const originalMarkdown = markdownFor('P-1');
+    await models.Conversation.create({
+      conversationId,
+      user: userId,
+      tenantId: 'tenant-1',
+      title: 'Source only',
+      endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId,
+      conversationId,
+      user: userId,
+      tenantId: 'tenant-1',
+      isCreatedByUser: false,
+      text: originalMarkdown,
+    });
+    await State.create({
+      conversationId,
+      currentOcrResultMarkdown: originalMarkdown,
+      currentOcrResultMessageId: messageId,
+      currentOcrResultGenerationId: 'generation-1',
+    });
+    await File.create({
+      user: userId,
+      tenantId: 'tenant-1',
+      conversationId,
+      file_id: 'source-only-file',
+      bytes: 12,
+      filename: 'replacement.pdf',
+      filepath: '/uploads/replacement.pdf',
+      object: 'file',
+      type: 'application/pdf',
+      source: 'local',
+      usage: 0,
+    });
+    const writer = createSteelReviewWriteMethods(mongoose);
+    const firstResult = await writer.commitSteelReview(makeInput({
+      userId,
+      operationId: 'source-only-bootstrap',
+      revision: 'generation-1',
+      previousValue: 'P-1',
+      nextValue: 'P-7',
+      conversationId,
+      messageId,
+    }));
+    await QuotationState.create({
+      conversationId,
+      userId,
+      tenantId: 'tenant-1',
+      currentSystemOrder: {
+        runId: 'source-only-run',
+        messageId: 'order-message',
+        ocrMessageId: messageId,
+        ocrOutputId: 'ocr_result:generation-1',
+        markdown: '## system_order\n| 型號 | 數量 |\n| --- | --- |\n| KEEP | 1 |',
+        sha256: createHash('sha256').update('source-only-order').digest('hex'),
+        updatedAt: new Date('2026-10-03T00:00:00.000Z'),
+        needsRequote: false,
+      },
+    });
+
+    const currentMarkdown = markdownFor('P-7');
+    const targetText = currentMarkdown.slice(currentMarkdown.indexOf('| 來源 |'));
+    const replacementText = markdownFor('P-7', 'F1').slice(markdownFor('P-7', 'F1').indexOf('| 來源 |'));
+    const sourceOnlyBase: Omit<SteelReviewCommitInput, 'digest'> = {
+      ...makeInput({
+        userId,
+        operationId: 'source-only-correction',
+        revision: firstResult.revision,
+        previousValue: 'P-7',
+        nextValue: 'P-7',
+        conversationId,
+        messageId,
+      }),
+      rows: [{
+        rowId: 'row-1',
+        values: {
+          來源: { baseline: 'A', effective: 'F1' },
+          零件編號: { baseline: 'P-1', effective: 'P-7' },
+        },
+        source: {
+          fileId: 'source-only-file',
+          pageNumber: 2,
+          filename: 'replacement.pdf',
+          mediaType: 'application/pdf',
+        },
+      }],
+      sourceIntents: [{ rowId: 'row-1', fileId: 'source-only-file', pageNumber: 2 }],
+      sourceMappings: [{
+        fileId: 'source-only-file',
+        sourceCode: 'F1',
+        sourceFilename: 'replacement.pdf',
+        mediaType: 'application/pdf',
+      }],
+      messageSha256: createHash('sha256').update(currentMarkdown).digest('hex'),
+      target: {
+        start: currentMarkdown.indexOf('| 來源 |'),
+        end: currentMarkdown.length,
+        sha256: createHash('sha256').update(targetText).digest('hex'),
+      },
+      targetText,
+      replacementText,
+      cleanReplacementText: replacementText,
+      effectiveMarkdown: currentMarkdown.replace(targetText, replacementText),
+      displayMarkdown: currentMarkdown.replace(targetText, replacementText),
+      caption: { kind: 'ocr_result', changedRows: 1, changedRowIds: ['row-1'] },
+    };
+    const sourceOnly = rehashInput(sourceOnlyBase);
+
+    await expect(writer.commitSteelReview(sourceOnly)).resolves.toMatchObject({ changedRows: 1 });
+    const saved = await ReviewOutput.findOne({ conversationId }).lean();
+    expect(saved?.rows[0]?.source).toMatchObject({ fileId: 'source-only-file', pageNumber: 2 });
+    expect(saved?.sourceMappings).toEqual([expect.objectContaining({
+      fileId: 'source-only-file',
+      sourceCode: 'F1',
+      sourceFilename: 'replacement.pdf',
+    })]);
+    expect(saved?.receipts?.[1]?.snapshot?.sourceMappings).toEqual(saved?.sourceMappings);
+    expect(await models.Message.findOne({ messageId }).lean()).toMatchObject({
+      text: expect.stringContaining('| F1 | P-7 |'),
+    });
+    expect(await QuotationState.findOne({ conversationId }).lean()).toMatchObject({
+      currentSystemOrder: { needsRequote: false },
+    });
   });
 
   it('rejects persisted source metadata disappearing before any transaction write', async () => {

@@ -385,6 +385,15 @@ export const steelReviewSource = (
   const query = new URLSearchParams({ messageId }).toString();
   return `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}/sources/${encodeURIComponent(fileId)}?${query}`;
 };
+export const steelReviewSourcePageCount = (
+  conversationId: string,
+  kind: string,
+  fileId: string,
+  messageId: string,
+) => {
+  const query = new URLSearchParams({ messageId }).toString();
+  return `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}/sources/${encodeURIComponent(fileId)}/page-count?${query}`;
+};
 
 export const adminSteelBase = () => `${BASE_URL}/api/admin/steel`;
 export const adminSteelCapabilitySmoke = () => `${adminSteelBase()}/ai/capability-smoke`;

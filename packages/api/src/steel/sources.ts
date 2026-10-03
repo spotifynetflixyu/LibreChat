@@ -15,6 +15,7 @@ import type {
 } from 'librechat-data-provider';
 import type { Readable } from 'node:stream';
 import type { ServerRequest } from '~/types/http';
+import { getPdfPageCount } from './ocr/chunks';
 
 export interface SteelReviewSourceListInput extends SteelReviewSourceQuery {
   userId: string;
@@ -31,6 +32,8 @@ export interface SteelReviewSourceBinaryInput {
   fileId: string;
   messageId: string;
 }
+
+export type SteelReviewSourcePageCountInput = SteelReviewSourceBinaryInput;
 
 export interface SteelReviewSourceStreamReader {
   (request: ServerRequest, source: SteelReviewSourceRecord): Promise<Readable>;
@@ -58,6 +61,11 @@ export interface SteelReviewSourceService {
     input: SteelReviewSourceBinaryInput,
     request: ServerRequest,
   ): Promise<{ source: SteelReviewSourceFile; stream: Readable }>;
+  readMetadata(input: SteelReviewSourceBinaryInput): Promise<SteelReviewSourceFile | null>;
+  readPageCount(
+    input: SteelReviewSourcePageCountInput,
+    request: ServerRequest,
+  ): Promise<{ source: SteelReviewSourceFile; pageCount: number }>;
 }
 
 export class SteelReviewSourceError extends Error {
@@ -103,6 +111,14 @@ function publicSource(source: SteelReviewSourceRecord): SteelReviewSourceFile {
     mediaType: source.mediaType,
     ...(source.bytes !== undefined ? { bytes: source.bytes } : {}),
   };
+}
+
+async function readStreamBytes(stream: Readable): Promise<Uint8Array> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks);
 }
 
 function validateScope(input: SteelReviewSourceListInput): SteelReviewSourceQuery {
@@ -170,6 +186,65 @@ export function createSteelReviewSourceService({
         );
       }
       return { source: publicSource(source), stream: await readStream(request, source) };
+    },
+
+    async readMetadata(input) {
+      const query = steelReviewSourceBinaryQuerySchema.safeParse({ messageId: input.messageId });
+      if (!query.success || !steelReviewKinds.includes(input.kind) || !input.fileId) {
+        throw new SteelReviewSourceError(
+          'INVALID_REVIEW_SOURCE_QUERY',
+          400,
+          'Invalid review source query',
+        );
+      }
+      const source = await reader.readSteelReviewSource({
+        userId: input.userId,
+        ...(input.tenantId !== undefined ? { tenantId: input.tenantId } : {}),
+        conversationId: input.conversationId,
+        messageId: query.data.messageId,
+        kind: input.kind,
+        fileId: input.fileId,
+      });
+      return source ? publicSource(source) : null;
+    },
+
+    async readPageCount(input, request) {
+      const query = steelReviewSourceBinaryQuerySchema.safeParse({ messageId: input.messageId });
+      if (!query.success || !steelReviewKinds.includes(input.kind) || !input.fileId) {
+        throw new SteelReviewSourceError(
+          'INVALID_REVIEW_SOURCE_QUERY',
+          400,
+          'Invalid review source query',
+        );
+      }
+      const source = await reader.readSteelReviewSource({
+        userId: input.userId,
+        ...(input.tenantId !== undefined ? { tenantId: input.tenantId } : {}),
+        conversationId: input.conversationId,
+        messageId: query.data.messageId,
+        kind: input.kind,
+        fileId: input.fileId,
+      });
+      if (!source) {
+        throw new SteelReviewSourceError('REVIEW_SOURCE_NOT_FOUND', 404, 'Review source not found');
+      }
+      if (!readStream) {
+        throw new SteelReviewSourceError('REVIEW_SOURCE_UNAVAILABLE', 501, 'Review source preview unavailable');
+      }
+      try {
+        if (source.mediaType.toLowerCase().startsWith('image/')) {
+          return { source: publicSource(source), pageCount: 1 };
+        }
+        const bytes = await readStreamBytes(await readStream(request, source));
+        const pageCount = await getPdfPageCount({ pdfBytes: bytes });
+        return { source: publicSource(source), pageCount };
+      } catch {
+        throw new SteelReviewSourceError(
+          'REVIEW_SOURCE_UNAVAILABLE',
+          501,
+          'Review source page count unavailable',
+        );
+      }
     },
   };
 }

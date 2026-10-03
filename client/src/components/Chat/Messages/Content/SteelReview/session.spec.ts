@@ -1,12 +1,14 @@
-import type { SteelReviewTable } from 'librechat-data-provider';
+import type { SteelReviewSource, SteelReviewTable } from 'librechat-data-provider';
 import {
   applySteelReviewDrafts,
   createSteelReviewDraftState,
   getSteelReviewDraftKey,
   getSteelReviewDraftOwnerKey,
   getSteelReviewDirtyRowIds,
+  getSteelReviewPrepareInput,
   rebaseSteelReviewDraftState,
   setSteelReviewDraftCell,
+  setSteelReviewDraftSource,
 } from './session';
 
 const table: SteelReviewTable = {
@@ -124,6 +126,51 @@ describe('Steel review local draft session', () => {
     let draft = createSteelReviewDraftState(getSteelReviewDraftKey(selection, table));
     draft = setSteelReviewDraftCell(draft, { ...table.rows[0], rowId: '' }, '數量', '3');
     expect(draft.cells).toEqual({});
+  });
+
+  it('stages one trusted source intent and counts source-only rows once', () => {
+    const source: SteelReviewSource = {
+      fileId: 'file-1',
+      pageNumber: 2,
+      filename: 'drawing.pdf',
+      mediaType: 'application/pdf',
+    };
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(selection, table));
+    draft = setSteelReviewDraftSource(draft, table.rows[0], source);
+
+    expect(getSteelReviewDirtyRowIds(table, draft)).toEqual(['row-1']);
+    expect(applySteelReviewDrafts(table.rows, draft)[0]?.source).toEqual(source);
+    expect(getSteelReviewPrepareInput(
+      selection,
+      table,
+      draft,
+      applySteelReviewDrafts(table.rows, draft),
+    ).sourceIntents).toEqual([{ rowId: 'row-1', fileId: 'file-1', pageNumber: 2 }]);
+  });
+
+  it('allows an explicit clear source intent and rebases it after save', () => {
+    const source: SteelReviewSource = {
+      fileId: 'file-1',
+      pageNumber: 1,
+      filename: 'drawing.pdf',
+      mediaType: 'application/pdf',
+    };
+    const sourcedTable = {
+      ...table,
+      rows: [{ ...table.rows[0], source }],
+    };
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(selection, sourcedTable));
+    draft = setSteelReviewDraftSource(draft, sourcedTable.rows[0], null);
+    expect(getSteelReviewPrepareInput(
+      selection,
+      sourcedTable,
+      draft,
+      applySteelReviewDrafts(sourcedTable.rows, draft),
+    ).sourceIntents).toEqual([{ rowId: 'row-1', fileId: null, pageNumber: null }]);
+
+    const rebased = rebaseSteelReviewDraftState(draft, [{ ...sourcedTable.rows[0], source: null }], draft.changeSequence);
+    expect(rebased.sourceDrafts).toEqual({});
+    expect(getSteelReviewDirtyRowIds({ rows: [{ ...sourcedTable.rows[0], source: null }] }, rebased)).toEqual([]);
   });
 
   it('preserves edits made after a confirmed save while rebasing submitted cells', () => {
