@@ -1194,6 +1194,111 @@ test.describe('Steel managed source review', () => {
     expect(await persistedSnapshot(conversationId)).toEqual(expiredState);
   });
 
+  test('representation-only OCR whitespace is a confirmed no-op with no DB or timestamp write', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const before = await persistedSnapshot(conversationId);
+    const response = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(response.status()).toBe(200);
+    const { table } = await response.json() as { table: SteelReviewTable };
+    const rows = structuredClone(table.rows);
+    rows[0].values['數量'].effective = ' 2 ';
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const prepare = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+    expect(prepare.status()).toBe(200);
+    const prepared = await prepare.json() as SteelReviewPrepared;
+    expect(prepared.caption.changedRows).toBe(0);
+    const commit = await page.request.post(`${url}/commit`, { headers, data: prepared });
+    expect(commit.status()).toBe(200);
+    expect(await commit.json()).toMatchObject({ changedRows: 0 });
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    const reopened = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(reopened.status()).toBe(200);
+    expect(await reopened.json()).toMatchObject({ table: { rows: [{ values: { 數量: { baseline: '2', effective: '2' } } }] } });
+  });
+
+  test('OCR Save canonicalizes cell whitespace before persisting and the saved table reopens', async ({ page }) => {
+    const markdown = `WHITESPACE-KEEP-PREFIX\n\n${ocr}\n\nWHITESPACE-KEEP-SUFFIX`;
+    const { conversationId, messageId } = await seedCurrent(markdown);
+    conversations.push(conversationId);
+    const before = await persistedSnapshot(conversationId);
+    const response = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(response.status()).toBe(200);
+    const { table } = await response.json() as { table: SteelReviewTable };
+    const rows = structuredClone(table.rows);
+    rows[0].values['數量'].effective = ' \r\n7\r\n ';
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const prepare = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+    expect(prepare.status()).toBe(200);
+    const prepared = await prepare.json() as SteelReviewPrepared;
+    expect(prepared.caption.changedRows).toBe(1);
+    const commit = await page.request.post(`${url}/commit`, { headers, data: prepared });
+    expect(commit.status()).toBe(200);
+    const receipt = await commit.json();
+    expect(receipt.savedSnapshot.rows[0].values['數量']).toEqual({ baseline: '2', effective: '7' });
+    const after = await persistedSnapshot(conversationId);
+    const expected = markdown.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 7 | 1 |');
+    expect(after.messages.find((message) => message.messageId === messageId)?.text).toBe(expected);
+    expect(after.reviews[0]?.humanMarkdown).toBe(expected.slice(expected.indexOf('## ocr_result'), expected.indexOf('\n\nWHITESPACE-KEEP-SUFFIX')));
+    expectPreservedAiState(before.ocr, after.ocr);
+    const reopened = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(reopened.status()).toBe(200);
+    expect(await reopened.json()).toMatchObject({ table: { rows: [{ rowId: rows[0].rowId, values: { 數量: { baseline: '2', effective: '7' } } }] } });
+    expect(await persistedSnapshot(conversationId)).toEqual(after);
+  });
+
+  test('an OCR business cell containing a literal backslash and pipe roundtrips through Save and reopen', async ({ page }) => {
+    const markdown = `PIPE-KEEP-PREFIX\n\n${ocr}\n\nPIPE-KEEP-SUFFIX`;
+    const { conversationId, messageId } = await seedCurrent(markdown);
+    conversations.push(conversationId);
+    const before = await persistedSnapshot(conversationId);
+    const response = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(response.status()).toBe(200);
+    const { table } = await response.json() as { table: SteelReviewTable };
+    const rows = structuredClone(table.rows);
+    const literal = 'REVIEW\\|PART';
+    rows[0].values['零件編號'].effective = literal;
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const prepare = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+    expect(prepare.status()).toBe(200);
+    const prepared = await prepare.json() as SteelReviewPrepared;
+    expect(prepared.caption.changedRows).toBe(1);
+    const commit = await page.request.post(`${url}/commit`, { headers, data: prepared });
+    expect(commit.status()).toBe(200);
+    const receipt = await commit.json();
+    expect(receipt.savedSnapshot.rows[0].values['零件編號']).toEqual({ baseline: 'REVIEW-P1', effective: literal });
+    const after = await persistedSnapshot(conversationId);
+    const savedMessage = after.messages.find((message) => message.messageId === messageId);
+    expect(savedMessage?.text.startsWith('PIPE-KEEP-PREFIX\n\n')).toBe(true);
+    expect(savedMessage?.text.endsWith('\n\nPIPE-KEEP-SUFFIX')).toBe(true);
+    expect(savedMessage?.content).toEqual([{ type: 'text', text: savedMessage?.text }]);
+    expectPreservedAiState(before.ocr, after.ocr);
+    const reopened = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(reopened.status()).toBe(200);
+    expect(await reopened.json()).toMatchObject({ table: { rows: [{ rowId: rows[0].rowId, values: { 零件編號: { baseline: 'REVIEW-P1', effective: literal }, 數量: { effective: '2' } } }] } });
+    expect(await persistedSnapshot(conversationId)).toEqual(after);
+  });
+
+  test('saving representation-only OCR whitespace clears the local draft without marking Updated', async ({ page }) => {
+    const { conversationId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const before = await persistedSnapshot(conversationId);
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+    await quantity.fill(' 2 ');
+    await dialog.getByRole('button', { name: /^Save/ }).click();
+    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+    await expect(quantity).toHaveValue('2');
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeVisible();
+    await expect(page.getByRole('button', { name: 'Save updates', exact: true })).toHaveCount(0);
+    await expect(page.getByText('Updated', { exact: true })).toHaveCount(0);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+  });
+
   test('manual OCR Save changes only the clicked message and chat reload shows clean saved values', async ({ page }) => {
     const markdown = [
       'SAVE-KEEP-PREFIX',
