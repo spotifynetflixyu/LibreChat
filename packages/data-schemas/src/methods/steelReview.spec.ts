@@ -128,6 +128,9 @@ describe('Steel review read methods', () => {
       '| legacy | P-6 |',
       '| attached | P-7 |',
       '| unattached | P-8 |',
+      '| other-user | P-9 |',
+      '| other-tenant | P-10 |',
+      '| expired | P-11 |',
     ].join('\n');
     await models.Conversation.create({
       conversationId,
@@ -142,9 +145,22 @@ describe('Steel review read methods', () => {
       user: userId.toString(),
       tenantId: 'tenant-source',
       isCreatedByUser: false,
-      files: [{ file_id: 'attached-file' }],
       text: markdown,
       content: [{ type: 'text', text: markdown }],
+    });
+    await models.Message.create({
+      messageId: 'source-upload-message',
+      conversationId,
+      user: userId.toString(),
+      tenantId: 'tenant-source',
+      isCreatedByUser: true,
+      text: 'Review uploaded source',
+      files: [
+        { file_id: 'attached-file' },
+        { file_id: 'other-user-file' },
+        { file_id: 'other-tenant-file' },
+        { file_id: 'expired-file' },
+      ],
     });
     await models.File.create([
       {
@@ -179,6 +195,43 @@ describe('Steel review read methods', () => {
         bytes: 1,
         filename: 'unattached.pdf',
         filepath: '/uploads/unattached.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        source: 'local',
+        usage: 0,
+      },
+      {
+        user: foreignUserId,
+        tenantId: 'tenant-source',
+        file_id: 'other-user-file',
+        bytes: 1,
+        filename: 'other-user.pdf',
+        filepath: '/uploads/other-user.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        source: 'local',
+        usage: 0,
+      },
+      {
+        user: userId,
+        tenantId: 'other-tenant',
+        file_id: 'other-tenant-file',
+        bytes: 1,
+        filename: 'other-tenant.pdf',
+        filepath: '/uploads/other-tenant.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        source: 'local',
+        usage: 0,
+      },
+      {
+        user: userId,
+        tenantId: 'tenant-source',
+        expiredAt: new Date(Date.now() - 60_000),
+        file_id: 'expired-file',
+        bytes: 1,
+        filename: 'expired.pdf',
+        filepath: '/uploads/expired.pdf',
         object: 'file',
         type: 'application/pdf',
         source: 'local',
@@ -249,6 +302,9 @@ describe('Steel review read methods', () => {
         { fileId: 'legacy-message-file', sourceCode: 'legacy', sourceFilename: 'legacy.pdf' },
         { fileId: 'attached-file', sourceCode: 'attached', sourceFilename: 'attached.pdf' },
         { fileId: 'unattached-file', sourceCode: 'unattached', sourceFilename: 'unattached.pdf' },
+        { fileId: 'other-user-file', sourceCode: 'other-user', sourceFilename: 'other-user.pdf' },
+        { fileId: 'other-tenant-file', sourceCode: 'other-tenant', sourceFilename: 'other-tenant.pdf' },
+        { fileId: 'expired-file', sourceCode: 'expired', sourceFilename: 'expired.pdf' },
       ],
       currentOcrResultMarkdown: markdown,
       currentOcrResultMessageId: 'source-file-message',
@@ -304,6 +360,21 @@ describe('Steel review read methods', () => {
           values: { 來源: { baseline: 'missing', effective: 'missing' } },
           source: { fileId: 'missing-file', pageNumber: 1, filename: 'missing.pdf' },
         },
+        {
+          rowId: 'other-user-row',
+          values: { 來源: { baseline: 'other-user', effective: 'other-user' } },
+          source: { fileId: 'other-user-file', pageNumber: 1, filename: 'other-user.pdf' },
+        },
+        {
+          rowId: 'other-tenant-row',
+          values: { 來源: { baseline: 'other-tenant', effective: 'other-tenant' } },
+          source: { fileId: 'other-tenant-file', pageNumber: 1, filename: 'other-tenant.pdf' },
+        },
+        {
+          rowId: 'expired-row',
+          values: { 來源: { baseline: 'expired', effective: 'expired' } },
+          source: { fileId: 'expired-file', pageNumber: 1, filename: 'expired.pdf' },
+        },
       ],
     });
     const sidecar = await read.readSteelReview({
@@ -316,6 +387,9 @@ describe('Steel review read methods', () => {
     });
     expect(sidecar?.rows).toEqual([
       expect.objectContaining({ source: { fileId: 'trusted-file', pageNumber: 1, filename: 'trusted.pdf' } }),
+      expect.objectContaining({ source: null }),
+      expect.objectContaining({ source: null }),
+      expect.objectContaining({ source: null }),
       expect.objectContaining({ source: null }),
       expect.objectContaining({ source: null }),
     ]);

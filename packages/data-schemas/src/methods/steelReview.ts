@@ -291,10 +291,19 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
 
   return {
     async readSteelReview(input) {
-      const [messageRecord, conversation, conversationIdentities] = await Promise.all([
+      const [messageRecord, conversationMessages, conversation, conversationIdentities] = await Promise.all([
         Message.findOne(messageFilter(input))
           .select({ messageId: 1, text: 1, content: 1, files: 1 })
           .lean<Pick<IMessage, 'messageId' | 'text' | 'content' | 'files'>>(),
+        Message.find({
+          $and: [
+            { user: input.userId, conversationId: input.conversationId, 'files.0': { $exists: true } },
+            tenantFilter(input.tenantId),
+            activeExpirationFilter(),
+          ],
+        })
+          .select({ files: 1 })
+          .lean<Array<Pick<IMessage, 'files'>>>(),
         Conversation.findOne({
           $and: [
             { user: input.userId, conversationId: input.conversationId },
@@ -315,7 +324,10 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
       if (!message) {
         return null;
       }
-      const attachedFileIds = messageFileIds(messageRecord.files);
+      const attachedFileIds = [
+        ...messageFileIds(messageRecord.files),
+        ...conversationMessages.flatMap((message) => messageFileIds(message.files)),
+      ];
       const trustedGlobalConversation = conversationIdentities.length === 1 &&
         conversationIdentities[0]?.user === input.userId &&
         matchesTenantScope(conversationIdentities[0]?.tenantId, input.tenantId);
