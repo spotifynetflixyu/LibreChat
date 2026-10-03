@@ -274,7 +274,7 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
           $or: [
             { conversationId: input.conversationId },
             { conversationId: null, messageId: input.messageId },
-            { file_id: { $in: attachedFileIds } },
+            { conversationId: null, file_id: { $in: attachedFileIds } },
           ],
         },
         tenantFilter(input.tenantId),
@@ -283,10 +283,19 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
     })
       .select({ file_id: 1, filename: 1 })
       .lean<Array<{ file_id: string; filename: string }>>();
-    return new Map(files.map((file) => [file.file_id, {
-      fileId: file.file_id,
-      filename: file.filename,
-    }]));
+    const authorized = new Map<string, AuthorizedFile>();
+    const ambiguous = new Set<string>();
+    for (const file of files) {
+      if (authorized.has(file.file_id)) {
+        authorized.delete(file.file_id);
+        ambiguous.add(file.file_id);
+        continue;
+      }
+      if (!ambiguous.has(file.file_id)) {
+        authorized.set(file.file_id, { fileId: file.file_id, filename: file.filename });
+      }
+    }
+    return authorized;
   };
 
   return {
