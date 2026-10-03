@@ -504,6 +504,12 @@ test.describe('Steel managed source review', () => {
     await expect.poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(800);
     await expect(dialog.getByText('GAMMA-ONE', { exact: true })).toBeVisible();
     await expect(dialog.getByRole('button', { name: 'Next page', exact: true })).toBeDisabled();
+    await dialog.getByLabel('Source file', { exact: true }).selectOption('review-alpha');
+    await expect.poll(() => canvas.evaluate((element: HTMLCanvasElement) => element.width)).toBeGreaterThan(0);
+    await expect(dialog.getByText('ALPHA-ONE-A', { exact: true })).toBeVisible();
+    const fullscreenBounds = await dialog.boundingBox();
+    expect(fullscreenBounds?.x).toBeCloseTo(0, 0);
+    expect(fullscreenBounds?.y).toBeCloseTo(0, 0);
     await page.keyboard.press('Escape');
     await expect(dialog).not.toBeVisible();
     await page.reload();
