@@ -478,9 +478,14 @@ test.describe('Steel managed source review', () => {
       if (!context) return '';
       const data = context.getImageData(0, 0, element.width, element.height).data;
       let value = 0;
-      for (let i = 0; i < data.length; i += 4) value = (value * 31 + data[i]) >>> 0;
-      return `${element.width}:${element.height}:${value}`;
+      let ink = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i + 3] > 0 && data[i] < 200) ink += 1;
+        value = (value * 31 + data[i]) >>> 0;
+      }
+      return ink > 500 ? `${element.width}:${element.height}:${value}` : '';
     });
+    await expect.poll(checksum).not.toBe('');
     const firstPage = await checksum();
     await expect(dialog.getByText('ALPHA-ONE-A', { exact: true })).toBeVisible();
     await expect(dialog.getByText('ALPHA-ONE-B', { exact: true })).toBeVisible();
@@ -489,6 +494,7 @@ test.describe('Steel managed source review', () => {
     await dialog.getByRole('button', { name: 'Next page', exact: true }).click();
     await expect(dialog.getByText('ALPHA-TWO', { exact: true })).toBeVisible();
     await expect(dialog.getByText('ALPHA-ONE-A', { exact: true })).toHaveCount(0);
+    await expect.poll(checksum).not.toBe('');
     await expect.poll(checksum).not.toBe(firstPage);
     await dialog.getByRole('button', { name: 'Next page', exact: true }).click();
     await dialog.getByLabel('Source file', { exact: true }).selectOption('review-beta');
