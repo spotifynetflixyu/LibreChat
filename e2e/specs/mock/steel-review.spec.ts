@@ -160,6 +160,38 @@ test.describe('Steel managed source review', () => {
     expect(await persistedSnapshot(conversationId)).toEqual(before);
   });
 
+  test('a normal upload attached to a prior user message locates its source without File conversation metadata', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    await seedMessages(getE2EUser().email, conversationId, [{
+      messageId: randomUUID(),
+      parentMessageId: '00000000-0000-0000-0000-000000000000',
+      text: 'Review uploaded source',
+      isCreatedByUser: true,
+      sender: 'User',
+      files: [{ file_id: 'review-alpha' }],
+    }]);
+    await withMongo(async (db) => {
+      await db.collection('files').updateOne({ conversationId, file_id: 'review-alpha' }, {
+        $unset: { conversationId: '', messageId: '' },
+      });
+    });
+    try {
+      const before = await persistedSnapshot(conversationId);
+      const result = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+      expect(result.status()).toBe(200);
+      expect(await result.json()).toMatchObject({ table: { rows: [
+        { source: { fileId: 'review-alpha', pageNumber: 1 } },
+        { source: { fileId: 'review-alpha', pageNumber: 1 } },
+      ] } });
+      expect(await persistedSnapshot(conversationId)).toEqual(before);
+    } finally {
+      await withMongo(async (db) => {
+        await db.collection('files').updateOne({ file_id: 'review-alpha' }, { $set: { conversationId } });
+      });
+    }
+  });
+
   test('a saved text-only Markdown supports its actual text target without inventing a content mirror', async ({ page }) => {
     const { conversationId, messageId } = await seedCurrent(ocr);
     conversations.push(conversationId);
