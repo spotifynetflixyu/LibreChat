@@ -160,6 +160,29 @@ test.describe('Steel managed source review', () => {
     expect(await persistedSnapshot(conversationId)).toEqual(before);
   });
 
+  test('a saved text-only Markdown supports its actual text target without inventing a content mirror', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    await withMongo(async (db) => {
+      await db.collection('messages').updateOne({ conversationId, messageId }, { $unset: { content: '' } });
+    });
+    const before = await persistedSnapshot(conversationId);
+    const result = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(result.status()).toBe(200);
+    const data = await result.json();
+    expect(data).toMatchObject({ table: { isLatest: true, rows: [{ source: { fileId: 'review-alpha' } }, { source: { fileId: 'review-alpha' } }] } });
+    expect(data.table.partIndex).toBeUndefined();
+    await page.goto(`/c/${conversationId}`);
+    await expect(page.getByRole('button', { name: 'Open Steel review', exact: true })).toHaveCount(1);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    await expect(dialog.getByText('REVIEW-P1', { exact: true })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await page.reload();
+    await expect(page.getByRole('button', { name: 'Open Steel review', exact: true })).toHaveCount(1);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+  });
+
   test('a stale rendered content mirror is rejected without changing either message representation', async ({ page }) => {
     const { conversationId, messageId } = await seedCurrent(ocr);
     conversations.push(conversationId);
