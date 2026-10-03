@@ -895,7 +895,7 @@ test.describe('Steel managed source review', () => {
     expect(await persistedSnapshot(conversationId)).toEqual(snapshot);
   });
 
-  for (const proof of ['matching_receipt', 'missing_receipt', 'mismatched_receipt'] as const) {
+  for (const proof of ['matching_receipt', 'missing_receipt', 'mismatched_receipt', 'mismatched_hash', 'mismatched_digest'] as const) {
     test(`a pre-selector saved source stays reliable only with matching immutable proof: ${proof}`, async ({ page }) => {
       const { conversationId, messageId } = await seedCurrent(ocr);
       conversations.push(conversationId);
@@ -924,6 +924,16 @@ test.describe('Steel managed source review', () => {
         if (proof === 'mismatched_receipt') {
           await db.collection('steel_review_outputs').updateOne(filter, { $set: {
             'receipts.0.snapshot.rows.0.values.數量.effective': '999',
+          } });
+        }
+        if (proof === 'mismatched_hash') {
+          await db.collection('steel_review_outputs').updateOne(filter, { $set: {
+            'receipts.0.snapshot.messageSha256': '0'.repeat(64),
+          } });
+        }
+        if (proof === 'mismatched_digest') {
+          await db.collection('steel_review_outputs').updateOne(filter, { $set: {
+            'receipts.0.snapshot.digest': '0'.repeat(64),
           } });
         }
       });
@@ -1267,6 +1277,8 @@ test.describe('Steel managed source review', () => {
     await dialog.getByRole('combobox', { name: 'Page', exact: true }).click();
     await page.getByRole('option', { name: '2', exact: true }).click();
     await expect(reviewValue(dialog, 'REVIEW-P1')).toBeVisible();
+    await expect(row.locator('td').nth(4).getByText('2', { exact: true })).toBeVisible();
+    await expect(row.locator('td').nth(4).locator('del')).toHaveText('1');
     await expect(dialog.getByText('Unsaved changes: 1 rows', { exact: true })).toBeVisible();
     expect(await persistedSnapshot(conversationId)).toEqual(before);
     await page.keyboard.press('Escape');
@@ -1405,6 +1417,90 @@ test.describe('Steel managed source review', () => {
     expectPreservedAiState(before.ocr, after.ocr);
   });
 
+  test('returning a source draft to the authentic legacy file and page is a zero-write UI no-op', async ({ page }) => {
+    const { conversationId, messageId } = await seedCapturedLegacyReview('steel-review-legacy03-sourced');
+    conversations.push(conversationId);
+    await seedSelectorFiles(conversationId);
+    const before = await persistedSnapshot(conversationId);
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(read.status()).toBe(200);
+    const { table } = await read.json() as { table: SteelReviewTable };
+    expect(table.rows[0].source?.mediaType).toBeUndefined();
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    const row = dialog.locator('tbody tr').filter({ has: page.locator('input[value="LEGACY-P1"]') });
+    await row.getByRole('button', { name: `Change source ${table.rows[0].rowId}`, exact: true }).click();
+    await row.getByRole('combobox', { name: 'Source file', exact: true }).click();
+    await page.getByRole('option', { name: 'beta.pdf', exact: true }).click();
+    await expect(dialog.getByText('Unsaved changes: 1 rows', { exact: true })).toBeVisible();
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    await row.getByRole('combobox', { name: 'Source file', exact: true }).click();
+    await page.getByRole('option', { name: 'alpha.pdf', exact: true }).click();
+    await row.getByRole('combobox', { name: 'Source page', exact: true }).click();
+    await page.getByRole('option', { name: '1', exact: true }).click();
+    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeVisible();
+    await expect(page.getByRole('button', { name: 'Discard unsaved changes', exact: true })).toHaveCount(0);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+  });
+
+  test('an unproven current source code remains reserved without becoming a file association', async ({ page }) => {
+    const markdown = ocr.replace('| A | REVIEW-P2', '| F7 | REVIEW-P2');
+    const { conversationId, messageId } = await seedCurrent(markdown);
+    conversations.push(conversationId);
+    await seedSelectorFiles(conversationId);
+    await withMongo(async (db) => {
+      await db.collection('steel_conversation_ocr_state').updateOne({ conversationId }, { $set: { sourceMappings: [] } });
+    });
+    const before = await persistedSnapshot(conversationId);
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(read.status()).toBe(200);
+    const { table } = await read.json() as { table: SteelReviewTable };
+    expect(table.rows.map((row) => row.source)).toEqual([null, null]);
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const response = await page.request.post(`${url}/prepare`, { headers, data: {
+      ...table, sourceIntents: [{ rowId: table.rows[0].rowId, fileId: 'review-beta', pageNumber: 1 }],
+    } });
+    expect(response.status()).toBe(200);
+    const prepared = await response.json() as SteelReviewPrepared;
+    expect(prepared.rows[0].values['來源'].effective).toBe('F8');
+    expect(prepared.rows[1]).toEqual(table.rows[1]);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    const commit = await page.request.post(`${url}/commit`, { headers, data: prepared });
+    expect(commit.status()).toBe(200);
+    const after = await persistedSnapshot(conversationId);
+    const reopen = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(reopen.status()).toBe(200);
+    const reopened = await reopen.json() as { table: SteelReviewTable };
+    expect(reopened.table.rows[0].source).toMatchObject({ fileId: 'review-beta', pageNumber: 1 });
+    expect(reopened.table.rows[1]).toEqual(table.rows[1]);
+    expect(reopened.table.rows[1].source).toBeNull();
+    expectPreservedAiState(before.ocr, after.ocr);
+    expect(await persistedSnapshot(conversationId)).toEqual(after);
+  });
+
+  test('a valid source intent cannot import forged client media into an authentic legacy row', async ({ page }) => {
+    const { conversationId, messageId } = await seedCapturedLegacyReview('steel-review-legacy03-sourced');
+    conversations.push(conversationId);
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(read.status()).toBe(200);
+    const { table } = await read.json() as { table: SteelReviewTable };
+    expect(table.rows[0].source?.mediaType).toBeUndefined();
+    const rows = structuredClone(table.rows);
+    rows[0].source = { fileId: 'review-alpha', pageNumber: 2, filename: 'alpha.pdf', mediaType: 'image/png' };
+    const before = await persistedSnapshot(conversationId);
+    const response = await page.request.post(`/api/steel/conversations/${conversationId}/review/ocr_result/prepare`, {
+      headers, data: { ...table, rows,
+        sourceIntents: [{ rowId: rows[0].rowId, fileId: 'review-alpha', pageNumber: 2 }] },
+    });
+    expect(response.status()).toBeGreaterThanOrEqual(400);
+    expect(response.status()).toBeLessThan(500);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+  });
+
   test('new human source codes reserve unavailable owner AI codes without locating their old rows', async ({ page }) => {
     const markdown = ocr.replace('| A | REVIEW-P2', '| F7 | REVIEW-P2');
     const { conversationId, messageId } = await seedCurrent(markdown);
@@ -1474,7 +1570,9 @@ test.describe('Steel managed source review', () => {
     await page.getByRole('option', { name: 'gamma.png', exact: true }).click();
     await expect(reviewValue(dialog, 'REVIEW-P1')).toBeVisible();
     await expect(reviewValue(dialog, 'REVIEW-P2')).toBeVisible();
-    await expect.poll(() => dialog.locator('canvas').evaluate((canvas: HTMLCanvasElement) => canvas.width)).toBe(800);
+    const image = dialog.getByRole('img', { name: 'Source page preview', exact: true });
+    await expect(image).toBeVisible();
+    await expect.poll(() => image.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(800);
     await page.keyboard.press('Escape');
     await expect(dialog).not.toBeVisible();
     expect(await persistedSnapshot(conversationId)).toEqual(saved);
