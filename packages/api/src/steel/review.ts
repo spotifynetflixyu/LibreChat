@@ -318,6 +318,17 @@ function projectRecord(
     latestOutputId,
     isLatest,
     readOnly: !isLatest,
+    ...(record.humanSavedAt ? { humanSavedAt: record.humanSavedAt.toISOString() } : {}),
+    ...(record.humanSavedAt && isLatest ? { updated: true } : {}),
+    ...(record.humanSavedAt && !isLatest ? { previousVersion: true } : {}),
+    ...(record.aiRawMarkdown ? { aiRawMarkdown: record.aiRawMarkdown } : {}),
+    ...(record.aiBaselineMarkdown ? { aiBaselineMarkdown: record.aiBaselineMarkdown } : {}),
+    ...(record.humanMarkdown ? { humanMarkdown: record.humanMarkdown } : {}),
+    ...(record.effectiveMarkdown ? { effectiveMarkdown: record.effectiveMarkdown } : {}),
+    ...(record.displayMarkdown ? { displayMarkdown: record.displayMarkdown } : {}),
+    ...(record.lastSave ? {
+      lastSave: { ...record.lastSave, savedAt: record.lastSave.savedAt.toISOString() },
+    } : {}),
     headers: table.headers,
     rows,
   };
@@ -380,6 +391,17 @@ function projectSidecar(
     latestOutputId,
     isLatest,
     readOnly: !isLatest,
+    ...(record.humanSavedAt ? { humanSavedAt: record.humanSavedAt.toISOString() } : {}),
+    ...(record.humanSavedAt && isLatest ? { updated: true } : {}),
+    ...(record.humanSavedAt && !isLatest ? { previousVersion: true } : {}),
+    ...(record.aiRawMarkdown ? { aiRawMarkdown: record.aiRawMarkdown } : {}),
+    ...(record.aiBaselineMarkdown ? { aiBaselineMarkdown: record.aiBaselineMarkdown } : {}),
+    ...(record.humanMarkdown ? { humanMarkdown: record.humanMarkdown } : {}),
+    ...(record.effectiveMarkdown ? { effectiveMarkdown: record.effectiveMarkdown } : {}),
+    ...(record.displayMarkdown ? { displayMarkdown: record.displayMarkdown } : {}),
+    ...(record.lastSave ? {
+      lastSave: { ...record.lastSave, savedAt: record.lastSave.savedAt.toISOString() },
+    } : {}),
     headers: record.headers,
     rows: record.rows,
   };
@@ -598,7 +620,8 @@ export function createSteelReviewService({
       const changedRowIds = input.rows
         .filter((row, index) => JSON.stringify(row.values) !== JSON.stringify(currentRows[index]?.values))
         .map((row) => row.rowId);
-      const cleanReplacementText = serializeReviewTable(input.rows.length > 0 ? Object.keys(input.rows[0]?.values ?? {}) : target.headers, input.rows);
+      const headers = record.headers ?? target.headers;
+      const cleanReplacementText = serializeReviewTable(headers, input.rows);
       const effectiveMarkdown = replaceTargetText(record, target, cleanReplacementText);
       if (!effectiveMarkdown) {
         throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review table target not found');
@@ -607,7 +630,6 @@ export function createSteelReviewService({
       if (fullText === undefined) {
         throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review message not found');
       }
-      const headers = input.rows.length > 0 ? Object.keys(input.rows[0].values) : target.headers;
       const operationId = randomUUID();
       const operationBase: Omit<SteelReviewCommitInput, 'digest'> = {
         ...input,

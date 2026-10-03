@@ -14,7 +14,11 @@ import type {
   OpenAIOAuthTokenStatus,
   OpenAIOAuthUsageRemaining,
   SteelReviewKind,
+  SteelReviewCommit,
+  SteelReviewPrepare,
+  SteelReviewPrepared,
   SteelReviewResponse,
+  SteelReviewSaveResponse,
   SteelReviewSourcesResponse,
   SteelQuotationStatus,
 } from 'librechat-data-provider';
@@ -182,6 +186,44 @@ export const useGetSteelReviewSourceQuery = (
       staleTime: 0,
       cacheTime: 0,
       ...config,
+    },
+  );
+};
+
+export const usePrepareSteelReviewMutation = (): UseMutationResult<
+  SteelReviewPrepared,
+  unknown,
+  SteelReviewPrepare,
+  unknown
+> => {
+  return useMutation(
+    [MutationKeys.prepareSteelReview],
+    (input: SteelReviewPrepare) => dataService.prepareSteelReview(input),
+  );
+};
+
+export const useCommitSteelReviewMutation = (): UseMutationResult<
+  SteelReviewSaveResponse,
+  unknown,
+  SteelReviewCommit,
+  unknown
+> => {
+  const queryClient = useQueryClient();
+  return useMutation(
+    [MutationKeys.commitSteelReview],
+    (input: SteelReviewCommit) => dataService.commitSteelReview(input),
+    {
+      onSuccess: (_data, input) => {
+        void queryClient.invalidateQueries(
+          DynamicQueryKeys.steelReview(
+            input.conversationId,
+            input.kind,
+            input.messageId,
+            input.tableId,
+            input.partIndex,
+          ),
+        );
+      },
     },
   );
 };

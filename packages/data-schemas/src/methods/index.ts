@@ -624,8 +624,6 @@ export type {
   MCPAuthorityConfigSourceDocument,
   MCPAuthorityCredentialSourceDocument,
   InsightsMethods,
-  SteelReviewReadMethods,
-  SteelReviewWriteMethods,
   SteelReviewSourceMethods,
 };
 

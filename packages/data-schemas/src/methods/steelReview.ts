@@ -207,7 +207,7 @@ function sanitizeRows(
 }
 
 function sidecarRecord(
-  output: Pick<ISteelReviewOutput, 'userId' | 'tenantId' | 'conversationId' | 'kind' | 'messageId' | 'tableId' | 'outputId' | 'revision' | 'state' | 'headers' | 'rows' | 'latestOutputId' | 'aiRawMarkdown' | 'aiBaselineMarkdown' | 'humanMarkdown' | 'humanSavedAt' | 'effectiveMarkdown' | 'displayMarkdown'>,
+  output: Pick<ISteelReviewOutput, 'userId' | 'tenantId' | 'conversationId' | 'kind' | 'messageId' | 'tableId' | 'outputId' | 'revision' | 'state' | 'headers' | 'rows' | 'latestOutputId' | 'aiRawMarkdown' | 'aiBaselineMarkdown' | 'humanMarkdown' | 'humanSavedAt' | 'effectiveMarkdown' | 'displayMarkdown' | 'receipts'>,
   message?: { selected: string; parts: SteelReviewTextPart[]; selectedPartIndex?: number },
   authorizedFiles: ReadonlyMap<string, AuthorizedFile> = new Map(),
 ): SteelReviewReadRecord {
@@ -233,6 +233,7 @@ function sidecarRecord(
     ...(output.humanSavedAt ? { humanSavedAt: output.humanSavedAt } : {}),
     ...(output.effectiveMarkdown ? { effectiveMarkdown: output.effectiveMarkdown } : {}),
     ...(output.displayMarkdown ? { displayMarkdown: output.displayMarkdown } : {}),
+    ...(output.receipts?.length > 0 ? { lastSave: output.receipts[output.receipts.length - 1] } : {}),
     ...(message
       ? {
           messageText: message.selected,
@@ -588,7 +589,7 @@ function commitDigest(input: Omit<SteelReviewCommitInput, 'digest'>): string {
   return createHash('sha256').update(canonical).digest('hex');
 }
 
-type SteelTextPart = { type?: string; text?: string; [key: string]: unknown };
+type SteelTextPart = { contentIndex?: number; type?: string; text?: string; [key: string]: unknown };
 
 function readTextMirror(message: Pick<IMessage, 'text' | 'content'>): {
   text: string;
@@ -600,9 +601,12 @@ function readTextMirror(message: Pick<IMessage, 'text' | 'content'>): {
   if (!Array.isArray(message.content)) {
     return { text: message.text, parts: [] };
   }
-  const parts = message.content.filter(
-    (part): part is SteelTextPart => typeof part === 'object' && part !== null && !Array.isArray(part),
-  );
+  const parts = message.content.flatMap((part, contentIndex) => {
+    if (typeof part !== 'object' || part === null || Array.isArray(part)) {
+      return [];
+    }
+    return [{ ...(part as SteelTextPart), contentIndex }];
+  });
   const rendered = parts
     .filter((part) => part.type === 'text' && typeof part.text === 'string')
     .map((part) => part.text as string)
@@ -629,7 +633,7 @@ function withTextPart(
   replacement: string,
 ): SteelTextPart[] | null {
   const next = parts.map((part) => ({ ...part }));
-  const part = next[partIndex];
+  const part = next.find((candidate) => candidate.contentIndex === partIndex);
   if (!part || part.type !== 'text' || typeof part.text !== 'string') {
     return null;
   }
@@ -670,6 +674,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
   const Message = createMessageModel(mongoose);
   const Conversation = createConversationModel(mongoose);
   const OcrState = createSteelConversationOcrStateModel(mongoose);
+  const QuotationState = createSteelQuotationStateModel(mongoose);
   const ReviewOutput = createSteelReviewOutputModel(mongoose);
 
   return {
@@ -729,7 +734,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
       try {
         let result: SteelReviewCommitResult | undefined;
         await session.withTransaction(async () => {
-          const [conversation, message] = await Promise.all([
+          const [conversation, message, ocrState, quotation] = await Promise.all([
             Conversation.findOne({
               $and: [
                 { conversationId: input.conversationId, user: input.userId },
@@ -741,9 +746,29 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               .select({ messageId: 1, text: 1, content: 1 })
               .session(session)
               .lean<Pick<IMessage, 'messageId' | 'text' | 'content'> | null>(),
+            input.kind === 'ocr_result'
+              ? OcrState.findOne({ conversationId: input.conversationId })
+                .session(session)
+                .lean<ISteelConversationOcrState | null>()
+              : Promise.resolve(null),
+            input.kind === 'system_order'
+              ? QuotationState.findOne(reviewScope(input))
+                .session(session)
+                .lean<ISteelQuotationState | null>()
+              : Promise.resolve(null),
           ]);
           if (!conversation || !message) {
             throw new SteelReviewWriteError('REVIEW_NOT_FOUND', 'Review table not found');
+          }
+          if (input.kind === 'ocr_result' &&
+            (ocrState?.currentOcrResultMessageId !== input.messageId ||
+              ocrState?.currentOcrResultGenerationId !== input.outputId.replace(/^ocr_result:/u, ''))) {
+            throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review output is no longer current');
+          }
+          if (input.kind === 'system_order' &&
+            (quotation?.currentSystemOrder?.messageId !== input.messageId ||
+              quotation?.currentSystemOrder?.runId !== input.outputId.replace(/^system_order:/u, ''))) {
+            throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review output is no longer current');
           }
           if (typeof message.text !== 'string' || createHash('sha256').update(message.text).digest('hex') !== input.messageSha256) {
             throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review message changed');
@@ -755,7 +780,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
           }
           const selectedText = input.partIndex === undefined
             ? mirror.text
-            : mirror.parts[input.partIndex]?.text;
+            : mirror.parts.find((part) => part.contentIndex === input.partIndex)?.text;
           if (selectedText === undefined) {
             throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review message part changed');
           }
@@ -799,7 +824,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
           const safeNextParts = nextParts ?? [];
           const nextContent = input.partIndex === undefined || safeNextParts.length === 0
             ? message.content
-            : safeNextParts;
+            : safeNextParts.map(({ contentIndex: _contentIndex, ...part }) => part);
           const nextText = input.partIndex === undefined
             ? selectedNext
             : renderTextParts(safeNextParts);
@@ -815,7 +840,8 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review output is no longer current');
           }
           const baselineRows = output?.rows ?? input.rows;
-          if (output && output.rows.length !== input.rows.length) {
+          if (output && (output.rows.length !== input.rows.length ||
+            JSON.stringify(output.headers) !== JSON.stringify(input.headers))) {
             throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review rows changed');
           }
           if (output) {
@@ -823,7 +849,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               const previous = output.rows[index];
               const next = input.rows[index];
               if (!next || previous.rowId !== next.rowId ||
-                JSON.stringify(previous.values) === JSON.stringify(next.values) && previous.source !== next.source) {
+                JSON.stringify(previous.source) !== JSON.stringify(next.source)) {
                 throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review row identity changed');
               }
               for (const header of input.headers) {
@@ -907,7 +933,9 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             $push: { receipts: receipt },
           };
           const updated = await ReviewOutput.findOneAndUpdate(
-            outputFilter,
+            output
+              ? { ...outputFilter, state: 'current', revision: input.revision }
+              : outputFilter,
             update,
             { upsert: !output, new: true, session },
           ).lean<ISteelReviewOutput>();

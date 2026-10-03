@@ -47,7 +47,7 @@ export interface SteelReviewReadRecord extends SteelReviewScope {
   humanSavedAt?: Date;
   effectiveMarkdown?: string;
   displayMarkdown?: string;
-  lastSave?: SteelReviewCaption & { savedAt: Date };
+  lastSave?: SteelReviewReceipt;
 }
 
 export interface SteelReviewSourceMapping {

@@ -143,6 +143,8 @@ export enum MutationKeys {
   startOpenAIOAuthCodexLogin = 'startOpenAIOAuthCodexLogin',
   cancelOpenAIOAuthCodexLogin = 'cancelOpenAIOAuthCodexLogin',
   cancelSteelQuotation = 'cancelSteelQuotation',
+  prepareSteelReview = 'prepareSteelReview',
+  commitSteelReview = 'commitSteelReview',
   logoutOpenAIOAuthCodex = 'logoutOpenAIOAuthCodex',
   deleteAgentApiKey = 'deleteAgentApiKey',
   fileUpload = 'fileUpload',

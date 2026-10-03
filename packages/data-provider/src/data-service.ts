@@ -10,6 +10,7 @@ import type {
   SteelReviewPrepare,
   SteelReviewPrepared,
   SteelReviewCommit,
+  SteelReviewSaveResponse,
   SteelReviewSourcesResponse,
   SteelQuotationStatus,
 } from './steel';
@@ -201,7 +202,7 @@ export function prepareSteelReview(input: SteelReviewPrepare): Promise<SteelRevi
   return request.post(endpoints.steelReviewPrepare(input.conversationId, input.kind), input);
 }
 
-export function commitSteelReview(input: SteelReviewCommit): Promise<SteelReviewPrepared> {
+export function commitSteelReview(input: SteelReviewCommit): Promise<SteelReviewSaveResponse> {
   return request.post(endpoints.steelReviewCommit(input.conversationId, input.kind), input);
 }
 

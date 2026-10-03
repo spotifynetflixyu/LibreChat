@@ -45,6 +45,15 @@ export const steelReviewCaptionSchema = z.object({
   changedRowIds: z.array(z.string().min(1)),
 });
 
+export const steelReviewReceiptSchema = z.object({
+  operationId: z.string().min(1),
+  digest: z.string().length(64),
+  revision: z.string().min(1),
+  changedRows: z.number().int().nonnegative(),
+  changedRowIds: z.array(z.string().min(1)),
+  savedAt: z.string().datetime(),
+});
+
 export const steelReviewTableSchema = z.object({
   conversationId: z.string().min(1),
   messageId: z.string().min(1),
@@ -56,6 +65,15 @@ export const steelReviewTableSchema = z.object({
   latestOutputId: z.string().min(1),
   isLatest: z.boolean(),
   readOnly: z.boolean(),
+  humanSavedAt: z.string().datetime().optional(),
+  updated: z.boolean().optional(),
+  previousVersion: z.boolean().optional(),
+  aiRawMarkdown: z.string().optional(),
+  aiBaselineMarkdown: z.string().optional(),
+  humanMarkdown: z.string().optional(),
+  effectiveMarkdown: z.string().optional(),
+  displayMarkdown: z.string().optional(),
+  lastSave: steelReviewReceiptSchema.optional(),
   headers: z.array(z.string()),
   rows: z.array(steelReviewRowSchema),
 });
@@ -89,6 +107,12 @@ export const steelReviewPreparedSchema = steelReviewPrepareSchema.extend({
 
 export const steelReviewCommitSchema = steelReviewPreparedSchema;
 
+export const steelReviewSaveResponseSchema = steelReviewPreparedSchema.extend({
+  savedAt: z.string().datetime(),
+  changedRows: z.number().int().nonnegative(),
+  changedRowIds: z.array(z.string().min(1)),
+});
+
 export const steelReviewResponseSchema = z.object({
   table: steelReviewTableSchema.nullable(),
 });
@@ -120,9 +144,11 @@ export type SteelReviewTable = z.infer<typeof steelReviewTableSchema>;
 export type SteelReviewResponse = z.infer<typeof steelReviewResponseSchema>;
 export type SteelReviewTarget = z.infer<typeof steelReviewTargetSchema>;
 export type SteelReviewCaption = z.infer<typeof steelReviewCaptionSchema>;
+export type SteelReviewReceipt = z.infer<typeof steelReviewReceiptSchema>;
 export type SteelReviewPrepare = z.infer<typeof steelReviewPrepareSchema>;
 export type SteelReviewPrepared = z.infer<typeof steelReviewPreparedSchema>;
 export type SteelReviewCommit = z.infer<typeof steelReviewCommitSchema>;
+export type SteelReviewSaveResponse = z.infer<typeof steelReviewSaveResponseSchema>;
 export type SteelReviewSourceFile = z.infer<typeof steelReviewSourceFileSchema>;
 export type SteelReviewSourcesResponse = z.infer<typeof steelReviewSourcesResponseSchema>;
 export type SteelReviewSourceQuery = z.infer<typeof steelReviewSourceQuerySchema>;
