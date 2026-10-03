@@ -29,6 +29,10 @@ The current source-review spec, glossary, and ADRs are the acceptance source.
   payload digest. Identical already-committed retries return their stored receipt without
   writes, even after supersession. Same ID/different payload fails. Never-committed and new
   undo/redo operations recheck latest-output eligibility and revision.
+- Save reuses existing backend field normalization on clean effective values (system order:
+  `packages/api/src/steel/markdown/order.ts`), before building display differences. Preparation
+  and commit use identical validation/normalization/recalculation and final hash/counts; persist
+  and return the same normalized snapshot in DB and exact chat targets. AI originals stay intact.
 - One Mongo transaction/CAS updates review data, canonical OCR/quotation, staleness metadata,
   and precisely identified message targets. system order/customer_quote are atomic. Generic
   message mutation and AI writers must not bypass the managed-table revision boundary.
@@ -72,14 +76,20 @@ The current source-review spec, glossary, and ADRs are the acceptance source.
 - Material replacement updates candidate dimensions/price/material derived values but
   preserves all existing processing fields. Separate later input changes retain ordinary
   dependency recomputation. Inputs are decimal strings; use existing exact quote arithmetic.
+- Manual Save is the only ordinary human commit trigger. Enter/blur, source/CRUD/candidate
+  selection and undo/redo update a feature-owned draft only; page/file switching preserves it.
+  A localized Save button has a persistent net unique unsaved-row caption. Save flushes the
+  active cell, prepares/recalculates all net operations and displays authoritative affected counts
+  before atomic commit; zero net changes do not write or refresh human time. Changes arriving
+  during a save stay in a subsequent draft, never cleared by an earlier receipt.
 - The frontend uses shared semantic primitives, Jotai feature state and React Query. PDF
   rendering is controlled single-page, multi-source single selection; one source has many rows.
-  Sessions preserve pending operations across pages and support persisted inverse operations.
+  Sessions preserve pending operations across pages and stage inverse operations for explicit Save.
   Every close entry checks unsaved active cells/failed drafts and asks Save updates, Discard
   unsaved changes or Continue editing; save closes only after confirmed success. Discard
-  never rolls back committed autosaves, and unknown in-flight outcomes use their receipt.
+  never rolls back committed saves, and unknown in-flight outcomes use their receipt.
 - Managed-table downloads use the same feature-owned save gate: flush the active edit and
-  drain pending autosave/prepare/commit, save only net corrections, then download the clicked
+  drain in-flight prepare/commit, save only net corrections, then download the clicked
   owner's backend-confirmed immutable saved clean snapshot/revision. No-op/history downloads
   do not write or refresh human time. Failures or superseded pending edits block download and
   retain drafts; a lost save response is resolved through the existing idempotent receipt.
@@ -89,6 +99,9 @@ The current source-review spec, glossary, and ADRs are the acceptance source.
 
 ## Task graph
 
+User execution preference: implement tickets in numeric/topological order, one ticket at a time.
+Complete, review and verify a ticket before releasing the next; no parallel ticket implementation.
+
 Each numbered ticket is a demoable vertical slice with schema/API/UI and behavior tests
 where its behavior needs them. Shared plumbing is introduced by the slice using it.
 
@@ -96,7 +109,7 @@ where its behavior needs them. Shared plumbing is introduced by the slice using 
 | --- | --- | --- |
 | 01 | Recognized Steel table read-only entry and per-kind current/history eligibility | none |
 | 02 | Multi-file controlled page/image preview and all corresponding rows | 01 |
-| 03 | OCR cell autosave, baseline/diff, exact atomic chat write, retry/conflict and stale quote | 01 |
+| 03 | OCR cell draft and manual Save, baseline/diff, exact atomic chat write, retry/conflict and stale quote | 01 |
 | 04 | Single nullable source selectors and legacy unlocated labeling | 02, 03 |
 | 05 | OCR add/delete/session undo-redo and stable IDs | 02, 03 |
 | 06 | System order price/quantity correction and atomic customer_quote update | 03 |
