@@ -843,11 +843,21 @@ test.describe('Steel managed source review', () => {
     }
     const saved = await page.request.post(`${url}/commit`, { headers, data: operations[0] });
     expect(saved.status()).toBe(200);
+    const savedBody = await saved.json();
     const after = await persistedSnapshot(conversationId);
     const expected = markdown.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 7 | 1 |');
     const message = after.messages.find((candidate) => candidate.messageId === messageId);
     expect(message?.text).toBe(`${expected} CAS-SECOND-PART`);
     expect(message?.content).toEqual([{ type: 'text', text: expected }, { type: 'text', text: 'CAS-SECOND-PART' }]);
+    expect(savedBody.savedSnapshot).toMatchObject({
+      conversationId, messageId, messageText: `${expected} CAS-SECOND-PART`,
+      messageSha256: createHash('sha256').update(`${expected} CAS-SECOND-PART`).digest('hex'),
+      messageTextParts: [{ partIndex: 0, text: expected }, { partIndex: 1, text: 'CAS-SECOND-PART' }],
+      ownerUpdated: { version: 1, kind: 'ocr_result', conversationId, messageId,
+        tableId: table.tableId, outputId: table.outputId, revision: savedBody.revision },
+    });
+    expect(message?.metadata?.steel).toEqual(before.messages.find((candidate) => candidate.messageId === messageId)?.metadata?.steel);
+
     expect(after.messages.find((candidate) => candidate.messageId === previousMessageId))
       .toEqual(before.messages.find((candidate) => candidate.messageId === previousMessageId));
     const review = after.reviews[0];
@@ -988,6 +998,7 @@ test.describe('Steel managed source review', () => {
     const committedReceipt = await page.request.get(receiptUrl, { headers });
     expect(committedReceipt.status()).toBe(200);
     const receipt = await committedReceipt.json();
+    expect(receipt.snapshot).toEqual(first.saved.savedSnapshot);
     expect(receipt).toMatchObject({ status: 'committed', snapshot: {
       operationId: first.operation.operationId, revision: first.saved.revision,
       effectiveMarkdown: first.saved.effectiveMarkdown, messageSha256: first.saved.messageSha256,
