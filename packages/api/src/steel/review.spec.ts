@@ -376,7 +376,7 @@ describe('Steel review read service', () => {
       '',
       '| 來源 | 零件編號 |',
       '| --- | --- |',
-      '| A | P-1 |',
+      '| A | P-9 |',
       '',
       'suffix',
     ].join('\n');
@@ -443,6 +443,193 @@ describe('Steel review read service', () => {
       caption: prepared.caption,
     })).rejects.toMatchObject({ code: 'REVIEW_INVALID_OPERATION' });
     expect(commitSteelReview).not.toHaveBeenCalled();
+  });
+
+  it('reconciles a physical OCR table after unrelated canonical tables shift its index', async () => {
+    const markdown = [
+      '```markdown',
+      '## ocr_result',
+      '',
+      '| 來源 | 零件編號 |',
+      '| --- | --- |',
+      '| fake | fenced |',
+      '```',
+      '',
+      '## customer_data',
+      '',
+      '| Name | Value |',
+      '| --- | --- |',
+      '| keep | customer |',
+      '',
+      '## ocr_result',
+      '',
+      'OCR notes remain inside the managed section.',
+      '',
+      '| 來源 | 零件編號 |',
+      '| --- | --- |',
+      '| A | P-1 |',
+      '',
+      '## extra',
+      '',
+      '| Name | Value |',
+      '| --- | --- |',
+      '| keep | extra |',
+    ].join('\n');
+    const record = {
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result' as const,
+      messageId: 'message-1',
+      tableId: 'ocr_result:2',
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      state: 'current' as const,
+      markdown,
+      messageText: markdown,
+    };
+    const reader = { readSteelReview: jest.fn().mockResolvedValue(record) };
+    const service = createSteelReviewService({ reader });
+    const current = await service.read({
+      userId: record.userId,
+      conversationId: record.conversationId,
+      kind: record.kind,
+      messageId: record.messageId,
+      tableId: record.tableId,
+    });
+    const rows = current.table.rows.map((row) => ({
+      ...row,
+      values: {
+        ...row.values,
+        零件編號: { ...row.values.零件編號, effective: 'P-9' },
+      },
+    }));
+
+    const prepared = await service.prepare({
+      userId: record.userId,
+      conversationId: record.conversationId,
+      kind: record.kind,
+      messageId: record.messageId,
+      tableId: record.tableId,
+      outputId: record.outputId,
+      revision: record.revision,
+      rows,
+    });
+
+    expect(prepared.effectiveMarkdown).toContain('## ocr_result');
+    expect(prepared.effectiveMarkdown).toContain('OCR notes remain inside the managed section.');
+    expect(prepared.effectiveMarkdown).toContain('| A | P-9 |');
+    expect(prepared.effectiveMarkdown).not.toContain('customer_data');
+    expect(prepared.effectiveMarkdown).not.toContain('## extra');
+    expect(prepared.effectiveMarkdown).not.toContain('fenced');
+    expect(prepared.target.start).toBeGreaterThan(markdown.indexOf('## ocr_result'));
+  });
+
+  it('rejects ambiguous canonical managed table identities before preparing a save', async () => {
+    const duplicate = [
+      managedMarkdown,
+      '',
+      managedMarkdown,
+    ].join('\n');
+    const record = {
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result' as const,
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      state: 'current' as const,
+      markdown: duplicate,
+      messageText: duplicate,
+    };
+    const service = createSteelReviewService({
+      reader: { readSteelReview: jest.fn().mockResolvedValue(record) },
+    });
+    await expect(service.prepare({
+      userId: record.userId,
+      conversationId: record.conversationId,
+      kind: record.kind,
+      messageId: record.messageId,
+      tableId: record.tableId,
+      outputId: record.outputId,
+      revision: record.revision,
+      rows: [{
+        rowId: 'row-1',
+        values: {
+          來源: { baseline: 'A', effective: 'A' },
+          零件編號: { baseline: 'P-1', effective: 'P-9' },
+        },
+        source: null,
+      }],
+    })).rejects.toMatchObject({ code: 'REVIEW_NOT_FOUND', statusCode: 404 });
+  });
+
+  it('uses persisted effective sidecar values rather than the immutable AI baseline', async () => {
+    const aiMarkdown = managedMarkdown.replace('P-1', 'P-2');
+    const effectiveMarkdown = managedMarkdown.replace('P-1', 'P-7');
+    const record = {
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result' as const,
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      state: 'current' as const,
+      markdown: aiMarkdown,
+      messageText: effectiveMarkdown,
+      headers: ['來源', '零件編號'],
+      rows: [{
+        rowId: 'row-1',
+        values: {
+          來源: { baseline: 'A', effective: 'A' },
+          零件編號: { baseline: 'P-2', effective: 'P-7' },
+        },
+        source: null,
+      }],
+      effectiveMarkdown,
+    };
+    const service = createSteelReviewService({
+      reader: { readSteelReview: jest.fn().mockResolvedValue(record) },
+    });
+    await expect(service.prepare({
+      userId: record.userId,
+      conversationId: record.conversationId,
+      kind: record.kind,
+      messageId: record.messageId,
+      tableId: record.tableId,
+      outputId: record.outputId,
+      revision: record.revision,
+      rows: [{
+        rowId: 'row-1',
+        values: {
+          來源: { baseline: 'A', effective: 'A' },
+          零件編號: { baseline: 'P-2', effective: 'P-8' },
+        },
+        source: null,
+      }],
+    })).resolves.toEqual(expect.objectContaining({
+      effectiveMarkdown: expect.stringContaining('| A | P-8 |'),
+    }));
+
+    record.messageText = aiMarkdown;
+    await expect(service.prepare({
+      userId: record.userId,
+      conversationId: record.conversationId,
+      kind: record.kind,
+      messageId: record.messageId,
+      tableId: record.tableId,
+      outputId: record.outputId,
+      revision: record.revision,
+      rows: [{
+        rowId: 'row-1',
+        values: {
+          來源: { baseline: 'A', effective: 'A' },
+          零件編號: { baseline: 'P-2', effective: 'P-8' },
+        },
+        source: null,
+      }],
+    })).rejects.toMatchObject({ code: 'REVIEW_NOT_FOUND', statusCode: 404 });
   });
 
   it('rejects source association cell edits while allowing Profile business edits', async () => {
