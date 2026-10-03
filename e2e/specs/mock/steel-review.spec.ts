@@ -867,7 +867,7 @@ test.describe('Steel managed source review', () => {
     expect(review?.effectiveMarkdown).toBe(review?.humanMarkdown);
     // A human Save must not replace the latest AI input or advance its timestamp.
     expect(after.ocr).toEqual(before.ocr);
-    expect(review?.aiSavedAt).toEqual(before.ocr?.updatedAt);
+    expect(review?.aiUpdatedAt).toEqual(before.ocr?.updatedAt);
     expect(review?.humanSavedAt.getTime()).toBeGreaterThan(before.ocr?.updatedAt.getTime());
     const stale = await page.request.post(`${url}/commit`, { headers, data: operations[1] });
     expect(stale.status()).toBe(409);
