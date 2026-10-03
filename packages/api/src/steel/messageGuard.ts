@@ -1,3 +1,4 @@
+import type { SteelReviewMessageMutationCheckResult } from '@librechat/data-schemas';
 import type { Response, NextFunction } from 'express';
 import type { ServerRequest } from '../types/http';
 import { resolveRequestTenantId } from '../middleware/tenant';
@@ -10,7 +11,9 @@ export interface SteelReviewMessageGuardInput {
 }
 
 export interface SteelReviewMessageGuardDeps {
-  isManagedSteelReviewMessage: (input: SteelReviewMessageGuardInput) => Promise<boolean>;
+  checkSteelReviewMessageMutation: (
+    input: SteelReviewMessageGuardInput,
+  ) => Promise<SteelReviewMessageMutationCheckResult>;
 }
 
 type SteelReviewMessageRequest = ServerRequest & {
@@ -22,12 +25,13 @@ type SteelReviewMessageRequest = ServerRequest & {
 
 export const STEEL_REVIEW_MESSAGE_EDIT_ERROR =
   'Managed Steel review messages must be edited through the review save contract';
+export const STEEL_REVIEW_MESSAGE_NOT_FOUND_ERROR = 'Message not found';
 
 export function createSteelReviewMessageMutationMiddleware(
   deps: SteelReviewMessageGuardDeps,
 ): (req: SteelReviewMessageRequest, res: Response, next: NextFunction) => Promise<void> {
-  if (!deps || typeof deps.isManagedSteelReviewMessage !== 'function') {
-    throw new Error('Steel review message guard requires an injected managed-message checker');
+  if (!deps || typeof deps.checkSteelReviewMessageMutation !== 'function') {
+    throw new Error('Steel review message guard requires an injected mutation checker');
   }
 
   return async (req, res, next) => {
@@ -44,13 +48,17 @@ export function createSteelReviewMessageMutationMiddleware(
     }
 
     try {
-      const managed = await deps.isManagedSteelReviewMessage({
+      const result = await deps.checkSteelReviewMessageMutation({
         userId,
         tenantId: resolveRequestTenantId(req),
         conversationId,
         messageId,
       });
-      if (managed) {
+      if (!result.ok) {
+        res.status(404).json({ error: STEEL_REVIEW_MESSAGE_NOT_FOUND_ERROR });
+        return;
+      }
+      if (result.value.managed) {
         res.status(409).json({ error: STEEL_REVIEW_MESSAGE_EDIT_ERROR });
         return;
       }

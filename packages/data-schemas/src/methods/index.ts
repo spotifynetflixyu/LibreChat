@@ -18,6 +18,7 @@ export {
 export type {
   SteelReviewCommitInput,
   SteelReviewCommitResult,
+  SteelReviewMessageMutationCheckResult,
   SteelReviewReadMethods,
   SteelReviewWriteMethods,
 } from './steelReview';
