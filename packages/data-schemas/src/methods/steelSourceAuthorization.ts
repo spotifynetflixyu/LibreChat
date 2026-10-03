@@ -27,7 +27,20 @@ export type SteelReviewAuthorizedFile = Pick<
   messageId?: string;
 };
 
-type ScopedMessage = Pick<IMessage, 'messageId' | 'conversationId' | 'user' | 'files'>;
+type ScopedMessage = Pick<IMessage, 'messageId' | 'conversationId' | 'user' | 'files'> & {
+  tenantId?: string | null;
+  expiredAt?: Date | null;
+};
+
+type SteelReviewSourceOwnerContext = {
+  conversation: {
+    conversationId: string;
+    user?: string;
+    tenantId?: string | null;
+    expiredAt?: Date | null;
+  };
+  message: ScopedMessage;
+};
 
 function tenantFilter(tenantId?: string): TenantFilter {
   return tenantId === undefined
@@ -88,6 +101,29 @@ function hasOnlyRequestedConversation(conversations: ReadonlySet<string>, reques
   return conversations.size > 0 && [...conversations].every((conversationId) => conversationId === requestedConversationId);
 }
 
+function matchesTenantScope(actual: string | null | undefined, expected?: string): boolean {
+  return expected === undefined ? actual == null : actual === expected;
+}
+
+function isActive(expiredAt: Date | null | undefined): boolean {
+  return expiredAt == null || expiredAt > new Date();
+}
+
+function isValidOwnerContext(
+  context: SteelReviewSourceOwnerContext,
+  input: SteelReviewSourceScope,
+): boolean {
+  return context.conversation.conversationId === input.conversationId &&
+    context.conversation.user === input.userId &&
+    matchesTenantScope(context.conversation.tenantId, input.tenantId) &&
+    isActive(context.conversation.expiredAt) &&
+    context.message.messageId === input.messageId &&
+    context.message.conversationId === input.conversationId &&
+    context.message.user === input.userId &&
+    matchesTenantScope(context.message.tenantId, input.tenantId) &&
+    isActive(context.message.expiredAt);
+}
+
 /**
  * Resolves the internal file projection shared by the review row and source
  * readers. Legacy files without a conversationId require one physical record
@@ -103,6 +139,7 @@ export function createSteelReviewSourceAuthorization(mongoose: Mongoose) {
     input: SteelReviewSourceScope,
     requestedFileIds?: readonly string[],
     session?: ClientSession,
+    ownerContext?: SteelReviewSourceOwnerContext,
   ): Promise<ReadonlyMap<string, SteelReviewAuthorizedFile>> {
     const uniqueRequestedFileIds = requestedFileIds
       ? [...new Set(requestedFileIds.filter((fileId) => fileId.length > 0))]
@@ -133,20 +170,31 @@ export function createSteelReviewSourceAuthorization(mongoose: Mongoose) {
       ],
     };
 
-    const conversationQuery = Conversation.findOne(conversationFilter).select({ conversationId: 1 });
+    const reusableOwnerContext = ownerContext && isValidOwnerContext(ownerContext, input)
+      ? ownerContext
+      : undefined;
+    const conversationQuery = reusableOwnerContext
+      ? undefined
+      : Conversation.findOne(conversationFilter).select({ conversationId: 1 });
     const scopedMessagesQuery = Message.find(scopedMessageFilter)
       .select({ messageId: 1, conversationId: 1, user: 1, files: 1 });
-    const clickedMessagesQuery = Message.find(clickedMessageFilter)
-      .select({ messageId: 1, conversationId: 1, user: 1, files: 1 });
+    const clickedMessagesQuery = reusableOwnerContext
+      ? undefined
+      : Message.find(clickedMessageFilter)
+        .select({ messageId: 1, conversationId: 1, user: 1, files: 1 });
     if (session) {
-      conversationQuery.session(session);
+      conversationQuery?.session(session);
       scopedMessagesQuery.session(session);
-      clickedMessagesQuery.session(session);
+      clickedMessagesQuery?.session(session);
     }
     const [conversation, scopedMessages, clickedMessages] = await Promise.all([
-      conversationQuery.lean(),
+      reusableOwnerContext
+        ? Promise.resolve(reusableOwnerContext.conversation)
+        : conversationQuery!.lean(),
       scopedMessagesQuery.lean<ScopedMessage[]>(),
-      clickedMessagesQuery.lean<ScopedMessage[]>(),
+      reusableOwnerContext
+        ? Promise.resolve([reusableOwnerContext.message])
+        : clickedMessagesQuery!.lean<ScopedMessage[]>(),
     ]);
     if (!conversation || clickedMessages.length !== 1) {
       return new Map();

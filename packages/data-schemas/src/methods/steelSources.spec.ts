@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { MongoMemoryReplSet } from 'mongodb-memory-server';
+import { MongoMemoryReplSet, MongoMemoryServer } from 'mongodb-memory-server';
 import { createSteelReviewSourceAuthorization } from './steelSourceAuthorization';
 import { createSteelReviewSourceMethods } from './steelSources';
 import { createConversationModel } from '~/models/convo';
@@ -7,13 +7,13 @@ import { createMessageModel } from '~/models/message';
 import { createFileModel } from '~/models/file';
 
 describe('Steel review source methods', () => {
-  let mongo: MongoMemoryReplSet;
+  let mongo: MongoMemoryServer;
   let Conversation: ReturnType<typeof createConversationModel>;
   let Message: ReturnType<typeof createMessageModel>;
   let File: ReturnType<typeof createFileModel>;
 
   beforeAll(async () => {
-    mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
+    mongo = await MongoMemoryServer.create();
     await mongoose.connect(mongo.getUri());
     Conversation = createConversationModel(mongoose);
     Message = createMessageModel(mongoose);
@@ -278,18 +278,24 @@ describe('Steel review source methods', () => {
   });
 
   it('resolves files written in the supplied transaction session', async () => {
-    const authorizeFiles = createSteelReviewSourceAuthorization(mongoose);
-    const userId = new mongoose.Types.ObjectId();
+    const transactionMongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
+    const transactionMongoose = new mongoose.Mongoose();
+    await transactionMongoose.connect(transactionMongo.getUri());
+    const SessionConversation = createConversationModel(transactionMongoose);
+    const SessionMessage = createMessageModel(transactionMongoose);
+    const SessionFile = createFileModel(transactionMongoose);
+    const authorizeFiles = createSteelReviewSourceAuthorization(transactionMongoose);
+    const userId = new transactionMongoose.Types.ObjectId();
     const conversationId = 'session-source-conversation';
     const messageId = 'session-source-message';
-    await Conversation.create({
+    await SessionConversation.create({
       conversationId,
       user: userId,
       tenantId: 'tenant-a',
       title: 'Session source',
       endpoint: 'openAI',
     });
-    await Message.create({
+    await SessionMessage.create({
       messageId,
       conversationId,
       user: userId,
@@ -297,11 +303,11 @@ describe('Steel review source methods', () => {
       isCreatedByUser: false,
       text: 'OCR message',
     });
-    const session = await mongoose.startSession();
+    const session = await transactionMongoose.startSession();
     let resolved: string | undefined;
     try {
       await session.withTransaction(async () => {
-        await File.create([{
+        await SessionFile.create([{
           user: userId,
           tenantId: 'tenant-a',
           conversationId,
@@ -325,6 +331,8 @@ describe('Steel review source methods', () => {
       });
     } finally {
       await session.endSession();
+      await transactionMongoose.disconnect();
+      await transactionMongo.stop();
     }
     expect(resolved).toBe('drawing.pdf');
   });

@@ -998,10 +998,20 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               ],
             }).limit(2).session(session).lean(),
             Message.find(messageFilter(input))
-              .select({ messageId: 1, text: 1, content: 1, metadata: 1 })
+              .select({
+                messageId: 1,
+                conversationId: 1,
+                user: 1,
+                tenantId: 1,
+                expiredAt: 1,
+                files: 1,
+                text: 1,
+                content: 1,
+                metadata: 1,
+              })
               .limit(2)
               .session(session)
-              .lean<Array<Pick<IMessage, 'messageId' | 'text' | 'content' | 'metadata'>>>(),
+              .lean<Array<Pick<IMessage, 'messageId' | 'conversationId' | 'user' | 'tenantId' | 'expiredAt' | 'files' | 'text' | 'content' | 'metadata'>>>(),
             input.kind === 'ocr_result'
               ? OcrState.find({ conversationId: input.conversationId })
                 .limit(2)
@@ -1117,7 +1127,22 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             ? [...new Set(output.rows.flatMap((row) => row.source?.fileId ? [row.source.fileId] : []))]
             : [];
           const authorizedFiles = sourceFileIds.length > 0
-            ? projectAuthorizedFiles(await authorizeFiles(input, sourceFileIds, session))
+            ? projectAuthorizedFiles(await authorizeFiles(input, sourceFileIds, session, {
+              conversation: {
+                conversationId: conversation.conversationId,
+                user: conversation.user,
+                tenantId: conversation.tenantId,
+                expiredAt: conversation.expiredAt,
+              },
+              message: {
+                messageId: message.messageId,
+                conversationId: message.conversationId,
+                user: message.user,
+                tenantId: message.tenantId,
+                expiredAt: message.expiredAt,
+                files: message.files,
+              },
+            }))
             : new Map<string, AuthorizedFile>();
           const projectedRows = output ? sanitizeRows(output.rows, authorizedFiles) : [];
           const baselineRows = output?.rows ?? input.rows;
