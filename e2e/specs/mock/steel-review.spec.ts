@@ -93,6 +93,20 @@ async function persistedSnapshot(conversationId: string) {
   }));
 }
 
+function expectPreservedAiState(
+  before: Awaited<ReturnType<typeof persistedSnapshot>>['ocr'],
+  after: Awaited<ReturnType<typeof persistedSnapshot>>['ocr'],
+) {
+  expect(before).not.toBeNull();
+  expect(after).not.toBeNull();
+  const { reviewLockToken: previousToken, ...original } = before ?? {};
+  const { reviewLockToken: savedToken, ...saved } = after ?? {};
+  expect(saved).toEqual(original);
+  expect(typeof savedToken).toBe('string');
+  expect(savedToken).not.toBe('');
+  expect(savedToken).not.toBe(previousToken);
+}
+
 function reviewValue(dialog: Locator, value: string) {
   return dialog.locator(`input[value=${JSON.stringify(value)}]`).or(dialog.getByText(value, { exact: true }));
 }
@@ -876,7 +890,7 @@ test.describe('Steel managed source review', () => {
     expect(review?.humanMarkdown).toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 7 | 1 |'));
     expect(review?.effectiveMarkdown).toBe(review?.humanMarkdown);
     // A human Save must not replace the latest AI input or advance its timestamp.
-    expect(after.ocr).toEqual(before.ocr);
+    expectPreservedAiState(before.ocr, after.ocr);
     expect(review?.aiUpdatedAt).toEqual(before.ocr?.updatedAt);
     expect(review?.humanSavedAt.getTime()).toBeGreaterThan(before.ocr?.updatedAt.getTime());
     const stale = await page.request.post(`${url}/commit`, { headers, data: operations[1] });
@@ -931,7 +945,7 @@ test.describe('Steel managed source review', () => {
       expect(save.status()).toBe(200);
       const after = await persistedSnapshot(conversationId);
       const quotation = after.quotations[0];
-      expect(after.ocr).toEqual(before.ocr);
+      expectPreservedAiState(before.ocr, after.ocr);
       expect(quotation.currentSystemOrder.markdown).toBe(systemOrder);
       expect(quotation.currentSystemOrder.customerQuoteMarkdown).toBe('INTERNAL-QUOTE-KEEP');
       expect(quotation.tickets).toEqual(before.quotations[0].tickets);
