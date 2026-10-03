@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { randomUUID } from 'node:crypto';
+import { SteelReviewWriteError } from '@librechat/data-schemas';
 import {
   getSteelReviewTableId,
   steelReviewCommitSchema,
@@ -23,7 +24,6 @@ import type {
   SteelReviewReadInput,
   SteelReviewReadRecord,
 } from '@librechat/data-schemas';
-import { SteelReviewWriteError } from '@librechat/data-schemas';
 import { parseMarkdownTables, type SteelMarkdownTable } from './markdown/table';
 
 export interface SteelReviewReader {

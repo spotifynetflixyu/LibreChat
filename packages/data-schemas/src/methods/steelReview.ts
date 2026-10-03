@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto';
 import type {
+  SteelReviewCaption,
+  SteelReviewRow,
+  SteelReviewTarget,
+} from 'librechat-data-provider';
+import type {
   IMessage,
   ISteelConversationOcrState,
   ISteelDelegateOcrRun,
@@ -12,11 +17,6 @@ import type {
   SteelReviewSourceMapping,
   SteelReviewTextPart,
 } from '~/types';
-import type {
-  SteelReviewCaption,
-  SteelReviewRow,
-  SteelReviewTarget,
-} from 'librechat-data-provider';
 import {
   createSteelConversationOcrStateModel,
   createSteelDelegateOcrRunModel,

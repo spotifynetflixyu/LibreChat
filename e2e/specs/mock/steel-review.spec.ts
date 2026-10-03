@@ -886,4 +886,75 @@ test.describe('Steel managed source review', () => {
     }
   });
 
+
+  test('failed OCR Save keeps the focused draft and retries through the real backend', async ({ page }) => {
+    const { conversationId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const before = await persistedSnapshot(conversationId);
+    const commitUrl = `**/api/steel/conversations/${conversationId}/review/ocr_result/commit`;
+    await page.route(commitUrl, (route) => route.abort('failed'));
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+    await quantity.fill('7');
+    await dialog.getByRole('button', { name: /^Save/ }).click();
+    await expect(dialog.getByRole('alert')).toBeVisible();
+    await expect(quantity).toHaveValue('7');
+    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    await quantity.press('Escape');
+    await page.getByRole('button', { name: 'Continue editing', exact: true }).click();
+    await expect(quantity).toHaveValue('7');
+    await page.unroute(commitUrl);
+    await dialog.getByRole('button', { name: /^Save/ }).click();
+    await expect.poll(async () => {
+      const snapshot = await persistedSnapshot(conversationId);
+      return snapshot.messages[0]?.text;
+    }).toContain('| A | REVIEW-P1 | 1000 | 7 | 1 |');
+    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+  });
+
+  test('a lost committed OCR Save response is reconciled without a second DB mutation', async ({ page }) => {
+    const { conversationId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const commitUrl = `**/api/steel/conversations/${conversationId}/review/ocr_result/commit`;
+    let firstCommitted: Awaited<ReturnType<typeof persistedSnapshot>> | undefined;
+    let commits = 0;
+    await page.route(commitUrl, async (route) => {
+      commits += 1;
+      if (commits > 1) {
+        await route.continue();
+        return;
+      }
+      const response = await route.fetch();
+      expect(response.status()).toBe(200);
+      firstCommitted = await persistedSnapshot(conversationId);
+      await route.abort('failed');
+    });
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+    const oneUnsavedRow = dialog.getByText(/Unsaved.*1|1.*unsaved/i);
+    await quantity.fill('7');
+    await quantity.press('Enter');
+    await expect(oneUnsavedRow).toBeVisible();
+    await dialog.getByRole('button', { name: /^Save/ }).click();
+    await expect.poll(() => firstCommitted !== undefined).toBe(true);
+    await expect.poll(async () =>
+      await dialog.getByRole('alert').count() > 0 || await oneUnsavedRow.count() === 0,
+    ).toBe(true);
+    if (await dialog.getByRole('alert').count() > 0) {
+      await dialog.getByRole('button', { name: /^Save/ }).click();
+    }
+    await expect(oneUnsavedRow).toHaveCount(0);
+    await expect(quantity).toHaveValue('7');
+    expect(await persistedSnapshot(conversationId)).toEqual(firstCommitted);
+    await page.unroute(commitUrl);
+    await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeVisible();
+    expect(await persistedSnapshot(conversationId)).toEqual(firstCommitted);
+  });
+
 });
