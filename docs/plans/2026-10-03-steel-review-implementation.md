@@ -153,3 +153,9 @@ caption includes cascade changes and excludes unchanged processing on material r
 - Retain open tracker issues until actual PR merge permits resolution; draft/ready PR alone
   is not a merged completion. Report branch, head, PR, checks and remaining limitations honestly.
 - Archive completed ticket worktrees after integrating and preserving any necessary ignored files.
+
+## Latest title-status and output revision
+
+Title status applies only to ocr_result, system_order and customer_data. The trusted per-kind current Markdown-bound messageId selects the latest completed message owner, with output/table/generation identity and CAS revision for same-message replacements. Human Save keeps messageId/outputId and records Updated independently; a fresh AI baseline resets manual state. Historical known owners show Previous version, retaining an existing human Updated fact where applicable. Shared noninteractive Tag; en Updated/Previous version, zh-Hant 已更新/歷史版本, zh-Hans 已更新/历史版本. The explicit user language request permits these two narrow Chinese key additions; other new copy remains EN-only. Badge metadata stays outside Markdown and never changes heading/table identity. Customer_data gains status only, no editor. Persist/batch the metadata for reload without serial per-message reads.
+
+Backend delivery stops generating/appending customer_quote Markdown in new streams, cached finals, completion and Save. Keep existing internal quote calculation/snapshots/summary totals atomic with system_order; no CQ chat locator/insertion/mirror is needed and missing CQ section does not block Save. Preserve existing historical CQ text and all unrelated message bytes. Test every delivery path and saved/reloaded representation.

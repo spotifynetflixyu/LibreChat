@@ -53,7 +53,7 @@ _Avoid_: system_order、報價結果
 _Avoid_: ocr_result、customer_quote
 
 **客戶報價表（customer_quote）**:
-依系統報價表形成、供客戶閱讀的報價資料表，呈現項目、計價總數、小計與總計。
+依系統報價表形成的後端內部報價計算資料，包含項目、計價總數、小計與總計；新後端回覆不再輸出其 Markdown 表格。
 _Avoid_: system_order、OCR 結果
 
 **單重（Unit Weight）**:
@@ -83,3 +83,6 @@ _Avoid_: 使用者輸入的 keyword、已確認訂單列
 **型號（ERP Item Code）**:
 系統報價表所選候選品項的 ERP 品項碼，與該候選的品名規格相對應。
 _Avoid_: 自由查詢文字、零件編號
+
+**歷史版本（Previous version）**:
+同 kind 已被可信 current reference 取代的完整結果 owner；標題 badge 僅用於 ocr_result、system_order、customer_data，保留唯讀。版本資格依 Markdown-bound messageId 及 output／table／generation 身分，人工修訂不更換訊息 owner。
