@@ -895,7 +895,7 @@ test.describe('Steel managed source review', () => {
     expect(await persistedSnapshot(conversationId)).toEqual(snapshot);
   });
 
-  for (const proof of ['matching_receipt', 'missing_receipt', 'mismatched_receipt'] as const) {
+  for (const proof of ['matching_receipt', 'missing_receipt', 'mismatched_receipt', 'mismatched_hash', 'mismatched_digest'] as const) {
     test(`a pre-selector saved source stays reliable only with matching immutable proof: ${proof}`, async ({ page }) => {
       const { conversationId, messageId } = await seedCurrent(ocr);
       conversations.push(conversationId);
@@ -924,6 +924,16 @@ test.describe('Steel managed source review', () => {
         if (proof === 'mismatched_receipt') {
           await db.collection('steel_review_outputs').updateOne(filter, { $set: {
             'receipts.0.snapshot.rows.0.values.數量.effective': '999',
+          } });
+        }
+        if (proof === 'mismatched_hash') {
+          await db.collection('steel_review_outputs').updateOne(filter, { $set: {
+            'receipts.0.snapshot.messageSha256': '0'.repeat(64),
+          } });
+        }
+        if (proof === 'mismatched_digest') {
+          await db.collection('steel_review_outputs').updateOne(filter, { $set: {
+            'receipts.0.snapshot.digest': '0'.repeat(64),
           } });
         }
       });
@@ -1267,6 +1277,8 @@ test.describe('Steel managed source review', () => {
     await dialog.getByRole('combobox', { name: 'Page', exact: true }).click();
     await page.getByRole('option', { name: '2', exact: true }).click();
     await expect(reviewValue(dialog, 'REVIEW-P1')).toBeVisible();
+    await expect(row.locator('td').nth(4).getByText('2', { exact: true })).toBeVisible();
+    await expect(row.locator('td').nth(4).locator('del')).toHaveText('1');
     await expect(dialog.getByText('Unsaved changes: 1 rows', { exact: true })).toBeVisible();
     expect(await persistedSnapshot(conversationId)).toEqual(before);
     await page.keyboard.press('Escape');
@@ -1403,6 +1415,25 @@ test.describe('Steel managed source review', () => {
     expect(after.messages.find((message) => message.messageId === messageId)?.text)
       .toBe(snapshot.messageText.replace('| A | LEGACY-P1 | 7 | 1 |', '| A | LEGACY-P1 | 7 | 2 |'));
     expectPreservedAiState(before.ocr, after.ocr);
+  });
+
+  test('a valid source intent cannot import forged client media into an authentic legacy row', async ({ page }) => {
+    const { conversationId, messageId } = await seedCapturedLegacyReview('steel-review-legacy03-sourced');
+    conversations.push(conversationId);
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(read.status()).toBe(200);
+    const { table } = await read.json() as { table: SteelReviewTable };
+    expect(table.rows[0].source?.mediaType).toBeUndefined();
+    const rows = structuredClone(table.rows);
+    rows[0].source = { fileId: 'review-alpha', pageNumber: 2, filename: 'alpha.pdf', mediaType: 'image/png' };
+    const before = await persistedSnapshot(conversationId);
+    const response = await page.request.post(`/api/steel/conversations/${conversationId}/review/ocr_result/prepare`, {
+      headers, data: { ...table, rows,
+        sourceIntents: [{ rowId: rows[0].rowId, fileId: 'review-alpha', pageNumber: 2 }] },
+    });
+    expect(response.status()).toBeGreaterThanOrEqual(400);
+    expect(response.status()).toBeLessThan(500);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
   });
 
   test('new human source codes reserve unavailable owner AI codes without locating their old rows', async ({ page }) => {
