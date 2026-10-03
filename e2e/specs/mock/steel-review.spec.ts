@@ -1214,7 +1214,7 @@ test.describe('Steel managed source review', () => {
     expect(await persistedSnapshot(conversationId)).toEqual(before);
     const reopened = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
     expect(reopened.status()).toBe(200);
-    expect(await reopened.json()).toMatchObject({ table: { rows: [{ values: { 數量: { baseline: '2', effective: '2' } } }] } });
+    expect(await reopened.json()).toMatchObject({ table: { rows: [{ values: { 數量: { baseline: '2', effective: '2' } } }, {}] } });
   });
 
   test('OCR Save canonicalizes cell whitespace before persisting and the saved table reopens', async ({ page }) => {
@@ -1243,7 +1243,7 @@ test.describe('Steel managed source review', () => {
     expectPreservedAiState(before.ocr, after.ocr);
     const reopened = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
     expect(reopened.status()).toBe(200);
-    expect(await reopened.json()).toMatchObject({ table: { rows: [{ rowId: rows[0].rowId, values: { 數量: { baseline: '2', effective: '7' } } }] } });
+    expect(await reopened.json()).toMatchObject({ table: { rows: [{ rowId: rows[0].rowId, values: { 數量: { baseline: '2', effective: '7' } } }, {}] } });
     expect(await persistedSnapshot(conversationId)).toEqual(after);
   });
 
@@ -1275,7 +1275,7 @@ test.describe('Steel managed source review', () => {
     expectPreservedAiState(before.ocr, after.ocr);
     const reopened = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
     expect(reopened.status()).toBe(200);
-    expect(await reopened.json()).toMatchObject({ table: { rows: [{ rowId: rows[0].rowId, values: { 零件編號: { baseline: 'REVIEW-P1', effective: literal }, 數量: { effective: '2' } } }] } });
+    expect(await reopened.json()).toMatchObject({ table: { rows: [{ rowId: rows[0].rowId, values: { 零件編號: { baseline: 'REVIEW-P1', effective: literal }, 數量: { effective: '2' } } }, {}] } });
     expect(await persistedSnapshot(conversationId)).toEqual(after);
   });
 
