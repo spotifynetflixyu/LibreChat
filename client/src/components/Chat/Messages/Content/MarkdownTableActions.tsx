@@ -658,6 +658,7 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
   });
   const [recognizedReview, setRecognizedReview] = useState<typeof reviewCandidate>(null);
   const previousSubmittingRef = useRef(isSubmitting === true);
+  const previousChildrenRef = useRef(children);
   const completionRefreshKeyRef = useRef<string>();
   const reviewErrorStatus = getReviewErrorStatus(reviewQuery.error);
   const candidateKey = reviewCandidate ? getReviewCandidateKey(reviewCandidate) : undefined;
@@ -683,14 +684,16 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
   }, [candidateKey, reviewCandidate, reviewErrorStatus, reviewQuery.data?.table]);
   useEffect(() => {
     const wasSubmitting = previousSubmittingRef.current;
+    const childrenChanged = previousChildrenRef.current !== children;
     previousSubmittingRef.current = isSubmitting === true;
-    if (!wasSubmitting || isSubmitting === true || !reviewCandidate || !candidateKey ||
+    previousChildrenRef.current = children;
+    if ((!wasSubmitting && !childrenChanged) || isSubmitting === true || !reviewCandidate || !candidateKey ||
       completionRefreshKeyRef.current === candidateKey) {
       return;
     }
     completionRefreshKeyRef.current = candidateKey;
     void reviewQuery.refetch();
-  }, [candidateKey, isSubmitting, reviewCandidate, reviewQuery.refetch]);
+  }, [candidateKey, children, isSubmitting, reviewCandidate, reviewQuery.refetch]);
   const reviewLabel = localize('com_ui_steel_review_open');
   const reviewRetryLabel = localize('com_ui_steel_review_retry');
   const canComment = isCreatedByUser !== true && !!messageId && !!commentConversationId;

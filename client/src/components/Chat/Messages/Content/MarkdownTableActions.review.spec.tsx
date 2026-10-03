@@ -218,6 +218,36 @@ describe('MarkdownTableActions Steel review entry', () => {
     mockMessageContext = { ...mockMessageContext, isSubmitting: false };
   });
 
+  it('refreshes once when rendered children settle after an initial absence', async () => {
+    const refetch = jest.fn();
+    mockMessageContext = { ...mockMessageContext, isSubmitting: false };
+    mockUseGetSteelReviewQuery.mockReturnValue({
+      data: undefined,
+      error: { response: { status: 404 } },
+      isError: true,
+      isLoading: false,
+      refetch,
+    });
+    const rendered = renderTable();
+
+    rendered.rerender(
+      <RecoilRoot>
+        <div className="message-render">
+          <div className="message-content">
+            <h2>ocr_result</h2>
+            <MarkdownTableActions markdownIndex={1}>
+              <thead><tr><th>來源</th><th>零件編號</th></tr></thead>
+              <tbody><tr><td>A</td><td>P-2</td></tr></tbody>
+            </MarkdownTableActions>
+          </div>
+        </div>
+      </RecoilRoot>,
+    );
+
+    await waitFor(() => expect(refetch).toHaveBeenCalledTimes(1));
+    rendered.unmount();
+  });
+
   it('offers an entry only after the scoped backend read recognizes the table', async () => {
     mockUseGetSteelReviewQuery.mockReturnValue({
       data: {
