@@ -936,7 +936,7 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
       outputId: currentTable.outputId,
       revision: currentTable.revision,
     };
-    const gate = saveGateRef.current;
+    const gate = saveGateRef.current?.isOpen ? saveGateRef.current : undefined;
     downloadAuthorityRef.current = { authority, gate };
     if (gate) {
       const gateMatrix = gate.getMatrix();
