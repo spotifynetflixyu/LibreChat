@@ -1,7 +1,8 @@
 import { RecoilRoot } from 'recoil';
 import { createStore, Provider } from 'jotai';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { DynamicQueryKeys } from 'librechat-data-provider';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { steelReviewSelectionAtom } from './SteelReview/state';
 import MarkdownTableActions from './MarkdownTableActions';
 import SteelReviewDialog from './SteelReviewDialog';
@@ -76,6 +77,8 @@ let mockMessageContext: {
   isSubmitting: false,
 };
 
+let activeReviewQueryClient: QueryClient | undefined;
+
 jest.mock('~/data-provider', () => ({
   useGetSteelReviewQuery: jest.fn(),
   useGetSteelReviewSourcesQuery: jest.fn(() => ({
@@ -138,9 +141,8 @@ const partHeader = '零件編號';
 const firstPart = 'P-1';
 const secondPart = 'P-2';
 
-function renderDialog() {
+function renderDialog(queryClient = new QueryClient()) {
   const store = createStore();
-  const queryClient = new QueryClient();
   store.set(steelReviewSelectionAtom, reviewIdentity);
   const rendered = render(
     <QueryClientProvider client={queryClient}>
@@ -376,6 +378,118 @@ describe('MarkdownTableActions Steel review entry', () => {
     }));
     expect(commit).toHaveBeenCalledWith(prepared);
     expect(screen.queryByText('com_ui_steel_review_unsaved_caption')).toBeNull();
+  });
+
+  it('preserves an edit made during commit when the confirmed revision changes the atom owner', async () => {
+    const queryClient = new QueryClient();
+    const reviewQueryKey = DynamicQueryKeys.steelReview(
+      reviewIdentity.conversationId,
+      reviewIdentity.kind,
+      reviewIdentity.messageId,
+      reviewIdentity.tableId,
+      reviewIdentity.partIndex,
+    );
+    const firstTable = {
+      ...reviewIdentity,
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      latestOutputId: 'ocr_result:generation-1',
+      isLatest: true,
+      readOnly: false,
+      headers: ['品名'],
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 品名: { baseline: '鋼板', effective: '鋼板' } },
+      }],
+    };
+    const savedRows = [{
+      rowId: 'row-1',
+      source: null,
+      values: { 品名: { baseline: '鋼板', effective: '7' } },
+    }];
+    const prepared = {
+      conversationId: reviewIdentity.conversationId,
+      messageId: reviewIdentity.messageId,
+      kind: reviewIdentity.kind,
+      tableId: reviewIdentity.tableId,
+      outputId: firstTable.outputId,
+      revision: firstTable.revision,
+      rows: [firstTable.rows[0]],
+      operationId: 'operation-inflight',
+      digest: 'a'.repeat(64),
+      messageSha256: 'b'.repeat(64),
+      target: { start: 0, end: 1, sha256: 'c'.repeat(64) },
+      replacementText: 'replacement',
+      cleanReplacementText: 'replacement',
+      targetText: 'target',
+      headers: firstTable.headers,
+      effectiveMarkdown: 'effective',
+      displayMarkdown: 'display',
+      caption: { kind: reviewIdentity.kind, changedRows: 1, changedRowIds: ['row-1'] },
+    };
+    const commitResult = {
+      changedRows: 1,
+      changedRowIds: ['row-1'],
+      savedSnapshot: {
+        operationId: prepared.operationId,
+        digest: prepared.digest,
+        outputId: prepared.outputId,
+        revision: 'generation-2',
+        headers: firstTable.headers,
+        rows: savedRows,
+        changedRows: 1,
+        changedRowIds: ['row-1'],
+        savedAt: '2026-10-03T00:00:00.000Z',
+        messageSha256: 'd'.repeat(64),
+        conversationId: reviewIdentity.conversationId,
+        messageId: reviewIdentity.messageId,
+        messageText: 'saved',
+        effectiveMarkdown: 'effective',
+        displayMarkdown: 'display',
+      },
+    };
+    let resolveCommit!: (value: typeof commitResult) => void;
+    const commit = jest.fn(() => new Promise<typeof commitResult>((resolve) => {
+      resolveCommit = resolve;
+    }));
+    mockUseGetSteelReviewQuery.mockImplementation((input) => {
+      const key = DynamicQueryKeys.steelReview(
+        input?.conversationId ?? '',
+        input?.kind ?? 'ocr_result',
+        input?.messageId ?? '',
+        input?.tableId ?? '',
+        input?.partIndex,
+      );
+      return useQuery({
+        queryKey: key,
+        queryFn: () => activeReviewQueryClient?.getQueryData(key) ?? { table: null },
+        enabled: Boolean(input),
+        retry: false,
+      });
+    });
+    mockUsePrepareSteelReviewMutation.mockReturnValue({ mutateAsync: jest.fn().mockResolvedValue(prepared) });
+    mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
+    queryClient.setQueryData(reviewQueryKey, { table: firstTable });
+    activeReviewQueryClient = queryClient;
+    const rendered = renderDialog(queryClient);
+
+    fireEvent.change(screen.getByRole('textbox', { name: '品名 row-1' }), { target: { value: '7' } });
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+    fireEvent.change(screen.getByRole('textbox', { name: '品名 row-1' }), { target: { value: '10' } });
+
+    resolveCommit(commitResult);
+
+    await waitFor(() => {
+      expect(screen.getByRole('textbox', { name: '品名 row-1' })).toHaveValue('10');
+      expect(screen.getByText('com_ui_steel_review_unsaved_caption')).toBeInTheDocument();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(screen.getByRole('textbox', { name: '品名 row-1' })).toHaveValue('10');
+    expect(screen.getByText('com_ui_steel_review_unsaved_caption')).toBeInTheDocument();
+    rendered.unmount();
+    activeReviewQueryClient = undefined;
   });
 
   it('keeps source rows visible while sources load or fail, then renders an image preview', async () => {

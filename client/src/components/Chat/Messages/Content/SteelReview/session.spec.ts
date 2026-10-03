@@ -3,6 +3,7 @@ import {
   applySteelReviewDrafts,
   createSteelReviewDraftState,
   getSteelReviewDraftKey,
+  getSteelReviewDraftOwnerKey,
   getSteelReviewDirtyRowIds,
   rebaseSteelReviewDraftState,
   setSteelReviewDraftCell,
@@ -56,6 +57,14 @@ describe('Steel review local draft session', () => {
       partIndex: null,
       outputId: 'ocr_result:generation-1',
       baseRevision: 'revision-1',
+    }));
+    expect(getSteelReviewDraftOwnerKey(selection, table)).toBe(JSON.stringify({
+      conversationId: 'conversation-1',
+      messageId: 'message-1',
+      kind: 'ocr_result',
+      tableId: 'ocr_result:1',
+      partIndex: null,
+      outputId: 'ocr_result:generation-1',
     }));
   });
 

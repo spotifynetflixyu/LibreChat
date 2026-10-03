@@ -41,6 +41,7 @@ import {
   createSteelReviewDraftState,
   getSteelReviewDirtyRowIds,
   getSteelReviewDraftKey,
+  getSteelReviewDraftOwnerKey,
   getSteelReviewPrepareInput,
   rebaseSteelReviewDraftState,
   setSteelReviewDraftCell,
@@ -169,7 +170,10 @@ export default function SteelReviewDialog({
   const draftStateKey = table
     ? getSteelReviewDraftKey(identity, table)
     : `pending:${dialogStateKey}`;
-  const [draftState, setDraftState] = useAtom(steelReviewDraftStateFamily(draftStateKey));
+  const draftStateAtomKey = table
+    ? getSteelReviewDraftOwnerKey(identity, table)
+    : `pending:${dialogStateKey}`;
+  const [draftState, setDraftState] = useAtom(steelReviewDraftStateFamily(draftStateAtomKey));
   const [closeRequested, setCloseRequested] = useState(false);
   const [savePhase, setSavePhase] = useState<SavePhase>('idle');
   const [saveErrorCode, setSaveErrorCode] = useState<SteelReviewErrorCode>();
