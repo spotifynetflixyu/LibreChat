@@ -3,6 +3,37 @@ import { z } from 'zod';
 export const steelReviewKinds = ['ocr_result', 'system_order'] as const;
 export type SteelReviewKind = (typeof steelReviewKinds)[number];
 
+const steelReviewSourceAssociationHeaders = new Set([
+  '來源',
+  '頁碼',
+  '檔案',
+  '來源檔案',
+  '檔名',
+  '來源檔名',
+  '圖片',
+  '原始檔案',
+  '原檔頁碼',
+  '原始頁碼',
+  '原始檔名',
+  'source',
+  'file',
+  'filename',
+  'page',
+  'page number',
+  'source file',
+  'source filename',
+  'source page',
+  'image',
+  'original file',
+  'original filename',
+  'original page',
+  'original page number',
+].map((header) => header.toLowerCase().replace(/[\s_]+/g, '')));
+
+export function isSteelReviewSourceAssociationHeader(header: string): boolean {
+  return steelReviewSourceAssociationHeaders.has(header.trim().toLowerCase().replace(/[\s_]+/g, ''));
+}
+
 export const steelReviewErrorCodeSchema = z.enum([
   'INVALID_REVIEW_QUERY',
   'REVIEW_NOT_FOUND',

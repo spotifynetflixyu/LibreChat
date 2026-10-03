@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { SteelReviewWriteError } from '@librechat/data-schemas';
 import {
   getSteelReviewTableId,
+  isSteelReviewSourceAssociationHeader,
   steelReviewCommitSchema,
   steelReviewPrepareSchema,
   steelReviewReceiptQuerySchema,
@@ -269,12 +270,46 @@ function collectMessageTables(record: SteelReviewReadRecord): ReviewTableCandida
   });
 }
 
+function collectLocatedMessageTables(record: SteelReviewReadRecord): LocatedTable[] {
+  if (!record.messageTextParts || record.messageTextParts.length === 0) {
+    return record.messageText ? collectLocatedTables(record.messageText) : [];
+  }
+  let tableOffset = 0;
+  return record.messageTextParts.flatMap((part) => {
+    const localTables = collectLocatedTables(part.text);
+    const tables = localTables.map((table) => ({
+      ...table,
+      index: table.index + tableOffset,
+      partIndex: part.partIndex,
+      raw: part.text.slice(table.start, table.end),
+    }));
+    tableOffset += localTables.length;
+    return tables;
+  });
+}
+
 function parsePageNumber(value: string | undefined): number | null {
   if (!value || !/^\d+$/u.test(value.trim())) {
     return null;
   }
   const page = Number(value.trim());
   return Number.isSafeInteger(page) && page > 0 ? page : null;
+}
+
+function hasCellProperty(cell: SteelReviewCell | undefined, property: keyof SteelReviewCell): boolean {
+  return cell !== undefined && Object.prototype.hasOwnProperty.call(cell, property);
+}
+
+function sameCellProperty(
+  left: SteelReviewCell | undefined,
+  leftProperty: keyof SteelReviewCell,
+  right: SteelReviewCell | undefined,
+  rightProperty: keyof SteelReviewCell,
+): boolean {
+  const leftHasProperty = hasCellProperty(left, leftProperty);
+  const rightHasProperty = hasCellProperty(right, rightProperty);
+  return leftHasProperty === rightHasProperty &&
+    (!leftHasProperty || left?.[leftProperty] === right?.[rightProperty]);
 }
 
 function sourceForRow(
@@ -374,14 +409,13 @@ function sidecarTarget(
   record: SteelReviewReadRecord,
   tableId: string,
 ): ReviewTableCandidate | undefined {
-  if (!record.messageText || !record.headers || !record.rows) {
+  if ((!record.messageText && (!record.messageTextParts || record.messageTextParts.length === 0)) ||
+    record.headers === undefined || record.rows === undefined) {
     return undefined;
   }
   const rows = record.rows.map((row) => record.headers!.map((header) => {
     const cell = row.values[header];
-    const value = cell && Object.prototype.hasOwnProperty.call(cell, 'effective')
-      ? cell.effective
-      : cell?.baseline;
+    const value = cell && Object.prototype.hasOwnProperty.call(cell, 'effective') ? cell.effective : undefined;
     if (value === null) {
       return '';
     }
@@ -512,34 +546,31 @@ function fullMessageText(record: SteelReviewReadRecord): string | undefined {
   return record.messageText;
 }
 
-function locateReviewTarget(record: SteelReviewReadRecord, tableId: string): LocatedTable | undefined {
-  if (record.messageTextParts && record.messageTextParts.length > 0) {
-    let tableOffset = 0;
-    for (const part of record.messageTextParts) {
-      const localTables = collectLocatedTables(part.text);
-      const target = localTables.find(
-        (candidate) => getSteelReviewTableId(record.kind, candidate.index + tableOffset) === tableId,
-      );
-      if (target && isManagedTitle(record.kind, target.title)) {
-        return {
-          ...target,
-          index: target.index + tableOffset,
-          partIndex: part.partIndex,
-          raw: part.text.slice(target.start, target.end),
-        };
-      }
-      tableOffset += localTables.length;
-    }
-    return undefined;
-  }
-  const text = record.messageText;
-  if (!text) {
-    return undefined;
-  }
-  const target = collectLocatedTables(text).find(
-    (candidate) => getSteelReviewTableId(record.kind, candidate.index) === tableId,
+function findVerifiedPhysicalTarget(
+  record: SteelReviewReadRecord,
+  expected: ReviewTableCandidate,
+  tableId: string,
+): LocatedTable | undefined {
+  const candidates = collectLocatedMessageTables(record).filter((candidate) =>
+    getSteelReviewTableId(record.kind, candidate.index) === tableId &&
+    candidate.title === expected.title &&
+    sameTable(candidate, expected) &&
+    (candidate.partIndex ?? null) === (expected.partIndex ?? null),
   );
-  return target && isManagedTitle(record.kind, target.title) ? target : undefined;
+  return candidates.length === 1 ? candidates[0] : undefined;
+}
+
+function findVerifiedSaveTarget(
+  record: SteelReviewReadRecord,
+  tableId: string,
+): LocatedTable | undefined {
+  const expected = record.headers !== undefined && record.rows !== undefined
+    ? sidecarTarget(record, tableId)
+    : findCanonicalTarget(record, tableId);
+  if (!expected) {
+    return undefined;
+  }
+  return findVerifiedPhysicalTarget(record, expected, tableId);
 }
 
 function escapeMarkdownCell(value: string): string {
@@ -560,35 +591,83 @@ function ownerMarkdown(record: SteelReviewReadRecord): string | undefined {
 function locateOwnerTarget(
   record: SteelReviewReadRecord,
   markdown: string,
+  expected: LocatedTable,
 ): LocatedTable | undefined {
-  const managed = collectLocatedTables(markdown)
-    .filter((table) => isManagedTitle(record.kind, table.title));
-  const exact = managed.find((table) => getSteelReviewTableId(record.kind, table.index) === record.tableId);
-  return exact ?? (managed.length === 1 ? managed[0] : undefined);
+  const matches = collectLocatedTables(markdown).filter((table) =>
+    isManagedTitle(record.kind, table.title) &&
+    table.title === expected.title &&
+    sameTable(table, expected),
+  );
+  return matches.length === 1 ? matches[0] : undefined;
 }
 
-function ownedSection(record: SteelReviewReadRecord, markdown: string): string | undefined {
-  const headings = [...markdown.matchAll(/^ {0,3}#{1,6}(?:[ \t]+|$).*$/gmu)];
-  const heading = headings
-    .filter((candidate) => isManagedTitle(record.kind, headingTitle(candidate[0])))
-    [headings.length - 1];
-  if (!heading || heading.index === undefined) {
-    return markdown;
+interface LocatedHeading {
+  start: number;
+  title?: string;
+}
+
+function collectHeadings(markdown: string): LocatedHeading[] {
+  const headings: LocatedHeading[] = [];
+  const lines = markdown.match(/[^\r\n]*(?:\r?\n|$)/gu) ?? [];
+  let fence: MarkdownFence | undefined;
+  let offset = 0;
+  for (const rawLine of lines) {
+    const line = rawLine.replace(/\r?\n$/u, '');
+    const start = offset;
+    offset += rawLine.length;
+    if (fence) {
+      if (closesFence(line, fence)) {
+        fence = undefined;
+      }
+      continue;
+    }
+    const nextFence = getFence(line);
+    if (nextFence) {
+      fence = nextFence;
+      continue;
+    }
+    if (isHeading(line)) {
+      headings.push({ start, title: headingTitle(line) });
+    }
   }
-  const nextHeading = headings.find((candidate) => (candidate.index ?? 0) > (heading.index ?? 0));
-  return markdown.slice(heading.index, nextHeading?.index ?? markdown.length).trimEnd();
+  return headings;
+}
+
+function ownedSection(
+  record: SteelReviewReadRecord,
+  markdown: string,
+  expected: LocatedTable,
+): string | undefined {
+  const ownerTarget = locateOwnerTarget(record, markdown, expected);
+  if (!ownerTarget) {
+    return undefined;
+  }
+  const headings = collectHeadings(markdown);
+  let headingIndex = -1;
+  for (let index = 0; index < headings.length; index += 1) {
+    if (headings[index].start <= ownerTarget.start) {
+      headingIndex = index;
+    }
+  }
+  if (headingIndex < 0 || !isManagedTitle(record.kind, headings[headingIndex]?.title)) {
+    return undefined;
+  }
+  const heading = headings[headingIndex];
+  const nextHeading = headings[headingIndex + 1];
+  return markdown.slice(heading.start, nextHeading?.start ?? markdown.length).trimEnd();
 }
 
 function replaceOwnerTarget(
   record: SteelReviewReadRecord,
   replacement: string,
+  expected: LocatedTable,
 ): string | undefined {
   const markdown = ownerMarkdown(record);
-  const section = markdown ? ownedSection(record, markdown) : undefined;
+  const section = markdown ? ownedSection(record, markdown, expected) : undefined;
   if (!section) {
     return undefined;
   }
-  const target = locateOwnerTarget(record, section);
+  const target = locateOwnerTarget(record, section, expected);
   return target ? `${section.slice(0, target.start)}${replacement}${section.slice(target.end)}` : undefined;
 }
 
@@ -686,11 +765,12 @@ export function createSteelReviewService({
       record.outputId !== payload.outputId || record.revision !== payload.revision) {
       throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review table is no longer current');
     }
-    const target = locateReviewTarget(record, payload.tableId);
+    const target = findVerifiedSaveTarget(record, payload.tableId);
     if (!target || target.partIndex !== payload.partIndex && payload.partIndex !== undefined) {
       throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review table target not found');
     }
     const currentRows = record.rows ?? toRows(target, record.outputId, record.sourceMappings);
+    const headers = record.headers ?? target.headers;
     if (currentRows.length !== payload.rows.length ||
       currentRows.some((row, index) => row.rowId !== payload.rows[index]?.rowId)) {
       throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Review rows changed');
@@ -705,12 +785,15 @@ export function createSteelReviewService({
       if (!next || Object.keys(next.values).some((header) => !Object.prototype.hasOwnProperty.call(current.values, header))) {
         throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Review columns changed');
       }
+      if (headers.some((header) => isSteelReviewSourceAssociationHeader(header) &&
+        !sameCellProperty(current.values[header], 'effective', next?.values[header], 'effective'))) {
+        throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Review source association cell changed');
+      }
       if ((current.source === null && next.source !== null) ||
         (current.source !== null && next.source !== null && JSON.stringify(current.source) !== JSON.stringify(next.source))) {
         throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Review source changed');
       }
     }
-    const headers = record.headers ?? target.headers;
     if (payload.rows.some((row) => Object.keys(row.values).length !== headers.length ||
       headers.some((header) => !Object.prototype.hasOwnProperty.call(row.values, header)))) {
       throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Review columns changed');
@@ -719,7 +802,7 @@ export function createSteelReviewService({
       .filter((row, index) => JSON.stringify(row.values) !== JSON.stringify(currentRows[index]?.values))
       .map((row) => row.rowId);
     const cleanReplacementText = serializeReviewTable(headers, payload.rows);
-    const effectiveMarkdown = replaceOwnerTarget(record, cleanReplacementText);
+    const effectiveMarkdown = replaceOwnerTarget(record, cleanReplacementText, target);
     if (!effectiveMarkdown) {
       throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review table target not found');
     }

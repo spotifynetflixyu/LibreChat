@@ -1,5 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { isSteelReviewSourceAssociationHeader } from 'librechat-data-provider';
 import type {
+  SteelReviewCell,
   SteelReviewCaption,
   SteelReviewRow,
   SteelReviewTarget,
@@ -96,6 +98,26 @@ function tenantFilter(tenantId?: string): Record<string, unknown> {
   return tenantId === undefined
     ? { $or: [{ tenantId: { $exists: false } }, { tenantId: null }] }
     : { tenantId };
+}
+
+function hasCellProperty(cell: SteelReviewCell | undefined, property: keyof SteelReviewCell): boolean {
+  return cell !== undefined && Object.prototype.hasOwnProperty.call(cell, property);
+}
+
+function sameCellProperty(
+  left: SteelReviewCell | undefined,
+  leftProperty: keyof SteelReviewCell,
+  right: SteelReviewCell | undefined,
+  rightProperty: keyof SteelReviewCell,
+): boolean {
+  const leftHasProperty = hasCellProperty(left, leftProperty);
+  const rightHasProperty = hasCellProperty(right, rightProperty);
+  return leftHasProperty === rightHasProperty &&
+    (!leftHasProperty || left?.[leftProperty] === right?.[rightProperty]);
+}
+
+function sameSourceAssociationCellAsBaseline(cell: SteelReviewCell | undefined): boolean {
+  return sameCellProperty(cell, 'effective', cell, 'baseline');
 }
 
 function scopeFilter(input: SteelReviewReadInput): Record<string, unknown> {
@@ -1033,8 +1055,21 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
                 if ((previous.values[header]?.baseline ?? null) !== (next.values[header]?.baseline ?? null)) {
                   throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review AI baseline changed');
                 }
+                if (isSteelReviewSourceAssociationHeader(header) &&
+                  !sameCellProperty(previous.values[header], 'effective', next.values[header], 'effective')) {
+                  throw new SteelReviewWriteError(
+                    'REVIEW_INVALID_OPERATION',
+                    'Review source association cell is read-only',
+                  );
+                }
               }
             }
+          } else if (input.headers.some((header) => isSteelReviewSourceAssociationHeader(header) &&
+            input.rows.some((row) => !sameSourceAssociationCellAsBaseline(row.values[header])))) {
+            throw new SteelReviewWriteError(
+              'REVIEW_INVALID_OPERATION',
+              'Review source association cell is read-only',
+            );
           }
           const previousEffective = new Map(
             baselineRows.map((row) => [
