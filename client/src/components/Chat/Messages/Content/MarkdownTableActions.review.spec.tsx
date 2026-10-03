@@ -315,6 +315,10 @@ describe('MarkdownTableActions Steel review entry', () => {
     const { store } = renderDialog();
     const input = screen.getByRole('textbox', { name: '品名 row-1' });
     fireEvent.change(input, { target: { value: '鍍鋅鋼板' } });
+    fireEvent.change(input, { target: { value: '另一種鋼板' } });
+    fireEvent.change(input, { target: { value: '鋼板' } });
+    expect(screen.queryByText('com_ui_steel_review_unsaved_caption')).toBeNull();
+    fireEvent.change(input, { target: { value: '鍍鋅鋼板' } });
     expect(screen.getByText('com_ui_steel_review_unsaved_caption')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'com_ui_steel_review_save' })).toBeEnabled();
 
@@ -374,28 +378,28 @@ describe('MarkdownTableActions Steel review entry', () => {
     };
     const prepare = jest.fn().mockResolvedValue(prepared);
     const commit = jest.fn().mockResolvedValue({ changedRows: 1, changedRowIds: ['row-1'], savedSnapshot });
+    const authorityTable = {
+      ...reviewIdentity,
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      latestOutputId: 'ocr_result:generation-1',
+      isLatest: true,
+      readOnly: false,
+      headers: ['品名'],
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 品名: { baseline: '鋼板', effective: '鋼板' } },
+      }],
+    };
     mockUsePrepareSteelReviewMutation.mockReturnValue({ mutateAsync: prepare });
     mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
     mockUseGetSteelReviewQuery.mockReturnValue({
-      data: {
-        table: {
-          ...reviewIdentity,
-          outputId: 'ocr_result:generation-1',
-          revision: 'generation-1',
-          latestOutputId: 'ocr_result:generation-1',
-          isLatest: true,
-          readOnly: false,
-          headers: ['品名'],
-          rows: [{
-            rowId: 'row-1',
-            source: null,
-            values: { 品名: { baseline: '鋼板', effective: '鋼板' } },
-          }],
-        },
-      },
+      data: { table: authorityTable },
       error: null,
       isError: false,
       isLoading: false,
+      refetch: jest.fn().mockResolvedValue({ data: { table: authorityTable }, error: null }),
     });
 
     renderDialog();
