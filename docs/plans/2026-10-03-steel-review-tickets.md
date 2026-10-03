@@ -13,7 +13,7 @@ Baseline: `056eb076ac0b9f7b7ccaba74672ae1288fab662a`.
 | --- | --- | --- | --- |
 | 01 | [Steel 表格唯讀入口與版本資格](https://github.com/spotifynetflixyu/LibreChat/issues/2) | None | Verified (`d58ce51bc`) |
 | 02 | [多檔單頁原檔預覽](https://github.com/spotifynetflixyu/LibreChat/issues/3) | #2 | Verified (`c3bd8ad1c`) |
-| 03 | [OCR 草稿、手動儲存與精準聊天更新](https://github.com/spotifynetflixyu/LibreChat/issues/4) | #2 | In progress |
+| 03 | [OCR 草稿、手動儲存與精準聊天更新](https://github.com/spotifynetflixyu/LibreChat/issues/4) | #2 | Verified (`1db96bd67`) |
 | 04 | [單一來源 selector 與未定位列補標](https://github.com/spotifynetflixyu/LibreChat/issues/5) | #3, #4 | Pending |
 | 05 | [OCR 列增刪與本次 undo／redo](https://github.com/spotifynetflixyu/LibreChat/issues/6) | #3, #4 | Pending |
 | 06 | [System order 修正與內部報價原子同步](https://github.com/spotifynetflixyu/LibreChat/issues/7) | #4 | Pending |
@@ -37,6 +37,9 @@ for fresh implementer context; GitHub is the authoritative tracker.
 
 Slice01 evidence at `d58ce51bca450f1b7b3de6b36b996a97a3d4a5f9`: 11/11 authenticated browser cases against the real backend and a disposable Mongo replica set; 13/13 focused real-Mongo cases; 7/7 API cases; owning workspace builds/typechecks; exact-head spec and standards repair reviews passed. No DB writes on read/reload. Full-feature Lighthouse and final review remain in slice14.
 
-Latest user preference: update related tickets first, then implement them sequentially. Human edits use explicit Save with unsaved-row caption; dirty close asks save/discard/continue. Save reuses backend field cleanup and atomically updates normalized DB/chat data. Existing slice03 WIP is preserved until slice02 is verified.
+Latest user preference: update related tickets first, then implement them sequentially. Human edits use explicit Save with unsaved-row caption; dirty close asks save/discard/continue. Save reuses backend field cleanup and atomically updates normalized DB/chat data. Slices01–03 are verified; source selector04 now proceeds in numerical order.
 
 Slice02 evidence at `c3bd8ad1c74c03d2eab65a3ef0ba92db38bddbb3`: 17/17 authenticated Chrome cases against real Express and a disposable Mongo replica set, including multi-PDF/image pages, independent same-page rows, unlocated and out-of-range rows, zoom/pan/fullscreen, narrow light/dark layouts, menu-first Escape, retry, active owner and cross-chat/tenant identity guards. Focused real-Mongo/client/shared-dialog tests and owning workspace builds/typechecks passed; independent spec and standards reviews approved frozen feature head `b1818e418`. Scoped ESLint and diff checks passed. Slice03 now proceeds in the user-requested sequence; later slices remain pending.
+
+
+Slice03 evidence at `1db96bd67f0af7c902c6c0d8556cb56f0d1dbe94`: 55/55 authenticated Chrome cases against real Express and a disposable Mongo replica set, with DB readback and chat reload. Saved clean values replace only the authorized messageId/table target; other same-title messages and unrelated content remain byte-for-byte unchanged. Covers normalization/no-op, prepared and confirmed captions, immutable receipts, failed/lost Save recovery, later drafts, dirty close, clean download, generic edit guards, and unavailable-source business saves while rejecting forged clearing of available sources. Controlled AI publication/manual Save race passed. Owning real-Mongo writer/source suites passed14/14; fresh shared/database/API builds and database/API noEmit passed. Client tree is unchanged from the already validated `99358fe30` client build/typecheck/focused UI and legacy route checks. Independent exact-head spec and standards reviews approved. Full-feature checks and Lighthouse remain in14; issues and draft PR remain open pending the final merge workflow.
