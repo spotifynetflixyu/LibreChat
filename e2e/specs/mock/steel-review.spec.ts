@@ -357,7 +357,8 @@ test.describe('Steel managed source review', () => {
       expect(body).not.toHaveProperty('aiRawMarkdown');
       expect(body).not.toHaveProperty('aiBaselineMarkdown');
     }
-    await expect(dialog.getByText('Unsaved changes: 0 rows', { exact: true })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+    await expect(dialog.getByText('Unsaved changes: 1 rows', { exact: true })).toHaveCount(0);
     const after = await persistedSnapshot(conversationId);
     const clean = markdown.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 9 | 1 |');
     expect(after.messages.find((message) => message.messageId === messageId)?.text).toBe(clean);
