@@ -3216,6 +3216,58 @@ test.describe('Steel managed source review', () => {
     });
   }
 
+  test('a new AI generation on the same message preserves the old dirty popup and reopens its fresh baseline', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+    await quantity.fill('6');
+    await dialog.getByRole('button', { name: /^Save/ }).click();
+    await expect(dialog.getByText('Updated 1 rows', { exact: true })).toBeVisible();
+    await quantity.fill('9');
+    await quantity.press('Enter');
+    const newAI = ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 4 | 1 |');
+    await withMongo(async (db) => {
+      await db.collection('messages').updateOne({ conversationId, messageId }, {
+        $set: { text: newAI, content: [{ type: 'text', text: newAI }] },
+        $unset: { 'metadata.steelReview.ocr_result': '' },
+      });
+      await db.collection('steel_conversation_ocr_state').updateOne({ conversationId }, { $set: {
+        currentOcrResultGenerationId: 'review-same-message-new-generation',
+        currentOcrResultMarkdown: newAI, updatedAt: new Date(),
+      } });
+    });
+    const afterAI = await persistedSnapshot(conversationId);
+    const live = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(live.status()).toBe(200);
+    expect(await live.json()).toMatchObject({ table: { outputId: 'ocr_result:review-same-message-new-generation',
+      rows: [{ values: { 數量: { baseline: '4', effective: '4' } } }, {}] } });
+    await page.evaluate(() => window.dispatchEvent(new Event('offline')));
+    const refreshed = page.waitForResponse((response) => response.request().method() === 'GET' &&
+      response.url().includes(readUrl(conversationId, messageId, 1)));
+    await page.evaluate(() => window.dispatchEvent(new Event('online')));
+    expect((await refreshed).status()).toBe(200);
+    await expect(reviewValue(dialog, '9')).toBeVisible();
+    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
+    await expect(dialog.getByRole('button', { name: /^Save/ })).toBeDisabled();
+    await page.keyboard.press('Escape');
+    await expect(dialog.getByRole('alertdialog')).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Save updates', exact: true })).toBeDisabled();
+    await dialog.getByRole('button', { name: 'Continue editing', exact: true }).click();
+    await expect(reviewValue(dialog, '9')).toBeVisible();
+    expect(await persistedSnapshot(conversationId)).toEqual(afterAI);
+    await page.keyboard.press('Escape');
+    await dialog.getByRole('button', { name: 'Discard unsaved changes', exact: true }).click();
+    await page.reload();
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    await expect(quantity).toHaveValue('4');
+    await expect(dialog.locator('del')).toHaveCount(0);
+    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
+    expect(await persistedSnapshot(conversationId)).toEqual(afterAI);
+  });
+
   for (const check of ['caption', 'escape', 'first_close', 'last_close', 'outside'] as const) {
     test(`a superseded dirty OCR editor retains its caption and asks before closing: ${check}`, async ({ page }) => {
       const { conversationId, messageId } = await seedCurrent(ocr);
