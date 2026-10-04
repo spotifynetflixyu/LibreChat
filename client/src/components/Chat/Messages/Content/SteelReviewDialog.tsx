@@ -45,6 +45,7 @@ import {
   canUndoSteelReviewDraft,
   createSteelReviewDraftState,
   deleteSteelReviewDraftRow,
+  finishSteelReviewDraftHistory,
   getSteelReviewDirtyRowIds,
   getSteelReviewDraftKey,
   getSteelReviewDraftOwnerKey,
@@ -337,7 +338,9 @@ export default function SteelReviewDialog({
   const capturedAuthority = capturedAuthorityRef.current;
   const authorityMatchesLiveTable = !capturedAuthority || !table ||
     (table.outputId === capturedAuthority.outputId && table.revision === capturedAuthority.revision);
-  const canEdit = Boolean(table && table.kind === 'ocr_result' && table.isLatest && !table.readOnly);
+  const canEdit = Boolean(table && table.kind === 'ocr_result' && table.isLatest &&
+    table.latestOutputId === table.outputId && !table.readOnly &&
+    (!capturedAuthority || table.outputId === capturedAuthority.outputId));
   const canSave = canEdit && authorityMatchesLiveTable;
   useEffect(() => {
     if (!capturedAuthority || !table || authorityMatchesLiveTable) {
@@ -520,6 +523,9 @@ export default function SteelReviewDialog({
     },
     [baseTable, canEdit, draftStateKey, setDraftState, table],
   );
+  const onCellHistoryBoundary = useCallback(() => {
+    setDraftState((current) => finishSteelReviewDraftHistory(current));
+  }, [setDraftState]);
   const onSourceEdit = useCallback((row: SteelReviewRow) => {
     if (!canEdit || !row.rowId) {
       return;
@@ -552,7 +558,8 @@ export default function SteelReviewDialog({
     return next;
   }, []);
   const onAddRow = useCallback(() => {
-    if (!table || !canEdit) return;
+    const editTable = baseTable ?? table;
+    if (!editTable || !canEdit) return;
     setDraftState((current) => {
       const ownerDraft = current.ownerKey === draftStateKey
         ? current
@@ -568,28 +575,29 @@ export default function SteelReviewDialog({
             mediaType: selectedSource.mediaType,
           }
         : null;
-      return updateDraftRows(addSteelReviewDraftRow(ownerDraft, table, anchor, source));
+      return updateDraftRows(addSteelReviewDraftRow(ownerDraft, editTable, anchor, source));
     });
-  }, [canEdit, draftRows, draftStateKey, pageNumber, selectedSource, setDraftState, table, updateDraftRows]);
+  }, [baseTable, canEdit, draftRows, draftStateKey, pageNumber, selectedSource, setDraftState, table, updateDraftRows]);
   const onDeleteRow = useCallback((row: SteelReviewRow) => {
-    if (!table || !canEdit) return;
+    const editTable = baseTable ?? table;
+    if (!editTable || !canEdit) return;
     setDraftState((current) => {
       const ownerDraft = current.ownerKey === draftStateKey
         ? current
         : createSteelReviewDraftState(draftStateKey);
-      const isSaved = table.rows.some((candidate) => candidate.rowId === row.rowId);
+      const isSaved = editTable.rows.some((candidate) => candidate.rowId === row.rowId);
       return updateDraftRows(deleteSteelReviewDraftRow(ownerDraft, row, isSaved));
     });
-  }, [canEdit, draftStateKey, setDraftState, table, updateDraftRows]);
+  }, [baseTable, canEdit, draftStateKey, setDraftState, table, updateDraftRows]);
   const onRestoreRow = useCallback((row: SteelReviewRow) => {
-    if (!table || !canEdit) return;
+    if (!(baseTable ?? table) || !canEdit) return;
     setDraftState((current) => {
       const ownerDraft = current.ownerKey === draftStateKey
         ? current
         : createSteelReviewDraftState(draftStateKey);
       return updateDraftRows(restoreSteelReviewDraftRow(ownerDraft, row));
     });
-  }, [canEdit, draftStateKey, setDraftState, table, updateDraftRows]);
+  }, [baseTable, canEdit, draftStateKey, setDraftState, table, updateDraftRows]);
   const onUndo = useCallback(() => {
     setDraftState((current) => updateDraftRows(undoSteelReviewDraft(current)));
   }, [setDraftState, updateDraftRows]);
@@ -828,8 +836,9 @@ export default function SteelReviewDialog({
       ))) {
       return false;
     }
-    return getSteelReviewDirtyRowIds(baseTable ?? currentTable, latestDraft).length === 0;
-  }, [baseTable, canSave, dirtyRowCount, getCurrentReviewTable, saveChanges, savePhase]);
+    const confirmedTable = capturedAuthorityRef.current?.table ?? currentTable;
+    return getSteelReviewDirtyRowIds(confirmedTable, latestDraft).length === 0;
+  }, [canSave, dirtyRowCount, getCurrentReviewTable, saveChanges, savePhase]);
   useEffect(() => {
     if (!saveGateRef) {
       return undefined;
@@ -992,11 +1001,12 @@ export default function SteelReviewDialog({
       return;
     }
     const latestDraft = latestDraftStateRef.current;
-    if (getSteelReviewDirtyRowIds(baseTable ?? table, latestDraft).length === 0) {
+    const confirmedTable = capturedAuthorityRef.current?.table ?? table;
+    if (getSteelReviewDirtyRowIds(confirmedTable, latestDraft).length === 0) {
       setCloseRequested(false);
       setSelection(null);
     }
-  }, [baseTable, saveChanges, setSelection, table]);
+  }, [saveChanges, setSelection, table]);
   const downloadCsv = useCallback(async () => {
     if (!(await ensureSaved())) {
       return;
@@ -1152,7 +1162,7 @@ export default function SteelReviewDialog({
                       >
                         <SelectValue placeholder={localize('com_ui_steel_review_source')} />
                       </SelectTrigger>
-                      <SelectContent>
+                      <SelectContent onEscapeKeyDown={(event) => event.stopPropagation()}>
                         {sources.map((source) => (
                           <SelectItem key={source.fileId} value={source.fileId}>
                             {source.filename}
@@ -1177,7 +1187,7 @@ export default function SteelReviewDialog({
                         >
                           <SelectValue />
                         </SelectTrigger>
-                        <SelectContent>
+                        <SelectContent onEscapeKeyDown={(event) => event.stopPropagation()}>
                           {Array.from({ length: Math.max(1, pageCount) }, (_, index) => index + 1).map((page) => (
                             <SelectItem key={page} value={String(page)}>
                               {page}
@@ -1228,6 +1238,8 @@ export default function SteelReviewDialog({
                       ...sourceEditorLabels,
                     }}
                     onCellChange={onCellChange}
+                    onCellHistoryBoundary={onCellHistoryBoundary}
+                    canEdit={canEdit}
                     sourcePageCountError={sourcePageCountQuery.isError}
                     onSourcePageRetry={() => void sourcePageCountQuery.refetch()}
                     onSourceEdit={canEdit ? onSourceEdit : undefined}
@@ -1252,6 +1264,8 @@ export default function SteelReviewDialog({
                           ...sourceEditorLabels,
                         }}
                         onCellChange={onCellChange}
+                        onCellHistoryBoundary={onCellHistoryBoundary}
+                        canEdit={canEdit}
                         sourcePageCountError={sourcePageCountQuery.isError}
                         onSourcePageRetry={() => void sourcePageCountQuery.refetch()}
                         onSourceEdit={canEdit ? onSourceEdit : undefined}
@@ -1277,6 +1291,8 @@ export default function SteelReviewDialog({
                     ...sourceEditorLabels,
                   }}
                   onCellChange={onCellChange}
+                  onCellHistoryBoundary={onCellHistoryBoundary}
+                  canEdit={canEdit}
                   sourcePageCountError={sourcePageCountQuery.isError}
                   onSourcePageRetry={() => void sourcePageCountQuery.refetch()}
                   onSourceEdit={canEdit ? onSourceEdit : undefined}

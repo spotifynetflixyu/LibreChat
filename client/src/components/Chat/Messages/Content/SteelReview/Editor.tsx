@@ -29,6 +29,8 @@ export interface SteelReviewEditorProps {
   draft: SteelReviewDraftState;
   labels: SteelReviewEditorLabels;
   onCellChange: (row: SteelReviewRow, header: string, value: string) => void;
+  onCellHistoryBoundary?: () => void;
+  canEdit?: boolean;
   sources?: readonly SteelReviewSourceFile[];
   sourceCorrectionRowId?: string;
   sourcePageCount?: number;
@@ -69,6 +71,7 @@ function SourceCell({
   onSourcePageRetry,
   onSourceEdit,
   onSourceChange,
+  canEdit,
 }: {
   table: SteelReviewTable;
   row: SteelReviewRow;
@@ -81,11 +84,13 @@ function SourceCell({
   onSourcePageRetry?: () => void;
   onSourceEdit?: (row: SteelReviewRow) => void;
   onSourceChange?: (row: SteelReviewRow, source: SteelReviewSource | null) => void;
+  canEdit: boolean;
 }) {
   const editable = Boolean(
     row.rowId &&
     !row.deleted &&
     sourceCorrectionRowId === row.rowId &&
+    canEdit &&
     table.kind === 'ocr_result' &&
     table.isLatest &&
     !table.readOnly &&
@@ -132,7 +137,7 @@ function SourceCell({
         <SelectTrigger aria-label={labels.sourcePage}>
           <SelectValue placeholder={labels.sourceNoPage} />
         </SelectTrigger>
-        <SelectContent>
+        <SelectContent onEscapeKeyDown={(event) => event.stopPropagation()}>
           <SelectItem value={NO_SOURCE_PAGE_VALUE}>{labels.sourceNoPage}</SelectItem>
           {pageValues.map((page) => (
             <SelectItem key={page} value={String(page)}>{page}</SelectItem>
@@ -149,7 +154,7 @@ function SourceCell({
           <span aria-label={`${labels.sourceFile}: ${sourceLabel(source) || labels.readonly}`}>
             {sourceLabel(source) || labels.readonly}
           </span>
-          {onSourceEdit && row.rowId && !row.deleted && table.kind === 'ocr_result' && table.isLatest && !table.readOnly && (
+          {canEdit && onSourceEdit && row.rowId && !row.deleted && table.kind === 'ocr_result' && table.isLatest && !table.readOnly && (
             <Button
               type="button"
               variant="outline"
@@ -192,7 +197,7 @@ function SourceCell({
             <SelectTrigger aria-label={labels.sourceFile}>
               <SelectValue placeholder={labels.sourceFile} />
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent onEscapeKeyDown={(event) => event.stopPropagation()}>
               <SelectItem value={CLEAR_SOURCE_VALUE}>{labels.clearSource}</SelectItem>
               {sources.map((candidate) => (
                 <SelectItem key={candidate.fileId} value={candidate.fileId}>
@@ -220,6 +225,8 @@ function ReviewCell({
   draft,
   readonlyLabel,
   onCellChange,
+  onCellHistoryBoundary,
+  canEdit = true,
 }: {
   table: SteelReviewTable;
   row: SteelReviewRow;
@@ -227,6 +234,8 @@ function ReviewCell({
   draft: SteelReviewDraftState;
   readonlyLabel: string;
   onCellChange: SteelReviewEditorProps['onCellChange'];
+  onCellHistoryBoundary?: SteelReviewEditorProps['onCellHistoryBoundary'];
+  canEdit: boolean;
 }) {
   const cell = row.values[header];
   if (!cell) {
@@ -236,7 +245,7 @@ function ReviewCell({
   const draftValue = row.rowId ? getSteelReviewDraftCell(draft, row.rowId, header) : undefined;
   const currentValue = draftValue ?? displayCellValue(cell.effective);
   const changed = displayCellValue(cell.baseline) !== currentValue;
-  const editable = Boolean(row.rowId) && !row.deleted && isSteelReviewCellEditable(table, header);
+  const editable = Boolean(row.rowId) && canEdit && !row.deleted && isSteelReviewCellEditable(table, header);
   const deletedValue = row.deleted
     ? <del className="text-text-secondary">{row.origin === 'manual' ? currentValue : displayCellValue(cell.baseline)}</del>
     : null;
@@ -255,9 +264,11 @@ function ReviewCell({
         onKeyDown={(event: KeyboardEvent<HTMLInputElement>) => {
           if (event.key === 'Enter') {
             event.preventDefault();
+            onCellHistoryBoundary?.();
             event.currentTarget.blur();
           }
         }}
+        onBlur={onCellHistoryBoundary}
       />
     );
   } else if (!row.deleted) {
@@ -279,6 +290,8 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
   draft,
   labels,
   onCellChange,
+  onCellHistoryBoundary,
+  canEdit = true,
   sources = [],
   sourceCorrectionRowId,
   sourcePageCount,
@@ -324,6 +337,8 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
                   draft={draft}
                   readonlyLabel={labels.readonly}
                   onCellChange={onCellChange}
+                  onCellHistoryBoundary={onCellHistoryBoundary}
+                  canEdit={canEdit}
                 />
               ))}
               {onSourceChange && (
@@ -339,6 +354,7 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
                   onSourcePageRetry={onSourcePageRetry}
                   onSourceEdit={onSourceEdit}
                   onSourceChange={onSourceChange}
+                  canEdit={canEdit}
                 />
               )}
               {(onDeleteRow || onRestoreRow) && (

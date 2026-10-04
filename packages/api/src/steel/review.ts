@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { SteelReviewWriteError } from '@librechat/data-schemas';
 import {
   getSteelReviewTableId,
+  parseSteelReviewMarkdownTables,
   encodeSteelReviewDigest,
   isSteelReviewSourceAssociationHeader,
   normalizeSteelReviewLedgerRows,
@@ -39,7 +40,7 @@ import type {
   SteelReviewReceiptLookup,
 } from '@librechat/data-schemas';
 import type { ServerRequest } from '~/types/http';
-import { parseMarkdownTables, type SteelMarkdownTable } from './markdown/table';
+import type { SteelMarkdownTable } from './markdown/table';
 import { escapeMarkdownTableCell } from './markdown/row-codec';
 
 export interface SteelReviewReader {
@@ -180,114 +181,24 @@ function isManagedTitle(kind: SteelReviewKind, title: string | undefined): boole
 }
 
 function collectTables(markdown: string): ReviewTableCandidate[] {
-  const tables: ReviewTableCandidate[] = [];
-  let fence: MarkdownFence | undefined;
-  let title: string | undefined;
-  let block: string[] = [];
-  let index = 0;
-
-  const flush = () => {
-    if (block.length > 0) {
-      const parsed = parseMarkdownTables(block.join('\n'));
-      for (const table of parsed) {
-        index += 1;
-        tables.push({ ...table, index, title });
-      }
-      block = [];
-    }
-  };
-
-  for (const line of markdown.split(/\r?\n/u)) {
-    if (fence) {
-      if (closesFence(line, fence)) {
-        fence = undefined;
-      }
-      continue;
-    }
-    const nextFence = getFence(line);
-    if (nextFence) {
-      flush();
-      fence = nextFence;
-      continue;
-    }
-    const nextTitle = headingTitle(line);
-    if (isHeading(line)) {
-      flush();
-      // A managed H2 section ends at every heading level. Do not carry its
-      // authority into an ordinary table below an H1/H3/other section.
-      title = nextTitle;
-      continue;
-    }
-    const trimmed = line.trim();
-    if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
-      block.push(trimmed);
-    } else {
-      flush();
-    }
-  }
-  flush();
-  return tables;
+  return parseSteelReviewMarkdownTables(markdown).map(({ headers, rows, index, title }) => ({
+    headers,
+    rows,
+    index,
+    title,
+  }));
 }
 
 function collectLocatedTables(markdown: string): LocatedTable[] {
-  const tables: LocatedTable[] = [];
-  const lines = markdown.match(/[^\r\n]*(?:\r?\n|$)/gu) ?? [];
-  let fence: MarkdownFence | undefined;
-  let title: string | undefined;
-  let block: string[] = [];
-  let blockStart = 0;
-  let blockEnd = 0;
-  let offset = 0;
-  let index = 0;
-
-  const flush = () => {
-    if (block.length === 0) {
-      return;
-    }
-    const parsed = parseMarkdownTables(block.join('\n'));
-    for (const table of parsed) {
-      index += 1;
-      const raw = markdown.slice(blockStart, blockEnd);
-      tables.push({ ...table, index, title, start: blockStart, end: blockEnd, raw });
-    }
-    block = [];
-  };
-
-  for (const rawLine of lines) {
-    const line = rawLine.replace(/\r?\n$/u, '');
-    const trimmed = line.trim();
-    const lineStart = offset;
-    offset += rawLine.length;
-    if (fence) {
-      if (closesFence(line, fence)) {
-        fence = undefined;
-      }
-      continue;
-    }
-    const nextFence = getFence(line);
-    if (nextFence) {
-      flush();
-      fence = nextFence;
-      continue;
-    }
-    const nextTitle = headingTitle(line);
-    if (isHeading(line)) {
-      flush();
-      title = nextTitle;
-      continue;
-    }
-    if (trimmed.startsWith('|') && trimmed.endsWith('|')) {
-      if (block.length === 0) {
-        blockStart = lineStart;
-      }
-      blockEnd = lineStart + line.length;
-      block.push(trimmed);
-      continue;
-    }
-    flush();
-  }
-  flush();
-  return tables;
+  return parseSteelReviewMarkdownTables(markdown).map(({ headers, rows, index, title, start, end, raw }) => ({
+    headers,
+    rows,
+    index,
+    title,
+    start,
+    end,
+    raw,
+  }));
 }
 
 function collectMessageTables(record: SteelReviewReadRecord): ReviewTableCandidate[] {
@@ -884,8 +795,11 @@ export function createSteelReviewService({
     }
     const record = await reader.readSteelReview(scope);
     if (!record || record.state !== 'current' || (record.latestOutputId ?? record.outputId) !== record.outputId ||
-      record.outputId !== payload.outputId || record.revision !== payload.revision) {
+      record.outputId !== payload.outputId) {
       throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review table is no longer current');
+    }
+    if (record.revision !== payload.revision) {
+      throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review table is no longer current');
     }
     const target = findVerifiedSaveTarget(record, payload.tableId);
     if (!target || target.partIndex !== payload.partIndex && payload.partIndex !== undefined) {

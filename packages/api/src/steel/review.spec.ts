@@ -1147,6 +1147,42 @@ describe('Steel review read service', () => {
     expect(commitSteelReview).not.toHaveBeenCalled();
   });
 
+  it('reports an authorized same-output stale prepare as a conflict', async () => {
+    const record = {
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result' as const,
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+      outputId: 'ocr_result:generation-1',
+      revision: 'current-revision',
+      state: 'current' as const,
+      markdown: managedMarkdown,
+      messageText: managedMarkdown,
+    };
+    const service = createSteelReviewService({
+      reader: { readSteelReview: jest.fn().mockResolvedValue(record) },
+    });
+
+    await expect(service.prepare({
+      userId: record.userId,
+      conversationId: record.conversationId,
+      kind: record.kind,
+      messageId: record.messageId,
+      tableId: record.tableId,
+      outputId: record.outputId,
+      revision: 'captured-revision',
+      rows: [{
+        rowId: 'row-1',
+        values: {
+          來源: { baseline: 'A', effective: 'A' },
+          零件編號: { baseline: 'P-1', effective: 'P-2' },
+        },
+        source: null,
+      }],
+    })).rejects.toMatchObject({ code: 'REVIEW_CONFLICT' });
+  });
+
   it('replays an authenticated committed legacy receipt without rebuilding or writing', async () => {
     const reader = {
       readSteelReview: jest.fn().mockResolvedValue({

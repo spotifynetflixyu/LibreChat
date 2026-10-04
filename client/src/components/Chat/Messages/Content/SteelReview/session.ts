@@ -125,6 +125,13 @@ function recordMutation(
   };
 }
 
+export function finishSteelReviewDraftHistory(draft: SteelReviewDraftState): SteelReviewDraftState {
+  if (draft.historyGroup === undefined) {
+    return draft;
+  }
+  return { ...draft, historyGroup: undefined };
+}
+
 function restoreSnapshot(
   draft: SteelReviewDraftState,
   snapshot: SteelReviewDraftSnapshot,
@@ -198,10 +205,11 @@ export function setSteelReviewDraftCell(
   const touched = { ...draft.touched, [getSteelReviewDraftCellKey(row.rowId, header)]: value };
   const cellVersions = { ...draft.cellVersions };
   const key = getSteelReviewDraftCellKey(row.rowId, header);
-  const effective = cell.effective ?? '';
+  const currentEffective = getSteelReviewDraftCell(draft, row.rowId, header) ?? cell.effective ?? '';
+  const confirmedEffective = cell.effective ?? '';
   const changeSequence = draft.changeSequence + 1;
   cellVersions[key] = changeSequence;
-  if (value === effective) {
+  if (value === confirmedEffective) {
     delete cells[key];
   } else {
     cells[key] = value;
@@ -213,8 +221,8 @@ export function setSteelReviewDraftCell(
     ? draft
     : {
         ...draft,
-        cells: { ...draft.cells, [key]: effective },
-        touched: { ...draft.touched, [key]: effective },
+        cells: { ...draft.cells, [key]: currentEffective },
+        touched: { ...draft.touched, [key]: currentEffective },
       };
   const historySnapshot = isSameCellGroup
     ? undefined
@@ -240,39 +248,35 @@ export function getSteelReviewDirtyRowIds(
   table: { rows: readonly SteelReviewRow[] },
   draft: SteelReviewDraftState,
 ): string[] {
-  const trustedRowIds = new Set(table.rows.map((row) => row.rowId).filter(Boolean));
-  const rowIds = new Set<string>();
-  for (const key of Object.keys(draft.cells)) {
-    const separatorIndex = key.indexOf('\u0000');
-    if (separatorIndex < 1) {
-      continue;
-    }
-    const rowId = key.slice(0, separatorIndex);
-    if (trustedRowIds.has(rowId)) {
-      rowIds.add(rowId);
+  const normalizeRow = (row: SteelReviewRow) => ({
+    rowId: row.rowId,
+    origin: row.origin ?? 'ai',
+    deleted: row.deleted ?? false,
+    insertion: row.insertion ?? null,
+    source: row.source ?? null,
+    values: Object.fromEntries(Object.entries(row.values).map(([header, cell]) => [header, {
+      baseline: cell.baseline ?? null,
+      effective: cell.effective ?? '',
+    }])),
+  });
+  const confirmedRows = new Map(table.rows.map((row) => [row.rowId, normalizeRow(row)]));
+  const projectedRows = new Map(applySteelReviewDrafts(table.rows, draft)
+    .map((row) => [row.rowId, normalizeRow(row)]));
+  const dirty = new Set<string>();
+  for (const [rowId, confirmed] of confirmedRows) {
+    const projected = projectedRows.get(rowId);
+    if (!projected || JSON.stringify(projected) !== JSON.stringify(confirmed)) {
+      dirty.add(rowId);
     }
   }
-  for (const rowId of Object.keys(draft.sourceDrafts)) {
-    if (trustedRowIds.has(rowId)) {
-      rowIds.add(rowId);
-    }
-  }
-  for (const [rowId, row] of Object.entries(draft.rowStates)) {
-    const trusted = table.rows.find((candidate) => candidate.rowId === rowId);
-    if (!trusted) {
-      if (!row.deleted) {
-        rowIds.add(rowId);
-      }
-      continue;
-    }
-    if (JSON.stringify({ ...trusted, origin: trusted.origin ?? 'ai', deleted: trusted.deleted ?? false }) !==
-      JSON.stringify({ ...row, origin: row.origin ?? 'ai', deleted: row.deleted ?? false })) {
-      rowIds.add(rowId);
+  for (const [rowId, projected] of projectedRows) {
+    if (!confirmedRows.has(rowId) && !projected.deleted) {
+      dirty.add(rowId);
     }
   }
   return [
-    ...table.rows.map((row) => row.rowId).filter((rowId) => rowIds.has(rowId)),
-    ...Object.keys(draft.rowStates).filter((rowId) => !trustedRowIds.has(rowId) && rowIds.has(rowId)),
+    ...table.rows.map((row) => row.rowId).filter((rowId) => dirty.has(rowId)),
+    ...[...projectedRows.keys()].filter((rowId) => !confirmedRows.has(rowId) && dirty.has(rowId)),
   ];
 }
 
@@ -359,7 +363,7 @@ export function addSteelReviewDraftRow(
     ? inheritedAnchor.rowId
     : anchor?.rowId;
   const anchorKey = anchorKind === 'after' ? `after:${anchorRowId}` : anchorKind;
-  const ordinal = Object.values(draft.rowStates)
+  const ordinal = [...table.rows, ...Object.values(draft.rowStates)]
     .filter((row) => {
       const insertion = row.insertion;
       if (!insertion) return false;
@@ -390,7 +394,13 @@ export function deleteSteelReviewDraftRow(
   } else {
     rowStates[row.rowId] = { ...row, deleted: true };
   }
-  return recordMutation(draft, { ...draft, rowStates, changeSequence: draft.changeSequence + 1 }, `delete:${row.rowId}`);
+  const historySnapshot = isSaved
+    ? snapshotOf({
+        ...draft,
+        rowStates: { ...draft.rowStates, [row.rowId]: { ...row, deleted: false } },
+      })
+    : undefined;
+  return recordMutation(draft, { ...draft, rowStates, changeSequence: draft.changeSequence + 1 }, `delete:${row.rowId}`, historySnapshot);
 }
 
 export function restoreSteelReviewDraftRow(
@@ -507,9 +517,15 @@ export function rebaseSteelReviewDraftState(
   const rowStates = { ...draft.rowStates };
   for (const [rowId, row] of Object.entries(rowStates)) {
     const saved = savedRows.find((candidate) => candidate.rowId === rowId);
-    if (saved && JSON.stringify({ ...saved, origin: saved.origin ?? 'ai', deleted: saved.deleted ?? false }) ===
+    if (!saved) {
+      continue;
+    }
+    const rebasedRow = { ...saved, deleted: row.deleted ?? false };
+    if (JSON.stringify({ ...saved, origin: saved.origin ?? 'ai', deleted: saved.deleted ?? false }) ===
       JSON.stringify({ ...row, origin: row.origin ?? 'ai', deleted: row.deleted ?? false })) {
       delete rowStates[rowId];
+    } else {
+      rowStates[rowId] = rebasedRow;
     }
   }
 
@@ -523,6 +539,10 @@ export function rebaseSteelReviewDraftState(
     const snapshotRows = { ...snapshot.rowStates };
     for (const saved of savedRows) {
       if (Object.prototype.hasOwnProperty.call(snapshotRows, saved.rowId)) {
+        snapshotRows[saved.rowId] = {
+          ...saved,
+          deleted: snapshotRows[saved.rowId]?.deleted ?? saved.deleted ?? false,
+        };
         continue;
       }
       const origin = saved.origin ?? 'ai';

@@ -556,7 +556,25 @@ export function encodeSteelReviewDigest(input: SteelReviewDigestInput): string {
     partIndex: input.partIndex ?? null,
     outputId: input.outputId,
     revision: input.revision,
-    rows: input.rows,
+    rows: input.rows.map((row) => {
+      const hasLedgerField = Object.prototype.hasOwnProperty.call(row, 'origin') ||
+        Object.prototype.hasOwnProperty.call(row, 'deleted') ||
+        Object.prototype.hasOwnProperty.call(row, 'insertion');
+      if (!hasLedgerField) {
+        return row;
+      }
+      // Zod materializes Ticket05 row fields in schema order at the HTTP
+      // boundary. Keep that order for new ledger digests while preserving
+      // the exact property presence/order of committed 03/04 rows.
+      return {
+        rowId: row.rowId,
+        values: row.values,
+        source: row.source,
+        ...(Object.prototype.hasOwnProperty.call(row, 'origin') ? { origin: row.origin } : {}),
+        ...(Object.prototype.hasOwnProperty.call(row, 'deleted') ? { deleted: row.deleted } : {}),
+        ...(Object.prototype.hasOwnProperty.call(row, 'insertion') ? { insertion: row.insertion } : {}),
+      };
+    }),
   };
   if (hasSourceIntents) {
     payload.sourceIntents = input.sourceIntents;

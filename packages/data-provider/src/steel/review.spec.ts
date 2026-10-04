@@ -177,6 +177,43 @@ describe('Steel review contracts', () => {
     }));
   });
 
+  it('keeps new ledger digests stable across HTTP schema property ordering', () => {
+    const base = {
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result' as const,
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      headers: ['Value'],
+      messageSha256: 'a'.repeat(64),
+      target: { start: 0, end: 1, sha256: 'b'.repeat(64) },
+      targetText: 'old',
+      replacementText: 'new',
+      cleanReplacementText: 'new',
+      effectiveMarkdown: 'table',
+      displayMarkdown: 'table',
+      caption: { kind: 'ocr_result' as const, changedRows: 1, changedRowIds: ['row-1'] },
+    };
+    const browserRow = {
+      rowId: 'row-1',
+      values: { Value: { baseline: 'AI', effective: 'new' } },
+      source: null,
+      deleted: true,
+      origin: 'ai' as const,
+    };
+    const parsedRow = {
+      rowId: browserRow.rowId,
+      values: browserRow.values,
+      source: browserRow.source,
+      origin: browserRow.origin,
+      deleted: browserRow.deleted,
+    };
+    expect(encodeSteelReviewDigest({ ...base, rows: [browserRow] }))
+      .toBe(encodeSteelReviewDigest({ ...base, rows: [parsedRow] }));
+  });
+
   it('orders trusted ledger rows and reserves ordinals across tombstones', () => {
     const current = [
       {

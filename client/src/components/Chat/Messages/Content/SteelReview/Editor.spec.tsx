@@ -97,6 +97,57 @@ describe('Steel review local editor gates', () => {
     expect(screen.getByLabelText('品名規格: Read-only cell')).toHaveTextContent('鋼板');
   });
 
+  it('keeps a captured prior-generation editor read-only even when the live table is latest', () => {
+    const onCellChange = jest.fn();
+    const onSourceEdit = jest.fn();
+    render(
+      <SteelReviewEditor
+        table={table}
+        rows={table.rows}
+        draft={createSteelReviewDraftState('owner')}
+        canEdit={false}
+        labels={{
+          ...sourceLabels,
+          table: 'Steel review table',
+          readonly: 'Read-only cell',
+          changeSource: 'Change source',
+          sourceFile: 'Source file',
+          sourceActions: 'Source actions',
+        }}
+        sources={[{ fileId: 'file-1', filename: 'drawing.pdf', mediaType: 'application/pdf' }]}
+        onCellChange={onCellChange}
+        onSourceEdit={onSourceEdit}
+        onSourceChange={jest.fn()}
+        onDeleteRow={jest.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole('textbox', { name: '品名規格 row-1' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Change source row-1' })).toBeNull();
+    expect(screen.getByLabelText('品名規格: Read-only cell')).toHaveTextContent('鋼板');
+    expect(onCellChange).not.toHaveBeenCalled();
+    expect(onSourceEdit).not.toHaveBeenCalled();
+  });
+
+  it('ends focused history on Enter and blur', () => {
+    const onCellHistoryBoundary = jest.fn();
+    render(
+      <SteelReviewEditor
+        table={table}
+        rows={table.rows}
+        draft={createSteelReviewDraftState('owner')}
+        labels={{ ...sourceLabels, table: 'Steel review table', readonly: 'Read-only cell' }}
+        onCellChange={jest.fn()}
+        onCellHistoryBoundary={onCellHistoryBoundary}
+      />,
+    );
+
+    const input = screen.getByRole('textbox', { name: '品名規格 row-1' });
+    fireEvent.keyDown(input, { key: 'Enter' });
+    fireEvent.blur(input);
+    expect(onCellHistoryBoundary).toHaveBeenCalled();
+  });
+
   it('offers a source correction action with stable source labels', () => {
     const onSourceEdit = jest.fn();
     const sources: SteelReviewSourceFile[] = [{
@@ -190,5 +241,35 @@ describe('Steel review local editor gates', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('Source pages unavailable');
     fireEvent.click(screen.getByRole('button', { name: /Retry/u }));
     expect(onSourcePageRetry).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes the source page menu on its first Escape', () => {
+    const sourceRow = {
+      ...table.rows[0],
+      source: { fileId: 'file-1', pageNumber: 1, filename: 'drawing.pdf' },
+    };
+    render(
+      <SteelReviewEditor
+        table={table}
+        rows={[sourceRow]}
+        draft={createSteelReviewDraftState('owner')}
+        labels={{
+          ...sourceLabels,
+          table: 'Steel review table',
+          readonly: 'Read-only cell',
+        }}
+        sources={[{ fileId: 'file-1', filename: 'drawing.pdf', mediaType: 'application/pdf' }]}
+        sourceCorrectionRowId="row-1"
+        sourcePageCount={2}
+        onCellChange={jest.fn()}
+        onSourceChange={jest.fn()}
+      />,
+    );
+
+    const pageTrigger = screen.getByRole('combobox', { name: 'Source page' });
+    fireEvent.click(pageTrigger);
+    expect(screen.getByRole('option', { name: '2' })).toBeInTheDocument();
+    fireEvent.keyDown(document.activeElement ?? pageTrigger, { key: 'Escape' });
+    expect(screen.queryByRole('option', { name: '2' })).toBeNull();
   });
 });

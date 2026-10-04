@@ -12,6 +12,7 @@ import {
   getSteelReviewPrepareInput,
   rebaseSteelReviewDraftState,
   setSteelReviewDraftCell,
+  finishSteelReviewDraftHistory,
   setSteelReviewDraftSource,
   undoSteelReviewDraft,
   redoSteelReviewDraft,
@@ -337,6 +338,79 @@ describe('Steel review local draft session', () => {
     }];
     const rebased = rebaseSteelReviewDraftState(draft, savedRows, draft.changeSequence);
     expect(applySteelReviewDrafts(savedRows, undoSteelReviewDraft(rebased))[0]?.values.數量.effective).toBe('1');
+  });
+
+  it('treats an undo back to the confirmed value as net clean', () => {
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(selection, table));
+    draft = setSteelReviewDraftCell(draft, table.rows[0], '數量', '7');
+    draft = undoSteelReviewDraft(draft);
+
+    expect(applySteelReviewDrafts(table.rows, draft)[0]?.values.數量.effective).toBe('1');
+    expect(getSteelReviewDirtyRowIds(table, draft)).toEqual([]);
+  });
+
+  it('starts a new focused history group after Enter or blur', () => {
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(selection, table));
+    draft = setSteelReviewDraftCell(draft, table.rows[0], '數量', '7');
+    draft = finishSteelReviewDraftHistory(draft);
+    draft = setSteelReviewDraftCell(draft, table.rows[0], '數量', '8');
+
+    const firstUndo = undoSteelReviewDraft(draft);
+    expect(applySteelReviewDrafts(table.rows, firstUndo)[0]?.values.數量.effective).toBe('7');
+    expect(applySteelReviewDrafts(table.rows, undoSteelReviewDraft(firstUndo))[0]?.values.數量.effective).toBe('1');
+  });
+
+  it('rebases a saved manual row with its confirmed values before undoing deletion', () => {
+    const savedManual = {
+      rowId: 'manual-saved',
+      origin: 'manual' as const,
+      deleted: false,
+      insertion: { kind: 'end' as const, ordinal: 0 },
+      source: { fileId: 'file-1', pageNumber: 2, filename: 'drawing.pdf' },
+      values: {
+        品名: { baseline: null, effective: 'MANUAL-ONLY' },
+        數量: { baseline: null, effective: '4' },
+      },
+    };
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(selection, table));
+    draft = deleteSteelReviewDraftRow(draft, { ...savedManual, values: {
+      品名: { baseline: null, effective: '' },
+      數量: { baseline: null, effective: '' },
+    } }, true);
+    const savedRows = [...table.rows, { ...savedManual, deleted: true }];
+    const rebased = rebaseSteelReviewDraftState(draft, savedRows, draft.changeSequence);
+
+    const restored = applySteelReviewDrafts(savedRows, undoSteelReviewDraft(rebased))
+      .find((row) => row.rowId === savedManual.rowId);
+    expect(restored).toMatchObject({
+      deleted: false,
+      source: savedManual.source,
+      values: savedManual.values,
+    });
+  });
+
+  it('allocates the next ordinal after a saved tombstoned row', () => {
+    const tableWithTombstone: SteelReviewTable = {
+      ...table,
+      rows: [
+        ...table.rows,
+        {
+          rowId: 'manual-tombstone',
+          origin: 'manual',
+          deleted: true,
+          insertion: { kind: 'end', ordinal: 0 },
+          source: null,
+          values: { 品名: { baseline: null, effective: 'old' }, 數量: { baseline: null, effective: '1' } },
+        },
+      ],
+    };
+    const draft = addSteelReviewDraftRow(
+      createSteelReviewDraftState(getSteelReviewDraftKey(selection, tableWithTombstone)),
+      tableWithTombstone,
+      undefined,
+      null,
+    );
+    expect(Object.values(draft.rowStates)[0]?.insertion).toEqual({ kind: 'end', ordinal: 1 });
   });
 
   it('rebases grouped source history across a confirmed page save', () => {
