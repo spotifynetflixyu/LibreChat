@@ -2606,6 +2606,81 @@ test.describe('Steel managed source review', () => {
     await expect(dialog).not.toBeVisible();
   });
 
+  test('a failed OCR prepare keeps grouped history and retry saves only the chosen draft', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const before = await persistedSnapshot(conversationId);
+    const prepareUrl = `**/api/steel/conversations/${conversationId}/review/ocr_result/prepare`;
+    await page.route(prepareUrl, (route) => route.abort('failed'));
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+    await quantity.fill('7');
+    await quantity.press('8');
+    await dialog.getByRole('button', { name: /^Save/ }).click();
+    await expect(dialog.getByRole('alert')).toBeVisible();
+    await expect(quantity).toHaveValue('78');
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect(quantity).toHaveValue('2');
+    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+    await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
+    await expect(quantity).toHaveValue('78');
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    await page.unroute(prepareUrl);
+    await dialog.getByRole('button', { name: /^Save/ }).click();
+    await expect(dialog.getByText('Updated 1 rows', { exact: true })).toBeVisible();
+    const saved = await persistedSnapshot(conversationId);
+    expect(saved.messages.find((message) => message.messageId === messageId)?.text)
+      .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 78 | 1 |'));
+    expect(saved.reviews[0]?.receipts).toHaveLength(1);
+    expectPreservedAiState(before.ocr, saved.ocr);
+  });
+
+  test('deleting a previously saved manual OCR row changes one row without inventing an AI comparison', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
+    const added = dialog.locator('tbody tr').last();
+    await added.locator('td').nth(1).getByRole('textbox').fill('MANUAL-ONLY');
+    await added.locator('td').nth(3).getByRole('textbox').fill('4');
+    await dialog.getByRole('button', { name: /^Save/ }).click();
+    await expect(dialog.getByText('Updated 1 rows', { exact: true })).toBeVisible();
+    const first = await persistedSnapshot(conversationId);
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(read.status()).toBe(200);
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const manual = table.rows.find((row) => row.values['零件編號'].effective === 'MANUAL-ONLY');
+    expect(manual).toBeDefined();
+    await dialog.locator('tbody tr').filter({ has: page.locator('input[value="MANUAL-ONLY"]') })
+      .getByRole('button', { name: /^Delete row(?:\s|$)/ }).click();
+    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
+    await expect(dialog.locator('del').filter({ hasText: 'MANUAL-ONLY' })).toHaveCount(0);
+    expect(await persistedSnapshot(conversationId)).toEqual(first);
+    await dialog.getByRole('button', { name: /^Save/ }).click();
+    await expect.poll(async () => (await persistedSnapshot(conversationId)).reviews[0]?.receipts.length).toBe(2);
+    const second = await persistedSnapshot(conversationId);
+    expect(second.messages.find((message) => message.messageId === messageId)?.text).toBe(ocr);
+    expect(second.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
+    expect(second.reviews[0]?.rows).toContainEqual(expect.objectContaining({ rowId: manual?.rowId,
+      origin: 'manual', deleted: true }));
+    expect(second.reviews[0]?.receipts[1]).toMatchObject({ changedRows: 1, changedRowIds: [manual?.rowId] });
+    await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect(dialog.locator('input[value="MANUAL-ONLY"]')).toBeVisible();
+    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
+    expect(await persistedSnapshot(conversationId)).toEqual(second);
+    await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
+    await expect(dialog.locator('input[value="MANUAL-ONLY"]')).toHaveCount(0);
+    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeVisible();
+    expect(await persistedSnapshot(conversationId)).toEqual(second);
+  });
+
   test('OCR Save displays authoritative prepared and confirmed row counts without writing presentation copy into chat', async ({ page }) => {
     const { conversationId } = await seedCurrent(ocr);
     conversations.push(conversationId);
