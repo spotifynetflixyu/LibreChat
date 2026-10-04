@@ -896,6 +896,51 @@ describe('Steel review write methods', () => {
     expect(await ReviewOutput.findOne({ conversationId }).lean()).toBeNull();
   });
 
+  it('rejects a new operation with an unknown captured revision without writing state', async () => {
+    const models = createModels(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const conversationId = 'unknown-revision-conversation';
+    const messageId = 'unknown-revision-message';
+    const originalMarkdown = markdownFor('P-1');
+    await models.Conversation.create({
+      conversationId, user: 'user-1', tenantId: 'tenant-1', title: 'Unknown revision', endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId, conversationId, user: 'user-1', tenantId: 'tenant-1', isCreatedByUser: false,
+      text: originalMarkdown,
+    });
+    await State.create({
+      conversationId,
+      currentOcrResultMarkdown: originalMarkdown,
+      currentOcrResultMessageId: messageId,
+      currentOcrResultGenerationId: 'generation-1',
+    });
+    const base = makeInput({
+      operationId: 'unknown-revision-operation',
+      revision: 'unknown-never-existed',
+      previousValue: 'P-1',
+      nextValue: 'P-7',
+      conversationId,
+      messageId,
+    });
+    const operation = {
+      ...base,
+      operationDigest: base.digest,
+      requestDigest: 'request-digest',
+    };
+    const snapshot = async () => ({
+      message: await models.Message.findOne({ messageId }).lean(),
+      output: await ReviewOutput.findOne({ conversationId }).lean(),
+      state: await State.findOne({ conversationId }).lean(),
+    });
+    const before = await snapshot();
+    await expect(createSteelReviewWriteMethods(mongoose).commitSteelReview(operation)).rejects.toMatchObject({
+      code: 'REVIEW_CONFLICT',
+    });
+    expect(await snapshot()).toEqual(before);
+  });
+
   it('allows a business save when the existing source association is blank', async () => {
     const models = createModels(mongoose);
     const State = createSteelConversationOcrStateModel(mongoose);

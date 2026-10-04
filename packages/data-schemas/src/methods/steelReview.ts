@@ -1368,6 +1368,10 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
           const currentSourceMappings = output?.sourceMappings
             ?.filter((mapping) => currentAuthorizedFiles.has(mapping.fileId)) ??
             (ocrState?.sourceMappings ? sourceMappings(ocrState, currentAuthorizedFiles) : undefined);
+          const currentRevision = output?.revision ?? ocrState?.currentOcrResultGenerationId;
+          if (input.operationDigest !== undefined && !currentRevision) {
+            throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review output revision is unavailable');
+          }
           const currentLatestOutputId = output?.latestOutputId ?? input.outputId;
           const currentAiRawMarkdown = output?.aiRawMarkdown ?? ocrState?.currentOcrResultMarkdown;
 
@@ -1384,7 +1388,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               messageId: input.messageId,
               tableId: input.tableId,
               outputId: output?.outputId ?? input.outputId,
-              revision: output?.revision ?? input.revision,
+              revision: currentRevision ?? input.revision,
               state: 'current',
               ...(output?.headers ? { headers: output.headers } : {}),
               ...(output?.rows
@@ -1422,6 +1426,9 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               ...(input.partIndex !== undefined ? { messageTextPartIndex: input.partIndex } : {}),
             };
             const prepared = await input.prepareOperation!(currentRecord);
+            if (prepared.revision !== currentRecord.revision) {
+              throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review captured revision is unavailable');
+            }
             if (prepared.operationDigest !== input.operationDigest ||
               prepared.digest !== input.digest ||
               prepared.requestDigest !== input.requestDigest ||
@@ -1429,6 +1436,10 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review operation digest mismatch');
             }
             input = prepared;
+          }
+
+          if (input.operationDigest !== undefined && input.revision !== currentRevision) {
+            throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review captured revision is unavailable');
           }
 
           if (typeof message.text !== 'string' || createHash('sha256').update(message.text).digest('hex') !== input.messageSha256) {

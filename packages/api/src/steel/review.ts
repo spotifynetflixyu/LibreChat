@@ -990,18 +990,23 @@ export function createSteelReviewService({
     if (matchingSnapshots.length > 1) {
       return undefined;
     }
-    const markdown = record.aiBaselineMarkdown ?? record.markdown;
-    if (!markdown) {
+    const initialOutputId = `ocr_result:${payload.revision}`;
+    if (record.kind !== 'ocr_result' || record.outputId !== initialOutputId) {
       return undefined;
     }
-    const indexText = payload.tableId.slice(payload.tableId.lastIndexOf(':') + 1);
-    const index = Number(indexText);
-    const table = parseSteelReviewMarkdownTables(markdown).find((candidate) =>
-      candidate.index === index && JSON.stringify(candidate.headers) === JSON.stringify(target.headers));
-    if (!table) {
+    const initialMarkdown = record.aiBaselineMarkdown ?? record.markdown;
+    if (!initialMarkdown) {
       return undefined;
     }
-    return normalizeSteelReviewLedgerRows(toRows(table, record.outputId, record.sourceMappings));
+    const initialTables = collectTables(initialMarkdown).filter((candidate) =>
+      getSteelReviewTableId(record.kind, candidate.index) === payload.tableId &&
+      candidate.title === target.title &&
+      JSON.stringify(candidate.headers) === JSON.stringify(target.headers),
+    );
+    if (initialTables.length !== 1) {
+      return undefined;
+    }
+    return normalizeSteelReviewLedgerRows(toRows(initialTables[0], record.outputId, record.sourceMappings));
   }
 
   function operationRecovery(

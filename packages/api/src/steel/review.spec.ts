@@ -1184,6 +1184,126 @@ describe('Steel review read service', () => {
     })).rejects.toMatchObject({ code: 'REVIEW_CONFLICT' });
   });
 
+  it('rejects an operation whose captured revision has no trusted owner history', async () => {
+    const reader = {
+      readSteelReview: jest.fn().mockResolvedValue({
+        userId: 'user-1',
+        conversationId: 'conversation-1',
+        kind: 'ocr_result' as const,
+        messageId: 'message-1',
+        tableId: 'ocr_result:1',
+        outputId: 'ocr_result:generation-1',
+        revision: 'generation-1',
+        state: 'current' as const,
+        markdown: managedMarkdown,
+        messageText: managedMarkdown,
+      }),
+    };
+    const commitSteelReview = jest.fn();
+    const service = createSteelReviewService({ reader, writer: { commitSteelReview } });
+    const current = await service.read({
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result',
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+    });
+    const operation = {
+      conversationId: 'conversation-1',
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+      kind: 'ocr_result' as const,
+      outputId: current.table.outputId,
+      revision: 'unknown-never-existed',
+      operations: [{
+        type: 'update' as const,
+        rowId: current.table.rows[0]!.rowId,
+        changes: [{ header: '零件編號', value: 'P-7' }],
+      }],
+    };
+    await expect(service.prepare({ userId: 'user-1', ...operation })).rejects.toMatchObject({
+      code: 'REVIEW_CONFLICT',
+    });
+    expect(commitSteelReview).not.toHaveBeenCalled();
+  });
+
+  it('uses the server-owned initial OCR revision for a disjoint merge after a human save', async () => {
+    const initialRowId = createHash('sha256')
+      .update(`ocr_result:generation-1:0:${JSON.stringify(['A', 'P-1'])}`)
+      .digest('hex');
+    const currentMarkdown = [
+      '## ocr_result',
+      '',
+      '| 來源 | 零件編號 |',
+      '| --- | --- |',
+      '| A | P-1 |',
+      '| B | P-2 |',
+    ].join('\n');
+    const reader = {
+      readSteelReview: jest.fn().mockResolvedValue({
+        userId: 'user-1',
+        conversationId: 'conversation-1',
+        kind: 'ocr_result' as const,
+        messageId: 'message-1',
+        tableId: 'ocr_result:1',
+        outputId: 'ocr_result:generation-1',
+        revision: 'saved-revision',
+        state: 'current' as const,
+        headers: ['來源', '零件編號'],
+        rows: [
+          {
+            rowId: initialRowId,
+            values: {
+              來源: { baseline: 'A', effective: 'A' },
+              零件編號: { baseline: 'P-1', effective: 'P-1' },
+            },
+            source: null,
+            origin: 'ai' as const,
+            deleted: false,
+          },
+          {
+            rowId: 'row-manual',
+            values: {
+              來源: { baseline: null, effective: 'B' },
+              零件編號: { baseline: null, effective: 'P-2' },
+            },
+            source: null,
+            origin: 'manual' as const,
+            deleted: false,
+            insertion: { kind: 'end' as const, ordinal: 0 },
+          },
+        ],
+        aiBaselineMarkdown: managedMarkdown,
+        effectiveMarkdown: currentMarkdown,
+        messageText: currentMarkdown,
+      }),
+    };
+    const service = createSteelReviewService({ reader });
+
+    const prepared = await service.prepare({
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result',
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      operations: [{
+        type: 'update' as const,
+        rowId: initialRowId,
+        changes: [{ header: '零件編號', value: 'P-7' }],
+      }],
+    });
+
+    expect(prepared.rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        rowId: initialRowId,
+        values: expect.objectContaining({ 零件編號: { baseline: 'P-1', effective: 'P-7' } }),
+      }),
+      expect.objectContaining({ rowId: 'row-manual' }),
+    ]));
+  });
+
   it('replays an authenticated committed legacy receipt without rebuilding or writing', async () => {
     const reader = {
       readSteelReview: jest.fn().mockResolvedValue({
