@@ -247,7 +247,7 @@ describe('Steel review write methods', () => {
       customerQuoteMarkdown: expect.stringContaining('| 雷射板 | 2 | 82 |'),
     });
     expect(await ReviewOutput.findOne({ conversationId, outputId: 'system_order:run-1' }).lean()).toMatchObject({
-      revision: createHash('sha256').update(savedMarkdown).digest('hex'),
+      revision: createHash('sha256').update(`${currentHash}:system-order-digest`).digest('hex'),
       effectiveMarkdown: savedMarkdown,
       rows: [expect.objectContaining({ rowId: 'row-1' })],
     });
@@ -304,6 +304,7 @@ describe('Steel review write methods', () => {
       text: currentMarkdown,
     });
     const currentHash = createHash('sha256').update(currentMarkdown).digest('hex');
+    let currentReviewRevision = currentHash;
     await QuotationState.create({
       userId: 'user-1',
       tenantId: 'tenant-1',
@@ -341,7 +342,8 @@ describe('Steel review write methods', () => {
         title,
         tableId: 'system_order:table',
         outputId: 'system_order:run-rollback',
-        revision: createHash('sha256').update(beforeMarkdown).digest('hex'),
+        revision: currentReviewRevision,
+        systemOrderSha256: createHash('sha256').update(beforeMarkdown).digest('hex'),
         operationId,
         digest,
         rows: [{ rowId: rollbackRowId, values, source: null }],
@@ -376,6 +378,7 @@ describe('Steel review write methods', () => {
     const beforeQuotation = await QuotationState.findOne({ conversationId }).lean();
     const beforeOutput = await ReviewOutput.findOne({ conversationId, outputId: 'system_order:run-rollback' }).lean();
     expect(beforeOutput?.receipts).toHaveLength(1);
+    currentReviewRevision = beforeOutput?.revision ?? currentReviewRevision;
 
     const injectedFailure = jest.spyOn(QuotationState, 'updateOne').mockImplementationOnce(() => {
       throw new Error('injected system-order quotation write failure');

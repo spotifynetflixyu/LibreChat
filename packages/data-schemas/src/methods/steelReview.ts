@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   isSteelReviewSourceAssociationHeader,
+  inferSteelReviewSystemState,
   parseSteelReviewMarkdownTables,
   normalizeSteelReviewRows,
   normalizeSteelReviewEffectiveValue,
@@ -80,6 +81,8 @@ export interface SteelReviewCommitInput extends SteelReviewReadInput {
   aiRawMarkdown?: string;
   /** Private quotation projection used only by the system-order transaction. */
   systemOrderMarkdown?: string;
+  /** Private physical Markdown CAS for the quotation state; sidecar revision stays independent. */
+  systemOrderSha256?: string;
   customerQuoteMarkdown?: string;
   caption: SteelReviewCaption;
   sourceIntents?: SteelReviewSourceIntent[];
@@ -375,7 +378,10 @@ function trustedInitialRowsFromMarkdown(
     const rowId = createHash('sha256')
       .update(`${input.outputId}:${rowIndex}:${JSON.stringify(row)}`)
       .digest('hex');
-    return [{ rowId, values, source, origin: 'ai' as const, deleted: false }];
+    const system = input.kind === 'system_order'
+      ? inferSteelReviewSystemState(table.headers, row)
+      : undefined;
+    return [{ rowId, values, source, origin: 'ai' as const, deleted: false, ...(system ? { system } : {}) }];
   });
 }
 
@@ -1961,6 +1967,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
                     { ...cell, effective: cell.baseline },
                   ])),
                 source: row.source,
+                system: row.system ?? null,
                 ...(ledgerMode ? { origin: row.origin, deleted: row.deleted } : {}),
               }),
             ]),
@@ -1969,6 +1976,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             .filter((row) => previousEffective.get(row.rowId) !== JSON.stringify({
               values: row.values,
               source: row.source,
+              system: row.system ?? null,
               ...(ledgerMode ? { origin: row.origin, deleted: row.deleted } : {}),
             }))
             .map((row) => row.rowId);
@@ -1978,6 +1986,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               return (previous === undefined && ledgerMode && row.origin === 'manual' && !row.deleted) ||
                 (previous !== undefined &&
                 ((ledgerMode && previous.deleted !== row.deleted) ||
+                JSON.stringify(previous.system ?? null) !== JSON.stringify(row.system ?? null) ||
                 JSON.stringify(businessValues(previous, input.headers, !output)) !==
                 JSON.stringify(businessValues(row, input.headers))));
             })
@@ -2042,11 +2051,15 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
           }
 
           const savedAt = new Date();
-          const nextRevision = input.kind === 'system_order' && input.systemOrderMarkdown
-            ? markdownSha256(input.systemOrderMarkdown)
-            : createHash('sha256')
-              .update(`${input.revision}:${input.digest}`)
-              .digest('hex');
+          const expectedSystemOrderSha256 = input.kind === 'system_order'
+            ? input.systemOrderSha256 ?? input.revision
+            : undefined;
+          const nextRevision = createHash('sha256')
+            .update(`${input.revision}:${input.digest}`)
+            .digest('hex');
+          const nextSystemOrderSha256 = input.kind === 'system_order'
+            ? markdownSha256(input.systemOrderMarkdown ?? input.effectiveMarkdown)
+            : undefined;
           const nextMessageSha256 = createHash('sha256').update(nextText).digest('hex');
           const ownerUpdated: SteelReviewOwnerUpdatedRecord = {
             version: 1,
@@ -2173,7 +2186,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             const currentSystemOrder = quotation?.currentSystemOrder;
             const systemOrderMarkdown = input.systemOrderMarkdown ?? input.effectiveMarkdown;
             if (!currentSystemOrder || currentSystemOrder.runId !== input.outputId.replace(/^system_order:/u, '') ||
-              currentSystemOrder.messageId !== input.messageId || currentSystemOrder.sha256 !== input.revision) {
+              currentSystemOrder.messageId !== input.messageId || currentSystemOrder.sha256 !== expectedSystemOrderSha256) {
               throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Quotation state changed');
             }
             const quotationUpdate = await QuotationState.updateOne(
@@ -2181,12 +2194,12 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
                 ...reviewScope(input),
                 'currentSystemOrder.runId': currentSystemOrder.runId,
                 'currentSystemOrder.messageId': input.messageId,
-                'currentSystemOrder.sha256': input.revision,
+                'currentSystemOrder.sha256': expectedSystemOrderSha256,
               },
               {
                 $set: {
                   'currentSystemOrder.markdown': systemOrderMarkdown,
-                  'currentSystemOrder.sha256': nextRevision,
+                  'currentSystemOrder.sha256': nextSystemOrderSha256,
                   'currentSystemOrder.updatedAt': savedAt,
                   ...(input.customerQuoteMarkdown !== undefined
                     ? { 'currentSystemOrder.customerQuoteMarkdown': input.customerQuoteMarkdown }

@@ -5,6 +5,7 @@ import {
   parseSteelReviewMarkdownTables,
   applySteelReviewOperations,
   encodeSteelReviewDigest,
+  inferSteelReviewSystemState,
   isSteelReviewSourceAssociationHeader,
   normalizeSteelReviewLedgerRows,
   sameSteelReviewSource,
@@ -338,6 +339,7 @@ function sourceForRow(
 
 function toRows(
   table: SteelMarkdownTable,
+  kind: SteelReviewKind,
   outputId: string,
   sourceMappings: SteelReviewReadRecord['sourceMappings'],
 ): SteelReviewRow[] {
@@ -353,7 +355,13 @@ function toRows(
     const rowId = createHash('sha256')
       .update(`${outputId}:${rowIndex}:${JSON.stringify(row)}`)
       .digest('hex');
-    return [{ rowId, values, source: sourceForRow(table, row, sourceMappings) }];
+    const system = kind === 'system_order' ? inferSteelReviewSystemState(table.headers, row) : undefined;
+    return [{
+      rowId,
+      values,
+      source: sourceForRow(table, row, sourceMappings),
+      ...(system ? { system } : {}),
+    }];
   });
 }
 
@@ -369,7 +377,7 @@ function projectRecord(
     (!table.headers.includes('來源') || !table.headers.includes('零件編號'))) {
     return null;
   }
-  const rows = toRows(table, record.outputId, record.sourceMappings);
+  const rows = toRows(table, record.kind, record.outputId, record.sourceMappings);
   const latestOutputId = record.latestOutputId ?? record.outputId;
   const isLatest = record.state === 'current' && latestOutputId === record.outputId;
   return {
@@ -943,7 +951,7 @@ export function createSteelReviewService({
     if (initialTables.length !== 1) {
       return undefined;
     }
-    return normalizeSteelReviewLedgerRows(toRows(initialTables[0], record.outputId, record.sourceMappings));
+    return normalizeSteelReviewLedgerRows(toRows(initialTables[0], record.kind, record.outputId, record.sourceMappings));
   }
 
   function operationRecovery(
@@ -1048,7 +1056,7 @@ export function createSteelReviewService({
     if (!target) {
       throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review table target not found');
     }
-    const currentRows = normalizeSteelReviewLedgerRows(record.rows ?? toRows(target, record.outputId, record.sourceMappings));
+    const currentRows = normalizeSteelReviewLedgerRows(record.rows ?? toRows(target, record.kind, record.outputId, record.sourceMappings));
     const headers = record.headers ?? target.headers;
     const expectedRows = operationExpectedRows(record, payload, target, currentRows);
     if (!expectedRows) {
@@ -1081,10 +1089,41 @@ export function createSteelReviewService({
         isSteelReviewSourceAssociationHeader(change.header))) {
         throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review row column is read-only');
       }
-      if (payload.kind === 'system_order' && (
+      const existingRow = operation.type === 'update' || operation.type === 'classify' || operation.type === 'delete' || operation.type === 'restore'
+        ? currentRows.find((row) => row.rowId === operation.rowId)
+        : undefined;
+      const operationSource = operation.type === 'add' || operation.type === 'update' ? operation.source : undefined;
+      const operationBinding = operation.type === 'update' ? operation.binding : undefined;
+      if (payload.kind !== 'system_order' && (
+        (operation.type === 'add' && operation.system !== undefined) ||
+        operation.type === 'classify' ||
+        (operation.type === 'update' && operation.binding !== undefined)
+      )) {
+        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'System row identity is unavailable for OCR results');
+      }
+      if (payload.kind === 'system_order' && operation.type === 'add' && !operation.system) {
+        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'System rows require an explicit kind');
+      }
+      if (payload.kind === 'system_order' && operation.type === 'classify' && existingRow?.system?.kind !== 'unassigned') {
+        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Only unassigned rows may be classified');
+      }
+      if (payload.kind === 'system_order' && operation.type === 'update' && operation.binding !== undefined &&
+        existingRow?.system?.kind !== 'processing') {
+        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Only processing rows may be bound');
+      }
+      if (payload.kind === 'system_order' && operationSource !== undefined &&
+        operation.type === 'update' && existingRow?.system?.kind !== 'material') {
+        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Only material rows may select a source');
+      }
+      if (payload.kind === 'system_order' && operationSource !== undefined &&
+        operation.type === 'add' && operation.system?.kind === 'processing') {
+        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Processing source follows its material');
+      }
+      const isStructuralSystemOperation = operation.type === 'add' || operation.type === 'classify' ||
+        operation.type === 'delete' || operation.type === 'restore';
+      if (payload.kind === 'system_order' && !isStructuralSystemOperation && (
         operation.type !== 'update' ||
-        changes.some((change) => !SYSTEM_ORDER_EDITABLE_HEADERS.has(change.header)) ||
-        operation.source !== undefined
+        changes.some((change) => !SYSTEM_ORDER_EDITABLE_HEADERS.has(change.header))
       )) {
         throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'System-order edits are limited to unit price and total');
       }
@@ -1161,7 +1200,7 @@ export function createSteelReviewService({
     if (!target || target.partIndex !== payload.partIndex && payload.partIndex !== undefined) {
       throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review table target not found');
     }
-    const currentRows = record.rows ?? toRows(target, record.outputId, record.sourceMappings);
+    const currentRows = record.rows ?? toRows(target, record.kind, record.outputId, record.sourceMappings);
     const headers = record.headers ?? target.headers;
     const ledgerValidation = validateSteelReviewLedger(currentRows, payload.rows, headers);
     if (!ledgerValidation.ok) {
@@ -1241,6 +1280,9 @@ export function createSteelReviewService({
         throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Review columns changed');
       }
       const intent = intentsByRow.get(current.rowId);
+      if (intent && next.system?.kind === 'processing') {
+        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Processing source follows its material');
+      }
       if (!intent) {
         if (isNewRow && next.source !== null) {
           throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'New review source selection is invalid');
@@ -1319,6 +1361,26 @@ export function createSteelReviewService({
         ...(canonicalMediaType ? { mediaType: canonicalMediaType } : {}),
       }, headers, mapping.sourceCode));
     }
+    const canonicalById = new Map(canonicalRows.map((row) => [row.rowId, row]));
+    const canonicalSourceColumn = sourceHeader(headers);
+    for (const row of canonicalRows) {
+      if (row.system?.kind !== 'processing' || !row.system.parentRowId || row.deleted) {
+        continue;
+      }
+      const parent = canonicalById.get(row.system.parentRowId);
+      if (!parent || parent.deleted || parent.system?.kind !== 'material') {
+        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Processing row requires an active material parent');
+      }
+      const source = parent.source;
+      const parentCode = canonicalSourceColumn
+        ? parent.values[canonicalSourceColumn]?.effective?.trim() || undefined
+        : undefined;
+      const mapping = source
+        ? trustedSourceMappings.find((candidate) => candidate.fileId === source.fileId)
+        : undefined;
+      const index = canonicalRows.findIndex((candidate) => candidate.rowId === row.rowId);
+      canonicalRows[index] = rowWithSource(row, source, headers, mapping?.sourceCode ?? parentCode);
+    }
     if (payload.rows.some((row) => Object.keys(row.values).length !== headers.length ||
       headers.some((header) => !Object.prototype.hasOwnProperty.call(row.values, header)))) {
       throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Review columns changed');
@@ -1389,8 +1451,19 @@ export function createSteelReviewService({
     const changedRowIds = canonicalLedgerRows
       .filter((row) => {
         const previous = previousById.get(row.rowId);
-        return !previous || JSON.stringify({ values: row.values, source: row.source, origin: row.origin, deleted: row.deleted }) !==
-          JSON.stringify({ values: previous.values, source: previous.source, origin: previous.origin, deleted: previous.deleted });
+        return !previous || JSON.stringify({
+          values: row.values,
+          source: row.source,
+          origin: row.origin,
+          deleted: row.deleted,
+          system: row.system ?? null,
+        }) !== JSON.stringify({
+          values: previous.values,
+          source: previous.source,
+          origin: previous.origin,
+          deleted: previous.deleted,
+          system: previous.system ?? null,
+        });
       })
       .map((row) => row.rowId);
     const fullText = fullMessageText(record);
@@ -1426,6 +1499,9 @@ export function createSteelReviewService({
       effectiveMarkdown,
       displayMarkdown: effectiveMarkdown,
       ...(systemOrderMarkdown ? { systemOrderMarkdown } : {}),
+      ...(payload.kind === 'system_order' && (record.effectiveMarkdown ?? record.markdown)
+        ? { systemOrderSha256: createHash('sha256').update(record.effectiveMarkdown ?? record.markdown!).digest('hex') }
+        : {}),
       ...(customerQuoteMarkdown ? { customerQuoteMarkdown } : {}),
       ...(record.aiBaselineMarkdown || record.markdown
         ? { aiBaselineMarkdown: record.aiBaselineMarkdown ?? record.markdown }

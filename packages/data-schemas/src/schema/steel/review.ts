@@ -5,6 +5,7 @@ import type {
   SteelReviewRow,
   SteelReviewSource,
   SteelReviewSourceMapping,
+  SteelReviewSystemState,
 } from 'librechat-data-provider';
 import type {
   ISteelReviewOutput,
@@ -29,6 +30,15 @@ const steelReviewCellSchema = new Schema<SteelReviewCell>(
   { _id: false },
 );
 
+const steelReviewSystemStateSchema = new Schema<SteelReviewSystemState>(
+  {
+    kind: { type: String, enum: ['material', 'processing', 'unassigned'], required: true },
+    parentRowId: { type: String, default: null },
+    cascadeDeletedBy: { type: String, default: null },
+  },
+  { _id: false },
+);
+
 const steelReviewRowSchema: Schema<SteelReviewRow> = new Schema(
   {
     rowId: { type: String, required: true },
@@ -46,6 +56,7 @@ const steelReviewRowSchema: Schema<SteelReviewRow> = new Schema(
         { _id: false },
       ),
     },
+    system: { type: steelReviewSystemStateSchema },
   },
   { _id: false },
 );

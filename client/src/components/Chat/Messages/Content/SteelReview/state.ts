@@ -33,6 +33,7 @@ export interface SteelReviewDialogState {
   fullScreen: boolean;
   initializedSourceId?: string;
   sourceCorrectionRowId?: string;
+  processingParentId?: string;
 }
 
 export interface SteelReviewPan {
@@ -130,6 +131,7 @@ export const steelReviewDraftStateFamily = createOwnedStateFamily<SteelReviewDra
   cellVersions: {},
   sourceDrafts: {},
   sourceVersions: {},
+  systemVersions: {},
   rowStates: {},
   past: [],
   future: [],

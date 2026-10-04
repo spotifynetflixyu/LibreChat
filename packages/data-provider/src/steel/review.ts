@@ -151,6 +151,50 @@ export const steelReviewRowInsertionSchema = z.object({
   }
 });
 
+export const steelReviewSystemKindSchema = z.enum(['material', 'processing', 'unassigned']);
+export type SteelReviewSystemKind = z.infer<typeof steelReviewSystemKindSchema>;
+
+export const steelReviewSystemStateSchema = z.object({
+  kind: steelReviewSystemKindSchema,
+  parentRowId: z.string().min(1).nullable(),
+  cascadeDeletedBy: z.string().min(1).nullable(),
+}).strict().superRefine((state, context) => {
+  if (state.kind !== 'processing' && state.parentRowId !== null) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['parentRowId'], message: 'Only processing rows may have a parent' });
+  }
+  if (state.kind !== 'processing' && state.cascadeDeletedBy !== null) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['cascadeDeletedBy'], message: 'Only processing rows may have cascade provenance' });
+  }
+  if (state.cascadeDeletedBy !== null && state.kind !== 'processing') {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['cascadeDeletedBy'], message: 'Cascade provenance requires processing' });
+  }
+});
+
+const steelReviewSystemCategoryHeaders = new Set(['類別', '分類', 'category', 'type']);
+
+/**
+ * Project the persisted system-order relationship from the same category
+ * evidence used by the API and the first-save database baseline.
+ */
+export function inferSteelReviewSystemState(
+  headers: readonly string[],
+  values: readonly string[],
+): SteelReviewSystemState | undefined {
+  const categoryIndex = headers.findIndex((header) => {
+    const normalized = header.trim().toLowerCase().replace(/[\s_]+/g, '');
+    return steelReviewSystemCategoryHeaders.has(normalized);
+  });
+  if (categoryIndex < 0) {
+    return undefined;
+  }
+  const category = values[categoryIndex]?.trim() ?? '';
+  return {
+    kind: category.length === 0 ? 'unassigned' : category.startsWith('加工/') ? 'processing' : 'material',
+    parentRowId: null,
+    cascadeDeletedBy: null,
+  };
+}
+
 export const steelReviewRowSchema = z.object({
   rowId: z.string().min(1),
   values: z.record(z.string(), steelReviewCellSchema),
@@ -160,6 +204,7 @@ export const steelReviewRowSchema = z.object({
   origin: steelReviewRowOriginSchema.optional(),
   deleted: z.boolean().optional(),
   insertion: steelReviewRowInsertionSchema.optional(),
+  system: steelReviewSystemStateSchema.optional(),
 });
 
 export const steelReviewTargetSchema = z.object({
@@ -198,6 +243,15 @@ const steelReviewOperationSourceSchema = z.union([
   z.object({ fileId: z.string().min(1), pageNumber: z.number().int().positive().nullable() }).strict(),
 ]);
 
+const steelReviewOperationSystemSchema = z.object({
+  kind: steelReviewSystemKindSchema,
+  parentRowId: z.string().min(1).nullable(),
+}).strict().superRefine((state, context) => {
+  if (state.kind !== 'processing' && state.parentRowId !== null) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['parentRowId'], message: 'Only processing rows may have a parent' });
+  }
+});
+
 function rejectPresentUndefinedOperationField(value: Record<string, unknown>, context: z.RefinementCtx): void {
   for (const field of ['source', 'position'] as const) {
     if (Object.prototype.hasOwnProperty.call(value, field) && value[field] === undefined) {
@@ -211,9 +265,12 @@ const steelReviewOperationUpdateSchema = z.object({
   rowId: z.string().min(1),
   changes: z.array(steelReviewOperationChangeSchema).optional(),
   source: steelReviewOperationSourceSchema.optional(),
+  binding: z.object({ parentRowId: z.string().min(1).nullable() }).strict().optional(),
 }).strict().superRefine((value, context) => {
   rejectPresentUndefinedOperationField(value, context);
-  if ((!value.changes || value.changes.length === 0) && !Object.prototype.hasOwnProperty.call(value, 'source')) {
+  if ((!value.changes || value.changes.length === 0) &&
+    !Object.prototype.hasOwnProperty.call(value, 'source') &&
+    !Object.prototype.hasOwnProperty.call(value, 'binding')) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: 'An update requires changes or a source intent' });
   }
   if (value.changes && value.changes.length > 0 && new Set(value.changes.map((change) => change.header)).size !== value.changes.length) {
@@ -227,12 +284,19 @@ const steelReviewOperationAddSchema = z.object({
   position: steelReviewOperationPositionSchema,
   changes: z.array(steelReviewOperationChangeSchema).min(1),
   source: steelReviewOperationSourceSchema.optional(),
+  system: steelReviewOperationSystemSchema.optional(),
 }).strict().superRefine((value, context) => {
   rejectPresentUndefinedOperationField(value, context);
   if (new Set(value.changes.map((change) => change.header)).size !== value.changes.length) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['changes'], message: 'An add cannot repeat a field' });
   }
 });
+
+const steelReviewOperationClassifySchema = z.object({
+  type: z.literal('classify'),
+  rowId: z.string().min(1),
+  system: steelReviewOperationSystemSchema,
+}).strict();
 
 const steelReviewOperationTransitionSchema = z.object({
   type: z.union([z.literal('delete'), z.literal('restore')]),
@@ -246,6 +310,7 @@ const steelReviewOperationTransitionSchema = z.object({
 export const steelReviewOperationSchema = z.union([
   steelReviewOperationUpdateSchema,
   steelReviewOperationAddSchema,
+  steelReviewOperationClassifySchema,
   steelReviewOperationTransitionSchema,
 ]);
 export type SteelReviewOperation = z.infer<typeof steelReviewOperationSchema>;
@@ -359,6 +424,13 @@ export const steelReviewConflictSchema = z.union([
     rowId: z.string().min(1),
     reason: z.enum(['anchor-unavailable', 'anchor-changed', 'identity-duplicated']),
     neededAnchor: z.string().min(1).optional(),
+  }).strict(),
+  z.object({
+    kind: z.literal('binding'),
+    rowId: z.string().min(1),
+    expected: z.string().nullable(),
+    current: z.string().nullable(),
+    requested: z.string().nullable(),
   }).strict(),
 ]);
 
@@ -494,6 +566,7 @@ export type SteelReviewSourceMapping = z.infer<typeof steelReviewSourceMappingSc
 export type SteelReviewCell = z.infer<typeof steelReviewCellSchema>;
 export type SteelReviewRowOrigin = z.infer<typeof steelReviewRowOriginSchema>;
 export type SteelReviewRowInsertion = z.infer<typeof steelReviewRowInsertionSchema>;
+export type SteelReviewSystemState = z.infer<typeof steelReviewSystemStateSchema>;
 export type SteelReviewRow = z.infer<typeof steelReviewRowSchema>;
 export type SteelReviewLedgerRow = Omit<SteelReviewRow, 'origin' | 'deleted'> & {
   origin: SteelReviewRowOrigin;
@@ -521,12 +594,86 @@ function sameOperationBusinessState(
       .filter((header) => !isSteelReviewSourceAssociationHeader(header))
       .map((header) => [header, left.values[header]?.effective ?? null])),
     source: operationSourceValue(left.source),
+    system: left.system ?? null,
   }) === JSON.stringify({
     values: Object.fromEntries(headers
       .filter((header) => !isSteelReviewSourceAssociationHeader(header))
       .map((header) => [header, right.values[header]?.effective ?? null])),
     source: operationSourceValue(right.source),
+    system: right.system ?? null,
   });
+}
+
+function relationState(row: SteelReviewLedgerRow): SteelReviewSystemState | null {
+  return row.system ?? null;
+}
+
+function relationParentId(row: SteelReviewLedgerRow): string | null {
+  return row.system?.kind === 'processing' ? row.system.parentRowId : null;
+}
+
+function sameRelationState(left: SteelReviewLedgerRow, right: SteelReviewLedgerRow): boolean {
+  return JSON.stringify(relationState(left)) === JSON.stringify(relationState(right));
+}
+
+function requestedRelationState(requested: Pick<SteelReviewSystemState, 'kind' | 'parentRowId'> & Partial<Pick<SteelReviewSystemState, 'cascadeDeletedBy'>>): SteelReviewSystemState {
+  return {
+    kind: requested.kind,
+    parentRowId: requested.kind === 'processing' ? requested.parentRowId : null,
+    cascadeDeletedBy: requested.kind === 'processing'
+      ? requested.cascadeDeletedBy ?? null
+      : null,
+  };
+}
+
+function relationConflict(
+  row: SteelReviewLedgerRow,
+  expectedRow: SteelReviewLedgerRow,
+  requested: Pick<SteelReviewSystemState, 'kind' | 'parentRowId'>,
+): SteelReviewConflict {
+  return {
+    kind: 'binding',
+    rowId: row.rowId,
+    expected: relationParentId(expectedRow),
+    current: relationParentId(row),
+    requested: requested.kind === 'processing' ? requested.parentRowId : null,
+  };
+}
+
+function stageBinding(
+  row: SteelReviewLedgerRow,
+  expectedRow: SteelReviewLedgerRow,
+  requested: Pick<SteelReviewSystemState, 'kind' | 'parentRowId'> & Partial<Pick<SteelReviewSystemState, 'cascadeDeletedBy'>>,
+  currentById: Map<string, SteelReviewLedgerRow>,
+  expectedById: Map<string, SteelReviewLedgerRow>,
+  conflicts: SteelReviewConflict[],
+): void {
+  const next = requestedRelationState(requested);
+  if (row.deleted || expectedRow.deleted) {
+    conflicts.push({ kind: 'activity', rowId: row.rowId, reason: row.deleted ? 'current-deleted' : 'expected-deleted' });
+    return;
+  }
+  if (next.kind === 'processing') {
+    if (!next.parentRowId) {
+      conflicts.push(relationConflict(row, expectedRow, next));
+      return;
+    }
+    const parent = currentById.get(next.parentRowId);
+    const expectedParent = expectedById.get(next.parentRowId);
+    if (!parent || !expectedParent || parent.deleted || expectedParent.deleted || parent.system?.kind !== 'material' || expectedParent.system?.kind !== 'material') {
+      conflicts.push({ kind: 'binding', rowId: row.rowId, expected: relationParentId(expectedRow), current: relationParentId(row), requested: next.parentRowId });
+      return;
+    }
+  } else if (next.kind === 'material' && next.parentRowId !== null) {
+    conflicts.push(relationConflict(row, expectedRow, next));
+    return;
+  }
+  if (!sameRelationState(row, expectedRow) && !sameRelationState(row, { ...expectedRow, system: next })) {
+    conflicts.push(relationConflict(row, expectedRow, next));
+    return;
+  }
+  row.system = next;
+  expectedRow.system = next;
 }
 
 /** Apply a strict operation request to trusted expected/current ledgers. */
@@ -600,7 +747,15 @@ export function applySteelReviewOperations({
         origin: 'manual',
         deleted: false,
         insertion,
+        ...(operation.system ? { system: requestedRelationState(operation.system) } : {}),
       };
+      if (row.system?.kind === 'processing') {
+        const parent = row.system.parentRowId ? currentById.get(row.system.parentRowId) : undefined;
+        if (!parent || parent.deleted || parent.system?.kind !== 'material') {
+          conflicts.push({ kind: 'binding', rowId: row.rowId, expected: null, current: null, requested: row.system.parentRowId });
+          continue;
+        }
+      }
       current.push(row);
       currentById.set(row.rowId, row);
       continue;
@@ -658,6 +813,22 @@ export function applySteelReviewOperations({
             : null;
         }
       }
+      if (operation.binding) {
+        const requested = {
+          kind: 'processing' as const,
+          parentRowId: operation.binding.parentRowId,
+          cascadeDeletedBy: row.system?.cascadeDeletedBy ?? null,
+        };
+        stageBinding(row, expectedRow, requested, currentById, expectedById, conflicts);
+      }
+      continue;
+    }
+    if (operation.type === 'classify') {
+      if (!expectedRow || row.system?.kind !== 'unassigned' || expectedRow.system?.kind !== 'unassigned') {
+        conflicts.push(relationConflict(row, expectedRow ?? row, operation.system));
+        continue;
+      }
+      stageBinding(row, expectedRow, operation.system, currentById, expectedById, conflicts);
       continue;
     }
     if (operation.type === 'delete') {
@@ -674,6 +845,24 @@ export function applySteelReviewOperations({
       } else {
         row.deleted = true;
         expectedRow.deleted = true;
+        if (row.system?.kind === 'material') {
+          for (const child of current) {
+            if (child.system?.kind !== 'processing' || child.system.parentRowId !== row.rowId || child.deleted) {
+              continue;
+            }
+            const expectedChild = expectedById.get(child.rowId);
+            if (!expectedChild || expectedChild.deleted || !sameOperationBusinessState(child, expectedChild, headers)) {
+              conflicts.push({ kind: 'activity', rowId: child.rowId, reason: 'current-deleted' });
+              continue;
+            }
+            child.deleted = true;
+            expectedChild.deleted = true;
+            child.system = { ...child.system, cascadeDeletedBy: row.rowId };
+            if (expectedChild.system?.kind === 'processing') {
+              expectedChild.system = { ...expectedChild.system, cascadeDeletedBy: row.rowId };
+            }
+          }
+        }
       }
       continue;
     }
@@ -687,6 +876,24 @@ export function applySteelReviewOperations({
     }
     row.deleted = false;
     expectedRow.deleted = false;
+    if (row.system?.kind === 'material') {
+      for (const child of current) {
+        if (child.system?.kind !== 'processing' || child.system.parentRowId !== row.rowId ||
+          !child.deleted || child.system.cascadeDeletedBy !== row.rowId) {
+          continue;
+        }
+        const expectedChild = expectedById.get(child.rowId);
+        if (!expectedChild || !expectedChild.deleted || expectedChild.system?.cascadeDeletedBy !== row.rowId ||
+          !sameOperationBusinessState(child, expectedChild, headers)) {
+          conflicts.push({ kind: 'activity', rowId: child.rowId, reason: 'current-restored' });
+          continue;
+        }
+        child.deleted = false;
+        expectedChild.deleted = false;
+        child.system = { ...child.system, cascadeDeletedBy: null };
+        expectedChild.system = { ...expectedChild.system, cascadeDeletedBy: null };
+      }
+    }
   }
   return conflicts.length > 0
     ? { ok: false, conflicts }

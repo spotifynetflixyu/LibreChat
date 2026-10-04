@@ -258,6 +258,7 @@ function seedReopenedDraft(
     cellVersions: { 'row-1\u0000數量': 1 },
     sourceDrafts: {},
     sourceVersions: {},
+    systemVersions: {},
     rowStates: {},
     changeSequence: 41,
   };
@@ -502,7 +503,7 @@ describe('MarkdownTableActions Steel review entry', () => {
     expect(screen.queryByRole('textbox')).toBeNull();
   });
 
-  it('keeps system-order structural and source controls unavailable while allowing price and total edits', async () => {
+  it('allows approved system-order structure and material-source controls while keeping prices editable', async () => {
     const systemIdentity: SteelReviewIdentity = {
       ...reviewIdentity,
       kind: 'system_order',
@@ -522,6 +523,7 @@ describe('MarkdownTableActions Steel review entry', () => {
       headers: ['品名規格', '總數', '單價'],
       rows: [{
         rowId: 'row-1',
+        system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
         source: { fileId: 'drawing-1', pageNumber: 1, filename: 'drawing.pdf' },
         values: {
           品名規格: { baseline: '雷射板', effective: '雷射板' },
@@ -541,11 +543,12 @@ describe('MarkdownTableActions Steel review entry', () => {
 
     expect(await screen.findByRole('textbox', { name: '總數 row-1' })).toBeEnabled();
     expect(screen.getByRole('textbox', { name: '單價 row-1' })).toBeEnabled();
-    expect(screen.queryByRole('button', { name: 'com_ui_steel_review_add_row' })).toBeNull();
-    expect(screen.queryByRole('button', { name: /com_ui_steel_review_delete_row/u })).toBeNull();
+    expect(screen.getByRole('button', { name: 'com_ui_steel_review_add_material' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'com_ui_steel_review_add_processing' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: /com_ui_steel_review_delete_row/u })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /com_ui_steel_review_restore_row/u })).toBeNull();
-    expect(screen.queryByLabelText('com_ui_steel_review_source_actions')).toBeNull();
-    expect(screen.queryByRole('button', { name: 'com_ui_steel_review_change_source' })).toBeNull();
+    expect(screen.getByRole('columnheader', { name: 'com_ui_steel_review_source_actions' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /com_ui_steel_review_change_source/u })).toBeInTheDocument();
   });
 
   it('renders the managed empty table state without edit controls', () => {

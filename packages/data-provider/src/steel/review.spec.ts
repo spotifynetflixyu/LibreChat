@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { SteelReviewOperation } from './review';
+import type { SteelReviewLedgerRow, SteelReviewOperation } from './review';
 import {
   encodeSteelReviewDigest as encodeSteelReviewDigestValue,
   encodeSteelReviewTitleOwner,
@@ -615,6 +615,90 @@ describe('Steel review contracts', () => {
     expect((result as { conflicts: unknown[] }).conflicts).toHaveLength(1);
     expect(current[0]?.values.Value.effective).toBe('foreign');
     expect(expected[0]?.values.Value.effective).toBe('ai');
+  });
+
+  it('accepts server-owned relation state only in persisted rows and applies binding intents', () => {
+    const material = {
+      rowId: 'material-1',
+      values: { Category: { baseline: '材', effective: '材' } },
+      source: null,
+      system: { kind: 'material' as const, parentRowId: null, cascadeDeletedBy: null },
+      origin: 'ai' as const,
+      deleted: false,
+    };
+    const processing = {
+      rowId: 'processing-1',
+      values: { Category: { baseline: '加工/切割', effective: '加工/切割' } },
+      source: null,
+      system: { kind: 'processing' as const, parentRowId: null, cascadeDeletedBy: null },
+      origin: 'ai' as const,
+      deleted: false,
+    };
+    expect(steelReviewOperationSchema.safeParse({
+      type: 'add',
+      rowId: 'processing-2',
+      position: { kind: 'end' },
+      changes: [{ header: 'Category', value: '加工/鑽孔' }],
+      system: { kind: 'processing', parentRowId: material.rowId },
+    }).success).toBe(true);
+    expect(steelReviewOperationSchema.safeParse({
+      type: 'classify',
+      rowId: 'processing-1',
+      system: { kind: 'processing', parentRowId: material.rowId, cascadeDeletedBy: null },
+    }).success).toBe(false);
+    const result = applySteelReviewOperations({
+      currentRows: normalizeSteelReviewLedgerRows([material, processing]),
+      expectedRows: normalizeSteelReviewLedgerRows([material, processing]),
+      headers: ['Category'],
+      operations: [{
+        type: 'update',
+        rowId: processing.rowId,
+        binding: { parentRowId: material.rowId },
+      }],
+    });
+    expect(result).toMatchObject({ ok: true });
+    if (result.ok) {
+      expect(result.currentRows.find((row) => row.rowId === processing.rowId)?.system).toEqual({
+        kind: 'processing',
+        parentRowId: material.rowId,
+        cascadeDeletedBy: null,
+      });
+    }
+  });
+
+  it('cascades material deletion and restores only its own processing tombstones', () => {
+    const row = (rowId: string, system: SteelReviewLedgerRow['system'], deleted = false) => ({
+      rowId,
+      values: { Category: { baseline: rowId, effective: rowId } },
+      source: null,
+      system,
+      origin: 'ai' as const,
+      deleted,
+    });
+    const material = row('material-1', { kind: 'material', parentRowId: null, cascadeDeletedBy: null });
+    const child = row('processing-1', { kind: 'processing', parentRowId: 'material-1', cascadeDeletedBy: null });
+    const priorTombstone = row('processing-2', { kind: 'processing', parentRowId: 'material-1', cascadeDeletedBy: null }, true);
+    const deleted = applySteelReviewOperations({
+      currentRows: [material, child, priorTombstone],
+      expectedRows: [material, child, priorTombstone],
+      headers: ['Category'],
+      operations: [{ type: 'delete', rowId: material.rowId }],
+    });
+    expect(deleted).toMatchObject({ ok: true });
+    if (!deleted.ok) return;
+    const deletedChild = deleted.currentRows.find((entry) => entry.rowId === child.rowId);
+    expect(deletedChild).toMatchObject({ deleted: true, system: { cascadeDeletedBy: material.rowId } });
+    const restored = applySteelReviewOperations({
+      currentRows: deleted.currentRows,
+      expectedRows: deleted.expectedRows,
+      headers: ['Category'],
+      operations: [{ type: 'restore', rowId: material.rowId }],
+    });
+    expect(restored).toMatchObject({ ok: true });
+    if (restored.ok) {
+      expect(restored.currentRows.find((entry) => entry.rowId === child.rowId)).toMatchObject({ deleted: false });
+      expect(restored.currentRows.find((entry) => entry.rowId === priorTombstone.rowId)).toMatchObject({ deleted: true });
+    }
   });
 
   it('allocates boundary ordinals across saved tombstones and same-request additions', () => {

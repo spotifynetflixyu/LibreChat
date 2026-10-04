@@ -20,6 +20,12 @@ export interface SteelReviewEditorLabels {
   sourcePageRetry: string;
   deleteRow?: string;
   restoreRow?: string;
+  bindProcessing?: string;
+  parent?: string;
+  deleteGroup?: string;
+  classify?: string;
+  material?: string;
+  processing?: string;
   rowActions?: string;
 }
 
@@ -41,6 +47,10 @@ export interface SteelReviewEditorProps {
   onSourceChange?: (row: SteelReviewRow, source: SteelReviewSource | null) => void;
   onDeleteRow?: (row: SteelReviewRow) => void;
   onRestoreRow?: (row: SteelReviewRow) => void;
+  onSystemChange?: (row: SteelReviewRow, parentRowId: string | null) => void;
+  onClassify?: (row: SteelReviewRow, kind: 'material' | 'processing') => void;
+  onDeleteGroup?: (row: SteelReviewRow) => void;
+  systemMaterials?: readonly SteelReviewRow[];
 }
 
 export function isSteelReviewCellEditable(table: SteelReviewTable, header: string): boolean {
@@ -96,7 +106,7 @@ function SourceCell({
     !row.deleted &&
     sourceCorrectionRowId === row.rowId &&
     canEdit &&
-    table.kind === 'ocr_result' &&
+    (table.kind === 'ocr_result' || (table.kind === 'system_order' && row.system?.kind === 'material')) &&
     table.isLatest &&
     !table.readOnly &&
     onSourceChange,
@@ -137,7 +147,7 @@ function SourceCell({
         onValueChange={(value) => onSourceChange?.(row, {
           ...source,
           pageNumber: value === NO_SOURCE_PAGE_VALUE ? null : Number(value),
-        })}
+                          })}
       >
         <SelectTrigger aria-label={labels.sourcePage}>
           <SelectValue placeholder={labels.sourceNoPage} />
@@ -159,7 +169,9 @@ function SourceCell({
           <span aria-label={`${labels.sourceFile}: ${sourceLabel(source) || labels.readonly}`}>
             {sourceLabel(source) || labels.readonly}
           </span>
-          {canEdit && onSourceEdit && row.rowId && !row.deleted && table.kind === 'ocr_result' && table.isLatest && !table.readOnly && (
+          {canEdit && onSourceEdit && row.rowId && !row.deleted &&
+            (table.kind === 'ocr_result' || (table.kind === 'system_order' && row.system?.kind === 'material')) &&
+            table.isLatest && !table.readOnly && (
             <Button
               type="button"
               variant="outline"
@@ -307,6 +319,10 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
   onSourceChange,
   onDeleteRow,
   onRestoreRow,
+  onSystemChange,
+  onClassify,
+  onDeleteGroup,
+  systemMaterials = rows,
 }: SteelReviewEditorProps) {
   return (
     <div className="max-h-[60vh] overflow-auto rounded-md border border-border-light">
@@ -323,7 +339,7 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
                 {labels.sourceActions}
               </th>
             )}
-            {(onDeleteRow || onRestoreRow) && (
+            {(onDeleteRow || onRestoreRow || onSystemChange || onDeleteGroup) && (
               <th scope="col" className="border-b border-border-light px-3 py-2 text-left font-semibold">
                 {labels.rowActions}
               </th>
@@ -362,8 +378,49 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
                   canEdit={canEdit}
                 />
               )}
-              {(onDeleteRow || onRestoreRow) && (
+              {(onDeleteRow || onRestoreRow || onSystemChange || onDeleteGroup) && (
                 <td className="border-b border-border-light px-3 py-2 align-top">
+                  {row.system?.kind === 'processing' && onSystemChange && (
+                    <label className="mb-2 flex flex-col gap-1 text-xs text-text-secondary">
+                      <span>{labels.parent ?? labels.bindProcessing}</span>
+                      <Select
+                        value={row.system.parentRowId ?? ''}
+                        onValueChange={(value) => onSystemChange(row, value || null)}
+                      >
+                        <SelectTrigger aria-label={`${labels.bindProcessing} ${row.rowId}`}>
+                          <SelectValue placeholder={labels.bindProcessing} />
+                        </SelectTrigger>
+                        <SelectContent onEscapeKeyDown={(event) => event.stopPropagation()}>
+                          {systemMaterials.filter((candidate) => !candidate.deleted && candidate.system?.kind === 'material').map((candidate) => {
+                            const name = Object.values(candidate.values).find((cell) => (cell.effective ?? '').trim())?.effective ?? candidate.rowId;
+                            return <SelectItem key={candidate.rowId} value={candidate.rowId}>{name}</SelectItem>;
+                          })}
+                        </SelectContent>
+                      </Select>
+                    </label>
+                  )}
+                  {row.system?.kind === 'unassigned' && onClassify && (
+                    <Select value="" onValueChange={(value) => onClassify(row, value as 'material' | 'processing')}>
+                      <SelectTrigger aria-label={`${labels.classify} ${row.rowId}`}>
+                        <SelectValue placeholder={labels.classify} />
+                      </SelectTrigger>
+                      <SelectContent onEscapeKeyDown={(event) => event.stopPropagation()}>
+                        <SelectItem value="material">{labels.material}</SelectItem>
+                        <SelectItem value="processing">{labels.processing}</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  )}
+                  {row.system?.kind === 'material' && onDeleteGroup && !row.deleted && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="mb-2"
+                      aria-label={`${labels.deleteGroup} ${row.rowId}`}
+                      onClick={() => onDeleteGroup(row)}
+                    >
+                      {labels.deleteGroup}
+                    </Button>
+                  )}
                   {row.deleted ? (
                     <Button
                       type="button"

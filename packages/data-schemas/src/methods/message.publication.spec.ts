@@ -294,18 +294,33 @@ describe('guarded Steel quotation publication', () => {
     expect(first.ok).toBe(true);
     expect(retry.ok).toBe(true);
     const humanMarkdown = `${order.replace('| 10 |', '| 12 |')}\n\n## quote_summary\n\n人工作業`;
-    const humanSave = await methods.saveMessage({ userId }, {
-      messageId, conversationId, text: humanMarkdown, isCreatedByUser: false,
-    });
-    expect(humanSave?.text).toBe(humanMarkdown);
     const humanSystemOrder = order.replace('| 10 |', '| 12 |');
     const humanSystemOrderSha256 = sha256(humanSystemOrder);
+    const humanReviewRevision = sha256(`${currentSystemOrderSha256}:human-review`);
+    const humanSave = await methods.saveMessage({ userId }, {
+      messageId, conversationId, text: humanMarkdown, isCreatedByUser: false,
+      metadata: {
+        steelReview: {
+          system_order: {
+            version: 1,
+            kind: 'system_order',
+            conversationId,
+            messageId,
+            title: 'system_order',
+            outputId: `system_order:${runId}`,
+            revision: humanReviewRevision,
+            updatedAt: new Date(),
+          },
+        },
+      },
+    });
+    expect(humanSave?.text).toBe(humanMarkdown);
     await State.updateOne({ userId, conversationId }, {
       $set: { 'currentSystemOrder.markdown': humanSystemOrder, 'currentSystemOrder.sha256': humanSystemOrderSha256 },
     });
     await ReviewOutput.create({
       userId, conversationId, kind: 'system_order', messageId, tableId: 'system_order:table',
-      outputId: `system_order:${runId}`, state: 'current', revision: humanSystemOrderSha256,
+      outputId: `system_order:${runId}`, state: 'current', title: 'system_order', revision: humanReviewRevision,
       headers: ['品名', '總數', '單價'], rows: [{ rowId: 'row-a', values: {
         品名: { baseline: 'A', effective: 'A' }, 總數: { baseline: '2', effective: '2' }, 單價: { baseline: '10', effective: '12' },
       }, origin: 'manual', deleted: false, source: null }],

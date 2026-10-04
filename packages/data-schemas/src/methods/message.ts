@@ -38,6 +38,30 @@ const MAX_STORED_USER_SUBMITTED_FIELD_PATHS = MAX_NORMALIZED_USER_SUBMITTED_PATH
 const MAX_USER_SUBMITTED_PATH_LENGTH = 2048;
 const MAX_PROVENANCE_CAS_ATTEMPTS = 8;
 const MAX_SUBAGENT_CONTROL_RECEIPTS = 64;
+
+function hasCurrentSteelReviewOwner(
+  message: Pick<IMessage, 'metadata'>,
+  output: Pick<ISteelReviewOutput, 'title' | 'outputId' | 'revision'>,
+  scope: { conversationId: string; messageId: string },
+): boolean {
+  const metadata = message.metadata;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+    return false;
+  }
+  const steelReview = metadata.steelReview;
+  if (!steelReview || typeof steelReview !== 'object' || Array.isArray(steelReview)) {
+    return false;
+  }
+  const owner = (steelReview as Record<string, unknown>).system_order;
+  if (!owner || typeof owner !== 'object' || Array.isArray(owner)) {
+    return false;
+  }
+  const value = owner as Record<string, unknown>;
+  return value.version === 1 && value.kind === 'system_order' &&
+    value.conversationId === scope.conversationId && value.messageId === scope.messageId &&
+    value.outputId === output.outputId && value.revision === output.revision &&
+    typeof value.title === 'string' && (output.title === undefined || value.title === output.title);
+}
 const MAX_SUBAGENT_CONTROL_MESSAGE_LENGTH = 4 * 1024;
 /** One owner admits at most 64 terminal control invocations. The optimistic
  * writer therefore has enough rounds for every admitted receipt to converge. */
@@ -1285,9 +1309,13 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
           result = { ok: false, code: 'superseded' };
           return;
         }
-        if (currentMessage && output?.humanSavedAt &&
+        if (currentMessage && output?.humanSavedAt && output.effectiveMarkdown &&
           output.effectiveMarkdown === currentSystemOrder.markdown &&
-          output.revision === currentSystemOrder.sha256) {
+          createHash('sha256').update(output.effectiveMarkdown).digest('hex') === currentSystemOrder.sha256 &&
+          hasCurrentSteelReviewOwner(currentMessage, output, {
+            conversationId: scope.conversationId,
+            messageId: input.targetMessageId,
+          })) {
           savedMessage = currentMessage;
         } else {
           const sourceMessageId = message.sourceMessageId ?? input.targetMessageId;
