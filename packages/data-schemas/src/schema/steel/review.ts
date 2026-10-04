@@ -97,6 +97,7 @@ const steelReviewReceiptSchema = new Schema(
   {
     operationId: { type: String, required: true },
     digest: { type: String, required: true },
+    title: { type: String },
     requestDigest: { type: String },
     revision: { type: String, required: true },
     changedRows: { type: Number, required: true, min: 0 },
@@ -107,6 +108,7 @@ const steelReviewReceiptSchema = new Schema(
         {
           operationId: { type: String, required: true },
           digest: { type: String, required: true },
+          title: { type: String },
           requestDigest: { type: String },
           outputId: { type: String, required: true },
           revision: { type: String, required: true },
@@ -158,6 +160,7 @@ const steelReviewOutputSchema: Schema<ISteelReviewOutput> = new Schema<ISteelRev
     kind: { type: String, enum: ['ocr_result', 'system_order'], required: true },
     messageId: { type: String, required: true },
     tableId: { type: String, required: true },
+    title: { type: String },
     outputId: { type: String, required: true },
     revision: { type: String, required: true },
     state: { type: String, enum: ['current', 'historical'], required: true },
@@ -186,6 +189,18 @@ steelReviewOutputSchema.index({
   tableId: 1,
   outputId: 1,
 }, { unique: true });
+steelReviewOutputSchema.index({
+  userId: 1,
+  tenantId: 1,
+  conversationId: 1,
+  kind: 1,
+  messageId: 1,
+  outputId: 1,
+  title: 1,
+}, {
+  unique: true,
+  partialFilterExpression: { title: { $type: 'string' } },
+});
 steelReviewOutputSchema.index({
   userId: 1,
   tenantId: 1,

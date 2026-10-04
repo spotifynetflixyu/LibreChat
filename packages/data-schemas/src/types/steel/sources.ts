@@ -6,7 +6,7 @@ export interface SteelReviewSourceScope {
   conversationId: string;
   messageId: string;
   kind: SteelReviewKind;
-  tableId?: string;
+  title: string;
 }
 
 export interface SteelReviewSourceReadInput extends SteelReviewSourceScope {

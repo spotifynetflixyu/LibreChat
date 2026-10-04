@@ -249,6 +249,7 @@ describe('Steel review source methods', () => {
       conversationId,
       messageId: 'steel-source-message',
       kind: 'ocr_result' as const,
+      title: 'ocr_result',
     };
     const sources = await methods.listSteelReviewSources(input);
     expect(sources.map((source) => source.fileId)).toEqual([
@@ -326,6 +327,7 @@ describe('Steel review source methods', () => {
           conversationId,
           messageId,
           kind: 'ocr_result',
+          title: 'ocr_result',
         }, ['session-source-file'], session);
         resolved = files.get('session-source-file')?.filename;
       });
@@ -443,6 +445,7 @@ describe('Steel review source methods', () => {
       conversationId,
       messageId: 'provenance-clicked',
       kind: 'ocr_result' as const,
+      title: 'ocr_result',
     };
     expect((await methods.listSteelReviewSources(input)).map((source) => source.fileId)).toEqual([
       'anchored-legacy-source',

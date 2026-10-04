@@ -36,7 +36,7 @@ interface SteelReviewDraftSnapshot {
 
 export function getSteelReviewDraftKey(
   selection: SteelReviewSelection,
-  table: Pick<SteelReviewTable, 'outputId' | 'revision' | 'partIndex'>,
+  table: Pick<SteelReviewTable, 'outputId' | 'revision'>,
 ): string {
   return JSON.stringify({
     ...JSON.parse(getSteelReviewDraftOwnerKey(selection, table)),
@@ -46,14 +46,13 @@ export function getSteelReviewDraftKey(
 
 export function getSteelReviewDraftOwnerKey(
   selection: SteelReviewSelection,
-  table: Pick<SteelReviewTable, 'outputId' | 'partIndex'>,
+  table: Pick<SteelReviewTable, 'outputId'>,
 ): string {
   return JSON.stringify({
     conversationId: selection.conversationId,
     messageId: selection.messageId,
     kind: selection.kind,
-    tableId: selection.tableId,
-    partIndex: selection.partIndex ?? table.partIndex ?? null,
+    title: selection.title,
     outputId: table.outputId,
   });
 }
@@ -69,8 +68,7 @@ export function areSteelReviewDraftOwnersSame(left: string, right: string): bool
       'conversationId',
       'messageId',
       'kind',
-      'tableId',
-      'partIndex',
+      'title',
       'outputId',
     ].every((field) => leftOwner[field] === rightOwner[field]);
   } catch {
@@ -454,14 +452,12 @@ export function getSteelReviewPrepareInput(
   draft: SteelReviewDraftState,
   rows: SteelReviewRow[],
 ): SteelReviewOperationPrepare {
-  const partIndex = table.partIndex ?? selection.partIndex;
   const operations = compileSteelReviewOperations(table, draft, rows);
   return {
     conversationId: selection.conversationId,
     messageId: selection.messageId,
     kind: selection.kind,
-    tableId: selection.tableId,
-    ...(partIndex !== undefined ? { partIndex } : {}),
+    title: selection.title,
     outputId: table.outputId,
     revision: table.revision,
     operations,

@@ -8,8 +8,7 @@ export type SteelReviewSelection = {
   conversationId: string;
   messageId: string;
   kind: SteelReviewKind;
-  tableId: string;
-  partIndex?: number;
+  title: string;
   capturedAuthority?: SteelReviewCapturedAuthority;
 };
 
@@ -49,8 +48,7 @@ export function steelReviewIdentityKey(selection: SteelReviewSelection): string 
     selection.conversationId,
     selection.messageId,
     selection.kind,
-    selection.tableId,
-    selection.partIndex ?? '',
+    selection.title,
   ].join(':');
 }
 
@@ -60,14 +58,13 @@ export function steelReviewSourcePreviewKey(selection: SteelReviewSelection, fil
 
 export function sameSteelReviewIdentity(
   left: SteelReviewSelection | null | undefined,
-  right: Pick<SteelReviewSelection, 'conversationId' | 'messageId' | 'kind' | 'tableId' | 'partIndex'>,
+  right: Pick<SteelReviewSelection, 'conversationId' | 'messageId' | 'kind' | 'title'>,
 ): left is SteelReviewSelection {
   return Boolean(left &&
     left.conversationId === right.conversationId &&
     left.messageId === right.messageId &&
     left.kind === right.kind &&
-    left.tableId === right.tableId &&
-    left.partIndex === right.partIndex);
+    left.title === right.title);
 }
 
 type OwnedStateFamily<T> = ((key: string) => PrimitiveAtom<T>) & {

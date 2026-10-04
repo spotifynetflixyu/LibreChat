@@ -263,14 +263,14 @@ export function createSteelRouteHandlers({
       }
       try {
         const messageId = typeof req.query.messageId === 'string' ? req.query.messageId : '';
-        const tableId = typeof req.query.tableId === 'string' ? req.query.tableId : undefined;
+        const title = typeof req.query.title === 'string' ? req.query.title : '';
         const result = await sourceService.list({
           userId,
           tenantId: req.tenantId ?? req.user?.tenantId,
           conversationId,
           kind,
           messageId,
-          ...(tableId !== undefined ? { tableId } : {}),
+          title,
         });
         res.status(200).json(result);
       } catch (error) {

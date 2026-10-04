@@ -338,13 +338,11 @@ export const steelReview = (
   conversationId: string,
   kind: string,
   messageId: string,
-  tableId: string,
-  partIndex?: number,
+  title: string,
 ) => {
   const query = new URLSearchParams({
     messageId,
-    tableId,
-    ...(partIndex !== undefined ? { partIndex: String(partIndex) } : {}),
+    title,
   }).toString();
   return `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}?${query}`;
 };
@@ -356,23 +354,25 @@ export const steelReviewReceipt = (
   conversationId: string,
   kind: string,
   messageId: string,
-  tableId: string,
   outputId: string,
   operationId: string,
   digest: string,
+  title: string,
 ) => {
-  const query = new URLSearchParams({ messageId, tableId, outputId, operationId, digest }).toString();
+  const query = new URLSearchParams({
+    messageId, outputId, operationId, digest, title,
+  }).toString();
   return `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}/receipt?${query}`;
 };
 export const steelReviewSources = (
   conversationId: string,
   kind: string,
   messageId: string,
-  tableId?: string,
+  title: string,
 ) => {
   const query = new URLSearchParams({
     messageId,
-    ...(tableId !== undefined ? { tableId } : {}),
+    title,
   }).toString();
   return `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}/sources?${query}`;
 };

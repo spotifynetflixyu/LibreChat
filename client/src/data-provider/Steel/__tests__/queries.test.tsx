@@ -142,7 +142,7 @@ describe('Steel review receipt query', () => {
         conversationId: 'conversation-1',
         kind: 'ocr_result',
         messageId: 'message-1',
-        tableId: 'ocr_result:1',
+        title: 'ocr_result',
         outputId: 'ocr_result:generation-1',
         operationId: 'operation-1',
         digest: 'a'.repeat(64),

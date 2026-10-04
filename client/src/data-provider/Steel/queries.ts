@@ -87,8 +87,7 @@ export const useGetSteelReviewQuery = (
     conversationId: string;
     kind: SteelReviewKind;
     messageId: string;
-    tableId: string;
-    partIndex?: number;
+    title: string;
   } | null,
   config?: UseQueryOptions<SteelReviewResponse>,
 ): QueryObserverResult<SteelReviewResponse> => {
@@ -99,15 +98,13 @@ export const useGetSteelReviewQuery = (
       input?.conversationId ?? '',
       input?.kind ?? 'ocr_result',
       input?.messageId ?? '',
-      input?.tableId ?? '',
-      input?.partIndex,
+      input?.title ?? '',
     ),
     () => dataService.getSteelReview(
       input?.conversationId ?? '',
       input?.kind ?? 'ocr_result',
       input?.messageId ?? '',
-      input?.tableId ?? '',
-      input?.partIndex,
+      input?.title ?? '',
     ),
     {
       refetchOnWindowFocus: false,
@@ -125,7 +122,7 @@ export const useGetSteelReviewSourcesQuery = (
     conversationId: string;
     kind: SteelReviewKind;
     messageId: string;
-    tableId?: string;
+    title: string;
   } | null,
   config?: UseQueryOptions<SteelReviewSourcesResponse>,
 ): QueryObserverResult<SteelReviewSourcesResponse> => {
@@ -136,13 +133,13 @@ export const useGetSteelReviewSourcesQuery = (
       input?.conversationId ?? '',
       input?.kind ?? 'ocr_result',
       input?.messageId ?? '',
-      input?.tableId,
+      input?.title ?? '',
     ),
     () => dataService.getSteelReviewSources(
       input?.conversationId ?? '',
       input?.kind ?? 'ocr_result',
       input?.messageId ?? '',
-      input?.tableId,
+      input?.title ?? '',
     ),
     {
       refetchOnWindowFocus: false,
@@ -254,8 +251,7 @@ export const useCommitSteelReviewMutation = (): UseMutationResult<
             input.conversationId,
             input.kind,
             input.messageId,
-            input.tableId,
-            input.partIndex,
+            input.title,
           ),
         );
       },
@@ -268,10 +264,10 @@ export const useGetSteelReviewReceiptQuery = (
     conversationId: string;
     kind: SteelReviewKind;
     messageId: string;
-    tableId: string;
     outputId: string;
     operationId: string;
     digest: string;
+    title: string;
   } | null,
   config?: UseQueryOptions<SteelReviewReceiptStatus>,
 ): QueryObserverResult<SteelReviewReceiptStatus> => {
@@ -281,19 +277,19 @@ export const useGetSteelReviewReceiptQuery = (
       input?.conversationId ?? '',
       input?.kind ?? 'ocr_result',
       input?.messageId ?? '',
-      input?.tableId ?? '',
       input?.outputId ?? '',
       input?.operationId ?? '',
       input?.digest ?? '',
+      input?.title ?? '',
     ),
     () => dataService.getSteelReviewReceipt(
       input?.conversationId ?? '',
       input?.kind ?? 'ocr_result',
       input?.messageId ?? '',
-      input?.tableId ?? '',
       input?.outputId ?? '',
       input?.operationId ?? '',
       input?.digest ?? '',
+      input?.title ?? '',
     ),
     {
       refetchOnWindowFocus: false,

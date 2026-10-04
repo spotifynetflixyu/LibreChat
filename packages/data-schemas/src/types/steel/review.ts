@@ -18,14 +18,18 @@ export interface SteelReviewScope {
 export interface SteelReviewReadInput extends SteelReviewScope {
   kind: SteelReviewKind;
   messageId: string;
-  tableId: string;
+  title: string;
+  /** Private physical hints retained only for existing repository internals; public requests never carry them. */
+  tableId?: string;
   partIndex?: number;
 }
 
 export interface SteelReviewReceiptLookup extends SteelReviewScope {
   kind: SteelReviewKind;
   messageId: string;
-  tableId: string;
+  title: string;
+  /** Private physical hint for an already-resolved receipt; public queries omit it. */
+  tableId?: string;
   outputId: string;
   operationId: string;
   digest: string;
@@ -49,6 +53,7 @@ export interface SteelReviewReadRecord extends SteelReviewScope {
   kind: SteelReviewKind;
   messageId: string;
   tableId: string;
+  title?: string;
   outputId: string;
   revision: string;
   state: 'current' | 'historical';
@@ -83,6 +88,7 @@ export interface ISteelReviewOutput extends Document, SteelReviewScope {
   kind: SteelReviewKind;
   messageId: string;
   tableId: string;
+  title?: string;
   outputId: string;
   revision: string;
   state: 'current' | 'historical';
@@ -105,6 +111,7 @@ export interface ISteelReviewOutput extends Document, SteelReviewScope {
 export interface SteelReviewReceipt {
   operationId: string;
   digest: string;
+  title?: string;
   /** Present only on the additive operation-intent receipt lane. */
   requestDigest?: string;
   revision: string;
@@ -117,6 +124,7 @@ export interface SteelReviewReceipt {
 export interface SteelReviewSavedSnapshotRecord {
   operationId: string;
   digest: string;
+  title?: string;
   /** Present only on the additive operation-intent receipt lane. */
   requestDigest?: string;
   outputId: string;

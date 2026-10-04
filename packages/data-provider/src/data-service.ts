@@ -194,10 +194,9 @@ export function getSteelReview(
   conversationId: string,
   kind: SteelReviewKind,
   messageId: string,
-  tableId: string,
-  partIndex?: number,
+  title: string,
 ): Promise<SteelReviewResponse> {
-  return request.get(endpoints.steelReview(conversationId, kind, messageId, tableId, partIndex));
+  return request.get(endpoints.steelReview(conversationId, kind, messageId, title));
 }
 
 export function prepareSteelReview(input: SteelReviewPrepare): Promise<SteelReviewPrepared> {
@@ -212,19 +211,19 @@ export function getSteelReviewReceipt(
   conversationId: string,
   kind: SteelReviewKind,
   messageId: string,
-  tableId: string,
   outputId: string,
   operationId: string,
   digest: string,
+  title: string,
 ): Promise<SteelReviewReceiptStatus> {
   return request.get(endpoints.steelReviewReceipt(
     conversationId,
     kind,
     messageId,
-    tableId,
     outputId,
     operationId,
     digest,
+    title,
   ));
 }
 
@@ -232,9 +231,9 @@ export function getSteelReviewSources(
   conversationId: string,
   kind: SteelReviewKind,
   messageId: string,
-  tableId?: string,
+  title: string,
 ): Promise<SteelReviewSourcesResponse> {
-  return request.get(endpoints.steelReviewSources(conversationId, kind, messageId, tableId));
+  return request.get(endpoints.steelReviewSources(conversationId, kind, messageId, title));
 }
 
 export function getSteelReviewSource(

@@ -3,6 +3,33 @@ import { z } from 'zod';
 export const steelReviewKinds = ['ocr_result', 'system_order'] as const;
 export type SteelReviewKind = (typeof steelReviewKinds)[number];
 
+export const steelReviewTitleSchema = z.string().min(1).max(1000);
+export type SteelReviewTitleOwner = {
+  userId: string;
+  tenantId?: string | null;
+  conversationId: string;
+  messageId: string;
+  kind: SteelReviewKind;
+  outputId: string;
+  title: string;
+};
+
+/** Browser-safe canonical bytes shared by the API and data-schema title IDs. */
+export function encodeSteelReviewTitleOwner(owner: SteelReviewTitleOwner): string {
+  return JSON.stringify({
+    namespace: 'steel-review-title-owner-v1',
+    owner: [
+      owner.userId,
+      owner.tenantId ?? null,
+      owner.conversationId,
+      owner.messageId,
+      owner.kind,
+      owner.outputId,
+      owner.title,
+    ],
+  });
+}
+
 const steelReviewSourceAssociationHeaders = new Set([
   '來源',
   '頁碼',
@@ -65,24 +92,19 @@ export const steelReviewRequoteProvenanceSchema = z.object({
 });
 export type SteelReviewRequoteProvenance = z.infer<typeof steelReviewRequoteProvenanceSchema>;
 
-export function getSteelReviewTableId(kind: SteelReviewKind, markdownIndex: number): string {
-  return `${kind}:${markdownIndex}`;
-}
-
 export const steelReviewReadQuerySchema = z.object({
   messageId: z.string().trim().min(1).max(300),
-  tableId: z.string().trim().min(1).max(300),
-  partIndex: z.coerce.number().int().nonnegative().max(10_000).optional(),
-});
+  title: steelReviewTitleSchema,
+}).strict();
 export type SteelReviewReadQuery = z.infer<typeof steelReviewReadQuerySchema>;
 
 export const steelReviewReceiptQuerySchema = z.object({
   messageId: z.string().trim().min(1).max(300),
-  tableId: z.string().trim().min(1).max(300),
   outputId: z.string().trim().min(1).max(300),
   operationId: z.string().trim().min(1).max(300),
   digest: z.string().length(64),
-});
+  title: steelReviewTitleSchema,
+}).strict();
 export type SteelReviewReceiptQuery = z.infer<typeof steelReviewReceiptQuerySchema>;
 
 export const steelReviewSourceSchema = z.object({
@@ -133,8 +155,8 @@ export const steelReviewRowSchema = z.object({
   rowId: z.string().min(1),
   values: z.record(z.string(), steelReviewCellSchema),
   source: steelReviewSourceSchema.nullable(),
-  // These fields were added by Ticket05. They stay optional at the shared
-  // boundary so an authenticated 03/04 receipt can be decoded byte-for-byte.
+  // These persisted-row fields stay optional for older stored ledgers while
+  // current title-only requests continue to send only row operations.
   origin: steelReviewRowOriginSchema.optional(),
   deleted: z.boolean().optional(),
   insertion: steelReviewRowInsertionSchema.optional(),
@@ -236,6 +258,7 @@ export const steelReviewSavedSnapshotSchema = z.object({
   digest: z.string().length(64),
   requestDigest: z.string().length(64).optional(),
   outputId: z.string().min(1),
+  title: steelReviewTitleSchema.optional(),
   revision: z.string().min(1),
   headers: z.array(z.string()),
   rows: z.array(steelReviewRowSchema),
@@ -268,6 +291,7 @@ export const steelReviewReceiptSchema = z.object({
   digest: z.string().length(64),
   requestDigest: z.string().length(64).optional(),
   revision: z.string().min(1),
+  title: steelReviewTitleSchema.optional(),
   changedRows: z.number().int().nonnegative(),
   changedRowIds: z.array(z.string().min(1)),
   savedAt: z.string().datetime(),
@@ -277,9 +301,8 @@ export const steelReviewReceiptSchema = z.object({
 export const steelReviewTableSchema = z.object({
   conversationId: z.string().min(1),
   messageId: z.string().min(1),
-  tableId: z.string().min(1),
-  partIndex: z.number().int().nonnegative().optional(),
   outputId: z.string().min(1),
+  title: steelReviewTitleSchema,
   kind: z.enum(steelReviewKinds),
   revision: z.string().min(1),
   latestOutputId: z.string().min(1),
@@ -342,26 +365,13 @@ export const steelReviewRecoverySchema = z.object({
   conflicts: z.array(steelReviewConflictSchema).min(1),
 }).strict();
 
-const steelReviewPrepareBaseSchema = z.object({
-  conversationId: z.string().min(1),
-  messageId: z.string().min(1),
-  tableId: z.string().min(1),
-  partIndex: z.number().int().nonnegative().optional(),
-  kind: z.enum(steelReviewKinds),
-  outputId: z.string().min(1),
-  revision: z.string().min(1),
-  rows: z.array(steelReviewRowSchema),
-  sourceIntents: z.array(steelReviewSourceIntentSchema).optional(),
-}).strict();
-
 const steelReviewOperationPrepareBaseSchema = z.object({
   conversationId: z.string().min(1),
   messageId: z.string().min(1),
-  tableId: z.string().min(1),
-  partIndex: z.number().int().nonnegative().optional(),
   kind: z.enum(steelReviewKinds),
   outputId: z.string().min(1),
   revision: z.string().min(1),
+  title: steelReviewTitleSchema,
   operations: z.array(steelReviewOperationSchema).min(1),
 }).strict();
 
@@ -381,12 +391,9 @@ function rejectPresentInvalidSourceFields(
 }
 
 export const steelReviewOperationPrepareSchema = steelReviewOperationPrepareBaseSchema;
-export const steelReviewPrepareSchema = z.union([
-  steelReviewPrepareBaseSchema.superRefine(rejectPresentInvalidSourceFields),
-  steelReviewOperationPrepareBaseSchema,
-]);
+export const steelReviewPrepareSchema = steelReviewOperationPrepareBaseSchema;
 
-const steelReviewPreparedBaseSchema = steelReviewPrepareBaseSchema.extend({
+const steelReviewPreparedBaseSchema = steelReviewOperationPrepareBaseSchema.extend({
   operationId: z.string().min(1),
   digest: z.string().length(64),
   messageSha256: z.string().length(64),
@@ -395,6 +402,7 @@ const steelReviewPreparedBaseSchema = steelReviewPrepareBaseSchema.extend({
   cleanReplacementText: z.string(),
   targetText: z.string(),
   headers: z.array(z.string()),
+  rows: z.array(steelReviewRowSchema),
   effectiveMarkdown: z.string(),
   displayMarkdown: z.string(),
   aiBaselineMarkdown: z.string().optional(),
@@ -414,23 +422,13 @@ export const steelReviewPreparedSchema = z.union([
   steelReviewPreparedOperationBaseSchema,
 ]);
 
-// The old 03 commit shape is retained only so the API can validate an
-// already-committed receipt replay without manufacturing a new operation.
-export const steelReviewLegacyCommitSchema = steelReviewPreparedBaseSchema.omit({
-  sourceIntents: true,
-  sourceMappings: true,
-});
-
 const steelReviewOperationCommitBaseSchema = steelReviewOperationPrepareBaseSchema.extend({
   operationId: z.string().min(1),
   digest: z.string().length(64),
 });
 
 export const steelReviewOperationCommitSchema = steelReviewOperationCommitBaseSchema;
-export const steelReviewCommitSchema = z.union([
-  steelReviewPreparedBaseSchema.superRefine(rejectPresentInvalidSourceFields),
-  steelReviewOperationCommitBaseSchema,
-]);
+export const steelReviewCommitSchema = steelReviewOperationCommitBaseSchema;
 
 const steelReviewSaveResponseBaseSchema = steelReviewPreparedBaseSchema.extend({
   savedAt: z.string().datetime(),
@@ -481,8 +479,8 @@ export const steelReviewSourcePageCountSchema = z.object({
 
 export const steelReviewSourceQuerySchema = z.object({
   messageId: z.string().trim().min(1).max(300),
-  tableId: z.string().trim().min(1).max(300).optional(),
-});
+  title: steelReviewTitleSchema,
+}).strict();
 
 export const steelReviewSourceBinaryQuerySchema = z.object({
   messageId: z.string().trim().min(1).max(300),
@@ -710,11 +708,17 @@ export type SteelReviewPrepared = z.infer<typeof steelReviewPreparedSchema>;
 export type SteelReviewCommit = z.infer<typeof steelReviewCommitSchema>;
 export type SteelReviewOperationPrepared = z.infer<typeof steelReviewPreparedOperationBaseSchema>;
 
-export type SteelReviewDigestInput = Omit<SteelReviewPrepared, 'operationId' | 'digest' | 'sourceIntents' | 'sourceMappings'> & {
+export type SteelReviewDigestInput = {
+  conversationId: string;
+  messageId: string;
+  kind: SteelReviewKind;
+  title: string;
+  outputId: string;
+  revision: string;
+  operationId: string;
+  operations: SteelReviewOperation[];
   userId: string;
   tenantId?: string | null;
-  sourceIntents?: SteelReviewSourceIntent[];
-  sourceMappings?: SteelReviewSourceMapping[];
 };
 
 export function sameSteelReviewSource(
@@ -909,84 +913,21 @@ export function validateSteelReviewLedger(
 
 /** Keep the wire digest's field order and null semantics in one browser-safe encoder. */
 export function encodeSteelReviewDigest(input: SteelReviewDigestInput): string {
-  const hasSourceIntents = Object.prototype.hasOwnProperty.call(input, 'sourceIntents');
-  const hasSourceMappings = Object.prototype.hasOwnProperty.call(input, 'sourceMappings');
-  if ((hasSourceIntents && !Array.isArray(input.sourceIntents)) ||
-    (hasSourceMappings && !Array.isArray(input.sourceMappings))) {
-    throw new Error('Steel review source digest fields must be arrays when present');
-  }
-  const payload: {
-    userId: string;
-    tenantId: string | null;
-    conversationId: string;
-    kind: SteelReviewKind;
-    messageId: string;
-    tableId: string;
-    partIndex: number | null;
-    outputId: string;
-    revision: string;
-    rows: SteelReviewRow[];
-    sourceIntents?: SteelReviewSourceIntent[];
-    sourceMappings?: SteelReviewSourceMapping[];
-    headers?: string[];
-    messageSha256?: string;
-    target?: SteelReviewTarget;
-    targetText?: string;
-    replacementText?: string;
-    cleanReplacementText?: string;
-    effectiveMarkdown?: string;
-    displayMarkdown?: string;
-    aiBaselineMarkdown?: string | null;
-    aiRawMarkdown?: string | null;
-    caption?: SteelReviewCaption;
-  } = {
-    userId: input.userId,
-    tenantId: input.tenantId ?? null,
-    conversationId: input.conversationId,
-    kind: input.kind,
-    messageId: input.messageId,
-    tableId: input.tableId,
-    partIndex: input.partIndex ?? null,
-    outputId: input.outputId,
-    revision: input.revision,
-    rows: input.rows.map((row) => {
-      const hasLedgerField = Object.prototype.hasOwnProperty.call(row, 'origin') ||
-        Object.prototype.hasOwnProperty.call(row, 'deleted') ||
-        Object.prototype.hasOwnProperty.call(row, 'insertion');
-      if (!hasLedgerField) {
-        return row;
-      }
-      // Zod materializes Ticket05 row fields in schema order at the HTTP
-      // boundary. Keep that order for new ledger digests while preserving
-      // the exact property presence/order of committed 03/04 rows.
-      return {
-        rowId: row.rowId,
-        values: row.values,
-        source: row.source,
-        ...(Object.prototype.hasOwnProperty.call(row, 'origin') ? { origin: row.origin } : {}),
-        ...(Object.prototype.hasOwnProperty.call(row, 'deleted') ? { deleted: row.deleted } : {}),
-        ...(Object.prototype.hasOwnProperty.call(row, 'insertion') ? { insertion: row.insertion } : {}),
-      };
-    }),
-  };
-  if (hasSourceIntents) {
-    payload.sourceIntents = input.sourceIntents;
-  }
-  if (hasSourceMappings) {
-    payload.sourceMappings = input.sourceMappings;
-  }
-  payload.headers = input.headers;
-  payload.messageSha256 = input.messageSha256;
-  payload.target = input.target;
-  payload.targetText = input.targetText;
-  payload.replacementText = input.replacementText;
-  payload.cleanReplacementText = input.cleanReplacementText;
-  payload.effectiveMarkdown = input.effectiveMarkdown;
-  payload.displayMarkdown = input.displayMarkdown;
-  payload.aiBaselineMarkdown = input.aiBaselineMarkdown ?? null;
-  payload.aiRawMarkdown = input.aiRawMarkdown ?? null;
-  payload.caption = input.caption;
-  return JSON.stringify(payload);
+  return JSON.stringify({
+    namespace: 'steel-review-operation-v2',
+    owner: [
+      input.userId,
+      input.tenantId ?? null,
+      input.conversationId,
+      input.messageId,
+      input.kind,
+      input.title,
+      input.outputId,
+      input.revision,
+      input.operationId,
+    ],
+    operations: input.operations,
+  });
 }
 export type SteelReviewSaveResponse = z.infer<typeof steelReviewSaveResponseSchema>;
 export type SteelReviewSourceFile = z.infer<typeof steelReviewSourceFileSchema>;

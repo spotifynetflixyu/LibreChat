@@ -1,19 +1,22 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
-  encodeSteelReviewDigest,
   isSteelReviewSourceAssociationHeader,
   parseSteelReviewMarkdownTables,
   normalizeSteelReviewRows,
+  normalizeSteelReviewEffectiveValue,
+  encodeSteelReviewTitleOwner,
   sameSteelReviewSource,
   validateSteelReviewLedger,
 } from 'librechat-data-provider';
 import type {
   SteelReviewCell,
+  SteelReviewKind,
   SteelReviewCaption,
   SteelReviewOperationPrepare,
   SteelReviewRow,
   SteelReviewSourceIntent,
   SteelReviewSourceMapping,
+  SteelReviewTitleOwner,
   SteelReviewTarget,
   SteelReviewRecovery,
 } from 'librechat-data-provider';
@@ -57,6 +60,9 @@ export type SteelReviewMessageMutationCheckResult =
   | { ok: false; error: { code: 'REVIEW_NOT_FOUND' } };
 
 export interface SteelReviewCommitInput extends SteelReviewReadInput {
+  /** Server-resolved physical target; never accepted from the public request. */
+  tableId: string;
+  partIndex?: number;
   outputId: string;
   revision: string;
   operationId: string;
@@ -92,6 +98,7 @@ export interface SteelReviewCommitResult {
   digest: string;
   requestDigest?: string;
   outputId: string;
+  title?: string;
   revision: string;
   headers?: string[];
   rows?: SteelReviewRow[];
@@ -141,6 +148,113 @@ function tenantFilter(tenantId?: string): Record<string, unknown> {
   return tenantId === undefined
     ? { $or: [{ tenantId: { $exists: false } }, { tenantId: null }] }
     : { tenantId };
+}
+
+function isManagedReviewTitle(kind: SteelReviewKind, title: string | undefined): title is string {
+  if (!title) {
+    return false;
+  }
+  const prefix = kind === 'ocr_result' ? 'ocr_result' : 'system_order';
+  if (title === prefix) {
+    return true;
+  }
+  const separator = title.indexOf('｜');
+  return separator > 0 && title.slice(0, separator).trim() === prefix &&
+    title.slice(separator + 1).trim().length > 0;
+}
+
+function hasUniqueTitle(markdown: string | undefined, kind: SteelReviewKind, title: string): boolean {
+  if (!markdown) {
+    return false;
+  }
+  const matches = parseSteelReviewMarkdownTables(markdown)
+    .filter((table) => table.title === title && isManagedReviewTitle(kind, table.title));
+  return matches.length === 1;
+}
+
+function hasUniqueRenderedTitle(
+  message: { messageText: string; parts: SteelReviewTextPart[] },
+  kind: SteelReviewKind,
+  title: string,
+): boolean {
+  const sources = message.parts.length > 0 ? message.parts.map((part) => part.text) : [message.messageText];
+  const matches = sources.flatMap((markdown) => parseSteelReviewMarkdownTables(markdown))
+    .filter((table) => table.title === title && isManagedReviewTitle(kind, table.title));
+  return matches.length === 1;
+}
+
+function titleStorageId(owner: SteelReviewTitleOwner): string {
+  return `${owner.kind}:title:${createHash('sha256').update(encodeSteelReviewTitleOwner(owner)).digest('hex')}`;
+}
+
+function sidecarHasTitle(
+  output: Pick<ISteelReviewOutput, 'title' | 'kind' | 'outputId' | 'headers' | 'rows' | 'aiRawMarkdown' | 'aiBaselineMarkdown' | 'humanMarkdown' | 'effectiveMarkdown'>,
+  title: string,
+): boolean {
+  const baseline = output.aiBaselineMarkdown ?? output.aiRawMarkdown;
+  const effective = output.effectiveMarkdown ?? output.humanMarkdown;
+  if (!baseline || !effective || output.title !== undefined && output.title !== title) {
+    return false;
+  }
+  const baselineTables = parseSteelReviewMarkdownTables(baseline)
+    .filter((candidate) => isManagedReviewTitle(output.kind, candidate.title));
+  const effectiveTables = parseSteelReviewMarkdownTables(effective)
+    .filter((candidate) => isManagedReviewTitle(output.kind, candidate.title));
+  const aiRows = output.rows.filter((row) => (row.origin ?? 'ai') === 'ai');
+  const baselineCandidates = baselineTables.filter((candidate) => {
+    if (JSON.stringify(candidate.headers) !== JSON.stringify(output.headers)) {
+      return false;
+    }
+    let aiIndex = 0;
+    for (const [originalRowIndex, row] of candidate.rows.entries()) {
+      // Malformed physical rows are skipped by the trusted ledger importer;
+      // their original index must still remain part of the following row ID.
+      if (row.length !== candidate.headers.length) {
+        continue;
+      }
+      const stored = aiRows[aiIndex];
+      if (!stored || stored.rowId !== createHash('sha256')
+        .update(`${output.outputId}:${originalRowIndex}:${JSON.stringify(row)}`).digest('hex')) {
+        return false;
+      }
+      if (!output.headers.every((header, columnIndex) =>
+        (stored.values[header]?.baseline ?? '') === (row[columnIndex] ?? ''))) {
+        return false;
+      }
+      aiIndex += 1;
+    }
+    return aiIndex === aiRows.length;
+  });
+  if (baselineCandidates.length !== 1) {
+    return false;
+  }
+  const [baselineTable] = baselineCandidates;
+  if (!baselineTable || baselineTable.title !== title || output.title !== undefined && output.title !== title) {
+    return false;
+  }
+  const effectiveCandidates = effectiveTables.filter((candidate) => {
+    if (candidate.title !== title || JSON.stringify(candidate.headers) !== JSON.stringify(output.headers) ||
+      candidate.rows.length !== output.rows.filter((row) => !row.deleted).length) {
+      return false;
+    }
+    return output.rows.filter((row) => !row.deleted).every((stored, rowIndex) =>
+      output.headers.every((header, columnIndex) =>
+        (stored.values[header]?.effective ?? '') ===
+        (normalizeSteelReviewEffectiveValue(candidate.rows[rowIndex]?.[columnIndex] ?? '') ?? '')));
+  });
+  return effectiveCandidates.length === 1;
+}
+
+function sidecarMentionsTitle(
+  output: Pick<ISteelReviewOutput, 'title' | 'kind' | 'aiRawMarkdown' | 'aiBaselineMarkdown' | 'humanMarkdown' | 'effectiveMarkdown'>,
+  title: string,
+): boolean {
+  if (output.title === title) {
+    return true;
+  }
+  return [output.aiBaselineMarkdown, output.aiRawMarkdown, output.humanMarkdown, output.effectiveMarkdown]
+    .some((markdown) => parseSteelReviewMarkdownTables(markdown ?? '')
+      .some((candidate) => candidate.title === title && isManagedReviewTitle(output.kind, candidate.title)));
 }
 
 function hasCellProperty(cell: SteelReviewCell | undefined, property: keyof SteelReviewCell): boolean {
@@ -526,7 +640,7 @@ function projectAuthorizedFiles(
 }
 
 function sidecarRecord(
-  output: Pick<ISteelReviewOutput, 'userId' | 'tenantId' | 'conversationId' | 'kind' | 'messageId' | 'tableId' | 'outputId' | 'revision' | 'state' | 'headers' | 'rows' | 'sourceMappings' | 'latestOutputId' | 'aiUpdatedAt' | 'aiRawMarkdown' | 'aiBaselineMarkdown' | 'humanMarkdown' | 'humanSavedAt' | 'effectiveMarkdown' | 'displayMarkdown' | 'receipts'>,
+  output: Pick<ISteelReviewOutput, 'userId' | 'tenantId' | 'conversationId' | 'kind' | 'messageId' | 'tableId' | 'title' | 'outputId' | 'revision' | 'state' | 'headers' | 'rows' | 'sourceMappings' | 'latestOutputId' | 'aiUpdatedAt' | 'aiRawMarkdown' | 'aiBaselineMarkdown' | 'humanMarkdown' | 'humanSavedAt' | 'effectiveMarkdown' | 'displayMarkdown' | 'receipts'>,
   message?: { selected: string; parts: SteelReviewTextPart[]; selectedPartIndex?: number; ownerUpdated?: SteelReviewOwnerUpdatedRecord },
   authorizedFiles: ReadonlyMap<string, AuthorizedFile> = new Map(),
   aiUpdatedAt?: Date,
@@ -541,6 +655,7 @@ function sidecarRecord(
     kind: output.kind,
     messageId: output.messageId,
     tableId: output.tableId,
+    ...(output.title ? { title: output.title } : {}),
     outputId: output.outputId,
     revision: output.revision,
     state: output.state,
@@ -696,10 +811,14 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
         return null;
       }
       const messageRecord = messageRecords[0];
-      const message = renderedMessageText(messageRecord, input.partIndex);
+      const message = renderedMessageText(messageRecord, input.title ? undefined : input.partIndex);
       if (!message) {
         return null;
       }
+      const legacyTitle = input.title === undefined
+        ? parseSteelReviewMarkdownTables(message.messageText)
+          .find((candidate) => `${input.kind}:${candidate.index}` === input.tableId)?.title
+        : undefined;
       const trustedGlobalConversation = conversationIdentities.length === 1 &&
         conversationIdentities[0]?.user === input.userId &&
         matchesTenantScope(conversationIdentities[0]?.tenantId, input.tenantId);
@@ -707,12 +826,11 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
         ...scopeFilter(input),
         kind: input.kind,
         messageId: input.messageId,
-        tableId: input.tableId,
       })
         .lean<ISteelReviewOutput[]>();
 
       if (input.kind === 'ocr_result') {
-        const [sidecarCandidates, ocrData] = await Promise.all([
+        const [allSidecarCandidates, ocrData] = await Promise.all([
           sidecarCandidatesPromise,
           trustedGlobalConversation
             ? Promise.all([
@@ -729,6 +847,14 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
             : Promise.resolve([undefined, undefined] as const),
         ]);
         const [state, historicalRun] = ocrData;
+        if (input.title && allSidecarCandidates.some((candidate) =>
+          sidecarMentionsTitle(candidate, input.title!) && !sidecarHasTitle(candidate, input.title!))) {
+          return null;
+        }
+        const sidecarCandidates = input.title
+          ? allSidecarCandidates.filter((candidate) => sidecarHasTitle(candidate, input.title!))
+          : allSidecarCandidates.filter((candidate) => candidate.tableId === input.tableId ||
+            (legacyTitle !== undefined && sidecarHasTitle(candidate, legacyTitle)));
         const authority = state?.currentOcrResultGenerationId
           ? {
               outputId: `ocr_result:${state.currentOcrResultGenerationId}`,
@@ -752,6 +878,7 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
           return sidecarRecord({
             ...selectedWithoutLatest,
             ...(authority ? { latestOutputId: authority.outputId } : {}),
+            ...(input.title ? { title: input.title } : {}),
             ...(selectedMappings && selectedMappings.length > 0 ? { sourceMappings: selectedMappings } : {}),
           }, {
             ...message,
@@ -764,16 +891,30 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
         if (
           state?.currentOcrResultMessageId === input.messageId &&
           state.currentOcrResultMarkdown &&
-          state.currentOcrResultGenerationId
+          state.currentOcrResultGenerationId &&
+          (!input.title || (
+            hasUniqueTitle(state.currentOcrResultMarkdown, input.kind, input.title) &&
+            hasUniqueRenderedTitle(message, input.kind, input.title)
+          ))
         ) {
+          const outputId = `ocr_result:${state.currentOcrResultGenerationId}`;
           return {
             userId: input.userId,
             ...(input.tenantId ? { tenantId: input.tenantId } : {}),
             conversationId: input.conversationId,
             kind: input.kind,
             messageId: input.messageId,
-            tableId: input.tableId,
-            outputId: `ocr_result:${state.currentOcrResultGenerationId}`,
+            tableId: titleStorageId({
+              userId: input.userId,
+              tenantId: input.tenantId,
+              conversationId: input.conversationId,
+              messageId: input.messageId,
+              kind: input.kind,
+              outputId,
+              title: input.title,
+            }),
+            title: input.title,
+            outputId,
             revision: state.currentOcrResultGenerationId,
             state: 'current',
             markdown: state.currentOcrResultMarkdown,
@@ -796,15 +937,29 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
 
         const candidate = historicalRun?.finalizedCandidate;
         const revision = candidate?.generationId ?? historicalRun?.responseGenerationId;
-        if (candidate?.markdown && revision && candidate.targetMessageId === input.messageId) {
+        if (candidate?.markdown && revision && candidate.targetMessageId === input.messageId &&
+          (!input.title || (
+            hasUniqueTitle(candidate.markdown, input.kind, input.title) &&
+            hasUniqueRenderedTitle(message, input.kind, input.title)
+          ))) {
+          const outputId = `ocr_result:${revision}`;
           return {
             userId: input.userId,
             ...(input.tenantId ? { tenantId: input.tenantId } : {}),
             conversationId: input.conversationId,
             kind: input.kind,
             messageId: input.messageId,
-            tableId: input.tableId,
-            outputId: `ocr_result:${revision}`,
+            tableId: titleStorageId({
+              userId: input.userId,
+              tenantId: input.tenantId,
+              conversationId: input.conversationId,
+              messageId: input.messageId,
+              kind: input.kind,
+              outputId,
+              title: input.title,
+            }),
+            title: input.title,
+            outputId,
             revision,
             state: 'historical',
             markdown: candidate.markdown,
@@ -821,10 +976,18 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
         return null;
       }
 
-      const [sidecarCandidates, quotation] = await Promise.all([
+      const [allSidecarCandidates, quotation] = await Promise.all([
         sidecarCandidatesPromise,
         QuotationState.findOne(scopeFilter(input)).lean<ISteelQuotationState>(),
       ]);
+      if (input.title && allSidecarCandidates.some((candidate) =>
+        sidecarMentionsTitle(candidate, input.title!) && !sidecarHasTitle(candidate, input.title!))) {
+        return null;
+      }
+      const sidecarCandidates = input.title
+        ? allSidecarCandidates.filter((candidate) => sidecarHasTitle(candidate, input.title!))
+        : allSidecarCandidates.filter((candidate) => candidate.tableId === input.tableId ||
+          (legacyTitle !== undefined && sidecarHasTitle(candidate, legacyTitle)));
       const authority = quotation?.currentSystemOrder?.runId
         ? {
             outputId: `system_order:${quotation.currentSystemOrder.runId}`,
@@ -840,6 +1003,7 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
         return sidecarRecord({
           ...selectedWithoutLatest,
           ...(authority ? { latestOutputId: authority.outputId } : {}),
+          ...(input.title ? { title: input.title } : {}),
         }, {
           ...message,
           ...(readOwnerUpdated(messageRecord.metadata, input.kind)
@@ -853,17 +1017,31 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
 
       if (
         quotation?.currentSystemOrder?.messageId === input.messageId &&
-        quotation.currentSystemOrder.markdown
+        quotation.currentSystemOrder.markdown &&
+        (!input.title || (
+          hasUniqueTitle(quotation.currentSystemOrder.markdown, input.kind, input.title) &&
+          hasUniqueRenderedTitle(message, input.kind, input.title)
+        ))
       ) {
         const { runId, markdown } = quotation.currentSystemOrder;
+        const outputId = `system_order:${runId}`;
         return {
           userId: input.userId,
           ...(input.tenantId ? { tenantId: input.tenantId } : {}),
           conversationId: input.conversationId,
           kind: input.kind,
           messageId: input.messageId,
-          tableId: input.tableId,
-          outputId: `system_order:${runId}`,
+          tableId: titleStorageId({
+            userId: input.userId,
+            tenantId: input.tenantId,
+            conversationId: input.conversationId,
+            messageId: input.messageId,
+            kind: input.kind,
+            outputId,
+            title: input.title,
+          }),
+          title: input.title,
+          outputId,
           revision: quotation.currentSystemOrder.sha256,
           state: 'current',
           markdown,
@@ -923,7 +1101,16 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
         conversationId: input.conversationId,
         kind: input.kind,
         messageId: input.messageId,
-        tableId: input.tableId,
+        tableId: input.tableId ?? titleStorageId({
+          userId: input.userId,
+          tenantId: input.tenantId,
+          conversationId: input.conversationId,
+          messageId: input.messageId,
+          kind: input.kind,
+          outputId: `system_order:${artifact.runId}`,
+          title: input.title,
+        }),
+        ...(input.title ? { title: input.title } : {}),
         outputId: `system_order:${artifact.runId}`,
         revision: artifact.sha256,
         state: 'historical',
@@ -937,10 +1124,6 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
       };
     },
   };
-}
-
-function commitDigest(input: Omit<SteelReviewCommitInput, 'digest'>): string {
-  return createHash('sha256').update(encodeSteelReviewDigest(input)).digest('hex');
 }
 
 type SteelTextPart = { contentIndex?: number; type?: string; text?: string; [key: string]: unknown };
@@ -1025,6 +1208,7 @@ function resultFromReceipt(
     digest: receipt.digest,
     ...(receipt.requestDigest ? { requestDigest: receipt.requestDigest } : {}),
     outputId: snapshot.outputId,
+    ...(snapshot.title !== undefined ? { title: snapshot.title } : {}),
     revision: snapshot.revision,
     headers: snapshot.headers,
     rows: snapshot.rows,
@@ -1074,7 +1258,7 @@ function quotationIsLinkedToOcr(
 }
 
 function matchesReviewOutputOwner(
-  output: Pick<ISteelReviewOutput, 'userId' | 'tenantId' | 'conversationId' | 'kind' | 'messageId' | 'tableId' | 'outputId'>,
+  output: Pick<ISteelReviewOutput, 'userId' | 'tenantId' | 'conversationId' | 'kind' | 'messageId' | 'tableId' | 'title' | 'outputId'>,
   input: SteelReviewCommitInput,
 ): boolean {
   return output.userId === input.userId &&
@@ -1083,6 +1267,7 @@ function matchesReviewOutputOwner(
     output.kind === input.kind &&
     output.messageId === input.messageId &&
     output.tableId === input.tableId &&
+    (input.title === undefined || output.title === undefined || output.title === input.title) &&
     output.outputId === input.outputId;
 }
 
@@ -1155,12 +1340,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
     if (input.kind !== 'ocr_result') {
       throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'This review save is available for OCR results only');
     }
-    if (input.operationDigest === undefined) {
-      const computedDigest = commitDigest(input);
-      if (computedDigest !== input.digest) {
-        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review operation digest mismatch');
-      }
-    } else if (input.operationDigest !== input.digest) {
+    if (input.operationDigest === undefined || input.operationDigest !== input.digest) {
       throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review operation digest mismatch');
     }
     return findReceipt(input);
@@ -1387,6 +1567,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               kind: input.kind,
               messageId: input.messageId,
               tableId: input.tableId,
+              ...(output?.title ?? input.title ? { title: output?.title ?? input.title } : {}),
               outputId: output?.outputId ?? input.outputId,
               revision: currentRevision ?? input.revision,
               state: 'current',
@@ -1691,6 +1872,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               operationId: input.operationId,
               digest: input.digest,
               outputId: input.outputId,
+              ...(input.title !== undefined ? { title: input.title } : {}),
               revision: input.revision,
               changedRows: 0,
               changedRowIds: [],
@@ -1769,6 +1951,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               digest: input.digest,
               ...(input.requestDigest ? { requestDigest: input.requestDigest } : {}),
               outputId: input.outputId,
+              ...(input.title !== undefined ? { title: input.title } : {}),
               revision: nextRevision,
               headers: input.headers,
               rows: canonicalRows,
@@ -1806,6 +1989,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               messageId: input.messageId,
               tableId: input.tableId,
               outputId: input.outputId,
+              ...(input.title !== undefined ? { title: input.title } : {}),
               revision: nextRevision,
               state: 'current' as const,
               headers: input.headers,
@@ -1890,8 +2074,9 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
           result = {
             operationId: receipt.operationId,
             digest: receipt.digest,
-            outputId: updated.outputId,
-            revision: updated.revision,
+              outputId: updated.outputId,
+              ...(updated.title !== undefined ? { title: updated.title } : {}),
+              revision: updated.revision,
             changedRows: receipt.changedRows,
             changedRowIds: receipt.changedRowIds,
             savedAt: receipt.savedAt,

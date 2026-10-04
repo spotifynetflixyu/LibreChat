@@ -4,7 +4,6 @@ import filenamify from 'filenamify';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { useRecoilState, useRecoilValue } from 'recoil';
-import { getSteelReviewTableId } from 'librechat-data-provider';
 import { Check, Copy, Download, FileSearch, Maximize2, X } from 'lucide-react';
 import {
   ControlCombobox,
@@ -94,14 +93,13 @@ type SteelReviewCandidate = {
   conversationId: string;
   messageId: string;
   kind: SteelReviewKind;
-  tableId: string;
-  partIndex?: number;
+  title: string;
 };
 
 const wideColumnTextThreshold = 36;
 
 function getReviewCandidateKey(candidate: SteelReviewCandidate): string {
-  return `${candidate.conversationId}:${candidate.messageId}:${candidate.kind}:${candidate.tableId}:${candidate.partIndex ?? ''}`;
+  return `${candidate.conversationId}:${candidate.messageId}:${candidate.kind}:${candidate.title}`;
 }
 
 function getReviewKind(markdownTitle?: string): SteelReviewKind | undefined {
@@ -699,10 +697,10 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
             conversationId: commentConversationId,
             messageId,
             kind: reviewKind,
-            tableId: getSteelReviewTableId(reviewKind, markdownIndex),
+            title: markdownTitle!,
           }
         : null,
-    [commentConversationId, isCreatedByUser, markdownIndex, messageId, reviewKind],
+    [commentConversationId, isCreatedByUser, markdownTitle, messageId, reviewKind],
   );
   const reviewQuery = useGetSteelReviewQuery(reviewCandidate, {
     enabled: reviewCandidate != null,
@@ -718,8 +716,10 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
   let reviewIdentity: SteelReviewCandidate | null = null;
   if (recognizedReview && candidateKey === getReviewCandidateKey(recognizedReview)) {
     reviewIdentity = recognizedReview;
-  } else if (reviewQuery.data?.table) {
-    reviewIdentity = reviewCandidate;
+  } else if (reviewCandidate && reviewQuery.data?.table) {
+    reviewIdentity = {
+      ...reviewCandidate,
+    };
   }
   const reviewRetryAvailable = reviewQuery.isError === true && reviewErrorStatus !== 404 && !reviewIdentity;
   useEffect(() => {
@@ -729,7 +729,9 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
       return;
     }
     if (reviewQuery.data?.table) {
-      setRecognizedReview(reviewCandidate);
+      setRecognizedReview({
+        ...reviewCandidate,
+      });
       return;
     }
     if (reviewErrorStatus === 404) {

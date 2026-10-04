@@ -124,7 +124,7 @@ async function readStreamBytes(stream: Readable): Promise<Uint8Array> {
 function validateScope(input: SteelReviewSourceListInput): SteelReviewSourceQuery {
   const result = steelReviewSourceQuerySchema.safeParse({
     messageId: input.messageId,
-    ...(input.tableId !== undefined ? { tableId: input.tableId } : {}),
+    title: input.title,
   });
   if (!result.success || !steelReviewKinds.includes(input.kind)) {
     throw new SteelReviewSourceError(
@@ -170,7 +170,7 @@ export function createSteelReviewSourceService({
         conversationId: input.conversationId,
         messageId: query.messageId,
         kind: input.kind,
-        ...(query.tableId !== undefined ? { tableId: query.tableId } : {}),
+        title: query.title,
       });
       return { sources: sources.map(publicSource) };
     },

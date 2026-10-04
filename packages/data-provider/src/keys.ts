@@ -117,12 +117,12 @@ export const DynamicQueryKeys = {
   agentFiles: (agentId: string) => ['agentFiles', agentId] as const,
   steelQuotationStatus: (conversationId: string) =>
     [QueryKeys.steelQuotationStatus, conversationId] as const,
-  steelReview: (conversationId: string, kind: string, messageId: string, tableId: string, partIndex?: number) =>
-    [QueryKeys.steelReview, conversationId, kind, messageId, tableId, partIndex] as const,
-  steelReviewReceipt: (conversationId: string, kind: string, messageId: string, tableId: string, outputId: string, operationId: string, digest: string) =>
-    [QueryKeys.steelReview, 'receipt', conversationId, kind, messageId, tableId, outputId, operationId, digest] as const,
-  steelReviewSources: (conversationId: string, kind: string, messageId: string, tableId?: string) =>
-    [QueryKeys.steelReview, 'sources', conversationId, kind, messageId, tableId] as const,
+  steelReview: (conversationId: string, kind: string, messageId: string, title: string) =>
+    [QueryKeys.steelReview, conversationId, kind, messageId, title] as const,
+  steelReviewReceipt: (conversationId: string, kind: string, messageId: string, outputId: string, operationId: string, digest: string, title: string) =>
+    [QueryKeys.steelReview, 'receipt', conversationId, kind, messageId, outputId, operationId, digest, title] as const,
+  steelReviewSources: (conversationId: string, kind: string, messageId: string, title: string) =>
+    [QueryKeys.steelReview, 'sources', conversationId, kind, messageId, title] as const,
   steelReviewSource: (conversationId: string, kind: string, messageId: string, fileId: string) =>
     [QueryKeys.steelReview, 'source', conversationId, kind, messageId, fileId] as const,
   steelReviewSourcePageCount: (conversationId: string, kind: string, messageId: string, fileId: string) =>

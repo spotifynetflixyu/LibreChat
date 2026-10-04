@@ -34,7 +34,7 @@ const snapshot: SteelReviewSavedSnapshot = {
     kind: 'ocr_result',
     conversationId: 'conversation-1',
     messageId: 'message-1',
-    tableId: 'ocr_result:1',
+    title: 'ocr_result',
     outputId: 'ocr_result:output-1',
     revision: 'revision-2',
     updatedAt: '2026-10-03T00:00:00.000Z',
@@ -83,7 +83,7 @@ describe('Steel review confirmed snapshot cache', () => {
       table: {
         conversationId: snapshot.conversationId,
         messageId: snapshot.messageId,
-        tableId: 'ocr_result:1',
+        title: 'ocr_result',
         outputId: snapshot.outputId,
         kind: 'ocr_result' as const,
         revision: 'revision-1',

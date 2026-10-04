@@ -1,5 +1,5 @@
-import { Readable } from 'node:stream';
 import { PDFDocument } from 'pdf-lib';
+import { Readable } from 'node:stream';
 import type { SteelReviewSourceMethods, SteelReviewSourceRecord } from '@librechat/data-schemas';
 import type { SteelReviewSourceFile } from 'librechat-data-provider';
 import type { ServerRequest } from '~/types/http';
@@ -31,7 +31,7 @@ describe('Steel review source service', () => {
       conversationId: 'conversation-1',
       kind: 'ocr_result',
       messageId: 'message-1',
-      tableId: 'ocr_result:1',
+      title: 'ocr_result',
     });
 
     expect(result).toEqual({
@@ -48,7 +48,7 @@ describe('Steel review source service', () => {
       conversationId: 'conversation-1',
       kind: 'ocr_result',
       messageId: 'message-1',
-      tableId: 'ocr_result:1',
+      title: 'ocr_result',
     });
   });
 

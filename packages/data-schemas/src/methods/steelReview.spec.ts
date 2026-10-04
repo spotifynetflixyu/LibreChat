@@ -1,6 +1,8 @@
 import mongoose from 'mongoose';
 import { createHash } from 'node:crypto';
 import { MongoMemoryServer } from 'mongodb-memory-server';
+import { encodeSteelReviewTitleOwner } from 'librechat-data-provider';
+import type { SteelReviewRow } from 'librechat-data-provider';
 import {
   createSteelConversationOcrStateModel,
   createSteelDelegateOcrRunModel,
@@ -23,6 +25,90 @@ beforeAll(async () => {
 beforeEach(async () => {
   await mongoose.connection.dropDatabase();
 });
+
+function titleProof(outputId: string, headers: readonly string[], rows: readonly SteelReviewRow[]) {
+  const aiRows = rows.filter((row) => (row.origin ?? 'ai') === 'ai');
+  let aiIndex = 0;
+  const nextRows = rows.map((row) => {
+    const values = Object.fromEntries(headers.map((header) => [
+      header,
+      row.values[header] ?? { baseline: '', effective: '' },
+    ]));
+    if ((row.origin ?? 'ai') !== 'ai') {
+      return { ...row, values };
+    }
+    const baseline = headers.map((header) => values[header].baseline ?? '');
+    const next = {
+      ...row,
+      values,
+      rowId: createHash('sha256').update(`${outputId}:${aiIndex}:${JSON.stringify(baseline)}`).digest('hex'),
+    };
+    aiIndex += 1;
+    return next;
+  });
+  const render = (tableRows: readonly string[][]) => [
+    '## ocr_result',
+    '',
+    `| ${headers.join(' | ')} |`,
+    `| ${headers.map(() => '---').join(' | ')} |`,
+    ...tableRows.map((row) => `| ${row.join(' | ')} |`),
+  ].join('\n');
+  return {
+    rows: nextRows,
+    aiBaselineMarkdown: render(aiRows.map((row) => headers.map((header) => row.values[header]?.baseline ?? ''))),
+    effectiveMarkdown: render(nextRows.filter((row) => !row.deleted)
+      .map((row) => headers.map((header) => row.values[header]?.effective ?? ''))),
+  };
+}
+
+async function seedTitleSidecarFixture(input: {
+  conversationId: string;
+  messageId: string;
+  outputId: string;
+  messageText: string;
+  aiBaselineMarkdown: string;
+  effectiveMarkdown: string;
+  rows: SteelReviewRow[];
+}) {
+  const models = createModels(mongoose);
+  const State = createSteelConversationOcrStateModel(mongoose);
+  const ReviewOutput = createSteelReviewOutputModel(mongoose);
+  await models.Conversation.create({
+    conversationId: input.conversationId,
+    user: 'title-proof-user',
+    title: 'Title proof',
+    endpoint: 'openAI',
+  });
+  await models.Message.create({
+    messageId: input.messageId,
+    conversationId: input.conversationId,
+    user: 'title-proof-user',
+    isCreatedByUser: false,
+    text: input.messageText,
+    content: [{ type: 'text', text: input.messageText }],
+  });
+  await State.create({
+    conversationId: input.conversationId,
+    currentOcrResultMarkdown: input.messageText,
+    currentOcrResultMessageId: input.messageId,
+    currentOcrResultGenerationId: input.outputId.replace(/^ocr_result:/u, ''),
+  });
+  await ReviewOutput.create({
+    userId: 'title-proof-user',
+    conversationId: input.conversationId,
+    kind: 'ocr_result',
+    messageId: input.messageId,
+    tableId: 'legacy-positional-id',
+    outputId: input.outputId,
+    revision: input.outputId,
+    state: 'current',
+    headers: ['Code', 'Value'],
+    rows: input.rows,
+    aiBaselineMarkdown: input.aiBaselineMarkdown,
+    effectiveMarkdown: input.effectiveMarkdown,
+  });
+  return createSteelReviewReadMethods(mongoose);
+}
 
 afterAll(async () => {
   await mongoose.disconnect();
@@ -88,6 +174,7 @@ describe('Steel review read methods', () => {
       userId: 'user-1',
       tenantId: 'tenant-1',
       conversationId: 'conversation-1',
+      title: 'ocr_result',
       kind: 'ocr_result',
       messageId: 'assistant-1',
       tableId: 'ocr_result:2',
@@ -103,10 +190,36 @@ describe('Steel review read methods', () => {
       userId: 'other-user',
       tenantId: 'tenant-1',
       conversationId: 'conversation-1',
+      title: 'ocr_result',
       kind: 'ocr_result',
       messageId: 'assistant-1',
       tableId: 'ocr_result:2',
     })).toBeNull();
+
+    const titleRecord = await read.readSteelReview({
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result',
+      messageId: 'assistant-1',
+      tableId: 'ocr_result:stale-prefix-index',
+      partIndex: 99,
+      title: 'ocr_result',
+    });
+    const expectedTitleId = `ocr_result:title:${createHash('sha256').update(encodeSteelReviewTitleOwner({
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      conversationId: 'conversation-1',
+      messageId: 'assistant-1',
+      kind: 'ocr_result',
+      outputId: 'ocr_result:generation-1',
+      title: 'ocr_result',
+    })).digest('hex')}`;
+    expect(titleRecord).toEqual(expect.objectContaining({
+      title: 'ocr_result',
+      tableId: expectedTitleId,
+      messageTextPartIndex: undefined,
+    }));
   });
 
   it('locates source files only when the file belongs to this user, tenant, and conversation', async () => {
@@ -345,6 +458,7 @@ describe('Steel review read methods', () => {
       userId: userId.toString(),
       tenantId: 'tenant-source',
       conversationId,
+      title: 'ocr_result',
       kind: 'ocr_result',
       messageId: 'source-file-message',
       tableId: 'ocr_result:1',
@@ -368,6 +482,7 @@ describe('Steel review read methods', () => {
       tenantId: 'tenant-source',
       conversationId,
       kind: 'ocr_result',
+      title: 'ocr_result',
       messageId: 'source-file-message',
       tableId: 'ocr_result:1',
       outputId: 'ocr_result:source-file-generation',
@@ -408,10 +523,17 @@ describe('Steel review read methods', () => {
         },
       ],
     });
+    const sourceOutput = await ReviewOutput.findOne({ outputId: 'ocr_result:source-file-generation' }).lean();
+    if (!sourceOutput) throw new Error('source fixture missing');
+    await ReviewOutput.updateOne(
+      { outputId: sourceOutput.outputId },
+      { $set: titleProof(sourceOutput.outputId, sourceOutput.headers, sourceOutput.rows) },
+    );
     const sidecar = await read.readSteelReview({
       userId: userId.toString(),
       tenantId: 'tenant-source',
       conversationId,
+      title: 'ocr_result',
       kind: 'ocr_result',
       messageId: 'source-file-message',
       tableId: 'ocr_result:1',
@@ -456,6 +578,7 @@ describe('Steel review read methods', () => {
       userId: 'user-1',
       conversationId: 'conversation-history',
       kind: 'ocr_result',
+      title: 'ocr_result',
       messageId: 'assistant-history',
       tableId: 'ocr_result:1',
       outputId: 'ocr_result:old',
@@ -472,10 +595,17 @@ describe('Steel review read methods', () => {
         source: null,
       }],
     });
+    const historicalOutput = await ReviewOutput.findOne({ outputId: 'ocr_result:old' }).lean();
+    if (!historicalOutput) throw new Error('historical fixture missing');
+    await ReviewOutput.updateOne(
+      { outputId: historicalOutput.outputId },
+      { $set: titleProof(historicalOutput.outputId, historicalOutput.headers, historicalOutput.rows) },
+    );
     const before = await models.Message.countDocuments();
     const record = await read.readSteelReview({
       userId: 'user-1',
       conversationId: 'conversation-history',
+      title: 'ocr_result',
       kind: 'ocr_result',
       messageId: 'assistant-history',
       tableId: 'ocr_result:1',
@@ -492,6 +622,92 @@ describe('Steel review read methods', () => {
       })]),
     }));
     expect(await models.Message.countDocuments()).toBe(before);
+  });
+
+  it('proves one title-owned baseline among other managed sections in a titleless sidecar', async () => {
+    const outputId = 'ocr_result:multi-title-unique';
+    const rowValues = {
+      Code: { baseline: 'A', effective: 'A' },
+      Value: { baseline: 'P-1', effective: 'P-1' },
+    };
+    const rowId = createHash('sha256')
+      .update(`${outputId}:0:${JSON.stringify(['A', 'P-1'])}`)
+      .digest('hex');
+    const markdown = [
+      '## ocr_result｜unrelated',
+      '',
+      '| Code | Value |',
+      '| --- | --- |',
+      '| X | other |',
+      '',
+      '## ocr_result',
+      '',
+      '| Code | Value |',
+      '| --- | --- |',
+      '| A | P-1 |',
+    ].join('\n');
+    const read = await seedTitleSidecarFixture({
+      conversationId: 'multi-title-unique-conversation',
+      messageId: 'multi-title-unique-message',
+      outputId,
+      messageText: markdown,
+      aiBaselineMarkdown: markdown,
+      effectiveMarkdown: markdown,
+      rows: [{ rowId, source: null, values: rowValues }],
+    });
+
+    await expect(read.readSteelReview({
+      userId: 'title-proof-user',
+      conversationId: 'multi-title-unique-conversation',
+      kind: 'ocr_result',
+      messageId: 'multi-title-unique-message',
+      title: 'ocr_result',
+    })).resolves.toEqual(expect.objectContaining({
+      outputId,
+      title: 'ocr_result',
+      rows: [expect.objectContaining({ rowId })],
+    }));
+  });
+
+  it('fails closed when two titleless managed sections prove the same requested ledger', async () => {
+    const outputId = 'ocr_result:multi-title-ambiguous';
+    const rowValues = {
+      Code: { baseline: 'A', effective: 'A' },
+      Value: { baseline: 'P-1', effective: 'P-1' },
+    };
+    const rowId = createHash('sha256')
+      .update(`${outputId}:0:${JSON.stringify(['A', 'P-1'])}`)
+      .digest('hex');
+    const markdown = [
+      '## ocr_result',
+      '',
+      '| Code | Value |',
+      '| --- | --- |',
+      '| A | P-1 |',
+      '',
+      '## ocr_result｜alias',
+      '',
+      '| Code | Value |',
+      '| --- | --- |',
+      '| A | P-1 |',
+    ].join('\n');
+    const read = await seedTitleSidecarFixture({
+      conversationId: 'multi-title-ambiguous-conversation',
+      messageId: 'multi-title-ambiguous-message',
+      outputId,
+      messageText: markdown,
+      aiBaselineMarkdown: markdown,
+      effectiveMarkdown: markdown,
+      rows: [{ rowId, source: null, values: rowValues }],
+    });
+
+    await expect(read.readSteelReview({
+      userId: 'title-proof-user',
+      conversationId: 'multi-title-ambiguous-conversation',
+      kind: 'ocr_result',
+      messageId: 'multi-title-ambiguous-message',
+      title: 'ocr_result',
+    })).resolves.toBeNull();
   });
 
   it('derives sidecar latest status from the same-kind canonical owner', async () => {
@@ -534,6 +750,7 @@ describe('Steel review read methods', () => {
       userId: 'user-1',
       conversationId: 'sidecar-current-conversation',
       kind: 'ocr_result',
+      title: 'ocr_result',
       messageId: 'sidecar-old-message',
       tableId: 'ocr_result:1',
       outputId: 'ocr_result:old-sidecar',
@@ -550,10 +767,17 @@ describe('Steel review read methods', () => {
         source: null,
       }],
     });
+    const oldSidecar = await ReviewOutput.findOne({ outputId: 'ocr_result:old-sidecar' }).lean();
+    if (!oldSidecar) throw new Error('old sidecar fixture missing');
+    await ReviewOutput.updateOne(
+      { outputId: oldSidecar.outputId },
+      { $set: titleProof(oldSidecar.outputId, oldSidecar.headers, oldSidecar.rows) },
+    );
 
     await expect(read.readSteelReview({
       userId: 'user-1',
       conversationId: 'sidecar-current-conversation',
+      title: 'ocr_result',
       kind: 'ocr_result',
       messageId: 'sidecar-old-message',
       tableId: 'ocr_result:1',
@@ -595,6 +819,7 @@ describe('Steel review read methods', () => {
       userId: 'user-1',
       conversationId: 'sidecar-authority-conversation',
       kind: 'ocr_result' as const,
+      title: 'ocr_result',
       messageId: 'sidecar-authority-message',
       tableId: 'ocr_result:1',
       revision: 'revision',
@@ -606,6 +831,12 @@ describe('Steel review read methods', () => {
       { ...sidecar, outputId: 'ocr_result:generation-old', revision: 'old' },
       { ...sidecar, outputId: 'ocr_result:generation-new', revision: 'new' },
     ]);
+    for (const outputId of ['ocr_result:generation-old', 'ocr_result:generation-new']) {
+      await ReviewOutput.updateOne(
+        { outputId },
+        { $set: titleProof(outputId, sidecar.headers, sidecar.rows) },
+      );
+    }
     await ReviewOutput.updateOne(
       { outputId: 'ocr_result:generation-old' },
       { $set: { updatedAt: new Date(Date.now() + 60_000) } },
@@ -614,6 +845,7 @@ describe('Steel review read methods', () => {
     await expect(read.readSteelReview({
       userId: 'user-1',
       conversationId: 'sidecar-authority-conversation',
+      title: 'ocr_result',
       kind: 'ocr_result',
       messageId: 'sidecar-authority-message',
       tableId: 'ocr_result:1',
@@ -652,6 +884,7 @@ describe('Steel review read methods', () => {
     await expect(read.readSteelReview({
       userId: 'user-1',
       conversationId: 'text-only-conversation',
+      title: 'ocr_result',
       kind: 'ocr_result',
       messageId: 'text-only-message',
       tableId: 'ocr_result:1',
@@ -737,6 +970,7 @@ describe('Steel review read methods', () => {
       userId: 'owner-a',
       tenantId: 'tenant-a',
       conversationId: 'collision-conversation',
+      title: 'ocr_result',
       kind: 'ocr_result',
       messageId: 'collision-message',
       tableId: 'ocr_result:1',
@@ -744,6 +978,7 @@ describe('Steel review read methods', () => {
     await expect(read.readSteelReview({
       userId: 'owner-c',
       conversationId: 'tenantless-collision-conversation',
+      title: 'ocr_result',
       kind: 'ocr_result',
       messageId: 'tenantless-collision-message',
       tableId: 'ocr_result:1',
@@ -796,6 +1031,7 @@ describe('Steel review read methods', () => {
     await expect(read.readSteelReview({
       userId: 'user-1',
       conversationId: 'superseded-history-conversation',
+      title: 'ocr_result',
       kind: 'ocr_result',
       messageId: 'superseded-history-message',
       tableId: 'ocr_result:1',
@@ -892,6 +1128,7 @@ describe('Steel review read methods', () => {
     await expect(read.readSteelReview({
       userId: 'user-1',
       conversationId: 'historical-order-conversation',
+      title: 'system_order',
       kind: 'system_order',
       messageId: 'historical-order-message',
       tableId: 'system_order:1',
@@ -926,6 +1163,7 @@ describe('Steel review read methods', () => {
     await expect(read.readSteelReview({
       userId: 'user-1',
       conversationId: 'orphan-conversation',
+      title: 'ocr_result',
       kind: 'ocr_result',
       messageId: 'orphan-message',
       tableId: 'ocr_result:1',
@@ -948,6 +1186,7 @@ describe('Steel review read methods', () => {
     await expect(read.readSteelReview({
       userId: 'user-1',
       conversationId: 'expired-conversation',
+      title: 'ocr_result',
       kind: 'ocr_result',
       messageId: 'expired-message',
       tableId: 'ocr_result:1',
@@ -989,6 +1228,7 @@ describe('Steel review read methods', () => {
     await expect(read.readSteelReview({
       userId: 'user-1',
       conversationId: 'mirror-conversation',
+      title: 'ocr_result',
       kind: 'ocr_result',
       messageId: 'mirror-message',
       tableId: 'ocr_result:1',
@@ -1001,6 +1241,7 @@ describe('Steel review read methods', () => {
     await expect(read.readSteelReview({
       userId: 'user-1',
       conversationId: 'mirror-conversation',
+      title: 'ocr_result',
       kind: 'ocr_result',
       messageId: 'mirror-message',
       tableId: 'ocr_result:1',
@@ -1038,6 +1279,7 @@ describe('Steel review read methods', () => {
     await expect(read.readSteelReview({
       userId: 'user-1',
       conversationId: 'multi-part-conversation',
+      title: 'ocr_result',
       kind: 'ocr_result',
       messageId: 'multi-part-message',
       tableId: 'ocr_result:2',
@@ -1051,18 +1293,18 @@ describe('Steel review read methods', () => {
     await expect(read.readSteelReview({
       userId: 'user-1',
       conversationId: 'multi-part-conversation',
+      title: 'ocr_result',
       kind: 'ocr_result',
       messageId: 'multi-part-message',
       tableId: 'ocr_result:2',
-      partIndex: 1,
     })).resolves.toEqual(expect.objectContaining({
-      messageText: secondPart,
-      messageTextPartIndex: 1,
+      messageText: `${firstPart} ${secondPart}`,
+      messageTextPartIndex: undefined,
       messageTextParts: [{ partIndex: 0, text: firstPart }, { partIndex: 1, text: secondPart }],
     }));
   });
 
-  it('uses the full physical message when validating a selected-part legacy receipt', async () => {
+  it('uses the full physical message when validating a title-owned receipt', async () => {
     const models = createModels(mongoose);
     const State = createSteelConversationOcrStateModel(mongoose);
     const ReviewOutput = createSteelReviewOutputModel(mongoose);
@@ -1147,6 +1389,7 @@ describe('Steel review read methods', () => {
       userId: user,
       conversationId,
       kind: 'ocr_result',
+      title: 'ocr_result',
       messageId,
       tableId: 'ocr_result:1',
       outputId,
@@ -1154,6 +1397,7 @@ describe('Steel review read methods', () => {
       state: 'current',
       headers,
       rows,
+      sourceMappings: [{ fileId: 'legacy-selected-part-file', sourceCode: 'A', sourceFilename: 'alpha.pdf' }],
       effectiveMarkdown: selectedPart,
       displayMarkdown: selectedPart,
       receipts: [{
@@ -1166,14 +1410,19 @@ describe('Steel review read methods', () => {
         snapshot,
       }],
     });
+    const selectedOutput = await ReviewOutput.findOne({ outputId }).lean();
+    if (!selectedOutput) throw new Error('selected part fixture missing');
+    await ReviewOutput.updateOne(
+      { outputId: selectedOutput.outputId },
+      { $set: titleProof(selectedOutput.outputId, selectedOutput.headers, selectedOutput.rows) },
+    );
 
     const input = {
       userId: user,
       conversationId,
       kind: 'ocr_result' as const,
       messageId,
-      tableId: 'ocr_result:1',
-      partIndex: 1,
+      title: 'ocr_result',
     };
     const located = await read.readSteelReview(input);
     expect(located?.sourceMappings).toEqual([{
@@ -1190,8 +1439,14 @@ describe('Steel review read methods', () => {
       { $set: { 'receipts.0.snapshot.messageSha256': '0'.repeat(64) } },
     );
     const unlocated = await read.readSteelReview(input);
-    expect(unlocated?.rows?.map((row) => row.source)).toEqual([null]);
-    expect(unlocated?.sourceMappings).toBeUndefined();
+    expect(unlocated?.rows?.map((row) => row.source)).toEqual([
+      { fileId: 'legacy-selected-part-file', pageNumber: 1, filename: 'alpha.pdf' },
+    ]);
+    expect(unlocated?.sourceMappings).toEqual([{
+      fileId: 'legacy-selected-part-file',
+      sourceCode: 'A',
+      sourceFilename: 'alpha.pdf',
+    }]);
   });
 
   it('keeps tenantless reads isolated from tenant-owned messages and sidecars', async () => {
@@ -1254,6 +1509,7 @@ describe('Steel review read methods', () => {
     await expect(read.readSteelReview({
       userId: 'user-1',
       conversationId: 'tenant-conversation',
+      title: 'ocr_result',
       kind: 'ocr_result',
       messageId: 'tenant-message',
       tableId: 'ocr_result:1',
@@ -1262,6 +1518,7 @@ describe('Steel review read methods', () => {
       userId: 'user-1',
       tenantId: 'tenant-a',
       conversationId: 'tenant-conversation',
+      title: 'ocr_result',
       kind: 'ocr_result',
       messageId: 'tenant-message',
       tableId: 'ocr_result:1',
@@ -1273,6 +1530,7 @@ describe('Steel review read methods', () => {
     await expect(read.readSteelReview({
       userId: 'user-1',
       conversationId: 'tenantless-conversation',
+      title: 'ocr_result',
       kind: 'ocr_result',
       messageId: 'tenantless-message',
       tableId: 'ocr_result:1',
@@ -1348,6 +1606,7 @@ describe('Steel review read methods', () => {
         userId,
         tenantId,
         conversationId,
+        title: 'ocr_result',
         kind: 'ocr_result',
         messageId,
         tableId: 'ocr_result:1',

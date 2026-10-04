@@ -49,7 +49,7 @@ describe('Steel review read service', () => {
           conversationId: 'conversation-1',
           kind: 'ocr_result',
           messageId: 'message-1',
-          tableId: 'ocr_result:2',
+          title: 'ocr_result',
           outputId: 'ocr_result:generation-1',
           revision: 'generation-1',
           state: 'current',
@@ -66,18 +66,53 @@ describe('Steel review read service', () => {
     });
 
     await expect(service.read({
+      title: 'ocr_result',
       userId: 'user-1',
       conversationId: 'conversation-1',
       kind: 'ocr_result',
       messageId: 'message-1',
-      tableId: 'ocr_result:2',
+      title: 'ocr_result',
     })).resolves.toEqual({
       table: expect.objectContaining({
-        tableId: 'ocr_result:2',
+        title: 'ocr_result',
         outputId: 'ocr_result:generation-1',
         isLatest: true,
         readOnly: false,
         rows: [expect.objectContaining({ rowId: expect.any(String) })],
+      }),
+    });
+  });
+
+  it('resolves an exact title while ignoring a stale positional candidate', async () => {
+    const service = createSteelReviewService({
+      reader: {
+        readSteelReview: jest.fn().mockResolvedValue({
+          userId: 'user-1',
+          conversationId: 'conversation-1',
+          kind: 'ocr_result',
+          messageId: 'message-1',
+          tableId: 'ocr_result:title:canonical',
+          title: 'ocr_result',
+          outputId: 'ocr_result:generation-1',
+          revision: 'generation-1',
+          state: 'current',
+          markdown: managedMarkdown,
+          messageText: `| ordinary | table |\n| --- | --- |\n| ignored | row |\n\n${managedMarkdown}`,
+        }),
+      },
+    });
+
+    await expect(service.read({
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result',
+      messageId: 'message-1',
+      tableId: 'ocr_result:999',
+      title: 'ocr_result',
+    })).resolves.toEqual({
+      table: expect.objectContaining({
+        tableId: 'ocr_result:title:canonical',
+        title: 'ocr_result',
       }),
     });
   });
@@ -106,6 +141,7 @@ describe('Steel review read service', () => {
     const service = createSteelReviewService({ reader });
 
     await expect(service.read({
+      title: 'ocr_result',
       userId: 'user-1',
       conversationId: 'conversation-1',
       kind: 'ocr_result',
@@ -135,6 +171,7 @@ describe('Steel review read service', () => {
     const service = createSteelReviewService({ reader });
 
     await expect(service.read({
+      title: 'ocr_result',
       userId: 'user-1',
       conversationId: 'conversation-1',
       kind: 'ocr_result',
@@ -171,6 +208,7 @@ describe('Steel review read service', () => {
     const service = createSteelReviewService({ reader });
 
     await expect(service.read({
+      title: 'ocr_result',
       userId: 'user-1',
       conversationId: 'conversation-1',
       kind: 'ocr_result',
@@ -211,6 +249,7 @@ describe('Steel review read service', () => {
     const service = createSteelReviewService({ reader });
 
     await expect(service.read({
+      title: 'ocr_result',
       userId: 'user-1',
       conversationId: 'conversation-1',
       kind: 'ocr_result',
@@ -239,6 +278,7 @@ describe('Steel review read service', () => {
       messageText: `${managedMarkdown}\n\n${managedMarkdown}`,
     });
     await expect(service.read({
+      title: 'ocr_result',
       userId: 'user-1',
       conversationId: 'conversation-1',
       kind: 'ocr_result',
@@ -267,6 +307,7 @@ describe('Steel review read service', () => {
       messageText: `\`\`\`markdown\n${managedMarkdown}\n\`\`\``,
     });
     await expect(service.read({
+      title: 'ocr_result',
       userId: 'user-1',
       conversationId: 'conversation-1',
       kind: 'ocr_result',
@@ -295,6 +336,7 @@ describe('Steel review read service', () => {
       messageText: managedMarkdown,
     });
     await expect(service.read({
+      title: 'ocr_result',
       userId: 'user-1',
       conversationId: 'conversation-1',
       kind: 'ocr_result',
@@ -328,6 +370,7 @@ describe('Steel review read service', () => {
     });
 
     await expect(service.read({
+      title: 'ocr_result',
       userId: 'user-1',
       conversationId: 'conversation-1',
       kind: 'ocr_result',
@@ -360,6 +403,7 @@ describe('Steel review read service', () => {
     });
 
     await expect(service.read({
+      title: 'ocr_result',
       userId: 'user-1',
       conversationId: 'conversation-1',
       kind: 'ocr_result',
@@ -494,6 +538,7 @@ describe('Steel review read service', () => {
     const reader = { readSteelReview: jest.fn().mockResolvedValue(record) };
     const service = createSteelReviewService({ reader });
     const current = await service.read({
+      title: 'ocr_result',
       userId: record.userId,
       conversationId: record.conversationId,
       kind: record.kind,
@@ -1123,6 +1168,7 @@ describe('Steel review read service', () => {
       writer: { resolveSteelReviewReceipt, commitSteelReview },
     });
     const current = await service.read({
+      title: 'ocr_result',
       userId: 'user-1',
       conversationId: 'conversation-1',
       kind: 'ocr_result',
@@ -1202,6 +1248,7 @@ describe('Steel review read service', () => {
     const commitSteelReview = jest.fn();
     const service = createSteelReviewService({ reader, writer: { commitSteelReview } });
     const current = await service.read({
+      title: 'ocr_result',
       userId: 'user-1',
       conversationId: 'conversation-1',
       kind: 'ocr_result',
@@ -1344,6 +1391,7 @@ describe('Steel review read service', () => {
       writer: { resolveSteelReviewReceipt, commitSteelReview },
     });
     const current = await service.read({
+      title: 'ocr_result',
       userId: 'user-1',
       conversationId: 'conversation-1',
       kind: 'ocr_result',
@@ -1436,6 +1484,7 @@ describe('Steel review read service', () => {
     });
 
     await expect(service.receipt({
+      title: 'ocr_result',
       userId: 'user-1',
       conversationId: 'conversation-1',
       kind: 'ocr_result',

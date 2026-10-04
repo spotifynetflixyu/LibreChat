@@ -23,7 +23,7 @@ import {
 const table: SteelReviewTable = {
   conversationId: 'conversation-1',
   messageId: 'message-1',
-  tableId: 'ocr_result:1',
+  title: 'ocr_result',
   outputId: 'ocr_result:generation-1',
   kind: 'ocr_result',
   revision: 'revision-1',
@@ -55,7 +55,7 @@ const selection = {
   conversationId: table.conversationId,
   messageId: table.messageId,
   kind: table.kind,
-  tableId: table.tableId,
+  title: table.title,
 };
 
 describe('Steel review local draft session', () => {
@@ -77,8 +77,7 @@ describe('Steel review local draft session', () => {
       conversationId: 'conversation-1',
       messageId: 'message-1',
       kind: 'ocr_result',
-      tableId: 'ocr_result:1',
-      partIndex: null,
+      title: 'ocr_result',
       outputId: 'ocr_result:generation-1',
       baseRevision: 'revision-1',
     }));
@@ -86,8 +85,7 @@ describe('Steel review local draft session', () => {
       conversationId: 'conversation-1',
       messageId: 'message-1',
       kind: 'ocr_result',
-      tableId: 'ocr_result:1',
-      partIndex: null,
+      title: 'ocr_result',
       outputId: 'ocr_result:generation-1',
     }));
   });
@@ -102,11 +100,12 @@ describe('Steel review local draft session', () => {
       table,
     );
     const textPart = getSteelReviewDraftKey(selection, table);
-    const contentPart = getSteelReviewDraftKey({ ...selection, partIndex: 0 }, table);
+    const titledTable = { ...table, title: 'ocr_result｜second' };
+    const contentPart = getSteelReviewDraftKey({ ...selection, title: titledTable.title }, titledTable);
 
     expect(delimiterLike).not.toBe(splitOwner);
     expect(textPart).not.toBe(contentPart);
-    expect(getSteelReviewDraftKey(selection, { ...table, partIndex: 0 })).toBe(contentPart);
+    expect(getSteelReviewDraftKey({ ...selection, title: titledTable.title }, titledTable)).toBe(contentPart);
   });
 
   it('counts each changed trusted row once and applies its draft cells', () => {

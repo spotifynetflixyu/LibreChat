@@ -16,12 +16,12 @@ function createResponse() {
 describe('Steel production route handlers', () => {
   it('reads a scoped review table through the injected service', async () => {
     const reviewService = {
-      read: jest.fn(async () => ({ table: { tableId: 'ocr_result:1' } })),
+      read: jest.fn(async () => ({ table: { title: 'ocr_result' } })),
     } as unknown as NonNullable<Parameters<typeof createSteelRouteHandlers>[0]['reviewService']>;
     const handlers = createSteelRouteHandlers({ getModelsConfig: jest.fn(), reviewService });
     const req = {
       params: { conversationId: 'conversation-1', kind: 'ocr_result' },
-      query: { messageId: 'message-1', tableId: 'ocr_result:1' },
+      query: { messageId: 'message-1', title: 'ocr_result' },
       tenantId: 'tenant-1',
       user: { id: 'user-1' },
     } as unknown as Request;
@@ -35,7 +35,42 @@ describe('Steel production route handlers', () => {
       conversationId: 'conversation-1',
       kind: 'ocr_result',
       messageId: 'message-1',
-      tableId: 'ocr_result:1',
+      title: 'ocr_result',
+    });
+    expect(res.status).toHaveBeenCalledWith(200);
+  });
+
+  it('reads a scoped receipt through the injected service with authenticated context', async () => {
+    const reviewService = {
+      receipt: jest.fn(async () => ({ status: 'absent' as const })),
+    } as unknown as NonNullable<Parameters<typeof createSteelRouteHandlers>[0]['reviewService']>;
+    const handlers = createSteelRouteHandlers({ getModelsConfig: jest.fn(), reviewService });
+    const req = {
+      params: { conversationId: 'conversation-1', kind: 'ocr_result' },
+      query: {
+        messageId: 'message-1',
+        title: 'ocr_result',
+        outputId: 'ocr_result:generation-1',
+        operationId: 'operation-1',
+        digest: 'a'.repeat(64),
+      },
+      tenantId: 'tenant-1',
+      user: { id: 'user-1' },
+    } as unknown as Request;
+    const res = createResponse();
+
+    await handlers.readReviewReceipt(req, res);
+
+    expect(reviewService.receipt).toHaveBeenCalledWith({
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result',
+      messageId: 'message-1',
+      title: 'ocr_result',
+      outputId: 'ocr_result:generation-1',
+      operationId: 'operation-1',
+      digest: 'a'.repeat(64),
     });
     expect(res.status).toHaveBeenCalledWith(200);
   });

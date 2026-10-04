@@ -30,7 +30,24 @@ const aiRowIdFor = (outputId: string, row: readonly string[], rowIndex = 0): str
   createHash('sha256').update(`${outputId}:${rowIndex}:${JSON.stringify(row)}`).digest('hex');
 
 const digestFor = (input: Omit<SteelReviewCommitInput, 'digest'>): string => {
-  return createHash('sha256').update(encodeSteelReviewDigest(input)).digest('hex');
+  const firstRow = input.rows[0];
+  const value = firstRow?.values['零件編號']?.effective ?? null;
+  return createHash('sha256').update(encodeSteelReviewDigest({
+    userId: input.userId,
+    ...(input.tenantId !== undefined ? { tenantId: input.tenantId } : {}),
+    conversationId: input.conversationId,
+    messageId: input.messageId,
+    kind: input.kind,
+    title: input.title ?? 'ocr_result',
+    outputId: input.outputId,
+    revision: input.revision,
+    operationId: input.operationId,
+    operations: [{
+      type: 'update',
+      rowId: firstRow?.rowId ?? 'row-1',
+      changes: [{ header: '零件編號', value }],
+    }],
+  })).digest('hex');
 };
 
 const makeInput = ({
@@ -75,6 +92,7 @@ const makeInput = ({
     conversationId,
     kind: 'ocr_result',
     messageId,
+    title: 'ocr_result',
     tableId: 'ocr_result:1',
     outputId: 'ocr_result:generation-1',
     revision,
@@ -243,6 +261,7 @@ describe('Steel review write methods', () => {
       conversationId: 'conversation-1',
       kind: 'ocr_result',
       messageId: 'assistant-1',
+      title: 'ocr_result',
       tableId: 'ocr_result:1',
       outputId: 'ocr_result:generation-1',
       operationId: 'operation-1',

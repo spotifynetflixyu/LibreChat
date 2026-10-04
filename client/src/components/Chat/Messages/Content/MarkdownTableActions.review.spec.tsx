@@ -3,6 +3,7 @@ import { createStore, Provider } from 'jotai';
 import { dataService, DynamicQueryKeys } from 'librechat-data-provider';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import type { SteelReviewSelection } from './SteelReview/state';
 import { steelReviewDraftStateFamily, steelReviewSelectionAtom } from './SteelReview/state';
 import { getSteelReviewDraftOwnerKey } from './SteelReview/session';
 import MarkdownTableActions from './MarkdownTableActions';
@@ -154,7 +155,7 @@ const reviewIdentity = {
   conversationId: 'conversation-1',
   messageId: 'message-1',
   kind: 'ocr_result' as const,
-  tableId: 'ocr_result:1',
+  title: 'ocr_result',
 };
 
 const testHeading = 'ocr_result';
@@ -163,13 +164,17 @@ const partHeader = '零件編號';
 const firstPart = 'P-1';
 const secondPart = 'P-2';
 
-function renderDialog(queryClient = new QueryClient()) {
-  const store = createStore();
-  store.set(steelReviewSelectionAtom, reviewIdentity);
+function renderDialog(
+  queryClient = new QueryClient(),
+  selection: SteelReviewSelection = reviewIdentity,
+  store = createStore(),
+  identity: SteelReviewSelection = reviewIdentity,
+) {
+  store.set(steelReviewSelectionAtom, selection);
   const rendered = render(
     <QueryClientProvider client={queryClient}>
       <Provider store={store}>
-        <SteelReviewDialog identity={reviewIdentity} />
+        <SteelReviewDialog identity={identity} />
       </Provider>
     </QueryClientProvider>,
   );
@@ -505,7 +510,7 @@ describe('MarkdownTableActions Steel review entry', () => {
       conversationId: 'conversation-1',
       messageId: 'message-1',
       kind: 'ocr_result',
-      tableId: 'ocr_result:1',
+      title: 'ocr_result',
       outputId: 'ocr_result:generation-1',
       revision: 'generation-1',
       rows: [],
@@ -723,7 +728,7 @@ describe('MarkdownTableActions Steel review entry', () => {
       reviewIdentity.conversationId,
       reviewIdentity.kind,
       reviewIdentity.messageId,
-      reviewIdentity.tableId,
+      reviewIdentity.title,
       undefined,
     );
     queryClient.setQueryData(reviewQueryKey, { table });
@@ -886,7 +891,7 @@ describe('MarkdownTableActions Steel review entry', () => {
       reviewIdentity.conversationId,
       reviewIdentity.kind,
       reviewIdentity.messageId,
-      reviewIdentity.tableId,
+      reviewIdentity.title,
       undefined,
     );
     const firstTable = {
@@ -912,7 +917,7 @@ describe('MarkdownTableActions Steel review entry', () => {
       conversationId: reviewIdentity.conversationId,
       messageId: reviewIdentity.messageId,
       kind: reviewIdentity.kind,
-      tableId: reviewIdentity.tableId,
+      title: reviewIdentity.title,
       outputId: firstTable.outputId,
       revision: firstTable.revision,
       rows: [firstTable.rows[0]],
@@ -958,8 +963,7 @@ describe('MarkdownTableActions Steel review entry', () => {
         input?.conversationId ?? '',
         input?.kind ?? 'ocr_result',
         input?.messageId ?? '',
-        input?.tableId ?? '',
-        input?.partIndex,
+        input?.title ?? '',
       );
       return useQuery({
         queryKey: key,
@@ -1012,7 +1016,7 @@ describe('MarkdownTableActions Steel review entry', () => {
       conversationId: reviewIdentity.conversationId,
       messageId: reviewIdentity.messageId,
       kind: reviewIdentity.kind,
-      tableId: reviewIdentity.tableId,
+      title: reviewIdentity.title,
       outputId: table.outputId,
       revision: table.revision,
       rows: table.rows,
@@ -1084,6 +1088,343 @@ describe('MarkdownTableActions Steel review entry', () => {
     });
   });
 
+  it.each([
+    ['conversationId', 'conversation-foreign'],
+    ['messageId', 'message-foreign'],
+    ['kind', 'system_order'],
+    ['title', 'table-foreign'],
+  ] as const)('does not acknowledge a receipt for a captured authority with a different %s', async (field, value) => {
+    const table = {
+      ...reviewIdentity,
+      kind: 'ocr_result' as const,
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      latestOutputId: 'ocr_result:generation-1',
+      isLatest: true,
+      readOnly: false,
+      headers: ['數量'],
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 數量: { baseline: '2', effective: '2' } },
+      }],
+    };
+    const foreignTable = { ...table, [field]: value };
+    const newAiTable = {
+      ...table,
+      outputId: 'ocr_result:generation-2',
+      revision: 'generation-2',
+      latestOutputId: 'ocr_result:generation-2',
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 數量: { baseline: '4', effective: '4' } },
+      }],
+    };
+    const prepared = {
+      ...reviewIdentity,
+      outputId: table.outputId,
+      revision: table.revision,
+      rows: table.rows,
+      operationId: `operation-receipt-mismatch-${field}`,
+      digest: 'q'.repeat(64),
+      messageSha256: 'r'.repeat(64),
+      target: { start: 0, end: 1, sha256: 's'.repeat(64) },
+      replacementText: 'replacement',
+      cleanReplacementText: 'replacement',
+      targetText: 'target',
+      headers: table.headers,
+      effectiveMarkdown: 'effective',
+      displayMarkdown: 'display',
+      caption: { kind: reviewIdentity.kind, changedRows: 1, changedRowIds: ['row-1'] },
+    };
+    const snapshot = {
+      operationId: prepared.operationId,
+      digest: prepared.digest,
+      outputId: prepared.outputId,
+      revision: 'generation-1-save-1',
+      headers: table.headers,
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 數量: { baseline: '2', effective: '9' } },
+      }],
+      changedRows: 1,
+      changedRowIds: ['row-1'],
+      savedAt: '2026-10-03T00:00:00.000Z',
+      messageSha256: 't'.repeat(64),
+      conversationId: reviewIdentity.conversationId,
+      messageId: reviewIdentity.messageId,
+      messageText: 'saved',
+      effectiveMarkdown: 'effective',
+      displayMarkdown: 'display',
+    };
+    const reviewRefetch = jest.fn().mockResolvedValue({ data: { table: newAiTable }, error: null });
+    const commit = jest.fn().mockRejectedValue(new Error('connection lost'));
+    let receiptResolve!: (result: { data: { status: 'committed'; snapshot: typeof snapshot }; error: null }) => void;
+    const receiptRefetch = jest.fn().mockImplementation(() => new Promise((resolve) => {
+      receiptResolve = resolve;
+    }));
+    mockUseGetSteelReviewQuery.mockReturnValue({
+      data: { table },
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: reviewRefetch,
+    });
+    mockUsePrepareSteelReviewMutation.mockReturnValue({ mutateAsync: jest.fn().mockResolvedValue(prepared) });
+    mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
+    mockUseGetSteelReviewReceiptQuery.mockReturnValue({
+      data: undefined,
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: receiptRefetch,
+    });
+
+    const { store } = renderDialog(new QueryClient(), {
+      ...reviewIdentity,
+      capturedAuthority: {
+        outputId: table.outputId,
+        revision: table.revision,
+        table: foreignTable,
+      },
+    });
+    const input = screen.getByRole('textbox', { name: '數量 row-1' });
+    fireEvent.change(input, { target: { value: '9' } });
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_close' }));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_discard_unsaved' }));
+    await waitFor(() => expect(receiptRefetch).toHaveBeenCalledTimes(1));
+    receiptResolve({ data: { status: 'committed', snapshot }, error: null });
+
+    await waitFor(() => expect(store.get(steelReviewSelectionAtom)?.capturedAuthority?.revision)
+      .toBe(table.revision));
+    expect(store.get(steelReviewSelectionAtom)).toEqual(expect.objectContaining({
+      capturedAuthority: expect.objectContaining({ table: foreignTable }),
+    }));
+  });
+
+  it.each([
+    ['commit', 'conversationId', 'conversation-foreign'],
+    ['commit', 'messageId', 'message-foreign'],
+    ['commit', 'kind', 'system_order'],
+    ['commit', 'title', 'table-foreign'],
+    ['no-op', 'conversationId', 'conversation-foreign'],
+    ['no-op', 'messageId', 'message-foreign'],
+    ['no-op', 'kind', 'system_order'],
+    ['no-op', 'title', 'table-foreign'],
+  ] as const)('does not acknowledge a %s when the current table has a different %s', async (mode, field, value) => {
+    const table = {
+      ...reviewIdentity,
+      kind: 'ocr_result' as const,
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      latestOutputId: 'ocr_result:generation-1',
+      isLatest: true,
+      readOnly: false,
+      headers: ['數量'],
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 數量: { baseline: '2', effective: '2' } },
+      }],
+    };
+    const foreignTable = { ...table, [field]: value, revision: 'foreign-revision' };
+    const prepared = {
+      ...reviewIdentity,
+      outputId: table.outputId,
+      revision: table.revision,
+      rows: [{
+        ...table.rows[0],
+        values: { 數量: { baseline: '2', effective: mode === 'no-op' ? ' 2 ' : '9' } },
+      }],
+      operationId: `operation-current-mismatch-${mode}-${field}`,
+      digest: 'u'.repeat(64),
+      messageSha256: 'v'.repeat(64),
+      target: { start: 0, end: 1, sha256: 'w'.repeat(64) },
+      replacementText: 'replacement',
+      cleanReplacementText: 'replacement',
+      targetText: 'target',
+      headers: table.headers,
+      effectiveMarkdown: 'effective',
+      displayMarkdown: 'display',
+      caption: { kind: reviewIdentity.kind, changedRows: 1, changedRowIds: ['row-1'] },
+    };
+    const savedSnapshot = {
+      operationId: prepared.operationId,
+      digest: prepared.digest,
+      outputId: prepared.outputId,
+      revision: 'generation-1-save-1',
+      headers: table.headers,
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 數量: { baseline: '2', effective: '9' } },
+      }],
+      changedRows: 1,
+      changedRowIds: ['row-1'],
+      savedAt: '2026-10-03T00:00:00.000Z',
+      messageSha256: 'x'.repeat(64),
+      conversationId: reviewIdentity.conversationId,
+      messageId: reviewIdentity.messageId,
+      messageText: 'saved',
+      effectiveMarkdown: 'effective',
+      displayMarkdown: 'display',
+    };
+    const prepare = jest.fn().mockResolvedValue(prepared);
+    const commit = jest.fn().mockResolvedValue(mode === 'no-op'
+      ? { changedRows: 0, changedRowIds: [] }
+      : { changedRows: 1, changedRowIds: ['row-1'], savedSnapshot });
+    const refetch = jest.fn().mockResolvedValue({ data: { table: foreignTable }, error: null });
+    mockUseGetSteelReviewQuery.mockReturnValue({
+      data: { table },
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch,
+    });
+    mockUsePrepareSteelReviewMutation.mockReturnValue({ mutateAsync: prepare });
+    mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
+
+    const { store } = renderDialog();
+    const input = screen.getByRole('textbox', { name: '數量 row-1' });
+    fireEvent.change(input, { target: { value: mode === 'no-op' ? ' 2 ' : '9' } });
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(store.get(steelReviewSelectionAtom)?.capturedAuthority?.revision)
+      .toBe(table.revision));
+    const draftAtom = steelReviewDraftStateFamily(getSteelReviewDraftOwnerKey(reviewIdentity, table));
+    expect(store.get(draftAtom).past.length).toBeGreaterThan(0);
+    expect(screen.getByText('com_ui_steel_review_unsaved_caption')).toBeInTheDocument();
+  });
+
+  it('does not apply an old receipt after selection changes while messages refetch waits', async () => {
+    const table = {
+      ...reviewIdentity,
+      kind: 'ocr_result' as const,
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      latestOutputId: 'ocr_result:generation-1',
+      isLatest: true,
+      readOnly: false,
+      headers: ['數量'],
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 數量: { baseline: '2', effective: '2' } },
+      }],
+    };
+    const foreignTable = { ...table, title: 'table-foreign', revision: 'foreign-revision' };
+    const foreignSelection = {
+      ...reviewIdentity,
+      title: foreignTable.title,
+      capturedAuthority: {
+        outputId: foreignTable.outputId,
+        revision: foreignTable.revision,
+        table: foreignTable,
+      },
+    };
+    const prepared = {
+      ...reviewIdentity,
+      outputId: table.outputId,
+      revision: table.revision,
+      rows: table.rows,
+      operationId: 'operation-receipt-selection-change',
+      digest: 'y'.repeat(64),
+      messageSha256: 'z'.repeat(64),
+      target: { start: 0, end: 1, sha256: 'a'.repeat(64) },
+      replacementText: 'replacement',
+      cleanReplacementText: 'replacement',
+      targetText: 'target',
+      headers: table.headers,
+      effectiveMarkdown: 'effective',
+      displayMarkdown: 'display',
+      caption: { kind: reviewIdentity.kind, changedRows: 1, changedRowIds: ['row-1'] },
+    };
+    const snapshot = {
+      operationId: prepared.operationId,
+      digest: prepared.digest,
+      outputId: prepared.outputId,
+      revision: 'generation-1-save-1',
+      headers: table.headers,
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 數量: { baseline: '2', effective: '9' } },
+      }],
+      changedRows: 1,
+      changedRowIds: ['row-1'],
+      savedAt: '2026-10-03T00:00:00.000Z',
+      messageSha256: 'b'.repeat(64),
+      conversationId: reviewIdentity.conversationId,
+      messageId: reviewIdentity.messageId,
+      messageText: 'saved',
+      effectiveMarkdown: 'effective',
+      displayMarkdown: 'display',
+    };
+    const commit = jest.fn().mockRejectedValue(new Error('connection lost'));
+    const reviewRefetch = jest.fn().mockResolvedValue({ data: { table }, error: null });
+    const receiptRefetch = jest.fn().mockResolvedValue({
+      data: { status: 'committed', snapshot },
+      error: null,
+    });
+    let resolveMessages!: (messages: never[]) => void;
+    const messagesPromise = new Promise<never[]>((resolve) => {
+      resolveMessages = resolve;
+    });
+    const messagesQuery = jest.spyOn(dataService, 'getMessagesByConvoId');
+    messagesQuery.mockImplementation(() => messagesPromise);
+    mockUseGetSteelReviewQuery.mockReturnValue({
+      data: { table },
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: reviewRefetch,
+    });
+    mockUsePrepareSteelReviewMutation.mockReturnValue({ mutateAsync: jest.fn().mockResolvedValue(prepared) });
+    mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
+    mockUseGetSteelReviewReceiptQuery.mockReturnValue({
+      data: undefined,
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: receiptRefetch,
+    });
+
+    const rendered = renderDialog();
+    const { queryClient, store } = rendered;
+    const input = screen.getByRole('textbox', { name: '數量 row-1' });
+    fireEvent.change(input, { target: { value: '9' } });
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_close' }));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_discard_unsaved' }));
+    await waitFor(() => expect(messagesQuery).toHaveBeenCalledTimes(1));
+
+    const foreignDraftKey = getSteelReviewDraftOwnerKey(foreignSelection, foreignTable);
+    const foreignDraftAtom = steelReviewDraftStateFamily(foreignDraftKey);
+    store.set(foreignDraftAtom, (current) => ({
+      ...current,
+      ownerKey: foreignDraftKey,
+      cells: { 'row-1\u0000數量': 'foreign' },
+      changeSequence: 42,
+    }));
+    rendered.unmount();
+    store.set(steelReviewSelectionAtom, foreignSelection);
+    const remounted = renderDialog(queryClient, foreignSelection, store, foreignSelection);
+    resolveMessages([]);
+
+    await waitFor(() => expect(store.get(steelReviewSelectionAtom)).toEqual(foreignSelection));
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(store.get(foreignDraftAtom).cells['row-1\u0000數量']).toBe('foreign');
+    expect(store.get(foreignDraftAtom).changeSequence).toBe(42);
+    remounted.unmount();
+  });
+
   it('acknowledges a committed receipt into the captured session after a new AI owner appears', async () => {
     const table = {
       ...reviewIdentity,
@@ -1115,7 +1456,7 @@ describe('MarkdownTableActions Steel review entry', () => {
       conversationId: reviewIdentity.conversationId,
       messageId: reviewIdentity.messageId,
       kind: reviewIdentity.kind,
-      tableId: reviewIdentity.tableId,
+      title: reviewIdentity.title,
       outputId: table.outputId,
       revision: table.revision,
       rows: table.rows,
@@ -1389,7 +1730,7 @@ describe('MarkdownTableActions Steel review entry', () => {
         table: {
           conversationId: 'conversation-1',
           messageId: 'message-1',
-          tableId: 'ocr_result:1',
+          title: 'ocr_result',
           outputId: 'ocr_result:generation-1',
           kind: 'ocr_result',
           revision: 'generation-1',
@@ -1438,7 +1779,7 @@ describe('MarkdownTableActions Steel review entry', () => {
       expect.objectContaining({
         conversationId: 'conversation-1',
         messageId: 'message-1',
-        tableId: 'ocr_result:1',
+        title: 'ocr_result',
       }),
       expect.any(Object),
     ]);

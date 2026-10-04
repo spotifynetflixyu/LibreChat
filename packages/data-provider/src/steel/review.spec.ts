@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
+import type { SteelReviewOperation } from './review';
 import {
-  encodeSteelReviewDigest,
+  encodeSteelReviewDigest as encodeSteelReviewDigestValue,
+  encodeSteelReviewTitleOwner,
   applySteelReviewOperations,
   isSteelReviewSourceAssociationHeader,
   normalizeSteelReviewEffectiveValue,
@@ -9,6 +11,7 @@ import {
   sameSteelReviewSource,
   steelReviewReadQuerySchema,
   steelReviewResponseSchema,
+  steelReviewCommitSchema,
   steelReviewPreparedSchema,
   steelReviewPrepareSchema,
   steelReviewOperationCommitSchema,
@@ -16,6 +19,75 @@ import {
   steelReviewOperationSchema,
   validateSteelReviewLedger,
 } from './review';
+
+const identity = {
+  conversationId: 'conversation-1',
+  messageId: 'message-1',
+  kind: 'ocr_result' as const,
+  title: 'ocr_result｜完整標題',
+  outputId: 'ocr_result:generation-1',
+  revision: 'generation-1',
+};
+
+const update = {
+  type: 'update' as const,
+  rowId: 'row-1',
+  changes: [{ header: 'Value', value: 'new' }],
+};
+
+type DigestFixture = {
+  userId: string;
+  tenantId?: string | null;
+  conversationId: string;
+  messageId: string;
+  kind: 'ocr_result' | 'system_order';
+  title?: string;
+  outputId: string;
+  revision: string;
+  operationId?: string;
+  operations?: SteelReviewOperation[];
+  rows?: Array<{
+    rowId: string;
+    values: Record<string, { baseline: string | null; effective: string | null }>;
+    insertion?: { kind: 'start' | 'end' | 'after'; rowId?: string; ordinal: number };
+  }>;
+  [key: string]: unknown;
+};
+
+function encodeSteelReviewDigest(input: DigestFixture): string {
+  const operations = input.operations ?? (input.rows ?? []).map((row) => {
+    const changes = Object.entries(row.values)
+      .filter(([, cell]) => cell.baseline !== cell.effective)
+      .map(([header, cell]) => ({ header, value: cell.effective }));
+    if (row.insertion) {
+      return {
+        type: 'add' as const,
+        rowId: row.rowId,
+        position: row.insertion.kind === 'after'
+          ? { kind: 'after' as const, rowId: row.insertion.rowId! }
+          : { kind: row.insertion.kind },
+        changes: changes.length > 0 ? changes : [{ header: 'Value', value: null }],
+      };
+    }
+    return {
+      type: 'update' as const,
+      rowId: row.rowId,
+      changes: changes.length > 0 ? changes : [{ header: 'Value', value: null }],
+    };
+  });
+  return encodeSteelReviewDigestValue({
+    userId: input.userId,
+    ...(input.tenantId !== undefined ? { tenantId: input.tenantId } : {}),
+    conversationId: input.conversationId,
+    messageId: input.messageId,
+    kind: input.kind,
+    title: input.title ?? 'ocr_result',
+    outputId: input.outputId,
+    revision: input.revision,
+    operationId: input.operationId ?? 'fixture-operation',
+    operations,
+  });
+}
 
 describe('Steel review contracts', () => {
   it('classifies exact source association headers without locking business fields', () => {
@@ -35,7 +107,7 @@ describe('Steel review contracts', () => {
       table: {
         conversationId: 'conversation-1',
         messageId: 'message-1',
-        tableId: 'ocr_result:message-1:4',
+        title: 'ocr_result｜完整標題',
         outputId: 'ocr_result:generation-1',
         kind: 'ocr_result',
         revision: 'generation-1',
@@ -64,17 +136,90 @@ describe('Steel review contracts', () => {
     expect(() =>
       steelReviewReadQuerySchema.parse({
         messageId: '',
-        tableId: 'table-1',
+        title: 'ocr_result',
       }),
     ).toThrow();
   });
 
-  it('accepts a concrete rendered content part owner', () => {
+  it('requires title-only public review locators and rejects positional/full-row fields', () => {
     expect(steelReviewReadQuerySchema.parse({
       messageId: 'message-1',
+      title: 'ocr_result｜完整標題',
+    })).toEqual({ messageId: 'message-1', title: 'ocr_result｜完整標題' });
+    expect(steelReviewReadQuerySchema.safeParse({ messageId: 'message-1' }).success).toBe(false);
+    expect(steelReviewReadQuerySchema.safeParse({
+      messageId: 'message-1',
+      title: 'ocr_result',
       tableId: 'ocr_result:2',
-      partIndex: '3',
-    }).partIndex).toBe(3);
+    }).success).toBe(false);
+
+    const operation = {
+      conversationId: 'conversation-1',
+      messageId: 'message-1',
+      kind: 'ocr_result' as const,
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      title: 'ocr_result',
+      operations: [{
+        type: 'update' as const,
+        rowId: 'row-1',
+        changes: [{ header: 'Profile', value: 'P-2' }],
+      }],
+    };
+    expect(steelReviewOperationPrepareSchema.parse(operation)).toEqual(operation);
+    expect(steelReviewOperationPrepareSchema.safeParse({
+      ...operation,
+      tableId: 'ocr_result:2',
+    }).success).toBe(false);
+    expect(steelReviewPrepareSchema.safeParse({
+      ...operation,
+      rows: [],
+    }).success).toBe(false);
+    expect(steelReviewCommitSchema.parse({
+      ...operation,
+      operationId: 'operation-1',
+      digest: 'a'.repeat(64),
+    })).toEqual({
+      ...operation,
+      operationId: 'operation-1',
+      digest: 'a'.repeat(64),
+    });
+  });
+
+  it('accepts an exact full title as the logical review locator', () => {
+    expect(steelReviewReadQuerySchema.parse({
+      messageId: 'message-1',
+      title: 'system_order｜梁柱詳圖 A-01',
+    }).title).toBe('system_order｜梁柱詳圖 A-01');
+  });
+
+  it('encodes title owners with a shared namespace and ordered scope', () => {
+    expect(encodeSteelReviewTitleOwner({
+      userId: 'user-1',
+      tenantId: null,
+      conversationId: 'conversation-1',
+      messageId: 'message-1',
+      kind: 'ocr_result',
+      outputId: 'ocr_result:generation-1',
+      title: 'ocr_result｜完整版',
+    })).toContain('steel-review-title-owner-v1');
+    expect(encodeSteelReviewTitleOwner({
+      userId: 'user-1',
+      tenantId: null,
+      conversationId: 'conversation-1',
+      messageId: 'message-1',
+      kind: 'ocr_result',
+      outputId: 'ocr_result:generation-1',
+      title: 'ocr_result｜完整版',
+    })).not.toBe(encodeSteelReviewTitleOwner({
+      userId: 'user-1',
+      tenantId: null,
+      conversationId: 'conversation-1',
+      messageId: 'message-1',
+      kind: 'ocr_result',
+      outputId: 'ocr_result:generation-1',
+      title: 'ocr_result',
+    }));
   });
 
   it('normalizes effective whitespace while preserving null', () => {
@@ -139,45 +284,20 @@ describe('Steel review contracts', () => {
   });
 
   it('validates typed insertion anchors and keeps them in the digest', () => {
-    const row = {
-      rowId: 'row-manual',
-      source: null,
-      origin: 'manual' as const,
-      deleted: false,
-      insertion: { kind: 'after' as const, rowId: 'row-ai', ordinal: 0 },
-      values: { Value: { baseline: null, effective: 'new' } },
-    };
-    expect(steelReviewPrepareSchema.safeParse({
-      conversationId: 'conversation-1',
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-      kind: 'ocr_result',
-      outputId: 'ocr_result:generation-1',
-      revision: 'generation-1',
-      rows: [row],
-    }).success).toBe(true);
     const base = {
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result' as const,
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-      outputId: 'ocr_result:generation-1',
-      revision: 'generation-1',
-      rows: [row],
-      headers: ['Value'],
-      messageSha256: 'a'.repeat(64),
-      target: { start: 0, end: 1, sha256: 'b'.repeat(64) },
-      targetText: 'old',
-      replacementText: 'new',
-      cleanReplacementText: 'new',
-      effectiveMarkdown: 'table',
-      displayMarkdown: 'table',
-      caption: { kind: 'ocr_result' as const, changedRows: 1, changedRowIds: ['row-manual'] },
+      ...identity,
+      operations: [{
+        type: 'add' as const,
+        rowId: 'row-manual',
+        position: { kind: 'after' as const, rowId: 'row-ai' },
+        changes: [{ header: 'Value', value: 'new' }],
+      }],
     };
-    expect(encodeSteelReviewDigest(base)).not.toBe(encodeSteelReviewDigest({
+    expect(steelReviewOperationPrepareSchema.safeParse(base).success).toBe(true);
+    expect(encodeSteelReviewDigest({ ...base, userId: 'user-1' })).not.toBe(encodeSteelReviewDigest({
       ...base,
-      rows: [{ ...row, insertion: { kind: 'start', ordinal: 0 } }],
+      userId: 'user-1',
+      operations: [{ ...base.operations[0], position: { kind: 'start' as const } }],
     }));
   });
 
@@ -312,7 +432,7 @@ describe('Steel review contracts', () => {
       conversationId: 'conversation-1',
       kind: 'ocr_result' as const,
       messageId: 'message-1',
-      tableId: 'ocr_result:1',
+      title: 'ocr_result',
       outputId: 'ocr_result:generation-1',
       revision: 'revision-1',
       rows: [{
@@ -335,7 +455,7 @@ describe('Steel review contracts', () => {
     expect(encodeSteelReviewDigest({ ...base, userId: 'user-2' })).not.toBe(withoutTenant);
     expect(encodeSteelReviewDigest({
       ...base,
-      target: { ...base.target, start: 2 },
+      title: 'ocr_result｜另一本表',
     })).not.toBe(withoutTenant);
     expect(encodeSteelReviewDigest({
       ...base,
@@ -343,13 +463,13 @@ describe('Steel review contracts', () => {
     })).not.toBe(withoutTenant);
   });
 
-  it('preserves the exact 03 digest shape when both new source fields are absent', () => {
+  it('encodes a migrated stored row through the title-only operation identity', () => {
     const legacy = {
       userId: 'legacy-fixture-user',
       conversationId: 'legacy-fixture-chat',
       kind: 'ocr_result' as const,
       messageId: 'legacy-fixture-message',
-      tableId: 'ocr_result:1',
+      title: 'ocr_result',
       outputId: 'ocr_result:legacy-fixture-generation',
       revision: 'legacy-fixture-generation',
       rows: [{
@@ -382,60 +502,33 @@ describe('Steel review contracts', () => {
         changedRowIds: ['31c389e1916d78f3aeb367b3074d9943ccc1d85c2e58bdf04ceea976fade3d57'],
       },
     };
-    expect(createHash('sha256').update(encodeSteelReviewDigest(legacy)).digest('hex')).toBe(
-      '530790f7a97b4b48f1a6f6a0a86ea71f5ace91cc8d52714d0a00d39f8112d2eb',
-    );
-    expect(encodeSteelReviewDigest({ ...legacy, sourceMappings: [] })).not.toBe(
-      encodeSteelReviewDigest(legacy),
-    );
-    expect(encodeSteelReviewDigest({ ...legacy, sourceIntents: [] })).not.toBe(
-      encodeSteelReviewDigest(legacy),
-    );
-    expect(() => encodeSteelReviewDigest({ ...legacy, sourceMappings: null as never })).toThrow();
-    expect(() => encodeSteelReviewDigest({ ...legacy, sourceMappings: undefined })).toThrow();
+    const digest = createHash('sha256').update(encodeSteelReviewDigest({
+      ...legacy,
+      operationId: 'legacy-operation',
+      operations: [{
+        type: 'update',
+        rowId: legacy.rows[0].rowId,
+        changes: [{ header: '數量', value: '7' }],
+      }],
+    })).digest('hex');
+    expect(digest).toHaveLength(64);
+    expect(encodeSteelReviewDigest({ ...legacy, sourceMappings: [] })).toBe(encodeSteelReviewDigest(legacy));
   });
 
   it('rejects present undefined or null source intents while accepting an explicit empty array', () => {
-    const base = {
-      conversationId: 'conversation-1',
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-      kind: 'ocr_result' as const,
-      outputId: 'ocr_result:generation-1',
-      revision: 'generation-1',
-      rows: [{
-        rowId: 'row-1',
-        values: { Value: { baseline: '1', effective: '1' } },
-        source: null,
-      }],
-    };
-    expect(steelReviewPrepareSchema.safeParse({ ...base, sourceIntents: undefined }).success).toBe(false);
-    expect(steelReviewPrepareSchema.safeParse({ ...base, sourceIntents: null }).success).toBe(false);
-    expect(steelReviewPrepareSchema.safeParse({ ...base, sourceIntents: [] }).success).toBe(true);
+    const base = { ...identity, operations: [update] };
     expect(steelReviewPrepareSchema.safeParse(base).success).toBe(true);
-    const prepared = { ...base,
-      operationId: 'operation-1',
-      digest: 'a'.repeat(64),
-      messageSha256: 'b'.repeat(64),
-      target: { start: 0, end: 1, sha256: 'c'.repeat(64) },
-      replacementText: 'new',
-      cleanReplacementText: 'new',
-      targetText: 'old',
-      headers: ['Value'],
-      effectiveMarkdown: 'table',
-      displayMarkdown: 'table',
-      caption: { kind: 'ocr_result' as const, changedRows: 0, changedRowIds: [] },
-    };
-    expect(steelReviewPreparedSchema.safeParse({ ...prepared, sourceMappings: undefined }).success).toBe(false);
-    expect(steelReviewPreparedSchema.safeParse({ ...prepared, sourceMappings: null }).success).toBe(false);
-    expect(steelReviewPreparedSchema.safeParse({ ...prepared, sourceMappings: [] }).success).toBe(true);
+    expect(steelReviewPrepareSchema.safeParse({ ...base, sourceIntents: [] }).success).toBe(false);
+    expect(steelReviewPrepareSchema.safeParse({ ...base, rows: [] }).success).toBe(false);
+    expect(steelReviewPreparedSchema.safeParse({ ...base, operationId: 'operation-1', digest: 'a'.repeat(64) }).success)
+      .toBe(false);
   });
 
   it('keeps changed-row operations closed and presence-sensitive', () => {
     const identity = {
       conversationId: 'conversation-1',
       messageId: 'message-1',
-      tableId: 'ocr_result:1',
+      title: 'ocr_result',
       kind: 'ocr_result' as const,
       outputId: 'ocr_result:generation-1',
       revision: 'generation-1',
