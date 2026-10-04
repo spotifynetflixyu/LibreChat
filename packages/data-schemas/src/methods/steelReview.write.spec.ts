@@ -1903,6 +1903,218 @@ describe('Steel review write methods', () => {
     });
   });
 
+  it('cascades a material source to existing and newly added processing rows in one ordered save', async () => {
+    const models = createModels(mongoose);
+    const QuotationState = createSteelQuotationStateModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const File = createFileModel(mongoose);
+    const writer = createSteelReviewWriteMethods(mongoose);
+    const userId = new mongoose.Types.ObjectId().toString();
+    const conversationId = 'system-source-cascade-conversation';
+    const messageId = 'system-source-cascade-message';
+    const title = 'system_order｜來源串接';
+    const outputId = 'system_order:source-cascade-run';
+    const headers = ['來源', '品名規格', '總數', '單價'];
+    const source = (fileId: string, pageNumber: number, filename: string) => ({
+      fileId, pageNumber, filename, mediaType: 'application/pdf',
+    });
+    const cell = (baseline: string | null, effective: string | null) => ({ baseline, effective });
+    const materialId = aiRowIdFor(outputId, ['A', '材料A', '2', '10'], 0);
+    const existingProcessingId = aiRowIdFor(outputId, ['A', '加工A', '1', '3'], 1);
+    const unboundProcessingId = aiRowIdFor(outputId, ['A', '加工未綁定', '1', '2'], 2);
+    const addedProcessingId = 'processing-source-cascade-added';
+    const currentMarkdown = [
+      `## ${title}`,
+      '',
+      `| ${headers.join(' | ')} |`,
+      `| ${headers.map(() => '---').join(' | ')} |`,
+      '| A | 材料A | 2 | 10 |',
+      '| A | 加工A | 1 | 3 |',
+      '| A | 加工未綁定 | 1 | 2 |',
+    ].join('\n');
+    const savedMarkdown = currentMarkdown.replace('| A | 材料A | 2 | 10 |', '| A | 材料A | 2 | 11 |');
+    const reboundMarkdown = [
+      `## ${title}`,
+      '',
+      `| ${headers.join(' | ')} |`,
+      `| ${headers.map(() => '---').join(' | ')} |`,
+      '| B | 材料A | 2 | 11 |',
+      '| B | 加工A | 1 | 3 |',
+      '| A | 加工未綁定 | 1 | 2 |',
+      '| B | 加工B | 1 | 4 |',
+    ].join('\n');
+    const currentHash = createHash('sha256').update(currentMarkdown).digest('hex');
+    const savedHash = createHash('sha256').update(savedMarkdown).digest('hex');
+    const sourceA = source('system-source-cascade-alpha', 1, 'alpha.pdf');
+    const sourceB = source('system-source-cascade-beta', 2, 'beta.pdf');
+    await models.Conversation.create({
+      conversationId, user: userId, tenantId: 'tenant-1', title: 'Source cascade', endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId, conversationId, user: userId, tenantId: 'tenant-1', isCreatedByUser: false, text: currentMarkdown,
+    });
+    await QuotationState.create({
+      userId, tenantId: 'tenant-1', conversationId,
+      currentSystemOrder: {
+        runId: 'source-cascade-run', sha256: currentHash, markdown: currentMarkdown, messageId,
+        customerQuoteMarkdown: '## customer_quote｜來源串接\n\n| 項目 | 小計 |\n| --- | --- |\n| 材料A | 20 |',
+        updatedAt: new Date('2026-10-03T00:00:00.000Z'),
+      },
+    });
+    await File.create([
+      {
+        user: userId, tenantId: 'tenant-1', conversationId, file_id: sourceA.fileId, bytes: 12,
+        filename: sourceA.filename, filepath: '/uploads/alpha.pdf', object: 'file', type: sourceA.mediaType,
+        source: 'local', usage: 0,
+      },
+      {
+        user: userId, tenantId: 'tenant-1', conversationId, file_id: sourceB.fileId, bytes: 12,
+        filename: sourceB.filename, filepath: '/uploads/beta.pdf', object: 'file', type: sourceB.mediaType,
+        source: 'local', usage: 0,
+      },
+    ]);
+    const material = (sourceValue: ReturnType<typeof source>, price: string): SteelReviewRow => ({
+      rowId: materialId,
+      values: {
+        來源: cell('A', 'A'),
+        品名規格: cell('材料A', '材料A'),
+        總數: cell('2', '2'),
+        單價: cell('10', price),
+      },
+      source: sourceValue,
+      system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
+    });
+    const existingProcessing = (sourceValue: ReturnType<typeof source>): SteelReviewRow => ({
+      rowId: existingProcessingId,
+      values: {
+        來源: cell('A', 'A'),
+        品名規格: cell('加工A', '加工A'),
+        總數: cell('1', '1'),
+        單價: cell('3', '3'),
+      },
+      source: sourceValue,
+      system: { kind: 'processing', parentRowId: materialId, cascadeDeletedBy: null },
+    });
+    const unboundProcessing = (sourceValue: ReturnType<typeof source>): SteelReviewRow => ({
+      rowId: unboundProcessingId,
+      values: {
+        來源: cell('A', 'A'),
+        品名規格: cell('加工未綁定', '加工未綁定'),
+        總數: cell('1', '1'),
+        單價: cell('2', '2'),
+      },
+      source: sourceValue,
+      system: { kind: 'processing', parentRowId: null, cascadeDeletedBy: null },
+    });
+    const initialMaterial = material(sourceA, '11');
+    const initialProcessing = existingProcessing(sourceA);
+    const initialUnboundProcessing = unboundProcessing(sourceA);
+    const initialTargetText = currentMarkdown.slice(currentMarkdown.indexOf('| 來源 |'));
+    const initialReplacementText = savedMarkdown.slice(savedMarkdown.indexOf('| 來源 |'));
+    const first = await writer.commitSteelReview({
+      userId, tenantId: 'tenant-1', conversationId, kind: 'system_order', messageId, title,
+      tableId: 'system_order:source-cascade', outputId, revision: currentHash,
+      operationId: 'system-source-cascade-bootstrap', digest: 'system-source-cascade-bootstrap-digest',
+      rows: [initialMaterial, initialProcessing, initialUnboundProcessing], headers, messageSha256: currentHash,
+      target: {
+        start: currentMarkdown.indexOf('| 來源 |'), end: currentMarkdown.length,
+        sha256: createHash('sha256').update(initialTargetText).digest('hex'),
+      },
+      targetText: initialTargetText, replacementText: initialReplacementText,
+      cleanReplacementText: initialReplacementText, effectiveMarkdown: savedMarkdown,
+      displayMarkdown: savedMarkdown, aiBaselineMarkdown: currentMarkdown, aiRawMarkdown: currentMarkdown,
+      systemOrderMarkdown: savedMarkdown, systemOrderSha256: currentHash,
+      customerQuoteMarkdown: '## customer_quote｜來源串接\n\n| 項目 | 小計 |\n| --- | --- |\n| 材料A | 22 |',
+      caption: {
+        kind: 'system_order', changedRows: 1, changedRowIds: [materialId],
+        customerQuoteChangedRows: 1, customerQuoteTotal: '22',
+      },
+      sourceIntents: [{ rowId: materialId, fileId: sourceA.fileId, pageNumber: sourceA.pageNumber }],
+      sourceMappings: [
+        { fileId: sourceA.fileId, sourceCode: 'A', sourceFilename: sourceA.filename, mediaType: sourceA.mediaType },
+      ],
+    });
+    expect(first.changedRows).toBe(1);
+
+    const reboundMaterial: SteelReviewRow = {
+      ...material(sourceB, '11'),
+      origin: 'ai', deleted: false,
+      values: {
+        ...material(sourceB, '11').values,
+        來源: cell('A', 'B'),
+      },
+    };
+    const reboundExistingProcessing: SteelReviewRow = {
+      ...existingProcessing(sourceB),
+      origin: 'ai', deleted: false,
+      values: {
+        ...existingProcessing(sourceB).values,
+        來源: cell('A', 'B'),
+      },
+    };
+    const reboundUnboundProcessing: SteelReviewRow = {
+      ...unboundProcessing(sourceA),
+      origin: 'ai', deleted: false,
+    };
+    const addedProcessing: SteelReviewRow = {
+      rowId: addedProcessingId,
+      values: {
+        來源: cell(null, 'B'),
+        品名規格: cell(null, '加工B'),
+        總數: cell(null, '1'),
+        單價: cell(null, '4'),
+      },
+      source: sourceB,
+      origin: 'manual', deleted: false,
+      insertion: { kind: 'end', ordinal: 0 },
+      system: { kind: 'processing', parentRowId: materialId, cascadeDeletedBy: null },
+    };
+    const reboundTargetText = savedMarkdown.slice(savedMarkdown.indexOf('| 來源 |'));
+    const reboundReplacementText = reboundMarkdown.slice(reboundMarkdown.indexOf('| 來源 |'));
+    const second = await writer.commitSteelReview({
+      userId, tenantId: 'tenant-1', conversationId, kind: 'system_order', messageId, title,
+      tableId: 'system_order:source-cascade', outputId, revision: first.revision,
+      operationId: 'system-source-cascade-rebind-and-add', digest: 'system-source-cascade-rebind-digest',
+      rows: [reboundMaterial, reboundExistingProcessing, reboundUnboundProcessing, addedProcessing], headers,
+      messageSha256: createHash('sha256').update(savedMarkdown).digest('hex'),
+      target: {
+        start: savedMarkdown.indexOf('| 來源 |'), end: savedMarkdown.length,
+        sha256: createHash('sha256').update(reboundTargetText).digest('hex'),
+      },
+      targetText: reboundTargetText, replacementText: reboundReplacementText,
+      cleanReplacementText: reboundReplacementText, effectiveMarkdown: reboundMarkdown,
+      displayMarkdown: reboundMarkdown, aiBaselineMarkdown: currentMarkdown, aiRawMarkdown: currentMarkdown,
+      systemOrderMarkdown: reboundMarkdown, systemOrderSha256: savedHash,
+      customerQuoteMarkdown: '## customer_quote｜來源串接\n\n| 項目 | 小計 |\n| --- | --- |\n| 材料A | 22 |',
+      caption: {
+        kind: 'system_order', changedRows: 3,
+        changedRowIds: [materialId, existingProcessingId, addedProcessingId],
+        customerQuoteChangedRows: 1, customerQuoteTotal: '22',
+      },
+      sourceIntents: [{ rowId: materialId, fileId: sourceB.fileId, pageNumber: sourceB.pageNumber }],
+      sourceMappings: [
+        { fileId: sourceA.fileId, sourceCode: 'A', sourceFilename: sourceA.filename, mediaType: sourceA.mediaType },
+        { fileId: sourceB.fileId, sourceCode: 'B', sourceFilename: sourceB.filename, mediaType: sourceB.mediaType },
+      ],
+    });
+    expect(second).toMatchObject({
+      changedRows: 3,
+      changedRowIds: [materialId, existingProcessingId, addedProcessingId],
+    });
+    const saved = await ReviewOutput.findOne({ conversationId, outputId }).lean();
+    expect(saved?.rows).toEqual([
+      expect.objectContaining({ rowId: materialId, source: sourceB }),
+      expect.objectContaining({ rowId: existingProcessingId, source: sourceB }),
+      expect.objectContaining({ rowId: unboundProcessingId, source: sourceA }),
+      expect.objectContaining({ rowId: addedProcessingId, source: sourceB }),
+    ]);
+    expect(saved?.rows[1]?.system).toMatchObject({ kind: 'processing', parentRowId: materialId });
+    expect(await models.Message.findOne({ messageId }).lean()).toMatchObject({ text: reboundMarkdown });
+    expect(await QuotationState.findOne({ conversationId }).lean()).toMatchObject({
+      currentSystemOrder: { markdown: reboundMarkdown, sha256: createHash('sha256').update(reboundMarkdown).digest('hex') },
+    });
+  });
+
   it('rejects persisted source metadata disappearing before any transaction write', async () => {
     const models = createModels(mongoose);
     const State = createSteelConversationOcrStateModel(mongoose);

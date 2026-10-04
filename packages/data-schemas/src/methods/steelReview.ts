@@ -1858,6 +1858,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             ? ledgerValidation.orderedRows
             : [];
           const trustedLedgerIds = new Set(trustedLedgerRows.map((row) => row.rowId));
+          const trustedById = new Map(trustedLedgerRows.map((row) => [row.rowId, row]));
           const submittedById = new Map(submittedLedgerRows.map((row) => [row.rowId, row]));
           const sourceIntents = new Map<string, SteelReviewSourceIntent>();
           for (const intent of input.sourceIntents ?? []) {
@@ -1866,6 +1867,62 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             }
             sourceIntents.set(intent.rowId, intent);
           }
+          const validatedSourceRows = new Map<string, boolean>();
+          const validatingSourceRows = new Set<string>();
+          const sourceMatchesExpected = (rowId: string): boolean => {
+            const validated = validatedSourceRows.get(rowId);
+            if (validated !== undefined) {
+              return validated;
+            }
+            if (validatingSourceRows.has(rowId)) {
+              return false;
+            }
+            const next = submittedById.get(rowId);
+            if (!next) {
+              validatedSourceRows.set(rowId, false);
+              return false;
+            }
+            validatingSourceRows.add(rowId);
+            const previous = trustedById.get(rowId);
+            const intent = sourceIntents.get(rowId);
+            let matched: boolean;
+            if (intent && next.system?.kind === 'processing') {
+              throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Processing source follows its material');
+            }
+            if (intent) {
+              if (intent.fileId === null) {
+                matched = next.source === null;
+              } else {
+                const nextSource = next.source;
+                const authorizedFile = authorizedFiles.get(intent.fileId);
+                matched = nextSource !== null && nextSource !== undefined &&
+                  nextSource.fileId === intent.fileId && nextSource.pageNumber === intent.pageNumber &&
+                  nextSource.filename === authorizedFile?.filename &&
+                  (nextSource.mediaType === undefined || nextSource.mediaType === authorizedFile?.mediaType);
+              }
+            } else if (next.system?.kind === 'processing' && !next.deleted) {
+              const parentId = next.system.parentRowId;
+              if (!parentId) {
+                // Imported AI processing rows can remain unbound until an explicit
+                // binding operation. Preserve their trusted source evidence while
+                // requiring new rows to start blank until they have a parent.
+                matched = trustedLedgerIds.has(rowId)
+                  ? sameSteelReviewSource(previous?.source ?? null, next.source ?? null)
+                  : next.source === null;
+              } else {
+                const parent = submittedById.get(parentId);
+                matched = Boolean(parent && !parent.deleted && parent.system?.kind === 'material' &&
+                  sourceMatchesExpected(parent.rowId) && sameSteelReviewSource(next.source ?? null, parent.source ?? null));
+              }
+            } else {
+              matched = trustedLedgerIds.has(rowId)
+                ? sameSteelReviewSource(previous?.source ?? null, next.source ?? null)
+                : next.source === null;
+            }
+            validatingSourceRows.delete(rowId);
+            validatedSourceRows.set(rowId, matched);
+            return matched;
+          };
           if (input.sourceMappings) {
             const mappingByCode = new Map<string, SteelReviewSourceMapping>();
             const mappingByFile = new Map<string, SteelReviewSourceMapping>();
@@ -1903,21 +1960,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               const next = submittedById.get(previous.rowId);
               const isNewRow = !trustedLedgerIds.has(previous.rowId);
               const intent = sourceIntents.get(previous.rowId);
-              let sourceMatches: boolean;
-              if (!intent) {
-                sourceMatches = isNewRow
-                  ? next?.source === null
-                  : sameSteelReviewSource(previous.source ?? null, next?.source ?? null);
-              } else if (intent.fileId === null) {
-                sourceMatches = next?.source === null;
-              } else {
-                const nextSource = next?.source;
-                const authorizedFile = authorizedFiles.get(intent.fileId);
-                sourceMatches = nextSource !== null && nextSource !== undefined &&
-                  nextSource.fileId === intent.fileId && nextSource.pageNumber === intent.pageNumber &&
-                  nextSource.filename === authorizedFile?.filename &&
-                  (nextSource.mediaType === undefined || nextSource.mediaType === authorizedFile?.mediaType);
-              }
+              const sourceMatches = next ? sourceMatchesExpected(previous.rowId) : false;
               if (!next || !sourceMatches) {
                 throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review row identity changed');
               }
@@ -1927,6 +1970,12 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
                 }
                 if (!intent && isSteelReviewSourceAssociationHeader(header) &&
                   !sameCellProperty(previous.values[header], 'effective', next.values[header], 'effective')) {
+                  const parentId = next.system?.kind === 'processing' && !next.deleted ? next.system.parentRowId : undefined;
+                  const parent = parentId ? submittedById.get(parentId) : undefined;
+                  if (parent && parent.system?.kind === 'material' &&
+                    sameCellProperty(parent.values[header], 'effective', next.values[header], 'effective')) {
+                    continue;
+                  }
                   throw new SteelReviewWriteError(
                     'REVIEW_INVALID_OPERATION',
                     'Review source association cell is read-only',
