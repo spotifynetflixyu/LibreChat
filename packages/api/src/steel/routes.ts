@@ -435,7 +435,9 @@ export function createSteelRouteHandlers({
       } catch (error) {
         if (error instanceof SteelReviewReadError || error instanceof SteelReviewWriteError) {
           res.status(error instanceof SteelReviewReadError ? error.statusCode : steelReviewWriteStatus(error))
-            .json({ message: error.message, code: error.code });
+            .json(error instanceof SteelReviewWriteError
+              ? steelReviewWriteBody(error)
+              : { message: error.message, code: error.code });
           return;
         }
         res.status(500).json({ message: 'Steel review save failed' });

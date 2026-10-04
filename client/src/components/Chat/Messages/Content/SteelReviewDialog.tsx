@@ -1210,7 +1210,17 @@ export default function SteelReviewDialog({
       }
       if (status.status === 'committed') {
         const prepared = preparedRef.current;
-        if (!prepared || !isAuthorizedCurrentTable(currentResult.data.table, prepared)) {
+        if (!prepared) {
+          preparedRef.current = undefined;
+          setSavePhase('stale');
+          setSaveErrorCode('REVIEW_CONFLICT');
+          setReceiptInput(null);
+          setReceiptFailed(false);
+          return;
+        }
+        const currentTableIsAuthorized = isAuthorizedCurrentTable(currentResult.data.table, prepared);
+        const capturedAuthorityMatches = capturedAuthority?.outputId === prepared.outputId;
+        if (!currentTableIsAuthorized && !capturedAuthorityMatches) {
           preparedRef.current = undefined;
           setSavePhase('stale');
           setSaveErrorCode('REVIEW_CONFLICT');
@@ -1225,7 +1235,12 @@ export default function SteelReviewDialog({
           return;
         }
         const boundary = discardBoundaryRef.current ?? submittedChangeSequenceRef.current;
-        if (currentResult.data.table.revision === status.snapshot.revision) {
+        if (!currentTableIsAuthorized) {
+          // The receipt confirms the captured operation even if the live owner
+          // changed while the request was in flight. Rebase only that old
+          // session and leave the authoritative new-AI query/message intact.
+          applyConfirmedSnapshot(status.snapshot, boundary, false, false);
+        } else if (currentResult.data.table.revision === status.snapshot.revision) {
           const messages = queryClient.getQueryData<TMessage[]>([QueryKeys.messages, identity.conversationId]);
           const canApplyMessageSnapshot = await canApplySteelReviewMessageSnapshot(messages, prepared, status.snapshot);
           applyConfirmedSnapshot(status.snapshot, boundary, canApplyMessageSnapshot);
@@ -1266,7 +1281,7 @@ export default function SteelReviewDialog({
     return () => {
       active = false;
     };
-  }, [applyConfirmedNoOp, applyConfirmedSnapshot, clearCapturedAuthority, discardRequested, finishDiscardAtBoundary, identity.conversationId, queryClient, receiptInput, refetchAuthoritativeMessages, refetchCurrentReview, refetchReceipt, setDraftState, setSelection]);
+  }, [applyConfirmedNoOp, applyConfirmedSnapshot, capturedAuthority, clearCapturedAuthority, discardRequested, finishDiscardAtBoundary, identity.conversationId, queryClient, receiptInput, refetchAuthoritativeMessages, refetchCurrentReview, refetchReceipt, setDraftState, setSelection]);
   const saveAndClose = useCallback(async () => {
     const saved = await saveChanges();
     if (!saved || !table) {

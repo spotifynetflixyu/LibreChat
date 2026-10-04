@@ -1083,6 +1083,121 @@ describe('MarkdownTableActions Steel review entry', () => {
     });
   });
 
+  it('acknowledges a committed receipt into the captured session after a new AI owner appears', async () => {
+    const table = {
+      ...reviewIdentity,
+      kind: 'ocr_result' as const,
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      latestOutputId: 'ocr_result:generation-1',
+      isLatest: true,
+      readOnly: false,
+      headers: ['數量'],
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 數量: { baseline: '2', effective: '2' } },
+      }],
+    };
+    const newAiTable = {
+      ...table,
+      outputId: 'ocr_result:generation-2',
+      revision: 'generation-2',
+      latestOutputId: 'ocr_result:generation-2',
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 數量: { baseline: '4', effective: '4' } },
+      }],
+    };
+    const prepared = {
+      conversationId: reviewIdentity.conversationId,
+      messageId: reviewIdentity.messageId,
+      kind: reviewIdentity.kind,
+      tableId: reviewIdentity.tableId,
+      outputId: table.outputId,
+      revision: table.revision,
+      rows: table.rows,
+      operationId: 'operation-receipt-new-ai',
+      digest: 'q'.repeat(64),
+      messageSha256: 'r'.repeat(64),
+      target: { start: 0, end: 1, sha256: 's'.repeat(64) },
+      replacementText: 'replacement',
+      cleanReplacementText: 'replacement',
+      targetText: 'target',
+      headers: table.headers,
+      effectiveMarkdown: 'effective',
+      displayMarkdown: 'display',
+      caption: { kind: reviewIdentity.kind, changedRows: 1, changedRowIds: ['row-1'] },
+    };
+    const snapshot = {
+      operationId: prepared.operationId,
+      digest: prepared.digest,
+      outputId: prepared.outputId,
+      revision: 'generation-1-save-1',
+      headers: table.headers,
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 數量: { baseline: '2', effective: '9' } },
+      }],
+      changedRows: 1,
+      changedRowIds: ['row-1'],
+      savedAt: '2026-10-03T00:00:00.000Z',
+      messageSha256: 't'.repeat(64),
+      conversationId: reviewIdentity.conversationId,
+      messageId: reviewIdentity.messageId,
+      messageText: 'saved',
+      effectiveMarkdown: 'effective',
+      displayMarkdown: 'display',
+    };
+    const reviewRefetch = jest.fn().mockResolvedValue({ data: { table: newAiTable }, error: null });
+    const prepare = jest.fn().mockResolvedValue(prepared);
+    const commit = jest.fn().mockRejectedValue(new Error('connection lost'));
+    mockUseGetSteelReviewQuery.mockReturnValue({
+      data: { table },
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: reviewRefetch,
+    });
+    mockUsePrepareSteelReviewMutation.mockReturnValue({ mutateAsync: prepare });
+    mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
+    let receiptResolve!: (result: { data: { status: 'committed'; snapshot: typeof snapshot }; error: null }) => void;
+    const receiptRefetch = jest.fn().mockImplementation(() => new Promise((resolve) => {
+      receiptResolve = resolve;
+    }));
+    mockUseGetSteelReviewReceiptQuery.mockReturnValue({
+      data: undefined,
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: receiptRefetch,
+    });
+
+    const { store } = renderDialog();
+    const input = screen.getByRole('textbox', { name: '數量 row-1' });
+    fireEvent.change(input, { target: { value: '9' } });
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_close' }));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_discard_unsaved' }));
+    await waitFor(() => expect(receiptRefetch).toHaveBeenCalledTimes(1));
+    fireEvent.change(input, { target: { value: '10' } });
+    receiptResolve({ data: { status: 'committed', snapshot }, error: null });
+
+    await waitFor(() => {
+      expect(input).toHaveValue('10');
+      expect(screen.getByText('com_ui_steel_review_unsaved_caption')).toBeInTheDocument();
+      expect(screen.queryByText('com_ui_steel_review_conflict')).toBeNull();
+      expect(store.get(steelReviewSelectionAtom)?.capturedAuthority?.revision)
+        .toBe(snapshot.revision);
+      expect(store.get(steelReviewSelectionAtom)?.capturedAuthority?.table.rows[0]?.values.數量?.effective)
+        .toBe('9');
+    });
+  });
+
   it('keeps source rows visible while sources load or fail, then renders an image preview', async () => {
     const row = {
       rowId: 'drawing-row',
