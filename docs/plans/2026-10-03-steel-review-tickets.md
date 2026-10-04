@@ -50,3 +50,5 @@ Slice04 evidence at `65c9b2140c980c80b9797abc5909bbe5df65e072`: the separately m
 Latest Save contract revision: the new UI submits only changed-row operations and a captured expected revision. The backend applies them to the latest saved effective Markdown while keeping the AI baseline immutable. Same-output nonconflicting row/field edits automatically merge, including another Save between prepare and commit; genuine conflicts preserve the draft, and new AI generations remain separate owners. Ticket05/GitHub#6 records the approved transaction-current merge and intent receipt contract. Slice05 is still In progress; this note records scope, not runtime verification.
 
 Latest session-history revision: successful own Save confirmation clears undo/redo and the focus group; failed/unknown saves retain history. Later local inputs during Save remain unsaved drafts even when confirmation clears history. Server AI baselines, saved revisions and immutable receipts remain retained.
+
+05 補充：R12 衝突恢復已獲獨立架構審核並更新 GitHub #6：同 owner 409 回傳最新版與全部衝突，檔案／頁碼 selector 警示，保留草稿並以下次指定最新版保存；同值自動消除。仍為 In progress，需真實 UI／API／Mongo／reload、精準鏡像與兩軸審查通過後才標 Verified。

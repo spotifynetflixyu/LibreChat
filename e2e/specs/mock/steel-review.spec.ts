@@ -3973,4 +3973,245 @@ test.describe('Steel managed source review', () => {
     expect(await persistedSnapshot(conversationId)).toEqual(before);
   });
 
+  test('operation conflicts return all unequal fields and one authoritative latest Markdown without writes', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const rows = structuredClone(table.rows);
+    rows[0].values['數量'].effective = '7';
+    rows[0].values['長度'].effective = '1234';
+    rows[1].values['數量'].effective = '8';
+    const foreign = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+    expect(foreign.status()).toBe(200);
+    const committed = await page.request.post(`${url}/commit`, { headers, data: await foreign.json() });
+    expect(committed.status()).toBe(200);
+    const before = await persistedSnapshot(conversationId);
+    const current = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    const latest = await current.json() as { table: SteelReviewTable };
+    const request: SteelReviewOperationPrepare = { conversationId, messageId, kind: 'ocr_result',
+      tableId: table.tableId, partIndex: table.partIndex, outputId: table.outputId, revision: table.revision,
+      operations: [
+        { type: 'update', rowId: table.rows[0].rowId, changes: [
+          { header: '數量', value: '9' }, { header: '長度', value: '1234' },
+        ] },
+        { type: 'update', rowId: table.rows[1].rowId, changes: [{ header: '數量', value: '10' }] },
+      ] };
+    const conflict = await page.request.post(`${url}/prepare`, { headers, data: request });
+    expect(conflict.status()).toBe(409);
+    const body = await conflict.json();
+    expect(body.code).toBe('REVIEW_CONFLICT');
+    expect(body.recovery.table).toMatchObject({ conversationId, messageId, outputId: table.outputId,
+      revision: latest.table.revision, effectiveMarkdown: latest.table.effectiveMarkdown,
+      isLatest: true, readOnly: false });
+    expect(body.recovery.table.rows).toEqual(latest.table.rows);
+    expect(body.recovery.conflicts).toHaveLength(2);
+    expect(body.recovery.conflicts).toEqual(expect.arrayContaining([
+      { kind: 'field', rowId: table.rows[0].rowId, header: '數量', expected: '2', current: '7', requested: '9' },
+      { kind: 'field', rowId: table.rows[1].rowId, header: '數量', expected: '3', current: '8', requested: '10' },
+    ]));
+    expect(body.recovery.conflicts.some((field: { header?: string }) => field.header === '長度')).toBe(false);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    const retry = await page.request.post(`${url}/prepare`, { headers, data: { ...request,
+      revision: body.recovery.table.revision } });
+    expect(retry.status()).toBe(200);
+    const prepared = await retry.json() as SteelReviewOperationPrepared;
+    const saved = await page.request.post(`${url}/commit`, { headers, data: {
+      ...prepared.operationRequest, operationId: prepared.operationId, digest: prepared.digest } });
+    expect(saved.status()).toBe(200);
+    const after = await persistedSnapshot(conversationId);
+    expect(after.reviews[0]?.rows).toMatchObject([
+      { values: { 數量: { baseline: '2', effective: '9' }, 長度: { baseline: '1000', effective: '1234' } } },
+      { values: { 數量: { baseline: '3', effective: '10' } } },
+    ]);
+    expect(after.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
+  });
+
+  test('all requested values already equal latest automatically remove conflict without DB writes', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const rows = structuredClone(table.rows);
+    rows[0].values['數量'].effective = '7';
+    rows[1].values['數量'].effective = '8';
+    const foreign = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+    expect(foreign.status()).toBe(200);
+    expect((await page.request.post(`${url}/commit`, { headers, data: await foreign.json() })).status()).toBe(200);
+    const before = await persistedSnapshot(conversationId);
+    const request: SteelReviewOperationPrepare = { conversationId, messageId, kind: 'ocr_result',
+      tableId: table.tableId, partIndex: table.partIndex, outputId: table.outputId, revision: table.revision,
+      operations: [
+        { type: 'update', rowId: table.rows[0].rowId, changes: [{ header: '數量', value: '7' }] },
+        { type: 'update', rowId: table.rows[1].rowId, changes: [{ header: '數量', value: '8' }] },
+      ] };
+    const prepare = await page.request.post(`${url}/prepare`, { headers, data: request });
+    expect(prepare.status()).toBe(200);
+    const prepared = await prepare.json() as SteelReviewOperationPrepared;
+    expect(prepared.caption.changedRows).toBe(0);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    const saved = await page.request.post(`${url}/commit`, { headers, data: {
+      ...prepared.operationRequest, operationId: prepared.operationId, digest: prepared.digest } });
+    expect(saved.status()).toBe(200);
+    expect((await saved.json()).changedRows).toBe(0);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+  });
+
+  test('conflict recovery marks file and page then retries its latest revision preserving foreign fields', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+    await quantity.fill('9');
+    await quantity.press('Enter');
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const rows = structuredClone(table.rows);
+    rows[0].values['數量'].effective = '7';
+    rows[0].values['長度'].effective = '1234';
+    const foreign = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+    expect(foreign.status()).toBe(200);
+    expect((await page.request.post(`${url}/commit`, { headers, data: await foreign.json() })).status()).toBe(200);
+    const before = await persistedSnapshot(conversationId);
+    const failedResponse = page.waitForResponse((response) => response.request().method() === 'POST' &&
+      response.url().endsWith(`${url}/prepare`));
+    await dialog.getByRole('button', { name: /^Save/ }).click();
+    const conflict = await failedResponse;
+    expect(conflict.status()).toBe(409);
+    const body = await conflict.json();
+    await expect(dialog.getByRole('alert')).toBeVisible();
+    await expect(quantity).toHaveValue('9');
+    await expect(dialog.locator('tbody tr').first().locator('td').nth(2).getByRole('textbox')).toHaveValue('1234');
+    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeEnabled();
+    await expect(dialog.getByRole('img', { name: /Conflicts on this file/i }).first()).toBeVisible();
+    await expect(dialog.getByRole('img', { name: /Conflicts on this page/i }).first()).toBeVisible();
+    const fileMenu = dialog.getByRole('combobox', { name: 'Source file', exact: true });
+    await fileMenu.click();
+    await expect(page.getByRole('option', { name: /alpha.pdf/ }).getByRole('img', { name: /Conflicts on this file/i })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(dialog).toBeVisible();
+    const pageMenu = dialog.getByRole('combobox', { name: 'Page', exact: true });
+    await pageMenu.click();
+    await expect(page.getByRole('option', { name: /^1\b/ }).getByRole('img', { name: /Conflicts on this page/i })).toBeVisible();
+    await page.keyboard.press('Escape');
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    const retryRequest = page.waitForRequest((request) => request.method() === 'POST' && request.url().endsWith(`${url}/prepare`));
+    await dialog.getByRole('button', { name: /^Save/ }).click();
+    const request = (await retryRequest).postDataJSON() as SteelReviewOperationPrepare;
+    expect(request.revision).toBe(body.recovery.table.revision);
+    expect(request.revision).not.toBe(table.revision);
+    expect(request.operations).toEqual([{ type: 'update', rowId: table.rows[0].rowId,
+      changes: [{ header: '數量', value: '9' }] }]);
+    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+    await expect(dialog.getByRole('img', { name: /Conflicts on this (file|page)/i })).toHaveCount(0);
+    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
+    const after = await persistedSnapshot(conversationId);
+    expect(after.messages.find((message) => message.messageId === messageId)?.text)
+      .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1234 | 9 | 1 |'));
+    expect(after.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
+    await page.keyboard.press('Escape');
+    await page.reload();
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    await expect(quantity).toHaveValue('9');
+    expect(await persistedSnapshot(conversationId)).toEqual(after);
+  });
+
+  test('a Save racing after conflict recovery returns a newer conflict instead of overwriting', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const request: SteelReviewOperationPrepare = { conversationId, messageId, kind: 'ocr_result',
+      tableId: table.tableId, partIndex: table.partIndex, outputId: table.outputId, revision: table.revision,
+      operations: [{ type: 'update', rowId: table.rows[0].rowId, changes: [{ header: '數量', value: '9' }] }] };
+    let expectedRevision = table.revision;
+    for (const value of ['7', '8']) {
+      const current = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+      const latest = await current.json() as { table: SteelReviewTable };
+      const rows = structuredClone(latest.table.rows);
+      rows[0].values['數量'].effective = value;
+      const foreign = await page.request.post(`${url}/prepare`, { headers, data: { ...latest.table, rows } });
+      expect(foreign.status()).toBe(200);
+      expect((await page.request.post(`${url}/commit`, { headers, data: await foreign.json() })).status()).toBe(200);
+      const before = await persistedSnapshot(conversationId);
+      const failed = await page.request.post(`${url}/prepare`, { headers, data: { ...request, revision: expectedRevision } });
+      expect(failed.status()).toBe(409);
+      const body = await failed.json();
+      expect(body.recovery.conflicts).toEqual([{ kind: 'field', rowId: table.rows[0].rowId,
+        header: '數量', expected: value === '7' ? '2' : '7', current: value, requested: '9' }]);
+      expect(body.recovery.table.revision).not.toBe(expectedRevision);
+      expect(body.recovery.table.rows[0].values['數量'].effective).toBe(value);
+      expectedRevision = body.recovery.table.revision;
+      expect(await persistedSnapshot(conversationId)).toEqual(before);
+    }
+  });
+
+  for (const location of ['located', 'unlocated'] as const) {
+    test(`using the latest conflicted value preserves other local changes: ${location}`, async ({ page }) => {
+      const { conversationId, messageId } = await seedCurrent(ocr);
+      conversations.push(conversationId);
+      if (location === 'unlocated') {
+        await withMongo(async (db) => {
+          await db.collection('steel_conversation_ocr_state').updateOne({ conversationId }, { $set: { sourceMappings: [] } });
+        });
+      }
+      const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+      await page.goto(`/c/${conversationId}`);
+      await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+      const rowsUi = dialog.locator('tbody tr');
+      const quantity = rowsUi.first().locator('td').nth(3).getByRole('textbox');
+      const otherQuantity = rowsUi.last().locator('td').nth(3).getByRole('textbox');
+      await quantity.fill('9');
+      await quantity.press('Enter');
+      await otherQuantity.fill('10');
+      await otherQuantity.press('Enter');
+      const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+      const { table } = await read.json() as { table: SteelReviewTable };
+      const rows = structuredClone(table.rows);
+      rows[0].values['數量'].effective = '7';
+      rows[0].values['長度'].effective = '1234';
+      const foreign = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+      expect(foreign.status()).toBe(200);
+      expect((await page.request.post(`${url}/commit`, { headers, data: await foreign.json() })).status()).toBe(200);
+      const before = await persistedSnapshot(conversationId);
+      const failed = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith(`${url}/prepare`));
+      await dialog.getByRole('button', { name: /^Save/ }).click();
+      const response = await failed;
+      expect(response.status()).toBe(409);
+      const body = await response.json();
+      if (location === 'unlocated') {
+        await expect(dialog.getByRole('img', { name: /Conflicts in unlocated rows/i })).toBeVisible();
+      }
+      await dialog.getByRole('button', { name: /Use latest value/i }).first().click();
+      await expect(quantity).toHaveValue('7');
+      await expect(otherQuantity).toHaveValue('10');
+      await expect(rowsUi.first().locator('td').nth(2).getByRole('textbox')).toHaveValue('1234');
+      await expect(dialog.getByRole('button', { name: /Use latest value/i })).toHaveCount(0);
+      await expect(dialog.getByRole('img', { name: /Conflicts (on this|in unlocated)/i })).toHaveCount(0);
+      await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
+      expect(await persistedSnapshot(conversationId)).toEqual(before);
+      const nextRequest = page.waitForRequest((request) => request.method() === 'POST' && request.url().endsWith(`${url}/prepare`));
+      await dialog.getByRole('button', { name: /^Save/ }).click();
+      const request = (await nextRequest).postDataJSON() as SteelReviewOperationPrepare;
+      expect(request.revision).toBe(body.recovery.table.revision);
+      expect(request.operations).toEqual([{ type: 'update', rowId: table.rows[1].rowId,
+        changes: [{ header: '數量', value: '10' }] }]);
+      await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+      const after = await persistedSnapshot(conversationId);
+      expect(after.reviews[0]?.rows).toMatchObject([
+        { values: { 數量: { baseline: '2', effective: '7' }, 長度: { effective: '1234' } } },
+        { values: { 數量: { baseline: '3', effective: '10' } } },
+      ]);
+      expect(after.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
+      if (location === 'unlocated') expect(after.reviews[0]?.rows.every((row: SteelReviewTable['rows'][number]) => row.source === null)).toBe(true);
+    });
+  }
+
 });
