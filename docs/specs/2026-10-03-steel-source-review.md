@@ -214,7 +214,7 @@
 
 ### 聊天精準更新與保存邊界
 
-- 使用者確認每份 Markdown 有完整 title，且同一個回覆內 title 不重複。新覆核以已授權的 conversation／messageId ＋完整 title 直接定位表格；不同訊息的同名 title 互不影響。含「｜」的標題須比對完整字串，不能只比對種類前綴。後端保留 latest output／generation、指定版本、穩定 rowId、權限及交易驗證；content part／offset 是後端定位出的實際寫入範圍，不作為新 UI 的邏輯表格身分。歷史缺標題或重複目標安全拒寫，舊已保存收據及 storage 身分保持相容，讀取不回填 DB。
+- 使用者確認每份 Markdown 有完整 title，且同一個回覆內 title 不重複。新覆核以已授權的 conversation／messageId ＋完整 title 直接定位表格；不同訊息的同名 title 互不影響。含「｜」的標題須比對完整字串，不能只比對種類前綴。後端保留 latest output／generation、指定版本、穩定 rowId、權限及交易驗證；content part／offset 是後端定位出的實際寫入範圍，不作為新 UI 的邏輯表格身分。缺標題或重複目標安全拒寫，讀取不回填 DB。所有覆核讀取、保存與收據查詢一律使用 messageId ＋完整 title，不保留表格序號、partIndex、tableId alias 或舊整表提交的相容入口；前端只提交變更 rows。原始 AI、已保存人工資料、穩定列身分及本協定的重試收據仍由後端保存。
 - 每個受管理表格綁定 authenticated user／tenant、聊天、訊息、content part、邏輯結果、表格／區段 owner 與版本；system order 另綁定報價 run、OCR 依據、客戶快照與 內部 customer_quote 計算 owner；不再綁定 customer_quote 聊天 target。
 - 前端保存只提交本次 rows 的新增、修改、刪除及復原操作，包含穩定 rowId、變更欄位新值、來源檔案 ID／單頁及 expected revision，不回傳 AI 原版、baseline 或未修改的整張表。後端讀取同 messageId／output 的最新已保存有效 Markdown 與 ledger 作為底稿；AI 原版另存供彈窗比較，不能每次 Save 覆蓋先前人工修改。
 - expected revision 是衝突比較基準。後端從同 owner 的原 AI 基準或不可變 saved receipt 取得該版本，與交易內最新資料逐欄比較；不同列或同列不同欄位可自動合併，同欄位已等於本次新值為淨零，同欄位不同修改則保留草稿並拒寫。來源檔案／頁碼視為一組；刪除及復原採整列衝突檢查，新增位置以最新完整 ledger 分配穩定序號。不能猜測缺失歷史基準，不能把新 AI output 當成同版合併目標。
