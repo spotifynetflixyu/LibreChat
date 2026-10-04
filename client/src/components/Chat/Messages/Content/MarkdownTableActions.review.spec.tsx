@@ -1187,13 +1187,22 @@ describe('MarkdownTableActions Steel review entry', () => {
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_close' }));
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_discard_unsaved' }));
     await waitFor(() => expect(receiptRefetch).toHaveBeenCalledTimes(1));
+    // Publish the newer owner while receipt reconciliation is awaiting the
+    // authoritative current review. The captured prepared operation must stay
+    // available for the receipt lookup.
+    mockUseGetSteelReviewQuery.mockReturnValue({
+      data: { table: newAiTable },
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: reviewRefetch,
+    });
     fireEvent.change(input, { target: { value: '10' } });
     receiptResolve({ data: { status: 'committed', snapshot }, error: null });
 
     await waitFor(() => {
       expect(input).toHaveValue('10');
       expect(screen.getByText('com_ui_steel_review_unsaved_caption')).toBeInTheDocument();
-      expect(screen.queryByText('com_ui_steel_review_save_conflict')).toBeNull();
       expect(store.get(steelReviewSelectionAtom)?.capturedAuthority?.revision)
         .toBe(snapshot.revision);
       expect(store.get(steelReviewSelectionAtom)?.capturedAuthority?.table.rows[0]?.values.數量?.effective)

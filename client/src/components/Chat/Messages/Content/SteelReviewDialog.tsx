@@ -429,10 +429,20 @@ export default function SteelReviewDialog({
     if (!capturedAuthority || !table || authorityMatchesLiveTable) {
       return;
     }
+    // Keep the prepared operation available for its commit or receipt lookup
+    // while a newer live owner is being published. The receipt belongs to the
+    // captured session and must be allowed to acknowledge that operation
+    // before the live-owner guard can mark the dialog stale.
+    if (preparedRef.current && (
+      savePhase === 'preparing' || savePhase === 'committing' ||
+      savePhase === 'uncertain' || savePhase === 'reconciling'
+    )) {
+      return;
+    }
     preparedRef.current = undefined;
     setSavePhase('stale');
     setSaveErrorCode('REVIEW_CONFLICT');
-  }, [authorityMatchesLiveTable, capturedAuthority, table]);
+  }, [authorityMatchesLiveTable, capturedAuthority, savePhase, table]);
   const dirtyRowIds = useMemo(
     () => (baseTable ? getSteelReviewDirtyRowIds(baseTable, draftState) : []),
     [baseTable, draftState],
