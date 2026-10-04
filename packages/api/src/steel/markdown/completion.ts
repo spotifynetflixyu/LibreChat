@@ -110,7 +110,7 @@ interface CompletionReceipt {
   customerPreparationId?: string;
   delegateCompleted?: boolean;
   revisionSaved?: boolean;
-  revisionSnapshot?: SteelQuotationCurrentSystemOrder;
+  systemOrderSnapshot?: SteelQuotationCurrentSystemOrder;
   acceptedRun?: SteelQuotationActiveRun;
   latest?: ISteelQuotationState;
 }
@@ -582,6 +582,7 @@ export async function finalizeSteelMarkdownTurn(
           JSON.stringify(parseMarkdownTables(savedOrder.markdown))) {
           throw new SteelResponseCompletionError('invalid_system_order');
         }
+        receipt.systemOrderSnapshot = savedOrder;
         receipt.expectedSystemOrderHash = savedOrder.sha256;
         receipt.expectedSystemOrderRunId = savedOrder.runId;
       }
@@ -630,7 +631,7 @@ export async function finalizeSteelMarkdownTurn(
     // Save the complete merged message before canonical OCR points at its message id.
     const prePersistState = await dependencies.quotation.readState(scope);
     await persistQuotationResponse(input, dependencies, receipt.canonicalMarkdown,
-      prePersistState, receipt.acceptedRun, false, receipt.revisionSnapshot);
+      prePersistState, receipt.acceptedRun, false, receipt.systemOrderSnapshot);
     if (receipt.ocr && !receipt.ocrSaved) {
       if (claimToken && receipt.candidateToken) {
         requireSaved(await dependencies.ocr.updateDelegateFinalizationJournal({
@@ -678,7 +679,7 @@ export async function finalizeSteelMarkdownTurn(
       const result = await receipt.preparedRevision.commit();
       if (!result.ok) throw new SteelResponseCompletionError(result.code);
       receipt.revisionSaved = true;
-      receipt.revisionSnapshot = result.snapshot;
+      receipt.systemOrderSnapshot = result.snapshot;
     }
     if (receipt.ocr && claimToken && receipt.candidateToken && !receipt.delegateCompleted) {
       requireSaved(await dependencies.ocr.updateDelegateFinalizationJournal({ ...claim,
@@ -742,7 +743,7 @@ export async function finalizeSteelMarkdownTurn(
         order: currentOcr?.markdown, customer: latest?.currentCustomer?.customerMarkdown,
         completed: true, language: input.req.cookies?.lang || input.req.headers?.['accept-language']?.split(',')[0] || 'en' });
     if (input.stage !== 'workflow') await persistQuotationResponse(
-      input, dependencies, markdown, latest, receipt.acceptedRun, true, receipt.revisionSnapshot,
+      input, dependencies, markdown, latest, receipt.acceptedRun, true, receipt.systemOrderSnapshot,
     );
     const [publishedOcr, publishedState] = await Promise.all([
       dependencies.ocr.readCurrentOcrResult(scope.conversationId), dependencies.quotation.readState(scope),
