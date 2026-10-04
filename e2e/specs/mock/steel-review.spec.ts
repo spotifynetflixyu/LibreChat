@@ -3618,39 +3618,41 @@ test.describe('Steel managed source review', () => {
       .toMatchObject({ deleted: false, values: { 數量: { baseline: '2', effective: '8' } } });
   });
 
-  test('concurrent operation additions at the same anchor retain both identities and unique ordinals', async ({ page }) => {
-    const { conversationId, messageId } = await seedCurrent(ocr);
-    conversations.push(conversationId);
-    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
-    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
-    const { table } = await read.json() as { table: SteelReviewTable };
-    const identity = { conversationId, messageId, kind: 'ocr_result' as const, tableId: table.tableId,
-      partIndex: table.partIndex, outputId: table.outputId, revision: table.revision };
-    const rowIds = [randomUUID(), randomUUID()];
-    const pending: SteelReviewOperationPrepared[] = [];
-    for (const rowId of rowIds) {
-      const response = await page.request.post(`${url}/prepare`, { headers, data: { ...identity,
-        operations: [{ type: 'add', rowId, position: { kind: 'after', rowId: table.rows[1].rowId },
-          changes: [{ header: '零件編號', value: 'CONCURRENT-ADD' }, { header: '數量', value: '1' }] }] } });
-      expect(response.status()).toBe(200);
-      pending.push(await response.json() as SteelReviewOperationPrepared);
-    }
-    const bodies = pending.map((prepared) => ({ ...prepared.operationRequest, operationId: prepared.operationId, digest: prepared.digest }));
-    const first = await page.request.post(`${url}/commit`, { headers, data: bodies[0] });
-    expect(first.status()).toBe(200);
-    const firstReceipt = await first.json();
-    const second = await page.request.post(`${url}/commit`, { headers, data: bodies[1] });
-    expect(second.status()).toBe(200);
-    const merged = await persistedSnapshot(conversationId);
-    const added = merged.reviews[0]?.rows.filter((row: SteelReviewTable['rows'][number]) => row.origin === 'manual');
-    expect(added.map((row: SteelReviewTable['rows'][number]) => row.rowId)).toEqual(rowIds);
-    expect(added.map((row: SteelReviewTable['rows'][number]) => row.insertion?.ordinal)).toEqual([0, 1]);
-    const replay = await page.request.post(`${url}/commit`, { headers, data: bodies[0] });
-    expect(replay.status()).toBe(200);
-    expect(await replay.json()).toEqual(firstReceipt);
-    expect(await persistedSnapshot(conversationId)).toEqual(merged);
-    expect(merged.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
-  });
+  for (const position of ['after', 'start', 'end'] as const) {
+    test(`concurrent operation additions at the same anchor retain both identities and unique ordinals: ${position}`, async ({ page }) => {
+      const { conversationId, messageId } = await seedCurrent(ocr);
+      conversations.push(conversationId);
+      const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+      const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+      const { table } = await read.json() as { table: SteelReviewTable };
+      const identity = { conversationId, messageId, kind: 'ocr_result' as const, tableId: table.tableId,
+        partIndex: table.partIndex, outputId: table.outputId, revision: table.revision };
+      const rowIds = [randomUUID(), randomUUID()];
+      const pending: SteelReviewOperationPrepared[] = [];
+      for (const rowId of rowIds) {
+        const response = await page.request.post(`${url}/prepare`, { headers, data: { ...identity,
+          operations: [{ type: 'add', rowId, position: position === 'after' ? { kind: position, rowId: table.rows[1].rowId } : { kind: position },
+            changes: [{ header: '零件編號', value: 'CONCURRENT-ADD' }, { header: '數量', value: '1' }] }] } });
+        expect(response.status()).toBe(200);
+        pending.push(await response.json() as SteelReviewOperationPrepared);
+      }
+      const bodies = pending.map((prepared) => ({ ...prepared.operationRequest, operationId: prepared.operationId, digest: prepared.digest }));
+      const first = await page.request.post(`${url}/commit`, { headers, data: bodies[0] });
+      expect(first.status()).toBe(200);
+      const firstReceipt = await first.json();
+      const second = await page.request.post(`${url}/commit`, { headers, data: bodies[1] });
+      expect(second.status()).toBe(200);
+      const merged = await persistedSnapshot(conversationId);
+      const added = merged.reviews[0]?.rows.filter((row: SteelReviewTable['rows'][number]) => row.origin === 'manual');
+      expect(added.map((row: SteelReviewTable['rows'][number]) => row.rowId)).toEqual(rowIds);
+      expect(added.map((row: SteelReviewTable['rows'][number]) => row.insertion?.ordinal)).toEqual([0, 1]);
+      const replay = await page.request.post(`${url}/commit`, { headers, data: bodies[0] });
+      expect(replay.status()).toBe(200);
+      expect(await replay.json()).toEqual(firstReceipt);
+      expect(await persistedSnapshot(conversationId)).toEqual(merged);
+      expect(merged.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
+    });
+  }
 
   test('an operation delete conflicts with a changed row and a disjoint update preserves foreign deletion', async ({ page }) => {
     const { conversationId, messageId } = await seedCurrent(ocr);
