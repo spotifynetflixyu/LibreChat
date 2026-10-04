@@ -2660,6 +2660,78 @@ test.describe('Steel managed source review', () => {
     expect(await persistedSnapshot(conversationId)).toEqual(saved);
   });
 
+  for (const boundary of ['enter', 'blur']) {
+    test(`OCR refocusing a cell starts a new undo group after ${boundary}`, async ({ page }) => {
+      const { conversationId } = await seedCurrent(ocr);
+      conversations.push(conversationId);
+      const before = await persistedSnapshot(conversationId);
+      await page.goto(`/c/${conversationId}`);
+      await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+      const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+      await quantity.fill('7');
+      if (boundary === 'enter') await quantity.press('Enter');
+      else await dialog.getByRole('heading', { name: 'Steel source review' }).click();
+      await quantity.fill('8');
+      await quantity.press('Enter');
+      await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
+      await expect(quantity).toHaveValue('7');
+      await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
+      await expect(quantity).toHaveValue('2');
+      await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+      await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
+      await expect(quantity).toHaveValue('7');
+      await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
+      await expect(quantity).toHaveValue('8');
+      expect(await persistedSnapshot(conversationId)).toEqual(before);
+    });
+  }
+
+  test('OCR additions allocate new ordinals after saved manual rows and tombstones', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    await expect.poll(() => dialog.locator('canvas').evaluate((element: HTMLCanvasElement) => element.width)).toBeGreaterThan(0);
+    for (const [index, part] of ['FIRST-SAVED', 'SECOND-SAVED', 'AFTER-TOMBSTONE'].entries()) {
+      if (index === 2) {
+        await dialog.locator('tbody tr').filter({ has: page.locator('input[value="SECOND-SAVED"]') })
+          .getByRole('button', { name: /^Delete row(?:\s|$)/ }).click();
+        await dialog.getByRole('button', { name: /^Save/ }).click();
+        await expect.poll(async () => (await persistedSnapshot(conversationId)).reviews[0]?.receipts.length).toBe(3);
+        await page.keyboard.press('Escape');
+        await expect(dialog).not.toBeVisible();
+        await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+      }
+      await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
+      const row = dialog.locator('tbody tr').last();
+      await row.locator('td').nth(1).getByRole('textbox').fill(part);
+      await row.locator('td').nth(3).getByRole('textbox').fill('4');
+      await row.locator('td').nth(3).getByRole('textbox').press('Enter');
+      await dialog.getByRole('button', { name: /^Save/ }).click();
+      await expect.poll(async () => (await persistedSnapshot(conversationId)).reviews[0]?.receipts.length).toBe(index === 2 ? 4 : index + 1);
+      await expect(dialog.locator(`input[value="${part}"]`)).toBeVisible();
+      await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+    }
+    const saved = await persistedSnapshot(conversationId);
+    const manual = saved.reviews[0]?.rows.filter((row) => row.origin === 'manual');
+    expect(manual).toMatchObject([
+      { deleted: false, insertion: { kind: 'after', ordinal: 0 } },
+      { deleted: true, insertion: { kind: 'after', ordinal: 1 } },
+      { deleted: false, insertion: { kind: 'after', ordinal: 2 } },
+    ]);
+    expect(new Set(manual?.map((row) => row.insertion?.rowId)).size).toBe(1);
+    expect(saved.messages.find((message) => message.messageId === messageId)?.text).toContain('FIRST-SAVED');
+    expect(saved.messages.find((message) => message.messageId === messageId)?.text).toContain('AFTER-TOMBSTONE');
+    expect(saved.messages.find((message) => message.messageId === messageId)?.text).not.toContain('SECOND-SAVED');
+    await page.keyboard.press('Escape');
+    await page.reload();
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    await expect(dialog.locator('input[value="AFTER-TOMBSTONE"]')).toBeVisible();
+    expect(await persistedSnapshot(conversationId)).toEqual(saved);
+  });
+
   test('consecutive OCR Saves preserve each semantic undo value without writing their inverses', async ({ page }) => {
     const { conversationId, messageId } = await seedCurrent(ocr);
     conversations.push(conversationId);
@@ -3252,6 +3324,10 @@ test.describe('Steel managed source review', () => {
     await expect(reviewValue(dialog, '9')).toBeVisible();
     await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
     await expect(dialog.getByRole('button', { name: /^Save/ })).toBeDisabled();
+    await expect(dialog.getByRole('textbox')).toHaveCount(0);
+    await expect(dialog.getByRole('button', { name: 'Add row', exact: true })).toHaveCount(0);
+    await expect(dialog.getByRole('button', { name: /^Change source/ })).toHaveCount(0);
+    await expect(dialog.getByRole('button', { name: /^Delete row/ })).toHaveCount(0);
     await page.keyboard.press('Escape');
     await expect(dialog.getByRole('alertdialog')).toBeVisible();
     await expect(dialog.getByRole('button', { name: 'Save updates', exact: true })).toBeDisabled();
