@@ -1516,8 +1516,8 @@ test.describe('Steel managed source review', () => {
     const before = await persistedSnapshot(conversationId);
     const manualValues = new Map([['零件編號', 'API-MANUAL'], ['數量', '4']]);
     const makeManual = (ordinal: number) => ({
-      rowId: randomUUID(), origin: 'manual', deleted: false,
-      insertion: { kind: 'end', ordinal }, source: null,
+      rowId: randomUUID(), origin: 'manual' as const, deleted: false,
+      insertion: { kind: 'end' as const, ordinal }, source: null,
       values: Object.fromEntries(table.headers.map((header) => [header, {
         baseline: null, effective: manualValues.get(header) ?? '',
       }])),
