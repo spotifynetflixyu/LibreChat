@@ -24,6 +24,8 @@ export interface SteelReviewDraftState {
   changeSequence: number;
 }
 
+type SteelReviewDraftLogicalOwner = SteelReviewIdentity & { outputId: string };
+
 interface SteelReviewDraftSnapshot {
   cells: Record<string, string>;
   touched: Record<string, string>;
@@ -60,30 +62,61 @@ export function getSteelReviewDraftOwnerKey(
 }
 
 export function areSteelReviewDraftOwnersSame(left: string, right: string): boolean {
-  if (left === right) {
-    return true;
-  }
-  try {
-    const parseOwner = (key: string): Record<string, unknown> => {
-      try {
-        return JSON.parse(key) as Record<string, unknown>;
-      } catch {
-        const jsonEnd = key.lastIndexOf('}');
-        return JSON.parse(key.slice(0, jsonEnd + 1)) as Record<string, unknown>;
-      }
-    };
-    const leftOwner = parseOwner(left);
-    const rightOwner = parseOwner(right);
-    return [
+  const parseOwner = (key: string): SteelReviewDraftLogicalOwner | undefined => {
+    const jsonEnd = key.lastIndexOf('}');
+    if (jsonEnd < 0) {
+      return undefined;
+    }
+    const suffix = key.slice(jsonEnd + 1);
+    if (suffix !== '' && !/^:[^:]+$/u.test(suffix)) {
+      return undefined;
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(key.slice(0, jsonEnd + 1));
+    } catch {
+      return undefined;
+    }
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return undefined;
+    }
+    const owner = parsed;
+    const allowedFields = new Set([
       'conversationId',
       'messageId',
       'kind',
       'title',
       'outputId',
-    ].every((field) => leftOwner[field] === rightOwner[field]);
-  } catch {
-    return false;
-  }
+      'baseRevision',
+    ]);
+    if (Object.keys(owner).some((field) => !allowedFields.has(field))) {
+      return undefined;
+    }
+    const readString = (field: string): string | undefined => {
+      const value = Reflect.get(owner, field);
+      return typeof value === 'string' && value.length > 0 ? value : undefined;
+    };
+    const conversationId = readString('conversationId');
+    const messageId = readString('messageId');
+    const kind = readString('kind');
+    const title = readString('title');
+    const outputId = readString('outputId');
+    const baseRevision = Reflect.get(owner, 'baseRevision');
+    if (!conversationId || !messageId || (kind !== 'ocr_result' && kind !== 'system_order') ||
+      !title || !outputId || (baseRevision !== undefined &&
+        (typeof baseRevision !== 'string' || baseRevision.length === 0))) {
+      return undefined;
+    }
+    return { conversationId, messageId, kind, title, outputId };
+  };
+  const leftOwner = parseOwner(left);
+  const rightOwner = parseOwner(right);
+  return leftOwner !== undefined && rightOwner !== undefined &&
+    leftOwner.conversationId === rightOwner.conversationId &&
+    leftOwner.messageId === rightOwner.messageId &&
+    leftOwner.kind === rightOwner.kind &&
+    leftOwner.title === rightOwner.title &&
+    leftOwner.outputId === rightOwner.outputId;
 }
 
 export function getSteelReviewDraftCellKey(rowId: string, header: string): string {

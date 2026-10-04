@@ -38,6 +38,7 @@ import type {
 } from 'librechat-data-provider';
 import type { MutableRefObject } from 'react';
 import type { SteelReviewCapturedAuthority, SteelReviewIdentity, SteelReviewSelection } from './SteelReview/state';
+import type { SteelReviewDraftState } from './SteelReview/session';
 import type { SteelReviewPreviewRows } from './SteelReview/filter';
 import type { TableMatrix } from './table/export';
 import {
@@ -135,6 +136,25 @@ type SteelReviewScope = SteelReviewIdentity;
 type CaptureScoped<T> = {
   captureId: string;
   value: T;
+};
+
+type CaptureUiState = {
+  closeRequested: boolean;
+  savePhase: SavePhase;
+  saveErrorCode?: SteelReviewErrorCode;
+  saveRecovery?: SteelReviewRecovery;
+  confirmedSave?: SteelReviewConfirmedSave;
+  receiptInput: CaptureScoped<ReceiptInput> | null;
+  discardRequested: boolean;
+  receiptFailed: boolean;
+};
+
+const emptyCaptureUiState: CaptureUiState = {
+  closeRequested: false,
+  savePhase: 'idle',
+  receiptInput: null,
+  discardRequested: false,
+  receiptFailed: false,
 };
 
 function getCaptureScopedValue<T>(
@@ -410,14 +430,82 @@ export default function SteelReviewDialog({
     ? getSteelReviewDraftOwnerKey(identity, baseTable, captureId)
     : `pending:${dialogStateKey}`;
   const [draftState, setDraftState] = useAtom(steelReviewDraftStateFamily(draftStateAtomKey));
-  const [closeRequested, setCloseRequested] = useState(false);
-  const [savePhase, setSavePhase] = useState<SavePhase>('idle');
-  const [saveErrorCode, setSaveErrorCode] = useState<SteelReviewErrorCode>();
-  const [saveRecovery, setSaveRecovery] = useState<SteelReviewRecovery>();
-  const [confirmedSave, setConfirmedSave] = useState<SteelReviewConfirmedSave>();
-  const [receiptInput, setReceiptInput] = useState<CaptureScoped<ReceiptInput> | null>(null);
-  const [discardRequested, setDiscardRequested] = useState(false);
-  const [receiptFailed, setReceiptFailed] = useState(false);
+  const setDraftStateScoped = useCallback((
+    update: SteelReviewDraftState | ((current: SteelReviewDraftState) => SteelReviewDraftState),
+  ) => {
+    if (!captureId) {
+      return;
+    }
+    setDraftState((current) => {
+      const liveSelection = store.get(steelReviewSelectionAtom);
+      if (!liveSelection || liveSelection.captureId !== captureId ||
+        !sameSteelReviewIdentity(liveSelection, identity)) {
+        return current;
+      }
+      return typeof update === 'function' ? update(current) : update;
+    });
+  }, [captureId, identity, setDraftState, store]);
+  const [captureUiState, setCaptureUiState] = useState<CaptureScoped<CaptureUiState>>();
+  const currentCaptureUi = captureId && captureUiState?.captureId === captureId
+    ? captureUiState.value
+    : emptyCaptureUiState;
+  const {
+    closeRequested,
+    savePhase,
+    saveErrorCode,
+    saveRecovery,
+    confirmedSave,
+    receiptInput,
+    discardRequested,
+    receiptFailed,
+  } = currentCaptureUi;
+  const setCaptureUiValue = useCallback(function setCaptureUiValue<K extends keyof CaptureUiState>(
+    field: K,
+    value: CaptureUiState[K] | ((current: CaptureUiState[K]) => CaptureUiState[K]),
+  ) {
+    if (!captureId) {
+      return;
+    }
+    setCaptureUiState((current) => {
+      const liveSelection = store.get(steelReviewSelectionAtom);
+      if (!liveSelection || liveSelection.captureId !== captureId ||
+        !sameSteelReviewIdentity(liveSelection, identity)) {
+        return current;
+      }
+      const previous = current?.captureId === captureId ? current.value : emptyCaptureUiState;
+      const nextValue = typeof value === 'function'
+        ? (value as (current: CaptureUiState[K]) => CaptureUiState[K])(previous[field])
+        : value;
+      return {
+        captureId,
+        value: { ...previous, [field]: nextValue },
+      };
+    });
+  }, [captureId, identity, setCaptureUiState, store]);
+  const setCloseRequested = useCallback((value: boolean | ((current: boolean) => boolean)) => {
+    setCaptureUiValue('closeRequested', value);
+  }, [setCaptureUiValue]);
+  const setSavePhase = useCallback((value: SavePhase | ((current: SavePhase) => SavePhase)) => {
+    setCaptureUiValue('savePhase', value);
+  }, [setCaptureUiValue]);
+  const setSaveErrorCode = useCallback((value: SteelReviewErrorCode | undefined | ((current: SteelReviewErrorCode | undefined) => SteelReviewErrorCode | undefined)) => {
+    setCaptureUiValue('saveErrorCode', value);
+  }, [setCaptureUiValue]);
+  const setSaveRecovery = useCallback((value: SteelReviewRecovery | undefined | ((current: SteelReviewRecovery | undefined) => SteelReviewRecovery | undefined)) => {
+    setCaptureUiValue('saveRecovery', value);
+  }, [setCaptureUiValue]);
+  const setConfirmedSave = useCallback((value: SteelReviewConfirmedSave | undefined | ((current: SteelReviewConfirmedSave | undefined) => SteelReviewConfirmedSave | undefined)) => {
+    setCaptureUiValue('confirmedSave', value);
+  }, [setCaptureUiValue]);
+  const setReceiptInput = useCallback((value: CaptureScoped<ReceiptInput> | null) => {
+    setCaptureUiValue('receiptInput', value);
+  }, [setCaptureUiValue]);
+  const setDiscardRequested = useCallback((value: boolean | ((current: boolean) => boolean)) => {
+    setCaptureUiValue('discardRequested', value);
+  }, [setCaptureUiValue]);
+  const setReceiptFailed = useCallback((value: boolean | ((current: boolean) => boolean)) => {
+    setCaptureUiValue('receiptFailed', value);
+  }, [setCaptureUiValue]);
   const previousCaptureIdRef = useRef<string>();
   const submittedChangeSequenceRef = useRef(0);
   const discardBoundaryRef = useRef<number>();
@@ -456,7 +544,7 @@ export default function SteelReviewDialog({
     setCloseRequested(false);
     setSaveErrorCode(undefined);
     setSavePhase('idle');
-  }, [captureId]);
+  }, [captureId, setCloseRequested, setConfirmedSave, setDiscardRequested, setReceiptFailed, setReceiptInput, setSaveErrorCode, setSavePhase, setSaveRecovery]);
   const {
     selectedFileId,
     pageNumber,
@@ -531,6 +619,25 @@ export default function SteelReviewDialog({
       expectedAuthority,
     );
   }, [captureId, getCapturedAuthority, identity, store]);
+  const clearSelectionForCapture = useCallback((
+    expectedCaptureId: string | undefined,
+    expectedOutputId?: string,
+  ) => {
+    if (!expectedCaptureId) {
+      return;
+    }
+    setSelection((current) => {
+      if (!current || current.captureId !== expectedCaptureId ||
+        !sameSteelReviewIdentity(current, identity)) {
+        return current;
+      }
+      if (expectedOutputId && current.capturedAuthority &&
+        current.capturedAuthority.outputId !== expectedOutputId) {
+        return current;
+      }
+      return null;
+    });
+  }, [identity, setSelection]);
   const persistCapturedAuthority = useCallback((authority: {
     outputId: string;
     revision: string;
@@ -583,7 +690,7 @@ export default function SteelReviewDialog({
     preparedRef.current = undefined;
     setSavePhase('stale');
     setSaveErrorCode('REVIEW_CONFLICT');
-  }, [authorityMatchesLiveTable, captureId, capturedAuthority, savePhase, table]);
+  }, [authorityMatchesLiveTable, captureId, capturedAuthority, saveErrorCode, savePhase, setSaveErrorCode, setSavePhase, table]);
   const dirtyRowIds = useMemo(
     () => (baseTable ? getSteelReviewDirtyRowIds(baseTable, draftState) : []),
     [baseTable, draftState],
@@ -661,16 +768,16 @@ export default function SteelReviewDialog({
       return;
     }
     if (areSteelReviewDraftOwnersSame(draftState.ownerKey, draftStateKey)) {
-      setDraftState((current) => ({ ...current, ownerKey: draftStateKey }));
+      setDraftStateScoped((current) => ({ ...current, ownerKey: draftStateKey }));
       return;
     }
-    setDraftState(createSteelReviewDraftState(draftStateKey));
-  }, [draftState.ownerKey, draftStateKey, setDraftState]);
+    setDraftStateScoped(createSteelReviewDraftState(draftStateKey));
+  }, [draftState.ownerKey, draftStateKey, setDraftStateScoped]);
   useEffect(() => {
     if (!isOpen) {
       setCloseRequested(false);
     }
-  }, [isOpen]);
+  }, [isOpen, setCloseRequested]);
   useEffect(() => {
     setDialogState((state) => {
       if (state.isOpen === isOpen) {
@@ -771,7 +878,7 @@ export default function SteelReviewDialog({
       if (!table || !canEdit || !row.rowId) {
         return;
       }
-      setDraftState((current) => {
+      setDraftStateScoped((current) => {
         const ownerDraft = current.ownerKey === draftStateKey
           ? current
           : createSteelReviewDraftState(draftStateKey);
@@ -783,13 +890,13 @@ export default function SteelReviewDialog({
         return next;
       });
     },
-    [baseTable, canEdit, captureId, draftStateKey, setDraftState, table],
+    [baseTable, canEdit, captureId, draftStateKey, setDraftStateScoped, table],
   );
 
   const clearRecovery = useCallback(() => {
     recoveryRef.current = undefined;
     setSaveRecovery(undefined);
-  }, []);
+  }, [setSaveRecovery]);
 
   const adoptConflictRecovery = useCallback((recovery: SteelReviewRecovery) => {
     if (!captureId) {
@@ -818,15 +925,15 @@ export default function SteelReviewDialog({
       { preserveUnchangedRows: true },
     );
     latestDraftStateRef.current = rebased;
-    setDraftState(rebased);
+    setDraftStateScoped(rebased);
     exportBaseRowsRef.current = recoveredTable.rows;
     exportRowsRef.current = applySteelReviewDrafts(recoveredTable.rows, rebased);
     setSaveRecovery(recovery);
-  }, [captureId, identity, persistCapturedAuthority, queryClient, setDraftState]);
+  }, [captureId, identity, persistCapturedAuthority, queryClient, setDraftStateScoped, setSaveRecovery]);
 
   const onCellHistoryBoundary = useCallback(() => {
-    setDraftState((current) => finishSteelReviewDraftHistory(current));
-  }, [setDraftState]);
+    setDraftStateScoped((current) => finishSteelReviewDraftHistory(current));
+  }, [setDraftStateScoped]);
   const onSourceEdit = useCallback((row: SteelReviewRow) => {
     if (!canEdit || !row.rowId) {
       return;
@@ -838,7 +945,7 @@ export default function SteelReviewDialog({
       if (!table || !canEdit || !row.rowId) {
         return;
       }
-      setDraftState((current) => {
+      setDraftStateScoped((current) => {
         const ownerDraft = current.ownerKey === draftStateKey
           ? current
           : createSteelReviewDraftState(draftStateKey);
@@ -850,7 +957,7 @@ export default function SteelReviewDialog({
         return next;
       });
     },
-    [baseTable, canEdit, captureId, draftStateKey, setDraftState, table],
+    [baseTable, canEdit, captureId, draftStateKey, setDraftStateScoped, table],
   );
   const applyLatestConflictValue = useCallback((conflict: SteelReviewConflict) => {
     const recovery = getCaptureScopedValue(recoveryRef, captureId);
@@ -879,7 +986,7 @@ export default function SteelReviewDialog({
     if (saveRecovery?.conflicts.length === 1) {
       recoveryRef.current = undefined;
     }
-  }, [captureId, onCellChange, onSourceChange, saveRecovery?.conflicts.length, sources]);
+  }, [captureId, onCellChange, onSourceChange, saveRecovery?.conflicts.length, setSaveRecovery, sources]);
   const updateDraftRows = useCallback((next: typeof draftState) => {
     if (getCaptureScopedValue(pendingSnapshotRef, captureId)) {
       exportRowsRef.current = applySteelReviewDrafts(exportBaseRowsRef.current, next);
@@ -889,7 +996,7 @@ export default function SteelReviewDialog({
   const onAddRow = useCallback(() => {
     const editTable = baseTable ?? table;
     if (!editTable || !canEdit) return;
-    setDraftState((current) => {
+    setDraftStateScoped((current) => {
       const ownerDraft = current.ownerKey === draftStateKey
         ? current
         : createSteelReviewDraftState(draftStateKey);
@@ -906,33 +1013,33 @@ export default function SteelReviewDialog({
         : null;
       return updateDraftRows(addSteelReviewDraftRow(ownerDraft, editTable, anchor, source));
     });
-  }, [baseTable, canEdit, draftRows, draftStateKey, pageNumber, selectedSource, setDraftState, table, updateDraftRows]);
+  }, [baseTable, canEdit, draftRows, draftStateKey, pageNumber, selectedSource, setDraftStateScoped, table, updateDraftRows]);
   const onDeleteRow = useCallback((row: SteelReviewRow) => {
     const editTable = baseTable ?? table;
     if (!editTable || !canEdit) return;
-    setDraftState((current) => {
+    setDraftStateScoped((current) => {
       const ownerDraft = current.ownerKey === draftStateKey
         ? current
         : createSteelReviewDraftState(draftStateKey);
       const isSaved = editTable.rows.some((candidate) => candidate.rowId === row.rowId);
       return updateDraftRows(deleteSteelReviewDraftRow(ownerDraft, row, isSaved));
     });
-  }, [baseTable, canEdit, draftStateKey, setDraftState, table, updateDraftRows]);
+  }, [baseTable, canEdit, draftStateKey, setDraftStateScoped, table, updateDraftRows]);
   const onRestoreRow = useCallback((row: SteelReviewRow) => {
     if (!(baseTable ?? table) || !canEdit) return;
-    setDraftState((current) => {
+    setDraftStateScoped((current) => {
       const ownerDraft = current.ownerKey === draftStateKey
         ? current
         : createSteelReviewDraftState(draftStateKey);
       return updateDraftRows(restoreSteelReviewDraftRow(ownerDraft, row));
     });
-  }, [baseTable, canEdit, draftStateKey, setDraftState, table, updateDraftRows]);
+  }, [baseTable, canEdit, draftStateKey, setDraftStateScoped, table, updateDraftRows]);
   const onUndo = useCallback(() => {
-    setDraftState((current) => updateDraftRows(undoSteelReviewDraft(current)));
-  }, [setDraftState, updateDraftRows]);
+    setDraftStateScoped((current) => updateDraftRows(undoSteelReviewDraft(current)));
+  }, [setDraftStateScoped, updateDraftRows]);
   const onRedo = useCallback(() => {
-    setDraftState((current) => updateDraftRows(redoSteelReviewDraft(current)));
-  }, [setDraftState, updateDraftRows]);
+    setDraftStateScoped((current) => updateDraftRows(redoSteelReviewDraft(current)));
+  }, [setDraftStateScoped, updateDraftRows]);
   const latestDraftStateRef = useRef(draftState);
   latestDraftStateRef.current = draftState;
   const latestTableRef = useRef(table);
@@ -1032,14 +1139,14 @@ export default function SteelReviewDialog({
       rebaseSteelReviewDraftState(currentDraft, snapshot.rows, submittedChangeSequence),
     );
     latestDraftStateRef.current = rebasedDraft;
-    setDraftState((current) => {
+    setDraftStateScoped((current) => {
       const rebased = clearSteelReviewDraftHistory(
         rebaseSteelReviewDraftState(current, snapshot.rows, submittedChangeSequence),
       );
       exportRowsRef.current = applySteelReviewDrafts(snapshot.rows, rebased);
       return rebased;
     });
-  }, [captureId, getCapturedAuthority, identity, persistCapturedAuthority, queryClient, setConfirmedSave, setDraftState, table]);
+  }, [captureId, getCapturedAuthority, identity, persistCapturedAuthority, queryClient, setConfirmedSave, setDraftStateScoped, table]);
   const applyConfirmedNoOp = useCallback((
     currentTable: SteelReviewTable,
     submittedChangeSequence: number,
@@ -1056,14 +1163,14 @@ export default function SteelReviewDialog({
       submittedChangeSequence,
     ));
     latestDraftStateRef.current = rebasedDraft;
-    setDraftState((current) => {
+    setDraftStateScoped((current) => {
       const rebased = clearSteelReviewDraftHistory(
         rebaseSteelReviewDraftState(current, currentTable.rows, submittedChangeSequence),
       );
       exportRowsRef.current = applySteelReviewDrafts(currentTable.rows, rebased);
       return rebased;
     });
-  }, [persistCapturedAuthority, setDraftState]);
+  }, [persistCapturedAuthority, setDraftStateScoped]);
   const saveChanges = useCallback(async (): Promise<boolean> => {
     const initiatedCaptureId = captureId;
     if (!initiatedCaptureId) {
@@ -1241,7 +1348,7 @@ export default function SteelReviewDialog({
         savePromiseRef.current = undefined;
       }
     }
-  }, [adoptConflictRecovery, applyConfirmedNoOp, applyConfirmedSnapshot, baseTable, canSave, captureId, clearRecovery, commitMutation, dirtyRowCount, draftRows, draftState, getCapturedAuthority, hasActiveCapturedSession, identity, isCurrentCapture, prepareMutation, queryClient, refetchAuthoritativeMessages, refetchCurrentReview, savePhase, table]);
+  }, [adoptConflictRecovery, applyConfirmedNoOp, applyConfirmedSnapshot, baseTable, canSave, captureId, clearRecovery, commitMutation, dirtyRowCount, draftRows, draftState, getCapturedAuthority, hasActiveCapturedSession, identity, isCurrentCapture, prepareMutation, queryClient, refetchAuthoritativeMessages, refetchCurrentReview, savePhase, setSaveErrorCode, setSavePhase, table]);
   const getCurrentReviewTable = useCallback(() => {
     const tableKey = DynamicQueryKeys.steelReview(
       identity.conversationId,
@@ -1300,7 +1407,7 @@ export default function SteelReviewDialog({
     };
   }, [ensureSaved, getExportMatrix, isOpen, saveGateRef]);
   const clearDraftAndClose = useCallback(() => {
-    setDraftState(createSteelReviewDraftState(draftStateKey));
+    setDraftStateScoped(createSteelReviewDraftState(draftStateKey));
     latestDraftStateRef.current = createSteelReviewDraftState(draftStateKey);
     preparedRef.current = undefined;
     discardBoundaryRef.current = undefined;
@@ -1312,13 +1419,13 @@ export default function SteelReviewDialog({
     setDiscardRequested(false);
     setCloseRequested(false);
     clearCapturedAuthority();
-    setSelection(null);
-  }, [clearCapturedAuthority, clearRecovery, draftStateKey, setDraftState, setSelection]);
+    clearSelectionForCapture(captureId, capturedAuthority?.outputId);
+  }, [captureId, capturedAuthority?.outputId, clearCapturedAuthority, clearRecovery, clearSelectionForCapture, draftStateKey, setCloseRequested, setDiscardRequested, setDraftStateScoped, setReceiptFailed, setReceiptInput, setSaveErrorCode, setSavePhase]);
   const finishDiscardAtBoundary = useCallback((rows: readonly SteelReviewRow[]) => {
     const boundary = discardBoundaryRef.current ?? latestDraftStateRef.current.changeSequence;
     const rebased = rebaseSteelReviewDraftState(latestDraftStateRef.current, rows, boundary);
     latestDraftStateRef.current = rebased;
-    setDraftState(rebased);
+    setDraftStateScoped(rebased);
     preparedRef.current = undefined;
     discardBoundaryRef.current = undefined;
     setReceiptFailed(false);
@@ -1330,11 +1437,11 @@ export default function SteelReviewDialog({
     if (remainingDirtyRows.length === 0) {
       setCloseRequested(false);
       clearCapturedAuthority();
-      setSelection(null);
+      clearSelectionForCapture(captureId, getCapturedAuthority(captureId)?.outputId);
       return;
     }
     setCloseRequested(false);
-  }, [clearCapturedAuthority, setDraftState, setSelection]);
+  }, [captureId, clearCapturedAuthority, clearSelectionForCapture, getCapturedAuthority, setCloseRequested, setDiscardRequested, setDraftStateScoped, setReceiptFailed, setReceiptInput, setSaveErrorCode, setSavePhase]);
   const requestReceiptBeforeDiscard = useCallback(() => {
     const prepared = getCaptureScopedValue(preparedRef, captureId);
     if (!prepared) {
@@ -1360,7 +1467,7 @@ export default function SteelReviewDialog({
       },
     });
     setDiscardRequested(true);
-  }, [captureId, clearDraftAndClose]);
+  }, [captureId, clearDraftAndClose, setDiscardRequested, setReceiptFailed, setReceiptInput, setSavePhase]);
   const discardDraftAndClose = useCallback(() => {
     if (savePhase === 'uncertain' || savePhase === 'reconciling') {
       requestReceiptBeforeDiscard();
@@ -1376,7 +1483,7 @@ export default function SteelReviewDialog({
     setSaveErrorCode(undefined);
     setSavePhase('reconciling');
     setDiscardRequested(true);
-  }, [captureId, receiptInput]);
+  }, [captureId, receiptInput, setDiscardRequested, setReceiptFailed, setSaveErrorCode, setSavePhase]);
   const requestClose = useCallback(() => {
     if (dirtyRowCount > 0 || savePhase === 'preparing' || savePhase === 'committing' ||
       savePhase === 'uncertain' || savePhase === 'reconciling') {
@@ -1384,8 +1491,8 @@ export default function SteelReviewDialog({
       return;
     }
     clearCapturedAuthority();
-    setSelection(null);
-  }, [clearCapturedAuthority, dirtyRowCount, savePhase, setSelection]);
+    clearSelectionForCapture(captureId, getCapturedAuthority(captureId)?.outputId);
+  }, [captureId, clearCapturedAuthority, clearSelectionForCapture, dirtyRowCount, getCapturedAuthority, savePhase, setCloseRequested]);
   useEffect(() => {
     if (!discardRequested || !receiptInput) {
       return undefined;
@@ -1482,7 +1589,7 @@ export default function SteelReviewDialog({
           boundary,
         );
         latestDraftStateRef.current = rebased;
-        setDraftState(rebased);
+        setDraftStateScoped(rebased);
         preparedRef.current = undefined;
         discardBoundaryRef.current = undefined;
         setReceiptInput(null);
@@ -1493,7 +1600,7 @@ export default function SteelReviewDialog({
         if (getSteelReviewDirtyRowIds({ rows: status.snapshot.rows }, rebased).length === 0) {
           setCloseRequested(false);
           clearCapturedAuthority();
-          setSelection(null);
+          clearSelectionForCapture(initiatedCaptureId, prepared.outputId);
         } else {
           setCloseRequested(false);
         }
@@ -1511,7 +1618,7 @@ export default function SteelReviewDialog({
     return () => {
       active = false;
     };
-  }, [applyConfirmedNoOp, applyConfirmedSnapshot, clearCapturedAuthority, discardRequested, finishDiscardAtBoundary, getCapturedAuthority, hasActiveCapturedSession, identity.conversationId, isCurrentCapture, queryClient, receiptInput, refetchAuthoritativeMessages, refetchCurrentReview, refetchReceipt, setDraftState, setSelection]);
+  }, [applyConfirmedNoOp, applyConfirmedSnapshot, clearCapturedAuthority, clearSelectionForCapture, discardRequested, finishDiscardAtBoundary, getCapturedAuthority, hasActiveCapturedSession, identity.conversationId, isCurrentCapture, queryClient, receiptInput, refetchAuthoritativeMessages, refetchCurrentReview, refetchReceipt, setCloseRequested, setDiscardRequested, setDraftStateScoped, setReceiptFailed, setReceiptInput, setSaveErrorCode, setSavePhase]);
   const saveAndClose = useCallback(async () => {
     const initiatedCaptureId = captureId;
     const expectedAuthority = getCapturedAuthority(initiatedCaptureId);
@@ -1525,9 +1632,9 @@ export default function SteelReviewDialog({
     if (getSteelReviewDirtyRowIds(confirmedTable, latestDraft).length === 0) {
       setCloseRequested(false);
       clearCapturedAuthority();
-      setSelection(null);
+      clearSelectionForCapture(initiatedCaptureId, expectedAuthority?.outputId);
     }
-  }, [captureId, clearCapturedAuthority, getCapturedAuthority, hasCurrentCapturedSession, saveChanges, setSelection, table]);
+  }, [captureId, clearCapturedAuthority, clearSelectionForCapture, getCapturedAuthority, hasCurrentCapturedSession, saveChanges, setCloseRequested, table]);
   const downloadCsv = useCallback(async () => {
     const initiatedCaptureId = captureId;
     const expectedAuthority = getCapturedAuthority(initiatedCaptureId);

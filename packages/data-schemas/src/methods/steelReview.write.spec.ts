@@ -269,6 +269,72 @@ describe('Steel review write methods', () => {
     })).rejects.toMatchObject({ code: 'REVIEW_NOT_FOUND' });
   });
 
+  it('reuses a proven titleless ledger when a changed save supplies its title', async () => {
+    const models = createModels(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const originalMarkdown = markdownFor('P-1');
+    await models.Conversation.create({
+      conversationId: 'conversation-titleless', user: 'user-1', tenantId: 'tenant-1',
+      title: 'Review', endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId: 'assistant-titleless', conversationId: 'conversation-titleless', user: 'user-1',
+      tenantId: 'tenant-1', isCreatedByUser: false, text: originalMarkdown,
+    });
+    await State.create({
+      conversationId: 'conversation-titleless', currentOcrResultMarkdown: originalMarkdown,
+      currentOcrResultMessageId: 'assistant-titleless', currentOcrResultGenerationId: 'generation-1',
+    });
+    const writer = createSteelReviewWriteMethods(mongoose);
+    const firstInput = makeInput({
+      operationId: 'operation-titleless-first', revision: 'generation-1',
+      previousValue: 'P-1', nextValue: 'P-7', conversationId: 'conversation-titleless', messageId: 'assistant-titleless',
+    });
+    const trustedRowId = aiRowIdFor('ocr_result:generation-1', ['A', 'P-1']);
+    const first = await writer.commitSteelReview(rehashInput({
+      ...firstInput,
+      rows: firstInput.rows.map((row) => ({ ...row, rowId: trustedRowId })),
+      caption: { ...firstInput.caption, changedRowIds: [trustedRowId] },
+    }));
+    const savedBefore = await ReviewOutput.findOne({ conversationId: 'conversation-titleless' }).lean();
+    expect(savedBefore).toBeDefined();
+    await ReviewOutput.updateOne({ _id: savedBefore?._id }, { $unset: { title: 1 } });
+    const beforeNoOp = await ReviewOutput.findById(savedBefore?._id).lean();
+    const noopInput = makeInput({
+      operationId: 'operation-titleless-noop', revision: first.revision,
+      previousValue: 'P-7', nextValue: 'P-7', changedRows: 0,
+      conversationId: 'conversation-titleless', messageId: 'assistant-titleless',
+    });
+    await expect(writer.commitSteelReview(rehashInput({
+      ...noopInput,
+      rows: noopInput.rows.map((row) => ({ ...row, rowId: trustedRowId })),
+      caption: { ...noopInput.caption, changedRowIds: [] },
+    }))).resolves.toMatchObject({ changedRows: 0 });
+    const afterNoOp = await ReviewOutput.findById(savedBefore?._id).lean();
+    expect(afterNoOp?.title).toBeUndefined();
+    expect(afterNoOp?.receipts).toHaveLength(1);
+    expect(afterNoOp?.updatedAt).toEqual(beforeNoOp?.updatedAt);
+
+    const secondInput = makeInput({
+      operationId: 'operation-titleless-second', revision: first.revision,
+      previousValue: 'P-7', nextValue: 'P-9', conversationId: 'conversation-titleless', messageId: 'assistant-titleless',
+    });
+    const second = await writer.commitSteelReview(rehashInput({
+      ...secondInput,
+      rows: secondInput.rows.map((row) => ({ ...row, rowId: trustedRowId })),
+      caption: { ...secondInput.caption, changedRowIds: [trustedRowId] },
+    }));
+    const savedAfter = await ReviewOutput.find({ conversationId: 'conversation-titleless' }).lean();
+    expect(savedAfter).toHaveLength(1);
+    expect(savedAfter[0]?._id).toEqual(savedBefore?._id);
+    expect(savedAfter[0]?.tableId).toBe(savedBefore?.tableId);
+    expect(savedAfter[0]?.title).toBe('ocr_result');
+    expect(savedAfter[0]?.rows[0]?.values.零件編號?.effective).toBe('P-9');
+    expect(savedAfter[0]?.receipts).toHaveLength(2);
+    expect(second.changedRows).toBe(1);
+  });
+
   it('persists a manual ledger row and counts its later tombstone exactly once', async () => {
     const models = createModels(mongoose);
     const State = createSteelConversationOcrStateModel(mongoose);

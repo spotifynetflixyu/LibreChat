@@ -669,6 +669,92 @@ describe('Steel review read methods', () => {
     }));
   });
 
+  it('resolves two independently proven titleless ledgers without cross-associating them', async () => {
+    const models = createModels(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const read = createSteelReviewReadMethods(mongoose);
+    const conversationId = 'multi-ledger-titleless-conversation';
+    const messageId = 'multi-ledger-titleless-message';
+    const outputId = 'ocr_result:multi-ledger-titleless';
+    const markdown = [
+      '## ocr_result｜first',
+      '',
+      '| Code | Value |',
+      '| --- | --- |',
+      '| A | P-1 |',
+      '',
+      '## ocr_result｜second',
+      '',
+      '| Code | Value |',
+      '| --- | --- |',
+      '| B | P-2 |',
+    ].join('\n');
+    const firstRowId = createHash('sha256')
+      .update(`${outputId}:0:${JSON.stringify(['A', 'P-1'])}`)
+      .digest('hex');
+    const secondRowId = createHash('sha256')
+      .update(`${outputId}:0:${JSON.stringify(['B', 'P-2'])}`)
+      .digest('hex');
+    const rows = (rowId: string, code: string, value: string): SteelReviewRow[] => [{
+      rowId,
+      source: null,
+      origin: 'ai',
+      deleted: false,
+      values: {
+        Code: { baseline: code, effective: code },
+        Value: { baseline: value, effective: value },
+      },
+    }];
+    await models.Conversation.create({
+      conversationId, user: 'title-proof-user', title: 'Title proof', endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId, conversationId, user: 'title-proof-user', isCreatedByUser: false,
+      text: markdown, content: [{ type: 'text', text: markdown }],
+    });
+    await State.create({
+      conversationId, currentOcrResultMarkdown: markdown,
+      currentOcrResultMessageId: messageId, currentOcrResultGenerationId: 'multi-ledger-titleless',
+    });
+    await ReviewOutput.create([
+      {
+        userId: 'title-proof-user', conversationId, kind: 'ocr_result', messageId,
+        tableId: 'ledger-first', outputId, revision: outputId, state: 'historical',
+        headers: ['Code', 'Value'], rows: rows(firstRowId, 'A', 'P-1'),
+        aiBaselineMarkdown: markdown, effectiveMarkdown: markdown,
+      },
+      {
+        userId: 'title-proof-user', conversationId, kind: 'ocr_result', messageId,
+        tableId: 'ledger-second', outputId, revision: outputId, state: 'historical',
+        headers: ['Code', 'Value'], rows: rows(secondRowId, 'B', 'P-2'),
+        aiBaselineMarkdown: markdown, effectiveMarkdown: markdown,
+      },
+    ]);
+    const before = await ReviewOutput.find({ conversationId }).lean();
+
+    await expect(read.readSteelReview({
+      userId: 'title-proof-user', conversationId, kind: 'ocr_result', messageId,
+      title: 'ocr_result｜first',
+    })).resolves.toEqual(expect.objectContaining({
+      tableId: 'ledger-first',
+      title: 'ocr_result｜first',
+      rows: [expect.objectContaining({ rowId: firstRowId })],
+    }));
+    await expect(read.readSteelReview({
+      userId: 'title-proof-user', conversationId, kind: 'ocr_result', messageId,
+      title: 'ocr_result｜second',
+    })).resolves.toEqual(expect.objectContaining({
+      tableId: 'ledger-second',
+      title: 'ocr_result｜second',
+      rows: [expect.objectContaining({ rowId: secondRowId })],
+    }));
+
+    const after = await ReviewOutput.find({ conversationId }).lean();
+    expect(after).toEqual(before);
+    expect(after.every((candidate) => candidate.title === undefined)).toBe(true);
+  });
+
   it('fails closed when two titleless managed sections prove the same requested ledger', async () => {
     const outputId = 'ocr_result:multi-title-ambiguous';
     const rowValues = {

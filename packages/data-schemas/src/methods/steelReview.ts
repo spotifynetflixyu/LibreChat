@@ -187,19 +187,44 @@ function titleStorageId(owner: SteelReviewTitleOwner): string {
   return `${owner.kind}:title:${createHash('sha256').update(encodeSteelReviewTitleOwner(owner)).digest('hex')}`;
 }
 
-function sidecarHasTitle(
+function provenSidecarTitle(
   output: Pick<ISteelReviewOutput, 'title' | 'kind' | 'outputId' | 'headers' | 'rows' | 'aiRawMarkdown' | 'aiBaselineMarkdown' | 'humanMarkdown' | 'effectiveMarkdown'>,
-  title: string,
-): boolean {
+): string | undefined {
   const baseline = output.aiBaselineMarkdown ?? output.aiRawMarkdown;
   const effective = output.effectiveMarkdown ?? output.humanMarkdown;
-  if (!baseline || !effective || output.title !== undefined && output.title !== title) {
-    return false;
+  if (!baseline || !effective) {
+    return undefined;
   }
   const baselineTables = parseSteelReviewMarkdownTables(baseline)
     .filter((candidate) => isManagedReviewTitle(output.kind, candidate.title));
   const effectiveTables = parseSteelReviewMarkdownTables(effective)
     .filter((candidate) => isManagedReviewTitle(output.kind, candidate.title));
+  const matchesEffectiveAiRows = (candidate: { headers: string[]; rows: string[][] }): boolean => {
+    const expectedRows = output.rows.filter((row) => !row.deleted && (row.origin ?? 'ai') === 'ai');
+    let candidateIndex = 0;
+    for (const stored of expectedRows) {
+      const matchIndex = candidate.rows.findIndex((row, index) => index >= candidateIndex &&
+        output.headers.every((header, columnIndex) =>
+          (stored.values[header]?.effective ?? '') ===
+          (normalizeSteelReviewEffectiveValue(row[columnIndex] ?? '') ?? '')));
+      if (matchIndex < 0) {
+        return false;
+      }
+      candidateIndex = matchIndex + 1;
+    }
+    return true;
+  };
+  if (output.title !== undefined) {
+    if (!isManagedReviewTitle(output.kind, output.title)) {
+      return undefined;
+    }
+    const explicitBaseline = baselineTables.filter((candidate) =>
+      candidate.title === output.title && JSON.stringify(candidate.headers) === JSON.stringify(output.headers));
+    const explicitEffective = effectiveTables.filter((candidate) =>
+      candidate.title === output.title && JSON.stringify(candidate.headers) === JSON.stringify(output.headers) &&
+      matchesEffectiveAiRows(candidate));
+    return explicitBaseline.length === 1 && explicitEffective.length === 1 ? output.title : undefined;
+  }
   const aiRows = output.rows.filter((row) => (row.origin ?? 'ai') === 'ai');
   const baselineCandidates = baselineTables.filter((candidate) => {
     if (JSON.stringify(candidate.headers) !== JSON.stringify(output.headers)) {
@@ -226,23 +251,26 @@ function sidecarHasTitle(
     return aiIndex === aiRows.length;
   });
   if (baselineCandidates.length !== 1) {
-    return false;
+    return undefined;
   }
   const [baselineTable] = baselineCandidates;
-  if (!baselineTable || baselineTable.title !== title || output.title !== undefined && output.title !== title) {
-    return false;
+  if (!baselineTable) {
+    return undefined;
   }
   const effectiveCandidates = effectiveTables.filter((candidate) => {
-    if (candidate.title !== title || JSON.stringify(candidate.headers) !== JSON.stringify(output.headers) ||
-      candidate.rows.length !== output.rows.filter((row) => !row.deleted).length) {
+    if (candidate.title !== baselineTable.title || JSON.stringify(candidate.headers) !== JSON.stringify(output.headers)) {
       return false;
     }
-    return output.rows.filter((row) => !row.deleted).every((stored, rowIndex) =>
-      output.headers.every((header, columnIndex) =>
-        (stored.values[header]?.effective ?? '') ===
-        (normalizeSteelReviewEffectiveValue(candidate.rows[rowIndex]?.[columnIndex] ?? '') ?? '')));
+    return matchesEffectiveAiRows(candidate);
   });
-  return effectiveCandidates.length === 1;
+  return effectiveCandidates.length === 1 ? baselineTable.title : undefined;
+}
+
+function sidecarHasTitle(
+  output: Pick<ISteelReviewOutput, 'title' | 'kind' | 'outputId' | 'headers' | 'rows' | 'aiRawMarkdown' | 'aiBaselineMarkdown' | 'humanMarkdown' | 'effectiveMarkdown'>,
+  title: string,
+): boolean {
+  return provenSidecarTitle(output) === title;
 }
 
 function sidecarMentionsTitle(
@@ -255,6 +283,17 @@ function sidecarMentionsTitle(
   return [output.aiBaselineMarkdown, output.aiRawMarkdown, output.humanMarkdown, output.effectiveMarkdown]
     .some((markdown) => parseSteelReviewMarkdownTables(markdown ?? '')
       .some((candidate) => candidate.title === title && isManagedReviewTitle(output.kind, candidate.title)));
+}
+
+function sidecarCouldMatchTitle(
+  output: Pick<ISteelReviewOutput, 'title' | 'kind' | 'outputId' | 'headers' | 'rows' | 'aiRawMarkdown' | 'aiBaselineMarkdown' | 'humanMarkdown' | 'effectiveMarkdown'>,
+  title: string,
+): boolean {
+  const provenTitle = provenSidecarTitle(output);
+  if (provenTitle !== undefined) {
+    return provenTitle === title;
+  }
+  return output.title === title || sidecarMentionsTitle(output, title);
 }
 
 function hasCellProperty(cell: SteelReviewCell | undefined, property: keyof SteelReviewCell): boolean {
@@ -876,7 +915,7 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
         ]);
         const [state, historicalRun] = ocrData;
         if (input.title && allSidecarCandidates.some((candidate) =>
-          sidecarMentionsTitle(candidate, input.title!) && !sidecarHasTitle(candidate, input.title!))) {
+          provenSidecarTitle(candidate) === undefined && sidecarCouldMatchTitle(candidate, input.title!))) {
           return null;
         }
         const sidecarCandidates = allSidecarCandidates.filter((candidate) =>
@@ -1007,7 +1046,7 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
         QuotationState.findOne(scopeFilter(input)).lean<ISteelQuotationState>(),
       ]);
       if (input.title && allSidecarCandidates.some((candidate) =>
-        sidecarMentionsTitle(candidate, input.title!) && !sidecarHasTitle(candidate, input.title!))) {
+        provenSidecarTitle(candidate) === undefined && sidecarCouldMatchTitle(candidate, input.title!))) {
         return null;
       }
       const sidecarCandidates = allSidecarCandidates.filter((candidate) =>
@@ -1535,21 +1574,22 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review message changed');
           }
 
-          const outputFilter = {
+          const scopedOutputFilter = {
             ...reviewScope(input),
             kind: input.kind,
             messageId: input.messageId,
-            title: input.title,
             outputId: input.outputId,
           };
-          const outputs = await ReviewOutput.find(outputFilter)
-            .limit(2)
+          const outputFilter = { ...scopedOutputFilter, title: input.title };
+          const outputs = await ReviewOutput.find(scopedOutputFilter)
             .session(session)
             .lean<ISteelReviewOutput[]>();
-          if (outputs.length > 1) {
+          const provenOutputs = outputs.filter((candidate) => sidecarHasTitle(candidate, input.title));
+          const potentiallyMatching = outputs.filter((candidate) => sidecarCouldMatchTitle(candidate, input.title));
+          if (provenOutputs.length > 1 || potentiallyMatching.length !== provenOutputs.length) {
             throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review output authority is ambiguous');
           }
-          const output = outputs[0];
+          const output = provenOutputs[0];
           if (output && !matchesReviewOutputOwner(output, input)) {
             throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review output owner changed');
           }
@@ -2090,7 +2130,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
           };
           const updated = await ReviewOutput.findOneAndUpdate(
             output
-              ? { ...outputFilter, _id: output._id, state: 'current', revision: input.revision }
+              ? { ...scopedOutputFilter, _id: output._id, state: 'current', revision: input.revision }
               : outputFilter,
             update,
             { upsert: !output, new: true, session },

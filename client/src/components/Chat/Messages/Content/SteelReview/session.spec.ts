@@ -7,6 +7,7 @@ import {
   clearSteelReviewDraftHistory,
   createSteelReviewDraftState,
   deleteSteelReviewDraftRow,
+  areSteelReviewDraftOwnersSame,
   getSteelReviewDraftKey,
   getSteelReviewDraftOwnerKey,
   getSteelReviewDirtyRowIds,
@@ -88,6 +89,22 @@ describe('Steel review local draft session', () => {
       title: 'ocr_result',
       outputId: 'ocr_result:generation-1',
     }));
+  });
+
+  it('compares only validated logical owners and ignores capture suffixes', () => {
+    const firstCapture = getSteelReviewDraftOwnerKey(selection, table, 'capture-1');
+    const secondCapture = getSteelReviewDraftOwnerKey(selection, table, 'capture-2');
+
+    expect(areSteelReviewDraftOwnersSame(firstCapture, secondCapture)).toBe(true);
+    expect(areSteelReviewDraftOwnersSame(firstCapture, getSteelReviewDraftOwnerKey({
+      ...selection,
+      title: 'ocr_result｜second',
+    }, table, 'capture-2'))).toBe(false);
+    expect(areSteelReviewDraftOwnersSame('{}', '{}')).toBe(false);
+    expect(areSteelReviewDraftOwnersSame('{"messageId":"message-1"}', '{"messageId":"message-1"}')).toBe(false);
+    expect(areSteelReviewDraftOwnersSame('{"conversationId":"conversation-1","messageId":"message-1","kind":"other","title":"ocr_result","outputId":"ocr_result:generation-1"}',
+      '{"conversationId":"conversation-1","messageId":"message-1","kind":"other","title":"ocr_result","outputId":"ocr_result:generation-1"}')).toBe(false);
+    expect(areSteelReviewDraftOwnersSame(`${firstCapture}:malformed`, `${firstCapture}:malformed`)).toBe(false);
   });
 
   it('keeps delimiter-like owners and actual part scopes distinct', () => {

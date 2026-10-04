@@ -3,11 +3,12 @@ import { createStore, Provider } from 'jotai';
 import { dataService, DynamicQueryKeys } from 'librechat-data-provider';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import type { MutableRefObject } from 'react';
 import type { SteelReviewIdentity, SteelReviewSelection } from './SteelReview/state';
 import { steelReviewDraftStateFamily, steelReviewSelectionAtom } from './SteelReview/state';
-import { getSteelReviewDraftOwnerKey } from './SteelReview/session';
+import { getSteelReviewDraftKey, getSteelReviewDraftOwnerKey } from './SteelReview/session';
+import SteelReviewDialog, { type SteelReviewSaveGate } from './SteelReviewDialog';
 import MarkdownTableActions from './MarkdownTableActions';
-import SteelReviewDialog from './SteelReviewDialog';
 
 jest.mock('pdfjs-dist/build/pdf.worker.mjs?url', () => ({ default: 'pdf-worker.js' }), { virtual: true });
 jest.mock('pdfjs-dist/build/pdf.mjs', () => ({
@@ -173,16 +174,120 @@ function renderDialog(
   selection: SteelReviewSelection = reviewSelection,
   store = createStore(),
   identity: SteelReviewIdentity = reviewIdentity,
+  saveGateRef?: MutableRefObject<SteelReviewSaveGate | undefined>,
 ) {
   store.set(steelReviewSelectionAtom, selection);
   const rendered = render(
     <QueryClientProvider client={queryClient}>
       <Provider store={store}>
-        <SteelReviewDialog identity={identity} />
+        <SteelReviewDialog identity={identity} saveGateRef={saveGateRef} />
       </Provider>
     </QueryClientProvider>,
   );
   return { ...rendered, queryClient, store };
+}
+
+function createReopenLifecycleFixture() {
+  const table = {
+    ...reviewIdentity,
+    kind: 'ocr_result' as const,
+    outputId: 'ocr_result:generation-reopen',
+    revision: 'generation-reopen',
+    latestOutputId: 'ocr_result:generation-reopen',
+    isLatest: true,
+    readOnly: false,
+    headers: ['數量'],
+    rows: [{
+      rowId: 'row-1',
+      source: null,
+      values: { 數量: { baseline: '2', effective: '2' } },
+    }],
+  };
+  const prepared = {
+    ...reviewIdentity,
+    outputId: table.outputId,
+    revision: table.revision,
+    rows: table.rows,
+    operationId: 'operation-reopen-old',
+    digest: 'u'.repeat(64),
+    messageSha256: 'v'.repeat(64),
+    target: { start: 0, end: 1, sha256: 'w'.repeat(64) },
+    replacementText: 'replacement',
+    cleanReplacementText: 'replacement',
+    targetText: 'target',
+    headers: table.headers,
+    effectiveMarkdown: 'effective',
+    displayMarkdown: 'display',
+    caption: { kind: reviewIdentity.kind, changedRows: 1, changedRowIds: ['row-1'] },
+  };
+  const savedSnapshot = {
+    operationId: prepared.operationId,
+    digest: prepared.digest,
+    outputId: prepared.outputId,
+    revision: 'generation-reopen-save-1',
+    headers: table.headers,
+    rows: [{
+      rowId: 'row-1',
+      source: null,
+      values: { 數量: { baseline: '2', effective: '9' } },
+    }],
+    changedRows: 1,
+    changedRowIds: ['row-1'],
+    savedAt: '2026-10-03T00:00:00.000Z',
+    messageSha256: 'x'.repeat(64),
+    conversationId: reviewIdentity.conversationId,
+    messageId: reviewIdentity.messageId,
+    messageText: 'saved',
+    effectiveMarkdown: 'effective',
+    displayMarkdown: 'display',
+  };
+  return { table, prepared, savedSnapshot };
+}
+
+function seedReopenedDraft(
+  store: ReturnType<typeof createStore>,
+  selection: SteelReviewSelection,
+  table: ReturnType<typeof createReopenLifecycleFixture>['table'],
+) {
+  const draftAtomKey = getSteelReviewDraftOwnerKey(selection, table, selection.captureId);
+  const ownerKey = `${getSteelReviewDraftKey(selection, table)}:${selection.captureId}`;
+  const draftAtom = steelReviewDraftStateFamily(draftAtomKey);
+  const history = {
+    cells: { 'row-1\u0000數量': 'history' },
+    touched: { 'row-1\u0000數量': 'history' },
+    cellVersions: { 'row-1\u0000數量': 1 },
+    sourceDrafts: {},
+    sourceVersions: {},
+    rowStates: {},
+    changeSequence: 41,
+  };
+  store.set(draftAtom, (current) => ({
+    ...current,
+    ownerKey,
+    cells: { 'row-1\u0000數量': 'reopened' },
+    touched: { 'row-1\u0000數量': 'reopened' },
+    cellVersions: { 'row-1\u0000數量': 42 },
+    past: [history],
+    future: [history],
+    historyGroup: 'reopened',
+    changeSequence: 42,
+  }));
+  return { draftAtom, before: store.get(draftAtom) };
+}
+
+function createReopenedSelection(
+  table: ReturnType<typeof createReopenLifecycleFixture>['table'],
+  captureId = 'capture-reopened',
+): SteelReviewSelection {
+  return {
+    ...reviewSelection,
+    captureId,
+    capturedAuthority: {
+      outputId: table.outputId,
+      revision: table.revision,
+      table,
+    },
+  };
 }
 
 function renderTable() {
@@ -1423,9 +1528,10 @@ describe('MarkdownTableActions Steel review entry', () => {
     resolveMessages([]);
 
     await waitFor(() => expect(store.get(steelReviewSelectionAtom)).toEqual(foreignSelection));
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    expect(store.get(foreignDraftAtom).cells['row-1\u0000數量']).toBe('foreign');
-    expect(store.get(foreignDraftAtom).changeSequence).toBe(42);
+    await waitFor(() => {
+      expect(store.get(foreignDraftAtom).cells['row-1\u0000數量']).toBe('foreign');
+      expect(store.get(foreignDraftAtom).changeSequence).toBe(42);
+    });
     remounted.unmount();
   });
 
@@ -1533,7 +1639,6 @@ describe('MarkdownTableActions Steel review entry', () => {
     const foreignRender = renderDialog(new QueryClient(), foreignSelection, rendered.store, foreignSelection);
     resolveCommit({ changedRows: 1, changedRowIds: ['row-1'], savedSnapshot });
 
-    await new Promise((resolve) => setTimeout(resolve, 25));
     await waitFor(() => expect(rendered.store.get(steelReviewSelectionAtom)).toEqual(foreignSelection));
     foreignRender.unmount();
   });
@@ -1633,22 +1738,223 @@ describe('MarkdownTableActions Steel review entry', () => {
       },
     };
     rendered.unmount();
-    const reopened = renderDialog(new QueryClient(), reopenedSelection, rendered.store, reviewIdentity);
-    const reopenedDraftKey = getSteelReviewDraftOwnerKey(reviewIdentity, table, reopenedSelection.captureId);
-    const reopenedDraftAtom = steelReviewDraftStateFamily(reopenedDraftKey);
-    rendered.store.set(reopenedDraftAtom, (current) => ({
-      ...current,
-      ownerKey: reopenedDraftKey,
-      cells: { 'row-1\u0000數量': 'reopened' },
-      changeSequence: 42,
-    }));
+    const saveGateRef: MutableRefObject<SteelReviewSaveGate | undefined> = { current: undefined };
+    const reopened = renderDialog(new QueryClient(), reopenedSelection, rendered.store, reviewIdentity, saveGateRef);
+    const reopenedDraft = seedReopenedDraft(rendered.store, reopenedSelection, table);
 
     resolveCommit({ changedRows: 1, changedRowIds: ['row-1'], savedSnapshot });
 
-    await new Promise((resolve) => setTimeout(resolve, 25));
-    expect(rendered.store.get(steelReviewSelectionAtom)).toEqual(reopenedSelection);
-    expect(rendered.store.get(reopenedDraftAtom).cells['row-1\u0000數量']).toBe('reopened');
-    expect(rendered.store.get(reopenedDraftAtom).changeSequence).toBe(42);
+    await waitFor(() => {
+      expect(rendered.store.get(steelReviewSelectionAtom)).toEqual(reopenedSelection);
+      expect(rendered.store.get(reopenedDraft.draftAtom)).toEqual(reopenedDraft.before);
+      expect(saveGateRef.current?.getMatrix()).toEqual([['數量'], ['reopened']]);
+    });
+    expect(screen.queryByRole('alert')).toBeNull();
+    reopened.unmount();
+  });
+
+  it('keeps a reopened same-owner capture isolated while a no-op finishes after messages refresh', async () => {
+    const { table, prepared } = createReopenLifecycleFixture();
+    const prepare = jest.fn().mockResolvedValue(prepared);
+    const commit = jest.fn().mockResolvedValue({ changedRows: 0, changedRowIds: [] });
+    let resolveReview!: (result: { data: { table: typeof table }; error: null }) => void;
+    const reviewRefetch = jest.fn(() => new Promise<{ data: { table: typeof table }; error: null }>((resolve) => {
+      resolveReview = resolve;
+    }));
+    let resolveMessages!: (messages: never[]) => void;
+    const messagesPromise = new Promise<never[]>((resolve) => {
+      resolveMessages = resolve;
+    });
+    jest.spyOn(dataService, 'getMessagesByConvoId').mockImplementation(() => messagesPromise);
+    mockUseGetSteelReviewQuery.mockReturnValue({
+      data: { table },
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: reviewRefetch,
+    });
+    mockUsePrepareSteelReviewMutation.mockReturnValue({ mutateAsync: prepare });
+    mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
+
+    const rendered = renderDialog();
+    fireEvent.change(screen.getByRole('textbox', { name: '數量 row-1' }), { target: { value: '9' } });
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    await waitFor(() => {
+      expect(commit).toHaveBeenCalledTimes(1);
+      expect(reviewRefetch).toHaveBeenCalledTimes(1);
+    });
+
+    resolveReview({ data: { table }, error: null });
+    await waitFor(() => expect(dataService.getMessagesByConvoId).toHaveBeenCalledTimes(1));
+
+    const reopenedSelection = createReopenedSelection(table, 'capture-reopened-noop');
+    rendered.unmount();
+    const saveGateRef: MutableRefObject<SteelReviewSaveGate | undefined> = { current: undefined };
+    const reopened = renderDialog(new QueryClient(), reopenedSelection, rendered.store, reviewIdentity, saveGateRef);
+    const reopenedDraft = seedReopenedDraft(rendered.store, reopenedSelection, table);
+    resolveMessages([]);
+
+    await waitFor(() => {
+      expect(rendered.store.get(steelReviewSelectionAtom)).toEqual(reopenedSelection);
+      expect(rendered.store.get(reopenedDraft.draftAtom)).toEqual(reopenedDraft.before);
+      expect(saveGateRef.current?.getMatrix()).toEqual([['數量'], ['reopened']]);
+    });
+    expect(screen.queryByRole('alert')).toBeNull();
+    reopened.unmount();
+  });
+
+  it('keeps a reopened same-owner capture isolated while a committed receipt finishes after messages refresh', async () => {
+    const { table, prepared, savedSnapshot } = createReopenLifecycleFixture();
+    const prepare = jest.fn().mockResolvedValue(prepared);
+    const commit = jest.fn().mockRejectedValue(new Error('connection lost'));
+    const receiptRefetch = jest.fn().mockResolvedValue({
+      data: { status: 'committed', snapshot: savedSnapshot },
+      error: null,
+    });
+    let resolveReview!: (result: { data: { table: typeof table }; error: null }) => void;
+    const reviewRefetch = jest.fn(() => new Promise<{ data: { table: typeof table }; error: null }>((resolve) => {
+      resolveReview = resolve;
+    }));
+    let resolveMessages!: (messages: never[]) => void;
+    const messagesPromise = new Promise<never[]>((resolve) => {
+      resolveMessages = resolve;
+    });
+    jest.spyOn(dataService, 'getMessagesByConvoId').mockImplementation(() => messagesPromise);
+    mockUseGetSteelReviewQuery.mockReturnValue({
+      data: { table },
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: reviewRefetch,
+    });
+    mockUsePrepareSteelReviewMutation.mockReturnValue({ mutateAsync: prepare });
+    mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
+    mockUseGetSteelReviewReceiptQuery.mockReturnValue({
+      data: undefined,
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: receiptRefetch,
+    });
+
+    const rendered = renderDialog();
+    fireEvent.change(screen.getByRole('textbox', { name: '數量 row-1' }), { target: { value: '9' } });
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_close' }));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_discard_unsaved' }));
+    await waitFor(() => {
+      expect(receiptRefetch).toHaveBeenCalledTimes(1);
+      expect(reviewRefetch).toHaveBeenCalledTimes(1);
+    });
+
+    resolveReview({ data: { table }, error: null });
+    await waitFor(() => expect(dataService.getMessagesByConvoId).toHaveBeenCalledTimes(1));
+    const reopenedSelection = createReopenedSelection(table, 'capture-reopened-receipt');
+    rendered.unmount();
+    const saveGateRef: MutableRefObject<SteelReviewSaveGate | undefined> = { current: undefined };
+    const reopened = renderDialog(new QueryClient(), reopenedSelection, rendered.store, reviewIdentity, saveGateRef);
+    const reopenedDraft = seedReopenedDraft(rendered.store, reopenedSelection, table);
+    resolveMessages([]);
+
+    await waitFor(() => {
+      expect(rendered.store.get(steelReviewSelectionAtom)).toEqual(reopenedSelection);
+      expect(rendered.store.get(reopenedDraft.draftAtom)).toEqual(reopenedDraft.before);
+      expect(saveGateRef.current?.getMatrix()).toEqual([['數量'], ['reopened']]);
+    });
+    expect(screen.queryByRole('alert')).toBeNull();
+    reopened.unmount();
+  });
+
+  it('does not reuse a delayed prepare after a same-owner capture reopens and starts a fresh save', async () => {
+    const { table, prepared } = createReopenLifecycleFixture();
+    const nextPrepared = { ...prepared, operationId: 'operation-reopen-new' };
+    let resolvePrepare!: (value: typeof prepared) => void;
+    const prepare = jest.fn()
+      .mockImplementationOnce(() => new Promise<typeof prepared>((resolve) => {
+        resolvePrepare = resolve;
+      }))
+      .mockResolvedValueOnce(nextPrepared);
+    const commit = jest.fn().mockResolvedValue({ changedRows: 0, changedRowIds: [] });
+    mockUseGetSteelReviewQuery.mockReturnValue({
+      data: { table },
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: jest.fn().mockResolvedValue({ data: { table }, error: null }),
+    });
+    mockUsePrepareSteelReviewMutation.mockReturnValue({ mutateAsync: prepare });
+    mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
+
+    const rendered = renderDialog();
+    fireEvent.change(screen.getByRole('textbox', { name: '數量 row-1' }), { target: { value: '9' } });
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    await waitFor(() => expect(prepare).toHaveBeenCalledTimes(1));
+
+    const reopenedSelection = createReopenedSelection(table, 'capture-reopened-prepare');
+    rendered.unmount();
+    const saveGateRef: MutableRefObject<SteelReviewSaveGate | undefined> = { current: undefined };
+    const reopened = renderDialog(new QueryClient(), reopenedSelection, rendered.store, reviewIdentity, saveGateRef);
+    const reopenedDraft = seedReopenedDraft(rendered.store, reopenedSelection, table);
+    resolvePrepare(prepared);
+
+    await waitFor(() => {
+      expect(commit).not.toHaveBeenCalled();
+      expect(rendered.store.get(reopenedDraft.draftAtom)).toEqual(reopenedDraft.before);
+      expect(saveGateRef.current?.getMatrix()).toEqual([['數量'], ['reopened']]);
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    await waitFor(() => {
+      expect(prepare).toHaveBeenCalledTimes(2);
+      expect(commit).toHaveBeenCalledTimes(1);
+    });
+    expect(prepare.mock.calls[1]?.[0]?.operationId).not.toBe(prepared.operationId);
+    await waitFor(() => {
+      expect(rendered.store.get(reopenedDraft.draftAtom).past).toEqual([]);
+      expect(rendered.store.get(reopenedDraft.draftAtom).future).toEqual([]);
+      expect(screen.queryByRole('alert')).toBeNull();
+    });
+    reopened.unmount();
+  });
+
+  it.each([
+    ['409 conflict', { response: { status: 409, data: { code: 'REVIEW_CONFLICT' } } }],
+    ['ordinary error', new Error('connection lost')],
+  ] as const)('does not apply a delayed %s to a reopened same-owner capture', async (_label, failure) => {
+    const { table, prepared } = createReopenLifecycleFixture();
+    let rejectCommit!: (reason: unknown) => void;
+    const commit = jest.fn(() => new Promise<never>((_resolve, reject) => {
+      rejectCommit = reject;
+    }));
+    mockUseGetSteelReviewQuery.mockReturnValue({
+      data: { table },
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: jest.fn(),
+    });
+    mockUsePrepareSteelReviewMutation.mockReturnValue({ mutateAsync: jest.fn().mockResolvedValue(prepared) });
+    mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
+
+    const rendered = renderDialog();
+    fireEvent.change(screen.getByRole('textbox', { name: '數量 row-1' }), { target: { value: '9' } });
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+
+    const reopenedSelection = createReopenedSelection(table, `capture-reopened-${_label}`);
+    rendered.unmount();
+    const saveGateRef: MutableRefObject<SteelReviewSaveGate | undefined> = { current: undefined };
+    const reopened = renderDialog(new QueryClient(), reopenedSelection, rendered.store, reviewIdentity, saveGateRef);
+    const reopenedDraft = seedReopenedDraft(rendered.store, reopenedSelection, table);
+    rejectCommit(failure);
+
+    await waitFor(() => {
+      expect(rendered.store.get(steelReviewSelectionAtom)).toEqual(reopenedSelection);
+      expect(rendered.store.get(reopenedDraft.draftAtom)).toEqual(reopenedDraft.before);
+      expect(saveGateRef.current?.getMatrix()).toEqual([['數量'], ['reopened']]);
+    });
+    expect(screen.queryByRole('alert')).toBeNull();
     reopened.unmount();
   });
 
