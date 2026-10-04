@@ -729,7 +729,6 @@ describe('MarkdownTableActions Steel review entry', () => {
       reviewIdentity.kind,
       reviewIdentity.messageId,
       reviewIdentity.title,
-      undefined,
     );
     queryClient.setQueryData(reviewQueryKey, { table });
     renderDialog(queryClient);
@@ -892,7 +891,6 @@ describe('MarkdownTableActions Steel review entry', () => {
       reviewIdentity.kind,
       reviewIdentity.messageId,
       reviewIdentity.title,
-      undefined,
     );
     const firstTable = {
       ...reviewIdentity,
