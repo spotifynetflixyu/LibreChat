@@ -79,7 +79,7 @@ const makeInput = ({
     `| A | ${nextValue} |`,
   ].join('\n');
   const rows: SteelReviewRow[] = [{
-    rowId: 'row-1',
+    rowId: aiRowIdFor('ocr_result:generation-1', ['A', 'P-1']),
     values: {
       來源: { baseline: sourceValue, effective: sourceValue },
       零件編號: { baseline: 'P-1', effective: nextValue },
@@ -112,7 +112,11 @@ const makeInput = ({
     displayMarkdown: currentMarkdown.replace(targetText, replacementText),
     aiBaselineMarkdown: markdownFor('P-1', sourceValue),
     aiRawMarkdown: markdownFor('P-1', sourceValue),
-    caption: { kind: 'ocr_result', changedRows, changedRowIds: changedRows === 0 ? [] : ['row-1'] },
+    caption: {
+      kind: 'ocr_result',
+      changedRows,
+      changedRowIds: changedRows === 0 ? [] : [aiRowIdFor('ocr_result:generation-1', ['A', 'P-1'])],
+    },
   };
   return { ...base, digest: digestFor(base) };
 };
@@ -335,6 +339,111 @@ describe('Steel review write methods', () => {
     expect(second.changedRows).toBe(1);
   });
 
+  it('rejects an unproven titleless same-output ledger before creating a new record', async () => {
+    const models = createModels(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const conversationId = 'write-titleless-unproven';
+    const messageId = 'write-titleless-unproven-message';
+    const outputId = 'ocr_result:generation-write-titleless-unproven';
+    const currentMarkdown = markdownFor('P-1');
+    const unprovenMarkdown = [
+      '## Unmanaged source table', '', '| 來源 | 零件編號 |', '| --- | --- |', '| A | P-1 |',
+    ].join('\n');
+    await models.Conversation.create({
+      conversationId, user: 'user-1', tenantId: 'tenant-1', title: 'Review', endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId, conversationId, user: 'user-1', tenantId: 'tenant-1', isCreatedByUser: false,
+      text: currentMarkdown,
+    });
+    await State.create({
+      conversationId, currentOcrResultMarkdown: currentMarkdown,
+      currentOcrResultMessageId: messageId, currentOcrResultGenerationId: outputId.replace(/^ocr_result:/u, ''),
+    });
+    await ReviewOutput.create({
+      userId: 'user-1', tenantId: 'tenant-1', conversationId, kind: 'ocr_result', messageId,
+      tableId: 'existing-unproven-ledger', outputId, revision: outputId, state: 'current',
+      headers: ['來源', '零件編號'],
+      rows: [{
+        rowId: aiRowIdFor(outputId, ['A', 'P-1']), origin: 'ai', deleted: false, source: null,
+        values: {
+          來源: { baseline: 'A', effective: 'A' },
+          零件編號: { baseline: 'P-1', effective: 'P-1' },
+        },
+      }],
+      aiBaselineMarkdown: unprovenMarkdown,
+      effectiveMarkdown: unprovenMarkdown,
+    });
+    const writer = createSteelReviewWriteMethods(mongoose);
+    const input = makeInput({
+      operationId: 'write-titleless-unproven-operation', revision: outputId.replace(/^ocr_result:/u, ''),
+      previousValue: 'P-1', nextValue: 'P-7', conversationId, messageId,
+    });
+    const before = await ReviewOutput.find({ conversationId }).lean();
+
+    await expect(writer.commitSteelReview(rehashInput({
+      ...input,
+      outputId,
+      tableId: 'existing-unproven-ledger',
+      rows: input.rows.map((row) => ({ ...row, rowId: aiRowIdFor(outputId, ['A', 'P-1']) })),
+    }))).rejects.toMatchObject({ code: 'REVIEW_CONFLICT' });
+
+    await expect(ReviewOutput.find({ conversationId }).lean()).resolves.toEqual(before);
+  });
+
+  it('rejects a stored-title ledger when its effective Markdown omits an active manual row', async () => {
+    const models = createModels(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const conversationId = 'write-stored-title-effective-corrupt';
+    const messageId = 'write-stored-title-effective-corrupt-message';
+    const outputId = 'ocr_result:generation-write-stored-title-effective-corrupt';
+    const currentMarkdown = markdownFor('P-1');
+    const aiRow: SteelReviewRow = {
+      rowId: aiRowIdFor(outputId, ['A', 'P-1']), origin: 'ai', deleted: false, source: null,
+      values: { 來源: { baseline: 'A', effective: 'A' }, 零件編號: { baseline: 'P-1', effective: 'P-1' } },
+    };
+    const manualRow: SteelReviewRow = {
+      rowId: 'write-corrupt-manual', origin: 'manual', deleted: false, source: null,
+      insertion: { kind: 'end', ordinal: 0 },
+      values: { 來源: { baseline: null, effective: '' }, 零件編號: { baseline: null, effective: 'MANUAL' } },
+    };
+    await models.Conversation.create({
+      conversationId, user: 'user-1', tenantId: 'tenant-1', title: 'Review', endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId, conversationId, user: 'user-1', tenantId: 'tenant-1', isCreatedByUser: false,
+      text: currentMarkdown,
+    });
+    await State.create({
+      conversationId, currentOcrResultMarkdown: currentMarkdown,
+      currentOcrResultMessageId: messageId, currentOcrResultGenerationId: outputId.replace(/^ocr_result:/u, ''),
+    });
+    await ReviewOutput.create({
+      userId: 'user-1', tenantId: 'tenant-1', conversationId, kind: 'ocr_result', messageId,
+      tableId: 'existing-corrupt-effective-ledger', title: 'ocr_result', outputId,
+      revision: outputId, state: 'current', headers: ['來源', '零件編號'], rows: [aiRow, manualRow],
+      aiBaselineMarkdown: currentMarkdown, effectiveMarkdown: currentMarkdown,
+    });
+    const writer = createSteelReviewWriteMethods(mongoose);
+    const input = makeInput({
+      operationId: 'write-stored-title-effective-corrupt-operation', revision: outputId.replace(/^ocr_result:/u, ''),
+      previousValue: 'P-1', nextValue: 'P-7', conversationId, messageId,
+    });
+    const before = await ReviewOutput.find({ conversationId }).lean();
+
+    await expect(writer.commitSteelReview(rehashInput({
+      ...input,
+      outputId,
+      tableId: 'existing-corrupt-effective-ledger',
+      rows: [aiRow, manualRow],
+      caption: { ...input.caption, changedRowIds: ['write-corrupt-manual'] },
+    }))).rejects.toMatchObject({ code: 'REVIEW_CONFLICT' });
+
+    await expect(ReviewOutput.find({ conversationId }).lean()).resolves.toEqual(before);
+  });
+
   it('persists a manual ledger row and counts its later tombstone exactly once', async () => {
     const models = createModels(mongoose);
     const State = createSteelConversationOcrStateModel(mongoose);
@@ -360,7 +469,7 @@ describe('Steel review write methods', () => {
       insertion: { kind: 'end', ordinal: 0 },
       values: { 來源: { baseline: null, effective: '' }, 零件編號: { baseline: null, effective: 'P-1' } },
     };
-    const firstMarkdown = [originalMarkdown, '| A | P-1 |'].join('\n');
+    const firstMarkdown = [originalMarkdown, '|  | P-1 |'].join('\n');
     const makeLedgerInput = (args: {
       operationId: string;
       revision: string;
@@ -1022,7 +1131,7 @@ describe('Steel review write methods', () => {
         title: 'ocr_result',
         operations: [{
           type: 'update' as const,
-          rowId: 'row-1',
+          rowId: aiRowIdFor('ocr_result:generation-1', ['A', 'P-1']),
           changes: [{ header: '零件編號', value: 'P-7' }],
         }],
       },
@@ -1172,7 +1281,7 @@ describe('Steel review write methods', () => {
         title: 'ocr_result',
         operations: [{
           type: 'update' as const,
-          rowId: 'row-1',
+          rowId: aiRowIdFor('ocr_result:generation-1', ['A', 'P-1']),
           changes: [{ header: '零件編號', value: 'P-7' }],
         }],
       },
@@ -1332,7 +1441,7 @@ describe('Steel review write methods', () => {
         messageId,
       }),
       rows: [{
-        rowId: 'row-1',
+        rowId: aiRowIdFor('ocr_result:generation-1', ['A', 'P-1']),
         values: {
           來源: { baseline: 'A', effective: 'F1' },
           零件編號: { baseline: 'P-1', effective: 'P-7' },
@@ -1344,7 +1453,7 @@ describe('Steel review write methods', () => {
           mediaType: 'application/pdf',
         },
       }],
-      sourceIntents: [{ rowId: 'row-1', fileId: 'source-only-file', pageNumber: 2 }],
+      sourceIntents: [{ rowId: aiRowIdFor('ocr_result:generation-1', ['A', 'P-1']), fileId: 'source-only-file', pageNumber: 2 }],
       sourceMappings: [{
         fileId: 'source-only-file',
         sourceCode: 'F1',
@@ -1362,7 +1471,11 @@ describe('Steel review write methods', () => {
       cleanReplacementText: replacementText,
       effectiveMarkdown: currentMarkdown.replace(targetText, replacementText),
       displayMarkdown: currentMarkdown.replace(targetText, replacementText),
-      caption: { kind: 'ocr_result', changedRows: 1, changedRowIds: ['row-1'] },
+      caption: {
+        kind: 'ocr_result',
+        changedRows: 1,
+        changedRowIds: [aiRowIdFor('ocr_result:generation-1', ['A', 'P-1'])],
+      },
     };
     const sourceOnly = rehashInput(sourceOnlyBase);
 

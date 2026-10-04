@@ -796,6 +796,110 @@ describe('Steel review read methods', () => {
     })).resolves.toBeNull();
   });
 
+  it('does not fall back to a new current record for an unproven titleless ledger', async () => {
+    const models = createModels(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const read = createSteelReviewReadMethods(mongoose);
+    const conversationId = 'titleless-unproven-conversation';
+    const messageId = 'titleless-unproven-message';
+    const outputId = 'ocr_result:titleless-unproven';
+    const currentMarkdown = [
+      '## ocr_result', '', '| 來源 | 零件編號 |', '| --- | --- |', '| A | P-1 |',
+    ].join('\n');
+    const unprovenMarkdown = [
+      '## Unmanaged source table',
+      '',
+      '| 來源 | 零件編號 |',
+      '| --- | --- |',
+      '| A | P-1 |',
+    ].join('\n');
+    const rowId = createHash('sha256')
+      .update(`${outputId}:0:${JSON.stringify(['A', 'P-1'])}`)
+      .digest('hex');
+    await models.Conversation.create({
+      conversationId, user: 'title-proof-user', title: 'Title proof', endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId, conversationId, user: 'title-proof-user', isCreatedByUser: false,
+      text: currentMarkdown, content: [{ type: 'text', text: currentMarkdown }],
+    });
+    await State.create({
+      conversationId, currentOcrResultMarkdown: currentMarkdown,
+      currentOcrResultMessageId: messageId, currentOcrResultGenerationId: 'titleless-unproven',
+    });
+    await ReviewOutput.create({
+      userId: 'title-proof-user', conversationId, kind: 'ocr_result', messageId,
+      tableId: 'titleless-unproven-ledger', outputId, revision: outputId, state: 'current',
+      headers: ['來源', '零件編號'],
+      rows: [{
+        rowId, origin: 'ai', deleted: false, source: null,
+        values: {
+          來源: { baseline: 'A', effective: 'A' },
+          零件編號: { baseline: 'P-1', effective: 'P-1' },
+        },
+      }],
+      aiBaselineMarkdown: unprovenMarkdown,
+      effectiveMarkdown: unprovenMarkdown,
+    });
+    const before = await ReviewOutput.find({ conversationId }).lean();
+
+    await expect(read.readSteelReview({
+      userId: 'title-proof-user', conversationId, kind: 'ocr_result', messageId, title: 'ocr_result',
+    })).resolves.toBeNull();
+
+    await expect(ReviewOutput.find({ conversationId }).lean()).resolves.toEqual(before);
+  });
+
+  it('rejects a stored-title ledger whose effective section omits or adds active rows', async () => {
+    const models = createModels(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const read = createSteelReviewReadMethods(mongoose);
+    const conversationId = 'stored-title-effective-corrupt-conversation';
+    const messageId = 'stored-title-effective-corrupt-message';
+    const outputId = 'ocr_result:stored-title-effective-corrupt';
+    const baseline = [
+      '## ocr_result', '', '| 來源 | 零件編號 |', '| --- | --- |', '| A | P-1 |',
+    ].join('\n');
+    const corruptEffective = [baseline, '| A | HUMAN-EXTRA |'].join('\n');
+    const rowId = createHash('sha256')
+      .update(`${outputId}:0:${JSON.stringify(['A', 'P-1'])}`)
+      .digest('hex');
+    await models.Conversation.create({
+      conversationId, user: 'title-proof-user', title: 'Title proof', endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId, conversationId, user: 'title-proof-user', isCreatedByUser: false,
+      text: baseline, content: [{ type: 'text', text: baseline }],
+    });
+    await State.create({
+      conversationId, currentOcrResultMarkdown: baseline,
+      currentOcrResultMessageId: messageId, currentOcrResultGenerationId: 'stored-title-effective-corrupt',
+    });
+    await ReviewOutput.create({
+      userId: 'title-proof-user', conversationId, kind: 'ocr_result', messageId,
+      tableId: 'stored-title-effective-corrupt-ledger', title: 'ocr_result', outputId,
+      revision: outputId, state: 'current', headers: ['來源', '零件編號'],
+      rows: [{
+        rowId, origin: 'ai', deleted: false, source: null,
+        values: {
+          來源: { baseline: 'A', effective: 'A' },
+          零件編號: { baseline: 'P-1', effective: 'P-1' },
+        },
+      }],
+      aiBaselineMarkdown: baseline,
+      effectiveMarkdown: corruptEffective,
+    });
+    const before = await ReviewOutput.find({ conversationId }).lean();
+
+    await expect(read.readSteelReview({
+      userId: 'title-proof-user', conversationId, kind: 'ocr_result', messageId, title: 'ocr_result',
+    })).resolves.toBeNull();
+
+    await expect(ReviewOutput.find({ conversationId }).lean()).resolves.toEqual(before);
+  });
+
   it('derives sidecar latest status from the same-kind canonical owner', async () => {
     const models = createModels(mongoose);
     const State = createSteelConversationOcrStateModel(mongoose);

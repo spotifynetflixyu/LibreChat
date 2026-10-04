@@ -187,9 +187,22 @@ function titleStorageId(owner: SteelReviewTitleOwner): string {
   return `${owner.kind}:title:${createHash('sha256').update(encodeSteelReviewTitleOwner(owner)).digest('hex')}`;
 }
 
-function provenSidecarTitle(
-  output: Pick<ISteelReviewOutput, 'title' | 'kind' | 'outputId' | 'headers' | 'rows' | 'aiRawMarkdown' | 'aiBaselineMarkdown' | 'humanMarkdown' | 'effectiveMarkdown'>,
-): string | undefined {
+type SidecarProofOutput = Pick<
+  ISteelReviewOutput,
+  'title' | 'kind' | 'outputId' | 'headers' | 'rows' | 'aiRawMarkdown' | 'aiBaselineMarkdown' | 'humanMarkdown' | 'effectiveMarkdown'
+>;
+
+function sameReviewHeaders(left: readonly string[], right: readonly string[]): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
+/**
+ * Prove one immutable sidecar owner without consulting the requested title.
+ * The baseline uses physical parser indexes for AI row IDs; effective output
+ * uses every active ledger row so manual insertions cannot be hidden by a
+ * subsequence match.
+ */
+function provenSidecarTitle(output: SidecarProofOutput): string | undefined {
   const baseline = output.aiBaselineMarkdown ?? output.aiRawMarkdown;
   const effective = output.effectiveMarkdown ?? output.humanMarkdown;
   if (!baseline || !effective) {
@@ -199,41 +212,15 @@ function provenSidecarTitle(
     .filter((candidate) => isManagedReviewTitle(output.kind, candidate.title));
   const effectiveTables = parseSteelReviewMarkdownTables(effective)
     .filter((candidate) => isManagedReviewTitle(output.kind, candidate.title));
-  const matchesEffectiveAiRows = (candidate: { headers: string[]; rows: string[][] }): boolean => {
-    const expectedRows = output.rows.filter((row) => !row.deleted && (row.origin ?? 'ai') === 'ai');
-    let candidateIndex = 0;
-    for (const stored of expectedRows) {
-      const matchIndex = candidate.rows.findIndex((row, index) => index >= candidateIndex &&
-        output.headers.every((header, columnIndex) =>
-          (stored.values[header]?.effective ?? '') ===
-          (normalizeSteelReviewEffectiveValue(row[columnIndex] ?? '') ?? '')));
-      if (matchIndex < 0) {
-        return false;
-      }
-      candidateIndex = matchIndex + 1;
-    }
-    return true;
-  };
-  if (output.title !== undefined) {
-    if (!isManagedReviewTitle(output.kind, output.title)) {
-      return undefined;
-    }
-    const explicitBaseline = baselineTables.filter((candidate) =>
-      candidate.title === output.title && JSON.stringify(candidate.headers) === JSON.stringify(output.headers));
-    const explicitEffective = effectiveTables.filter((candidate) =>
-      candidate.title === output.title && JSON.stringify(candidate.headers) === JSON.stringify(output.headers) &&
-      matchesEffectiveAiRows(candidate));
-    return explicitBaseline.length === 1 && explicitEffective.length === 1 ? output.title : undefined;
-  }
   const aiRows = output.rows.filter((row) => (row.origin ?? 'ai') === 'ai');
-  const baselineCandidates = baselineTables.filter((candidate) => {
-    if (JSON.stringify(candidate.headers) !== JSON.stringify(output.headers)) {
+  const matchesBaseline = (candidate: { headers: string[]; rows: string[][] }): boolean => {
+    if (!sameReviewHeaders(candidate.headers, output.headers)) {
       return false;
     }
     let aiIndex = 0;
     for (const [originalRowIndex, row] of candidate.rows.entries()) {
       // Malformed physical rows are skipped by the trusted ledger importer;
-      // their original index must still remain part of the following row ID.
+      // their original index still remains part of the following row ID.
       if (row.length !== candidate.headers.length) {
         continue;
       }
@@ -249,51 +236,41 @@ function provenSidecarTitle(
       aiIndex += 1;
     }
     return aiIndex === aiRows.length;
-  });
+  };
+  const matchesEffective = (candidate: { headers: string[]; rows: string[][] }): boolean => {
+    if (!sameReviewHeaders(candidate.headers, output.headers)) {
+      return false;
+    }
+    const expectedRows = output.rows.filter((row) => !row.deleted);
+    if (candidate.rows.length !== expectedRows.length) {
+      return false;
+    }
+    return expectedRows.every((stored, rowIndex) =>
+      output.headers.every((header, columnIndex) =>
+        (normalizeSteelReviewEffectiveValue(stored.values[header]?.effective ?? '') ?? '') ===
+        (normalizeSteelReviewEffectiveValue(candidate.rows[rowIndex]?.[columnIndex] ?? '') ?? '')));
+  };
+  const baselineCandidates = baselineTables.filter(matchesBaseline);
+  // Effective human values cannot disambiguate two identical immutable AI
+  // candidates. Require one complete baseline owner before checking its
+  // mutable projection, even when only one candidate happens to match it.
   if (baselineCandidates.length !== 1) {
     return undefined;
   }
   const [baselineTable] = baselineCandidates;
-  if (!baselineTable) {
+  if (!baselineTable?.title) {
     return undefined;
   }
-  const effectiveCandidates = effectiveTables.filter((candidate) => {
-    if (candidate.title !== baselineTable.title || JSON.stringify(candidate.headers) !== JSON.stringify(output.headers)) {
-      return false;
-    }
-    return matchesEffectiveAiRows(candidate);
-  });
-  return effectiveCandidates.length === 1 ? baselineTable.title : undefined;
+  const effectiveMatches = effectiveTables.filter((candidate) =>
+    candidate.title === baselineTable.title && matchesEffective(candidate));
+  return effectiveMatches.length === 1 &&
+    (output.title === undefined || output.title === baselineTable.title)
+    ? baselineTable.title
+    : undefined;
 }
 
-function sidecarHasTitle(
-  output: Pick<ISteelReviewOutput, 'title' | 'kind' | 'outputId' | 'headers' | 'rows' | 'aiRawMarkdown' | 'aiBaselineMarkdown' | 'humanMarkdown' | 'effectiveMarkdown'>,
-  title: string,
-): boolean {
+function sidecarHasTitle(output: SidecarProofOutput, title: string): boolean {
   return provenSidecarTitle(output) === title;
-}
-
-function sidecarMentionsTitle(
-  output: Pick<ISteelReviewOutput, 'title' | 'kind' | 'aiRawMarkdown' | 'aiBaselineMarkdown' | 'humanMarkdown' | 'effectiveMarkdown'>,
-  title: string,
-): boolean {
-  if (output.title === title) {
-    return true;
-  }
-  return [output.aiBaselineMarkdown, output.aiRawMarkdown, output.humanMarkdown, output.effectiveMarkdown]
-    .some((markdown) => parseSteelReviewMarkdownTables(markdown ?? '')
-      .some((candidate) => candidate.title === title && isManagedReviewTitle(output.kind, candidate.title)));
-}
-
-function sidecarCouldMatchTitle(
-  output: Pick<ISteelReviewOutput, 'title' | 'kind' | 'outputId' | 'headers' | 'rows' | 'aiRawMarkdown' | 'aiBaselineMarkdown' | 'humanMarkdown' | 'effectiveMarkdown'>,
-  title: string,
-): boolean {
-  const provenTitle = provenSidecarTitle(output);
-  if (provenTitle !== undefined) {
-    return provenTitle === title;
-  }
-  return output.title === title || sidecarMentionsTitle(output, title);
 }
 
 function hasCellProperty(cell: SteelReviewCell | undefined, property: keyof SteelReviewCell): boolean {
@@ -914,18 +891,20 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
             : Promise.resolve([undefined, undefined] as const),
         ]);
         const [state, historicalRun] = ocrData;
-        if (input.title && allSidecarCandidates.some((candidate) =>
-          provenSidecarTitle(candidate) === undefined && sidecarCouldMatchTitle(candidate, input.title!))) {
-          return null;
-        }
-        const sidecarCandidates = allSidecarCandidates.filter((candidate) =>
-          sidecarHasTitle(candidate, input.title));
         const authority = state?.currentOcrResultGenerationId
           ? {
               outputId: `ocr_result:${state.currentOcrResultGenerationId}`,
               messageId: state.currentOcrResultMessageId,
             }
           : undefined;
+        const relevantSidecarCandidates = authority
+          ? allSidecarCandidates.filter((candidate) => candidate.outputId === authority.outputId)
+          : allSidecarCandidates;
+        if (input.title && relevantSidecarCandidates.some((candidate) => provenSidecarTitle(candidate) === undefined)) {
+          return null;
+        }
+        const sidecarCandidates = allSidecarCandidates.filter((candidate) =>
+          sidecarHasTitle(candidate, input.title));
         const selected = selectSidecar(sidecarCandidates, authority, input.messageId);
         const selectedMappings = selected?.sourceMappings ??
           (selected ? legacySnapshotMappings(selected, input.kind, message.messageText) : undefined);
@@ -1045,18 +1024,20 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
         sidecarCandidatesPromise,
         QuotationState.findOne(scopeFilter(input)).lean<ISteelQuotationState>(),
       ]);
-      if (input.title && allSidecarCandidates.some((candidate) =>
-        provenSidecarTitle(candidate) === undefined && sidecarCouldMatchTitle(candidate, input.title!))) {
-        return null;
-      }
-      const sidecarCandidates = allSidecarCandidates.filter((candidate) =>
-        sidecarHasTitle(candidate, input.title));
       const authority = quotation?.currentSystemOrder?.runId
         ? {
             outputId: `system_order:${quotation.currentSystemOrder.runId}`,
             messageId: quotation.currentSystemOrder.messageId,
           }
         : undefined;
+      const relevantSidecarCandidates = authority
+        ? allSidecarCandidates.filter((candidate) => candidate.outputId === authority.outputId)
+        : allSidecarCandidates;
+      if (input.title && relevantSidecarCandidates.some((candidate) => provenSidecarTitle(candidate) === undefined)) {
+        return null;
+      }
+      const sidecarCandidates = allSidecarCandidates.filter((candidate) =>
+        sidecarHasTitle(candidate, input.title));
       const selected = selectSidecar(sidecarCandidates, authority, input.messageId);
       const authorizedFiles = await readAuthorizedFiles(input, [
         ...(selected?.rows ?? []).flatMap((row) => row.source?.fileId ? [row.source.fileId] : []),
@@ -1585,8 +1566,8 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             .session(session)
             .lean<ISteelReviewOutput[]>();
           const provenOutputs = outputs.filter((candidate) => sidecarHasTitle(candidate, input.title));
-          const potentiallyMatching = outputs.filter((candidate) => sidecarCouldMatchTitle(candidate, input.title));
-          if (provenOutputs.length > 1 || potentiallyMatching.length !== provenOutputs.length) {
+          const unprovenOutputs = outputs.filter((candidate) => provenSidecarTitle(candidate) === undefined);
+          if (provenOutputs.length > 1 || unprovenOutputs.length > 0) {
             throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review output authority is ambiguous');
           }
           const output = provenOutputs[0];
