@@ -1461,10 +1461,17 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
         return resolved;
       }
 
+      const originalInput = input;
       const session = await mongoose.startSession();
       try {
         let result: SteelReviewCommitResult | undefined;
         await session.withTransaction(async () => {
+          // Mongo may invoke the transaction callback again after a transient
+          // error. Rebuild the private current-operation lane from the
+          // immutable request so its server callback is available on every
+          // attempt; the first attempt may replace `input` with its prepared
+          // transaction-current projection.
+          input = originalInput;
           const [conversations, messages, ocrStates, quotations] = await Promise.all([
             Conversation.find({
               $and: [

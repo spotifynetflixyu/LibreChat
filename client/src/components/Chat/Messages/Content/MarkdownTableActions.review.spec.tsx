@@ -1423,6 +1423,114 @@ describe('MarkdownTableActions Steel review entry', () => {
     remounted.unmount();
   });
 
+  it('does not let an unmounted save-and-close clear a reopened foreign selection', async () => {
+    const table = {
+      ...reviewIdentity,
+      kind: 'ocr_result' as const,
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      latestOutputId: 'ocr_result:generation-1',
+      isLatest: true,
+      readOnly: false,
+      headers: ['數量'],
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 數量: { baseline: '2', effective: '2' } },
+      }],
+    };
+    const foreignTable = {
+      ...table,
+      title: 'table-foreign',
+      outputId: 'ocr_result:foreign-generation',
+      revision: 'foreign-generation',
+      latestOutputId: 'ocr_result:foreign-generation',
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 數量: { baseline: '4', effective: '4' } },
+      }],
+    };
+    const prepared = {
+      ...reviewIdentity,
+      outputId: table.outputId,
+      revision: table.revision,
+      rows: table.rows,
+      operationId: 'operation-unmounted-save-close',
+      digest: 'u'.repeat(64),
+      messageSha256: 'v'.repeat(64),
+      target: { start: 0, end: 1, sha256: 'w'.repeat(64) },
+      replacementText: 'replacement',
+      cleanReplacementText: 'replacement',
+      targetText: 'target',
+      headers: table.headers,
+      effectiveMarkdown: 'effective',
+      displayMarkdown: 'display',
+      caption: { kind: reviewIdentity.kind, changedRows: 1, changedRowIds: ['row-1'] },
+    };
+    const savedSnapshot = {
+      operationId: prepared.operationId,
+      digest: prepared.digest,
+      outputId: prepared.outputId,
+      revision: 'generation-1-save-1',
+      headers: table.headers,
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 數量: { baseline: '2', effective: '9' } },
+      }],
+      changedRows: 1,
+      changedRowIds: ['row-1'],
+      savedAt: '2026-10-03T00:00:00.000Z',
+      messageSha256: 'x'.repeat(64),
+      conversationId: reviewIdentity.conversationId,
+      messageId: reviewIdentity.messageId,
+      messageText: 'saved',
+      effectiveMarkdown: 'effective',
+      displayMarkdown: 'display',
+    };
+    const savedTable = {
+      ...table,
+      revision: savedSnapshot.revision,
+      rows: savedSnapshot.rows,
+    };
+    let resolveCommit!: (result: { changedRows: number; changedRowIds: string[]; savedSnapshot: typeof savedSnapshot }) => void;
+    const commit = jest.fn(() => new Promise<{ changedRows: number; changedRowIds: string[]; savedSnapshot: typeof savedSnapshot }>((resolve) => {
+      resolveCommit = resolve;
+    }));
+    const prepare = jest.fn().mockResolvedValue(prepared);
+    const reviewRefetch = jest.fn().mockResolvedValue({ data: { table: savedTable }, error: null });
+    mockUseGetSteelReviewQuery.mockImplementation((input) => input?.title === foreignTable.title
+      ? { data: { table: foreignTable }, error: null, isError: false, isLoading: false, refetch: jest.fn() }
+      : { data: { table }, error: null, isError: false, isLoading: false, refetch: reviewRefetch });
+    mockUsePrepareSteelReviewMutation.mockReturnValue({ mutateAsync: prepare });
+    mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
+
+    const rendered = renderDialog();
+    const input = screen.getByRole('textbox', { name: '數量 row-1' });
+    fireEvent.change(input, { target: { value: '9' } });
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_close' }));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save_updates' }));
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+
+    const foreignSelection = {
+      ...reviewIdentity,
+      title: foreignTable.title,
+      capturedAuthority: {
+        outputId: foreignTable.outputId,
+        revision: foreignTable.revision,
+        table: foreignTable,
+      },
+    };
+    rendered.unmount();
+    const foreignRender = renderDialog(new QueryClient(), foreignSelection, rendered.store, foreignSelection);
+    resolveCommit({ changedRows: 1, changedRowIds: ['row-1'], savedSnapshot });
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    await waitFor(() => expect(rendered.store.get(steelReviewSelectionAtom)).toEqual(foreignSelection));
+    foreignRender.unmount();
+  });
+
   it('acknowledges a committed receipt into the captured session after a new AI owner appears', async () => {
     const table = {
       ...reviewIdentity,
@@ -1491,7 +1599,10 @@ describe('MarkdownTableActions Steel review entry', () => {
       effectiveMarkdown: 'effective',
       displayMarkdown: 'display',
     };
-    const reviewRefetch = jest.fn().mockResolvedValue({ data: { table: newAiTable }, error: null });
+    let reviewResolve!: (result: { data: { table: typeof newAiTable }; error: null }) => void;
+    const reviewRefetch = jest.fn().mockImplementation(() => new Promise((resolve) => {
+      reviewResolve = resolve;
+    }));
     const prepare = jest.fn().mockResolvedValue(prepared);
     const commit = jest.fn().mockRejectedValue(new Error('connection lost'));
     mockUseGetSteelReviewQuery.mockReturnValue({
@@ -1538,6 +1649,8 @@ describe('MarkdownTableActions Steel review entry', () => {
     });
     fireEvent.change(input, { target: { value: '10' } });
     receiptResolve({ data: { status: 'committed', snapshot }, error: null });
+    await waitFor(() => expect(reviewRefetch).toHaveBeenCalledTimes(1));
+    reviewResolve({ data: { table: newAiTable }, error: null });
 
     await waitFor(() => {
       expect(input).toHaveValue('10');

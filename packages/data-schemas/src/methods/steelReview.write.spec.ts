@@ -1052,6 +1052,98 @@ describe('Steel review write methods', () => {
     }).toEqual(before);
   });
 
+  it('rebuilds the current operation callback when Mongo retries the transaction', async () => {
+    const models = createModels(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const conversationId = 'transaction-retry-conversation';
+    const messageId = 'transaction-retry-message';
+    const originalMarkdown = markdownFor('P-1');
+    await models.Conversation.create({
+      conversationId, user: 'user-1', tenantId: 'tenant-1', title: 'Transaction retry', endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId, conversationId, user: 'user-1', tenantId: 'tenant-1', isCreatedByUser: false,
+      text: originalMarkdown,
+    });
+    await State.create({
+      conversationId,
+      currentOcrResultMarkdown: originalMarkdown,
+      currentOcrResultMessageId: messageId,
+      currentOcrResultGenerationId: 'generation-1',
+    });
+
+    const base = makeInput({
+      operationId: 'transaction-retry-operation',
+      revision: 'generation-1',
+      previousValue: 'P-1',
+      nextValue: 'P-7',
+      conversationId,
+      messageId,
+    });
+    const operationBase = rehashInput({
+      ...base,
+      rows: base.rows.map((row) => ({
+        ...row,
+        rowId: aiRowIdFor('ocr_result:generation-1', ['A', 'P-1']),
+      })),
+      caption: {
+        ...base.caption,
+        changedRowIds: [aiRowIdFor('ocr_result:generation-1', ['A', 'P-1'])],
+      },
+    });
+    let callbackCalls = 0;
+    const operation = {
+      ...operationBase,
+      operationDigest: operationBase.digest,
+      requestDigest: 'request-digest',
+      operationRequest: {
+        conversationId,
+        messageId,
+        kind: 'ocr_result' as const,
+        outputId: 'ocr_result:generation-1',
+        revision: 'generation-1',
+        title: 'ocr_result',
+        operations: [{
+          type: 'update' as const,
+          rowId: 'row-1',
+          changes: [{ header: '零件編號', value: 'P-7' }],
+        }],
+      },
+      prepareOperation: async () => {
+        callbackCalls += 1;
+        return {
+          ...operationBase,
+          operationDigest: operationBase.digest,
+          requestDigest: 'request-digest',
+        };
+      },
+    };
+    const originalExec = mongoose.Query.prototype.exec;
+    let injected = false;
+    const execSpy = jest.spyOn(mongoose.Query.prototype, 'exec');
+    execSpy.mockImplementation(async function (this: mongoose.Query<unknown, unknown>) {
+      const value = await originalExec.call(this);
+      if (!injected && this.model.modelName === 'SteelConversationOcrState' && this.getUpdate() !== undefined &&
+        this.getOptions().session) {
+        injected = true;
+        throw new mongoose.mongo.MongoServerError({
+          message: 'retry current operation transaction',
+          errorLabels: ['TransientTransactionError'],
+        });
+      }
+      return value;
+    });
+    try {
+      const result = await createSteelReviewWriteMethods(mongoose).commitSteelReview(operation);
+      expect(result.changedRows).toBe(1);
+      expect(callbackCalls).toBeGreaterThanOrEqual(2);
+      expect(await ReviewOutput.countDocuments({ conversationId })).toBe(1);
+    } finally {
+      execSpy.mockRestore();
+    }
+  });
+
   it('allows a business save when the existing source association is blank', async () => {
     const models = createModels(mongoose);
     const State = createSteelConversationOcrStateModel(mongoose);

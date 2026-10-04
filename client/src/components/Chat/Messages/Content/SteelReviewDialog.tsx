@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useAtom } from 'jotai';
+import { useAtom, useStore } from 'jotai';
 import { useQueryClient } from '@tanstack/react-query';
 import { AlertTriangle, Maximize2, Minimize2 } from 'lucide-react';
 import {
@@ -364,8 +364,7 @@ export default function SteelReviewDialog({
   }), [localize]);
   const queryClient = useQueryClient();
   const [selection, setSelection] = useAtom(steelReviewSelectionAtom);
-  const selectionRef = useRef(selection);
-  selectionRef.current = selection;
+  const store = useStore();
   const isOpen = selection != null &&
     selection.conversationId === identity.conversationId &&
     selection.messageId === identity.messageId &&
@@ -442,20 +441,24 @@ export default function SteelReviewDialog({
     });
   }, [identity, isOpen, selection?.capturedAuthority, setSelection, table]);
   const capturedAuthority = selection?.capturedAuthority ?? capturedAuthorityRef.current;
-  const hasActiveCapturedSession = useCallback((prepared: SteelReviewPrepared) =>
-    isCapturedSessionActive(
-      selectionRef.current,
+  const hasActiveCapturedSession = useCallback((prepared: SteelReviewPrepared) => {
+    const currentSelection = store.get(steelReviewSelectionAtom);
+    return isCapturedSessionActive(
+      currentSelection,
       identity,
-      selectionRef.current?.capturedAuthority ?? capturedAuthorityRef.current,
+      currentSelection?.capturedAuthority ?? capturedAuthorityRef.current,
       prepared,
-    ), [identity]);
-  const hasCurrentCapturedSession = useCallback((expectedAuthority: SteelReviewCapturedAuthority | undefined) =>
-    isCurrentCapturedSession(
-      selectionRef.current,
+    );
+  }, [identity, store]);
+  const hasCurrentCapturedSession = useCallback((expectedAuthority: SteelReviewCapturedAuthority | undefined) => {
+    const currentSelection = store.get(steelReviewSelectionAtom);
+    return isCurrentCapturedSession(
+      currentSelection,
       identity,
-      selectionRef.current?.capturedAuthority ?? capturedAuthorityRef.current,
+      currentSelection?.capturedAuthority ?? capturedAuthorityRef.current,
       expectedAuthority,
-    ), [identity]);
+    );
+  }, [identity, store]);
   const persistCapturedAuthority = useCallback((authority: {
     outputId: string;
     revision: string;
@@ -1288,8 +1291,8 @@ export default function SteelReviewDialog({
       if (!active) {
         return;
       }
-      setDiscardRequested(false);
       if (result.error || !result.data) {
+        setDiscardRequested(false);
         setSavePhase('reconciling');
         setSaveErrorCode(getErrorCode(result.error));
         setReceiptFailed(true);
@@ -1301,6 +1304,7 @@ export default function SteelReviewDialog({
         return;
       }
       if (currentResult.error || !currentResult.data?.table) {
+        setDiscardRequested(false);
         setSavePhase('reconciling');
         setSaveErrorCode(undefined);
         setReceiptFailed(true);
@@ -1310,6 +1314,7 @@ export default function SteelReviewDialog({
         const prepared = preparedRef.current;
         if (!prepared) {
           preparedRef.current = undefined;
+          setDiscardRequested(false);
           setSavePhase('stale');
           setSaveErrorCode('REVIEW_CONFLICT');
           setReceiptInput(null);
@@ -1327,6 +1332,7 @@ export default function SteelReviewDialog({
         );
         if (!currentTableMatchesScope || (!currentTableIsAuthorized && !capturedAuthorityMatches)) {
           preparedRef.current = undefined;
+          setDiscardRequested(false);
           setSavePhase('stale');
           setSaveErrorCode('REVIEW_CONFLICT');
           setReceiptInput(null);
@@ -1338,6 +1344,7 @@ export default function SteelReviewDialog({
           return;
         }
         if (!refreshedMessages.authoritative) {
+          setDiscardRequested(false);
           setSavePhase('reconciling');
           setReceiptFailed(true);
           return;
@@ -1375,6 +1382,7 @@ export default function SteelReviewDialog({
         discardBoundaryRef.current = undefined;
         setReceiptInput(null);
         setReceiptFailed(false);
+        setDiscardRequested(false);
         setSaveErrorCode(undefined);
         setSavePhase('idle');
         if (getSteelReviewDirtyRowIds({ rows: status.snapshot.rows }, rebased).length === 0) {
