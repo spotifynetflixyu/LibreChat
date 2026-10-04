@@ -1573,6 +1573,24 @@ test.describe('Steel managed source review', () => {
     expectPreservedAiState(before.ocr, saved.ocr);
     expect((await page.request.post(`${url}/commit`, { headers, data: prepared })).status()).toBe(200);
     expect(await persistedSnapshot(conversationId)).toEqual(saved);
+    const currentResponse = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(currentResponse.status()).toBe(200);
+    const { table: current } = await currentResponse.json() as { table: SteelReviewTable };
+    for (const attack of ['anchor', 'ordinal', 'placement_swap']) {
+      const changed = structuredClone(current.rows);
+      const manual = changed.find((row) => row.rowId === first.rowId);
+      const otherManual = changed.find((row) => row.rowId === second.rowId);
+      if (!manual || !otherManual) throw new Error('Missing saved manual insertion authority');
+      if (attack === 'anchor') manual.insertion = { kind: 'after', rowId: table.rows[0].rowId, ordinal: 0 };
+      if (attack === 'ordinal') manual.insertion = { kind: 'end', ordinal: 3 };
+      if (attack === 'placement_swap') {
+        manual.insertion = { kind: 'end', ordinal: 1 };
+        otherManual.insertion = { kind: 'end', ordinal: 0 };
+      }
+      const refused = await page.request.post(`${url}/prepare`, { headers, data: { ...current, rows: changed } });
+      expect([400, 409], attack).toContain(refused.status());
+      expect(await persistedSnapshot(conversationId), attack).toEqual(saved);
+    }
   });
 
   test('a reliable authentic 03 source reuses its code and same-association intent is a no-op', async ({ page }) => {
@@ -2565,6 +2583,29 @@ test.describe('Steel managed source review', () => {
     await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
     await expect(dialog.getByRole('button', { name: 'Add row', exact: true })).toBeEnabled();
     expect(await persistedSnapshot(conversationId)).toEqual(after);
+    await expect.poll(() => dialog.locator('canvas').evaluate((element: HTMLCanvasElement) => element.width)).toBeGreaterThan(0);
+    await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
+    const addedRow = dialog.locator('tbody tr').last();
+    await addedRow.locator('td').nth(1).getByRole('textbox').fill('AFTER-ALL-DELETE');
+    await addedRow.locator('td').nth(2).getByRole('textbox').fill('500');
+    await addedRow.locator('td').nth(3).getByRole('textbox').fill('4');
+    await addedRow.locator('td').nth(3).getByRole('textbox').press('Enter');
+    await dialog.getByRole('button', { name: /^Save/ }).click();
+    await expect(dialog.getByText('Updated 1 rows', { exact: true })).toBeVisible();
+    const afterAdd = await persistedSnapshot(conversationId);
+    expect(afterAdd.reviews[0]?.rows).toMatchObject([
+      { origin: 'ai', deleted: true }, { origin: 'ai', deleted: true },
+      { origin: 'manual', deleted: false, insertion: { kind: 'end', ordinal: 0 },
+        values: { 零件編號: { baseline: null, effective: 'AFTER-ALL-DELETE' } } },
+    ]);
+    expect(afterAdd.messages.find((message) => message.messageId === messageId)?.text)
+      .toBe(emptyMarkdown + '\n| A | AFTER-ALL-DELETE | 500 | 4 | 1 |');
+    await page.keyboard.press('Escape');
+    await page.reload();
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    await expect(dialog.locator('input[value="AFTER-ALL-DELETE"]')).toBeVisible();
+    await expect(dialog.locator('del').filter({ hasText: 'REVIEW-P1' })).toBeVisible();
+    expect(await persistedSnapshot(conversationId)).toEqual(afterAdd);
   });
 
   test('OCR cell history groups a focused edit, survives Save, and resets when the dialog reopens', async ({ page }) => {
@@ -3105,72 +3146,86 @@ test.describe('Steel managed source review', () => {
         await dialog.locator('tbody tr').first().locator('td').nth(2).getByRole('textbox').fill('1234');
         await expect(quantity).toHaveValue('9');
       } else {
-        const preparedResponse = page.waitForResponse((response) => response.request().method() === 'POST' &&
-          response.url().endsWith(`${url}/prepare`));
-        await dialog.getByRole('button', { name: /^Save/ }).click();
-        const attempted = await preparedResponse;
-        if (attempted.status() === 200) {
-          await expect(dialog.getByText('Updated 1 rows', { exact: true })).toBeVisible();
-        }
-        expect(await persistedSnapshot(conversationId)).toEqual(otherSaved);
-        expect(attempted.status()).toBe(409);
+        await expect(dialog.getByRole('button', { name: /^Save/ })).toBeDisabled();
         await expect(dialog.getByRole('alert')).toBeVisible();
+        const staleRows = structuredClone(table.rows);
+        staleRows[0].values['數量'].effective = '9';
+        const staleAttempt = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows: staleRows } });
+        expect(staleAttempt.status()).toBe(409);
+        expect(await persistedSnapshot(conversationId)).toEqual(otherSaved);
         await expect(quantity).toHaveValue('9');
       }
       expect(await persistedSnapshot(conversationId)).toEqual(otherSaved);
+      for (const close of ['escape', 'first_close', 'last_close', 'outside']) {
+        if (close === 'escape') await page.keyboard.press('Escape');
+        else if (close === 'outside') await page.mouse.click(1, 1);
+        else await dialog.getByRole('button', { name: 'Close', exact: true }).nth(close === 'first_close' ? 0 : 1).click();
+        await expect(dialog.getByRole('alertdialog')).toBeVisible();
+        await expect(dialog.getByRole('button', { name: 'Save updates', exact: true })).toBeDisabled();
+        await dialog.getByRole('button', { name: 'Continue editing', exact: true }).click();
+        await expect(quantity).toHaveValue('9');
+        await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
+        expect(await persistedSnapshot(conversationId)).toEqual(otherSaved);
+      }
       await page.keyboard.press('Escape');
-      await expect(dialog.getByRole('alertdialog')).toBeVisible();
       await dialog.getByRole('button', { name: 'Discard unsaved changes', exact: true }).click();
       await expect(dialog).not.toBeVisible();
       expect(await persistedSnapshot(conversationId)).toEqual(otherSaved);
     });
   }
 
-  for (const check of ['caption', 'close'] as const) {
+  for (const check of ['caption', 'escape', 'first_close', 'last_close', 'outside'] as const) {
     test(`a superseded dirty OCR editor retains its caption and asks before closing: ${check}`, async ({ page }) => {
-    const { conversationId, messageId } = await seedCurrent(ocr);
-    conversations.push(conversationId);
-    await page.goto(`/c/${conversationId}`);
-    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
-    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
-    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
-    await quantity.fill('6');
-    await dialog.getByRole('button', { name: /^Save/ }).click();
-    await expect(dialog.getByText('Updated 1 rows', { exact: true })).toBeVisible();
-    await quantity.fill('9');
-    await quantity.press('Enter');
-    const newMessageId = randomUUID();
-    await seedMessages(getE2EUser().email, conversationId, [{
-      messageId: newMessageId, parentMessageId: messageId, text: ocr,
-      content: [{ type: 'text', text: ocr }], isCreatedByUser: false, sender: 'Assistant',
-    }]);
-    await withMongo(async (db) => {
-      await db.collection('steel_conversation_ocr_state').updateOne({ conversationId }, { $set: {
-        currentOcrResultMessageId: newMessageId, currentOcrResultGenerationId: 'review-superseding-generation',
-        currentOcrResultMarkdown: ocr, updatedAt: new Date(),
-      } });
-    });
-    const afterAI = await persistedSnapshot(conversationId);
-    await page.evaluate(() => window.dispatchEvent(new Event('offline')));
-    const refreshed = page.waitForResponse((response) => response.request().method() === 'GET' &&
-      response.url().includes(readUrl(conversationId, messageId, 1)));
-    await page.evaluate(() => window.dispatchEvent(new Event('online')));
-    expect((await refreshed).status()).toBe(200);
-    await expect(reviewValue(dialog, '9')).toBeVisible();
-    if (check === 'caption') {
-      await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
-    }
-    await expect(dialog.getByRole('button', { name: /^Save/ })).toBeDisabled();
-    await page.keyboard.press('Escape');
-    await expect(dialog).toBeVisible();
-    await expect(dialog.getByRole('alertdialog')).toBeVisible();
-    await dialog.getByRole('button', { name: 'Continue editing', exact: true }).click();
-    await expect(reviewValue(dialog, '9')).toBeVisible();
-    expect(await persistedSnapshot(conversationId)).toEqual(afterAI);
-    await page.keyboard.press('Escape');
-    await dialog.getByRole('button', { name: 'Discard unsaved changes', exact: true }).click();
-    await expect(dialog).not.toBeVisible();
-    expect(await persistedSnapshot(conversationId)).toEqual(afterAI);
+      const { conversationId, messageId } = await seedCurrent(ocr);
+      conversations.push(conversationId);
+      await page.goto(`/c/${conversationId}`);
+      await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+      const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+      await quantity.fill('6');
+      await dialog.getByRole('button', { name: /^Save/ }).click();
+      await expect(dialog.getByText('Updated 1 rows', { exact: true })).toBeVisible();
+      await quantity.fill('9');
+      await quantity.press('Enter');
+      const newMessageId = randomUUID();
+      await seedMessages(getE2EUser().email, conversationId, [{
+        messageId: newMessageId, parentMessageId: messageId, text: ocr,
+        content: [{ type: 'text', text: ocr }], isCreatedByUser: false, sender: 'Assistant',
+      }]);
+      await withMongo(async (db) => {
+        await db.collection('steel_conversation_ocr_state').updateOne({ conversationId }, { $set: {
+          currentOcrResultMessageId: newMessageId, currentOcrResultGenerationId: 'review-superseding-generation',
+          currentOcrResultMarkdown: ocr, updatedAt: new Date(),
+        } });
+      });
+      const afterAI = await persistedSnapshot(conversationId);
+      await page.evaluate(() => window.dispatchEvent(new Event('offline')));
+      const refreshed = page.waitForResponse((response) => response.request().method() === 'GET' &&
+        response.url().includes(readUrl(conversationId, messageId, 1)));
+      await page.evaluate(() => window.dispatchEvent(new Event('online')));
+      expect((await refreshed).status()).toBe(200);
+      await expect(reviewValue(dialog, '9')).toBeVisible();
+      if (check === 'caption') {
+        await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
+      }
+      await expect(dialog.getByRole('button', { name: /^Save/ })).toBeDisabled();
+      if (check === 'first_close' || check === 'last_close') {
+        await dialog.getByRole('button', { name: 'Close', exact: true }).nth(check === 'first_close' ? 0 : 1).click();
+      } else if (check === 'outside') {
+        await page.mouse.click(1, 1);
+      } else {
+        await page.keyboard.press('Escape');
+      }
+      await expect(dialog).toBeVisible();
+      await expect(dialog.getByRole('alertdialog')).toBeVisible();
+      await expect(dialog.getByRole('button', { name: 'Save updates', exact: true })).toBeDisabled();
+      await dialog.getByRole('button', { name: 'Continue editing', exact: true }).click();
+      await expect(reviewValue(dialog, '9')).toBeVisible();
+      expect(await persistedSnapshot(conversationId)).toEqual(afterAI);
+      await page.keyboard.press('Escape');
+      await dialog.getByRole('button', { name: 'Discard unsaved changes', exact: true }).click();
+      await expect(dialog).not.toBeVisible();
+      expect(await persistedSnapshot(conversationId)).toEqual(afterAI);
     });
   }
 
