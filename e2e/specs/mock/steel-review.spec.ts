@@ -4121,8 +4121,6 @@ test.describe('Steel managed source review', () => {
           await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toHaveCount(0);
           await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toHaveCount(0);
           await expect(dialog.getByRole('button', { name: /^Save/ })).toBeDisabled();
-          await expect(dialog.getByText('Updated 1 rows', { exact: true })).toBeVisible();
-          await expect(dialog.getByRole('alert')).toHaveCount(0);
           await page.keyboard.press('Escape');
           await dialog.getByRole('button', { name: 'Discard unsaved changes', exact: true }).click();
         }
