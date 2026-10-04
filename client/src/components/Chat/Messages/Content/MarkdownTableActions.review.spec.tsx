@@ -3,7 +3,8 @@ import { createStore, Provider } from 'jotai';
 import { dataService, DynamicQueryKeys } from 'librechat-data-provider';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
-import { steelReviewSelectionAtom } from './SteelReview/state';
+import { steelReviewDraftStateFamily, steelReviewSelectionAtom } from './SteelReview/state';
+import { getSteelReviewDraftOwnerKey } from './SteelReview/session';
 import MarkdownTableActions from './MarkdownTableActions';
 import SteelReviewDialog from './SteelReviewDialog';
 
@@ -1178,6 +1179,8 @@ describe('MarkdownTableActions Steel review entry', () => {
     const { store } = renderDialog();
     const input = screen.getByRole('textbox', { name: '數量 row-1' });
     fireEvent.change(input, { target: { value: '9' } });
+    const draftAtom = steelReviewDraftStateFamily(getSteelReviewDraftOwnerKey(reviewIdentity, table));
+    const submittedChangeSequence = store.get(draftAtom).changeSequence;
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
 
@@ -1190,11 +1193,17 @@ describe('MarkdownTableActions Steel review entry', () => {
     await waitFor(() => {
       expect(input).toHaveValue('10');
       expect(screen.getByText('com_ui_steel_review_unsaved_caption')).toBeInTheDocument();
-      expect(screen.queryByText('com_ui_steel_review_conflict')).toBeNull();
+      expect(screen.queryByText('com_ui_steel_review_save_conflict')).toBeNull();
       expect(store.get(steelReviewSelectionAtom)?.capturedAuthority?.revision)
         .toBe(snapshot.revision);
       expect(store.get(steelReviewSelectionAtom)?.capturedAuthority?.table.rows[0]?.values.數量?.effective)
         .toBe('9');
+      const draft = store.get(draftAtom);
+      expect(draft.cells['row-1\u0000數量']).toBe('10');
+      expect(draft.changeSequence).toBeGreaterThan(submittedChangeSequence);
+      expect(draft.past).toEqual([]);
+      expect(draft.future).toEqual([]);
+      expect(draft.historyGroup).toBeUndefined();
     });
   });
 
