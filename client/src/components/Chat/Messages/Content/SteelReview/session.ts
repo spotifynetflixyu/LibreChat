@@ -111,10 +111,12 @@ function recordMutation(
   draft: SteelReviewDraftState,
   next: Omit<SteelReviewDraftState, 'past' | 'future' | 'historyGroup'>,
   group: string,
+  snapshot = snapshotOf(draft),
 ): SteelReviewDraftState {
-  const past = draft.historyGroup === group
-    ? [...draft.past.slice(0, -1), snapshotOf(draft)]
-    : [...draft.past, snapshotOf(draft)];
+  // Preserve the first pre-group snapshot. Replacing it with the previous
+  // keystroke makes Undo stop at the penultimate character instead of the
+  // value that was present when the focused edit began.
+  const past = draft.historyGroup === group ? draft.past : [...draft.past, snapshot];
   return {
     ...next,
     past,
@@ -205,14 +207,25 @@ export function setSteelReviewDraftCell(
     cells[key] = value;
   }
 
-  const historyBase = Object.prototype.hasOwnProperty.call(draft.touched, key)
+  const group = `cell:${key}`;
+  const isSameCellGroup = draft.historyGroup === group;
+  const historyBase = isSameCellGroup
     ? draft
     : {
         ...draft,
         cells: { ...draft.cells, [key]: effective },
         touched: { ...draft.touched, [key]: effective },
       };
-  return recordMutation(historyBase, { ...draft, cells, touched, cellVersions, changeSequence }, `cell:${key}`);
+  const historySnapshot = isSameCellGroup
+    ? undefined
+    : snapshotOf({
+        ...historyBase,
+        sourceDrafts: {
+          ...historyBase.sourceDrafts,
+          [row.rowId]: row.source,
+        },
+      });
+  return recordMutation(historyBase, { ...draft, cells, touched, cellVersions, changeSequence }, group, historySnapshot);
 }
 
 export function getSteelReviewDraftCell(
@@ -267,7 +280,7 @@ export function applySteelReviewDrafts(
   rows: readonly SteelReviewRow[],
   draft: SteelReviewDraftState,
 ): SteelReviewRow[] {
-  const projectedRows = rows.map((row) => {
+  const projectRow = (row: SteelReviewRow): SteelReviewRow => {
     if (!row.rowId) {
       return row;
     }
@@ -280,7 +293,10 @@ export function applySteelReviewDrafts(
         return [header, value === undefined ? cell : { ...cell, effective: value }];
       }),
     );
-    const source = getSteelReviewDraftSource(draft, projectedRow.rowId);
+    const draftSource = getSteelReviewDraftSource(draft, projectedRow.rowId);
+    const source = draftSource === undefined && projectedRow.origin === 'manual' && projectedRow.source !== null
+      ? projectedRow.source
+      : draftSource;
     if (source === undefined) {
       return { ...projectedRow, values };
     }
@@ -317,11 +333,14 @@ export function applySteelReviewDrafts(
       };
     }
     return { ...projectedRow, values: projectedValues, source };
-  });
+  };
+  const projectedRows = rows.map(projectRow);
   const existing = new Set(rows.map((row) => row.rowId));
   return [
     ...projectedRows,
-    ...Object.values(draft.rowStates).filter((row) => !existing.has(row.rowId) && !row.deleted),
+    ...Object.values(draft.rowStates)
+      .filter((row) => !existing.has(row.rowId) && !row.deleted)
+      .map(projectRow),
   ];
 }
 
@@ -496,7 +515,7 @@ export function rebaseSteelReviewDraftState(
 
   const rebaseSnapshot = (snapshot: SteelReviewDraftSnapshot): SteelReviewDraftSnapshot => {
     const snapshotCells: Record<string, string> = {};
-    for (const [key, value] of Object.entries(snapshot.touched)) {
+    for (const [key, value] of Object.entries(snapshot.cells)) {
       if (value !== rowsByCell.get(key)) {
         snapshotCells[key] = value;
       }

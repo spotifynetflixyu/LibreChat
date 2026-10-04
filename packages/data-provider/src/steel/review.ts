@@ -332,6 +332,10 @@ export type SteelReviewCell = z.infer<typeof steelReviewCellSchema>;
 export type SteelReviewRowOrigin = z.infer<typeof steelReviewRowOriginSchema>;
 export type SteelReviewRowInsertion = z.infer<typeof steelReviewRowInsertionSchema>;
 export type SteelReviewRow = z.infer<typeof steelReviewRowSchema>;
+export type SteelReviewLedgerRow = Omit<SteelReviewRow, 'origin' | 'deleted'> & {
+  origin: SteelReviewRowOrigin;
+  deleted: boolean;
+};
 export type SteelReviewTable = z.infer<typeof steelReviewTableSchema>;
 export type SteelReviewResponse = z.infer<typeof steelReviewResponseSchema>;
 export type SteelReviewReceiptStatus = z.infer<typeof steelReviewReceiptStatusSchema>;
@@ -386,7 +390,7 @@ export function normalizeSteelReviewRows(rows: readonly SteelReviewRow[]): Steel
  * authenticated trusted-view boundary. This deliberately preserves absent
  * properties for old digest inputs and receipt snapshots.
  */
-export function withSteelReviewLedgerDefaults(row: SteelReviewRow): SteelReviewRow {
+export function withSteelReviewLedgerDefaults(row: SteelReviewRow): SteelReviewLedgerRow {
   return {
     ...row,
     origin: row.origin ?? 'ai',
@@ -394,8 +398,120 @@ export function withSteelReviewLedgerDefaults(row: SteelReviewRow): SteelReviewR
   };
 }
 
-export function normalizeSteelReviewLedgerRows(rows: readonly SteelReviewRow[]): SteelReviewRow[] {
+export function normalizeSteelReviewLedgerRows(rows: readonly SteelReviewRow[]): SteelReviewLedgerRow[] {
   return normalizeSteelReviewRows(rows).map(withSteelReviewLedgerDefaults);
+}
+
+export type SteelReviewLedgerValidationCode =
+  | 'duplicate-id'
+  | 'existing-authority'
+  | 'existing-insertion'
+  | 'existing-order'
+  | 'new-row-authority'
+  | 'insertion-anchor'
+  | 'insertion-order';
+
+export type SteelReviewLedgerValidation =
+  | {
+      ok: true;
+      currentRows: SteelReviewLedgerRow[];
+      submittedRows: SteelReviewLedgerRow[];
+      orderedRows: SteelReviewLedgerRow[];
+      orderedSubmittedRows: SteelReviewLedgerRow[];
+    }
+  | {
+      ok: false;
+      code: SteelReviewLedgerValidationCode;
+      rowId?: string;
+    };
+
+function ledgerInsertionKey(insertion: SteelReviewRowInsertion | undefined): string {
+  if (!insertion || insertion.kind === 'start') return 'start';
+  if (insertion.kind === 'end') return 'end';
+  return `after:${insertion.rowId}`;
+}
+
+/**
+ * Validate and deterministically order a trusted ledger before a boundary
+ * applies source authorization or persistence-specific error handling.
+ * Defaults are materialized only in this trusted result, never in a digest.
+ */
+export function validateSteelReviewLedger(
+  currentRows: readonly SteelReviewRow[],
+  submittedRows: readonly SteelReviewRow[],
+  headers: readonly string[],
+): SteelReviewLedgerValidation {
+  const current = normalizeSteelReviewLedgerRows(currentRows);
+  const submitted = normalizeSteelReviewLedgerRows(submittedRows);
+  const currentById = new Map(current.map((row) => [row.rowId, row]));
+  const seenIds = new Set<string>();
+  for (const row of submitted) {
+    if (seenIds.has(row.rowId)) {
+      return { ok: false, code: 'duplicate-id', rowId: row.rowId };
+    }
+    seenIds.add(row.rowId);
+    const prior = currentById.get(row.rowId);
+    if (prior) {
+      const sameBaseline = headers.every((header) =>
+        (prior.values[header]?.baseline ?? null) === (row.values[header]?.baseline ?? null));
+      if (row.origin !== prior.origin || !sameBaseline) {
+        return { ok: false, code: 'existing-authority', rowId: row.rowId };
+      }
+      if (JSON.stringify(row.insertion) !== JSON.stringify(prior.insertion)) {
+        return { ok: false, code: 'existing-insertion', rowId: row.rowId };
+      }
+      continue;
+    }
+    if (row.origin !== 'manual' || row.deleted || !row.insertion ||
+      headers.some((header) => row.values[header]?.baseline !== null)) {
+      return { ok: false, code: 'new-row-authority', rowId: row.rowId };
+    }
+  }
+
+  const existingIds = submitted.filter((row) => currentById.has(row.rowId)).map((row) => row.rowId);
+  if (JSON.stringify(existingIds) !== JSON.stringify(current.map((row) => row.rowId))) {
+    return { ok: false, code: 'existing-order' };
+  }
+
+  const usedOrdinals = new Set<string>();
+  for (const row of current) {
+    const insertion = row.insertion;
+    if (!insertion) continue;
+    const key = `${ledgerInsertionKey(insertion)}:${insertion.ordinal}`;
+    if (usedOrdinals.has(key)) return { ok: false, code: 'insertion-order', rowId: row.rowId };
+    usedOrdinals.add(key);
+  }
+  const activeIds = new Set(current.filter((row) => !row.deleted).map((row) => row.rowId));
+  for (const row of submitted) {
+    if (currentById.has(row.rowId)) continue;
+    const insertion = row.insertion!;
+    if (insertion.kind === 'after' && !activeIds.has(insertion.rowId!)) {
+      return { ok: false, code: 'insertion-anchor', rowId: row.rowId };
+    }
+    const key = `${ledgerInsertionKey(insertion)}:${insertion.ordinal}`;
+    if (usedOrdinals.has(key)) return { ok: false, code: 'insertion-order', rowId: row.rowId };
+    usedOrdinals.add(key);
+  }
+
+  const additionsByAnchor = new Map<string, SteelReviewLedgerRow[]>();
+  const submittedById = new Map(submitted.map((row) => [row.rowId, row]));
+  for (const row of submitted) {
+    if (currentById.has(row.rowId)) continue;
+    const key = ledgerInsertionKey(row.insertion);
+    const additions = additionsByAnchor.get(key) ?? [];
+    additions.push(row);
+    additionsByAnchor.set(key, additions);
+  }
+  const sorted = (rows: readonly SteelReviewLedgerRow[]) =>
+    [...rows].sort((left, right) => (left.insertion?.ordinal ?? 0) - (right.insertion?.ordinal ?? 0));
+  const orderedRows: SteelReviewLedgerRow[] = [...sorted(additionsByAnchor.get('start') ?? [])];
+  for (const row of current) {
+    orderedRows.push(row);
+    orderedRows.push(...sorted(additionsByAnchor.get(`after:${row.rowId}`) ?? []));
+  }
+  orderedRows.push(...sorted(additionsByAnchor.get('end') ?? []));
+  const orderedSubmittedRows = orderedRows.map((row) => submittedById.get(row.rowId) ?? row);
+  return { ok: true, currentRows: current, submittedRows: submitted, orderedRows, orderedSubmittedRows };
 }
 
 /** Keep the wire digest's field order and null semantics in one browser-safe encoder. */

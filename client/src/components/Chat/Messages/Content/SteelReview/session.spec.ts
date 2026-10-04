@@ -231,6 +231,16 @@ describe('Steel review local draft session', () => {
     expect(applySteelReviewDrafts(table.rows, draft).filter((row) => row.origin === 'manual')).toHaveLength(1);
   });
 
+  it('projects cell edits onto newly inserted rows before prepare', () => {
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(selection, table));
+    draft = addSteelReviewDraftRow(draft, table, undefined, null);
+    const added = applySteelReviewDrafts(table.rows, draft).find((row) => row.origin === 'manual');
+    expect(added).toBeDefined();
+    draft = setSteelReviewDraftCell(draft, added!, '品名', 'MANUAL-DUPLICATE');
+    expect(applySteelReviewDrafts(table.rows, draft).find((row) => row.rowId === added?.rowId)?.values.品名.effective)
+      .toBe('MANUAL-DUPLICATE');
+  });
+
   it('anchors a row added after a new row to the original trusted anchor', () => {
     let draft = createSteelReviewDraftState(getSteelReviewDraftKey(selection, table));
     draft = addSteelReviewDraftRow(draft, table, table.rows[0], null);
@@ -285,9 +295,37 @@ describe('Steel review local draft session', () => {
     }];
     const rebased = rebaseSteelReviewDraftState(draft, savedRows, draft.changeSequence);
     const undone = undoSteelReviewDraft(rebased);
-    expect(applySteelReviewDrafts(savedRows, undone)[0]?.values.數量.effective).toBe('2');
+    expect(applySteelReviewDrafts(savedRows, undone)[0]?.values.數量.effective).toBe('1');
     const redone = redoSteelReviewDraft(undone);
     expect(applySteelReviewDrafts(savedRows, redone)[0]?.values.數量.effective).toBe('78');
+  });
+
+  it('keeps the original focused value as the undo target after Save', () => {
+    const sourceRow = {
+      ...table.rows[0],
+      values: { ...table.rows[0].values, 數量: { baseline: '2', effective: '2' } },
+    };
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(selection, table));
+    draft = setSteelReviewDraftCell(draft, sourceRow, '數量', '7');
+    draft = setSteelReviewDraftCell(draft, sourceRow, '數量', '78');
+    const savedRows = [{ ...sourceRow, values: { ...sourceRow.values, 數量: { baseline: '2', effective: '78' } } }];
+    const rebased = rebaseSteelReviewDraftState(draft, savedRows, draft.changeSequence);
+    expect(applySteelReviewDrafts(savedRows, undoSteelReviewDraft(rebased))[0]?.values.數量.effective).toBe('2');
+  });
+
+  it('starts a new focused history group after each confirmed save', () => {
+    const initial = {
+      ...table.rows[0],
+      values: { ...table.rows[0].values, 數量: { baseline: '2', effective: '2' } },
+    };
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(selection, table));
+    draft = setSteelReviewDraftCell(draft, initial, '數量', '78');
+    const saved78 = [{ ...initial, values: { ...initial.values, 數量: { baseline: '2', effective: '78' } } }];
+    draft = rebaseSteelReviewDraftState(draft, saved78, draft.changeSequence);
+    draft = setSteelReviewDraftCell(draft, saved78[0]!, '數量', '9');
+    const saved9 = [{ ...saved78[0]!, values: { ...saved78[0]!.values, 數量: { baseline: '2', effective: '9' } } }];
+    const rebased = rebaseSteelReviewDraftState(draft, saved9, draft.changeSequence);
+    expect(applySteelReviewDrafts(saved9, undoSteelReviewDraft(rebased))[0]?.values.數量.effective).toBe('78');
   });
 
   it('restores the saved row baseline after undoing one grouped cell edit', () => {
@@ -326,6 +364,30 @@ describe('Steel review local draft session', () => {
     const afterFirstUndo = undoSteelReviewDraft(rebased);
     expect(applySteelReviewDrafts(savedRows, afterFirstUndo)[0]?.source).toEqual(sourceTwo);
     expect(applySteelReviewDrafts(savedRows, undoSteelReviewDraft(afterFirstUndo))[0]?.source).toEqual(sourceOne);
+  });
+
+  it('keeps source and business history attached to one row after Save', () => {
+    const sourceOne: SteelReviewSource = { fileId: 'file-1', pageNumber: 1, filename: 'drawing.pdf' };
+    const sourceTwo: SteelReviewSource = { ...sourceOne, pageNumber: 2 };
+    const sourced = { ...table.rows[0], source: sourceOne };
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(selection, table));
+    draft = setSteelReviewDraftCell(draft, sourced, '數量', '7');
+    draft = setSteelReviewDraftSource(draft, sourced, sourceTwo);
+    const savedRows = [{
+      ...sourced,
+      source: sourceTwo,
+      values: { ...sourced.values, 數量: { baseline: '1', effective: '7' } },
+    }];
+    const rebased = rebaseSteelReviewDraftState(draft, savedRows, draft.changeSequence);
+    const afterSourceUndo = undoSteelReviewDraft(rebased);
+    expect(applySteelReviewDrafts(savedRows, afterSourceUndo)[0]).toMatchObject({
+      source: sourceOne,
+      values: { 數量: { effective: '7' } },
+    });
+    expect(applySteelReviewDrafts(savedRows, undoSteelReviewDraft(afterSourceUndo))[0]).toMatchObject({
+      source: sourceOne,
+      values: { 數量: { effective: '1' } },
+    });
   });
 
   it('rebases an inserted row history into a manual tombstone after save', () => {

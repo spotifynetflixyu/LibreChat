@@ -318,6 +318,54 @@ describe('Steel review write methods', () => {
     expect(second.effectiveMarkdown).not.toContain('| A | P-1 |\n| A | P-1 |');
   });
 
+  it('saves an all-deleted first ledger as a header-only table', async () => {
+    const models = createModels(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const originalMarkdown = markdownFor('P-1');
+    await models.Conversation.create({
+      conversationId: 'conversation-all-delete', user: 'user-1', tenantId: 'tenant-1',
+      title: 'Review', endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId: 'assistant-all-delete', conversationId: 'conversation-all-delete', user: 'user-1',
+      tenantId: 'tenant-1', isCreatedByUser: false, text: originalMarkdown,
+    });
+    await State.create({
+      conversationId: 'conversation-all-delete', currentOcrResultMarkdown: originalMarkdown,
+      currentOcrResultMessageId: 'assistant-all-delete', currentOcrResultGenerationId: 'generation-all-delete',
+    });
+    const base = makeInput({
+      operationId: 'operation-all-delete', revision: 'generation-all-delete',
+      previousValue: 'P-1', nextValue: 'P-1', changedRows: 1,
+      conversationId: 'conversation-all-delete', messageId: 'assistant-all-delete',
+    });
+    const targetText = originalMarkdown.slice(originalMarkdown.indexOf('| 來源 |'));
+    const headerOnly = ['| 來源 | 零件編號 |', '| --- | --- |'].join('\n');
+    const input = rehashInput({
+      ...base,
+      outputId: 'ocr_result:generation-all-delete',
+      rows: base.rows.map((row) => ({ ...row, origin: 'ai', deleted: true })),
+      targetText,
+      replacementText: headerOnly,
+      cleanReplacementText: headerOnly,
+      effectiveMarkdown: originalMarkdown.replace(targetText, headerOnly),
+      displayMarkdown: originalMarkdown.replace(targetText, headerOnly),
+      caption: { kind: 'ocr_result', changedRows: 1, changedRowIds: ['row-1'] },
+    });
+
+    const result = await createSteelReviewWriteMethods(mongoose).commitSteelReview(input);
+    expect(result.changedRows).toBe(1);
+    expect(result.changedRowIds).toEqual(['row-1']);
+    expect(result.effectiveMarkdown).toBe(originalMarkdown.replace(targetText, headerOnly));
+    await expect(models.Message.findOne({ messageId: 'assistant-all-delete' }).lean())
+      .resolves.toMatchObject({ text: result.effectiveMarkdown });
+    await expect(ReviewOutput.findOne({ conversationId: 'conversation-all-delete' }).lean())
+      .resolves.toMatchObject({
+        rows: [expect.objectContaining({ rowId: 'row-1', origin: 'ai', deleted: true })],
+      });
+  });
+
   it('rejects a noncanonical effective cell before claiming or writing state', async () => {
     const models = createModels(mongoose);
     const State = createSteelConversationOcrStateModel(mongoose);

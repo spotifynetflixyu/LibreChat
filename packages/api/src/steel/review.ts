@@ -10,6 +10,7 @@ import {
   steelReviewCommitSchema,
   steelReviewLegacyCommitSchema,
   steelReviewPrepareSchema,
+  validateSteelReviewLedger,
   steelReviewReceiptQuerySchema,
   steelReviewReadQuerySchema,
 } from 'librechat-data-provider';
@@ -28,7 +29,7 @@ import type {
   SteelReviewSavedSnapshot,
   SteelReviewSourceIntent,
   SteelReviewSourceMapping,
-  SteelReviewRowInsertion,
+  SteelReviewLedgerValidation,
 } from 'librechat-data-provider';
 import type {
   SteelReviewCommitInput,
@@ -780,98 +781,24 @@ function rowWithSource(
   return { ...row, values, source };
 }
 
-type SteelReviewLedgerRow = SteelReviewRow & { origin: 'ai' | 'manual'; deleted: boolean };
-
-function sameRowBaseline(left: SteelReviewRow, right: SteelReviewRow, headers: readonly string[]): boolean {
-  return headers.every((header) =>
-    (left.values[header]?.baseline ?? null) === (right.values[header]?.baseline ?? null));
-}
-
-function insertionAnchorKey(insertion: SteelReviewRowInsertion | undefined): string {
-  if (!insertion || insertion.kind === 'start') {
-    return 'start';
+function throwLedgerValidationFailure(result: SteelReviewLedgerValidation): never {
+  if (result.ok) {
+    throw new Error('Expected a failed Steel review ledger validation');
   }
-  if (insertion.kind === 'end') {
-    return 'end';
+  if (result.code === 'existing-authority') {
+    throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Review row ledger authority changed');
   }
-  return `after:${insertion.rowId}`;
-}
-
-function rowOrderWithInsertions(
-  currentRows: readonly SteelReviewLedgerRow[],
-  submittedRows: readonly SteelReviewLedgerRow[],
-): SteelReviewLedgerRow[] {
-  const additionsByAnchor = new Map<string, SteelReviewLedgerRow[]>();
-  for (const row of submittedRows) {
-    if (currentRows.some((current) => current.rowId === row.rowId)) {
-      continue;
-    }
-    const list = additionsByAnchor.get(insertionAnchorKey(row.insertion)) ?? [];
-    list.push(row);
-    additionsByAnchor.set(insertionAnchorKey(row.insertion), list);
+  if (result.code === 'existing-insertion') {
+    throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Existing review rows cannot move');
   }
-  const sortAdditions = (rows: SteelReviewLedgerRow[]): SteelReviewLedgerRow[] =>
-    [...rows].sort((left, right) => (left.insertion?.ordinal ?? 0) - (right.insertion?.ordinal ?? 0));
-  const result: SteelReviewLedgerRow[] = [];
-  result.push(...sortAdditions(additionsByAnchor.get('start') ?? []));
-  for (const row of currentRows) {
-    result.push(row);
-    result.push(...sortAdditions(additionsByAnchor.get(`after:${row.rowId}`) ?? []));
-  }
-  result.push(...sortAdditions(additionsByAnchor.get('end') ?? []));
-  return result;
-}
-
-function validateLedgerRows(
-  currentRows: readonly SteelReviewLedgerRow[],
-  submittedRows: readonly SteelReviewLedgerRow[],
-  headers: readonly string[],
-): void {
-  const currentById = new Map(currentRows.map((row) => [row.rowId, row]));
-  const seen = new Set<string>();
-  for (const row of submittedRows) {
-    if (seen.has(row.rowId)) {
-      throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review row identity is duplicated');
-    }
-    seen.add(row.rowId);
-    const current = currentById.get(row.rowId);
-    if (current) {
-      if (row.origin !== current.origin || !sameRowBaseline(current, row, headers)) {
-        throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Review row ledger authority changed');
-      }
-      if (JSON.stringify(row.insertion) !== JSON.stringify(current.insertion)) {
-        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Existing review rows cannot move');
-      }
-      continue;
-    }
-    if (row.origin !== 'manual' || row.deleted || !row.insertion) {
-      throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'New review rows require manual insertion authority');
-    }
-    if (headers.some((header) => row.values[header]?.baseline !== null)) {
-      throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'New review rows cannot forge an AI baseline');
-    }
-  }
-  const submittedExistingIds = submittedRows
-    .filter((row) => currentById.has(row.rowId))
-    .map((row) => row.rowId);
-  if (JSON.stringify(submittedExistingIds) !== JSON.stringify(currentRows.map((row) => row.rowId))) {
-    throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review row order changed');
-  }
-  const activeIds = new Set(currentRows.filter((row) => !row.deleted).map((row) => row.rowId));
-  const ordinals = new Set<string>();
-  for (const row of submittedRows) {
-    if (!currentById.has(row.rowId)) {
-      const insertion = row.insertion!;
-      if (insertion.kind === 'after' && !activeIds.has(insertion.rowId!)) {
-        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review insertion anchor is unavailable');
-      }
-      const key = `${insertionAnchorKey(insertion)}:${insertion.ordinal}`;
-      if (ordinals.has(key)) {
-        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review insertion order is ambiguous');
-      }
-      ordinals.add(key);
-    }
-  }
+  const messages: Record<string, string> = {
+    'duplicate-id': 'Review row identity is duplicated',
+    'existing-order': 'Review row order changed',
+    'new-row-authority': 'New review rows require manual insertion authority',
+    'insertion-anchor': 'Review insertion anchor is unavailable',
+    'insertion-order': 'Review insertion order is ambiguous',
+  };
+  throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', messages[result.code]);
 }
 
 export function createSteelReviewService({
@@ -966,10 +893,11 @@ export function createSteelReviewService({
     }
     const currentRows = record.rows ?? toRows(target, record.outputId, record.sourceMappings);
     const headers = record.headers ?? target.headers;
-    const trustedCurrentRows = normalizeSteelReviewLedgerRows(currentRows) as SteelReviewLedgerRow[];
-    const submittedRows = normalizeSteelReviewLedgerRows(payload.rows) as SteelReviewLedgerRow[];
-    validateLedgerRows(trustedCurrentRows, submittedRows, headers);
-    const orderedRows = rowOrderWithInsertions(trustedCurrentRows, submittedRows);
+    const ledgerValidation = validateSteelReviewLedger(currentRows, payload.rows, headers);
+    if (!ledgerValidation.ok) {
+      throwLedgerValidationFailure(ledgerValidation);
+    }
+    const { currentRows: trustedCurrentRows, submittedRows, orderedRows } = ledgerValidation;
     const sourceIntents = payload.sourceIntents ?? [];
     const intentsByRow = new Map<string, SteelReviewSourceIntent>();
     for (const intent of sourceIntents) {
@@ -1127,17 +1055,21 @@ export function createSteelReviewService({
     if (intentsByRow.size !== sourceIntents.length) {
       throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review source intent is duplicated');
     }
-    const normalizedRows = normalizeSteelReviewLedgerRows(canonicalRows) as SteelReviewLedgerRow[];
-    const normalizedCurrentRows = normalizeSteelReviewLedgerRows(currentRows) as SteelReviewLedgerRow[];
+    const normalizedRows = validateSteelReviewLedger(currentRows, canonicalRows, headers);
+    if (!normalizedRows.ok) {
+      throwLedgerValidationFailure(normalizedRows);
+    }
+    const canonicalLedgerRows = normalizedRows.orderedSubmittedRows;
+    const normalizedCurrentRows = normalizedRows.currentRows;
     const previousById = new Map(normalizedCurrentRows.map((row) => [row.rowId, row]));
-    const changedRowIds = normalizedRows
+    const changedRowIds = canonicalLedgerRows
       .filter((row) => {
         const previous = previousById.get(row.rowId);
         return !previous || JSON.stringify({ values: row.values, source: row.source, origin: row.origin, deleted: row.deleted }) !==
           JSON.stringify({ values: previous.values, source: previous.source, origin: previous.origin, deleted: previous.deleted });
       })
       .map((row) => row.rowId);
-    const cleanReplacementText = serializeReviewTable(headers, normalizedRows.filter((row) => !row.deleted));
+    const cleanReplacementText = serializeReviewTable(headers, canonicalLedgerRows.filter((row) => !row.deleted));
     const effectiveMarkdown = replaceOwnerTarget(record, cleanReplacementText, target);
     if (!effectiveMarkdown) {
       throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review table target not found');
@@ -1156,7 +1088,7 @@ export function createSteelReviewService({
       ...(target.partIndex !== undefined ? { partIndex: target.partIndex } : {}),
       outputId: payload.outputId,
       revision: payload.revision,
-      rows: normalizedRows,
+      rows: canonicalLedgerRows,
       ...(sourceIntents.length > 0 ? { sourceIntents } : {}),
       sourceMappings: uniqueSourceMappings(trustedSourceMappings),
       headers,

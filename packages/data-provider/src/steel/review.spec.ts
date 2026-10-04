@@ -10,6 +10,7 @@ import {
   steelReviewResponseSchema,
   steelReviewPreparedSchema,
   steelReviewPrepareSchema,
+  validateSteelReviewLedger,
 } from './review';
 
 describe('Steel review contracts', () => {
@@ -174,6 +175,52 @@ describe('Steel review contracts', () => {
       ...base,
       rows: [{ ...row, insertion: { kind: 'start', ordinal: 0 } }],
     }));
+  });
+
+  it('orders trusted ledger rows and reserves ordinals across tombstones', () => {
+    const current = [
+      {
+        rowId: 'row-ai',
+        source: null,
+        values: { Value: { baseline: 'AI', effective: 'AI' } },
+      },
+      {
+        rowId: 'row-manual-old',
+        source: null,
+        origin: 'manual' as const,
+        deleted: true,
+        insertion: { kind: 'end' as const, ordinal: 0 },
+        values: { Value: { baseline: null, effective: 'old' } },
+      },
+    ];
+    const result = validateSteelReviewLedger(current, [
+      ...current,
+      {
+        rowId: 'row-manual-new',
+        source: null,
+        origin: 'manual' as const,
+        deleted: false,
+        insertion: { kind: 'end' as const, ordinal: 1 },
+        values: { Value: { baseline: null, effective: 'new' } },
+      },
+    ], ['Value']);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.orderedRows.map((row) => row.rowId)).toEqual([
+        'row-ai', 'row-manual-old', 'row-manual-new',
+      ]);
+    }
+    expect(validateSteelReviewLedger(current, [
+      ...current,
+      {
+        rowId: 'row-forged',
+        source: null,
+        origin: 'manual' as const,
+        deleted: false,
+        insertion: { kind: 'end' as const, ordinal: 0 },
+        values: { Value: { baseline: null, effective: 'forged' } },
+      },
+    ], ['Value'])).toMatchObject({ ok: false, code: 'insertion-order' });
   });
 
   it('encodes scope, target, and row changes distinctly with stable null defaults', () => {
