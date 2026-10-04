@@ -5,6 +5,7 @@ import { AlertTriangle, Maximize2, Minimize2 } from 'lucide-react';
 import {
   DynamicQueryKeys,
   QueryKeys,
+  dataService,
   steelReviewErrorCodeSchema,
   steelReviewRecoverySchema,
 } from 'librechat-data-provider';
@@ -604,6 +605,37 @@ export default function SteelReviewDialog({
     setSaveRecovery(undefined);
   }, []);
 
+  const adoptConflictRecovery = useCallback((recovery: SteelReviewRecovery) => {
+    const recoveredTable = recovery.table;
+    const tableKey = DynamicQueryKeys.steelReview(
+      identity.conversationId,
+      identity.kind,
+      identity.messageId,
+      identity.tableId,
+      recoveredTable.partIndex ?? identity.partIndex,
+    );
+    queryClient.setQueryData<SteelReviewResponse>(tableKey, (current) =>
+      current ? { ...current, table: recoveredTable } : { table: recoveredTable });
+    latestTableRef.current = recoveredTable;
+    capturedAuthorityRef.current = {
+      outputId: recoveredTable.outputId,
+      revision: recoveredTable.revision,
+      table: recoveredTable,
+    };
+    recoveryRef.current = recovery;
+    const rebased = rebaseSteelReviewDraftState(
+      latestDraftStateRef.current,
+      recoveredTable.rows,
+      0,
+      { preserveUnchangedRows: true },
+    );
+    latestDraftStateRef.current = rebased;
+    setDraftState(rebased);
+    exportBaseRowsRef.current = recoveredTable.rows;
+    exportRowsRef.current = applySteelReviewDrafts(recoveredTable.rows, rebased);
+    setSaveRecovery(recovery);
+  }, [identity, queryClient, setDraftState]);
+
   const onCellHistoryBoundary = useCallback(() => {
     setDraftState((current) => finishSteelReviewDraftHistory(current));
   }, [setDraftState]);
@@ -730,6 +762,27 @@ export default function SteelReviewDialog({
     }
     return reviewQueryRefetchRef.current();
   }, []);
+  const refetchAuthoritativeMessages = useCallback(async () => {
+    const queryKey = [QueryKeys.messages, identity.conversationId] as const;
+    const messagesAtRequestStart = queryClient.getQueryData<TMessage[]>(queryKey);
+    try {
+      const messages = await queryClient.fetchQuery<TMessage[]>(
+        queryKey,
+        async () => {
+          const fetched = await dataService.getMessagesByConvoId(identity.conversationId);
+          const currentMessages = queryClient.getQueryData<TMessage[]>(queryKey);
+          if (messagesAtRequestStart !== undefined && currentMessages !== messagesAtRequestStart) {
+            return currentMessages ?? fetched;
+          }
+          return fetched;
+        },
+        { staleTime: 0 },
+      );
+      return { messages, authoritative: true };
+    } catch {
+      return { messages: queryClient.getQueryData<TMessage[]>(queryKey), authoritative: false };
+    }
+  }, [identity.conversationId, queryClient]);
   const savePromiseRef = useRef<Promise<boolean>>();
   const applyConfirmedSnapshot = useCallback((
     snapshot: SteelReviewSavedSnapshot,
@@ -862,6 +915,15 @@ export default function SteelReviewDialog({
             setSaveErrorCode(undefined);
             return false;
           }
+          // Refresh the rendered conversation before any owner/revision guard
+          // can return early. A held response may finish after a foreign save
+          // or a new AI publication, and the immutable receipt must never be
+          // allowed to leave the chat on its older message text.
+          const refreshedMessages = await refetchAuthoritativeMessages();
+          if (!refreshedMessages.authoritative) {
+            setSavePhase('uncertain');
+            return false;
+          }
           if (!isAuthorizedCurrentNoOpTable(currentResult.data.table, prepared)) {
             preparedRef.current = undefined;
             setSavePhase('stale');
@@ -875,6 +937,11 @@ export default function SteelReviewDialog({
           if (currentResult.error || !currentResult.data?.table) {
             setSavePhase('uncertain');
             setSaveErrorCode(undefined);
+            return false;
+          }
+          const refreshedMessages = await refetchAuthoritativeMessages();
+          if (!refreshedMessages.authoritative) {
+            setSavePhase('uncertain');
             return false;
           }
           if (!isAuthorizedCurrentTable(currentResult.data.table, prepared)) {
@@ -904,8 +971,7 @@ export default function SteelReviewDialog({
           setSavePhase('stale');
           setSaveErrorCode(code);
           if (recovery) {
-            recoveryRef.current = recovery;
-            setSaveRecovery(recovery);
+            adoptConflictRecovery(recovery);
           }
           void refetchCurrentReview();
         } else if (commitAttempted) {
@@ -926,7 +992,7 @@ export default function SteelReviewDialog({
         savePromiseRef.current = undefined;
       }
     }
-  }, [applyConfirmedNoOp, applyConfirmedSnapshot, baseTable, canSave, clearRecovery, commitMutation, dirtyRowCount, draftRows, draftState, identity, prepareMutation, queryClient, refetchCurrentReview, savePhase, table]);
+  }, [adoptConflictRecovery, applyConfirmedNoOp, applyConfirmedSnapshot, baseTable, canSave, clearRecovery, commitMutation, dirtyRowCount, draftRows, draftState, identity, prepareMutation, queryClient, refetchAuthoritativeMessages, refetchCurrentReview, savePhase, table]);
   const getCurrentReviewTable = useCallback(() => {
     const tableKey = DynamicQueryKeys.steelReview(
       identity.conversationId,
@@ -1095,6 +1161,12 @@ export default function SteelReviewDialog({
           setReceiptFailed(false);
           return;
         }
+        const refreshedMessages = await refetchAuthoritativeMessages();
+        if (!refreshedMessages.authoritative) {
+          setSavePhase('reconciling');
+          setReceiptFailed(true);
+          return;
+        }
         const boundary = discardBoundaryRef.current ?? submittedChangeSequenceRef.current;
         if (currentResult.data.table.revision === status.snapshot.revision) {
           const messages = queryClient.getQueryData<TMessage[]>([QueryKeys.messages, identity.conversationId]);
@@ -1136,7 +1208,7 @@ export default function SteelReviewDialog({
     return () => {
       active = false;
     };
-  }, [applyConfirmedNoOp, applyConfirmedSnapshot, discardRequested, finishDiscardAtBoundary, identity.conversationId, queryClient, receiptInput, refetchCurrentReview, refetchReceipt, setDraftState, setSelection]);
+  }, [applyConfirmedNoOp, applyConfirmedSnapshot, discardRequested, finishDiscardAtBoundary, identity.conversationId, queryClient, receiptInput, refetchAuthoritativeMessages, refetchCurrentReview, refetchReceipt, setDraftState, setSelection]);
   const saveAndClose = useCallback(async () => {
     const saved = await saveChanges();
     if (!saved || !table) {

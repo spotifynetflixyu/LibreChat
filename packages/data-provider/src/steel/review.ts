@@ -650,15 +650,23 @@ export function applySteelReviewOperations({
           JSON.stringify(currentSource) !== JSON.stringify(requestedSource)) {
           conflicts.push({ kind: 'source', rowId: row.rowId, expected: expectedSource, current: currentSource, requested: requestedSource });
         } else {
-          row.source = null;
-          expectedRow.source = null;
+          row.source = requestedSource
+            ? { fileId: requestedSource.fileId, pageNumber: requestedSource.pageNumber }
+            : null;
+          expectedRow.source = requestedSource
+            ? { fileId: requestedSource.fileId, pageNumber: requestedSource.pageNumber }
+            : null;
         }
       }
       continue;
     }
     if (operation.type === 'delete') {
-      if (!expectedRow || expectedRow.deleted) {
-        conflicts.push({ kind: 'activity', rowId: operation.rowId, reason: expectedRow?.deleted ? 'expected-deleted' : 'unavailable' });
+      if (!expectedRow) {
+        conflicts.push({ kind: 'activity', rowId: operation.rowId, reason: 'unavailable' });
+      } else if (expectedRow.deleted && row.deleted) {
+        continue;
+      } else if (expectedRow.deleted) {
+        conflicts.push({ kind: 'activity', rowId: operation.rowId, reason: 'expected-deleted' });
       } else if (row.deleted) {
         expectedRow.deleted = true;
       } else if (!sameOperationBusinessState(row, expectedRow, headers)) {
@@ -669,14 +677,24 @@ export function applySteelReviewOperations({
       }
       continue;
     }
-    if (!expectedRow || !expectedRow.deleted || !row.deleted || !sameOperationBusinessState(row, expectedRow, headers)) {
+    if (!expectedRow || !expectedRow.deleted || !sameOperationBusinessState(row, expectedRow, headers)) {
       conflicts.push({ kind: 'activity', rowId: operation.rowId, reason: expectedRow?.deleted ? 'current-restored' : 'unavailable' });
+      continue;
+    }
+    if (!row.deleted) {
+      expectedRow.deleted = false;
       continue;
     }
     row.deleted = false;
     expectedRow.deleted = false;
   }
-  return conflicts.length > 0 ? { ok: false, conflicts } : { ok: true, currentRows: current, expectedRows: expected };
+  return conflicts.length > 0
+    ? { ok: false, conflicts }
+    : {
+        ok: true,
+        currentRows: orderSteelReviewLedgerRows(current),
+        expectedRows: orderSteelReviewLedgerRows(expected),
+      };
 }
 export type SteelReviewResponse = z.infer<typeof steelReviewResponseSchema>;
 export type SteelReviewReceiptStatus = z.infer<typeof steelReviewReceiptStatusSchema>;
@@ -775,6 +793,51 @@ function ledgerInsertionKey(insertion: SteelReviewRowInsertion | undefined): str
   return `after:${insertion.rowId}`;
 }
 
+function orderSteelReviewLedgerRows(rows: readonly SteelReviewLedgerRow[]): SteelReviewLedgerRow[] {
+  const currentIndex = new Map(rows.map((row, index) => [row.rowId, index]));
+  const children = new Map<string, SteelReviewLedgerRow[]>();
+  const starts: SteelReviewLedgerRow[] = [];
+  const ends: SteelReviewLedgerRow[] = [];
+  const roots: SteelReviewLedgerRow[] = [];
+  const rowIds = new Set(rows.map((row) => row.rowId));
+  for (const row of rows) {
+    const insertion = row.insertion;
+    if (!insertion || row.origin !== 'manual') {
+      roots.push(row);
+      continue;
+    }
+    if (insertion.kind === 'start') {
+      starts.push(row);
+    } else if (insertion.kind === 'end') {
+      ends.push(row);
+    } else if (insertion.kind === 'after' && insertion.rowId && rowIds.has(insertion.rowId)) {
+      const siblings = children.get(insertion.rowId) ?? [];
+      siblings.push(row);
+      children.set(insertion.rowId, siblings);
+    } else {
+      // Validation reports a missing anchor for new rows. Existing data may
+      // contain one from an older writer; keep it deterministic at the end.
+      ends.push(row);
+    }
+  }
+  const sortByOrdinal = (left: SteelReviewLedgerRow, right: SteelReviewLedgerRow) =>
+    (left.insertion?.ordinal ?? 0) - (right.insertion?.ordinal ?? 0) ||
+    (currentIndex.get(left.rowId) ?? 0) - (currentIndex.get(right.rowId) ?? 0);
+  const ordered: SteelReviewLedgerRow[] = [];
+  const emitted = new Set<string>();
+  const emit = (row: SteelReviewLedgerRow) => {
+    if (emitted.has(row.rowId)) return;
+    emitted.add(row.rowId);
+    ordered.push(row);
+    for (const child of [...(children.get(row.rowId) ?? [])].sort(sortByOrdinal)) emit(child);
+  };
+  for (const row of [...starts].sort(sortByOrdinal)) emit(row);
+  for (const row of roots) emit(row);
+  for (const row of [...ends].sort(sortByOrdinal)) emit(row);
+  for (const row of rows) emit(row);
+  return ordered;
+}
+
 /**
  * Validate and deterministically order a trusted ledger before a boundary
  * applies source authorization or persistence-specific error handling.
@@ -837,23 +900,9 @@ export function validateSteelReviewLedger(
     usedOrdinals.add(key);
   }
 
-  const additionsByAnchor = new Map<string, SteelReviewLedgerRow[]>();
   const submittedById = new Map(submitted.map((row) => [row.rowId, row]));
-  for (const row of submitted) {
-    if (currentById.has(row.rowId)) continue;
-    const key = ledgerInsertionKey(row.insertion);
-    const additions = additionsByAnchor.get(key) ?? [];
-    additions.push(row);
-    additionsByAnchor.set(key, additions);
-  }
-  const sorted = (rows: readonly SteelReviewLedgerRow[]) =>
-    [...rows].sort((left, right) => (left.insertion?.ordinal ?? 0) - (right.insertion?.ordinal ?? 0));
-  const orderedRows: SteelReviewLedgerRow[] = [...sorted(additionsByAnchor.get('start') ?? [])];
-  for (const row of current) {
-    orderedRows.push(row);
-    orderedRows.push(...sorted(additionsByAnchor.get(`after:${row.rowId}`) ?? []));
-  }
-  orderedRows.push(...sorted(additionsByAnchor.get('end') ?? []));
+  const newRows = submitted.filter((row) => !currentById.has(row.rowId));
+  const orderedRows = orderSteelReviewLedgerRows([...current, ...newRows]);
   const orderedSubmittedRows = orderedRows.map((row) => submittedById.get(row.rowId) ?? row);
   return { ok: true, currentRows: current, submittedRows: submitted, orderedRows, orderedSubmittedRows };
 }

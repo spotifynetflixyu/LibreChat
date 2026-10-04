@@ -246,8 +246,8 @@ function ReviewCell({
   const currentValue = draftValue ?? displayCellValue(cell.effective);
   const changed = displayCellValue(cell.baseline) !== currentValue;
   const editable = Boolean(row.rowId) && canEdit && !row.deleted && isSteelReviewCellEditable(table, header);
-  const deletedValue = row.deleted
-    ? <del className="text-text-secondary">{row.origin === 'manual' ? currentValue : displayCellValue(cell.baseline)}</del>
+  const deletedValue = row.deleted && row.origin !== 'manual'
+    ? <del className="text-text-secondary">{displayCellValue(cell.baseline)}</del>
     : null;
   const previousValue = !row.deleted && changed && cell.baseline !== null && cell.baseline !== undefined
     ? <del className="mr-2 text-text-secondary">{cell.baseline}</del>

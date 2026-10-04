@@ -113,6 +113,24 @@ function isOperationCommit(payload: SteelReviewCommit): payload is SteelReviewOp
   return Object.prototype.hasOwnProperty.call(payload, 'operations');
 }
 
+const operationIdentityKeys = new Set([
+  'conversationId', 'messageId', 'tableId', 'partIndex', 'kind', 'outputId', 'revision', 'operations',
+  // These are injected by the authenticated route/service boundary, never by
+  // the browser operation DTO.
+  'userId', 'tenantId', 'sourceRequest',
+]);
+
+function assertOperationKeys(input: object, commit: boolean): void {
+  const allowed = new Set(operationIdentityKeys);
+  if (commit) {
+    allowed.add('operationId');
+    allowed.add('digest');
+  }
+  if (Object.keys(input).some((key) => !allowed.has(key))) {
+    throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Invalid review operation');
+  }
+}
+
 export class SteelReviewReadError extends Error {
   readonly statusCode: 400 | 404;
   readonly code: 'INVALID_REVIEW_QUERY' | 'REVIEW_NOT_FOUND';
@@ -754,6 +772,7 @@ export function createSteelReviewService({
   function parsePreparePayload(input: SteelReviewPrepareInput): SteelReviewPrepare {
     const hasOperations = Object.prototype.hasOwnProperty.call(input, 'operations');
     if (hasOperations) {
+      assertOperationKeys(input, false);
       const operationInput = input as SteelReviewOperationPrepare;
       const parsed = steelReviewOperationPrepareSchema.safeParse({
         conversationId: operationInput.conversationId,
@@ -795,6 +814,7 @@ export function createSteelReviewService({
   function parseCommitPayload(input: SteelReviewCommitRequest): SteelReviewCommit {
     const hasOperations = Object.prototype.hasOwnProperty.call(input, 'operations');
     if (hasOperations) {
+      assertOperationKeys(input, true);
       const operationInput = input as SteelReviewOperationCommit;
       const parsed = steelReviewOperationCommitSchema.safeParse({
         conversationId: operationInput.conversationId,
@@ -929,6 +949,7 @@ export function createSteelReviewService({
       kind: payload.kind,
       outputId: snapshot.outputId,
       revision: snapshot.revision,
+      headers: snapshot.headers,
       rows: snapshot.rows,
       operationId: result.operationId,
       digest: result.digest,
@@ -1535,6 +1556,10 @@ export function createSteelReviewService({
             digest: payload.digest,
           });
           if (receipt) {
+            const requestDigest = operationRequestDigest(payload);
+            if (receipt.requestDigest !== requestDigest && receipt.snapshot?.requestDigest !== requestDigest) {
+              throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review operation request changed');
+            }
             const prepared = operationPreparedFromReceipt(payload, receipt);
             return {
               ...prepared,
@@ -1601,12 +1626,37 @@ export function createSteelReviewService({
             };
           },
         });
+        // The first response and an exact receipt replay must expose the same
+        // safe operation projection. Build both from the immutable saved
+        // snapshot so internal owner/auth fields and the mutable prepare
+        // preview cannot leak into only one of the two responses.
+        const savedProjection = result.snapshot
+          ? operationPreparedFromReceipt(payload, result)
+          : (() => {
+              const { operationId: _operationId, digest: _digest, ...operationRequest } = payload;
+              return {
+                ...trusted,
+                operationRequest,
+                revision: result.revision,
+                ...(result.headers ? { headers: result.headers } : {}),
+                ...(result.rows ? { rows: result.rows } : {}),
+                messageSha256: result.messageSha256,
+                effectiveMarkdown: result.effectiveMarkdown,
+                displayMarkdown: result.displayMarkdown,
+                ...(result.target ? { target: result.target } : {}),
+                ...(result.targetText !== undefined ? { targetText: result.targetText } : {}),
+                ...(result.replacementText !== undefined ? { replacementText: result.replacementText } : {}),
+                ...(result.cleanReplacementText !== undefined
+                  ? { cleanReplacementText: result.cleanReplacementText }
+                  : {}),
+                ...(result.aiBaselineMarkdown !== undefined ? { aiBaselineMarkdown: result.aiBaselineMarkdown } : {}),
+                ...(result.aiRawMarkdown !== undefined ? { aiRawMarkdown: result.aiRawMarkdown } : {}),
+                ...(result.sourceMappings ? { sourceMappings: result.sourceMappings } : {}),
+                ...(result.caption ? { caption: result.caption } : {}),
+              };
+            })();
         return {
-          ...trusted,
-          revision: result.revision,
-          messageSha256: result.messageSha256,
-          effectiveMarkdown: result.effectiveMarkdown,
-          displayMarkdown: result.displayMarkdown,
+          ...savedProjection,
           savedAt: result.savedAt.toISOString(),
           changedRows: result.changedRows,
           changedRowIds: result.changedRowIds,

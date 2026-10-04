@@ -90,8 +90,19 @@ export interface SteelReviewCommitInput extends SteelReviewReadInput {
 export interface SteelReviewCommitResult {
   operationId: string;
   digest: string;
+  requestDigest?: string;
   outputId: string;
   revision: string;
+  headers?: string[];
+  rows?: SteelReviewRow[];
+  caption?: SteelReviewCaption;
+  target?: SteelReviewTarget;
+  targetText?: string;
+  replacementText?: string;
+  cleanReplacementText?: string;
+  aiBaselineMarkdown?: string;
+  aiRawMarkdown?: string;
+  sourceMappings?: SteelReviewSourceMapping[];
   changedRows: number;
   changedRowIds: string[];
   savedAt: Date;
@@ -185,6 +196,7 @@ function trustedInitialRowsFromMarkdown(
   markdown: string,
   input: SteelReviewCommitInput,
   trustedMappings: readonly SteelReviewSourceMapping[],
+  authorizedFiles: ReadonlyMap<string, AuthorizedFile>,
 ): SteelReviewRow[] | undefined {
   const physicalTarget = parseSteelReviewMarkdownTables(input.targetText)
     .find((candidate) => JSON.stringify(candidate.headers) === JSON.stringify(input.headers));
@@ -212,7 +224,12 @@ function trustedInitialRowsFromMarkdown(
     const sourceCode = sourceColumn ? row[table.headers.indexOf(sourceColumn)]?.trim() : undefined;
     const mapping = sourceCode ? mappingsByCode.get(sourceCode) : undefined;
     const page = pageColumn ? parseSourcePage(row[table.headers.indexOf(pageColumn)]) : null;
-    const source = mapping
+    // A source code in the immutable AI table is evidence only when the
+    // transaction can still authorize its file for this user/message. Keep
+    // unavailable mappings as reserved codes, but project their row source to
+    // NULL so a later authorized source edit does not conflict with a hidden
+    // historical file association.
+    const source = mapping && authorizedFiles.has(mapping.fileId)
       ? {
           fileId: mapping.fileId,
           pageNumber: page,
@@ -1006,8 +1023,19 @@ function resultFromReceipt(
   return {
     operationId: receipt.operationId,
     digest: receipt.digest,
+    ...(receipt.requestDigest ? { requestDigest: receipt.requestDigest } : {}),
     outputId: snapshot.outputId,
     revision: snapshot.revision,
+    headers: snapshot.headers,
+    rows: snapshot.rows,
+    ...(snapshot.caption ? { caption: snapshot.caption } : {}),
+    ...(snapshot.target ? { target: snapshot.target } : {}),
+    ...(snapshot.targetText !== undefined ? { targetText: snapshot.targetText } : {}),
+    ...(snapshot.replacementText !== undefined ? { replacementText: snapshot.replacementText } : {}),
+    ...(snapshot.cleanReplacementText !== undefined ? { cleanReplacementText: snapshot.cleanReplacementText } : {}),
+    ...(snapshot.aiBaselineMarkdown !== undefined ? { aiBaselineMarkdown: snapshot.aiBaselineMarkdown } : {}),
+    ...(snapshot.aiRawMarkdown !== undefined ? { aiRawMarkdown: snapshot.aiRawMarkdown } : {}),
+    ...(snapshot.sourceMappings ? { sourceMappings: snapshot.sourceMappings } : {}),
     changedRows: snapshot.changedRows,
     changedRowIds: snapshot.changedRowIds,
     savedAt: snapshot.savedAt,
@@ -1311,8 +1339,35 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             (!operationLane && output.revision !== input.revision))) {
             throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review output is no longer current');
           }
-          const currentSourceMappings = output?.sourceMappings ??
+          const currentSourceFileIds = [...new Set([
+            ...(output?.rows ?? []).flatMap((row) => row.source?.fileId ? [row.source.fileId] : []),
+            ...(ocrState?.sourceMappings ?? []).map((mapping) => mapping.fileId),
+            ...(input.sourceIntents ?? []).flatMap((intent) => intent.fileId ? [intent.fileId] : []),
+            ...(input.sourceMappings ?? []).map((mapping) => mapping.fileId),
+          ])];
+          const currentAuthorizedFiles = currentSourceFileIds.length > 0
+            ? projectAuthorizedFiles(await authorizeFiles(input, currentSourceFileIds, session, {
+              conversation: {
+                conversationId: conversation.conversationId,
+                user: conversation.user,
+                tenantId: conversation.tenantId,
+                expiredAt: conversation.expiredAt,
+              },
+              message: {
+                messageId: message.messageId,
+                conversationId: message.conversationId,
+                user: message.user,
+                tenantId: message.tenantId,
+                expiredAt: message.expiredAt,
+                files: message.files,
+              },
+            }))
+            : new Map<string, AuthorizedFile>();
+          const trustedCurrentSourceMappings = output?.sourceMappings ??
             (ocrState?.sourceMappings ? trustedSourceMappings(ocrState) : undefined);
+          const currentSourceMappings = output?.sourceMappings
+            ?.filter((mapping) => currentAuthorizedFiles.has(mapping.fileId)) ??
+            (ocrState?.sourceMappings ? sourceMappings(ocrState, currentAuthorizedFiles) : undefined);
           const currentLatestOutputId = output?.latestOutputId ?? input.outputId;
           const currentAiRawMarkdown = output?.aiRawMarkdown ?? ocrState?.currentOcrResultMarkdown;
 
@@ -1332,9 +1387,22 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               revision: output?.revision ?? input.revision,
               state: 'current',
               ...(output?.headers ? { headers: output.headers } : {}),
-              ...(output?.rows ? { rows: output.rows } : {}),
+              ...(output?.rows
+                ? { rows: sanitizeRows(output.rows, currentAuthorizedFiles, output.sourceMappings) }
+                : {}),
               ...(currentSourceMappings ? { sourceMappings: currentSourceMappings } : {}),
-              ...(currentSourceMappings ? { trustedSourceMappings: currentSourceMappings } : {}),
+              ...(trustedCurrentSourceMappings ? { trustedSourceMappings: trustedCurrentSourceMappings } : {}),
+              // Keep unavailable AI mappings as allocation reservations. They
+              // are never projected back onto rows, but a later authorized
+              // human source must not reuse their F-code.
+              ...(ocrState?.sourceMappings || output?.sourceMappings
+                ? {
+                    sourceMappingReservations: [
+                      ...(ocrState?.sourceMappings ? sourceMappingReservations(ocrState) : []),
+                      ...(output?.sourceMappings ?? []),
+                    ],
+                  }
+                : {}),
               latestOutputId: currentLatestOutputId,
               ...(currentAiRawMarkdown ? { aiRawMarkdown: currentAiRawMarkdown } : {}),
               ...(output?.aiBaselineMarkdown ? { aiBaselineMarkdown: output.aiBaselineMarkdown } : {}),
@@ -1418,34 +1486,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             ? selectedNext
             : renderTextParts(safeNextParts);
 
-          const sourceFileIds = output
-            ? [...new Set([
-              ...output.rows.flatMap((row) => row.source?.fileId ? [row.source.fileId] : []),
-              ...(input.sourceIntents ?? []).flatMap((intent) => intent.fileId ? [intent.fileId] : []),
-              ...(input.sourceMappings ?? []).map((mapping) => mapping.fileId),
-            ])]
-            : [...new Set([
-              ...(input.sourceIntents ?? []).flatMap((intent) => intent.fileId ? [intent.fileId] : []),
-              ...(input.sourceMappings ?? []).map((mapping) => mapping.fileId),
-            ])];
-          const authorizedFiles = sourceFileIds.length > 0
-            ? projectAuthorizedFiles(await authorizeFiles(input, sourceFileIds, session, {
-              conversation: {
-                conversationId: conversation.conversationId,
-                user: conversation.user,
-                tenantId: conversation.tenantId,
-                expiredAt: conversation.expiredAt,
-              },
-              message: {
-                messageId: message.messageId,
-                conversationId: message.conversationId,
-                user: message.user,
-                tenantId: message.tenantId,
-                expiredAt: message.expiredAt,
-                files: message.files,
-              },
-            }))
-            : new Map<string, AuthorizedFile>();
+          const authorizedFiles = currentAuthorizedFiles;
           if (output && input.sourceMappings === undefined && output.rows.some((row) =>
             row.source !== null && authorizedFiles.has(row.source.fileId))) {
             throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review source metadata changed');
@@ -1477,6 +1518,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               serverOriginalMarkdown,
               input,
               ocrState?.sourceMappings ?? [],
+              authorizedFiles,
             );
           }
           if (!output && ledgerMode && !initialTrustedRows) {
@@ -1645,6 +1687,22 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               messageSha256: input.messageSha256,
               effectiveMarkdown: output?.effectiveMarkdown ?? input.effectiveMarkdown,
               displayMarkdown: output?.displayMarkdown ?? input.displayMarkdown,
+              headers: input.headers,
+              rows: canonicalRows,
+              ...(input.operationDigest !== undefined
+                ? { caption: { kind: input.kind, changedRows: 0, changedRowIds: [] } }
+                : {}),
+              ...(input.operationDigest !== undefined
+                ? {
+                    target: input.target,
+                    targetText: input.targetText,
+                    replacementText: input.replacementText,
+                    cleanReplacementText: input.cleanReplacementText,
+                    ...(input.aiBaselineMarkdown !== undefined ? { aiBaselineMarkdown: input.aiBaselineMarkdown } : {}),
+                    ...(input.aiRawMarkdown !== undefined ? { aiRawMarkdown: input.aiRawMarkdown } : {}),
+                    ...(input.sourceMappings ? { sourceMappings: input.sourceMappings } : {}),
+                  }
+                : {}),
             };
             return;
           }
@@ -1829,6 +1887,20 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             messageSha256: nextMessageSha256,
             effectiveMarkdown: input.effectiveMarkdown,
             displayMarkdown: input.displayMarkdown,
+            headers: input.headers,
+            rows: canonicalRows,
+            ...(input.operationDigest !== undefined ? { caption: input.caption } : {}),
+            ...(input.operationDigest !== undefined
+              ? {
+                  target: input.target,
+                  targetText: input.targetText,
+                  replacementText: input.replacementText,
+                  cleanReplacementText: input.cleanReplacementText,
+                  ...(input.aiBaselineMarkdown !== undefined ? { aiBaselineMarkdown: input.aiBaselineMarkdown } : {}),
+                  ...(input.aiRawMarkdown !== undefined ? { aiRawMarkdown: input.aiRawMarkdown } : {}),
+                  ...(input.sourceMappings ? { sourceMappings: input.sourceMappings } : {}),
+                }
+              : {}),
             snapshot: receipt.snapshot,
           };
         });

@@ -264,6 +264,48 @@ describe('Steel review contracts', () => {
     ], ['Value'])).toMatchObject({ ok: false, code: 'insertion-order' });
   });
 
+  it('orders persisted and new siblings by protected ordinals, including tombstones', () => {
+    const ai = {
+      rowId: 'row-ai',
+      source: null,
+      values: { Value: { baseline: 'AI', effective: 'AI' } },
+    };
+    const older = {
+      rowId: 'row-manual-older',
+      source: null,
+      origin: 'manual' as const,
+      deleted: true,
+      insertion: { kind: 'after' as const, rowId: 'row-ai', ordinal: 1 },
+      values: { Value: { baseline: null, effective: 'older' } },
+    };
+    const newer = {
+      rowId: 'row-manual-newer',
+      source: null,
+      origin: 'manual' as const,
+      deleted: false,
+      insertion: { kind: 'after' as const, rowId: 'row-ai', ordinal: 2 },
+      values: { Value: { baseline: null, effective: 'newer' } },
+    };
+    const result = validateSteelReviewLedger(
+      [ai, newer, older],
+      [ai, newer, older, {
+        rowId: 'row-manual-latest',
+        source: null,
+        origin: 'manual' as const,
+        deleted: false,
+        insertion: { kind: 'after' as const, rowId: 'row-ai', ordinal: 3 },
+        values: { Value: { baseline: null, effective: 'latest' } },
+      }],
+      ['Value'],
+    );
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.orderedRows.map((row) => row.rowId)).toEqual([
+        'row-ai', 'row-manual-older', 'row-manual-newer', 'row-manual-latest',
+      ]);
+    }
+  });
+
   it('encodes scope, target, and row changes distinctly with stable null defaults', () => {
     const base = {
       userId: 'user-1',

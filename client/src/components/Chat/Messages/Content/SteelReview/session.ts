@@ -607,6 +607,7 @@ export function rebaseSteelReviewDraftState(
   draft: SteelReviewDraftState,
   savedRows: readonly SteelReviewRow[],
   submittedChangeSequence: number,
+  options?: { preserveUnchangedRows?: boolean },
 ): SteelReviewDraftState {
   const rowsByCell = new Map<string, string>();
   for (const row of savedRows) {
@@ -671,14 +672,23 @@ export function rebaseSteelReviewDraftState(
         };
         continue;
       }
-      const origin = saved.origin ?? 'ai';
-      if (origin === 'manual' && !saved.deleted) {
-        snapshotRows[saved.rowId] = { ...saved, deleted: true };
-      } else if (origin === 'ai' && saved.deleted) {
-        snapshotRows[saved.rowId] = { ...saved, deleted: false };
+      if (!options?.preserveUnchangedRows) {
+        const origin = saved.origin ?? 'ai';
+        if (origin === 'manual' && !saved.deleted) {
+          snapshotRows[saved.rowId] = { ...saved, deleted: true };
+        } else if (origin === 'ai' && saved.deleted) {
+          snapshotRows[saved.rowId] = { ...saved, deleted: false };
+        }
       }
     }
-    return { ...snapshot, cells: snapshotCells, rowStates: snapshotRows };
+    const snapshotSources = { ...snapshot.sourceDrafts };
+    for (const [rowId, source] of Object.entries(snapshotSources)) {
+      const savedSource = savedRows.find((row) => row.rowId === rowId)?.source ?? null;
+      if (JSON.stringify(source) === JSON.stringify(savedSource)) {
+        delete snapshotSources[rowId];
+      }
+    }
+    return { ...snapshot, cells: snapshotCells, sourceDrafts: snapshotSources, rowStates: snapshotRows };
   };
 
   return {
