@@ -374,6 +374,7 @@ describe('Steel review read methods', () => {
       revision: 'source-file-generation',
       state: 'current',
       headers: ['來源', '零件編號'],
+      sourceMappings: [{ fileId: 'trusted-file', sourceCode: 'trusted', sourceFilename: 'trusted.pdf' }],
       rows: [
         {
           rowId: 'trusted-row',
@@ -1059,6 +1060,138 @@ describe('Steel review read methods', () => {
       messageTextPartIndex: 1,
       messageTextParts: [{ partIndex: 0, text: firstPart }, { partIndex: 1, text: secondPart }],
     }));
+  });
+
+  it('uses the full physical message when validating a selected-part legacy receipt', async () => {
+    const models = createModels(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const read = createSteelReviewReadMethods(mongoose);
+    const userId = new mongoose.Types.ObjectId();
+    const user = userId.toString();
+    const conversationId = 'legacy-selected-part-proof';
+    const messageId = 'legacy-selected-part-message';
+    const outputId = 'ocr_result:legacy-selected-part-generation';
+    const revision = 'legacy-selected-part-revision';
+    const operationId = 'legacy-selected-part-operation';
+    const digest = 'legacy-selected-part-digest';
+    const firstPart = 'LEGACY-PREFIX';
+    const selectedPart = '## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| A | P-1 |';
+    const thirdPart = 'LEGACY-SUFFIX';
+    const messageText = `${firstPart} ${selectedPart} ${thirdPart}`;
+    const headers = ['來源', '零件編號'];
+    const rows = [{
+      rowId: 'legacy-selected-part-row',
+      values: {
+        來源: { baseline: 'A', effective: 'A' },
+        零件編號: { baseline: 'P-1', effective: 'P-1' },
+      },
+      source: { fileId: 'legacy-selected-part-file', pageNumber: 1, filename: 'alpha.pdf' },
+    }];
+    const savedAt = new Date();
+    const snapshot = {
+      operationId,
+      digest,
+      outputId,
+      revision,
+      headers,
+      rows,
+      changedRows: 0,
+      changedRowIds: [],
+      savedAt,
+      messageSha256: createHash('sha256').update(messageText).digest('hex'),
+      conversationId,
+      messageId,
+      messageText,
+      effectiveMarkdown: selectedPart,
+      displayMarkdown: selectedPart,
+    };
+    await models.Conversation.create({
+      conversationId,
+      user,
+      title: 'Legacy selected part proof',
+      endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId,
+      conversationId,
+      user,
+      isCreatedByUser: false,
+      text: messageText,
+      content: [
+        { type: 'text', text: firstPart },
+        { type: 'text', text: selectedPart },
+        { type: 'text', text: thirdPart },
+      ],
+    });
+    await models.File.create({
+      user: userId,
+      conversationId,
+      file_id: 'legacy-selected-part-file',
+      bytes: 1,
+      filename: 'alpha.pdf',
+      filepath: '/uploads/alpha.pdf',
+      object: 'file',
+      type: 'application/pdf',
+      source: 'local',
+      usage: 0,
+    });
+    await State.create({
+      conversationId,
+      sourceMappings: [],
+      currentOcrResultMarkdown: selectedPart,
+      currentOcrResultMessageId: messageId,
+      currentOcrResultGenerationId: 'legacy-selected-part-generation',
+    });
+    await ReviewOutput.create({
+      userId: user,
+      conversationId,
+      kind: 'ocr_result',
+      messageId,
+      tableId: 'ocr_result:1',
+      outputId,
+      revision,
+      state: 'current',
+      headers,
+      rows,
+      effectiveMarkdown: selectedPart,
+      displayMarkdown: selectedPart,
+      receipts: [{
+        operationId,
+        digest,
+        revision,
+        changedRows: 0,
+        changedRowIds: [],
+        savedAt,
+        snapshot,
+      }],
+    });
+
+    const input = {
+      userId: user,
+      conversationId,
+      kind: 'ocr_result' as const,
+      messageId,
+      tableId: 'ocr_result:1',
+      partIndex: 1,
+    };
+    const located = await read.readSteelReview(input);
+    expect(located?.sourceMappings).toEqual([{
+      fileId: 'legacy-selected-part-file',
+      sourceCode: 'A',
+      sourceFilename: 'alpha.pdf',
+    }]);
+    expect(located?.rows?.map((row) => row.source)).toEqual([
+      { fileId: 'legacy-selected-part-file', pageNumber: 1, filename: 'alpha.pdf' },
+    ]);
+
+    await ReviewOutput.updateOne(
+      { conversationId, messageId, outputId },
+      { $set: { 'receipts.0.snapshot.messageSha256': '0'.repeat(64) } },
+    );
+    const unlocated = await read.readSteelReview(input);
+    expect(unlocated?.rows?.map((row) => row.source)).toEqual([null]);
+    expect(unlocated?.sourceMappings).toBeUndefined();
   });
 
   it('keeps tenantless reads isolated from tenant-owned messages and sidecars', async () => {

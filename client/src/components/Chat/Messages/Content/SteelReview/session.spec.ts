@@ -173,6 +173,27 @@ describe('Steel review local draft session', () => {
     expect(getSteelReviewDirtyRowIds({ rows: [{ ...sourcedTable.rows[0], source: null }] }, rebased)).toEqual([]);
   });
 
+  it('keeps legacy omitted media metadata omitted while projecting a page correction', () => {
+    const sourcedRow = {
+      ...table.rows[0],
+      values: {
+        ...table.rows[0].values,
+        來源: { baseline: 'A', effective: 'A' },
+        頁碼: { baseline: '1', effective: '1' },
+      },
+      source: { fileId: 'file-1', pageNumber: 1, filename: 'drawing.pdf' },
+    };
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(selection, table));
+    draft = setSteelReviewDraftSource(draft, sourcedRow, {
+      fileId: 'file-1', pageNumber: 2, filename: 'drawing.pdf', mediaType: 'application/pdf',
+    });
+
+    const [projected] = applySteelReviewDrafts([sourcedRow], draft);
+    expect(projected?.source).toEqual({ fileId: 'file-1', pageNumber: 2, filename: 'drawing.pdf' });
+    expect(projected?.values.來源?.effective).toBe('A');
+    expect(projected?.values.頁碼?.effective).toBe('2');
+  });
+
   it('preserves edits made after a confirmed save while rebasing submitted cells', () => {
     let draft = createSteelReviewDraftState(getSteelReviewDraftKey(selection, table));
     draft = setSteelReviewDraftCell(draft, table.rows[0], '數量', '3');

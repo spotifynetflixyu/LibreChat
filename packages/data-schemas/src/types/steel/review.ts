@@ -5,7 +5,6 @@ import type {
   SteelReviewRequoteProvenance,
   SteelReviewRow,
   SteelReviewSource,
-  SteelReviewSourceIntent,
   SteelReviewSourceMapping,
 } from 'librechat-data-provider';
 import type { Document } from 'mongoose';
@@ -57,6 +56,8 @@ export interface SteelReviewReadRecord extends SteelReviewScope {
   rows?: SteelReviewRow[];
   markdown?: string;
   sourceMappings?: SteelReviewSourceMapping[];
+  /** Trusted mapping evidence retained for current-owner files that may be unavailable now. */
+  trustedSourceMappings?: SteelReviewSourceMapping[];
   /** Internal code reservations retained when an old source file is unavailable. */
   sourceMappingReservations?: SteelReviewSourceMapping[];
   latestOutputId?: string;

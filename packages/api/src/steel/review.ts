@@ -36,9 +36,9 @@ import type {
   SteelReviewReadRecord,
   SteelReviewReceiptLookup,
 } from '@librechat/data-schemas';
+import type { ServerRequest } from '~/types/http';
 import { parseMarkdownTables, type SteelMarkdownTable } from './markdown/table';
 import { escapeMarkdownTableCell } from './markdown/row-codec';
-import type { ServerRequest } from '~/types/http';
 
 export interface SteelReviewReader {
   readSteelReview(input: SteelReviewReadInput): Promise<SteelReviewReadRecord | null>;
@@ -438,6 +438,7 @@ function projectRecord(
     ...(record.lastSave ? { lastSave: serializeReceipt(record.lastSave) } : {}),
     headers: table.headers,
     rows,
+    ...(record.sourceMappings ? { sourceMappings: record.sourceMappings } : {}),
   };
 }
 
@@ -521,6 +522,7 @@ function projectSidecar(
     ...(record.lastSave ? { lastSave: serializeReceipt(record.lastSave) } : {}),
     headers: record.headers,
     rows: record.rows,
+    ...(record.sourceMappings ? { sourceMappings: record.sourceMappings } : {}),
   };
 }
 
@@ -722,15 +724,19 @@ function pageHeader(headers: readonly string[]): string | undefined {
   });
 }
 
-function nextHumanSourceCode(mappings: readonly SteelReviewSourceMapping[]): string {
-  let next = 1;
-  for (const mapping of mappings) {
-    const match = mapping.sourceCode.match(/^F(\d+)$/u);
+function nextHumanSourceCode(
+  mappings: readonly SteelReviewSourceMapping[],
+  reservedCodes: readonly string[] = [],
+): string {
+  let next = BigInt(1);
+  for (const code of [...mappings.map((mapping) => mapping.sourceCode), ...reservedCodes]) {
+    const match = code.match(/^F([1-9]\d*)$/u);
     if (match) {
-      next = Math.max(next, Number(match[1]) + 1);
+      const value = BigInt(match[1]);
+      next = value >= next ? value + BigInt(1) : next;
     }
   }
-  return `F${next}`;
+  return `F${next.toString()}`;
 }
 
 function uniqueSourceMappings(mappings: readonly SteelReviewSourceMapping[]): SteelReviewSourceMapping[] {
@@ -783,7 +789,11 @@ export function createSteelReviewService({
   sourceAuthority?: SteelReviewSourceAuthority;
 }) {
   function parsePreparePayload(input: SteelReviewPrepareInput): SteelReviewPrepare {
-    const parsed = steelReviewPrepareSchema.strict().safeParse({
+    const hasSourceIntents = Object.prototype.hasOwnProperty.call(input, 'sourceIntents');
+    if (hasSourceIntents && !Array.isArray(input.sourceIntents)) {
+      throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Invalid review operation');
+    }
+    const parsed = steelReviewPrepareSchema.safeParse({
       conversationId: input.conversationId,
       messageId: input.messageId,
       tableId: input.tableId,
@@ -792,7 +802,7 @@ export function createSteelReviewService({
       outputId: input.outputId,
       revision: input.revision,
       rows: input.rows,
-      ...(input.sourceIntents !== undefined ? { sourceIntents: input.sourceIntents } : {}),
+      ...(hasSourceIntents ? { sourceIntents: input.sourceIntents } : {}),
     });
     if (!parsed.success) {
       throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Invalid review operation');
@@ -803,6 +813,10 @@ export function createSteelReviewService({
   function parseCommitPayload(input: SteelReviewCommitRequest): SteelReviewCommit {
     const hasSourceIntents = Object.prototype.hasOwnProperty.call(input, 'sourceIntents');
     const hasSourceMappings = Object.prototype.hasOwnProperty.call(input, 'sourceMappings');
+    if ((hasSourceIntents && !Array.isArray(input.sourceIntents)) ||
+      (hasSourceMappings && !Array.isArray(input.sourceMappings))) {
+      throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Invalid review operation');
+    }
     const candidate = {
       conversationId: input.conversationId,
       messageId: input.messageId,
@@ -831,7 +845,6 @@ export function createSteelReviewService({
     const hasNewSourceFields = Object.prototype.hasOwnProperty.call(candidate, 'sourceIntents') ||
       Object.prototype.hasOwnProperty.call(candidate, 'sourceMappings');
     const parsed = (hasNewSourceFields ? steelReviewCommitSchema : steelReviewLegacyCommitSchema)
-      .strict()
       .safeParse(candidate);
     if (!parsed.success) {
       throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Invalid review operation');
@@ -871,9 +884,51 @@ export function createSteelReviewService({
       intentsByRow.set(intent.rowId, intent);
     }
     const sourceMappings = [
-      ...(record.sourceMappings ?? []),
+      ...(record.trustedSourceMappings ?? record.sourceMappings ?? []),
       ...(record.sourceMappingReservations ?? []),
     ];
+    const trustedSourceMappings = [...(record.trustedSourceMappings ?? record.sourceMappings ?? [])];
+    const sourceColumn = sourceHeader(headers);
+    const sourceCodeReservations = currentRows.flatMap((row) => {
+      const sourceCode = sourceColumn ? row.values[sourceColumn]?.effective?.trim() : undefined;
+      return sourceCode?.match(/^F[1-9]\d*$/u) ? [sourceCode] : [];
+    });
+    const metadataByFile = new Map<string, Awaited<ReturnType<SteelReviewSourceAuthority['readMetadata']>>>();
+    const metadataInputs = new Map<string, SteelReviewSourceIntentInput>();
+    for (const intent of sourceIntents) {
+      if (intent.fileId === null || metadataInputs.has(intent.fileId)) {
+        continue;
+      }
+      metadataInputs.set(intent.fileId, {
+        userId: scope.userId,
+        ...(scope.tenantId !== undefined ? { tenantId: scope.tenantId } : {}),
+        conversationId: scope.conversationId,
+        messageId: payload.messageId,
+        kind: payload.kind,
+        fileId: intent.fileId,
+      });
+    }
+    if (sourceAuthority && metadataInputs.size > 0) {
+      const metadataResults = await Promise.all([...metadataInputs.entries()].map(async ([fileId, sourceInput]) =>
+        [fileId, await sourceAuthority.readMetadata(sourceInput)] as const));
+      for (const [fileId, metadata] of metadataResults) {
+        metadataByFile.set(fileId, metadata);
+      }
+    }
+    const pageCountsByFile = new Map<string, { pageCount: number } | null>();
+    if (sourceAuthority && scope.sourceRequest) {
+      const pageInputs = [...metadataInputs.entries()].filter(([fileId]) => {
+        const metadata = metadataByFile.get(fileId);
+        return metadata !== null && [...intentsByRow.values()].some((intent) =>
+          intent.fileId === fileId && intent.pageNumber !== null &&
+          !metadata?.mediaType.toLowerCase().startsWith('image/'));
+      });
+      const pageResults = await Promise.all(pageInputs.map(async ([fileId, sourceInput]) =>
+        [fileId, await sourceAuthority.readPageCount(sourceInput, scope.sourceRequest!)] as const));
+      for (const [fileId, pageCount] of pageResults) {
+        pageCountsByFile.set(fileId, pageCount);
+      }
+    }
     const canonicalRows = [] as SteelReviewRow[];
     const knownRowIds = new Set(currentRows.map((row) => row.rowId));
     if ([...intentsByRow.keys()].some((rowId) => !knownRowIds.has(rowId))) {
@@ -905,20 +960,21 @@ export function createSteelReviewService({
         throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review source selection is unavailable');
       }
       if (intent.fileId === null) {
+        if (next.source !== null) {
+          throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review source selection is invalid');
+        }
         canonicalRows.push(rowWithSource(next, null, headers));
         continue;
       }
-      const sourceInput = {
-        userId: scope.userId,
-        ...(scope.tenantId !== undefined ? { tenantId: scope.tenantId } : {}),
-        conversationId: scope.conversationId,
-        messageId: payload.messageId,
-        kind: payload.kind,
-        fileId: intent.fileId,
-      } satisfies SteelReviewSourceIntentInput;
-      const metadata = await sourceAuthority.readMetadata(sourceInput);
+      const metadata = metadataByFile.get(intent.fileId);
       if (!metadata) {
         throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review source is unavailable');
+      }
+      const preservesCurrentSource = sameSteelReviewSource(current.source, next.source);
+      if (next.source && !preservesCurrentSource && (next.source.fileId !== metadata.fileId ||
+        (next.source.filename !== undefined && next.source.filename !== metadata.filename) ||
+        (next.source.mediaType !== undefined && next.source.mediaType !== metadata.mediaType))) {
+        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review source metadata is invalid');
       }
       const mediaType = metadata.mediaType.toLowerCase();
       if (intent.pageNumber !== null) {
@@ -930,27 +986,29 @@ export function createSteelReviewService({
           if (!scope.sourceRequest) {
             throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review source page is unavailable');
           }
-          const pageCount = await sourceAuthority.readPageCount(sourceInput, scope.sourceRequest);
+          const pageCount = pageCountsByFile.get(intent.fileId);
           if (!pageCount || intent.pageNumber > pageCount.pageCount) {
             throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review source page is invalid');
           }
         }
       }
-      let mapping = sourceMappings.find((candidate) => candidate.fileId === metadata.fileId);
+      let mapping = trustedSourceMappings.find((candidate) => candidate.fileId === metadata.fileId);
       if (!mapping) {
         mapping = {
           fileId: metadata.fileId,
-          sourceCode: nextHumanSourceCode(sourceMappings),
+          sourceCode: nextHumanSourceCode(sourceMappings, sourceCodeReservations),
           sourceFilename: metadata.filename,
           mediaType: metadata.mediaType,
         };
         sourceMappings.push(mapping);
+        trustedSourceMappings.push(mapping);
       } else if (mapping.sourceFilename !== metadata.filename ||
         (mapping.mediaType !== undefined && mapping.mediaType !== metadata.mediaType)) {
         throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review source mapping changed');
       }
-      const canonicalMediaType = mapping.mediaType ?? (mapping.sourceFilename === metadata.filename &&
-        next.source?.fileId === metadata.fileId ? next.source.mediaType : metadata.mediaType);
+      const preservesLegacyOmittedMedia = mapping.mediaType === undefined &&
+        next.source?.fileId === metadata.fileId && next.source.mediaType === undefined;
+      const canonicalMediaType = preservesLegacyOmittedMedia ? undefined : metadata.mediaType;
       canonicalRows.push(rowWithSource(next, {
         fileId: metadata.fileId,
         pageNumber: intent.pageNumber,
@@ -992,7 +1050,7 @@ export function createSteelReviewService({
       revision: payload.revision,
       rows: normalizedRows,
       ...(sourceIntents.length > 0 ? { sourceIntents } : {}),
-      sourceMappings: uniqueSourceMappings(sourceMappings),
+      sourceMappings: uniqueSourceMappings(trustedSourceMappings),
       headers,
       operationId,
       messageSha256: createHash('sha256').update(fullText).digest('hex'),
@@ -1141,7 +1199,7 @@ export function createSteelReviewService({
       }
       let trusted: SteelReviewPrepared;
       try {
-        trusted = await buildTrustedPrepared(candidate, payload, payload.operationId);
+        trusted = await buildTrustedPrepared(input, payload, payload.operationId);
       } catch (error) {
         if (error instanceof SteelReviewReadError &&
           error.code === 'REVIEW_NOT_FOUND' && error.message === 'Review table is no longer current') {

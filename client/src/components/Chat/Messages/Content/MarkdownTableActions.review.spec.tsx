@@ -94,6 +94,13 @@ jest.mock('~/data-provider', () => ({
     isLoading: false,
     refetch: jest.fn(),
   })),
+  useGetSteelReviewSourcePageCountQuery: jest.fn(() => ({
+    data: undefined,
+    error: null,
+    isError: false,
+    isLoading: false,
+    refetch: jest.fn(),
+  })),
   usePrepareSteelReviewMutation: jest.fn(() => ({ mutateAsync: jest.fn() })),
   useCommitSteelReviewMutation: jest.fn(() => ({ mutateAsync: jest.fn() })),
   useGetSteelReviewReceiptQuery: jest.fn(() => ({
