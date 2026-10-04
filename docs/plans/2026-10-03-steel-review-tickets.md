@@ -5,8 +5,8 @@ Spec: https://github.com/spotifynetflixyu/LibreChat/issues/1
 Integration branch: `codex/steel-source-review`.
 Draft PR: https://github.com/spotifynetflixyu/LibreChat/pull/16.
 
-User pause boundary (2026-10-04): finish the current slice05 repair, verify and update GitHub,
-then pause before slice06. The canonical Markdown locator is **messageId + exact full title**.
+Current execution (2026-10-05): continue sequentially from slice06 through slice14; verify,
+review and integrate each slice, then update GitHub before starting the next slice. The canonical Markdown locator is **messageId + exact full title**.
 Each reply contains at most one Markdown section with that full title; another message's same
 title is independent. Authorization, output ownership and expected revision remain backend guards.
 No positional aliases or older review wire compatibility are retained.
@@ -29,7 +29,7 @@ Baseline: `056eb076ac0b9f7b7ccaba74672ae1288fab662a`.
 | 03 | [OCR 草稿、手動儲存與精準聊天更新](https://github.com/spotifynetflixyu/LibreChat/issues/4) | #2 | Verified (`1db96bd67`) |
 | 04 | [單一來源 selector 與未定位列補標](https://github.com/spotifynetflixyu/LibreChat/issues/5) | #3, #4 | Verified (`65c9b2140`) |
 | 05 | [OCR 列增刪與本次 undo／redo](https://github.com/spotifynetflixyu/LibreChat/issues/6) | #3, #4 | Verified (`e4ed93c76`) |
-| 06 | [System order 修正與內部報價原子同步](https://github.com/spotifynetflixyu/LibreChat/issues/7) | #4 | Pending |
+| 06 | [System order 修正與內部報價原子同步](https://github.com/spotifynetflixyu/LibreChat/issues/7) | #4 | In progress (not integrated) |
 | 07 | [材料與加工列綁定及整組增刪復原](https://github.com/spotifynetflixyu/LibreChat/issues/8) | #5, #7 | Pending |
 | 08 | [材料單重與計價總數依賴重算](https://github.com/spotifynetflixyu/LibreChat/issues/9) | #7 | Pending |
 | 09 | [加工計量輸入與 save 前重算](https://github.com/spotifynetflixyu/LibreChat/issues/10) | #8, #9 | Pending |
@@ -50,7 +50,7 @@ for fresh implementer context; GitHub is the authoritative tracker.
 
 Slice01 evidence at `d58ce51bca450f1b7b3de6b36b996a97a3d4a5f9`: 11/11 authenticated browser cases against the real backend and a disposable Mongo replica set; 13/13 focused real-Mongo cases; 7/7 API cases; owning workspace builds/typechecks; exact-head spec and standards repair reviews passed. No DB writes on read/reload. Full-feature Lighthouse and final review remain in slice14.
 
-Latest user preference: update related tickets first, then implement them sequentially. Human edits use explicit Save with unsaved-row caption; dirty close asks save/discard/continue. Save reuses backend field cleanup and atomically updates normalized DB/chat data. Slices01–05 are verified; execution pauses before06 at the user’s request.
+Latest user preference: update related tickets first, then implement them sequentially. Human edits use explicit Save with unsaved-row caption; dirty close asks save/discard/continue. Save reuses backend field cleanup and atomically updates normalized DB/chat data. Slices01–05 are verified; the user has resumed sequential execution from06.
 
 Slice02 evidence at `c3bd8ad1c74c03d2eab65a3ef0ba92db38bddbb3`: 17/17 authenticated Chrome cases against real Express and a disposable Mongo replica set, including multi-PDF/image pages, independent same-page rows, unlocated and out-of-range rows, zoom/pan/fullscreen, narrow light/dark layouts, menu-first Escape, retry, active owner and cross-chat/tenant identity guards. Focused real-Mongo/client/shared-dialog tests and owning workspace builds/typechecks passed; independent spec and standards reviews approved frozen feature head `b1818e418`. Scoped ESLint and diff checks passed. Slice03 now proceeds in the user-requested sequence; later slices remain pending.
 
@@ -64,7 +64,7 @@ Latest Save contract revision: the new UI submits only changed-row operations an
 
 Latest session-history revision: successful own Save confirmation clears undo/redo and the focus group; failed/unknown saves retain history. Later local inputs during Save remain unsaved drafts even when confirmation clears history. Server AI baselines, saved revisions and immutable receipts remain retained.
 
-05 補充：R12 衝突恢復已獲獨立架構審核並更新 GitHub #6：同 owner 409 回傳最新版與全部衝突，檔案／頁碼 selector 警示，保留草稿並以下次指定最新版保存；同值自動消除。已由下方固定版本的真實 UI／API／Mongo／reload 與兩軸審查驗證；現為 Verified，暫停於06之前。
+05 補充：R12 衝突恢復已獲獨立架構審核並更新 GitHub #6：同 owner 409 回傳最新版與全部衝突，檔案／頁碼 selector 警示，保留草稿並以下次指定最新版保存；同值自動消除。已由下方固定版本的真實 UI／API／Mongo／reload 與兩軸審查驗證；現為 Verified；使用者已指示從06依序繼續。
 
 Latest title contract: every Markdown has a unique full title within one reply. New review location is the authorized messageId plus exact full title, with backend-derived physical target and retained output/version authorization. All review entry points require title and changed-row operations; positional aliases, full-row submission and old wire/digest compatibility are removed at the user’s request. Slice05 incorporates this uniform protocol before release06; existing backend data and current-protocol receipts remain protected. The title path and retained normal-flow behavior passed real UI/API/Mongo/reload proof and independent reviews at the frozen head below; GitHub #6 records Verified while remaining OPEN until the PR merge policy permits closure.
 
@@ -75,4 +75,6 @@ The current validation boundary covers normal frontend/backend-produced data and
 
 The canonical locator remains **messageId + exact full title**; normal DB records preserve the AI baseline, saved human Markdown and successful timestamps. Diff strikes appear only in the comparison dialog; saved chat/export show clean active values. Save submits changed-row operations against the latest data, clears this session’s undo/redo after confirmation, and preserves later drafts and other messages.
 
-Execution is paused after05 and the GitHub update, before06. Slices06–14, full-feature Lighthouse/static checks, remote CI and whole-feature review remain pending. PR16 stays Draft and OPEN; tickets remain OPEN under the final PR merge/closure workflow. No production deployment, parent issue update or primary-branch write occurred.
+Execution has resumed from06. Slice06 is in progress and is not yet integrated or verified; slices07–14, full-feature Lighthouse/static checks, remote CI and whole-feature review remain pending. PR16 stays Draft and OPEN; tickets remain OPEN under the final PR merge/closure workflow. No production deployment, parent issue update or primary-branch write occurred.
+
+Latest source-boundary correction: OCR result includes all source files. Identical Markdown cannot bind a different file mapping in normal flows; manual row deletion only reduces bindings. Do not add that hypothetical to acceptance or defensive logic. Keep the source evidence of the selected OCR snapshot. GitHub #7 records this correction.

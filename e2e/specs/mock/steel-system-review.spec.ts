@@ -9,6 +9,7 @@ import {
   createSteelQuotationStateService,
   createSteelMarkdownCompletionServices,
   publishCompletedQuotation,
+  runQuotationPreflight,
   renderQuotationCustomerMarkdown,
 } from '@librechat/api';
 
@@ -32,7 +33,16 @@ const ocr = '## ocr_result\n\n| 來源 | 零件編號 | 數量 |\n| --- | --- | 
 const oldQuote = '## customer_quote｜歷史保留\n\n| 項目 | 小計 |\n| --- | --- |\n| OLD-KEEP | 456 |';
 const fullMessage = `SYSTEM-PREFIX\n\n${order}\n\n${oldQuote}\n\nSYSTEM-SUFFIX`;
 
-async function seedOrder(withHistoricalQuote = true, withOcrReview = false) {
+interface OrderFixture {
+  conversationId: string;
+  messageId: string;
+  otherMessageId: string;
+  ocrMessageId: string;
+  runId: string;
+}
+
+async function seedOrder(withHistoricalQuote = true, withOcrReview = false,
+  beforePublication?: (fixture: OrderFixture) => Promise<void>) {
   const conversationId = randomUUID();
   const messageId = randomUUID();
   const otherMessageId = randomUUID();
@@ -89,18 +99,31 @@ async function seedOrder(withHistoricalQuote = true, withOcrReview = false) {
     const completed = await service.completeRun({ scope, runId: run.runId, leaseToken: lease.leaseToken,
       finalRef: { ...scope, runId: run.runId, ...ref, kind: 'final' } });
     if (!completed) throw new Error('Missing completed quotation run');
+    const fixture = { conversationId, messageId, otherMessageId, ocrMessageId, runId: run.runId };
+    createModels(db);
+    const methods = createMethods(db);
+    if (beforePublication) {
+      const saved = await methods.saveMessage({ userId }, {
+        messageId, conversationId, parentMessageId: ocrMessageId, unfinished: true,
+        text: messageText, content: [{ type: 'text', text: messageText }],
+        isCreatedByUser: false, sender: 'Assistant',
+      }, { context: 'steel-review-e2e-stream-snapshot' });
+      if (!saved) throw new Error('Missing normal streamed quotation message');
+    }
     await publishCompletedQuotation({ scope, run: completed, markdown: order, service,
-      publishFinal: async ({ markdown }) => {
-        if (withHistoricalQuote) return;
-        const text = `SYSTEM-PREFIX\n\n${markdown}\n\nSYSTEM-SUFFIX`;
-        createModels(db);
-        const saved = await createMethods(db).saveMessage({ userId }, {
-          messageId, conversationId, parentMessageId: withOcrReview ? ocrMessageId : '00000000-0000-0000-0000-000000000000',
-          text, content: [{ type: 'text', text }], isCreatedByUser: false, sender: 'Assistant',
-        }, { context: 'steel-review-e2e-publication' });
-        if (!saved) throw new Error('Missing published quotation message');
+      publishFinal: async (publication) => {
+        await beforePublication?.(fixture);
+        const text = withHistoricalQuote ? messageText
+          : `SYSTEM-PREFIX\n\n${publication.markdown}\n\nSYSTEM-SUFFIX`;
+        return methods.saveSteelQuotationMessage({
+          ...publication,
+          message: {
+            user: userId, messageId, conversationId, parentMessageId: withOcrReview ? ocrMessageId : '00000000-0000-0000-0000-000000000000',
+            text, content: [{ type: 'text', text }], isCreatedByUser: false, sender: 'Assistant',
+          },
+        });
       } });
-    return { conversationId, messageId, otherMessageId, ocrMessageId, runId: run.runId };
+    return fixture;
   } finally {
     await db.disconnect();
   }
@@ -149,6 +172,21 @@ async function replayCompleted(fixture: { conversationId: string; messageId: str
       responseId: fixture.messageId, generationId: randomUUID(), markdown: projected, completed: true,
       applyMarkdown: (markdown) => { projected = markdown; },
       persistMarkdown,
+      publishQuotation: async (publication) => {
+        writes += 1;
+        const text = `SYSTEM-PREFIX\n\n${publication.markdown}\n\nSYSTEM-SUFFIX`;
+        const saved = await methods.saveSteelQuotationMessage({
+          ...publication,
+          message: { user: userId, messageId: fixture.messageId, conversationId: fixture.conversationId,
+            parentMessageId: fixture.ocrMessageId, text, content: [{ type: 'text', text }],
+            isCreatedByUser: false, sender: 'Assistant' },
+        });
+        if (saved.ok) {
+          responseMessagePersisted = true;
+          persistedMessage = saved.message;
+        }
+        return saved;
+      },
       publishedResponse: {
         load: async ({ userId: owner, responseId }) => {
           const record = await methods.getMessage({ user: owner, messageId: responseId });
@@ -167,6 +205,35 @@ async function replayCompleted(fixture: { conversationId: string; messageId: str
       persistedMessage: JSON.parse(JSON.stringify(persistedMessage)) };
   } finally {
     await db.disconnect();
+  }
+}
+
+async function replayPublishedRun(fixture: OrderFixture) {
+  const email = getE2EUser().email;
+  const userId = await withMongo(async (database) => {
+    const user = await database.collection('users').findOne({ email });
+    if (!user) throw new Error('Missing runner replay owner');
+    return String(user._id);
+  });
+  const runtimePath = process.env.E2E_RUNTIME_ENV_PATH ?? `${process.cwd()}/e2e/specs/.test-results/runtime-env.json`;
+  const runtime = JSON.parse(await readFile(runtimePath, 'utf8')) as { MONGO_URI: string };
+  await mongoose.connect(runtime.MONGO_URI);
+  try {
+    const emissions: string[] = [];
+    let modelCalls = 0;
+    let lookupCalls = 0;
+    let publishCalls = 0;
+    const result = await runQuotationPreflight({
+      scope: { userId, conversationId: fixture.conversationId },
+      modelOptions: { model: 'unused-replay-model' }, signal: new AbortController().signal,
+      invokeModel: async () => { modelCalls += 1; throw new Error('Replay must not invoke a model'); },
+      executeLookup: async () => { lookupCalls += 1; throw new Error('Replay must not run lookup'); },
+      publishFinal: async () => { publishCalls += 1; throw new Error('Replay must not publish again'); },
+      projectFinal: async ({ markdown }) => { emissions.push(markdown); },
+    });
+    return { result, emissions, modelCalls, lookupCalls, publishCalls };
+  } finally {
+    await mongoose.disconnect();
   }
 }
 
@@ -526,6 +593,66 @@ test.describe('System order atomic manual review', () => {
     await page.reload();
     await expect(page.getByText('SYSTEM-SUFFIX', { exact: true })).toBeVisible();
     expect(await readback(fixture.conversationId)).toEqual(afterReplay);
+  });
+
+  test('completed runner replay projects the human-saved value without model lookup or publication writes', async ({ page }) => {
+    const fixture = await seedOrder(false, true);
+    conversations.push(fixture.conversationId);
+    const table = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+    const prepared = await prepare(page, headers, requestFor(table, [{ header: '單價', value: '12' }]));
+    expect((await commit(page, headers, prepared)).status()).toBe(200);
+    const saved = await readback(fixture.conversationId);
+    const replay = await replayPublishedRun(fixture);
+    expect(replay.result.status).toBe('completed');
+    expect(replay.result.markdown).toContain('| 2 | 12 |');
+    expect(replay.emissions).toEqual([replay.result.markdown]);
+    expect(replay.emissions[0]).not.toContain('customer_quote');
+    expect([replay.modelCalls, replay.lookupCalls, replay.publishCalls]).toEqual([0, 0, 0]);
+    expect(await readback(fixture.conversationId)).toEqual(saved);
+    await page.goto(`/c/${fixture.conversationId}`);
+    await expect(page.getByText('SYSTEM-SUFFIX', { exact: true })).toBeVisible();
+    await page.reload();
+    await expect(page.getByText('SYSTEM-SUFFIX', { exact: true })).toBeVisible();
+    expect(await readback(fixture.conversationId)).toEqual(saved);
+  });
+
+  test('a manual Save before first publication rejects the stale writer and preserves the saved message', async ({ page }) => {
+    let signalReady!: (fixture: OrderFixture) => void;
+    let releasePublication!: () => void;
+    const ready = new Promise<OrderFixture>((resolve) => { signalReady = resolve; });
+    const paused = new Promise<void>((resolve) => { releasePublication = resolve; });
+    const publication = seedOrder(false, true, async (fixture) => {
+      signalReady(fixture);
+      await paused;
+    });
+    const outcome = publication.then(() => ({ ok: true }), (error) => ({ ok: false, error }));
+    const fixture = await ready;
+    conversations.push(fixture.conversationId);
+    let saved;
+    try {
+      const table = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+      const prepared = await prepare(page, headers, requestFor(table, [{ header: '單價', value: '12' }]));
+      expect((await commit(page, headers, prepared)).status()).toBe(200);
+      saved = await readback(fixture.conversationId);
+    } finally {
+      releasePublication();
+    }
+    const result = await outcome;
+    const after = await readback(fixture.conversationId);
+    expect(after.messages.find((message) => message.messageId === fixture.messageId))
+      .toEqual(saved!.messages.find((message) => message.messageId === fixture.messageId));
+    expect(result).toEqual({ ok: false, error: expect.objectContaining({ code: 'superseded_response' }) });
+    expect(after).toEqual(saved);
+    await page.goto(`/c/${fixture.conversationId}`);
+    await expect(page.getByText('SYSTEM-SUFFIX', { exact: true })).toBeVisible();
+    await page.getByTestId('message-body').filter({ hasText: 'SYSTEM-SUFFIX' })
+      .getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    await expect(materialRow(dialog).getByRole('textbox').last()).toHaveValue('12');
+    await page.keyboard.press('Escape');
+    await page.reload();
+    await expect(page.getByText('SYSTEM-SUFFIX', { exact: true })).toBeVisible();
+    expect(await readback(fixture.conversationId)).toEqual(saved);
   });
 
   test('system-order callers cannot supply another run, customer snapshot or immutable column', async ({ page }) => {
