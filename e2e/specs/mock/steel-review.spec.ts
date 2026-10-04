@@ -1986,7 +1986,7 @@ test.describe('Steel managed source review', () => {
       { fileId: null, pageNumber: 1 },
     ]) {
       const response = await page.request.post(`/api/steel/conversations/${conversationId}/review/ocr_result/prepare`, {
-        headers, data: requestForRows(table, undefined, [{ rowId: table.rows[0].rowId, ...intent }]),
+        headers, data: { ...requestForRows(table), operations: [{ type: 'update', rowId: table.rows[0].rowId, source: intent }] },
       });
       expect(response.status()).toBeGreaterThanOrEqual(400);
       expect(response.status()).toBeLessThan(500);
