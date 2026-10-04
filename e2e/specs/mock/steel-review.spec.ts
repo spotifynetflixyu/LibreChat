@@ -4216,4 +4216,90 @@ test.describe('Steel managed source review', () => {
     });
   }
 
+  for (const publication of ['foreign_save', 'new_ai'] as const) {
+    test(`a delayed committed response cannot rewind current chat or cache: ${publication}`, async ({ page }) => {
+      const { conversationId, messageId } = await seedCurrent(ocr);
+      conversations.push(conversationId);
+      const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+      const commitUrl = `**${url}/commit`;
+      let releaseResponse: (() => void) | undefined;
+      const held = new Promise<void>((resolve) => { releaseResponse = resolve; });
+      let committed = false;
+      await page.route(commitUrl, async (route) => {
+        const response = await route.fetch();
+        expect(response.status()).toBe(200);
+        committed = true;
+        await held;
+        await route.fulfill({ response });
+      });
+      try {
+        await page.goto(`/c/${conversationId}`);
+        await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+        const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+        const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+        await quantity.fill('9');
+        await quantity.press('Enter');
+        await dialog.getByRole('button', { name: /^Save/ }).click();
+        await expect.poll(() => committed).toBe(true);
+        if (publication === 'foreign_save') {
+          const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+          const { table } = await read.json() as { table: SteelReviewTable };
+          const rows = structuredClone(table.rows);
+          rows[0].values['長度'].effective = '1234';
+          const foreign = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+          expect(foreign.status()).toBe(200);
+          expect((await page.request.post(`${url}/commit`, { headers, data: await foreign.json() })).status()).toBe(200);
+        } else {
+          const newAi = ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 4 | 1 |');
+          await withMongo(async (db) => {
+            await db.collection('messages').updateOne({ conversationId, messageId }, {
+              $set: { text: newAi, content: [{ type: 'text', text: newAi }] },
+              $unset: { 'metadata.steelReview.ocr_result': '' },
+            });
+            await db.collection('steel_conversation_ocr_state').updateOne({ conversationId }, { $set: {
+              currentOcrResultGenerationId: 'review-delayed-response-new-ai',
+              currentOcrResultAttemptId: 'review-delayed-response-new-attempt',
+              currentOcrResultMarkdown: newAi, updatedAt: new Date(),
+            } });
+          });
+        }
+        const latest = await persistedSnapshot(conversationId);
+        releaseResponse?.();
+        await expect(dialog.getByRole('button', { name: /^Save/ })).not.toHaveAttribute('aria-busy', 'true');
+        expect(await persistedSnapshot(conversationId)).toEqual(latest);
+        if (publication === 'foreign_save') {
+          await expect(quantity).toHaveValue('9');
+          await expect(dialog.locator('tbody tr').first().locator('td').nth(2).getByRole('textbox')).toHaveValue('1234');
+          await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+          await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
+          await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
+        } else {
+          await expect(dialog.getByRole('button', { name: 'Add row', exact: true })).toBeDisabled();
+          await expect(dialog.getByRole('button', { name: /^Save/ })).toBeDisabled();
+        }
+        const live = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+        const { table } = await live.json() as { table: SteelReviewTable };
+        expect(table.rows[0].values['數量'].effective).toBe(publication === 'new_ai' ? '4' : '9');
+        if (publication === 'foreign_save') expect(table.rows[0].values['長度'].effective).toBe('1234');
+        const chatRow = page.getByTestId('message-body').locator('tbody tr')
+          .filter({ has: page.getByText('REVIEW-P1', { exact: true }) }).first();
+        await expect(chatRow.locator('td').nth(3)).toHaveText(publication === 'new_ai' ? '4' : '9');
+        if (publication === 'foreign_save') await expect(chatRow.locator('td').nth(2)).toHaveText('1234');
+        await expect(chatRow.locator('del')).toHaveCount(0);
+        await page.reload();
+        await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+        const reopened = page.getByRole('dialog', { name: 'Steel source review' });
+        await expect(reopened.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox'))
+          .toHaveValue(publication === 'new_ai' ? '4' : '9');
+        if (publication === 'new_ai') {
+          await expect(reopened.locator('del', { hasText: '9' })).toHaveCount(0);
+        }
+        expect(await persistedSnapshot(conversationId)).toEqual(latest);
+      } finally {
+        releaseResponse?.();
+        await page.unroute(commitUrl);
+      }
+    });
+  }
+
 });
