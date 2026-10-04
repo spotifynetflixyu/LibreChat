@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import { encodeSteelReviewDigest } from 'librechat-data-provider';
-import type { SteelReviewOperationCommit, SteelReviewOperationPrepare, SteelReviewOperationPrepared, SteelReviewPrepared, SteelReviewSavedSnapshot, SteelReviewSaveResponse, SteelReviewTable } from 'librechat-data-provider';
+import type { SteelReviewErrorResponse, SteelReviewOperationCommit, SteelReviewOperationPrepare, SteelReviewOperationPrepared, SteelReviewPrepared, SteelReviewSavedSnapshot, SteelReviewSaveResponse, SteelReviewTable } from 'librechat-data-provider';
 import type { Locator } from '@playwright/test';
 import {
   deleteConversations,
@@ -2565,9 +2565,9 @@ test.describe('Steel managed source review', () => {
         revision: 'unknown-never-existed',
         operations: [{ type: 'update', rowId: table.rows[0].rowId, changes: [{ header: '數量', value }] }] } });
       expect(response.status()).toBe(409);
-      const failure = await response.json() as { code: string; recovery?: object };
+      const failure = await response.json() as SteelReviewErrorResponse;
       expect(failure.code).toBe('REVIEW_CONFLICT');
-      expect(failure.recovery).toBeUndefined();
+      expect(failure).not.toHaveProperty('recovery');
       expect(await persistedSnapshot(conversationId)).toEqual(before);
     };
     await rejectUnknown('7');
