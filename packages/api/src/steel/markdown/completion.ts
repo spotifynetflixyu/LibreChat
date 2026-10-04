@@ -240,7 +240,7 @@ async function currentQuotationPublicationProof(
   const currentSystemOrder = capturedSystemOrder ?? state?.currentSystemOrder;
   const customer = state?.currentCustomer;
   const targetMessageId = currentSystemOrder?.messageId ?? run?.targetMessageId;
-  if (!run || run.status !== 'completed' || !targetMessageId || !currentOrder ||
+  if (!run || run.status !== 'completed' || !run.targetMessageId || !targetMessageId || !currentOrder ||
     !currentSystemOrder || !customer || !input.publishQuotation) return undefined;
   const final = await dependencies.quotation.readCheckpoint({
     scope: input.req.steelNativeContext!.quotation!.scope,
@@ -395,7 +395,11 @@ export async function finalizeSteelMarkdownTurn(
         throw new SteelResponseCompletionError('superseded_response');
       }
       if (adoptedRun) {
-        await persistQuotationResponse(input, dependencies, input.markdown, adoptedState, adoptedRun, true);
+        const capturedSystemOrder = adoptedState?.currentSystemOrder && adoption.publication.systemOrderHash
+          ? { ...adoptedState.currentSystemOrder, sha256: adoption.publication.systemOrderHash }
+          : undefined;
+        await persistQuotationResponse(input, dependencies, input.markdown, adoptedState, adoptedRun, true,
+          capturedSystemOrder);
       } else {
         // A durable pending publication without a live run has no guarded proof
         // for a new write; project it to the current response and retain its receipt.
