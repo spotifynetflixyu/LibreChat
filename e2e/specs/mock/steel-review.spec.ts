@@ -4019,6 +4019,127 @@ test.describe('Steel managed source review', () => {
     expect(await persistedSnapshot(conversationId)).toEqual(before);
   });
 
+  test('commit conflicts preserve authoritative recovery after another Save between prepare and commit', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const request: SteelReviewOperationPrepare = { conversationId, messageId, kind: 'ocr_result',
+      tableId: table.tableId, partIndex: table.partIndex, outputId: table.outputId, revision: table.revision,
+      operations: [{ type: 'update', rowId: table.rows[0].rowId,
+        changes: [{ header: '數量', value: '9' }] }] };
+    const preview = await page.request.post(`${url}/prepare`, { headers, data: request });
+    expect(preview.status()).toBe(200);
+    const prepared = await preview.json() as SteelReviewOperationPrepared;
+    const rows = structuredClone(table.rows);
+    rows[0].values['數量'].effective = '7';
+    rows[1].values['長度'].effective = '2345';
+    const foreign = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+    expect(foreign.status()).toBe(200);
+    expect((await page.request.post(`${url}/commit`, { headers, data: await foreign.json() })).status()).toBe(200);
+    const before = await persistedSnapshot(conversationId);
+    const latest = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    const current = await latest.json() as { table: SteelReviewTable };
+    const conflict = await page.request.post(`${url}/commit`, { headers, data: {
+      ...prepared.operationRequest, operationId: prepared.operationId, digest: prepared.digest } });
+    expect(conflict.status()).toBe(409);
+    const body = await conflict.json() as SteelReviewErrorResponse;
+    expect(body.code).toBe('REVIEW_CONFLICT');
+    expect(body.recovery?.table).toEqual(current.table);
+    expect(body.recovery?.conflicts).toEqual([{ kind: 'field', rowId: table.rows[0].rowId,
+      header: '數量', expected: '2', current: '7', requested: '9' }]);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+  });
+
+  for (const laterInput of [false, true]) {
+    test(`committed receipt recovery acknowledges the captured old session after new AI: later input ${laterInput}`, async ({ page }) => {
+      const { conversationId, messageId } = await seedCurrent(ocr);
+      conversations.push(conversationId);
+      const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+      const commitUrl = `**${url}/commit`;
+      const receiptUrl = `**${url}/receipt?*`;
+      let committed = false;
+      let receiptRead = false;
+      let releaseReceipt: (() => void) | undefined;
+      const receiptGate = new Promise<void>((resolve) => { releaseReceipt = resolve; });
+      await page.route(commitUrl, async (route) => {
+        const response = await route.fetch();
+        expect(response.status()).toBe(200);
+        committed = true;
+        await route.abort('failed');
+      });
+      await page.route(receiptUrl, async (route) => {
+        const response = await route.fetch();
+        expect(response.status()).toBe(200);
+        expect((await response.json()).status).toBe('committed');
+        receiptRead = true;
+        await receiptGate;
+        await route.fulfill({ response });
+      });
+      try {
+        await page.goto(`/c/${conversationId}`);
+        await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+        const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+        const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+        await quantity.fill('9');
+        await quantity.press('Enter');
+        await dialog.getByRole('button', { name: /^Save/ }).click();
+        await expect.poll(() => committed).toBe(true);
+        await expect(dialog.getByRole('alert')).toBeVisible();
+        await page.keyboard.press('Escape');
+        await dialog.getByRole('button', { name: 'Discard unsaved changes', exact: true }).click();
+        await expect.poll(() => receiptRead).toBe(true);
+        if (laterInput) {
+          await dialog.getByRole('button', { name: 'Continue editing', exact: true }).click();
+          await quantity.fill('10');
+          await quantity.press('Enter');
+        }
+        const newAi = ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 4 | 1 |');
+        await withMongo(async (db) => {
+          await db.collection('messages').updateOne({ conversationId, messageId }, {
+            $set: { text: newAi, content: [{ type: 'text', text: newAi }] },
+            $unset: { 'metadata.steelReview.ocr_result': '' },
+          });
+          await db.collection('steel_conversation_ocr_state').updateOne({ conversationId }, { $set: {
+            currentOcrResultGenerationId: 'review-receipt-recovery-new-ai',
+            currentOcrResultAttemptId: 'review-receipt-recovery-new-attempt',
+            currentOcrResultMarkdown: newAi, updatedAt: new Date(),
+          } });
+        });
+        const beforeAck = await persistedSnapshot(conversationId);
+        expect(beforeAck.reviews[0]?.receipts).toHaveLength(1);
+        releaseReceipt?.();
+        if (laterInput) {
+          await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
+          await expect(dialog.locator('tbody tr').first().locator('td').nth(3).getByText('10', { exact: true })).toBeVisible();
+          await expect(dialog.getByRole('textbox')).toHaveCount(0);
+          await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
+          await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
+          await expect(dialog.getByRole('button', { name: /^Save/ })).toBeDisabled();
+          await page.keyboard.press('Escape');
+          await dialog.getByRole('button', { name: 'Discard unsaved changes', exact: true }).click();
+        }
+        await expect(dialog).not.toBeVisible();
+        const chatRow = page.getByTestId('message-body').locator('tbody tr')
+          .filter({ has: page.getByText('REVIEW-P1', { exact: true }) }).first();
+        await expect(chatRow.locator('td').nth(3)).toHaveText('4');
+        await expect(chatRow.locator('del')).toHaveCount(0);
+        expect(await persistedSnapshot(conversationId)).toEqual(beforeAck);
+        await page.reload();
+        await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+        await expect(quantity).toHaveValue('4');
+        await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+        await expect(dialog.locator('del', { hasText: '9' })).toHaveCount(0);
+        expect(await persistedSnapshot(conversationId)).toEqual(beforeAck);
+      } finally {
+        releaseReceipt?.();
+        await page.unroute(commitUrl);
+        await page.unroute(receiptUrl);
+      }
+    });
+  }
+
   test('operation conflicts return all unequal fields and one authoritative latest Markdown without writes', async ({ page }) => {
     const { conversationId, messageId } = await seedCurrent(ocr);
     conversations.push(conversationId);
