@@ -164,6 +164,15 @@ function getCaptureScopedValue<T>(
   return captureId && ref.current?.captureId === captureId ? ref.current.value : undefined;
 }
 
+function getReceiptEffectKey(receiptInput: CaptureScoped<ReceiptInput>): string {
+  return [
+    receiptInput.captureId,
+    receiptInput.value.outputId,
+    receiptInput.value.operationId,
+    receiptInput.value.digest,
+  ].join(':');
+}
+
 function sameSteelReviewScope(
   left: SteelReviewScope | null | undefined,
   right: SteelReviewScope | null | undefined,
@@ -516,6 +525,8 @@ export default function SteelReviewDialog({
   const exportBaseRowsRef = useRef<readonly SteelReviewRow[]>([]);
   const pendingSnapshotRef = useRef<CaptureScoped<{ outputId: string; revision: string }>>();
   const receiptEffectKeyRef = useRef<string>();
+  const latestReceiptEffectKeyRef = useRef<string>();
+  latestReceiptEffectKeyRef.current = receiptInput ? getReceiptEffectKey(receiptInput) : undefined;
   const prepareMutation = usePrepareSteelReviewMutation();
   const commitMutation = useCommitSteelReviewMutation();
   const receiptQuery = useGetSteelReviewReceiptQuery(receiptInput?.value ?? null, {
@@ -1500,12 +1511,7 @@ export default function SteelReviewDialog({
       return undefined;
     }
     const initiatedCaptureId = receiptInput.captureId;
-    const receiptEffectKey = [
-      initiatedCaptureId,
-      receiptInput.value.outputId,
-      receiptInput.value.operationId,
-      receiptInput.value.digest,
-    ].join(':');
+    const receiptEffectKey = getReceiptEffectKey(receiptInput);
     // React Query may publish the newer owner while this receipt is awaiting
     // its current-review/messages reads. Keep one reconciliation alive for
     // that captured operation; callback identity changes must not cancel the
@@ -1515,8 +1521,9 @@ export default function SteelReviewDialog({
     }
     receiptEffectKeyRef.current = receiptEffectKey;
     let active = true;
+    const isReceiptRunActive = () => active && latestReceiptEffectKeyRef.current === receiptEffectKey;
     void refetchReceipt().then(async (result) => {
-      if (!active || !isCurrentCapture(initiatedCaptureId)) {
+      if (!isReceiptRunActive() || !isCurrentCapture(initiatedCaptureId)) {
         return;
       }
       if (result.error || !result.data) {
@@ -1528,7 +1535,7 @@ export default function SteelReviewDialog({
       }
       const status: SteelReviewReceiptStatus = result.data;
       const currentResult = await refetchCurrentReview();
-      if (!active || !isCurrentCapture(initiatedCaptureId)) {
+      if (!isReceiptRunActive() || !isCurrentCapture(initiatedCaptureId)) {
         return;
       }
       if (currentResult.error || !currentResult.data?.table) {
@@ -1568,7 +1575,7 @@ export default function SteelReviewDialog({
           return;
         }
         const refreshedMessages = await refetchAuthoritativeMessages();
-        if (!active || !hasActiveCapturedSession(prepared, initiatedCaptureId)) {
+        if (!isReceiptRunActive() || !hasActiveCapturedSession(prepared, initiatedCaptureId)) {
           return;
         }
         if (!refreshedMessages.authoritative) {
@@ -1589,14 +1596,14 @@ export default function SteelReviewDialog({
         } else if (currentResult.data.table.revision === status.snapshot.revision) {
           const messages = queryClient.getQueryData<TMessage[]>([QueryKeys.messages, identity.conversationId]);
           const canApplyMessageSnapshot = await canApplySteelReviewMessageSnapshot(messages, prepared, status.snapshot);
-          if (!active || !hasActiveCapturedSession(prepared, initiatedCaptureId)) {
+          if (!isReceiptRunActive() || !hasActiveCapturedSession(prepared, initiatedCaptureId)) {
             return;
           }
           applyConfirmedSnapshot(status.snapshot, boundary, canApplyMessageSnapshot);
         } else {
           applyConfirmedNoOp(currentResult.data.table, boundary);
         }
-        if (!active || !hasActiveCapturedSession(prepared, initiatedCaptureId)) {
+        if (!isReceiptRunActive() || !hasActiveCapturedSession(prepared, initiatedCaptureId)) {
           return;
         }
         // A same-capture remount may have accepted later local input while
@@ -1629,7 +1636,7 @@ export default function SteelReviewDialog({
       }
       finishDiscardAtBoundary(currentResult.data.table.rows);
     }).catch(() => {
-      if (active && isCurrentCapture(initiatedCaptureId)) {
+      if (isReceiptRunActive() && isCurrentCapture(initiatedCaptureId)) {
         setDiscardRequested(false);
         setSavePhase('reconciling');
         setSaveErrorCode(undefined);
