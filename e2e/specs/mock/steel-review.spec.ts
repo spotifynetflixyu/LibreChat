@@ -1320,13 +1320,13 @@ test.describe('Steel managed source review', () => {
     const commit = await page.request.post(`${reviewUrl}/commit`, { headers, data: await prepare.json() });
     expect(commit.status()).toBe(200);
     const after = await persistedSnapshot(conversationId);
-    expect(after.reviews[0]?.rows).toEqual(rows);
+    expect(after.reviews[0]?.rows).toEqual(rows.map((row) => ({ ...row, origin: 'ai', deleted: false })));
     expect(after.messages.find((message) => message.messageId === messageId)?.text)
       .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 7 | 1 |'));
     expectPreservedAiState(before.ocr, after.ocr);
     const reopened = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
     expect(reopened.status()).toBe(200);
-    expect(await reopened.json()).toMatchObject({ table: { rows } });
+    expect(await reopened.json()).toMatchObject({ table: { rows: rows.map((row) => ({ ...row, origin: 'ai', deleted: false })) } });
   });
 
   test('an unlocated row uses existing source menus as a local draft then dirty-close Save updates the scoped chat', async ({ page }) => {
@@ -1414,7 +1414,7 @@ test.describe('Steel managed source review', () => {
     const saved = await persistedSnapshot(conversationId);
     expect(saved.reviews[0]?.rows[0].source).toMatchObject({ fileId: 'review-beta', pageNumber: null });
     expect(saved.reviews[0]?.rows[0].values['頁碼'].effective).toBe('');
-    expect(saved.reviews[0]?.rows[1]).toEqual(table.rows[1]);
+    expect(saved.reviews[0]?.rows[1]).toEqual({ ...table.rows[1], origin: 'ai', deleted: false });
     await row.getByRole('combobox', { name: 'Source file', exact: true }).click();
     await page.getByRole('option', { name: 'Clear source', exact: true }).click();
     await expect(row.getByRole('combobox', { name: 'Source page', exact: true })).toHaveCount(0);
@@ -1664,7 +1664,7 @@ test.describe('Steel managed source review', () => {
       expect(response.status()).toBe(200);
       const prepared = await response.json() as SteelReviewPrepared;
       expect(prepared.rows[0].values['來源'].effective).toBe(nextCode);
-      expect(prepared.rows[1]).toEqual(table.rows[1]);
+      expect(prepared.rows[1]).toEqual({ ...table.rows[1], origin: 'ai', deleted: false });
       expect(await persistedSnapshot(conversationId)).toEqual(before);
       const commit = await page.request.post(`${url}/commit`, { headers, data: prepared });
       expect(commit.status()).toBe(200);
@@ -1673,7 +1673,7 @@ test.describe('Steel managed source review', () => {
       expect(reopen.status()).toBe(200);
       const reopened = await reopen.json() as { table: SteelReviewTable };
       expect(reopened.table.rows[0].source).toMatchObject({ fileId: 'review-beta', pageNumber: 1 });
-      expect(reopened.table.rows[1]).toEqual(table.rows[1]);
+      expect(reopened.table.rows[1]).toEqual({ ...table.rows[1], origin: 'ai', deleted: false });
       expect(reopened.table.rows[1].source).toBeNull();
       expectPreservedAiState(before.ocr, after.ocr);
       expect(await persistedSnapshot(conversationId)).toEqual(after);
@@ -1722,7 +1722,7 @@ test.describe('Steel managed source review', () => {
     expect(response.status()).toBe(200);
     const prepared = await response.json() as SteelReviewPrepared;
     expect(prepared.rows[0].values['來源'].effective).toBe('F8');
-    expect(prepared.rows[1]).toEqual(table.rows[1]);
+    expect(prepared.rows[1]).toEqual({ ...table.rows[1], origin: 'ai', deleted: false });
     expect(await persistedSnapshot(conversationId)).toEqual(before);
     const commit = await page.request.post(`${url}/commit`, { headers, data: prepared });
     expect(commit.status()).toBe(200);
@@ -1839,7 +1839,7 @@ test.describe('Steel managed source review', () => {
     expect(prepared.rows[0].values['來源'].effective).toMatch(/^F\d+$/u);
     expect(prepared.rows[0].values['頁碼']).toEqual({ baseline: '1', effective: '2' });
     for (const header of ['零件編號', '長度', '數量']) expect(prepared.rows[0].values[header]).toEqual(table.rows[0].values[header]);
-    expect(prepared.rows[1]).toEqual(table.rows[1]);
+    expect(prepared.rows[1]).toEqual({ ...table.rows[1], origin: 'ai', deleted: false });
     const mapping = { fileId: 'review-beta', sourceCode: prepared.rows[0].values['來源'].effective, sourceFilename: 'beta.pdf' };
     expect(prepared).toMatchObject({ sourceMappings: expect.arrayContaining([expect.objectContaining(mapping)]) });
     expect(await persistedSnapshot(conversationId)).toEqual(before);
