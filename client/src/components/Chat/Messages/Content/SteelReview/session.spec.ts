@@ -8,12 +8,14 @@ import {
   compileSteelReviewOperations,
   createSteelReviewDraftState,
   deleteSteelReviewDraftRow,
+  deleteSteelReviewDraftGroup,
   areSteelReviewDraftOwnersSame,
   getSteelReviewDraftKey,
   getSteelReviewDraftOwnerKey,
   getSteelReviewDirtyRowIds,
   getSteelReviewPrepareInput,
   rebaseSteelReviewDraftState,
+  restoreSteelReviewDraftGroup,
   setSteelReviewDraftCell,
   finishSteelReviewDraftHistory,
   setSteelReviewDraftSource,
@@ -235,6 +237,136 @@ describe('Steel review local draft session', () => {
       position: { kind: 'after', rowId: 'material-1' },
       system: { kind: 'processing', parentRowId: 'material-1' },
     });
+    expect(processingAdd).not.toHaveProperty('source');
+  });
+
+  it('projects material source changes onto processing rows and preserves a later rebind', () => {
+    const sourceOne: SteelReviewSource = { fileId: 'file-1', pageNumber: 1, filename: 'alpha.pdf' };
+    const sourceTwo: SteelReviewSource = { fileId: 'file-2', pageNumber: 2, filename: 'beta.pdf' };
+    const systemTable: SteelReviewTable = {
+      ...table,
+      kind: 'system_order',
+      title: 'system_order',
+      outputId: 'system_order:source-1',
+      headers: ['來源', '頁碼', '品名', '數量'],
+      rows: [
+        {
+          rowId: 'material-1', source: sourceOne, origin: 'ai', deleted: false,
+          system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
+          values: {
+            來源: { baseline: 'F1', effective: 'F1' }, 頁碼: { baseline: '1', effective: '1' },
+            品名: { baseline: '鋼板', effective: '鋼板' }, 數量: { baseline: '1', effective: '1' },
+          },
+        },
+        {
+          rowId: 'material-2', source: sourceTwo, origin: 'ai', deleted: false,
+          system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
+          values: {
+            來源: { baseline: 'F2', effective: 'F2' }, 頁碼: { baseline: '2', effective: '2' },
+            品名: { baseline: '角鐵', effective: '角鐵' }, 數量: { baseline: '2', effective: '2' },
+          },
+        },
+        {
+          rowId: 'processing-1', source: sourceOne, origin: 'ai', deleted: false,
+          system: { kind: 'processing', parentRowId: 'material-1', cascadeDeletedBy: null },
+          values: {
+            來源: { baseline: 'F1', effective: 'F1' }, 頁碼: { baseline: '1', effective: '1' },
+            品名: { baseline: '加工', effective: '加工' }, 數量: { baseline: '1', effective: '1' },
+          },
+        },
+      ],
+    };
+    const systemSelection = { ...selection, kind: 'system_order' as const, title: 'system_order' };
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(systemSelection, systemTable));
+    draft = setSteelReviewDraftSource(draft, systemTable.rows[0]!, sourceTwo);
+    let projected = applySteelReviewDrafts(systemTable.rows, draft);
+    expect(projected.find((row) => row.rowId === 'processing-1')).toMatchObject({ source: sourceTwo });
+    expect(compileSteelReviewOperations(systemTable, draft, projected)).toEqual([
+      { type: 'update', rowId: 'material-1', source: { fileId: 'file-2', pageNumber: 2 } },
+    ]);
+
+    const firstBinding = draft.changeSequence + 1;
+    draft = setSteelReviewDraftSystem(draft, systemTable.rows[2]!, {
+      kind: 'processing', parentRowId: 'material-2', cascadeDeletedBy: null,
+    });
+    expect(draft.systemVersions['processing-1']).toBe(firstBinding);
+    draft = setSteelReviewDraftSystem(draft, systemTable.rows[2]!, {
+      kind: 'processing', parentRowId: 'material-1', cascadeDeletedBy: null,
+    });
+    projected = applySteelReviewDrafts(systemTable.rows, draft);
+    const processing = projected.find((row) => row.rowId === 'processing-1');
+    expect(processing).toMatchObject({ source: sourceTwo, system: { parentRowId: 'material-1' } });
+
+    const savedRows = systemTable.rows.map((row) => {
+      if (row.rowId === 'material-1') return { ...row, source: sourceTwo };
+      if (row.rowId === 'processing-1') {
+        return { ...row, system: { ...row.system!, parentRowId: 'material-2' }, source: sourceTwo };
+      }
+      return row;
+    });
+    const rebased = rebaseSteelReviewDraftState(draft, savedRows, firstBinding);
+    const rebasedRows = applySteelReviewDrafts(savedRows, rebased);
+    expect(rebasedRows.find((row) => row.rowId === 'processing-1')).toMatchObject({
+      source: sourceTwo,
+      system: { parentRowId: 'material-1' },
+    });
+    expect(compileSteelReviewOperations({ ...systemTable, rows: savedRows }, rebased, rebasedRows)).toEqual([
+      { type: 'update', rowId: 'processing-1', binding: { parentRowId: 'material-1' } },
+    ]);
+  });
+
+  it('compiles group delete and restore as one parent intent while preserving child edits and tombstones', () => {
+    const systemTable: SteelReviewTable = {
+      ...table,
+      kind: 'system_order',
+      title: 'system_order',
+      outputId: 'system_order:group-1',
+      rows: [
+        {
+          rowId: 'material-1', source: null, origin: 'ai', deleted: false,
+          system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
+          values: { 品名: { baseline: '鋼板', effective: '鋼板' }, 數量: { baseline: '1', effective: '1' } },
+        },
+        {
+          rowId: 'processing-1', source: null, origin: 'ai', deleted: false,
+          system: { kind: 'processing', parentRowId: 'material-1', cascadeDeletedBy: null },
+          values: { 品名: { baseline: '加工/切割', effective: '加工/切割' }, 數量: { baseline: '1', effective: '1' } },
+        },
+        {
+          rowId: 'processing-2', source: null, origin: 'ai', deleted: true,
+          system: { kind: 'processing', parentRowId: 'material-1', cascadeDeletedBy: null },
+          values: { 品名: { baseline: '加工/孔', effective: '加工/孔' }, 數量: { baseline: '1', effective: '1' } },
+        },
+      ],
+    };
+    const identity = { ...selection, kind: 'system_order' as const, title: 'system_order' };
+    const initialDraft = createSteelReviewDraftState(getSteelReviewDraftKey(identity, systemTable));
+    const material = systemTable.rows[0]!;
+    const groupDeletedDraft = deleteSteelReviewDraftGroup(initialDraft, systemTable.rows, material);
+    let draft = groupDeletedDraft;
+    const deletedRows = applySteelReviewDrafts(systemTable.rows, draft);
+    expect(compileSteelReviewOperations(systemTable, draft, deletedRows)).toEqual([
+      { type: 'delete', rowId: 'material-1' },
+    ]);
+
+    const editedChild = deletedRows.find((row) => row.rowId === 'processing-1')!;
+    draft = setSteelReviewDraftCell(draft, editedChild, '數量', '7');
+    const editedOperations = compileSteelReviewOperations(systemTable, draft, applySteelReviewDrafts(systemTable.rows, draft));
+    expect(editedOperations).toEqual([
+      { type: 'update', rowId: 'processing-1', changes: [{ header: '數量', value: '7' }] },
+      { type: 'delete', rowId: 'material-1' },
+    ]);
+    expect(editedOperations.some((operation) => operation.type === 'delete' && operation.rowId === 'processing-1')).toBe(false);
+
+    const restoredDraft = restoreSteelReviewDraftGroup(groupDeletedDraft, deletedRows, material);
+    const deletedTable = { ...systemTable, rows: deletedRows };
+    const restoredRows = applySteelReviewDrafts(deletedRows, restoredDraft);
+    expect(restoredRows.find((row) => row.rowId === 'processing-1')).toMatchObject({ deleted: false,
+      system: { cascadeDeletedBy: null } });
+    expect(restoredRows.find((row) => row.rowId === 'processing-2')?.deleted).toBe(true);
+    expect(compileSteelReviewOperations(deletedTable, restoredDraft, restoredRows)).toEqual([
+      { type: 'restore', rowId: 'material-1' },
+    ]);
   });
 
   it('allows an explicit clear source intent and rebases it after save', () => {

@@ -61,6 +61,7 @@ import {
   getSteelReviewPrepareInput,
   rebaseSteelReviewDraftState,
   redoSteelReviewDraft,
+  restoreSteelReviewDraftGroup,
   restoreSteelReviewDraftRow,
   setSteelReviewDraftCell,
   setSteelReviewDraftSource,
@@ -1069,6 +1070,14 @@ export default function SteelReviewDialog({
       parentRowId: parent?.rowId ?? null,
       cascadeDeletedBy: null,
     };
+    const source = kind === 'material' && selectedSource
+      ? {
+          fileId: selectedSource.fileId,
+          pageNumber,
+          filename: selectedSource.filename,
+          mediaType: selectedSource.mediaType,
+        }
+      : null;
     setDraftStateScoped((current) => {
       const ownerDraft = current.ownerKey === draftStateKey
         ? current
@@ -1076,9 +1085,9 @@ export default function SteelReviewDialog({
       const anchor = kind === 'processing'
         ? parent
         : anchorRow ?? [...draftRows].reverse().find((row) => !row.deleted);
-      return updateDraftRows(addSteelReviewDraftRow(ownerDraft, editTable, anchor, null, system));
+      return updateDraftRows(addSteelReviewDraftRow(ownerDraft, editTable, anchor, source, system));
     });
-  }, [baseTable, canEditStructure, draftRows, draftStateKey, setDraftStateScoped, table, updateDraftRows]);
+  }, [baseTable, canEditStructure, draftRows, draftStateKey, pageNumber, selectedSource, setDraftStateScoped, table, updateDraftRows]);
   const onAddProcessingUnder = useCallback((row: SteelReviewRow) => {
     onAddSystemRow('processing', row.rowId, row);
   }, [onAddSystemRow]);
@@ -1131,9 +1140,11 @@ export default function SteelReviewDialog({
       const ownerDraft = current.ownerKey === draftStateKey
         ? current
         : createSteelReviewDraftState(draftStateKey);
-      return updateDraftRows(restoreSteelReviewDraftRow(ownerDraft, row));
+      return updateDraftRows(row.system?.kind === 'material'
+        ? restoreSteelReviewDraftGroup(ownerDraft, draftRows, row)
+        : restoreSteelReviewDraftRow(ownerDraft, row));
     });
-  }, [baseTable, canEditStructure, draftStateKey, setDraftStateScoped, table, updateDraftRows]);
+  }, [baseTable, canEditStructure, draftRows, draftStateKey, setDraftStateScoped, table, updateDraftRows]);
   const onUndo = useCallback(() => {
     setDraftStateScoped((current) => updateDraftRows(undoSteelReviewDraft(current)));
   }, [setDraftStateScoped, updateDraftRows]);
@@ -1931,12 +1942,12 @@ export default function SteelReviewDialog({
                   </Button>
                 </div>
               )}
-              {table.kind === 'ocr_result' && sourcesQuery.isLoading && (
+              {(table.kind === 'ocr_result' || table.kind === 'system_order') && sourcesQuery.isLoading && (
                 <p aria-live="polite" role="status">
                   {localize('com_ui_steel_review_sources_loading')}
                 </p>
               )}
-              {table.kind === 'ocr_result' && sourcesQuery.isError && (
+              {(table.kind === 'ocr_result' || table.kind === 'system_order') && sourcesQuery.isError && (
                 <div className="space-y-2" role="alert">
                   <p>{localize('com_ui_steel_review_sources_error')}</p>
                   <Button type="button" variant="outline" onClick={() => void sourcesQuery.refetch()}>
@@ -2025,7 +2036,7 @@ export default function SteelReviewDialog({
                   )}
                 </div>
               )}
-              {table.kind === 'ocr_result' && sources.length > 0 && (
+              {(table.kind === 'ocr_result' || table.kind === 'system_order') && sources.length > 0 && (
                 <div className="grid gap-3 rounded-md border border-border-light p-3 sm:grid-cols-[minmax(0,1fr)_auto]">
                   <label className="flex min-w-0 flex-col gap-1 text-sm text-text-secondary">
                     <span>{localize('com_ui_steel_review_source')}</span>

@@ -2314,6 +2314,126 @@ describe('MarkdownTableActions Steel review entry', () => {
     expect(await screen.findByRole('img', { name: 'com_ui_steel_review_preview_canvas' })).toBeInTheDocument();
   });
 
+  it('renders source loading, failure, and selectors for system-order reviews', async () => {
+    const identity = {
+      ...reviewIdentity,
+      kind: 'system_order' as const,
+      title: 'system_order',
+    };
+    const selection: SteelReviewSelection = { ...identity, captureId: 'capture-system-source' };
+    const table = {
+      ...identity,
+      outputId: 'system_order:run-1',
+      revision: 'revision-1',
+      latestOutputId: 'system_order:run-1',
+      isLatest: true,
+      readOnly: true,
+      headers: ['品名'],
+      rows: [{
+        rowId: 'material-1',
+        system: { kind: 'material' as const, parentRowId: null, cascadeDeletedBy: null },
+        source: { fileId: 'drawing-a', pageNumber: 1, filename: 'drawing-a.png' },
+        values: { 品名: { baseline: '鋼板', effective: '鋼板' } },
+      }],
+    };
+    const sourceRefetch = jest.fn();
+    mockUseGetSteelReviewQuery.mockReturnValue({ data: { table }, error: null, isError: false, isLoading: false });
+    mockUseGetSteelReviewSourcesQuery.mockReturnValue({
+      data: undefined,
+      error: null,
+      isError: false,
+      isLoading: true,
+      refetch: sourceRefetch,
+    });
+    mockUseGetSteelReviewSourceQuery.mockReturnValue({
+      data: undefined,
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: jest.fn(),
+    });
+    const rendered = renderDialog(new QueryClient(), selection, createStore(), identity);
+    expect(screen.getByRole('status')).toHaveTextContent('com_ui_steel_review_sources_loading');
+
+    mockUseGetSteelReviewSourcesQuery.mockReturnValue({
+      data: undefined,
+      error: new Error('source listing failed'),
+      isError: true,
+      isLoading: false,
+      refetch: sourceRefetch,
+    });
+    rendered.rerender(
+      <QueryClientProvider client={rendered.queryClient}>
+        <Provider store={rendered.store}>
+          <SteelReviewDialog identity={identity} />
+        </Provider>
+      </QueryClientProvider>,
+    );
+    expect(screen.getByRole('alert')).toHaveTextContent('com_ui_steel_review_sources_error');
+    screen.getByRole('button', { name: 'com_ui_retry' }).click();
+    expect(sourceRefetch).toHaveBeenCalledTimes(1);
+
+    mockUseGetSteelReviewSourcesQuery.mockReturnValue({
+      data: { sources: [{ fileId: 'drawing-a', filename: 'drawing-a.png', mediaType: 'image/png' }] },
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: sourceRefetch,
+    });
+    rendered.rerender(
+      <QueryClientProvider client={rendered.queryClient}>
+        <Provider store={rendered.store}>
+          <SteelReviewDialog identity={identity} />
+        </Provider>
+      </QueryClientProvider>,
+    );
+    expect(screen.getAllByRole('combobox').length).toBeGreaterThanOrEqual(2);
+    expect(screen.getByRole('option', { name: 'drawing-a.png' })).toBeInTheDocument();
+  });
+
+  it('inherits the active preview source when adding a material, and leaves it empty without one', async () => {
+    const identity = {
+      ...reviewIdentity,
+      kind: 'system_order' as const,
+      title: 'system_order',
+    };
+    const selection: SteelReviewSelection = { ...identity, captureId: 'capture-system-add-source' };
+    const table = {
+      ...identity,
+      outputId: 'system_order:run-add-source',
+      revision: 'revision-add-source',
+      latestOutputId: 'system_order:run-add-source',
+      isLatest: true,
+      readOnly: false,
+      headers: ['品名'],
+      rows: [],
+    };
+    mockUseGetSteelReviewQuery.mockReturnValue({ data: { table }, error: null, isError: false, isLoading: false });
+    mockUseGetSteelReviewSourcesQuery.mockReturnValue({
+      data: { sources: [{ fileId: 'preview-file', filename: 'preview.pdf', mediaType: 'application/pdf' }] },
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: jest.fn(),
+    });
+    const rendered = renderDialog(new QueryClient(), selection, createStore(), identity);
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_add_material' }));
+    expect(screen.getAllByText('preview.pdf', { exact: true })).toHaveLength(2);
+
+    rendered.unmount();
+    mockUseGetSteelReviewSourcesQuery.mockReturnValue({
+      data: { sources: [] },
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: jest.fn(),
+    });
+    const emptyRendered = renderDialog(new QueryClient(), { ...selection, captureId: 'capture-system-add-empty' }, createStore(), identity);
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_add_material' }));
+    expect(screen.queryByText('preview.pdf', { exact: true })).toBeNull();
+    emptyRendered.unmount();
+  });
+
   it('keeps transient recognition failures retryable without opening ordinary Markdown review', async () => {
     const refetch = jest.fn();
     mockUseGetSteelReviewQuery.mockReturnValue({

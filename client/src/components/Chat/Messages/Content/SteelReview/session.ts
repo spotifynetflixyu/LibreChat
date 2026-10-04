@@ -244,11 +244,14 @@ export function setSteelReviewDraftSystem(
   row: SteelReviewRow,
   system: SteelReviewSystemState,
 ): SteelReviewDraftState {
-  if (!row.rowId || JSON.stringify(row.system ?? null) === JSON.stringify(system)) {
+  if (!row.rowId) {
     return draft;
   }
   const changeSequence = draft.changeSequence + 1;
   const baseRow = draft.rowStates[row.rowId] ?? row;
+  if (JSON.stringify(baseRow.system ?? null) === JSON.stringify(system)) {
+    return draft;
+  }
   return recordMutation(draft, {
     ...draft,
     rowStates: { ...draft.rowStates, [row.rowId]: { ...baseRow, system } },
@@ -277,12 +280,39 @@ export function deleteSteelReviewDraftGroup(
     rowStates[row.rowId] = {
       ...(rowStates[row.rowId] ?? row),
       deleted: true,
-      ...(row.system?.kind === 'processing'
+      ...(row.system?.kind === 'processing' && !row.deleted
         ? { system: { ...row.system, cascadeDeletedBy: material.rowId } }
         : {}),
     };
   }
   return recordMutation(draft, { ...draft, rowStates, changeSequence }, `delete-group:${material.rowId}`);
+}
+
+export function restoreSteelReviewDraftGroup(
+  draft: SteelReviewDraftState,
+  rows: readonly SteelReviewRow[],
+  material: SteelReviewRow,
+): SteelReviewDraftState {
+  if (!material.rowId) return draft;
+  const group = rows.filter((row) => row.rowId === material.rowId ||
+    (row.deleted && row.system?.kind === 'processing' && row.system.cascadeDeletedBy === material.rowId));
+  if (group.length === 0) return draft;
+  const rowStates = { ...draft.rowStates };
+  for (const row of group) {
+    if (!row.rowId) continue;
+    rowStates[row.rowId] = {
+      ...(rowStates[row.rowId] ?? row),
+      deleted: false,
+      ...(row.system?.kind === 'processing'
+        ? { system: { ...row.system, cascadeDeletedBy: null } }
+        : {}),
+    };
+  }
+  return recordMutation(draft, {
+    ...draft,
+    rowStates,
+    changeSequence: draft.changeSequence + 1,
+  }, `restore-group:${material.rowId}`);
 }
 
 export function setSteelReviewDraftCell(
@@ -384,7 +414,7 @@ export function applySteelReviewDrafts(
   rows: readonly SteelReviewRow[],
   draft: SteelReviewDraftState,
 ): SteelReviewRow[] {
-  const projectRow = (row: SteelReviewRow): SteelReviewRow => {
+  const projectRow = (row: SteelReviewRow, sourceOverride?: SteelReviewSource | null): SteelReviewRow => {
     if (!row.rowId) {
       return row;
     }
@@ -398,9 +428,12 @@ export function applySteelReviewDrafts(
       }),
     );
     const draftSource = getSteelReviewDraftSource(draft, projectedRow.rowId);
-    const source = draftSource === undefined && projectedRow.origin === 'manual' && projectedRow.source !== null
-      ? projectedRow.source
-      : draftSource;
+    let source = sourceOverride;
+    if (source === undefined) {
+      source = draftSource === undefined && projectedRow.origin === 'manual' && projectedRow.source !== null
+        ? projectedRow.source
+        : draftSource;
+    }
     if (source === undefined) {
       return { ...projectedRow, values };
     }
@@ -438,14 +471,30 @@ export function applySteelReviewDrafts(
     }
     return { ...projectedRow, values: projectedValues, source };
   };
-  const projectedRows = rows.map(projectRow);
-  const existing = new Set(rows.map((row) => row.rowId));
-  return [
-    ...projectedRows,
-    ...Object.values(draft.rowStates)
-      .filter((row) => !existing.has(row.rowId) && !row.deleted)
-      .map(projectRow),
+  const baseRows = [
+    ...rows,
+    ...Object.values(draft.rowStates).filter((row) => !rows.some((candidate) => candidate.rowId === row.rowId) && !row.deleted),
   ];
+  const projectedRows = baseRows.map((row) => projectRow(row));
+  const projectedById = new Map(projectedRows.map((row) => [row.rowId, row]));
+  const projectedWithSystemSources = projectedRows.map((row) => {
+    if (row.system?.kind !== 'processing' || row.deleted) {
+      return row;
+    }
+    const parent = row.system.parentRowId ? projectedById.get(row.system.parentRowId) : undefined;
+    if (!parent || parent.deleted) {
+      return row;
+    }
+    const projected = projectRow(row, parent.source);
+    const values = { ...projected.values };
+    for (const [header, cell] of Object.entries(parent.values)) {
+      if (isSteelReviewSourceAssociationHeader(header) && values[header]) {
+        values[header] = { ...values[header], effective: cell.effective };
+      }
+    }
+    return { ...projected, values };
+  });
+  return projectedWithSystemSources;
 }
 
 export function addSteelReviewDraftRow(
@@ -631,6 +680,7 @@ export function compileSteelReviewOperations(
 ): SteelReviewOperation[] {
   const originalById = new Map(table.rows.map((row) => [row.rowId, row]));
   const operations: SteelReviewOperation[] = [];
+  const deferredGroupDeletes: SteelReviewOperation[] = [];
   const orderedRows = [...projectedRows].sort((left, right) => {
     const leftVersion = Math.max(...Object.entries(left.values).map(([header]) => draft.cellVersions[getSteelReviewDraftCellKey(left.rowId, header)] ?? 0), draft.sourceVersions[left.rowId] ?? 0, draft.systemVersions[left.rowId] ?? 0);
     const rightVersion = Math.max(...Object.entries(right.values).map(([header]) => draft.cellVersions[getSteelReviewDraftCellKey(right.rowId, header)] ?? 0), draft.sourceVersions[right.rowId] ?? 0, draft.systemVersions[right.rowId] ?? 0);
@@ -638,6 +688,14 @@ export function compileSteelReviewOperations(
   });
   const allRowsById = new Map([...table.rows, ...Object.values(draft.rowStates)].map((row) => [row.rowId, row]));
   const trustedIds = new Set(table.rows.map((row) => row.rowId));
+  const groupDeleteParentIds = new Set(projectedRows.flatMap((next) => {
+    const previous = originalById.get(next.rowId);
+    return next.system?.kind === 'material' && previous && !previous.deleted && next.deleted ? [next.rowId] : [];
+  }));
+  const groupRestoreParentIds = new Set(projectedRows.flatMap((next) => {
+    const previous = originalById.get(next.rowId);
+    return next.system?.kind === 'material' && previous?.deleted && !next.deleted ? [next.rowId] : [];
+  }));
   for (const next of orderedRows) {
     const previous = originalById.get(next.rowId);
     if (!previous) {
@@ -651,7 +709,7 @@ export function compileSteelReviewOperations(
         position: resolveInsertionPosition(next, allRowsById, trustedIds),
         changes,
       };
-      if (next.source !== null) add.source = sourceIntent(next.source);
+      if (next.source !== null && next.system?.kind !== 'processing') add.source = sourceIntent(next.source);
       if (next.system && (next.system.kind === 'material' || next.system.kind === 'processing')) {
         add.system = { kind: next.system.kind, parentRowId: next.system.parentRowId };
       }
@@ -659,7 +717,7 @@ export function compileSteelReviewOperations(
       continue;
     }
     const changes = rowValuesChanged(table, previous, next, draft);
-    const sourceWasChanged = sourceChanged(previous.source, next.source) &&
+    const sourceWasChanged = next.system?.kind !== 'processing' && sourceChanged(previous.source, next.source) &&
       (draft.sourceVersions[next.rowId] ?? 0) > 0;
     const systemWasChanged = systemChanged(previous.system, next.system) &&
       (draft.systemVersions[next.rowId] ?? 0) > 0;
@@ -670,6 +728,12 @@ export function compileSteelReviewOperations(
     const classify = previous.system?.kind === 'unassigned' && next.system && next.system.kind !== 'unassigned' && systemWasChanged
       ? { type: 'classify' as const, rowId: next.rowId, system: { kind: next.system.kind, parentRowId: next.system.parentRowId } }
       : undefined;
+    const isCascadeChildDelete = next.deleted && next.system?.kind === 'processing' &&
+      next.system.cascadeDeletedBy !== null && next.system.cascadeDeletedBy !== undefined &&
+      groupDeleteParentIds.has(next.system.cascadeDeletedBy);
+    const isCascadeChildRestore = previous.deleted && !next.deleted && previous.system?.kind === 'processing' &&
+      previous.system.cascadeDeletedBy !== null && previous.system.cascadeDeletedBy !== undefined &&
+      groupRestoreParentIds.has(previous.system.cascadeDeletedBy);
     if (!previous.deleted && next.deleted) {
       if (changes.length > 0 || sourceWasChanged || binding) {
         const update: Extract<SteelReviewOperation, { type: 'update' }> = {
@@ -681,11 +745,20 @@ export function compileSteelReviewOperations(
         operations.push(update);
       }
       if (classify) operations.push(classify);
-      operations.push({ type: 'delete', rowId: next.rowId });
+      if (!isCascadeChildDelete) {
+        const deletion = { type: 'delete' as const, rowId: next.rowId };
+        if (groupDeleteParentIds.has(next.rowId)) {
+          deferredGroupDeletes.push(deletion);
+        } else {
+          operations.push(deletion);
+        }
+      }
       continue;
     }
     if (previous.deleted && !next.deleted) {
-      operations.push({ type: 'restore', rowId: next.rowId });
+      if (!isCascadeChildRestore) {
+        operations.push({ type: 'restore', rowId: next.rowId });
+      }
       if (changes.length > 0 || sourceWasChanged || binding) {
         operations.push({
           type: 'update', rowId: next.rowId,
@@ -707,7 +780,7 @@ export function compileSteelReviewOperations(
     }
     if (classify) operations.push(classify);
   }
-  return operations;
+  return [...operations, ...deferredGroupDeletes];
 }
 
 export function getSteelReviewCommitInput(prepared: SteelReviewPrepared): SteelReviewCommit {

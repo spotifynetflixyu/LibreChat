@@ -1308,14 +1308,14 @@ export function createSteelReviewService({
         throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Processing source follows its material');
       }
       if (!intent) {
-        if (isNewRow && next.source !== null) {
+        if (isNewRow && next.source !== null && next.system?.kind !== 'processing') {
           throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'New review source selection is invalid');
         }
-        if (headers.some((header) => isSteelReviewSourceAssociationHeader(header) &&
+        if (next.system?.kind !== 'processing' && headers.some((header) => isSteelReviewSourceAssociationHeader(header) &&
           !sameCellProperty(current.values[header], 'effective', next?.values[header], 'effective'))) {
           throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Review source association cell changed');
         }
-        if (!sameSteelReviewSource(current.source, next.source)) {
+        if (next.system?.kind !== 'processing' && !sameSteelReviewSource(current.source, next.source)) {
           throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Review source changed');
         }
         canonicalRows.push(next);
