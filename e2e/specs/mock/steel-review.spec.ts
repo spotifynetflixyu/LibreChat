@@ -3443,8 +3443,249 @@ test.describe('Steel managed source review', () => {
     }
   });
 
+  for (const merge of ['other_row', 'other_field', 'same_value'] as const) {
+    test(`the OCR editor merges a same-output Save without losing current values: ${merge}`, async ({ page }) => {
+      const { conversationId, messageId } = await seedCurrent(ocr);
+      conversations.push(conversationId);
+      await page.goto(`/c/${conversationId}`);
+      await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+      const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+      await quantity.fill('9');
+      await quantity.press('Enter');
+      const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+      expect(read.status()).toBe(200);
+      const { table } = await read.json() as { table: SteelReviewTable };
+      const rows = structuredClone(table.rows);
+      if (merge === 'other_row') rows[1].values['數量'].effective = '7';
+      if (merge === 'other_field') rows[0].values['長度'].effective = '1234';
+      if (merge === 'same_value') rows[0].values['數量'].effective = '9';
+      const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+      const prepare = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+      expect(prepare.status()).toBe(200);
+      const commit = await page.request.post(`${url}/commit`, { headers, data: await prepare.json() });
+      expect(commit.status()).toBe(200);
+      const otherSaved = await persistedSnapshot(conversationId);
+      await page.evaluate(() => window.dispatchEvent(new Event('offline')));
+      const refreshed = page.waitForResponse((response) => response.request().method() === 'GET' &&
+        response.url().includes(readUrl(conversationId, messageId, 1)));
+      await page.evaluate(() => window.dispatchEvent(new Event('online')));
+      expect((await refreshed).status()).toBe(200);
+      await expect(quantity).toHaveValue('9');
+      await expect(dialog.getByRole('button', { name: /^Save/ })).toBeEnabled();
+      await dialog.getByRole('button', { name: /^Save/ }).click();
+      await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+      const merged = await persistedSnapshot(conversationId);
+      expect(merged.reviews[0]?.rows[0].values['數量']).toEqual({ baseline: '2', effective: '9' });
+      if (merge === 'other_row') expect(merged.reviews[0]?.rows[1].values['數量'].effective).toBe('7');
+      if (merge === 'other_field') expect(merged.reviews[0]?.rows[0].values['長度'].effective).toBe('1234');
+      if (merge === 'same_value') expect(merged).toEqual(otherSaved);
+      expect(merged.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
+      expectPreservedAiState(otherSaved.ocr, merged.ocr);
+      const clean = merge === 'other_row'
+        ? ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 9 | 1 |')
+          .replace('| A | REVIEW-P2 | 2000 | 3 | 1 |', '| A | REVIEW-P2 | 2000 | 7 | 1 |')
+        : ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', `| A | REVIEW-P1 | ${merge === 'other_field' ? '1234' : '1000'} | 9 | 1 |`);
+      expect(merged.messages.find((message) => message.messageId === messageId)?.text).toBe(clean);
+      if (merge !== 'same_value') {
+        await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
+        await expect(quantity).toHaveValue('2');
+        if (merge === 'other_field') {
+          await expect(dialog.locator('tbody tr').first().locator('td').nth(2).getByRole('textbox')).toHaveValue('1234');
+        }
+        expect(await persistedSnapshot(conversationId)).toEqual(merged);
+        await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
+        await expect(quantity).toHaveValue('9');
+      }
+      await page.keyboard.press('Escape');
+      await expect(dialog).not.toBeVisible();
+      await page.reload();
+      await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+      await expect(quantity).toHaveValue('9');
+      expect(await persistedSnapshot(conversationId)).toEqual(merged);
+    });
+  }
+
+  for (const change of ['disjoint', 'conflict'] as const) {
+    test(`an OCR operation handles a real foreign Save between prepare and commit: ${change}`, async ({ page }) => {
+      const { conversationId, messageId } = await seedCurrent(ocr);
+      conversations.push(conversationId);
+      const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+      const commitUrl = `**${url}/commit`;
+      let otherSaved: Awaited<ReturnType<typeof persistedSnapshot>> | undefined;
+      let commitStatus: number | undefined;
+      await page.route(commitUrl, async (route) => {
+        const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+        expect(read.status()).toBe(200);
+        const { table } = await read.json() as { table: SteelReviewTable };
+        const rows = structuredClone(table.rows);
+        rows[change === 'disjoint' ? 1 : 0].values['數量'].effective = '7';
+        const foreignPrepare = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+        expect(foreignPrepare.status()).toBe(200);
+        const foreignCommit = await page.request.post(`${url}/commit`, { headers, data: await foreignPrepare.json() });
+        expect(foreignCommit.status()).toBe(200);
+        otherSaved = await persistedSnapshot(conversationId);
+        const response = await route.fetch();
+        commitStatus = response.status();
+        await route.fulfill({ response });
+      });
+      try {
+        await page.goto(`/c/${conversationId}`);
+        await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+        const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+        const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+        await quantity.fill('9');
+        await dialog.getByRole('button', { name: /^Save/ }).click();
+        await expect.poll(() => commitStatus).toBe(change === 'disjoint' ? 200 : 409);
+        if (change === 'conflict') {
+          await expect(dialog.getByRole('alert')).toBeVisible();
+          await expect(quantity).toHaveValue('9');
+          await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
+          expect(await persistedSnapshot(conversationId)).toEqual(otherSaved);
+        } else {
+          await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+          const merged = await persistedSnapshot(conversationId);
+          expect(merged.reviews[0]?.rows).toMatchObject([
+            { values: { 數量: { baseline: '2', effective: '9' } } },
+            { values: { 數量: { baseline: '3', effective: '7' } } },
+          ]);
+          expect(merged.messages.find((message) => message.messageId === messageId)?.text)
+            .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 9 | 1 |')
+              .replace('| A | REVIEW-P2 | 2000 | 3 | 1 |', '| A | REVIEW-P2 | 2000 | 7 | 1 |'));
+          expect(merged.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
+          await expect(dialog.locator('tbody tr').last().locator('td').nth(3).getByRole('textbox')).toHaveValue('7');
+          const ready = page.waitForEvent('download');
+          await dialog.getByRole('button', { name: 'Download table as CSV', exact: true }).click();
+          const path = await (await ready).path();
+          if (!path) throw new Error('Missing merged confirmed CSV');
+          const csv = await readFile(path, 'utf8');
+          expect(csv).toMatch(/REVIEW-P1,1000,9/);
+          expect(csv).toMatch(/REVIEW-P2,2000,7/);
+          expect(await persistedSnapshot(conversationId)).toEqual(merged);
+        }
+      } finally {
+        await page.unroute(commitUrl);
+      }
+    });
+  }
+
+  test('a bare update based on a tombstone cannot adopt another editor restore', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const initial = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    const { table } = await initial.json() as { table: SteelReviewTable };
+    const identity = { conversationId, messageId, kind: 'ocr_result' as const, tableId: table.tableId,
+      partIndex: table.partIndex, outputId: table.outputId, revision: table.revision };
+    const deletion = await page.request.post(`${url}/prepare`, { headers, data: { ...identity,
+      operations: [{ type: 'delete', rowId: table.rows[0].rowId }] } });
+    expect(deletion.status()).toBe(200);
+    const prepared = await deletion.json() as SteelReviewOperationPrepared;
+    const deleted = await page.request.post(`${url}/commit`, { headers,
+      data: { ...prepared.operationRequest, operationId: prepared.operationId, digest: prepared.digest } });
+    expect(deleted.status()).toBe(200);
+    const capturedDeleted = await deleted.json() as SteelReviewOperationPrepared;
+    const latest = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    const current = (await latest.json() as { table: SteelReviewTable }).table;
+    const rows = structuredClone(current.rows);
+    rows[0].deleted = false;
+    const foreignRestore = await page.request.post(`${url}/prepare`, { headers, data: { ...current, rows } });
+    expect(foreignRestore.status()).toBe(200);
+    const restored = await page.request.post(`${url}/commit`, { headers, data: await foreignRestore.json() });
+    expect(restored.status()).toBe(200);
+    const before = await persistedSnapshot(conversationId);
+    const base = { ...identity, revision: capturedDeleted.revision };
+    const update = { type: 'update' as const, rowId: table.rows[0].rowId, changes: [{ header: '數量', value: '8' }] };
+    const rejected = await page.request.post(`${url}/prepare`, { headers, data: { ...base, operations: [update] } });
+    expect(rejected.status()).toBe(409);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    const explicit = await page.request.post(`${url}/prepare`, { headers,
+      data: { ...base, operations: [{ type: 'restore', rowId: table.rows[0].rowId }, update] } });
+    expect(explicit.status()).toBe(200);
+    const result = await explicit.json() as SteelReviewOperationPrepared;
+    const saved = await page.request.post(`${url}/commit`, { headers,
+      data: { ...result.operationRequest, operationId: result.operationId, digest: result.digest } });
+    expect(saved.status()).toBe(200);
+    expect((await persistedSnapshot(conversationId)).reviews[0]?.rows[0])
+      .toMatchObject({ deleted: false, values: { 數量: { baseline: '2', effective: '8' } } });
+  });
+
+  test('concurrent operation additions at the same anchor retain both identities and unique ordinals', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const identity = { conversationId, messageId, kind: 'ocr_result' as const, tableId: table.tableId,
+      partIndex: table.partIndex, outputId: table.outputId, revision: table.revision };
+    const rowIds = [randomUUID(), randomUUID()];
+    const pending: SteelReviewOperationPrepared[] = [];
+    for (const rowId of rowIds) {
+      const response = await page.request.post(`${url}/prepare`, { headers, data: { ...identity,
+        operations: [{ type: 'add', rowId, position: { kind: 'after', rowId: table.rows[1].rowId },
+          changes: [{ header: '零件編號', value: 'CONCURRENT-ADD' }, { header: '數量', value: '1' }] }] } });
+      expect(response.status()).toBe(200);
+      pending.push(await response.json() as SteelReviewOperationPrepared);
+    }
+    const bodies = pending.map((prepared) => ({ ...prepared.operationRequest, operationId: prepared.operationId, digest: prepared.digest }));
+    const first = await page.request.post(`${url}/commit`, { headers, data: bodies[0] });
+    expect(first.status()).toBe(200);
+    const firstReceipt = await first.json();
+    const second = await page.request.post(`${url}/commit`, { headers, data: bodies[1] });
+    expect(second.status()).toBe(200);
+    const merged = await persistedSnapshot(conversationId);
+    const added = merged.reviews[0]?.rows.filter((row: SteelReviewTable['rows'][number]) => row.origin === 'manual');
+    expect(added.map((row: SteelReviewTable['rows'][number]) => row.rowId)).toEqual(rowIds);
+    expect(added.map((row: SteelReviewTable['rows'][number]) => row.insertion?.ordinal)).toEqual([0, 1]);
+    const replay = await page.request.post(`${url}/commit`, { headers, data: bodies[0] });
+    expect(replay.status()).toBe(200);
+    expect(await replay.json()).toEqual(firstReceipt);
+    expect(await persistedSnapshot(conversationId)).toEqual(merged);
+    expect(merged.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
+  });
+
+  test('an operation delete conflicts with a changed row and a disjoint update preserves foreign deletion', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const identity = { conversationId, messageId, kind: 'ocr_result' as const, tableId: table.tableId,
+      partIndex: table.partIndex, outputId: table.outputId, revision: table.revision };
+    const prepare = await page.request.post(`${url}/prepare`, { headers, data: { ...identity,
+      operations: [{ type: 'delete', rowId: table.rows[0].rowId }] } });
+    expect(prepare.status()).toBe(200);
+    const pending = await prepare.json() as SteelReviewOperationPrepared;
+    const rows = structuredClone(table.rows);
+    rows[0].values['數量'].effective = '7';
+    rows[1].deleted = true;
+    const foreign = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+    expect(foreign.status()).toBe(200);
+    const foreignSave = await page.request.post(`${url}/commit`, { headers, data: await foreign.json() });
+    expect(foreignSave.status()).toBe(200);
+    const before = await persistedSnapshot(conversationId);
+    const rejected = await page.request.post(`${url}/commit`, { headers,
+      data: { ...pending.operationRequest, operationId: pending.operationId, digest: pending.digest } });
+    expect(rejected.status()).toBe(409);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    const disjoint = await page.request.post(`${url}/prepare`, { headers, data: { ...identity,
+      operations: [{ type: 'update', rowId: table.rows[0].rowId, changes: [{ header: '長度', value: '1234' }] }] } });
+    expect(disjoint.status()).toBe(200);
+    const result = await disjoint.json() as SteelReviewOperationPrepared;
+    const saved = await page.request.post(`${url}/commit`, { headers,
+      data: { ...result.operationRequest, operationId: result.operationId, digest: result.digest } });
+    expect(saved.status()).toBe(200);
+    const merged = await persistedSnapshot(conversationId);
+    expect(merged.reviews[0]?.rows).toMatchObject([
+      { deleted: false, values: { 數量: { effective: '7' }, 長度: { effective: '1234' } } },
+      { deleted: true },
+    ]);
+    expect(merged.messages.find((message) => message.messageId === messageId)?.text).not.toContain('REVIEW-P2');
+    expect(merged.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
+  });
+
   for (const action of ['save', 'edit'] as const) {
-    test(`a foreign same-output Save cannot rebase a dirty editor on reconnect: ${action}`, async ({ page }) => {
+    test(`a conflicting same-field Save retains the dirty editor on reconnect: ${action}`, async ({ page }) => {
       const { conversationId, messageId } = await seedCurrent(ocr);
       conversations.push(conversationId);
       await page.goto(`/c/${conversationId}`);
@@ -3473,9 +3714,12 @@ test.describe('Steel managed source review', () => {
       if (action === 'edit') {
         await dialog.locator('tbody tr').first().locator('td').nth(2).getByRole('textbox').fill('1234');
         await expect(quantity).toHaveValue('9');
-      } else {
-        await expect(dialog.getByRole('button', { name: /^Save/ })).toBeDisabled();
-        await expect(dialog.getByRole('alert')).toBeVisible();
+      }
+      await expect(dialog.getByRole('button', { name: /^Save/ })).toBeEnabled();
+      await dialog.getByRole('button', { name: /^Save/ }).click();
+      await expect(dialog.getByRole('alert')).toBeVisible();
+      await expect(quantity).toHaveValue('9');
+      if (action === 'save') {
         const staleRows = structuredClone(table.rows);
         staleRows[0].values['數量'].effective = '9';
         const staleAttempt = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows: staleRows } });
@@ -3489,7 +3733,6 @@ test.describe('Steel managed source review', () => {
         else if (close === 'outside') await page.mouse.click(1, 1);
         else await dialog.getByRole('button', { name: 'Close', exact: true }).nth(close === 'first_close' ? 0 : 1).click();
         await expect(dialog.getByRole('alertdialog')).toBeVisible();
-        await expect(dialog.getByRole('button', { name: 'Save updates', exact: true })).toBeDisabled();
         await dialog.getByRole('button', { name: 'Continue editing', exact: true }).click();
         await expect(quantity).toHaveValue('9');
         await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
