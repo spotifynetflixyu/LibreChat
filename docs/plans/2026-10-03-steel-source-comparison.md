@@ -306,3 +306,6 @@ PDF 預覽需受控單頁渲染，以 selector 決定原檔頁碼；既有 ifram
 修改先保留本地草稿，儲存按鈕 caption 持續顯示未儲存 N 列，Enter／blur、來源、增刪、候選及 undo／redo 不直接寫 DB。關閉遇到尚未按儲存的淨變更，先詢問儲存／捨棄／繼續編輯。Save 由後端沿既有欄位清理、統一重算與原子保存，回傳同一份已更新 DB／聊天 Markdown 的資料；下載有修正仍先保存。先更新相關 tickets，再依序實作、審查與驗證，不平行推進 tickets。
 
 - 補充：聊天 Markdown 標題後的「已更新」badge 僅代表同版成功人工保存，reload 保留；草稿與失敗不標記，新 AI 版不繼承。badge 不寫入 Markdown 正文；刪除線仍只由彈窗比對 AI 原版與有效結果產生。
+
+
+最新使用者定位決策：不需要覆核介面的舊協定相容性；一律以已授權 messageId ＋完整 title 定位 Markdown。覆核 API／UI 不保留表格序號、caller partIndex／tableId alias 或舊整張 rows 提交路徑；只提交變更 rows，後端取得原始 AI、目前有效資料與指定版本，並自行核對實際 text／content target。不同訊息的同名 title 不受影響，缺少或重複目標安全拒寫；最新結果资格、權限、原子保存、原版與人工結果及本協定的重試保障維持。此決策取代本文先前新舊入口相容提案。
