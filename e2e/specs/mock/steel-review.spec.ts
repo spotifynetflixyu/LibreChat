@@ -2839,6 +2839,12 @@ test.describe('Steel managed source review', () => {
     await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
     await redo.click();
     await expect(quantity).toHaveValue('78');
+    await quantity.fill('79');
+    await quantity.press('Enter');
+    await undo.click();
+    await expect(quantity).toHaveValue('78');
+    await expect(undo).toBeEnabled();
+    await expect(redo).toBeEnabled();
     expect(await persistedSnapshot(conversationId)).toEqual(before);
     await dialog.getByRole('button', { name: /^Save/ }).click();
     await expect(dialog.getByText('Updated 1 rows', { exact: true })).toBeVisible();
