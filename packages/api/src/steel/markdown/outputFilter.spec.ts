@@ -47,6 +47,44 @@ describe('Steel Markdown output filter', () => {
     expect(output).toContain('```markdown\n## customer_quote\n\nexample\n```');
   });
 
+  it('removes fenced blocks inside a suppressed quote while retaining later examples', () => {
+    const markdown = [
+      '## system_order',
+      '',
+      'rows',
+      '',
+      '## customer_quote',
+      '',
+      '```markdown',
+      '## customer_quote',
+      '',
+      'internal example',
+      '```',
+      '',
+      '## notes',
+      '',
+      '```markdown',
+      '## customer_quote',
+      '',
+      'retained example',
+      '```',
+    ].join('\n');
+
+    expect(stripCustomerQuoteSections(markdown)).toBe([
+      '## system_order',
+      '',
+      'rows',
+      '',
+      '## notes',
+      '',
+      '```markdown',
+      '## customer_quote',
+      '',
+      'retained example',
+      '```',
+    ].join('\n'));
+  });
+
   it('does not remove inline mentions or third-level headings', () => {
     const markdown = 'Use ## customer_quote as a label\n\n### customer_quote\n\ntext';
     expect(stripCustomerQuoteSections(markdown)).toBe(`${markdown}`);

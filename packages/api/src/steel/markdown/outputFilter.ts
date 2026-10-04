@@ -39,6 +39,7 @@ export function stripCustomerQuoteSections(markdown: string): string {
 
 export function createSteelMarkdownOutputFilter(): SteelMarkdownOutputFilter {
   let fence: MarkdownFence | undefined;
+  let suppressFence = false;
   let suppressCustomerQuote = false;
   let pending = '';
   let lineStart = true;
@@ -48,14 +49,20 @@ export function createSteelMarkdownOutputFilter(): SteelMarkdownOutputFilter {
     const withoutCarriageReturn = content.endsWith('\r') ? content.slice(0, -1) : content;
 
     if (fence) {
-      if (isFenceClosing(withoutCarriageReturn, fence)) fence = undefined;
-      return line;
+      if (isFenceClosing(withoutCarriageReturn, fence)) {
+        fence = undefined;
+        const output = suppressFence ? '' : line;
+        suppressFence = false;
+        return output;
+      }
+      return suppressFence ? '' : line;
     }
 
     const opening = fenceOpening(withoutCarriageReturn);
     if (opening) {
       fence = opening;
-      return line;
+      suppressFence = suppressCustomerQuote;
+      return suppressFence ? '' : line;
     }
 
     const baseName = headingBaseName(withoutCarriageReturn);
