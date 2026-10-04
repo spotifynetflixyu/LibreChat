@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import { encodeSteelReviewDigest } from 'librechat-data-provider';
-import type { SteelReviewOperationCommit, SteelReviewOperationPrepare, SteelReviewOperationPrepared, SteelReviewPrepared, SteelReviewSavedSnapshot, SteelReviewTable } from 'librechat-data-provider';
+import type { SteelReviewOperationCommit, SteelReviewOperationPrepare, SteelReviewOperationPrepared, SteelReviewPrepared, SteelReviewSavedSnapshot, SteelReviewSaveResponse, SteelReviewTable } from 'librechat-data-provider';
 import type { Locator } from '@playwright/test';
 import {
   deleteConversations,
@@ -2565,7 +2565,7 @@ test.describe('Steel managed source review', () => {
     const firstBody = { ...first.operationRequest, operationId: first.operationId, digest: first.digest };
     const committed = await page.request.post(`${url}/commit`, { headers, data: firstBody });
     expect(committed.status()).toBe(200);
-    const firstSaved = await committed.json() as SteelReviewOperationPrepared;
+    const firstSaved = await committed.json() as SteelReviewSaveResponse;
     const secondRequest = { ...request, revision: firstSaved.revision,
       operations: [{ type: 'update' as const, rowId: table.rows[1].rowId, changes: [{ header: '數量', value: '8' }] }] };
     const preparedAgain = await page.request.post(`${url}/prepare`, { headers, data: secondRequest });
@@ -2618,7 +2618,7 @@ test.describe('Steel managed source review', () => {
     const committed = await page.request.post(`${url}/commit`, { headers,
       data: { ...first.operationRequest, operationId: first.operationId, digest: first.digest } });
     expect(committed.status()).toBe(200);
-    const deleted = await committed.json() as SteelReviewOperationPrepared;
+    const deleted = await committed.json() as SteelReviewSaveResponse;
     const afterDelete = await persistedSnapshot(conversationId);
     expect(afterDelete.reviews[0]?.rows[0]).toMatchObject({ deleted: true, values: { 數量: { baseline: '2', effective: '7' } } });
     expect(afterDelete.messages.find((message) => message.messageId === messageId)?.text).not.toContain('REVIEW-P1');
@@ -3592,7 +3592,7 @@ test.describe('Steel managed source review', () => {
     const deleted = await page.request.post(`${url}/commit`, { headers,
       data: { ...prepared.operationRequest, operationId: prepared.operationId, digest: prepared.digest } });
     expect(deleted.status()).toBe(200);
-    const capturedDeleted = await deleted.json() as SteelReviewOperationPrepared;
+    const capturedDeleted = await deleted.json() as SteelReviewSaveResponse;
     const latest = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
     const current = (await latest.json() as { table: SteelReviewTable }).table;
     const rows = structuredClone(current.rows);
