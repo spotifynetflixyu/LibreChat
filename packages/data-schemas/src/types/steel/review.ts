@@ -1,9 +1,11 @@
 import type {
   SteelReviewKind,
   SteelReviewOwnerUpdated,
+  SteelReviewCaption,
   SteelReviewRequoteProvenance,
   SteelReviewRow,
   SteelReviewSourceMapping,
+  SteelReviewTarget,
 } from 'librechat-data-provider';
 import type { Document } from 'mongoose';
 
@@ -73,6 +75,8 @@ export interface SteelReviewReadRecord extends SteelReviewScope {
   needsRequote?: boolean;
   requoteProvenance?: SteelReviewRequoteProvenanceRecord;
   lastSave?: SteelReviewReceipt;
+  /** Immutable receipt history used to resolve a captured same-owner revision. */
+  receipts?: SteelReviewReceipt[];
 }
 
 export interface ISteelReviewOutput extends Document, SteelReviewScope {
@@ -101,6 +105,8 @@ export interface ISteelReviewOutput extends Document, SteelReviewScope {
 export interface SteelReviewReceipt {
   operationId: string;
   digest: string;
+  /** Present only on the additive operation-intent receipt lane. */
+  requestDigest?: string;
   revision: string;
   changedRows: number;
   changedRowIds: string[];
@@ -111,6 +117,8 @@ export interface SteelReviewReceipt {
 export interface SteelReviewSavedSnapshotRecord {
   operationId: string;
   digest: string;
+  /** Present only on the additive operation-intent receipt lane. */
+  requestDigest?: string;
   outputId: string;
   revision: string;
   headers: string[];
@@ -127,4 +135,11 @@ export interface SteelReviewSavedSnapshotRecord {
   effectiveMarkdown: string;
   displayMarkdown: string;
   ownerUpdated?: SteelReviewOwnerUpdatedRecord;
+  target?: SteelReviewTarget;
+  targetText?: string;
+  replacementText?: string;
+  cleanReplacementText?: string;
+  aiBaselineMarkdown?: string;
+  aiRawMarkdown?: string;
+  caption?: SteelReviewCaption;
 }

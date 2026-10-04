@@ -4,6 +4,7 @@ import {
   applySteelReviewDrafts,
   canRedoSteelReviewDraft,
   canUndoSteelReviewDraft,
+  clearSteelReviewDraftHistory,
   createSteelReviewDraftState,
   deleteSteelReviewDraftRow,
   getSteelReviewDraftKey,
@@ -58,6 +59,19 @@ const selection = {
 };
 
 describe('Steel review local draft session', () => {
+  it('clears undo and redo stacks after an authoritative save', () => {
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(selection, table));
+    draft = setSteelReviewDraftCell(draft, table.rows[0], '數量', '3');
+    draft = undoSteelReviewDraft(draft);
+    draft = redoSteelReviewDraft(draft);
+    expect(canUndoSteelReviewDraft(draft)).toBe(true);
+    expect(canRedoSteelReviewDraft(draft)).toBe(false);
+    const cleared = clearSteelReviewDraftHistory(draft);
+    expect(canUndoSteelReviewDraft(cleared)).toBe(false);
+    expect(canRedoSteelReviewDraft(cleared)).toBe(false);
+    expect(cleared.cells).toEqual(draft.cells);
+  });
+
   it('keys drafts by the exact output owner and revision', () => {
     expect(getSteelReviewDraftKey(selection, table)).toBe(JSON.stringify({
       conversationId: 'conversation-1',
@@ -136,7 +150,7 @@ describe('Steel review local draft session', () => {
     expect(draft.cells).toEqual({});
   });
 
-  it('stages one trusted source intent and counts source-only rows once', () => {
+  it('stages one typed source operation and counts source-only rows once', () => {
     const source: SteelReviewSource = {
       fileId: 'file-1',
       pageNumber: 2,
@@ -153,7 +167,7 @@ describe('Steel review local draft session', () => {
       table,
       draft,
       applySteelReviewDrafts(table.rows, draft),
-    ).sourceIntents).toEqual([{ rowId: 'row-1', fileId: 'file-1', pageNumber: 2 }]);
+    ).operations).toEqual([{ type: 'update', rowId: 'row-1', source: { fileId: 'file-1', pageNumber: 2 } }]);
   });
 
   it('allows an explicit clear source intent and rebases it after save', () => {
@@ -174,7 +188,7 @@ describe('Steel review local draft session', () => {
       sourcedTable,
       draft,
       applySteelReviewDrafts(sourcedTable.rows, draft),
-    ).sourceIntents).toEqual([{ rowId: 'row-1', fileId: null, pageNumber: null }]);
+    ).operations).toEqual([{ type: 'update', rowId: 'row-1', source: { fileId: null, pageNumber: null } }]);
 
     const rebased = rebaseSteelReviewDraftState(draft, [{ ...sourcedTable.rows[0], source: null }], draft.changeSequence);
     expect(rebased.sourceDrafts).toEqual({});
@@ -252,13 +266,13 @@ describe('Steel review local draft session', () => {
     expect(manuals[1]?.insertion).toEqual({ kind: 'after', rowId: 'row-1', ordinal: 1 });
   });
 
-  it('emits a trusted source intent for a newly inserted sourced row', () => {
+  it('emits a typed source intent for a newly inserted sourced row', () => {
     const source: SteelReviewSource = { fileId: 'file-1', pageNumber: 2, filename: 'drawing.pdf' };
     let draft = createSteelReviewDraftState(getSteelReviewDraftKey(selection, table));
     draft = addSteelReviewDraftRow(draft, table, undefined, source);
     const input = getSteelReviewPrepareInput(selection, table, draft, applySteelReviewDrafts(table.rows, draft));
-    expect(input.sourceIntents).toEqual([
-      expect.objectContaining({ fileId: 'file-1', pageNumber: 2 }),
+    expect(input.operations).toEqual([
+      expect.objectContaining({ type: 'add', source: { fileId: 'file-1', pageNumber: 2 } }),
     ]);
   });
 

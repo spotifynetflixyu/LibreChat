@@ -26,6 +26,9 @@ const markdownFor = (value: string, source = 'A') => [
   `| ${source} | ${value} |`,
 ].join('\n');
 
+const aiRowIdFor = (outputId: string, row: readonly string[], rowIndex = 0): string =>
+  createHash('sha256').update(`${outputId}:${rowIndex}:${JSON.stringify(row)}`).digest('hex');
+
 const digestFor = (input: Omit<SteelReviewCommitInput, 'digest'>): string => {
   return createHash('sha256').update(encodeSteelReviewDigest(input)).digest('hex');
 };
@@ -264,7 +267,7 @@ describe('Steel review write methods', () => {
       currentOcrResultMessageId: 'assistant-1', currentOcrResultGenerationId: 'generation-1',
     });
     const aiRow: SteelReviewRow = {
-      rowId: 'row-ai', origin: 'ai', deleted: false, source: null,
+      rowId: aiRowIdFor('ocr_result:generation-1', ['A', 'P-1']), origin: 'ai', deleted: false, source: null,
       values: { 來源: { baseline: 'A', effective: 'A' }, 零件編號: { baseline: 'P-1', effective: 'P-1' } },
     };
     const manualRow: SteelReviewRow = {
@@ -303,7 +306,7 @@ describe('Steel review write methods', () => {
     }));
     expect(first.changedRows).toBe(1);
     const savedFirst = await ReviewOutput.findOne({ conversationId: 'conversation-1', tableId: 'ocr_result:1' }).lean();
-    expect(savedFirst?.rows.map((row) => row.rowId)).toEqual(['row-ai', 'row-manual']);
+    expect(savedFirst?.rows.map((row) => row.rowId)).toEqual([aiRow.rowId, 'row-manual']);
     expect(savedFirst?.rows[1]).toMatchObject({ origin: 'manual', deleted: false });
 
     const deletedManual = { ...manualRow, deleted: true };
@@ -345,24 +348,37 @@ describe('Steel review write methods', () => {
     const input = rehashInput({
       ...base,
       outputId: 'ocr_result:generation-all-delete',
-      rows: base.rows.map((row) => ({ ...row, origin: 'ai', deleted: true })),
+      rows: base.rows.map((row) => ({
+        ...row,
+        rowId: aiRowIdFor('ocr_result:generation-all-delete', ['A', 'P-1']),
+        origin: 'ai',
+        deleted: true,
+      })),
       targetText,
       replacementText: headerOnly,
       cleanReplacementText: headerOnly,
       effectiveMarkdown: originalMarkdown.replace(targetText, headerOnly),
       displayMarkdown: originalMarkdown.replace(targetText, headerOnly),
-      caption: { kind: 'ocr_result', changedRows: 1, changedRowIds: ['row-1'] },
+      caption: {
+        kind: 'ocr_result',
+        changedRows: 1,
+        changedRowIds: [aiRowIdFor('ocr_result:generation-all-delete', ['A', 'P-1'])],
+      },
     });
 
     const result = await createSteelReviewWriteMethods(mongoose).commitSteelReview(input);
     expect(result.changedRows).toBe(1);
-    expect(result.changedRowIds).toEqual(['row-1']);
+    expect(result.changedRowIds).toEqual([aiRowIdFor('ocr_result:generation-all-delete', ['A', 'P-1'])]);
     expect(result.effectiveMarkdown).toBe(originalMarkdown.replace(targetText, headerOnly));
     await expect(models.Message.findOne({ messageId: 'assistant-all-delete' }).lean())
       .resolves.toMatchObject({ text: result.effectiveMarkdown });
     await expect(ReviewOutput.findOne({ conversationId: 'conversation-all-delete' }).lean())
       .resolves.toMatchObject({
-        rows: [expect.objectContaining({ rowId: 'row-1', origin: 'ai', deleted: true })],
+        rows: [expect.objectContaining({
+          rowId: aiRowIdFor('ocr_result:generation-all-delete', ['A', 'P-1']),
+          origin: 'ai',
+          deleted: true,
+        })],
       });
   });
 
@@ -787,6 +803,97 @@ describe('Steel review write methods', () => {
     });
     expect((await ReviewOutput.findOne({ conversationId }).lean())?.receipts).toHaveLength(2);
     expect((await State.findOne({ conversationId }).lean())?.reviewLockToken).toBe(tokenBeforeForgedLater);
+  });
+
+  it('derives a fresh ledger baseline from server OCR markdown before accepting rows', async () => {
+    const models = createModels(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const conversationId = 'server-baseline-conversation';
+    const messageId = 'server-baseline-message';
+    const originalMarkdown = markdownFor('P-1');
+    await models.Conversation.create({
+      conversationId, user: 'user-1', tenantId: 'tenant-1', title: 'Server baseline', endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId, conversationId, user: 'user-1', tenantId: 'tenant-1', isCreatedByUser: false,
+      text: originalMarkdown,
+    });
+    await State.create({
+      conversationId,
+      currentOcrResultMarkdown: originalMarkdown,
+      currentOcrResultMessageId: messageId,
+      currentOcrResultGenerationId: 'generation-1',
+    });
+    const base = makeInput({
+      operationId: 'server-baseline-forged', revision: 'generation-1', previousValue: 'P-1', nextValue: 'P-7',
+      conversationId, messageId,
+    });
+    const rowId = aiRowIdFor('ocr_result:generation-1', ['A', 'P-1']);
+    const forged = rehashInput({
+      ...base,
+      rows: base.rows.map((row) => ({
+        ...row,
+        rowId,
+        origin: 'ai' as const,
+        deleted: false,
+        values: {
+          ...row.values,
+          零件編號: { baseline: 'FORGED-AI', effective: 'P-7' },
+        },
+      })),
+      caption: { kind: 'ocr_result', changedRows: 1, changedRowIds: [rowId] },
+    });
+    await expect(createSteelReviewWriteMethods(mongoose).commitSteelReview(forged)).rejects.toMatchObject({
+      code: 'REVIEW_CONFLICT',
+    });
+    expect(await ReviewOutput.findOne({ conversationId }).lean()).toBeNull();
+    expect(await models.Message.findOne({ messageId }).lean()).toMatchObject({ text: originalMarkdown });
+    expect((await State.findOne({ conversationId }).lean())?.reviewLockToken).toBeUndefined();
+  });
+
+  it('rejects a new operation baseline forged through legacy-shaped rows', async () => {
+    const models = createModels(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const conversationId = 'server-baseline-legacy-shaped-conversation';
+    const messageId = 'server-baseline-legacy-shaped-message';
+    const originalMarkdown = markdownFor('P-1');
+    await models.Conversation.create({
+      conversationId, user: 'user-1', tenantId: 'tenant-1', title: 'Server baseline', endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId, conversationId, user: 'user-1', tenantId: 'tenant-1', isCreatedByUser: false,
+      text: originalMarkdown,
+    });
+    await State.create({
+      conversationId,
+      currentOcrResultMarkdown: originalMarkdown,
+      currentOcrResultMessageId: messageId,
+      currentOcrResultGenerationId: 'generation-1',
+    });
+    const base = makeInput({
+      operationId: 'server-baseline-legacy-shaped', revision: 'generation-1', previousValue: 'P-1', nextValue: 'P-7',
+      conversationId, messageId,
+    });
+    const rowId = aiRowIdFor('ocr_result:generation-1', ['A', 'P-1']);
+    const forged = rehashInput({
+      ...base,
+      rows: base.rows.map((row) => ({
+        ...row,
+        rowId,
+        values: {
+          ...row.values,
+          零件編號: { baseline: 'FORGED-AI', effective: 'P-7' },
+        },
+      })),
+      caption: { kind: 'ocr_result', changedRows: 1, changedRowIds: [rowId] },
+    });
+    const operation = { ...forged, operationDigest: forged.digest };
+    await expect(createSteelReviewWriteMethods(mongoose).commitSteelReview(operation)).rejects.toMatchObject({
+      code: 'REVIEW_CONFLICT',
+    });
+    expect(await ReviewOutput.findOne({ conversationId }).lean()).toBeNull();
   });
 
   it('allows a business save when the existing source association is blank', async () => {

@@ -93,6 +93,18 @@ function steelReviewWriteStatus(error: SteelReviewWriteError): 404 | 409 {
   return error.code === 'REVIEW_NOT_FOUND' ? 404 : 409;
 }
 
+function steelReviewWriteBody(error: SteelReviewWriteError): {
+  message: string;
+  code: SteelReviewWriteError['code'];
+  recovery?: NonNullable<SteelReviewWriteError['recovery']>;
+} {
+  return {
+    message: error.message,
+    code: error.code,
+    ...(error.recovery ? { recovery: error.recovery } : {}),
+  };
+}
+
 function parseSteelReviewRouteScope(req: SteelRequest, invalidMessage: string): SteelReviewRouteScopeResult {
   const userId = req.user?.id;
   const conversationId = req.params.conversationId;
@@ -229,7 +241,9 @@ export function createSteelRouteHandlers({
       } catch (error) {
         if (error instanceof SteelReviewReadError || error instanceof SteelReviewWriteError) {
           res.status(error instanceof SteelReviewReadError ? error.statusCode : steelReviewWriteStatus(error))
-            .json({ message: error.message, code: error.code });
+            .json(error instanceof SteelReviewWriteError
+              ? steelReviewWriteBody(error)
+              : { message: error.message, code: error.code });
           return;
         }
         res.status(500).json({ message: 'Steel review receipt read failed' });
@@ -382,7 +396,9 @@ export function createSteelRouteHandlers({
       } catch (error) {
         if (error instanceof SteelReviewReadError || error instanceof SteelReviewWriteError) {
           res.status(error instanceof SteelReviewReadError ? error.statusCode : steelReviewWriteStatus(error))
-            .json({ message: error.message, code: error.code });
+            .json(error instanceof SteelReviewWriteError
+              ? steelReviewWriteBody(error)
+              : { message: error.message, code: error.code });
           return;
         }
         res.status(500).json({ message: 'Steel review prepare failed' });

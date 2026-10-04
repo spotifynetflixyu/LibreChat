@@ -74,10 +74,30 @@ const steelReviewOwnerUpdatedSchema = new Schema<SteelReviewOwnerUpdatedRecord>(
   { _id: false },
 );
 
+const steelReviewTargetSchema = new Schema(
+  {
+    partIndex: { type: Number, min: 0 },
+    start: { type: Number, required: true, min: 0 },
+    end: { type: Number, required: true, min: 0 },
+    sha256: { type: String, required: true },
+  },
+  { _id: false },
+);
+
+const steelReviewCaptionSchema = new Schema(
+  {
+    kind: { type: String, enum: ['ocr_result', 'system_order'], required: true },
+    changedRows: { type: Number, required: true, min: 0 },
+    changedRowIds: { type: [String], required: true, default: [] },
+  },
+  { _id: false },
+);
+
 const steelReviewReceiptSchema = new Schema(
   {
     operationId: { type: String, required: true },
     digest: { type: String, required: true },
+    requestDigest: { type: String },
     revision: { type: String, required: true },
     changedRows: { type: Number, required: true, min: 0 },
     changedRowIds: { type: [String], required: true, default: [] },
@@ -87,6 +107,7 @@ const steelReviewReceiptSchema = new Schema(
         {
           operationId: { type: String, required: true },
           digest: { type: String, required: true },
+          requestDigest: { type: String },
           outputId: { type: String, required: true },
           revision: { type: String, required: true },
           headers: { type: [String], required: true, default: [] },
@@ -114,6 +135,13 @@ const steelReviewReceiptSchema = new Schema(
           effectiveMarkdown: { type: String, required: true },
           displayMarkdown: { type: String, required: true },
           ownerUpdated: { type: steelReviewOwnerUpdatedSchema },
+          target: { type: steelReviewTargetSchema },
+          targetText: { type: String },
+          replacementText: { type: String },
+          cleanReplacementText: { type: String },
+          aiBaselineMarkdown: { type: String },
+          aiRawMarkdown: { type: String },
+          caption: { type: steelReviewCaptionSchema },
         },
         { _id: false },
       ),

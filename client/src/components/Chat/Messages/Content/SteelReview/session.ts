@@ -1,9 +1,11 @@
 import { isSteelReviewSourceAssociationHeader } from 'librechat-data-provider';
 import type {
-  SteelReviewPrepare,
+  SteelReviewPrepared,
+  SteelReviewOperation,
+  SteelReviewOperationPrepare,
+  SteelReviewCommit,
   SteelReviewRow,
   SteelReviewSource,
-  SteelReviewSourceIntent,
   SteelReviewTable,
 } from 'librechat-data-provider';
 import type { SteelReviewSelection } from './state';
@@ -130,6 +132,10 @@ export function finishSteelReviewDraftHistory(draft: SteelReviewDraftState): Ste
     return draft;
   }
   return { ...draft, historyGroup: undefined };
+}
+
+export function clearSteelReviewDraftHistory(draft: SteelReviewDraftState): SteelReviewDraftState {
+  return { ...draft, past: [], future: [], historyGroup: undefined };
 }
 
 function restoreSnapshot(
@@ -358,10 +364,17 @@ export function addSteelReviewDraftRow(
     `manual-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const values = Object.fromEntries(table.headers.map((header) => [header, { baseline: null, effective: '' }]));
   const inheritedAnchor = anchor?.origin === 'manual' ? anchor.insertion : undefined;
-  const anchorKind = inheritedAnchor?.kind ?? (anchor?.rowId ? 'after' : 'end');
-  const anchorRowId = inheritedAnchor?.kind === 'after'
-    ? inheritedAnchor.rowId
-    : anchor?.rowId;
+  let anchorKind: 'start' | 'end' | 'after' = 'end';
+  let anchorRowId: string | undefined;
+  if (inheritedAnchor?.kind === 'after') {
+    anchorKind = 'after';
+    anchorRowId = inheritedAnchor.rowId;
+  } else if (inheritedAnchor?.kind === 'start' || inheritedAnchor?.kind === 'end') {
+    anchorKind = inheritedAnchor.kind;
+  } else if (anchor?.rowId) {
+    anchorKind = 'after';
+    anchorRowId = anchor.rowId;
+  }
   const anchorKey = anchorKind === 'after' ? `after:${anchorRowId}` : anchorKind;
   const ordinal = [...table.rows, ...Object.values(draft.rowStates)]
     .filter((row) => {
@@ -371,9 +384,9 @@ export function addSteelReviewDraftRow(
       return key === anchorKey;
     })
     .reduce((max, row) => Math.max(max, row.insertion?.ordinal ?? -1), -1) + 1;
-  const insertion = anchorKind === 'after'
-    ? { kind: 'after' as const, rowId: anchorRowId!, ordinal }
-    : { kind: anchorKind as 'start' | 'end', ordinal };
+  const insertion = anchorKind === 'after' && anchorRowId
+    ? { kind: 'after' as const, rowId: anchorRowId, ordinal }
+    : { kind: anchorKind === 'start' ? 'start' as const : 'end' as const, ordinal };
   const row: SteelReviewRow = { rowId, origin: 'manual', deleted: false, insertion, values, source };
   return recordMutation(draft, {
     ...draft,
@@ -440,8 +453,9 @@ export function getSteelReviewPrepareInput(
   table: SteelReviewTable,
   draft: SteelReviewDraftState,
   rows: SteelReviewRow[],
-): SteelReviewPrepare {
+): SteelReviewOperationPrepare {
   const partIndex = table.partIndex ?? selection.partIndex;
+  const operations = compileSteelReviewOperations(table, draft, rows);
   return {
     conversationId: selection.conversationId,
     messageId: selection.messageId,
@@ -450,31 +464,143 @@ export function getSteelReviewPrepareInput(
     ...(partIndex !== undefined ? { partIndex } : {}),
     outputId: table.outputId,
     revision: table.revision,
-    rows,
-    ...(Object.entries(draftSourceIntents(draft, rows)).length > 0
-      ? { sourceIntents: draftSourceIntents(draft, rows) }
-      : {}),
+    operations,
   };
 }
 
-function draftSourceIntents(
+function isSourceHeader(header: string): boolean {
+  return isSteelReviewSourceAssociationHeader(header);
+}
+
+type SteelReviewOperationSource = NonNullable<Extract<SteelReviewOperation, { type: 'update' }>['source']>;
+
+function sourceIntent(source: SteelReviewSource | null): SteelReviewOperationSource {
+  return source === null
+    ? { fileId: null, pageNumber: null }
+    : { fileId: source.fileId, pageNumber: source.pageNumber };
+}
+
+function sourceChanged(left: SteelReviewSource | null, right: SteelReviewSource | null): boolean {
+  return JSON.stringify(left) !== JSON.stringify(right);
+}
+
+function rowValuesChanged(
+  table: Pick<SteelReviewTable, 'headers'>,
+  previous: SteelReviewRow,
+  next: SteelReviewRow,
   draft: SteelReviewDraftState,
-  rows: readonly SteelReviewRow[],
-): SteelReviewSourceIntent[] {
-  const byId = new Map(rows.map((row) => [row.rowId, row]));
-  const sourceDrafts = { ...draft.sourceDrafts };
-  for (const row of rows) {
-    if (row.origin === 'manual' && row.source !== null && !Object.prototype.hasOwnProperty.call(sourceDrafts, row.rowId)) {
-      sourceDrafts[row.rowId] = row.source;
+): Array<{ header: string; value: string | null }> {
+  const headers = table.headers.filter((header) => !isSourceHeader(header));
+  return headers
+    .filter((header) => (previous.values[header]?.effective ?? null) !== (next.values[header]?.effective ?? null))
+    .sort((left, right) => (draft.cellVersions[getSteelReviewDraftCellKey(next.rowId, left)] ?? 0) -
+      (draft.cellVersions[getSteelReviewDraftCellKey(next.rowId, right)] ?? 0))
+    .map((header) => ({ header, value: next.values[header]?.effective ?? null }));
+}
+
+function resolveInsertionPosition(
+  row: SteelReviewRow,
+  rowsById: Map<string, SteelReviewRow>,
+  trustedIds: Set<string>,
+): { kind: 'start' } | { kind: 'end' } | { kind: 'after'; rowId: string } {
+  const insertion = row.insertion;
+  if (!insertion) {
+    return { kind: 'end' };
+  }
+  if (insertion.kind === 'start') {
+    return { kind: 'start' };
+  }
+  if (insertion.kind === 'end') {
+    return { kind: 'end' };
+  }
+  const anchorId = insertion.rowId;
+  if (!anchorId) {
+    return { kind: 'end' };
+  }
+  const anchor = rowsById.get(anchorId);
+  if (!anchor || trustedIds.has(anchor.rowId) || anchor.origin !== 'manual' || !anchor.insertion) {
+    return { kind: 'after', rowId: anchorId };
+  }
+  return resolveInsertionPosition(anchor, rowsById, trustedIds);
+}
+
+export function compileSteelReviewOperations(
+  table: Pick<SteelReviewTable, 'headers' | 'rows'>,
+  draft: SteelReviewDraftState,
+  projectedRows: readonly SteelReviewRow[],
+): SteelReviewOperation[] {
+  const originalById = new Map(table.rows.map((row) => [row.rowId, row]));
+  const operations: SteelReviewOperation[] = [];
+  const orderedRows = [...projectedRows].sort((left, right) => {
+    const leftVersion = Math.max(...Object.entries(left.values).map(([header]) => draft.cellVersions[getSteelReviewDraftCellKey(left.rowId, header)] ?? 0), draft.sourceVersions[left.rowId] ?? 0);
+    const rightVersion = Math.max(...Object.entries(right.values).map(([header]) => draft.cellVersions[getSteelReviewDraftCellKey(right.rowId, header)] ?? 0), draft.sourceVersions[right.rowId] ?? 0);
+    return leftVersion - rightVersion;
+  });
+  const allRowsById = new Map([...table.rows, ...Object.values(draft.rowStates)].map((row) => [row.rowId, row]));
+  const trustedIds = new Set(table.rows.map((row) => row.rowId));
+  for (const next of orderedRows) {
+    const previous = originalById.get(next.rowId);
+    if (!previous) {
+      if (next.origin !== 'manual' || next.deleted) continue;
+      const changes = table.headers
+        .filter((header) => !isSourceHeader(header))
+        .map((header) => ({ header, value: next.values[header]?.effective ?? null }));
+      const add: Extract<SteelReviewOperation, { type: 'add' }> = {
+        type: 'add',
+        rowId: next.rowId,
+        position: resolveInsertionPosition(next, allRowsById, trustedIds),
+        changes,
+      };
+      if (next.source !== null) add.source = sourceIntent(next.source);
+      operations.push(add);
+      continue;
+    }
+    const changes = rowValuesChanged(table, previous, next, draft);
+    const sourceWasChanged = sourceChanged(previous.source, next.source) &&
+      (draft.sourceVersions[next.rowId] ?? 0) > 0;
+    if (!previous.deleted && next.deleted) {
+      if (changes.length > 0 || sourceWasChanged) {
+        const update: Extract<SteelReviewOperation, { type: 'update' }> = {
+          type: 'update', rowId: next.rowId,
+          ...(changes.length > 0 ? { changes } : {}),
+          ...(sourceWasChanged ? { source: sourceIntent(next.source) } : {}),
+        };
+        operations.push(update);
+      }
+      operations.push({ type: 'delete', rowId: next.rowId });
+      continue;
+    }
+    if (previous.deleted && !next.deleted) {
+      operations.push({ type: 'restore', rowId: next.rowId });
+      if (changes.length > 0 || sourceWasChanged) {
+        operations.push({
+          type: 'update', rowId: next.rowId,
+          ...(changes.length > 0 ? { changes } : {}),
+          ...(sourceWasChanged ? { source: sourceIntent(next.source) } : {}),
+        });
+      }
+      continue;
+    }
+    if (changes.length > 0 || sourceWasChanged) {
+      operations.push({
+        type: 'update', rowId: next.rowId,
+        ...(changes.length > 0 ? { changes } : {}),
+        ...(sourceWasChanged ? { source: sourceIntent(next.source) } : {}),
+      });
     }
   }
-  return Object.entries(sourceDrafts)
-    .filter(([rowId]) => byId.has(rowId))
-    .map(([rowId, source]) => ({
-      rowId,
-      fileId: source?.fileId ?? null,
-      pageNumber: source?.pageNumber ?? null,
-    }));
+  return operations;
+}
+
+export function getSteelReviewCommitInput(prepared: SteelReviewPrepared): SteelReviewCommit {
+  if ('operationRequest' in prepared) {
+    return {
+      ...prepared.operationRequest,
+      operationId: prepared.operationId,
+      digest: prepared.digest,
+    };
+  }
+  return prepared;
 }
 
 export function rebaseSteelReviewDraftState(

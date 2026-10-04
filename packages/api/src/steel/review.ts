@@ -4,12 +4,15 @@ import { SteelReviewWriteError } from '@librechat/data-schemas';
 import {
   getSteelReviewTableId,
   parseSteelReviewMarkdownTables,
+  applySteelReviewOperations,
   encodeSteelReviewDigest,
   isSteelReviewSourceAssociationHeader,
   normalizeSteelReviewLedgerRows,
   sameSteelReviewSource,
   steelReviewCommitSchema,
   steelReviewLegacyCommitSchema,
+  steelReviewOperationCommitSchema,
+  steelReviewOperationPrepareSchema,
   steelReviewPrepareSchema,
   validateSteelReviewLedger,
   steelReviewReceiptQuerySchema,
@@ -24,9 +27,15 @@ import type {
   SteelReviewTable,
   SteelReviewPrepare,
   SteelReviewPrepared,
+  SteelReviewOperationPrepare,
+  SteelReviewOperationCommit,
+  SteelReviewOperationPrepared,
+  SteelReviewLedgerRow,
   SteelReviewCommit,
   SteelReviewReceiptStatus,
   SteelReviewReceipt,
+  SteelReviewConflict,
+  SteelReviewRecovery,
   SteelReviewSavedSnapshot,
   SteelReviewSourceIntent,
   SteelReviewSourceMapping,
@@ -39,8 +48,8 @@ import type {
   SteelReviewReadRecord,
   SteelReviewReceiptLookup,
 } from '@librechat/data-schemas';
-import type { ServerRequest } from '~/types/http';
 import type { SteelMarkdownTable } from './markdown/table';
+import type { ServerRequest } from '~/types/http';
 import { escapeMarkdownTableCell } from './markdown/row-codec';
 
 export interface SteelReviewReader {
@@ -82,6 +91,27 @@ type SteelReviewLegacyCommit = Omit<SteelReviewCommit, 'sourceIntents' | 'source
 type SteelReviewCommitRequest = (SteelReviewCommit | SteelReviewLegacyCommit) & SteelReviewReadInput & {
   sourceRequest?: ServerRequest;
 };
+type SteelReviewLegacyPrepared = Extract<SteelReviewPrepared, { rows: SteelReviewRow[] }>;
+type SteelReviewLegacyCommitPayload = Extract<SteelReviewCommit, { rows: SteelReviewRow[] }>;
+
+type SteelReviewSourceMetadata = {
+  fileId: string;
+  filename: string;
+  mediaType: string;
+};
+
+interface SteelReviewSourceEvidence {
+  metadataByFile: Map<string, SteelReviewSourceMetadata | null>;
+  pageCountsByFile: Map<string, { pageCount: number } | null>;
+}
+
+function isOperationPrepare(payload: SteelReviewPrepare): payload is SteelReviewOperationPrepare {
+  return Object.prototype.hasOwnProperty.call(payload, 'operations');
+}
+
+function isOperationCommit(payload: SteelReviewCommit): payload is SteelReviewOperationCommit {
+  return Object.prototype.hasOwnProperty.call(payload, 'operations');
+}
 
 export class SteelReviewReadError extends Error {
   readonly statusCode: 400 | 404;
@@ -722,20 +752,39 @@ export function createSteelReviewService({
   sourceAuthority?: SteelReviewSourceAuthority;
 }) {
   function parsePreparePayload(input: SteelReviewPrepareInput): SteelReviewPrepare {
-    const hasSourceIntents = Object.prototype.hasOwnProperty.call(input, 'sourceIntents');
-    if (hasSourceIntents && !Array.isArray(input.sourceIntents)) {
+    const hasOperations = Object.prototype.hasOwnProperty.call(input, 'operations');
+    if (hasOperations) {
+      const operationInput = input as SteelReviewOperationPrepare;
+      const parsed = steelReviewOperationPrepareSchema.safeParse({
+        conversationId: operationInput.conversationId,
+        messageId: operationInput.messageId,
+        tableId: operationInput.tableId,
+        ...(operationInput.partIndex !== undefined ? { partIndex: operationInput.partIndex } : {}),
+        kind: operationInput.kind,
+        outputId: operationInput.outputId,
+        revision: operationInput.revision,
+        operations: operationInput.operations,
+      });
+      if (!parsed.success) {
+        throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Invalid review operation');
+      }
+      return parsed.data;
+    }
+    const legacyInput = input as Extract<SteelReviewPrepareInput, { rows: SteelReviewRow[] }>;
+    const hasSourceIntents = Object.prototype.hasOwnProperty.call(legacyInput, 'sourceIntents');
+    if (hasSourceIntents && !Array.isArray(legacyInput.sourceIntents)) {
       throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Invalid review operation');
     }
     const parsed = steelReviewPrepareSchema.safeParse({
-      conversationId: input.conversationId,
-      messageId: input.messageId,
-      tableId: input.tableId,
-      ...(input.partIndex !== undefined ? { partIndex: input.partIndex } : {}),
-      kind: input.kind,
-      outputId: input.outputId,
-      revision: input.revision,
-      rows: input.rows,
-      ...(hasSourceIntents ? { sourceIntents: input.sourceIntents } : {}),
+      conversationId: legacyInput.conversationId,
+      messageId: legacyInput.messageId,
+      tableId: legacyInput.tableId,
+      ...(legacyInput.partIndex !== undefined ? { partIndex: legacyInput.partIndex } : {}),
+      kind: legacyInput.kind,
+      outputId: legacyInput.outputId,
+      revision: legacyInput.revision,
+      rows: legacyInput.rows,
+      ...(hasSourceIntents ? { sourceIntents: legacyInput.sourceIntents } : {}),
     });
     if (!parsed.success) {
       throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Invalid review operation');
@@ -744,36 +793,57 @@ export function createSteelReviewService({
   }
 
   function parseCommitPayload(input: SteelReviewCommitRequest): SteelReviewCommit {
-    const hasSourceIntents = Object.prototype.hasOwnProperty.call(input, 'sourceIntents');
-    const hasSourceMappings = Object.prototype.hasOwnProperty.call(input, 'sourceMappings');
-    if ((hasSourceIntents && !Array.isArray(input.sourceIntents)) ||
-      (hasSourceMappings && !Array.isArray(input.sourceMappings))) {
+    const hasOperations = Object.prototype.hasOwnProperty.call(input, 'operations');
+    if (hasOperations) {
+      const operationInput = input as SteelReviewOperationCommit;
+      const parsed = steelReviewOperationCommitSchema.safeParse({
+        conversationId: operationInput.conversationId,
+        messageId: operationInput.messageId,
+        tableId: operationInput.tableId,
+        ...(operationInput.partIndex !== undefined ? { partIndex: operationInput.partIndex } : {}),
+        kind: operationInput.kind,
+        outputId: operationInput.outputId,
+        revision: operationInput.revision,
+        operations: operationInput.operations,
+        operationId: operationInput.operationId,
+        digest: operationInput.digest,
+      });
+      if (!parsed.success) {
+        throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Invalid review operation');
+      }
+      return parsed.data;
+    }
+    const legacyInput = input as Extract<SteelReviewCommitRequest, { rows: SteelReviewRow[] }>;
+    const hasSourceIntents = Object.prototype.hasOwnProperty.call(legacyInput, 'sourceIntents');
+    const hasSourceMappings = Object.prototype.hasOwnProperty.call(legacyInput, 'sourceMappings');
+    if ((hasSourceIntents && !Array.isArray(legacyInput.sourceIntents)) ||
+      (hasSourceMappings && !Array.isArray(legacyInput.sourceMappings))) {
       throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Invalid review operation');
     }
     const candidate = {
-      conversationId: input.conversationId,
-      messageId: input.messageId,
-      tableId: input.tableId,
-      ...(input.partIndex !== undefined ? { partIndex: input.partIndex } : {}),
-      kind: input.kind,
-      outputId: input.outputId,
-      revision: input.revision,
-      rows: input.rows,
-      ...(hasSourceIntents ? { sourceIntents: input.sourceIntents } : {}),
-      operationId: input.operationId,
-      digest: input.digest,
-      messageSha256: input.messageSha256,
-      target: input.target,
-      replacementText: input.replacementText,
-      cleanReplacementText: input.cleanReplacementText,
-      targetText: input.targetText,
-      headers: input.headers,
-      effectiveMarkdown: input.effectiveMarkdown,
-      displayMarkdown: input.displayMarkdown,
-      ...(input.aiBaselineMarkdown !== undefined ? { aiBaselineMarkdown: input.aiBaselineMarkdown } : {}),
-      ...(input.aiRawMarkdown !== undefined ? { aiRawMarkdown: input.aiRawMarkdown } : {}),
-      caption: input.caption,
-      ...(hasSourceMappings ? { sourceMappings: input.sourceMappings } : {}),
+      conversationId: legacyInput.conversationId,
+      messageId: legacyInput.messageId,
+      tableId: legacyInput.tableId,
+      ...(legacyInput.partIndex !== undefined ? { partIndex: legacyInput.partIndex } : {}),
+      kind: legacyInput.kind,
+      outputId: legacyInput.outputId,
+      revision: legacyInput.revision,
+      rows: legacyInput.rows,
+      ...(hasSourceIntents ? { sourceIntents: legacyInput.sourceIntents } : {}),
+      operationId: legacyInput.operationId,
+      digest: legacyInput.digest,
+      messageSha256: legacyInput.messageSha256,
+      target: legacyInput.target,
+      replacementText: legacyInput.replacementText,
+      cleanReplacementText: legacyInput.cleanReplacementText,
+      targetText: legacyInput.targetText,
+      headers: legacyInput.headers,
+      effectiveMarkdown: legacyInput.effectiveMarkdown,
+      displayMarkdown: legacyInput.displayMarkdown,
+      ...(legacyInput.aiBaselineMarkdown !== undefined ? { aiBaselineMarkdown: legacyInput.aiBaselineMarkdown } : {}),
+      ...(legacyInput.aiRawMarkdown !== undefined ? { aiRawMarkdown: legacyInput.aiRawMarkdown } : {}),
+      caption: legacyInput.caption,
+      ...(hasSourceMappings ? { sourceMappings: legacyInput.sourceMappings } : {}),
     };
     const hasNewSourceFields = Object.prototype.hasOwnProperty.call(candidate, 'sourceIntents') ||
       Object.prototype.hasOwnProperty.call(candidate, 'sourceMappings');
@@ -785,15 +855,328 @@ export function createSteelReviewService({
     return parsed.data as SteelReviewCommit;
   }
 
-  async function buildTrustedPrepared(
+  function operationRequestDigest(payload: SteelReviewOperationPrepare): string {
+    const request = {
+      conversationId: payload.conversationId,
+      messageId: payload.messageId,
+      tableId: payload.tableId,
+      ...(payload.partIndex !== undefined ? { partIndex: payload.partIndex } : {}),
+      kind: payload.kind,
+      outputId: payload.outputId,
+      revision: payload.revision,
+      operations: payload.operations.map((operation) => {
+        if (operation.type === 'update') {
+          return {
+            type: operation.type,
+            rowId: operation.rowId,
+            ...(operation.changes !== undefined ? { changes: operation.changes.map((change) => ({
+              header: change.header,
+              value: change.value,
+            })) } : {}),
+            ...(operation.source !== undefined ? { source: {
+              fileId: operation.source.fileId,
+              pageNumber: operation.source.pageNumber,
+            } } : {}),
+          };
+        }
+        if (operation.type === 'add') {
+          return {
+            type: operation.type,
+            rowId: operation.rowId,
+            position: operation.position.kind === 'after'
+              ? { kind: operation.position.kind, rowId: operation.position.rowId }
+              : { kind: operation.position.kind },
+            changes: operation.changes.map((change) => ({
+              header: change.header,
+              value: change.value,
+            })),
+            ...(operation.source !== undefined ? { source: {
+              fileId: operation.source.fileId,
+              pageNumber: operation.source.pageNumber,
+            } } : {}),
+          };
+        }
+        return { type: operation.type, rowId: operation.rowId };
+      }),
+    };
+    return createHash('sha256')
+      .update(`steel-review-operation-request-v1:${JSON.stringify(request)}`)
+      .digest('hex');
+  }
+
+  function operationIntentDigest(payload: SteelReviewOperationPrepare, operationId: string): string {
+    return createHash('sha256')
+      .update(`steel-review-operation-intent-v1:${operationId}:${operationRequestDigest(payload)}`)
+      .digest('hex');
+  }
+
+  function operationPreparedFromReceipt(
+    payload: SteelReviewOperationCommit,
+    result: SteelReviewCommitResult,
+  ): SteelReviewPrepared {
+    const snapshot = result.snapshot;
+    if (!snapshot || !snapshot.target || snapshot.targetText === undefined ||
+      snapshot.replacementText === undefined || snapshot.cleanReplacementText === undefined ||
+      !snapshot.caption || snapshot.requestDigest === undefined) {
+      throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review operation receipt snapshot is incomplete');
+    }
+    const { operationId: _operationId, digest: _digest, ...operationRequest } = payload;
+    return {
+      conversationId: payload.conversationId,
+      messageId: payload.messageId,
+      tableId: payload.tableId,
+      ...(payload.partIndex !== undefined ? { partIndex: payload.partIndex } : {}),
+      kind: payload.kind,
+      outputId: snapshot.outputId,
+      revision: snapshot.revision,
+      rows: snapshot.rows,
+      operationId: result.operationId,
+      digest: result.digest,
+      messageSha256: snapshot.messageSha256,
+      target: snapshot.target,
+      targetText: snapshot.targetText,
+      replacementText: snapshot.replacementText,
+      cleanReplacementText: snapshot.cleanReplacementText,
+      effectiveMarkdown: snapshot.effectiveMarkdown,
+      displayMarkdown: snapshot.displayMarkdown,
+      ...(snapshot.aiBaselineMarkdown ? { aiBaselineMarkdown: snapshot.aiBaselineMarkdown } : {}),
+      ...(snapshot.aiRawMarkdown ? { aiRawMarkdown: snapshot.aiRawMarkdown } : {}),
+      sourceMappings: snapshot.sourceMappings ?? [],
+      caption: snapshot.caption,
+      operations: payload.operations,
+      operationRequest,
+      requestDigest: snapshot.requestDigest,
+    } as SteelReviewPrepared;
+  }
+
+  function operationExpectedRows(
+    record: SteelReviewReadRecord,
+    payload: SteelReviewOperationPrepare,
+    target: LocatedTable,
+    currentRows: SteelReviewLedgerRow[],
+  ): SteelReviewLedgerRow[] | undefined {
+    if (record.revision === payload.revision) {
+      return currentRows.map((row) => ({ ...row, values: { ...row.values } }));
+    }
+    const matchingSnapshots = (record.receipts ?? [])
+      .filter((receipt) => receipt.revision === payload.revision && receipt.snapshot)
+      .flatMap((receipt) => receipt.snapshot ? [receipt.snapshot] : [])
+      .filter((snapshot) => snapshot.outputId === record.outputId &&
+        JSON.stringify(snapshot.headers) === JSON.stringify(target.headers));
+    if (matchingSnapshots.length === 1) {
+      return normalizeSteelReviewLedgerRows(matchingSnapshots[0].rows);
+    }
+    if (matchingSnapshots.length > 1) {
+      return undefined;
+    }
+    const markdown = record.aiBaselineMarkdown ?? record.markdown;
+    if (!markdown) {
+      return undefined;
+    }
+    const indexText = payload.tableId.slice(payload.tableId.lastIndexOf(':') + 1);
+    const index = Number(indexText);
+    const table = parseSteelReviewMarkdownTables(markdown).find((candidate) =>
+      candidate.index === index && JSON.stringify(candidate.headers) === JSON.stringify(target.headers));
+    if (!table) {
+      return undefined;
+    }
+    return normalizeSteelReviewLedgerRows(toRows(table, record.outputId, record.sourceMappings));
+  }
+
+  function operationRecovery(
+    record: SteelReviewReadRecord,
+    payload: SteelReviewOperationPrepare,
+    target: LocatedTable,
+    currentRows: readonly SteelReviewLedgerRow[],
+    conflicts: readonly SteelReviewConflict[],
+  ): SteelReviewRecovery {
+    const latestOutputId = record.latestOutputId ?? record.outputId;
+    return {
+      table: {
+        conversationId: record.conversationId,
+        messageId: record.messageId,
+        tableId: payload.tableId,
+        ...(payload.partIndex !== undefined ? { partIndex: payload.partIndex } : {}),
+        outputId: record.outputId,
+        kind: record.kind,
+        revision: record.revision,
+        latestOutputId,
+        isLatest: record.state === 'current' && latestOutputId === record.outputId,
+        readOnly: record.state !== 'current' || latestOutputId !== record.outputId,
+        headers: target.headers,
+        rows: [...currentRows],
+        effectiveMarkdown: record.effectiveMarkdown ?? record.humanMarkdown ?? record.markdown ?? '',
+        ...(record.humanSavedAt ? { humanSavedAt: record.humanSavedAt.toISOString() } : {}),
+        ...(record.aiRawMarkdown ? { aiRawMarkdown: record.aiRawMarkdown } : {}),
+        ...(record.aiBaselineMarkdown ? { aiBaselineMarkdown: record.aiBaselineMarkdown } : {}),
+        ...(record.sourceMappings ? { sourceMappings: record.sourceMappings } : {}),
+      },
+      conflicts: [...conflicts],
+    };
+  }
+
+  async function loadSourceEvidence(
     scope: SteelReviewPrepareInput,
-    payload: SteelReviewPrepare,
+    payload: SteelReviewOperationPrepare,
+  ): Promise<SteelReviewSourceEvidence> {
+    const metadataByFile = new Map<string, SteelReviewSourceMetadata | null>();
+    const pageCountsByFile = new Map<string, { pageCount: number } | null>();
+    if (!sourceAuthority) {
+      return { metadataByFile, pageCountsByFile };
+    }
+    const sourceInputs = new Map<string, SteelReviewSourceIntentInput>();
+    for (const operation of payload.operations) {
+      const source = operation.type === 'add' || operation.type === 'update'
+        ? operation.source
+        : undefined;
+      if (!source || source.fileId === null || sourceInputs.has(source.fileId)) {
+        continue;
+      }
+      sourceInputs.set(source.fileId, {
+        userId: scope.userId,
+        ...(scope.tenantId !== undefined ? { tenantId: scope.tenantId } : {}),
+        conversationId: scope.conversationId,
+        messageId: payload.messageId,
+        kind: payload.kind,
+        fileId: source.fileId,
+      });
+    }
+    const metadataResults = await Promise.all([...sourceInputs.entries()].map(async ([fileId, sourceInput]) =>
+      [fileId, await sourceAuthority.readMetadata(sourceInput)] as const));
+    for (const [fileId, metadata] of metadataResults) {
+      metadataByFile.set(fileId, metadata);
+    }
+    if (!scope.sourceRequest) {
+      return { metadataByFile, pageCountsByFile };
+    }
+    const pageInputs = [...sourceInputs.entries()].filter(([fileId]) => {
+      const metadata = metadataByFile.get(fileId);
+      return metadata !== null && metadata !== undefined && !metadata.mediaType.toLowerCase().startsWith('image/') &&
+        payload.operations.some((operation) => {
+          const source = operation.type === 'add' || operation.type === 'update'
+            ? operation.source
+            : undefined;
+          return source?.fileId === fileId && source.pageNumber !== null && source.pageNumber !== undefined;
+        });
+    });
+    const pageResults = await Promise.all(pageInputs.map(async ([fileId, sourceInput]) =>
+      [fileId, await sourceAuthority.readPageCount(sourceInput, scope.sourceRequest!)] as const));
+    for (const [fileId, pageCount] of pageResults) {
+      pageCountsByFile.set(fileId, pageCount);
+    }
+    return { metadataByFile, pageCountsByFile };
+  }
+
+  async function buildTrustedOperationPrepared(
+    scope: SteelReviewPrepareInput,
+    payload: SteelReviewOperationPrepare,
     operationId: string,
+    trustedRecord?: SteelReviewReadRecord,
+    sourceEvidence?: SteelReviewSourceEvidence,
   ): Promise<SteelReviewPrepared> {
     if (payload.kind !== 'ocr_result') {
       throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'This review save is available for OCR results only');
     }
-    const record = await reader.readSteelReview(scope);
+    const record = trustedRecord ?? await reader.readSteelReview(scope);
+    if (!record || record.state !== 'current' || (record.latestOutputId ?? record.outputId) !== record.outputId ||
+      record.outputId !== payload.outputId) {
+      throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review table is no longer current');
+    }
+    const target = findVerifiedSaveTarget(record, payload.tableId);
+    if (!target || (target.partIndex !== payload.partIndex && payload.partIndex !== undefined)) {
+      throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review table target not found');
+    }
+    const currentRows = normalizeSteelReviewLedgerRows(record.rows ?? toRows(target, record.outputId, record.sourceMappings));
+    const headers = record.headers ?? target.headers;
+    const expectedRows = operationExpectedRows(record, payload, target, currentRows);
+    if (!expectedRows) {
+      throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review expected version is unavailable');
+    }
+    const sourceIntents: SteelReviewSourceIntent[] = [];
+    for (const operation of payload.operations) {
+      if (operation.type === 'add' && operation.source) {
+        sourceIntents.push({
+          rowId: operation.rowId,
+          fileId: operation.source.fileId,
+          pageNumber: operation.source.pageNumber,
+        });
+      } else if (operation.type === 'update' && operation.source) {
+        sourceIntents.push({
+          rowId: operation.rowId,
+          fileId: operation.source.fileId,
+          pageNumber: operation.source.pageNumber,
+        });
+      }
+    }
+    for (const operation of payload.operations) {
+      let changes: Array<{ header: string; value: string | null }> = [];
+      if (operation.type === 'add') {
+        changes = operation.changes;
+      } else if (operation.type === 'update') {
+        changes = operation.changes ?? [];
+      }
+      if (changes.some((change) => !headers.includes(change.header) ||
+        isSteelReviewSourceAssociationHeader(change.header))) {
+        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review row column is read-only');
+      }
+    }
+    const applied = applySteelReviewOperations({
+      currentRows,
+      expectedRows,
+      headers,
+      operations: payload.operations,
+    });
+    if (!applied.ok) {
+      throw new SteelReviewWriteError(
+        'REVIEW_CONFLICT',
+        'Review changes conflict with the latest saved table',
+        operationRecovery(record, payload, target, currentRows, applied.conflicts),
+      );
+    }
+    const stagedRows = applied.currentRows;
+    const trustedSourceEvidence = sourceEvidence ?? await loadSourceEvidence(scope, payload);
+    const fullPayload: SteelReviewPrepare = {
+      conversationId: payload.conversationId,
+      messageId: payload.messageId,
+      tableId: payload.tableId,
+      ...(payload.partIndex !== undefined ? { partIndex: payload.partIndex } : {}),
+      kind: payload.kind,
+      outputId: payload.outputId,
+      // The full trusted preview is based on the transaction-current record.
+      // Keep the client's captured revision in the operation request and intent
+      // digest; the legacy internal projection must use the current owner
+      // revision so the writer can persist the merged snapshot.
+      revision: record.revision,
+      rows: stagedRows,
+      ...(sourceIntents.length > 0 ? { sourceIntents } : {}),
+    };
+    const prepared = await buildTrustedPrepared(scope, fullPayload, operationId, record, trustedSourceEvidence);
+    if (!isOperationPrepare(payload)) {
+      return prepared;
+    }
+    return {
+      ...prepared,
+      operations: payload.operations,
+      operationRequest: payload,
+      digest: operationIntentDigest(payload, operationId),
+      requestDigest: operationRequestDigest(payload),
+    } as SteelReviewPrepared;
+  }
+
+  async function buildTrustedPrepared(
+    scope: SteelReviewPrepareInput,
+    payload: SteelReviewPrepare,
+    operationId: string,
+    trustedRecord?: SteelReviewReadRecord,
+    sourceEvidence?: SteelReviewSourceEvidence,
+  ): Promise<SteelReviewPrepared> {
+    if (isOperationPrepare(payload)) {
+      return buildTrustedOperationPrepared(scope, payload, operationId, trustedRecord, sourceEvidence);
+    }
+    if (payload.kind !== 'ocr_result') {
+      throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'This review save is available for OCR results only');
+    }
+    const record = trustedRecord ?? await reader.readSteelReview(scope);
     if (!record || record.state !== 'current' || (record.latestOutputId ?? record.outputId) !== record.outputId ||
       record.outputId !== payload.outputId) {
       throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review table is no longer current');
@@ -830,7 +1213,8 @@ export function createSteelReviewService({
       const sourceCode = sourceColumn ? row.values[sourceColumn]?.effective?.trim() : undefined;
       return sourceCode?.match(/^F[1-9]\d*$/u) ? [sourceCode] : [];
     });
-    const metadataByFile = new Map<string, Awaited<ReturnType<SteelReviewSourceAuthority['readMetadata']>>>();
+    const metadataByFile = sourceEvidence?.metadataByFile ??
+      new Map<string, SteelReviewSourceMetadata | null>();
     const metadataInputs = new Map<string, SteelReviewSourceIntentInput>();
     for (const intent of sourceIntents) {
       if (intent.fileId === null || metadataInputs.has(intent.fileId)) {
@@ -845,15 +1229,15 @@ export function createSteelReviewService({
         fileId: intent.fileId,
       });
     }
-    if (sourceAuthority && metadataInputs.size > 0) {
+    if (!sourceEvidence && sourceAuthority && metadataInputs.size > 0) {
       const metadataResults = await Promise.all([...metadataInputs.entries()].map(async ([fileId, sourceInput]) =>
         [fileId, await sourceAuthority.readMetadata(sourceInput)] as const));
       for (const [fileId, metadata] of metadataResults) {
         metadataByFile.set(fileId, metadata);
       }
     }
-    const pageCountsByFile = new Map<string, { pageCount: number } | null>();
-    if (sourceAuthority && scope.sourceRequest) {
+    const pageCountsByFile = sourceEvidence?.pageCountsByFile ?? new Map<string, { pageCount: number } | null>();
+    if (!sourceEvidence && sourceAuthority && scope.sourceRequest) {
       const pageInputs = [...metadataInputs.entries()].filter(([fileId]) => {
         const metadata = metadataByFile.get(fileId);
         return metadata !== null && [...intentsByRow.values()].some((intent) =>
@@ -929,7 +1313,7 @@ export function createSteelReviewService({
             throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review image page is invalid');
           }
         } else {
-          if (!scope.sourceRequest) {
+          if (!pageCountsByFile.has(intent.fileId)) {
             throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review source page is unavailable');
           }
           const pageCount = pageCountsByFile.get(intent.fileId);
@@ -1038,8 +1422,23 @@ export function createSteelReviewService({
     };
   }
 
-  function sameTrustedPayload(left: SteelReviewCommit, right: SteelReviewPrepared): boolean {
-    const fields: Array<keyof SteelReviewCommit> = [
+  function sameTrustedPayload(left: SteelReviewLegacyCommitPayload, right: SteelReviewLegacyPrepared): boolean {
+    const canonicalRows = (rows: readonly SteelReviewRow[]) => normalizeSteelReviewLedgerRows(rows).map((row) => ({
+      rowId: row.rowId,
+      values: row.values,
+      source: row.source
+        ? {
+            fileId: row.source.fileId,
+            pageNumber: row.source.pageNumber,
+            ...(row.source.filename !== undefined ? { filename: row.source.filename } : {}),
+            ...(row.source.mediaType !== undefined ? { mediaType: row.source.mediaType } : {}),
+          }
+        : null,
+      origin: row.origin,
+      deleted: row.deleted,
+      ...(row.insertion ? { insertion: row.insertion } : {}),
+    }));
+    const fields: Array<keyof SteelReviewLegacyCommitPayload> = [
       'conversationId', 'messageId', 'tableId', 'partIndex', 'kind', 'outputId', 'revision',
       'rows', 'operationId', 'digest', 'messageSha256', 'target', 'replacementText',
       'cleanReplacementText', 'targetText', 'headers', 'effectiveMarkdown', 'displayMarkdown',
@@ -1047,8 +1446,7 @@ export function createSteelReviewService({
     ];
     return fields.every((field) => {
       if (field === 'rows') {
-        return JSON.stringify(normalizeSteelReviewLedgerRows(left.rows)) ===
-          JSON.stringify(normalizeSteelReviewLedgerRows(right.rows));
+        return JSON.stringify(canonicalRows(left.rows)) === JSON.stringify(canonicalRows(right.rows));
       }
       return JSON.stringify(left[field]) === JSON.stringify(right[field]);
     });
@@ -1123,11 +1521,109 @@ export function createSteelReviewService({
         throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Steel review save unavailable');
       }
       const payload = parseCommitPayload(input);
+      if (isOperationCommit(payload)) {
+        if (writer.readSteelReviewReceipt) {
+          const receipt = await writer.readSteelReviewReceipt({
+            userId: input.userId,
+            ...(input.tenantId !== undefined ? { tenantId: input.tenantId } : {}),
+            conversationId: payload.conversationId,
+            kind: payload.kind,
+            messageId: payload.messageId,
+            tableId: payload.tableId,
+            outputId: payload.outputId,
+            operationId: payload.operationId,
+            digest: payload.digest,
+          });
+          if (receipt) {
+            const prepared = operationPreparedFromReceipt(payload, receipt);
+            return {
+              ...prepared,
+              savedAt: receipt.savedAt.toISOString(),
+              changedRows: receipt.changedRows,
+              changedRowIds: receipt.changedRowIds,
+              ...(receipt.snapshot ? { savedSnapshot: serializeSavedSnapshot(receipt.snapshot) } : {}),
+            } as SteelReviewPrepared & {
+              savedAt: string;
+              changedRows: number;
+              changedRowIds: string[];
+              savedSnapshot?: SteelReviewSavedSnapshot;
+            };
+          }
+        }
+        let trusted: SteelReviewPrepared;
+        const sourceEvidence = await loadSourceEvidence(input as SteelReviewPrepareInput, payload);
+        try {
+          trusted = await buildTrustedPrepared(
+            input as SteelReviewPrepareInput,
+            payload,
+            payload.operationId,
+            undefined,
+            sourceEvidence,
+          );
+        } catch (error) {
+          if (error instanceof SteelReviewReadError &&
+            error.code === 'REVIEW_NOT_FOUND' && error.message === 'Review table is no longer current') {
+            throw new SteelReviewWriteError('REVIEW_CONFLICT', error.message);
+          }
+          throw error;
+        }
+        if (payload.digest !== trusted.digest) {
+          throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review operation digest mismatch');
+        }
+        const trustedOperation = trusted as SteelReviewOperationPrepared;
+        const legacyTrusted = trusted as SteelReviewLegacyPrepared;
+        const result = await writer.commitSteelReview({
+          ...legacyTrusted,
+          userId: input.userId,
+          ...(input.tenantId !== undefined ? { tenantId: input.tenantId } : {}),
+          operationDigest: trustedOperation.digest,
+          ...(trustedOperation.requestDigest ? { requestDigest: trustedOperation.requestDigest } : {}),
+          operationRequest: payload,
+          prepareOperation: async (currentRecord) => {
+            const currentTrusted = await buildTrustedOperationPrepared(
+              input as SteelReviewPrepareInput,
+              payload,
+              payload.operationId,
+              currentRecord,
+              sourceEvidence,
+            );
+            const currentOperation = currentTrusted as SteelReviewOperationPrepared;
+            if (currentOperation.digest !== payload.digest || currentOperation.requestDigest !== trustedOperation.requestDigest) {
+              throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review operation digest mismatch');
+            }
+            return {
+              ...(currentTrusted as SteelReviewLegacyPrepared),
+              userId: input.userId,
+              ...(input.tenantId !== undefined ? { tenantId: input.tenantId } : {}),
+              operationDigest: currentOperation.digest,
+              ...(currentOperation.requestDigest ? { requestDigest: currentOperation.requestDigest } : {}),
+              operationRequest: payload,
+            };
+          },
+        });
+        return {
+          ...trusted,
+          revision: result.revision,
+          messageSha256: result.messageSha256,
+          effectiveMarkdown: result.effectiveMarkdown,
+          displayMarkdown: result.displayMarkdown,
+          savedAt: result.savedAt.toISOString(),
+          changedRows: result.changedRows,
+          changedRowIds: result.changedRowIds,
+          ...(result.snapshot ? { savedSnapshot: serializeSavedSnapshot(result.snapshot) } : {}),
+        } as SteelReviewPrepared & {
+          savedAt: string;
+          changedRows: number;
+          changedRowIds: string[];
+          savedSnapshot?: SteelReviewSavedSnapshot;
+        };
+      }
+      const legacyPayload = payload as SteelReviewLegacyCommitPayload;
       const candidate = {
         userId: input.userId,
         ...(input.tenantId !== undefined ? { tenantId: input.tenantId } : {}),
-        ...payload,
-      } satisfies SteelReviewCommitInput;
+        ...legacyPayload,
+      } as SteelReviewCommitInput;
       if (writer.resolveSteelReviewReceipt) {
         const historical = await writer.resolveSteelReviewReceipt(candidate);
         if (historical) {
@@ -1146,20 +1642,29 @@ export function createSteelReviewService({
             changedRows: historical.changedRows,
             changedRowIds: historical.changedRowIds,
             ...(historical.snapshot ? { savedSnapshot: serializeSavedSnapshot(historical.snapshot) } : {}),
+          } as SteelReviewLegacyPrepared & {
+            savedAt: string;
+            changedRows: number;
+            changedRowIds: string[];
+            savedSnapshot?: SteelReviewSavedSnapshot;
           };
         }
       }
-      const hasNewSourceFields = Object.prototype.hasOwnProperty.call(payload, 'sourceIntents') ||
-        Object.prototype.hasOwnProperty.call(payload, 'sourceMappings');
+      const hasNewSourceFields = Object.prototype.hasOwnProperty.call(legacyPayload, 'sourceIntents') ||
+        Object.prototype.hasOwnProperty.call(legacyPayload, 'sourceMappings');
       if (!hasNewSourceFields) {
         throw new SteelReviewWriteError(
           'REVIEW_INVALID_OPERATION',
           'Review operation requires the current source contract',
         );
       }
-      let trusted: SteelReviewPrepared;
+      let trusted: SteelReviewLegacyPrepared;
       try {
-        trusted = await buildTrustedPrepared(input, payload, payload.operationId);
+        trusted = await buildTrustedPrepared(
+          input as SteelReviewPrepareInput,
+          legacyPayload,
+          legacyPayload.operationId,
+        ) as SteelReviewLegacyPrepared;
       } catch (error) {
         if (error instanceof SteelReviewReadError &&
           error.code === 'REVIEW_NOT_FOUND' && error.message === 'Review table is no longer current') {
@@ -1167,7 +1672,7 @@ export function createSteelReviewService({
         }
         throw error;
       }
-      if (!sameTrustedPayload(candidate, trusted)) {
+      if (!sameTrustedPayload(legacyPayload, trusted)) {
         throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review operation does not match trusted review state');
       }
       const result = await writer.commitSteelReview({
@@ -1182,7 +1687,7 @@ export function createSteelReviewService({
         effectiveMarkdown: result.effectiveMarkdown,
         displayMarkdown: result.displayMarkdown,
         caption: {
-          ...input.caption,
+          ...legacyPayload.caption,
           changedRows: result.changedRows,
           changedRowIds: result.changedRowIds,
         },

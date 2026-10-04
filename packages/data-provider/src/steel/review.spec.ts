@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import {
   encodeSteelReviewDigest,
+  applySteelReviewOperations,
   isSteelReviewSourceAssociationHeader,
   normalizeSteelReviewEffectiveValue,
   normalizeSteelReviewRows,
@@ -10,6 +11,9 @@ import {
   steelReviewResponseSchema,
   steelReviewPreparedSchema,
   steelReviewPrepareSchema,
+  steelReviewOperationCommitSchema,
+  steelReviewOperationPrepareSchema,
+  steelReviewOperationSchema,
   validateSteelReviewLedger,
 } from './review';
 
@@ -383,5 +387,123 @@ describe('Steel review contracts', () => {
     expect(steelReviewPreparedSchema.safeParse({ ...prepared, sourceMappings: undefined }).success).toBe(false);
     expect(steelReviewPreparedSchema.safeParse({ ...prepared, sourceMappings: null }).success).toBe(false);
     expect(steelReviewPreparedSchema.safeParse({ ...prepared, sourceMappings: [] }).success).toBe(true);
+  });
+
+  it('keeps changed-row operations closed and presence-sensitive', () => {
+    const identity = {
+      conversationId: 'conversation-1',
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+      kind: 'ocr_result' as const,
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+    };
+    const update = { type: 'update' as const, rowId: 'row-1', changes: [{ header: 'Value', value: 'new' }] };
+    const add = {
+      type: 'add' as const,
+      rowId: 'manual-1',
+      position: { kind: 'after' as const, rowId: 'row-1' },
+      changes: [{ header: 'Value', value: 'new' }],
+    };
+
+    expect(steelReviewOperationSchema.safeParse(update).success).toBe(true);
+    expect(steelReviewOperationSchema.safeParse({ type: 'delete', rowId: 'row-1' }).success).toBe(true);
+    expect(steelReviewOperationSchema.safeParse({ type: 'restore', rowId: 'row-1' }).success).toBe(true);
+    expect(steelReviewOperationSchema.safeParse({ ...update, source: { fileId: null, pageNumber: null } }).success).toBe(true);
+    expect(steelReviewOperationSchema.safeParse({ ...update, source: { fileId: 'file-1', pageNumber: null } }).success).toBe(true);
+    expect(steelReviewOperationSchema.safeParse(add).success).toBe(true);
+
+    const invalid = [
+      { ...update, source: undefined },
+      { ...update, source: null },
+      { ...update, source: { fileId: null, pageNumber: 1 } },
+      { ...update, source: { fileId: 'file-1' } },
+      { ...update, source: { fileId: 'file-1', pageNumber: 0 } },
+      { ...update, changes: [{ header: 'Value', value: 'a' }, { header: 'Value', value: 'b' }] },
+      { ...update, extra: true },
+      { ...add, position: { kind: 'start', rowId: undefined } },
+      { ...add, position: { kind: 'end', rowId: null } },
+      { ...add, position: { kind: 'after' } },
+      { ...add, position: { kind: 'after', rowId: '' } },
+      { ...add, position: undefined },
+      { ...add, source: undefined },
+      { ...add, changes: [] },
+    ];
+    for (const candidate of invalid) {
+      expect(steelReviewOperationSchema.safeParse(candidate).success).toBe(false);
+    }
+
+    expect(steelReviewOperationPrepareSchema.safeParse({ ...identity, operations: [update] }).success).toBe(true);
+    expect(steelReviewOperationPrepareSchema.safeParse({
+      ...identity,
+      operations: [update],
+      rows: [],
+    }).success).toBe(false);
+    expect(steelReviewOperationCommitSchema.safeParse({
+      ...identity,
+      operations: [update],
+      operationId: 'operation-1',
+      digest: 'a'.repeat(64),
+    }).success).toBe(true);
+  });
+
+  it('merges disjoint fields and returns every conflicting field without mutating trusted inputs', () => {
+    const row = (value: string) => ({
+      rowId: 'row-1',
+      values: {
+        Value: { baseline: 'ai', effective: value },
+        Other: { baseline: 'ai-other', effective: 'ai-other' },
+      },
+      source: null,
+      origin: 'ai' as const,
+      deleted: false,
+    });
+    const current = [row('foreign')];
+    const expected = [row('ai')];
+    const result = applySteelReviewOperations({
+      currentRows: normalizeSteelReviewLedgerRows(current),
+      expectedRows: normalizeSteelReviewLedgerRows(expected),
+      headers: ['Value', 'Other'],
+      operations: [{
+        type: 'update',
+        rowId: 'row-1',
+        changes: [
+          { header: 'Value', value: 'local' },
+          { header: 'Other', value: 'local-other' },
+        ],
+      }],
+    });
+    expect(result).toMatchObject({
+      ok: false,
+      conflicts: [{ kind: 'field', rowId: 'row-1', header: 'Value', expected: 'ai', current: 'foreign', requested: 'local' }],
+    });
+    expect((result as { conflicts: unknown[] }).conflicts).toHaveLength(1);
+    expect(current[0]?.values.Value.effective).toBe('foreign');
+    expect(expected[0]?.values.Value.effective).toBe('ai');
+  });
+
+  it('allocates boundary ordinals across saved tombstones and same-request additions', () => {
+    const row = (rowId: string, insertion: { kind: 'start' | 'end'; ordinal: number }, deleted = false) => ({
+      rowId,
+      values: { Value: { baseline: null, effective: null } },
+      source: null,
+      origin: 'manual' as const,
+      deleted,
+      insertion,
+    });
+    const result = applySteelReviewOperations({
+      currentRows: [row('saved-start', { kind: 'start', ordinal: 0 }, true), row('saved-end', { kind: 'end', ordinal: 0 }, true)],
+      expectedRows: [row('saved-start', { kind: 'start', ordinal: 0 }, true), row('saved-end', { kind: 'end', ordinal: 0 }, true)],
+      headers: ['Value'],
+      operations: [
+        { type: 'add', rowId: 'new-start', position: { kind: 'start' }, changes: [{ header: 'Value', value: 'start' }] },
+        { type: 'add', rowId: 'new-end', position: { kind: 'end' }, changes: [{ header: 'Value', value: 'end' }] },
+      ],
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.currentRows.find((row) => row.rowId === 'new-start')?.insertion).toEqual({ kind: 'start', ordinal: 1 });
+      expect(result.currentRows.find((row) => row.rowId === 'new-end')?.insertion).toEqual({ kind: 'end', ordinal: 1 });
+    }
   });
 });

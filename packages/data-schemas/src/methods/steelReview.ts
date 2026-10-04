@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   encodeSteelReviewDigest,
   isSteelReviewSourceAssociationHeader,
+  parseSteelReviewMarkdownTables,
   normalizeSteelReviewRows,
   sameSteelReviewSource,
   validateSteelReviewLedger,
@@ -9,10 +10,12 @@ import {
 import type {
   SteelReviewCell,
   SteelReviewCaption,
+  SteelReviewOperationPrepare,
   SteelReviewRow,
   SteelReviewSourceIntent,
   SteelReviewSourceMapping,
   SteelReviewTarget,
+  SteelReviewRecovery,
 } from 'librechat-data-provider';
 import type {
   IMessage,
@@ -72,6 +75,16 @@ export interface SteelReviewCommitInput extends SteelReviewReadInput {
   caption: SteelReviewCaption;
   sourceIntents?: SteelReviewSourceIntent[];
   sourceMappings?: SteelReviewSourceMapping[];
+  /** Private new-operation receipt namespace; legacy full-row digests omit it. */
+  operationDigest?: string;
+  requestDigest?: string;
+  /**
+   * The operation lane is rebuilt from the transaction-current record. This
+   * callback is private to the API/data-schemas boundary and never enters a
+   * request digest or a persisted document.
+   */
+  prepareOperation?: (current: SteelReviewReadRecord) => Promise<SteelReviewCommitInput>;
+  operationRequest?: SteelReviewOperationPrepare;
 }
 
 export interface SteelReviewCommitResult {
@@ -99,14 +112,17 @@ export interface SteelReviewWriteMethods {
 
 export class SteelReviewWriteError extends Error {
   readonly code: 'REVIEW_CONFLICT' | 'REVIEW_NOT_FOUND' | 'REVIEW_INVALID_OPERATION';
+  readonly recovery?: SteelReviewRecovery;
 
   constructor(
     code: SteelReviewWriteError['code'],
     message: string,
+    recovery?: SteelReviewRecovery,
   ) {
     super(message);
     this.name = 'SteelReviewWriteError';
     this.code = code;
+    this.recovery = recovery;
   }
 }
 
@@ -134,6 +150,81 @@ function sameCellProperty(
 
 function rowsAreNormalized(rows: readonly SteelReviewRow[]): boolean {
   return JSON.stringify(normalizeSteelReviewRows(rows)) === JSON.stringify(rows);
+}
+
+function sourceHeader(headers: readonly string[]): string | undefined {
+  return headers.find((header) => header === '來源') ?? headers.find((header) => {
+    const normalized = header.trim().toLowerCase().replace(/[\s_]+/gu, '');
+    return ['source', 'sourcefile', 'sourcefilename', 'file', 'filename', 'originalfile', 'originalfilename']
+      .includes(normalized);
+  });
+}
+
+function pageHeader(headers: readonly string[]): string | undefined {
+  return headers.find((header) => ['頁碼', '原檔頁碼', '原始頁碼', '來源頁碼'].includes(header)) ?? headers.find((header) => {
+    const normalized = header.trim().toLowerCase().replace(/[\s_]+/gu, '');
+    return ['page', 'pagenumber', 'sourcepage', 'originalpage', 'originalpagenumber'].includes(normalized);
+  });
+}
+
+function parseSourcePage(value: string | undefined): number | null {
+  if (!value || !/^\d+$/u.test(value.trim())) {
+    return null;
+  }
+  const page = Number(value.trim());
+  return Number.isSafeInteger(page) && page > 0 ? page : null;
+}
+
+/**
+ * Build the first-save authority from the server's immutable AI markdown.
+ * The submitted rows are deliberately absent from this function: they may
+ * carry tombstones, changed baselines, or forged identities and therefore
+ * cannot establish the previous ledger state.
+ */
+function trustedInitialRowsFromMarkdown(
+  markdown: string,
+  input: SteelReviewCommitInput,
+  trustedMappings: readonly SteelReviewSourceMapping[],
+): SteelReviewRow[] | undefined {
+  const physicalTarget = parseSteelReviewMarkdownTables(input.targetText)
+    .find((candidate) => JSON.stringify(candidate.headers) === JSON.stringify(input.headers));
+  if (!physicalTarget) {
+    return undefined;
+  }
+  const matches = parseSteelReviewMarkdownTables(markdown).filter((candidate) =>
+    JSON.stringify(candidate.headers) === JSON.stringify(physicalTarget.headers) &&
+    JSON.stringify(candidate.rows) === JSON.stringify(physicalTarget.rows));
+  if (matches.length !== 1) {
+    return undefined;
+  }
+  const [table] = matches;
+  const sourceColumn = sourceHeader(table.headers);
+  const pageColumn = pageHeader(table.headers);
+  const mappingsByCode = new Map(trustedMappings.map((mapping) => [mapping.sourceCode, mapping]));
+  return table.rows.flatMap((row, rowIndex) => {
+    if (row.length !== table.headers.length) {
+      return [];
+    }
+    const values = Object.fromEntries(table.headers.map((header, index) => {
+      const value = row[index] ?? '';
+      return [header, { baseline: value, effective: value }];
+    }));
+    const sourceCode = sourceColumn ? row[table.headers.indexOf(sourceColumn)]?.trim() : undefined;
+    const mapping = sourceCode ? mappingsByCode.get(sourceCode) : undefined;
+    const page = pageColumn ? parseSourcePage(row[table.headers.indexOf(pageColumn)]) : null;
+    const source = mapping
+      ? {
+          fileId: mapping.fileId,
+          pageNumber: page,
+          filename: mapping.sourceFilename,
+          ...(mapping.mediaType ? { mediaType: mapping.mediaType } : {}),
+        }
+      : null;
+    const rowId = createHash('sha256')
+      .update(`${input.outputId}:${rowIndex}:${JSON.stringify(row)}`)
+      .digest('hex');
+    return [{ rowId, values, source, origin: 'ai' as const, deleted: false }];
+  });
 }
 
 function throwLedgerConflict(result: ReturnType<typeof validateSteelReviewLedger>): never {
@@ -462,6 +553,12 @@ function sidecarRecord(
             ...(lastSave.snapshot ? { snapshot: normalizeSnapshot(lastSave.snapshot) } : {}),
           },
         }
+      : {}),
+    ...(output.receipts?.length
+      ? { receipts: output.receipts.map((receipt) => ({
+          ...receipt,
+          ...(receipt.snapshot ? { snapshot: normalizeSnapshot(receipt.snapshot) } : {}),
+        })) }
       : {}),
     ...(message
       ? {
@@ -1030,8 +1127,12 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
     if (input.kind !== 'ocr_result') {
       throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'This review save is available for OCR results only');
     }
-    const computedDigest = commitDigest(input);
-    if (computedDigest !== input.digest) {
+    if (input.operationDigest === undefined) {
+      const computedDigest = commitDigest(input);
+      if (computedDigest !== input.digest) {
+        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review operation digest mismatch');
+      }
+    } else if (input.operationDigest !== input.digest) {
       throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review operation digest mismatch');
     }
     return findReceipt(input);
@@ -1168,6 +1269,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
           const message = messages[0];
           const ocrState = ocrStates[0];
           const quotation = quotations[0];
+          const operationLane = input.operationDigest !== undefined && input.prepareOperation !== undefined;
           if (!conversation || !message) {
             throw new SteelReviewWriteError('REVIEW_NOT_FOUND', 'Review table not found');
           }
@@ -1181,14 +1283,90 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               quotation?.currentSystemOrder?.runId !== input.outputId.replace(/^system_order:/u, ''))) {
             throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review output is no longer current');
           }
-          if (typeof message.text !== 'string' || createHash('sha256').update(message.text).digest('hex') !== input.messageSha256) {
+          if (!operationLane && (typeof message.text !== 'string' ||
+            createHash('sha256').update(message.text).digest('hex') !== input.messageSha256)) {
             throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review message changed');
           }
+
+          const outputFilter = {
+            ...reviewScope(input),
+            kind: input.kind,
+            messageId: input.messageId,
+            tableId: input.tableId,
+            outputId: input.outputId,
+          };
+          const outputs = await ReviewOutput.find(outputFilter)
+            .limit(2)
+            .session(session)
+            .lean<ISteelReviewOutput[]>();
+          if (outputs.length > 1) {
+            throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review output authority is ambiguous');
+          }
+          const output = outputs[0];
+          if (output && !matchesReviewOutputOwner(output, input)) {
+            throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review output owner changed');
+          }
+          if (output && (output.state !== 'current' ||
+            (output.latestOutputId !== undefined && output.latestOutputId !== output.outputId) ||
+            (!operationLane && output.revision !== input.revision))) {
+            throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review output is no longer current');
+          }
+          const currentSourceMappings = output?.sourceMappings ??
+            (ocrState?.sourceMappings ? trustedSourceMappings(ocrState) : undefined);
+          const currentLatestOutputId = output?.latestOutputId ?? input.outputId;
+          const currentAiRawMarkdown = output?.aiRawMarkdown ?? ocrState?.currentOcrResultMarkdown;
 
           const mirror = readTextMirror(message);
           if (!mirror) {
             throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review message mirror changed');
           }
+          if (operationLane) {
+            const currentRecord: SteelReviewReadRecord = {
+              userId: input.userId,
+              ...(input.tenantId !== undefined ? { tenantId: input.tenantId } : {}),
+              conversationId: input.conversationId,
+              kind: input.kind,
+              messageId: input.messageId,
+              tableId: input.tableId,
+              outputId: output?.outputId ?? input.outputId,
+              revision: output?.revision ?? input.revision,
+              state: 'current',
+              ...(output?.headers ? { headers: output.headers } : {}),
+              ...(output?.rows ? { rows: output.rows } : {}),
+              ...(currentSourceMappings ? { sourceMappings: currentSourceMappings } : {}),
+              ...(currentSourceMappings ? { trustedSourceMappings: currentSourceMappings } : {}),
+              latestOutputId: currentLatestOutputId,
+              ...(currentAiRawMarkdown ? { aiRawMarkdown: currentAiRawMarkdown } : {}),
+              ...(output?.aiBaselineMarkdown ? { aiBaselineMarkdown: output.aiBaselineMarkdown } : {}),
+              ...(output?.humanMarkdown ? { humanMarkdown: output.humanMarkdown } : {}),
+              ...(output?.humanSavedAt ? { humanSavedAt: output.humanSavedAt } : {}),
+              ...(output?.effectiveMarkdown ? { effectiveMarkdown: output.effectiveMarkdown } : {}),
+              ...(output?.displayMarkdown ? { displayMarkdown: output.displayMarkdown } : {}),
+              ...(output?.receipts ? { receipts: output.receipts } : {}),
+              ...(ocrState?.currentOcrResultMarkdown && !output
+                ? { markdown: ocrState.currentOcrResultMarkdown }
+                : {}),
+              messageText: mirror.text,
+              messageTextParts: mirror.parts
+                .filter((part): part is typeof part & { contentIndex: number; text: string } =>
+                  part.contentIndex !== undefined && part.type === 'text' && typeof part.text === 'string')
+                .map((part) => ({ partIndex: part.contentIndex, text: part.text as string })),
+              ...(input.partIndex !== undefined ? { messageTextPartIndex: input.partIndex } : {}),
+            };
+            const prepared = await input.prepareOperation!(currentRecord);
+            if (prepared.operationDigest !== input.operationDigest ||
+              prepared.digest !== input.digest ||
+              prepared.requestDigest !== input.requestDigest ||
+              prepared.operationId !== input.operationId) {
+              throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review operation digest mismatch');
+            }
+            input = prepared;
+          }
+
+          if (typeof message.text !== 'string' || createHash('sha256').update(message.text).digest('hex') !== input.messageSha256) {
+            throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review message changed');
+          }
+
           const selectedText = input.partIndex === undefined
             ? mirror.text
             : mirror.parts.find((part) => part.contentIndex === input.partIndex)?.text;
@@ -1240,27 +1418,6 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             ? selectedNext
             : renderTextParts(safeNextParts);
 
-          const outputFilter = {
-            ...reviewScope(input),
-            kind: input.kind,
-            messageId: input.messageId,
-            tableId: input.tableId,
-            outputId: input.outputId,
-          };
-          const outputs = await ReviewOutput.find(outputFilter)
-            .limit(2)
-            .session(session)
-            .lean<ISteelReviewOutput[]>();
-          if (outputs.length > 1) {
-            throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review output authority is ambiguous');
-          }
-          const output = outputs[0];
-          if (output && !matchesReviewOutputOwner(output, input)) {
-            throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review output owner changed');
-          }
-          if (output && (output.state !== 'current' || output.revision !== input.revision)) {
-            throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review output is no longer current');
-          }
           const sourceFileIds = output
             ? [...new Set([
               ...output.rows.flatMap((row) => row.source?.fileId ? [row.source.fileId] : []),
@@ -1293,9 +1450,12 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             row.source !== null && authorizedFiles.has(row.source.fileId))) {
             throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review source metadata changed');
           }
+          const freshOperationMode = input.operationDigest !== undefined;
+          const ledgerMode = Boolean(output) || freshOperationMode || input.rows.some((row) =>
+            row.origin !== undefined || row.deleted !== undefined || row.insertion !== undefined);
           const trustedMappings = input.sourceMappings ?? [];
           const projectedRows = output ? sanitizeRows(output.rows, authorizedFiles, trustedMappings) : [];
-          const initialTrustedRows = input.rows
+          const legacyInitialRows = input.rows
             .filter((row) => (row.origin ?? 'ai') === 'ai' || row.insertion === undefined)
             .map((row) => ({
               ...row,
@@ -1305,11 +1465,26 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
                 { ...cell, effective: cell.baseline },
               ])),
             }));
-          const baselineRows = output ? projectedRows : initialTrustedRows;
-          const ledgerMode = Boolean(output) || input.rows.some((row) =>
-            row.origin !== undefined || row.deleted !== undefined || row.insertion !== undefined);
+          const serverOriginalMarkdown = !output &&
+            ocrState?.currentOcrResultGenerationId === input.outputId.replace(/^ocr_result:/u, '')
+            ? ocrState.currentOcrResultMarkdown
+            : undefined;
+          let initialTrustedRows: SteelReviewRow[] | undefined;
+          if (output || !ledgerMode) {
+            initialTrustedRows = legacyInitialRows;
+          } else if (serverOriginalMarkdown) {
+            initialTrustedRows = trustedInitialRowsFromMarkdown(
+              serverOriginalMarkdown,
+              input,
+              ocrState?.sourceMappings ?? [],
+            );
+          }
+          if (!output && ledgerMode && !initialTrustedRows) {
+            throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review server baseline is unavailable');
+          }
+          const baselineRows = output ? projectedRows : initialTrustedRows ?? [];
           const ledgerValidation = ledgerMode
-            ? validateSteelReviewLedger(output ? projectedRows : initialTrustedRows, input.rows, input.headers)
+            ? validateSteelReviewLedger(output ? projectedRows : initialTrustedRows ?? [], input.rows, input.headers)
             : undefined;
           if (ledgerValidation && !ledgerValidation.ok) {
             throwLedgerConflict(ledgerValidation);
@@ -1515,6 +1690,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
           const receipt: SteelReviewReceipt = {
             operationId: input.operationId,
             digest: input.digest,
+            ...(input.requestDigest ? { requestDigest: input.requestDigest } : {}),
             revision: nextRevision,
             changedRows: changedRowIds.length,
             changedRowIds,
@@ -1522,6 +1698,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             snapshot: {
               operationId: input.operationId,
               digest: input.digest,
+              ...(input.requestDigest ? { requestDigest: input.requestDigest } : {}),
               outputId: input.outputId,
               revision: nextRevision,
               headers: input.headers,
@@ -1538,6 +1715,17 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               effectiveMarkdown: input.effectiveMarkdown,
               displayMarkdown: input.displayMarkdown,
               ownerUpdated,
+              ...(input.operationDigest !== undefined
+                ? {
+                    target: input.target,
+                    targetText: input.targetText,
+                    replacementText: input.replacementText,
+                    cleanReplacementText: input.cleanReplacementText,
+                    ...(input.aiBaselineMarkdown ? { aiBaselineMarkdown: input.aiBaselineMarkdown } : {}),
+                    ...(input.aiRawMarkdown ? { aiRawMarkdown: input.aiRawMarkdown } : {}),
+                    caption: input.caption,
+                  }
+                : {}),
             },
           };
           const update = {

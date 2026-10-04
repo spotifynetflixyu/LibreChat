@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { encodeSteelReviewDigest } from 'librechat-data-provider';
+import type { SteelReviewOperationPrepared } from 'librechat-data-provider';
 import { createSteelReviewService } from './review';
 
 const managedMarkdown = [
@@ -1328,5 +1329,100 @@ describe('Steel review read service', () => {
       snapshot: { revision: 'saved-revision', savedAt: savedAt.toISOString() },
     });
     expect(readSteelReviewReceipt).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps a changed-row operation bound to its captured revision while previewing current values', async () => {
+    const currentMarkdown = [
+      '## ocr_result',
+      '',
+      '| 來源 | 零件編號 |',
+      '| --- | --- |',
+      '| A | P-9 |',
+    ].join('\n');
+    const baselineMarkdown = [
+      '## ocr_result',
+      '',
+      '| 來源 | 零件編號 |',
+      '| --- | --- |',
+      '| A | P-1 |',
+    ].join('\n');
+    const rowId = createHash('sha256')
+      .update(`ocr_result:generation-1:0:${JSON.stringify(['A', 'P-1'])}`)
+      .digest('hex');
+    const currentRow = {
+      rowId,
+      values: {
+        來源: { baseline: 'A', effective: 'A' },
+        零件編號: { baseline: 'P-1', effective: 'P-9' },
+      },
+      source: null,
+      origin: 'ai' as const,
+      deleted: false,
+    };
+    const reader = {
+      readSteelReview: jest.fn().mockResolvedValue({
+        userId: 'user-1',
+        conversationId: 'conversation-1',
+        kind: 'ocr_result' as const,
+        messageId: 'message-1',
+        tableId: 'ocr_result:1',
+        outputId: 'ocr_result:generation-1',
+        revision: 'foreign-revision',
+        state: 'current' as const,
+        headers: ['來源', '零件編號'],
+        rows: [currentRow],
+        markdown: currentMarkdown,
+        aiBaselineMarkdown: baselineMarkdown,
+        messageText: currentMarkdown,
+      }),
+    };
+    const commitSteelReview = jest.fn().mockImplementation(async (input) => ({
+      operationId: input.operationId,
+      digest: input.digest,
+      outputId: input.outputId,
+      revision: 'saved-revision',
+      changedRows: 1,
+      changedRowIds: [rowId],
+      savedAt: new Date('2026-10-04T00:00:00.000Z'),
+      messageSha256: input.messageSha256,
+      effectiveMarkdown: input.effectiveMarkdown,
+      displayMarkdown: input.displayMarkdown,
+    }));
+    const service = createSteelReviewService({ reader, writer: { commitSteelReview } });
+    const operation = {
+      conversationId: 'conversation-1',
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+      kind: 'ocr_result' as const,
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      operations: [{
+        type: 'update' as const,
+        rowId,
+        changes: [{ header: '零件編號', value: 'P-9' }],
+      }],
+    };
+    const prepared = await service.prepare({ userId: 'user-1', ...operation });
+    const preparedOperation = prepared as SteelReviewOperationPrepared;
+    expect(preparedOperation.operationRequest.revision).toBe('generation-1');
+    expect(preparedOperation.revision).toBe('foreign-revision');
+    expect(preparedOperation.rows[0]?.values['零件編號']?.effective).toBe('P-9');
+    const preparedAgain = await service.prepare({ userId: 'user-1', ...operation });
+    const preparedAgainOperation = preparedAgain as SteelReviewOperationPrepared;
+    expect(preparedAgainOperation.requestDigest).toBe(preparedOperation.requestDigest);
+    expect(preparedAgainOperation.operationId).not.toBe(preparedOperation.operationId);
+    expect(preparedAgainOperation.digest).not.toBe(preparedOperation.digest);
+    const saved = await service.commit({
+      userId: 'user-1',
+      ...operation,
+      operationId: preparedOperation.operationId,
+      digest: preparedOperation.digest,
+    });
+    expect(commitSteelReview).toHaveBeenCalledWith(expect.objectContaining({
+      revision: 'foreign-revision',
+      operationDigest: preparedOperation.digest,
+      requestDigest: preparedOperation.requestDigest,
+    }));
+    expect(saved.revision).toBe('saved-revision');
   });
 });

@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAtom } from 'jotai';
-import { Maximize2, Minimize2 } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
+import { AlertTriangle, Maximize2, Minimize2 } from 'lucide-react';
 import {
   DynamicQueryKeys,
   QueryKeys,
   steelReviewErrorCodeSchema,
+  steelReviewRecoverySchema,
 } from 'librechat-data-provider';
 import {
   Button,
@@ -21,12 +22,13 @@ import {
   SelectValue,
 } from '@librechat/client';
 import type {
-  SteelReviewCommit,
   SteelReviewErrorCode,
+  SteelReviewConflict,
   SteelReviewKind,
   SteelReviewPrepared,
   SteelReviewReceiptStatus,
   SteelReviewResponse,
+  SteelReviewRecovery,
   SteelReviewRow,
   SteelReviewSavedSnapshot,
   SteelReviewSource,
@@ -43,6 +45,7 @@ import {
   areSteelReviewDraftOwnersSame,
   canRedoSteelReviewDraft,
   canUndoSteelReviewDraft,
+  clearSteelReviewDraftHistory,
   createSteelReviewDraftState,
   deleteSteelReviewDraftRow,
   finishSteelReviewDraftHistory,
@@ -50,6 +53,7 @@ import {
   getSteelReviewDraftKey,
   getSteelReviewDraftOwnerKey,
   getSteelReviewDraftSource,
+  getSteelReviewCommitInput,
   getSteelReviewPrepareInput,
   rebaseSteelReviewDraftState,
   redoSteelReviewDraft,
@@ -158,7 +162,6 @@ function getCurrentLastSaveCount(table: SteelReviewTable | null | undefined): nu
 function isAuthorizedCurrentTable(
   table: SteelReviewTable | null | undefined,
   prepared: SteelReviewPrepared,
-  snapshot: SteelReviewSavedSnapshot,
 ): boolean {
   return Boolean(
     table &&
@@ -169,8 +172,7 @@ function isAuthorizedCurrentTable(
     table.kind === prepared.kind &&
     table.outputId === prepared.outputId &&
     table.latestOutputId === prepared.outputId &&
-    table.isLatest &&
-    (table.revision === prepared.revision || table.revision === snapshot.revision),
+    table.isLatest,
   );
 }
 
@@ -216,6 +218,22 @@ function getErrorCode(error: unknown): SteelReviewErrorCode | undefined {
     return undefined;
   }
   const parsed = steelReviewErrorCodeSchema.safeParse(data.code);
+  return parsed.success ? parsed.data : undefined;
+}
+
+function getErrorRecovery(error: unknown): SteelReviewRecovery | undefined {
+  if (typeof error !== 'object' || error === null || !('response' in error)) {
+    return undefined;
+  }
+  const response = error.response;
+  if (typeof response !== 'object' || response === null || !('data' in response)) {
+    return undefined;
+  }
+  const data = response.data;
+  if (typeof data !== 'object' || data === null || !('recovery' in data)) {
+    return undefined;
+  }
+  const parsed = steelReviewRecoverySchema.safeParse(data.recovery);
   return parsed.success ? parsed.data : undefined;
 }
 
@@ -296,6 +314,7 @@ export default function SteelReviewDialog({
   const [closeRequested, setCloseRequested] = useState(false);
   const [savePhase, setSavePhase] = useState<SavePhase>('idle');
   const [saveErrorCode, setSaveErrorCode] = useState<SteelReviewErrorCode>();
+  const [saveRecovery, setSaveRecovery] = useState<SteelReviewRecovery>();
   const [confirmedSave, setConfirmedSave] = useState<SteelReviewConfirmedSave>();
   const [receiptInput, setReceiptInput] = useState<ReceiptInput | null>(null);
   const [discardRequested, setDiscardRequested] = useState(false);
@@ -303,6 +322,7 @@ export default function SteelReviewDialog({
   const submittedChangeSequenceRef = useRef(0);
   const discardBoundaryRef = useRef<number>();
   const preparedRef = useRef<SteelReviewPrepared>();
+  const recoveryRef = useRef<SteelReviewRecovery>();
   const exportRowsRef = useRef<readonly SteelReviewRow[]>([]);
   const exportBaseRowsRef = useRef<readonly SteelReviewRow[]>([]);
   const pendingSnapshotRef = useRef<{ outputId: string; revision: string }>();
@@ -337,7 +357,7 @@ export default function SteelReviewDialog({
   }, [isOpen, table]);
   const capturedAuthority = capturedAuthorityRef.current;
   const authorityMatchesLiveTable = !capturedAuthority || !table ||
-    (table.outputId === capturedAuthority.outputId && table.revision === capturedAuthority.revision);
+    table.outputId === capturedAuthority.outputId;
   const canEdit = Boolean(table && table.kind === 'ocr_result' && table.isLatest &&
     table.latestOutputId === table.outputId && !table.readOnly &&
     (!capturedAuthority || table.outputId === capturedAuthority.outputId));
@@ -504,6 +524,34 @@ export default function SteelReviewDialog({
     ),
     [draftRows, pageCount, pageNumber, selectedSource?.fileId, sources],
   );
+  const recoveryIndicators = useMemo(() => {
+    const fileIds = new Set<string>();
+    const pageKeys = new Set<string>();
+    let hasUnlocated = false;
+    if (!saveRecovery) {
+      return { fileIds, pageKeys, hasUnlocated };
+    }
+    const rowsById = new Map(saveRecovery.table.rows.map((row) => [row.rowId, row]));
+    const addSource = (source: { fileId: string | null; pageNumber: number | null } | null | undefined) => {
+      if (!source?.fileId) {
+        hasUnlocated = true;
+        return;
+      }
+      fileIds.add(source.fileId);
+      if (source.pageNumber !== null) {
+        pageKeys.add(`${source.fileId}:${source.pageNumber}`);
+      }
+    };
+    for (const conflict of saveRecovery.conflicts) {
+      if (conflict.kind === 'source') {
+        addSource(conflict.current);
+        addSource(conflict.requested);
+        continue;
+      }
+      addSource(rowsById.get(conflict.rowId)?.source);
+    }
+    return { fileIds, pageKeys, hasUnlocated };
+  }, [saveRecovery]);
   const onCellChange = useCallback(
     (row: SteelReviewRow, header: string, value: string) => {
       if (!table || !canEdit || !row.rowId) {
@@ -523,6 +571,12 @@ export default function SteelReviewDialog({
     },
     [baseTable, canEdit, draftStateKey, setDraftState, table],
   );
+
+  const clearRecovery = useCallback(() => {
+    recoveryRef.current = undefined;
+    setSaveRecovery(undefined);
+  }, []);
+
   const onCellHistoryBoundary = useCallback(() => {
     setDraftState((current) => finishSteelReviewDraftHistory(current));
   }, [setDraftState]);
@@ -551,6 +605,34 @@ export default function SteelReviewDialog({
     },
     [baseTable, canEdit, draftStateKey, setDraftState, table],
   );
+  const applyLatestConflictValue = useCallback((conflict: SteelReviewConflict) => {
+    const recovery = recoveryRef.current;
+    const row = recovery?.table.rows.find((candidate) => candidate.rowId === conflict.rowId);
+    if (!row) {
+      return;
+    }
+    if (conflict.kind === 'field') {
+      onCellChange(row, conflict.header, conflict.current ?? '');
+    } else if (conflict.kind === 'source') {
+      const latest = conflict.current;
+      const source = latest && latest.fileId
+        ? {
+            fileId: latest.fileId,
+            pageNumber: latest.pageNumber,
+            ...sources.find((candidate) => candidate.fileId === latest.fileId),
+          }
+        : null;
+      onSourceChange(row, source);
+    }
+    setSaveRecovery((current) => {
+      if (!current) return current;
+      const remaining = current.conflicts.filter((candidate) => candidate !== conflict);
+      return remaining.length > 0 ? { ...current, conflicts: remaining } : undefined;
+    });
+    if (saveRecovery?.conflicts.length === 1) {
+      recoveryRef.current = undefined;
+    }
+  }, [onCellChange, onSourceChange, saveRecovery?.conflicts.length, sources]);
   const updateDraftRows = useCallback((next: typeof draftState) => {
     if (pendingSnapshotRef.current) {
       exportRowsRef.current = applySteelReviewDrafts(exportBaseRowsRef.current, next);
@@ -666,10 +748,14 @@ export default function SteelReviewDialog({
       changedRows: snapshot.changedRows,
     });
     const currentDraft = latestDraftStateRef.current;
-    const rebasedDraft = rebaseSteelReviewDraftState(currentDraft, snapshot.rows, submittedChangeSequence);
+    const rebasedDraft = clearSteelReviewDraftHistory(
+      rebaseSteelReviewDraftState(currentDraft, snapshot.rows, submittedChangeSequence),
+    );
     latestDraftStateRef.current = rebasedDraft;
     setDraftState((current) => {
-      const rebased = rebaseSteelReviewDraftState(current, snapshot.rows, submittedChangeSequence);
+      const rebased = clearSteelReviewDraftHistory(
+        rebaseSteelReviewDraftState(current, snapshot.rows, submittedChangeSequence),
+      );
       exportRowsRef.current = applySteelReviewDrafts(snapshot.rows, rebased);
       return rebased;
     });
@@ -681,14 +767,16 @@ export default function SteelReviewDialog({
       table: currentTable,
     };
     exportBaseRowsRef.current = currentTable.rows;
-    const rebasedDraft = rebaseSteelReviewDraftState(
+    const rebasedDraft = clearSteelReviewDraftHistory(rebaseSteelReviewDraftState(
       latestDraftStateRef.current,
       currentTable.rows,
       submittedChangeSequence,
-    );
+    ));
     latestDraftStateRef.current = rebasedDraft;
     setDraftState((current) => {
-      const rebased = rebaseSteelReviewDraftState(current, currentTable.rows, submittedChangeSequence);
+      const rebased = clearSteelReviewDraftHistory(
+        rebaseSteelReviewDraftState(current, currentTable.rows, submittedChangeSequence),
+      );
       exportRowsRef.current = applySteelReviewDrafts(currentTable.rows, rebased);
       return rebased;
     });
@@ -719,13 +807,17 @@ export default function SteelReviewDialog({
       setSaveErrorCode(undefined);
       setSavePhase(preparedRef.current ? 'committing' : 'preparing');
       try {
-        const prepared = preparedRef.current ?? await prepareMutation.mutateAsync(
-          getSteelReviewPrepareInput(identity, baseTable, draftState, draftRows),
-        );
+        const prepared = preparedRef.current ?? await prepareMutation.mutateAsync((() => {
+          const request = getSteelReviewPrepareInput(identity, baseTable, draftState, draftRows);
+          const recovery = recoveryRef.current;
+          return recovery && recovery.table.outputId === request.outputId
+            ? { ...request, revision: recovery.table.revision }
+            : request;
+        })());
         preparedRef.current = prepared;
         setSavePhase('committing');
         commitAttempted = true;
-        const saved = await commitMutation.mutateAsync(prepared as SteelReviewCommit);
+        const saved = await commitMutation.mutateAsync(getSteelReviewCommitInput(prepared));
         if (saved.changedRows > 0 && !saved.savedSnapshot) {
           setSavePhase('uncertain');
           return false;
@@ -752,24 +844,34 @@ export default function SteelReviewDialog({
             setSaveErrorCode(undefined);
             return false;
           }
-          if (!isAuthorizedCurrentTable(currentResult.data.table, prepared, saved.savedSnapshot)) {
+          if (!isAuthorizedCurrentTable(currentResult.data.table, prepared)) {
             preparedRef.current = undefined;
             setSavePhase('stale');
             setSaveErrorCode('REVIEW_CONFLICT');
             return false;
           }
-          applyConfirmedSnapshot(saved.savedSnapshot, submittedChangeSequenceRef.current);
+          if (currentResult.data.table.revision === saved.savedSnapshot.revision) {
+            applyConfirmedSnapshot(saved.savedSnapshot, submittedChangeSequenceRef.current);
+          } else {
+            applyConfirmedNoOp(currentResult.data.table, submittedChangeSequenceRef.current);
+          }
         }
         preparedRef.current = undefined;
+        clearRecovery();
         setSavePhase('idle');
         setSaveErrorCode(undefined);
         return true;
       } catch (error) {
         const code = getErrorCode(error);
+        const recovery = getErrorRecovery(error);
         if (code === 'REVIEW_CONFLICT' || code === 'REVIEW_INVALID_OPERATION' || code === 'REVIEW_NOT_FOUND') {
           preparedRef.current = undefined;
           setSavePhase('stale');
           setSaveErrorCode(code);
+          if (recovery) {
+            recoveryRef.current = recovery;
+            setSaveRecovery(recovery);
+          }
           void refetchCurrentReview();
         } else if (commitAttempted) {
           setSavePhase('uncertain');
@@ -789,7 +891,7 @@ export default function SteelReviewDialog({
         savePromiseRef.current = undefined;
       }
     }
-  }, [applyConfirmedNoOp, applyConfirmedSnapshot, baseTable, canSave, commitMutation, dirtyRowCount, draftRows, draftState, identity, prepareMutation, refetchCurrentReview, savePhase, table]);
+  }, [applyConfirmedNoOp, applyConfirmedSnapshot, baseTable, canSave, clearRecovery, commitMutation, dirtyRowCount, draftRows, draftState, identity, prepareMutation, refetchCurrentReview, savePhase, table]);
   const getCurrentReviewTable = useCallback(() => {
     const tableKey = DynamicQueryKeys.steelReview(
       identity.conversationId,
@@ -813,8 +915,7 @@ export default function SteelReviewDialog({
       return false;
     }
     if (capturedAuthorityRef.current && (!initialTable ||
-      initialTable.outputId !== capturedAuthorityRef.current.outputId ||
-      initialTable.revision !== capturedAuthorityRef.current.revision)) {
+      initialTable.outputId !== capturedAuthorityRef.current.outputId)) {
       return false;
     }
     if (!canSave && dirtyRowCount > 0) {
@@ -831,8 +932,7 @@ export default function SteelReviewDialog({
     const currentTable = getCurrentReviewTable();
     if (!currentTable || (authority && currentTable.outputId !== authority.outputId) ||
       (capturedAuthorityRef.current && (
-        currentTable.outputId !== capturedAuthorityRef.current.outputId ||
-        currentTable.revision !== capturedAuthorityRef.current.revision
+        currentTable.outputId !== capturedAuthorityRef.current.outputId
       ))) {
       return false;
     }
@@ -855,12 +955,13 @@ export default function SteelReviewDialog({
     discardBoundaryRef.current = undefined;
     setSavePhase('idle');
     setSaveErrorCode(undefined);
+    clearRecovery();
     setReceiptFailed(false);
     setReceiptInput(null);
     setDiscardRequested(false);
     setCloseRequested(false);
     setSelection(null);
-  }, [draftStateKey, setDraftState, setSelection]);
+  }, [clearRecovery, draftStateKey, setDraftState, setSelection]);
   const finishDiscardAtBoundary = useCallback((rows: readonly SteelReviewRow[]) => {
     const boundary = discardBoundaryRef.current ?? latestDraftStateRef.current.changeSequence;
     const rebased = rebaseSteelReviewDraftState(latestDraftStateRef.current, rows, boundary);
@@ -951,7 +1052,7 @@ export default function SteelReviewDialog({
       }
       if (status.status === 'committed') {
         const prepared = preparedRef.current;
-        if (!prepared || !isAuthorizedCurrentTable(currentResult.data.table, prepared, status.snapshot)) {
+        if (!prepared || !isAuthorizedCurrentTable(currentResult.data.table, prepared)) {
           preparedRef.current = undefined;
           setSavePhase('stale');
           setSaveErrorCode('REVIEW_CONFLICT');
@@ -960,7 +1061,11 @@ export default function SteelReviewDialog({
           return;
         }
         const boundary = discardBoundaryRef.current ?? submittedChangeSequenceRef.current;
-        applyConfirmedSnapshot(status.snapshot, boundary);
+        if (currentResult.data.table.revision === status.snapshot.revision) {
+          applyConfirmedSnapshot(status.snapshot, boundary);
+        } else {
+          applyConfirmedNoOp(currentResult.data.table, boundary);
+        }
         const rebased = rebaseSteelReviewDraftState(
           latestDraftStateRef.current,
           status.snapshot.rows,
@@ -994,7 +1099,7 @@ export default function SteelReviewDialog({
     return () => {
       active = false;
     };
-  }, [applyConfirmedSnapshot, discardRequested, finishDiscardAtBoundary, receiptInput, refetchCurrentReview, refetchReceipt, setDraftState, setSelection]);
+  }, [applyConfirmedNoOp, applyConfirmedSnapshot, discardRequested, finishDiscardAtBoundary, receiptInput, refetchCurrentReview, refetchReceipt, setDraftState, setSelection]);
   const saveAndClose = useCallback(async () => {
     const saved = await saveChanges();
     if (!saved || !table) {
@@ -1143,6 +1248,79 @@ export default function SteelReviewDialog({
                   </Button>
                 </div>
               )}
+              {saveRecovery && (
+                <div
+                  className="space-y-2 rounded-md border border-status-error-border bg-status-error-subtle p-3 text-text-destructive"
+                  role="region"
+                  aria-live="polite"
+                  aria-label={localize('com_ui_steel_review_conflicts')}
+                >
+                  <p className="font-medium">{localize('com_ui_steel_review_conflicts')}</p>
+                  <div className="space-y-2 text-sm">
+                    {saveRecovery.conflicts.map((conflict) => {
+                      const conflictRowIndex = saveRecovery.table.rows.findIndex((row) => row.rowId === conflict.rowId);
+                      const conflictRowLabel = localize('com_ui_steel_review_conflict_row_context', {
+                        0: conflictRowIndex >= 0 ? conflictRowIndex + 1 : '?',
+                      });
+                      let conflictLabel = localize('com_ui_steel_review_conflict_insertion');
+                      let conflictValues = '';
+                      if (conflict.kind === 'field') {
+                        conflictLabel = `${localize('com_ui_steel_review_conflict_field')}: ${conflict.header}`;
+                        conflictValues = localize('com_ui_steel_review_conflict_values', {
+                          0: conflictRowLabel,
+                          1: conflict.expected ?? '∅',
+                          2: conflict.current ?? '∅',
+                          3: conflict.requested ?? '∅',
+                        });
+                      } else if (conflict.kind === 'source') {
+                        conflictLabel = localize('com_ui_steel_review_conflict_source');
+                        const formatSource = (source: { fileId: string | null; pageNumber: number | null } | null) =>
+                          source
+                            ? `${sources.find((candidate) => candidate.fileId === source.fileId)?.filename ?? localize('com_ui_steel_review_unlocated')}/${source.pageNumber ?? '∅'}`
+                            : '∅';
+                        conflictValues = localize('com_ui_steel_review_conflict_values', {
+                          0: conflictRowLabel,
+                          1: formatSource(conflict.expected),
+                          2: formatSource(conflict.current),
+                          3: formatSource(conflict.requested),
+                        });
+                      } else if (conflict.kind === 'activity') {
+                        conflictLabel = localize('com_ui_steel_review_conflict_activity');
+                        conflictValues = localize('com_ui_steel_review_conflict_row', {
+                          0: conflictRowLabel,
+                          1: conflict.reason,
+                        });
+                      } else {
+                        conflictValues = localize('com_ui_steel_review_conflict_row', {
+                          0: conflictRowLabel,
+                          1: conflict.reason,
+                        });
+                      }
+                      const actionable = conflict.kind === 'field' || conflict.kind === 'source';
+                      return (
+                        <div key={`${conflict.kind}:${conflict.rowId}:${conflictLabel}`} className="flex flex-wrap items-center gap-2">
+                          <span>{conflictLabel} · {conflictValues}</span>
+                          {actionable && (
+                            <Button
+                              type="button"
+                              variant="outline"
+                              aria-label={`${localize('com_ui_steel_review_use_latest_value')} · ${conflictRowLabel} · ${conflictLabel}`}
+                              onClick={() => applyLatestConflictValue(conflict)}
+                            >
+                              {localize('com_ui_steel_review_use_latest_value')}
+                            </Button>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {recoveryIndicators.hasUnlocated && (
+                    <span className="text-text-destructive" role="img" aria-label={localize('com_ui_steel_review_conflicts_unlocated')}>
+                      <AlertTriangle className="size-4" aria-hidden="true" />
+                    </span>
+                  )}
+                </div>
+              )}
               {sources.length > 0 && (
                 <div className="grid gap-3 rounded-md border border-border-light p-3 sm:grid-cols-[minmax(0,1fr)_auto]">
                   <label className="flex min-w-0 flex-col gap-1 text-sm text-text-secondary">
@@ -1165,7 +1343,14 @@ export default function SteelReviewDialog({
                       <SelectContent onEscapeKeyDown={(event) => event.stopPropagation()}>
                         {sources.map((source) => (
                           <SelectItem key={source.fileId} value={source.fileId}>
-                            {source.filename}
+                            <span className="inline-flex items-center gap-2">
+                              {source.filename}
+                              {recoveryIndicators.fileIds.has(source.fileId) && (
+                                <span className="text-text-destructive" role="img" aria-label={localize('com_ui_steel_review_conflicts_on_file')}>
+                                  <AlertTriangle className="size-4" aria-hidden="true" />
+                                </span>
+                              )}
+                            </span>
                           </SelectItem>
                         ))}
                       </SelectContent>
@@ -1190,7 +1375,14 @@ export default function SteelReviewDialog({
                         <SelectContent onEscapeKeyDown={(event) => event.stopPropagation()}>
                           {Array.from({ length: Math.max(1, pageCount) }, (_, index) => index + 1).map((page) => (
                             <SelectItem key={page} value={String(page)}>
-                              {page}
+                              <span className="inline-flex items-center gap-2">
+                                {page}
+                                {recoveryIndicators.pageKeys.has(`${selectedSource.fileId}:${page}`) && (
+                                  <span className="text-text-destructive" role="img" aria-label={localize('com_ui_steel_review_conflicts_on_page')}>
+                                    <AlertTriangle className="size-4" aria-hidden="true" />
+                                  </span>
+                                )}
+                              </span>
                             </SelectItem>
                           ))}
                         </SelectContent>

@@ -158,6 +158,74 @@ export const steelReviewTextPartSchema = z.object({
   text: z.string(),
 });
 
+const steelReviewOperationChangeSchema = z.object({
+  header: z.string().min(1),
+  value: z.string().nullable(),
+}).strict();
+
+const steelReviewOperationPositionSchema = z.union([
+  z.object({ kind: z.literal('start') }).strict(),
+  z.object({ kind: z.literal('end') }).strict(),
+  z.object({ kind: z.literal('after'), rowId: z.string().min(1) }).strict(),
+]);
+
+const steelReviewOperationSourceSchema = z.union([
+  z.object({ fileId: z.null(), pageNumber: z.null() }).strict(),
+  z.object({ fileId: z.string().min(1), pageNumber: z.number().int().positive().nullable() }).strict(),
+]);
+
+function rejectPresentUndefinedOperationField(value: Record<string, unknown>, context: z.RefinementCtx): void {
+  for (const field of ['source', 'position'] as const) {
+    if (Object.prototype.hasOwnProperty.call(value, field) && value[field] === undefined) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: [field], message: `${field} cannot be undefined` });
+    }
+  }
+}
+
+const steelReviewOperationUpdateSchema = z.object({
+  type: z.literal('update'),
+  rowId: z.string().min(1),
+  changes: z.array(steelReviewOperationChangeSchema).optional(),
+  source: steelReviewOperationSourceSchema.optional(),
+}).strict().superRefine((value, context) => {
+  rejectPresentUndefinedOperationField(value, context);
+  if ((!value.changes || value.changes.length === 0) && !Object.prototype.hasOwnProperty.call(value, 'source')) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'An update requires changes or a source intent' });
+  }
+  if (value.changes && value.changes.length > 0 && new Set(value.changes.map((change) => change.header)).size !== value.changes.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['changes'], message: 'An update cannot repeat a field' });
+  }
+});
+
+const steelReviewOperationAddSchema = z.object({
+  type: z.literal('add'),
+  rowId: z.string().min(1),
+  position: steelReviewOperationPositionSchema,
+  changes: z.array(steelReviewOperationChangeSchema).min(1),
+  source: steelReviewOperationSourceSchema.optional(),
+}).strict().superRefine((value, context) => {
+  rejectPresentUndefinedOperationField(value, context);
+  if (new Set(value.changes.map((change) => change.header)).size !== value.changes.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['changes'], message: 'An add cannot repeat a field' });
+  }
+});
+
+const steelReviewOperationTransitionSchema = z.object({
+  type: z.union([z.literal('delete'), z.literal('restore')]),
+  rowId: z.string().min(1),
+}).strict();
+
+// The operation branches carry presence refinements (for example, an own
+// `source: undefined` is invalid). Zod's discriminatedUnion only accepts raw
+// ZodObject branches, so retain the closed discriminating field with a strict
+// union instead of dropping those refinements at the transport boundary.
+export const steelReviewOperationSchema = z.union([
+  steelReviewOperationUpdateSchema,
+  steelReviewOperationAddSchema,
+  steelReviewOperationTransitionSchema,
+]);
+export type SteelReviewOperation = z.infer<typeof steelReviewOperationSchema>;
+
 /**
  * The immutable result captured by one successful human save.  This is kept
  * on the receipt rather than read back from the current sidecar so a retry of
@@ -166,6 +234,7 @@ export const steelReviewTextPartSchema = z.object({
 export const steelReviewSavedSnapshotSchema = z.object({
   operationId: z.string().min(1),
   digest: z.string().length(64),
+  requestDigest: z.string().length(64).optional(),
   outputId: z.string().min(1),
   revision: z.string().min(1),
   headers: z.array(z.string()),
@@ -182,11 +251,22 @@ export const steelReviewSavedSnapshotSchema = z.object({
   displayMarkdown: z.string(),
   sourceMappings: z.array(steelReviewSourceMappingSchema).optional(),
   ownerUpdated: steelReviewOwnerUpdatedSchema.optional(),
+  // These fields are present only on the additive operation receipt lane so
+  // an exact retry can return the original prepared projection without
+  // rereading or re-preparing against a later revision.
+  target: steelReviewTargetSchema.optional(),
+  targetText: z.string().optional(),
+  replacementText: z.string().optional(),
+  cleanReplacementText: z.string().optional(),
+  aiBaselineMarkdown: z.string().optional(),
+  aiRawMarkdown: z.string().optional(),
+  caption: steelReviewCaptionSchema.optional(),
 });
 
 export const steelReviewReceiptSchema = z.object({
   operationId: z.string().min(1),
   digest: z.string().length(64),
+  requestDigest: z.string().length(64).optional(),
   revision: z.string().min(1),
   changedRows: z.number().int().nonnegative(),
   changedRowIds: z.array(z.string().min(1)),
@@ -223,6 +303,45 @@ export const steelReviewTableSchema = z.object({
   sourceMappings: z.array(steelReviewSourceMappingSchema).optional(),
 });
 
+const steelReviewConflictSourceValueSchema = z.object({
+  fileId: z.string().nullable(),
+  pageNumber: z.number().int().positive().nullable(),
+}).nullable();
+
+export const steelReviewConflictSchema = z.union([
+  z.object({
+    kind: z.literal('field'),
+    rowId: z.string().min(1),
+    header: z.string().min(1),
+    expected: z.string().nullable(),
+    current: z.string().nullable(),
+    requested: z.string().nullable(),
+  }).strict(),
+  z.object({
+    kind: z.literal('source'),
+    rowId: z.string().min(1),
+    expected: steelReviewConflictSourceValueSchema,
+    current: steelReviewConflictSourceValueSchema,
+    requested: steelReviewConflictSourceValueSchema,
+  }).strict(),
+  z.object({
+    kind: z.literal('activity'),
+    rowId: z.string().min(1),
+    reason: z.enum(['expected-deleted', 'current-deleted', 'current-restored', 'unavailable']),
+  }).strict(),
+  z.object({
+    kind: z.literal('insertion'),
+    rowId: z.string().min(1),
+    reason: z.enum(['anchor-unavailable', 'anchor-changed', 'identity-duplicated']),
+    neededAnchor: z.string().min(1).optional(),
+  }).strict(),
+]);
+
+export const steelReviewRecoverySchema = z.object({
+  table: steelReviewTableSchema.extend({ effectiveMarkdown: z.string() }),
+  conflicts: z.array(steelReviewConflictSchema).min(1),
+}).strict();
+
 const steelReviewPrepareBaseSchema = z.object({
   conversationId: z.string().min(1),
   messageId: z.string().min(1),
@@ -233,6 +352,17 @@ const steelReviewPrepareBaseSchema = z.object({
   revision: z.string().min(1),
   rows: z.array(steelReviewRowSchema),
   sourceIntents: z.array(steelReviewSourceIntentSchema).optional(),
+}).strict();
+
+const steelReviewOperationPrepareBaseSchema = z.object({
+  conversationId: z.string().min(1),
+  messageId: z.string().min(1),
+  tableId: z.string().min(1),
+  partIndex: z.number().int().nonnegative().optional(),
+  kind: z.enum(steelReviewKinds),
+  outputId: z.string().min(1),
+  revision: z.string().min(1),
+  operations: z.array(steelReviewOperationSchema).min(1),
 }).strict();
 
 function rejectPresentInvalidSourceFields(
@@ -250,7 +380,11 @@ function rejectPresentInvalidSourceFields(
   }
 }
 
-export const steelReviewPrepareSchema = steelReviewPrepareBaseSchema.superRefine(rejectPresentInvalidSourceFields);
+export const steelReviewOperationPrepareSchema = steelReviewOperationPrepareBaseSchema;
+export const steelReviewPrepareSchema = z.union([
+  steelReviewPrepareBaseSchema.superRefine(rejectPresentInvalidSourceFields),
+  steelReviewOperationPrepareBaseSchema,
+]);
 
 const steelReviewPreparedBaseSchema = steelReviewPrepareBaseSchema.extend({
   operationId: z.string().min(1),
@@ -269,7 +403,16 @@ const steelReviewPreparedBaseSchema = steelReviewPrepareBaseSchema.extend({
   caption: steelReviewCaptionSchema,
 });
 
-export const steelReviewPreparedSchema = steelReviewPreparedBaseSchema.superRefine(rejectPresentInvalidSourceFields);
+const steelReviewPreparedOperationBaseSchema = steelReviewPreparedBaseSchema.extend({
+  operations: z.array(steelReviewOperationSchema).min(1),
+  operationRequest: steelReviewOperationPrepareBaseSchema,
+  requestDigest: z.string().length(64).optional(),
+});
+
+export const steelReviewPreparedSchema = z.union([
+  steelReviewPreparedBaseSchema.superRefine(rejectPresentInvalidSourceFields),
+  steelReviewPreparedOperationBaseSchema,
+]);
 
 // The old 03 commit shape is retained only so the API can validate an
 // already-committed receipt replay without manufacturing a new operation.
@@ -278,14 +421,33 @@ export const steelReviewLegacyCommitSchema = steelReviewPreparedBaseSchema.omit(
   sourceMappings: true,
 });
 
-export const steelReviewCommitSchema = steelReviewPreparedSchema;
+const steelReviewOperationCommitBaseSchema = steelReviewOperationPrepareBaseSchema.extend({
+  operationId: z.string().min(1),
+  digest: z.string().length(64),
+});
 
-export const steelReviewSaveResponseSchema = steelReviewPreparedBaseSchema.extend({
+export const steelReviewOperationCommitSchema = steelReviewOperationCommitBaseSchema;
+export const steelReviewCommitSchema = z.union([
+  steelReviewPreparedBaseSchema.superRefine(rejectPresentInvalidSourceFields),
+  steelReviewOperationCommitBaseSchema,
+]);
+
+const steelReviewSaveResponseBaseSchema = steelReviewPreparedBaseSchema.extend({
   savedAt: z.string().datetime(),
   changedRows: z.number().int().nonnegative(),
   changedRowIds: z.array(z.string().min(1)),
   savedSnapshot: steelReviewSavedSnapshotSchema.optional(),
 }).superRefine(rejectPresentInvalidSourceFields);
+
+export const steelReviewSaveResponseSchema = z.union([
+  steelReviewSaveResponseBaseSchema,
+  steelReviewPreparedOperationBaseSchema.extend({
+    savedAt: z.string().datetime(),
+    changedRows: z.number().int().nonnegative(),
+    changedRowIds: z.array(z.string().min(1)),
+    savedSnapshot: steelReviewSavedSnapshotSchema.optional(),
+  }),
+]);
 
 export const steelReviewResponseSchema = z.object({
   table: steelReviewTableSchema.nullable(),
@@ -299,6 +461,7 @@ export const steelReviewReceiptStatusSchema = z.discriminatedUnion('status', [
 export const steelReviewErrorResponseSchema = z.object({
   code: steelReviewErrorCodeSchema,
   message: z.string(),
+  recovery: steelReviewRecoverySchema.optional(),
 });
 
 export const steelReviewSourceFileSchema = z.object({
@@ -337,6 +500,184 @@ export type SteelReviewLedgerRow = Omit<SteelReviewRow, 'origin' | 'deleted'> & 
   deleted: boolean;
 };
 export type SteelReviewTable = z.infer<typeof steelReviewTableSchema>;
+export type SteelReviewConflict = z.infer<typeof steelReviewConflictSchema>;
+export type SteelReviewRecovery = z.infer<typeof steelReviewRecoverySchema>;
+
+export type SteelReviewOperationApplyResult =
+  | { ok: true; currentRows: SteelReviewLedgerRow[]; expectedRows: SteelReviewLedgerRow[] }
+  | { ok: false; conflicts: SteelReviewConflict[] };
+
+function operationSourceValue(source: SteelReviewSource | null): { fileId: string; pageNumber: number | null } | null {
+  return source ? { fileId: source.fileId, pageNumber: source.pageNumber } : null;
+}
+
+function sameOperationBusinessState(
+  left: SteelReviewLedgerRow,
+  right: SteelReviewLedgerRow,
+  headers: readonly string[],
+): boolean {
+  return JSON.stringify({
+    values: Object.fromEntries(headers
+      .filter((header) => !isSteelReviewSourceAssociationHeader(header))
+      .map((header) => [header, left.values[header]?.effective ?? null])),
+    source: operationSourceValue(left.source),
+  }) === JSON.stringify({
+    values: Object.fromEntries(headers
+      .filter((header) => !isSteelReviewSourceAssociationHeader(header))
+      .map((header) => [header, right.values[header]?.effective ?? null])),
+    source: operationSourceValue(right.source),
+  });
+}
+
+/** Apply a strict operation request to trusted expected/current ledgers. */
+export function applySteelReviewOperations({
+  currentRows,
+  expectedRows,
+  headers,
+  operations,
+}: {
+  currentRows: readonly SteelReviewLedgerRow[];
+  expectedRows: readonly SteelReviewLedgerRow[];
+  headers: readonly string[];
+  operations: readonly SteelReviewOperation[];
+}): SteelReviewOperationApplyResult {
+  const current = currentRows.map((row) => ({ ...row, values: { ...row.values } }));
+  const expected = expectedRows.map((row) => ({ ...row, values: { ...row.values } }));
+  const currentById = new Map(current.map((row) => [row.rowId, row]));
+  const expectedById = new Map(expected.map((row) => [row.rowId, row]));
+  const knownIds = new Set(currentById.keys());
+  const seen = new Map<string, SteelReviewOperation['type']>();
+  const conflicts: SteelReviewConflict[] = [];
+  const nextOrdinal = (kind: string, anchor?: string): number => {
+    const key = kind === 'after' && anchor ? `after:${anchor}` : kind;
+    const ordinals = current
+      .filter((row) => row.insertion && ledgerInsertionKey(row.insertion) === key)
+      .map((row) => row.insertion?.ordinal ?? -1);
+    return Math.max(-1, ...ordinals) + 1;
+  };
+
+  for (const operation of operations) {
+    const previousType = seen.get(operation.rowId);
+    if (previousType && !(
+      (previousType === 'restore' && operation.type === 'update') ||
+      (previousType === 'update' && operation.type === 'delete')
+    )) {
+      conflicts.push({ kind: 'activity', rowId: operation.rowId, reason: 'unavailable' });
+      continue;
+    }
+    seen.set(operation.rowId, operation.type);
+    if (operation.type === 'add') {
+      if (knownIds.has(operation.rowId) || currentById.has(operation.rowId)) {
+        conflicts.push({ kind: 'insertion', rowId: operation.rowId, reason: 'identity-duplicated' });
+        continue;
+      }
+      if (operation.position.kind === 'after') {
+        const anchor = currentById.get(operation.position.rowId);
+        const expectedAnchor = expectedById.get(operation.position.rowId);
+        if (!anchor || anchor.deleted || !expectedAnchor || expectedAnchor.deleted) {
+          conflicts.push({
+            kind: 'insertion',
+            rowId: operation.rowId,
+            reason: 'anchor-unavailable',
+            neededAnchor: operation.position.rowId,
+          });
+          continue;
+        }
+      }
+      const values: Record<string, SteelReviewCell> = Object.fromEntries(
+        headers.map((header) => [header, { baseline: null, effective: null }]),
+      );
+      for (const change of operation.changes) {
+        values[change.header] = { baseline: null, effective: normalizeSteelReviewEffectiveValue(change.value) };
+      }
+      const insertion = operation.position.kind === 'after'
+        ? { kind: operation.position.kind, rowId: operation.position.rowId, ordinal: nextOrdinal('after', operation.position.rowId) }
+        : { kind: operation.position.kind, ordinal: nextOrdinal(operation.position.kind) };
+      const row: SteelReviewLedgerRow = {
+        rowId: operation.rowId,
+        values,
+        source: null,
+        origin: 'manual',
+        deleted: false,
+        insertion,
+      };
+      current.push(row);
+      currentById.set(row.rowId, row);
+      continue;
+    }
+    const row = currentById.get(operation.rowId);
+    const expectedRow = expectedById.get(operation.rowId);
+    if (!row) {
+      conflicts.push({ kind: 'activity', rowId: operation.rowId, reason: 'unavailable' });
+      continue;
+    }
+    if (operation.type === 'update') {
+      if (!expectedRow || expectedRow.deleted || row.deleted) {
+        let reason: 'expected-deleted' | 'current-deleted' | 'unavailable' = 'unavailable';
+        if (expectedRow?.deleted) {
+          reason = 'expected-deleted';
+        } else if (row.deleted) {
+          reason = 'current-deleted';
+        }
+        conflicts.push({
+          kind: 'activity',
+          rowId: operation.rowId,
+          reason,
+        });
+        continue;
+      }
+      for (const change of operation.changes ?? []) {
+        const requestedValue = normalizeSteelReviewEffectiveValue(change.value);
+        const currentValue = row.values[change.header]?.effective ?? null;
+        const expectedValue = expectedRow.values[change.header]?.effective ?? null;
+        if (currentValue !== expectedValue && currentValue !== requestedValue) {
+          conflicts.push({
+            kind: 'field', rowId: row.rowId, header: change.header,
+            expected: expectedValue, current: currentValue, requested: requestedValue,
+          });
+          continue;
+        }
+        row.values[change.header] = { ...row.values[change.header], effective: requestedValue };
+        expectedRow.values[change.header] = { ...expectedRow.values[change.header], effective: requestedValue };
+      }
+      if (operation.source) {
+        const expectedSource = operationSourceValue(expectedRow.source);
+        const currentSource = operationSourceValue(row.source);
+        const requestedSource = operation.source.fileId === null
+          ? null
+          : { fileId: operation.source.fileId, pageNumber: operation.source.pageNumber };
+        if (JSON.stringify(currentSource) !== JSON.stringify(expectedSource) &&
+          JSON.stringify(currentSource) !== JSON.stringify(requestedSource)) {
+          conflicts.push({ kind: 'source', rowId: row.rowId, expected: expectedSource, current: currentSource, requested: requestedSource });
+        } else {
+          row.source = null;
+          expectedRow.source = null;
+        }
+      }
+      continue;
+    }
+    if (operation.type === 'delete') {
+      if (!expectedRow || expectedRow.deleted) {
+        conflicts.push({ kind: 'activity', rowId: operation.rowId, reason: expectedRow?.deleted ? 'expected-deleted' : 'unavailable' });
+      } else if (row.deleted) {
+        expectedRow.deleted = true;
+      } else if (!sameOperationBusinessState(row, expectedRow, headers)) {
+        conflicts.push({ kind: 'activity', rowId: operation.rowId, reason: 'current-deleted' });
+      } else {
+        row.deleted = true;
+        expectedRow.deleted = true;
+      }
+      continue;
+    }
+    if (!expectedRow || !expectedRow.deleted || !row.deleted || !sameOperationBusinessState(row, expectedRow, headers)) {
+      conflicts.push({ kind: 'activity', rowId: operation.rowId, reason: expectedRow?.deleted ? 'current-restored' : 'unavailable' });
+      continue;
+    }
+    row.deleted = false;
+    expectedRow.deleted = false;
+  }
+  return conflicts.length > 0 ? { ok: false, conflicts } : { ok: true, currentRows: current, expectedRows: expected };
+}
 export type SteelReviewResponse = z.infer<typeof steelReviewResponseSchema>;
 export type SteelReviewReceiptStatus = z.infer<typeof steelReviewReceiptStatusSchema>;
 export type SteelReviewErrorResponse = z.infer<typeof steelReviewErrorResponseSchema>;
@@ -344,9 +685,12 @@ export type SteelReviewTarget = z.infer<typeof steelReviewTargetSchema>;
 export type SteelReviewCaption = z.infer<typeof steelReviewCaptionSchema>;
 export type SteelReviewSavedSnapshot = z.infer<typeof steelReviewSavedSnapshotSchema>;
 export type SteelReviewReceipt = z.infer<typeof steelReviewReceiptSchema>;
+export type SteelReviewOperationPrepare = z.infer<typeof steelReviewOperationPrepareSchema>;
+export type SteelReviewOperationCommit = z.infer<typeof steelReviewOperationCommitSchema>;
 export type SteelReviewPrepare = z.infer<typeof steelReviewPrepareSchema>;
 export type SteelReviewPrepared = z.infer<typeof steelReviewPreparedSchema>;
 export type SteelReviewCommit = z.infer<typeof steelReviewCommitSchema>;
+export type SteelReviewOperationPrepared = z.infer<typeof steelReviewPreparedOperationBaseSchema>;
 
 export type SteelReviewDigestInput = Omit<SteelReviewPrepared, 'operationId' | 'digest' | 'sourceIntents' | 'sourceMappings'> & {
   userId: string;
