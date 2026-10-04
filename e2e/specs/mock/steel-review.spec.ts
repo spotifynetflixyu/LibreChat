@@ -2516,9 +2516,9 @@ test.describe('Steel managed source review', () => {
       { type: 'update', rowId: table.rows[0].rowId, source: { fileId: null, pageNumber: 1 } },
       { type: 'update', rowId: table.rows[0].rowId, source: { fileId: 'review-alpha' } },
       { type: 'update', rowId: table.rows[0].rowId, source: null },
-      { type: 'add', rowId: randomUUID(), position: { kind: 'end', rowId: table.rows[0].rowId }, changes: [] },
-      { type: 'add', rowId: randomUUID(), position: { kind: 'after' }, changes: [] },
-      { type: 'add', rowId: randomUUID(), position: { kind: 'after', rowId: null }, changes: [] },
+      { type: 'add', rowId: randomUUID(), position: { kind: 'end', rowId: table.rows[0].rowId }, changes: [{ header: '零件編號', value: 'BAD-POSITION' }] },
+      { type: 'add', rowId: randomUUID(), position: { kind: 'after' }, changes: [{ header: '零件編號', value: 'BAD-POSITION' }] },
+      { type: 'add', rowId: randomUUID(), position: { kind: 'after', rowId: null }, changes: [{ header: '零件編號', value: 'BAD-POSITION' }] },
       { type: 'delete', rowId: table.rows[0].rowId, origin: 'manual' },
     ];
     for (const operation of invalidOperations) {
@@ -2529,6 +2529,12 @@ test.describe('Steel managed source review', () => {
     const mixed = await page.request.post(`${url}/prepare`, { headers, data: { ...request, rows: table.rows } });
     expect([400, 409]).toContain(mixed.status());
     expect(await persistedSnapshot(conversationId)).toEqual(before);
+    for (const source of [{ fileId: null, pageNumber: null }, { fileId: 'review-alpha', pageNumber: null }]) {
+      const sourcePrepared = await page.request.post(`${url}/prepare`, { headers, data: { ...request,
+        operations: [{ type: 'update', rowId: table.rows[0].rowId, source }] } });
+      expect(sourcePrepared.status()).toBe(200);
+      expect(await persistedSnapshot(conversationId)).toEqual(before);
+    }
     const prepared = await page.request.post(`${url}/prepare`, { headers, data: request });
     expect(prepared.status()).toBe(200);
     const result = await prepared.json() as SteelReviewOperationPrepared;
@@ -2575,6 +2581,10 @@ test.describe('Steel managed source review', () => {
     expect(await persistedSnapshot(conversationId)).toEqual(beforeRetry);
     const downgrade = await page.request.post(`${url}/commit`, { headers, data: first });
     expect([400, 409]).toContain(downgrade.status());
+    expect(await persistedSnapshot(conversationId)).toEqual(beforeRetry);
+    const stripped = await page.request.post(`${url}/commit`, { headers, data: { ...first,
+      operations: undefined, operationRequest: undefined, requestDigest: undefined } });
+    expect([400, 409]).toContain(stripped.status());
     expect(await persistedSnapshot(conversationId)).toEqual(beforeRetry);
     const replay = await page.request.post(`${url}/commit`, { headers, data: firstBody });
     expect(replay.status()).toBe(200);
