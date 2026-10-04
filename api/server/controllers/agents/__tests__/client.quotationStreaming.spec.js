@@ -79,8 +79,8 @@ describe('quotation text streaming', () => {
     };
     const primary = { type: 'text', text: 'primary answer' };
     const tool = { type: 'tool_call', tool_call: { id: 'lookup', name: 'lookup' } };
-    const steer = { type: 'steer', text: 'keep this steer' };
-    const reasoning = { type: 'reasoning', text: 'keep this reasoning' };
+    const steer = { type: 'steer', steer: 'keep this steer' };
+    const reasoning = { type: 'think', think: 'keep this reasoning' };
     contentParts.push(primary, tool, steer, reasoning);
 
     const wiring = AgentClient.prototype.buildQuotationTextWiring.call(client, {
