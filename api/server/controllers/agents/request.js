@@ -37,6 +37,7 @@ const {
   createSteelOcrStateService,
   createSteelQuotationStateService,
   createSteelMarkdownCompletionServices,
+  createSteelQuotationPublicationPublisher,
   shouldDeferSteelMarkdownPersistence,
   createSteelOcrResponseAuditService,
   createMCPRuntimeRequestBody,
@@ -3247,6 +3248,16 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           }
           return saved;
         };
+        const publishQuotation = createSteelQuotationPublicationPublisher({
+          saveContext: reqCtx,
+          buildMessage: ({ markdown }) => ({
+            ...response,
+            messageId: response.messageId,
+            sourceMessageId: response.messageId,
+            text: markdown,
+          }),
+          savePublication: (proof) => saveSteelQuotationMessage(proof),
+        });
         const markdownCompletion = createSteelMarkdownCompletionServices({
           ocr: createSteelOcrStateService(mongoose),
           quotation: createSteelQuotationStateService(mongoose),
@@ -3270,17 +3281,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           },
           applyMarkdown: (markdown) => replaceResponseMarkdown(response, markdown),
           persistMarkdown: persistResponseMessage,
-          publishQuotation: async (proof) => saveSteelQuotationMessage({
-            ...proof,
-            saveContext: reqCtx,
-            message: {
-              ...response,
-              messageId: proof.targetMessageId,
-              conversationId: proof.scope.conversationId,
-              text: proof.markdown,
-              user: proof.scope.userId,
-            },
-          }),
+          publishQuotation,
           publishedResponse: {
             load: ({ userId: publishedUserId, responseId: publishedResponseId }) =>
               getMessage({ user: publishedUserId, messageId: publishedResponseId }),

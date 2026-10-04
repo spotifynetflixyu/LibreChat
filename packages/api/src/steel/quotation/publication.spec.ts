@@ -1,5 +1,6 @@
 import {
   createSteelQuotationPublicationMessageBuilder,
+  createSteelQuotationPublicationPublisher,
   projectSteelQuotationMessage,
 } from './publication';
 
@@ -172,6 +173,50 @@ describe('Steel quotation publication message projection', () => {
       targetMessageId: 'response', markdown: 'final quotation',
     })).resolves.toEqual(expect.objectContaining({
       text: '\n\nfinal quotation',
+    }));
+  });
+
+  it('keeps the raw host source when the canonical target belongs to a later revision', async () => {
+    const savePublication = jest.fn();
+    savePublication.mockResolvedValue({ ok: true, message: {
+      messageId: 'target-b', conversationId: 'conversation', user: 'user',
+    } });
+    const proof = {
+      scope: { userId: 'user', conversationId: 'conversation' },
+      runId: 'run-a',
+      runTargetMessageId: 'source-a',
+      targetMessageId: 'target-b',
+      finalSha256: 'a'.repeat(64),
+      currentOrderSha256: 'b'.repeat(64),
+      currentSystemOrderSha256: 'c'.repeat(64),
+      customer: { preparationId: 'preparation', customerIdentity: 'customer', customerMarkdown: 'customer' },
+      message: { messageId: 'target-b', conversationId: 'conversation', text: 'placeholder', user: 'user' },
+      markdown: '## system_order\n\n| A |\n| --- |\n| 1 |',
+    };
+    const publish = createSteelQuotationPublicationPublisher({
+      buildMessage: ({ markdown }) => ({
+        messageId: 'source-a',
+        sourceMessageId: 'source-a',
+        conversationId: 'conversation',
+        user: 'user',
+        text: `source prefix\n\n${markdown}`,
+        content: [{ type: 'text', text: `source prefix\n\n${markdown}` }, { type: 'tool_call', id: 'lookup' }],
+        metadata: { source: 'A', retain: true },
+      }),
+      savePublication,
+    });
+
+    await publish(proof);
+
+    expect(savePublication).toHaveBeenCalledWith(expect.objectContaining({
+      targetMessageId: 'target-b',
+      message: expect.objectContaining({
+        messageId: 'target-b',
+        sourceMessageId: 'source-a',
+        text: 'source prefix\n\n## system_order\n\n| A |\n| --- |\n| 1 |',
+        content: [{ type: 'text', text: 'source prefix\n\n## system_order\n\n| A |\n| --- |\n| 1 |' }, { type: 'tool_call', id: 'lookup' }],
+        metadata: { source: 'A', retain: true },
+      }),
     }));
   });
 });

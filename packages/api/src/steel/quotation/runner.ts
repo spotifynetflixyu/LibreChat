@@ -263,6 +263,27 @@ export function createQuotationPublicationProjector(
   };
 }
 
+/**
+ * Selects the host's preview and committed-text callbacks in one typed seam.
+ * Chat uses the ordinary stream callback for deltas and replaces its reserved
+ * slot on commit; Responses can keep its final callback for the durable text.
+ */
+export function createSteelQuotationPublicationTransport(input: {
+  onText: (text: string) => Promise<void>;
+  onFinalText?: (text: string) => Promise<void>;
+}): {
+  onTextDelta?: (text: string) => Promise<void>;
+  projectFinal: (input: { run: SteelQuotationActiveRun; markdown: string }) => Promise<void>;
+} {
+  const projectFinal = createQuotationPublicationProjector(async ({ markdown }) => {
+    await (input.onFinalText ?? input.onText)(`\n\n${markdown}`);
+  });
+  return {
+    onTextDelta: input.onFinalText ? input.onText : undefined,
+    projectFinal,
+  };
+}
+
 function validateCompletionReceiptReplay(
   state: ISteelQuotationState | null | undefined,
   ticket: SteelQuotationTicket,

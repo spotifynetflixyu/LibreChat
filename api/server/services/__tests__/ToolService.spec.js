@@ -8660,6 +8660,39 @@ describe('quotation transport bridge', () => {
     }), expect.anything());
     expect(mockSaveQuotationMessage.mock.invocationCallOrder[0]).toBeLessThan(input.onText.mock.invocationCallOrder[0]);
   });
+
+  it('keeps the raw host source separate from a later canonical target', async () => {
+    const input = makeInput(true);
+    input.buildPublicationMessage = ({ markdown }) => ({
+      messageId: 'source-a',
+      sourceMessageId: 'source-a',
+      conversationId: 'conversation-1',
+      parentMessageId: 'original-input',
+      user: 'owner',
+      text: `source prefix\n\n${markdown}`,
+      content: [{ type: 'text', text: `source prefix\n\n${markdown}` }, { type: 'tool_call', id: 'lookup' }],
+      metadata: { source: 'A', keep: true },
+    });
+    mockRunQuotation.mockImplementationOnce(async ({ publishFinal }) => {
+      await publishFinal({
+        run: { targetMessageId: 'target-b', triggerMessageId: 'original-input' },
+        targetMessageId: 'target-b',
+        markdown: '## system_order\ncomplete',
+      });
+      return { status: 'completed' };
+    });
+
+    await executeSteelQuotationWorkflow(input);
+
+    expect(mockSaveQuotationMessage).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      messageId: 'target-b',
+      sourceMessageId: 'source-a',
+      text: 'source prefix\n\n## system_order\ncomplete',
+      content: [{ type: 'text', text: 'source prefix\n\n## system_order\ncomplete' }, { type: 'tool_call', id: 'lookup' }],
+      metadata: { source: 'A', keep: true },
+    }), expect.anything());
+  });
+
   it('projects an already-published full quotation through the current request once', async () => {
     const input = makeInput(true);
     const markdown = '## system_order\ncomplete\n\n## customer_quote\nfinal';

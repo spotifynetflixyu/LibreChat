@@ -59,7 +59,8 @@ const {
   executeSteelTool,
   bindQuotationCustomerResult,
   runQuotationPreflight,
-  createQuotationPublicationProjector,
+  createSteelQuotationPublicationPublisher,
+  createSteelQuotationPublicationTransport,
   processQuotationPendingMessages,
   quotationMessageText,
   buildSteelQuotationStatusEventEnvelope,
@@ -6448,31 +6449,23 @@ async function executeSteelQuotationWorkflow({
     }
   };
   const quotationToolIndexes = new Map();
-  const publishFinal = async (proof) => {
-    const targetMessageId = proof.targetMessageId ?? proof.run?.targetMessageId;
-    if (!targetMessageId) throw new Error('Quotation publication target is unavailable');
-    const message = await buildPublicationMessage({
+  const publishFinal = createSteelQuotationPublicationPublisher({
+    scope,
+    saveContext: publicationSaveContext,
+    buildMessage: ({ targetMessageId, markdown, proof }) => buildPublicationMessage({
       targetMessageId,
-      markdown: proof.markdown,
+      markdown,
       run: proof.run,
       scope,
       agent,
       context,
-    });
-    return db.saveSteelQuotationMessage({
-      ...proof,
-      scope,
-      targetMessageId,
-      saveContext: publicationSaveContext,
-      message,
-    });
-  };
-  const projectFinal = createQuotationPublicationProjector(async ({ markdown }) => {
-    await (onFinalText ?? onText)(`\n\n${markdown}`);
+    }),
+    savePublication: (proof) => db.saveSteelQuotationMessage(proof),
   });
+  const publicationTransport = createSteelQuotationPublicationTransport({ onText, onFinalText });
   const runPreflight = () => runQuotationPreflight({
     scope, modelOptions, signal, onUsage,
-    onTextDelta: onFinalText ? onText : undefined,
+    onTextDelta: publicationTransport.onTextDelta,
     onHistory: async (restored) => {
       const history = ensureSteelNativeHistory(context);
       const delta = getQuotationHistoryDelta(history, restored);
@@ -6526,7 +6519,7 @@ async function executeSteelQuotationWorkflow({
           createSteelPaddleOcrRunStepDeltaEvent({ stepId, providerToolCallId, toolName: call.name, args, index })] });
     },
     publishFinal,
-    projectFinal,
+    projectFinal: publicationTransport.projectFinal,
   });
   const result = await runPreflight();
   if (result.status === 'busy') {

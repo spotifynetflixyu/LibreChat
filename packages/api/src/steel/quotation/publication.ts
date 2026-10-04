@@ -1,4 +1,10 @@
-import type { SteelQuotationPublicationMessage } from '@librechat/data-schemas';
+import type {
+  SteelQuotationPublicationMessage,
+  SteelQuotationPublicationProof,
+  SteelQuotationPublicationSaveContext,
+  SteelQuotationPublicationSaveResult,
+  SteelQuotationScope,
+} from '@librechat/data-schemas';
 import type { ResponseAggregator } from '../../agents/responses/service';
 import type { ResponseTracker } from '../../agents/responses/handlers';
 import type { OutputItem } from '../../agents/responses/types';
@@ -21,6 +27,23 @@ export type SteelQuotationPublicationMessageFields = Omit<
   conversationId: string;
   user: string;
 };
+
+export interface SteelQuotationPublicationMessageBuildInput {
+  targetMessageId: string;
+  markdown: string;
+  proof: SteelQuotationPublicationProof & { markdown: string };
+}
+
+export interface SteelQuotationPublicationPublisherInput {
+  scope?: SteelQuotationScope;
+  buildMessage: (
+    input: SteelQuotationPublicationMessageBuildInput,
+  ) => SteelQuotationPublicationMessageSnapshot | Promise<SteelQuotationPublicationMessageSnapshot>;
+  savePublication: (
+    input: SteelQuotationPublicationProof,
+  ) => Promise<SteelQuotationPublicationSaveResult>;
+  saveContext?: SteelQuotationPublicationSaveContext;
+}
 
 export type SteelQuotationPublicationTrackerSnapshot = Pick<
   ResponseTracker,
@@ -116,4 +139,51 @@ export function projectSteelQuotationMessage(input: {
     content.push({ type: 'text', text: input.markdown });
   }
   return { ...input.message, text: renderText(content), content };
+}
+
+/**
+ * Binds a host's raw response snapshot to the guarded quotation writer.
+ *
+ * The host message is built while its original response id is still present.
+ * Only this TypeScript seam applies the canonical current target, so a delayed
+ * completion cannot accidentally make the target look like the raw source.
+ */
+export function createSteelQuotationPublicationPublisher(
+  input: SteelQuotationPublicationPublisherInput,
+): (proof: SteelQuotationPublicationProof & { markdown: string }) => Promise<SteelQuotationPublicationSaveResult> {
+  return async (proof) => {
+    const targetMessageId = proof.targetMessageId || proof.run?.targetMessageId;
+    if (!targetMessageId) {
+      throw new Error('Quotation publication target is unavailable');
+    }
+
+    const message = await input.buildMessage({
+      targetMessageId,
+      markdown: proof.markdown,
+      proof,
+    });
+    const sourceMessageId = message.sourceMessageId ?? message.messageId;
+    if (!sourceMessageId) {
+      throw new Error('Quotation publication source is unavailable');
+    }
+
+    const scope = input.scope ?? proof.scope;
+    if (!scope) {
+      throw new Error('Quotation publication scope is unavailable');
+    }
+
+    return input.savePublication({
+      ...proof,
+      scope,
+      targetMessageId,
+      saveContext: input.saveContext ?? proof.saveContext,
+      message: {
+        ...message,
+        messageId: targetMessageId,
+        sourceMessageId,
+        conversationId: scope.conversationId,
+        user: scope.userId,
+      },
+    });
+  };
 }

@@ -97,6 +97,7 @@ const {
   createSteelOcrStateService,
   createSteelQuotationStateService,
   createSteelMarkdownCompletionServices,
+  createSteelQuotationPublicationPublisher,
   createSteelQuotationPublicationMessageBuilder,
   finalizeSteelResponsesTurn,
   replaceSteelResponsesMarkdown,
@@ -705,6 +706,20 @@ async function saveResponseOutput(
     persistedMessage = saved;
     return saved;
   };
+  const publishQuotation = createSteelQuotationPublicationPublisher({
+    saveContext: {
+      isTemporary: req.body?.isTemporary,
+      expiredAt: req._agentEventBindingRetention?.expiredAt ?? req.resolvedConversation?.expiredAt,
+      interfaceConfig: req.config?.interfaceConfig,
+    },
+    buildMessage: ({ markdown }) => ({
+      ...responseMessage,
+      messageId: responseMessage.messageId,
+      sourceMessageId: responseMessage.messageId,
+      text: markdown,
+    }),
+    savePublication: (proof) => db.saveSteelQuotationMessage(proof),
+  });
   const markdownCompletion = createSteelMarkdownCompletionServices({
     ocr: createSteelOcrStateService(mongoose),
     quotation: createSteelQuotationStateService(mongoose),
@@ -723,21 +738,7 @@ async function saveResponseOutput(
       responseMessage.text = markdown;
     },
     persistMarkdown,
-    publishQuotation: async (proof) => db.saveSteelQuotationMessage({
-      ...proof,
-      saveContext: {
-        isTemporary: req.body?.isTemporary,
-        expiredAt: req._agentEventBindingRetention?.expiredAt ?? req.resolvedConversation?.expiredAt,
-        interfaceConfig: req.config?.interfaceConfig,
-      },
-      message: {
-        ...responseMessage,
-        messageId: proof.targetMessageId,
-        conversationId: proof.scope.conversationId,
-        text: proof.markdown,
-        user: proof.scope.userId,
-      },
-    }),
+    publishQuotation,
     publishedResponse: {
       load: ({ userId: publishedUserId, responseId: publishedResponseId }) =>
         db.getMessage({ user: publishedUserId, messageId: publishedResponseId }),
