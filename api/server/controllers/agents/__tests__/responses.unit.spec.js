@@ -28,6 +28,8 @@ const mockPrepareQuotationTurn = jest.fn().mockResolvedValue({
 });
 const mockHasQuotationOrder = jest.fn().mockReturnValue(false);
 const mockExecuteSteelQuotationWorkflow = jest.fn().mockResolvedValue(undefined);
+const mockCreateSteelQuotationPublicationMessageBuilder = jest.fn((...args) =>
+  jest.requireActual('@librechat/api').createSteelQuotationPublicationMessageBuilder(...args));
 const mockFinalizeOcrResponse = jest.fn();
 const mockSaveOcrAudit = jest.fn().mockResolvedValue({});
 const mockMarkdownFinalize = jest.fn();
@@ -299,6 +301,8 @@ jest.mock('@librechat/api', () => ({
   createSteelMarkdownCompletionServices: jest.fn(() => ({
     finalize: (...args) => mockMarkdownFinalize(...args),
   })),
+  createSteelQuotationPublicationMessageBuilder: (...args) =>
+    mockCreateSteelQuotationPublicationMessageBuilder(...args),
   finalizeOcrResponse: (...args) => mockFinalizeOcrResponse(...args),
   parseAssistantMarkdown: (markdown) => ({
     sections: [...markdown.matchAll(/^## (ocr_result(?:_updates)?)$/gmu)].map((match) => ({ title: match[1] })),
@@ -728,6 +732,8 @@ describe('createResponse controller', () => {
     jest.clearAllMocks();
     resetMockExecution();
     mockGlobalDiscoveredAgentConfigs = null;
+    mockCreateSteelQuotationPublicationMessageBuilder.mockReset().mockImplementation((...args) =>
+      jest.requireActual('@librechat/api').createSteelQuotationPublicationMessageBuilder(...args));
     mockFinalizeOcrResponse.mockReset();
     mockSaveOcrAudit.mockReset().mockResolvedValue({});
     mockMarkdownFinalize.mockReset().mockImplementation(async (input) => {
@@ -2845,6 +2851,133 @@ describe('createResponse controller', () => {
         expect.any(Object),
       );
     });
+
+    it.each([
+      { stream: false, resume: false, expectedPrefix: 'primary answer' },
+      { stream: true, resume: false, expectedPrefix: 'primary answer' },
+      { stream: false, resume: true, expectedPrefix: '' },
+    ])(
+      'supplies the quotation workflow with the captured Responses snapshot: stream=$stream resume=$resume',
+      async ({ stream, resume, expectedPrefix }) => {
+        const api = require('@librechat/api');
+        const actual = jest.requireActual('@librechat/api');
+        const tracker = actual.createResponseTracker();
+        const aggregator = actual.createResponseAggregator();
+        const primaryMessage = {
+          type: 'message',
+          role: 'assistant',
+          id: 'primary-message',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'primary answer', annotations: [] }],
+        };
+        if (!resume) tracker.items.push(primaryMessage);
+        tracker.items.push(
+          { type: 'function_call', id: 'call-1', call_id: 'call-1', name: 'lookup', arguments: '{}' },
+          { type: 'reasoning', id: 'reasoning-1', summary: [{ type: 'summary_text', text: 'reasoning' }] },
+        );
+        tracker.usage.outputTokens = 50;
+        aggregator.addReasoning('reasoning');
+        if (!resume) aggregator.addText('primary answer');
+        aggregator.toolCalls.set('call-1', { name: 'lookup', arguments: '{}' });
+        aggregator.toolOutputs.set('call-1', 'lookup result');
+        aggregator.usage.outputTokens = 50;
+        if (stream) {
+          req.body.stream = true;
+          api.createResponseTracker.mockReturnValueOnce(tracker);
+        } else {
+          req.body.stream = false;
+          api.createResponseAggregator.mockReturnValueOnce(aggregator);
+        }
+        api.validateResponseRequest.mockReturnValueOnce({
+          request: { model: 'agent-123', input: 'Hello', stream },
+        });
+        req.steelNativeContext = resume ? { quotation: { resume: true } } : undefined;
+        let callbackResult;
+        mockExecuteSteelQuotationWorkflow.mockImplementationOnce(async ({ buildPublicationMessage }) => {
+          if (stream) {
+            const quotationMessage = {
+              type: 'message',
+              role: 'assistant',
+              id: 'quotation-message',
+              status: 'in_progress',
+              content: [{ type: 'output_text', text: 'old quotation', annotations: [] }],
+            };
+            tracker.items.push(quotationMessage);
+            tracker.currentMessage = quotationMessage;
+            tracker.currentContentIndex = 0;
+            tracker.accumulatedText = 'old quotation';
+          } else {
+            aggregator.addText('old quotation');
+          }
+          callbackResult = await buildPublicationMessage({
+            targetMessageId: 'canonical-response',
+            markdown: 'final quotation',
+          });
+        });
+
+        await createResponse(req, res);
+
+        expect(JSON.stringify([
+          ...res.write.mock.calls,
+          ...res.json.mock.calls,
+          ...res.end.mock.calls,
+        ])).not.toContain('final quotation');
+        expect(mockExecuteSteelQuotationWorkflow).toHaveBeenCalledTimes(1);
+        expect(mockExecuteSteelQuotationWorkflow).toHaveBeenCalledWith(
+          expect.objectContaining({ buildPublicationMessage: expect.any(Function) }),
+        );
+        expect(mockCreateSteelQuotationPublicationMessageBuilder).toHaveBeenCalledTimes(1);
+        const [factoryInput] = mockCreateSteelQuotationPublicationMessageBuilder.mock.calls[0];
+        expect(factoryInput).toEqual(expect.objectContaining({
+          tracker: stream ? tracker : null,
+          aggregator: stream ? null : aggregator,
+          buildMessageFields: expect.any(Function),
+        }));
+        expect(callbackResult).toEqual(expect.objectContaining({
+          sourceMessageId: 'resp_mock-123',
+          conversationId: 'mock-uuid-456',
+          user: 'user-123',
+          parentMessageId: null,
+          isCreatedByUser: false,
+          unfinished: false,
+          sender: 'Agent',
+          endpoint: 'agents',
+          model: 'agent-123',
+          finish_reason: 'stop',
+          tokenCount: 50,
+          processingDurationMs: expect.any(Number),
+          langfuseSampled: true,
+          langfuseDestinationIds: ['destination-1'],
+          metadata: { steel: { native: { ingress: 'open_responses', renderProfile: 'open_responses' } } },
+          messageId: 'canonical-response',
+          text: `${expectedPrefix}\n\nfinal quotation`,
+        }));
+        if (stream) {
+          expect(tracker.items.map((item) => item.type)).toEqual([
+            ...(resume ? [] : ['message']), 'function_call', 'reasoning', 'message',
+          ]);
+          expect(tracker.items.at(-1)).toEqual(expect.objectContaining({
+            id: 'quotation-message',
+            content: [{ type: 'output_text', text: 'old quotation', annotations: [] }],
+          }));
+          expect(tracker.currentMessage).toBe(tracker.items.at(-1));
+          expect(tracker.currentContentIndex).toBe(0);
+          expect(tracker.accumulatedText).toBe('old quotation');
+          expect(callbackResult.text).not.toContain('old quotation');
+        } else {
+          expect(aggregator.reasoningChunks).toEqual(['reasoning']);
+          expect(aggregator.textChunks).toEqual([
+            ...(resume ? [] : ['primary answer']), 'old quotation',
+          ]);
+          expect(aggregator.toolCalls).toEqual(new Map([
+            ['call-1', { name: 'lookup', arguments: '{}' }],
+          ]));
+          expect(aggregator.toolOutputs).toEqual(new Map([['call-1', 'lookup result']]));
+          expect(aggregator.usage.outputTokens).toBe(50);
+          expect(callbackResult.text).not.toContain('old quotation');
+        }
+      },
+    );
 
     it('propagates provisional and completed persistence state to the response save', async () => {
       const api = require('@librechat/api');

@@ -3,6 +3,14 @@ const { GenerationJobManager } = require('@librechat/api');
 const AgentClient = require('../client');
 const { getDefaultHandlers } = require('../callbacks');
 
+const mockProjectSteelQuotationMessage = jest.fn((...args) =>
+  jest.requireActual('@librechat/api').projectSteelQuotationMessage(...args));
+
+jest.mock('@librechat/api', () => ({
+  ...jest.requireActual('@librechat/api'),
+  projectSteelQuotationMessage: (...args) => mockProjectSteelQuotationMessage(...args),
+}));
+
 describe('quotation text streaming', () => {
   afterEach(() => jest.restoreAllMocks());
 
@@ -53,6 +61,71 @@ describe('quotation text streaming', () => {
     await wiring.onFinalText(deltas.join(''));
     expect(contentParts[0].text).toBe(deltas.join(''));
     expect(contentParts[0].text.match(/## system_order/g)).toHaveLength(1);
+  });
+
+  it('supplies the external workflow with a host snapshot callback that preserves non-quotation content', async () => {
+    const { contentParts } = createContentAggregator();
+    const metadata = { traceId: 'trace-1', usage: { outputTokens: 8 } };
+    const client = {
+      contentParts,
+      responseMessageId: 'source-response',
+      conversationId: 'conversation',
+      parentMessageId: 'parent-message',
+      options: {
+        req: { user: { id: 'user-1' } },
+        agent: { id: 'agent-1', name: 'Steel Agent' },
+      },
+      buildResponseMetadata: jest.fn(() => metadata),
+    };
+    const primary = { type: 'text', text: 'primary answer' };
+    const tool = { type: 'tool_call', tool_call: { id: 'lookup', name: 'lookup' } };
+    const steer = { type: 'steer', text: 'keep this steer' };
+    const reasoning = { type: 'reasoning', text: 'keep this reasoning' };
+    contentParts.push(primary, tool, steer, reasoning);
+
+    const wiring = AgentClient.prototype.buildQuotationTextWiring.call(client, {
+      configurable: { thread_id: 'conversation' },
+    });
+    const externalWorkflow = jest.fn(async ({ onText, buildPublicationMessage }) => {
+      await onText('old quotation');
+      return buildPublicationMessage({
+        targetMessageId: 'canonical-response',
+        markdown: 'final quotation',
+      });
+    });
+
+    const published = await externalWorkflow(wiring);
+
+    expect(externalWorkflow).toHaveBeenCalledWith(wiring);
+    expect(mockProjectSteelQuotationMessage).toHaveBeenCalledWith({
+      message: {
+        messageId: 'canonical-response',
+        sourceMessageId: 'source-response',
+        conversationId: 'conversation',
+        user: 'user-1',
+        text: 'final quotation',
+        parentMessageId: 'parent-message',
+        isCreatedByUser: false,
+        unfinished: false,
+        sender: 'Steel Agent',
+        endpoint: 'agents',
+        model: 'agent-1',
+        finish_reason: 'stop',
+        metadata,
+        content: [primary, tool, steer, reasoning, { type: 'text', text: 'old quotation' }],
+      },
+      markdown: 'final quotation',
+      quotationContentIndex: 4,
+    });
+    expect(published.content).toEqual([
+      primary,
+      tool,
+      steer,
+      reasoning,
+      { type: 'text', text: 'final quotation' },
+    ]);
+    expect(published.text).toBe('primary answer final quotation');
+    expect(published.messageId).toBe('canonical-response');
   });
 
   function setup(withHandlers = true) {
