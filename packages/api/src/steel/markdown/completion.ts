@@ -3,6 +3,7 @@ import type {
   ISteelConversationOcrState,
   ISteelQuotationState,
   SteelQuotationActiveRun,
+  SteelQuotationCurrentSystemOrder,
   SteelQuotationPublicationProof,
   SteelQuotationPublicationSaveResult,
   SteelQuotationScope,
@@ -15,9 +16,9 @@ import type { SteelResponseRequest } from '../quotation/completion';
 import type { SteelOcrResponseAuditService } from '../ocr/audit';
 import type { SteelDelegateOcrStateService } from '../ocr/state';
 import type { FinalizeOcrResponseSuccess } from '../ocr/result';
+import { acceptQuotationSignal, acceptQuotationResponse, publishCompletedQuotation, SteelQuotationPublicationError } from '../quotation/runner';
 import { appendSteelNextStep, hasSteelDataMarkdown, hasSteelCustomerTier, steelSectionTitle } from '../quotation/next';
 import { isUnfinishedQuotation, prepareQuotationCustomerResponse, hasQuotationOrder } from '../quotation/preparation';
-import { acceptQuotationSignal, acceptQuotationResponse, publishCompletedQuotation, SteelQuotationPublicationError } from '../quotation/runner';
 import { finalizeOcrResponse, parseAssistantMarkdown } from '../ocr/result';
 import { createSystemOrderRevisionService } from '../quotation/revision';
 import { SteelResponseCompletionError } from '../quotation/completion';
@@ -109,6 +110,7 @@ interface CompletionReceipt {
   customerPreparationId?: string;
   delegateCompleted?: boolean;
   revisionSaved?: boolean;
+  revisionSnapshot?: SteelQuotationCurrentSystemOrder;
   acceptedRun?: SteelQuotationActiveRun;
   latest?: ISteelQuotationState;
 }
@@ -232,9 +234,10 @@ async function currentQuotationPublicationProof(
   markdown: string,
   state: ISteelQuotationState | null | undefined,
   run: SteelQuotationActiveRun | undefined,
+  capturedSystemOrder?: SteelQuotationCurrentSystemOrder,
 ): Promise<(SteelQuotationPublicationProof & { markdown: string }) | undefined> {
   const currentOrder = state?.currentOrder;
-  const currentSystemOrder = state?.currentSystemOrder;
+  const currentSystemOrder = capturedSystemOrder ?? state?.currentSystemOrder;
   const customer = state?.currentCustomer;
   const targetMessageId = currentSystemOrder?.messageId ?? run?.targetMessageId;
   if (!run || run.status !== 'completed' || !targetMessageId || !currentOrder ||
@@ -248,6 +251,7 @@ async function currentQuotationPublicationProof(
   return {
     scope: input.req.steelNativeContext!.quotation!.scope,
     runId: run.runId,
+    runTargetMessageId: run.targetMessageId,
     targetMessageId,
     markdown,
     finalSha256: hash(final),
@@ -275,13 +279,15 @@ async function persistQuotationResponse(
   state: ISteelQuotationState | null | undefined,
   run: SteelQuotationActiveRun | undefined,
   completed: boolean,
+  capturedSystemOrder?: SteelQuotationCurrentSystemOrder,
 ): Promise<void> {
-  const targetMessageId = state?.currentSystemOrder?.messageId ?? run?.targetMessageId;
-  if (!run || run.status !== 'completed' || targetMessageId !== input.responseId) {
+  const effectiveRun = run ?? (state?.activeRun?.status === 'completed' ? state.activeRun : undefined);
+  const targetMessageId = capturedSystemOrder?.messageId ?? state?.currentSystemOrder?.messageId ?? effectiveRun?.targetMessageId;
+  if (!effectiveRun || targetMessageId !== input.responseId) {
     await persist(input, markdown, completed);
     return;
   }
-  const proof = await currentQuotationPublicationProof(input, dependencies, markdown, state, run);
+  const proof = await currentQuotationPublicationProof(input, dependencies, markdown, state, effectiveRun, capturedSystemOrder);
   if (!proof) throw new SteelResponseCompletionError('response_save_failed');
   await input.assertActive?.();
   input.applyMarkdown(markdown);
@@ -425,7 +431,8 @@ export async function finalizeSteelMarkdownTurn(
           quotationState.currentCustomer?.customerMarkdown !== replayTicket.customerMarkdown ||
           (savedCompletion.ocrGeneration && (savedCompletion.ocrGeneration !== ocrState?.currentOcrResultGenerationId ||
             savedCompletion.ocrHash !== hash(ocrState?.currentOcrResultMarkdown ?? ''))) ||
-          (savedCompletion.systemOrderHash && savedCompletion.systemOrderHash !== quotationState.currentSystemOrder?.sha256)) {
+          (savedCompletion.systemOrderHash && quotationState.currentSystemOrder?.runId !== replayTicket.acceptedRunId &&
+            savedCompletion.systemOrderHash !== quotationState.currentSystemOrder?.sha256)) {
           throw new SteelResponseCompletionError('superseded_response');
         }
         const acceptedRun = await acceptQuotationSignal({ scope, response: savedCompletion.markdown,
@@ -619,7 +626,7 @@ export async function finalizeSteelMarkdownTurn(
     // Save the complete merged message before canonical OCR points at its message id.
     const prePersistState = await dependencies.quotation.readState(scope);
     await persistQuotationResponse(input, dependencies, receipt.canonicalMarkdown,
-      prePersistState, receipt.acceptedRun, false);
+      prePersistState, receipt.acceptedRun, false, receipt.revisionSnapshot);
     if (receipt.ocr && !receipt.ocrSaved) {
       if (claimToken && receipt.candidateToken) {
         requireSaved(await dependencies.ocr.updateDelegateFinalizationJournal({
@@ -667,6 +674,7 @@ export async function finalizeSteelMarkdownTurn(
       const result = await receipt.preparedRevision.commit();
       if (!result.ok) throw new SteelResponseCompletionError(result.code);
       receipt.revisionSaved = true;
+      receipt.revisionSnapshot = result.snapshot;
     }
     if (receipt.ocr && claimToken && receipt.candidateToken && !receipt.delegateCompleted) {
       requireSaved(await dependencies.ocr.updateDelegateFinalizationJournal({ ...claim,
@@ -730,7 +738,7 @@ export async function finalizeSteelMarkdownTurn(
         order: currentOcr?.markdown, customer: latest?.currentCustomer?.customerMarkdown,
         completed: true, language: input.req.cookies?.lang || input.req.headers?.['accept-language']?.split(',')[0] || 'en' });
     if (input.stage !== 'workflow') await persistQuotationResponse(
-      input, dependencies, markdown, latest, receipt.acceptedRun, true,
+      input, dependencies, markdown, latest, receipt.acceptedRun, true, receipt.revisionSnapshot,
     );
     const [publishedOcr, publishedState] = await Promise.all([
       dependencies.ocr.readCurrentOcrResult(scope.conversationId), dependencies.quotation.readState(scope),

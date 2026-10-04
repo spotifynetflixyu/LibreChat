@@ -59,7 +59,7 @@ async function turn(markdown: string, text = '確認訂單', language = 'zh-TW')
       await dependencies.quotation.markPublished({
         scope,
         runId: proof.runId,
-        targetMessageId: proof.targetMessageId,
+        targetMessageId: proof.runTargetMessageId,
         finalSha256: proof.finalSha256,
       });
       return { ok: true, message: { messageId: proof.targetMessageId, conversationId: scope.conversationId, text: proof.markdown, user: scope.userId } };
@@ -406,9 +406,21 @@ it.each(['ocr', 'system'])('publishes a new flow quotation after committed %s up
   await dependencies.quotation.checkpoint({ scope, runId, leaseToken: lease.leaseToken, operationId: 'final', kind: 'final', payload: final });
   const ref = (await dependencies.quotation.readState(scope))?.activeRun?.checkpointRefs.find((entry) => entry.operationId === 'final');
   if (!ref) throw new Error('new flow checkpoint missing');
-  await dependencies.quotation.completeRun({ scope, runId, leaseToken: lease.leaseToken,
+  const completed = await dependencies.quotation.completeRun({ scope, runId, leaseToken: lease.leaseToken,
     finalRef: { ...scope, runId, ...ref, kind: 'final' } });
-  await dependencies.quotation.markPublished({ scope, runId, targetMessageId: 'response', finalSha256: createHash('sha256').update(final).digest('hex') });
+  if (!completed) throw new Error('new flow completion missing');
+  await publishCompletedQuotation({
+    scope,
+    run: completed,
+    markdown: final,
+    service: dependencies.quotation,
+    publishFinal: async (proof) => {
+      await dependencies.quotation.markPublished({ scope, runId: proof.runId, targetMessageId: proof.targetMessageId,
+        finalSha256: proof.finalSha256 });
+      return { ok: true, message: { messageId: proof.targetMessageId, conversationId: scope.conversationId,
+        text: proof.markdown, user: scope.userId } };
+    },
+  });
   const composite = `${markdown}\n\n${final}`;
   const result = await finalizer.finalize({ ...fixture.input, markdown: composite, stage: 'ui' });
   expect(result.markdown).toBe(composite);
