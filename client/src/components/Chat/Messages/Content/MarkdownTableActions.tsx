@@ -925,7 +925,7 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
   }, []);
   const openReview = useCallback(() => {
     if (reviewIdentity) {
-      setSelection(reviewIdentity);
+      setSelection({ ...reviewIdentity, captureId: crypto.randomUUID() });
     }
   }, [reviewIdentity, setSelection]);
   const retryReviewRecognition = useCallback(() => {

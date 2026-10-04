@@ -4,11 +4,16 @@ import type { SteelReviewKind, SteelReviewTable } from 'librechat-data-provider'
 import type { PrimitiveAtom } from 'jotai';
 import type { SteelReviewDraftState } from './session';
 
-export type SteelReviewSelection = {
+export type SteelReviewIdentity = {
   conversationId: string;
   messageId: string;
   kind: SteelReviewKind;
   title: string;
+};
+
+export type SteelReviewSelection = SteelReviewIdentity & {
+  /** Client-only identity for one explicit review opening. Never send this to the API. */
+  captureId: string;
   capturedAuthority?: SteelReviewCapturedAuthority;
 };
 
@@ -43,7 +48,7 @@ export interface SteelReviewPreviewState {
   renderError: boolean;
 }
 
-export function steelReviewIdentityKey(selection: SteelReviewSelection): string {
+export function steelReviewIdentityKey(selection: SteelReviewIdentity): string {
   return [
     selection.conversationId,
     selection.messageId,
@@ -52,14 +57,14 @@ export function steelReviewIdentityKey(selection: SteelReviewSelection): string 
   ].join(':');
 }
 
-export function steelReviewSourcePreviewKey(selection: SteelReviewSelection, fileId: string): string {
+export function steelReviewSourcePreviewKey(selection: SteelReviewIdentity, fileId: string): string {
   return `${steelReviewIdentityKey(selection)}:${fileId}`;
 }
 
 export function sameSteelReviewIdentity(
-  left: SteelReviewSelection | null | undefined,
-  right: Pick<SteelReviewSelection, 'conversationId' | 'messageId' | 'kind' | 'title'>,
-): left is SteelReviewSelection {
+  left: SteelReviewIdentity | null | undefined,
+  right: SteelReviewIdentity,
+): left is SteelReviewIdentity {
   return Boolean(left &&
     left.conversationId === right.conversationId &&
     left.messageId === right.messageId &&

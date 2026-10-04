@@ -8,7 +8,7 @@ import type {
   SteelReviewSource,
   SteelReviewTable,
 } from 'librechat-data-provider';
-import type { SteelReviewSelection } from './state';
+import type { SteelReviewIdentity } from './state';
 
 export interface SteelReviewDraftState {
   ownerKey: string;
@@ -35,7 +35,7 @@ interface SteelReviewDraftSnapshot {
 }
 
 export function getSteelReviewDraftKey(
-  selection: SteelReviewSelection,
+  selection: SteelReviewIdentity,
   table: Pick<SteelReviewTable, 'outputId' | 'revision'>,
 ): string {
   return JSON.stringify({
@@ -45,16 +45,18 @@ export function getSteelReviewDraftKey(
 }
 
 export function getSteelReviewDraftOwnerKey(
-  selection: SteelReviewSelection,
+  selection: SteelReviewIdentity,
   table: Pick<SteelReviewTable, 'outputId'>,
+  captureId?: string,
 ): string {
-  return JSON.stringify({
+  const owner = {
     conversationId: selection.conversationId,
     messageId: selection.messageId,
     kind: selection.kind,
     title: selection.title,
     outputId: table.outputId,
-  });
+  };
+  return captureId ? `${JSON.stringify(owner)}:${captureId}` : JSON.stringify(owner);
 }
 
 export function areSteelReviewDraftOwnersSame(left: string, right: string): boolean {
@@ -62,8 +64,16 @@ export function areSteelReviewDraftOwnersSame(left: string, right: string): bool
     return true;
   }
   try {
-    const leftOwner = JSON.parse(left) as Record<string, unknown>;
-    const rightOwner = JSON.parse(right) as Record<string, unknown>;
+    const parseOwner = (key: string): Record<string, unknown> => {
+      try {
+        return JSON.parse(key) as Record<string, unknown>;
+      } catch {
+        const jsonEnd = key.lastIndexOf('}');
+        return JSON.parse(key.slice(0, jsonEnd + 1)) as Record<string, unknown>;
+      }
+    };
+    const leftOwner = parseOwner(left);
+    const rightOwner = parseOwner(right);
     return [
       'conversationId',
       'messageId',
@@ -447,7 +457,7 @@ export function redoSteelReviewDraft(draft: SteelReviewDraftState): SteelReviewD
 }
 
 export function getSteelReviewPrepareInput(
-  selection: SteelReviewSelection,
+  selection: SteelReviewIdentity,
   table: SteelReviewTable,
   draft: SteelReviewDraftState,
   rows: SteelReviewRow[],

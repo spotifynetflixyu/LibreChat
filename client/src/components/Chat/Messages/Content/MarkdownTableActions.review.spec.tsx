@@ -3,7 +3,7 @@ import { createStore, Provider } from 'jotai';
 import { dataService, DynamicQueryKeys } from 'librechat-data-provider';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
-import type { SteelReviewSelection } from './SteelReview/state';
+import type { SteelReviewIdentity, SteelReviewSelection } from './SteelReview/state';
 import { steelReviewDraftStateFamily, steelReviewSelectionAtom } from './SteelReview/state';
 import { getSteelReviewDraftOwnerKey } from './SteelReview/session';
 import MarkdownTableActions from './MarkdownTableActions';
@@ -157,6 +157,10 @@ const reviewIdentity = {
   kind: 'ocr_result' as const,
   title: 'ocr_result',
 };
+const reviewSelection: SteelReviewSelection = {
+  ...reviewIdentity,
+  captureId: 'capture-1',
+};
 
 const testHeading = 'ocr_result';
 const sourceHeader = '來源';
@@ -166,9 +170,9 @@ const secondPart = 'P-2';
 
 function renderDialog(
   queryClient = new QueryClient(),
-  selection: SteelReviewSelection = reviewIdentity,
+  selection: SteelReviewSelection = reviewSelection,
   store = createStore(),
-  identity: SteelReviewSelection = reviewIdentity,
+  identity: SteelReviewIdentity = reviewIdentity,
 ) {
   store.set(steelReviewSelectionAtom, selection);
   const rendered = render(
@@ -403,7 +407,7 @@ describe('MarkdownTableActions Steel review entry', () => {
     const { store } = renderDialog();
     expect(screen.getByText('com_ui_steel_review_empty')).toBeInTheDocument();
     expect(screen.queryByRole('textbox')).toBeNull();
-    expect(store.get(steelReviewSelectionAtom)).toEqual(reviewIdentity);
+    expect(store.get(steelReviewSelectionAtom)).toEqual(reviewSelection);
   });
 
   it('retains the captured owner and local draft across a dialog remount', async () => {
@@ -1182,6 +1186,7 @@ describe('MarkdownTableActions Steel review entry', () => {
 
     const { store } = renderDialog(new QueryClient(), {
       ...reviewIdentity,
+      captureId: 'capture-receipt-mismatch',
       capturedAuthority: {
         outputId: table.outputId,
         revision: table.revision,
@@ -1295,7 +1300,7 @@ describe('MarkdownTableActions Steel review entry', () => {
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(store.get(steelReviewSelectionAtom)?.capturedAuthority?.revision)
       .toBe(table.revision));
-    const draftAtom = steelReviewDraftStateFamily(getSteelReviewDraftOwnerKey(reviewIdentity, table));
+    const draftAtom = steelReviewDraftStateFamily(getSteelReviewDraftOwnerKey(reviewIdentity, table, reviewSelection.captureId));
     expect(store.get(draftAtom).past.length).toBeGreaterThan(0);
     expect(screen.getByText('com_ui_steel_review_unsaved_caption')).toBeInTheDocument();
   });
@@ -1320,6 +1325,7 @@ describe('MarkdownTableActions Steel review entry', () => {
     const foreignSelection = {
       ...reviewIdentity,
       title: foreignTable.title,
+      captureId: 'capture-foreign-receipt',
       capturedAuthority: {
         outputId: foreignTable.outputId,
         revision: foreignTable.revision,
@@ -1403,7 +1409,7 @@ describe('MarkdownTableActions Steel review entry', () => {
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_discard_unsaved' }));
     await waitFor(() => expect(messagesQuery).toHaveBeenCalledTimes(1));
 
-    const foreignDraftKey = getSteelReviewDraftOwnerKey(foreignSelection, foreignTable);
+    const foreignDraftKey = getSteelReviewDraftOwnerKey(foreignSelection, foreignTable, foreignSelection.captureId);
     const foreignDraftAtom = steelReviewDraftStateFamily(foreignDraftKey);
     store.set(foreignDraftAtom, (current) => ({
       ...current,
@@ -1516,6 +1522,7 @@ describe('MarkdownTableActions Steel review entry', () => {
     const foreignSelection = {
       ...reviewIdentity,
       title: foreignTable.title,
+      captureId: 'capture-foreign-save-close',
       capturedAuthority: {
         outputId: foreignTable.outputId,
         revision: foreignTable.revision,
@@ -1529,6 +1536,120 @@ describe('MarkdownTableActions Steel review entry', () => {
     await new Promise((resolve) => setTimeout(resolve, 25));
     await waitFor(() => expect(rendered.store.get(steelReviewSelectionAtom)).toEqual(foreignSelection));
     foreignRender.unmount();
+  });
+
+  it('does not let an unmounted save-and-close clear a reopened same-owner capture', async () => {
+    const table = {
+      ...reviewIdentity,
+      kind: 'ocr_result' as const,
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      latestOutputId: 'ocr_result:generation-1',
+      isLatest: true,
+      readOnly: false,
+      headers: ['數量'],
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 數量: { baseline: '2', effective: '2' } },
+      }],
+    };
+    const prepared = {
+      ...reviewIdentity,
+      outputId: table.outputId,
+      revision: table.revision,
+      rows: table.rows,
+      operationId: 'operation-unmounted-same-owner-save-close',
+      digest: 'u'.repeat(64),
+      messageSha256: 'v'.repeat(64),
+      target: { start: 0, end: 1, sha256: 'w'.repeat(64) },
+      replacementText: 'replacement',
+      cleanReplacementText: 'replacement',
+      targetText: 'target',
+      headers: table.headers,
+      effectiveMarkdown: 'effective',
+      displayMarkdown: 'display',
+      caption: { kind: reviewIdentity.kind, changedRows: 1, changedRowIds: ['row-1'] },
+    };
+    const savedSnapshot = {
+      operationId: prepared.operationId,
+      digest: prepared.digest,
+      outputId: prepared.outputId,
+      revision: 'generation-1-save-1',
+      headers: table.headers,
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 數量: { baseline: '2', effective: '9' } },
+      }],
+      changedRows: 1,
+      changedRowIds: ['row-1'],
+      savedAt: '2026-10-03T00:00:00.000Z',
+      messageSha256: 'x'.repeat(64),
+      conversationId: reviewIdentity.conversationId,
+      messageId: reviewIdentity.messageId,
+      messageText: 'saved',
+      effectiveMarkdown: 'effective',
+      displayMarkdown: 'display',
+    };
+    const savedTable = { ...table, revision: savedSnapshot.revision, rows: savedSnapshot.rows };
+    let resolveCommit!: (result: {
+      changedRows: number;
+      changedRowIds: string[];
+      savedSnapshot: typeof savedSnapshot;
+    }) => void;
+    const commit = jest.fn(() => new Promise<{
+      changedRows: number;
+      changedRowIds: string[];
+      savedSnapshot: typeof savedSnapshot;
+    }>((resolve) => {
+      resolveCommit = resolve;
+    }));
+    const reviewRefetch = jest.fn().mockResolvedValue({ data: { table: savedTable }, error: null });
+    mockUseGetSteelReviewQuery.mockReturnValue({
+      data: { table },
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: reviewRefetch,
+    });
+    mockUsePrepareSteelReviewMutation.mockReturnValue({ mutateAsync: jest.fn().mockResolvedValue(prepared) });
+    mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
+
+    const rendered = renderDialog();
+    const input = screen.getByRole('textbox', { name: '數量 row-1' });
+    fireEvent.change(input, { target: { value: '9' } });
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_close' }));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save_updates' }));
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+
+    const reopenedSelection: SteelReviewSelection = {
+      ...reviewSelection,
+      captureId: 'capture-reopened',
+      capturedAuthority: {
+        outputId: table.outputId,
+        revision: table.revision,
+        table,
+      },
+    };
+    rendered.unmount();
+    const reopened = renderDialog(new QueryClient(), reopenedSelection, rendered.store, reviewIdentity);
+    const reopenedDraftKey = getSteelReviewDraftOwnerKey(reviewIdentity, table, reopenedSelection.captureId);
+    const reopenedDraftAtom = steelReviewDraftStateFamily(reopenedDraftKey);
+    rendered.store.set(reopenedDraftAtom, (current) => ({
+      ...current,
+      ownerKey: reopenedDraftKey,
+      cells: { 'row-1\u0000數量': 'reopened' },
+      changeSequence: 42,
+    }));
+
+    resolveCommit({ changedRows: 1, changedRowIds: ['row-1'], savedSnapshot });
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    expect(rendered.store.get(steelReviewSelectionAtom)).toEqual(reopenedSelection);
+    expect(rendered.store.get(reopenedDraftAtom).cells['row-1\u0000數量']).toBe('reopened');
+    expect(rendered.store.get(reopenedDraftAtom).changeSequence).toBe(42);
+    reopened.unmount();
   });
 
   it('acknowledges a committed receipt into the captured session after a new AI owner appears', async () => {
@@ -1629,7 +1750,7 @@ describe('MarkdownTableActions Steel review entry', () => {
     const { store } = renderDialog();
     const input = screen.getByRole('textbox', { name: '數量 row-1' });
     fireEvent.change(input, { target: { value: '9' } });
-    const draftAtom = steelReviewDraftStateFamily(getSteelReviewDraftOwnerKey(reviewIdentity, table));
+    const draftAtom = steelReviewDraftStateFamily(getSteelReviewDraftOwnerKey(reviewIdentity, table, reviewSelection.captureId));
     const submittedChangeSequence = store.get(draftAtom).changeSequence;
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
