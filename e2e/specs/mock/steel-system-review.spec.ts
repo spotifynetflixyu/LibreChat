@@ -9,6 +9,8 @@ import {
   createSteelQuotationStateService,
   createSteelMarkdownCompletionServices,
   publishCompletedQuotation,
+  registerSteelMarkdownPublication,
+  prepareQuotationTurn,
   runQuotationPreflight,
   renderQuotationCustomerMarkdown,
 } from '@librechat/api';
@@ -237,12 +239,166 @@ async function replayPublishedRun(fixture: OrderFixture) {
   }
 }
 
+
+async function reviseCompleted(fixture: OrderFixture,
+  beforeTerminal?: (messageId: string) => Promise<void>,
+  afterRevisionCommit?: (messageId: string) => Promise<void>) {
+  const email = getE2EUser().email;
+  const userId = await withMongo(async (database) => {
+    const owner = await database.collection('users').findOne({ email });
+    if (!owner) throw new Error('Missing revision owner');
+    return String(owner._id);
+  });
+  const runtimePath = process.env.E2E_RUNTIME_ENV_PATH ?? `${process.cwd()}/e2e/specs/.test-results/runtime-env.json`;
+  const runtime = JSON.parse(await readFile(runtimePath, 'utf8')) as { MONGO_URI: string };
+  await mongoose.connect(runtime.MONGO_URI);
+  try {
+    const scope = { userId, conversationId: fixture.conversationId };
+    const quotation = createSteelQuotationStateService(mongoose);
+    const state = await quotation.readState(scope);
+    const snapshot = state?.currentSystemOrder;
+    if (!snapshot) throw new Error('Missing completed source order');
+    const lines = snapshot.markdown.split('\n');
+    const row = lines[4].split('|').slice(1, -1).map((value) => value.trim());
+    row[6] = '3';
+    const markdown = [
+      '## system_order_updates', '',
+      `| base_hash | row_index | ${lines[2].slice(1, -1).trim()} |`,
+      `| --- | --- | ${lines[3].slice(1, -1).trim()} |`,
+      `| ${snapshot.sha256} | 1 | ${row.join(' | ')} |`,
+    ].join('\n');
+    const messageId = randomUUID();
+    const saveCurrentSystemOrder = quotation.saveCurrentSystemOrder;
+    quotation.saveCurrentSystemOrder = async (input) => {
+      const saved = await saveCurrentSystemOrder(input);
+      if (saved?.messageId === messageId) await afterRevisionCommit?.(messageId);
+      return saved;
+    };
+    const prepared = await prepareQuotationTurn({ scope, messageId: 'revision-user', responseId: messageId,
+      text: '將第一列總數修正為3' });
+    createModels(mongoose);
+    const methods = createMethods(mongoose);
+    let current = markdown;
+    let terminalPaused = false;
+    const pause = async () => {
+      if (terminalPaused) return;
+      terminalPaused = true;
+      await beforeTerminal?.(messageId);
+    };
+    const message = () => ({
+      user: userId, messageId, conversationId: fixture.conversationId, parentMessageId: fixture.messageId,
+      text: `REVISION-PREFIX\n\n ${current} \n\nREVISION-SUFFIX`,
+      content: [
+        { type: 'text' as const, text: 'REVISION-PREFIX\n\n' },
+        { type: 'tool_call' as const, tool_call: { id: 'revision-lookup', name: 'search_price_candidates',
+          args: '{"queries":[]}', output: '{"ok":true}' } },
+        { type: 'text' as const, text: current },
+        { type: 'text' as const, text: '\n\nREVISION-SUFFIX' },
+      ],
+      metadata: { reviewBrowser: { retained: true } }, isCreatedByUser: false, sender: 'Assistant',
+    });
+    const finalizer = createSteelMarkdownCompletionServices({ quotation, ocr: createSteelOcrStateService(mongoose) });
+    const input: Parameters<typeof finalizer.finalize>[0] = {
+      req: { user: { id: userId }, steelNativeContext: { requestId: messageId, quotation: prepared } },
+      responseId: messageId, generationId: messageId, markdown, completed: true,
+      applyMarkdown: (value) => { current = value; },
+      persistMarkdown: async (options) => {
+        if (options?.completed !== false) await pause();
+        return methods.saveMessage({ userId }, { ...message(), unfinished: options?.completed === false },
+          { context: 'steel-review-e2e-normal-revision' });
+      },
+      publishQuotation: async (publication) => {
+        await pause();
+        return methods.saveSteelQuotationMessage({ ...publication, message: { ...message(), unfinished: false } });
+      },
+    };
+    try {
+      await finalizer.finalize(input);
+    } catch (error) {
+      if (error instanceof Error && 'code' in error && error.code === 'superseded_response') {
+        await expect(finalizer.finalize(input)).rejects.toMatchObject({ code: 'superseded_response' });
+      }
+      throw error;
+    }
+    return { ...fixture, messageId };
+  } finally {
+    await mongoose.disconnect();
+  }
+}
+
+
+async function adoptCompleted(fixture: OrderFixture, beforeSaveBarrier: () => Promise<void>,
+  mode: 'adopted' | 'prepared' = 'adopted') {
+  const runtimePath = process.env.E2E_RUNTIME_ENV_PATH ?? `${process.cwd()}/e2e/specs/.test-results/runtime-env.json`;
+  const runtime = JSON.parse(await readFile(runtimePath, 'utf8')) as { MONGO_URI: string };
+  await mongoose.connect(runtime.MONGO_URI);
+  try {
+    createModels(mongoose);
+    const methods = createMethods(mongoose);
+    const owner = await mongoose.connection.collection('users').findOne({ email: getE2EUser().email });
+    if (!owner) throw new Error('Missing adoption owner');
+    const userId = String(owner._id);
+    const scope = { userId, conversationId: fixture.conversationId };
+    const quotation = createSteelQuotationStateService(mongoose);
+    const state = await quotation.readState(scope);
+    if (!state?.currentSystemOrder) throw new Error('Missing adoption system order');
+    const stored = await methods.getMessage({ user: userId, messageId: fixture.messageId });
+    if (!stored) throw new Error('Missing actual adoption response');
+    const prepared = await prepareQuotationTurn({ scope, messageId: 'adoption-user', responseId: fixture.messageId,
+      text: '核對報價' });
+    const req = { user: { id: userId }, steelNativeContext: { requestId: fixture.messageId, quotation: prepared } };
+    const finalizer = createSteelMarkdownCompletionServices({ quotation, ocr: createSteelOcrStateService(mongoose) });
+    let projected = state.currentSystemOrder.markdown;
+    const snapshot = () => {
+      const text = `SYSTEM-PREFIX\n\n${projected}\n\nSYSTEM-SUFFIX`;
+      return { ...stored, text, content: [{ type: 'text' as const, text }], unfinished: false };
+    };
+    const input: Parameters<typeof finalizer.finalize>[0] = {
+      req, responseId: fixture.messageId, generationId: fixture.messageId,
+      markdown: projected, completed: true,
+      applyMarkdown: (markdown) => { projected = markdown; },
+      persistMarkdown: () => methods.saveMessage({ userId }, snapshot(), { context: 'steel-review-adoption' }),
+      publishQuotation: (proof) => methods.saveSteelQuotationMessage({ ...proof, message: snapshot() }),
+    };
+    if (mode === 'prepared') {
+      let paused = false;
+      input.onPrepared = async () => {
+        if (paused) return;
+        paused = true;
+        await beforeSaveBarrier();
+      };
+      await expect(finalizer.finalize(input)).rejects.toMatchObject({ code: 'superseded_response' });
+      await expect(finalizer.finalize(input)).rejects.toMatchObject({ code: 'superseded_response' });
+      return;
+    }
+    const completed = await finalizer.finalize(input);
+    if (!completed.publication) throw new Error('Missing normal branded publication');
+    registerSteelMarkdownPublication(req, completed.publication, fixture.messageId, fixture.messageId);
+    const readState = quotation.readState;
+    let verifiedRead = false;
+    quotation.readState = async (scopeToRead) => {
+      const current = await readState(scopeToRead);
+      if (!verifiedRead) {
+        verifiedRead = true;
+        await beforeSaveBarrier();
+      }
+      return current;
+    };
+    await expect(finalizer.finalize({ ...input, markdown: completed.markdown }))
+      .rejects.toMatchObject({ code: 'superseded_response' });
+    await expect(finalizer.finalize({ ...input, markdown: completed.markdown }))
+      .rejects.toMatchObject({ code: 'superseded_response' });
+  } finally {
+    await mongoose.disconnect();
+  }
+}
+
 function reviewUrl(conversationId: string) {
   return `/api/steel/conversations/${conversationId}/review/system_order`;
 }
 
-async function readTable(page: Page, headers: { Authorization: string }, conversationId: string, messageId: string) {
-  const response = await page.request.get(`${reviewUrl(conversationId)}?${new URLSearchParams({ messageId, title })}`, { headers });
+async function readTable(page: Page, headers: { Authorization: string }, conversationId: string, messageId: string, fullTitle = title) {
+  const response = await page.request.get(`${reviewUrl(conversationId)}?${new URLSearchParams({ messageId, title: fullTitle })}`, { headers });
   expect(response.status()).toBe(200);
   return (await response.json() as { table: SteelReviewTable }).table;
 }
@@ -277,7 +433,8 @@ async function readback(conversationId: string) {
 async function openEditor(page: Page, conversationId: string) {
   await page.goto(`/c/${conversationId}`);
   await expect(page.getByText('SYSTEM-SUFFIX', { exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+  await page.getByTestId('message-body').filter({ hasText: 'SYSTEM-SUFFIX' })
+    .getByRole('button', { name: 'Open Steel review', exact: true }).click();
   const dialog = page.getByRole('dialog', { name: 'Steel source review' });
   await expect(dialog).toBeVisible();
   return dialog;
@@ -654,6 +811,170 @@ test.describe('System order atomic manual review', () => {
     await expect(page.getByText('SYSTEM-SUFFIX', { exact: true })).toBeVisible();
     expect(await readback(fixture.conversationId)).toEqual(saved);
   });
+
+
+  test('a normal later revision keeps its current message, tool content and saved value through runner replay', async ({ page }) => {
+    const original = await seedOrder(false, true);
+    conversations.push(original.conversationId);
+    const before = await readback(original.conversationId);
+    const fixture = await reviseCompleted(original);
+    const revised = await readback(fixture.conversationId);
+    expect(revised.quotation?.activeRun?.targetMessageId).toBe(original.messageId);
+    expect(revised.quotation?.currentSystemOrder?.messageId).toBe(fixture.messageId);
+    expect(revised.messages.find((message) => message.messageId === original.messageId))
+      .toEqual(before.messages.find((message) => message.messageId === original.messageId));
+    const revisedTitle = revised.quotation!.currentSystemOrder!.markdown.split('\n')[0].replace(/^##\s+/u, '');
+    const table = await readTable(page, headers, fixture.conversationId, fixture.messageId, revisedTitle);
+    expect(table.rows[0].values['總數'].effective).toBe('3');
+    const prepared = await prepare(page, headers, requestFor(table, [{ header: '單價', value: '12' }]));
+    expect((await commit(page, headers, prepared)).status()).toBe(200);
+    const saved = await readback(fixture.conversationId);
+    const message = saved.messages.find((entry) => entry.messageId === fixture.messageId);
+    expect(message?.metadata).toMatchObject({ reviewBrowser: { retained: true } });
+    expect(message?.content).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'tool_call',
+      tool_call: expect.objectContaining({ id: 'revision-lookup' }) })]));
+    expect(saved.quotation?.currentSystemOrder?.customerQuoteMarkdown).toContain('| REVIEW-MATERIAL-A | 3 | 36 |');
+    const replay = await replayPublishedRun(fixture);
+    expect(replay.result.status).toBe('completed');
+    expect(replay.emissions).toEqual([replay.result.markdown]);
+    expect(replay.result.markdown).toContain('| 3 | 12 |');
+    expect([replay.modelCalls, replay.lookupCalls, replay.publishCalls]).toEqual([0, 0, 0]);
+    expect(await readback(fixture.conversationId)).toEqual(saved);
+    await page.goto(`/c/${fixture.conversationId}`);
+    await expect(page.getByText('REVISION-SUFFIX', { exact: true })).toBeVisible();
+    await page.getByTestId('message-body').filter({ hasText: 'REVISION-SUFFIX' })
+      .getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    await expect(materialRow(page.getByRole('dialog', { name: 'Steel source review' }))
+      .getByRole('textbox').last()).toHaveValue('12');
+    await page.keyboard.press('Escape');
+    await page.reload();
+    await expect(page.getByText('REVISION-SUFFIX', { exact: true })).toBeVisible();
+    expect(await readback(fixture.conversationId)).toEqual(saved);
+  });
+
+  test('a human Save after a normal revision commit defeats the stale terminal writer', async ({ page }) => {
+    const original = await seedOrder(false, true);
+    conversations.push(original.conversationId);
+    let readyRevision!: (messageId: string) => void;
+    let releaseTerminal!: () => void;
+    const ready = new Promise<string>((resolve) => { readyRevision = resolve; });
+    const paused = new Promise<void>((resolve) => { releaseTerminal = resolve; });
+    const revision = reviseCompleted(original, async (messageId) => {
+      readyRevision(messageId);
+      await paused;
+    });
+    const outcome = revision.then(() => ({ ok: true }), (error) => ({ ok: false, error }));
+    const messageId = await Promise.race([ready, outcome.then((result) => {
+      if (!result.ok) throw result.error;
+      throw new Error('Revision completed before reaching the Save barrier');
+    })]);
+    let saved;
+    try {
+      const revised = await readback(original.conversationId);
+      const revisedTitle = revised.quotation!.currentSystemOrder!.markdown.split('\n')[0].replace(/^##\s+/u, '');
+      const table = await readTable(page, headers, original.conversationId, messageId, revisedTitle);
+      const prepared = await prepare(page, headers, requestFor(table, [{ header: '單價', value: '12' }]));
+      expect((await commit(page, headers, prepared)).status()).toBe(200);
+      saved = await readback(original.conversationId);
+    } finally {
+      releaseTerminal();
+    }
+    const result = await outcome;
+    const after = await readback(original.conversationId);
+    expect(after.messages.find((message) => message.messageId === messageId))
+      .toEqual(saved!.messages.find((message) => message.messageId === messageId));
+    expect(result).toEqual({ ok: false, error: expect.objectContaining({ code: 'superseded_response' }) });
+    expect(after).toEqual(saved);
+    await page.goto(`/c/${original.conversationId}`);
+    await expect(page.getByText('REVISION-SUFFIX', { exact: true })).toBeVisible();
+    await page.getByTestId('message-body').filter({ hasText: 'REVISION-SUFFIX' })
+      .getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    await expect(materialRow(page.getByRole('dialog', { name: 'Steel source review' }))
+      .getByRole('textbox').last()).toHaveValue('12');
+    await page.keyboard.press('Escape');
+    await page.reload();
+    await expect(page.getByText('REVISION-SUFFIX', { exact: true })).toBeVisible();
+    expect(await readback(original.conversationId)).toEqual(saved);
+  });
+
+  test('a human Save before the revision result returns is not blessed by a newer canonical read', async ({ page }) => {
+    const original = await seedOrder(false, true);
+    conversations.push(original.conversationId);
+    let readyRevision!: (messageId: string) => void;
+    let releaseTerminal!: () => void;
+    const ready = new Promise<string>((resolve) => { readyRevision = resolve; });
+    const paused = new Promise<void>((resolve) => { releaseTerminal = resolve; });
+    const revision = reviseCompleted(original, undefined, async (messageId) => {
+      readyRevision(messageId);
+      await paused;
+    });
+    const outcome = revision.then(() => ({ ok: true }), (error) => ({ ok: false, error }));
+    const messageId = await Promise.race([ready, outcome.then((result) => {
+      if (!result.ok) throw result.error;
+      throw new Error('Revision completed before reaching the Save barrier');
+    })]);
+    let saved;
+    try {
+      const revised = await readback(original.conversationId);
+      const revisedTitle = revised.quotation!.currentSystemOrder!.markdown.split('\n')[0].replace(/^##\s+/u, '');
+      const table = await readTable(page, headers, original.conversationId, messageId, revisedTitle);
+      const prepared = await prepare(page, headers, requestFor(table, [{ header: '單價', value: '12' }]));
+      expect((await commit(page, headers, prepared)).status()).toBe(200);
+      saved = await readback(original.conversationId);
+    } finally {
+      releaseTerminal();
+    }
+    const result = await outcome;
+    const after = await readback(original.conversationId);
+    expect(after.messages.find((message) => message.messageId === messageId))
+      .toEqual(saved!.messages.find((message) => message.messageId === messageId));
+    expect(result).toEqual({ ok: false, error: expect.objectContaining({ code: 'superseded_response' }) });
+    expect(after).toEqual(saved);
+    await page.goto(`/c/${original.conversationId}`);
+    await expect(page.getByText('REVISION-SUFFIX', { exact: true })).toBeVisible();
+    await page.getByTestId('message-body').filter({ hasText: 'REVISION-SUFFIX' })
+      .getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    await expect(materialRow(page.getByRole('dialog', { name: 'Steel source review' }))
+      .getByRole('textbox').last()).toHaveValue('12');
+    await page.keyboard.press('Escape');
+    await page.reload();
+    await expect(page.getByText('REVISION-SUFFIX', { exact: true })).toBeVisible();
+    expect(await readback(original.conversationId)).toEqual(saved);
+  });
+
+  for (const mode of ['adopted', 'prepared'] as const) {
+  test(`a ${mode} publication cannot bless a human Save made before the next canonical read`, async ({ page }) => {
+    const fixture = await seedOrder(false, true);
+    conversations.push(fixture.conversationId);
+    let readyAdoption!: () => void;
+    let releaseAdoption!: () => void;
+    const ready = new Promise<void>((resolve) => { readyAdoption = resolve; });
+    const paused = new Promise<void>((resolve) => { releaseAdoption = resolve; });
+    const adoption = adoptCompleted(fixture, async () => { readyAdoption(); await paused; }, mode);
+    const outcome = adoption.then(() => ({ ok: true }), (error) => ({ ok: false, error }));
+    await Promise.race([ready, outcome.then((result) => {
+      if (!result.ok) throw result.error;
+      throw new Error('Adoption completed before reaching the Save barrier');
+    })]);
+    let saved;
+    try {
+      const table = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+      const prepared = await prepare(page, headers, requestFor(table, [{ header: '單價', value: '12' }]));
+      expect((await commit(page, headers, prepared)).status()).toBe(200);
+      saved = await readback(fixture.conversationId);
+    } finally {
+      releaseAdoption();
+    }
+    expect(await outcome).toEqual({ ok: true });
+    expect(await readback(fixture.conversationId)).toEqual(saved);
+    const dialog = await openEditor(page, fixture.conversationId);
+    await expect(materialRow(dialog).getByRole('textbox').last()).toHaveValue('12');
+    await page.keyboard.press('Escape');
+    await page.reload();
+    expect(await readback(fixture.conversationId)).toEqual(saved);
+  });
+
+  }
 
   test('system-order callers cannot supply another run, customer snapshot or immutable column', async ({ page }) => {
     const fixture = await seedOrder();
