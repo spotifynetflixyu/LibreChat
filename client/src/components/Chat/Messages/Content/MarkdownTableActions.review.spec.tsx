@@ -1,6 +1,6 @@
 import { RecoilRoot } from 'recoil';
 import { createStore, Provider } from 'jotai';
-import { DynamicQueryKeys } from 'librechat-data-provider';
+import { dataService, DynamicQueryKeys } from 'librechat-data-provider';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
 import { steelReviewSelectionAtom } from './SteelReview/state';
@@ -78,6 +78,18 @@ let mockMessageContext: {
 };
 
 let activeReviewQueryClient: QueryClient | undefined;
+
+beforeEach(() => {
+  jest.spyOn(dataService, 'getMessagesByConvoId').mockResolvedValue([]);
+  Object.defineProperty(URL, 'revokeObjectURL', {
+    configurable: true,
+    value: jest.fn(),
+  });
+});
+
+afterEach(() => {
+  jest.restoreAllMocks();
+});
 
 jest.mock('~/data-provider', () => ({
   useGetSteelReviewQuery: jest.fn(),
@@ -187,6 +199,15 @@ function renderTable() {
   return { ...rendered, queryClient };
 }
 
+function readBlob(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(reader.error);
+    reader.readAsText(blob);
+  });
+}
+
 describe('MarkdownTableActions Steel review entry', () => {
   it('does not offer an entry when the scoped backend read rejects a same-heading table', async () => {
     mockUseGetSteelReviewQuery.mockReturnValue({
@@ -236,6 +257,89 @@ describe('MarkdownTableActions Steel review entry', () => {
     const download = await screen.findByRole('button', { name: 'com_ui_download_table_csv' });
     fireEvent.click(download);
     await waitFor(() => expect(URL.createObjectURL).toHaveBeenCalledTimes(1));
+  });
+
+  it('exports only active rows from a confirmed table', async () => {
+    const table = {
+      ...reviewIdentity,
+      kind: 'ocr_result' as const,
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      latestOutputId: 'ocr_result:generation-1',
+      isLatest: true,
+      readOnly: false,
+      headers: ['來源', '零件編號', '數量'],
+      rows: [
+        {
+          rowId: 'row-active',
+          source: null,
+          values: {
+            來源: { baseline: 'A', effective: 'A' },
+            零件編號: { baseline: 'P-1', effective: 'P-1' },
+            數量: { baseline: '2', effective: '2' },
+          },
+        },
+        {
+          rowId: 'row-deleted',
+          source: null,
+          deleted: true,
+          values: {
+            來源: { baseline: 'A', effective: 'A' },
+            零件編號: { baseline: 'P-2', effective: 'P-2' },
+            數量: { baseline: '4', effective: '4' },
+          },
+        },
+      ],
+    };
+    const createObjectURL = jest.fn(() => 'blob:review-active-export');
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    mockUseGetSteelReviewQuery.mockImplementation((input) => input
+      ? { data: { table }, error: null, isError: false, isLoading: false }
+      : { data: undefined, error: null, isError: false, isLoading: false });
+
+    renderTable();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'com_ui_download_table_csv' }));
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
+    const csv = await readBlob((createObjectURL.mock.calls as unknown as Array<[Blob]>)[0][0]);
+    expect(csv).toContain('P-1');
+    expect(csv).not.toContain('P-2');
+  });
+
+  it('exports a header-only CSV when every confirmed row is deleted', async () => {
+    const table = {
+      ...reviewIdentity,
+      kind: 'ocr_result' as const,
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      latestOutputId: 'ocr_result:generation-1',
+      isLatest: true,
+      readOnly: false,
+      headers: ['來源', '零件編號'],
+      rows: [{
+        rowId: 'row-deleted',
+        source: null,
+        deleted: true,
+        values: {
+          來源: { baseline: 'A', effective: 'A' },
+          零件編號: { baseline: 'P-2', effective: 'P-2' },
+        },
+      }],
+    };
+    const createObjectURL = jest.fn(() => 'blob:review-header-export');
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    mockUseGetSteelReviewQuery.mockImplementation((input) => input
+      ? { data: { table }, error: null, isError: false, isLoading: false }
+      : { data: undefined, error: null, isError: false, isLoading: false });
+
+    renderTable();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'com_ui_download_table_csv' }));
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
+    const csv = await readBlob((createObjectURL.mock.calls as unknown as Array<[Blob]>)[0][0]);
+    expect(csv).toContain('來源');
+    expect(csv).toContain('零件編號');
+    expect(csv).not.toContain('P-2');
   });
 
 
@@ -294,6 +398,60 @@ describe('MarkdownTableActions Steel review entry', () => {
     expect(screen.getByText('com_ui_steel_review_empty')).toBeInTheDocument();
     expect(screen.queryByRole('textbox')).toBeNull();
     expect(store.get(steelReviewSelectionAtom)).toEqual(reviewIdentity);
+  });
+
+  it('retains the captured owner and local draft across a dialog remount', async () => {
+    const firstTable = {
+      ...reviewIdentity,
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      latestOutputId: 'ocr_result:generation-1',
+      isLatest: true,
+      readOnly: false,
+      headers: ['品名'],
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 品名: { baseline: '鋼板', effective: '鋼板' } },
+      }],
+    };
+    const newAiTable = {
+      ...firstTable,
+      outputId: 'ocr_result:generation-2',
+      revision: 'generation-2',
+      latestOutputId: 'ocr_result:generation-2',
+      rows: [{
+        rowId: 'row-1',
+        source: null,
+        values: { 品名: { baseline: '新AI', effective: '新AI' } },
+      }],
+    };
+    let liveTable = firstTable;
+    mockUseGetSteelReviewQuery.mockImplementation((input) => input
+      ? { data: { table: liveTable }, error: null, isError: false, isLoading: false }
+      : { data: undefined, error: null, isError: false, isLoading: false });
+
+    const firstRender = renderDialog();
+    await waitFor(() => expect(firstRender.store.get(steelReviewSelectionAtom)?.capturedAuthority?.outputId)
+      .toBe(firstTable.outputId));
+    fireEvent.change(await screen.findByRole('textbox', { name: '品名 row-1' }), { target: { value: '本地草稿' } });
+    firstRender.unmount();
+    liveTable = newAiTable;
+
+    render(
+      <QueryClientProvider client={firstRender.queryClient}>
+        <Provider store={firstRender.store}>
+          <SteelReviewDialog identity={reviewIdentity} />
+        </Provider>
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => expect(screen.queryByRole('textbox')).toBeNull());
+    expect(screen.getByText('本地草稿')).toBeInTheDocument();
+    expect(screen.getByText('com_ui_steel_review_readonly')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'com_ui_steel_review_add_row' })).toBeNull();
+    expect(firstRender.store.get(steelReviewSelectionAtom)?.capturedAuthority?.outputId)
+      .toBe(firstTable.outputId);
   });
 
   it('keeps OCR edits local and requires an explicit discard or continue choice on close', () => {
@@ -419,10 +577,11 @@ describe('MarkdownTableActions Steel review entry', () => {
       messageId: 'message-1',
       outputId: 'ocr_result:generation-1',
       revision: 'generation-1',
-      rows: [expect.objectContaining({
+      operations: [{
         rowId: 'row-1',
-        values: { 品名: { baseline: '鋼板', effective: '鍍鋅鋼板' } },
-      })],
+        type: 'update',
+        changes: [{ header: '品名', value: '鍍鋅鋼板' }],
+      }],
     }));
     expect(commit).toHaveBeenCalledWith(prepared);
     expect(screen.queryByText('com_ui_steel_review_unsaved_caption')).toBeNull();

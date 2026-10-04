@@ -1,6 +1,6 @@
 import { atom } from 'jotai';
 import { atomFamily } from 'jotai/utils';
-import type { SteelReviewKind } from 'librechat-data-provider';
+import type { SteelReviewKind, SteelReviewTable } from 'librechat-data-provider';
 import type { PrimitiveAtom } from 'jotai';
 import type { SteelReviewDraftState } from './session';
 
@@ -10,6 +10,13 @@ export type SteelReviewSelection = {
   kind: SteelReviewKind;
   tableId: string;
   partIndex?: number;
+  capturedAuthority?: SteelReviewCapturedAuthority;
+};
+
+export type SteelReviewCapturedAuthority = {
+  outputId: string;
+  revision: string;
+  table: SteelReviewTable;
 };
 
 export const steelReviewSelectionAtom = atom<SteelReviewSelection | null>(null);
@@ -49,6 +56,18 @@ export function steelReviewIdentityKey(selection: SteelReviewSelection): string 
 
 export function steelReviewSourcePreviewKey(selection: SteelReviewSelection, fileId: string): string {
   return `${steelReviewIdentityKey(selection)}:${fileId}`;
+}
+
+export function sameSteelReviewIdentity(
+  left: SteelReviewSelection | null | undefined,
+  right: Pick<SteelReviewSelection, 'conversationId' | 'messageId' | 'kind' | 'tableId' | 'partIndex'>,
+): left is SteelReviewSelection {
+  return Boolean(left &&
+    left.conversationId === right.conversationId &&
+    left.messageId === right.messageId &&
+    left.kind === right.kind &&
+    left.tableId === right.tableId &&
+    left.partIndex === right.partIndex);
 }
 
 type OwnedStateFamily<T> = ((key: string) => PrimitiveAtom<T>) & {

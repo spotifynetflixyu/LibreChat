@@ -228,7 +228,9 @@ function getTableMatrix(table: HTMLTableElement | null): TableMatrix {
 function getReviewTableMatrix(table: SteelReviewTable): TableMatrix {
   return [
     table.headers,
-    ...table.rows.map((row) => table.headers.map((header) => row.values[header]?.effective ?? '')),
+    ...table.rows
+      .filter((row) => !row.deleted)
+      .map((row) => table.headers.map((header) => row.values[header]?.effective ?? '')),
   ];
 }
 
