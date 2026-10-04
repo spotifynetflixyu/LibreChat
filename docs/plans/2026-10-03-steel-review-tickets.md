@@ -5,6 +5,12 @@ Spec: https://github.com/spotifynetflixyu/LibreChat/issues/1
 Integration branch: `codex/steel-source-review`.
 Draft PR: https://github.com/spotifynetflixyu/LibreChat/pull/16.
 
+User pause boundary (2026-10-04): finish the current slice05 repair, verify and update GitHub,
+then pause before slice06. The canonical Markdown locator is **messageId + exact full title**.
+Each reply contains at most one Markdown section with that full title; another message's same
+title is independent. Authorization, output ownership and expected revision remain backend guards.
+No positional aliases or older review wire compatibility are retained.
+
 User revision: every new AI output starts review from its own complete AI baseline; prior human
 changes remain historical and are not carried into the new UI or compared with the new AI output.
 Baseline: `056eb076ac0b9f7b7ccaba74672ae1288fab662a`.
