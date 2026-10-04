@@ -2660,6 +2660,48 @@ test.describe('Steel managed source review', () => {
     expect(await persistedSnapshot(conversationId)).toEqual(saved);
   });
 
+  test('consecutive OCR Saves preserve each semantic undo value without writing their inverses', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+    for (const value of ['78', '9']) {
+      await quantity.fill(value);
+      await quantity.press('Enter');
+      await dialog.getByRole('button', { name: /^Save/ }).click();
+      await expect(dialog.getByText('Updated 1 rows', { exact: true })).toBeVisible();
+      await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+      await expect.poll(async () => (await persistedSnapshot(conversationId)).messages
+        .find((message) => message.messageId === messageId)?.text)
+        .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', `| A | REVIEW-P1 | 1000 | ${value} | 1 |`));
+    }
+    const saved = await persistedSnapshot(conversationId);
+    expect(saved.reviews[0]?.receipts).toHaveLength(2);
+    for (const value of ['78', '2']) {
+      await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
+      await expect(quantity).toHaveValue(value);
+      await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
+      expect(await persistedSnapshot(conversationId)).toEqual(saved);
+    }
+    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
+    for (const value of ['78', '9']) {
+      await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
+      await expect(quantity).toHaveValue(value);
+      expect(await persistedSnapshot(conversationId)).toEqual(saved);
+    }
+    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+    await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
+    await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeVisible();
+    await page.reload();
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    await expect(quantity).toHaveValue('9');
+    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
+    expect(await persistedSnapshot(conversationId)).toEqual(saved);
+  });
+
   test('OCR source and business undo stay attached to one row across page filters before and after Save', async ({ page }) => {
     const { conversationId, messageId } = await seedCurrent(ocr);
     conversations.push(conversationId);
