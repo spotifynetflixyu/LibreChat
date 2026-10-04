@@ -2849,6 +2849,61 @@ describe('OpenAI OAuth model adapter', () => {
   );
 
   it.each(['invoke', 'stream'] as const)(
+    'filters a suffixed provider customer_quote during %s, including split headings',
+    async (mode) => {
+      const separator = mode === 'invoke' ? '|' : '｜';
+      const providerText = [
+        '## system_order',
+        '| 品名規格 | 總數 | 單價 |',
+        '| --- | --- | --- |',
+        '| A | 1 | 2 |',
+        '',
+        `## customer_quote${separator}內部計算`,
+        '| 項目 | 小計 |',
+        '| --- | --- |',
+        '| A | 2 |',
+        '',
+        '## notes',
+        'kept',
+      ].join('\n');
+      const doGenerate = jest.fn(async () =>
+        createGenerateResult([{ type: 'text', text: providerText }]),
+      );
+      const splitAt = providerText.indexOf(`## customer_quote${separator}`) + '## customer_quote'.length;
+      const doStream = jest.fn(async () =>
+        createStreamResult([
+          { type: 'text-delta', id: 'text_1', delta: providerText.slice(0, splitAt) },
+          { type: 'text-delta', id: 'text_1', delta: providerText.slice(splitAt) },
+          {
+            type: 'finish',
+            usage: createUsage(),
+            finishReason: { unified: 'stop', raw: 'stop' },
+          },
+        ]),
+      );
+      const model = createOpenAIOAuthModel({
+        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+        model: 'gpt-5.5',
+      });
+
+      let content: string;
+      if (mode === 'invoke') {
+        content = String((await model.invoke(quoteMessages())).content);
+      } else {
+        const chunks = [];
+        for await (const chunk of await model.stream(quoteMessages())) {
+          chunks.push(chunk);
+        }
+        content = chunks.map((chunk) => chunk.content).join('');
+      }
+
+      expect(content).toContain('## system_order');
+      expect(content).toContain('## notes\nkept');
+      expect(content).not.toContain('## customer_quote');
+    },
+  );
+
+  it.each(['invoke', 'stream'] as const)(
     'does not compose customer_quote outside a current price-result flow during %s',
     async (mode) => {
       const providerText = [

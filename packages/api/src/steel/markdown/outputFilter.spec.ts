@@ -47,6 +47,32 @@ describe('Steel Markdown output filter', () => {
     expect(output).toContain('```markdown\n## customer_quote\n\nexample\n```');
   });
 
+  it.each(['｜', '|'])('removes customer quote headings with a %s title suffix', (separator) => {
+    const markdown = [
+      '## system_order',
+      '',
+      'rows',
+      '',
+      `## customer_quote${separator}內部計算`,
+      '',
+      'hidden',
+      '',
+      '## notes',
+      '',
+      'kept',
+    ].join('\n');
+
+    expect(stripCustomerQuoteSections(markdown)).toBe([
+      '## system_order',
+      '',
+      'rows',
+      '',
+      '## notes',
+      '',
+      'kept',
+    ].join('\n'));
+  });
+
   it('removes fenced blocks inside a suppressed quote while retaining later examples', () => {
     const markdown = [
       '## system_order',

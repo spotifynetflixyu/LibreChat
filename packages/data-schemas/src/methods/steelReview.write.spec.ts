@@ -1162,6 +1162,162 @@ describe('Steel review write methods', () => {
     expect(unrelatedAfter).toEqual(unrelatedBefore);
   });
 
+  it('preserves OCR staleness through a later system-order save', async () => {
+    const models = createModels(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const QuotationState = createSteelQuotationStateModel(mongoose);
+    const conversationId = 'stale-preservation-conversation';
+    const ocrMessageId = 'stale-preservation-ocr-message';
+    const systemMessageId = 'stale-preservation-system-message';
+    const ocrMarkdown = markdownFor('P-1');
+    const systemOrderMarkdown = '## system_order｜報價單\n\n| 品名規格 | 總數 | 單價 |\n| --- | --- | --- |\n| 雷射板 | 2 | 40 |';
+    const updatedSystemOrderMarkdown = systemOrderMarkdown.replace('| 雷射板 | 2 | 40 |', '| 雷射板 | 2 | 41 |');
+    const systemOrderHash = createHash('sha256').update(systemOrderMarkdown).digest('hex');
+    const ocrHash = createHash('sha256').update(ocrMarkdown).digest('hex');
+    await models.Conversation.create({
+      conversationId,
+      user: 'user-1',
+      tenantId: 'tenant-1',
+      title: 'Stale preservation',
+      endpoint: 'openAI',
+    });
+    await models.Message.create([
+      {
+        messageId: ocrMessageId,
+        conversationId,
+        user: 'user-1',
+        tenantId: 'tenant-1',
+        isCreatedByUser: false,
+        text: ocrMarkdown,
+      },
+      {
+        messageId: systemMessageId,
+        conversationId,
+        user: 'user-1',
+        tenantId: 'tenant-1',
+        isCreatedByUser: false,
+        text: systemOrderMarkdown,
+      },
+    ]);
+    await State.create({
+      conversationId,
+      currentOcrResultMarkdown: ocrMarkdown,
+      currentOcrResultMessageId: ocrMessageId,
+      currentOcrResultGenerationId: 'generation-1',
+      sourceMappings: [{ fileId: 'source-file', sourceCode: 'A', sourceFilename: 'source.pdf' }],
+    });
+    await QuotationState.create({
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      conversationId,
+      currentSystemOrder: {
+        runId: 'run-stale-preservation',
+        sha256: systemOrderHash,
+        markdown: systemOrderMarkdown,
+        messageId: systemMessageId,
+        ocrMessageId,
+        ocrOutputId: 'ocr_result:generation-1',
+        customerQuoteMarkdown: '## customer_quote\n\n| 項目 | 小計 |\n| --- | --- |\n| 雷射板 | 80 |',
+        updatedAt: new Date('2026-10-03T00:00:00.000Z'),
+      },
+      tickets: [{
+        index: 1,
+        token: 'ticket-stale-preservation',
+        orderHash: ocrHash,
+        customerMarkdown: 'customer',
+        customerIdentity: 'customer-id',
+        triggeringMessageId: 'trigger-message',
+        selectionProvenance: { method: 'unique' },
+        issuedAt: new Date('2026-10-03T00:00:00.000Z'),
+        acceptedRunId: 'run-stale-preservation',
+        completionReceipt: {
+          inputHash: 'input-stale-preservation',
+          markdown: systemOrderMarkdown,
+          ocrGeneration: 'generation-1',
+          ocrHash,
+          systemOrderHash,
+        },
+      }],
+    });
+
+    const writer = createSteelReviewWriteMethods(mongoose);
+    const ocrResult = await writer.commitSteelReview(makeInput({
+      operationId: 'stale-preservation-ocr-save',
+      revision: 'generation-1',
+      previousValue: 'P-1',
+      nextValue: 'P-7',
+      conversationId,
+      messageId: ocrMessageId,
+    }));
+    const staleAfterOcr = await QuotationState.findOne({ conversationId }).lean();
+    expect(staleAfterOcr?.currentSystemOrder).toMatchObject({
+      needsRequote: true,
+      requoteProvenance: {
+        sourceOutputId: 'ocr_result:generation-1',
+        sourceRevision: ocrResult.revision,
+        changedRows: 1,
+      },
+    });
+
+    const targetText = systemOrderMarkdown.slice(systemOrderMarkdown.indexOf('| 品名規格 |'));
+    const replacementText = updatedSystemOrderMarkdown.slice(updatedSystemOrderMarkdown.indexOf('| 品名規格 |'));
+    await writer.commitSteelReview({
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      conversationId,
+      kind: 'system_order',
+      messageId: systemMessageId,
+      title: 'system_order｜報價單',
+      tableId: 'system_order:table',
+      outputId: 'system_order:run-stale-preservation',
+      revision: systemOrderHash,
+      operationId: 'stale-preservation-system-save',
+      digest: 'stale-preservation-system-digest',
+      rows: [{
+        rowId: 'system-order-row',
+        values: {
+          品名規格: { baseline: '雷射板', effective: '雷射板' },
+          總數: { baseline: '2', effective: '2' },
+          單價: { baseline: '40', effective: '41' },
+        },
+        source: null,
+      }],
+      headers: ['品名規格', '總數', '單價'],
+      messageSha256: systemOrderHash,
+      target: {
+        start: systemOrderMarkdown.indexOf('| 品名規格 |'),
+        end: systemOrderMarkdown.length,
+        sha256: createHash('sha256').update(targetText).digest('hex'),
+      },
+      targetText,
+      replacementText,
+      cleanReplacementText: replacementText,
+      effectiveMarkdown: updatedSystemOrderMarkdown,
+      displayMarkdown: updatedSystemOrderMarkdown,
+      aiBaselineMarkdown: systemOrderMarkdown,
+      aiRawMarkdown: systemOrderMarkdown,
+      systemOrderMarkdown: updatedSystemOrderMarkdown,
+      customerQuoteMarkdown: '## customer_quote\n\n| 項目 | 小計 |\n| --- | --- |\n| 雷射板 | 82 |',
+      caption: {
+        kind: 'system_order',
+        changedRows: 1,
+        changedRowIds: ['system-order-row'],
+        customerQuoteChangedRows: 1,
+        customerQuoteTotal: '82',
+      },
+    });
+
+    expect((await QuotationState.findOne({ conversationId }).lean())?.currentSystemOrder).toMatchObject({
+      markdown: updatedSystemOrderMarkdown,
+      needsRequote: true,
+      requoteProvenance: {
+        sourceOutputId: 'ocr_result:generation-1',
+        sourceRevision: ocrResult.revision,
+        changedRows: 1,
+      },
+    });
+  });
+
   it('rejects source association cell edits before first and later sidecar writes', async () => {
     const models = createModels(mongoose);
     const State = createSteelConversationOcrStateModel(mongoose);

@@ -15,7 +15,7 @@ import type { SteelDelegateOcrStateService } from '../ocr/state';
 import type { FinalizeOcrResponseSuccess } from '../ocr/result';
 import { appendSteelNextStep, hasSteelDataMarkdown, hasSteelCustomerTier, steelSectionTitle } from '../quotation/next';
 import { isUnfinishedQuotation, prepareQuotationCustomerResponse, hasQuotationOrder } from '../quotation/preparation';
-import { acceptQuotationSignal, acceptQuotationResponse } from '../quotation/runner';
+import { acceptQuotationSignal, acceptQuotationResponse, publishCompletedQuotation } from '../quotation/runner';
 import { finalizeOcrResponse, parseAssistantMarkdown } from '../ocr/result';
 import { createSystemOrderRevisionService } from '../quotation/revision';
 import { SteelResponseCompletionError } from '../quotation/completion';
@@ -298,17 +298,31 @@ export async function finalizeSteelMarkdownTurn(
         await input.onPrepared?.(savedCompletion.markdown);
         let markdown = savedCompletion.markdown;
         if (quotationState.activeRun?.status === 'completed') {
-          markdown = requireSaved(await dependencies.quotation.readCheckpoint({ scope,
+          const finalMarkdown = requireSaved(await dependencies.quotation.readCheckpoint({ scope,
             runId: quotationState.activeRun.runId, operationId: 'final' }), 'missing_quotation_result');
+          const published = await publishCompletedQuotation({
+            scope,
+            run: quotationState.activeRun,
+            markdown: finalMarkdown,
+            service: dependencies.quotation,
+            publishFinal: async ({ markdown: publicMarkdown }) => {
+              await persist(input, publicMarkdown, true);
+            },
+          });
+          markdown = published.markdown;
+        } else {
+          await persist(input, markdown, input.stage !== 'workflow');
         }
-        await persist(input, markdown, input.stage !== 'workflow');
+        const [publishedOcr, publishedState] = await Promise.all([
+          dependencies.ocr.readCurrentOcrResult(scope.conversationId), dependencies.quotation.readState(scope),
+        ]);
         const publication = Object.freeze({ scopeKey: scopeKey(scope), responseId: input.responseId,
           generationId, markdown,
-          ocrGeneration: ocrState?.currentOcrResultGenerationId,
-          ocrHash: ocrState?.currentOcrResultMarkdown ? hash(ocrState.currentOcrResultMarkdown) : undefined,
-          orderHash: quotationState.currentOrder?.sha256,
-          customerPreparationId: quotationState.currentCustomer?.preparationId,
-          runId: quotationState.activeRun?.runId, systemOrderHash: quotationState.currentSystemOrder?.sha256 });
+          ocrGeneration: publishedOcr?.generationId,
+          ocrHash: publishedOcr?.markdown ? hash(publishedOcr.markdown) : undefined,
+          orderHash: publishedState?.currentOrder?.sha256,
+          customerPreparationId: publishedState?.currentCustomer?.preparationId,
+          runId: publishedState?.activeRun?.runId, systemOrderHash: publishedState?.currentSystemOrder?.sha256 });
         publications.add(publication);
         await verifyPublication(publication, scope, dependencies);
         return { markdown, acceptedRun, publication };

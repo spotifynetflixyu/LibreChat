@@ -2193,10 +2193,6 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
                     : {}),
                   'updatedAt': savedAt,
                 },
-                $unset: {
-                  'currentSystemOrder.needsRequote': '',
-                  'currentSystemOrder.requoteProvenance': '',
-                },
               },
               { session },
             );

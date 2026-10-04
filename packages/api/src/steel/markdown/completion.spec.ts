@@ -9,6 +9,7 @@ import { createSteelMarkdownCompletionServices, registerSteelMarkdownPublication
 import { renderQuotationCustomerMarkdown, prepareQuotationTurn, bindQuotationCustomerResult } from '../quotation/preparation';
 import { buildResponse, createResponseTracker, emitOutputTextDone } from '../../agents/responses/handlers';
 import { finalizeSteelResponsesTurn, replaceSteelResponsesMarkdown } from '../quotation/transport';
+import { acceptQuotationSignal, publishCompletedQuotation } from '../quotation/runner';
 import { extractSteelNativeResponseOutputText } from '../native/markdown';
 import { createSystemOrderRevisionService } from '../quotation/revision';
 import { SteelResponseCompletionError } from '../quotation/completion';
@@ -391,11 +392,95 @@ it.each(['ocr', 'system'])('publishes a new flow quotation after committed %s up
   expect(result.markdown).toBe(composite);
   expect(result.markdown).not.toContain('**下一步：**');
   expect((await dependencies.quotation.readState(scope))?.pendingMessages).toHaveLength(0);
+  const persistedBeforeReplay = await mongoose.connection.collection('completion_messages').findOne({ messageId: 'response' });
   const fresh = await turn(markdown, '數量改成3，報價');
   fresh.input.generationId = 'fresh-generation';
   const replay = await fresh.run();
   expect(replay.markdown).toBe(final);
-  expect((await mongoose.connection.collection('completion_messages').findOne({ messageId: 'response' }))?.markdown).toBe(final);
+  expect(await mongoose.connection.collection('completion_messages').findOne({ messageId: 'response' })).toEqual(persistedBeforeReplay);
+});
+
+it('replays a completed publication from the saved system order without rewriting the human message', async () => {
+  await dependencies.quotation.setOrder({ scope, fullMarkdown: order });
+  await seedCustomer();
+  const systemOrder = '## system_order\n\n| 品名規格 | 數量 | 總數 | 單價 |\n| --- | --- | --- | --- |\n| A | 2 | 2 | 10 |';
+  const completionInput = `${systemOrder}\n\n## quote_signal\n\nstart`;
+  const run = await acceptQuotationSignal({
+    scope,
+    response: completionInput,
+    responseId: 'response',
+    messageId: 'user-message',
+    expectedOrderHash: (await dependencies.quotation.readState(scope))?.currentOrder?.sha256,
+    expectedCustomerPreparationId: (await dependencies.quotation.readState(scope))?.currentCustomer?.preparationId,
+    completionReceipt: {
+      inputHash: createHash('sha256').update(completionInput).digest('hex'),
+      markdown: completionInput,
+    },
+    finishReason: 'stop',
+    service: dependencies.quotation,
+  });
+  if (!run) throw new Error('quotation run was not accepted');
+  const lease = await dependencies.quotation.acquireLease({ scope, runId: run.runId, leaseToken: 'replay-lease' });
+  if (!lease) throw new Error('quotation lease was not acquired');
+  const rawFinal = `${systemOrder}\n\n## customer_quote|歷史\n\n| 項目 | 小計 |\n| --- | --- |\n| A | 20 |\n\n## quote_summary\n\n歷史摘要`;
+  await dependencies.quotation.checkpoint({ scope, runId: run.runId, leaseToken: lease.leaseToken,
+    operationId: 'final', kind: 'final', payload: rawFinal });
+  const finalRef = (await dependencies.quotation.readState(scope))?.activeRun?.checkpointRefs.find(
+    (entry) => entry.operationId === 'final',
+  );
+  if (!finalRef) throw new Error('final checkpoint was not saved');
+  await dependencies.quotation.completeRun({ scope, runId: run.runId, leaseToken: lease.leaseToken,
+    finalRef: { ...scope, runId: run.runId, ...finalRef, kind: 'final' } });
+
+  const first = await turn(completionInput, '報價');
+  const published = await publishCompletedQuotation({
+    scope,
+    run,
+    markdown: rawFinal,
+    service: dependencies.quotation,
+    publishFinal: async ({ markdown }) => {
+      first.input.applyMarkdown(markdown);
+      await first.input.persistMarkdown({ completed: true });
+    },
+  });
+  expect(published.markdown).not.toContain('## customer_quote');
+  expect(first.writes).toHaveLength(1);
+
+  const beforeState = await dependencies.quotation.readState(scope);
+  const savedOrder = await dependencies.quotation.readCurrentSystemOrder(scope);
+  if (!beforeState?.currentOrder || !beforeState.currentCustomer || !savedOrder) {
+    throw new Error('published quotation state was not materialized');
+  }
+  const humanSystemOrder = savedOrder.markdown.replace('| A | 2 | 2 | 10 |', '| A | 2 | 2 | 77 |');
+  const humanHash = createHash('sha256').update(humanSystemOrder).digest('hex');
+  await dependencies.quotation.saveCurrentSystemOrder({
+    scope,
+    snapshot: { ...savedOrder, markdown: humanSystemOrder, sha256: humanHash, updatedAt: new Date() },
+    expectedRunId: run.runId,
+    expectedCurrentOrderSha256: beforeState.currentOrder.sha256,
+    expectedCustomer: {
+      customerIdentity: beforeState.currentCustomer.customerIdentity,
+      customerMarkdown: beforeState.currentCustomer.customerMarkdown,
+    },
+    expectedCurrentSystemOrderSha256: savedOrder.sha256,
+    expectedCurrentSystemOrderPresent: true,
+  });
+  const humanMessage = published.markdown.replace(savedOrder.markdown, humanSystemOrder);
+  await mongoose.connection.collection('completion_messages').updateOne(
+    { messageId: 'response' },
+    { $set: { markdown: humanMessage } },
+  );
+  const persistedBeforeReplay = await mongoose.connection.collection('completion_messages').findOne({ messageId: 'response' });
+  const replay = await turn(completionInput, '報價');
+  replay.input.generationId = 'fresh-generation';
+  const replayed = await replay.run();
+
+  expect(replayed.markdown).toContain('| A | 2 | 2 | 77 |');
+  expect(replayed.markdown).not.toContain('## customer_quote');
+  expect(replay.writes).toEqual([]);
+  expect(await mongoose.connection.collection('completion_messages').findOne({ messageId: 'response' })).toEqual(persistedBeforeReplay);
+  expect((await dependencies.quotation.readCurrentSystemOrder(scope))?.markdown).toBe(humanSystemOrder);
+  expect(await dependencies.quotation.readCheckpoint({ scope, runId: run.runId, operationId: 'final' })).toBe(rawFinal);
 });
 
 it('keeps streamed revision deltas, done text, completed output and persisted message identical', async () => {

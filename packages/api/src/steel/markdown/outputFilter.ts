@@ -24,7 +24,7 @@ function headingBaseName(line: string): string | undefined {
     ?.replace(/[ \t]+#+[ \t]*$/u, '')
     .trim();
   if (!title) return undefined;
-  return title.split('｜', 1)[0]?.trim();
+  return title.split(/[｜|]/u, 1)[0]?.trim();
 }
 
 function isCustomerQuoteHeading(line: string): boolean {
