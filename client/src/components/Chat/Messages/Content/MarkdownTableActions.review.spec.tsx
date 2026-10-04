@@ -2095,6 +2095,94 @@ describe('MarkdownTableActions Steel review entry', () => {
     });
   });
 
+  it('closes the captured session after a committed receipt when new AI arrives without later input', async () => {
+    const { table, prepared, savedSnapshot } = createReopenLifecycleFixture();
+    const newAiTable = {
+      ...table,
+      outputId: 'ocr_result:generation-reopen-new-ai',
+      revision: 'generation-reopen-new-ai',
+      latestOutputId: 'ocr_result:generation-reopen-new-ai',
+      rows: [{
+        ...table.rows[0],
+        values: { 數量: { baseline: '4', effective: '4' } },
+      }],
+    };
+    const reviewRefetch = jest.fn<Promise<{ data: { table: typeof newAiTable }; error: null }>, []>();
+    let resolveReview!: (result: { data: { table: typeof newAiTable }; error: null }) => void;
+    reviewRefetch.mockImplementation(() => new Promise((resolve) => {
+      resolveReview = resolve;
+    }));
+    const prepare = jest.fn().mockResolvedValue(prepared);
+    const commit = jest.fn().mockRejectedValue(new Error('connection lost'));
+    const receiptResolvers: Array<(result: {
+      data: { status: 'committed'; snapshot: typeof savedSnapshot };
+      error: null;
+    }) => void> = [];
+    const committedReceipt: {
+      data: { status: 'committed'; snapshot: typeof savedSnapshot };
+      error: null;
+    } = { data: { status: 'committed', snapshot: savedSnapshot }, error: null };
+    let receiptReleased = false;
+    const receiptRefetch = jest.fn().mockImplementation(() => receiptReleased
+      ? Promise.resolve({ ...committedReceipt })
+      : new Promise((resolve) => {
+        receiptResolvers.push(resolve);
+      }));
+    mockUseGetSteelReviewQuery.mockReturnValue({
+      data: { table },
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: reviewRefetch,
+    });
+    mockUsePrepareSteelReviewMutation.mockReturnValue({ mutateAsync: prepare });
+    mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
+    mockUseGetSteelReviewReceiptQuery.mockReturnValue({
+      data: undefined,
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: receiptRefetch,
+    });
+
+    const rendered = renderDialog();
+    const input = screen.getByRole('textbox', { name: '數量 row-1' });
+    fireEvent.change(input, { target: { value: '9' } });
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_close' }));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_discard_unsaved' }));
+    await waitFor(() => expect(receiptRefetch).toHaveBeenCalledTimes(1));
+
+    receiptReleased = true;
+    receiptResolvers.forEach((resolve) => resolve(committedReceipt));
+    await waitFor(() => expect(reviewRefetch).toHaveBeenCalledTimes(1));
+    // The production refetch updates React Query's table while reconciliation
+    // is still awaiting the current response. This re-render changes the
+    // capture-scoped callbacks mid-await, the ordering that used to cancel the
+    // committed receipt before it could close the old session.
+    mockUseGetSteelReviewQuery.mockReturnValue({
+      data: { table: newAiTable },
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: reviewRefetch,
+    });
+    rendered.rerender(
+      <QueryClientProvider client={rendered.queryClient}>
+        <Provider store={rendered.store}>
+          <SteelReviewDialog identity={reviewIdentity} />
+        </Provider>
+      </QueryClientProvider>,
+    );
+    resolveReview({ data: { table: newAiTable }, error: null });
+
+    await waitFor(() => {
+      expect(rendered.store.get(steelReviewSelectionAtom)).toBeNull();
+      expect(screen.queryByRole('dialog')).toBeNull();
+    });
+  });
+
   it('keeps source rows visible while sources load or fail, then renders an image preview', async () => {
     const row = {
       rowId: 'drawing-row',

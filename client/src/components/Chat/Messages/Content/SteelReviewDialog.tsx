@@ -429,7 +429,8 @@ export default function SteelReviewDialog({
   const draftStateAtomKey = baseTable
     ? getSteelReviewDraftOwnerKey(identity, baseTable, captureId)
     : `pending:${dialogStateKey}`;
-  const [draftState, setDraftState] = useAtom(steelReviewDraftStateFamily(draftStateAtomKey));
+  const draftStateAtom = steelReviewDraftStateFamily(draftStateAtomKey);
+  const [draftState, setDraftState] = useAtom(draftStateAtom);
   const setDraftStateScoped = useCallback((
     update: SteelReviewDraftState | ((current: SteelReviewDraftState) => SteelReviewDraftState),
   ) => {
@@ -514,6 +515,7 @@ export default function SteelReviewDialog({
   const exportRowsRef = useRef<readonly SteelReviewRow[]>([]);
   const exportBaseRowsRef = useRef<readonly SteelReviewRow[]>([]);
   const pendingSnapshotRef = useRef<CaptureScoped<{ outputId: string; revision: string }>>();
+  const receiptEffectKeyRef = useRef<string>();
   const prepareMutation = usePrepareSteelReviewMutation();
   const commitMutation = useCommitSteelReviewMutation();
   const receiptQuery = useGetSteelReviewReceiptQuery(receiptInput?.value ?? null, {
@@ -1498,6 +1500,20 @@ export default function SteelReviewDialog({
       return undefined;
     }
     const initiatedCaptureId = receiptInput.captureId;
+    const receiptEffectKey = [
+      initiatedCaptureId,
+      receiptInput.value.outputId,
+      receiptInput.value.operationId,
+      receiptInput.value.digest,
+    ].join(':');
+    // React Query may publish the newer owner while this receipt is awaiting
+    // its current-review/messages reads. Keep one reconciliation alive for
+    // that captured operation; callback identity changes must not cancel the
+    // old operation before it can acknowledge and close its own session.
+    if (receiptEffectKeyRef.current === receiptEffectKey) {
+      return undefined;
+    }
+    receiptEffectKeyRef.current = receiptEffectKey;
     let active = true;
     void refetchReceipt().then(async (result) => {
       if (!active || !isCurrentCapture(initiatedCaptureId)) {
@@ -1583,8 +1599,13 @@ export default function SteelReviewDialog({
         if (!active || !hasActiveCapturedSession(prepared, initiatedCaptureId)) {
           return;
         }
+        // A same-capture remount may have accepted later local input while
+        // this receipt was awaiting the authoritative reads. Read the live
+        // Jotai atom before rebasing so the old continuation cannot restore
+        // its stale draft snapshot over that input.
+        const currentDraft = store.get(draftStateAtom);
         const rebased = rebaseSteelReviewDraftState(
-          latestDraftStateRef.current,
+          currentDraft,
           status.snapshot.rows,
           boundary,
         );
@@ -1614,11 +1635,17 @@ export default function SteelReviewDialog({
         setSaveErrorCode(undefined);
         setReceiptFailed(true);
       }
+    }).finally(() => {
+      if (receiptEffectKeyRef.current === receiptEffectKey) {
+        receiptEffectKeyRef.current = undefined;
+      }
     });
     return () => {
-      active = false;
+      if (receiptEffectKeyRef.current !== receiptEffectKey) {
+        active = false;
+      }
     };
-  }, [applyConfirmedNoOp, applyConfirmedSnapshot, clearCapturedAuthority, clearSelectionForCapture, discardRequested, finishDiscardAtBoundary, getCapturedAuthority, hasActiveCapturedSession, identity.conversationId, isCurrentCapture, queryClient, receiptInput, refetchAuthoritativeMessages, refetchCurrentReview, refetchReceipt, setCloseRequested, setDiscardRequested, setDraftStateScoped, setReceiptFailed, setReceiptInput, setSaveErrorCode, setSavePhase]);
+  }, [applyConfirmedNoOp, applyConfirmedSnapshot, clearCapturedAuthority, clearSelectionForCapture, discardRequested, draftStateAtom, finishDiscardAtBoundary, getCapturedAuthority, hasActiveCapturedSession, identity.conversationId, isCurrentCapture, queryClient, receiptInput, refetchAuthoritativeMessages, refetchCurrentReview, refetchReceipt, setCloseRequested, setDiscardRequested, setDraftStateScoped, setReceiptFailed, setReceiptInput, setSaveErrorCode, setSavePhase, store]);
   const saveAndClose = useCallback(async () => {
     const initiatedCaptureId = captureId;
     const expectedAuthority = getCapturedAuthority(initiatedCaptureId);
