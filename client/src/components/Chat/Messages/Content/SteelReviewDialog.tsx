@@ -194,6 +194,34 @@ function isAuthorizedCurrentNoOpTable(
   );
 }
 
+async function canApplySteelReviewMessageSnapshot(
+  messages: readonly TMessage[] | undefined,
+  prepared: SteelReviewPrepared,
+  snapshot: SteelReviewSavedSnapshot,
+): Promise<boolean> {
+  if (!messages) {
+    return true;
+  }
+  const message = messages.find((candidate) => candidate.messageId === snapshot.messageId);
+  if (!message) {
+    return false;
+  }
+  if (message.text === snapshot.messageText) {
+    return true;
+  }
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) {
+    return false;
+  }
+  try {
+    const digest = await subtle.digest('SHA-256', new TextEncoder().encode(message.text));
+    const hash = Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('');
+    return hash === prepared.messageSha256;
+  } catch {
+    return false;
+  }
+}
+
 function getErrorStatus(error: unknown): number | undefined {
   if (typeof error !== 'object' || error === null || !('response' in error)) {
     return undefined;
@@ -704,7 +732,11 @@ export default function SteelReviewDialog({
     return reviewQueryRefetchRef.current();
   }, []);
   const savePromiseRef = useRef<Promise<boolean>>();
-  const applyConfirmedSnapshot = useCallback((snapshot: SteelReviewSavedSnapshot, submittedChangeSequence: number) => {
+  const applyConfirmedSnapshot = useCallback((
+    snapshot: SteelReviewSavedSnapshot,
+    submittedChangeSequence: number,
+    applyMessageSnapshot = true,
+  ) => {
     const tableKey = DynamicQueryKeys.steelReview(
       identity.conversationId,
       identity.kind,
@@ -714,10 +746,12 @@ export default function SteelReviewDialog({
     );
     queryClient.setQueryData<SteelReviewResponse>(tableKey, (current) =>
       applySteelReviewSnapshotToResponse(current, snapshot));
-    queryClient.setQueryData<TMessage[]>(
-      [QueryKeys.messages, identity.conversationId],
-      (current) => applySteelReviewSnapshotToMessages(current, identity.kind, snapshot),
-    );
+    if (applyMessageSnapshot) {
+      queryClient.setQueryData<TMessage[]>(
+        [QueryKeys.messages, identity.conversationId],
+        (current) => applySteelReviewSnapshotToMessages(current, identity.kind, snapshot),
+      );
+    }
     const capturedBase = capturedAuthorityRef.current?.table ?? table;
     if (capturedBase) {
       capturedAuthorityRef.current = {
@@ -851,7 +885,9 @@ export default function SteelReviewDialog({
             return false;
           }
           if (currentResult.data.table.revision === saved.savedSnapshot.revision) {
-            applyConfirmedSnapshot(saved.savedSnapshot, submittedChangeSequenceRef.current);
+            const messages = queryClient.getQueryData<TMessage[]>([QueryKeys.messages, identity.conversationId]);
+            const canApplyMessageSnapshot = await canApplySteelReviewMessageSnapshot(messages, prepared, saved.savedSnapshot);
+            applyConfirmedSnapshot(saved.savedSnapshot, submittedChangeSequenceRef.current, canApplyMessageSnapshot);
           } else {
             applyConfirmedNoOp(currentResult.data.table, submittedChangeSequenceRef.current);
           }
@@ -1062,7 +1098,9 @@ export default function SteelReviewDialog({
         }
         const boundary = discardBoundaryRef.current ?? submittedChangeSequenceRef.current;
         if (currentResult.data.table.revision === status.snapshot.revision) {
-          applyConfirmedSnapshot(status.snapshot, boundary);
+          const messages = queryClient.getQueryData<TMessage[]>([QueryKeys.messages, identity.conversationId]);
+          const canApplyMessageSnapshot = await canApplySteelReviewMessageSnapshot(messages, prepared, status.snapshot);
+          applyConfirmedSnapshot(status.snapshot, boundary, canApplyMessageSnapshot);
         } else {
           applyConfirmedNoOp(currentResult.data.table, boundary);
         }
