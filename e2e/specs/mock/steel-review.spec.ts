@@ -1,5 +1,6 @@
 import { ObjectId } from 'mongodb';
 import { join } from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 import type { SteelReviewErrorResponse, SteelReviewOperationCommit, SteelReviewOperationPrepare, SteelReviewOperationPrepared, SteelReviewSaveResponse, SteelReviewTable } from 'librechat-data-provider';
@@ -328,7 +329,7 @@ test.describe('Steel managed source review', () => {
     conversations.push(conversationId);
     const otherMessageId = randomUUID();
     await seedMessages(getE2EUser().email, conversationId, [{
-      messageId: otherMessageId, parentMessageId: '00000000-0000-0000-0000-000000000000',
+      messageId: otherMessageId, parentMessageId: messageId,
       text: ocr, content: [{ type: 'text', text: ocr }], isCreatedByUser: false, sender: 'Assistant',
     }]);
     const before = await persistedSnapshot(conversationId);
@@ -673,6 +674,9 @@ test.describe('Steel managed source review', () => {
       if (!current) throw new Error('Missing current-protocol saved owner');
       await db.collection('steel_review_outputs').insertOne({ ...current, _id: new ObjectId(),
         outputId: 'ocr_result:historical-generation', revision: 'historical-sidecar', state: 'historical',
+        rows: current.rows.map((row: SteelReviewTable['rows'][number], index: number) => ({ ...row,
+          rowId: createHash('sha256').update(`ocr_result:historical-generation:${index}:${JSON.stringify(current.headers.map((header: string) => row.values[header].baseline ?? ''))}`).digest('hex'),
+        })),
         updatedAt: new Date(Date.now() + 60_000), receipts: [],
       });
     });
@@ -745,7 +749,7 @@ test.describe('Steel managed source review', () => {
     ] });
     const foreign = await page.request.get(`${sourcesUrl.split('?')[0]}/review-foreign-tenant?${new URLSearchParams({ messageId })}`, { headers });
     expect(foreign.status()).toBe(404);
-    const missingOwnerQuery = new URLSearchParams({ messageId: 'missing-review-owner' });
+    const missingOwnerQuery = new URLSearchParams({ messageId: 'missing-review-owner', title: 'ocr_result' });
     const missingOwnerList = await page.request.get(`${sourcesUrl.split('?')[0]}?${missingOwnerQuery}`, { headers });
     expect(missingOwnerList.status()).toBe(200);
     expect(await missingOwnerList.json()).toEqual({ sources: [] });
@@ -863,7 +867,7 @@ test.describe('Steel managed source review', () => {
     });
     const before = await persistedSnapshot(conversationId);
     const root = `/api/steel/conversations/${conversationId}/review/ocr_result/sources`;
-    const query = new URLSearchParams({ messageId });
+    const query = new URLSearchParams({ messageId, title: 'ocr_result' });
     const list = await page.request.get(`${root}?${query}`, { headers });
     expect(list.status()).toBe(200);
     expect(await list.json()).toEqual({ sources: [] });
@@ -918,7 +922,7 @@ test.describe('Steel managed source review', () => {
         rows: [{ source: null }, { source: null }],
       } });
       const root = `/api/steel/conversations/${current.conversationId}/review/ocr_result/sources`;
-      const query = new URLSearchParams({ messageId: current.messageId });
+      const query = new URLSearchParams({ messageId: current.messageId, title: 'ocr_result' });
       const list = await page.request.get(`${root}?${query}`, { headers });
       expect(list.status()).toBe(200);
       expect(await list.json()).toEqual({ sources: [] });
@@ -962,7 +966,7 @@ test.describe('Steel managed source review', () => {
         rows: [{ source: null }, { source: null }],
       } });
       const root = `/api/steel/conversations/${current.conversationId}/review/ocr_result/sources`;
-      const query = new URLSearchParams({ messageId: current.messageId });
+      const query = new URLSearchParams({ messageId: current.messageId, title: 'ocr_result' });
       const list = await page.request.get(`${root}?${query}`, { headers });
       expect(list.status()).toBe(200);
       expect(await list.json()).toEqual({ sources: [] });
@@ -1005,7 +1009,7 @@ test.describe('Steel managed source review', () => {
       const review = await page.request.get(readUrl(conversationId, messageId, 'ocr_result'), { headers });
       expect(review.status()).toBe(404);
       const root = `/api/steel/conversations/${conversationId}/review/ocr_result/sources`;
-      const query = new URLSearchParams({ messageId });
+      const query = new URLSearchParams({ messageId, title: 'ocr_result' });
       const list = await page.request.get(`${root}?${query}`, { headers });
       expect(list.status()).toBe(200);
       expect(await list.json()).toEqual({ sources: [] });
@@ -2199,8 +2203,8 @@ test.describe('Steel managed source review', () => {
       return { operation, saved: await commit.json() };
     }
     const first = await save('7');
-    const receiptQuery = new URLSearchParams({ messageId, title: first.operation.title,
-      outputId: first.operation.outputId, operationId: first.operation.operationId, digest: first.operation.digest });
+    const receiptQuery = new URLSearchParams({ messageId, title: first.operation.operationRequest.title,
+      outputId: first.operation.operationRequest.outputId, operationId: first.operation.operationId, digest: first.operation.digest });
     const receiptUrl = `${url}/receipt?${receiptQuery}`;
     const firstState = await persistedSnapshot(conversationId);
     const committedReceipt = await page.request.get(receiptUrl, { headers });
@@ -3328,7 +3332,9 @@ test.describe('Steel managed source review', () => {
         userId: message.user, conversationId, messageId: historicalId,
         kind: 'ocr_result', tableId: 'ocr_result:1', outputId: 'ocr_result:previous-owner',
         revision: 'previous-owner-revision', state: 'historical',
-        headers: table.headers, rows: table.rows, aiRawMarkdown: ocr,
+        headers: table.headers, rows: table.rows.map((row, index) => ({ ...row,
+          rowId: createHash('sha256').update(`ocr_result:previous-owner:${index}:${JSON.stringify(table.headers.map((header) => row.values[header].baseline ?? ''))}`).digest('hex'),
+        })), aiRawMarkdown: ocr,
         aiBaselineMarkdown: ocr, effectiveMarkdown: ocr, receipts: [],
         createdAt: new Date(), updatedAt: new Date(),
       });
