@@ -3,7 +3,12 @@ import { createHash } from 'node:crypto';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { AIMessageChunk } from '@librechat/agents/langchain/messages';
 import { createSteelQuotationStateModel, createSteelQuotationArtifactModel } from '@librechat/data-schemas';
-import type { SteelQuotationScope, SteelQuotationActiveRun } from '@librechat/data-schemas';
+import type {
+  SteelQuotationScope,
+  SteelQuotationActiveRun,
+  SteelQuotationPublicationProof,
+  SteelQuotationPublicationSaveResult,
+} from '@librechat/data-schemas';
 import type { SteelToolJsonObject, SteelToolResult } from '../tools/results';
 import type { QuotationModelInput, QuotationModelResult } from './model';
 import type { OpenAIOAuthModelOptions } from '../native/oauth';
@@ -230,6 +235,15 @@ afterAll(async () => {
 async function prepareRun(rowCount: number, rowsPerChunk = 30): Promise<SteelQuotationActiveRun> {
   const order = orderMarkdown(rowCount);
   await service.setOrder({ scope, fullMarkdown: order, revision: 'runner-test' });
+  await service.saveCustomer({
+    scope,
+    customerMarkdown,
+    customerIdentity: 'C1',
+    triggeringMessageId: 'customer-trigger',
+    responseId: 'customer-response',
+    orderHash: createHash('sha256').update(order).digest('hex'),
+    selectionProvenance: { method: 'unique', lookupMessageId: 'customer-lookup' },
+  });
   const ticket = await service.issueTicket({
     scope,
     customerMarkdown,
@@ -259,11 +273,12 @@ function runnerInput(
   options: {
     signal?: AbortSignal;
     onProgress?: (progress: { run: SteelQuotationActiveRun }) => Promise<void>;
-    publishFinal?: (input: { run: SteelQuotationActiveRun; markdown: string }) => Promise<void>;
+    publishFinal?: (input: SteelQuotationPublicationProof & { markdown: string }) => Promise<SteelQuotationPublicationSaveResult | void>;
     projectFinal?: (input: { run: SteelQuotationActiveRun; markdown: string }) => Promise<void>;
     onTextDelta?: (text: string) => Promise<void>;
   } = {},
 ) {
+  const publishFinal = options.publishFinal ?? (async () => undefined);
   return {
     scope,
     modelOptions: {} as OpenAIOAuthModelOptions,
@@ -272,7 +287,23 @@ function runnerInput(
     executeLookup,
     onProgress: options.onProgress,
     onTextDelta: options.onTextDelta,
-    publishFinal: options.publishFinal ?? jest.fn(async () => undefined),
+    publishFinal: async (input: SteelQuotationPublicationProof & { markdown: string }) => {
+      if (!input.run) throw new Error('Quotation publication test proof is missing its run');
+      const run = input.run;
+      const saved = await publishFinal(input);
+      if (!saved && run.targetMessageId) {
+        await service.markPublished({
+          scope: input.scope,
+          runId: run.runId,
+          targetMessageId: input.targetMessageId,
+          finalSha256: input.finalSha256,
+        });
+      }
+      return saved ?? { ok: true as const, message: {
+        messageId: run.targetMessageId ?? 'target-1', conversationId: scope.conversationId,
+        text: input.markdown, user: scope.userId,
+      } };
+    },
     projectFinal: options.projectFinal,
   };
 }
@@ -1620,7 +1651,7 @@ describe('quotation runner integration', () => {
     expect(replay.status).toBe('completed');
     expect(model.mock.calls.length).toBe(callsAfterCompletion);
     expect(publishFinal).not.toHaveBeenCalled();
-    expect(projectFinal).not.toHaveBeenCalled();
+    expect(projectFinal).toHaveBeenCalledTimes(1);
     const current = await service.readCurrentSystemOrder(scope);
     expect(current).toBeDefined();
     const editedMarkdown = current!.markdown.replace('10', '77');
@@ -1648,7 +1679,7 @@ describe('quotation runner integration', () => {
     });
     expect(edited?.markdown).toBe(editedMarkdown);
     await runQuotationPreflight({ ...runnerInput(model, lookup, { publishFinal, projectFinal }) });
-    expect(projectFinal).not.toHaveBeenCalled();
+    expect(projectFinal).toHaveBeenCalledTimes(2);
     const final = (await service.readState(scope))!.activeRun!.checkpointRefs.find(
       (entry) => entry.operationId === 'final',
     );
@@ -1668,6 +1699,7 @@ describe('quotation runner integration', () => {
     expect(publishedReplay.systemOrderHash).toBe(
       createHash('sha256').update(editedMarkdown, 'utf8').digest('hex'),
     );
+    expect(projectFinal).toHaveBeenCalledTimes(3);
   });
 
   it('retries a failed projector and deduplicates only after successful projection', async () => {

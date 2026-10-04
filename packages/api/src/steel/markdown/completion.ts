@@ -3,6 +3,8 @@ import type {
   ISteelConversationOcrState,
   ISteelQuotationState,
   SteelQuotationActiveRun,
+  SteelQuotationPublicationProof,
+  SteelQuotationPublicationSaveResult,
   SteelQuotationScope,
   SteelQuotationSourceSnapshot,
 } from '@librechat/data-schemas';
@@ -15,7 +17,7 @@ import type { SteelDelegateOcrStateService } from '../ocr/state';
 import type { FinalizeOcrResponseSuccess } from '../ocr/result';
 import { appendSteelNextStep, hasSteelDataMarkdown, hasSteelCustomerTier, steelSectionTitle } from '../quotation/next';
 import { isUnfinishedQuotation, prepareQuotationCustomerResponse, hasQuotationOrder } from '../quotation/preparation';
-import { acceptQuotationSignal, acceptQuotationResponse, publishCompletedQuotation } from '../quotation/runner';
+import { acceptQuotationSignal, acceptQuotationResponse, publishCompletedQuotation, SteelQuotationPublicationError } from '../quotation/runner';
 import { finalizeOcrResponse, parseAssistantMarkdown } from '../ocr/result';
 import { createSystemOrderRevisionService } from '../quotation/revision';
 import { SteelResponseCompletionError } from '../quotation/completion';
@@ -32,6 +34,8 @@ export interface SteelMarkdownCompletionInput {
   stage?: 'workflow' | 'ui' | 'pending';
   applyMarkdown(markdown: string): void;
   persistMarkdown(options?: { completed: boolean }): Promise<object | null | undefined>;
+  publishQuotation?(input: SteelQuotationPublicationProof & { markdown: string }):
+    Promise<SteelQuotationPublicationSaveResult>;
   publishedResponse?: SteelPublishedResponsePort;
   assertActive?(): Promise<void>;
   onPrepared?(markdown: string): Promise<void>;
@@ -206,6 +210,84 @@ async function persist(input: SteelMarkdownCompletionInput, markdown: string, co
   requireSaved(await input.persistMarkdown({ completed }), 'response_save_failed');
 }
 
+async function persistQuotation(
+  input: SteelMarkdownCompletionInput,
+  publication: SteelQuotationPublicationProof & { markdown: string },
+): Promise<SteelQuotationPublicationSaveResult> {
+  if (input.publishQuotation) {
+    // Update the caller-owned physical response before its guarded save captures
+    // the full message, preserving content parts alongside the clean text.
+    input.applyMarkdown(publication.markdown);
+    const saved = await input.publishQuotation(publication);
+    if (!saved.ok) throw new SteelResponseCompletionError('superseded_response');
+    input.publishedResponse?.accept(saved.message);
+    return saved;
+  }
+  throw new SteelResponseCompletionError('response_save_failed');
+}
+
+async function currentQuotationPublicationProof(
+  input: SteelMarkdownCompletionInput,
+  dependencies: SteelMarkdownCompletionDependencies,
+  markdown: string,
+  state: ISteelQuotationState | null | undefined,
+  run: SteelQuotationActiveRun | undefined,
+): Promise<(SteelQuotationPublicationProof & { markdown: string }) | undefined> {
+  const currentOrder = state?.currentOrder;
+  const currentSystemOrder = state?.currentSystemOrder;
+  const customer = state?.currentCustomer;
+  const targetMessageId = currentSystemOrder?.messageId ?? run?.targetMessageId;
+  if (!run || run.status !== 'completed' || !targetMessageId || !currentOrder ||
+    !currentSystemOrder || !customer || !input.publishQuotation) return undefined;
+  const final = await dependencies.quotation.readCheckpoint({
+    scope: input.req.steelNativeContext!.quotation!.scope,
+    runId: run.runId,
+    operationId: 'final',
+  });
+  if (!final) return undefined;
+  return {
+    scope: input.req.steelNativeContext!.quotation!.scope,
+    runId: run.runId,
+    targetMessageId,
+    markdown,
+    finalSha256: hash(final),
+    currentOrderSha256: currentOrder.sha256,
+    currentSystemOrderSha256: currentSystemOrder.sha256,
+    ...(currentSystemOrder.sourceSnapshot ? { sourceSnapshot: currentSystemOrder.sourceSnapshot } : {}),
+    customer: {
+      preparationId: customer.preparationId,
+      customerIdentity: customer.customerIdentity,
+      customerMarkdown: customer.customerMarkdown,
+    },
+    message: {
+      messageId: targetMessageId,
+      conversationId: input.req.steelNativeContext!.quotation!.scope.conversationId,
+      text: markdown,
+      user: input.req.steelNativeContext!.quotation!.scope.userId,
+    },
+  };
+}
+
+async function persistQuotationResponse(
+  input: SteelMarkdownCompletionInput,
+  dependencies: SteelMarkdownCompletionDependencies,
+  markdown: string,
+  state: ISteelQuotationState | null | undefined,
+  run: SteelQuotationActiveRun | undefined,
+  completed: boolean,
+): Promise<void> {
+  const targetMessageId = state?.currentSystemOrder?.messageId ?? run?.targetMessageId;
+  if (!run || run.status !== 'completed' || targetMessageId !== input.responseId) {
+    await persist(input, markdown, completed);
+    return;
+  }
+  const proof = await currentQuotationPublicationProof(input, dependencies, markdown, state, run);
+  if (!proof) throw new SteelResponseCompletionError('response_save_failed');
+  await input.assertActive?.();
+  input.applyMarkdown(markdown);
+  await persistQuotation(input, proof);
+}
+
 async function acceptPublishedResponse(
   input: SteelMarkdownCompletionInput,
   scope: SteelQuotationScope,
@@ -301,7 +383,18 @@ export async function finalizeSteelMarkdownTurn(
       const publication = Object.freeze({ ...adoption.publication,
         responseId: input.responseId, generationId, markdown: input.markdown });
       publications.add(publication);
-      await persist(input, input.markdown, true);
+      const adoptedState = await dependencies.quotation.readState(scope);
+      const adoptedRun = adoptedState?.activeRun;
+      if (adoption.publication.runId && (!adoptedRun || adoptedRun.runId !== adoption.publication.runId)) {
+        throw new SteelResponseCompletionError('superseded_response');
+      }
+      if (adoptedRun) {
+        await persistQuotationResponse(input, dependencies, input.markdown, adoptedState, adoptedRun, true);
+      } else {
+        // A durable pending publication without a live run has no guarded proof
+        // for a new write; project it to the current response and retain its receipt.
+        input.applyMarkdown(input.markdown);
+      }
       await verifyPublication(publication, scope, dependencies);
       return { markdown: input.markdown, publication };
     }
@@ -350,8 +443,9 @@ export async function finalizeSteelMarkdownTurn(
             run: quotationState.activeRun,
             markdown: finalMarkdown,
             service: dependencies.quotation,
-            publishFinal: async ({ markdown: publicMarkdown }) => {
-              await persist(input, publicMarkdown, true);
+            publishFinal: (publication) => persistQuotation(input, publication),
+            projectFinal: async ({ markdown: publicMarkdown }) => {
+              input.applyMarkdown(publicMarkdown);
             },
           });
           markdown = published.markdown;
@@ -523,7 +617,9 @@ export async function finalizeSteelMarkdownTurn(
       receipt.candidateValidated = true;
     }
     // Save the complete merged message before canonical OCR points at its message id.
-    await persist(input, receipt.canonicalMarkdown, false);
+    const prePersistState = await dependencies.quotation.readState(scope);
+    await persistQuotationResponse(input, dependencies, receipt.canonicalMarkdown,
+      prePersistState, receipt.acceptedRun, false);
     if (receipt.ocr && !receipt.ocrSaved) {
       if (claimToken && receipt.candidateToken) {
         requireSaved(await dependencies.ocr.updateDelegateFinalizationJournal({
@@ -633,7 +729,9 @@ export async function finalizeSteelMarkdownTurn(
       ? receipt.canonicalMarkdown : appendSteelNextStep({ markdown: receipt.canonicalMarkdown,
         order: currentOcr?.markdown, customer: latest?.currentCustomer?.customerMarkdown,
         completed: true, language: input.req.cookies?.lang || input.req.headers?.['accept-language']?.split(',')[0] || 'en' });
-    if (input.stage !== 'workflow') await persist(input, markdown, true);
+    if (input.stage !== 'workflow') await persistQuotationResponse(
+      input, dependencies, markdown, latest, receipt.acceptedRun, true,
+    );
     const [publishedOcr, publishedState] = await Promise.all([
       dependencies.ocr.readCurrentOcrResult(scope.conversationId), dependencies.quotation.readState(scope),
     ]);
@@ -656,6 +754,9 @@ export async function finalizeSteelMarkdownTurn(
     return { markdown, publication, ...(receipt.acceptedRun ? { acceptedRun: receipt.acceptedRun } : {}) };
   } catch (error) {
     if (error instanceof SteelResponseCompletionError) throw error;
+    if (error instanceof SteelQuotationPublicationError) {
+      throw new SteelResponseCompletionError(error.code);
+    }
     throw new SteelResponseCompletionError('response_save_failed');
   }
 }

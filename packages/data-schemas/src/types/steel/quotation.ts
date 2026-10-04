@@ -1,3 +1,4 @@
+import type { TCustomConfig } from 'librechat-data-provider';
 import type { Document } from 'mongoose';
 
 export type SteelQuotationRunStatus =
@@ -25,6 +26,56 @@ export interface SteelQuotationScope {
   conversationId: string;
   tenantId?: string;
 }
+
+/** Plain response payload used by the guarded quotation publication seam. */
+export interface SteelQuotationPublicationMessage {
+  messageId: string;
+  conversationId: string;
+  text: string;
+  user: string;
+  tenantId?: string;
+  [key: string]: unknown;
+}
+
+/** The full saved record is retained at runtime while this result exposes only
+ * the identity fields consumed by completion persistence bookkeeping. */
+export interface SteelQuotationSavedMessage {
+  messageId: string;
+  conversationId: string;
+  user: string;
+  text?: string;
+  tenantId?: string;
+}
+
+/** Request-scoped message retention inputs carried into the private save core. */
+export interface SteelQuotationPublicationSaveContext {
+  isTemporary?: boolean;
+  expiredAt?: Date;
+  interfaceConfig?: TCustomConfig['interface'];
+}
+
+/** Trusted current inputs captured before a quotation publication callback runs. */
+export interface SteelQuotationPublicationProof {
+  scope: SteelQuotationScope;
+  runId: string;
+  targetMessageId: string;
+  finalSha256: string;
+  currentOrderSha256: string;
+  currentSystemOrderSha256: string;
+  sourceSnapshot?: SteelQuotationSourceSnapshot;
+  saveContext?: SteelQuotationPublicationSaveContext;
+  run?: SteelQuotationActiveRun;
+  customer: {
+    preparationId: string;
+    customerIdentity: string;
+    customerMarkdown: string;
+  };
+  message: SteelQuotationPublicationMessage;
+}
+
+export type SteelQuotationPublicationSaveResult =
+  | { ok: true; message: SteelQuotationSavedMessage }
+  | { ok: false; code: 'superseded' };
 
 export interface SteelQuotationOrder {
   markdown: string;

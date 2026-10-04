@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto';
 import type {
   SteelQuotationPendingMessageFile,
   SteelQuotationScope,
+  SteelQuotationPublicationProof,
+  SteelQuotationPublicationSaveResult,
 } from '@librechat/data-schemas';
 import type { SteelQuotationActiveRun } from '@librechat/data-schemas';
 import type { SteelMarkdownPublication } from '../markdown/completion';
@@ -43,6 +45,7 @@ export async function processQuotationPendingMessages(input: {
   ) => Promise<SteelQuotationPendingInputPreparationResult>;
   language?: string;
   persist(input: { messageId: string; parentMessageId: string; markdown: string; completed?: boolean }): Promise<object | null | undefined>;
+  publishQuotation?(input: SteelQuotationPublicationProof & { markdown: string }): Promise<SteelQuotationPublicationSaveResult>;
   publish(input: { messageId: string; parentMessageId: string; markdown: string; publication?: SteelMarkdownPublication; acceptedRun?: SteelQuotationActiveRun }): Promise<void>;
   onSignalAccepted?(): Promise<void>;
 }): Promise<void> {
@@ -151,6 +154,7 @@ export async function processQuotationPendingMessages(input: {
         },
         applyMarkdown: (value) => { finalMarkdown = value; },
         persistMarkdown: (options) => input.persist({ messageId, parentMessageId: claim.sourceMessageId, markdown: finalMarkdown, completed: options?.completed }),
+        publishQuotation: input.publishQuotation,
       });
       markdown = finalized.markdown;
       if (finalized.acceptedRun) await input.onSignalAccepted?.();

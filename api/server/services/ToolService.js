@@ -6339,6 +6339,11 @@ async function executeSteelQuotationWorkflow({
   const quotation = context?.quotation;
   if (!quotation) return;
   const { scope } = quotation;
+  const publicationSaveContext = {
+    isTemporary: req.body?.isTemporary,
+    expiredAt: req._agentEventBindingRetention?.expiredAt ?? req.resolvedConversation?.expiredAt,
+    interfaceConfig: req.config?.interfaceConfig,
+  };
   const service = createSteelQuotationStateService(mongoose);
   if (!quotation.resume) {
     const messages = run?.getRunMessages?.() ?? [];
@@ -6442,11 +6447,34 @@ async function executeSteelQuotationWorkflow({
     }
   };
   const quotationToolIndexes = new Map();
-  const publishFinal = createQuotationPublicationProjector(async ({ run: active, markdown }) => persist({
-    messageId: active.targetMessageId ?? context.requestId,
-    parentMessageId: active.triggerMessageId,
-    markdown,
-  }));
+  const publishFinal = async (proof) => {
+    const targetMessageId = proof.targetMessageId ?? proof.run?.targetMessageId;
+    if (!targetMessageId) throw new Error('Quotation publication target is unavailable');
+    return db.saveSteelQuotationMessage({
+      ...proof,
+      scope,
+      targetMessageId,
+      saveContext: publicationSaveContext,
+      message: {
+        messageId: targetMessageId,
+        conversationId: scope.conversationId,
+        user: scope.userId,
+        parentMessageId: proof.run?.triggerMessageId,
+        isCreatedByUser: false,
+        unfinished: false,
+        text: proof.markdown,
+        content: [{ type: 'text', text: proof.markdown }],
+        sender: agent?.name ?? 'Agent',
+        endpoint: 'agents',
+        model: agent?.id,
+        finish_reason: 'stop',
+        metadata: { steel: { activityEvents: context.steelHistory?.activityEvents, preflightToolCalls: context.steelHistory?.preflightToolCalls } },
+      },
+    });
+  };
+  const projectFinal = createQuotationPublicationProjector(async ({ markdown }) => {
+    await (onFinalText ?? onText)(`\n\n${markdown}`);
+  });
   const runPreflight = () => runQuotationPreflight({
     scope, modelOptions, signal, onUsage,
     onTextDelta: onFinalText ? onText : undefined,
@@ -6500,7 +6528,7 @@ async function executeSteelQuotationWorkflow({
           createSteelPaddleOcrRunStepDeltaEvent({ stepId, providerToolCallId, toolName: call.name, args, index })] });
     },
     publishFinal,
-    projectFinal: publishFinal,
+    projectFinal,
   });
   const result = await runPreflight();
   if (result.status === 'busy') {
@@ -6513,6 +6541,7 @@ async function executeSteelQuotationWorkflow({
   let pendingSignalAccepted = false;
   await processQuotationPendingMessages({
     scope, modelOptions, signal, onUsage,
+    publishQuotation: publishFinal,
     persist: async (output) => persist(output, false),
     publish: async (output) => {
       if (output.acceptedRun) {

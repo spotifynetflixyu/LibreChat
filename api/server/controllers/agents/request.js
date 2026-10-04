@@ -70,6 +70,7 @@ const { logViolation } = require('~/cache');
 const { recordScheduleOutcome, isScheduleLive } = require('~/server/services/Schedules');
 const {
   saveMessage,
+  saveSteelQuotationMessage,
   getMessage,
   saveConvo,
   getMessages,
@@ -3269,6 +3270,17 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           },
           applyMarkdown: (markdown) => replaceResponseMarkdown(response, markdown),
           persistMarkdown: persistResponseMessage,
+          publishQuotation: async (proof) => saveSteelQuotationMessage({
+            ...proof,
+            saveContext: reqCtx,
+            message: {
+              ...response,
+              messageId: proof.targetMessageId,
+              conversationId: proof.scope.conversationId,
+              text: proof.markdown,
+              user: proof.scope.userId,
+            },
+          }),
           publishedResponse: {
             load: ({ userId: publishedUserId, responseId: publishedResponseId }) =>
               getMessage({ user: publishedUserId, messageId: publishedResponseId }),

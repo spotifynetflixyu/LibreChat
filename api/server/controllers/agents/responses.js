@@ -722,6 +722,21 @@ async function saveResponseOutput(
       responseMessage.text = markdown;
     },
     persistMarkdown,
+    publishQuotation: async (proof) => db.saveSteelQuotationMessage({
+      ...proof,
+      saveContext: {
+        isTemporary: req.body?.isTemporary,
+        expiredAt: req._agentEventBindingRetention?.expiredAt ?? req.resolvedConversation?.expiredAt,
+        interfaceConfig: req.config?.interfaceConfig,
+      },
+      message: {
+        ...responseMessage,
+        messageId: proof.targetMessageId,
+        conversationId: proof.scope.conversationId,
+        text: proof.markdown,
+        user: proof.scope.userId,
+      },
+    }),
     publishedResponse: {
       load: ({ userId: publishedUserId, responseId: publishedResponseId }) =>
         db.getMessage({ user: publishedUserId, messageId: publishedResponseId }),

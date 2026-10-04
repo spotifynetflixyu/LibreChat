@@ -10,6 +10,8 @@ import type {
   SteelQuotationSourceSnapshot,
   SteelQuotationTicket,
   SteelQuotationTicketCompletionReceipt,
+  SteelQuotationPublicationProof,
+  SteelQuotationPublicationSaveResult,
 } from '@librechat/data-schemas';
 import type { QuotationBackendFailure, QuotationChildResultInput, QuotationLookupEvidence, QuotationPythonEvidence } from './protocol';
 import type { SteelToolJsonObject, SteelToolResult } from '../tools/results';
@@ -61,14 +63,24 @@ export interface SteelQuotationPublicationInput {
   run: SteelQuotationActiveRun;
   markdown: string;
   service: Pick<SteelQuotationStateService,
-    'readState' | 'readCurrentSystemOrder' | 'readArtifact' | 'saveCurrentSystemOrder' | 'getArtifact' | 'markPublished'>;
-  publishFinal: (input: { run: SteelQuotationActiveRun; markdown: string }) => Promise<void>;
+    'readState' | 'readCurrentSystemOrder' | 'readArtifact' | 'saveCurrentSystemOrder' | 'getArtifact'>;
+  publishFinal: (input: SteelQuotationPublicationProof & { markdown: string }) =>
+    Promise<SteelQuotationPublicationSaveResult | void>;
   projectFinal?: (input: { run: SteelQuotationActiveRun; markdown: string }) => Promise<void>;
+}
+
+export class SteelQuotationPublicationError extends Error {
+  readonly code = 'superseded_response' as const;
+
+  constructor() {
+    super('Steel response could not be finalized.');
+    this.name = 'SteelQuotationPublicationError';
+  }
 }
 
 async function materializeCompletedSystemOrder(
   input: SteelQuotationPublicationInput,
-): Promise<SteelQuotationCurrentSystemOrder> {
+): Promise<{ state: ISteelQuotationState; currentSystemOrder: SteelQuotationCurrentSystemOrder }> {
   const state = await input.service.readState(input.scope);
   if (!state || state.activeRun?.runId !== input.run.runId || state.activeRun.status !== 'completed') {
     throw new Error('Quotation publication run is not the trusted completed run');
@@ -90,7 +102,7 @@ async function materializeCompletedSystemOrder(
     throw new Error('Quotation publication has no canonical system order');
   }
   const existing = await input.service.readCurrentSystemOrder(input.scope);
-  if (existing?.runId === input.run.runId) return existing;
+  if (existing?.runId === input.run.runId) return { state, currentSystemOrder: existing };
   const saved = await input.service.saveCurrentSystemOrder({
     scope: input.scope,
     snapshot: {
@@ -114,17 +126,19 @@ async function materializeCompletedSystemOrder(
     expectedCurrentSystemOrderPresent: existing !== undefined,
   });
   if (!saved) throw new Error('Quotation publication current system order CAS failed');
-  return saved;
+  return { state, currentSystemOrder: saved };
 }
 
 export async function publishCompletedQuotation(
   input: SteelQuotationPublicationInput,
 ): Promise<{ status: 'completed'; markdown: string; systemOrderHash: string; alreadyPublished: boolean }> {
-  const currentSystemOrder = await materializeCompletedSystemOrder(input);
+  const materialized = await materializeCompletedSystemOrder(input);
+  const { state, currentSystemOrder } = materialized;
   const publicMarkdown = projectPublishedMarkdown(
     stripCustomerQuoteSections(input.markdown),
     currentSystemOrder.markdown,
   );
+  const targetMessageId = currentSystemOrder.messageId ?? input.run.targetMessageId;
   const finalSha256 = createHash('sha256').update(input.markdown, 'utf8').digest('hex');
   const receipt = await input.service.getArtifact({
     scope: input.scope,
@@ -133,14 +147,37 @@ export async function publishCompletedQuotation(
   });
   const alreadyPublished = receipt != null;
   if (!receipt) {
-    await input.publishFinal({ run: input.run, markdown: publicMarkdown });
-    const marked = await input.service.markPublished({
+    const customer = state.currentCustomer;
+    const currentOrder = state.currentOrder;
+    if (!customer || !currentOrder || !targetMessageId) {
+      throw new Error('Quotation publication proof is unavailable');
+    }
+    const saved = await input.publishFinal({
       scope: input.scope,
       runId: input.run.runId,
-      targetMessageId: input.run.targetMessageId,
+      run: input.run,
+      targetMessageId,
+      markdown: publicMarkdown,
       finalSha256,
+      currentOrderSha256: currentOrder.sha256,
+      currentSystemOrderSha256: currentSystemOrder.sha256,
+      ...(currentSystemOrder.sourceSnapshot ? { sourceSnapshot: currentSystemOrder.sourceSnapshot } : {}),
+      customer: {
+        preparationId: customer.preparationId,
+        customerIdentity: customer.customerIdentity,
+        customerMarkdown: customer.customerMarkdown,
+      },
+      message: {
+        messageId: targetMessageId,
+        conversationId: input.scope.conversationId,
+        text: publicMarkdown,
+        user: input.scope.userId,
+      },
     });
-    if (!marked) throw new Error('Quotation publication was superseded');
+    if (!saved || !saved.ok) throw new SteelQuotationPublicationError();
+    await input.projectFinal?.({ run: input.run, markdown: publicMarkdown });
+  } else {
+    await input.projectFinal?.({ run: input.run, markdown: publicMarkdown });
   }
   return { status: 'completed', markdown: publicMarkdown, systemOrderHash: currentSystemOrder.sha256, alreadyPublished };
 }
@@ -195,7 +232,8 @@ export interface QuotationRunnerInput {
     arguments: SteelToolJsonObject;
     result?: SteelToolResult;
   }): Promise<void>;
-  publishFinal(input: { run: SteelQuotationActiveRun; markdown: string }): Promise<void>;
+  publishFinal(input: SteelQuotationPublicationProof & { markdown: string }):
+    Promise<SteelQuotationPublicationSaveResult | void>;
   projectFinal?(input: { run: SteelQuotationActiveRun; markdown: string }): Promise<void>;
   onUsage?: QuotationModelInput['onUsage'];
   onTextDelta?: QuotationModelInput['onTextDelta'];

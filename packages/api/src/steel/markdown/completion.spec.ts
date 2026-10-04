@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import { createHash } from 'node:crypto';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
+import { createMethods, createModels } from '@librechat/data-schemas';
 import type { Response as ServerResponse } from 'express';
 import type { SteelMarkdownCompletionDependencies, SteelPublishedResponseIdentity } from './completion';
 import type { SteelResponseRequest } from '../quotation/completion';
@@ -22,14 +23,15 @@ jest.mock('../native/context', () => ({
   buildDefaultSteelGlobalAgentContext: jest.fn(async () => ({ instructionPrefix: 'test quotation rules' })),
 }));
 
-const scope = { userId: 'completion-user', conversationId: 'completion-conversation' };
+const scope = { userId: 'completion-user', conversationId: '6bf991da-be8c-5300-bd85-ff6ee2d17bb5' };
 const order = '## ocr_result\n\n| 來源 | 零件編號 | 類別 | 數量 |\n| --- | --- | --- | --- |\n| 文字訂單 | P1 | 鋼板 | 2 |';
-let mongo: MongoMemoryServer;
+let mongo: MongoMemoryReplSet;
 let dependencies: SteelMarkdownCompletionDependencies;
 
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create();
+  mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   await mongoose.connect(mongo.getUri());
+  createModels(mongoose);
 });
 beforeEach(() => {
   dependencies = { ocr: createSteelOcrStateService(mongoose), quotation: createSteelQuotationStateService(mongoose),
@@ -51,8 +53,27 @@ async function turn(markdown: string, text = '確認訂單', language = 'zh-TW')
       await mongoose.connection.collection('completion_messages').updateOne({ messageId: 'response' },
         { $set: { markdown: current, unfinished: options?.completed === false } }, { upsert: true });
       return { messageId: 'response' };
-    } };
-  return { input, writes, req, quotation, run: () => createSteelMarkdownCompletionServices(dependencies).finalize(input) };
+    },
+    publishQuotation: async (proof) => {
+      await input.persistMarkdown({ completed: true });
+      await dependencies.quotation.markPublished({
+        scope,
+        runId: proof.runId,
+        targetMessageId: proof.targetMessageId,
+        finalSha256: proof.finalSha256,
+      });
+      return { ok: true, message: { messageId: proof.targetMessageId, conversationId: scope.conversationId, text: proof.markdown, user: scope.userId } };
+    },
+  };
+  return {
+    input,
+    writes,
+    req,
+    quotation,
+    run: async () => {
+      return createSteelMarkdownCompletionServices(dependencies).finalize(input);
+    },
+  };
 }
 
 async function seedCustomer(tier: 'A' | 'B' = 'B') {
@@ -204,7 +225,7 @@ it.each(['chat', 'responses'])('adopts a branded pending publication in multi-pa
       saveConversation: async () => {}, saveInput: async () => {}, saveOutput: async () => { await parent.run(); } });
     expect(extractSteelNativeResponseOutputText(response)).toBe(composite);
   } else expect((await parent.run()).markdown).toBe(composite);
-  expect((await mongoose.connection.collection('completion_messages').findOne({ messageId: 'response' }))?.markdown).toBe(composite);
+  expect((await mongoose.connection.collection('completion_messages').findOne({ messageId: 'response' }))?.markdown).toBe(result.markdown);
   expect(write).toHaveBeenCalledTimes(1);
   expect(Object.isFrozen(result.publication)).toBe(true);
   expect(shouldDeferSteelMarkdownPersistence(parent.req, result.markdown)).toBe(true);
@@ -433,19 +454,30 @@ it('replays a completed publication from the saved system order without rewritin
   await dependencies.quotation.completeRun({ scope, runId: run.runId, leaseToken: lease.leaseToken,
     finalRef: { ...scope, runId: run.runId, ...finalRef, kind: 'final' } });
 
+  const Models = mongoose.models as typeof mongoose.models & {
+    Conversation: mongoose.Model<Record<string, unknown>>;
+    Message: mongoose.Model<Record<string, unknown>>;
+  };
+  await Models.Conversation.create({ conversationId: scope.conversationId, user: scope.userId,
+    title: 'quotation', endpoint: 'openAI' });
+  await Models.Message.create({ messageId: 'response', conversationId: scope.conversationId,
+    user: scope.userId, text: 'partial', unfinished: true });
+  const methods = createMethods(mongoose);
   const first = await turn(completionInput, '報價');
   const published = await publishCompletedQuotation({
     scope,
     run,
     markdown: rawFinal,
     service: dependencies.quotation,
-    publishFinal: async ({ markdown }) => {
-      first.input.applyMarkdown(markdown);
-      await first.input.persistMarkdown({ completed: true });
-    },
+    publishFinal: async (publication) => methods.saveSteelQuotationMessage({
+      ...publication,
+      message: { messageId: publication.targetMessageId, conversationId: scope.conversationId,
+        user: scope.userId, text: publication.markdown, parentMessageId: 'user-message',
+        isCreatedByUser: false, content: [{ type: 'text', text: publication.markdown }] },
+    }),
   });
   expect(published.markdown).not.toContain('## customer_quote');
-  expect(first.writes).toHaveLength(1);
+  expect(first.writes).toHaveLength(0);
 
   const beforeState = await dependencies.quotation.readState(scope);
   const savedOrder = await dependencies.quotation.readCurrentSystemOrder(scope);
@@ -467,11 +499,10 @@ it('replays a completed publication from the saved system order without rewritin
     expectedCurrentSystemOrderPresent: true,
   });
   const humanMessage = published.markdown.replace(savedOrder.markdown, humanSystemOrder);
-  await mongoose.connection.collection('completion_messages').updateOne(
-    { messageId: 'response' },
-    { $set: { markdown: humanMessage } },
-  );
-  const persistedBeforeReplay = await mongoose.connection.collection('completion_messages').findOne({ messageId: 'response' });
+  await Models.Message.updateOne({ messageId: 'response', user: scope.userId }, {
+    $set: { text: humanMessage, content: [{ type: 'text', text: humanMessage }] },
+  });
+  const persistedBeforeReplay = await Models.Message.findOne({ messageId: 'response', user: scope.userId }).lean();
   const replay = await turn(completionInput, '報價');
   replay.input.generationId = 'fresh-generation';
   const replayed = await replay.run();
@@ -479,14 +510,10 @@ it('replays a completed publication from the saved system order without rewritin
   expect(replayed.markdown).toContain('| A | 2 | 2 | 77 |');
   expect(replayed.markdown).not.toContain('## customer_quote');
   expect(replay.writes).toEqual([]);
-  expect(await mongoose.connection.collection('completion_messages').findOne({ messageId: 'response' })).toEqual(persistedBeforeReplay);
+  expect(await Models.Message.findOne({ messageId: 'response', user: scope.userId }).lean()).toEqual(persistedBeforeReplay);
   expect((await dependencies.quotation.readCurrentSystemOrder(scope))?.markdown).toBe(humanSystemOrder);
   expect(await dependencies.quotation.readCheckpoint({ scope, runId: run.runId, operationId: 'final' })).toBe(rawFinal);
 
-  await mongoose.connection.collection('completion_messages').updateOne(
-    { messageId: 'response' },
-    { $set: { conversationId: scope.conversationId, user: scope.userId } },
-  );
   const loaded: SteelPublishedResponseIdentity[] = [];
   let loadCount = 0;
   const acceptedReplay = await turn(completionInput, '報價');
@@ -494,10 +521,10 @@ it('replays a completed publication from the saved system order without rewritin
   acceptedReplay.input.publishedResponse = {
     load: async () => {
       loadCount += 1;
-      const record = await mongoose.connection.collection('completion_messages').findOne({
+      const record = await Models.Message.findOne({
         messageId: 'response',
         user: scope.userId,
-      });
+      }).lean();
       return record as SteelPublishedResponseIdentity | null;
     },
     accept: (record) => { loaded.push(record); },

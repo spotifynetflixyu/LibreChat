@@ -395,6 +395,11 @@ const mockGetRoleByName = jest.fn();
 jest.mock('~/models', () => ({
   findPluginAuthsByKeys: jest.fn(),
   saveMessage: (...args) => mockSaveQuotationMessage(...args),
+  saveSteelQuotationMessage: (proof) => mockSaveQuotationMessage(
+    { userId: proof.scope?.userId ?? 'owner', ...proof.saveContext },
+    proof.message,
+    { context: 'Steel quotation guarded publication' },
+  ).then((message) => ({ ok: true, message })),
   getFiles: (...args) => mockGetFiles(...args),
   getRoleByName: (...args) => mockGetRoleByName(...args),
 }));
@@ -8632,8 +8637,9 @@ describe('quotation transport bridge', () => {
   });
   it('durably publishes to the original response id before presenting the result', async () => {
     const input = makeInput(true);
-    mockRunQuotation.mockImplementation(async ({ publishFinal }) => {
+    mockRunQuotation.mockImplementation(async ({ publishFinal, projectFinal }) => {
       await publishFinal({ run: { targetMessageId: 'original-response', triggerMessageId: 'original-input' }, markdown: '## system_order\ncomplete' });
+      await projectFinal({ run: { targetMessageId: 'original-response', triggerMessageId: 'original-input' }, markdown: '## system_order\ncomplete' });
       return { status: 'completed' };
     });
     await executeSteelQuotationWorkflow(input);
@@ -8647,7 +8653,7 @@ describe('quotation transport bridge', () => {
     const markdown = '## system_order\ncomplete\n\n## customer_quote\nfinal';
     const run = { runId: 'published-run', targetMessageId: 'original-response', triggerMessageId: 'original-input' };
     mockRunQuotation.mockImplementationOnce(async ({ publishFinal, projectFinal }) => {
-      expect(projectFinal).toBe(publishFinal);
+      expect(projectFinal).not.toBe(publishFinal);
       await publishFinal({ run, markdown });
       await projectFinal({ run, markdown });
       return { status: 'completed' };
