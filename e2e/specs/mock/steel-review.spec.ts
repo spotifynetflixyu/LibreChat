@@ -3105,7 +3105,15 @@ test.describe('Steel managed source review', () => {
         await dialog.locator('tbody tr').first().locator('td').nth(2).getByRole('textbox').fill('1234');
         await expect(quantity).toHaveValue('9');
       } else {
+        const preparedResponse = page.waitForResponse((response) => response.request().method() === 'POST' &&
+          response.url().endsWith(`${url}/prepare`));
         await dialog.getByRole('button', { name: /^Save/ }).click();
+        const attempted = await preparedResponse;
+        if (attempted.status() === 200) {
+          await expect(dialog.getByText('Updated 1 rows', { exact: true })).toBeVisible();
+        }
+        expect(await persistedSnapshot(conversationId)).toEqual(otherSaved);
+        expect(attempted.status()).toBe(409);
         await expect(dialog.getByRole('alert')).toBeVisible();
         await expect(quantity).toHaveValue('9');
       }
@@ -3118,7 +3126,8 @@ test.describe('Steel managed source review', () => {
     });
   }
 
-  test('a superseded dirty OCR editor retains its caption and asks before closing', async ({ page }) => {
+  for (const check of ['caption', 'close'] as const) {
+    test(`a superseded dirty OCR editor retains its caption and asks before closing: ${check}`, async ({ page }) => {
     const { conversationId, messageId } = await seedCurrent(ocr);
     conversations.push(conversationId);
     await page.goto(`/c/${conversationId}`);
@@ -3148,7 +3157,9 @@ test.describe('Steel managed source review', () => {
     await page.evaluate(() => window.dispatchEvent(new Event('online')));
     expect((await refreshed).status()).toBe(200);
     await expect(reviewValue(dialog, '9')).toBeVisible();
-    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
+    if (check === 'caption') {
+      await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
+    }
     await expect(dialog.getByRole('button', { name: /^Save/ })).toBeDisabled();
     await page.keyboard.press('Escape');
     await expect(dialog).toBeVisible();
@@ -3160,7 +3171,8 @@ test.describe('Steel managed source review', () => {
     await dialog.getByRole('button', { name: 'Discard unsaved changes', exact: true }).click();
     await expect(dialog).not.toBeVisible();
     expect(await persistedSnapshot(conversationId)).toEqual(afterAI);
-  });
+    });
+  }
 
   test('OCR download saves the focused draft and exports the confirmed clean snapshot', async ({ page }) => {
     const { conversationId, messageId } = await seedCurrent(ocr);
