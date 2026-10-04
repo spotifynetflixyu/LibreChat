@@ -28,9 +28,6 @@ import type {
 } from '@librechat/data-schemas';
 
 type Mongoose = typeof import('mongoose');
-type StateModel = ReturnType<typeof createSteelQuotationStateModel>;
-type ArtifactModel = ReturnType<typeof createSteelQuotationArtifactModel>;
-
 export const MAX_QUOTATION_ORDER_BYTES = 250_000;
 export const MAX_QUOTATION_CUSTOMER_BYTES = 100_000;
 export const MAX_QUOTATION_PROMPT_BYTES = 250_000;

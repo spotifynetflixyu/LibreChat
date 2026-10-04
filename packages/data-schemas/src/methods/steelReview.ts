@@ -1813,13 +1813,14 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
                 { ...cell, effective: cell.baseline },
               ])),
             }));
-          const serverOriginalMarkdown = !output && input.kind === 'ocr_result' &&
-            ocrState?.currentOcrResultGenerationId === input.outputId.replace(/^ocr_result:/u, '')
-            ? ocrState.currentOcrResultMarkdown
-            : !output && input.kind === 'system_order' &&
-              quotation?.currentSystemOrder?.runId === input.outputId.replace(/^system_order:/u, '')
-              ? quotation.currentSystemOrder.markdown
-              : undefined;
+          let serverOriginalMarkdown: string | undefined;
+          if (!output && input.kind === 'ocr_result' &&
+            ocrState?.currentOcrResultGenerationId === input.outputId.replace(/^ocr_result:/u, '')) {
+            serverOriginalMarkdown = ocrState.currentOcrResultMarkdown;
+          } else if (!output && input.kind === 'system_order' &&
+            quotation?.currentSystemOrder?.runId === input.outputId.replace(/^system_order:/u, '')) {
+            serverOriginalMarkdown = quotation.currentSystemOrder.markdown;
+          }
           let initialTrustedRows: SteelReviewRow[] | undefined;
           if (output || !ledgerMode) {
             initialTrustedRows = legacyInitialRows;

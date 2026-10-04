@@ -1,11 +1,11 @@
 import mongoose from 'mongoose';
 import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import { steelReviewRecoverySchema } from 'librechat-data-provider';
 import {
   createSteelQuotationStateService,
-  createSystemOrderRevisionService,
+  publishCompletedQuotation,
   renderQuotationCustomerMarkdown,
 } from '@librechat/api';
 
@@ -14,7 +14,6 @@ import type { SteelReviewOperationPrepare, SteelReviewOperationPrepared, SteelRe
 import type { Locator, Page } from '@playwright/test';
 
 import { deleteConversations, deleteMessagesByConversation, seedConversations, seedMessages, withMongo } from './db';
-import { buildCustomerQuoteFromMarkdown } from '../../../packages/api/src/steel/markdown/quote';
 import { getE2EUser } from '../../setup/user';
 import { getAccessToken } from './helpers';
 const title = 'system_order｜覆核報價';
@@ -69,21 +68,11 @@ async function seedOrder(withHistoricalQuote = true) {
     await service.checkpoint({ scope, runId: run.runId, leaseToken: lease.leaseToken, operationId: 'final', kind: 'final', payload: order });
     const ref = (await service.readState(scope))?.activeRun?.checkpointRefs.find((entry) => entry.operationId === 'final');
     if (!ref) throw new Error('Missing normal final checkpoint');
-    await service.completeRun({ scope, runId: run.runId, leaseToken: lease.leaseToken,
+    const completed = await service.completeRun({ scope, runId: run.runId, leaseToken: lease.leaseToken,
       finalRef: { ...scope, runId: run.runId, ...ref, kind: 'final' } });
-    await service.markPublished({ scope, runId: run.runId, targetMessageId: messageId,
-      finalSha256: createHash('sha256').update(order).digest('hex') });
-    const revision = createSystemOrderRevisionService({ read: service.readState,
-      readCurrentSystemOrder: service.readCurrentSystemOrder, readCheckpoint: service.readCheckpoint,
-      saveCurrentSystemOrder: service.saveCurrentSystemOrder });
-    const snapshot = await revision.readCurrentSystemOrder(scope);
-    if (!snapshot) throw new Error('Missing published system order');
-    const saved = await service.saveCurrentSystemOrder({ scope,
-      snapshot: { ...snapshot, customerQuoteMarkdown: buildCustomerQuoteFromMarkdown(snapshot.markdown)?.markdown },
-      expectedRunId: run.runId, expectedCurrentOrderSha256: ticket.orderHash,
-      expectedCustomer: { customerIdentity: ticket.customerIdentity, customerMarkdown },
-      expectedCurrentSystemOrderPresent: false });
-    if (!saved) throw new Error('Could not store normal canonical system order');
+    if (!completed) throw new Error('Missing completed quotation run');
+    await publishCompletedQuotation({ scope, run: completed, markdown: order, service,
+      publishFinal: async () => undefined });
     return { conversationId, messageId, otherMessageId, runId: run.runId };
   } finally {
     await db.disconnect();

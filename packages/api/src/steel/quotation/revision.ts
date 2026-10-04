@@ -211,6 +211,13 @@ function canonicalSnapshot(markdown: string): { markdown: string; sha256: string
   };
 }
 
+export function canonicalizeSystemOrderMarkdown(
+  markdown: string,
+): { markdown: string; sha256: string } | undefined {
+  const canonical = canonicalSnapshot(markdown);
+  return canonical ? { markdown: canonical.markdown, sha256: canonical.sha256 } : undefined;
+}
+
 function fail(code: SystemOrderRevisionFailureCode): SystemOrderRevisionFailure {
   return { ok: false, code };
 }
@@ -403,13 +410,9 @@ export function createSystemOrderRevisionService(
     });
     let admittedSourceSnapshot = dependencies.sourceSnapshot ?? current.sourceSnapshot;
     if (admittedSnapshotPayload) {
-      try {
-        const runSnapshot = JSON.parse(admittedSnapshotPayload) as SteelQuotationSnapshotPayload;
-        if (runSnapshot.orderHash === state.currentOrder.sha256) {
-          admittedSourceSnapshot = runSnapshot.sourceSnapshot ?? admittedSourceSnapshot;
-        }
-      } catch {
-        // Missing or malformed source evidence leaves rows unlocated.
+      const runSnapshot = JSON.parse(admittedSnapshotPayload) as SteelQuotationSnapshotPayload;
+      if (runSnapshot.orderHash === state.currentOrder.sha256) {
+        admittedSourceSnapshot = runSnapshot.sourceSnapshot ?? admittedSourceSnapshot;
       }
     }
     const now = input.now ? new Date(input.now) : new Date();

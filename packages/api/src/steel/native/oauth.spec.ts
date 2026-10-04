@@ -953,13 +953,13 @@ describe('OpenAI OAuth model adapter', () => {
   });
 
   it.each([
-    ['missing system_order', '## customer_quote\nDRAFT'],
-    ['missing customer_quote', '## system_order\n\nA'],
-    ['reversed headings', '## customer_quote\nDRAFT\n\n## system_order\n\nA'],
-    ['inline mentions', 'Please use ## system_order and ## customer_quote'],
-    ['third-level headings', '### system_order\n\nA\n\n### customer_quote\nDRAFT'],
-    ['fenced headings', '```markdown\n## system_order\n\nA\n\n## customer_quote\nDRAFT\n```'],
-  ])('passes through %s without Stage2', async (_label, text) => {
+    ['missing system_order', '## customer_quote\nDRAFT', ''],
+    ['missing customer_quote', '## system_order\n\nA', '## system_order\n\nA'],
+    ['reversed headings', '## customer_quote\nDRAFT\n\n## system_order\n\nA', '## system_order\n\nA'],
+    ['inline mentions', 'Please use ## system_order and ## customer_quote', 'Please use ## system_order and ## customer_quote'],
+    ['third-level headings', '### system_order\n\nA\n\n### customer_quote\nDRAFT', '### system_order\n\nA\n\n### customer_quote\nDRAFT'],
+    ['fenced headings', '```markdown\n## system_order\n\nA\n\n## customer_quote\nDRAFT\n```', '```markdown\n## system_order\n\nA\n\n## customer_quote\nDRAFT\n```'],
+  ])('filters %s without Stage2', async (_label, text, expected) => {
     const doGenerate = jest.fn(async () => createGenerateResult([{ type: 'text', text }]));
     const model = createOpenAIOAuthGraphModel({
       modelOptions: {
@@ -978,7 +978,7 @@ describe('OpenAI OAuth model adapter', () => {
           tool_call_id: 'call_price_1',
         }),
       ]),
-    ).resolves.toEqual(expect.objectContaining({ content: text }));
+    ).resolves.toEqual(expect.objectContaining({ content: expected }));
     expect(doGenerate).toHaveBeenCalledTimes(1);
     expect(dispatchCustomEvent).not.toHaveBeenCalled();
   });
@@ -1022,7 +1022,7 @@ describe('OpenAI OAuth model adapter', () => {
     expect(doGenerate).not.toHaveBeenCalled();
   });
 
-  it('passes through a mixed valid-looking response with a client tool call', async () => {
+  it('filters a mixed valid-looking response with a client tool call', async () => {
     const text = '## system_order\n\nA\n\n## customer_quote\nDRAFT';
     const doGenerate = jest.fn(async () =>
       createGenerateResult([
@@ -1052,14 +1052,14 @@ describe('OpenAI OAuth model adapter', () => {
       }),
     ]);
 
-    expect(result.content).toBe(text);
+    expect(result.content).toBe('## system_order\n\nA\n\n');
     expect(result.tool_calls).toEqual([
       expect.objectContaining({ name: 'search_price_candidates' }),
     ]);
     expect(doGenerate).toHaveBeenCalledTimes(1);
   });
 
-  it('passes through valid headings when the provider already used Code Interpreter', async () => {
+  it('filters provider-authored customer quote after Code Interpreter', async () => {
     const text = '## system_order\n\nA\n\n## customer_quote\n100';
     const doGenerate = jest.fn(async () =>
       createGenerateResult([
@@ -1096,7 +1096,7 @@ describe('OpenAI OAuth model adapter', () => {
       }),
     ], config);
 
-    expect(result.content).toBe(text);
+    expect(result.content).toBe('## system_order\n\nA\n\n');
     expect(doGenerate).toHaveBeenCalledTimes(1);
     expect(dispatchCustomEvent).toHaveBeenCalledTimes(1);
     expect(dispatchCustomEvent).toHaveBeenCalledWith(
@@ -1113,7 +1113,7 @@ describe('OpenAI OAuth model adapter', () => {
     );
   });
 
-  it('streams valid headings without Stage2 when the provider already used Code Interpreter', async () => {
+  it('filters streamed provider-authored customer quote after Code Interpreter', async () => {
     const text = '## system_order\n\nA\n\n## customer_quote\n100';
     const doGenerate = jest.fn();
     const doStream = jest.fn(async () =>
@@ -1162,7 +1162,7 @@ describe('OpenAI OAuth model adapter', () => {
       chunks.push(chunk);
     }
 
-    expect(chunks.map((chunk) => chunk.content).join('')).toBe(text);
+    expect(chunks.map((chunk) => chunk.content).join('')).toBe('## system_order\n\nA\n\n');
     expect(doStream).toHaveBeenCalledTimes(1);
     expect(doGenerate).not.toHaveBeenCalled();
     expect(dispatchCustomEvent).toHaveBeenCalledTimes(1);
@@ -1304,7 +1304,9 @@ describe('OpenAI OAuth model adapter', () => {
       chunks.push(chunk);
     }
 
-    expect(chunks.map((chunk) => chunk.content).join('')).toBe(text);
+    expect(chunks.map((chunk) => chunk.content).join('')).toBe(
+      text.slice(0, text.indexOf('## customer_quote')),
+    );
     expect(chunks[chunks.length - 1]?.response_metadata).toEqual(
       expect.objectContaining({
         id: responseMetadata.id,
@@ -1361,14 +1363,8 @@ describe('OpenAI OAuth model adapter', () => {
       chunks.push(chunk);
     }
 
-    expect(chunks.map((chunk) => chunk.content).join('')).toBe(`${stageOne}${draft}`);
-    expect(
-      chunks.findIndex(
-        (chunk) => typeof chunk.content === 'string' && chunk.content.includes('DRAFT'),
-      ),
-    ).toBeLessThan(
-      chunks.findIndex((chunk) => chunk.tool_calls?.[0]?.name === 'search_price_candidates'),
-    );
+    expect(chunks.map((chunk) => chunk.content).join('')).toBe(`${stageOne}\n\n`);
+    expect(chunks.map((chunk) => chunk.content).join('')).not.toContain('DRAFT');
     expect(chunks[chunks.length - 1]?.usage_metadata).toEqual({
       input_tokens: 12,
       output_tokens: 4,
@@ -1414,14 +1410,19 @@ describe('OpenAI OAuth model adapter', () => {
     const first = await iterator.next();
     const second = await iterator.next();
     expect(first.value?.content).toBe(prefix);
-    expect(second.value?.content).toBe(manualReview);
-    expect(`${first.value?.content ?? ''}${second.value?.content ?? ''}`).toBe(
-      `${prefix}${manualReview}`,
-    );
-    expect(`${first.value?.content ?? ''}${second.value?.content ?? ''}`).not.toContain(
-      '## customer_quote',
-    );
-    await expect(iterator.next()).rejects.toThrow(providerError);
+    let emitted = `${first.value?.content ?? ''}${second.value?.content ?? ''}`;
+    while (true) {
+      try {
+        const next = await iterator.next();
+        if (next.done) break;
+        emitted += next.value?.content ?? '';
+      } catch (error) {
+        expect(error).toBe(providerError);
+        break;
+      }
+    }
+    expect(emitted).toContain(manualReview);
+    expect(emitted).not.toContain('## customer_quote');
     expect(doStream).toHaveBeenCalledTimes(1);
     expect(dispatchCustomEvent).not.toHaveBeenCalled();
   });
@@ -2799,7 +2800,7 @@ describe('OpenAI OAuth model adapter', () => {
   );
 
   it.each(['invoke', 'stream'] as const)(
-    'preserves one existing customer_quote during %s',
+    'filters one provider customer_quote during %s',
     async (mode) => {
       const providerText = [
         '## system_order',
@@ -2842,8 +2843,8 @@ describe('OpenAI OAuth model adapter', () => {
         content = chunks.map((chunk) => chunk.content).join('');
       }
 
-      expect(content).toBe(providerText);
-      expect(content.match(/## customer_quote/g)).toHaveLength(1);
+      expect(content).toContain('## system_order');
+      expect(content).not.toContain('## customer_quote');
     },
   );
 

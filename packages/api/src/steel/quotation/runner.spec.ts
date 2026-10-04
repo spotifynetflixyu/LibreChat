@@ -11,7 +11,7 @@ import type { SteelNativeHistory } from '../native/events';
 import type { QuotationProgress } from './runner';
 import type { QuotationChunk } from './protocol';
 import { bindQuotationCustomerResult, commitQuotationCustomerResponse, defaultQuotationCustomerMarkdown, prepareQuotationTurn, quotationPreparationStatus, renderQuotationCustomerMarkdown } from './preparation';
-import { acceptQuotationResponse, acceptQuotationSignal, createQuotationPublicationProjector, runQuotationPreflight } from './runner';
+import { acceptQuotationResponse, acceptQuotationSignal, createQuotationPublicationProjector, publishCompletedQuotation, runQuotationPreflight } from './runner';
 import { createSteelNativeHistory, appendSteelNativeActivityEvent, upsertSteelNativePreflightToolCall } from '../native/events';
 import { buildQuotationChunks, splitQuotationChunk, quotationSignal } from './protocol';
 import { getQuotationHistoryDelta, readQuotationHistory } from './history';
@@ -1573,7 +1573,7 @@ describe('quotation runner integration', () => {
   });
 
   it('retries publication from the saved final artifact without rerunning model work', async () => {
-    await prepareRun(1);
+    const run = await prepareRun(1);
     const invokeModel = createModel();
     const executeLookup = createLookupExecutor();
     let firstPublication = true;
@@ -1600,10 +1600,16 @@ describe('quotation runner integration', () => {
     expect(onHistory.mock.calls[0]?.[0].activityEvents).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'quotation_status', status: 'completed', completedChunks: 1, totalChunks: 1 })]));
     expect(onHistory.mock.invocationCallOrder[0]).toBeLessThan(publishFinal.mock.invocationCallOrder[1]!);
     expect((await service.readState(scope))?.activeRun?.checkpointRefs.some((ref) => ref.operationId === 'published')).toBe(true);
+    const publishedState = await service.readState(scope);
+    expect(publishedState?.currentSystemOrder).toEqual(expect.objectContaining({
+      runId: run.runId,
+      messageId: 'target-1',
+      customerQuoteMarkdown: expect.stringContaining('## customer_quote'),
+    }));
   });
 
   it('projects an already published final without rerunning models or publishing again', async () => {
-    await prepareRun(1);
+    const run = await prepareRun(1);
     const model = createModel();
     const lookup = createLookupExecutor();
     await runQuotationPreflight(runnerInput(model, lookup));
@@ -1614,7 +1620,51 @@ describe('quotation runner integration', () => {
     expect(replay.status).toBe('completed');
     expect(model.mock.calls.length).toBe(callsAfterCompletion);
     expect(publishFinal).not.toHaveBeenCalled();
-    expect(projectFinal).toHaveBeenCalledTimes(1);
+    expect(projectFinal).not.toHaveBeenCalled();
+    const current = await service.readCurrentSystemOrder(scope);
+    expect(current).toBeDefined();
+    const editedMarkdown = current!.markdown.replace('10', '77');
+    const stateBeforeEdit = await service.readState(scope);
+    const expectedCustomer = stateBeforeEdit?.currentCustomer
+      ? {
+          customerIdentity: stateBeforeEdit.currentCustomer.customerIdentity,
+          customerMarkdown: stateBeforeEdit.currentCustomer.customerMarkdown,
+        }
+      : undefined;
+    const edited = await service.saveCurrentSystemOrder({
+      scope,
+      snapshot: {
+        ...current!,
+        markdown: editedMarkdown,
+        sha256: createHash('sha256').update(editedMarkdown).digest('hex'),
+        customerQuoteMarkdown: current!.customerQuoteMarkdown,
+        updatedAt: new Date(),
+      },
+      expectedRunId: run.runId,
+      expectedCurrentOrderSha256: stateBeforeEdit!.currentOrder!.sha256,
+      expectedCustomer,
+      expectedCurrentSystemOrderSha256: current!.sha256,
+      expectedCurrentSystemOrderPresent: true,
+    });
+    expect(edited?.markdown).toBe(editedMarkdown);
+    await runQuotationPreflight({ ...runnerInput(model, lookup, { publishFinal, projectFinal }) });
+    expect(projectFinal).not.toHaveBeenCalled();
+    const final = (await service.readState(scope))!.activeRun!.checkpointRefs.find(
+      (entry) => entry.operationId === 'final',
+    );
+    expect(final).toBeDefined();
+    const finalRef = { ...scope, ...final!, runId: run.runId };
+    const finalMarkdown = await service.readArtifact({ scope, ref: finalRef });
+    const publishedReplay = await publishCompletedQuotation({
+      scope,
+      run,
+      markdown: finalMarkdown!,
+      service,
+      publishFinal,
+      projectFinal,
+    });
+    expect(publishedReplay.markdown).toContain(editedMarkdown);
+    expect(publishedReplay.markdown).not.toContain('## customer_quote');
   });
 
   it('retries a failed projector and deduplicates only after successful projection', async () => {

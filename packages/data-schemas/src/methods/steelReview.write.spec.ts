@@ -253,6 +253,146 @@ describe('Steel review write methods', () => {
     });
   });
 
+  it('rolls back a system-order save and internal quote when the quotation transaction fails', async () => {
+    const models = createModels(mongoose);
+    const QuotationState = createSteelQuotationStateModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const writer = createSteelReviewWriteMethods(mongoose);
+    const conversationId = 'system-order-rollback-conversation';
+    const messageId = 'system-order-rollback-message';
+    const title = 'system_order｜報價單 rollback';
+    const headers = [
+      '型號', '品名規格', '材質編號', '單位', '數量', '單重', '總數', '單價',
+      '計價基準', '公式編號', '厚度', '寬度', '長度', '肚', '類別', '備註',
+    ];
+    const row = ['M1', '雷射板', 'MAT-1', '件', '2', '4', '8', '40', 'kg', 'F1', '6', '100', '200', '0', '鋼材', 'memo'];
+    const render = (price: string): string => {
+      const values = [...row];
+      values[7] = price;
+      return [
+        `## ${title}`,
+        '',
+        `| ${headers.join(' | ')} |`,
+        `| ${headers.map(() => '---').join(' | ')} |`,
+        `| ${values.join(' | ')} |`,
+      ].join('\n');
+    };
+    const customerQuoteMarkdown = [
+      '## customer_quote｜報價單 rollback',
+      '',
+      '| 項目 | 總數 | 小計 |',
+      '| --- | --- | --- |',
+      '| 雷射板 | 8 | 320 |',
+      '| 總計 |  | 320 |',
+    ].join('\n');
+    const currentMarkdown = render('40');
+    const firstMarkdown = render('41');
+    const secondMarkdown = render('42');
+    await models.Conversation.create({
+      conversationId,
+      user: 'user-1',
+      tenantId: 'tenant-1',
+      title: 'System order rollback',
+      endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId,
+      conversationId,
+      user: 'user-1',
+      tenantId: 'tenant-1',
+      isCreatedByUser: false,
+      text: currentMarkdown,
+    });
+    const currentHash = createHash('sha256').update(currentMarkdown).digest('hex');
+    await QuotationState.create({
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      conversationId,
+      currentSystemOrder: {
+        runId: 'run-rollback',
+        sha256: currentHash,
+        markdown: currentMarkdown,
+        messageId,
+        customerQuoteMarkdown,
+        updatedAt: new Date('2026-10-03T00:00:00.000Z'),
+      },
+    });
+
+    const buildInput = (
+      operationId: string,
+      beforeMarkdown: string,
+      nextMarkdown: string,
+      digest: string,
+    ): SteelReviewCommitInput => {
+      const beforeTable = beforeMarkdown.slice(beforeMarkdown.indexOf('| 型號 |'));
+      const nextTable = nextMarkdown.slice(nextMarkdown.indexOf('| 型號 |'));
+      const effectivePrice = nextMarkdown.includes('| 42 |') ? '42' : '41';
+      const rollbackRowId = aiRowIdFor('system_order:run-rollback', row);
+      const values = Object.fromEntries(headers.map((header, index) => [
+        header,
+        { baseline: row[index] ?? '', effective: index === 7 ? effectivePrice : row[index] ?? '' },
+      ]));
+      return {
+        userId: 'user-1',
+        tenantId: 'tenant-1',
+        conversationId,
+        kind: 'system_order',
+        messageId,
+        title,
+        tableId: 'system_order:table',
+        outputId: 'system_order:run-rollback',
+        revision: createHash('sha256').update(beforeMarkdown).digest('hex'),
+        operationId,
+        digest,
+        rows: [{ rowId: rollbackRowId, values, source: null }],
+        headers,
+        messageSha256: createHash('sha256').update(beforeMarkdown).digest('hex'),
+        target: {
+          start: beforeMarkdown.indexOf('| 型號 |'),
+          end: beforeMarkdown.length,
+          sha256: createHash('sha256').update(beforeTable).digest('hex'),
+        },
+        targetText: beforeTable,
+        replacementText: nextTable,
+        cleanReplacementText: nextTable,
+        effectiveMarkdown: nextMarkdown,
+        displayMarkdown: nextMarkdown,
+        aiBaselineMarkdown: currentMarkdown,
+        aiRawMarkdown: currentMarkdown,
+        systemOrderMarkdown: nextMarkdown,
+        customerQuoteMarkdown,
+        caption: {
+          kind: 'system_order',
+          changedRows: 1,
+          changedRowIds: [rollbackRowId],
+          customerQuoteChangedRows: 1,
+          customerQuoteTotal: '336',
+        },
+      };
+    };
+
+    await writer.commitSteelReview(buildInput('rollback-first', currentMarkdown, firstMarkdown, 'digest-first'));
+    const beforeMessage = await models.Message.findOne({ messageId }).lean();
+    const beforeQuotation = await QuotationState.findOne({ conversationId }).lean();
+    const beforeOutput = await ReviewOutput.findOne({ conversationId, outputId: 'system_order:run-rollback' }).lean();
+    expect(beforeOutput?.receipts).toHaveLength(1);
+
+    const injectedFailure = jest.spyOn(QuotationState, 'updateOne').mockImplementationOnce(() => {
+      throw new Error('injected system-order quotation write failure');
+    });
+    try {
+      await expect(writer.commitSteelReview(
+        buildInput('rollback-second', firstMarkdown, secondMarkdown, 'digest-second'),
+      )).rejects.toThrow('injected system-order quotation write failure');
+    } finally {
+      injectedFailure.mockRestore();
+    }
+
+    expect(await models.Message.findOne({ messageId }).lean()).toEqual(beforeMessage);
+    expect(await QuotationState.findOne({ conversationId }).lean()).toEqual(beforeQuotation);
+    expect(await ReviewOutput.findOne({ conversationId, outputId: 'system_order:run-rollback' }).lean()).toEqual(beforeOutput);
+  });
+
   it('returns the immutable first receipt after a later save', async () => {
     const models = createModels(mongoose);
     const State = createSteelConversationOcrStateModel(mongoose);

@@ -502,6 +502,52 @@ describe('MarkdownTableActions Steel review entry', () => {
     expect(screen.queryByRole('textbox')).toBeNull();
   });
 
+  it('keeps system-order structural and source controls unavailable while allowing price and total edits', async () => {
+    const systemIdentity: SteelReviewIdentity = {
+      ...reviewIdentity,
+      kind: 'system_order',
+      title: 'system_order｜報價單 A',
+    };
+    const systemSelection: SteelReviewSelection = {
+      ...reviewSelection,
+      ...systemIdentity,
+    };
+    const table = {
+      ...systemIdentity,
+      outputId: 'system_order:run-1',
+      revision: 'revision-1',
+      latestOutputId: 'system_order:run-1',
+      isLatest: true,
+      readOnly: false,
+      headers: ['品名規格', '總數', '單價'],
+      rows: [{
+        rowId: 'row-1',
+        source: { fileId: 'drawing-1', pageNumber: 1, filename: 'drawing.pdf' },
+        values: {
+          品名規格: { baseline: '雷射板', effective: '雷射板' },
+          總數: { baseline: '2', effective: '2' },
+          單價: { baseline: '40', effective: '40' },
+        },
+      }],
+    };
+    mockUseGetSteelReviewQuery.mockReturnValue({
+      data: { table },
+      error: null,
+      isError: false,
+      isLoading: false,
+    });
+
+    renderDialog(new QueryClient(), systemSelection, createStore(), systemIdentity);
+
+    expect(await screen.findByRole('textbox', { name: '總數 row-1' })).toBeEnabled();
+    expect(screen.getByRole('textbox', { name: '單價 row-1' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: 'com_ui_steel_review_add_row' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /com_ui_steel_review_delete_row/u })).toBeNull();
+    expect(screen.queryByRole('button', { name: /com_ui_steel_review_restore_row/u })).toBeNull();
+    expect(screen.queryByLabelText('com_ui_steel_review_source_actions')).toBeNull();
+    expect(screen.queryByRole('button', { name: 'com_ui_steel_review_change_source' })).toBeNull();
+  });
+
   it('renders the managed empty table state without edit controls', () => {
     mockUseGetSteelReviewQuery.mockReturnValue({
       data: { table: { ...reviewIdentity, rows: [], headers: ['來源'], readOnly: false } },
