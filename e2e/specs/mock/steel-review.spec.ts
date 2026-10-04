@@ -4216,7 +4216,7 @@ test.describe('Steel managed source review', () => {
     });
   }
 
-  for (const publication of ['foreign_save', 'new_ai'] as const) {
+  for (const publication of ['foreign_save', 'new_ai', 'outside_section'] as const) {
     test(`a delayed committed response cannot rewind current chat or cache: ${publication}`, async ({ page }) => {
       const { conversationId, messageId } = await seedCurrent(ocr);
       conversations.push(conversationId);
@@ -4249,6 +4249,15 @@ test.describe('Steel managed source review', () => {
           const foreign = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
           expect(foreign.status()).toBe(200);
           expect((await page.request.post(`${url}/commit`, { headers, data: await foreign.json() })).status()).toBe(200);
+        } else if (publication === 'outside_section') {
+          await withMongo(async (db) => {
+            const current = await db.collection('messages').findOne({ conversationId, messageId });
+            if (!current || typeof current.text !== 'string') throw new Error('Missing committed prefix fixture');
+            const latestText = `LATER-UNMANAGED-PREFIX\n\n${current.text}`;
+            await db.collection('messages').updateOne({ conversationId, messageId }, {
+              $set: { text: latestText, content: [{ type: 'text', text: latestText }], updatedAt: new Date() },
+            });
+          });
         } else {
           const newAi = ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 4 | 1 |');
           await withMongo(async (db) => {
@@ -4267,9 +4276,9 @@ test.describe('Steel managed source review', () => {
         releaseResponse?.();
         await expect(dialog.getByRole('button', { name: /^Save/ })).not.toHaveAttribute('aria-busy', 'true');
         expect(await persistedSnapshot(conversationId)).toEqual(latest);
-        if (publication === 'foreign_save') {
+        if (publication !== 'new_ai') {
           await expect(quantity).toHaveValue('9');
-          await expect(dialog.locator('tbody tr').first().locator('td').nth(2).getByRole('textbox')).toHaveValue('1234');
+          if (publication === 'foreign_save') await expect(dialog.locator('tbody tr').first().locator('td').nth(2).getByRole('textbox')).toHaveValue('1234');
           await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
           await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
           await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
@@ -4286,6 +4295,9 @@ test.describe('Steel managed source review', () => {
         await expect(chatRow.locator('td').nth(3)).toHaveText(publication === 'new_ai' ? '4' : '9');
         if (publication === 'foreign_save') await expect(chatRow.locator('td').nth(2)).toHaveText('1234');
         await expect(chatRow.locator('del')).toHaveCount(0);
+        if (publication === 'outside_section') {
+          await expect(page.getByTestId('message-body').getByText('LATER-UNMANAGED-PREFIX', { exact: true })).toBeVisible();
+        }
         await page.reload();
         await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
         const reopened = page.getByRole('dialog', { name: 'Steel source review' });
