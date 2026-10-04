@@ -4283,7 +4283,8 @@ test.describe('Steel managed source review', () => {
           await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
           await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
         } else {
-          await expect(dialog.getByRole('button', { name: 'Add row', exact: true })).toBeDisabled();
+          await expect(dialog.getByRole('button', { name: 'Add row', exact: true })).toHaveCount(0);
+          await expect(dialog.getByRole('textbox')).toHaveCount(0);
           await expect(dialog.getByRole('button', { name: /^Save/ })).toBeDisabled();
         }
         const live = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
