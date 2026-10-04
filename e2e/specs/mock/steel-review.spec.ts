@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import { encodeSteelReviewDigest } from 'librechat-data-provider';
-import type { SteelReviewPrepared, SteelReviewSavedSnapshot, SteelReviewTable } from 'librechat-data-provider';
+import type { SteelReviewOperationCommit, SteelReviewOperationPrepare, SteelReviewOperationPrepared, SteelReviewPrepared, SteelReviewSavedSnapshot, SteelReviewSaveResponse, SteelReviewTable } from 'librechat-data-provider';
 import type { Locator } from '@playwright/test';
 import {
   deleteConversations,
@@ -1370,7 +1370,21 @@ test.describe('Steel managed source review', () => {
     await expect(row.getByRole('combobox', { name: 'Source page', exact: true })).toHaveText('2');
     expect(await persistedSnapshot(conversationId)).toEqual(before);
     await page.keyboard.press('Escape');
+    const prepareRequest = page.waitForRequest((request) => request.method() === 'POST' &&
+      request.url().endsWith(`/api/steel/conversations/${conversationId}/review/ocr_result/prepare`));
+    const commitRequest = page.waitForRequest((request) => request.method() === 'POST' &&
+      request.url().endsWith(`/api/steel/conversations/${conversationId}/review/ocr_result/commit`));
     await page.getByRole('button', { name: 'Save updates', exact: true }).click();
+    const prepareBody = (await prepareRequest).postDataJSON() as SteelReviewOperationPrepare;
+    const commitBody = (await commitRequest).postDataJSON() as SteelReviewOperationCommit;
+    expect(prepareBody.operations).toEqual([{ type: 'update', rowId: table.rows[0].rowId,
+      source: { fileId: 'review-alpha', pageNumber: 2 } }]);
+    expect(commitBody.operations).toEqual(prepareBody.operations);
+    for (const body of [prepareBody, commitBody]) {
+      expect(body).not.toHaveProperty('rows');
+      expect(body).not.toHaveProperty('aiRawMarkdown');
+      expect(body).not.toHaveProperty('aiBaselineMarkdown');
+    }
     await expect(dialog).not.toBeVisible();
     const after = await persistedSnapshot(conversationId);
     const updated = after.reviews[0]?.rows[0];
@@ -2453,6 +2467,175 @@ test.describe('Steel managed source review', () => {
     expect((await persistedSnapshot(conversationId)).messages.find((message) => message.messageId === previousMessageId)).toEqual(previousBefore);
   });
 
+  test('the OCR editor sends only changed row values and replays its immutable operation request', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+    await quantity.fill('7');
+    const prepareRequest = page.waitForRequest((request) => request.method() === 'POST' &&
+      request.url().endsWith(`/api/steel/conversations/${conversationId}/review/ocr_result/prepare`));
+    const commitRequest = page.waitForRequest((request) => request.method() === 'POST' &&
+      request.url().endsWith(`/api/steel/conversations/${conversationId}/review/ocr_result/commit`));
+    await dialog.getByRole('button', { name: /^Save/ }).click();
+    const preparedBody = (await prepareRequest).postDataJSON() as SteelReviewOperationPrepare;
+    const committedBody = (await commitRequest).postDataJSON() as SteelReviewOperationCommit;
+    expect(preparedBody.operations).toEqual([{ type: 'update', rowId: expect.any(String),
+      changes: [{ header: '數量', value: '7' }] }]);
+    expect(committedBody.operations).toEqual(preparedBody.operations);
+    expect(committedBody).toMatchObject({ ...preparedBody, operationId: expect.any(String), digest: expect.any(String) });
+    for (const body of [preparedBody, committedBody]) {
+      for (const field of ['rows', 'headers', 'aiBaselineMarkdown', 'aiRawMarkdown', 'target', 'targetText', 'sourceMappings', 'effectiveMarkdown']) {
+        expect(body).not.toHaveProperty(field);
+      }
+    }
+    await expect(dialog.getByText('Updated 1 rows', { exact: true })).toBeVisible();
+    const saved = await persistedSnapshot(conversationId);
+    expect(saved.messages.find((message) => message.messageId === messageId)?.text)
+      .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 7 | 1 |'));
+    expect(saved.reviews[0]?.rows[1].values).toMatchObject({ 數量: { baseline: '3', effective: '3' } });
+    expect(saved.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
+  });
+
+  test('changed-row operations prepare without writes and reject immutable fields and ambiguous positions', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const before = await persistedSnapshot(conversationId);
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(read.status()).toBe(200);
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const request: SteelReviewOperationPrepare = { conversationId, messageId, kind: 'ocr_result',
+      tableId: table.tableId, partIndex: table.partIndex, outputId: table.outputId, revision: table.revision,
+      operations: [{ type: 'update', rowId: table.rows[0].rowId, changes: [{ header: '數量', value: '7' }] }] };
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const invalidOperations = [
+      { type: 'update', rowId: table.rows[0].rowId, changes: [{ header: '來源', value: 'FORGED' }] },
+      { type: 'update', rowId: table.rows[0].rowId, baseline: 'FORGED', changes: [{ header: '數量', value: '7' }] },
+      { type: 'update', rowId: table.rows[0].rowId, source: { fileId: null, pageNumber: 1 } },
+      { type: 'update', rowId: table.rows[0].rowId, source: { fileId: 'review-alpha' } },
+      { type: 'update', rowId: table.rows[0].rowId, source: null },
+      { type: 'add', rowId: randomUUID(), position: { kind: 'end', rowId: table.rows[0].rowId }, changes: [{ header: '零件編號', value: 'BAD-POSITION' }] },
+      { type: 'add', rowId: randomUUID(), position: { kind: 'after' }, changes: [{ header: '零件編號', value: 'BAD-POSITION' }] },
+      { type: 'add', rowId: randomUUID(), position: { kind: 'after', rowId: null }, changes: [{ header: '零件編號', value: 'BAD-POSITION' }] },
+      { type: 'delete', rowId: table.rows[0].rowId, origin: 'manual' },
+    ];
+    for (const operation of invalidOperations) {
+      const rejected = await page.request.post(`${url}/prepare`, { headers, data: { ...request, operations: [operation] } });
+      expect([400, 409]).toContain(rejected.status());
+      expect(await persistedSnapshot(conversationId)).toEqual(before);
+    }
+    const mixed = await page.request.post(`${url}/prepare`, { headers, data: { ...request, rows: table.rows } });
+    expect([400, 409]).toContain(mixed.status());
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    for (const source of [{ fileId: null, pageNumber: null }, { fileId: 'review-alpha', pageNumber: null }]) {
+      const sourcePrepared = await page.request.post(`${url}/prepare`, { headers, data: { ...request,
+        operations: [{ type: 'update', rowId: table.rows[0].rowId, source }] } });
+      expect(sourcePrepared.status()).toBe(200);
+      expect(await persistedSnapshot(conversationId)).toEqual(before);
+    }
+    const prepared = await page.request.post(`${url}/prepare`, { headers, data: request });
+    expect(prepared.status()).toBe(200);
+    const result = await prepared.json() as SteelReviewOperationPrepared;
+    expect(result.operationRequest).toEqual(request);
+    expect(result.caption).toMatchObject({ changedRows: 1, changedRowIds: [table.rows[0].rowId] });
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    const commit = await page.request.post(`${url}/commit`, { headers,
+      data: { ...result.operationRequest, operationId: result.operationId, digest: result.digest } });
+    expect(commit.status()).toBe(200);
+    const saved = await persistedSnapshot(conversationId);
+    expect(saved.reviews[0]?.rows[1].values).toEqual(table.rows[1].values);
+    expect(saved.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
+  });
+
+  test('changed-row receipts reject request tampering and replay their original snapshot after a later Save', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(read.status()).toBe(200);
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const request: SteelReviewOperationPrepare = { conversationId, messageId, kind: 'ocr_result',
+      tableId: table.tableId, partIndex: table.partIndex, outputId: table.outputId, revision: table.revision,
+      operations: [{ type: 'update', rowId: table.rows[0].rowId, changes: [{ header: '數量', value: '7' }] }] };
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const prepared = await page.request.post(`${url}/prepare`, { headers, data: request });
+    expect(prepared.status()).toBe(200);
+    const first = await prepared.json() as SteelReviewOperationPrepared;
+    const firstBody = { ...first.operationRequest, operationId: first.operationId, digest: first.digest };
+    const committed = await page.request.post(`${url}/commit`, { headers, data: firstBody });
+    expect(committed.status()).toBe(200);
+    const firstSaved = await committed.json() as SteelReviewSaveResponse;
+    const secondRequest = { ...request, revision: firstSaved.revision,
+      operations: [{ type: 'update' as const, rowId: table.rows[1].rowId, changes: [{ header: '數量', value: '8' }] }] };
+    const preparedAgain = await page.request.post(`${url}/prepare`, { headers, data: secondRequest });
+    expect(preparedAgain.status()).toBe(200);
+    const second = await preparedAgain.json() as SteelReviewOperationPrepared;
+    const secondSave = await page.request.post(`${url}/commit`, { headers,
+      data: { ...second.operationRequest, operationId: second.operationId, digest: second.digest } });
+    expect(secondSave.status()).toBe(200);
+    const beforeRetry = await persistedSnapshot(conversationId);
+    const tampered = await page.request.post(`${url}/commit`, { headers, data: { ...firstBody,
+      operations: [{ type: 'update', rowId: table.rows[0].rowId, changes: [{ header: '數量', value: '9' }] }] } });
+    expect([400, 409]).toContain(tampered.status());
+    expect(await persistedSnapshot(conversationId)).toEqual(beforeRetry);
+    const downgrade = await page.request.post(`${url}/commit`, { headers, data: first });
+    expect([400, 409]).toContain(downgrade.status());
+    expect(await persistedSnapshot(conversationId)).toEqual(beforeRetry);
+    const stripped = await page.request.post(`${url}/commit`, { headers, data: { ...first,
+      operations: undefined, operationRequest: undefined, requestDigest: undefined } });
+    expect([400, 409]).toContain(stripped.status());
+    expect(await persistedSnapshot(conversationId)).toEqual(beforeRetry);
+    const replay = await page.request.post(`${url}/commit`, { headers, data: firstBody });
+    expect(replay.status()).toBe(200);
+    expect(await replay.json()).toEqual(firstSaved);
+    expect(await persistedSnapshot(conversationId)).toEqual(beforeRetry);
+    expect(beforeRetry.messages.find((message) => message.messageId === messageId)?.text)
+      .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 7 | 1 |')
+        .replace('| A | REVIEW-P2 | 2000 | 3 | 1 |', '| A | REVIEW-P2 | 2000 | 8 | 1 |'));
+    expect(beforeRetry.reviews[0]?.rows).toMatchObject([
+      { values: { 數量: { baseline: '2', effective: '7' } } },
+      { values: { 數量: { baseline: '3', effective: '8' } } },
+    ]);
+    expect(beforeRetry.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
+  });
+
+  test('ordered row updates retain tombstone values and count restore plus update once', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(read.status()).toBe(200);
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const rowId = table.rows[0].rowId;
+    const request: SteelReviewOperationPrepare = { conversationId, messageId, kind: 'ocr_result',
+      tableId: table.tableId, partIndex: table.partIndex, outputId: table.outputId, revision: table.revision,
+      operations: [{ type: 'update', rowId, changes: [{ header: '數量', value: '7' }] }, { type: 'delete', rowId }] };
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const prepared = await page.request.post(`${url}/prepare`, { headers, data: request });
+    expect(prepared.status()).toBe(200);
+    const first = await prepared.json() as SteelReviewOperationPrepared;
+    expect(first.caption.changedRows).toBe(1);
+    const committed = await page.request.post(`${url}/commit`, { headers,
+      data: { ...first.operationRequest, operationId: first.operationId, digest: first.digest } });
+    expect(committed.status()).toBe(200);
+    const deleted = await committed.json() as SteelReviewSaveResponse;
+    const afterDelete = await persistedSnapshot(conversationId);
+    expect(afterDelete.reviews[0]?.rows[0]).toMatchObject({ deleted: true, values: { 數量: { baseline: '2', effective: '7' } } });
+    expect(afterDelete.messages.find((message) => message.messageId === messageId)?.text).not.toContain('REVIEW-P1');
+    const restored = await page.request.post(`${url}/prepare`, { headers, data: { ...request, revision: deleted.revision,
+      operations: [{ type: 'restore', rowId }, { type: 'update', rowId, changes: [{ header: '數量', value: '8' }] }] } });
+    expect(restored.status()).toBe(200);
+    const second = await restored.json() as SteelReviewOperationPrepared;
+    expect(second.caption.changedRows).toBe(1);
+    const saved = await page.request.post(`${url}/commit`, { headers,
+      data: { ...second.operationRequest, operationId: second.operationId, digest: second.digest } });
+    expect(saved.status()).toBe(200);
+    const afterRestore = await persistedSnapshot(conversationId);
+    expect(afterRestore.reviews[0]?.rows[0]).toMatchObject({ deleted: false, values: { 數量: { baseline: '2', effective: '8' } } });
+    expect(afterRestore.messages.find((message) => message.messageId === messageId)?.text)
+      .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 8 | 1 |'));
+    expect(afterRestore.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
+  });
 
   test('OCR row CRUD is local and adding then deleting before Save is a net-zero no-op', async ({ page }) => {
     const { conversationId } = await seedCurrent(ocr);
@@ -2503,7 +2686,33 @@ test.describe('Steel managed source review', () => {
     }
     await expect(dialog.getByText(/Unsaved.*2|2.*unsaved/i)).toBeVisible();
     expect(await persistedSnapshot(conversationId)).toEqual(before);
+    const prepareRequest = page.waitForRequest((request) => request.method() === 'POST' &&
+      request.url().endsWith(`/api/steel/conversations/${conversationId}/review/ocr_result/prepare`));
+    const commitRequest = page.waitForRequest((request) => request.method() === 'POST' &&
+      request.url().endsWith(`/api/steel/conversations/${conversationId}/review/ocr_result/commit`));
     await dialog.getByRole('button', { name: /^Save/ }).click();
+    const prepareBody = (await prepareRequest).postDataJSON() as SteelReviewOperationPrepare;
+    const commitBody = (await commitRequest).postDataJSON() as SteelReviewOperationCommit;
+    expect(prepareBody.operations).toHaveLength(2);
+    const newIds = prepareBody.operations.map((operation) => operation.rowId);
+    expect(new Set(newIds).size).toBe(2);
+    for (const operation of prepareBody.operations) {
+      expect(operation.type).toBe('add');
+      if (operation.type !== 'add') throw new Error('Expected independent add operations');
+      expect(operation.source).toEqual({ fileId: 'review-alpha', pageNumber: 1 });
+      expect(operation.position.kind).toMatch(/^(?:after|end)$/);
+      if (operation.position.kind === 'after') expect(newIds).not.toContain(operation.position.rowId);
+      expect(operation).not.toHaveProperty('ordinal');
+      expect(operation).not.toHaveProperty('values');
+      expect(operation.changes).toEqual(expect.arrayContaining([{ header: '零件編號', value: 'MANUAL-DUPLICATE' },
+        { header: '長度', value: '3000' }, { header: '數量', value: '4' }]));
+    }
+    const [firstAdd, secondAdd] = prepareBody.operations;
+    if (firstAdd.type !== 'add' || secondAdd.type !== 'add') throw new Error('Expected two add operations');
+    expect(firstAdd.position).toEqual(secondAdd.position);
+    expect(commitBody.operations).toEqual(prepareBody.operations);
+    expect(prepareBody).not.toHaveProperty('rows');
+    expect(commitBody).not.toHaveProperty('rows');
     await expect(dialog.getByText('Updated 2 rows', { exact: true })).toBeVisible();
     const after = await persistedSnapshot(conversationId);
     expect(after.reviews).toHaveLength(1);
@@ -2513,6 +2722,11 @@ test.describe('Steel managed source review', () => {
     const added = table.rows.filter((row) => row.values['零件編號'].effective === 'MANUAL-DUPLICATE');
     expect(added).toHaveLength(2);
     expect(new Set(added.map((row) => row.rowId)).size).toBe(2);
+    expect(added.map((row) => row.insertion?.ordinal)).toEqual([0, 1]);
+    const replay = await page.request.post(`/api/steel/conversations/${conversationId}/review/ocr_result/commit`,
+      { headers, data: commitBody });
+    expect(replay.status()).toBe(200);
+    expect(await persistedSnapshot(conversationId)).toEqual(after);
     for (const row of added) {
       expect(row).toMatchObject({ origin: 'manual', deleted: false,
         source: { fileId: 'review-alpha', pageNumber: 1, filename: 'alpha.pdf' } });
@@ -2558,13 +2772,10 @@ test.describe('Steel managed source review', () => {
       rows: [{ origin: 'ai', deleted: true }, { origin: 'ai', deleted: true }],
       receipts: [{ changedRows: 2 }] });
     expectPreservedAiState(before.ocr, after.ocr);
-    // Session history survives Save; this restoration is local until the next Save.
-    await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
-    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
-    await expect(dialog.locator('input[value="REVIEW-P2"]')).toBeVisible();
-    expect(await persistedSnapshot(conversationId)).toEqual(after);
-    await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
+    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
+    await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
     await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+    expect(await persistedSnapshot(conversationId)).toEqual(after);
     await page.keyboard.press('Escape');
     await expect(dialog).not.toBeVisible();
     await expect(page.locator('del')).toHaveCount(0);
@@ -2608,7 +2819,7 @@ test.describe('Steel managed source review', () => {
     expect(await persistedSnapshot(conversationId)).toEqual(afterAdd);
   });
 
-  test('OCR cell history groups a focused edit, survives Save, and resets when the dialog reopens', async ({ page }) => {
+  test('OCR cell history groups a focused edit, clears on Save, and starts fresh for later edits', async ({ page }) => {
     const { conversationId, messageId } = await seedCurrent(ocr);
     conversations.push(conversationId);
     const before = await persistedSnapshot(conversationId);
@@ -2628,25 +2839,28 @@ test.describe('Steel managed source review', () => {
     await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
     await redo.click();
     await expect(quantity).toHaveValue('78');
+    await quantity.fill('79');
+    await quantity.press('Enter');
+    await undo.click();
+    await expect(quantity).toHaveValue('78');
+    await expect(undo).toBeEnabled();
+    await expect(redo).toBeEnabled();
     expect(await persistedSnapshot(conversationId)).toEqual(before);
     await dialog.getByRole('button', { name: /^Save/ }).click();
     await expect(dialog.getByText('Updated 1 rows', { exact: true })).toBeVisible();
     const saved = await persistedSnapshot(conversationId);
     expect(saved.messages.find((message) => message.messageId === messageId)?.text)
       .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 78 | 1 |'));
-    await undo.click();
-    await expect(quantity).toHaveValue('2');
-    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
-    expect(await persistedSnapshot(conversationId)).toEqual(saved);
-    await redo.click();
-    await expect(quantity).toHaveValue('78');
+    await expect(undo).toBeDisabled();
+    await expect(redo).toBeDisabled();
     await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
-    await undo.click();
+    expect(await persistedSnapshot(conversationId)).toEqual(saved);
     await quantity.fill('9');
     await quantity.press('Enter');
     await expect(redo).toBeDisabled();
     await undo.click();
-    await expect(quantity).toHaveValue('2');
+    await expect(quantity).toHaveValue('78');
+    await expect(undo).toBeDisabled();
     await redo.click();
     await expect(quantity).toHaveValue('9');
     expect(await persistedSnapshot(conversationId)).toEqual(saved);
@@ -2660,7 +2874,79 @@ test.describe('Steel managed source review', () => {
     expect(await persistedSnapshot(conversationId)).toEqual(saved);
   });
 
-  test('consecutive OCR Saves preserve each semantic undo value without writing their inverses', async ({ page }) => {
+  for (const boundary of ['enter', 'blur']) {
+    test(`OCR refocusing a cell starts a new undo group after ${boundary}`, async ({ page }) => {
+      const { conversationId } = await seedCurrent(ocr);
+      conversations.push(conversationId);
+      const before = await persistedSnapshot(conversationId);
+      await page.goto(`/c/${conversationId}`);
+      await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+      const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+      await quantity.fill('7');
+      if (boundary === 'enter') await quantity.press('Enter');
+      else await dialog.getByRole('heading', { name: 'Steel source review' }).click();
+      await quantity.fill('8');
+      await quantity.press('Enter');
+      await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
+      await expect(quantity).toHaveValue('7');
+      await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
+      await expect(quantity).toHaveValue('2');
+      await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+      await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
+      await expect(quantity).toHaveValue('7');
+      await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
+      await expect(quantity).toHaveValue('8');
+      expect(await persistedSnapshot(conversationId)).toEqual(before);
+    });
+  }
+
+  test('OCR additions allocate new ordinals after saved manual rows and tombstones', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    await expect.poll(() => dialog.locator('canvas').evaluate((element: HTMLCanvasElement) => element.width)).toBeGreaterThan(0);
+    for (const [index, part] of ['FIRST-SAVED', 'SECOND-SAVED', 'AFTER-TOMBSTONE'].entries()) {
+      if (index === 2) {
+        await dialog.locator('tbody tr').filter({ has: page.locator('input[value="SECOND-SAVED"]') })
+          .getByRole('button', { name: /^Delete row(?:\s|$)/ }).click();
+        await dialog.getByRole('button', { name: /^Save/ }).click();
+        await expect.poll(async () => (await persistedSnapshot(conversationId)).reviews[0]?.receipts.length).toBe(3);
+        await page.keyboard.press('Escape');
+        await expect(dialog).not.toBeVisible();
+        await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+      }
+      await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
+      const row = dialog.locator('tbody tr').last();
+      await row.locator('td').nth(1).getByRole('textbox').fill(part);
+      await row.locator('td').nth(3).getByRole('textbox').fill('4');
+      await row.locator('td').nth(3).getByRole('textbox').press('Enter');
+      await dialog.getByRole('button', { name: /^Save/ }).click();
+      await expect.poll(async () => (await persistedSnapshot(conversationId)).reviews[0]?.receipts.length).toBe(index === 2 ? 4 : index + 1);
+      await expect(dialog.locator(`input[value="${part}"]`)).toBeVisible();
+      await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+    }
+    const saved = await persistedSnapshot(conversationId);
+    const manual = saved.reviews[0]?.rows.filter((row) => row.origin === 'manual');
+    expect(manual).toMatchObject([
+      { deleted: false, insertion: { kind: 'after', ordinal: 0 } },
+      { deleted: true, insertion: { kind: 'after', ordinal: 1 } },
+      { deleted: false, insertion: { kind: 'after', ordinal: 2 } },
+    ]);
+    expect(new Set(manual?.map((row) => row.insertion?.rowId)).size).toBe(1);
+    expect(saved.messages.find((message) => message.messageId === messageId)?.text).toContain('FIRST-SAVED');
+    expect(saved.messages.find((message) => message.messageId === messageId)?.text).toContain('AFTER-TOMBSTONE');
+    expect(saved.messages.find((message) => message.messageId === messageId)?.text).not.toContain('SECOND-SAVED');
+    await page.keyboard.press('Escape');
+    await page.reload();
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    await expect(dialog.locator('input[value="AFTER-TOMBSTONE"]')).toBeVisible();
+    expect(await persistedSnapshot(conversationId)).toEqual(saved);
+  });
+
+  test('consecutive OCR Saves clear history without changing the immutable AI baseline', async ({ page }) => {
     const { conversationId, messageId } = await seedCurrent(ocr);
     conversations.push(conversationId);
     await page.goto(`/c/${conversationId}`);
@@ -2673,25 +2959,16 @@ test.describe('Steel managed source review', () => {
       await dialog.getByRole('button', { name: /^Save/ }).click();
       await expect(dialog.getByText('Updated 1 rows', { exact: true })).toBeVisible();
       await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+      await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
+      await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
       await expect.poll(async () => (await persistedSnapshot(conversationId)).messages
         .find((message) => message.messageId === messageId)?.text)
         .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', `| A | REVIEW-P1 | 1000 | ${value} | 1 |`));
     }
     const saved = await persistedSnapshot(conversationId);
     expect(saved.reviews[0]?.receipts).toHaveLength(2);
-    for (const value of ['78', '2']) {
-      await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
-      await expect(quantity).toHaveValue(value);
-      await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
-      expect(await persistedSnapshot(conversationId)).toEqual(saved);
-    }
+    expect(saved.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
     await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
-    for (const value of ['78', '9']) {
-      await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
-      await expect(quantity).toHaveValue(value);
-      expect(await persistedSnapshot(conversationId)).toEqual(saved);
-    }
-    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
     await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
     await page.keyboard.press('Escape');
     await expect(dialog).not.toBeVisible();
@@ -2702,7 +2979,7 @@ test.describe('Steel managed source review', () => {
     expect(await persistedSnapshot(conversationId)).toEqual(saved);
   });
 
-  test('OCR source and business undo stay attached to one row across page filters before and after Save', async ({ page }) => {
+  test('OCR source and business undo stay attached across pages and clear after Save', async ({ page }) => {
     const { conversationId, messageId } = await seedCurrent(ocr);
     conversations.push(conversationId);
     const before = await persistedSnapshot(conversationId);
@@ -2741,18 +3018,15 @@ test.describe('Steel managed source review', () => {
     const saved = await persistedSnapshot(conversationId);
     expect(saved.reviews[0]?.rows[0]).toMatchObject({ rowId: table.rows[0].rowId,
       source: { fileId: 'review-alpha', pageNumber: 2 }, values: { 數量: { baseline: '2', effective: '7' } } });
-    await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
-    await selectPage('1');
+    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
+    await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
     await expect(quantity).toHaveValue('7');
-    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
+    await expect(row.locator('td').nth(4).getByText('2', { exact: true })).toBeVisible();
+    await quantity.fill('8');
+    await quantity.press('Enter');
     await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
-    await expect(quantity).toHaveValue('2');
-    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
-    expect(await persistedSnapshot(conversationId)).toEqual(saved);
-    await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
-    await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
-    await selectPage('2');
     await expect(quantity).toHaveValue('7');
+    await expect(row.locator('td').nth(4).getByText('2', { exact: true })).toBeVisible();
     await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
     expect(await persistedSnapshot(conversationId)).toEqual(saved);
     await page.keyboard.press('Escape');
@@ -2814,6 +3088,13 @@ test.describe('Steel managed source review', () => {
     await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
     await expect(dialog.locator('del').filter({ hasText: 'MANUAL-ONLY' })).toHaveCount(0);
     expect(await persistedSnapshot(conversationId)).toEqual(first);
+    await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect(dialog.locator('input[value="MANUAL-ONLY"]')).toBeVisible();
+    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+    await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
+    await expect(dialog.locator('input[value="MANUAL-ONLY"]')).toHaveCount(0);
+    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
+    expect(await persistedSnapshot(conversationId)).toEqual(first);
     await dialog.getByRole('button', { name: /^Save/ }).click();
     await expect.poll(async () => (await persistedSnapshot(conversationId)).reviews[0]?.receipts.length).toBe(2);
     const second = await persistedSnapshot(conversationId);
@@ -2822,11 +3103,8 @@ test.describe('Steel managed source review', () => {
     expect(second.reviews[0]?.rows).toContainEqual(expect.objectContaining({ rowId: manual?.rowId,
       origin: 'manual', deleted: true }));
     expect(second.reviews[0]?.receipts[1]).toMatchObject({ changedRows: 1, changedRowIds: [manual?.rowId] });
-    await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
-    await expect(dialog.locator('input[value="MANUAL-ONLY"]')).toBeVisible();
-    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
-    expect(await persistedSnapshot(conversationId)).toEqual(second);
-    await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
+    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
+    await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
     await expect(dialog.locator('input[value="MANUAL-ONLY"]')).toHaveCount(0);
     await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
     await page.keyboard.press('Escape');
@@ -3108,6 +3386,8 @@ test.describe('Steel managed source review', () => {
     }
     await expect(oneUnsavedRow).toHaveCount(0);
     await expect(quantity).toHaveValue('7');
+    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
+    await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
     expect(await persistedSnapshot(conversationId)).toEqual(firstCommitted);
     await page.unroute(commitUrl);
     await page.keyboard.press('Escape');
@@ -3142,6 +3422,8 @@ test.describe('Steel managed source review', () => {
       releaseResponse?.();
       await expect(dialog.getByRole('button', { name: /^Save/ })).toBeEnabled();
       await expect(quantity).toHaveValue('10');
+      await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
+      await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
       await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
       expect(await persistedSnapshot(conversationId)).toEqual(firstCommitted);
       expect(firstCommitted?.messages[0]?.text).toContain('| A | REVIEW-P1 | 1000 | 7 | 1 |');
@@ -3157,8 +3439,263 @@ test.describe('Steel managed source review', () => {
     }
   });
 
+  for (const merge of ['other_row', 'other_field', 'same_value'] as const) {
+    test(`the OCR editor merges a same-output Save without losing current values: ${merge}`, async ({ page }) => {
+      const { conversationId, messageId } = await seedCurrent(ocr);
+      conversations.push(conversationId);
+      await page.goto(`/c/${conversationId}`);
+      await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+      const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+      await quantity.fill('9');
+      await quantity.press('Enter');
+      const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+      expect(read.status()).toBe(200);
+      const { table } = await read.json() as { table: SteelReviewTable };
+      const rows = structuredClone(table.rows);
+      if (merge === 'other_row') rows[1].values['數量'].effective = '7';
+      if (merge === 'other_field') rows[0].values['長度'].effective = '1234';
+      if (merge === 'same_value') rows[0].values['數量'].effective = '9';
+      const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+      const prepare = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+      expect(prepare.status()).toBe(200);
+      const commit = await page.request.post(`${url}/commit`, { headers, data: await prepare.json() });
+      expect(commit.status()).toBe(200);
+      const otherSaved = await persistedSnapshot(conversationId);
+      await page.evaluate(() => window.dispatchEvent(new Event('offline')));
+      const refreshed = page.waitForResponse((response) => response.request().method() === 'GET' &&
+        response.url().includes(readUrl(conversationId, messageId, 1)));
+      await page.evaluate(() => window.dispatchEvent(new Event('online')));
+      expect((await refreshed).status()).toBe(200);
+      await expect(quantity).toHaveValue('9');
+      await expect(dialog.getByRole('button', { name: /^Save/ })).toBeEnabled();
+      const requestReady = page.waitForRequest((request) => request.method() === 'POST' && request.url().endsWith(`${url}/prepare`));
+      await dialog.getByRole('button', { name: /^Save/ }).click();
+      const submitted = (await requestReady).postDataJSON() as SteelReviewOperationPrepare;
+      expect(submitted.revision).toBe(table.revision);
+      expect(submitted.operations).toEqual([{ type: 'update', rowId: table.rows[0].rowId,
+        changes: [{ header: '數量', value: '9' }] }]);
+      expect(submitted).not.toHaveProperty('rows');
+      await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+      const merged = await persistedSnapshot(conversationId);
+      expect(merged.reviews[0]?.rows[0].values['數量']).toEqual({ baseline: '2', effective: '9' });
+      if (merge === 'other_row') expect(merged.reviews[0]?.rows[1].values['數量'].effective).toBe('7');
+      if (merge === 'other_field') expect(merged.reviews[0]?.rows[0].values['長度'].effective).toBe('1234');
+      if (merge === 'same_value') expect(merged).toEqual(otherSaved);
+      expect(merged.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
+      if (merge !== 'same_value') expectPreservedAiState(otherSaved.ocr, merged.ocr);
+      const clean = merge === 'other_row'
+        ? ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 9 | 1 |')
+          .replace('| A | REVIEW-P2 | 2000 | 3 | 1 |', '| A | REVIEW-P2 | 2000 | 7 | 1 |')
+        : ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', `| A | REVIEW-P1 | ${merge === 'other_field' ? '1234' : '1000'} | 9 | 1 |`);
+      expect(merged.messages.find((message) => message.messageId === messageId)?.text).toBe(clean);
+      await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
+      await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
+      if (merge !== 'same_value') {
+        await quantity.fill('10');
+        await quantity.press('Enter');
+        await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
+        await expect(quantity).toHaveValue('9');
+        if (merge === 'other_field') {
+          await expect(dialog.locator('tbody tr').first().locator('td').nth(2).getByRole('textbox')).toHaveValue('1234');
+        }
+        expect(await persistedSnapshot(conversationId)).toEqual(merged);
+        await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
+        await expect(quantity).toHaveValue('10');
+        await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
+        await expect(quantity).toHaveValue('9');
+      }
+      await page.keyboard.press('Escape');
+      await expect(dialog).not.toBeVisible();
+      await page.reload();
+      await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+      await expect(quantity).toHaveValue('9');
+      expect(await persistedSnapshot(conversationId)).toEqual(merged);
+    });
+  }
+
+  for (const change of ['disjoint', 'conflict'] as const) {
+    test(`an OCR operation handles a real foreign Save between prepare and commit: ${change}`, async ({ page }) => {
+      const { conversationId, messageId } = await seedCurrent(ocr);
+      conversations.push(conversationId);
+      const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+      const commitUrl = `**${url}/commit`;
+      let otherSaved: Awaited<ReturnType<typeof persistedSnapshot>> | undefined;
+      let commitStatus: number | undefined;
+      await page.route(commitUrl, async (route) => {
+        const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+        expect(read.status()).toBe(200);
+        const { table } = await read.json() as { table: SteelReviewTable };
+        const rows = structuredClone(table.rows);
+        rows[change === 'disjoint' ? 1 : 0].values['數量'].effective = '7';
+        const foreignPrepare = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+        expect(foreignPrepare.status()).toBe(200);
+        const foreignCommit = await page.request.post(`${url}/commit`, { headers, data: await foreignPrepare.json() });
+        expect(foreignCommit.status()).toBe(200);
+        otherSaved = await persistedSnapshot(conversationId);
+        const response = await route.fetch();
+        commitStatus = response.status();
+        await route.fulfill({ response });
+      });
+      try {
+        await page.goto(`/c/${conversationId}`);
+        await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+        const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+        const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+        await quantity.fill('9');
+        await dialog.getByRole('button', { name: /^Save/ }).click();
+        await expect.poll(() => commitStatus).toBe(change === 'disjoint' ? 200 : 409);
+        if (change === 'conflict') {
+          await expect(dialog.getByRole('alert')).toBeVisible();
+          await expect(quantity).toHaveValue('9');
+          await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
+          expect(await persistedSnapshot(conversationId)).toEqual(otherSaved);
+        } else {
+          await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+          const merged = await persistedSnapshot(conversationId);
+          expect(merged.reviews[0]?.rows).toMatchObject([
+            { values: { 數量: { baseline: '2', effective: '9' } } },
+            { values: { 數量: { baseline: '3', effective: '7' } } },
+          ]);
+          expect(merged.messages.find((message) => message.messageId === messageId)?.text)
+            .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 9 | 1 |')
+              .replace('| A | REVIEW-P2 | 2000 | 3 | 1 |', '| A | REVIEW-P2 | 2000 | 7 | 1 |'));
+          expect(merged.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
+          await expect(dialog.locator('tbody tr').last().locator('td').nth(3).getByRole('textbox')).toHaveValue('7');
+          const ready = page.waitForEvent('download');
+          await dialog.getByRole('button', { name: 'Download table as CSV', exact: true }).click();
+          const path = await (await ready).path();
+          if (!path) throw new Error('Missing merged confirmed CSV');
+          const csv = await readFile(path, 'utf8');
+          expect(csv).toMatch(/REVIEW-P1,1000,9/);
+          expect(csv).toMatch(/REVIEW-P2,2000,7/);
+          expect(await persistedSnapshot(conversationId)).toEqual(merged);
+        }
+      } finally {
+        await page.unroute(commitUrl);
+      }
+    });
+  }
+
+  test('a bare update based on a tombstone cannot adopt another editor restore', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const initial = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    const { table } = await initial.json() as { table: SteelReviewTable };
+    const identity = { conversationId, messageId, kind: 'ocr_result' as const, tableId: table.tableId,
+      partIndex: table.partIndex, outputId: table.outputId, revision: table.revision };
+    const deletion = await page.request.post(`${url}/prepare`, { headers, data: { ...identity,
+      operations: [{ type: 'delete', rowId: table.rows[0].rowId }] } });
+    expect(deletion.status()).toBe(200);
+    const prepared = await deletion.json() as SteelReviewOperationPrepared;
+    const deleted = await page.request.post(`${url}/commit`, { headers,
+      data: { ...prepared.operationRequest, operationId: prepared.operationId, digest: prepared.digest } });
+    expect(deleted.status()).toBe(200);
+    const capturedDeleted = await deleted.json() as SteelReviewSaveResponse;
+    const latest = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    const current = (await latest.json() as { table: SteelReviewTable }).table;
+    const rows = structuredClone(current.rows);
+    rows[0].deleted = false;
+    const foreignRestore = await page.request.post(`${url}/prepare`, { headers, data: { ...current, rows } });
+    expect(foreignRestore.status()).toBe(200);
+    const restored = await page.request.post(`${url}/commit`, { headers, data: await foreignRestore.json() });
+    expect(restored.status()).toBe(200);
+    const before = await persistedSnapshot(conversationId);
+    const base = { ...identity, revision: capturedDeleted.revision };
+    const update = { type: 'update' as const, rowId: table.rows[0].rowId, changes: [{ header: '數量', value: '8' }] };
+    const rejected = await page.request.post(`${url}/prepare`, { headers, data: { ...base, operations: [update] } });
+    expect(rejected.status()).toBe(409);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    const explicit = await page.request.post(`${url}/prepare`, { headers,
+      data: { ...base, operations: [{ type: 'restore', rowId: table.rows[0].rowId }, update] } });
+    expect(explicit.status()).toBe(200);
+    const result = await explicit.json() as SteelReviewOperationPrepared;
+    const saved = await page.request.post(`${url}/commit`, { headers,
+      data: { ...result.operationRequest, operationId: result.operationId, digest: result.digest } });
+    expect(saved.status()).toBe(200);
+    expect((await persistedSnapshot(conversationId)).reviews[0]?.rows[0])
+      .toMatchObject({ deleted: false, values: { 數量: { baseline: '2', effective: '8' } } });
+  });
+
+  for (const position of ['after', 'start', 'end'] as const) {
+    test(`concurrent operation additions at the same anchor retain both identities and unique ordinals: ${position}`, async ({ page }) => {
+      const { conversationId, messageId } = await seedCurrent(ocr);
+      conversations.push(conversationId);
+      const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+      const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+      const { table } = await read.json() as { table: SteelReviewTable };
+      const identity = { conversationId, messageId, kind: 'ocr_result' as const, tableId: table.tableId,
+        partIndex: table.partIndex, outputId: table.outputId, revision: table.revision };
+      const rowIds = [randomUUID(), randomUUID()];
+      const pending: SteelReviewOperationPrepared[] = [];
+      for (const rowId of rowIds) {
+        const response = await page.request.post(`${url}/prepare`, { headers, data: { ...identity,
+          operations: [{ type: 'add', rowId, position: position === 'after' ? { kind: position, rowId: table.rows[1].rowId } : { kind: position },
+            changes: [{ header: '零件編號', value: 'CONCURRENT-ADD' }, { header: '數量', value: '1' }] }] } });
+        expect(response.status()).toBe(200);
+        pending.push(await response.json() as SteelReviewOperationPrepared);
+      }
+      const bodies = pending.map((prepared) => ({ ...prepared.operationRequest, operationId: prepared.operationId, digest: prepared.digest }));
+      const first = await page.request.post(`${url}/commit`, { headers, data: bodies[0] });
+      expect(first.status()).toBe(200);
+      const firstReceipt = await first.json();
+      const second = await page.request.post(`${url}/commit`, { headers, data: bodies[1] });
+      expect(second.status()).toBe(200);
+      const merged = await persistedSnapshot(conversationId);
+      const added = merged.reviews[0]?.rows.filter((row: SteelReviewTable['rows'][number]) => row.origin === 'manual');
+      expect(added.map((row: SteelReviewTable['rows'][number]) => row.rowId)).toEqual(rowIds);
+      expect(added.map((row: SteelReviewTable['rows'][number]) => row.insertion?.ordinal)).toEqual([0, 1]);
+      const replay = await page.request.post(`${url}/commit`, { headers, data: bodies[0] });
+      expect(replay.status()).toBe(200);
+      expect(await replay.json()).toEqual(firstReceipt);
+      expect(await persistedSnapshot(conversationId)).toEqual(merged);
+      expect(merged.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
+    });
+  }
+
+  test('an operation delete conflicts with a changed row and a disjoint update preserves foreign deletion', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const identity = { conversationId, messageId, kind: 'ocr_result' as const, tableId: table.tableId,
+      partIndex: table.partIndex, outputId: table.outputId, revision: table.revision };
+    const prepare = await page.request.post(`${url}/prepare`, { headers, data: { ...identity,
+      operations: [{ type: 'delete', rowId: table.rows[0].rowId }] } });
+    expect(prepare.status()).toBe(200);
+    const pending = await prepare.json() as SteelReviewOperationPrepared;
+    const rows = structuredClone(table.rows);
+    rows[0].values['數量'].effective = '7';
+    rows[1].deleted = true;
+    const foreign = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+    expect(foreign.status()).toBe(200);
+    const foreignSave = await page.request.post(`${url}/commit`, { headers, data: await foreign.json() });
+    expect(foreignSave.status()).toBe(200);
+    const before = await persistedSnapshot(conversationId);
+    const rejected = await page.request.post(`${url}/commit`, { headers,
+      data: { ...pending.operationRequest, operationId: pending.operationId, digest: pending.digest } });
+    expect(rejected.status()).toBe(409);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    const disjoint = await page.request.post(`${url}/prepare`, { headers, data: { ...identity,
+      operations: [{ type: 'update', rowId: table.rows[0].rowId, changes: [{ header: '長度', value: '1234' }] }] } });
+    expect(disjoint.status()).toBe(200);
+    const result = await disjoint.json() as SteelReviewOperationPrepared;
+    const saved = await page.request.post(`${url}/commit`, { headers,
+      data: { ...result.operationRequest, operationId: result.operationId, digest: result.digest } });
+    expect(saved.status()).toBe(200);
+    const merged = await persistedSnapshot(conversationId);
+    expect(merged.reviews[0]?.rows).toMatchObject([
+      { deleted: false, values: { 數量: { effective: '7' }, 長度: { effective: '1234' } } },
+      { deleted: true },
+    ]);
+    expect(merged.messages.find((message) => message.messageId === messageId)?.text).not.toContain('REVIEW-P2');
+    expect(merged.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
+  });
+
   for (const action of ['save', 'edit'] as const) {
-    test(`a foreign same-output Save cannot rebase a dirty editor on reconnect: ${action}`, async ({ page }) => {
+    test(`a conflicting same-field Save retains the dirty editor on reconnect: ${action}`, async ({ page }) => {
       const { conversationId, messageId } = await seedCurrent(ocr);
       conversations.push(conversationId);
       await page.goto(`/c/${conversationId}`);
@@ -3187,9 +3724,12 @@ test.describe('Steel managed source review', () => {
       if (action === 'edit') {
         await dialog.locator('tbody tr').first().locator('td').nth(2).getByRole('textbox').fill('1234');
         await expect(quantity).toHaveValue('9');
-      } else {
-        await expect(dialog.getByRole('button', { name: /^Save/ })).toBeDisabled();
-        await expect(dialog.getByRole('alert')).toBeVisible();
+      }
+      await expect(dialog.getByRole('button', { name: /^Save/ })).toBeEnabled();
+      await dialog.getByRole('button', { name: /^Save/ }).click();
+      await expect(dialog.getByRole('alert')).toBeVisible();
+      await expect(quantity).toHaveValue('9');
+      if (action === 'save') {
         const staleRows = structuredClone(table.rows);
         staleRows[0].values['數量'].effective = '9';
         const staleAttempt = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows: staleRows } });
@@ -3203,7 +3743,6 @@ test.describe('Steel managed source review', () => {
         else if (close === 'outside') await page.mouse.click(1, 1);
         else await dialog.getByRole('button', { name: 'Close', exact: true }).nth(close === 'first_close' ? 0 : 1).click();
         await expect(dialog.getByRole('alertdialog')).toBeVisible();
-        await expect(dialog.getByRole('button', { name: 'Save updates', exact: true })).toBeDisabled();
         await dialog.getByRole('button', { name: 'Continue editing', exact: true }).click();
         await expect(quantity).toHaveValue('9');
         await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
@@ -3252,6 +3791,10 @@ test.describe('Steel managed source review', () => {
     await expect(reviewValue(dialog, '9')).toBeVisible();
     await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
     await expect(dialog.getByRole('button', { name: /^Save/ })).toBeDisabled();
+    await expect(dialog.getByRole('textbox')).toHaveCount(0);
+    await expect(dialog.getByRole('button', { name: 'Add row', exact: true })).toHaveCount(0);
+    await expect(dialog.getByRole('button', { name: /^Change source/ })).toHaveCount(0);
+    await expect(dialog.getByRole('button', { name: /^Delete row/ })).toHaveCount(0);
     await page.keyboard.press('Escape');
     await expect(dialog.getByRole('alertdialog')).toBeVisible();
     await expect(dialog.getByRole('button', { name: 'Save updates', exact: true })).toBeDisabled();
@@ -3431,5 +3974,332 @@ test.describe('Steel managed source review', () => {
     expect(commits).toBe(1);
     expect(await persistedSnapshot(conversationId)).toEqual(before);
   });
+
+  test('operation conflicts return all unequal fields and one authoritative latest Markdown without writes', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const rows = structuredClone(table.rows);
+    rows[0].values['數量'].effective = '7';
+    rows[0].values['長度'].effective = '1234';
+    rows[1].values['數量'].effective = '8';
+    const foreign = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+    expect(foreign.status()).toBe(200);
+    const committed = await page.request.post(`${url}/commit`, { headers, data: await foreign.json() });
+    expect(committed.status()).toBe(200);
+    const before = await persistedSnapshot(conversationId);
+    const current = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    const latest = await current.json() as { table: SteelReviewTable };
+    const request: SteelReviewOperationPrepare = { conversationId, messageId, kind: 'ocr_result',
+      tableId: table.tableId, partIndex: table.partIndex, outputId: table.outputId, revision: table.revision,
+      operations: [
+        { type: 'update', rowId: table.rows[0].rowId, changes: [
+          { header: '數量', value: '9' }, { header: '長度', value: '1234' },
+        ] },
+        { type: 'update', rowId: table.rows[1].rowId, changes: [{ header: '數量', value: '10' }] },
+      ] };
+    const conflict = await page.request.post(`${url}/prepare`, { headers, data: request });
+    expect(conflict.status()).toBe(409);
+    const body = await conflict.json();
+    expect(body.code).toBe('REVIEW_CONFLICT');
+    expect(body.recovery.table).toMatchObject({ conversationId, messageId, outputId: table.outputId,
+      revision: latest.table.revision, effectiveMarkdown: latest.table.effectiveMarkdown,
+      isLatest: true, readOnly: false });
+    expect(body.recovery.table.rows).toEqual(latest.table.rows);
+    expect(body.recovery.conflicts).toHaveLength(2);
+    expect(body.recovery.conflicts).toEqual(expect.arrayContaining([
+      { kind: 'field', rowId: table.rows[0].rowId, header: '數量', expected: '2', current: '7', requested: '9' },
+      { kind: 'field', rowId: table.rows[1].rowId, header: '數量', expected: '3', current: '8', requested: '10' },
+    ]));
+    expect(body.recovery.conflicts.some((field: { header?: string }) => field.header === '長度')).toBe(false);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    const retry = await page.request.post(`${url}/prepare`, { headers, data: { ...request,
+      revision: body.recovery.table.revision } });
+    expect(retry.status()).toBe(200);
+    const prepared = await retry.json() as SteelReviewOperationPrepared;
+    const saved = await page.request.post(`${url}/commit`, { headers, data: {
+      ...prepared.operationRequest, operationId: prepared.operationId, digest: prepared.digest } });
+    expect(saved.status()).toBe(200);
+    const after = await persistedSnapshot(conversationId);
+    expect(after.reviews[0]?.rows).toMatchObject([
+      { values: { 數量: { baseline: '2', effective: '9' }, 長度: { baseline: '1000', effective: '1234' } } },
+      { values: { 數量: { baseline: '3', effective: '10' } } },
+    ]);
+    expect(after.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
+  });
+
+  test('all requested values already equal latest automatically remove conflict without DB writes', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const rows = structuredClone(table.rows);
+    rows[0].values['數量'].effective = '7';
+    rows[1].values['數量'].effective = '8';
+    const foreign = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+    expect(foreign.status()).toBe(200);
+    expect((await page.request.post(`${url}/commit`, { headers, data: await foreign.json() })).status()).toBe(200);
+    const before = await persistedSnapshot(conversationId);
+    const request: SteelReviewOperationPrepare = { conversationId, messageId, kind: 'ocr_result',
+      tableId: table.tableId, partIndex: table.partIndex, outputId: table.outputId, revision: table.revision,
+      operations: [
+        { type: 'update', rowId: table.rows[0].rowId, changes: [{ header: '數量', value: '7' }] },
+        { type: 'update', rowId: table.rows[1].rowId, changes: [{ header: '數量', value: '8' }] },
+      ] };
+    const prepare = await page.request.post(`${url}/prepare`, { headers, data: request });
+    expect(prepare.status()).toBe(200);
+    const prepared = await prepare.json() as SteelReviewOperationPrepared;
+    expect(prepared.caption.changedRows).toBe(0);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    const saved = await page.request.post(`${url}/commit`, { headers, data: {
+      ...prepared.operationRequest, operationId: prepared.operationId, digest: prepared.digest } });
+    expect(saved.status()).toBe(200);
+    expect((await saved.json()).changedRows).toBe(0);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+  });
+
+  test('conflict recovery marks file and page then retries its latest revision preserving foreign fields', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+    await quantity.fill('9');
+    await quantity.press('Enter');
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const rows = structuredClone(table.rows);
+    rows[0].values['數量'].effective = '7';
+    rows[0].values['長度'].effective = '1234';
+    const foreign = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+    expect(foreign.status()).toBe(200);
+    expect((await page.request.post(`${url}/commit`, { headers, data: await foreign.json() })).status()).toBe(200);
+    const before = await persistedSnapshot(conversationId);
+    const failedResponse = page.waitForResponse((response) => response.request().method() === 'POST' &&
+      response.url().endsWith(`${url}/prepare`));
+    await dialog.getByRole('button', { name: /^Save/ }).click();
+    const conflict = await failedResponse;
+    expect(conflict.status()).toBe(409);
+    const body = await conflict.json();
+    await expect(dialog.getByRole('alert')).toBeVisible();
+    await expect(quantity).toHaveValue('9');
+    await expect(dialog.locator('tbody tr').first().locator('td').nth(2).getByRole('textbox')).toHaveValue('1234');
+    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeEnabled();
+    await expect(dialog.getByRole('img', { name: /Conflicts on this file/i }).first()).toBeVisible();
+    await expect(dialog.getByRole('img', { name: /Conflicts on this page/i }).first()).toBeVisible();
+    const fileMenu = dialog.getByRole('combobox', { name: 'Source file', exact: true });
+    await fileMenu.click();
+    await expect(page.getByRole('option', { name: /alpha.pdf/ }).getByRole('img', { name: /Conflicts on this file/i })).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(dialog).toBeVisible();
+    const pageMenu = dialog.getByRole('combobox', { name: 'Page', exact: true });
+    await pageMenu.click();
+    await expect(page.getByRole('option', { name: /^1\b/ }).getByRole('img', { name: /Conflicts on this page/i })).toBeVisible();
+    await page.keyboard.press('Escape');
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    const retryRequest = page.waitForRequest((request) => request.method() === 'POST' && request.url().endsWith(`${url}/prepare`));
+    await dialog.getByRole('button', { name: /^Save/ }).click();
+    const request = (await retryRequest).postDataJSON() as SteelReviewOperationPrepare;
+    expect(request.revision).toBe(body.recovery.table.revision);
+    expect(request.revision).not.toBe(table.revision);
+    expect(request.operations).toEqual([{ type: 'update', rowId: table.rows[0].rowId,
+      changes: [{ header: '數量', value: '9' }] }]);
+    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+    await expect(dialog.getByRole('img', { name: /Conflicts on this (file|page)/i })).toHaveCount(0);
+    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
+    const after = await persistedSnapshot(conversationId);
+    expect(after.messages.find((message) => message.messageId === messageId)?.text)
+      .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1234 | 9 | 1 |'));
+    expect(after.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
+    await page.keyboard.press('Escape');
+    await page.reload();
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    await expect(quantity).toHaveValue('9');
+    expect(await persistedSnapshot(conversationId)).toEqual(after);
+  });
+
+  test('a Save racing after conflict recovery returns a newer conflict instead of overwriting', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const request: SteelReviewOperationPrepare = { conversationId, messageId, kind: 'ocr_result',
+      tableId: table.tableId, partIndex: table.partIndex, outputId: table.outputId, revision: table.revision,
+      operations: [{ type: 'update', rowId: table.rows[0].rowId, changes: [{ header: '數量', value: '9' }] }] };
+    let expectedRevision = table.revision;
+    for (const value of ['7', '8']) {
+      const current = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+      const latest = await current.json() as { table: SteelReviewTable };
+      const rows = structuredClone(latest.table.rows);
+      rows[0].values['數量'].effective = value;
+      const foreign = await page.request.post(`${url}/prepare`, { headers, data: { ...latest.table, rows } });
+      expect(foreign.status()).toBe(200);
+      expect((await page.request.post(`${url}/commit`, { headers, data: await foreign.json() })).status()).toBe(200);
+      const before = await persistedSnapshot(conversationId);
+      const failed = await page.request.post(`${url}/prepare`, { headers, data: { ...request, revision: expectedRevision } });
+      expect(failed.status()).toBe(409);
+      const body = await failed.json();
+      expect(body.recovery.conflicts).toEqual([{ kind: 'field', rowId: table.rows[0].rowId,
+        header: '數量', expected: value === '7' ? '2' : '7', current: value, requested: '9' }]);
+      expect(body.recovery.table.revision).not.toBe(expectedRevision);
+      expect(body.recovery.table.rows[0].values['數量'].effective).toBe(value);
+      expectedRevision = body.recovery.table.revision;
+      expect(await persistedSnapshot(conversationId)).toEqual(before);
+    }
+  });
+
+  for (const location of ['located', 'unlocated'] as const) {
+    test(`using the latest conflicted value preserves other local changes: ${location}`, async ({ page }) => {
+      const { conversationId, messageId } = await seedCurrent(ocr);
+      conversations.push(conversationId);
+      if (location === 'unlocated') {
+        await withMongo(async (db) => {
+          await db.collection('steel_conversation_ocr_state').updateOne({ conversationId }, { $set: { sourceMappings: [] } });
+        });
+      }
+      const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+      await page.goto(`/c/${conversationId}`);
+      await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+      const rowsUi = dialog.locator('tbody tr');
+      const quantity = rowsUi.first().locator('td').nth(3).getByRole('textbox');
+      const otherQuantity = rowsUi.last().locator('td').nth(3).getByRole('textbox');
+      await quantity.fill('9');
+      await quantity.press('Enter');
+      await otherQuantity.fill('10');
+      await otherQuantity.press('Enter');
+      const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+      const { table } = await read.json() as { table: SteelReviewTable };
+      const rows = structuredClone(table.rows);
+      rows[0].values['數量'].effective = '7';
+      rows[0].values['長度'].effective = '1234';
+      const foreign = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+      expect(foreign.status()).toBe(200);
+      expect((await page.request.post(`${url}/commit`, { headers, data: await foreign.json() })).status()).toBe(200);
+      const before = await persistedSnapshot(conversationId);
+      const failed = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith(`${url}/prepare`));
+      await dialog.getByRole('button', { name: /^Save/ }).click();
+      const response = await failed;
+      expect(response.status()).toBe(409);
+      const body = await response.json();
+      if (location === 'unlocated') {
+        await expect(dialog.getByRole('img', { name: /Conflicts in unlocated rows/i })).toBeVisible();
+      }
+      await dialog.getByRole('button', { name: /Use latest value/i }).first().click();
+      await expect(quantity).toHaveValue('7');
+      await expect(otherQuantity).toHaveValue('10');
+      await expect(rowsUi.first().locator('td').nth(2).getByRole('textbox')).toHaveValue('1234');
+      await expect(dialog.getByRole('button', { name: /Use latest value/i })).toHaveCount(0);
+      await expect(dialog.getByRole('img', { name: /Conflicts (on this|in unlocated)/i })).toHaveCount(0);
+      await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
+      expect(await persistedSnapshot(conversationId)).toEqual(before);
+      const nextRequest = page.waitForRequest((request) => request.method() === 'POST' && request.url().endsWith(`${url}/prepare`));
+      await dialog.getByRole('button', { name: /^Save/ }).click();
+      const request = (await nextRequest).postDataJSON() as SteelReviewOperationPrepare;
+      expect(request.revision).toBe(body.recovery.table.revision);
+      expect(request.operations).toEqual([{ type: 'update', rowId: table.rows[1].rowId,
+        changes: [{ header: '數量', value: '10' }] }]);
+      await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+      const after = await persistedSnapshot(conversationId);
+      expect(after.reviews[0]?.rows).toMatchObject([
+        { values: { 數量: { baseline: '2', effective: '7' }, 長度: { effective: '1234' } } },
+        { values: { 數量: { baseline: '3', effective: '10' } } },
+      ]);
+      expect(after.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
+      if (location === 'unlocated') expect(after.reviews[0]?.rows.every((row: SteelReviewTable['rows'][number]) => row.source === null)).toBe(true);
+    });
+  }
+
+  for (const publication of ['foreign_save', 'new_ai'] as const) {
+    test(`a delayed committed response cannot rewind current chat or cache: ${publication}`, async ({ page }) => {
+      const { conversationId, messageId } = await seedCurrent(ocr);
+      conversations.push(conversationId);
+      const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+      const commitUrl = `**${url}/commit`;
+      let releaseResponse: (() => void) | undefined;
+      const held = new Promise<void>((resolve) => { releaseResponse = resolve; });
+      let committed = false;
+      await page.route(commitUrl, async (route) => {
+        const response = await route.fetch();
+        expect(response.status()).toBe(200);
+        committed = true;
+        await held;
+        await route.fulfill({ response });
+      });
+      try {
+        await page.goto(`/c/${conversationId}`);
+        await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+        const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+        const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+        await quantity.fill('9');
+        await quantity.press('Enter');
+        await dialog.getByRole('button', { name: /^Save/ }).click();
+        await expect.poll(() => committed).toBe(true);
+        if (publication === 'foreign_save') {
+          const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+          const { table } = await read.json() as { table: SteelReviewTable };
+          const rows = structuredClone(table.rows);
+          rows[0].values['長度'].effective = '1234';
+          const foreign = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+          expect(foreign.status()).toBe(200);
+          expect((await page.request.post(`${url}/commit`, { headers, data: await foreign.json() })).status()).toBe(200);
+        } else {
+          const newAi = ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 4 | 1 |');
+          await withMongo(async (db) => {
+            await db.collection('messages').updateOne({ conversationId, messageId }, {
+              $set: { text: newAi, content: [{ type: 'text', text: newAi }] },
+              $unset: { 'metadata.steelReview.ocr_result': '' },
+            });
+            await db.collection('steel_conversation_ocr_state').updateOne({ conversationId }, { $set: {
+              currentOcrResultGenerationId: 'review-delayed-response-new-ai',
+              currentOcrResultAttemptId: 'review-delayed-response-new-attempt',
+              currentOcrResultMarkdown: newAi, updatedAt: new Date(),
+            } });
+          });
+        }
+        const latest = await persistedSnapshot(conversationId);
+        releaseResponse?.();
+        await expect(dialog.getByRole('button', { name: /^Save/ })).not.toHaveAttribute('aria-busy', 'true');
+        expect(await persistedSnapshot(conversationId)).toEqual(latest);
+        if (publication === 'foreign_save') {
+          await expect(quantity).toHaveValue('9');
+          await expect(dialog.locator('tbody tr').first().locator('td').nth(2).getByRole('textbox')).toHaveValue('1234');
+          await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+          await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
+          await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
+        } else {
+          await expect(dialog.getByRole('button', { name: 'Add row', exact: true })).toBeDisabled();
+          await expect(dialog.getByRole('button', { name: /^Save/ })).toBeDisabled();
+        }
+        const live = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+        const { table } = await live.json() as { table: SteelReviewTable };
+        expect(table.rows[0].values['數量'].effective).toBe(publication === 'new_ai' ? '4' : '9');
+        if (publication === 'foreign_save') expect(table.rows[0].values['長度'].effective).toBe('1234');
+        const chatRow = page.getByTestId('message-body').locator('tbody tr')
+          .filter({ has: page.getByText('REVIEW-P1', { exact: true }) }).first();
+        await expect(chatRow.locator('td').nth(3)).toHaveText(publication === 'new_ai' ? '4' : '9');
+        if (publication === 'foreign_save') await expect(chatRow.locator('td').nth(2)).toHaveText('1234');
+        await expect(chatRow.locator('del')).toHaveCount(0);
+        await page.reload();
+        await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+        const reopened = page.getByRole('dialog', { name: 'Steel source review' });
+        await expect(reopened.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox'))
+          .toHaveValue(publication === 'new_ai' ? '4' : '9');
+        if (publication === 'new_ai') {
+          await expect(reopened.locator('del', { hasText: '9' })).toHaveCount(0);
+        }
+        expect(await persistedSnapshot(conversationId)).toEqual(latest);
+      } finally {
+        releaseResponse?.();
+        await page.unroute(commitUrl);
+      }
+    });
+  }
 
 });
