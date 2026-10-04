@@ -1506,6 +1506,75 @@ test.describe('Steel managed source review', () => {
     expect(await persistedSnapshot(conversationId)).toEqual(before);
   });
 
+  test('OCR ledger authority rejects forged identities and anchors while independent manual rows save atomically', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(read.status()).toBe(200);
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const before = await persistedSnapshot(conversationId);
+    const manualValues = new Map([['零件編號', 'API-MANUAL'], ['數量', '4']]);
+    const makeManual = (ordinal: number) => ({
+      rowId: randomUUID(), origin: 'manual', deleted: false,
+      insertion: { kind: 'end', ordinal }, source: null,
+      values: Object.fromEntries(table.headers.map((header) => [header, {
+        baseline: null, effective: manualValues.get(header) ?? '',
+      }])),
+    });
+    for (const attack of ['origin', 'baseline', 'duplicate', 'reorder', 'missing', 'foreign_anchor', 'ai_insertion']) {
+      const rows = structuredClone(table.rows);
+      if (attack === 'origin') Reflect.set(rows[0], 'origin', 'manual');
+      if (attack === 'baseline') rows[0].values['數量'].baseline = null;
+      if (attack === 'duplicate') rows.push(structuredClone(rows[0]));
+      if (attack === 'reorder') rows.reverse();
+      if (attack === 'missing') rows.pop();
+      if (attack === 'foreign_anchor') {
+        const manual = makeManual(0);
+        Reflect.set(manual, 'insertion', { kind: 'after', rowId: randomUUID(), ordinal: 0 });
+        rows.push(manual);
+      }
+      if (attack === 'ai_insertion') {
+        const manual = makeManual(0);
+        Reflect.set(manual, 'origin', 'ai');
+        rows.push(manual);
+      }
+      const refused = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+      expect([400, 409], attack).toContain(refused.status());
+      expect(await persistedSnapshot(conversationId), attack).toEqual(before);
+    }
+    const first = makeManual(0);
+    const second = makeManual(1);
+    const preparedResponse = await page.request.post(`${url}/prepare`, { headers, data: {
+      ...table, rows: [...table.rows, first, second],
+    } });
+    expect(preparedResponse.status()).toBe(200);
+    const prepared = await preparedResponse.json() as SteelReviewPrepared;
+    expect(prepared.caption.changedRows).toBe(2);
+    expect(prepared.caption.changedRowIds).toEqual([first.rowId, second.rowId]);
+    expect(prepared.rows.map((row) => row.rowId)).toEqual([...table.rows.map((row) => row.rowId), first.rowId, second.rowId]);
+    const owner = before.messages.find((message) => message.messageId === messageId);
+    if (!owner) throw new Error('Missing ledger authority owner');
+    const forged = structuredClone(prepared);
+    Reflect.set(forged.rows[0], 'origin', 'manual');
+    forged.digest = createHash('sha256').update(encodeSteelReviewDigest({ ...forged, userId: String(owner.user) })).digest('hex');
+    expect([400, 409]).toContain((await page.request.post(`${url}/commit`, { headers, data: forged })).status());
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    const committed = await page.request.post(`${url}/commit`, { headers, data: prepared });
+    expect(committed.status()).toBe(200);
+    const saved = await persistedSnapshot(conversationId);
+    expect(saved.reviews[0]?.rows.slice(-2)).toMatchObject([
+      { rowId: first.rowId, origin: 'manual', deleted: false, source: null },
+      { rowId: second.rowId, origin: 'manual', deleted: false, source: null },
+    ]);
+    expect(saved.messages.find((message) => message.messageId === messageId)?.text)
+      .toBe(ocr + '\n|  | API-MANUAL |  | 4 |  |\n|  | API-MANUAL |  | 4 |  |');
+    expect(saved.reviews[0]?.receipts).toHaveLength(1);
+    expectPreservedAiState(before.ocr, saved.ocr);
+    expect((await page.request.post(`${url}/commit`, { headers, data: prepared })).status()).toBe(200);
+    expect(await persistedSnapshot(conversationId)).toEqual(saved);
+  });
+
   test('a reliable authentic 03 source reuses its code and same-association intent is a no-op', async ({ page }) => {
     const { conversationId, messageId, snapshot } = await seedCapturedLegacyReview('steel-review-legacy03-sourced');
     conversations.push(conversationId);
