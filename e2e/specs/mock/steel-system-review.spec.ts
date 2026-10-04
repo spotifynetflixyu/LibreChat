@@ -8,6 +8,7 @@ import {
   createSteelOcrStateService,
   createSteelQuotationStateService,
   createSteelMarkdownCompletionServices,
+  createSteelQuotationPublicationPublisher,
   publishCompletedQuotation,
   registerSteelMarkdownPublication,
   prepareQuotationTurn,
@@ -177,12 +178,13 @@ async function replayCompleted(fixture: { conversationId: string; messageId: str
       publishQuotation: async (publication) => {
         writes += 1;
         const text = `SYSTEM-PREFIX\n\n${publication.markdown}\n\nSYSTEM-SUFFIX`;
-        const saved = await methods.saveSteelQuotationMessage({
-          ...publication,
-          message: { user: userId, messageId: fixture.messageId, conversationId: fixture.conversationId,
+        const publish = createSteelQuotationPublicationPublisher({
+          savePublication: methods.saveSteelQuotationMessage,
+          buildMessage: () => ({ user: userId, messageId: fixture.messageId, conversationId: fixture.conversationId,
             parentMessageId: fixture.ocrMessageId, text, content: [{ type: 'text', text }],
-            isCreatedByUser: false, sender: 'Assistant' },
+            isCreatedByUser: false, sender: 'Assistant' }),
         });
+        const saved = await publish(publication);
         if (saved.ok) {
           responseMessagePersisted = true;
           persistedMessage = saved.message;
@@ -812,6 +814,66 @@ test.describe('System order atomic manual review', () => {
     expect(await readback(fixture.conversationId)).toEqual(saved);
   });
 
+
+  test('a delayed unpublished completion preserves the different canonical revision owner', async ({ page }) => {
+    let releaseFirst!: () => void;
+    let firstReady!: (fixture: OrderFixture) => void;
+    const pausedFirst = new Promise<void>((resolve) => { releaseFirst = resolve; });
+    const readyFirst = new Promise<OrderFixture>((resolve) => { firstReady = resolve; });
+    const first = seedOrder(false, true, async (fixture) => { firstReady(fixture); await pausedFirst; });
+    const firstOutcome = first.then(() => ({ ok: true }), (error) => ({ ok: false, error }));
+    const fixture = await Promise.race([readyFirst, firstOutcome.then((result) => {
+      if (!result.ok) throw result.error;
+      throw new Error('Initial publication completed before reaching its barrier');
+    })]);
+    conversations.push(fixture.conversationId);
+    let releaseRevision!: () => void;
+    let revisionReady!: (messageId: string) => void;
+    const pausedRevision = new Promise<void>((resolve) => { releaseRevision = resolve; });
+    const readyRevision = new Promise<string>((resolve) => { revisionReady = resolve; });
+    const revision = reviseCompleted(fixture, async (messageId) => { revisionReady(messageId); await pausedRevision; });
+    const revisionOutcome = revision.then((result) => ({ ok: true, fixture: result }), (error) => ({ ok: false, error }));
+    let messageId: string;
+    try {
+      messageId = await Promise.race([readyRevision, revisionOutcome.then((result) => {
+        if (!result.ok) throw result.error;
+        throw new Error('Revision completed before reaching its terminal barrier');
+      })]);
+      const before = await readback(fixture.conversationId);
+      expect(before.artifacts.some((artifact) => artifact.operationId === 'published')).toBe(false);
+      const originalMessage = before.messages.find((message) => message.messageId === fixture.messageId);
+      const target = before.messages.find((message) => message.messageId === messageId);
+      expect(target?.text).toContain('REVISION-SUFFIX');
+      expect(target?.content).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'tool_call' })]));
+      const replay = await replayCompleted(fixture);
+      expect(replay.writes).toBe(1);
+      const after = await readback(fixture.conversationId);
+      const preserved = after.messages.find((message) => message.messageId === messageId);
+      expect(preserved?.text).toBe(target?.text);
+      expect(preserved?.content).toEqual(target?.content);
+      expect(preserved?.metadata).toEqual(target?.metadata);
+      expect(after.messages.find((message) => message.messageId === fixture.messageId)).toEqual(originalMessage);
+      expect(after.quotation?.currentSystemOrder).toEqual(before.quotation?.currentSystemOrder);
+      expect(after.artifacts.some((artifact) => artifact.operationId === 'published')).toBe(true);
+    } finally {
+      releaseRevision();
+      releaseFirst();
+      await Promise.all([revisionOutcome, firstOutcome]);
+    }
+    expect(await revisionOutcome).toMatchObject({ ok: true });
+    expect(await firstOutcome).toMatchObject({ ok: false, error: expect.objectContaining({ code: 'superseded_response' }) });
+    const saved = await readback(fixture.conversationId);
+    await page.goto(`/c/${fixture.conversationId}`);
+    await expect(page.getByText('REVISION-SUFFIX', { exact: true })).toBeVisible();
+    await page.getByTestId('message-body').filter({ hasText: 'REVISION-SUFFIX' })
+      .getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    await expect(materialRow(page.getByRole('dialog', { name: 'Steel source review' }))
+      .getByRole('textbox').nth(0)).toHaveValue('3');
+    await page.keyboard.press('Escape');
+    await page.reload();
+    await expect(page.getByText('REVISION-SUFFIX', { exact: true })).toBeVisible();
+    expect(await readback(fixture.conversationId)).toEqual(saved);
+  });
 
   test('a normal later revision keeps its current message, tool content and saved value through runner replay', async ({ page }) => {
     const original = await seedOrder(false, true);
