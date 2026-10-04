@@ -5,7 +5,7 @@ Spec: https://github.com/spotifynetflixyu/LibreChat/issues/1
 Integration branch: `codex/steel-source-review`.
 Draft PR: https://github.com/spotifynetflixyu/LibreChat/pull/16.
 
-Current execution (2026-10-05): continue sequentially from slice06 through slice14; verify,
+Current execution (2026-10-05): continue sequentially from slice07 through slice14; verify,
 review and integrate each slice, then update GitHub before starting the next slice. The canonical Markdown locator is **messageId + exact full title**.
 Each reply contains at most one Markdown section with that full title; another message's same
 title is independent. Authorization, output ownership and expected revision remain backend guards.
@@ -29,7 +29,7 @@ Baseline: `056eb076ac0b9f7b7ccaba74672ae1288fab662a`.
 | 03 | [OCR 草稿、手動儲存與精準聊天更新](https://github.com/spotifynetflixyu/LibreChat/issues/4) | #2 | Verified (`1db96bd67`) |
 | 04 | [單一來源 selector 與未定位列補標](https://github.com/spotifynetflixyu/LibreChat/issues/5) | #3, #4 | Verified (`65c9b2140`) |
 | 05 | [OCR 列增刪與本次 undo／redo](https://github.com/spotifynetflixyu/LibreChat/issues/6) | #3, #4 | Verified (`e4ed93c76`) |
-| 06 | [System order 修正與內部報價原子同步](https://github.com/spotifynetflixyu/LibreChat/issues/7) | #4 | In progress (not integrated) |
+| 06 | [System order 修正與內部報價原子同步](https://github.com/spotifynetflixyu/LibreChat/issues/7) | #4 | Verified (`dfec53c9a`) |
 | 07 | [材料與加工列綁定及整組增刪復原](https://github.com/spotifynetflixyu/LibreChat/issues/8) | #5, #7 | Pending |
 | 08 | [材料單重與計價總數依賴重算](https://github.com/spotifynetflixyu/LibreChat/issues/9) | #7 | Pending |
 | 09 | [加工計量輸入與 save 前重算](https://github.com/spotifynetflixyu/LibreChat/issues/10) | #8, #9 | Pending |
@@ -50,7 +50,7 @@ for fresh implementer context; GitHub is the authoritative tracker.
 
 Slice01 evidence at `d58ce51bca450f1b7b3de6b36b996a97a3d4a5f9`: 11/11 authenticated browser cases against the real backend and a disposable Mongo replica set; 13/13 focused real-Mongo cases; 7/7 API cases; owning workspace builds/typechecks; exact-head spec and standards repair reviews passed. No DB writes on read/reload. Full-feature Lighthouse and final review remain in slice14.
 
-Latest user preference: update related tickets first, then implement them sequentially. Human edits use explicit Save with unsaved-row caption; dirty close asks save/discard/continue. Save reuses backend field cleanup and atomically updates normalized DB/chat data. Slices01–05 are verified; the user has resumed sequential execution from06.
+Latest user preference: update related tickets first, then implement them sequentially. Human edits use explicit Save with unsaved-row caption; dirty close asks save/discard/continue. Save reuses backend field cleanup and atomically updates normalized DB/chat data. Slices01–06 are verified; sequential execution now proceeds from07.
 
 Slice02 evidence at `c3bd8ad1c74c03d2eab65a3ef0ba92db38bddbb3`: 17/17 authenticated Chrome cases against real Express and a disposable Mongo replica set, including multi-PDF/image pages, independent same-page rows, unlocated and out-of-range rows, zoom/pan/fullscreen, narrow light/dark layouts, menu-first Escape, retry, active owner and cross-chat/tenant identity guards. Focused real-Mongo/client/shared-dialog tests and owning workspace builds/typechecks passed; independent spec and standards reviews approved frozen feature head `b1818e418`. Scoped ESLint and diff checks passed. Slice03 now proceeds in the user-requested sequence; later slices remain pending.
 
@@ -75,6 +75,11 @@ The current validation boundary covers normal frontend/backend-produced data and
 
 The canonical locator remains **messageId + exact full title**; normal DB records preserve the AI baseline, saved human Markdown and successful timestamps. Diff strikes appear only in the comparison dialog; saved chat/export show clean active values. Save submits changed-row operations against the latest data, clears this session’s undo/redo after confirmation, and preserves later drafts and other messages.
 
-Execution has resumed from06. Slice06 is in progress and is not yet integrated or verified; slices07–14, full-feature Lighthouse/static checks, remote CI and whole-feature review remain pending. PR16 stays Draft and OPEN; tickets remain OPEN under the final PR merge/closure workflow. No production deployment, parent issue update or primary-branch write occurred.
+Slice06 is verified and integrated at `dfec53c9a476483c369ac6e04cbf423746b8d7b7`; execution proceeds from07. Slices07–14, full-feature Lighthouse/static checks, remote CI and whole-feature review remain pending. PR16 stays Draft and OPEN; tickets remain OPEN under the final PR merge/closure workflow. No production deployment, parent issue update or primary-branch write occurred.
 
 Latest source-boundary correction: OCR result includes all source files. Identical Markdown cannot bind a different file mapping in normal flows; manual row deletion only reduces bindings. Do not add that hypothetical to acceptance or defensive logic. Keep the source evidence of the selected OCR snapshot. GitHub #7 records this correction.
+
+
+Slice06 final evidence at `dfec53c9a476483c369ac6e04cbf423746b8d7b7` (tree `8a8d9661e33246e2bc62436d9e4ffe316f39b6ef`): fresh independent SPEC and STANDARDS reviews approved the exact clean actor head. Root passed 22/22 authenticated Chrome cases against real Express and a disposable wiredTiger Mongo replica set, including atomic price/total Save, conflicts, clean download, immutable receipts, completed replay, ordinary revision and publication/manual-Save races. The normal no-publication-receipt A completion/B revision/delayed A replay preserves B's external text, tool content and metadata; the common typed publisher retains the original source identity before applying the trusted current target. New public customer_quote output is suppressed while internal quotation calculation and existing historical text remain retained. API focused81, actual host278, ToolService bridge15, completion36 and real-Mongo publication5 passed. Scoped43-file ESLint had zero new diagnostics; all34 remaining diagnostics were within the pre-existing35 baseline. Imports and diff checks passed without Prettier.
+
+A separate Git-only fast-forward integrated the identical reviewed tree. Root rebuilt all five dependent workspaces, passed all five noEmit checks, then reran all22 browser cases against the integrated build; all557 integrated source/dist hashes were unchanged through that run. This record changes only documentation after the reviewed executable tree. Full-feature Lighthouse/static checks, remote CI and final whole-feature review remain for14; GitHub #7 stays OPEN under the PR merge policy. No abnormal-DB repair or impossible same-Markdown/different-file-mapping acceptance case was added.
