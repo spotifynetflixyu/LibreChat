@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
+import { createModels, createMethods } from '@librechat/data-schemas';
 import { steelReviewRecoverySchema } from 'librechat-data-provider';
 import {
   createSteelQuotationStateService,
@@ -36,8 +37,8 @@ async function seedOrder(withHistoricalQuote = true) {
   const email = getE2EUser().email;
   const messageText = withHistoricalQuote ? fullMessage : `SYSTEM-PREFIX\n\n${order}\n\nSYSTEM-SUFFIX`;
   await seedConversations(email, [{ conversationId, title: 'System order real Save proof', updatedAt: new Date() }]);
-  await seedMessages(email, conversationId, [{ messageId, parentMessageId: '00000000-0000-0000-0000-000000000000',
-    text: messageText, content: [{ type: 'text', text: messageText }], isCreatedByUser: false, sender: 'Assistant' },
+  await seedMessages(email, conversationId, [...(withHistoricalQuote ? [{ messageId, parentMessageId: '00000000-0000-0000-0000-000000000000',
+    text: messageText, content: [{ type: 'text', text: messageText }], isCreatedByUser: false, sender: 'Assistant' }] : []),
   { messageId: otherMessageId, parentMessageId: messageId, text: order, content: [{ type: 'text', text: order }],
     isCreatedByUser: false, sender: 'Assistant' }]);
   const userId = await withMongo(async (db) => {
@@ -72,7 +73,16 @@ async function seedOrder(withHistoricalQuote = true) {
       finalRef: { ...scope, runId: run.runId, ...ref, kind: 'final' } });
     if (!completed) throw new Error('Missing completed quotation run');
     await publishCompletedQuotation({ scope, run: completed, markdown: order, service,
-      publishFinal: async () => undefined });
+      publishFinal: async ({ markdown }) => {
+        if (withHistoricalQuote) return;
+        const text = `SYSTEM-PREFIX\n\n${markdown}\n\nSYSTEM-SUFFIX`;
+        createModels(db);
+        const saved = await createMethods(db).saveMessage({ userId }, {
+          messageId, conversationId, parentMessageId: '00000000-0000-0000-0000-000000000000',
+          text, content: [{ type: 'text', text }], isCreatedByUser: false, sender: 'Assistant',
+        }, { context: 'steel-review-e2e-publication' });
+        if (!saved) throw new Error('Missing published quotation message');
+      } });
     return { conversationId, messageId, otherMessageId, runId: run.runId };
   } finally {
     await db.disconnect();
@@ -346,6 +356,9 @@ test.describe('System order atomic manual review', () => {
   test('a system-order Save needs no customer-quote chat section and never inserts one', async ({ page }) => {
     const fixture = await seedOrder(false);
     conversations.push(fixture.conversationId);
+    const dialog = await openEditor(page, fixture.conversationId);
+    await expect(materialRow(dialog).getByRole('textbox').last()).toBeEditable();
+    await page.keyboard.press('Escape');
     const table = await readTable(page, headers, fixture.conversationId, fixture.messageId);
     const operation = await prepare(page, headers, requestFor(table, [{ header: '單價', value: '12' }]));
     const response = await commit(page, headers, operation);
