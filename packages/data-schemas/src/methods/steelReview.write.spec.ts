@@ -207,7 +207,7 @@ describe('Steel review write methods', () => {
       changedRows: 0,
     });
     await expect(writer.commitSteelReview(noop)).resolves.toMatchObject({ changedRows: 0 });
-    const replay = await writer.commitSteelReview(first);
+    const replay = await writer.commitSteelReview({ ...first, operationDigest: first.digest });
     const changedPayload = makeInput({
       operationId: 'operation-1',
       revision: 'generation-1',
@@ -910,7 +910,7 @@ describe('Steel review write methods', () => {
     });
     const operation = { ...forged, operationDigest: forged.digest };
     await expect(createSteelReviewWriteMethods(mongoose).commitSteelReview(operation)).rejects.toMatchObject({
-      code: 'REVIEW_CONFLICT',
+      code: 'REVIEW_INVALID_OPERATION',
     });
     expect(await ReviewOutput.findOne({ conversationId }).lean()).toBeNull();
   });
@@ -947,6 +947,20 @@ describe('Steel review write methods', () => {
       ...base,
       operationDigest: base.digest,
       requestDigest: 'request-digest',
+      operationRequest: {
+        conversationId,
+        messageId,
+        kind: 'ocr_result' as const,
+        outputId: 'ocr_result:generation-1',
+        revision: 'unknown-never-existed',
+        title: 'ocr_result',
+        operations: [{
+          type: 'update' as const,
+          rowId: 'row-1',
+          changes: [{ header: '零件編號', value: 'P-7' }],
+        }],
+      },
+      prepareOperation: async () => base,
     };
     const snapshot = async () => ({
       message: await models.Message.findOne({ messageId }).lean(),
@@ -958,6 +972,84 @@ describe('Steel review write methods', () => {
       code: 'REVIEW_CONFLICT',
     });
     expect(await snapshot()).toEqual(before);
+  });
+
+  it('rejects a current operation when its private callback forges the AI projection', async () => {
+    const models = createModels(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const conversationId = 'forged-callback-conversation';
+    const messageId = 'forged-callback-message';
+    const originalMarkdown = markdownFor('P-1');
+    await models.Conversation.create({
+      conversationId, user: 'user-1', tenantId: 'tenant-1', title: 'Forged callback', endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId, conversationId, user: 'user-1', tenantId: 'tenant-1', isCreatedByUser: false,
+      text: originalMarkdown,
+    });
+    await State.create({
+      conversationId,
+      currentOcrResultMarkdown: originalMarkdown,
+      currentOcrResultMessageId: messageId,
+      currentOcrResultGenerationId: 'generation-1',
+    });
+    const writer = createSteelReviewWriteMethods(mongoose);
+    const first = makeInput({
+      operationId: 'forged-callback-first',
+      revision: 'generation-1',
+      previousValue: 'P-1',
+      nextValue: 'P-7',
+      conversationId,
+      messageId,
+    });
+    const forgedFirst = {
+      ...first,
+      operationDigest: first.digest,
+      prepareOperation: async () => ({
+        ...first,
+        operationDigest: first.digest,
+        aiRawMarkdown: markdownFor('FORGED-AI'),
+      }),
+    };
+    await expect(writer.commitSteelReview(forgedFirst)).rejects.toMatchObject({
+      code: 'REVIEW_INVALID_OPERATION',
+    });
+    expect(await ReviewOutput.findOne({ conversationId }).lean()).toBeNull();
+
+    await writer.commitSteelReview(first);
+    const before = {
+      output: await ReviewOutput.findOne({ conversationId }).lean(),
+      message: await models.Message.findOne({ messageId }).lean(),
+      state: await State.findOne({ conversationId }).lean(),
+    };
+    const second = makeInput({
+      operationId: 'forged-callback-second',
+      revision: before.output?.revision ?? '',
+      previousValue: 'P-7',
+      nextValue: 'P-8',
+      conversationId,
+      messageId,
+    });
+    const forgedSecond = {
+      ...second,
+      operationDigest: second.digest,
+      requestDigest: 'request-digest',
+      prepareOperation: async () => ({
+        ...second,
+        operationDigest: second.digest,
+        requestDigest: 'request-digest',
+        aiBaselineMarkdown: markdownFor('FORGED-BASE'),
+      }),
+    };
+    await expect(writer.commitSteelReview(forgedSecond)).rejects.toMatchObject({
+      code: 'REVIEW_INVALID_OPERATION',
+    });
+    expect({
+      output: await ReviewOutput.findOne({ conversationId }).lean(),
+      message: await models.Message.findOne({ messageId }).lean(),
+      state: await State.findOne({ conversationId }).lean(),
+    }).toEqual(before);
   });
 
   it('allows a business save when the existing source association is blank', async () => {

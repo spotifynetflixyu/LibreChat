@@ -80,7 +80,7 @@ describe('Steel production route handlers', () => {
       table: {
         conversationId: 'conversation-1',
         messageId: 'message-1',
-        tableId: 'ocr_result:1',
+        title: 'ocr_result',
         outputId: 'ocr_result:generation-1',
         kind: 'ocr_result',
         revision: 'generation-2',

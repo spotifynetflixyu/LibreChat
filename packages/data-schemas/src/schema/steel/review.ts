@@ -66,7 +66,7 @@ const steelReviewOwnerUpdatedSchema = new Schema<SteelReviewOwnerUpdatedRecord>(
     kind: { type: String, enum: ['ocr_result', 'system_order'], required: true },
     conversationId: { type: String, required: true },
     messageId: { type: String, required: true },
-    tableId: { type: String, required: true },
+    title: { type: String, required: true },
     outputId: { type: String, required: true },
     revision: { type: String, required: true },
     updatedAt: { type: Date, required: true },

@@ -358,6 +358,38 @@ function trustedInitialRowsFromMarkdown(
   });
 }
 
+function trustedPhysicalTarget(
+  record: SteelReviewReadRecord,
+): { raw: string; headers: string[]; rows: string[][]; partIndex?: number } | undefined {
+  if (!record.title) {
+    return undefined;
+  }
+  const candidates = record.messageTextParts && record.messageTextParts.length > 0
+    ? record.messageTextParts.flatMap((part) => parseSteelReviewMarkdownTables(part.text).map((table) => ({
+        ...table,
+        partIndex: part.partIndex,
+      })))
+    : parseSteelReviewMarkdownTables(record.messageText ?? record.markdown ?? '');
+  const titled = candidates.filter((candidate) => candidate.title === record.title);
+  const headed = record.headers
+    ? titled.filter((candidate) => JSON.stringify(candidate.headers) === JSON.stringify(record.headers))
+    : titled;
+  const activeRows = record.headers && record.rows
+    ? record.rows.filter((row) => !row.deleted).map((row) => record.headers!.map((header) => {
+        const value = row.values[header]?.effective;
+        return value === null || value === undefined ? '' : value;
+      }))
+    : undefined;
+  const matched = activeRows
+    ? headed.filter((candidate) => JSON.stringify(candidate.rows) === JSON.stringify(activeRows))
+    : headed;
+  if (matched.length !== 1) {
+    return undefined;
+  }
+  const [target] = matched;
+  return target;
+}
+
 function throwLedgerConflict(result: ReturnType<typeof validateSteelReviewLedger>): never {
   if (result.ok) {
     throw new Error('Expected a failed Steel review ledger validation');
@@ -494,7 +526,7 @@ function readOwnerUpdated(
   if (candidate.version !== 1 ||
     (candidate.kind !== 'ocr_result' && candidate.kind !== 'system_order') ||
     typeof candidate.conversationId !== 'string' || typeof candidate.messageId !== 'string' ||
-    typeof candidate.tableId !== 'string' || typeof candidate.outputId !== 'string' ||
+    typeof candidate.title !== 'string' || typeof candidate.outputId !== 'string' ||
     typeof candidate.revision !== 'string' || !(candidate.updatedAt instanceof Date)) {
     return undefined;
   }
@@ -557,7 +589,7 @@ function sanitizeRows(
 }
 
 function legacySnapshotMappings(
-  output: Pick<ISteelReviewOutput, 'conversationId' | 'messageId' | 'tableId' | 'outputId' | 'revision' | 'headers' | 'rows' | 'effectiveMarkdown' | 'receipts'>,
+  output: Pick<ISteelReviewOutput, 'conversationId' | 'messageId' | 'tableId' | 'title' | 'outputId' | 'revision' | 'headers' | 'rows' | 'effectiveMarkdown' | 'receipts'>,
   expectedKind: SteelReviewReadInput['kind'],
   currentMessageText: string,
 ): SteelReviewSourceMapping[] | undefined {
@@ -584,7 +616,7 @@ function legacySnapshotMappings(
         snapshot.ownerUpdated.kind === expectedKind &&
         snapshot.ownerUpdated.conversationId === output.conversationId &&
         snapshot.ownerUpdated.messageId === output.messageId &&
-        snapshot.ownerUpdated.tableId === output.tableId &&
+        snapshot.ownerUpdated.title === output.title &&
         snapshot.ownerUpdated.outputId === output.outputId &&
         snapshot.ownerUpdated.revision === output.revision
       )));
@@ -811,14 +843,10 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
         return null;
       }
       const messageRecord = messageRecords[0];
-      const message = renderedMessageText(messageRecord, input.title ? undefined : input.partIndex);
+      const message = renderedMessageText(messageRecord);
       if (!message) {
         return null;
       }
-      const legacyTitle = input.title === undefined
-        ? parseSteelReviewMarkdownTables(message.messageText)
-          .find((candidate) => `${input.kind}:${candidate.index}` === input.tableId)?.title
-        : undefined;
       const trustedGlobalConversation = conversationIdentities.length === 1 &&
         conversationIdentities[0]?.user === input.userId &&
         matchesTenantScope(conversationIdentities[0]?.tenantId, input.tenantId);
@@ -851,10 +879,8 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
           sidecarMentionsTitle(candidate, input.title!) && !sidecarHasTitle(candidate, input.title!))) {
           return null;
         }
-        const sidecarCandidates = input.title
-          ? allSidecarCandidates.filter((candidate) => sidecarHasTitle(candidate, input.title!))
-          : allSidecarCandidates.filter((candidate) => candidate.tableId === input.tableId ||
-            (legacyTitle !== undefined && sidecarHasTitle(candidate, legacyTitle)));
+        const sidecarCandidates = allSidecarCandidates.filter((candidate) =>
+          sidecarHasTitle(candidate, input.title));
         const authority = state?.currentOcrResultGenerationId
           ? {
               outputId: `ocr_result:${state.currentOcrResultGenerationId}`,
@@ -984,10 +1010,8 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
         sidecarMentionsTitle(candidate, input.title!) && !sidecarHasTitle(candidate, input.title!))) {
         return null;
       }
-      const sidecarCandidates = input.title
-        ? allSidecarCandidates.filter((candidate) => sidecarHasTitle(candidate, input.title!))
-        : allSidecarCandidates.filter((candidate) => candidate.tableId === input.tableId ||
-          (legacyTitle !== undefined && sidecarHasTitle(candidate, legacyTitle)));
+      const sidecarCandidates = allSidecarCandidates.filter((candidate) =>
+        sidecarHasTitle(candidate, input.title));
       const authority = quotation?.currentSystemOrder?.runId
         ? {
             outputId: `system_order:${quotation.currentSystemOrder.runId}`,
@@ -1101,7 +1125,7 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
         conversationId: input.conversationId,
         kind: input.kind,
         messageId: input.messageId,
-        tableId: input.tableId ?? titleStorageId({
+        tableId: titleStorageId({
           userId: input.userId,
           tenantId: input.tenantId,
           conversationId: input.conversationId,
@@ -1315,7 +1339,6 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
       ...scopeFilter(input),
       kind: input.kind,
       messageId: input.messageId,
-      tableId: input.tableId,
       outputId: input.outputId,
       'receipts.operationId': input.operationId,
     }).limit(2).lean<ISteelReviewOutput[]>();
@@ -1330,6 +1353,9 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
     if (!receipt) {
       throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review operation is unavailable');
     }
+    if (prior.title !== input.title && receipt.snapshot?.title !== input.title) {
+      return null;
+    }
     if (receipt.digest !== input.digest) {
       throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review operation payload changed');
     }
@@ -1340,8 +1366,11 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
     if (input.kind !== 'ocr_result') {
       throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'This review save is available for OCR results only');
     }
-    if (input.operationDigest === undefined || input.operationDigest !== input.digest) {
+    if (input.operationDigest !== undefined && input.operationDigest !== input.digest) {
       throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review operation digest mismatch');
+    }
+    if (input.operationDigest === undefined) {
+      return null;
     }
     return findReceipt(input);
   };
@@ -1478,6 +1507,9 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
           const ocrState = ocrStates[0];
           const quotation = quotations[0];
           const operationLane = input.operationDigest !== undefined && input.prepareOperation !== undefined;
+          if (input.operationDigest !== undefined && !input.prepareOperation) {
+            throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review operation authority is unavailable');
+          }
           if (!conversation || !message) {
             throw new SteelReviewWriteError('REVIEW_NOT_FOUND', 'Review table not found');
           }
@@ -1500,7 +1532,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             ...reviewScope(input),
             kind: input.kind,
             messageId: input.messageId,
-            tableId: input.tableId,
+            title: input.title,
             outputId: input.outputId,
           };
           const outputs = await ReviewOutput.find(outputFilter)
@@ -1551,6 +1583,19 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
           const currentRevision = output?.revision ?? ocrState?.currentOcrResultGenerationId;
           if (input.operationDigest !== undefined && !currentRevision) {
             throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review output revision is unavailable');
+          }
+          const capturedRevision = input.operationRequest?.revision;
+          if (input.operationDigest !== undefined && capturedRevision !== undefined &&
+            capturedRevision !== currentRevision) {
+            const hasImmutableReceipt = output?.receipts?.some((receipt) =>
+              receipt.revision === capturedRevision && receipt.snapshot !== undefined);
+            const isInitialOcrRevision = input.kind === 'ocr_result' &&
+              ocrState?.currentOcrResultGenerationId === capturedRevision &&
+              input.outputId === `ocr_result:${capturedRevision}` &&
+              Boolean(ocrState.currentOcrResultMarkdown || output?.aiBaselineMarkdown);
+            if (!hasImmutableReceipt && !isInitialOcrRevision) {
+              throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review captured revision is unavailable');
+            }
           }
           const currentLatestOutputId = output?.latestOutputId ?? input.outputId;
           const currentAiRawMarkdown = output?.aiRawMarkdown ?? ocrState?.currentOcrResultMarkdown;
@@ -1609,6 +1654,25 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             const prepared = await input.prepareOperation!(currentRecord);
             if (prepared.revision !== currentRecord.revision) {
               throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review captured revision is unavailable');
+            }
+            if ((currentAiRawMarkdown !== undefined && prepared.aiRawMarkdown !== currentAiRawMarkdown) ||
+              (output?.aiBaselineMarkdown !== undefined && prepared.aiBaselineMarkdown !== output.aiBaselineMarkdown)) {
+              throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review AI projection changed');
+            }
+            if (prepared.userId !== currentRecord.userId ||
+              prepared.conversationId !== currentRecord.conversationId ||
+              prepared.kind !== currentRecord.kind ||
+              prepared.messageId !== currentRecord.messageId ||
+              prepared.tableId !== currentRecord.tableId ||
+              prepared.title !== currentRecord.title ||
+              prepared.outputId !== currentRecord.outputId ||
+              (currentRecord.headers !== undefined && JSON.stringify(prepared.headers) !== JSON.stringify(currentRecord.headers))) {
+              throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review operation authority changed');
+            }
+            const physicalTarget = trustedPhysicalTarget(currentRecord);
+            if (!physicalTarget || prepared.targetText !== physicalTarget.raw ||
+              (prepared.target.partIndex ?? null) !== (currentRecord.messageTextPartIndex ?? null)) {
+              throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review operation target changed');
             }
             if (prepared.operationDigest !== input.operationDigest ||
               prepared.digest !== input.digest ||
@@ -1928,7 +1992,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             kind: input.kind,
             conversationId: input.conversationId,
             messageId: input.messageId,
-            tableId: input.tableId,
+            title: input.title,
             outputId: input.outputId,
             revision: nextRevision,
             updatedAt: savedAt,

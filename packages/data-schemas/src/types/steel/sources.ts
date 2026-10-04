@@ -6,7 +6,8 @@ export interface SteelReviewSourceScope {
   conversationId: string;
   messageId: string;
   kind: SteelReviewKind;
-  title: string;
+  /** Markdown table title is required for list queries, but binary reads use file ownership only. */
+  title?: string;
 }
 
 export interface SteelReviewSourceReadInput extends SteelReviewSourceScope {

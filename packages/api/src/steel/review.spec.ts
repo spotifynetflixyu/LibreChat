@@ -1,5 +1,4 @@
 import { createHash } from 'node:crypto';
-import { encodeSteelReviewDigest } from 'librechat-data-provider';
 import type { SteelReviewOperationPrepared } from 'librechat-data-provider';
 import { createSteelReviewService } from './review';
 
@@ -11,6 +10,59 @@ const managedMarkdown = [
   '| A | P-1 |',
 ].join('\n');
 
+const scope = {
+  userId: 'user-1',
+  conversationId: 'conversation-1',
+  kind: 'ocr_result' as const,
+  messageId: 'message-1',
+  title: 'ocr_result',
+};
+
+const aiRow = (rowId = 'row-1', value = 'P-1') => ({
+  rowId,
+  origin: 'ai' as const,
+  deleted: false,
+  values: {
+    來源: { baseline: 'A', effective: 'A' },
+    零件編號: { baseline: value, effective: value },
+  },
+  source: null,
+});
+
+const makeRecord = (overrides: Record<string, unknown> = {}) => ({
+  ...scope,
+  tableId: 'ocr_result:1',
+  outputId: 'ocr_result:generation-1',
+  latestOutputId: 'ocr_result:generation-1',
+  revision: 'generation-1',
+  state: 'current' as const,
+  headers: ['來源', '零件編號'],
+  rows: [aiRow()],
+  markdown: managedMarkdown,
+  messageText: managedMarkdown,
+  ...overrides,
+});
+
+const makeOperation = (overrides: Record<string, unknown> = {}) => ({
+  conversationId: scope.conversationId,
+  messageId: scope.messageId,
+  title: scope.title,
+  kind: scope.kind,
+  outputId: 'ocr_result:generation-1',
+  revision: 'generation-1',
+  operations: [{
+    type: 'update' as const,
+    rowId: 'row-1',
+    changes: [{ header: '零件編號', value: 'P-9' }],
+  }],
+  ...overrides,
+});
+
+const prepareInput = (overrides: Record<string, unknown> = {}) => ({
+  userId: scope.userId,
+  ...makeOperation(overrides),
+});
+
 const associationMarkdownFor = (
   source: string | null = 'A',
   page: string | null = '1',
@@ -20,15 +72,17 @@ const associationMarkdownFor = (
   '',
   '| 來源 | 原始檔案 | 原檔頁碼 | Profile |',
   '| --- | --- | --- | --- |',
-  `| ${source ?? ''} | ${source ?? ''} | ${page ?? ''} | ${profile} |`,
+  '| ' + (source ?? '') + ' | ' + (source ?? '') + ' | ' + (page ?? '') + ' | ' + profile + ' |',
 ].join('\n');
 
-const associationRowsFor = (
+const associationRow = (
   source: string | null = 'A',
   page: string | null = '1',
   profile = 'P-1',
-) => [{
+) => ({
   rowId: 'row-1',
+  origin: 'ai' as const,
+  deleted: false,
   values: {
     來源: { baseline: source, effective: source },
     原始檔案: { baseline: source, effective: source },
@@ -36,24 +90,15 @@ const associationRowsFor = (
     Profile: { baseline: 'P-1', effective: profile },
   },
   source: source
-    ? { fileId: 'file-1', pageNumber: 1, filename: 'drawing.pdf' }
+    ? { fileId: 'file-1', pageNumber: 1, filename: 'drawing.pdf', mediaType: 'application/pdf' }
     : null,
-}];
+});
 
 describe('Steel review read service', () => {
-  it('projects the requested table from the authenticated message identity', async () => {
+  it('projects the requested full title from the authenticated message identity', async () => {
     const service = createSteelReviewService({
       reader: {
-        readSteelReview: jest.fn().mockResolvedValue({
-          userId: 'user-1',
-          conversationId: 'conversation-1',
-          kind: 'ocr_result',
-          messageId: 'message-1',
-          title: 'ocr_result',
-          outputId: 'ocr_result:generation-1',
-          revision: 'generation-1',
-          state: 'current',
-          markdown: managedMarkdown,
+        readSteelReview: jest.fn().mockResolvedValue(makeRecord({
           messageText: [
             '| ordinary | table |',
             '| --- | --- |',
@@ -61,74 +106,24 @@ describe('Steel review read service', () => {
             '',
             managedMarkdown,
           ].join('\n'),
-        }),
+        })),
       },
     });
 
-    await expect(service.read({
+    const result = await service.read(scope);
+    expect(result.table).toEqual(expect.objectContaining({
       title: 'ocr_result',
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result',
-      messageId: 'message-1',
-      title: 'ocr_result',
-    })).resolves.toEqual({
-      table: expect.objectContaining({
-        title: 'ocr_result',
-        outputId: 'ocr_result:generation-1',
-        isLatest: true,
-        readOnly: false,
-        rows: [expect.objectContaining({ rowId: expect.any(String) })],
-      }),
-    });
+      outputId: 'ocr_result:generation-1',
+      isLatest: true,
+      readOnly: false,
+      rows: [expect.objectContaining({ rowId: expect.any(String) })],
+    }));
+    expect(result.table).not.toHaveProperty('tableId');
   });
 
-  it('resolves an exact title while ignoring a stale positional candidate', async () => {
-    const service = createSteelReviewService({
-      reader: {
-        readSteelReview: jest.fn().mockResolvedValue({
-          userId: 'user-1',
-          conversationId: 'conversation-1',
-          kind: 'ocr_result',
-          messageId: 'message-1',
-          tableId: 'ocr_result:title:canonical',
-          title: 'ocr_result',
-          outputId: 'ocr_result:generation-1',
-          revision: 'generation-1',
-          state: 'current',
-          markdown: managedMarkdown,
-          messageText: `| ordinary | table |\n| --- | --- |\n| ignored | row |\n\n${managedMarkdown}`,
-        }),
-      },
-    });
-
-    await expect(service.read({
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result',
-      messageId: 'message-1',
-      tableId: 'ocr_result:999',
-      title: 'ocr_result',
-    })).resolves.toEqual({
-      table: expect.objectContaining({
-        tableId: 'ocr_result:title:canonical',
-        title: 'ocr_result',
-      }),
-    });
-  });
-
-  it('rejects a same-heading table that is absent from the trusted canonical output', async () => {
+  it('uses the exact title and rejects an unowned same-heading table', async () => {
     const reader = {
-      readSteelReview: jest.fn().mockResolvedValue({
-        userId: 'user-1',
-        conversationId: 'conversation-1',
-        kind: 'ocr_result' as const,
-        messageId: 'message-1',
-        tableId: 'ocr_result:1',
-        outputId: 'ocr_result:generation-1',
-        revision: 'generation-1',
-        state: 'current' as const,
-        markdown: managedMarkdown,
+      readSteelReview: jest.fn().mockResolvedValue(makeRecord({
         messageText: [
           '## ocr_result',
           '',
@@ -136,48 +131,26 @@ describe('Steel review read service', () => {
           '| --- | --- |',
           '| attacker | fake |',
         ].join('\n'),
-      }),
+      })),
     };
     const service = createSteelReviewService({ reader });
 
-    await expect(service.read({
-      title: 'ocr_result',
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result',
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-    })).rejects.toMatchObject({
+    await expect(service.read(scope)).rejects.toMatchObject({
       code: 'REVIEW_NOT_FOUND',
       statusCode: 404,
     });
   });
 
-  it('rejects both identical canonical table copies as ambiguous', async () => {
-    const reader = {
-      readSteelReview: jest.fn().mockResolvedValue({
-        userId: 'user-1',
-        conversationId: 'conversation-1',
-        kind: 'ocr_result' as const,
-        messageId: 'message-1',
-        tableId: 'ocr_result:1',
-        outputId: 'ocr_result:generation-1',
-        revision: 'generation-1',
-        state: 'current' as const,
-        markdown: managedMarkdown,
-        messageText: `${managedMarkdown}\n\n${managedMarkdown}`,
-      }),
-    };
-    const service = createSteelReviewService({ reader });
+  it('rejects duplicate exact-title copies as unavailable', async () => {
+    const service = createSteelReviewService({
+      reader: {
+        readSteelReview: jest.fn().mockResolvedValue(makeRecord({
+          messageText: managedMarkdown + '\n\n' + managedMarkdown,
+        })),
+      },
+    });
 
-    await expect(service.read({
-      title: 'ocr_result',
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result',
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-    })).rejects.toMatchObject({
+    await expect(service.read(scope)).rejects.toMatchObject({
       code: 'REVIEW_NOT_FOUND',
       statusCode: 404,
     });
@@ -191,161 +164,21 @@ describe('Steel review read service', () => {
       '| --- | --- |',
       '| attacker | P-2 |',
     ].join('\n');
-    const reader = {
-      readSteelReview: jest.fn().mockResolvedValue({
-        userId: 'user-1',
-        conversationId: 'conversation-1',
-        kind: 'ocr_result' as const,
-        messageId: 'message-1',
-        tableId: 'ocr_result:2',
-        outputId: 'ocr_result:generation-1',
-        revision: 'generation-1',
-        state: 'current' as const,
-        markdown: managedMarkdown,
-        messageText: `${managedMarkdown}\n\n${unrelated}`,
-      }),
-    };
-    const service = createSteelReviewService({ reader });
+    const service = createSteelReviewService({
+      reader: {
+        readSteelReview: jest.fn().mockResolvedValue(makeRecord({
+          messageText: managedMarkdown + '\n\n' + unrelated,
+        })),
+      },
+    });
 
-    await expect(service.read({
-      title: 'ocr_result',
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result',
-      messageId: 'message-1',
-      tableId: 'ocr_result:2',
-    })).rejects.toMatchObject({ code: 'REVIEW_NOT_FOUND', statusCode: 404 });
+    await expect(service.read({ ...scope, title: 'ocr_result｜missing' })).rejects.toMatchObject({
+      code: 'REVIEW_NOT_FOUND',
+      statusCode: 404,
+    });
   });
 
-  it('requires a sidecar to match one actual managed table in the owned message', async () => {
-    const reader = {
-      readSteelReview: jest.fn().mockResolvedValue({
-        userId: 'user-1',
-        conversationId: 'conversation-1',
-        kind: 'ocr_result' as const,
-        messageId: 'message-1',
-        tableId: 'ocr_result:1',
-        outputId: 'review-output-1',
-        revision: 'review-revision-1',
-        state: 'current' as const,
-        headers: ['來源', '零件編號'],
-        rows: [{
-          rowId: 'row-1',
-          values: {
-            來源: { baseline: 'A', effective: 'A' },
-            零件編號: { baseline: 'P-1', effective: 'P-1' },
-          },
-          source: null,
-        }],
-        messageText: [
-          '## ocr_result',
-          '',
-          '| 來源 | 零件編號 |',
-          '| --- | --- |',
-          '| A | OTHER |',
-        ].join('\n'),
-      }),
-    };
-    const service = createSteelReviewService({ reader });
-
-    await expect(service.read({
-      title: 'ocr_result',
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result',
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-    })).rejects.toMatchObject({ code: 'REVIEW_NOT_FOUND', statusCode: 404 });
-
-    reader.readSteelReview.mockResolvedValueOnce({
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result' as const,
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-      outputId: 'review-output-1',
-      revision: 'review-revision-1',
-      state: 'current' as const,
-      headers: ['來源', '零件編號'],
-      rows: [{
-        rowId: 'row-1',
-        values: {
-          來源: { baseline: 'A', effective: 'A' },
-          零件編號: { baseline: 'P-1', effective: 'P-1' },
-        },
-        source: null,
-      }],
-      messageText: `${managedMarkdown}\n\n${managedMarkdown}`,
-    });
-    await expect(service.read({
-      title: 'ocr_result',
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result',
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-    })).rejects.toMatchObject({ code: 'REVIEW_NOT_FOUND', statusCode: 404 });
-
-    reader.readSteelReview.mockResolvedValueOnce({
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result' as const,
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-      outputId: 'review-output-1',
-      revision: 'review-revision-1',
-      state: 'current' as const,
-      headers: ['來源', '零件編號'],
-      rows: [{
-        rowId: 'row-1',
-        values: {
-          來源: { baseline: 'A', effective: 'A' },
-          零件編號: { baseline: 'P-1', effective: 'P-1' },
-        },
-        source: null,
-      }],
-      messageText: `\`\`\`markdown\n${managedMarkdown}\n\`\`\``,
-    });
-    await expect(service.read({
-      title: 'ocr_result',
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result',
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-    })).rejects.toMatchObject({ code: 'REVIEW_NOT_FOUND', statusCode: 404 });
-
-    reader.readSteelReview.mockResolvedValueOnce({
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result' as const,
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-      outputId: 'review-output-1',
-      revision: 'review-revision-1',
-      state: 'current' as const,
-      headers: ['來源', '零件編號'],
-      rows: [{
-        rowId: 'row-1',
-        values: {
-          來源: { baseline: 'A', effective: 'A' },
-          零件編號: { baseline: 'P-1', effective: 'P-1' },
-        },
-        source: null,
-      }],
-      messageText: managedMarkdown,
-    });
-    await expect(service.read({
-      title: 'ocr_result',
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result',
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-    })).resolves.toEqual({ table: expect.objectContaining({ outputId: 'review-output-1' }) });
-  });
-
-  it('keeps a trusted managed table readable when it has no rows', async () => {
+  it('keeps an authenticated title readable when the sidecar has no rows', async () => {
     const emptyMarkdown = [
       '## ocr_result',
       '',
@@ -354,154 +187,67 @@ describe('Steel review read service', () => {
     ].join('\n');
     const service = createSteelReviewService({
       reader: {
-        readSteelReview: jest.fn().mockResolvedValue({
-          userId: 'user-1',
-          conversationId: 'conversation-1',
-          kind: 'ocr_result' as const,
-          messageId: 'message-1',
-          tableId: 'ocr_result:1',
-          outputId: 'ocr_result:generation-1',
-          revision: 'generation-1',
-          state: 'current' as const,
+        readSteelReview: jest.fn().mockResolvedValue(makeRecord({
+          rows: [],
           markdown: emptyMarkdown,
           messageText: emptyMarkdown,
-        }),
+        })),
       },
     });
 
-    await expect(service.read({
-      title: 'ocr_result',
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result',
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-    })).resolves.toEqual({ table: expect.objectContaining({ rows: [], readOnly: false }) });
+    await expect(service.read(scope)).resolves.toEqual({
+      table: expect.objectContaining({ rows: [], readOnly: false }),
+    });
   });
 
-  it('uses the authenticated content part when multiple rendered parts share a message', async () => {
-    const firstPart = '| ordinary | table |\n| --- | --- |\n| keep | this |';
-    const secondPart = managedMarkdown;
+  it('rejects positional and full-row fields before reading a title operation', async () => {
+    const readSteelReview = jest.fn();
+    const service = createSteelReviewService({ reader: { readSteelReview } });
+    const current = makeOperation();
+
+    await expect(service.prepare({
+      userId: scope.userId,
+      ...current,
+      tableId: 'ocr_result:1',
+    } as never)).rejects.toMatchObject({ code: 'INVALID_REVIEW_QUERY', statusCode: 400 });
+    await expect(service.prepare({
+      userId: scope.userId,
+      ...current,
+      rows: [],
+    } as never)).rejects.toMatchObject({ code: 'INVALID_REVIEW_QUERY', statusCode: 400 });
+    expect(readSteelReview).not.toHaveBeenCalled();
+  });
+
+  it('applies ordered title-only row operations to server-owned current rows', async () => {
     const service = createSteelReviewService({
-      reader: {
-        readSteelReview: jest.fn().mockResolvedValue({
-          userId: 'user-1',
-          conversationId: 'conversation-1',
-          kind: 'ocr_result' as const,
-          messageId: 'message-1',
-          tableId: 'ocr_result:2',
-          partIndex: 1,
-          outputId: 'ocr_result:generation-1',
-          revision: 'generation-1',
-          state: 'current' as const,
-          markdown: managedMarkdown,
-          messageText: secondPart,
-          messageTextParts: [{ partIndex: 0, text: firstPart }, { partIndex: 1, text: secondPart }],
-          messageTextPartIndex: 1,
-        }),
-      },
+      reader: { readSteelReview: jest.fn().mockResolvedValue(makeRecord()) },
     });
 
-    await expect(service.read({
-      title: 'ocr_result',
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result',
-      messageId: 'message-1',
-      tableId: 'ocr_result:2',
-      partIndex: 1,
-    })).resolves.toEqual({
-      table: expect.objectContaining({ tableId: 'ocr_result:2', partIndex: 1 }),
-    });
-  });
-
-  it('rebuilds commit targets from the trusted reader instead of accepting a client rehash', async () => {
-    const markdown = [
-      'prefix',
-      '',
-      '## ocr_result',
-      '',
-      '| 來源 | 零件編號 |',
-      '| --- | --- |',
-      '| A | P-9 |',
-      '',
-      'suffix',
-    ].join('\n');
-    const rows = [{
+    const prepared = await service.prepare(prepareInput()) as SteelReviewOperationPrepared;
+    expect(prepared.title).toBe('ocr_result');
+    expect(prepared.rows).toEqual([expect.objectContaining({
       rowId: 'row-1',
-      values: {
-        來源: { baseline: 'A', effective: 'A' },
+      values: expect.objectContaining({
         零件編號: { baseline: 'P-1', effective: 'P-9' },
-      },
-      source: null,
-    }];
-    const reader = {
-      readSteelReview: jest.fn().mockResolvedValue({
-        userId: 'user-1',
-        conversationId: 'conversation-1',
-        kind: 'ocr_result' as const,
-        messageId: 'message-1',
-        tableId: 'ocr_result:1',
-        outputId: 'ocr_result:generation-1',
-        revision: 'generation-1',
-        state: 'current' as const,
-        markdown,
-        messageText: markdown,
-        headers: ['來源', '零件編號'],
-        rows,
       }),
-    };
-    const commitSteelReview = jest.fn();
-    const service = createSteelReviewService({ reader, writer: { commitSteelReview } });
-    const prepared = await service.prepare({
-      userId: 'user-1',
-      conversationId: 'conversation-1',
+    })]);
+    expect(prepared.caption).toEqual({
       kind: 'ocr_result',
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-      outputId: 'ocr_result:generation-1',
-      revision: 'generation-1',
-      rows,
+      changedRows: 1,
+      changedRowIds: ['row-1'],
     });
-    expect(prepared.effectiveMarkdown).toContain('## ocr_result');
-    expect(prepared.effectiveMarkdown).not.toContain('prefix');
-
-    await expect(service.commit({
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result',
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-      outputId: prepared.outputId,
-      revision: prepared.revision,
-      rows: prepared.rows,
-      operationId: prepared.operationId,
-      digest: 'a'.repeat(64),
-      headers: prepared.headers,
-      messageSha256: prepared.messageSha256,
-      target: { start: 0, end: markdown.length, sha256: 'b'.repeat(64) },
-      targetText: markdown,
-      replacementText: prepared.replacementText,
-      cleanReplacementText: prepared.cleanReplacementText,
-      effectiveMarkdown: `CORRUPTED\n${prepared.effectiveMarkdown}`,
-      displayMarkdown: `CORRUPTED\n${prepared.displayMarkdown}`,
-      aiBaselineMarkdown: prepared.aiBaselineMarkdown,
-      aiRawMarkdown: prepared.aiRawMarkdown,
-      sourceMappings: prepared.sourceMappings,
-      caption: prepared.caption,
-    })).rejects.toMatchObject({ code: 'REVIEW_INVALID_OPERATION' });
-    expect(commitSteelReview).not.toHaveBeenCalled();
+    expect(prepared.operationRequest).toEqual(makeOperation());
   });
 
-  it('reconciles a physical OCR table after unrelated canonical tables shift its index', async () => {
+  it('rebuilds the physical target from the trusted title while unrelated tables move around it', async () => {
     const markdown = [
-      '```markdown',
+      '\x60\x60\x60markdown',
       '## ocr_result',
       '',
       '| 來源 | 零件編號 |',
       '| --- | --- |',
       '| fake | fenced |',
-      '```',
+      '\x60\x60\x60',
       '',
       '## customer_data',
       '',
@@ -509,13 +255,7 @@ describe('Steel review read service', () => {
       '| --- | --- |',
       '| keep | customer |',
       '',
-      '## ocr_result',
-      '',
-      'OCR notes remain inside the managed section.',
-      '',
-      '| 來源 | 零件編號 |',
-      '| --- | --- |',
-      '| A | P-1 |',
+      managedMarkdown,
       '',
       '## extra',
       '',
@@ -523,455 +263,161 @@ describe('Steel review read service', () => {
       '| --- | --- |',
       '| keep | extra |',
     ].join('\n');
-    const record = {
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result' as const,
-      messageId: 'message-1',
+    const record = makeRecord({
       tableId: 'ocr_result:2',
-      outputId: 'ocr_result:generation-1',
-      revision: 'generation-1',
-      state: 'current' as const,
       markdown,
       messageText: markdown,
-    };
-    const reader = { readSteelReview: jest.fn().mockResolvedValue(record) };
-    const service = createSteelReviewService({ reader });
-    const current = await service.read({
-      title: 'ocr_result',
-      userId: record.userId,
-      conversationId: record.conversationId,
-      kind: record.kind,
-      messageId: record.messageId,
-      tableId: record.tableId,
     });
-    const rows = current.table.rows.map((row) => ({
-      ...row,
-      values: {
-        ...row.values,
-        零件編號: { ...row.values.零件編號, effective: 'P-9' },
-      },
-    }));
-
-    const prepared = await service.prepare({
-      userId: record.userId,
-      conversationId: record.conversationId,
-      kind: record.kind,
-      messageId: record.messageId,
-      tableId: record.tableId,
-      outputId: record.outputId,
-      revision: record.revision,
-      rows,
-    });
-
-    expect(prepared.effectiveMarkdown).toContain('## ocr_result');
-    expect(prepared.effectiveMarkdown).toContain('OCR notes remain inside the managed section.');
-    expect(prepared.effectiveMarkdown).toContain('| A | P-9 |');
-    expect(prepared.effectiveMarkdown).not.toContain('customer_data');
-    expect(prepared.effectiveMarkdown).not.toContain('## extra');
-    expect(prepared.effectiveMarkdown).not.toContain('fenced');
-    expect(prepared.target.start).toBeGreaterThan(markdown.indexOf('## ocr_result'));
-  });
-
-  it('rejects ambiguous canonical managed table identities before preparing a save', async () => {
-    const duplicate = [
-      managedMarkdown,
-      '',
-      managedMarkdown,
-    ].join('\n');
-    const record = {
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result' as const,
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-      outputId: 'ocr_result:generation-1',
-      revision: 'generation-1',
-      state: 'current' as const,
-      markdown: duplicate,
-      messageText: duplicate,
-    };
     const service = createSteelReviewService({
       reader: { readSteelReview: jest.fn().mockResolvedValue(record) },
     });
-    await expect(service.prepare({
-      userId: record.userId,
-      conversationId: record.conversationId,
-      kind: record.kind,
-      messageId: record.messageId,
-      tableId: record.tableId,
-      outputId: record.outputId,
-      revision: record.revision,
-      rows: [{
-        rowId: 'row-1',
-        values: {
-          來源: { baseline: 'A', effective: 'A' },
-          零件編號: { baseline: 'P-1', effective: 'P-9' },
-        },
-        source: null,
-      }],
-    })).rejects.toMatchObject({ code: 'REVIEW_NOT_FOUND', statusCode: 404 });
+
+    const prepared = await service.prepare(prepareInput()) as SteelReviewOperationPrepared;
+    expect(prepared.effectiveMarkdown).toContain('| A | P-9 |');
+    expect(prepared.effectiveMarkdown).toContain('## ocr_result');
+    expect(prepared.effectiveMarkdown).not.toContain('customer_data');
+    expect(prepared.effectiveMarkdown).not.toContain('## extra');
+    expect(prepared.effectiveMarkdown).not.toContain('fenced');
+    expect(prepared.target.start).toBeGreaterThan(markdown.indexOf('## customer_data'));
   });
 
-  it('uses persisted effective sidecar values rather than the immutable AI baseline', async () => {
+  it('rejects ambiguous canonical title targets before preparing a save', async () => {
+    const duplicate = managedMarkdown + '\n\n' + managedMarkdown;
+    const service = createSteelReviewService({
+      reader: { readSteelReview: jest.fn().mockResolvedValue(makeRecord({
+        markdown: duplicate,
+        messageText: duplicate,
+      })) },
+    });
+
+    await expect(service.prepare(prepareInput())).rejects.toMatchObject({
+      code: 'REVIEW_NOT_FOUND',
+      statusCode: 404,
+    });
+  });
+
+  it('uses persisted effective values instead of the immutable AI baseline', async () => {
     const aiMarkdown = managedMarkdown.replace('P-1', 'P-2');
     const effectiveMarkdown = managedMarkdown.replace('P-1', 'P-7');
-    const record = {
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result' as const,
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-      outputId: 'ocr_result:generation-1',
-      revision: 'generation-1',
-      state: 'current' as const,
+    const record = makeRecord({
       markdown: aiMarkdown,
+      aiBaselineMarkdown: aiMarkdown,
+      effectiveMarkdown,
       messageText: effectiveMarkdown,
-      headers: ['來源', '零件編號'],
       rows: [{
-        rowId: 'row-1',
+        ...aiRow('row-1', 'P-2'),
         values: {
           來源: { baseline: 'A', effective: 'A' },
           零件編號: { baseline: 'P-2', effective: 'P-7' },
         },
-        source: null,
       }],
-      effectiveMarkdown,
-    };
+    });
     const service = createSteelReviewService({
       reader: { readSteelReview: jest.fn().mockResolvedValue(record) },
     });
-    await expect(service.prepare({
-      userId: record.userId,
-      conversationId: record.conversationId,
-      kind: record.kind,
-      messageId: record.messageId,
-      tableId: record.tableId,
-      outputId: record.outputId,
-      revision: record.revision,
-      rows: [{
+
+    const prepared = await service.prepare(prepareInput({
+      operations: [{
+        type: 'update' as const,
         rowId: 'row-1',
-        values: {
-          來源: { baseline: 'A', effective: 'A' },
-          零件編號: { baseline: 'P-2', effective: 'P-8' },
-        },
-        source: null,
+        changes: [{ header: '零件編號', value: 'P-8' }],
       }],
-    })).resolves.toEqual(expect.objectContaining({
-      effectiveMarkdown: expect.stringContaining('| A | P-8 |'),
     }));
-
-    record.messageText = aiMarkdown;
-    await expect(service.prepare({
-      userId: record.userId,
-      conversationId: record.conversationId,
-      kind: record.kind,
-      messageId: record.messageId,
-      tableId: record.tableId,
-      outputId: record.outputId,
-      revision: record.revision,
-      rows: [{
-        rowId: 'row-1',
-        values: {
-          來源: { baseline: 'A', effective: 'A' },
-          零件編號: { baseline: 'P-2', effective: 'P-8' },
-        },
-        source: null,
-      }],
-    })).rejects.toMatchObject({ code: 'REVIEW_NOT_FOUND', statusCode: 404 });
+    expect(prepared.rows[0]?.values.零件編號).toEqual({ baseline: 'P-2', effective: 'P-8' });
+    expect(prepared.effectiveMarkdown).toContain('| A | P-8 |');
   });
 
-  it('rejects source association cell edits while allowing Profile business edits', async () => {
-    const trustedRows = associationRowsFor();
-    const reader = {
-      readSteelReview: jest.fn().mockResolvedValue({
-        userId: 'user-1',
-        conversationId: 'conversation-1',
-        kind: 'ocr_result' as const,
-        messageId: 'message-1',
-        tableId: 'ocr_result:1',
-        outputId: 'ocr_result:generation-1',
-        revision: 'generation-1',
-        state: 'current' as const,
-        markdown: associationMarkdownFor(),
-        messageText: associationMarkdownFor(),
-        headers: ['來源', '原始檔案', '原檔頁碼', 'Profile'],
-        rows: trustedRows,
-      }),
-    };
-    const commitSteelReview = jest.fn();
-    const service = createSteelReviewService({ reader, writer: { commitSteelReview } });
-    const base = {
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result' as const,
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-      outputId: 'ocr_result:generation-1',
-      revision: 'generation-1',
-    };
-    const businessRows = associationRowsFor('A', '1', 'P-2');
-    const prepared = await service.prepare({ ...base, rows: businessRows });
-    expect(prepared.caption.changedRows).toBe(1);
-
-    const forgedSourceRows = associationRowsFor('FORGED-SOURCE', '1', 'P-2');
-    await expect(service.prepare({ ...base, rows: forgedSourceRows })).rejects.toMatchObject({
-      code: 'INVALID_REVIEW_QUERY',
+  it('rejects source association cell edits while allowing a business-field operation', async () => {
+    const rows = [associationRow()];
+    const record = makeRecord({
+      headers: ['來源', '原始檔案', '原檔頁碼', 'Profile'],
+      rows,
+      markdown: associationMarkdownFor(),
+      messageText: associationMarkdownFor(),
     });
-    const forgedPageRows = associationRowsFor('A', '2', 'P-2');
-    await expect(service.commit({
-      userId: base.userId,
-      ...prepared,
-      rows: forgedPageRows,
-    })).rejects.toMatchObject({ code: 'INVALID_REVIEW_QUERY' });
-    expect(commitSteelReview).not.toHaveBeenCalled();
-  });
-
-  it('rejects source metadata disappearing while association cells stay unchanged', async () => {
-    const trustedRows = associationRowsFor();
-    const reader = {
-      readSteelReview: jest.fn().mockResolvedValue({
-        userId: 'user-1',
-        conversationId: 'conversation-1',
-        kind: 'ocr_result' as const,
-        messageId: 'message-1',
-        tableId: 'ocr_result:1',
-        outputId: 'ocr_result:generation-1',
-        revision: 'generation-1',
-        state: 'current' as const,
-        markdown: associationMarkdownFor(),
-        messageText: associationMarkdownFor(),
-        headers: ['來源', '原始檔案', '原檔頁碼', 'Profile'],
-        rows: trustedRows,
-      }),
-    };
-    const commitSteelReview = jest.fn();
-    const service = createSteelReviewService({ reader, writer: { commitSteelReview } });
-    const base = {
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result' as const,
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-      outputId: 'ocr_result:generation-1',
-      revision: 'generation-1',
-    };
-    const businessRows = associationRowsFor('A', '1', 'P-2');
-    const sourceNullRows = associationRowsFor('A', '1', 'P-2');
-    sourceNullRows[0]!.source = null;
-
-    await expect(service.prepare({ ...base, rows: sourceNullRows })).rejects.toMatchObject({
-      code: 'INVALID_REVIEW_QUERY',
-      statusCode: 400,
-    });
-
-    const prepared = await service.prepare({ ...base, rows: businessRows });
-    const { digest: _digest, ...sourceNullBase } = { ...prepared, rows: sourceNullRows };
-    const digest = createHash('sha256').update(encodeSteelReviewDigest({
-      ...sourceNullBase,
-      userId: 'user-1',
-    })).digest('hex');
-    await expect(service.commit({ userId: 'user-1', ...sourceNullBase, digest })).rejects.toMatchObject({
-      code: 'INVALID_REVIEW_QUERY',
-      statusCode: 400,
-    });
-    expect(commitSteelReview).not.toHaveBeenCalled();
-  });
-
-  it('preserves null association cells while preparing a business edit', async () => {
-    const rows = associationRowsFor(null, null, 'P-1');
-    const markdown = associationMarkdownFor(null, null);
     const service = createSteelReviewService({
-      reader: {
-        readSteelReview: jest.fn().mockResolvedValue({
-          userId: 'user-1',
-          conversationId: 'conversation-1',
-          kind: 'ocr_result' as const,
-          messageId: 'message-1',
-          tableId: 'ocr_result:1',
-          outputId: 'ocr_result:generation-1',
-          revision: 'generation-1',
-          state: 'current' as const,
-          markdown,
-          messageText: markdown,
-          headers: ['來源', '原始檔案', '原檔頁碼', 'Profile'],
-          rows,
-        }),
-      },
+      reader: { readSteelReview: jest.fn().mockResolvedValue(record) },
     });
 
-    await expect(service.prepare({
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result',
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-      outputId: 'ocr_result:generation-1',
-      revision: 'generation-1',
-      rows: associationRowsFor(null, null, 'P-2'),
-    })).resolves.toEqual(expect.objectContaining({
-      caption: { kind: 'ocr_result', changedRows: 1, changedRowIds: ['row-1'] },
-    }));
-  });
-
-  it('derives a trusted F source mapping and validates a selected PDF page', async () => {
-    const rows = associationRowsFor('A', '1', 'P-1');
-    const markdown = associationMarkdownFor('A', '1');
-    const reader = {
-      readSteelReview: jest.fn().mockResolvedValue({
-        userId: 'user-1',
-        conversationId: 'conversation-1',
-        kind: 'ocr_result' as const,
-        messageId: 'message-1',
-        tableId: 'ocr_result:1',
-        outputId: 'ocr_result:generation-1',
-        revision: 'generation-1',
-        state: 'current' as const,
-        markdown,
-        messageText: markdown,
-        headers: ['來源', '原始檔案', '原檔頁碼', 'Profile'],
-        rows,
-        sourceMappings: [{
-          fileId: 'file-1',
-          sourceCode: 'A',
-          sourceFilename: 'drawing.pdf',
-          mediaType: 'application/pdf',
+    const prepared = await service.prepare({
+      userId: scope.userId,
+      ...makeOperation({
+        operations: [{
+          type: 'update' as const,
+          rowId: 'row-1',
+          changes: [{ header: 'Profile', value: 'P-2' }],
         }],
       }),
-    };
+    });
+    expect(prepared.caption.changedRows).toBe(1);
+
+    await expect(service.prepare({
+      userId: scope.userId,
+      ...makeOperation({
+        operations: [{
+          type: 'update' as const,
+          rowId: 'row-1',
+          changes: [{ header: '來源', value: 'FORGED' }],
+        }],
+      }),
+    })).rejects.toMatchObject({ code: 'REVIEW_INVALID_OPERATION' });
+  });
+
+  it('resolves source metadata and validates a selected PDF page', async () => {
+    const rows = [associationRow()];
+    const record = makeRecord({
+      headers: ['來源', '原始檔案', '原檔頁碼', 'Profile'],
+      rows,
+      markdown: associationMarkdownFor(),
+      messageText: associationMarkdownFor(),
+      sourceMappings: [{
+        fileId: 'file-1', sourceCode: 'A', sourceFilename: 'drawing.pdf', mediaType: 'application/pdf',
+      }],
+    });
     const readMetadata = jest.fn().mockResolvedValue({
-      fileId: 'file-2',
-      filename: 'replacement.pdf',
-      mediaType: 'application/pdf',
+      fileId: 'file-2', filename: 'replacement.pdf', mediaType: 'application/pdf',
     });
     const readPageCount = jest.fn().mockResolvedValue({ pageCount: 3 });
     const service = createSteelReviewService({
-      reader,
+      reader: { readSteelReview: jest.fn().mockResolvedValue(record) },
       sourceAuthority: { readMetadata, readPageCount },
     });
+
     const prepared = await service.prepare({
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result',
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-      outputId: 'ocr_result:generation-1',
-      revision: 'generation-1',
+      userId: scope.userId,
       sourceRequest: {} as never,
-      sourceIntents: [{ rowId: 'row-1', fileId: 'file-2', pageNumber: 2 }],
-      rows: [{ ...rows[0]!, values: {
-        ...rows[0]!.values,
-        Profile: { baseline: 'P-1', effective: 'P-2' },
-      } }],
+      ...makeOperation({
+        operations: [{
+          type: 'update' as const,
+          rowId: 'row-1',
+          changes: [{ header: 'Profile', value: 'P-2' }],
+          source: { fileId: 'file-2', pageNumber: 2 },
+        }],
+      }),
     });
 
     expect(readMetadata).toHaveBeenCalledWith(expect.objectContaining({ fileId: 'file-2' }));
     expect(readPageCount).toHaveBeenCalledWith(expect.objectContaining({ fileId: 'file-2' }), {});
     expect(prepared.sourceMappings).toEqual(expect.arrayContaining([
-      expect.objectContaining({
-        fileId: 'file-2',
-        sourceCode: 'F1',
-        sourceFilename: 'replacement.pdf',
-        mediaType: 'application/pdf',
-      }),
+      expect.objectContaining({ fileId: 'file-2', sourceCode: 'F1', sourceFilename: 'replacement.pdf' }),
     ]));
-    expect(prepared.rows[0]?.source).toEqual({
-      fileId: 'file-2',
-      pageNumber: 2,
-      filename: 'replacement.pdf',
-      mediaType: 'application/pdf',
-    });
+    expect(prepared.rows[0]?.source).toEqual(expect.objectContaining({
+      fileId: 'file-2', pageNumber: 2, filename: 'replacement.pdf',
+    }));
     expect(prepared.rows[0]?.values.來源?.effective).toBe('F1');
     expect(prepared.rows[0]?.values.原檔頁碼?.effective).toBe('2');
-    expect(prepared.caption.changedRows).toBe(1);
   });
 
-  it('rejects a selected source page outside the server-owned PDF page count', async () => {
-    const rows = associationRowsFor('A', '1', 'P-1');
-    const markdown = associationMarkdownFor('A', '1');
-    const service = createSteelReviewService({
-      reader: {
-        readSteelReview: jest.fn().mockResolvedValue({
-          userId: 'user-1',
-          conversationId: 'conversation-1',
-          kind: 'ocr_result' as const,
-          messageId: 'message-1',
-          tableId: 'ocr_result:1',
-          outputId: 'ocr_result:generation-1',
-          revision: 'generation-1',
-          state: 'current' as const,
-          markdown,
-          messageText: markdown,
-          headers: ['來源', '原始檔案', '原檔頁碼', 'Profile'],
-          rows,
-        }),
-      },
-      sourceAuthority: {
-        readMetadata: jest.fn().mockResolvedValue({
-          fileId: 'file-2',
-          filename: 'replacement.pdf',
-          mediaType: 'application/pdf',
-        }),
-        readPageCount: jest.fn().mockResolvedValue({ pageCount: 2 }),
-      },
-    });
-
-    await expect(service.prepare({
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result',
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-      outputId: 'ocr_result:generation-1',
-      revision: 'generation-1',
-      sourceRequest: {} as never,
-      sourceIntents: [{ rowId: 'row-1', fileId: 'file-2', pageNumber: 3 }],
+  it('rejects a source page outside the server-owned PDF page count', async () => {
+    const rows = [associationRow()];
+    const record = makeRecord({
+      headers: ['來源', '原始檔案', '原檔頁碼', 'Profile'],
       rows,
-    })).rejects.toMatchObject({ code: 'REVIEW_INVALID_OPERATION' });
-  });
-
-  it('rejects a present undefined source intent before reading review state', async () => {
-    const readSteelReview = jest.fn();
-    const service = createSteelReviewService({ reader: { readSteelReview } });
-    await expect(service.prepare({
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result',
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-      outputId: 'ocr_result:generation-1',
-      revision: 'generation-1',
-      rows: associationRowsFor(),
-      sourceIntents: undefined,
-    } as never)).rejects.toMatchObject({ code: 'INVALID_REVIEW_QUERY', statusCode: 400 });
-    expect(readSteelReview).not.toHaveBeenCalled();
-  });
-
-  it('allocates source suffixes with lossless decimal precision', async () => {
-    const rows = associationRowsFor(null, '1', 'P-1');
-    const markdown = associationMarkdownFor(null, '1');
+      markdown: associationMarkdownFor(),
+      messageText: associationMarkdownFor(),
+    });
     const service = createSteelReviewService({
-      reader: {
-        readSteelReview: jest.fn().mockResolvedValue({
-          userId: 'user-1',
-          conversationId: 'conversation-1',
-          kind: 'ocr_result' as const,
-          messageId: 'message-1',
-          tableId: 'ocr_result:1',
-          outputId: 'ocr_result:generation-1',
-          revision: 'generation-1',
-          state: 'current' as const,
-          markdown,
-          messageText: markdown,
-          headers: ['來源', '原始檔案', '原檔頁碼', 'Profile'],
-          rows,
-          sourceMappings: [{
-            fileId: 'file-1',
-            sourceCode: 'F9007199254740993',
-            sourceFilename: 'drawing.pdf',
-          }],
-        }),
-      },
+      reader: { readSteelReview: jest.fn().mockResolvedValue(record) },
       sourceAuthority: {
         readMetadata: jest.fn().mockResolvedValue({
           fileId: 'file-2', filename: 'replacement.pdf', mediaType: 'application/pdf',
@@ -979,304 +425,191 @@ describe('Steel review read service', () => {
         readPageCount: jest.fn().mockResolvedValue({ pageCount: 2 }),
       },
     });
-    const prepared = await service.prepare({
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result',
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-      outputId: 'ocr_result:generation-1',
-      revision: 'generation-1',
-      sourceRequest: {} as never,
-      sourceIntents: [{ rowId: 'row-1', fileId: 'file-2', pageNumber: 1 }],
-      rows,
-    });
-    expect(prepared.sourceMappings).toEqual(expect.arrayContaining([
-      expect.objectContaining({ fileId: 'file-2', sourceCode: 'F9007199254740994' }),
-    ]));
-  });
 
-  it('canonicalizes effective cells before captioning and serializing a save', async () => {
-    const markdown = [
-      '## ocr_result',
-      '',
-      '| 來源 | 零件編號 |',
-      '| --- | --- |',
-      '| A | P-2 |',
-    ].join('\n');
-    const record = {
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result' as const,
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-      outputId: 'ocr_result:generation-1',
-      revision: 'generation-1',
-      state: 'current' as const,
-      markdown,
-      messageText: markdown,
-      headers: ['來源', '零件編號'],
-      rows: [{
-        rowId: 'row-1',
-        values: {
-          來源: { baseline: 'A', effective: 'A' },
-          零件編號: { baseline: 'P-2', effective: 'P-2' },
-        },
-        source: null,
-      }],
-    };
-    const service = createSteelReviewService({
-      reader: { readSteelReview: jest.fn().mockResolvedValue(record) },
-    });
-    const base = {
-      userId: record.userId,
-      conversationId: record.conversationId,
-      kind: record.kind,
-      messageId: record.messageId,
-      tableId: record.tableId,
-      outputId: record.outputId,
-      revision: record.revision,
-    };
-
-    const noOp = await service.prepare({
-      ...base,
-      rows: [{
-        ...record.rows[0],
-        values: {
-          ...record.rows[0].values,
-          零件編號: { baseline: 'P-2', effective: '  P-2\r\n  ' },
-        },
-      }],
-    });
-    expect(noOp.caption).toEqual({ kind: 'ocr_result', changedRows: 0, changedRowIds: [] });
-    expect(noOp.rows[0]?.values.零件編號.effective).toBe('P-2');
-    expect(noOp.cleanReplacementText).toContain('| A | P-2 |');
-
-    const changed = await service.prepare({
-      ...base,
-      rows: [{
-        ...record.rows[0],
-        values: {
-          ...record.rows[0].values,
-          零件編號: { baseline: 'P-2', effective: '  P-7\r\n  ' },
-        },
-      }],
-    });
-    expect(changed.caption).toEqual({ kind: 'ocr_result', changedRows: 1, changedRowIds: ['row-1'] });
-    expect(changed.rows[0]?.values.零件編號.effective).toBe('P-7');
-
-    const escaped = await service.prepare({
-      ...base,
-      rows: [{
-        ...record.rows[0],
-        values: {
-          ...record.rows[0].values,
-          零件編號: { baseline: 'P-2', effective: ' C:\\path|slot ' },
-        },
-      }],
-    });
-    expect(escaped.cleanReplacementText).toContain('C:\\\\path\\|slot');
-  });
-
-  it('reconstructs a trusted manual end insertion and rejects forged ledger rows', async () => {
-    const markdown = [
-      '## ocr_result',
-      '',
-      '| 來源 | 零件編號 |',
-      '| --- | --- |',
-      '| A | P-1 |',
-    ].join('\n');
-    const record = {
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result' as const,
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-      outputId: 'ocr_result:generation-1',
-      revision: 'generation-1',
-      state: 'current' as const,
-      markdown,
-      messageText: markdown,
-      headers: ['來源', '零件編號'],
-      rows: [{
-        rowId: 'row-ai',
-        origin: 'ai' as const,
-        deleted: false,
-        values: {
-          來源: { baseline: 'A', effective: 'A' },
-          零件編號: { baseline: 'P-1', effective: 'P-1' },
-        },
-        source: null,
-      }],
-    };
-    const service = createSteelReviewService({ reader: { readSteelReview: jest.fn().mockResolvedValue(record) } });
-    const manual = {
-      rowId: 'row-manual',
-      origin: 'manual' as const,
-      deleted: false,
-      insertion: { kind: 'end' as const, ordinal: 0 },
-      values: {
-        來源: { baseline: null, effective: '' },
-        零件編號: { baseline: null, effective: 'P-1' },
-      },
-      source: null,
-    };
-    const prepared = await service.prepare({
-      userId: record.userId,
-      conversationId: record.conversationId,
-      kind: record.kind,
-      messageId: record.messageId,
-      tableId: record.tableId,
-      outputId: record.outputId,
-      revision: record.revision,
-      rows: [record.rows[0]!, manual],
-    });
-    expect(prepared.rows.map((row) => row.rowId)).toEqual(['row-ai', 'row-manual']);
-    expect(prepared.rows[1]).toEqual(expect.objectContaining({ origin: 'manual', deleted: false }));
-    expect(prepared.cleanReplacementText).toContain('|  | P-1 |');
     await expect(service.prepare({
-      userId: record.userId,
-      conversationId: record.conversationId,
-      kind: record.kind,
-      messageId: record.messageId,
-      tableId: record.tableId,
-      outputId: record.outputId,
-      revision: record.revision,
-      rows: [record.rows[0]!, { ...manual, rowId: 'row-ai' }],
+      userId: scope.userId,
+      sourceRequest: {} as never,
+      ...makeOperation({
+        operations: [{
+          type: 'update' as const,
+          rowId: 'row-1',
+          source: { fileId: 'file-2', pageNumber: 3 },
+        }],
+      }),
     })).rejects.toMatchObject({ code: 'REVIEW_INVALID_OPERATION' });
   });
 
-  it('rejects an uncommitted legacy-shaped commit without a receipt', async () => {
-    const reader = {
-      readSteelReview: jest.fn().mockResolvedValue({
-        userId: 'user-1',
-        conversationId: 'conversation-1',
-        kind: 'ocr_result' as const,
-        messageId: 'message-1',
-        tableId: 'ocr_result:1',
-        outputId: 'ocr_result:generation-1',
-        revision: 'generation-1',
-        state: 'current' as const,
-        markdown: managedMarkdown,
-        messageText: managedMarkdown,
-      }),
-    };
-    const resolveSteelReviewReceipt = jest.fn().mockResolvedValue(null);
-    const commitSteelReview = jest.fn();
+  it('preserves null source association cells through a business operation', async () => {
+    const markdown = associationMarkdownFor(null, null);
     const service = createSteelReviewService({
-      reader,
-      writer: { resolveSteelReviewReceipt, commitSteelReview },
+      reader: {
+        readSteelReview: jest.fn().mockResolvedValue(makeRecord({
+          headers: ['來源', '原始檔案', '原檔頁碼', 'Profile'],
+          rows: [associationRow(null, null)],
+          markdown,
+          messageText: markdown,
+        })),
+      },
     });
-    const current = await service.read({
-      title: 'ocr_result',
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result',
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
+
+    const prepared = await service.prepare({
+      userId: scope.userId,
+      ...makeOperation({
+        operations: [{
+          type: 'update' as const,
+          rowId: 'row-1',
+          changes: [{ header: 'Profile', value: 'P-2' }],
+        }],
+      }),
     });
-    const trustedPrepared = await service.prepare({
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result',
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-      outputId: current.table.outputId,
-      revision: current.table.revision,
-      rows: current.table.rows,
-    });
-    const legacy = { ...trustedPrepared } as Record<string, unknown>;
-    delete legacy.sourceMappings;
-    await expect(service.commit(legacy as never)).rejects.toMatchObject({
-      code: 'REVIEW_INVALID_OPERATION',
-    });
-    expect(resolveSteelReviewReceipt).toHaveBeenCalledTimes(1);
-    expect(commitSteelReview).not.toHaveBeenCalled();
+    expect(prepared.rows[0]?.source).toBeNull();
+    expect(prepared.rows[0]?.values.來源).toEqual({ baseline: null, effective: null });
+    expect(prepared.rows[0]?.values.原檔頁碼).toEqual({ baseline: null, effective: null });
   });
 
-  it('reports an authorized same-output stale prepare as a conflict', async () => {
-    const record = {
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result' as const,
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-      outputId: 'ocr_result:generation-1',
-      revision: 'current-revision',
-      state: 'current' as const,
-      markdown: managedMarkdown,
-      messageText: managedMarkdown,
-    };
+  it('keeps source codes lossless beyond the JavaScript safe integer range', async () => {
+    const sourceCode = 'F9007199254740993';
+    const markdown = associationMarkdownFor(sourceCode, '1');
     const service = createSteelReviewService({
-      reader: { readSteelReview: jest.fn().mockResolvedValue(record) },
+      reader: {
+        readSteelReview: jest.fn().mockResolvedValue(makeRecord({
+          headers: ['來源', '原始檔案', '原檔頁碼', 'Profile'],
+          rows: [associationRow(sourceCode, '1')],
+          markdown,
+          messageText: markdown,
+          sourceMappings: [{
+            fileId: 'file-1', sourceCode, sourceFilename: 'drawing.pdf', mediaType: 'application/pdf',
+          }],
+        })),
+      },
     });
 
-    await expect(service.prepare({
-      userId: record.userId,
-      conversationId: record.conversationId,
-      kind: record.kind,
-      messageId: record.messageId,
-      tableId: record.tableId,
-      outputId: record.outputId,
-      revision: 'captured-revision',
-      rows: [{
-        rowId: 'row-1',
-        values: {
-          來源: { baseline: 'A', effective: 'A' },
-          零件編號: { baseline: 'P-1', effective: 'P-2' },
-        },
-        source: null,
-      }],
-    })).rejects.toMatchObject({ code: 'REVIEW_CONFLICT' });
+    const prepared = await service.prepare({
+      userId: scope.userId,
+      ...makeOperation({
+        operations: [{
+          type: 'update' as const,
+          rowId: 'row-1',
+          changes: [{ header: 'Profile', value: 'P-2' }],
+        }],
+      }),
+    });
+    expect(prepared.rows[0]?.values.來源?.effective).toBe(sourceCode);
+    expect(prepared.sourceMappings).toEqual(expect.arrayContaining([expect.objectContaining({ sourceCode })]));
   });
 
-  it('rejects an operation whose captured revision has no trusted owner history', async () => {
-    const reader = {
-      readSteelReview: jest.fn().mockResolvedValue({
-        userId: 'user-1',
-        conversationId: 'conversation-1',
-        kind: 'ocr_result' as const,
-        messageId: 'message-1',
-        tableId: 'ocr_result:1',
-        outputId: 'ocr_result:generation-1',
-        revision: 'generation-1',
-        state: 'current' as const,
-        markdown: managedMarkdown,
-        messageText: managedMarkdown,
+  it('rejects an own undefined source intent before reading the review', async () => {
+    const readSteelReview = jest.fn().mockResolvedValue(makeRecord());
+    const service = createSteelReviewService({ reader: { readSteelReview } });
+    const malformed = {
+      userId: scope.userId,
+      ...makeOperation({
+        operations: [{
+          type: 'update' as const,
+          rowId: 'row-1',
+          source: undefined,
+          changes: [{ header: '零件編號', value: 'P-2' }],
+        }],
       }),
-    };
-    const commitSteelReview = jest.fn();
-    const service = createSteelReviewService({ reader, writer: { commitSteelReview } });
-    const current = await service.read({
-      title: 'ocr_result',
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result',
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
+    } as never;
+
+    await expect(service.prepare(malformed)).rejects.toMatchObject({ code: 'INVALID_REVIEW_QUERY' });
+    expect(readSteelReview).not.toHaveBeenCalled();
+  });
+
+  it('binds a title operation to the selected content part', async () => {
+    const messageTextParts = [
+      { partIndex: 0, text: 'assistant context\n' },
+      { partIndex: 1, text: managedMarkdown },
+    ];
+    const messageText = messageTextParts.map((part) => part.text).join(' ');
+    const service = createSteelReviewService({
+      reader: {
+        readSteelReview: jest.fn().mockResolvedValue(makeRecord({
+          markdown: messageText,
+          messageText,
+          messageTextParts,
+          messageTextPartIndex: 1,
+        })),
+      },
     });
-    const operation = {
-      conversationId: 'conversation-1',
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-      kind: 'ocr_result' as const,
-      outputId: current.table.outputId,
-      revision: 'unknown-never-existed',
+
+    const prepared = await service.prepare(prepareInput());
+    expect(prepared.target.partIndex).toBe(1);
+    expect(prepared.targetText).toContain('| A | P-1 |');
+  });
+
+  it('normalizes effective values and produces a no-op caption for equal intent', async () => {
+    const service = createSteelReviewService({
+      reader: { readSteelReview: jest.fn().mockResolvedValue(makeRecord()) },
+    });
+
+    const prepared = await service.prepare(prepareInput({
       operations: [{
         type: 'update' as const,
-        rowId: current.table.rows[0]!.rowId,
-        changes: [{ header: '零件編號', value: 'P-7' }],
+        rowId: 'row-1',
+        changes: [{ header: '零件編號', value: '  P-1\r\n  ' }],
       }],
-    };
-    await expect(service.prepare({ userId: 'user-1', ...operation })).rejects.toMatchObject({
+    }));
+    expect(prepared.rows[0]?.values.零件編號.effective).toBe('P-1');
+    expect(prepared.caption).toEqual({ kind: 'ocr_result', changedRows: 0, changedRowIds: [] });
+    expect(prepared.cleanReplacementText).toContain('| A | P-1 |');
+  });
+
+  it('reconstructs a trusted manual end insertion from an add operation', async () => {
+    const service = createSteelReviewService({
+      reader: { readSteelReview: jest.fn().mockResolvedValue(makeRecord()) },
+    });
+
+    const prepared = await service.prepare(prepareInput({
+      operations: [{
+        type: 'add' as const,
+        rowId: 'row-manual',
+        position: { kind: 'end' as const },
+        changes: [
+          { header: '零件編號', value: 'P-1' },
+        ],
+      }],
+    }));
+    expect(prepared.rows.map((row) => row.rowId)).toEqual(['row-1', 'row-manual']);
+    expect(prepared.rows[1]).toEqual(expect.objectContaining({ origin: 'manual', deleted: false }));
+    expect(prepared.cleanReplacementText).toContain('|  | P-1 |');
+  });
+
+  it('reports a same-output stale prepare as a conflict without writing', async () => {
+    const commitSteelReview = jest.fn();
+    const service = createSteelReviewService({
+      reader: { readSteelReview: jest.fn().mockResolvedValue(makeRecord({ revision: 'current-revision' })) },
+      writer: { commitSteelReview },
+    });
+
+    await expect(service.prepare(prepareInput({ revision: 'captured-revision' }))).rejects.toMatchObject({
       code: 'REVIEW_CONFLICT',
     });
     expect(commitSteelReview).not.toHaveBeenCalled();
   });
 
+  it('rejects an unknown captured revision even when the requested value is current', async () => {
+    const commitSteelReview = jest.fn();
+    const service = createSteelReviewService({
+      reader: { readSteelReview: jest.fn().mockResolvedValue(makeRecord({ revision: 'saved-revision' })) },
+      writer: { commitSteelReview },
+    });
+
+    await expect(service.prepare(prepareInput({
+      revision: 'unknown-never-existed',
+      operations: [{
+        type: 'update' as const,
+        rowId: 'row-1',
+        changes: [{ header: '零件編號', value: 'P-1' }],
+      }],
+    }))).rejects.toMatchObject({ code: 'REVIEW_CONFLICT' });
+    expect(commitSteelReview).not.toHaveBeenCalled();
+  });
+
   it('uses the server-owned initial OCR revision for a disjoint merge after a human save', async () => {
     const initialRowId = createHash('sha256')
-      .update(`ocr_result:generation-1:0:${JSON.stringify(['A', 'P-1'])}`)
+      .update('ocr_result:generation-1:0:' + JSON.stringify(['A', 'P-1']))
       .digest('hex');
     const currentMarkdown = [
       '## ocr_result',
@@ -1286,62 +619,44 @@ describe('Steel review read service', () => {
       '| A | P-1 |',
       '| B | P-2 |',
     ].join('\n');
-    const reader = {
-      readSteelReview: jest.fn().mockResolvedValue({
-        userId: 'user-1',
-        conversationId: 'conversation-1',
-        kind: 'ocr_result' as const,
-        messageId: 'message-1',
-        tableId: 'ocr_result:1',
-        outputId: 'ocr_result:generation-1',
-        revision: 'saved-revision',
-        state: 'current' as const,
-        headers: ['來源', '零件編號'],
-        rows: [
-          {
-            rowId: initialRowId,
-            values: {
-              來源: { baseline: 'A', effective: 'A' },
-              零件編號: { baseline: 'P-1', effective: 'P-1' },
-            },
-            source: null,
-            origin: 'ai' as const,
-            deleted: false,
+    const record = makeRecord({
+      revision: 'saved-revision',
+      headers: ['來源', '零件編號'],
+      rows: [
+        aiRow(initialRowId),
+        {
+          rowId: 'row-manual',
+          origin: 'manual' as const,
+          deleted: false,
+          insertion: { kind: 'end' as const, ordinal: 0 },
+          values: {
+            來源: { baseline: null, effective: 'B' },
+            零件編號: { baseline: null, effective: 'P-2' },
           },
-          {
-            rowId: 'row-manual',
-            values: {
-              來源: { baseline: null, effective: 'B' },
-              零件編號: { baseline: null, effective: 'P-2' },
-            },
-            source: null,
-            origin: 'manual' as const,
-            deleted: false,
-            insertion: { kind: 'end' as const, ordinal: 0 },
-          },
-        ],
-        aiBaselineMarkdown: managedMarkdown,
-        effectiveMarkdown: currentMarkdown,
-        messageText: currentMarkdown,
-      }),
-    };
-    const service = createSteelReviewService({ reader });
-
-    const prepared = await service.prepare({
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result',
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-      outputId: 'ocr_result:generation-1',
-      revision: 'generation-1',
-      operations: [{
-        type: 'update' as const,
-        rowId: initialRowId,
-        changes: [{ header: '零件編號', value: 'P-7' }],
-      }],
+          source: null,
+        },
+      ],
+      aiBaselineMarkdown: managedMarkdown,
+      effectiveMarkdown: currentMarkdown,
+      markdown: currentMarkdown,
+      messageText: currentMarkdown,
+    });
+    const service = createSteelReviewService({
+      reader: { readSteelReview: jest.fn().mockResolvedValue(record) },
     });
 
+    const prepared = await service.prepare({
+      userId: scope.userId,
+      ...makeOperation({
+        outputId: 'ocr_result:generation-1',
+        revision: 'generation-1',
+        operations: [{
+          type: 'update' as const,
+          rowId: initialRowId,
+          changes: [{ header: '零件編號', value: 'P-7' }],
+        }],
+      }),
+    });
     expect(prepared.rows).toEqual(expect.arrayContaining([
       expect.objectContaining({
         rowId: initialRowId,
@@ -1351,100 +666,132 @@ describe('Steel review read service', () => {
     ]));
   });
 
-  it('replays an authenticated committed legacy receipt without rebuilding or writing', async () => {
-    const reader = {
-      readSteelReview: jest.fn().mockResolvedValue({
-        userId: 'user-1',
-        conversationId: 'conversation-1',
-        kind: 'ocr_result' as const,
-        messageId: 'message-1',
-        tableId: 'ocr_result:1',
-        outputId: 'ocr_result:generation-1',
-        revision: 'generation-1',
-        state: 'current' as const,
-        markdown: managedMarkdown,
-        messageText: managedMarkdown,
-      }),
-    };
+  it('rejects a commit digest mismatch before invoking the writer', async () => {
     const commitSteelReview = jest.fn();
-    const savedAt = new Date('2026-10-03T01:00:00.000Z');
-    const legacyReceipt: Record<string, unknown> = {};
-    const resolveSteelReviewReceipt = jest.fn().mockImplementation(async (candidate) => {
-      if (!legacyReceipt || candidate.digest !== legacyReceipt.digest) {
-        return null;
-      }
-      return {
-        operationId: candidate.operationId,
-        digest: candidate.digest,
-        outputId: candidate.outputId,
-        revision: 'saved-revision',
-        changedRows: 1,
-        changedRowIds: ['row-1'],
-        savedAt,
-        messageSha256: candidate.messageSha256,
-        effectiveMarkdown: candidate.effectiveMarkdown,
-        displayMarkdown: candidate.displayMarkdown,
-      };
-    });
     const service = createSteelReviewService({
-      reader,
-      writer: { resolveSteelReviewReceipt, commitSteelReview },
+      reader: { readSteelReview: jest.fn().mockResolvedValue(makeRecord()) },
+      writer: { commitSteelReview },
     });
-    const current = await service.read({
-      title: 'ocr_result',
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result',
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-    });
-    const trustedPrepared = await service.prepare({
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result',
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-      outputId: current.table.outputId,
-      revision: current.table.revision,
-      rows: current.table.rows,
-    });
-    const { sourceMappings: _sourceMappings, digest: _digest, ...legacyBase } = trustedPrepared;
-    const legacyDigest = createHash('sha256').update(encodeSteelReviewDigest({ ...legacyBase, userId: 'user-1' })).digest('hex');
-    Object.assign(legacyReceipt, { ...legacyBase, digest: legacyDigest });
-    const readerCallsBeforeCommit = reader.readSteelReview.mock.calls.length;
+    const prepared = await service.prepare(prepareInput()) as SteelReviewOperationPrepared;
 
-    const result = await service.commit({
-      userId: 'user-1',
-      ...legacyReceipt,
-      digest: legacyDigest,
-    } as never);
-
-    expect(resolveSteelReviewReceipt).toHaveBeenCalledTimes(1);
-    expect(reader.readSteelReview).toHaveBeenCalledTimes(readerCallsBeforeCommit);
+    await expect(service.commit({
+      userId: scope.userId,
+      ...makeOperation(),
+      operationId: prepared.operationId,
+      digest: 'a'.repeat(64),
+    })).rejects.toMatchObject({ code: 'REVIEW_INVALID_OPERATION' });
     expect(commitSteelReview).not.toHaveBeenCalled();
-    expect(result).toEqual(expect.objectContaining({
+  });
+
+  it('commits the trusted current projection and keeps the public response title-only', async () => {
+    const commitSteelReview = jest.fn().mockImplementation(async (input) => ({
+      operationId: input.operationId,
+      digest: input.operationDigest,
+      outputId: input.outputId,
+      revision: 'saved-revision',
+      headers: input.headers,
+      rows: input.rows,
+      messageSha256: input.messageSha256,
+      target: input.target,
+      targetText: input.targetText,
+      replacementText: input.replacementText,
+      cleanReplacementText: input.cleanReplacementText,
+      effectiveMarkdown: input.effectiveMarkdown,
+      displayMarkdown: input.displayMarkdown,
+      caption: input.caption,
+      changedRows: input.caption.changedRows,
+      changedRowIds: input.caption.changedRowIds,
+      savedAt: new Date('2026-10-04T00:00:00.000Z'),
+    }));
+    const service = createSteelReviewService({
+      reader: { readSteelReview: jest.fn().mockResolvedValue(makeRecord()) },
+      writer: { commitSteelReview },
+    });
+    const prepared = await service.prepare(prepareInput());
+    const saved = await service.commit({
+      userId: scope.userId,
+      ...makeOperation(),
+      operationId: prepared.operationId,
+      digest: prepared.digest,
+    });
+
+    expect(commitSteelReview).toHaveBeenCalledWith(expect.objectContaining({
+      title: 'ocr_result',
+      operationDigest: prepared.digest,
+      rows: prepared.rows,
+    }));
+    expect(saved).toEqual(expect.objectContaining({
+      title: 'ocr_result',
       revision: 'saved-revision',
       changedRows: 1,
       changedRowIds: ['row-1'],
+    }));
+    expect(saved).not.toHaveProperty('tableId');
+  });
+
+  it('replays an exact current-protocol receipt without rebuilding or writing', async () => {
+    const commitSteelReview = jest.fn();
+    const readSteelReviewReceipt = jest.fn();
+    const reader = { readSteelReview: jest.fn().mockResolvedValue(makeRecord()) };
+    const service = createSteelReviewService({
+      reader,
+      writer: { commitSteelReview, readSteelReviewReceipt },
+    });
+    const prepared = await service.prepare(prepareInput()) as SteelReviewOperationPrepared;
+    const savedAt = new Date('2026-10-04T01:00:00.000Z');
+    const snapshot = {
+      operationId: prepared.operationId,
+      digest: prepared.digest,
+      requestDigest: prepared.requestDigest,
+      outputId: prepared.outputId,
+      revision: 'saved-revision',
+      headers: prepared.headers,
+      rows: prepared.rows,
+      changedRows: 1,
+      changedRowIds: ['row-1'],
+      savedAt,
+      conversationId: scope.conversationId,
+      messageId: scope.messageId,
+      messageText: managedMarkdown,
+      messageSha256: prepared.messageSha256,
+      effectiveMarkdown: prepared.effectiveMarkdown,
+      displayMarkdown: prepared.displayMarkdown,
+      target: prepared.target,
+      targetText: prepared.targetText,
+      replacementText: prepared.replacementText,
+      cleanReplacementText: prepared.cleanReplacementText,
+      caption: prepared.caption,
+    };
+    readSteelReviewReceipt.mockResolvedValue({
+      operationId: prepared.operationId,
+      digest: prepared.digest,
+      requestDigest: prepared.requestDigest,
+      outputId: prepared.outputId,
+      revision: 'saved-revision',
+      changedRows: 1,
+      changedRowIds: ['row-1'],
+      savedAt,
+      messageSha256: prepared.messageSha256,
+      effectiveMarkdown: prepared.effectiveMarkdown,
+      displayMarkdown: prepared.displayMarkdown,
+      snapshot,
+    });
+
+    const replay = await service.commit({
+      userId: scope.userId,
+      ...makeOperation(),
+      operationId: prepared.operationId,
+      digest: prepared.digest,
+    });
+    expect(reader.readSteelReview).toHaveBeenCalledTimes(1);
+    expect(readSteelReviewReceipt).toHaveBeenCalledTimes(1);
+    expect(commitSteelReview).not.toHaveBeenCalled();
+    expect(replay).toEqual(expect.objectContaining({
+      title: 'ocr_result',
+      revision: 'saved-revision',
+      changedRows: 1,
       savedAt: savedAt.toISOString(),
     }));
-    expect(Object.prototype.hasOwnProperty.call(result, 'sourceMappings')).toBe(false);
-    expect(Object.prototype.hasOwnProperty.call(result, 'sourceIntents')).toBe(false);
-
-    await expect(service.commit({
-      userId: 'user-1',
-      ...legacyReceipt,
-      digest: legacyDigest,
-      sourceMappings: undefined,
-    } as never)).rejects.toMatchObject({ code: 'INVALID_REVIEW_QUERY' });
-    await expect(service.commit({
-      userId: 'user-1',
-      ...legacyReceipt,
-      digest: legacyDigest,
-      sourceIntents: undefined,
-    } as never)).rejects.toMatchObject({ code: 'INVALID_REVIEW_QUERY' });
-    expect(resolveSteelReviewReceipt).toHaveBeenCalledTimes(1);
-    expect(commitSteelReview).not.toHaveBeenCalled();
   });
 
   it('exposes immutable receipt resolution without a write', async () => {
@@ -1458,24 +805,24 @@ describe('Steel review read service', () => {
       changedRowIds: ['row-1'],
       savedAt,
       messageSha256: 'b'.repeat(64),
-      effectiveMarkdown: '## ocr_result\n\n| A | B |',
-      displayMarkdown: '## ocr_result\n\n| A | B |',
+      effectiveMarkdown: managedMarkdown,
+      displayMarkdown: managedMarkdown,
       snapshot: {
         operationId: 'op-1',
         digest: 'a'.repeat(64),
         outputId: 'ocr_result:generation-1',
         revision: 'saved-revision',
-        headers: ['來源'],
+        headers: ['來源', '零件編號'],
         rows: [],
         changedRows: 1,
         changedRowIds: ['row-1'],
         savedAt,
-        conversationId: 'conversation-1',
-        messageId: 'message-1',
-        messageText: '## ocr_result\n\n| A | B |',
+        conversationId: scope.conversationId,
+        messageId: scope.messageId,
+        messageText: managedMarkdown,
         messageSha256: 'b'.repeat(64),
-        effectiveMarkdown: '## ocr_result\n\n| A | B |',
-        displayMarkdown: '## ocr_result\n\n| A | B |',
+        effectiveMarkdown: managedMarkdown,
+        displayMarkdown: managedMarkdown,
       },
     });
     const service = createSteelReviewService({
@@ -1484,12 +831,7 @@ describe('Steel review read service', () => {
     });
 
     await expect(service.receipt({
-      title: 'ocr_result',
-      userId: 'user-1',
-      conversationId: 'conversation-1',
-      kind: 'ocr_result',
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
+      ...scope,
       outputId: 'ocr_result:generation-1',
       operationId: 'op-1',
       digest: 'a'.repeat(64),
@@ -1501,88 +843,66 @@ describe('Steel review read service', () => {
   });
 
   it('keeps a changed-row operation bound to its captured revision while previewing current values', async () => {
-    const currentMarkdown = [
-      '## ocr_result',
-      '',
-      '| 來源 | 零件編號 |',
-      '| --- | --- |',
-      '| A | P-9 |',
-    ].join('\n');
-    const baselineMarkdown = [
-      '## ocr_result',
-      '',
-      '| 來源 | 零件編號 |',
-      '| --- | --- |',
-      '| A | P-1 |',
-    ].join('\n');
     const rowId = createHash('sha256')
-      .update(`ocr_result:generation-1:0:${JSON.stringify(['A', 'P-1'])}`)
+      .update('ocr_result:generation-1:0:' + JSON.stringify(['A', 'P-1']))
       .digest('hex');
-    const currentRow = {
-      rowId,
-      values: {
-        來源: { baseline: 'A', effective: 'A' },
-        零件編號: { baseline: 'P-1', effective: 'P-9' },
-      },
-      source: null,
-      origin: 'ai' as const,
-      deleted: false,
-    };
-    const reader = {
-      readSteelReview: jest.fn().mockResolvedValue({
-        userId: 'user-1',
-        conversationId: 'conversation-1',
-        kind: 'ocr_result' as const,
-        messageId: 'message-1',
-        tableId: 'ocr_result:1',
-        outputId: 'ocr_result:generation-1',
-        revision: 'foreign-revision',
-        state: 'current' as const,
-        headers: ['來源', '零件編號'],
-        rows: [currentRow],
-        markdown: currentMarkdown,
-        aiBaselineMarkdown: baselineMarkdown,
-        messageText: currentMarkdown,
-      }),
-    };
+    const currentMarkdown = managedMarkdown.replace('P-1', 'P-9');
+    const record = makeRecord({
+      revision: 'foreign-revision',
+      rows: [{
+        ...aiRow(rowId),
+        values: {
+          來源: { baseline: 'A', effective: 'A' },
+          零件編號: { baseline: 'P-1', effective: 'P-9' },
+        },
+      }],
+      markdown: currentMarkdown,
+      messageText: currentMarkdown,
+      aiBaselineMarkdown: managedMarkdown,
+    });
     const commitSteelReview = jest.fn().mockImplementation(async (input) => ({
       operationId: input.operationId,
-      digest: input.digest,
+      digest: input.operationDigest,
       outputId: input.outputId,
       revision: 'saved-revision',
-      changedRows: 1,
-      changedRowIds: [rowId],
-      savedAt: new Date('2026-10-04T00:00:00.000Z'),
+      rows: input.rows,
+      headers: input.headers,
       messageSha256: input.messageSha256,
       effectiveMarkdown: input.effectiveMarkdown,
       displayMarkdown: input.displayMarkdown,
+      target: input.target,
+      targetText: input.targetText,
+      replacementText: input.replacementText,
+      cleanReplacementText: input.cleanReplacementText,
+      caption: input.caption,
+      changedRows: input.caption.changedRows,
+      changedRowIds: input.caption.changedRowIds,
+      savedAt: new Date('2026-10-04T00:00:00.000Z'),
     }));
-    const service = createSteelReviewService({ reader, writer: { commitSteelReview } });
-    const operation = {
-      conversationId: 'conversation-1',
-      messageId: 'message-1',
-      tableId: 'ocr_result:1',
-      kind: 'ocr_result' as const,
-      outputId: 'ocr_result:generation-1',
+    const service = createSteelReviewService({
+      reader: { readSteelReview: jest.fn().mockResolvedValue(record) },
+      writer: { commitSteelReview },
+    });
+    const operation = makeOperation({
       revision: 'generation-1',
       operations: [{
         type: 'update' as const,
         rowId,
         changes: [{ header: '零件編號', value: 'P-9' }],
       }],
-    };
-    const prepared = await service.prepare({ userId: 'user-1', ...operation });
+    });
+    const prepared = await service.prepare({ userId: scope.userId, ...operation });
     const preparedOperation = prepared as SteelReviewOperationPrepared;
     expect(preparedOperation.operationRequest.revision).toBe('generation-1');
     expect(preparedOperation.revision).toBe('foreign-revision');
-    expect(preparedOperation.rows[0]?.values['零件編號']?.effective).toBe('P-9');
-    const preparedAgain = await service.prepare({ userId: 'user-1', ...operation });
+    expect(preparedOperation.rows[0]?.values.零件編號?.effective).toBe('P-9');
+    const preparedAgain = await service.prepare({ userId: scope.userId, ...operation });
     const preparedAgainOperation = preparedAgain as SteelReviewOperationPrepared;
     expect(preparedAgainOperation.requestDigest).toBe(preparedOperation.requestDigest);
     expect(preparedAgainOperation.operationId).not.toBe(preparedOperation.operationId);
     expect(preparedAgainOperation.digest).not.toBe(preparedOperation.digest);
     const saved = await service.commit({
-      userId: 'user-1',
+      userId: scope.userId,
       ...operation,
       operationId: preparedOperation.operationId,
       digest: preparedOperation.digest,

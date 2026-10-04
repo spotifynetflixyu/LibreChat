@@ -99,6 +99,7 @@ describe('Steel review source service', () => {
       conversationId: 'conversation-1',
       kind: 'ocr_result',
       messageId: '',
+      title: 'ocr_result',
     })).rejects.toMatchObject<Partial<SteelReviewSourceError>>({
       code: 'INVALID_REVIEW_SOURCE_QUERY',
       statusCode: 400,

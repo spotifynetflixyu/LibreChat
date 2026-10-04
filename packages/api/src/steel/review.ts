@@ -1103,7 +1103,7 @@ export function createSteelReviewService({
     operationId: string,
     trustedRecord?: SteelReviewReadRecord,
     sourceEvidence?: SteelReviewSourceEvidence,
-  ): Promise<SteelReviewTrustedProjection> {
+  ): Promise<Omit<SteelReviewTrustedProjection, 'digest'>> {
     if (payload.kind !== 'ocr_result') {
       throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'This review save is available for OCR results only');
     }
@@ -1356,7 +1356,6 @@ export function createSteelReviewService({
     return {
       ...operationBase,
       sourceMappings: operationBase.sourceMappings ?? [],
-      digest: operationIntentDigest(payload, operationId, scope),
     };
   }
 
@@ -1373,6 +1372,7 @@ export function createSteelReviewService({
       revision: prepared.revision,
       operationId: prepared.operationId,
       digest: prepared.digest,
+      headers: prepared.headers,
       messageSha256: prepared.messageSha256,
       target: prepared.target,
       targetText: prepared.targetText,
@@ -1603,6 +1603,7 @@ export function createSteelReviewService({
           savedSnapshot?: SteelReviewSavedSnapshot;
         };
       }
+      throw new SteelReviewReadError('INVALID_REVIEW_QUERY', 400, 'Invalid review operation');
     },
   };
 }

@@ -74,7 +74,7 @@ export const steelReviewOwnerUpdatedSchema = z.object({
   kind: z.enum(steelReviewKinds),
   conversationId: z.string().min(1),
   messageId: z.string().min(1),
-  tableId: z.string().min(1),
+  title: steelReviewTitleSchema,
   outputId: z.string().min(1),
   revision: z.string().min(1),
   updatedAt: z.string().datetime(),
