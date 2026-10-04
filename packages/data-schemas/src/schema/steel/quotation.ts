@@ -16,7 +16,8 @@ import type {
   SteelQuotationPendingMessage,
   SteelQuotationPendingMessageFile,
   SteelQuotationSelectionProvenance,
-  SteelQuotationSnapshotPrompts,
+  SteelQuotationSourceMapping,
+  SteelQuotationSourceSnapshot,
   SteelQuotationTicket,
 } from '~/types';
 
@@ -30,6 +31,16 @@ const steelQuotationOrderSchema = new Schema<SteelQuotationOrder>(
   { _id: false },
 );
 
+const steelQuotationSourceMappingSchema = new Schema<SteelQuotationSourceMapping>(
+  {
+    fileId: { type: String, required: true },
+    sourceCode: { type: String, required: true },
+    sourceFilename: { type: String, required: true },
+    mediaType: { type: String },
+  },
+  { _id: false },
+);
+
 const steelQuotationCurrentSystemOrderSchema = new Schema<SteelQuotationCurrentSystemOrder>(
   {
     runId: { type: String, required: true },
@@ -38,6 +49,22 @@ const steelQuotationCurrentSystemOrderSchema = new Schema<SteelQuotationCurrentS
     messageId: { type: String },
     responseId: { type: String },
     customerQuoteMarkdown: { type: String },
+    sourceSnapshot: {
+      type: new Schema<SteelQuotationSourceSnapshot>(
+        {
+          orderHash: { type: String, required: true },
+          generationId: { type: String },
+          resultMessageId: { type: String },
+          resultHash: { type: String },
+          mappings: {
+            type: [steelQuotationSourceMappingSchema],
+            required: true,
+            default: [],
+          },
+        },
+        { _id: false },
+      ),
+    },
     needsRequote: { type: Boolean },
     requoteProvenance: {
       type: new Schema<SteelQuotationRequoteProvenance>(
@@ -138,14 +165,6 @@ const steelQuotationTicketSchema = new Schema<SteelQuotationTicket>(
     responseId: { type: String },
     acceptedRunId: { type: String },
     completionReceipt: { type: steelQuotationTicketCompletionReceiptSchema },
-  },
-  { _id: false },
-);
-
-const steelQuotationSnapshotPromptsSchema = new Schema<SteelQuotationSnapshotPrompts>(
-  {
-    child: { type: String, required: true },
-    main: { type: String, required: true },
   },
   { _id: false },
 );

@@ -1,12 +1,14 @@
-import type {
-  LanguageModelV3,
-  LanguageModelV3CallOptions,
-  LanguageModelV3GenerateResult,
-  LanguageModelV3StreamPart,
-} from '@ai-sdk/provider';
-import { dispatchCustomEvent } from '@langchain/core/callbacks/dispatch';
-import { BaseCallbackHandler } from '@langchain/core/callbacks/base';
 import { CallbackManager } from '@langchain/core/callbacks/manager';
+import { BaseCallbackHandler } from '@langchain/core/callbacks/base';
+import { dispatchCustomEvent } from '@langchain/core/callbacks/dispatch';
+import { RunnableLambda, type RunnableConfig } from '@librechat/agents/langchain/runnables';
+import {
+  AIMessage,
+  HumanMessage,
+  SystemMessage,
+  ToolMessage,
+  type BaseMessage,
+} from '@librechat/agents/langchain/messages';
 import {
   ChatModelStreamHandler,
   ContentTypes,
@@ -16,24 +18,17 @@ import {
   ToolNode,
   type GenericTool,
 } from '@librechat/agents';
-import type { BindToolsInput } from '@librechat/agents/langchain/language_models/chat_models';
-import {
-  AIMessage,
-  HumanMessage,
-  SystemMessage,
-  ToolMessage,
-  type BaseMessage,
-} from '@librechat/agents/langchain/messages';
-import { RunnableLambda, type RunnableConfig } from '@librechat/agents/langchain/runnables';
-import type { createOpenAIOAuth as createOpenAIOAuthType } from '@openai-oauth/ai-sdk';
+import type {
+  LanguageModelV3,
+  LanguageModelV3CallOptions,
+  LanguageModelV3GenerateResult,
+  LanguageModelV3StreamPart,
+} from '@ai-sdk/provider';
 import type { createOpenAIOAuthTransport as createOpenAIOAuthTransportType } from '@openai-oauth/core';
+import type { BindToolsInput } from '@librechat/agents/langchain/language_models/chat_models';
+import type { createOpenAIOAuth as createOpenAIOAuthType } from '@openai-oauth/ai-sdk';
 import type { openaiCredentials as openaiCredentialsType } from '@openai-oauth/local';
-import { OCR_COMPLETION_DIRECTIVE_MARKER } from '../markdown/ocr';
-import {
-  createOpenAIOAuthGraphModel,
-  createOpenAIOAuthModel,
-  createStatelessOpenAIOAuthProvider,
-} from './oauth';
+import type { OpenAIOAuthFetch } from './credentials';
 import {
   createDelegateOcrTool,
   delegateOcrStreamEventName,
@@ -43,8 +38,13 @@ import {
   runDelegateOcrWorkflow,
   type DelegateOcrExecutableTool,
 } from './delegate';
+import {
+  createOpenAIOAuthGraphModel,
+  createOpenAIOAuthModel,
+  createStatelessOpenAIOAuthProvider,
+} from './oauth';
 import { clearOpenAIOAuthCredentialInvalid, isOpenAIOAuthCredentialInvalid } from './auth-state';
-import type { OpenAIOAuthFetch } from './credentials';
+import { OCR_COMPLETION_DIRECTIVE_MARKER } from '../markdown/ocr';
 import { prepareSteelNativeToolConfig } from './tools';
 
 jest.mock('@langchain/core/callbacks/dispatch', () => {
@@ -2718,7 +2718,7 @@ describe('OpenAI OAuth model adapter', () => {
     expect(doGenerate).not.toHaveBeenCalled();
   });
 
-  it('generates customer_quote in the backend before manual_review with one provider call', async () => {
+  it('keeps the backend system-order output free of a new customer_quote', async () => {
     const providerText = [
       '## system_order｜報價.pdf（file-1）',
       '',
@@ -2743,16 +2743,13 @@ describe('OpenAI OAuth model adapter', () => {
     const result = await model.invoke(quoteMessages());
     const content = String(result.content);
 
-    expect(content).toContain(
-      '## customer_quote｜報價.pdf（file-1）\n\n| 項目 | 總數 | 小計 |\n| --- | --- | --- |\n| PL6\\|54 | 2.060154 | 80 |\n| 總計 |  | 80 |',
-    );
-    expect(content.indexOf('## system_order')).toBeLessThan(content.indexOf('## customer_quote'));
-    expect(content.indexOf('## customer_quote')).toBeLessThan(content.indexOf('## manual_review'));
+    expect(content).not.toContain('## customer_quote');
+    expect(content.indexOf('## system_order')).toBeLessThan(content.indexOf('## manual_review'));
     expect(doGenerate).toHaveBeenCalledTimes(1);
   });
 
   it.each(['invoke', 'stream'] as const)(
-    'normalizes only system_order numeric cells and composes the quote during %s',
+    'normalizes only system_order numeric cells and omits a new quote during %s',
     async (mode) => {
       const providerText = [
         '## system_order｜訂單',
@@ -2796,9 +2793,8 @@ describe('OpenAI OAuth model adapter', () => {
       }
 
       expect(content).toContain('| A | 2 | 2.5 | 10 | 3 | keep |');
-      expect(content).toContain('| A | 2.5 | 25 |');
       expect(content).toContain('## manual_review\n| 單價 | 計價基準 |\n| --- | --- |\n| NT$ 9 | A |');
-      expect(content.match(/## customer_quote/g)).toHaveLength(1);
+      expect(content).not.toContain('## customer_quote');
     },
   );
 
@@ -2895,7 +2891,7 @@ describe('OpenAI OAuth model adapter', () => {
     },
   );
 
-  it('buffers a split manual_review heading and inserts one backend quote before it', async () => {
+  it('buffers a split manual_review heading without inserting a new quote', async () => {
     const prefix = [
       '## system_order',
       '',
@@ -2948,28 +2944,19 @@ describe('OpenAI OAuth model adapter', () => {
     }
     const content = chunks.map((chunk) => chunk.content).join('');
 
-    expect(content).toContain('| A | 2 | 21 |');
-    expect(content.indexOf('## customer_quote')).toBeLessThan(content.indexOf('## manual_review'));
-    expect(content.match(/## customer_quote/g)).toHaveLength(1);
+    expect(content).toContain('| A | 2 | 10.5 |');
+    expect(content).not.toContain('## customer_quote');
     expect(doStream).toHaveBeenCalledTimes(1);
     expect(doGenerate).not.toHaveBeenCalled();
   });
 
-  it('appends exactly one backend quote at clean stop without manual_review', async () => {
+  it('keeps a clean-stop system order unchanged without manual_review', async () => {
     const providerText = [
       '## system_order｜訂單',
       '',
       '| 品名規格 | 總數 | 單價 |',
       '|---|---:|---:|',
       '| A | 2 | 10.5 |',
-    ].join('\n');
-    const expectedQuote = [
-      '## customer_quote｜訂單',
-      '',
-      '| 項目 | 總數 | 小計 |',
-      '| --- | --- | --- |',
-      '| A | 2 | 21 |',
-      '| 總計 |  | 21 |',
     ].join('\n');
     const doGenerate = jest.fn(async () =>
       createGenerateResult([{ type: 'text', text: providerText }]),
@@ -2982,12 +2969,12 @@ describe('OpenAI OAuth model adapter', () => {
     const result = await model.invoke(quoteMessages());
     const content = String(result.content);
 
-    expect(content).toBe(`${providerText}\n\n${expectedQuote}`);
-    expect(content.match(/## customer_quote/g)).toHaveLength(1);
+    expect(content).toBe(providerText);
+    expect(content).not.toContain('## customer_quote');
     expect(doGenerate).toHaveBeenCalledTimes(1);
   });
 
-  it('inserts the backend quote after system_order and before trailing summary text', async () => {
+  it('keeps a system order before trailing summary text without a new quote', async () => {
     const systemOrder = [
       '## system_order｜訂單',
       '',
@@ -2997,14 +2984,6 @@ describe('OpenAI OAuth model adapter', () => {
     ].join('\n');
     const summary = '查價輸出完成：共 1 筆 system_order，無待複核事項。';
     const providerText = `${systemOrder}\n\n${summary}`;
-    const expectedQuote = [
-      '## customer_quote｜訂單',
-      '',
-      '| 項目 | 總數 | 小計 |',
-      '| --- | --- | --- |',
-      '| A | 2 | 21 |',
-      '| 總計 |  | 21 |',
-    ].join('\n');
     const doGenerate = jest.fn();
     const doStream = jest.fn(async () =>
       createStreamResult([
@@ -3027,13 +3006,13 @@ describe('OpenAI OAuth model adapter', () => {
     }
     const content = chunks.map((chunk) => chunk.content).join('');
 
-    expect(content).toBe(`${systemOrder}\n\n${expectedQuote}\n\n${summary}`);
-    expect(content.match(/## customer_quote/g)).toHaveLength(1);
+    expect(content).toBe(`${systemOrder}\n\n${summary}`);
+    expect(content).not.toContain('## customer_quote');
     expect(doStream).toHaveBeenCalledTimes(1);
     expect(doGenerate).not.toHaveBeenCalled();
   });
 
-  it('preserves CRLF and trailing row spaces when inserting a streamed quote', async () => {
+  it('preserves CRLF and trailing row spaces in a streamed system order', async () => {
     const systemOrder = [
       '## system_order｜訂單',
       '',
@@ -3065,10 +3044,9 @@ describe('OpenAI OAuth model adapter', () => {
     }
     const content = chunks.map((chunk) => chunk.content).join('');
 
-    expect(content).toContain('| A | 2 | 10.5 |   \r\n\n## customer_quote｜訂單');
-    expect(content).toContain('| A | 2 | 21 |');
-    expect(content.indexOf('## customer_quote')).toBeLessThan(content.indexOf(summary));
-    expect(content.match(/## customer_quote/g)).toHaveLength(1);
+    expect(content).toContain('| A | 2 | 10.5 |   ');
+    expect(content).toContain(summary);
+    expect(content).not.toContain('## customer_quote');
   });
 
   it('streams a split table row without a leading pipe before provider completion', async () => {
@@ -3182,7 +3160,7 @@ describe('OpenAI OAuth model adapter', () => {
     },
   );
 
-  it('inserts a quote before a fenced manual_review at clean stop', async () => {
+  it('keeps a fenced manual_review after the system order without a new quote', async () => {
     const systemOrder = [
       '## system_order｜訂單',
       '',
@@ -3200,14 +3178,6 @@ describe('OpenAI OAuth model adapter', () => {
       '```',
     ].join('\n');
     const providerText = `${systemOrder}\n\n${fencedText}`;
-    const expectedQuote = [
-      '## customer_quote｜訂單',
-      '',
-      '| 項目 | 總數 | 小計 |',
-      '| --- | --- | --- |',
-      '| A | 2 | 21 |',
-      '| 總計 |  | 21 |',
-    ].join('\n');
     const doGenerate = jest.fn();
     const doStream = jest.fn(async () =>
       createStreamResult([
@@ -3234,12 +3204,9 @@ describe('OpenAI OAuth model adapter', () => {
     }
     const content = chunks.map((chunk) => chunk.content).join('');
     const fenceEnd = content.indexOf('```', content.indexOf('## manual_review'));
-    const quoteStart = content.indexOf('## customer_quote');
-
-    expect(content).toBe(`${systemOrder}\n\n${expectedQuote}\n\n${fencedText}`);
-    expect(content.match(/## customer_quote/g)).toHaveLength(1);
+    expect(content).toBe(`${systemOrder}\n\n${fencedText}`);
+    expect(content).not.toContain('## customer_quote');
     expect(fenceEnd).toBeGreaterThan(-1);
-    expect(quoteStart).toBeLessThan(content.indexOf('```markdown'));
     expect(doStream).toHaveBeenCalledTimes(1);
     expect(doGenerate).not.toHaveBeenCalled();
   });

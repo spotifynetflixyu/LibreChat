@@ -244,6 +244,46 @@ describe('Steel quotation state service', () => {
     );
   });
 
+  it('freezes the accepted OCR source snapshot in the immutable run artifact', async () => {
+    const order = await service.setOrder({ scope, fullMarkdown: '# order' });
+    const ticket = await service.issueTicket({
+      scope,
+      customerMarkdown: '# customer',
+      customerIdentity: 'customer-a',
+      triggeringMessageId: 'message-1',
+      selectionProvenance: { method: 'selected', selectionMessageId: 'message-1' },
+    });
+    if (!ticket || !order.currentOrder) {
+      throw new Error('test setup did not create a quotation ticket');
+    }
+    const sourceSnapshot = {
+      orderHash: order.currentOrder.sha256,
+      generationId: 'ocr-generation-1',
+      resultMessageId: 'ocr-message-1',
+      resultHash: 'ocr-result-hash-1',
+      mappings: [{
+        fileId: 'file-1',
+        sourceCode: 'F1',
+        sourceFilename: 'drawing.pdf',
+        mediaType: 'application/pdf',
+      }],
+    };
+    const run = await service.acceptSignal({
+      scope,
+      index: ticket.index,
+      token: ticket.token,
+      orderHash: ticket.orderHash,
+      customerMarkdown: ticket.customerMarkdown,
+      customerIdentity: ticket.customerIdentity,
+      prompts,
+      chunks: [{ index: 1, sourceRowCount: 1 }],
+      sourceSnapshot,
+    });
+
+    const payload = await service.readArtifact({ scope, ref: run.snapshotRef });
+    expect(JSON.parse(payload ?? '{}').sourceSnapshot).toEqual(sourceSnapshot);
+  });
+
   it('saves a customer without allocating an index and retains it when the order changes', async () => {
     const preparation = await prepareCustomer();
     const saved = await service.readState(scope);

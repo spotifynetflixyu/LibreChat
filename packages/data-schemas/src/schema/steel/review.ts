@@ -89,6 +89,8 @@ const steelReviewCaptionSchema = new Schema(
     kind: { type: String, enum: ['ocr_result', 'system_order'], required: true },
     changedRows: { type: Number, required: true, min: 0 },
     changedRowIds: { type: [String], required: true, default: [] },
+    customerQuoteChangedRows: { type: Number, min: 0 },
+    customerQuoteTotal: { type: String },
   },
   { _id: false },
 );

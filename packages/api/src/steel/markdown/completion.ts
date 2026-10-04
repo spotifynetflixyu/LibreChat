@@ -1,5 +1,11 @@
 import { createHash } from 'node:crypto';
-import type { ISteelQuotationState, SteelQuotationActiveRun, SteelQuotationScope } from '@librechat/data-schemas';
+import type {
+  ISteelConversationOcrState,
+  ISteelQuotationState,
+  SteelQuotationActiveRun,
+  SteelQuotationScope,
+  SteelQuotationSourceSnapshot,
+} from '@librechat/data-schemas';
 import type { PreparedQuotationCustomerResponse } from '../quotation/preparation';
 import type { PreparedSystemOrderRevisionSuccess } from '../quotation/revision';
 import type { SteelQuotationStateService } from '../quotation/state';
@@ -108,6 +114,28 @@ export function registerSteelMarkdownPublication(
 
 function hash(value: string): string {
   return createHash('sha256').update(value).digest('hex');
+}
+
+function admittedSourceSnapshot(
+  ocrState: Pick<ISteelConversationOcrState, 'currentOcrResultGenerationId' | 'currentOcrResultMessageId' |
+    'currentOcrResultMarkdown' | 'sourceMappings'> | null | undefined,
+  orderHash: string | undefined,
+): SteelQuotationSourceSnapshot | undefined {
+  if (!ocrState?.currentOcrResultGenerationId || !ocrState.currentOcrResultMarkdown || !orderHash ||
+    hash(ocrState.currentOcrResultMarkdown) !== orderHash) {
+    return undefined;
+  }
+  return {
+    orderHash,
+    generationId: ocrState.currentOcrResultGenerationId,
+    ...(ocrState.currentOcrResultMessageId ? { resultMessageId: ocrState.currentOcrResultMessageId } : {}),
+    resultHash: orderHash,
+    mappings: ocrState.sourceMappings.map(({ fileId, sourceCode, sourceFilename }) => ({
+      fileId,
+      sourceCode,
+      sourceFilename,
+    })),
+  };
 }
 
 function scopeKey(scope: SteelQuotationScope): string {
@@ -293,6 +321,7 @@ export async function finalizeSteelMarkdownTurn(
           messageFiles: context?.quotation?.messageFiles,
           expectedOrderHash: context?.quotation?.state?.currentOrder?.sha256,
           expectedCustomerPreparationId: context?.quotation?.state?.currentCustomer?.preparationId,
+          sourceSnapshot: admittedSourceSnapshot(ocrState, quotationState?.currentOrder?.sha256),
           finishReason: 'stop', service: dependencies.quotation,
         });
         if (acceptedRun) {
@@ -363,7 +392,8 @@ export async function finalizeSteelMarkdownTurn(
       }
       const revision = createSystemOrderRevisionService({ read: dependencies.quotation.readState,
         readCurrentSystemOrder: dependencies.quotation.readCurrentSystemOrder,
-        readCheckpoint: dependencies.quotation.readCheckpoint, saveCurrentSystemOrder: dependencies.quotation.saveCurrentSystemOrder });
+        readCheckpoint: dependencies.quotation.readCheckpoint, saveCurrentSystemOrder: dependencies.quotation.saveCurrentSystemOrder,
+      });
       if (titles.has('system_order_updates')) {
         const prepared = await revision.prepareSystemOrderUpdates({ scope,
           response: receipt.canonicalMarkdown, responseId: input.responseId, messageId: input.responseId });
@@ -506,11 +536,15 @@ export async function finalizeSteelMarkdownTurn(
         latest?.currentCustomer?.preparationId !== expectedCustomer) {
         throw new SteelResponseCompletionError('superseded_response');
       }
+      const admittedOcrState = receipt.ocr
+        ? await dependencies.ocr.readConversationOcrState(scope.conversationId)
+        : await dependencies.ocr.readConversationOcrState(scope.conversationId);
       receipt.acceptedRun = await acceptQuotationSignal({
         scope, response: input.markdown, responseId: input.responseId,
         messageId: context?.quotation?.messageId, service: dependencies.quotation,
         expectedOrderHash: latest?.currentOrder?.sha256,
         expectedCustomerPreparationId: latest?.currentCustomer?.preparationId, finishReason: 'stop',
+        sourceSnapshot: admittedSourceSnapshot(admittedOcrState, latest?.currentOrder?.sha256),
         completionReceipt: {
           inputHash: receipt.inputHash, markdown: receipt.canonicalMarkdown,
           ...(receipt.ocr ? { ocrGeneration: receipt.expectedOcrGeneration,

@@ -45,7 +45,10 @@ import type {
 } from '@librechat/data-schemas';
 import type { SteelMarkdownTable } from './markdown/table';
 import type { ServerRequest } from '~/types/http';
+import { cleanSystemOrderNumber, normalizeSystemOrderMarkdown } from './markdown/order';
+import { buildCustomerQuoteFromMarkdown } from './markdown/quote';
 import { escapeMarkdownTableCell } from './markdown/row-codec';
+import { parseMarkdownTables } from './markdown/table';
 
 export interface SteelReviewReader {
   readSteelReview(input: SteelReviewReadInput): Promise<SteelReviewReadRecord | null>;
@@ -575,6 +578,27 @@ function serializeReviewTable(headers: readonly string[], rows: readonly SteelRe
   return [header, separator, ...body].join('\n');
 }
 
+const SYSTEM_ORDER_EDITABLE_HEADERS = new Set(['單價', '總數']);
+const SYSTEM_ORDER_DECIMAL = /^(?:\d+(?:\.\d+)?|\d{1,3}(?:,\d{3})+(?:\.\d+)?)$/u;
+
+function quoteProjection(markdown: string | undefined): { markdown: string; rows: string[][]; total: string | null } | undefined {
+  if (!markdown) {
+    return undefined;
+  }
+  const quote = buildCustomerQuoteFromMarkdown(markdown);
+  const quoteMarkdown = quote?.markdown ?? markdown;
+  const table = parseMarkdownTables(quoteMarkdown)[0];
+  if (!table) {
+    return undefined;
+  }
+  const totalRow = table.rows[table.rows.length - 1];
+  return {
+    markdown: quoteMarkdown,
+    rows: table.rows.slice(0, -1),
+    total: totalRow?.[2] ?? null,
+  };
+}
+
 function ownerMarkdown(record: SteelReviewReadRecord): string | undefined {
   return record.effectiveMarkdown ?? record.humanMarkdown ?? record.markdown;
 }
@@ -900,7 +924,11 @@ export function createSteelReviewService({
       return undefined;
     }
     const initialOutputId = `ocr_result:${payload.revision}`;
-    if (record.kind !== 'ocr_result' || record.outputId !== initialOutputId) {
+    const isInitialOcrRevision = record.kind === 'ocr_result' && record.outputId === initialOutputId;
+    const isSystemOrderBaseline = record.kind === 'system_order' &&
+      record.aiBaselineMarkdown !== undefined &&
+      createHash('sha256').update(record.aiBaselineMarkdown).digest('hex') === payload.revision;
+    if (!isInitialOcrRevision && !isSystemOrderBaseline) {
       return undefined;
     }
     const initialMarkdown = record.aiBaselineMarkdown ?? record.markdown;
@@ -1008,9 +1036,6 @@ export function createSteelReviewService({
     trustedRecord?: SteelReviewReadRecord,
     sourceEvidence?: SteelReviewSourceEvidence,
   ): Promise<SteelReviewTrustedProjection> {
-    if (payload.kind !== 'ocr_result') {
-      throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'This review save is available for OCR results only');
-    }
     const record = trustedRecord ?? await reader.readSteelReview(scope);
     if (!record || record.state !== 'current' || (record.latestOutputId ?? record.outputId) !== record.outputId ||
       record.outputId !== payload.outputId) {
@@ -1055,6 +1080,20 @@ export function createSteelReviewService({
       if (changes.some((change) => !headers.includes(change.header) ||
         isSteelReviewSourceAssociationHeader(change.header))) {
         throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review row column is read-only');
+      }
+      if (payload.kind === 'system_order' && (
+        operation.type !== 'update' ||
+        changes.some((change) => !SYSTEM_ORDER_EDITABLE_HEADERS.has(change.header)) ||
+        operation.source !== undefined
+      )) {
+        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'System-order edits are limited to unit price and total');
+      }
+      if (payload.kind === 'system_order' && changes.some((change) => {
+        const value = change.value?.trim() ?? '';
+        return SYSTEM_ORDER_EDITABLE_HEADERS.has(change.header) && value !== '' &&
+          (!SYSTEM_ORDER_DECIMAL.test(value) || cleanSystemOrderNumber(value) === '');
+      })) {
+        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'System-order numeric input is invalid');
       }
     }
     const applied = applySteelReviewOperations({
@@ -1104,9 +1143,6 @@ export function createSteelReviewService({
     trustedRecord?: SteelReviewReadRecord,
     sourceEvidence?: SteelReviewSourceEvidence,
   ): Promise<Omit<SteelReviewTrustedProjection, 'digest'>> {
-    if (payload.kind !== 'ocr_result') {
-      throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'This review save is available for OCR results only');
-    }
     const record = trustedRecord ?? await reader.readSteelReview(scope);
     if (!record || record.state !== 'current' || (record.latestOutputId ?? record.outputId) !== record.outputId ||
       record.outputId !== payload.outputId) {
@@ -1294,8 +1330,61 @@ export function createSteelReviewService({
     if (!normalizedRows.ok) {
       throwLedgerValidationFailure(normalizedRows);
     }
-    const canonicalLedgerRows = normalizedRows.orderedSubmittedRows;
+    let canonicalLedgerRows = normalizedRows.orderedSubmittedRows;
     const normalizedCurrentRows = normalizedRows.currentRows;
+    let cleanReplacementText = serializeReviewTable(headers, canonicalLedgerRows.filter((row) => !row.deleted));
+    let effectiveMarkdown = replaceOwnerTarget(record, cleanReplacementText, target);
+    if (!effectiveMarkdown) {
+      throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review table target not found');
+    }
+    let systemOrderMarkdown: string | undefined;
+    let customerQuoteMarkdown: string | undefined;
+    let customerQuoteChangedRows: number | undefined;
+    let customerQuoteTotal: string | null | undefined;
+    if (payload.kind === 'system_order') {
+      // The system-order target is the canonical quotation input. Normalize
+      // numeric cells before persisting the message mirror and derive the
+      // internal customer quote from that same normalized section.
+      const normalized = normalizeSystemOrderMarkdown(effectiveMarkdown);
+      const normalizedTarget = collectLocatedTables(normalized).find((candidate) =>
+        candidate.title === payload.title && JSON.stringify(candidate.headers) === JSON.stringify(headers));
+      if (!normalizedTarget) {
+        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'System-order table is invalid');
+      }
+      const normalizedTable = parseMarkdownTables(normalizedTarget.raw)[0];
+      if (!normalizedTable || normalizedTable.rows.length !== canonicalLedgerRows.filter((row) => !row.deleted).length) {
+        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'System-order table rows are invalid');
+      }
+      let normalizedRowIndex = 0;
+      canonicalLedgerRows = canonicalLedgerRows.map((row) => {
+        if (row.deleted) return row;
+        const normalizedValues = normalizedTable.rows[normalizedRowIndex++] ?? [];
+        return {
+          ...row,
+          values: Object.fromEntries(headers.map((header, index) => [
+            header,
+            { ...row.values[header], effective: normalizedValues[index] ?? '' },
+          ])),
+        };
+      });
+      cleanReplacementText = normalizedTarget.raw;
+      effectiveMarkdown = normalized;
+      systemOrderMarkdown = normalized;
+      const nextQuote = quoteProjection(normalized);
+      if (!nextQuote) {
+        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'System-order quotation is invalid');
+      }
+      customerQuoteMarkdown = nextQuote.markdown;
+      customerQuoteTotal = nextQuote.total;
+      const currentQuote = quoteProjection(record.customerQuoteMarkdown) ?? quoteProjection(
+        `## ${payload.title}\n\n${serializeReviewTable(headers, (record.rows ?? []).filter((row) => !row.deleted))}`,
+      );
+      customerQuoteChangedRows = currentQuote
+        ? nextQuote.rows.reduce((count, row, index) =>
+          count + (JSON.stringify(row) === JSON.stringify(currentQuote.rows[index]) ? 0 : 1), 0) +
+          Math.max(0, currentQuote.rows.length - nextQuote.rows.length)
+        : nextQuote.rows.length;
+    }
     const previousById = new Map(normalizedCurrentRows.map((row) => [row.rowId, row]));
     const changedRowIds = canonicalLedgerRows
       .filter((row) => {
@@ -1304,11 +1393,6 @@ export function createSteelReviewService({
           JSON.stringify({ values: previous.values, source: previous.source, origin: previous.origin, deleted: previous.deleted });
       })
       .map((row) => row.rowId);
-    const cleanReplacementText = serializeReviewTable(headers, canonicalLedgerRows.filter((row) => !row.deleted));
-    const effectiveMarkdown = replaceOwnerTarget(record, cleanReplacementText, target);
-    if (!effectiveMarkdown) {
-      throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review table target not found');
-    }
     const fullText = fullMessageText(record);
     if (fullText === undefined) {
       throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review message not found');
@@ -1341,6 +1425,8 @@ export function createSteelReviewService({
       cleanReplacementText,
       effectiveMarkdown,
       displayMarkdown: effectiveMarkdown,
+      ...(systemOrderMarkdown ? { systemOrderMarkdown } : {}),
+      ...(customerQuoteMarkdown ? { customerQuoteMarkdown } : {}),
       ...(record.aiBaselineMarkdown || record.markdown
         ? { aiBaselineMarkdown: record.aiBaselineMarkdown ?? record.markdown }
         : {}),
@@ -1351,6 +1437,8 @@ export function createSteelReviewService({
         kind: payload.kind,
         changedRows: changedRowIds.length,
         changedRowIds,
+        ...(customerQuoteChangedRows !== undefined ? { customerQuoteChangedRows } : {}),
+        ...(customerQuoteTotal !== undefined ? { customerQuoteTotal } : {}),
       },
     };
     return {

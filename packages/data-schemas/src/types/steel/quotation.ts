@@ -33,6 +33,21 @@ export interface SteelQuotationOrder {
   messageId?: string;
 }
 
+export interface SteelQuotationSourceMapping {
+  fileId: string;
+  sourceCode: string;
+  sourceFilename: string;
+  mediaType?: string;
+}
+
+export interface SteelQuotationSourceSnapshot {
+  orderHash: string;
+  generationId?: string;
+  resultMessageId?: string;
+  resultHash?: string;
+  mappings: SteelQuotationSourceMapping[];
+}
+
 export interface SteelQuotationCurrentSystemOrder {
   runId: string;
   sha256: string;
@@ -40,6 +55,7 @@ export interface SteelQuotationCurrentSystemOrder {
   messageId?: string;
   responseId?: string;
   customerQuoteMarkdown?: string;
+  sourceSnapshot?: SteelQuotationSourceSnapshot;
   needsRequote?: boolean;
   requoteProvenance?: SteelQuotationRequoteProvenance;
   updatedAt: Date;
@@ -126,6 +142,7 @@ export interface SteelQuotationSnapshotPayload {
   orderHash: string;
   customerMarkdown: string;
   customerIdentity: string;
+  sourceSnapshot?: SteelQuotationSourceSnapshot;
 }
 
 export interface SteelQuotationArtifactRef {

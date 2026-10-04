@@ -730,7 +730,8 @@ describe('quotation runner integration', () => {
       const payload = JSON.parse(input.input);
       expect(payload).not.toHaveProperty('chunks');
       expect(parseMarkdownTables(payload.system_order)[0]!.rows).toHaveLength(31);
-      expect(onTextDelta.mock.calls[0]![0]).toContain(payload.system_order + '\n\n## customer_quote');
+      expect(onTextDelta.mock.calls[0]![0]).toContain(payload.system_order);
+      expect(onTextDelta.mock.calls[0]![0]).not.toContain('## customer_quote');
       expect(input.onTextDelta).toEqual(expect.any(Function));
       return { markdown: '無待複核事項。', lookups: [], pythonEvidence: [] };
     });
@@ -738,7 +739,7 @@ describe('quotation runner integration', () => {
     const final = publishFinal.mock.calls[0]![0] as unknown as { markdown: string };
     expect(final.markdown.match(/## system_order/g)).toHaveLength(1);
     expect(parseMarkdownTables(final.markdown)[0]!.rows).toHaveLength(31);
-    expect(final.markdown).toContain('## customer_quote');
+    expect(final.markdown).not.toContain('## customer_quote');
     expect(final.markdown).not.toContain('manual_reviews_chunk');
   });
 
@@ -755,7 +756,8 @@ describe('quotation runner integration', () => {
     const baseModel = createModel({ onMainInput: (input) => {
       reviewedOrder = JSON.parse(input).system_order;
       expect(previews).toHaveLength(1);
-      expect(previews[0]).toContain(reviewedOrder + '\n\n## customer_quote');
+      expect(previews[0]).toContain(reviewedOrder);
+      expect(previews[0]).not.toContain('## customer_quote');
       const rows = parseMarkdownTables(reviewedOrder)[0]!.rows;
       expect(rows).toHaveLength(25);
       for (const row of rows) {
@@ -782,7 +784,8 @@ describe('quotation runner integration', () => {
       onTextDelta: async (text) => { previews.push(text); },
     }));
     expect(result.status).toBe('completed');
-    expect(result.markdown!.startsWith(reviewedOrder + '\n\n## customer_quote')).toBe(true);
+    expect(result.markdown!.startsWith(reviewedOrder)).toBe(true);
+    expect(result.markdown).not.toContain('## customer_quote');
     expect(result.markdown).not.toMatch(/2支|1,234\.50元|6 mm/);
     expect(await service.readCheckpoint({ scope, runId: run.runId, operationId: 'system-order:normalized' }))
       .toBe(reviewedOrder);
@@ -805,7 +808,7 @@ describe('quotation runner integration', () => {
     expect(model.mock.calls.find(([input]) => input.role === 'main')![0]).not.toHaveProperty('validateMainOutput');
     const markdown = result.markdown!;
     const headings = [...markdown.matchAll(/^## (.+)$/gm)].map((match) => match[1]);
-    expect(headings).toEqual(['system_order', 'customer_quote', 'manual_reviews', 'notes', 'quote_summary']);
+    expect(headings).toEqual(['system_order', 'manual_reviews', 'notes', 'quote_summary']);
     expect(markdown).toContain('保留這段未使用表格的模型輸出。');
     expect(markdown).toContain('主 agent 補充。');
     expect(markdown).toContain('查價輸出完成：共 1 筆 system_order。');
@@ -858,7 +861,7 @@ describe('quotation runner integration', () => {
     });
     expect(onTextDelta.mock.calls).toHaveLength(4);
     expect(progress.filter((value) => value.stage === 'main_streaming')).toHaveLength(1);
-    expect(publishFinal).toHaveBeenCalledWith(expect.objectContaining({ markdown: expect.stringContaining('## customer_quote') }));
+    expect(publishFinal).toHaveBeenCalledWith(expect.objectContaining({ markdown: expect.not.stringContaining('## customer_quote') }));
     expect(publishFinal).toHaveBeenCalledTimes(1);
   });
   it('awaits delayed review delivery before its next delta, summary, and final replacement', async () => {
@@ -872,7 +875,7 @@ describe('quotation runner integration', () => {
     const reviewParts = ['## manual_reviews\n\n需確認', '尺寸。\n\n## notes\n\n備註。'];
     const model = async (input: QuotationModelInput) => {
       if (input.role !== 'main') return baseModel(input);
-      expect(delivered[0]).toContain('## customer_quote');
+      expect(delivered[0]).not.toContain('## customer_quote');
       const first = input.onTextDelta!(reviewParts[0]!);
       const second = input.onTextDelta!(reviewParts[1]!);
       await Promise.all([first, second]);
@@ -922,7 +925,7 @@ describe('quotation runner integration', () => {
       publishFinal, onTextDelta: async (text) => { delivered.push(text); },
     }));
     expect(executeLookup).toHaveBeenCalledTimes(1);
-    expect(delivered[0]).toContain('## customer_quote');
+    expect(delivered[0]).not.toContain('## customer_quote');
     expect(delivered.join('').match(/## manual_reviews/g)).toHaveLength(1);
       expect(delivered[delivered.length - 1]).toContain('## quote_summary');
   });

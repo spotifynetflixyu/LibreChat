@@ -283,8 +283,9 @@ describe('Steel system-order revisions', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.markdown).toContain('| A | 2 | 3 | 10 |');
-    expect(result.markdown).toContain('## customer_quote');
-    expect(result.markdown).toContain('| 總計 |  | 50 |');
+    expect(result.markdown).not.toContain('## customer_quote');
+    expect((await stateService.readState(scope))?.currentSystemOrder?.customerQuoteMarkdown)
+      .toContain('| 總計 |  | 50 |');
     expect(result.markdown).not.toContain('AI text');
     expect(result.markdown).toMatch(/## quote_summary\n\n報價表修正完成：共 2 筆 system_order。$/u);
     expect(result.snapshot.markdown).toContain('| B | 1 | 1 | 20 |');

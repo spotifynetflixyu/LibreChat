@@ -94,7 +94,156 @@ const associationRow = (
     : null,
 });
 
+const systemOrderTitle = 'system_order｜報價單 A';
+const systemOrderMarkdown = [
+  `## ${systemOrderTitle}`,
+  '',
+  '| 品名規格 | 總數 | 單價 |',
+  '| --- | --- | --- |',
+  '| 雷射板 | 2.060154 | 38.5 |',
+].join('\n');
+
+const makeSystemOrderRecord = (overrides: Record<string, unknown> = {}) => ({
+  ...scope,
+  kind: 'system_order' as const,
+  title: systemOrderTitle,
+  tableId: `system_order:${systemOrderTitle}`,
+  outputId: 'system_order:run-1',
+  latestOutputId: 'system_order:run-1',
+  revision: 'system-order-revision-1',
+  state: 'current' as const,
+  headers: ['品名規格', '總數', '單價'],
+  rows: [{
+    rowId: 'row-1',
+    origin: 'ai' as const,
+    deleted: false,
+    values: {
+      品名規格: { baseline: '雷射板', effective: '雷射板' },
+      總數: { baseline: '2.060154', effective: '2.060154' },
+      單價: { baseline: '38.5', effective: '38.5' },
+    },
+    source: null,
+  }],
+  markdown: systemOrderMarkdown,
+  messageText: systemOrderMarkdown,
+  ...overrides,
+});
+
 describe('Steel review read service', () => {
+  it('prepares direct system-order price and total edits with a clean internal quote projection', async () => {
+    const service = createSteelReviewService({
+      reader: { readSteelReview: jest.fn().mockResolvedValue(makeSystemOrderRecord()) },
+    });
+
+    const prepared = await service.prepare({
+      userId: scope.userId,
+      conversationId: scope.conversationId,
+      messageId: scope.messageId,
+      title: systemOrderTitle,
+      kind: 'system_order',
+      outputId: 'system_order:run-1',
+      revision: 'system-order-revision-1',
+      operations: [{
+        type: 'update' as const,
+        rowId: 'row-1',
+        changes: [
+          { header: '總數', value: '2.060154' },
+          { header: '單價', value: '39.5' },
+        ],
+      }],
+    });
+
+    expect(prepared.kind).toBe('system_order');
+    expect(prepared.cleanReplacementText).toContain('| 雷射板 | 2.060154 | 39.5 |');
+    expect(prepared.caption).toEqual(expect.objectContaining({
+      kind: 'system_order',
+      changedRows: 1,
+      customerQuoteChangedRows: 1,
+      customerQuoteTotal: '82',
+    }));
+  });
+
+  it('rejects system-order edits outside price and total and rejects invalid numeric input', async () => {
+    const service = createSteelReviewService({
+      reader: { readSteelReview: jest.fn().mockResolvedValue(makeSystemOrderRecord()) },
+    });
+    const base = {
+      userId: scope.userId,
+      conversationId: scope.conversationId,
+      messageId: scope.messageId,
+      title: systemOrderTitle,
+      kind: 'system_order' as const,
+      outputId: 'system_order:run-1',
+      revision: 'system-order-revision-1',
+    };
+
+    await expect(service.prepare({
+      ...base,
+      operations: [{
+        type: 'update' as const,
+        rowId: 'row-1',
+        changes: [{ header: '品名規格', value: '錯誤' }],
+      }],
+    })).rejects.toMatchObject({ code: 'REVIEW_INVALID_OPERATION' });
+    await expect(service.prepare({
+      ...base,
+      operations: [{
+        type: 'update' as const,
+        rowId: 'row-1',
+        changes: [{ header: '單價', value: '1e2' }],
+      }],
+    })).rejects.toMatchObject({ code: 'REVIEW_INVALID_OPERATION' });
+  });
+
+  it('merges a stale system-order operation from the immutable initial baseline', async () => {
+    const initialRevision = createHash('sha256').update(systemOrderMarkdown).digest('hex');
+    const rowId = createHash('sha256')
+      .update(`system_order:run-1:0:${JSON.stringify(['雷射板', '2.060154', '38.5'])}`)
+      .digest('hex');
+    const service = createSteelReviewService({
+      reader: {
+        readSteelReview: jest.fn().mockResolvedValue(makeSystemOrderRecord({
+          revision: createHash('sha256').update(systemOrderMarkdown.replace('38.5', '39.5')).digest('hex'),
+          aiBaselineMarkdown: systemOrderMarkdown,
+          markdown: systemOrderMarkdown.replace('38.5', '39.5'),
+          effectiveMarkdown: systemOrderMarkdown.replace('38.5', '39.5'),
+          messageText: systemOrderMarkdown.replace('38.5', '39.5'),
+          rows: [{
+            rowId,
+            origin: 'ai' as const,
+            deleted: false,
+            values: {
+              品名規格: { baseline: '雷射板', effective: '雷射板' },
+              總數: { baseline: '2.060154', effective: '2.060154' },
+              單價: { baseline: '38.5', effective: '39.5' },
+            },
+            source: null,
+          }],
+        })),
+      },
+    });
+
+    const prepared = await service.prepare({
+      userId: scope.userId,
+      conversationId: scope.conversationId,
+      messageId: scope.messageId,
+      title: systemOrderTitle,
+      kind: 'system_order',
+      outputId: 'system_order:run-1',
+      revision: initialRevision,
+      operations: [{
+        type: 'update' as const,
+        rowId,
+        changes: [{ header: '總數', value: '3.2' }],
+      }],
+    });
+
+    expect(prepared.rows[0]?.values).toEqual(expect.objectContaining({
+      總數: { baseline: '2.060154', effective: '3.2' },
+      單價: { baseline: '38.5', effective: '39.5' },
+    }));
+  });
+
   it('projects the requested full title from the authenticated message identity', async () => {
     const service = createSteelReviewService({
       reader: {

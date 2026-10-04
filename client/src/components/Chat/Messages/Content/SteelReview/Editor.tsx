@@ -44,8 +44,13 @@ export interface SteelReviewEditorProps {
 }
 
 export function isSteelReviewCellEditable(table: SteelReviewTable, header: string): boolean {
-  return table.kind === 'ocr_result' && table.isLatest && !table.readOnly &&
-    !isSteelReviewSourceAssociationHeader(header);
+  if (!table.isLatest || table.readOnly || isSteelReviewSourceAssociationHeader(header)) {
+    return false;
+  }
+  if (table.kind === 'system_order') {
+    return header === '單價' || header === '總數';
+  }
+  return table.kind === 'ocr_result';
 }
 
 function displayCellValue(value: string | null | undefined): string {

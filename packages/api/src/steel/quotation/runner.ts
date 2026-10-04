@@ -6,6 +6,7 @@ import type {
   SteelQuotationPendingMessageFile,
   SteelQuotationScope,
   SteelQuotationSnapshotPayload,
+  SteelQuotationSourceSnapshot,
   SteelQuotationTicket,
   SteelQuotationTicketCompletionReceipt,
 } from '@librechat/data-schemas';
@@ -148,6 +149,7 @@ export async function acceptQuotationResponse(input: {
   expectedOrderHash?: string;
   expectedCustomerPreparationId?: string;
   completionReceipt?: SteelQuotationTicketCompletionReceipt;
+  sourceSnapshot?: SteelQuotationSourceSnapshot;
   finishReason?: string;
   service?: ReturnType<typeof createSteelQuotationStateService>;
 }): Promise<SteelQuotationActiveRun | undefined> {
@@ -227,6 +229,7 @@ export async function acceptQuotationSignal(input: {
   expectedOrderHash?: string;
   expectedCustomerPreparationId?: string;
   completionReceipt?: SteelQuotationTicketCompletionReceipt;
+  sourceSnapshot?: SteelQuotationSourceSnapshot;
   finishReason?: string;
   service?: ReturnType<typeof createSteelQuotationStateService>;
 }): Promise<SteelQuotationActiveRun | undefined> {
@@ -245,6 +248,7 @@ export async function acceptQuotationSignal(input: {
       customerIdentity: existingTicket.customerIdentity,
       prompts: { child: 'replay', main: 'replay' },
       chunks: [],
+      ...(input.sourceSnapshot ? { sourceSnapshot: input.sourceSnapshot } : {}),
       targetMessageId: input.responseId,
     });
   }
@@ -284,6 +288,7 @@ export async function acceptQuotationSignal(input: {
     targetMessageId: input.responseId,
     prompts: { child: child.instructionPrefix, main: main.instructionPrefix },
     chunks: chunks.map((chunk) => ({ index: chunk.chunkIndex, sourceRowCount: chunk.sourceRows.length })),
+    ...(input.sourceSnapshot ? { sourceSnapshot: input.sourceSnapshot } : {}),
   });
 }
 
@@ -452,7 +457,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     const systemOrder = final.systemOrderMarkdown;
     await checkpoint('system-order:normalized', 'main', systemOrder);
     if (input.onTextDelta) {
-      await deliverText(async () => input.onTextDelta!(`${systemOrder}\n\n${final.customerQuoteMarkdown}`));
+      await deliverText(async () => input.onTextDelta!(systemOrder));
     }
     let mainStreamStarted = false;
     let reviewOutput = await service.readCheckpoint({ scope, runId, operationId: 'main-reviews' });
@@ -534,7 +539,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     const failureSummary = failedMaterialCount > 0
       ? `\n\n${failedMaterialCount} 個材料項次報價失敗，已保留 OCR 原值及空白報價欄位，需人工複核。` : '';
     const summary = `${completion}\n\n項次核對：材料項次 ${materialCount}／原始訂單 ${sourceCount} 項；加工列 ${processingCount} 筆。${failureSummary}`;
-    const completedResponse = [final.systemOrderMarkdown, final.customerQuoteMarkdown, reviewDisplay, `## quote_summary\n\n${summary}`]
+    const completedResponse = [final.systemOrderMarkdown, reviewDisplay, `## quote_summary\n\n${summary}`]
       .filter(Boolean).join('\n\n');
     await checkpoint('final', 'final', completedResponse);
     if (input.onTextDelta) {

@@ -583,7 +583,7 @@ describe('quotation protocol', () => {
     expect(finalized.rows).toEqual([corrected, finalRow(pricedRow)]);
     expect(finalized.response).toContain('| 鐵板 8T P2 |');
     expect(finalized.response).not.toContain('quote_lineage');
-    expect(finalized.response.match(/## customer_quote/g)).toHaveLength(1);
+    expect(finalized.response).not.toContain('## customer_quote');
     expect(finalized.summary).toBe('查價輸出完成：共 2 筆 system_order，無待複核事項。');
     expect(finalized.response).toContain(`## quote_summary\n\n${finalized.summary}`);
     expect(finalized.response).not.toContain('## manual_reviews');
@@ -622,7 +622,7 @@ describe('quotation protocol', () => {
     });
     expect(result.rows).toEqual([expected]);
     expect(result.response).not.toContain('1,234.50元');
-    expect(result.response.match(/## customer_quote/g)).toHaveLength(1);
+    expect(result.response).not.toContain('## customer_quote');
   });
 
   it.each(['manual_reviews', 'manual_review', 'manual_reviews｜訂單.pdf'])('normalizes %s without requiring backend source coverage', (title) => {
@@ -635,7 +635,7 @@ describe('quotation protocol', () => {
     expect(finalized.summary).toBe('查價輸出完成：共 1 筆 system_order、1 項待複核事項。');
     expect(finalized.response).toContain('## manual_reviews\n');
     expect(finalized.response).toContain('## system_order\n');
-    expect(finalized.response).toContain('## customer_quote\n');
+    expect(finalized.response).not.toContain('## customer_quote\n');
     expect(finalized.response).not.toContain('｜訂單.pdf');
     expect(finalized.response.indexOf('## manual_reviews')).toBeGreaterThan(finalized.response.indexOf('## notes'));
     expect(finalized.response).not.toContain('## manual_review\n');

@@ -140,6 +140,7 @@ export interface SteelQuotationAcceptSignalInput {
   customerIdentity: string;
   prompts: SteelQuotationSnapshotPayload['prompts'];
   chunks: readonly SteelQuotationChunkInput[];
+  sourceSnapshot?: SteelQuotationSnapshotPayload['sourceSnapshot'];
   targetMessageId?: string;
   now?: Date;
 }
@@ -493,6 +494,32 @@ function validatePendingFiles(files: readonly SteelQuotationPendingMessageFile[]
         throw new Error(`pending file ${name} must be a non-negative safe integer`);
       }
     }
+  }
+}
+
+function validateSourceSnapshot(
+  snapshot: SteelQuotationSnapshotPayload['sourceSnapshot'],
+  orderHash: string,
+): void {
+  if (!snapshot) return;
+  if (snapshot.orderHash !== orderHash) {
+    throw new Error('quotation source snapshot order hash is stale');
+  }
+  if (snapshot.mappings.length > MAX_QUOTATION_PENDING_FILES) {
+    throw new Error(`quotation source snapshot exceeds ${MAX_QUOTATION_PENDING_FILES} mappings`);
+  }
+  const sourceCodes = new Set<string>();
+  const fileIds = new Set<string>();
+  for (const mapping of snapshot.mappings) {
+    validateText(mapping.fileId, 'quotation source fileId', 2_000);
+    validateText(mapping.sourceCode, 'quotation source code', 200);
+    validateText(mapping.sourceFilename, 'quotation source filename', 2_000);
+    if (mapping.mediaType !== undefined) validateText(mapping.mediaType, 'quotation source mediaType', 200);
+    if (sourceCodes.has(mapping.sourceCode) || fileIds.has(mapping.fileId)) {
+      throw new Error('quotation source snapshot mappings must be unique');
+    }
+    sourceCodes.add(mapping.sourceCode);
+    fileIds.add(mapping.fileId);
   }
 }
 
@@ -1550,6 +1577,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
     if (!current.currentOrder || current.currentOrder.sha256 !== input.orderHash) {
       throw new Error('quotation signal order is stale');
     }
+    validateSourceSnapshot(input.sourceSnapshot, current.currentOrder.sha256);
     if (ticket.preparationId !== undefined || ticket.responseId !== undefined) {
       if (ticket.preparationId === undefined || ticket.responseId === undefined ||
         !matchesCustomerPreparation(current.currentCustomer, {
@@ -1571,6 +1599,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
       orderHash: current.currentOrder.sha256,
       customerMarkdown: input.customerMarkdown,
       customerIdentity: input.customerIdentity,
+      ...(input.sourceSnapshot ? { sourceSnapshot: input.sourceSnapshot } : {}),
     };
     const snapshotText = JSON.stringify(snapshotPayload);
     const snapshotRef = artifactRef(

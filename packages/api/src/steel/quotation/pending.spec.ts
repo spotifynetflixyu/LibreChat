@@ -384,11 +384,12 @@ describe('quotation pending processor', () => {
     }));
     const publishedMarkdown = publish.mock.calls[0]?.[0].markdown ?? '';
     expect(publishedMarkdown).toContain('## system_order｜報價單');
-    expect(publishedMarkdown).toContain('## customer_quote');
+    expect(publishedMarkdown).not.toContain('## customer_quote');
     expect(publishedMarkdown).not.toContain('## system_order_updates');
     const state = await service.readState(scope);
     expect(state?.currentSystemOrder?.responseId).toBe('system-order-corrected');
     expect(state?.currentSystemOrder?.markdown).toContain('| A | 3 | 3 | 10 |');
+    expect(state?.currentSystemOrder?.customerQuoteMarkdown).toContain('| 總計 |  | 30 |');
   });
 
   it('claims pending corrections in FIFO order and carries each stable target message', async () => {

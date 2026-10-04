@@ -145,6 +145,114 @@ afterAll(async () => {
 });
 
 describe('Steel review write methods', () => {
+  it('atomically saves a system-order price edit and its internal quote projection', async () => {
+    const models = createModels(mongoose);
+    const QuotationState = createSteelQuotationStateModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const conversationId = 'system-order-save-conversation';
+    const messageId = 'system-order-save-message';
+    const title = 'system_order｜報價單 A';
+    const currentMarkdown = [
+      `## ${title}`,
+      '',
+      '| 品名規格 | 總數 | 單價 |',
+      '| --- | --- | --- |',
+      '| 雷射板 | 2 | 40 |',
+    ].join('\n');
+    const savedMarkdown = currentMarkdown.replace('| 雷射板 | 2 | 40 |', '| 雷射板 | 2 | 41 |');
+    const targetText = currentMarkdown.slice(currentMarkdown.indexOf('| 品名規格 |'));
+    const replacementText = savedMarkdown.slice(savedMarkdown.indexOf('| 品名規格 |'));
+    const currentHash = createHash('sha256').update(currentMarkdown).digest('hex');
+    await models.Conversation.create({
+      conversationId,
+      user: 'user-1',
+      tenantId: 'tenant-1',
+      title: 'System order review',
+      endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId,
+      conversationId,
+      user: 'user-1',
+      tenantId: 'tenant-1',
+      isCreatedByUser: false,
+      text: currentMarkdown,
+    });
+    await QuotationState.create({
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      conversationId,
+      currentSystemOrder: {
+        runId: 'run-1',
+        sha256: currentHash,
+        markdown: currentMarkdown,
+        messageId,
+        customerQuoteMarkdown: '## customer_quote｜報價單 A\n\n| 項目 | 總數 | 小計 |\n| --- | --- | --- |\n| 雷射板 | 2 | 80 |\n| 總計 |  | 80 |',
+        updatedAt: new Date('2026-10-03T00:00:00.000Z'),
+      },
+    });
+    const writer = createSteelReviewWriteMethods(mongoose);
+    const result = await writer.commitSteelReview({
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      conversationId,
+      kind: 'system_order',
+      messageId,
+      title,
+      tableId: 'system_order:table',
+      outputId: 'system_order:run-1',
+      revision: currentHash,
+      operationId: 'system-order-operation',
+      digest: 'system-order-digest',
+      rows: [{
+        rowId: 'row-1',
+        values: {
+          品名規格: { baseline: '雷射板', effective: '雷射板' },
+          總數: { baseline: '2', effective: '2' },
+          單價: { baseline: '40', effective: '41' },
+        },
+        source: null,
+      }],
+      headers: ['品名規格', '總數', '單價'],
+      messageSha256: currentHash,
+      target: {
+        start: currentMarkdown.indexOf('| 品名規格 |'),
+        end: currentMarkdown.length,
+        sha256: createHash('sha256').update(targetText).digest('hex'),
+      },
+      targetText,
+      replacementText,
+      cleanReplacementText: replacementText,
+      effectiveMarkdown: savedMarkdown,
+      displayMarkdown: savedMarkdown,
+      aiBaselineMarkdown: currentMarkdown,
+      aiRawMarkdown: currentMarkdown,
+      systemOrderMarkdown: savedMarkdown,
+      customerQuoteMarkdown: '## customer_quote｜報價單 A\n\n| 項目 | 總數 | 小計 |\n| --- | --- | --- |\n| 雷射板 | 2 | 82 |\n| 總計 |  | 82 |',
+      caption: {
+        kind: 'system_order',
+        changedRows: 1,
+        changedRowIds: ['row-1'],
+        customerQuoteChangedRows: 1,
+        customerQuoteTotal: '82',
+      },
+    });
+
+    expect(result).toMatchObject({ changedRows: 1, changedRowIds: ['row-1'] });
+    expect((await models.Message.findOne({ messageId }).lean())?.text).toBe(savedMarkdown);
+    expect((await QuotationState.findOne({ conversationId }).lean())?.currentSystemOrder).toMatchObject({
+      runId: 'run-1',
+      sha256: createHash('sha256').update(savedMarkdown).digest('hex'),
+      markdown: savedMarkdown,
+      customerQuoteMarkdown: expect.stringContaining('| 雷射板 | 2 | 82 |'),
+    });
+    expect(await ReviewOutput.findOne({ conversationId, outputId: 'system_order:run-1' }).lean()).toMatchObject({
+      revision: createHash('sha256').update(savedMarkdown).digest('hex'),
+      effectiveMarkdown: savedMarkdown,
+      rows: [expect.objectContaining({ rowId: 'row-1' })],
+    });
+  });
+
   it('returns the immutable first receipt after a later save', async () => {
     const models = createModels(mongoose);
     const State = createSteelConversationOcrStateModel(mongoose);

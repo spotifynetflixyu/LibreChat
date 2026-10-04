@@ -78,6 +78,9 @@ export interface SteelReviewCommitInput extends SteelReviewReadInput {
   displayMarkdown: string;
   aiBaselineMarkdown?: string;
   aiRawMarkdown?: string;
+  /** Private quotation projection used only by the system-order transaction. */
+  systemOrderMarkdown?: string;
+  customerQuoteMarkdown?: string;
   caption: SteelReviewCaption;
   sourceIntents?: SteelReviewSourceIntent[];
   sourceMappings?: SteelReviewSourceMapping[];
@@ -109,6 +112,8 @@ export interface SteelReviewCommitResult {
   cleanReplacementText?: string;
   aiBaselineMarkdown?: string;
   aiRawMarkdown?: string;
+  systemOrderMarkdown?: string;
+  customerQuoteMarkdown?: string;
   sourceMappings?: SteelReviewSourceMapping[];
   changedRows: number;
   changedRowIds: string[];
@@ -694,6 +699,7 @@ function sidecarRecord(
   aiUpdatedAt?: Date,
   requote?: { needsRequote?: boolean; requoteProvenance?: SteelReviewRequoteProvenanceRecord },
   trustedMappings?: readonly SteelReviewSourceMapping[],
+  customerQuoteMarkdown?: string,
 ): SteelReviewReadRecord {
   const lastSave = output.receipts?.[output.receipts.length - 1];
   return {
@@ -725,6 +731,7 @@ function sidecarRecord(
     ...(aiUpdatedAt ? { aiUpdatedAt } : {}),
     ...(requote?.needsRequote !== undefined ? { needsRequote: requote.needsRequote } : {}),
     ...(requote?.requoteProvenance ? { requoteProvenance: requote.requoteProvenance } : {}),
+    ...(customerQuoteMarkdown !== undefined ? { customerQuoteMarkdown } : {}),
     ...(message?.ownerUpdated ? { ownerUpdated: message.ownerUpdated } : {}),
     ...(lastSave
       ? {
@@ -1056,7 +1063,7 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
         }, authorizedFiles, undefined, {
           needsRequote: quotation?.currentSystemOrder?.needsRequote,
           requoteProvenance: quotation?.currentSystemOrder?.requoteProvenance,
-        });
+        }, undefined, quotation?.currentSystemOrder?.customerQuoteMarkdown);
       }
 
       if (
@@ -1095,6 +1102,9 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
             : {}),
           ...(quotation.currentSystemOrder.requoteProvenance
             ? { requoteProvenance: quotation.currentSystemOrder.requoteProvenance }
+            : {}),
+          ...(quotation.currentSystemOrder.customerQuoteMarkdown !== undefined
+            ? { customerQuoteMarkdown: quotation.currentSystemOrder.customerQuoteMarkdown }
             : {}),
           ...(readOwnerUpdated(messageRecord.metadata, input.kind)
             ? { ownerUpdated: readOwnerUpdated(messageRecord.metadata, input.kind) }
@@ -1383,9 +1393,6 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
   };
 
   const resolveReceipt = async (input: SteelReviewCommitInput): Promise<SteelReviewCommitResult | null> => {
-    if (input.kind !== 'ocr_result') {
-      throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'This review save is available for OCR results only');
-    }
     if (input.operationDigest !== undefined && input.operationDigest !== input.digest) {
       throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review operation digest mismatch');
     }
@@ -1473,9 +1480,6 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
     },
 
     async commitSteelReview(input) {
-      if (input.kind !== 'ocr_result') {
-        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'This review save is available for OCR results only');
-      }
       const resolved = await resolveReceipt(input);
       if (resolved) {
         return resolved;
@@ -1604,11 +1608,15 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             }))
             : new Map<string, AuthorizedFile>();
           const trustedCurrentSourceMappings = output?.sourceMappings ??
-            (ocrState?.sourceMappings ? trustedSourceMappings(ocrState) : undefined);
+            (input.kind === 'ocr_result' && ocrState?.sourceMappings ? trustedSourceMappings(ocrState) : undefined);
           const currentSourceMappings = output?.sourceMappings
             ?.filter((mapping) => currentAuthorizedFiles.has(mapping.fileId)) ??
-            (ocrState?.sourceMappings ? sourceMappings(ocrState, currentAuthorizedFiles) : undefined);
-          const currentRevision = output?.revision ?? ocrState?.currentOcrResultGenerationId;
+            (input.kind === 'ocr_result' && ocrState?.sourceMappings
+              ? sourceMappings(ocrState, currentAuthorizedFiles)
+              : undefined);
+          const currentRevision = output?.revision ?? (input.kind === 'ocr_result'
+            ? ocrState?.currentOcrResultGenerationId
+            : quotation?.currentSystemOrder?.sha256);
           if (input.operationDigest !== undefined && !currentRevision) {
             throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review output revision is unavailable');
           }
@@ -1621,12 +1629,18 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               ocrState?.currentOcrResultGenerationId === capturedRevision &&
               input.outputId === `ocr_result:${capturedRevision}` &&
               Boolean(ocrState.currentOcrResultMarkdown || output?.aiBaselineMarkdown);
-            if (!hasImmutableReceipt && !isInitialOcrRevision) {
+            const isInitialSystemOrderRevision = input.kind === 'system_order' &&
+              output?.outputId === input.outputId &&
+              output.aiBaselineMarkdown !== undefined &&
+              markdownSha256(output.aiBaselineMarkdown) === capturedRevision;
+            if (!hasImmutableReceipt && !isInitialOcrRevision && !isInitialSystemOrderRevision) {
               throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review captured revision is unavailable');
             }
           }
           const currentLatestOutputId = output?.latestOutputId ?? input.outputId;
-          const currentAiRawMarkdown = output?.aiRawMarkdown ?? ocrState?.currentOcrResultMarkdown;
+          const currentAiRawMarkdown = output?.aiRawMarkdown ?? (input.kind === 'ocr_result'
+            ? ocrState?.currentOcrResultMarkdown
+            : quotation?.currentSystemOrder?.markdown);
 
           const mirror = readTextMirror(message);
           if (!mirror) {
@@ -1653,7 +1667,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               // Keep unavailable AI mappings as allocation reservations. They
               // are never projected back onto rows, but a later authorized
               // human source must not reuse their F-code.
-              ...(ocrState?.sourceMappings || output?.sourceMappings
+            ...(input.kind === 'ocr_result' && (ocrState?.sourceMappings || output?.sourceMappings)
                 ? {
                     sourceMappingReservations: [
                       ...(ocrState?.sourceMappings ? sourceMappingReservations(ocrState) : []),
@@ -1669,8 +1683,17 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               ...(output?.effectiveMarkdown ? { effectiveMarkdown: output.effectiveMarkdown } : {}),
               ...(output?.displayMarkdown ? { displayMarkdown: output.displayMarkdown } : {}),
               ...(output?.receipts ? { receipts: output.receipts } : {}),
-              ...(ocrState?.currentOcrResultMarkdown && !output
+              ...(!output && input.kind === 'ocr_result' && ocrState?.currentOcrResultMarkdown
                 ? { markdown: ocrState.currentOcrResultMarkdown }
+                : {}),
+              ...(!output && input.kind === 'system_order' && quotation?.currentSystemOrder?.markdown
+                ? {
+                    markdown: quotation.currentSystemOrder.markdown,
+                    customerQuoteMarkdown: quotation.currentSystemOrder.customerQuoteMarkdown,
+                  }
+                : {}),
+              ...(output && input.kind === 'system_order' && quotation?.currentSystemOrder?.customerQuoteMarkdown
+                ? { customerQuoteMarkdown: quotation.currentSystemOrder.customerQuoteMarkdown }
                 : {}),
               messageText: mirror.text,
               messageTextParts: mirror.parts
@@ -1790,10 +1813,13 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
                 { ...cell, effective: cell.baseline },
               ])),
             }));
-          const serverOriginalMarkdown = !output &&
+          const serverOriginalMarkdown = !output && input.kind === 'ocr_result' &&
             ocrState?.currentOcrResultGenerationId === input.outputId.replace(/^ocr_result:/u, '')
             ? ocrState.currentOcrResultMarkdown
-            : undefined;
+            : !output && input.kind === 'system_order' &&
+              quotation?.currentSystemOrder?.runId === input.outputId.replace(/^system_order:/u, '')
+              ? quotation.currentSystemOrder.markdown
+              : undefined;
           let initialTrustedRows: SteelReviewRow[] | undefined;
           if (output || !ledgerMode) {
             initialTrustedRows = legacyInitialRows;
@@ -1992,28 +2018,34 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             return;
           }
 
-          if (!ocrState?._id) {
-            throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review output is no longer current');
-          }
-          const reviewLockToken = randomUUID();
-          const fenced = await OcrState.updateOne(
-            {
-              _id: ocrState._id,
-              conversationId: input.conversationId,
-              currentOcrResultMessageId: input.messageId,
-              currentOcrResultGenerationId: input.outputId.replace(/^ocr_result:/u, ''),
-            },
-            { $set: { reviewLockToken } },
-            { session, timestamps: false },
-          );
-          if (fenced.matchedCount !== 1 || fenced.modifiedCount !== 1) {
+          if (input.kind === 'ocr_result') {
+            if (!ocrState?._id) {
+              throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review output is no longer current');
+            }
+            const reviewLockToken = randomUUID();
+            const fenced = await OcrState.updateOne(
+              {
+                _id: ocrState._id,
+                conversationId: input.conversationId,
+                currentOcrResultMessageId: input.messageId,
+                currentOcrResultGenerationId: input.outputId.replace(/^ocr_result:/u, ''),
+              },
+              { $set: { reviewLockToken } },
+              { session, timestamps: false },
+            );
+            if (fenced.matchedCount !== 1 || fenced.modifiedCount !== 1) {
+              throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review output is no longer current');
+            }
+          } else if (!quotation?.currentSystemOrder) {
             throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review output is no longer current');
           }
 
           const savedAt = new Date();
-          const nextRevision = createHash('sha256')
-            .update(`${input.revision}:${input.digest}`)
-            .digest('hex');
+          const nextRevision = input.kind === 'system_order' && input.systemOrderMarkdown
+            ? markdownSha256(input.systemOrderMarkdown)
+            : createHash('sha256')
+              .update(`${input.revision}:${input.digest}`)
+              .digest('hex');
           const nextMessageSha256 = createHash('sha256').update(nextText).digest('hex');
           const ownerUpdated: SteelReviewOwnerUpdatedRecord = {
             version: 1,
@@ -2135,6 +2167,41 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
           );
           if (messageUpdate.matchedCount !== 1) {
             throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review message changed');
+          }
+          if (input.kind === 'system_order') {
+            const currentSystemOrder = quotation?.currentSystemOrder;
+            const systemOrderMarkdown = input.systemOrderMarkdown ?? input.effectiveMarkdown;
+            if (!currentSystemOrder || currentSystemOrder.runId !== input.outputId.replace(/^system_order:/u, '') ||
+              currentSystemOrder.messageId !== input.messageId || currentSystemOrder.sha256 !== input.revision) {
+              throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Quotation state changed');
+            }
+            const quotationUpdate = await QuotationState.updateOne(
+              {
+                ...reviewScope(input),
+                'currentSystemOrder.runId': currentSystemOrder.runId,
+                'currentSystemOrder.messageId': input.messageId,
+                'currentSystemOrder.sha256': input.revision,
+              },
+              {
+                $set: {
+                  'currentSystemOrder.markdown': systemOrderMarkdown,
+                  'currentSystemOrder.sha256': nextRevision,
+                  'currentSystemOrder.updatedAt': savedAt,
+                  ...(input.customerQuoteMarkdown !== undefined
+                    ? { 'currentSystemOrder.customerQuoteMarkdown': input.customerQuoteMarkdown }
+                    : {}),
+                  'updatedAt': savedAt,
+                },
+                $unset: {
+                  'currentSystemOrder.needsRequote': '',
+                  'currentSystemOrder.requoteProvenance': '',
+                },
+              },
+              { session },
+            );
+            if (quotationUpdate.matchedCount !== 1) {
+              throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Quotation state changed');
+            }
           }
           if (input.kind === 'ocr_result' && businessChangedRowIds.length > 0 && quotationIsLinkedToOcr(quotation, input, output)) {
             const requoteProvenance = {

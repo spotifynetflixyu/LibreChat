@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 import type {
   SteelQuotationCurrentSystemOrder,
+  SteelQuotationSnapshotPayload,
+  SteelQuotationSourceSnapshot,
   SteelQuotationScope,
 } from '@librechat/data-schemas';
 import { buildCustomerQuoteFromMarkdown } from '../markdown/quote';
@@ -102,6 +104,7 @@ export interface SystemOrderRevisionDependencies {
   saveCurrentSystemOrder(
     input: SystemOrderRevisionSaveInput,
   ): Promise<SteelQuotationCurrentSystemOrder | undefined>;
+  sourceSnapshot?: SteelQuotationSourceSnapshot;
 }
 
 export interface SystemOrderRevisionFinalizeInput {
@@ -266,7 +269,6 @@ function revisionResponse(snapshot: SteelQuotationCurrentSystemOrder): string {
   const count = parseSystemOrder(snapshot.markdown)?.rows.length ?? 0;
   return [
     formatSnapshot(snapshot),
-    snapshot.customerQuoteMarkdown,
     `## quote_summary\n\n報價表修正完成：共 ${count} 筆 system_order。`,
   ].filter(Boolean).join('\n\n');
 }
@@ -394,6 +396,22 @@ export function createSystemOrderRevisionService(
     });
     const quote = buildCustomerQuoteFromMarkdown(markdown);
     if (!quote) return fail('invalid_system_order');
+    const admittedSnapshotPayload = await dependencies.readCheckpoint({
+      scope: input.scope,
+      runId: current.runId,
+      operationId: 'snapshot',
+    });
+    let admittedSourceSnapshot = dependencies.sourceSnapshot ?? current.sourceSnapshot;
+    if (admittedSnapshotPayload) {
+      try {
+        const runSnapshot = JSON.parse(admittedSnapshotPayload) as SteelQuotationSnapshotPayload;
+        if (runSnapshot.orderHash === state.currentOrder.sha256) {
+          admittedSourceSnapshot = runSnapshot.sourceSnapshot ?? admittedSourceSnapshot;
+        }
+      } catch {
+        // Missing or malformed source evidence leaves rows unlocated.
+      }
+    }
     const now = input.now ? new Date(input.now) : new Date();
     const snapshot: SteelQuotationCurrentSystemOrder = {
       runId: current.runId,
@@ -404,6 +422,7 @@ export function createSystemOrderRevisionService(
         : {}),
       responseId: input.responseId,
       customerQuoteMarkdown: quote.markdown,
+      ...(admittedSourceSnapshot ? { sourceSnapshot: admittedSourceSnapshot } : {}),
       updatedAt: now,
     };
     const saveInput: SystemOrderRevisionSaveInput = {

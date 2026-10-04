@@ -129,6 +129,8 @@ type SteelReviewConfirmedSave = {
   outputId: string;
   revision: string;
   changedRows: number;
+  customerQuoteChangedRows?: number;
+  customerQuoteTotal?: string | null;
 };
 
 type SteelReviewScope = SteelReviewIdentity;
@@ -247,6 +249,29 @@ function getCurrentLastSaveCount(table: SteelReviewTable | null | undefined): nu
     return undefined;
   }
   return snapshot.changedRows > 0 ? snapshot.changedRows : undefined;
+}
+
+function getCurrentLastSaveCaption(table: SteelReviewTable | null | undefined): {
+  customerQuoteChangedRows?: number;
+  customerQuoteTotal?: string | null;
+} | undefined {
+  const lastSave = table?.lastSave;
+  const snapshot = lastSave?.snapshot;
+  if (!lastSave || !snapshot || lastSave.revision !== table?.revision ||
+    snapshot.conversationId !== table?.conversationId || snapshot.messageId !== table?.messageId ||
+    snapshot.outputId !== table?.outputId || snapshot.revision !== table?.revision) {
+    return undefined;
+  }
+  return snapshot.caption
+    ? {
+        ...(snapshot.caption.customerQuoteChangedRows !== undefined
+          ? { customerQuoteChangedRows: snapshot.caption.customerQuoteChangedRows }
+          : {}),
+        ...(snapshot.caption.customerQuoteTotal !== undefined
+          ? { customerQuoteTotal: snapshot.caption.customerQuoteTotal }
+          : {}),
+      }
+    : undefined;
 }
 
 function isAuthorizedCurrentTable(
@@ -682,7 +707,7 @@ export default function SteelReviewDialog({
   }, [captureId, identity, setSelection]);
   const authorityMatchesLiveTable = !capturedAuthority || !table ||
     table.outputId === capturedAuthority.outputId;
-  const canEdit = Boolean(table && table.kind === 'ocr_result' && table.isLatest &&
+  const canEdit = Boolean(table && (table.kind === 'ocr_result' || table.kind === 'system_order') && table.isLatest &&
     table.latestOutputId === table.outputId && !table.readOnly &&
     (!capturedAuthority || table.outputId === capturedAuthority.outputId));
   const canSave = canEdit && authorityMatchesLiveTable;
@@ -1146,6 +1171,12 @@ export default function SteelReviewDialog({
       outputId: snapshot.outputId,
       revision: snapshot.revision,
       changedRows: snapshot.changedRows,
+      ...(snapshot.caption?.customerQuoteChangedRows !== undefined
+        ? { customerQuoteChangedRows: snapshot.caption.customerQuoteChangedRows }
+        : {}),
+      ...(snapshot.caption?.customerQuoteTotal !== undefined
+        ? { customerQuoteTotal: snapshot.caption.customerQuoteTotal }
+        : {}),
     });
     const currentDraft = latestDraftStateRef.current;
     const rebasedDraft = clearSteelReviewDraftHistory(
@@ -1698,6 +1729,14 @@ export default function SteelReviewDialog({
   const confirmedRowCount = confirmedSave && isCurrentOwner(table, confirmedSave)
     ? confirmedSave.changedRows
     : getCurrentLastSaveCount(table);
+  const isSystemOrder = table?.kind === 'system_order';
+  const preparedQuoteRowCount = preparedForCapture?.caption.customerQuoteChangedRows;
+  const lastSaveCaption = getCurrentLastSaveCaption(table);
+  const confirmedQuoteRowCount = confirmedSave && isCurrentOwner(table, confirmedSave)
+    ? confirmedSave.customerQuoteChangedRows
+    : lastSaveCaption?.customerQuoteChangedRows;
+  const quoteTotal = preparedForCapture?.caption.customerQuoteTotal ?? confirmedSave?.customerQuoteTotal ??
+    lastSaveCaption?.customerQuoteTotal ?? null;
   const onPageCount = useCallback((count: number) => {
     setDialogState((state) => ({
       ...state,
@@ -2086,12 +2125,24 @@ export default function SteelReviewDialog({
             )}
             {preparedRowCount !== undefined && (
               <span className="text-sm text-text-secondary" role="status">
-                {localize('com_ui_steel_review_save_caption', { 0: preparedRowCount })}
+                {isSystemOrder
+                  ? localize('com_ui_steel_review_system_save_caption', {
+                    0: preparedRowCount,
+                    1: preparedQuoteRowCount ?? 0,
+                    2: quoteTotal ?? '—',
+                  })
+                  : localize('com_ui_steel_review_save_caption', { 0: preparedRowCount })}
               </span>
             )}
             {confirmedRowCount !== undefined && preparedRowCount === undefined && (
               <span className="text-sm text-text-secondary" role="status">
-                {localize('com_ui_steel_review_updated_caption', { 0: confirmedRowCount })}
+                {isSystemOrder
+                  ? localize('com_ui_steel_review_system_updated_caption', {
+                    0: confirmedRowCount,
+                    1: confirmedQuoteRowCount ?? 0,
+                    2: quoteTotal ?? '—',
+                  })
+                  : localize('com_ui_steel_review_updated_caption', { 0: confirmedRowCount })}
               </span>
             )}
             {saveBusy && (

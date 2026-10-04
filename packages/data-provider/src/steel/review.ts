@@ -173,6 +173,8 @@ export const steelReviewCaptionSchema = z.object({
   kind: z.enum(steelReviewKinds),
   changedRows: z.number().int().nonnegative(),
   changedRowIds: z.array(z.string().min(1)),
+  customerQuoteChangedRows: z.number().int().nonnegative().optional(),
+  customerQuoteTotal: z.string().nullable().optional(),
 });
 
 export const steelReviewTextPartSchema = z.object({

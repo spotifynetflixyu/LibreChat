@@ -79,6 +79,8 @@ export interface SteelReviewReadRecord extends SteelReviewScope {
   ownerUpdated?: SteelReviewOwnerUpdatedRecord;
   needsRequote?: boolean;
   requoteProvenance?: SteelReviewRequoteProvenanceRecord;
+  /** Internal quotation state retained for system-order saves; never public. */
+  customerQuoteMarkdown?: string;
   lastSave?: SteelReviewReceipt;
   /** Immutable receipt history used to resolve a captured same-owner revision. */
   receipts?: SteelReviewReceipt[];
