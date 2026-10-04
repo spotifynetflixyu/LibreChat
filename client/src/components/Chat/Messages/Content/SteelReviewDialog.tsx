@@ -189,8 +189,7 @@ function isAuthorizedCurrentNoOpTable(
     table.kind === prepared.kind &&
     table.outputId === prepared.outputId &&
     table.latestOutputId === prepared.outputId &&
-    table.isLatest &&
-    table.revision === prepared.revision,
+    table.isLatest,
   );
 }
 
