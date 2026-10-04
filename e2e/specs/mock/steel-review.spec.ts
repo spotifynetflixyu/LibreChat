@@ -4,7 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import { encodeSteelReviewDigest } from 'librechat-data-provider';
-import type { SteelReviewPrepared, SteelReviewSavedSnapshot, SteelReviewTable } from 'librechat-data-provider';
+import type { SteelReviewOperationCommit, SteelReviewOperationPrepare, SteelReviewOperationPrepared, SteelReviewPrepared, SteelReviewSavedSnapshot, SteelReviewTable } from 'librechat-data-provider';
 import type { Locator } from '@playwright/test';
 import {
   deleteConversations,
@@ -1370,7 +1370,21 @@ test.describe('Steel managed source review', () => {
     await expect(row.getByRole('combobox', { name: 'Source page', exact: true })).toHaveText('2');
     expect(await persistedSnapshot(conversationId)).toEqual(before);
     await page.keyboard.press('Escape');
+    const prepareRequest = page.waitForRequest((request) => request.method() === 'POST' &&
+      request.url().endsWith(`/api/steel/conversations/${conversationId}/review/ocr_result/prepare`));
+    const commitRequest = page.waitForRequest((request) => request.method() === 'POST' &&
+      request.url().endsWith(`/api/steel/conversations/${conversationId}/review/ocr_result/commit`));
     await page.getByRole('button', { name: 'Save updates', exact: true }).click();
+    const prepareBody = (await prepareRequest).postDataJSON() as SteelReviewOperationPrepare;
+    const commitBody = (await commitRequest).postDataJSON() as SteelReviewOperationCommit;
+    expect(prepareBody.operations).toEqual([{ type: 'update', rowId: table.rows[0].rowId,
+      source: { fileId: 'review-alpha', pageNumber: 2 } }]);
+    expect(commitBody.operations).toEqual(prepareBody.operations);
+    for (const body of [prepareBody, commitBody]) {
+      expect(body).not.toHaveProperty('rows');
+      expect(body).not.toHaveProperty('aiRawMarkdown');
+      expect(body).not.toHaveProperty('aiBaselineMarkdown');
+    }
     await expect(dialog).not.toBeVisible();
     const after = await persistedSnapshot(conversationId);
     const updated = after.reviews[0]?.rows[0];
@@ -2453,6 +2467,165 @@ test.describe('Steel managed source review', () => {
     expect((await persistedSnapshot(conversationId)).messages.find((message) => message.messageId === previousMessageId)).toEqual(previousBefore);
   });
 
+  test('the OCR editor sends only changed row values and replays its immutable operation request', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+    await quantity.fill('7');
+    const prepareRequest = page.waitForRequest((request) => request.method() === 'POST' &&
+      request.url().endsWith(`/api/steel/conversations/${conversationId}/review/ocr_result/prepare`));
+    const commitRequest = page.waitForRequest((request) => request.method() === 'POST' &&
+      request.url().endsWith(`/api/steel/conversations/${conversationId}/review/ocr_result/commit`));
+    await dialog.getByRole('button', { name: /^Save/ }).click();
+    const preparedBody = (await prepareRequest).postDataJSON() as SteelReviewOperationPrepare;
+    const committedBody = (await commitRequest).postDataJSON() as SteelReviewOperationCommit;
+    expect(preparedBody.operations).toEqual([{ type: 'update', rowId: expect.any(String),
+      changes: [{ header: '數量', value: '7' }] }]);
+    expect(committedBody.operations).toEqual(preparedBody.operations);
+    expect(committedBody).toMatchObject({ ...preparedBody, operationId: expect.any(String), digest: expect.any(String) });
+    for (const body of [preparedBody, committedBody]) {
+      for (const field of ['rows', 'headers', 'aiBaselineMarkdown', 'aiRawMarkdown', 'target', 'targetText', 'sourceMappings', 'effectiveMarkdown']) {
+        expect(body).not.toHaveProperty(field);
+      }
+    }
+    await expect(dialog.getByText('Updated 1 rows', { exact: true })).toBeVisible();
+    const saved = await persistedSnapshot(conversationId);
+    expect(saved.messages.find((message) => message.messageId === messageId)?.text)
+      .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 7 | 1 |'));
+    expect(saved.reviews[0]?.rows[1].values).toMatchObject({ 數量: { baseline: '3', effective: '3' } });
+    expect(saved.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
+  });
+
+  test('changed-row operations prepare without writes and reject immutable fields and ambiguous positions', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const before = await persistedSnapshot(conversationId);
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(read.status()).toBe(200);
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const request: SteelReviewOperationPrepare = { conversationId, messageId, kind: 'ocr_result',
+      tableId: table.tableId, partIndex: table.partIndex, outputId: table.outputId, revision: table.revision,
+      operations: [{ type: 'update', rowId: table.rows[0].rowId, changes: [{ header: '數量', value: '7' }] }] };
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const invalidOperations = [
+      { type: 'update', rowId: table.rows[0].rowId, changes: [{ header: '來源', value: 'FORGED' }] },
+      { type: 'update', rowId: table.rows[0].rowId, baseline: 'FORGED', changes: [{ header: '數量', value: '7' }] },
+      { type: 'update', rowId: table.rows[0].rowId, source: { fileId: null, pageNumber: 1 } },
+      { type: 'update', rowId: table.rows[0].rowId, source: { fileId: 'review-alpha' } },
+      { type: 'update', rowId: table.rows[0].rowId, source: null },
+      { type: 'add', rowId: randomUUID(), position: { kind: 'end', rowId: table.rows[0].rowId }, changes: [] },
+      { type: 'add', rowId: randomUUID(), position: { kind: 'after' }, changes: [] },
+      { type: 'add', rowId: randomUUID(), position: { kind: 'after', rowId: null }, changes: [] },
+      { type: 'delete', rowId: table.rows[0].rowId, origin: 'manual' },
+    ];
+    for (const operation of invalidOperations) {
+      const rejected = await page.request.post(`${url}/prepare`, { headers, data: { ...request, operations: [operation] } });
+      expect([400, 409]).toContain(rejected.status());
+      expect(await persistedSnapshot(conversationId)).toEqual(before);
+    }
+    const mixed = await page.request.post(`${url}/prepare`, { headers, data: { ...request, rows: table.rows } });
+    expect([400, 409]).toContain(mixed.status());
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    const prepared = await page.request.post(`${url}/prepare`, { headers, data: request });
+    expect(prepared.status()).toBe(200);
+    const result = await prepared.json() as SteelReviewOperationPrepared;
+    expect(result.operationRequest).toEqual(request);
+    expect(result.caption).toMatchObject({ changedRows: 1, changedRowIds: [table.rows[0].rowId] });
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    const commit = await page.request.post(`${url}/commit`, { headers,
+      data: { ...result.operationRequest, operationId: result.operationId, digest: result.digest } });
+    expect(commit.status()).toBe(200);
+    const saved = await persistedSnapshot(conversationId);
+    expect(saved.reviews[0]?.rows[1].values).toEqual(table.rows[1].values);
+    expect(saved.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
+  });
+
+  test('changed-row receipts reject request tampering and replay their original snapshot after a later Save', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(read.status()).toBe(200);
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const request: SteelReviewOperationPrepare = { conversationId, messageId, kind: 'ocr_result',
+      tableId: table.tableId, partIndex: table.partIndex, outputId: table.outputId, revision: table.revision,
+      operations: [{ type: 'update', rowId: table.rows[0].rowId, changes: [{ header: '數量', value: '7' }] }] };
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const prepared = await page.request.post(`${url}/prepare`, { headers, data: request });
+    expect(prepared.status()).toBe(200);
+    const first = await prepared.json() as SteelReviewOperationPrepared;
+    const firstBody = { ...first.operationRequest, operationId: first.operationId, digest: first.digest };
+    const committed = await page.request.post(`${url}/commit`, { headers, data: firstBody });
+    expect(committed.status()).toBe(200);
+    const firstSaved = await committed.json() as SteelReviewOperationPrepared;
+    const secondRequest = { ...request, revision: firstSaved.revision,
+      operations: [{ type: 'update' as const, rowId: table.rows[1].rowId, changes: [{ header: '數量', value: '8' }] }] };
+    const preparedAgain = await page.request.post(`${url}/prepare`, { headers, data: secondRequest });
+    expect(preparedAgain.status()).toBe(200);
+    const second = await preparedAgain.json() as SteelReviewOperationPrepared;
+    const secondSave = await page.request.post(`${url}/commit`, { headers,
+      data: { ...second.operationRequest, operationId: second.operationId, digest: second.digest } });
+    expect(secondSave.status()).toBe(200);
+    const beforeRetry = await persistedSnapshot(conversationId);
+    const tampered = await page.request.post(`${url}/commit`, { headers, data: { ...firstBody,
+      operations: [{ type: 'update', rowId: table.rows[0].rowId, changes: [{ header: '數量', value: '9' }] }] } });
+    expect([400, 409]).toContain(tampered.status());
+    expect(await persistedSnapshot(conversationId)).toEqual(beforeRetry);
+    const downgrade = await page.request.post(`${url}/commit`, { headers, data: first });
+    expect([400, 409]).toContain(downgrade.status());
+    expect(await persistedSnapshot(conversationId)).toEqual(beforeRetry);
+    const replay = await page.request.post(`${url}/commit`, { headers, data: firstBody });
+    expect(replay.status()).toBe(200);
+    expect(await replay.json()).toEqual(firstSaved);
+    expect(await persistedSnapshot(conversationId)).toEqual(beforeRetry);
+    expect(beforeRetry.messages.find((message) => message.messageId === messageId)?.text)
+      .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 7 | 1 |')
+        .replace('| A | REVIEW-P2 | 2000 | 3 | 1 |', '| A | REVIEW-P2 | 2000 | 8 | 1 |'));
+    expect(beforeRetry.reviews[0]?.rows).toMatchObject([
+      { values: { 數量: { baseline: '2', effective: '7' } } },
+      { values: { 數量: { baseline: '3', effective: '8' } } },
+    ]);
+    expect(beforeRetry.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
+  });
+
+  test('ordered row updates retain tombstone values and count restore plus update once', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(read.status()).toBe(200);
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const rowId = table.rows[0].rowId;
+    const request: SteelReviewOperationPrepare = { conversationId, messageId, kind: 'ocr_result',
+      tableId: table.tableId, partIndex: table.partIndex, outputId: table.outputId, revision: table.revision,
+      operations: [{ type: 'update', rowId, changes: [{ header: '數量', value: '7' }] }, { type: 'delete', rowId }] };
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const prepared = await page.request.post(`${url}/prepare`, { headers, data: request });
+    expect(prepared.status()).toBe(200);
+    const first = await prepared.json() as SteelReviewOperationPrepared;
+    expect(first.caption.changedRows).toBe(1);
+    const committed = await page.request.post(`${url}/commit`, { headers,
+      data: { ...first.operationRequest, operationId: first.operationId, digest: first.digest } });
+    expect(committed.status()).toBe(200);
+    const deleted = await committed.json() as SteelReviewOperationPrepared;
+    const afterDelete = await persistedSnapshot(conversationId);
+    expect(afterDelete.reviews[0]?.rows[0]).toMatchObject({ deleted: true, values: { 數量: { baseline: '2', effective: '7' } } });
+    expect(afterDelete.messages.find((message) => message.messageId === messageId)?.text).not.toContain('REVIEW-P1');
+    const restored = await page.request.post(`${url}/prepare`, { headers, data: { ...request, revision: deleted.revision,
+      operations: [{ type: 'restore', rowId }, { type: 'update', rowId, changes: [{ header: '數量', value: '8' }] }] } });
+    expect(restored.status()).toBe(200);
+    const second = await restored.json() as SteelReviewOperationPrepared;
+    expect(second.caption.changedRows).toBe(1);
+    const saved = await page.request.post(`${url}/commit`, { headers,
+      data: { ...second.operationRequest, operationId: second.operationId, digest: second.digest } });
+    expect(saved.status()).toBe(200);
+    const afterRestore = await persistedSnapshot(conversationId);
+    expect(afterRestore.reviews[0]?.rows[0]).toMatchObject({ deleted: false, values: { 數量: { baseline: '2', effective: '8' } } });
+    expect(afterRestore.messages.find((message) => message.messageId === messageId)?.text)
+      .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 8 | 1 |'));
+    expect(afterRestore.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
+  });
 
   test('OCR row CRUD is local and adding then deleting before Save is a net-zero no-op', async ({ page }) => {
     const { conversationId } = await seedCurrent(ocr);
@@ -2503,7 +2676,33 @@ test.describe('Steel managed source review', () => {
     }
     await expect(dialog.getByText(/Unsaved.*2|2.*unsaved/i)).toBeVisible();
     expect(await persistedSnapshot(conversationId)).toEqual(before);
+    const prepareRequest = page.waitForRequest((request) => request.method() === 'POST' &&
+      request.url().endsWith(`/api/steel/conversations/${conversationId}/review/ocr_result/prepare`));
+    const commitRequest = page.waitForRequest((request) => request.method() === 'POST' &&
+      request.url().endsWith(`/api/steel/conversations/${conversationId}/review/ocr_result/commit`));
     await dialog.getByRole('button', { name: /^Save/ }).click();
+    const prepareBody = (await prepareRequest).postDataJSON() as SteelReviewOperationPrepare;
+    const commitBody = (await commitRequest).postDataJSON() as SteelReviewOperationCommit;
+    expect(prepareBody.operations).toHaveLength(2);
+    const newIds = prepareBody.operations.map((operation) => operation.rowId);
+    expect(new Set(newIds).size).toBe(2);
+    for (const operation of prepareBody.operations) {
+      expect(operation.type).toBe('add');
+      if (operation.type !== 'add') throw new Error('Expected independent add operations');
+      expect(operation.source).toEqual({ fileId: 'review-alpha', pageNumber: 1 });
+      expect(operation.position.kind).toMatch(/^(?:after|end)$/);
+      if (operation.position.kind === 'after') expect(newIds).not.toContain(operation.position.rowId);
+      expect(operation).not.toHaveProperty('ordinal');
+      expect(operation).not.toHaveProperty('values');
+      expect(operation.changes).toEqual(expect.arrayContaining([{ header: '零件編號', value: 'MANUAL-DUPLICATE' },
+        { header: '長度', value: '3000' }, { header: '數量', value: '4' }]));
+    }
+    const [firstAdd, secondAdd] = prepareBody.operations;
+    if (firstAdd.type !== 'add' || secondAdd.type !== 'add') throw new Error('Expected two add operations');
+    expect(firstAdd.position).toEqual(secondAdd.position);
+    expect(commitBody.operations).toEqual(prepareBody.operations);
+    expect(prepareBody).not.toHaveProperty('rows');
+    expect(commitBody).not.toHaveProperty('rows');
     await expect(dialog.getByText('Updated 2 rows', { exact: true })).toBeVisible();
     const after = await persistedSnapshot(conversationId);
     expect(after.reviews).toHaveLength(1);
@@ -2513,6 +2712,11 @@ test.describe('Steel managed source review', () => {
     const added = table.rows.filter((row) => row.values['零件編號'].effective === 'MANUAL-DUPLICATE');
     expect(added).toHaveLength(2);
     expect(new Set(added.map((row) => row.rowId)).size).toBe(2);
+    expect(added.map((row) => row.insertion?.ordinal)).toEqual([0, 1]);
+    const replay = await page.request.post(`/api/steel/conversations/${conversationId}/review/ocr_result/commit`,
+      { headers, data: commitBody });
+    expect(replay.status()).toBe(200);
+    expect(await persistedSnapshot(conversationId)).toEqual(after);
     for (const row of added) {
       expect(row).toMatchObject({ origin: 'manual', deleted: false,
         source: { fileId: 'review-alpha', pageNumber: 1, filename: 'alpha.pdf' } });
