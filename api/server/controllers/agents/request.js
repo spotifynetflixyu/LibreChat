@@ -70,6 +70,7 @@ const { logViolation } = require('~/cache');
 const { recordScheduleOutcome, isScheduleLive } = require('~/server/services/Schedules');
 const {
   saveMessage,
+  getMessage,
   saveConvo,
   getMessages,
   getConvo,
@@ -3268,6 +3269,14 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           },
           applyMarkdown: (markdown) => replaceResponseMarkdown(response, markdown),
           persistMarkdown: persistResponseMessage,
+          publishedResponse: {
+            load: ({ userId: publishedUserId, responseId: publishedResponseId }) =>
+              getMessage({ user: publishedUserId, messageId: publishedResponseId }),
+            accept: (saved) => {
+              responseMessagePersisted = true;
+              savedResponseMessage = saved;
+            },
+          },
         });
         if (!responseMessagePersisted) {
           await persistResponseMessage();

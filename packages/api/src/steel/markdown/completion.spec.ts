@@ -2,9 +2,10 @@ import mongoose from 'mongoose';
 import { createHash } from 'node:crypto';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import type { Response as ServerResponse } from 'express';
-import type { SteelMarkdownCompletionDependencies } from './completion';
+import type { SteelMarkdownCompletionDependencies, SteelPublishedResponseIdentity } from './completion';
 import type { SteelResponseRequest } from '../quotation/completion';
 import type { ResponseEvent } from '../../agents/responses/types';
+import type { SteelMarkdownCompletionInput } from './completion';
 import { createSteelMarkdownCompletionServices, registerSteelMarkdownPublication, shouldDeferSteelMarkdownPersistence } from './completion';
 import { renderQuotationCustomerMarkdown, prepareQuotationTurn, bindQuotationCustomerResult } from '../quotation/preparation';
 import { buildResponse, createResponseTracker, emitOutputTextDone } from '../../agents/responses/handlers';
@@ -43,7 +44,7 @@ async function turn(markdown: string, text = '確認訂單', language = 'zh-TW')
     steelNativeContext: { requestId: 'response', quotation } };
   let current = markdown;
   const writes: string[] = [];
-  const input = { req, responseId: 'response', generationId: 'generation', markdown, completed: true,
+  const input: SteelMarkdownCompletionInput = { req, responseId: 'response', generationId: 'generation', markdown, completed: true,
     applyMarkdown: (value: string) => { current = value; },
     persistMarkdown: async (options?: { completed: boolean }) => {
       writes.push(current);
@@ -481,6 +482,45 @@ it('replays a completed publication from the saved system order without rewritin
   expect(await mongoose.connection.collection('completion_messages').findOne({ messageId: 'response' })).toEqual(persistedBeforeReplay);
   expect((await dependencies.quotation.readCurrentSystemOrder(scope))?.markdown).toBe(humanSystemOrder);
   expect(await dependencies.quotation.readCheckpoint({ scope, runId: run.runId, operationId: 'final' })).toBe(rawFinal);
+
+  await mongoose.connection.collection('completion_messages').updateOne(
+    { messageId: 'response' },
+    { $set: { conversationId: scope.conversationId, user: scope.userId } },
+  );
+  const loaded: SteelPublishedResponseIdentity[] = [];
+  let loadCount = 0;
+  const acceptedReplay = await turn(completionInput, '報價');
+  acceptedReplay.input.generationId = 'another-fresh-generation';
+  acceptedReplay.input.publishedResponse = {
+    load: async () => {
+      loadCount += 1;
+      const record = await mongoose.connection.collection('completion_messages').findOne({
+        messageId: 'response',
+        user: scope.userId,
+      });
+      return record as SteelPublishedResponseIdentity | null;
+    },
+    accept: (record) => { loaded.push(record); },
+  };
+  const projected = jest.spyOn(acceptedReplay.input, 'applyMarkdown');
+  const acceptedResult = await acceptedReplay.run();
+  expect(acceptedResult.markdown).toContain('| A | 2 | 2 | 77 |');
+  expect(projected).toHaveBeenCalledWith(acceptedResult.markdown);
+  expect(loadCount).toBe(1);
+  expect(loaded).toHaveLength(1);
+  expect(loaded[0]).toEqual(expect.objectContaining({
+    messageId: 'response', conversationId: scope.conversationId, user: scope.userId,
+  }));
+  expect(acceptedReplay.writes).toEqual([]);
+
+  const rejectedReplay = await turn(completionInput, '報價');
+  rejectedReplay.input.generationId = 'foreign-record-generation';
+  rejectedReplay.input.publishedResponse = {
+    load: async () => ({ messageId: 'other-response', conversationId: scope.conversationId, user: scope.userId }),
+    accept: jest.fn(),
+  };
+  await expect(rejectedReplay.run()).rejects.toMatchObject({ code: 'response_save_failed' });
+  expect(rejectedReplay.writes).toEqual([]);
 });
 
 it('keeps streamed revision deltas, done text, completed output and persisted message identical', async () => {

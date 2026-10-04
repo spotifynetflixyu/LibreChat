@@ -1665,6 +1665,9 @@ describe('quotation runner integration', () => {
     });
     expect(publishedReplay.markdown).toContain(editedMarkdown);
     expect(publishedReplay.markdown).not.toContain('## customer_quote');
+    expect(publishedReplay.systemOrderHash).toBe(
+      createHash('sha256').update(editedMarkdown, 'utf8').digest('hex'),
+    );
   });
 
   it('retries a failed projector and deduplicates only after successful projection', async () => {

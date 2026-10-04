@@ -32,8 +32,28 @@ export interface SteelMarkdownCompletionInput {
   stage?: 'workflow' | 'ui' | 'pending';
   applyMarkdown(markdown: string): void;
   persistMarkdown(options?: { completed: boolean }): Promise<object | null | undefined>;
+  publishedResponse?: SteelPublishedResponsePort;
   assertActive?(): Promise<void>;
   onPrepared?(markdown: string): Promise<void>;
+}
+
+export interface SteelPublishedResponseLocator {
+  responseId: string;
+  conversationId: string;
+  userId: string;
+  tenantId?: string;
+}
+
+export interface SteelPublishedResponseIdentity {
+  messageId: string;
+  conversationId: string;
+  user: string;
+  tenantId?: string;
+}
+
+export interface SteelPublishedResponsePort<TRecord extends SteelPublishedResponseIdentity = SteelPublishedResponseIdentity> {
+  load(locator: SteelPublishedResponseLocator): Promise<TRecord | null | undefined>;
+  accept(record: TRecord): void;
 }
 
 export interface SteelMarkdownCompletionResult {
@@ -186,6 +206,30 @@ async function persist(input: SteelMarkdownCompletionInput, markdown: string, co
   requireSaved(await input.persistMarkdown({ completed }), 'response_save_failed');
 }
 
+async function acceptPublishedResponse(
+  input: SteelMarkdownCompletionInput,
+  scope: SteelQuotationScope,
+): Promise<void> {
+  if (!input.publishedResponse) return;
+  let record: SteelPublishedResponseIdentity | null | undefined;
+  try {
+    record = await input.publishedResponse.load({
+      responseId: input.responseId,
+      conversationId: scope.conversationId,
+      userId: scope.userId,
+      ...(scope.tenantId ? { tenantId: scope.tenantId } : {}),
+    });
+  } catch {
+    throw new SteelResponseCompletionError('response_save_failed');
+  }
+  if (!record || record.messageId !== input.responseId ||
+    record.conversationId !== scope.conversationId || record.user !== scope.userId ||
+    record.tenantId !== scope.tenantId) {
+    throw new SteelResponseCompletionError('response_save_failed');
+  }
+  input.publishedResponse.accept(record);
+}
+
 export function createSteelMarkdownCompletionServices(dependencies: SteelMarkdownCompletionDependencies): {
   finalize(input: SteelMarkdownCompletionInput): Promise<SteelMarkdownCompletionResult>;
 } {
@@ -297,6 +341,7 @@ export async function finalizeSteelMarkdownTurn(
         requireSaved(acceptedRun, 'signal_not_accepted');
         await input.onPrepared?.(savedCompletion.markdown);
         let markdown = savedCompletion.markdown;
+        let projectedSystemOrderHash: string | undefined;
         if (quotationState.activeRun?.status === 'completed') {
           const finalMarkdown = requireSaved(await dependencies.quotation.readCheckpoint({ scope,
             runId: quotationState.activeRun.runId, operationId: 'final' }), 'missing_quotation_result');
@@ -310,6 +355,11 @@ export async function finalizeSteelMarkdownTurn(
             },
           });
           markdown = published.markdown;
+          projectedSystemOrderHash = published.systemOrderHash;
+          if (published.alreadyPublished) {
+            await acceptPublishedResponse(input, scope);
+            input.applyMarkdown(markdown);
+          }
         } else {
           await persist(input, markdown, input.stage !== 'workflow');
         }
@@ -322,7 +372,8 @@ export async function finalizeSteelMarkdownTurn(
           ocrHash: publishedOcr?.markdown ? hash(publishedOcr.markdown) : undefined,
           orderHash: publishedState?.currentOrder?.sha256,
           customerPreparationId: publishedState?.currentCustomer?.preparationId,
-          runId: publishedState?.activeRun?.runId, systemOrderHash: publishedState?.currentSystemOrder?.sha256 });
+          runId: publishedState?.activeRun?.runId,
+          systemOrderHash: projectedSystemOrderHash ?? publishedState?.currentSystemOrder?.sha256 });
         publications.add(publication);
         await verifyPublication(publication, scope, dependencies);
         return { markdown, acceptedRun, publication };

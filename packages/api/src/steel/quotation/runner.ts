@@ -119,7 +119,7 @@ async function materializeCompletedSystemOrder(
 
 export async function publishCompletedQuotation(
   input: SteelQuotationPublicationInput,
-): Promise<{ status: 'completed'; markdown: string }> {
+): Promise<{ status: 'completed'; markdown: string; systemOrderHash: string; alreadyPublished: boolean }> {
   const currentSystemOrder = await materializeCompletedSystemOrder(input);
   const publicMarkdown = projectPublishedMarkdown(
     stripCustomerQuoteSections(input.markdown),
@@ -131,6 +131,7 @@ export async function publishCompletedQuotation(
     runId: input.run.runId,
     operationId: 'published',
   });
+  const alreadyPublished = receipt != null;
   if (!receipt) {
     await input.publishFinal({ run: input.run, markdown: publicMarkdown });
     const marked = await input.service.markPublished({
@@ -141,7 +142,7 @@ export async function publishCompletedQuotation(
     });
     if (!marked) throw new Error('Quotation publication was superseded');
   }
-  return { status: 'completed', markdown: publicMarkdown };
+  return { status: 'completed', markdown: publicMarkdown, systemOrderHash: currentSystemOrder.sha256, alreadyPublished };
 }
 
 function projectPublishedMarkdown(markdown: string, systemOrderMarkdown: string): string {

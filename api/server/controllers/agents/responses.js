@@ -722,6 +722,14 @@ async function saveResponseOutput(
       responseMessage.text = markdown;
     },
     persistMarkdown,
+    publishedResponse: {
+      load: ({ userId: publishedUserId, responseId: publishedResponseId }) =>
+        db.getMessage({ user: publishedUserId, messageId: publishedResponseId }),
+      accept: (saved) => {
+        responseMessagePersisted = true;
+        persistedMessage = saved;
+      },
+    },
   });
   responseText = completion.markdown;
   responseMessage.text = responseText;
