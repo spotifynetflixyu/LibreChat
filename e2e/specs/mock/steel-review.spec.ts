@@ -412,6 +412,37 @@ test.describe('Steel managed source review', () => {
     });
   }
 
+  for (const fixtureName of ['steel-review-legacy03', 'steel-review-legacy04'] as const) {
+    test(`title locator preserves captured ${fixtureName} identity and immutable receipts on a second Save`, async ({ page }) => {
+      const { conversationId, messageId, prepared, snapshot } = await seedCapturedLegacyReview(fixtureName);
+      conversations.push(conversationId);
+      const before = await persistedSnapshot(conversationId);
+      expect(before.reviews[0]).not.toHaveProperty('title');
+      const read = await page.request.get(titleReadUrl(conversationId, messageId), { headers });
+      expect(read.status()).toBe(200);
+      const { table } = await read.json() as { table: SteelReviewTable & { title: string } };
+      expect(table.title).toBe('ocr_result');
+      expect(table.tableId).toBe(prepared.tableId);
+      expect(table.rows.map((row) => row.rowId)).toEqual(snapshot.rows.map((row) => row.rowId));
+      expect(await persistedSnapshot(conversationId)).toEqual(before);
+      await commitOperation(page, headers, await prepareQuantity(page, headers, table, '8', 'ocr_result'));
+      const after = await persistedSnapshot(conversationId);
+      expect(after.reviews).toHaveLength(1);
+      expect(after.reviews[0]?.tableId).toBe(prepared.tableId);
+      expect(after.reviews[0]?.title).toBe('ocr_result');
+      expect(after.reviews[0]?.rows.map((row: SteelReviewTable['rows'][number]) => row.rowId))
+        .toEqual(snapshot.rows.map((row) => row.rowId));
+      expect(after.reviews[0]?.aiRawMarkdown).toBe(before.reviews[0]?.aiRawMarkdown);
+      expect(after.reviews[0]?.aiBaselineMarkdown).toBe(before.reviews[0]?.aiBaselineMarkdown);
+      expect(after.reviews[0]?.receipts).toHaveLength(2);
+      expect(after.reviews[0]?.receipts[0]).toEqual(before.reviews[0]?.receipts[0]);
+      const replay = await page.request.post(`/api/steel/conversations/${conversationId}/review/ocr_result/commit`,
+        { headers, data: prepared });
+      expect(replay.status()).toBe(200);
+      expect(await persistedSnapshot(conversationId)).toEqual(after);
+    });
+  }
+
   test('title locator re-resolves a moved physical section and rejects forged storage aliases without writing', async ({ page }) => {
     const { conversationId, messageId } = await seedCurrent(ocr);
     conversations.push(conversationId);
