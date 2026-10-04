@@ -123,6 +123,28 @@ describe('Steel Markdown output filter', () => {
     expect(filter.append(markdown.slice(-1))).toBe('。');
   });
 
+  it('does not treat a heading after an emitted inline fragment as a section control', () => {
+    const filter = createSteelMarkdownOutputFilter();
+    expect(filter.append('prefix')).toBe('prefix');
+    expect(filter.append('## customer_quote\n\ninternal\n\n## notes\n\nkept')).toBe(
+      '## customer_quote\n\ninternal\n\n## notes\n\nkept',
+    );
+    expect(filter.finish()).toBe('');
+  });
+
+  it('suppresses a customer quote section that ends at EOF', () => {
+    const filter = createSteelMarkdownOutputFilter();
+    expect(filter.append('## customer_quote\n\ninternal')).toBe('');
+    expect(filter.finish()).toBe('');
+  });
+
+  it('keeps an inline EOF fragment on the same logical line', () => {
+    const filter = createSteelMarkdownOutputFilter();
+    expect(filter.append('prefix')).toBe('prefix');
+    expect(filter.append(' ## customer_quote')).toBe(' ## customer_quote');
+    expect(filter.finish()).toBe('');
+  });
+
   it('composes with the system order normalizer', () => {
     const markdown = '## system_order｜訂單\n\n| 品名規格 | 總數 | 單價 |\n|---|---:|---:|\n| A | 2 | 10.5 |\n\n查價輸出完成。';
     const normalizer = createSystemOrderNormalizer();

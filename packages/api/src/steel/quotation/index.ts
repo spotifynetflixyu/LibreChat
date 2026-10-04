@@ -12,3 +12,4 @@ export * from './completion';
 export * from './transport';
 export * from './services';
 export * from './revision';
+export * from './publication';

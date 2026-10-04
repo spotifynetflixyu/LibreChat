@@ -33,8 +33,24 @@ export interface SteelQuotationPublicationMessage {
   conversationId: string;
   text: string;
   user: string;
+  parentMessageId?: string | null;
+  isCreatedByUser?: boolean;
+  unfinished?: boolean;
+  sender?: string;
+  endpoint?: string;
+  model?: string;
+  finish_reason?: string;
+  tokenCount?: number;
+  processingDurationMs?: number;
+  langfuseSampled?: boolean;
+  langfuseDestinationIds?: string[];
+  langfuseRunId?: string;
+  content?: unknown[];
+  metadata?: Record<string, unknown> | null;
+  iconURL?: string;
+  /** Host response owner that supplied the transport snapshot. */
+  sourceMessageId?: string;
   tenantId?: string;
-  [key: string]: unknown;
 }
 
 /** The full saved record is retained at runtime while this result exposes only
@@ -58,6 +74,9 @@ export interface SteelQuotationPublicationSaveContext {
 export interface SteelQuotationPublicationProof {
   scope: SteelQuotationScope;
   runId: string;
+  /** Immutable response owner captured when the quotation run was accepted. */
+  runTargetMessageId: string;
+  /** Current canonical response owner captured from currentSystemOrder. */
   targetMessageId: string;
   finalSha256: string;
   currentOrderSha256: string;

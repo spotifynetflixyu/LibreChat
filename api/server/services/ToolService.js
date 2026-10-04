@@ -6334,6 +6334,7 @@ async function loadActionToolsForExecution({
 /** Shared post-response/pre-turn quotation adapter for chat and Responses transports. */
 async function executeSteelQuotationWorkflow({
   req, res, streamId, signal, agent, run, onText, onFinalText, onUsage, onSteerApplied, userMCPAuthMap, requestScopedConnections, contentParts,
+  buildPublicationMessage,
 }) {
   const context = req?.steelNativeContext;
   const quotation = context?.quotation;
@@ -6450,26 +6451,20 @@ async function executeSteelQuotationWorkflow({
   const publishFinal = async (proof) => {
     const targetMessageId = proof.targetMessageId ?? proof.run?.targetMessageId;
     if (!targetMessageId) throw new Error('Quotation publication target is unavailable');
+    const message = await buildPublicationMessage({
+      targetMessageId,
+      markdown: proof.markdown,
+      run: proof.run,
+      scope,
+      agent,
+      context,
+    });
     return db.saveSteelQuotationMessage({
       ...proof,
       scope,
       targetMessageId,
       saveContext: publicationSaveContext,
-      message: {
-        messageId: targetMessageId,
-        conversationId: scope.conversationId,
-        user: scope.userId,
-        parentMessageId: proof.run?.triggerMessageId,
-        isCreatedByUser: false,
-        unfinished: false,
-        text: proof.markdown,
-        content: [{ type: 'text', text: proof.markdown }],
-        sender: agent?.name ?? 'Agent',
-        endpoint: 'agents',
-        model: agent?.id,
-        finish_reason: 'stop',
-        metadata: { steel: { activityEvents: context.steelHistory?.activityEvents, preflightToolCalls: context.steelHistory?.preflightToolCalls } },
-      },
+      message,
     });
   };
   const projectFinal = createQuotationPublicationProjector(async ({ markdown }) => {
@@ -6485,9 +6480,12 @@ async function executeSteelQuotationWorkflow({
       let historyChanged = false;
       for (const call of delta.preflightToolCalls) {
         const index = history.preflightToolCalls.findIndex((saved) => saved.id === call.id);
-        const toolIndex = contentParts
-          ? upsertQuotationToolContent(contentParts, call)
-          : index < 0 ? history.preflightToolCalls.length : index;
+        let toolIndex;
+        if (contentParts) {
+          toolIndex = upsertQuotationToolContent(contentParts, call);
+        } else {
+          toolIndex = index < 0 ? history.preflightToolCalls.length : index;
+        }
         quotationToolIndexes.set(call.id, toolIndex);
         historyChanged = upsertSteelNativePreflightToolCall(history, call) || historyChanged;
         const stepId = `${call.id}:step`;

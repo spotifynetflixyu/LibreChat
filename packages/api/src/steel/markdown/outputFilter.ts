@@ -49,7 +49,7 @@ export function createSteelMarkdownOutputFilter(): SteelMarkdownOutputFilter {
     const withoutCarriageReturn = content.endsWith('\r') ? content.slice(0, -1) : content;
 
     if (fence) {
-      if (isFenceClosing(withoutCarriageReturn, fence)) {
+      if (lineStart && isFenceClosing(withoutCarriageReturn, fence)) {
         fence = undefined;
         const output = suppressFence ? '' : line;
         suppressFence = false;
@@ -58,14 +58,14 @@ export function createSteelMarkdownOutputFilter(): SteelMarkdownOutputFilter {
       return suppressFence ? '' : line;
     }
 
-    const opening = fenceOpening(withoutCarriageReturn);
+    const opening = lineStart ? fenceOpening(withoutCarriageReturn) : undefined;
     if (opening) {
       fence = opening;
       suppressFence = suppressCustomerQuote;
       return suppressFence ? '' : line;
     }
 
-    const baseName = headingBaseName(withoutCarriageReturn);
+    const baseName = lineStart ? headingBaseName(withoutCarriageReturn) : undefined;
     if (baseName !== undefined) {
       if (isCustomerQuoteHeading(withoutCarriageReturn)) {
         suppressCustomerQuote = true;
@@ -112,8 +112,9 @@ export function createSteelMarkdownOutputFilter(): SteelMarkdownOutputFilter {
       if (!pending) return '';
       const line = pending;
       pending = '';
+      const output = processLine(line);
       lineStart = false;
-      return processLine(line);
+      return output;
     },
   };
 }

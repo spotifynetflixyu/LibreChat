@@ -8466,7 +8466,8 @@ describe('ToolService - Action Capability Gating', () => {
 
 
 describe('quotation transport bridge', () => {
-  const makeInput = (resume = false) => ({
+  const makeInput = (resume = false) => {
+    const input = {
     req: { user: { id: 'owner' }, steelNativeContext: {
       requestId: 'response-1', conversationId: 'conversation-1',
       quotation: { scope: { userId: 'owner', conversationId: 'conversation-1' }, resume,
@@ -8480,7 +8481,18 @@ describe('quotation transport bridge', () => {
     agent: { id: 'agent-1' },
     run: { getRunMessages: () => [{ getType: () => 'ai', content: '## quote_signal', response_metadata: { finish_reason: 'stop' } }] },
     onText: jest.fn(),
-  });
+    };
+    input.buildPublicationMessage = ({ targetMessageId, markdown }) => ({
+      messageId: targetMessageId,
+      conversationId: input.req.steelNativeContext.quotation.scope.conversationId,
+      parentMessageId: 'original-input',
+      user: 'owner',
+      text: markdown,
+      metadata: { steel: input.req.steelNativeContext.steelHistory },
+      content: [{ type: 'text', text: markdown }],
+    });
+    return input;
+  };
   beforeEach(() => {
     mockAcceptQuotation.mockReset().mockResolvedValue({ runId: 'run-1' });
     mockMarkdownFinalize.mockReset().mockImplementation(async (input) => {
@@ -8688,12 +8700,14 @@ describe('quotation transport bridge', () => {
   it('streams main deltas before publishing the durable authoritative final replacement', async () => {
     const input = makeInput(true);
     input.onFinalText = jest.fn();
-    mockRunQuotation.mockImplementation(async ({ onTextDelta, publishFinal }) => {
+    mockRunQuotation.mockImplementation(async ({ onTextDelta, publishFinal, projectFinal }) => {
       await onTextDelta('## system_order\n');
       expect(input.onText).toHaveBeenCalledWith('## system_order\n');
       expect(mockSaveQuotationMessage).not.toHaveBeenCalled();
       await onTextDelta('row\n');
-      await publishFinal({ run: { targetMessageId: 'original-response' }, markdown: '## system_order\nrow\n\n## customer_quote\nfinal' });
+      const publication = { run: { targetMessageId: 'original-response' }, markdown: '## system_order\nrow\n\n## customer_quote\nfinal' };
+      await publishFinal(publication);
+      await projectFinal(publication);
       return { status: 'completed' };
     });
     await executeSteelQuotationWorkflow(input);
@@ -8734,7 +8748,7 @@ describe('quotation transport bridge', () => {
     expect(events).toContainEqual(expect.objectContaining({ data: expect.objectContaining({
       stage: 'chunk_repair_started', chunkIndex: 2, attempt: 'attempt-1', repairAttempt: 2, maxRepairAttempts: 2, message: 'Invalid Markdown row',
     }) }));
-    expect(input.contentParts.map((part) => part.type)).toEqual(['text', 'tool_call', 'tool_call', 'text']);
+    expect(input.contentParts.map((part) => part.type)).toEqual(['text', 'tool_call', 'tool_call']);
   });
   it('publishes quotation and pending replies through the real authenticated message persistence contract', async () => {
     const { MongoMemoryServer } = require('mongodb-memory-server');

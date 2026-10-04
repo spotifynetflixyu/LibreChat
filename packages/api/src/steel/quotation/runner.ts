@@ -98,7 +98,8 @@ async function materializeCompletedSystemOrder(
   }
   const canonical = canonicalizeSystemOrderMarkdown(input.markdown);
   const quote = canonical && buildCustomerQuoteFromMarkdown(canonical.markdown);
-  if (!canonical || !quote || !input.run.targetMessageId) {
+  const runTargetMessageId = input.run.targetMessageId;
+  if (!canonical || !quote || !runTargetMessageId) {
     throw new Error('Quotation publication has no canonical system order');
   }
   const existing = await input.service.readCurrentSystemOrder(input.scope);
@@ -109,7 +110,7 @@ async function materializeCompletedSystemOrder(
       runId: input.run.runId,
       sha256: canonical.sha256,
       markdown: canonical.markdown,
-      messageId: input.run.targetMessageId,
+      messageId: runTargetMessageId,
       customerQuoteMarkdown: quote.markdown,
       ...(snapshot.sourceSnapshot ? { sourceSnapshot: snapshot.sourceSnapshot } : {}),
       updatedAt: new Date(),
@@ -138,7 +139,11 @@ export async function publishCompletedQuotation(
     stripCustomerQuoteSections(input.markdown),
     currentSystemOrder.markdown,
   );
-  const targetMessageId = currentSystemOrder.messageId ?? input.run.targetMessageId;
+  const runTargetMessageId = input.run.targetMessageId;
+  const targetMessageId = currentSystemOrder.messageId ?? runTargetMessageId;
+  if (!runTargetMessageId) {
+    throw new Error('Quotation publication target is unavailable');
+  }
   const finalSha256 = createHash('sha256').update(input.markdown, 'utf8').digest('hex');
   const receipt = await input.service.getArtifact({
     scope: input.scope,
@@ -155,6 +160,7 @@ export async function publishCompletedQuotation(
     const saved = await input.publishFinal({
       scope: input.scope,
       runId: input.run.runId,
+      runTargetMessageId,
       run: input.run,
       targetMessageId,
       markdown: publicMarkdown,

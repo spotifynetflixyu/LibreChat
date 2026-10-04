@@ -194,6 +194,7 @@ const {
   isAgentRunCancellation,
   markCompactionOutcome,
   resolvePersistableCodeEnvironmentDecision,
+  projectSteelQuotationMessage,
 } = require('@librechat/api');
 const {
   Run,
@@ -1727,6 +1728,26 @@ class AgentClient extends BaseClient {
           ...this.contentParts[quotationTextIndex], type: ContentTypes.TEXT, text,
         };
       },
+      buildPublicationMessage: ({ targetMessageId, markdown }) => projectSteelQuotationMessage({
+          message: {
+            messageId: targetMessageId,
+            sourceMessageId: this.responseMessageId,
+            conversationId: this.conversationId,
+            user: this.options.req?.user?.id,
+            text: markdown,
+            parentMessageId: this.parentMessageId,
+            isCreatedByUser: false,
+            unfinished: false,
+            sender: this.options.agent?.name ?? 'Agent',
+            endpoint: 'agents',
+            model: this.options.agent?.id,
+            finish_reason: 'stop',
+            metadata: this.buildResponseMetadata(),
+            content: Array.isArray(this.contentParts) ? this.contentParts : [],
+          },
+        markdown,
+        quotationContentIndex: quotationTextIndex,
+      }),
     };
   }
 

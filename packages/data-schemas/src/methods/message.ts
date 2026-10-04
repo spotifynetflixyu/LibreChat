@@ -7,28 +7,27 @@ import {
 import type { ClientSession, DeleteResult, FilterQuery, Model, Types, UpdateQuery } from 'mongoose';
 import type { UserSubmittedMessageFieldPath } from 'librechat-data-provider';
 import type { SearchParams } from 'meilisearch';
-import type { SchemaWithMeiliMethods } from '~/models/plugins/mongoMeili';
-import type { AppConfig, IConversation, IMessage } from '~/types';
 import type {
   ISteelQuotationArtifact,
   ISteelQuotationState,
   ISteelReviewOutput,
-  SteelQuotationPublicationMessage,
   SteelQuotationSavedMessage,
   SteelQuotationPublicationProof,
   SteelQuotationPublicationSaveResult,
 } from '~/types';
+import type { SchemaWithMeiliMethods } from '~/models/plugins/mongoMeili';
+import type { AppConfig, IConversation, IMessage } from '~/types';
 import {
   createSteelQuotationArtifactModel,
   createSteelQuotationStateModel,
   createSteelReviewOutputModel,
 } from '~/models';
-import { createConversationModel } from '~/models/convo';
-import { createMessageModel } from '~/models/message';
-import { compactMessageToolResults, compactToolCallOutput } from '~/utils/tool';
 import { createChatExpirationDate, createTempChatExpirationDate } from '~/utils/tempChatRetention';
 import { activeExpirationFilter, createFallbackRetentionDate } from '~/utils/retention';
+import { compactMessageToolResults, compactToolCallOutput } from '~/utils/tool';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import { createConversationModel } from '~/models/convo';
+import { createMessageModel } from '~/models/message';
 import logger from '~/config/winston';
 
 /** Simple UUID v4 regex to replace zod validation */
@@ -1192,7 +1191,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
     input: SteelQuotationPublicationProof,
   ): Promise<SteelQuotationPublicationSaveResult> {
     const { scope, message } = input;
-    if (!scope.userId || !scope.conversationId || !input.runId ||
+    if (!scope.userId || !scope.conversationId || !input.runId || !input.runTargetMessageId ||
       input.targetMessageId !== message.messageId || message.conversationId !== scope.conversationId ||
       typeof message.text !== 'string' || !/^[a-f0-9]{64}$/u.test(input.finalSha256) ||
       !/^[a-f0-9]{64}$/u.test(input.currentOrderSha256) ||
@@ -1268,7 +1267,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
             message.conversationId === scope.conversationId);
         const superseded = !conversation || !quotation || !targetMessageBound || !finalArtifact ||
           !run || run.runId !== input.runId || run.status !== 'completed' ||
-          run.targetMessageId !== input.targetMessageId || finalCheckpoint?.sha256 !== input.finalSha256 ||
+          run.targetMessageId !== input.runTargetMessageId || finalCheckpoint?.sha256 !== input.finalSha256 ||
           quotation.currentOrder?.sha256 !== input.currentOrderSha256 ||
           !customer || customer.preparationId !== input.customer.preparationId ||
           customer.customerIdentity !== input.customer.customerIdentity ||
@@ -1281,28 +1280,84 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
           result = { ok: false, code: 'superseded' };
           return;
         }
-        if (publicationArtifact) {
-          if (!currentMessage) {
-            result = { ok: false, code: 'superseded' };
-            return;
-          }
-          result = { ok: true, message: currentMessage };
+        let savedMessage: SteelQuotationSavedMessage;
+        if (publicationArtifact && !currentMessage) {
+          result = { ok: false, code: 'superseded' };
           return;
         }
-        let savedMessage: SteelQuotationSavedMessage;
         if (currentMessage && output?.humanSavedAt &&
           output.effectiveMarkdown === currentSystemOrder.markdown &&
           output.revision === currentSystemOrder.sha256) {
           savedMessage = currentMessage;
         } else {
+          const sourceMessageId = message.sourceMessageId ?? input.targetMessageId;
+          const messageFields = { ...message };
+          delete messageFields.sourceMessageId;
+          const publicationMessage = currentMessage
+            ? (() => {
+                const { _id, createdAt: _createdAt, updatedAt: _updatedAt, ...storedMessage } = currentMessage;
+                const currentMetadata = storedMessage.metadata;
+                const nextMetadata = message.metadata;
+                const nextMetadataRecord = nextMetadata && typeof nextMetadata === 'object' && !Array.isArray(nextMetadata)
+                  ? nextMetadata as Record<string, unknown>
+                  : undefined;
+                const currentSteel = currentMetadata?.steel;
+                const nextSteel = nextMetadataRecord?.steel;
+                const mergedMetadata = currentMetadata && nextMetadataRecord
+                  ? {
+                      ...currentMetadata,
+                      ...nextMetadataRecord,
+                      ...(currentSteel && nextSteel && typeof currentSteel === 'object' &&
+                        !Array.isArray(currentSteel) && typeof nextSteel === 'object' &&
+                        !Array.isArray(nextSteel)
+                        ? { steel: { ...currentSteel, ...nextSteel } }
+                        : {}),
+                    }
+                  : nextMetadata ?? currentMetadata;
+                if (sourceMessageId !== input.targetMessageId) {
+                  return {
+                    ...storedMessage,
+                    ...(typeof message.unfinished === 'boolean' ? { unfinished: message.unfinished } : {}),
+                    ...(typeof message.finish_reason === 'string' ? { finish_reason: message.finish_reason } : {}),
+                  };
+                }
+                return {
+                  ...storedMessage,
+                  ...messageFields,
+                  ...(mergedMetadata !== undefined ? { metadata: mergedMetadata } : {}),
+                };
+              })()
+            : messageFields;
           const saved = await saveMessageInternal(
             { userId: scope.userId, ...input.saveContext },
-            message as Omit<Partial<IMessage>, 'contextMeta'> & { newMessageId?: string; contextMeta?: IMessage['contextMeta'] | null },
+            publicationMessage as Omit<Partial<IMessage>, 'contextMeta'> & { newMessageId?: string; contextMeta?: IMessage['contextMeta'] | null },
             { context: 'Steel quotation guarded publication' },
             session,
           );
           if (!saved) throw new Error('Quotation message publication failed');
           savedMessage = saved;
+        }
+        if (publicationArtifact) {
+          const guardedCurrent = await QuotationState.findOneAndUpdate(
+            {
+              $and: [
+                stateFilter,
+                { 'activeRun.runId': input.runId, 'activeRun.status': 'completed', 'activeRun.targetMessageId': input.runTargetMessageId },
+                { 'activeRun.checkpointRefs': { $elemMatch: { operationId: 'final', kind: 'final', sha256: input.finalSha256 } } },
+                { 'activeRun.checkpointRefs': { $elemMatch: { operationId: 'published', kind: 'final', sha256: publicationSha256 } } },
+                { 'currentOrder.sha256': input.currentOrderSha256 },
+                { 'currentSystemOrder.runId': input.runId, 'currentSystemOrder.messageId': input.targetMessageId, 'currentSystemOrder.sha256': input.currentSystemOrderSha256 },
+                { 'currentCustomer.preparationId': input.customer.preparationId, 'currentCustomer.customerIdentity': input.customer.customerIdentity, 'currentCustomer.customerMarkdown': input.customer.customerMarkdown },
+              ],
+            },
+            { $set: { updatedAt: now } },
+            { new: true, session },
+          ).lean<ISteelQuotationState | null>();
+          if (!guardedCurrent) {
+            throw supersededError;
+          }
+          result = { ok: true, message: savedMessage };
+          return;
         }
         if (!publicationArtifact) {
           await QuotationArtifact.create([{
@@ -1329,7 +1384,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
           {
             $and: [
               stateFilter,
-              { 'activeRun.runId': input.runId, 'activeRun.status': 'completed', 'activeRun.targetMessageId': input.targetMessageId },
+              { 'activeRun.runId': input.runId, 'activeRun.status': 'completed', 'activeRun.targetMessageId': input.runTargetMessageId },
               { 'activeRun.checkpointRefs': { $elemMatch: { operationId: 'final', kind: 'final', sha256: input.finalSha256 } } },
               { 'activeRun.checkpointRefs': { $not: { $elemMatch: { operationId: 'published' } } } },
               { 'currentOrder.sha256': input.currentOrderSha256 },
