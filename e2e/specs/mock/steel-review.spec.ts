@@ -1069,7 +1069,8 @@ test.describe('Steel managed source review', () => {
     expect(reloaded.status()).toBe(200);
     const current = await reloaded.json() as { table: SteelReviewTable };
     expect(current.table.rows[0].values['長度']).toEqual({ baseline: '1000', effective: null });
-    const noChange = await page.request.post(`${url}/prepare`, { headers, data: requestForRows(current.table) });
+    const noChange = await page.request.post(`${url}/prepare`, { headers, data: { ...requestForRows(current.table), operations: [{ type: 'update', rowId: current.table.rows[0].rowId,
+      changes: [{ header: '長度', value: null }] }] } });
     expect(noChange.status()).toBe(200);
     const noOp = await page.request.post(`${url}/commit`, { headers, data: operationCommit(await noChange.json()) });
     expect(noOp.status()).toBe(200);
@@ -1689,7 +1690,7 @@ test.describe('Steel managed source review', () => {
     }
   });
 
-  test('a reliable authentic 03 source reuses its code and same-association intent is a no-op', async ({ page }) => {
+  test('a reliable saved source reuses its code and same-association intent is a no-op', async ({ page }) => {
     const { conversationId, messageId, snapshot } = await seedSavedReviewData(page, headers);
     conversations.push(conversationId);
     const before = await persistedSnapshot(conversationId);
@@ -1698,12 +1699,12 @@ test.describe('Steel managed source review', () => {
     expect(read.status()).toBe(200);
     const { table } = await read.json() as { table: SteelReviewTable };
     expect(table.rows).toEqual(snapshot.rows);
-    expect(Object.hasOwn(table.rows[0].source ?? {}, 'mediaType')).toBe(false);
+    expect(table.rows[0].source).toMatchObject({ fileId: 'review-alpha', pageNumber: 1 });
     const noop = await page.request.post(`${url}/prepare`, { headers, data: requestForRows(table, undefined, [{ rowId: table.rows[0].rowId, fileId: 'review-alpha', pageNumber: 1 }]) });
     expect(noop.status()).toBe(200);
     const noopPrepared = await noop.json() as SteelReviewOperationPrepared;
     expect(noopPrepared.caption.changedRows).toBe(0);
-    const noopCommit = await page.request.post(`${url}/commit`, { headers, data: noopPrepared });
+    const noopCommit = await page.request.post(`${url}/commit`, { headers, data: operationCommit(noopPrepared) });
     expect(noopCommit.status()).toBe(200);
     expect(await persistedSnapshot(conversationId)).toEqual(before);
     const changed = await page.request.post(`${url}/prepare`, { headers, data: requestForRows(table, undefined, [{ rowId: table.rows[0].rowId, fileId: 'review-alpha', pageNumber: 2 }]) });
@@ -1712,16 +1713,16 @@ test.describe('Steel managed source review', () => {
     expect(changedPrepared.caption.changedRows).toBe(1);
     expect(changedPrepared.rows[0].values['來源']).toEqual({ baseline: 'A', effective: 'A' });
     expect(changedPrepared.rows[0].values['頁碼']).toEqual({ baseline: '1', effective: '2' });
-    const commit = await page.request.post(`${url}/commit`, { headers, data: changedPrepared });
+    const commit = await page.request.post(`${url}/commit`, { headers, data: operationCommit(changedPrepared) });
     expect(commit.status()).toBe(200);
     const after = await persistedSnapshot(conversationId);
     expect(after.reviews[0]?.receipts.slice(0, 1)).toEqual(before.reviews[0]?.receipts);
     expect(after.messages.find((message) => message.messageId === messageId)?.text)
-      .toBe(snapshot.messageText.replace('| A | LEGACY-P1 | 7 | 1 |', '| A | LEGACY-P1 | 7 | 2 |'));
+      .toBe(snapshot.messageText.replace('| A | REVIEW-P1 | 1000 | 7 | 1 |', '| A | REVIEW-P1 | 1000 | 7 | 2 |'));
     expectPreservedAiState(before.ocr, after.ocr);
   });
 
-  test('returning a source draft to the authentic legacy file and page is a zero-write UI no-op', async ({ page }) => {
+  test('returning a source draft to the saved file and page is a zero-write UI no-op', async ({ page }) => {
     const { conversationId, messageId } = await seedSavedReviewData(page, headers);
     conversations.push(conversationId);
     await seedSelectorFiles(conversationId);
@@ -1729,11 +1730,11 @@ test.describe('Steel managed source review', () => {
     const read = await page.request.get(readUrl(conversationId, messageId, 'ocr_result'), { headers });
     expect(read.status()).toBe(200);
     const { table } = await read.json() as { table: SteelReviewTable };
-    expect(table.rows[0].source?.mediaType).toBeUndefined();
+    expect(table.rows[0].source).toMatchObject({ fileId: 'review-alpha', pageNumber: 1 });
     await page.goto(`/c/${conversationId}`);
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
-    const row = dialog.locator('tbody tr').filter({ has: page.locator('input[value="LEGACY-P1"]') });
+    const row = dialog.locator('tbody tr').filter({ has: page.locator('input[value="REVIEW-P1"]') });
     await row.getByRole('button', { name: `Change source ${table.rows[0].rowId}`, exact: true }).click();
     await row.getByRole('combobox', { name: 'Source file', exact: true }).click();
     await page.getByRole('option', { name: 'beta.pdf', exact: true }).click();
