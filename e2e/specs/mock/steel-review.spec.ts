@@ -86,16 +86,24 @@ async function seedCurrent(markdown: string) {
   return { conversationId, messageId };
 }
 
-async function seedCapturedLegacyReview(fixtureName: 'steel-review-legacy03' | 'steel-review-legacy03-sourced') {
+async function seedCapturedLegacyReview(fixtureName: 'steel-review-legacy03' | 'steel-review-legacy03-sourced' | 'steel-review-legacy04') {
   const fixture = JSON.parse(await readFile(`${__dirname}/fixtures/${fixtureName}.json`, 'utf8')) as {
     generatedFromCommit: string;
     realMongo: boolean;
-    prepared: Omit<SteelReviewPrepared, 'sourceMappings' | 'sourceIntents'> & { userId: string };
+    prepared: Omit<SteelReviewPrepared, 'sourceMappings' | 'sourceIntents'> &
+      Partial<Pick<SteelReviewPrepared, 'sourceMappings'>> & { userId: string };
     savedSnapshot: SteelReviewSavedSnapshot;
   };
-  expect(fixture.generatedFromCommit).toBe('1db96bd67f0af7c902c6c0d8556cb56f0d1dbe94');
+  const captured04 = fixtureName === 'steel-review-legacy04';
+  expect(fixture.generatedFromCommit).toBe(captured04
+    ? '65c9b2140c980c80b9797abc5909bbe5df65e072'
+    : '1db96bd67f0af7c902c6c0d8556cb56f0d1dbe94');
   expect(fixture.realMongo).toBe(true);
-  expect(Object.hasOwn(fixture.prepared, 'sourceMappings')).toBe(false);
+  expect(Object.hasOwn(fixture.prepared, 'sourceMappings')).toBe(captured04);
+  for (const row of fixture.prepared.rows) {
+    expect(Object.hasOwn(row, 'origin')).toBe(false);
+    expect(Object.hasOwn(row, 'deleted')).toBe(false);
+  }
   expect(Object.hasOwn(fixture.prepared, 'sourceIntents')).toBe(false);
   expect(createHash('sha256').update(encodeSteelReviewDigest(fixture.prepared)).digest('hex'))
     .toBe(fixture.prepared.digest);
@@ -115,7 +123,7 @@ async function seedCapturedLegacyReview(fixtureName: 'steel-review-legacy03' | '
   await withMongo(async (db) => {
     await db.collection('steel_conversation_ocr_state').updateOne({ conversationId }, { $set: {
       currentOcrResultMarkdown: prepared.aiBaselineMarkdown,
-      currentOcrResultGenerationId: 'legacy-fixture-generation', sourceMappings: [],
+      currentOcrResultGenerationId: 'legacy-fixture-generation', sourceMappings: fixture.prepared.sourceMappings ?? [],
     } });
     await db.collection('messages').updateOne({ conversationId, messageId }, { $set: {
       text: snapshot.messageText, content: [{ type: 'text', text: snapshot.messageText }],
@@ -129,6 +137,7 @@ async function seedCapturedLegacyReview(fixtureName: 'steel-review-legacy03' | '
       aiUpdatedAt: new Date('2026-10-03T13:42:29.807Z'),
       humanMarkdown: snapshot.effectiveMarkdown, humanSavedAt: savedAt,
       effectiveMarkdown: snapshot.effectiveMarkdown, displayMarkdown: snapshot.displayMarkdown,
+      ...(fixture.prepared.sourceMappings ? { sourceMappings: fixture.prepared.sourceMappings } : {}),
       receipts: [{ operationId: snapshot.operationId, digest: snapshot.digest,
         revision: snapshot.revision, changedRows: snapshot.changedRows,
         changedRowIds: snapshot.changedRowIds, savedAt,
@@ -1455,6 +1464,48 @@ test.describe('Steel managed source review', () => {
     expect(await persistedSnapshot(conversationId)).toEqual(before);
   });
 
+  test('an authentic committed 04 receipt preserves its pre-ledger digest while stripped fresh 05 writes are refused', async ({ page }) => {
+    const { conversationId, messageId, prepared, snapshot, userId } = await seedCapturedLegacyReview('steel-review-legacy04');
+    conversations.push(conversationId);
+    const before = await persistedSnapshot(conversationId);
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const replay = await page.request.post(`${url}/commit`, { headers, data: prepared });
+    expect(replay.status()).toBe(200);
+    expect(await replay.json()).toMatchObject({ savedSnapshot: snapshot });
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    const tampered = await page.request.post(`${url}/commit`, { headers, data: {
+      ...prepared, cleanReplacementText: prepared.cleanReplacementText.replace('7', '99'),
+    } });
+    expect(tampered.status()).toBe(409);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(read.status()).toBe(200);
+    const { table } = await read.json() as { table: SteelReviewTable };
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    const noChange = await page.request.post(`${url}/prepare`, { headers, data: table });
+    expect(noChange.status()).toBe(200);
+    const noOp = await noChange.json() as SteelReviewPrepared;
+    expect(noOp.caption.changedRows).toBe(0);
+    expect((await page.request.post(`${url}/commit`, { headers, data: noOp })).status()).toBe(200);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    const rows = structuredClone(table.rows);
+    rows[0].values['數量'].effective = '8';
+    const fresh = await page.request.post(`${url}/prepare`, { headers, data: { ...table, rows } });
+    expect(fresh.status()).toBe(200);
+    const current = await fresh.json() as SteelReviewPrepared;
+    for (const row of current.rows) {
+      expect(row).toMatchObject({ origin: 'ai', deleted: false });
+    }
+    const stripped = structuredClone(current);
+    for (const row of stripped.rows) {
+      Reflect.deleteProperty(row, 'origin');
+      Reflect.deleteProperty(row, 'deleted');
+    }
+    stripped.digest = createHash('sha256').update(encodeSteelReviewDigest({ ...stripped, userId })).digest('hex');
+    expect([400, 409]).toContain((await page.request.post(`${url}/commit`, { headers, data: stripped })).status());
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+  });
+
   test('a reliable authentic 03 source reuses its code and same-association intent is a no-op', async ({ page }) => {
     const { conversationId, messageId, snapshot } = await seedCapturedLegacyReview('steel-review-legacy03-sourced');
     conversations.push(conversationId);
@@ -2315,6 +2366,245 @@ test.describe('Steel managed source review', () => {
     expect((await persistedSnapshot(conversationId)).messages.find((message) => message.messageId === previousMessageId)).toEqual(previousBefore);
   });
 
+
+  test('OCR row CRUD is local and adding then deleting before Save is a net-zero no-op', async ({ page }) => {
+    const { conversationId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const before = await persistedSnapshot(conversationId);
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    await expect(dialog.locator('tbody tr')).toHaveCount(2);
+    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
+    await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
+    await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
+    await expect(dialog.locator('tbody tr')).toHaveCount(3);
+    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    await dialog.locator('tbody tr').last().getByRole('button', { name: /^Delete row(?:\s|$)/ }).click();
+    await expect(dialog.locator('tbody tr')).toHaveCount(2);
+    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+    await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect(dialog.locator('tbody tr')).toHaveCount(3);
+    await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
+    await expect(dialog.locator('tbody tr')).toHaveCount(2);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeVisible();
+    await expect(page.getByRole('button', { name: 'Discard unsaved changes', exact: true })).toHaveCount(0);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
+    await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
+  });
+
+  test('two identical OCR additions retain independent identities and one selected source through Save and reload', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const before = await persistedSnapshot(conversationId);
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    for (let index = 0; index < 2; index += 1) {
+      await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
+      const row = dialog.locator('tbody tr').last();
+      await row.locator('td').nth(1).getByRole('textbox').fill('MANUAL-DUPLICATE');
+      await row.locator('td').nth(2).getByRole('textbox').fill('3000');
+      await row.locator('td').nth(3).getByRole('textbox').fill('4');
+      await row.locator('td').nth(3).getByRole('textbox').press('Enter');
+    }
+    await expect(dialog.getByText(/Unsaved.*2|2.*unsaved/i)).toBeVisible();
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    await dialog.getByRole('button', { name: /^Save/ }).click();
+    await expect(dialog.getByText('Updated 2 rows', { exact: true })).toBeVisible();
+    const after = await persistedSnapshot(conversationId);
+    expect(after.reviews).toHaveLength(1);
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(read.status()).toBe(200);
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const added = table.rows.filter((row) => row.values['零件編號'].effective === 'MANUAL-DUPLICATE');
+    expect(added).toHaveLength(2);
+    expect(new Set(added.map((row) => row.rowId)).size).toBe(2);
+    for (const row of added) {
+      expect(row).toMatchObject({ origin: 'manual', deleted: false,
+        source: { fileId: 'review-alpha', pageNumber: 1, filename: 'alpha.pdf' } });
+      expect(Object.values(row.values).every((cell) => cell.baseline === null)).toBe(true);
+      expect(row.values['數量'].effective).toBe('4');
+    }
+    expect(after.reviews[0]?.rows).toEqual(table.rows);
+    expect(after.reviews[0]?.receipts).toMatchObject([{ changedRows: 2 }]);
+    expect(after.messages.find((message) => message.messageId === messageId)?.text)
+      .toBe(ocr + '\n| A | MANUAL-DUPLICATE | 3000 | 4 | 1 |\n| A | MANUAL-DUPLICATE | 3000 | 4 | 1 |');
+    expect(after.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
+    expectPreservedAiState(before.ocr, after.ocr);
+    await page.keyboard.press('Escape');
+    await page.reload();
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    await expect(dialog.locator('tbody tr')).toHaveCount(4);
+    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
+    await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
+    expect(await persistedSnapshot(conversationId)).toEqual(after);
+  });
+
+  test('deleting all OCR rows keeps popup AI tombstones and saves a reopenable clean header-only table', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const before = await persistedSnapshot(conversationId);
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    for (const id of ['REVIEW-P1', 'REVIEW-P2']) {
+      const row = dialog.locator('tbody tr').filter({ has: page.locator(`input[value="${id}"]`) });
+      await row.getByRole('button', { name: /^Delete row(?:\s|$)/ }).click();
+      await expect(dialog.locator('del').filter({ hasText: id })).toBeVisible();
+    }
+    await expect(dialog.getByText(/Unsaved.*2|2.*unsaved/i)).toBeVisible();
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    await dialog.getByRole('button', { name: /^Save/ }).click();
+    await expect(dialog.getByText('Updated 2 rows', { exact: true })).toBeVisible();
+    const after = await persistedSnapshot(conversationId);
+    const emptyMarkdown = ocr.split('\n').slice(0, 3).join('\n');
+    expect(after.messages.find((message) => message.messageId === messageId)?.text).toBe(emptyMarkdown);
+    expect(after.reviews[0]).toMatchObject({ aiBaselineMarkdown: ocr,
+      effectiveMarkdown: emptyMarkdown,
+      rows: [{ origin: 'ai', deleted: true }, { origin: 'ai', deleted: true }],
+      receipts: [{ changedRows: 2 }] });
+    expectPreservedAiState(before.ocr, after.ocr);
+    // Session history survives Save; this restoration is local until the next Save.
+    await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
+    await expect(dialog.locator('input[value="REVIEW-P2"]')).toBeVisible();
+    expect(await persistedSnapshot(conversationId)).toEqual(after);
+    await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
+    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+    await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeVisible();
+    await expect(page.locator('del')).toHaveCount(0);
+    const downloadReady = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'Download table as CSV', exact: true }).click();
+    const download = await downloadReady;
+    const downloadedPath = await download.path();
+    if (!downloadedPath) throw new Error('Missing header-only confirmed CSV');
+    const csv = await readFile(downloadedPath, 'utf8');
+    expect(csv).toContain('來源,零件編號,長度,數量,頁碼');
+    expect(csv).not.toMatch(/REVIEW-P1|REVIEW-P2|<del>|~~/);
+    await page.reload();
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    await expect(dialog.locator('del').filter({ hasText: 'REVIEW-P1' })).toBeVisible();
+    await expect(dialog.locator('del').filter({ hasText: 'REVIEW-P2' })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
+    await expect(dialog.getByRole('button', { name: 'Add row', exact: true })).toBeEnabled();
+    expect(await persistedSnapshot(conversationId)).toEqual(after);
+  });
+
+  test('OCR cell history groups a focused edit, survives Save, and resets when the dialog reopens', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const before = await persistedSnapshot(conversationId);
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+    const undo = dialog.getByRole('button', { name: 'Undo', exact: true });
+    const redo = dialog.getByRole('button', { name: 'Redo', exact: true });
+    await quantity.fill('7');
+    await quantity.press('8');
+    await quantity.press('Enter');
+    await expect(quantity).toHaveValue('78');
+    await undo.click();
+    await expect(quantity).toHaveValue('2');
+    await expect(undo).toBeDisabled();
+    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+    await redo.click();
+    await expect(quantity).toHaveValue('78');
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    await dialog.getByRole('button', { name: /^Save/ }).click();
+    await expect(dialog.getByText('Updated 1 rows', { exact: true })).toBeVisible();
+    const saved = await persistedSnapshot(conversationId);
+    expect(saved.messages.find((message) => message.messageId === messageId)?.text)
+      .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 78 | 1 |'));
+    await undo.click();
+    await expect(quantity).toHaveValue('2');
+    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
+    expect(await persistedSnapshot(conversationId)).toEqual(saved);
+    await redo.click();
+    await expect(quantity).toHaveValue('78');
+    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+    await undo.click();
+    await quantity.fill('9');
+    await quantity.press('Enter');
+    await expect(redo).toBeDisabled();
+    await undo.click();
+    await expect(quantity).toHaveValue('2');
+    await redo.click();
+    await expect(quantity).toHaveValue('9');
+    expect(await persistedSnapshot(conversationId)).toEqual(saved);
+    await page.keyboard.press('Escape');
+    await page.getByRole('button', { name: 'Discard unsaved changes', exact: true }).click();
+    await expect(dialog).not.toBeVisible();
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    await expect(quantity).toHaveValue('78');
+    await expect(undo).toBeDisabled();
+    await expect(redo).toBeDisabled();
+    expect(await persistedSnapshot(conversationId)).toEqual(saved);
+  });
+
+  test('OCR source and business undo stay attached to one row across page filters before and after Save', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const before = await persistedSnapshot(conversationId);
+    const read = await page.request.get(readUrl(conversationId, messageId, 1), { headers });
+    expect(read.status()).toBe(200);
+    const { table } = await read.json() as { table: SteelReviewTable };
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    const row = dialog.locator('tbody tr').filter({ has: page.locator('input[value="REVIEW-P1"]') });
+    const quantity = row.locator('td').nth(3).getByRole('textbox');
+    await quantity.fill('7');
+    await quantity.press('Enter');
+    await row.getByRole('button', { name: `Change source ${table.rows[0].rowId}`, exact: true }).click();
+    await row.getByRole('combobox', { name: 'Source page', exact: true }).click();
+    await page.getByRole('option', { name: '2', exact: true }).click();
+    const selectPage = async (value: string) => {
+      await dialog.getByRole('combobox', { name: 'Page', exact: true }).click();
+      await page.getByRole('option', { name: value, exact: true }).click();
+      await expect(page.getByRole('listbox', { includeHidden: true })).toHaveCount(0);
+    };
+    await selectPage('2');
+    await expect(quantity).toHaveValue('7');
+    await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect(row).toHaveCount(0);
+    await selectPage('1');
+    await expect(quantity).toHaveValue('7');
+    await expect(row.locator('td').nth(4).getByText('1', { exact: true })).toBeVisible();
+    await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
+    await expect(row).toHaveCount(0);
+    await selectPage('2');
+    await expect(quantity).toHaveValue('7');
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+    await dialog.getByRole('button', { name: /^Save/ }).click();
+    await expect(dialog.getByText('Updated 1 rows', { exact: true })).toBeVisible();
+    const saved = await persistedSnapshot(conversationId);
+    expect(saved.reviews[0]?.rows[0]).toMatchObject({ rowId: table.rows[0].rowId,
+      source: { fileId: 'review-alpha', pageNumber: 2 }, values: { 數量: { baseline: '2', effective: '7' } } });
+    await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
+    await selectPage('1');
+    await expect(quantity).toHaveValue('7');
+    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
+    await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect(quantity).toHaveValue('2');
+    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
+    expect(await persistedSnapshot(conversationId)).toEqual(saved);
+    await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
+    await selectPage('2');
+    await expect(quantity).toHaveValue('7');
+    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
+    expect(await persistedSnapshot(conversationId)).toEqual(saved);
+    await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeVisible();
+  });
 
   test('OCR Save displays authoritative prepared and confirmed row counts without writing presentation copy into chat', async ({ page }) => {
     const { conversationId } = await seedCurrent(ocr);
