@@ -52,3 +52,5 @@ Latest Save contract revision: the new UI submits only changed-row operations an
 Latest session-history revision: successful own Save confirmation clears undo/redo and the focus group; failed/unknown saves retain history. Later local inputs during Save remain unsaved drafts even when confirmation clears history. Server AI baselines, saved revisions and immutable receipts remain retained.
 
 05 補充：R12 衝突恢復已獲獨立架構審核並更新 GitHub #6：同 owner 409 回傳最新版與全部衝突，檔案／頁碼 selector 警示，保留草稿並以下次指定最新版保存；同值自動消除。仍為 In progress，需真實 UI／API／Mongo／reload、精準鏡像與兩軸審查通過後才標 Verified。
+
+Latest title contract: every Markdown has a unique full title within one reply. New review location is the authorized messageId plus exact full title, with backend-derived physical target and retained output/version/storage authority. Slice05 incorporates this shared locator adjustment before release06; legacy receipts stay immutable. GitHub #6 remains In progress until the title path and predecessor behavior pass real UI/API/Mongo/reload proof and independent reviews.

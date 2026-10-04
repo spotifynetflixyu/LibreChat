@@ -33,3 +33,5 @@ AI 原版與最新有效 Markdown 分開保存，對照彈窗取兩者以穩定�
 最新標題標記決策：僅 ocr_result、system_order、customer_data 使用共享非互動 badge，提供 en Updated／Previous version、zh-Hant 已更新／歷史版本、zh-Hans 已更新／历史版本。非最新可信 owner 維持唯讀；DB 各 kind 最新完整 Markdown 所綁 messageId 與 output／table／generation／revision 決定資格，人工保存保持 messageId。新 AI 基準重設人工標記，報價時間選擇獨立。Customer_data 不新增編輯入口。此使用者明確要求允許兩個 badge key 的中文翻譯例外。
 
 停止 customer_quote 的後端聊天輸出，涵蓋新串流、cached final、完成回覆與人工 Save 的衍生區段。既有重算、內部保存及 summary 總額仍保留，與 system_order 同交易；不再要求或插入 customer_quote 聊天 target，不猜測改寫歷史區段。
+
+最新定位決策：同一回覆的每份 Markdown 具有唯一完整 title；新覆核直接以已授權 messageId ＋完整 title 定位，不以表格序號作為邏輯身分。同名 title 在其他 messageId 不受影響；後端仍核對聊天／user／tenant、latest output／generation、預期版本及精準 text／content mirror，並自行取得實際 part／offset。既有穩定 rowId／storage owner／不可變收據保持相容，讀取不遷移或回填資料。此決策明確允許唯一且綁定指定訊息的標題定位，取代新 UI 依序號判定的提案。
