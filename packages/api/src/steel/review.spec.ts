@@ -163,6 +163,51 @@ describe('Steel review read service', () => {
     }));
   });
 
+  it('counts customer quote changes by stable ledger row IDs when deletion shifts later rows', async () => {
+    const markdown = [
+      `## ${systemOrderTitle}`,
+      '',
+      '| 品名規格 | 總數 | 單價 |',
+      '| --- | --- | --- |',
+      '| A | 1 | 10 |',
+      '| B | 2 | 10 |',
+      '| C | 3 | 10 |',
+    ].join('\n');
+    const service = createSteelReviewService({
+      reader: {
+        readSteelReview: jest.fn().mockResolvedValue(makeSystemOrderRecord({
+          revision: 'system-order-revision-1',
+          markdown,
+          messageText: markdown,
+          rows: ['a', 'b', 'c'].map((rowId, index) => ({
+            rowId,
+            origin: 'ai' as const,
+            deleted: false,
+            values: {
+              品名規格: { baseline: String.fromCharCode(65 + index), effective: String.fromCharCode(65 + index) },
+              總數: { baseline: String(index + 1), effective: String(index + 1) },
+              單價: { baseline: '10', effective: '10' },
+            },
+            source: null,
+          })),
+        })),
+      },
+    });
+
+    const prepared = await service.prepare({
+      userId: scope.userId,
+      conversationId: scope.conversationId,
+      messageId: scope.messageId,
+      title: systemOrderTitle,
+      kind: 'system_order',
+      outputId: 'system_order:run-1',
+      revision: 'system-order-revision-1',
+      operations: [{ type: 'delete', rowId: 'a' }],
+    });
+
+    expect(prepared.caption.customerQuoteChangedRows).toBe(1);
+  });
+
   it('rejects system-order edits outside price and total and rejects invalid numeric input', async () => {
     const service = createSteelReviewService({
       reader: { readSteelReview: jest.fn().mockResolvedValue(makeSystemOrderRecord()) },

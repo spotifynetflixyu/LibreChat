@@ -1057,7 +1057,7 @@ export default function SteelReviewDialog({
       return updateDraftRows(addSteelReviewDraftRow(ownerDraft, editTable, anchor, source));
     });
   }, [baseTable, canEditStructure, draftRows, draftStateKey, pageNumber, selectedSource, setDraftStateScoped, table, updateDraftRows]);
-  const onAddSystemRow = useCallback((kind: 'material' | 'processing', selectedParentId?: string) => {
+  const onAddSystemRow = useCallback((kind: 'material' | 'processing', selectedParentId?: string, anchorRow?: SteelReviewRow) => {
     const editTable = baseTable ?? table;
     if (!editTable || !canEditStructure || editTable.kind !== 'system_order') return;
     const parent = kind === 'processing'
@@ -1073,10 +1073,15 @@ export default function SteelReviewDialog({
       const ownerDraft = current.ownerKey === draftStateKey
         ? current
         : createSteelReviewDraftState(draftStateKey);
-      const anchor = kind === 'processing' ? parent : [...draftRows].reverse().find((row) => !row.deleted);
+      const anchor = kind === 'processing'
+        ? parent
+        : anchorRow ?? [...draftRows].reverse().find((row) => !row.deleted);
       return updateDraftRows(addSteelReviewDraftRow(ownerDraft, editTable, anchor, null, system));
     });
   }, [baseTable, canEditStructure, draftRows, draftStateKey, setDraftStateScoped, table, updateDraftRows]);
+  const onAddProcessingUnder = useCallback((row: SteelReviewRow) => {
+    onAddSystemRow('processing', row.rowId, row);
+  }, [onAddSystemRow]);
   const onBindProcessing = useCallback((row: SteelReviewRow, parentRowId: string | null) => {
     if (!canEditStructure || table?.kind !== 'system_order' || row.system?.kind !== 'processing') return;
     setDraftStateScoped((current) => {
@@ -2130,6 +2135,7 @@ export default function SteelReviewDialog({
                       bindProcessing: localize('com_ui_steel_review_bind_processing'),
                       parent: localize('com_ui_steel_review_parent'),
                       deleteGroup: localize('com_ui_steel_review_delete_group'),
+                      addProcessingUnder: localize('com_ui_steel_review_add_processing_under'),
                       classify: localize('com_ui_steel_review_classify'),
                       material: localize('com_ui_steel_review_material'),
                       processing: localize('com_ui_steel_review_processing'),
@@ -2145,6 +2151,7 @@ export default function SteelReviewDialog({
                     onRestoreRow={canEditStructure ? onRestoreRow : undefined}
                     onSystemChange={table.kind === 'system_order' && canEditStructure ? onBindProcessing : undefined}
                     onDeleteGroup={table.kind === 'system_order' && canEditStructure ? onDeleteGroup : undefined}
+                    onAddProcessingUnder={table.kind === 'system_order' && canEditStructure ? onAddProcessingUnder : undefined}
                     onClassify={table.kind === 'system_order' && canEditStructure ? onClassify : undefined}
                     systemMaterials={draftRows}
                   />
@@ -2166,6 +2173,7 @@ export default function SteelReviewDialog({
                           bindProcessing: localize('com_ui_steel_review_bind_processing'),
                           parent: localize('com_ui_steel_review_parent'),
                           deleteGroup: localize('com_ui_steel_review_delete_group'),
+                          addProcessingUnder: localize('com_ui_steel_review_add_processing_under'),
                           classify: localize('com_ui_steel_review_classify'),
                           material: localize('com_ui_steel_review_material'),
                           processing: localize('com_ui_steel_review_processing'),
@@ -2181,6 +2189,7 @@ export default function SteelReviewDialog({
                         onRestoreRow={canEditStructure ? onRestoreRow : undefined}
                         onSystemChange={table.kind === 'system_order' && canEditStructure ? onBindProcessing : undefined}
                         onDeleteGroup={table.kind === 'system_order' && canEditStructure ? onDeleteGroup : undefined}
+                        onAddProcessingUnder={table.kind === 'system_order' && canEditStructure ? onAddProcessingUnder : undefined}
                         onClassify={table.kind === 'system_order' && canEditStructure ? onClassify : undefined}
                         systemMaterials={draftRows}
                       />
@@ -2203,6 +2212,7 @@ export default function SteelReviewDialog({
                     bindProcessing: localize('com_ui_steel_review_bind_processing'),
                     parent: localize('com_ui_steel_review_parent'),
                     deleteGroup: localize('com_ui_steel_review_delete_group'),
+                    addProcessingUnder: localize('com_ui_steel_review_add_processing_under'),
                     classify: localize('com_ui_steel_review_classify'),
                     material: localize('com_ui_steel_review_material'),
                     processing: localize('com_ui_steel_review_processing'),
@@ -2218,6 +2228,7 @@ export default function SteelReviewDialog({
                   onRestoreRow={canEditStructure ? onRestoreRow : undefined}
                   onSystemChange={table.kind === 'system_order' && canEditStructure ? onBindProcessing : undefined}
                   onDeleteGroup={table.kind === 'system_order' && canEditStructure ? onDeleteGroup : undefined}
+                  onAddProcessingUnder={table.kind === 'system_order' && canEditStructure ? onAddProcessingUnder : undefined}
                   onClassify={table.kind === 'system_order' && canEditStructure ? onClassify : undefined}
                   systemMaterials={draftRows}
                 />

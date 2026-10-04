@@ -221,6 +221,20 @@ describe('Steel review local draft session', () => {
     const add = compileSteelReviewOperations(systemTable, added, applySteelReviewDrafts(systemTable.rows, added))
       .find((operation) => operation.type === 'add');
     expect(add).toMatchObject({ type: 'add', system: { kind: 'material', parentRowId: null } });
+
+    const addedProcessing = addSteelReviewDraftRow(added, systemTable, systemTable.rows[0], null, {
+      kind: 'processing', parentRowId: 'material-1', cascadeDeletedBy: null,
+    });
+    const processingAdd = compileSteelReviewOperations(
+      systemTable,
+      addedProcessing,
+      applySteelReviewDrafts(systemTable.rows, addedProcessing),
+    ).find((operation) => operation.type === 'add' && operation.system?.kind === 'processing');
+    expect(processingAdd).toMatchObject({
+      type: 'add',
+      position: { kind: 'after', rowId: 'material-1' },
+      system: { kind: 'processing', parentRowId: 'material-1' },
+    });
   });
 
   it('allows an explicit clear source intent and rebases it after save', () => {

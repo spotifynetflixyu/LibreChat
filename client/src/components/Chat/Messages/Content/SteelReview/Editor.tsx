@@ -23,6 +23,7 @@ export interface SteelReviewEditorLabels {
   bindProcessing?: string;
   parent?: string;
   deleteGroup?: string;
+  addProcessingUnder?: string;
   classify?: string;
   material?: string;
   processing?: string;
@@ -50,6 +51,7 @@ export interface SteelReviewEditorProps {
   onSystemChange?: (row: SteelReviewRow, parentRowId: string | null) => void;
   onClassify?: (row: SteelReviewRow, kind: 'material' | 'processing') => void;
   onDeleteGroup?: (row: SteelReviewRow) => void;
+  onAddProcessingUnder?: (row: SteelReviewRow) => void;
   systemMaterials?: readonly SteelReviewRow[];
 }
 
@@ -322,6 +324,7 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
   onSystemChange,
   onClassify,
   onDeleteGroup,
+  onAddProcessingUnder,
   systemMaterials = rows,
 }: SteelReviewEditorProps) {
   return (
@@ -339,7 +342,7 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
                 {labels.sourceActions}
               </th>
             )}
-            {(onDeleteRow || onRestoreRow || onSystemChange || onDeleteGroup) && (
+            {(onDeleteRow || onRestoreRow || onSystemChange || onDeleteGroup || onAddProcessingUnder) && (
               <th scope="col" className="border-b border-border-light px-3 py-2 text-left font-semibold">
                 {labels.rowActions}
               </th>
@@ -378,7 +381,7 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
                   canEdit={canEdit}
                 />
               )}
-              {(onDeleteRow || onRestoreRow || onSystemChange || onDeleteGroup) && (
+              {(onDeleteRow || onRestoreRow || onSystemChange || onDeleteGroup || onAddProcessingUnder) && (
                 <td className="border-b border-border-light px-3 py-2 align-top">
                   {row.system?.kind === 'processing' && onSystemChange && (
                     <label className="mb-2 flex flex-col gap-1 text-xs text-text-secondary">
@@ -410,16 +413,31 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
                       </SelectContent>
                     </Select>
                   )}
-                  {row.system?.kind === 'material' && onDeleteGroup && !row.deleted && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      className="mb-2"
-                      aria-label={`${labels.deleteGroup} ${row.rowId}`}
-                      onClick={() => onDeleteGroup(row)}
-                    >
-                      {labels.deleteGroup}
-                    </Button>
+                  {row.system?.kind === 'material' && !row.deleted && (
+                    <>
+                      {onAddProcessingUnder && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="mb-2"
+                          aria-label={`${labels.addProcessingUnder} ${row.rowId}`}
+                          onClick={() => onAddProcessingUnder(row)}
+                        >
+                          {labels.addProcessingUnder}
+                        </Button>
+                      )}
+                      {onDeleteGroup && (
+                        <Button
+                          type="button"
+                          variant="outline"
+                          className="mb-2"
+                          aria-label={`${labels.deleteGroup} ${row.rowId}`}
+                          onClick={() => onDeleteGroup(row)}
+                        >
+                          {labels.deleteGroup}
+                        </Button>
+                      )}
+                    </>
                   )}
                   {row.deleted ? (
                     <Button

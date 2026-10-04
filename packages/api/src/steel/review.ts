@@ -607,6 +607,31 @@ function quoteProjection(markdown: string | undefined): { markdown: string; rows
   };
 }
 
+function quoteRowProjection(headers: readonly string[], row: SteelReviewRow): string[] | undefined {
+  return quoteProjection(`## system_order\n\n${serializeReviewTable(headers, [row])}`)?.rows[0];
+}
+
+function countCustomerQuoteChangedRows(
+  headers: readonly string[],
+  currentRows: readonly SteelReviewRow[],
+  nextRows: readonly SteelReviewRow[],
+): number {
+  const currentById = new Map(currentRows
+    .filter((row) => !row.deleted)
+    .map((row) => [row.rowId, quoteRowProjection(headers, row)]));
+  const nextById = new Map(nextRows
+    .filter((row) => !row.deleted)
+    .map((row) => [row.rowId, quoteRowProjection(headers, row)]));
+  const rowIds = new Set([...currentById.keys(), ...nextById.keys()]);
+  let changed = 0;
+  for (const rowId of rowIds) {
+    if (JSON.stringify(currentById.get(rowId) ?? null) !== JSON.stringify(nextById.get(rowId) ?? null)) {
+      changed += 1;
+    }
+  }
+  return changed;
+}
+
 function ownerMarkdown(record: SteelReviewReadRecord): string | undefined {
   return record.effectiveMarkdown ?? record.humanMarkdown ?? record.markdown;
 }
@@ -1093,7 +1118,6 @@ export function createSteelReviewService({
         ? currentRows.find((row) => row.rowId === operation.rowId)
         : undefined;
       const operationSource = operation.type === 'add' || operation.type === 'update' ? operation.source : undefined;
-      const operationBinding = operation.type === 'update' ? operation.binding : undefined;
       if (payload.kind !== 'system_order' && (
         (operation.type === 'add' && operation.system !== undefined) ||
         operation.type === 'classify' ||
@@ -1438,14 +1462,7 @@ export function createSteelReviewService({
       }
       customerQuoteMarkdown = nextQuote.markdown;
       customerQuoteTotal = nextQuote.total;
-      const currentQuote = quoteProjection(record.customerQuoteMarkdown) ?? quoteProjection(
-        `## ${payload.title}\n\n${serializeReviewTable(headers, (record.rows ?? []).filter((row) => !row.deleted))}`,
-      );
-      customerQuoteChangedRows = currentQuote
-        ? nextQuote.rows.reduce((count, row, index) =>
-          count + (JSON.stringify(row) === JSON.stringify(currentQuote.rows[index]) ? 0 : 1), 0) +
-          Math.max(0, currentQuote.rows.length - nextQuote.rows.length)
-        : nextQuote.rows.length;
+      customerQuoteChangedRows = countCustomerQuoteChangedRows(headers, normalizedCurrentRows, canonicalLedgerRows);
     }
     const previousById = new Map(normalizedCurrentRows.map((row) => [row.rowId, row]));
     const changedRowIds = canonicalLedgerRows

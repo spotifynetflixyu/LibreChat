@@ -103,6 +103,32 @@ describe('Steel review local editor gates', () => {
     expect(screen.getByLabelText('品名規格: Read-only cell')).toHaveTextContent('鋼板');
   });
 
+  it('offers a material-scoped processing insertion action', () => {
+    const material = {
+      ...table.rows[0],
+      system: { kind: 'material' as const, parentRowId: null, cascadeDeletedBy: null },
+    };
+    const onAddProcessingUnder = jest.fn();
+    render(
+      <SteelReviewEditor
+        table={{ ...table, kind: 'system_order' }}
+        rows={[material]}
+        draft={createSteelReviewDraftState('owner')}
+        labels={{
+          ...sourceLabels,
+          table: 'Steel review table',
+          readonly: 'Read-only cell',
+          addProcessingUnder: 'Add processing under',
+        }}
+        onCellChange={jest.fn()}
+        onAddProcessingUnder={onAddProcessingUnder}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add processing under row-1' }));
+    expect(onAddProcessingUnder).toHaveBeenCalledWith(material);
+  });
+
   it('keeps a captured prior-generation editor read-only even when the live table is latest', () => {
     const onCellChange = jest.fn();
     const onSourceEdit = jest.fn();
