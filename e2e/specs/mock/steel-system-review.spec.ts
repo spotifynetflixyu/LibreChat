@@ -1,11 +1,13 @@
 import mongoose from 'mongoose';
 import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createModels, createMethods } from '@librechat/data-schemas';
 import { steelReviewRecoverySchema } from 'librechat-data-provider';
 import {
+  createSteelOcrStateService,
   createSteelQuotationStateService,
+  createSteelMarkdownCompletionServices,
   publishCompletedQuotation,
   renderQuotationCustomerMarkdown,
 } from '@librechat/api';
@@ -26,21 +28,25 @@ const order = [
   '| T1 | REVIEW-MATERIAL-A | M1 | kg | 2 | 1 | 2 | 10 | 1 |  |  |  |  |  | 材料 |  |',
   '| T2 | REVIEW-MATERIAL-B | M1 | pc | 1 |  | 1 |  | 1 |  |  |  |  |  | 材料 |  |',
 ].join('\n');
-const ocr = '## ocr_result\n\n| 零件編號 | 數量 |\n| --- | --- |\n| SOURCE-A | 2 |';
+const ocr = '## ocr_result\n\n| 來源 | 零件編號 | 數量 |\n| --- | --- | --- |\n|  | SOURCE-A | 2 |';
 const oldQuote = '## customer_quote｜歷史保留\n\n| 項目 | 小計 |\n| --- | --- |\n| OLD-KEEP | 456 |';
 const fullMessage = `SYSTEM-PREFIX\n\n${order}\n\n${oldQuote}\n\nSYSTEM-SUFFIX`;
 
-async function seedOrder(withHistoricalQuote = true) {
+async function seedOrder(withHistoricalQuote = true, withOcrReview = false) {
   const conversationId = randomUUID();
   const messageId = randomUUID();
   const otherMessageId = randomUUID();
+  const ocrMessageId = randomUUID();
+  const ocrGenerationId = randomUUID();
   const email = getE2EUser().email;
   const messageText = withHistoricalQuote ? fullMessage : `SYSTEM-PREFIX\n\n${order}\n\nSYSTEM-SUFFIX`;
   await seedConversations(email, [{ conversationId, title: 'System order real Save proof', updatedAt: new Date() }]);
-  await seedMessages(email, conversationId, [...(withHistoricalQuote ? [{ messageId, parentMessageId: '00000000-0000-0000-0000-000000000000',
+  await seedMessages(email, conversationId, [...(withHistoricalQuote ? [{ messageId, parentMessageId: withOcrReview ? ocrMessageId : '00000000-0000-0000-0000-000000000000',
     text: messageText, content: [{ type: 'text', text: messageText }], isCreatedByUser: false, sender: 'Assistant' }] : []),
   { messageId: otherMessageId, parentMessageId: messageId, text: order, content: [{ type: 'text', text: order }],
-    isCreatedByUser: false, sender: 'Assistant' }]);
+    isCreatedByUser: false, sender: 'Assistant' },
+  ...(withOcrReview ? [{ messageId: ocrMessageId, parentMessageId: '00000000-0000-0000-0000-000000000000',
+    text: ocr, content: [{ type: 'text', text: ocr }], isCreatedByUser: false, sender: 'Assistant' }] : [])]);
   const userId = await withMongo(async (db) => {
     const owner = await db.collection('users').findOne({ email });
     if (!owner) throw new Error('Missing authenticated user');
@@ -54,13 +60,24 @@ async function seedOrder(withHistoricalQuote = true) {
     const scope = { userId, conversationId };
     const service = createSteelQuotationStateService(db);
     const customerMarkdown = renderQuotationCustomerMarkdown({ tier: 'B' });
-    const current = await service.setOrder({ scope, fullMarkdown: ocr });
-    await service.saveCustomer({ scope, customerMarkdown, customerIdentity: 'explicit-default:B',
-      triggeringMessageId: 'quote-user', responseId: randomUUID(),
+    if (withOcrReview) {
+      await createSteelOcrStateService(db).upsertCurrentOcrResult({ conversationId, generationId: ocrGenerationId,
+        attemptNumber: 1, markdown: ocr, messageId: ocrMessageId });
+    }
+    const current = await service.setOrder({ scope, fullMarkdown: ocr,
+      ...(withOcrReview ? { revision: ocrGenerationId, messageId: ocrMessageId } : {}) });
+    const savedCustomer = await service.saveCustomer({ scope, customerMarkdown, customerIdentity: 'explicit-default:B',
+      triggeringMessageId: 'quote-user', responseId: withOcrReview ? messageId : randomUUID(),
       selectionProvenance: { method: 'default_tier', selectionMessageId: 'quote-user' },
       orderHash: current.currentOrder!.sha256 });
     const ticket = await service.issueTicket({ scope, customerMarkdown, customerIdentity: 'explicit-default:B',
-      triggeringMessageId: 'quote-user', selectionProvenance: { method: 'default_tier', selectionMessageId: 'quote-user' } });
+      triggeringMessageId: 'quote-user', selectionProvenance: { method: 'default_tier', selectionMessageId: 'quote-user' },
+      ...(withOcrReview ? { responseId: messageId, preparationId: savedCustomer.preparationId,
+        orderHash: current.currentOrder!.sha256, completionReceipt: {
+        inputHash: createHash('sha256').update('## quote_signal\n\nstart').digest('hex'),
+        markdown: '## quote_signal\n\nstart', ocrGeneration: ocrGenerationId,
+        ocrHash: current.currentOrder!.sha256,
+      } } : {}) });
     const run = await service.acceptSignal({ scope, index: ticket.index, token: ticket.token,
       orderHash: ticket.orderHash, customerMarkdown, customerIdentity: ticket.customerIdentity,
       prompts: { child: 'bounded child', main: 'bounded main' }, chunks: [{ index: 1, sourceRowCount: 1 }], targetMessageId: messageId });
@@ -78,12 +95,76 @@ async function seedOrder(withHistoricalQuote = true) {
         const text = `SYSTEM-PREFIX\n\n${markdown}\n\nSYSTEM-SUFFIX`;
         createModels(db);
         const saved = await createMethods(db).saveMessage({ userId }, {
-          messageId, conversationId, parentMessageId: '00000000-0000-0000-0000-000000000000',
+          messageId, conversationId, parentMessageId: withOcrReview ? ocrMessageId : '00000000-0000-0000-0000-000000000000',
           text, content: [{ type: 'text', text }], isCreatedByUser: false, sender: 'Assistant',
         }, { context: 'steel-review-e2e-publication' });
         if (!saved) throw new Error('Missing published quotation message');
       } });
-    return { conversationId, messageId, otherMessageId, runId: run.runId };
+    return { conversationId, messageId, otherMessageId, ocrMessageId, runId: run.runId };
+  } finally {
+    await db.disconnect();
+  }
+}
+
+async function replayCompleted(fixture: { conversationId: string; messageId: string; ocrMessageId: string }) {
+  const email = getE2EUser().email;
+  const userId = await withMongo(async (database) => {
+    const user = await database.collection('users').findOne({ email });
+    if (!user) throw new Error('Missing replay owner');
+    return String(user._id);
+  });
+  const runtimePath = process.env.E2E_RUNTIME_ENV_PATH ?? `${process.cwd()}/e2e/specs/.test-results/runtime-env.json`;
+  const runtime = JSON.parse(await readFile(runtimePath, 'utf8')) as { MONGO_URI: string };
+  const db = new mongoose.Mongoose();
+  await db.connect(runtime.MONGO_URI);
+  try {
+    const scope = { userId, conversationId: fixture.conversationId };
+    const quotation = createSteelQuotationStateService(db);
+    const state = await quotation.readState(scope);
+    createModels(db);
+    const methods = createMethods(db);
+    let projected = '## quote_signal\n\nstart';
+    let writes = 0;
+    let responseMessagePersisted = false;
+    let persistedMessage: object | undefined;
+    let loadedMessage: object | undefined;
+    const persistMarkdown = async () => {
+      writes += 1;
+      const text = `SYSTEM-PREFIX\n\n${projected}\n\nSYSTEM-SUFFIX`;
+      const saved = await methods.saveMessage({ userId }, { messageId: fixture.messageId,
+        conversationId: fixture.conversationId, parentMessageId: fixture.ocrMessageId,
+        text, content: [{ type: 'text', text }], isCreatedByUser: false, sender: 'Assistant',
+      }, { context: 'steel-review-e2e-replay' });
+      if (saved) {
+        responseMessagePersisted = true;
+        persistedMessage = saved;
+      }
+      return saved;
+    };
+    const result = await createSteelMarkdownCompletionServices({
+      quotation, ocr: createSteelOcrStateService(db),
+    }).finalize({
+      req: { user: { id: userId }, steelNativeContext: { requestId: fixture.messageId,
+        quotation: { scope, state: state ?? undefined, messageId: 'quote-user' } } },
+      responseId: fixture.messageId, generationId: randomUUID(), markdown: projected, completed: true,
+      applyMarkdown: (markdown) => { projected = markdown; },
+      persistMarkdown,
+      publishedResponse: {
+        load: async ({ userId: owner, responseId }) => {
+          const record = await methods.getMessage({ user: owner, messageId: responseId });
+          loadedMessage = record ?? undefined;
+          return record;
+        },
+        accept: (record) => {
+          responseMessagePersisted = true;
+          persistedMessage = record;
+        },
+      },
+    });
+    if (!responseMessagePersisted) await persistMarkdown();
+    if (!persistedMessage) throw new Error('Missing durable replay response');
+    return { result, writes, projected, acceptedSameRecord: persistedMessage === loadedMessage,
+      persistedMessage: JSON.parse(JSON.stringify(persistedMessage)) };
   } finally {
     await db.disconnect();
   }
@@ -370,6 +451,81 @@ test.describe('System order atomic manual review', () => {
     expect(JSON.stringify(savedMessage?.content)).not.toContain('customer_quote');
     const reopened = await readTable(page, headers, fixture.conversationId, fixture.messageId);
     expect(reopened.rows[0].values['單價'].effective).toBe('12');
+  });
+
+  test('an OCR business Save remains stale after a system-order price Save and reload', async ({ page }) => {
+    const fixture = await seedOrder(false, true);
+    conversations.push(fixture.conversationId);
+    const ocrUrl = `/api/steel/conversations/${fixture.conversationId}/review/ocr_result`;
+    const sourceResponse = await page.request.get(`${ocrUrl}?${new URLSearchParams({ messageId: fixture.ocrMessageId, title: 'ocr_result' })}`, { headers });
+    expect(sourceResponse.status()).toBe(200);
+    const source = (await sourceResponse.json() as { table: SteelReviewTable }).table;
+    const preparedResponse = await page.request.post(`${ocrUrl}/prepare`, { headers,
+      data: requestFor(source, [{ header: '數量', value: '3' }]) });
+    expect(preparedResponse.status(), await preparedResponse.text()).toBe(200);
+    const prepared = await preparedResponse.json() as SteelReviewOperationPrepared;
+    const sourceSave = await page.request.post(`${ocrUrl}/commit`, { headers,
+      data: { ...prepared.operationRequest, operationId: prepared.operationId, digest: prepared.digest } });
+    expect(sourceSave.status(), await sourceSave.text()).toBe(200);
+    const stale = await readback(fixture.conversationId);
+    expect(stale.quotation?.currentSystemOrder.needsRequote).toBe(true);
+    const provenance = stale.quotation?.currentSystemOrder.requoteProvenance;
+    expect(provenance).toMatchObject({ sourceMessageId: fixture.ocrMessageId, changedRows: 1 });
+    await page.goto(`/c/${fixture.conversationId}`);
+    await expect(page.getByText('SYSTEM-SUFFIX', { exact: true })).toBeVisible();
+    await page.getByTestId('message-body').filter({ hasText: 'SYSTEM-SUFFIX' })
+      .getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    await expect(dialog).toBeVisible();
+    await materialRow(dialog).getByRole('textbox').last().fill('12');
+    const savedResponse = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith('/review/system_order/commit'));
+    await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+    expect((await savedResponse).status()).toBe(200);
+    await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+    const saved = await readback(fixture.conversationId);
+    expect(saved.quotation?.currentSystemOrder.needsRequote).toBe(true);
+    expect(saved.quotation?.currentSystemOrder.requoteProvenance).toEqual(provenance);
+    expect(saved.quotation?.currentSystemOrder.customerQuoteMarkdown).toContain('| REVIEW-MATERIAL-A | 2 | 24 |');
+    expect(saved.ocr).toEqual(stale.ocr);
+    expect(saved.messages.find((message) => message.messageId === fixture.ocrMessageId))
+      .toEqual(stale.messages.find((message) => message.messageId === fixture.ocrMessageId));
+    await page.keyboard.press('Escape');
+    await page.reload();
+    await expect(page.getByText('SYSTEM-SUFFIX', { exact: true })).toBeVisible();
+    expect(await readback(fixture.conversationId)).toEqual(saved);
+  });
+
+  test('completed receipt replay retains a human-saved system order without another message write', async ({ page }) => {
+    const fixture = await seedOrder(false, true);
+    conversations.push(fixture.conversationId);
+    const table = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+    const prepared = await prepare(page, headers, requestFor(table, [{ header: '單價', value: '12' }]));
+    expect((await commit(page, headers, prepared)).status()).toBe(200);
+    const saved = await readback(fixture.conversationId);
+    const replay = await replayCompleted(fixture);
+    expect(replay.result.markdown).toContain('| 2 | 12 |');
+    expect(replay.result.markdown).not.toContain('customer_quote');
+    expect(replay.projected).toBe(replay.result.markdown);
+    expect(replay.writes).toBe(0);
+    expect(replay.acceptedSameRecord).toBe(true);
+    const savedMessage = JSON.parse(JSON.stringify(
+      saved.messages.find((message) => message.messageId === fixture.messageId),
+    ));
+    // getMessage uses the schema's select:false for the internal Meili index flag.
+    delete savedMessage._meiliIndex;
+    expect(replay.persistedMessage).toEqual(savedMessage);
+    const afterReplay = await readback(fixture.conversationId);
+    expect({ ...afterReplay, quotation: { ...afterReplay.quotation, updatedAt: saved.quotation?.updatedAt } }).toEqual(saved);
+    await page.goto(`/c/${fixture.conversationId}`);
+    await expect(page.getByText('SYSTEM-SUFFIX', { exact: true })).toBeVisible();
+    await page.getByTestId('message-body').filter({ hasText: 'SYSTEM-SUFFIX' })
+      .getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    await expect(materialRow(dialog).getByRole('textbox').last()).toHaveValue('12');
+    await page.keyboard.press('Escape');
+    await page.reload();
+    await expect(page.getByText('SYSTEM-SUFFIX', { exact: true })).toBeVisible();
+    expect(await readback(fixture.conversationId)).toEqual(afterReplay);
   });
 
   test('system-order callers cannot supply another run, customer snapshot or immutable column', async ({ page }) => {
