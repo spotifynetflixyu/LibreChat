@@ -4046,7 +4046,11 @@ test.describe('Steel managed source review', () => {
     expect(conflict.status()).toBe(409);
     const body = await conflict.json() as SteelReviewErrorResponse;
     expect(body.code).toBe('REVIEW_CONFLICT');
-    expect(body.recovery?.table).toEqual(current.table);
+    expect(body.recovery?.table).toMatchObject({ conversationId, messageId, tableId: table.tableId,
+      outputId: table.outputId, revision: current.table.revision, isLatest: true, readOnly: false,
+      headers: current.table.headers, rows: current.table.rows, effectiveMarkdown: current.table.effectiveMarkdown,
+      aiRawMarkdown: current.table.aiRawMarkdown, aiBaselineMarkdown: current.table.aiBaselineMarkdown });
+    expect(body.recovery?.table.partIndex).toBe(current.table.partIndex);
     expect(body.recovery?.conflicts).toEqual([{ kind: 'field', rowId: table.rows[0].rowId,
       header: '數量', expected: '2', current: '7', requested: '9' }]);
     expect(await persistedSnapshot(conversationId)).toEqual(before);
@@ -4114,9 +4118,11 @@ test.describe('Steel managed source review', () => {
           await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
           await expect(dialog.locator('tbody tr').first().locator('td').nth(3).getByText('10', { exact: true })).toBeVisible();
           await expect(dialog.getByRole('textbox')).toHaveCount(0);
-          await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
-          await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
+          await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toHaveCount(0);
+          await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toHaveCount(0);
           await expect(dialog.getByRole('button', { name: /^Save/ })).toBeDisabled();
+          await expect(dialog.getByText('Updated 1 rows', { exact: true })).toBeVisible();
+          await expect(dialog.getByRole('alert')).toHaveCount(0);
           await page.keyboard.press('Escape');
           await dialog.getByRole('button', { name: 'Discard unsaved changes', exact: true }).click();
         }
