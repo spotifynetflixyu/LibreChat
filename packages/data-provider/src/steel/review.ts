@@ -114,10 +114,30 @@ export const steelReviewCellSchema = z.object({
   effective: z.string().nullable(),
 });
 
+export const steelReviewRowOriginSchema = z.enum(['ai', 'manual']);
+
+export const steelReviewRowInsertionSchema = z.object({
+  kind: z.enum(['start', 'end', 'after']),
+  rowId: z.string().min(1).optional(),
+  ordinal: z.number().int().nonnegative(),
+}).superRefine((insertion, context) => {
+  if (insertion.kind === 'after' && !insertion.rowId) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['rowId'], message: 'An after anchor requires a row id' });
+  }
+  if (insertion.kind !== 'after' && insertion.rowId !== undefined) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['rowId'], message: 'Only an after anchor may include a row id' });
+  }
+});
+
 export const steelReviewRowSchema = z.object({
   rowId: z.string().min(1),
   values: z.record(z.string(), steelReviewCellSchema),
   source: steelReviewSourceSchema.nullable(),
+  // These fields were added by Ticket05. They stay optional at the shared
+  // boundary so an authenticated 03/04 receipt can be decoded byte-for-byte.
+  origin: steelReviewRowOriginSchema.optional(),
+  deleted: z.boolean().optional(),
+  insertion: steelReviewRowInsertionSchema.optional(),
 });
 
 export const steelReviewTargetSchema = z.object({
@@ -309,6 +329,8 @@ export type SteelReviewSource = z.infer<typeof steelReviewSourceSchema>;
 export type SteelReviewSourceIntent = z.infer<typeof steelReviewSourceIntentSchema>;
 export type SteelReviewSourceMapping = z.infer<typeof steelReviewSourceMappingSchema>;
 export type SteelReviewCell = z.infer<typeof steelReviewCellSchema>;
+export type SteelReviewRowOrigin = z.infer<typeof steelReviewRowOriginSchema>;
+export type SteelReviewRowInsertion = z.infer<typeof steelReviewRowInsertionSchema>;
 export type SteelReviewRow = z.infer<typeof steelReviewRowSchema>;
 export type SteelReviewTable = z.infer<typeof steelReviewTableSchema>;
 export type SteelReviewResponse = z.infer<typeof steelReviewResponseSchema>;
@@ -357,6 +379,23 @@ export function normalizeSteelReviewRows(rows: readonly SteelReviewRow[]): Steel
     }
     return { ...row, values };
   });
+}
+
+/**
+ * Materialize the Ticket05 ledger only after a row has crossed an
+ * authenticated trusted-view boundary. This deliberately preserves absent
+ * properties for old digest inputs and receipt snapshots.
+ */
+export function withSteelReviewLedgerDefaults(row: SteelReviewRow): SteelReviewRow {
+  return {
+    ...row,
+    origin: row.origin ?? 'ai',
+    deleted: row.deleted ?? false,
+  };
+}
+
+export function normalizeSteelReviewLedgerRows(rows: readonly SteelReviewRow[]): SteelReviewRow[] {
+  return normalizeSteelReviewRows(rows).map(withSteelReviewLedgerDefaults);
 }
 
 /** Keep the wire digest's field order and null semantics in one browser-safe encoder. */

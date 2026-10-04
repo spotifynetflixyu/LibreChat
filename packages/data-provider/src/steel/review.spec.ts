@@ -4,6 +4,7 @@ import {
   isSteelReviewSourceAssociationHeader,
   normalizeSteelReviewEffectiveValue,
   normalizeSteelReviewRows,
+  normalizeSteelReviewLedgerRows,
   sameSteelReviewSource,
   steelReviewReadQuerySchema,
   steelReviewResponseSchema,
@@ -115,6 +116,64 @@ describe('Steel review contracts', () => {
     }]);
     expect(normalized).not.toBe(rows);
     expect(normalized[0]?.values).not.toBe(rows[0].values);
+  });
+
+  it('materializes legacy ledger defaults only in the trusted effective view', () => {
+    const legacy = {
+      rowId: 'row-legacy',
+      source: null,
+      values: { Value: { baseline: 'AI', effective: 'human' } },
+    };
+    expect(Object.prototype.hasOwnProperty.call(legacy, 'origin')).toBe(false);
+    expect(normalizeSteelReviewRows([legacy])).toEqual([legacy]);
+    expect(normalizeSteelReviewLedgerRows([legacy])).toEqual([{
+      ...legacy,
+      origin: 'ai',
+      deleted: false,
+    }]);
+  });
+
+  it('validates typed insertion anchors and keeps them in the digest', () => {
+    const row = {
+      rowId: 'row-manual',
+      source: null,
+      origin: 'manual' as const,
+      deleted: false,
+      insertion: { kind: 'after' as const, rowId: 'row-ai', ordinal: 0 },
+      values: { Value: { baseline: null, effective: 'new' } },
+    };
+    expect(steelReviewPrepareSchema.safeParse({
+      conversationId: 'conversation-1',
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+      kind: 'ocr_result',
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      rows: [row],
+    }).success).toBe(true);
+    const base = {
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result' as const,
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      rows: [row],
+      headers: ['Value'],
+      messageSha256: 'a'.repeat(64),
+      target: { start: 0, end: 1, sha256: 'b'.repeat(64) },
+      targetText: 'old',
+      replacementText: 'new',
+      cleanReplacementText: 'new',
+      effectiveMarkdown: 'table',
+      displayMarkdown: 'table',
+      caption: { kind: 'ocr_result' as const, changedRows: 1, changedRowIds: ['row-manual'] },
+    };
+    expect(encodeSteelReviewDigest(base)).not.toBe(encodeSteelReviewDigest({
+      ...base,
+      rows: [{ ...row, insertion: { kind: 'start', ordinal: 0 } }],
+    }));
   });
 
   it('encodes scope, target, and row changes distinctly with stable null defaults', () => {

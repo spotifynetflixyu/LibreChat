@@ -109,5 +109,8 @@ export const steelReviewDraftStateFamily = createOwnedStateFamily<SteelReviewDra
   cellVersions: {},
   sourceDrafts: {},
   sourceVersions: {},
+  rowStates: {},
+  past: [],
+  future: [],
   changeSequence: 0,
 }));

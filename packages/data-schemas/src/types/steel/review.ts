@@ -1,10 +1,8 @@
 import type {
-  SteelReviewCell,
   SteelReviewKind,
   SteelReviewOwnerUpdated,
   SteelReviewRequoteProvenance,
   SteelReviewRow,
-  SteelReviewSource,
   SteelReviewSourceMapping,
 } from 'librechat-data-provider';
 import type { Document } from 'mongoose';
@@ -85,11 +83,7 @@ export interface ISteelReviewOutput extends Document, SteelReviewScope {
   revision: string;
   state: 'current' | 'historical';
   headers: string[];
-  rows: Array<{
-    rowId: string;
-    values: Record<string, SteelReviewCell>;
-    source: SteelReviewSource | null;
-  }>;
+  rows: SteelReviewRow[];
   sourceMappings?: SteelReviewSourceMapping[];
   latestOutputId?: string;
   aiUpdatedAt?: Date;

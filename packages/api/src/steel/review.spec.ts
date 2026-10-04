@@ -1032,6 +1032,74 @@ describe('Steel review read service', () => {
     expect(escaped.cleanReplacementText).toContain('C:\\\\path\\|slot');
   });
 
+  it('reconstructs a trusted manual end insertion and rejects forged ledger rows', async () => {
+    const markdown = [
+      '## ocr_result',
+      '',
+      '| 來源 | 零件編號 |',
+      '| --- | --- |',
+      '| A | P-1 |',
+    ].join('\n');
+    const record = {
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result' as const,
+      messageId: 'message-1',
+      tableId: 'ocr_result:1',
+      outputId: 'ocr_result:generation-1',
+      revision: 'generation-1',
+      state: 'current' as const,
+      markdown,
+      messageText: markdown,
+      headers: ['來源', '零件編號'],
+      rows: [{
+        rowId: 'row-ai',
+        origin: 'ai' as const,
+        deleted: false,
+        values: {
+          來源: { baseline: 'A', effective: 'A' },
+          零件編號: { baseline: 'P-1', effective: 'P-1' },
+        },
+        source: null,
+      }],
+    };
+    const service = createSteelReviewService({ reader: { readSteelReview: jest.fn().mockResolvedValue(record) } });
+    const manual = {
+      rowId: 'row-manual',
+      origin: 'manual' as const,
+      deleted: false,
+      insertion: { kind: 'end' as const, ordinal: 0 },
+      values: {
+        來源: { baseline: null, effective: '' },
+        零件編號: { baseline: null, effective: 'P-1' },
+      },
+      source: null,
+    };
+    const prepared = await service.prepare({
+      userId: record.userId,
+      conversationId: record.conversationId,
+      kind: record.kind,
+      messageId: record.messageId,
+      tableId: record.tableId,
+      outputId: record.outputId,
+      revision: record.revision,
+      rows: [record.rows[0]!, manual],
+    });
+    expect(prepared.rows.map((row) => row.rowId)).toEqual(['row-ai', 'row-manual']);
+    expect(prepared.rows[1]).toEqual(expect.objectContaining({ origin: 'manual', deleted: false }));
+    expect(prepared.cleanReplacementText).toContain('|  | P-1 |');
+    await expect(service.prepare({
+      userId: record.userId,
+      conversationId: record.conversationId,
+      kind: record.kind,
+      messageId: record.messageId,
+      tableId: record.tableId,
+      outputId: record.outputId,
+      revision: record.revision,
+      rows: [record.rows[0]!, { ...manual, rowId: 'row-ai' }],
+    })).rejects.toMatchObject({ code: 'REVIEW_INVALID_OPERATION' });
+  });
+
   it('rejects an uncommitted legacy-shaped commit without a receipt', async () => {
     const reader = {
       readSteelReview: jest.fn().mockResolvedValue({

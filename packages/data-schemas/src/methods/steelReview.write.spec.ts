@@ -247,6 +247,77 @@ describe('Steel review write methods', () => {
     })).rejects.toMatchObject({ code: 'REVIEW_NOT_FOUND' });
   });
 
+  it('persists a manual ledger row and counts its later tombstone exactly once', async () => {
+    const models = createModels(mongoose);
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const originalMarkdown = markdownFor('P-1');
+    await models.Conversation.create({
+      conversationId: 'conversation-1', user: 'user-1', tenantId: 'tenant-1', title: 'Review', endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId: 'assistant-1', conversationId: 'conversation-1', user: 'user-1', tenantId: 'tenant-1',
+      isCreatedByUser: false, text: originalMarkdown,
+    });
+    await State.create({
+      conversationId: 'conversation-1', currentOcrResultMarkdown: originalMarkdown,
+      currentOcrResultMessageId: 'assistant-1', currentOcrResultGenerationId: 'generation-1',
+    });
+    const aiRow: SteelReviewRow = {
+      rowId: 'row-ai', origin: 'ai', deleted: false, source: null,
+      values: { 來源: { baseline: 'A', effective: 'A' }, 零件編號: { baseline: 'P-1', effective: 'P-1' } },
+    };
+    const manualRow: SteelReviewRow = {
+      rowId: 'row-manual', origin: 'manual', deleted: false, source: null,
+      insertion: { kind: 'end', ordinal: 0 },
+      values: { 來源: { baseline: null, effective: '' }, 零件編號: { baseline: null, effective: 'P-1' } },
+    };
+    const firstMarkdown = [originalMarkdown, '| A | P-1 |'].join('\n');
+    const makeLedgerInput = (args: {
+      operationId: string;
+      revision: string;
+      rows: SteelReviewRow[];
+      oldMarkdown: string;
+      nextMarkdown: string;
+      changedRowIds: string[];
+    }): SteelReviewCommitInput => {
+      const targetText = args.oldMarkdown.slice(args.oldMarkdown.indexOf('| 來源 |'));
+      const replacementText = args.nextMarkdown.slice(args.nextMarkdown.indexOf('| 來源 |'));
+      return rehashInput({
+        ...makeInput({ operationId: args.operationId, revision: args.revision, previousValue: 'P-1', nextValue: 'P-1', changedRows: args.changedRowIds.length }),
+        rows: args.rows,
+        messageSha256: createHash('sha256').update(args.oldMarkdown).digest('hex'),
+        target: { start: args.oldMarkdown.indexOf('| 來源 |'), end: args.oldMarkdown.length, sha256: createHash('sha256').update(targetText).digest('hex') },
+        targetText,
+        replacementText,
+        cleanReplacementText: replacementText,
+        effectiveMarkdown: args.oldMarkdown.replace(targetText, replacementText),
+        displayMarkdown: args.oldMarkdown.replace(targetText, replacementText),
+        caption: { kind: 'ocr_result', changedRows: args.changedRowIds.length, changedRowIds: args.changedRowIds },
+      });
+    };
+    const writer = createSteelReviewWriteMethods(mongoose);
+    const first = await writer.commitSteelReview(makeLedgerInput({
+      operationId: 'operation-manual', revision: 'generation-1', rows: [aiRow, manualRow],
+      oldMarkdown: originalMarkdown, nextMarkdown: firstMarkdown, changedRowIds: ['row-manual'],
+    }));
+    expect(first.changedRows).toBe(1);
+    const savedFirst = await ReviewOutput.findOne({ conversationId: 'conversation-1', tableId: 'ocr_result:1' }).lean();
+    expect(savedFirst?.rows.map((row) => row.rowId)).toEqual(['row-ai', 'row-manual']);
+    expect(savedFirst?.rows[1]).toMatchObject({ origin: 'manual', deleted: false });
+
+    const deletedManual = { ...manualRow, deleted: true };
+    const secondMarkdown = originalMarkdown;
+    const second = await writer.commitSteelReview(makeLedgerInput({
+      operationId: 'operation-delete-manual', revision: first.revision, rows: [aiRow, deletedManual],
+      oldMarkdown: firstMarkdown, nextMarkdown: secondMarkdown, changedRowIds: ['row-manual'],
+    }));
+    expect(second.changedRows).toBe(1);
+    const savedSecond = await ReviewOutput.findOne({ conversationId: 'conversation-1', tableId: 'ocr_result:1' }).lean();
+    expect(savedSecond?.rows[1]).toMatchObject({ rowId: 'row-manual', origin: 'manual', deleted: true });
+    expect(second.effectiveMarkdown).not.toContain('| A | P-1 |\n| A | P-1 |');
+  });
+
   it('rejects a noncanonical effective cell before claiming or writing state', async () => {
     const models = createModels(mongoose);
     const State = createSteelConversationOcrStateModel(mongoose);

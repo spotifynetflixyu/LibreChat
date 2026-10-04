@@ -18,6 +18,9 @@ export interface SteelReviewEditorLabels {
   sourcePageLoading: string;
   sourcePageUnavailable: string;
   sourcePageRetry: string;
+  deleteRow?: string;
+  restoreRow?: string;
+  rowActions?: string;
 }
 
 export interface SteelReviewEditorProps {
@@ -34,6 +37,8 @@ export interface SteelReviewEditorProps {
   onSourcePageRetry?: () => void;
   onSourceEdit?: (row: SteelReviewRow) => void;
   onSourceChange?: (row: SteelReviewRow, source: SteelReviewSource | null) => void;
+  onDeleteRow?: (row: SteelReviewRow) => void;
+  onRestoreRow?: (row: SteelReviewRow) => void;
 }
 
 export function isSteelReviewCellEditable(table: SteelReviewTable, header: string): boolean {
@@ -79,6 +84,7 @@ function SourceCell({
 }) {
   const editable = Boolean(
     row.rowId &&
+    !row.deleted &&
     sourceCorrectionRowId === row.rowId &&
     table.kind === 'ocr_result' &&
     table.isLatest &&
@@ -143,7 +149,7 @@ function SourceCell({
           <span aria-label={`${labels.sourceFile}: ${sourceLabel(source) || labels.readonly}`}>
             {sourceLabel(source) || labels.readonly}
           </span>
-          {onSourceEdit && row.rowId && table.kind === 'ocr_result' && table.isLatest && !table.readOnly && (
+          {onSourceEdit && row.rowId && !row.deleted && table.kind === 'ocr_result' && table.isLatest && !table.readOnly && (
             <Button
               type="button"
               variant="outline"
@@ -230,30 +236,39 @@ function ReviewCell({
   const draftValue = row.rowId ? getSteelReviewDraftCell(draft, row.rowId, header) : undefined;
   const currentValue = draftValue ?? displayCellValue(cell.effective);
   const changed = displayCellValue(cell.baseline) !== currentValue;
-  const editable = Boolean(row.rowId) && isSteelReviewCellEditable(table, header);
+  const editable = Boolean(row.rowId) && !row.deleted && isSteelReviewCellEditable(table, header);
+  const deletedValue = row.deleted
+    ? <del className="text-text-secondary">{row.origin === 'manual' ? currentValue : displayCellValue(cell.baseline)}</del>
+    : null;
+  const previousValue = !row.deleted && changed && cell.baseline !== null && cell.baseline !== undefined
+    ? <del className="mr-2 text-text-secondary">{cell.baseline}</del>
+    : null;
+  let editorContent: ReactNode = null;
+  if (!row.deleted && editable) {
+    editorContent = (
+      <Input
+        aria-label={`${header} ${row.rowId}`}
+        className="min-w-24"
+        value={currentValue}
+        onChange={(event: ChangeEvent<HTMLInputElement>) =>
+          onCellChange(row, header, event.target.value)}
+        onKeyDown={(event: KeyboardEvent<HTMLInputElement>) => {
+          if (event.key === 'Enter') {
+            event.preventDefault();
+            event.currentTarget.blur();
+          }
+        }}
+      />
+    );
+  } else if (!row.deleted) {
+    editorContent = <span aria-label={`${header}: ${readonlyLabel}`}>{currentValue}</span>;
+  }
 
   return (
     <td className="border-b border-border-light px-3 py-2 align-top">
-      {changed && cell.baseline !== null && cell.baseline !== undefined && (
-        <del className="mr-2 text-text-secondary">{cell.baseline}</del>
-      )}
-      {editable ? (
-        <Input
-          aria-label={`${header} ${row.rowId}`}
-          className="min-w-24"
-          value={currentValue}
-          onChange={(event: ChangeEvent<HTMLInputElement>) =>
-            onCellChange(row, header, event.target.value)}
-          onKeyDown={(event: KeyboardEvent<HTMLInputElement>) => {
-            if (event.key === 'Enter') {
-              event.preventDefault();
-              event.currentTarget.blur();
-            }
-          }}
-        />
-      ) : (
-        <span aria-label={`${header}: ${readonlyLabel}`}>{currentValue}</span>
-      )}
+      {deletedValue}
+      {previousValue}
+      {editorContent}
     </td>
   );
 }
@@ -272,6 +287,8 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
   onSourcePageRetry,
   onSourceEdit,
   onSourceChange,
+  onDeleteRow,
+  onRestoreRow,
 }: SteelReviewEditorProps) {
   return (
     <div className="max-h-[60vh] overflow-auto rounded-md border border-border-light">
@@ -288,11 +305,16 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
                 {labels.sourceActions}
               </th>
             )}
+            {(onDeleteRow || onRestoreRow) && (
+              <th scope="col" className="border-b border-border-light px-3 py-2 text-left font-semibold">
+                {labels.rowActions}
+              </th>
+            )}
           </tr>
         </thead>
         <tbody>
           {rows.map((row, rowIndex) => (
-            <tr key={row.rowId || `ephemeral-${rowIndex}`}>
+            <tr key={row.rowId || `ephemeral-${rowIndex}`} className={row.deleted ? 'opacity-70' : undefined}>
               {table.headers.map((header) => (
                 <ReviewCell
                   key={`${row.rowId || `ephemeral-${rowIndex}`}-${header}`}
@@ -318,6 +340,29 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
                   onSourceEdit={onSourceEdit}
                   onSourceChange={onSourceChange}
                 />
+              )}
+              {(onDeleteRow || onRestoreRow) && (
+                <td className="border-b border-border-light px-3 py-2 align-top">
+                  {row.deleted ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      aria-label={`${labels.restoreRow} ${row.rowId}`}
+                      onClick={() => onRestoreRow?.(row)}
+                    >
+                      {labels.restoreRow}
+                    </Button>
+                  ) : (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      aria-label={`${labels.deleteRow} ${row.rowId}`}
+                      onClick={() => onDeleteRow?.(row)}
+                    >
+                      {labels.deleteRow}
+                    </Button>
+                  )}
+                </td>
               )}
             </tr>
           ))}

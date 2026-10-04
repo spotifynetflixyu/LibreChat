@@ -1,7 +1,11 @@
 import type { SteelReviewSource, SteelReviewTable } from 'librechat-data-provider';
 import {
+  addSteelReviewDraftRow,
   applySteelReviewDrafts,
+  canRedoSteelReviewDraft,
+  canUndoSteelReviewDraft,
   createSteelReviewDraftState,
+  deleteSteelReviewDraftRow,
   getSteelReviewDraftKey,
   getSteelReviewDraftOwnerKey,
   getSteelReviewDirtyRowIds,
@@ -9,6 +13,9 @@ import {
   rebaseSteelReviewDraftState,
   setSteelReviewDraftCell,
   setSteelReviewDraftSource,
+  undoSteelReviewDraft,
+  redoSteelReviewDraft,
+  restoreSteelReviewDraftRow,
 } from './session';
 
 const table: SteelReviewTable = {
@@ -208,5 +215,126 @@ describe('Steel review local draft session', () => {
 
     expect(rebased.cells).toEqual({ 'row-1\u0000數量': '4' });
     expect(rebased.changeSequence).toBe(draft.changeSequence);
+  });
+
+  it('keeps identical manual rows independent and drops an add-delete before save', () => {
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(selection, table));
+    draft = addSteelReviewDraftRow(draft, table, table.rows[0], null);
+    const first = applySteelReviewDrafts(table.rows, draft).find((row) => row.origin === 'manual');
+    draft = addSteelReviewDraftRow(draft, table, table.rows[0], null);
+    const rows = applySteelReviewDrafts(table.rows, draft);
+    const manuals = rows.filter((row) => row.origin === 'manual');
+    expect(manuals).toHaveLength(2);
+    expect(manuals[0]?.rowId).not.toBe(manuals[1]?.rowId);
+    expect(manuals[0]?.values.品名).toEqual({ baseline: null, effective: '' });
+    draft = deleteSteelReviewDraftRow(draft, first!, false);
+    expect(applySteelReviewDrafts(table.rows, draft).filter((row) => row.origin === 'manual')).toHaveLength(1);
+  });
+
+  it('anchors a row added after a new row to the original trusted anchor', () => {
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(selection, table));
+    draft = addSteelReviewDraftRow(draft, table, table.rows[0], null);
+    const first = applySteelReviewDrafts(table.rows, draft).find((row) => row.origin === 'manual');
+    draft = addSteelReviewDraftRow(draft, table, first, null);
+    const manuals = applySteelReviewDrafts(table.rows, draft).filter((row) => row.origin === 'manual');
+    expect(manuals[0]?.insertion).toEqual({ kind: 'after', rowId: 'row-1', ordinal: 0 });
+    expect(manuals[1]?.insertion).toEqual({ kind: 'after', rowId: 'row-1', ordinal: 1 });
+  });
+
+  it('emits a trusted source intent for a newly inserted sourced row', () => {
+    const source: SteelReviewSource = { fileId: 'file-1', pageNumber: 2, filename: 'drawing.pdf' };
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(selection, table));
+    draft = addSteelReviewDraftRow(draft, table, undefined, source);
+    const input = getSteelReviewPrepareInput(selection, table, draft, applySteelReviewDrafts(table.rows, draft));
+    expect(input.sourceIntents).toEqual([
+      expect.objectContaining({ fileId: 'file-1', pageNumber: 2 }),
+    ]);
+  });
+
+  it('undoes and redoes a row insertion and delete without network state', () => {
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(selection, table));
+    draft = addSteelReviewDraftRow(draft, table, undefined, null);
+    const added = applySteelReviewDrafts(table.rows, draft).find((row) => row.origin === 'manual');
+    expect(canUndoSteelReviewDraft(draft)).toBe(true);
+    draft = undoSteelReviewDraft(draft);
+    expect(applySteelReviewDrafts(table.rows, draft)).toHaveLength(table.rows.length);
+    expect(canRedoSteelReviewDraft(draft)).toBe(true);
+    draft = redoSteelReviewDraft(draft);
+    expect(applySteelReviewDrafts(table.rows, draft)).toHaveLength(table.rows.length + 1);
+    draft = deleteSteelReviewDraftRow(draft, added!, false);
+    expect(applySteelReviewDrafts(table.rows, draft)).toHaveLength(table.rows.length);
+  });
+
+  it('keeps a saved manual deletion as a tombstone and restores its stable id', () => {
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(selection, table));
+    const manual = { ...table.rows[0], rowId: 'manual-saved', origin: 'manual' as const, deleted: false };
+    draft = deleteSteelReviewDraftRow(draft, manual, true);
+    const deleted = draft.rowStates['manual-saved'];
+    expect(deleted?.deleted).toBe(true);
+    draft = restoreSteelReviewDraftRow(draft, deleted!);
+    expect(draft.rowStates['manual-saved']?.deleted).toBe(false);
+  });
+
+  it('rebases semantic cell history so undo after save restores the pre-save value', () => {
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(selection, table));
+    draft = setSteelReviewDraftCell(draft, table.rows[0], '數量', '2');
+    draft = setSteelReviewDraftCell(draft, table.rows[0], '數量', '78');
+    const savedRows = [{
+      ...table.rows[0],
+      values: { ...table.rows[0].values, 數量: { baseline: '1', effective: '78' } },
+    }];
+    const rebased = rebaseSteelReviewDraftState(draft, savedRows, draft.changeSequence);
+    const undone = undoSteelReviewDraft(rebased);
+    expect(applySteelReviewDrafts(savedRows, undone)[0]?.values.數量.effective).toBe('2');
+    const redone = redoSteelReviewDraft(undone);
+    expect(applySteelReviewDrafts(savedRows, redone)[0]?.values.數量.effective).toBe('78');
+  });
+
+  it('restores the saved row baseline after undoing one grouped cell edit', () => {
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(selection, table));
+    draft = setSteelReviewDraftCell(draft, table.rows[0], '數量', '78');
+    const savedRows = [{
+      ...table.rows[0],
+      values: { ...table.rows[0].values, 數量: { baseline: '1', effective: '78' } },
+    }];
+    const rebased = rebaseSteelReviewDraftState(draft, savedRows, draft.changeSequence);
+    expect(applySteelReviewDrafts(savedRows, undoSteelReviewDraft(rebased))[0]?.values.數量.effective).toBe('1');
+  });
+
+  it('rebases grouped source history across a confirmed page save', () => {
+    const sourceOne: SteelReviewSource = { fileId: 'file-1', pageNumber: 1, filename: 'drawing.pdf' };
+    const sourceTwo: SteelReviewSource = { ...sourceOne, pageNumber: 2 };
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(selection, table));
+    const sourced = { ...table.rows[0], source: sourceOne };
+    draft = setSteelReviewDraftSource(draft, sourced, sourceTwo);
+    const savedRows = [{ ...sourced, source: sourceTwo }];
+    const rebased = rebaseSteelReviewDraftState(draft, savedRows, draft.changeSequence);
+    expect(applySteelReviewDrafts(savedRows, undoSteelReviewDraft(rebased))[0]?.source?.pageNumber).toBe(1);
+    expect(applySteelReviewDrafts(savedRows, redoSteelReviewDraft(undoSteelReviewDraft(rebased)))[0]?.source?.pageNumber).toBe(2);
+  });
+
+  it('undoes source menu choices one operation at a time', () => {
+    const sourceOne: SteelReviewSource = { fileId: 'file-1', pageNumber: 1, filename: 'drawing.pdf' };
+    const sourceTwo: SteelReviewSource = { fileId: 'file-2', pageNumber: 1, filename: 'other.pdf' };
+    const sourceThree: SteelReviewSource = { ...sourceTwo, pageNumber: 2 };
+    const sourced = { ...table.rows[0], source: sourceOne };
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(selection, table));
+    draft = setSteelReviewDraftSource(draft, sourced, sourceTwo);
+    draft = setSteelReviewDraftSource(draft, sourced, sourceThree);
+    const savedRows = [{ ...sourced, source: sourceThree }];
+    const rebased = rebaseSteelReviewDraftState(draft, savedRows, draft.changeSequence);
+    const afterFirstUndo = undoSteelReviewDraft(rebased);
+    expect(applySteelReviewDrafts(savedRows, afterFirstUndo)[0]?.source).toEqual(sourceTwo);
+    expect(applySteelReviewDrafts(savedRows, undoSteelReviewDraft(afterFirstUndo))[0]?.source).toEqual(sourceOne);
+  });
+
+  it('rebases an inserted row history into a manual tombstone after save', () => {
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(selection, table));
+    draft = addSteelReviewDraftRow(draft, table, undefined, null);
+    const savedRows = [...table.rows, ...applySteelReviewDrafts(table.rows, draft).filter((row) => row.origin === 'manual')];
+    const rebased = rebaseSteelReviewDraftState(draft, savedRows, draft.changeSequence);
+    const undone = undoSteelReviewDraft(rebased);
+    expect(applySteelReviewDrafts(savedRows, undone).find((row) => row.origin === 'manual')?.deleted).toBe(true);
+    expect(applySteelReviewDrafts(savedRows, redoSteelReviewDraft(undone)).find((row) => row.origin === 'manual')?.deleted).toBe(false);
   });
 });

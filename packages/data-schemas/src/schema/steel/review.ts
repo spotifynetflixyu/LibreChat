@@ -34,6 +34,18 @@ const steelReviewRowSchema: Schema<SteelReviewRow> = new Schema(
     rowId: { type: String, required: true },
     values: { type: Map, of: steelReviewCellSchema, required: true },
     source: { type: steelReviewSourceSchema, default: null },
+    origin: { type: String, enum: ['ai', 'manual'] },
+    deleted: { type: Boolean },
+    insertion: {
+      type: new Schema(
+        {
+          kind: { type: String, enum: ['start', 'end', 'after'], required: true },
+          rowId: { type: String },
+          ordinal: { type: Number, required: true, min: 0 },
+        },
+        { _id: false },
+      ),
+    },
   },
   { _id: false },
 );

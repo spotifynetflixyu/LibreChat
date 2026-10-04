@@ -15,6 +15,20 @@ export interface SteelReviewDraftState {
   cellVersions: Record<string, number>;
   sourceDrafts: Record<string, SteelReviewSource | null>;
   sourceVersions: Record<string, number>;
+  rowStates: Record<string, SteelReviewRow>;
+  past: SteelReviewDraftSnapshot[];
+  future: SteelReviewDraftSnapshot[];
+  historyGroup?: string;
+  changeSequence: number;
+}
+
+interface SteelReviewDraftSnapshot {
+  cells: Record<string, string>;
+  touched: Record<string, string>;
+  cellVersions: Record<string, number>;
+  sourceDrafts: Record<string, SteelReviewSource | null>;
+  sourceVersions: Record<string, number>;
+  rowStates: Record<string, SteelReviewRow>;
   changeSequence: number;
 }
 
@@ -74,7 +88,54 @@ export function createSteelReviewDraftState(ownerKey: string): SteelReviewDraftS
     cellVersions: {},
     sourceDrafts: {},
     sourceVersions: {},
+    rowStates: {},
+    past: [],
+    future: [],
     changeSequence: 0,
+  };
+}
+
+function snapshotOf(draft: SteelReviewDraftState): SteelReviewDraftSnapshot {
+  return {
+    cells: draft.cells,
+    touched: draft.touched,
+    cellVersions: draft.cellVersions,
+    sourceDrafts: draft.sourceDrafts,
+    sourceVersions: draft.sourceVersions,
+    rowStates: draft.rowStates,
+    changeSequence: draft.changeSequence,
+  };
+}
+
+function recordMutation(
+  draft: SteelReviewDraftState,
+  next: Omit<SteelReviewDraftState, 'past' | 'future' | 'historyGroup'>,
+  group: string,
+): SteelReviewDraftState {
+  const past = draft.historyGroup === group
+    ? [...draft.past.slice(0, -1), snapshotOf(draft)]
+    : [...draft.past, snapshotOf(draft)];
+  return {
+    ...next,
+    past,
+    future: [],
+    historyGroup: group,
+  };
+}
+
+function restoreSnapshot(
+  draft: SteelReviewDraftState,
+  snapshot: SteelReviewDraftSnapshot,
+  past: SteelReviewDraftSnapshot[],
+  future: SteelReviewDraftSnapshot[],
+): SteelReviewDraftState {
+  return {
+    ...draft,
+    ...snapshot,
+    past,
+    future,
+    historyGroup: undefined,
+    changeSequence: draft.changeSequence + 1,
   };
 }
 
@@ -98,7 +159,13 @@ export function setSteelReviewDraftSource(
   } else {
     sourceDrafts[row.rowId] = normalizedSource;
   }
-  return { ...draft, sourceDrafts, sourceVersions, changeSequence };
+  const historyBase = Object.prototype.hasOwnProperty.call(draft.sourceDrafts, row.rowId)
+    ? draft
+    : { ...draft, sourceDrafts: { ...draft.sourceDrafts, [row.rowId]: row.source } };
+  // A source menu selection is a complete semantic operation. Keep successive
+  // file/page choices separate so Undo walks the user's source history one
+  // choice at a time; focused cell edits are the only coalesced mutations.
+  return recordMutation(historyBase, { ...draft, sourceDrafts, sourceVersions, changeSequence }, `source:${row.rowId}:${changeSequence}`);
 }
 
 export function getSteelReviewDraftSource(
@@ -138,7 +205,14 @@ export function setSteelReviewDraftCell(
     cells[key] = value;
   }
 
-  return { ...draft, cells, touched, cellVersions, changeSequence };
+  const historyBase = Object.prototype.hasOwnProperty.call(draft.touched, key)
+    ? draft
+    : {
+        ...draft,
+        cells: { ...draft.cells, [key]: effective },
+        touched: { ...draft.touched, [key]: effective },
+      };
+  return recordMutation(historyBase, { ...draft, cells, touched, cellVersions, changeSequence }, `cell:${key}`);
 }
 
 export function getSteelReviewDraftCell(
@@ -170,27 +244,45 @@ export function getSteelReviewDirtyRowIds(
       rowIds.add(rowId);
     }
   }
-  return table.rows.map((row) => row.rowId).filter((rowId) => rowIds.has(rowId));
+  for (const [rowId, row] of Object.entries(draft.rowStates)) {
+    const trusted = table.rows.find((candidate) => candidate.rowId === rowId);
+    if (!trusted) {
+      if (!row.deleted) {
+        rowIds.add(rowId);
+      }
+      continue;
+    }
+    if (JSON.stringify({ ...trusted, origin: trusted.origin ?? 'ai', deleted: trusted.deleted ?? false }) !==
+      JSON.stringify({ ...row, origin: row.origin ?? 'ai', deleted: row.deleted ?? false })) {
+      rowIds.add(rowId);
+    }
+  }
+  return [
+    ...table.rows.map((row) => row.rowId).filter((rowId) => rowIds.has(rowId)),
+    ...Object.keys(draft.rowStates).filter((rowId) => !trustedRowIds.has(rowId) && rowIds.has(rowId)),
+  ];
 }
 
 export function applySteelReviewDrafts(
   rows: readonly SteelReviewRow[],
   draft: SteelReviewDraftState,
 ): SteelReviewRow[] {
-  return rows.map((row) => {
+  const projectedRows = rows.map((row) => {
     if (!row.rowId) {
       return row;
     }
 
+    const projectedRow = draft.rowStates[row.rowId] ?? row;
+
     const values = Object.fromEntries(
-      Object.entries(row.values).map(([header, cell]) => {
-        const value = getSteelReviewDraftCell(draft, row.rowId, header);
+      Object.entries(projectedRow.values).map(([header, cell]) => {
+        const value = getSteelReviewDraftCell(draft, projectedRow.rowId, header);
         return [header, value === undefined ? cell : { ...cell, effective: value }];
       }),
     );
-    const source = getSteelReviewDraftSource(draft, row.rowId);
+    const source = getSteelReviewDraftSource(draft, projectedRow.rowId);
     if (source === undefined) {
-      return { ...row, values };
+      return { ...projectedRow, values };
     }
     const sourceColumn = Object.keys(values).find((header) => {
       const normalized = header.trim().toLowerCase().replace(/[\s_]+/gu, '');
@@ -212,7 +304,7 @@ export function applySteelReviewDrafts(
     });
     const projectedValues = { ...values };
     if (sourceColumn) {
-      const sameFile = source !== null && source.fileId === row.source?.fileId;
+      const sameFile = source !== null && source.fileId === projectedRow.source?.fileId;
       projectedValues[sourceColumn] = {
         ...projectedValues[sourceColumn],
         effective: source === null || !sameFile ? '' : projectedValues[sourceColumn]?.effective ?? '',
@@ -224,8 +316,94 @@ export function applySteelReviewDrafts(
         effective: source?.pageNumber == null ? '' : String(source.pageNumber),
       };
     }
-    return { ...row, values: projectedValues, source };
+    return { ...projectedRow, values: projectedValues, source };
   });
+  const existing = new Set(rows.map((row) => row.rowId));
+  return [
+    ...projectedRows,
+    ...Object.values(draft.rowStates).filter((row) => !existing.has(row.rowId) && !row.deleted),
+  ];
+}
+
+export function addSteelReviewDraftRow(
+  draft: SteelReviewDraftState,
+  table: Pick<SteelReviewTable, 'headers' | 'rows'>,
+  anchor: SteelReviewRow | undefined,
+  source: SteelReviewSource | null,
+): SteelReviewDraftState {
+  const rowId = globalThis.crypto?.randomUUID?.() ??
+    `manual-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+  const values = Object.fromEntries(table.headers.map((header) => [header, { baseline: null, effective: '' }]));
+  const inheritedAnchor = anchor?.origin === 'manual' ? anchor.insertion : undefined;
+  const anchorKind = inheritedAnchor?.kind ?? (anchor?.rowId ? 'after' : 'end');
+  const anchorRowId = inheritedAnchor?.kind === 'after'
+    ? inheritedAnchor.rowId
+    : anchor?.rowId;
+  const anchorKey = anchorKind === 'after' ? `after:${anchorRowId}` : anchorKind;
+  const ordinal = Object.values(draft.rowStates)
+    .filter((row) => {
+      const insertion = row.insertion;
+      if (!insertion) return false;
+      const key = insertion.kind === 'after' ? `after:${insertion.rowId}` : insertion.kind;
+      return key === anchorKey;
+    })
+    .reduce((max, row) => Math.max(max, row.insertion?.ordinal ?? -1), -1) + 1;
+  const insertion = anchorKind === 'after'
+    ? { kind: 'after' as const, rowId: anchorRowId!, ordinal }
+    : { kind: anchorKind as 'start' | 'end', ordinal };
+  const row: SteelReviewRow = { rowId, origin: 'manual', deleted: false, insertion, values, source };
+  return recordMutation(draft, {
+    ...draft,
+    rowStates: { ...draft.rowStates, [rowId]: row },
+    changeSequence: draft.changeSequence + 1,
+  }, `add:${rowId}`);
+}
+
+export function deleteSteelReviewDraftRow(
+  draft: SteelReviewDraftState,
+  row: SteelReviewRow,
+  isSaved: boolean,
+): SteelReviewDraftState {
+  if (!row.rowId) return draft;
+  const rowStates = { ...draft.rowStates };
+  if (!isSaved && (row.origin ?? 'ai') === 'manual') {
+    delete rowStates[row.rowId];
+  } else {
+    rowStates[row.rowId] = { ...row, deleted: true };
+  }
+  return recordMutation(draft, { ...draft, rowStates, changeSequence: draft.changeSequence + 1 }, `delete:${row.rowId}`);
+}
+
+export function restoreSteelReviewDraftRow(
+  draft: SteelReviewDraftState,
+  row: SteelReviewRow,
+): SteelReviewDraftState {
+  if (!row.rowId) return draft;
+  return recordMutation(draft, {
+    ...draft,
+    rowStates: { ...draft.rowStates, [row.rowId]: { ...row, deleted: false } },
+    changeSequence: draft.changeSequence + 1,
+  }, `restore:${row.rowId}`);
+}
+
+export function canUndoSteelReviewDraft(draft: SteelReviewDraftState): boolean {
+  return draft.past.length > 0;
+}
+
+export function canRedoSteelReviewDraft(draft: SteelReviewDraftState): boolean {
+  return draft.future.length > 0;
+}
+
+export function undoSteelReviewDraft(draft: SteelReviewDraftState): SteelReviewDraftState {
+  const previous = draft.past[draft.past.length - 1];
+  if (!previous) return draft;
+  return restoreSnapshot(draft, previous, draft.past.slice(0, -1), [snapshotOf(draft), ...draft.future]);
+}
+
+export function redoSteelReviewDraft(draft: SteelReviewDraftState): SteelReviewDraftState {
+  const next = draft.future[0];
+  if (!next) return draft;
+  return restoreSnapshot(draft, next, [...draft.past, snapshotOf(draft)], draft.future.slice(1));
 }
 
 export function getSteelReviewPrepareInput(
@@ -244,8 +422,8 @@ export function getSteelReviewPrepareInput(
     outputId: table.outputId,
     revision: table.revision,
     rows,
-    ...(Object.entries(draftSourceIntents(draft, table.rows)).length > 0
-      ? { sourceIntents: draftSourceIntents(draft, table.rows) }
+    ...(Object.entries(draftSourceIntents(draft, rows)).length > 0
+      ? { sourceIntents: draftSourceIntents(draft, rows) }
       : {}),
   };
 }
@@ -255,7 +433,13 @@ function draftSourceIntents(
   rows: readonly SteelReviewRow[],
 ): SteelReviewSourceIntent[] {
   const byId = new Map(rows.map((row) => [row.rowId, row]));
-  return Object.entries(draft.sourceDrafts)
+  const sourceDrafts = { ...draft.sourceDrafts };
+  for (const row of rows) {
+    if (row.origin === 'manual' && row.source !== null && !Object.prototype.hasOwnProperty.call(sourceDrafts, row.rowId)) {
+      sourceDrafts[row.rowId] = row.source;
+    }
+  }
+  return Object.entries(sourceDrafts)
     .filter(([rowId]) => byId.has(rowId))
     .map(([rowId, source]) => ({
       rowId,
@@ -301,5 +485,44 @@ export function rebaseSteelReviewDraftState(
     }
   }
 
-  return { ...draft, cells, sourceDrafts };
+  const rowStates = { ...draft.rowStates };
+  for (const [rowId, row] of Object.entries(rowStates)) {
+    const saved = savedRows.find((candidate) => candidate.rowId === rowId);
+    if (saved && JSON.stringify({ ...saved, origin: saved.origin ?? 'ai', deleted: saved.deleted ?? false }) ===
+      JSON.stringify({ ...row, origin: row.origin ?? 'ai', deleted: row.deleted ?? false })) {
+      delete rowStates[rowId];
+    }
+  }
+
+  const rebaseSnapshot = (snapshot: SteelReviewDraftSnapshot): SteelReviewDraftSnapshot => {
+    const snapshotCells: Record<string, string> = {};
+    for (const [key, value] of Object.entries(snapshot.touched)) {
+      if (value !== rowsByCell.get(key)) {
+        snapshotCells[key] = value;
+      }
+    }
+    const snapshotRows = { ...snapshot.rowStates };
+    for (const saved of savedRows) {
+      if (Object.prototype.hasOwnProperty.call(snapshotRows, saved.rowId)) {
+        continue;
+      }
+      const origin = saved.origin ?? 'ai';
+      if (origin === 'manual' && !saved.deleted) {
+        snapshotRows[saved.rowId] = { ...saved, deleted: true };
+      } else if (origin === 'ai' && saved.deleted) {
+        snapshotRows[saved.rowId] = { ...saved, deleted: false };
+      }
+    }
+    return { ...snapshot, cells: snapshotCells, rowStates: snapshotRows };
+  };
+
+  return {
+    ...draft,
+    cells,
+    sourceDrafts,
+    rowStates,
+    past: draft.past.map(rebaseSnapshot),
+    future: draft.future.map(rebaseSnapshot),
+    historyGroup: undefined,
+  };
 }
