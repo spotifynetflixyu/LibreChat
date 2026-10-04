@@ -5,7 +5,7 @@ import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import { encodeSteelReviewDigest } from 'librechat-data-provider';
 import type { SteelReviewErrorResponse, SteelReviewOperationCommit, SteelReviewOperationPrepare, SteelReviewOperationPrepared, SteelReviewPrepared, SteelReviewSavedSnapshot, SteelReviewSaveResponse, SteelReviewTable } from 'librechat-data-provider';
-import type { Locator } from '@playwright/test';
+import type { Locator, Page } from '@playwright/test';
 import {
   deleteConversations,
   deleteMessagesByConversation,
@@ -195,6 +195,47 @@ function readUrl(conversationId: string, messageId: string, tableIndex: number) 
   return `/api/steel/conversations/${conversationId}/review/ocr_result?${query}`;
 }
 
+function titleReadUrl(conversationId: string, messageId: string, title = 'ocr_result') {
+  const query = new URLSearchParams({ messageId, title, tableId: 'ocr_result:99', partIndex: '99' });
+  return `/api/steel/conversations/${conversationId}/review/ocr_result?${query}`;
+}
+
+async function prepareQuantity(
+  page: Page,
+  headers: { Authorization: string },
+  table: SteelReviewTable,
+  value: string,
+  title?: string,
+) {
+  const request: SteelReviewOperationPrepare & { title?: string } = {
+    conversationId: table.conversationId, messageId: table.messageId,
+    kind: table.kind, tableId: table.tableId, partIndex: table.partIndex,
+    outputId: table.outputId, revision: table.revision,
+    ...(title === undefined ? {} : { title }),
+    operations: [{ type: 'update', rowId: table.rows[0].rowId,
+      changes: [{ header: '數量', value }] }],
+  };
+  const url = `/api/steel/conversations/${table.conversationId}/review/ocr_result`;
+  const response = await page.request.post(`${url}/prepare`, { headers, data: request });
+  expect(response.status()).toBe(200);
+  return await response.json() as SteelReviewOperationPrepared;
+}
+
+async function commitOperation(
+  page: Page,
+  headers: { Authorization: string },
+  operation: SteelReviewOperationPrepared,
+) {
+  const request = { ...operation.operationRequest,
+    operationId: operation.operationId, digest: operation.digest };
+  const response = await page.request.post(
+    `/api/steel/conversations/${request.conversationId}/review/ocr_result/commit`,
+    { headers, data: request },
+  );
+  expect(response.status()).toBe(200);
+  return await response.json() as SteelReviewSaveResponse;
+}
+
 test.describe('Steel managed source review', () => {
   const conversations: string[] = [];
   let headers: { Authorization: string };
@@ -222,7 +263,7 @@ test.describe('Steel managed source review', () => {
       'REVIEW-UNRELATED-PREFIX',
       '## Ordinary table\n| Label | Value |\n| --- | --- |\n| Plain | Keep |',
       ocr,
-      '## ocr_result\n| 來源 | 零件編號 | 長度 | 數量 | 頁碼 |\n| --- | --- | --- | --- | --- |\n| A | UNMANAGED | 5 | 9 | 1 |',
+      '## Unmanaged source table\n| 來源 | 零件編號 | 長度 | 數量 | 頁碼 |\n| --- | --- | --- | --- | --- |\n| A | UNMANAGED | 5 | 9 | 1 |',
       '## customer_quote\n| Item | Subtotal |\n| --- | --- |\n| Keep quote | 42 |',
       '```markdown\n' + ocr + '\n```',
       'REVIEW-UNRELATED-SUFFIX',
@@ -260,6 +301,160 @@ test.describe('Steel managed source review', () => {
     await expect(dialog).not.toBeVisible();
     await page.reload();
     await expect(page.getByRole('button', { name: 'Open Steel review', exact: true })).toHaveCount(1);
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+  });
+
+  test('title locator ignores stale positions and accepts only the exact message title', async ({ page }) => {
+    const markdown = `TITLE-KEEP-PREFIX\n\n## Ordinary table\n| Key | Value |\n| --- | --- |\n| Keep | 8 |\n\n${ocr}`;
+    const { conversationId, messageId } = await seedCurrent(markdown);
+    conversations.push(conversationId);
+    const before = await persistedSnapshot(conversationId);
+    const response = await page.request.get(titleReadUrl(conversationId, messageId), { headers });
+    expect(response.status()).toBe(200);
+    const { table } = await response.json() as { table: SteelReviewTable & { title: string } };
+    expect(table.title).toBe('ocr_result');
+    expect(table.tableId).toMatch(/^ocr_result:title:[a-f0-9]{64}$/u);
+    const legacy = await page.request.get(readUrl(conversationId, messageId, 2), { headers });
+    expect(legacy.status()).toBe(200);
+    const positional = await legacy.json() as { table: SteelReviewTable };
+    expect(table.rows.map((row) => row.rowId)).toEqual(positional.table.rows.map((row) => row.rowId));
+    for (const title of ['OCR_RESULT', 'ocr_result extra', 'ocr_resul']) {
+      expect((await page.request.get(titleReadUrl(conversationId, messageId, title), { headers })).status()).toBe(404);
+    }
+    expect(await persistedSnapshot(conversationId)).toEqual(before);
+  });
+
+  test('title locator UI sends only changed rows and updates only its exact message and section', async ({ page }) => {
+    const markdown = `TITLE-KEEP-PREFIX\n\n${ocr}\n\n## Other data\n| Key | Value |\n| --- | --- |\n| Keep | 42 |\n\nTITLE-KEEP-SUFFIX`;
+    const { conversationId, messageId } = await seedCurrent(markdown);
+    conversations.push(conversationId);
+    const otherMessageId = randomUUID();
+    await seedMessages(getE2EUser().email, conversationId, [{
+      messageId: otherMessageId, parentMessageId: '00000000-0000-0000-0000-000000000000',
+      text: ocr, content: [{ type: 'text', text: ocr }], isCreatedByUser: false, sender: 'Assistant',
+    }]);
+    const before = await persistedSnapshot(conversationId);
+    const read = await page.request.get(titleReadUrl(conversationId, messageId), { headers });
+    expect(read.status()).toBe(200);
+    const { table } = await read.json() as { table: SteelReviewTable };
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    const row = dialog.locator('tbody tr').filter({ has: page.locator('input[value="REVIEW-P1"]') });
+    await row.locator('input').last().fill('9');
+    const prepareRequest = page.waitForRequest((request) => request.method() === 'POST' && request.url().endsWith('/review/ocr_result/prepare'));
+    const commitRequest = page.waitForRequest((request) => request.method() === 'POST' && request.url().endsWith('/review/ocr_result/commit'));
+    await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+    const preparedBody = (await prepareRequest).postDataJSON() as SteelReviewOperationPrepare & { title: string };
+    const committedBody = (await commitRequest).postDataJSON() as SteelReviewOperationCommit & { title: string };
+    for (const body of [preparedBody, committedBody]) {
+      expect(body.title).toBe('ocr_result');
+      expect(body.messageId).toBe(messageId);
+      expect(body.tableId).toBe(table.tableId);
+      expect(body.operations).toEqual([{ type: 'update', rowId: table.rows[0].rowId,
+        changes: [{ header: '數量', value: '9' }] }]);
+      expect(body).not.toHaveProperty('rows');
+      expect(body).not.toHaveProperty('aiRawMarkdown');
+      expect(body).not.toHaveProperty('aiBaselineMarkdown');
+    }
+    await expect(dialog.getByText('Unsaved changes: 0 rows', { exact: true })).toBeVisible();
+    const after = await persistedSnapshot(conversationId);
+    const clean = markdown.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 9 | 1 |');
+    expect(after.messages.find((message) => message.messageId === messageId)?.text).toBe(clean);
+    expect(after.messages.find((message) => message.messageId === messageId)?.content).toEqual([{ type: 'text', text: clean }]);
+    expect(after.messages.find((message) => message.messageId === otherMessageId))
+      .toEqual(before.messages.find((message) => message.messageId === otherMessageId));
+    expect(after.reviews).toHaveLength(1);
+    expect(after.reviews[0]?.aiRawMarkdown).toBe(ocr);
+    expectPreservedAiState(before.ocr, after.ocr);
+    await page.keyboard.press('Escape');
+    await page.reload();
+    expect(await persistedSnapshot(conversationId)).toEqual(after);
+    const reloaded = await page.request.get(titleReadUrl(conversationId, messageId), { headers });
+    expect(reloaded.status()).toBe(200);
+    expect(await reloaded.json()).toMatchObject({ table: { tableId: table.tableId,
+      rows: [{ rowId: table.rows[0].rowId, values: { 數量: { baseline: '2', effective: '9' } } }, {}] } });
+    await expect(page.locator('del')).toHaveCount(0);
+  });
+
+  for (const firstLane of ['title', 'positional'] as const) {
+    test(`title locator shares one immutable row ledger when ${firstLane} saves first`, async ({ page }) => {
+      const { conversationId, messageId } = await seedCurrent(ocr);
+      conversations.push(conversationId);
+      const initial = await page.request.get(firstLane === 'title'
+        ? titleReadUrl(conversationId, messageId) : readUrl(conversationId, messageId, 1), { headers });
+      expect(initial.status()).toBe(200);
+      const { table } = await initial.json() as { table: SteelReviewTable };
+      const rowIds = table.rows.map((row) => row.rowId);
+      await commitOperation(page, headers, await prepareQuantity(page, headers, table, '7',
+        firstLane === 'title' ? 'ocr_result' : undefined));
+      const first = await persistedSnapshot(conversationId);
+      expect(first.reviews).toHaveLength(1);
+      const alternate = await page.request.get(firstLane === 'title'
+        ? readUrl(conversationId, messageId, 1) : titleReadUrl(conversationId, messageId), { headers });
+      expect(alternate.status()).toBe(200);
+      const { table: current } = await alternate.json() as { table: SteelReviewTable };
+      expect(current.tableId).toBe(table.tableId);
+      expect(current.rows.map((row) => row.rowId)).toEqual(rowIds);
+      await commitOperation(page, headers, await prepareQuantity(page, headers, current, '8',
+        firstLane === 'title' ? undefined : 'ocr_result'));
+      const second = await persistedSnapshot(conversationId);
+      expect(second.reviews).toHaveLength(1);
+      expect(second.reviews[0]?.tableId).toBe(table.tableId);
+      expect(second.reviews[0]?.rows.map((row: SteelReviewTable['rows'][number]) => row.rowId)).toEqual(rowIds);
+      expect(second.reviews[0]?.aiRawMarkdown).toBe(first.reviews[0]?.aiRawMarkdown);
+      expect(second.reviews[0]?.aiBaselineMarkdown).toBe(first.reviews[0]?.aiBaselineMarkdown);
+      expect(second.reviews[0]?.receipts).toHaveLength(2);
+      expect(second.reviews[0]?.receipts[0]).toEqual(first.reviews[0]?.receipts[0]);
+      expect(second.messages.find((message) => message.messageId === messageId)?.text)
+        .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 8 | 1 |'));
+    });
+  }
+
+  test('title locator re-resolves a moved physical section and rejects forged storage aliases without writing', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const read = await page.request.get(titleReadUrl(conversationId, messageId), { headers });
+    expect(read.status()).toBe(200);
+    const { table } = await read.json() as { table: SteelReviewTable };
+    const operation = await prepareQuantity(page, headers, table, '7', 'ocr_result');
+    const prefix = 'TITLE-NEW-PREFIX\n\n## Unrelated insertion\n| Key | Value |\n| --- | --- |\n| Keep | 55 |\n\n';
+    await withMongo(async (db) => {
+      await db.collection('messages').updateOne({ conversationId, messageId }, { $set: {
+        text: prefix + ocr, content: [{ type: 'text', text: prefix + ocr }],
+      } });
+    });
+    const moved = await persistedSnapshot(conversationId);
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    const forgedPrepare = await page.request.post(`${url}/prepare`, { headers,
+      data: { ...operation.operationRequest, tableId: 'ocr_result:1' } });
+    expect([400, 409]).toContain(forgedPrepare.status());
+    const forgedCommit = await page.request.post(`${url}/commit`, { headers, data: {
+      ...operation.operationRequest, tableId: 'ocr_result:1',
+      operationId: operation.operationId, digest: operation.digest,
+    } });
+    expect([400, 409]).toContain(forgedCommit.status());
+    expect(await persistedSnapshot(conversationId)).toEqual(moved);
+    await commitOperation(page, headers, operation);
+    const after = await persistedSnapshot(conversationId);
+    const clean = prefix + ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 7 | 1 |');
+    expect(after.messages.find((message) => message.messageId === messageId)?.text).toBe(clean);
+    expect(after.messages.find((message) => message.messageId === messageId)?.content).toEqual([{ type: 'text', text: clean }]);
+    expect(after.reviews).toHaveLength(1);
+    expect(after.reviews[0]?.tableId).toBe(table.tableId);
+    const latest = await page.request.get(titleReadUrl(conversationId, messageId), { headers });
+    expect(latest.status()).toBe(200);
+    expect(await latest.json()).toMatchObject({ table: { tableId: table.tableId,
+      rows: [{ rowId: table.rows[0].rowId, values: { 數量: { effective: '7' } } }, {}] } });
+    expect(await persistedSnapshot(conversationId)).toEqual(after);
+  });
+
+  test('title locator rejects duplicated full titles without creating or changing any data', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(`${ocr}\n\n${ocr}`);
+    conversations.push(conversationId);
+    const before = await persistedSnapshot(conversationId);
+    const response = await page.request.get(titleReadUrl(conversationId, messageId), { headers });
+    expect(response.status()).toBe(404);
     expect(await persistedSnapshot(conversationId)).toEqual(before);
   });
 
