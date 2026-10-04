@@ -2474,6 +2474,7 @@ test.describe('Steel managed source review', () => {
     await page.goto(`/c/${conversationId}`);
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    await expect.poll(() => dialog.locator('canvas').evaluate((element: HTMLCanvasElement) => element.width)).toBeGreaterThan(0);
     for (let index = 0; index < 2; index += 1) {
       await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
       const row = dialog.locator('tbody tr').last();
