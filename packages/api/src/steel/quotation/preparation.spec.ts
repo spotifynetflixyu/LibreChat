@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import type { SteelToolResult } from '../tools/results';
 import { bindQuotationCustomerResult, hasQuotationOrder, parseQuotationTierSelection, prepareQuotationTurn, quotationPreparationStatus, renderQuotationCustomerMarkdown } from './preparation';
 
@@ -100,7 +99,7 @@ it('injects fresh saved customer and system-order presence into each ordinary tu
   expect(mockHasSystemOrder).toHaveBeenCalledTimes(2);
 });
 
-it('injects the completed system-order snapshot and exact revision mapping', async () => {
+it('keeps system-order corrections full-only and does not inject revision mappings', async () => {
   const completedSystemOrder = [
     '## system_order｜報價單',
     '',
@@ -108,7 +107,6 @@ it('injects the completed system-order snapshot and exact revision mapping', asy
     '| --- | --- | --- | --- |',
     '| A | 2 | 2 | 10 |',
   ].join('\n');
-  const baseHash = createHash('sha256').update(completedSystemOrder, 'utf8').digest('hex');
   mockRead.mockResolvedValue({
     currentOrder: { markdown: order, sha256: 'order-hash' },
     currentCustomer: { customerIdentity: 'saved-customer', customerMarkdown: 'saved customer' },
@@ -118,19 +116,13 @@ it('injects the completed system-order snapshot and exact revision mapping', asy
   });
   mockArtifact.mockResolvedValue({ operationId: 'published' });
   mockHasSystemOrder.mockResolvedValue(true);
-  mockReadCheckpoint.mockResolvedValue(completedSystemOrder);
 
   const prepared = await prepareQuotationTurn({ scope, messageId: 'u3', responseId: 'a3', text: '修改數量' });
 
-  expect(prepared.instruction).toContain(completedSystemOrder);
-  expect(prepared.instruction).toContain('## system_order_revision');
-  expect(prepared.instruction).toContain(`| ${baseHash} | 1 |`);
-  expect(prepared.instruction).toContain('| base_hash | row_index |');
-  expect(mockReadCheckpoint).toHaveBeenCalledWith({
-    scope,
-    runId: 'completed-run',
-    operationId: 'final',
-  });
+  expect(prepared.instruction).not.toContain(completedSystemOrder);
+  expect(prepared.instruction).not.toContain('## system_order_revision');
+  expect(prepared.instruction).not.toContain('## system_order_updates');
+  expect(mockReadCheckpoint).not.toHaveBeenCalled();
 });
 
 it('clears completed quote readiness after OCR changes the current order', async () => {

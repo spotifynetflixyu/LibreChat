@@ -38,6 +38,7 @@ const {
   createSteelQuotationStateService,
   createSteelMarkdownCompletionServices,
   createSteelQuotationPublicationPublisher,
+  createSteelFullMarkdownPublisher,
   shouldDeferSteelMarkdownPersistence,
   createSteelOcrResponseAuditService,
   createMCPRuntimeRequestBody,
@@ -72,6 +73,7 @@ const { recordScheduleOutcome, isScheduleLive } = require('~/server/services/Sch
 const {
   saveMessage,
   saveSteelQuotationMessage,
+  publishSteelMarkdown,
   getMessage,
   saveConvo,
   getMessages,
@@ -3282,6 +3284,9 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           applyMarkdown: (markdown) => replaceResponseMarkdown(response, markdown),
           persistMarkdown: persistResponseMessage,
           publishQuotation,
+          publishMarkdown: createSteelFullMarkdownPublisher({ saveContext: reqCtx,
+            buildMessage: ({ markdown }) => ({ ...response, text: markdown }),
+            savePublication: publishSteelMarkdown }),
           publishedResponse: {
             load: ({ userId: publishedUserId, responseId: publishedResponseId }) =>
               getMessage({ user: publishedUserId, messageId: publishedResponseId }),

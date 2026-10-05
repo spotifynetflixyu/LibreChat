@@ -1,3 +1,5 @@
+export { createSteelHistoryMethods } from './steelHistory';
+export type { SteelMarkdownHistoryReadInput, SteelMarkdownHistoryRecord, SteelMarkdownHistoryMethods } from './steelHistory';
 import type { OAuthCompactionMethods } from './oauthCompaction';
 import type { RoleMethods, RoleDeps } from './role';
 import {

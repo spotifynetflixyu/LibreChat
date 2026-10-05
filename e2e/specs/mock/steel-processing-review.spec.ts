@@ -52,6 +52,9 @@ test.describe('Processing measurement normal review workflow', () => {
     const process = named(owner, 'REVIEW-PROCESS');
     const before = await readback(fixture);
     const dialog = await openEditor(page, fixture);
+    const heading = page.locator('h2[data-markdown-title]').filter({ hasText: 'system_order' });
+    await expect(heading).toContainText('Latest version');
+    await expect(heading).not.toContainText(/v\d/);
     await expectBusinessEditable(dialog, process.rowId, owner.headers);
     await editBusinessValue(dialog, parent.rowId, '數量', '5');
     await expect(dialog.getByRole('textbox', { name: `總數 ${process.rowId}`, exact: true })).toHaveValue('2');
@@ -59,6 +62,7 @@ test.describe('Processing measurement normal review workflow', () => {
     await editBusinessValue(dialog, process.rowId, '單價', '9');
     expect(await readback(fixture)).toEqual(before);
     const saved = await saveUi(page, dialog);
+    await expect(heading).toContainText('Latest version v2');
     expect(named(saved, 'REVIEW-PROCESS').values['總數']).toEqual({ baseline: '2', effective: '7' });
     const processCell = dialog.getByRole('textbox', { name: `總數 ${process.rowId}`, exact: true }).locator('xpath=ancestor::td');
     await expect(processCell.locator('del')).toHaveText('2');
@@ -71,6 +75,7 @@ test.describe('Processing measurement normal review workflow', () => {
     await expect(dialog).not.toBeVisible();
     await page.reload();
     await expect(page.getByText('MATERIAL-SUFFIX', { exact: true })).toBeVisible();
+    await expect(heading).toContainText('Latest version v2');
     await expect(page.locator('del')).toHaveCount(0);
     const reloaded = await openEditor(page, fixture);
     await expect(reloaded.getByRole('textbox', { name: `總數 ${process.rowId}`, exact: true })).toHaveValue('7');

@@ -79,6 +79,7 @@ const steelCalculationCheckpointSchema = new Schema<SteelCalculationCheckpoint>(
 
 const steelQuotationCurrentSystemOrderSchema = new Schema<SteelQuotationCurrentSystemOrder>(
   {
+    reviewOutputId: { type: String },
     runId: { type: String, required: true },
     sha256: { type: String, required: true },
     markdown: { type: String, required: true },
@@ -313,11 +314,57 @@ const steelQuotationPendingMessageSchema = new Schema<SteelQuotationPendingMessa
   { _id: false },
 );
 
+const steelMarkdownReferenceSchema = new Schema({
+  kind: { type: String, enum: ['ocr_result', 'system_order', 'customer_data'], required: true },
+  source: { type: String, enum: ['ai', 'human'], required: true },
+  snapshotId: { type: String, required: true },
+  generationId: { type: String, required: true },
+  outputId: { type: String, required: true },
+  messageId: { type: String, required: true },
+  title: { type: String, required: true },
+  revision: { type: String, required: true },
+  sha256: { type: String, required: true },
+  lineageId: { type: String, required: true },
+  savedAt: { type: Date, required: true },
+  operationId: { type: String },
+}, { _id: false });
+const steelMarkdownOwnerSchema = new Schema({
+  ai: { type: steelMarkdownReferenceSchema, required: true },
+  effective: { type: steelMarkdownReferenceSchema, required: true },
+}, { _id: false });
+const steelMarkdownOwnersSchema = new Schema({
+  ocr_result: { type: steelMarkdownOwnerSchema },
+  system_order: { type: steelMarkdownOwnerSchema },
+  customer_data: { type: steelMarkdownOwnerSchema },
+}, { _id: false });
+const steelMarkdownExpectedSchema = new Schema({
+  ocrGeneration: { type: String },
+  ocrHash: { type: String },
+  orderHash: { type: String },
+  systemOrderHash: { type: String },
+  customerPreparationId: { type: String },
+  owners: { type: steelMarkdownOwnersSchema },
+}, { _id: false });
+const steelMarkdownAdmissionSchema = new Schema({
+  sequence: { type: Number, required: true, min: 1 },
+  responseId: { type: String, required: true },
+  generationId: { type: String, required: true },
+  lineageId: { type: String, required: true },
+  expected: { type: steelMarkdownExpectedSchema, required: true },
+}, { _id: false });
+const steelMarkdownStateSchema = new Schema({
+  nextSequence: { type: Number, required: true, default: 0 },
+  admission: { type: steelMarkdownAdmissionSchema },
+  current: { type: steelMarkdownOwnersSchema },
+  lastHumanOcr: { type: steelMarkdownReferenceSchema },
+}, { _id: false });
+
 const steelQuotationStateSchema: Schema<ISteelQuotationState> = new Schema<ISteelQuotationState>(
   {
     userId: { type: String, required: true },
     conversationId: { type: String, required: true },
     tenantId: { type: String },
+    markdownPublication: { type: steelMarkdownStateSchema },
     currentOrder: { type: steelQuotationOrderSchema },
     currentSystemOrder: { type: steelQuotationCurrentSystemOrderSchema },
     currentCustomer: { type: steelQuotationCustomerPreparationSchema },
@@ -351,6 +398,11 @@ const steelQuotationArtifactSchema: Schema<ISteelQuotationArtifact> =
       },
       sha256: { type: String, required: true },
       payload: { type: String, required: true },
+      markdownPublication: { type: new Schema({
+        reference: { type: steelMarkdownReferenceSchema, required: true },
+        rawMarkdown: { type: String, required: true },
+        baselineMarkdown: { type: String, required: true },
+      }, { _id: false }) },
     },
     { timestamps: true },
   );

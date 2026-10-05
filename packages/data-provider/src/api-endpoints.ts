@@ -335,6 +335,8 @@ export const steelQuotationStatus = (conversationId: string) =>
   `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/quotation`;
 export const steelQuotationCancel = (conversationId: string, index: number) =>
   `${steelQuotationStatus(conversationId)}/${encodeURIComponent(String(index))}/cancel`;
+export const steelMarkdownVersions = (conversationId: string) =>
+  `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/versions`;
 export const steelReview = (
   conversationId: string,
   kind: string,

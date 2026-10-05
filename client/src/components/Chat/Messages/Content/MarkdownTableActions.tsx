@@ -1,9 +1,8 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAtom } from 'jotai';
 import filenamify from 'filenamify';
+import { useRecoilValue } from 'recoil';
 import { createPortal } from 'react-dom';
-import { useTranslation } from 'react-i18next';
-import { useRecoilState, useRecoilValue } from 'recoil';
 import { Check, Copy, Download, FileSearch, Maximize2, X } from 'lucide-react';
 import {
   ControlCombobox,
@@ -11,20 +10,16 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
-  Tag,
 } from '@librechat/client';
 import type { SteelReviewKind, SteelReviewTable } from 'librechat-data-provider';
 import type { SteelReviewDownloadAuthority, SteelReviewSaveGate } from './SteelReviewDialog';
-import type { MarkdownTableComment } from '~/common';
 import type { TableMatrix } from './table/export';
 import { canGroupByThickness, createCsvBlob, createThicknessZip } from './table/export';
-import CommentableTableCell, { getReactNodeText } from './table/comments';
-import { getMessageTimestamp, triggerDownload } from '~/utils';
 import { steelReviewSelectionAtom } from './SteelReview/state';
 import { useGetSteelReviewQuery } from '~/data-provider';
-import { buildMarkdownTableCommentId } from '~/common';
 import SteelReviewDialog from './SteelReviewDialog';
 import { useMessageContext } from '~/Providers';
+import { triggerDownload } from '~/utils';
 import { useLocalize } from '~/hooks';
 import store from '~/store';
 
@@ -61,32 +56,6 @@ type TableToolbarProps = {
 type TableHeaderOption = {
   index: number;
   label: string;
-};
-
-type TableSectionProps = React.HTMLAttributes<HTMLTableSectionElement> & {
-  children?: React.ReactNode;
-};
-
-type TableRowProps = React.HTMLAttributes<HTMLTableRowElement> & {
-  children?: React.ReactNode;
-};
-
-type TableCellProps = React.TdHTMLAttributes<HTMLTableCellElement> & {
-  children?: React.ReactNode;
-};
-
-type CommentableTableChildrenInput = {
-  children: React.ReactNode;
-  columnHeaders: readonly TableHeaderOption[];
-  commentsByCell: ReadonlyMap<string, MarkdownTableComment>;
-  commentLabel: string;
-  onCommit: (input: {
-    columnHeader: string;
-    columnIndex: number;
-    comment: string;
-    oldValue: string;
-    rowIndex: number;
-  }) => void;
 };
 
 type SteelReviewCandidate = {
@@ -152,7 +121,7 @@ function getMarkdownTitle(table: HTMLTableElement | null): string | undefined {
       break;
     }
     if (element.tagName === 'H2') {
-      title = element.textContent?.trim() || title;
+      title = (element.getAttribute('data-markdown-title') ?? element.textContent)?.trim() || title;
     }
   }
 
@@ -211,9 +180,6 @@ function getNormalizedCellText(cell: HTMLTableCellElement): string {
   return normalizeCellText(cell.textContent ?? '');
 }
 
-function getCellCommentKey(rowIndex: number, columnIndex: number): string {
-  return `${rowIndex}:${columnIndex}`;
-}
 
 function getTableMatrix(table: HTMLTableElement | null): TableMatrix {
   if (!table) {
@@ -243,90 +209,6 @@ function getTableHeaderOptions(table: HTMLTableElement | null): TableHeaderOptio
     index,
     label: getNormalizedCellText(cell) || `Column ${index + 1}`,
   }));
-}
-
-function getColumnHeader(columnHeaders: readonly TableHeaderOption[], columnIndex: number): string {
-  return (
-    columnHeaders.find((header) => header.index === columnIndex)?.label ||
-    `Column ${columnIndex + 1}`
-  );
-}
-
-function getElementTagName(element: React.ReactElement): string | undefined {
-  if (typeof element.type === 'string') {
-    return element.type.toLowerCase();
-  }
-
-  const node = (element.props as { node?: { tagName?: string } }).node;
-  return node?.tagName?.toLowerCase();
-}
-
-function renderCommentableTableChildren({
-  children,
-  columnHeaders,
-  commentsByCell,
-  commentLabel,
-  onCommit,
-}: CommentableTableChildrenInput): React.ReactNode {
-  let dataRowIndex = 0;
-
-  const renderNode = (node: React.ReactNode, inTableBody: boolean): React.ReactNode => {
-    if (!React.isValidElement<TableSectionProps | TableRowProps | TableCellProps>(node)) {
-      return node;
-    }
-
-    const tagName = getElementTagName(node);
-    const isTableBody = tagName === 'tbody';
-
-    if (inTableBody && tagName === 'tr') {
-      dataRowIndex += 1;
-      const rowIndex = dataRowIndex;
-      const cells = React.Children.map(node.props.children, (cell, columnIndex) => {
-        if (!React.isValidElement<TableCellProps>(cell) || getElementTagName(cell) !== 'td') {
-          return cell;
-        }
-
-        const { children: cellChildren, ...cellProps } = cell.props;
-        const oldValue = normalizeCellText(getReactNodeText(cellChildren));
-        const columnHeader = getColumnHeader(columnHeaders, columnIndex);
-        const key = getCellCommentKey(rowIndex, columnIndex);
-
-        return (
-          <CommentableTableCell
-            key={`commentable-${rowIndex}-${columnIndex}`}
-            cellProps={cellProps}
-            columnHeader={columnHeader}
-            columnIndex={columnIndex}
-            comment={commentsByCell.get(key)}
-            commentLabel={commentLabel}
-            oldValue={oldValue}
-            rowIndex={rowIndex}
-            onCommit={(comment) =>
-              onCommit({
-                columnHeader,
-                columnIndex,
-                comment,
-                oldValue,
-                rowIndex,
-              })
-            }
-          >
-            {cellChildren}
-          </CommentableTableCell>
-        );
-      });
-
-      return React.cloneElement(node, node.props, cells);
-    }
-
-    const nextChildren = React.Children.map(node.props.children, (child) =>
-      renderNode(child, inTableBody || isTableBody),
-    );
-
-    return React.cloneElement(node, node.props, nextChildren);
-  };
-
-  return React.Children.map(children, (child) => renderNode(child, false));
 }
 
 function areHeaderOptionsEqual(
@@ -667,7 +549,6 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
   const [markdownTitle, setMarkdownTitle] = useState<string>();
   const [, setSelection] = useAtom(steelReviewSelectionAtom);
   const localize = useLocalize();
-  const { i18n } = useTranslation();
   const conversation = useRecoilValue(store.conversationByIndex(0));
   const { conversationId, isCreatedByUser, messageId, messageTimestamp, isSubmitting } =
     useMessageContext() ?? {};
@@ -675,32 +556,23 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
     () => getDownloadFilename(conversation?.title, messageTimestamp),
     [conversation?.title, messageTimestamp],
   );
-  const commentConversationId = conversationId ?? '';
-  const [pendingComments, setPendingComments] = useRecoilState(
-    store.pendingMarkdownTableCommentsByConvoId(commentConversationId),
-  );
+  const reviewConversationId = conversationId ?? '';
   const themeAttributes = useThemeAttributes(isExpanded);
   const modalClassName = ['markdown-table-modal', themeAttributes.className]
     .filter(Boolean)
     .join(' ');
-  const commentLabel = localize('com_ui_markdown_table_cell_comment');
-  const messageTimestampLabel = useMemo(() => {
-    const formatted = getMessageTimestamp(messageTimestamp, i18n.language);
-    return formatted?.absolute ?? messageTimestamp ?? 'Unknown time';
-  }, [i18n.language, messageTimestamp]);
-  const markdownLabel = `${messageTimestampLabel} / Markdown ${markdownIndex}`;
   const reviewKind = getReviewKind(markdownTitle);
   const reviewCandidate = useMemo(
     () =>
-      reviewKind && messageId && commentConversationId && isCreatedByUser !== true
+      reviewKind && messageId && reviewConversationId && isCreatedByUser !== true
         ? {
-            conversationId: commentConversationId,
+            conversationId: reviewConversationId,
             messageId,
             kind: reviewKind,
             title: markdownTitle!,
           }
         : null,
-    [commentConversationId, isCreatedByUser, markdownTitle, messageId, reviewKind],
+    [reviewConversationId, isCreatedByUser, markdownTitle, messageId, reviewKind],
   );
   const reviewQuery = useGetSteelReviewQuery(reviewCandidate, {
     enabled: reviewCandidate != null,
@@ -754,149 +626,11 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
   const reviewRetryLabel = localize('com_ui_steel_review_retry');
   const reviewTable = reviewQuery.data?.table;
   reviewTableRef.current = reviewTable ?? undefined;
-  let reviewTag: { label: string; variant: 'neutral' | 'success' } | undefined;
-  if (reviewIdentity && reviewTable?.previousVersion) {
-    reviewTag = { label: localize('com_ui_steel_review_previous_version'), variant: 'neutral' };
-  } else if (reviewIdentity && reviewTable?.updated) {
-    reviewTag = { label: localize('com_ui_steel_review_updated'), variant: 'success' };
-  }
-  const canComment = isCreatedByUser !== true && !!messageId && !!commentConversationId;
-  const commentsByCell = useMemo(() => {
-    const comments = new Map<string, MarkdownTableComment>();
-
-    if (!canComment) {
-      return comments;
-    }
-
-    pendingComments.forEach((comment) => {
-      if (comment.messageId !== messageId || comment.markdownIndex !== markdownIndex) {
-        return;
-      }
-
-      comments.set(getCellCommentKey(comment.rowIndex, comment.columnIndex), comment);
-    });
-
-    return comments;
-  }, [canComment, markdownIndex, messageId, pendingComments]);
   useEffect(() => {
     const title = getMarkdownTitle(tableRef.current);
     setMarkdownTitle(title);
     setDownloadMenu(/^system_order(?:\s|$)/i.test(title ?? ''));
   }, [children]);
-  useEffect(() => {
-    if (!canComment || !messageId) {
-      return;
-    }
-
-    const hasPendingComments = pendingComments.some(
-      (entry) => entry.messageId === messageId && entry.markdownIndex === markdownIndex,
-    );
-    if (!hasPendingComments) {
-      return;
-    }
-
-    const title = getMarkdownTitle(tableRef.current);
-    if (!title) {
-      return;
-    }
-
-    const needsTitle = pendingComments.some(
-      (entry) =>
-        entry.messageId === messageId &&
-        entry.markdownIndex === markdownIndex &&
-        entry.markdownTitle !== title,
-    );
-    if (!needsTitle) {
-      return;
-    }
-
-    setPendingComments((current) =>
-      current.map((entry) =>
-        entry.messageId === messageId && entry.markdownIndex === markdownIndex
-          ? { ...entry, markdownTitle: title, ...(messageTimestamp && { messageTimestamp }) }
-          : entry,
-      ),
-    );
-  }, [canComment, markdownIndex, messageId, messageTimestamp, pendingComments, setPendingComments]);
-  const getTableFingerprint = useCallback(
-    () => tableMatrixToMarkdown(getTableMatrix(tableRef.current)),
-    [],
-  );
-  const handleCommitCellComment = useCallback(
-    ({
-      columnHeader,
-      columnIndex,
-      comment,
-      oldValue,
-      rowIndex,
-    }: {
-      columnHeader: string;
-      columnIndex: number;
-      comment: string;
-      oldValue: string;
-      rowIndex: number;
-    }) => {
-      if (!canComment || !messageId) {
-        return;
-      }
-
-      const id = buildMarkdownTableCommentId({
-        messageId,
-        markdownIndex,
-        rowIndex,
-        columnIndex,
-      });
-      const normalizedComment = comment.trim();
-      const markdownTitle = getMarkdownTitle(tableRef.current);
-
-      setPendingComments((current) => {
-        const existing = current.find((entry) => entry.id === id);
-
-        if (!normalizedComment) {
-          return current.filter((entry) => entry.id !== id);
-        }
-
-        if (existing) {
-          return current.map((entry) =>
-            entry.id === id
-              ? { ...entry, comment: normalizedComment, ...(markdownTitle && { markdownTitle }) }
-              : entry,
-          );
-        }
-
-        return [
-          ...current,
-          {
-            id,
-            conversationId: commentConversationId,
-            messageId,
-            messageTimestampLabel,
-            ...(messageTimestamp && { messageTimestamp }),
-            markdownIndex,
-            markdownLabel,
-            markdownTitle,
-            tableFingerprint: getTableFingerprint(),
-            rowIndex,
-            columnIndex,
-            columnHeader,
-            oldValue,
-            comment: normalizedComment,
-          },
-        ];
-      });
-    },
-    [
-      canComment,
-      commentConversationId,
-      getTableFingerprint,
-      markdownIndex,
-      markdownLabel,
-      messageId,
-      messageTimestampLabel,
-      messageTimestamp,
-      setPendingComments,
-    ],
-  );
   const handleCopied = useCallback(() => {
     if (copiedResetTimerRef.current) {
       window.clearTimeout(copiedResetTimerRef.current);
@@ -1028,29 +762,8 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
     [],
   );
 
-  const modalChildren = useMemo(() => {
-    if (!canComment) {
-      return children;
-    }
-
-    return renderCommentableTableChildren({
-      children,
-      columnHeaders: headerOptions,
-      commentsByCell,
-      commentLabel,
-      onCommit: handleCommitCellComment,
-    });
-  }, [canComment, children, commentLabel, commentsByCell, handleCommitCellComment, headerOptions]);
-
   return (
     <div className="markdown-table-container" data-markdown-index={markdownIndex}>
-      {reviewTag && (
-        <Tag
-          className="mb-2 w-fit"
-          label={reviewTag.label}
-          variant={reviewTag.variant}
-        />
-      )}
       <TableToolbar
         tableRef={tableRef}
         copied={copied}
@@ -1106,7 +819,7 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
                 stickyColumnIndex={stickyColumnIndex}
               />
               <div className="markdown-table-modal-scroll">
-                <table ref={modalTableRef}>{modalChildren}</table>
+                <table ref={modalTableRef}>{children}</table>
               </div>
             </div>
           </div>,

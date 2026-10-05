@@ -343,7 +343,7 @@ function sourceForRow(
   };
 }
 
-function toRows(
+export function createSteelReviewBaselineRows(
   table: SteelMarkdownTable,
   kind: SteelReviewKind,
   outputId: string,
@@ -391,7 +391,7 @@ function projectRecord(
     (!table.headers.includes('來源') || !table.headers.includes('零件編號'))) {
     return null;
   }
-  const rows = toRows(table, record.kind, record.outputId, record.sourceMappings, record.calculationCheckpoint);
+  const rows = createSteelReviewBaselineRows(table, record.kind, record.outputId, record.sourceMappings, record.calculationCheckpoint);
   const latestOutputId = record.latestOutputId ?? record.outputId;
   const isLatest = record.state === 'current' && latestOutputId === record.outputId;
   return {
@@ -406,7 +406,7 @@ function projectRecord(
     readOnly: !isLatest,
     ...(record.humanSavedAt ? { humanSavedAt: record.humanSavedAt.toISOString() } : {}),
     ...(record.humanSavedAt && isLatest ? { updated: true } : {}),
-    ...(record.humanSavedAt && !isLatest ? { previousVersion: true } : {}),
+    ...(!isLatest ? { previousVersion: true } : {}),
     ...(record.aiUpdatedAt ? { aiUpdatedAt: record.aiUpdatedAt.toISOString() } : {}),
     ...(record.ownerUpdated
       ? { ownerUpdated: { ...record.ownerUpdated, updatedAt: record.ownerUpdated.updatedAt.toISOString() } }
@@ -488,7 +488,7 @@ function projectSidecar(
     readOnly: !isLatest,
     ...(record.humanSavedAt ? { humanSavedAt: record.humanSavedAt.toISOString() } : {}),
     ...(record.humanSavedAt && isLatest ? { updated: true } : {}),
-    ...(record.humanSavedAt && !isLatest ? { previousVersion: true } : {}),
+    ...(!isLatest ? { previousVersion: true } : {}),
     ...(record.aiUpdatedAt ? { aiUpdatedAt: record.aiUpdatedAt.toISOString() } : {}),
     ...(record.ownerUpdated
       ? { ownerUpdated: { ...record.ownerUpdated, updatedAt: record.ownerUpdated.updatedAt.toISOString() } }
@@ -1007,7 +1007,7 @@ export function createSteelReviewService({
     if (initialTables.length !== 1) {
       return undefined;
     }
-    return normalizeSteelReviewLedgerRows(toRows(initialTables[0], record.kind, record.outputId, record.sourceMappings, record.calculationCheckpoint));
+    return normalizeSteelReviewLedgerRows(createSteelReviewBaselineRows(initialTables[0], record.kind, record.outputId, record.sourceMappings, record.calculationCheckpoint));
   }
 
   function operationRecovery(
@@ -1112,7 +1112,7 @@ export function createSteelReviewService({
     if (!target) {
       throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review table target not found');
     }
-    const currentRows = normalizeSteelReviewLedgerRows(record.rows ?? toRows(target, record.kind, record.outputId, record.sourceMappings, record.calculationCheckpoint));
+    const currentRows = normalizeSteelReviewLedgerRows(record.rows ?? createSteelReviewBaselineRows(target, record.kind, record.outputId, record.sourceMappings, record.calculationCheckpoint));
     const headers = record.headers ?? target.headers;
     const expectedRows = operationExpectedRows(record, payload, target, currentRows);
     if (!expectedRows) {
@@ -1297,7 +1297,7 @@ export function createSteelReviewService({
     if (!target || target.partIndex !== payload.partIndex && payload.partIndex !== undefined) {
       throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review table target not found');
     }
-    const currentRows = record.rows ?? toRows(target, record.kind, record.outputId, record.sourceMappings, record.calculationCheckpoint);
+    const currentRows = record.rows ?? createSteelReviewBaselineRows(target, record.kind, record.outputId, record.sourceMappings, record.calculationCheckpoint);
     const headers = record.headers ?? target.headers;
     const ledgerValidation = validateSteelReviewLedger(currentRows, payload.rows, headers);
     if (!ledgerValidation.ok) {

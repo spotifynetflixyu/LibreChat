@@ -16,3 +16,5 @@ export * from './tools';
 export * from './runtime/types';
 export * from './vision/service';
 export * from './markdown/completion';
+export * from './markdown/full';
+export * from './markdown/history';

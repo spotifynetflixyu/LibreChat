@@ -50,6 +50,7 @@ import { getQuotationProgress, QUOTATION_V2_SPLIT_SIZES, QUOTATION_V2_MAX_DEPTH 
 import { executeSteelTool, createSteelToolRunState } from '../tools/execute';
 import { buildDefaultSteelGlobalAgentContext } from '../native/context';
 import { stripCustomerQuoteSections } from '../markdown/outputFilter';
+import { retiredMarkdownSectionTitles } from '../markdown/admission';
 import { buildCustomerQuoteFromMarkdown } from '../markdown/quote';
 import { buildSteelQuotationStatusEvent } from '../native/events';
 import { normalizeSteelChunkMarkdown } from '../markdown/chunk';
@@ -76,11 +77,12 @@ export interface SteelQuotationPublicationInput {
 }
 
 export class SteelQuotationPublicationError extends Error {
-  readonly code = 'superseded_response' as const;
+  readonly code: string;
 
-  constructor() {
+  constructor(code = 'superseded_response') {
     super('Steel response could not be finalized.');
     this.name = 'SteelQuotationPublicationError';
+    this.code = code;
   }
 }
 
@@ -430,11 +432,14 @@ export async function acceptQuotationResponse(input: {
   service?: ReturnType<typeof createSteelQuotationStateService>;
 }): Promise<SteelQuotationActiveRun | undefined> {
   if (input.finishReason !== 'stop') return undefined;
+  if (parseAssistantMarkdown(input.response).sections.some((section) => retiredMarkdownSectionTitles.some((title) => title === section.title.split(/[｜|]/u)[0]?.trim()))) {
+    throw new SteelQuotationPublicationError('retired_control_section');
+  }
   const signal = parseQuotationSignal(input.response);
   const sections = parseAssistantMarkdown(input.response).sections;
   const hasSection = (title: string) => sections.some((section) => section.title.split(/[｜|]/u)[0]?.trim() === title);
-  const hasOrder = hasSection('ocr_result') || hasSection('ocr_result_updates') || hasSection('system_order_updates');
-  const hasCustomerSection = hasSection('customer_data') || hasSection('customer_data_updates');
+  const hasOrder = hasSection('ocr_result');
+  const hasCustomerSection = hasSection('customer_data');
   const customer = extractCustomerDataTable(input.response);
   if (!signal && !hasCustomerSection && !hasOrder) return undefined;
   if (hasCustomerSection && !customer) {
@@ -459,7 +464,7 @@ export async function acceptQuotationResponse(input: {
       }
     }
     if (hasOrder) {
-      const orderSections = sections.filter((section) => ['ocr_result', 'ocr_result_updates', 'system_order_updates']
+      const orderSections = sections.filter((section) => ['ocr_result']
         .includes(section.title.split(/[｜|]/u)[0]?.trim() ?? ''));
       const orderSection = orderSections.length === 1 && orderSections[0]?.title === 'ocr_result'
         ? orderSections[0]
@@ -510,6 +515,9 @@ export async function acceptQuotationSignal(input: {
   service?: ReturnType<typeof createSteelQuotationStateService>;
 }): Promise<SteelQuotationActiveRun | undefined> {
   if (input.finishReason !== 'stop' || !parseQuotationSignal(input.response)) return undefined;
+  if (parseAssistantMarkdown(input.response).sections.some((section) => retiredMarkdownSectionTitles.some((title) => title === section.title.split(/[｜|]/u)[0]?.trim()))) {
+    throw new SteelQuotationPublicationError('retired_control_section');
+  }
   const service = input.service ?? createSteelQuotationStateService(mongoose);
   const state = await service.readState(input.scope);
   const existingTicket = state?.tickets.find((entry) => entry.responseId === input.responseId);

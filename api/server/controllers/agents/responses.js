@@ -32,6 +32,7 @@ const {
   createSteelNativeHistory,
   prepareSteelNativeToolConfig,
   prepareQuotationTurn,
+  prepareSteelMarkdownHistory,
   hasQuotationOrder,
   createSafeUser,
   initializeAgent,
@@ -98,6 +99,7 @@ const {
   createSteelQuotationStateService,
   createSteelMarkdownCompletionServices,
   createSteelQuotationPublicationPublisher,
+  createSteelFullMarkdownPublisher,
   createSteelQuotationPublicationMessageBuilder,
   finalizeSteelResponsesTurn,
   replaceSteelResponsesMarkdown,
@@ -739,6 +741,10 @@ async function saveResponseOutput(
     },
     persistMarkdown,
     publishQuotation,
+    publishMarkdown: createSteelFullMarkdownPublisher({
+      saveContext: { isTemporary: req.body?.isTemporary, expiredAt: req.resolvedConversation?.expiredAt, interfaceConfig: req.config?.interfaceConfig },
+      buildMessage: ({ markdown }) => ({ ...responseMessage, text: markdown }),
+      savePublication: db.publishSteelMarkdown }),
     publishedResponse: {
       load: ({ userId: publishedUserId, responseId: publishedResponseId }) =>
         db.getMessage({ user: publishedUserId, messageId: publishedResponseId }),
@@ -1086,9 +1092,11 @@ const executeResponse = async (envelope, { req, res }) => {
         agentsEConfig?.backgroundTasks?.ordinaryToolCancellation === true;
       const backgroundCompletionResultMaxChars =
         agentsEConfig?.backgroundTasks?.completionResultMaxChars;
-      const previousMessages = request.previous_response_id
-        ? await loadPreviousMessages(conversationId, principal.userId)
-        : [];
+      const previousMessages = await prepareSteelMarkdownHistory({
+        scope: { userId: principal.userId, conversationId, tenantId: principal.tenantId },
+        reader: db,
+        messages: request.previous_response_id ? await loadPreviousMessages(conversationId, principal.userId) : [],
+      });
       if (request.previous_response_id) {
         assertModelBoundContent({
           onTraversalFailure: reportLocatorTraversalFailure,
@@ -1504,6 +1512,8 @@ const executeResponse = async (envelope, { req, res }) => {
         scope: { userId: principal.userId, conversationId, tenantId: principal.tenantId },
         messageId: currentUserTurn?.messageId ?? responseId,
         responseId,
+        generationId: responseId,
+        publicationStore: db,
         text: currentUserTurn?.content ?? '',
         files: currentTurnFiles,
       });

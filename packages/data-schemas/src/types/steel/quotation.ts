@@ -1,5 +1,6 @@
 import type { SteelCalculationCheckpoint, TCustomConfig } from 'librechat-data-provider';
 import type { Document } from 'mongoose';
+import type { SteelMarkdownState, SteelMarkdownSnapshot, SteelMarkdownPublicationTarget } from './versions';
 
 export type SteelQuotationRunStatus =
   | 'queued'
@@ -72,6 +73,7 @@ export interface SteelQuotationPublicationSaveContext {
 
 /** Trusted current inputs captured before a quotation publication callback runs. */
 export interface SteelQuotationPublicationProof {
+  reviewBaseline?: SteelMarkdownPublicationTarget;
   scope: SteelQuotationScope;
   runId: string;
   /** Immutable response owner captured when the quotation run was accepted. */
@@ -120,6 +122,7 @@ export interface SteelQuotationSourceSnapshot {
 }
 
 export interface SteelQuotationCurrentSystemOrder {
+  reviewOutputId?: string;
   runId: string;
   sha256: string;
   markdown: string;
@@ -286,6 +289,7 @@ export interface SteelQuotationPendingMessageFile {
 }
 
 export interface ISteelQuotationState extends Document, SteelQuotationScope {
+  markdownPublication?: SteelMarkdownState;
   currentOrder?: SteelQuotationOrder;
   currentSystemOrder?: SteelQuotationCurrentSystemOrder;
   currentCustomer?: SteelQuotationCustomerPreparation;
@@ -299,6 +303,7 @@ export interface ISteelQuotationState extends Document, SteelQuotationScope {
 }
 
 export interface ISteelQuotationArtifact extends Document, SteelQuotationScope {
+  markdownPublication?: SteelMarkdownSnapshot;
   runId: string;
   operationId: string;
   kind: SteelQuotationArtifactKind;

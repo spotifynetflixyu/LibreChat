@@ -3,12 +3,14 @@ import {
   backgroundResultMetadata,
   HITL_MESSAGE_FILTER_FIELDS,
   RetentionMode,
+  normalizeSteelReviewLedgerRows,
 } from 'librechat-data-provider';
 import type { ClientSession, DeleteResult, FilterQuery, Model, Types, UpdateQuery } from 'mongoose';
 import type { UserSubmittedMessageFieldPath } from 'librechat-data-provider';
 import type { SearchParams } from 'meilisearch';
 import type {
   ISteelQuotationArtifact,
+  SteelMarkdownReference,
   ISteelQuotationState,
   ISteelReviewOutput,
   SteelQuotationSavedMessage,
@@ -25,7 +27,10 @@ import {
 import { createChatExpirationDate, createTempChatExpirationDate } from '~/utils/tempChatRetention';
 import { activeExpirationFilter, createFallbackRetentionDate } from '~/utils/retention';
 import { compactMessageToolResults, compactToolCallOutput } from '~/utils/tool';
+import { createSteelPublicationMethods } from './steelPublication';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import { steelReviewTitleStorageId } from '~/utils/identity';
+import { createSteelHistoryMethods } from './steelHistory';
 import { createConversationModel } from '~/models/convo';
 import { createMessageModel } from '~/models/message';
 import logger from '~/config/winston';
@@ -706,7 +711,7 @@ function toSettledAt(value: unknown): Date | undefined {
   return undefined;
 }
 
-export interface MessageMethods {
+export interface MessageMethods extends ReturnType<typeof createSteelPublicationMethods>, ReturnType<typeof createSteelHistoryMethods> {
   saveMessage(
     ctx: {
       userId: string;
@@ -1306,6 +1311,33 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
           result = { ok: false, code: 'superseded' };
           return;
         }
+        const baseline = input.reviewBaseline;
+        let aiOwner: SteelMarkdownReference | undefined;
+        if (!publicationArtifact && baseline) {
+          if (baseline.kind !== 'system_order' || baseline.outputId !== `system_order:${input.runId}` ||
+            baseline.baselineMarkdown !== currentSystemOrder.markdown || !baseline.rows || !baseline.headers) {
+            throw new Error('Quotation review baseline is invalid');
+          }
+          aiOwner = { kind: 'system_order', source: 'ai', snapshotId: `markdown:quotation:${input.runId}:ai:system_order`,
+            generationId: `quotation:${input.runId}`, outputId: baseline.outputId, messageId: input.targetMessageId,
+            title: baseline.title, revision: baseline.revision, sha256: input.currentSystemOrderSha256,
+            lineageId: quotation.markdownPublication?.current?.ocr_result?.ai.lineageId ?? input.runId, savedAt: now };
+          const payload = JSON.stringify({ rawMarkdown: message.text, baselineMarkdown: baseline.baselineMarkdown });
+          await QuotationArtifact.create([{ ...scope, runId: `markdown:quotation:${input.runId}`, operationId: 'ai:system_order', kind: 'main',
+            sha256: createHash('sha256').update(payload).digest('hex'), payload,
+            markdownPublication: { reference: aiOwner, rawMarkdown: message.text, baselineMarkdown: baseline.baselineMarkdown } }], { session });
+          await ReviewOutput.updateMany({ ...stateFilter, kind: 'system_order', state: 'current' },
+            { $set: { state: 'historical', latestOutputId: baseline.outputId } }, { session, timestamps: false });
+          await ReviewOutput.create([{ ...scope, kind: 'system_order', messageId: input.targetMessageId, title: baseline.title,
+            tableId: steelReviewTitleStorageId({ ...scope, messageId: input.targetMessageId,
+              kind: 'system_order', outputId: baseline.outputId, title: baseline.title }),
+            outputId: baseline.outputId, revision: baseline.revision, state: 'current', latestOutputId: baseline.outputId,
+            headers: baseline.headers, rows: normalizeSteelReviewLedgerRows(baseline.rows), sourceMappings: baseline.sourceMappings,
+            aiUpdatedAt: now, aiRawMarkdown: message.text, aiBaselineMarkdown: baseline.baselineMarkdown,
+            effectiveMarkdown: baseline.baselineMarkdown, displayMarkdown: baseline.baselineMarkdown, receipts: [] }], { session });
+          await QuotationState.updateOne(stateFilter, { $set: { 'markdownPublication.current.system_order': { ai: aiOwner, effective: aiOwner },
+            'currentSystemOrder.reviewOutputId': baseline.outputId } }, { session });
+        }
         let savedMessage: SteelQuotationSavedMessage;
         if (publicationArtifact && !currentMessage) {
           result = { ok: false, code: 'superseded' };
@@ -1358,6 +1390,17 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
                 };
               })()
             : messageFields;
+          if (aiOwner) {
+            const metadata = { ...publicationMessage.metadata };
+            const oldOwners = currentMessage?.metadata?.steelMarkdownOwners;
+            metadata.steelMarkdownOwners = { ...(oldOwners && typeof oldOwners === 'object' && !Array.isArray(oldOwners) ? oldOwners : {}), system_order: aiOwner };
+            const oldReview = currentMessage?.metadata?.steelReview;
+            const steelReview = oldReview && typeof oldReview === 'object' && !Array.isArray(oldReview) ? { ...oldReview } : {};
+            Reflect.deleteProperty(steelReview, 'system_order');
+            if (Object.keys(steelReview).length > 0) metadata.steelReview = steelReview;
+            else delete metadata.steelReview;
+            publicationMessage.metadata = metadata;
+          }
           const saved = await saveMessageInternal(
             { userId: scope.userId, ...input.saveContext },
             publicationMessage as Omit<Partial<IMessage>, 'contextMeta'> & { newMessageId?: string; contextMeta?: IMessage['contextMeta'] | null },
@@ -4081,6 +4124,13 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
   }
 
   return {
+    ...createSteelHistoryMethods(mongoose),
+    ...createSteelPublicationMethods(mongoose, async (input, message, session) => saveMessageInternal(
+      { userId: input.scope.userId, ...input.saveContext },
+      message as Omit<Partial<IMessage>, 'contextMeta'>,
+      { context: 'Steel full Markdown publication' },
+      session,
+    )),
     saveMessage,
     saveSteelQuotationMessage,
     bulkSaveMessages,

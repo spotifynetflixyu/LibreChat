@@ -20,26 +20,17 @@ jest.mock('@librechat/client', () => {
 function RenderSendButton({
   disabled = false,
   hasFiles = false,
-  hasPendingMarkdownTableComments = false,
   text = '',
 }: {
   disabled?: boolean;
   hasFiles?: boolean;
-  hasPendingMarkdownTableComments?: boolean;
   text?: string;
 }) {
   const methods = useForm<{ text: string }>({
     defaultValues: { text },
   });
 
-  return (
-    <SendButton
-      control={methods.control}
-      disabled={disabled}
-      hasFiles={hasFiles}
-      hasPendingMarkdownTableComments={hasPendingMarkdownTableComments}
-    />
-  );
+  return <SendButton control={methods.control} disabled={disabled} hasFiles={hasFiles} />;
 }
 
 describe('SendButton', () => {
@@ -57,12 +48,6 @@ describe('SendButton', () => {
 
   it('is enabled when text is present', () => {
     render(<RenderSendButton text="請 OCR" />);
-
-    expect(screen.getByTestId('send-button')).not.toBeDisabled();
-  });
-
-  it('is enabled for empty text when markdown table comments are pending', () => {
-    render(<RenderSendButton hasPendingMarkdownTableComments />);
 
     expect(screen.getByTestId('send-button')).not.toBeDisabled();
   });

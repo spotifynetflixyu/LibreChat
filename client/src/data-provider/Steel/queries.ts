@@ -19,6 +19,7 @@ import type {
   SteelReviewPrepare,
   SteelReviewPrepared,
   SteelReviewResponse,
+  SteelMarkdownVersions,
   SteelReviewReceiptStatus,
   SteelReviewSaveResponse,
   SteelReviewSourcesResponse,
@@ -82,6 +83,15 @@ export const useGetSteelQuotationStatusQuery = (
     },
   );
 };
+
+export const useGetSteelMarkdownVersionsQuery = (
+  conversationId: string,
+  enabled: boolean,
+): QueryObserverResult<SteelMarkdownVersions> => useQuery<SteelMarkdownVersions>(
+  DynamicQueryKeys.steelMarkdownVersions(conversationId),
+  () => dataService.getSteelMarkdownVersions(conversationId),
+  { enabled, staleTime: Infinity, refetchOnWindowFocus: false },
+);
 
 export const useGetSteelReviewQuery = (
   input?: {
@@ -247,6 +257,7 @@ export const useCommitSteelReviewMutation = (): UseMutationResult<
     (input: SteelReviewCommit) => dataService.commitSteelReview(input),
     {
       onSuccess: (_data, input) => {
+        void queryClient.invalidateQueries(DynamicQueryKeys.steelMarkdownVersions(input.conversationId));
         void queryClient.invalidateQueries(
           DynamicQueryKeys.steelReview(
             input.conversationId,

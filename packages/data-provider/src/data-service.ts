@@ -7,6 +7,7 @@ import type {
   OpenAIOAuthUsageRemaining,
   SteelReviewKind,
   SteelReviewResponse,
+  SteelMarkdownVersions,
   SteelReviewReceiptStatus,
   SteelReviewPrepare,
   SteelReviewPrepared,
@@ -190,6 +191,10 @@ export function getOpenAIOAuthUsage(): Promise<OpenAIOAuthUsageRemaining> {
 
 export function getSteelQuotationStatus(conversationId: string): Promise<SteelQuotationStatus> {
   return request.get(endpoints.steelQuotationStatus(conversationId));
+}
+
+export function getSteelMarkdownVersions(conversationId: string): Promise<SteelMarkdownVersions> {
+  return request.get(endpoints.steelMarkdownVersions(conversationId));
 }
 
 export function getSteelReview(

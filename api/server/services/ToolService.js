@@ -60,6 +60,7 @@ const {
   bindQuotationCustomerResult,
   runQuotationPreflight,
   createSteelQuotationPublicationPublisher,
+  createSteelFullMarkdownPublisher,
   createSteelQuotationPublicationTransport,
   processQuotationPendingMessages,
   quotationMessageText,
@@ -6582,7 +6583,12 @@ async function executeSteelQuotationWorkflow({
     }).finalize({
       req,
       responseId: context.requestId,
-      generationId: context.requestId,
+      generationId: String(req._resumableJobCreatedAt ?? context.requestId),
+      publishMarkdown: createSteelFullMarkdownPublisher({
+        saveContext: { isTemporary: req.body?.isTemporary, interfaceConfig: req.config?.interfaceConfig },
+        buildMessage: ({ markdown }) => ({ messageId: context.requestId, conversationId: scope.conversationId, user: scope.userId,
+          parentMessageId: quotation.messageId ?? null, isCreatedByUser: false, text: markdown, sender: agent?.name ?? 'Agent', endpoint: 'agents', model: agent?.id }),
+        savePublication: db.publishSteelMarkdown }),
       markdown: response,
       completed: last.response_metadata?.finish_reason === 'stop',
       stage: 'workflow',
@@ -6734,6 +6740,12 @@ async function executeSteelQuotationWorkflow({
   let pendingSignalAccepted = false;
   await processQuotationPendingMessages({
     scope, modelOptions, signal, onUsage,
+    publicationStore: db,
+    publishMarkdown: createSteelFullMarkdownPublisher({
+      saveContext: { isTemporary: req.body?.isTemporary, interfaceConfig: req.config?.interfaceConfig },
+      buildMessage: ({ markdown }) => ({ messageId: context.requestId, conversationId: scope.conversationId, user: scope.userId,
+        parentMessageId: quotation.messageId ?? null, isCreatedByUser: false, text: markdown, sender: agent?.name ?? 'Agent', endpoint: 'agents', model: agent?.id }),
+      savePublication: db.publishSteelMarkdown }),
     publishQuotation: publishFinal,
     persist: async (output) => persist(output, false),
     publish: async (output) => {

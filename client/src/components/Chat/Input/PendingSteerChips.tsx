@@ -191,11 +191,10 @@ function QueuedRow({
     (steering.pausedOnApproval || (steering.duringRunActive && steering.canSteer));
 
   const edit = () => {
-  const context = {
-    quotes: message.quotes,
-    manualSkills: message.manualSkills,
-    markdownTableComments: message.markdownTableComments,
-  };
+    const context = {
+      quotes: message.quotes,
+      manualSkills: message.manualSkills,
+    };
     if (!requiresDiscard) {
       steering.removeQueued(message.id);
       onEditToComposer(message.text, message.files, context);

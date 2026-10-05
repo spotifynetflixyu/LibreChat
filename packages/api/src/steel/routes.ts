@@ -1,7 +1,8 @@
 import mongoose from 'mongoose';
 import { SteelReviewWriteError } from '@librechat/data-schemas';
 import { steelCatalogQuerySchema, steelReviewKinds, steelReviewReceiptQuerySchema } from 'librechat-data-provider';
-import type { SteelReviewKind } from 'librechat-data-provider';
+import type { SteelReviewKind, SteelMarkdownVersion } from 'librechat-data-provider';
+import type { SteelQuotationScope } from '@librechat/data-schemas';
 import type { Request, Response } from 'express';
 import type { SteelReviewCatalogService } from './catalog';
 import type { ServerRequest } from '~/types/http';
@@ -74,12 +75,14 @@ export interface SteelRouteHandlersDeps {
   reviewService?: SteelReviewService;
   catalogService?: SteelReviewCatalogService;
   sourceService?: SteelReviewSourceService;
+  versionsReader?: { readSteelMarkdownVersions(scope: SteelQuotationScope): Promise<SteelMarkdownVersion[] | null> };
 }
 
 export interface SteelRouteHandlers {
   listModels(req: SteelRequest, res: Response): Promise<void>;
   readOpenAIOAuthUsage(req: SteelRequest, res: Response): Promise<void>;
   createRuleProposal(req: SteelRequest, res: Response): Promise<void>;
+  readVersions(req: SteelRequest, res: Response): Promise<void>;
   readReview(req: SteelRequest, res: Response): Promise<void>;
   readReviewCatalog(req: SteelRequest, res: Response): Promise<void>;
   readReviewReceipt(req: SteelRequest, res: Response): Promise<void>;
@@ -154,6 +157,7 @@ export function createSteelRouteHandlers({
   reviewService,
   catalogService,
   sourceService,
+  versionsReader,
 }: SteelRouteHandlersDeps): SteelRouteHandlers {
   let resolvedRuleProposalService = ruleProposalService;
   const resolvedReviewService = reviewService;
@@ -161,6 +165,21 @@ export function createSteelRouteHandlers({
     (resolvedRuleProposalService ??= createDefaultRuleProposalService());
 
   return {
+    async readVersions(req, res) {
+      const userId = req.user?.id;
+      const conversationId = req.params.conversationId;
+      if (!userId) { res.status(401).json({ code: 'AUTH_REQUIRED' }); return; }
+      if (!conversationId) { res.status(400).json({ code: 'INVALID_VERSION_QUERY' }); return; }
+      if (!versionsReader) { res.status(503).json({ code: 'VERSIONS_UNAVAILABLE' }); return; }
+      try {
+        const versions = await versionsReader.readSteelMarkdownVersions({ userId, conversationId,
+          ...(req.tenantId ?? req.user?.tenantId ? { tenantId: req.tenantId ?? req.user?.tenantId } : {}) });
+        if (versions === null) { res.status(404).json({ code: 'VERSION_NOT_FOUND' }); return; }
+        res.status(200).json({ versions });
+      } catch {
+        res.status(503).json({ code: 'VERSION_QUERY_FAILED' });
+      }
+    },
     async listModels(req, res) {
       const models = await getModelsConfig(req);
       const options = buildSteelModelOptions({

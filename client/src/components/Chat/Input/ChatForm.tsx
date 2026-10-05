@@ -40,7 +40,6 @@ import {
   PendingToolApprovalPanel,
 } from '~/components/Chat/approval/Review';
 import PendingManualSkillsChips from './PendingManualSkillsChips';
-import PendingMarkdownTableComments from './PendingMarkdownTableComments';
 import usePastedTextEdit from '~/hooks/Files/usePastedTextEdit';
 import useAskAnswerMode from '~/hooks/Input/useAskAnswerMode';
 import AskUserQuestionPopover from './AskUserQuestionPopover';
@@ -204,10 +203,6 @@ const ChatForm = memo(function ChatForm({
     () => conversation?.conversationId ?? Constants.NEW_CONVO,
     [conversation?.conversationId],
   );
-  const pendingMarkdownTableComments = useRecoilValue(
-    store.pendingMarkdownTableCommentsByConvoId(conversationId),
-  );
-  const hasPendingMarkdownTableComments = pendingMarkdownTableComments.length > 0;
   const isNewConversation = conversationId === '' || conversationId === Constants.NEW_CONVO;
   /**
    * The quote feature merges excerpts server-side in `BaseClient.sendMessage`,
@@ -339,7 +334,6 @@ const ChatForm = memo(function ChatForm({
         overrideFiles,
         overrideQuotes: context?.quotes ?? [],
         overrideManualSkills: context?.manualSkills ?? [],
-        overrideMarkdownTableComments: context?.markdownTableComments ?? [],
         overrideClientRequestId: context?.clientRequestId,
         overrideRecoverySteerId: context?.recoverySteerId,
         overrideExpectedPredecessorCreatedAt: context?.expectedPredecessorCreatedAt,
@@ -352,7 +346,7 @@ const ChatForm = memo(function ChatForm({
   const restoreComposerContext = useRecoilCallback(
     ({ set }) =>
       (context?: QueuedMessageContext) => {
-        const { quotes, manualSkills, markdownTableComments } = context ?? {};
+        const { quotes, manualSkills } = context ?? {};
         if (quotes != null && quotes.length > 0) {
           set(store.pendingQuotesByConvoId(conversationId), (prev) => [
             ...new Set([...prev, ...quotes]),
@@ -362,15 +356,6 @@ const ChatForm = memo(function ChatForm({
           set(store.pendingManualSkillsByConvoId(conversationId), (prev) => [
             ...new Set([...prev, ...manualSkills]),
           ]);
-        }
-        if (markdownTableComments != null && markdownTableComments.length > 0) {
-          set(store.pendingMarkdownTableCommentsByConvoId(conversationId), (prev) => {
-            const restoredIds = new Set(prev.map((comment) => comment.id));
-            return [
-              ...prev,
-              ...markdownTableComments.filter((comment) => !restoredIds.has(comment.id)),
-            ];
-          });
         }
       },
     [conversationId],
@@ -447,9 +432,7 @@ const ChatForm = memo(function ChatForm({
     ({ snapshot }) =>
       (convoId: string) =>
         snapshot.getLoadable(store.pendingQuotesByConvoId(convoId)).getValue().length > 0 ||
-        snapshot.getLoadable(store.pendingManualSkillsByConvoId(convoId)).getValue().length > 0 ||
-        snapshot.getLoadable(store.pendingMarkdownTableCommentsByConvoId(convoId)).getValue()
-          .length > 0,
+        snapshot.getLoadable(store.pendingManualSkillsByConvoId(convoId)).getValue().length > 0,
     [],
   );
 
@@ -548,8 +531,7 @@ const ChatForm = memo(function ChatForm({
   const submittableFileCount = composerReserved ? 0 : files.size;
 
   const { ref, ...registerProps } = methods.register('text', {
-    validate: (value) =>
-      value.trim().length > 0 || submittableFileCount > 0 || hasPendingMarkdownTableComments,
+    validate: (value) => value.trim().length > 0 || submittableFileCount > 0,
     onChange: useCallback(
       (e: React.ChangeEvent<HTMLTextAreaElement>) =>
         methods.setValue('text', e.target.value, { shouldValidate: true }),
@@ -780,7 +762,6 @@ const ChatForm = memo(function ChatForm({
                   onRestoreToComposer={restoreReclaimedSteer}
                 />
               )}
-              <PendingMarkdownTableComments conversationId={conversationId} />
               {/* WIP */}
               <EditBadges
                 isEditingChatBadges={isEditingBadges}
@@ -936,7 +917,6 @@ const ChatForm = memo(function ChatForm({
                           ref={submitButtonRef}
                           control={methods.control}
                           hasFiles={submittableFileCount > 0}
-                          hasPendingMarkdownTableComments={hasPendingMarkdownTableComments}
                           fileCount={submittableFileCount}
                           disabled={
                             filesLoading ||

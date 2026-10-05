@@ -7,7 +7,7 @@ import {
 } from '@librechat/data-schemas';
 import type { IConversation, IMongoFile, ISteelConversationOcrState, ISteelDelegateOcrRun, ISteelWorkingOrderMemory, SteelConversationOcrSourceMapping } from '@librechat/data-schemas';
 import type { Types } from 'mongoose';
-import { finalizeOcrResponse, parseAssistantMarkdown, parseOcrResultTable, parseSourceMappingTable } from './result';
+import { parseAssistantMarkdown, parseOcrResultTable, parseSourceMappingTable, reconstructLegacyOcrResponse } from './result';
 
 type Mongoose = typeof import('mongoose');
 type ForkMessage = {
@@ -187,7 +187,7 @@ export function createSteelOcrForkService(mongoose: Mongoose) {
         } else if (updates.length > 0) {
           // A split without the base must remain unseeded, never borrow the source's latest order.
           if (!markdown) continue;
-          const result = finalizeOcrResponse({
+          const result = reconstructLegacyOcrResponse({
             assistantResponse: text, previousOcrMarkdown: markdown,
             canonicalMapping: [], agentKind: 'other',
             currentUserTurn: messageText(path.find((entry) => entry.messageId === message.parentMessageId) ?? message),

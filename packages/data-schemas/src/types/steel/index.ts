@@ -236,3 +236,6 @@ export * from './conversationOcrState';
 export * from './ocrResponseAudit';
 export * from './quotation';
 export * from './review';
+
+export * from './publication';
+export * from './versions';

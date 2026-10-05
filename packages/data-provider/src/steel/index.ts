@@ -8,3 +8,5 @@ export * from './review';
 export * from './review-markdown';
 export * from './rules';
 export * from './usage';
+
+export * from './versions';

@@ -1,7 +1,13 @@
 import mongoose from 'mongoose';
 import { createHash } from 'node:crypto';
-import { MongoMemoryServer } from 'mongodb-memory-server';
-import { createSteelOcrResponseAuditModel, createSteelQuotationArtifactModel, createSteelQuotationStateModel } from '@librechat/data-schemas';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
+import {
+  createMethods,
+  createModels,
+  createSteelOcrResponseAuditModel,
+  createSteelQuotationArtifactModel,
+  createSteelQuotationStateModel,
+} from '@librechat/data-schemas';
 import type {
   SteelQuotationPendingMessageFile,
   SteelQuotationScope,
@@ -12,11 +18,14 @@ import {
   processQuotationPendingMessages,
   type SteelQuotationPendingInputPreparationResult,
 } from './pending';
+import { createSteelQuotationPublicationPublisher } from './publication';
 import { buildDefaultSteelGlobalAgentContext } from '../native/context';
+import { createSteelFullMarkdownPublisher } from '../markdown/full';
 import { defaultQuotationCustomerMarkdown } from './preparation';
 import { createSystemOrderRevisionService } from './revision';
 import { createSteelQuotationStateService } from './state';
 import { createSteelOcrStateService } from '../ocr/state';
+import { publishCompletedQuotation } from './runner';
 import { invokeQuotationModel } from './model';
 
 jest.mock('./model', () => ({
@@ -33,12 +42,13 @@ type PendingProcessInput = Parameters<typeof processQuotationPendingMessages>[0]
 type PendingPublishInput = Parameters<PendingProcessInput['publish']>[0];
 type PendingPersistInput = Parameters<PendingProcessInput['persist']>[0];
 
-let mongoServer: MongoMemoryServer;
+let mongoServer: MongoMemoryReplSet;
 let service: ReturnType<typeof createSteelQuotationStateService>;
+let methods: ReturnType<typeof createMethods>;
 
 const scope: SteelQuotationScope = {
   userId: 'quotation-pending-user',
-  conversationId: 'quotation-pending-conversation',
+  conversationId: '019c6e27-e55b-73d1-87d8-4e01f1f75043',
 };
 const modelOptions = {} as OpenAIOAuthModelOptions;
 
@@ -47,6 +57,21 @@ function processInput(
   preparePendingInput?: () => Promise<SteelQuotationPendingInputPreparationResult>,
   persisted?: PendingPersistInput[],
 ) {
+  const publishMarkdown = createSteelFullMarkdownPublisher({
+    buildMessage: async ({ markdown }) => {
+      const state = await service.readState(scope);
+      const claimed = state?.pendingMessages.find((message) => message.status === 'claimed');
+      return {
+        messageId: 'pending-message',
+        conversationId: scope.conversationId,
+        user: scope.userId,
+        parentMessageId: claimed?.sourceMessageId ?? null,
+        text: markdown,
+        content: [{ type: 'text', text: markdown }],
+      };
+    },
+    savePublication: methods.publishSteelMarkdown,
+  });
   return {
     scope,
     modelOptions,
@@ -61,6 +86,8 @@ function processInput(
       );
       return { messageId: input.messageId };
     },
+    publicationStore: { admitSteelMarkdown: methods.admitSteelMarkdown },
+    publishMarkdown,
     publishQuotation: async (proof: Parameters<NonNullable<PendingProcessInput['publishQuotation']>>[0]) => {
       await mongoose.connection.collection('pending_messages').updateOne(
         { messageId: proof.message.messageId },
@@ -130,6 +157,25 @@ async function prepareCompletedSystemOrder() {
     finalRef: { ...scope, runId: run.runId, ...checkpoint, kind: 'final' },
   });
   if (!completed) throw new Error('test setup did not complete the run');
+  const publishFinal = createSteelQuotationPublicationPublisher({
+    scope,
+    buildMessage: ({ targetMessageId, markdown }) => ({
+      messageId: targetMessageId,
+      sourceMessageId: completed.targetMessageId ?? targetMessageId,
+      conversationId: scope.conversationId,
+      user: scope.userId,
+      text: markdown,
+      content: [{ type: 'text', text: markdown }],
+    }),
+    savePublication: methods.saveSteelQuotationMessage,
+  });
+  await publishCompletedQuotation({
+    scope,
+    run: completed,
+    markdown: final,
+    service,
+    publishFinal,
+  });
   const revision = createSystemOrderRevisionService({
     read: service.readState,
     readCurrentSystemOrder: service.readCurrentSystemOrder,
@@ -142,12 +188,22 @@ async function prepareCompletedSystemOrder() {
 }
 
 beforeAll(async () => {
-  mongoServer = await MongoMemoryServer.create();
+  mongoServer = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } });
   await mongoose.connect(mongoServer.getUri());
+  const models = createModels(mongoose);
+  await Promise.all(Object.values(models).map((model) => model.init()));
+  methods = createMethods(mongoose);
   service = createSteelQuotationStateService(mongoose);
 });
 
-beforeEach(() => {
+beforeEach(async () => {
+  await Promise.all(Object.values(mongoose.connection.collections).map((collection) => collection.deleteMany({})));
+  await mongoose.models.Conversation.create({
+    conversationId: scope.conversationId,
+    user: scope.userId,
+    title: 'quotation',
+    endpoint: 'openAI',
+  });
   jest.clearAllMocks();
   contextMock.mockResolvedValue({
     instructionPrefix: 'mocked quotation rules',
@@ -159,10 +215,6 @@ beforeEach(() => {
   });
 });
 
-afterEach(async () => {
-  await mongoose.connection.dropDatabase();
-});
-
 afterAll(async () => {
   await mongoose.disconnect();
   await mongoServer.stop();
@@ -172,22 +224,29 @@ describe('quotation pending processor', () => {
   it('saves a queued default-B selection before an order exists without starting a quotation', async () => {
     await service.enqueuePendingMessage({ scope, sourceMessageId: 'choose-b', sourceMessageText: '使用預設 B tier' });
     invokeMock.mockResolvedValue({ markdown: defaultQuotationCustomerMarkdown, lookups: [], pythonEvidence: [] });
-    const publish = jest.fn(async () => undefined);
+    const publish = jest.fn<Promise<void>, [PendingPublishInput]>(async () => undefined);
 
     await processQuotationPendingMessages(processInput(publish));
 
     const state = await service.readState(scope);
-    expect(state?.currentCustomer?.customerMarkdown).toBe(defaultQuotationCustomerMarkdown);
+    expect(state?.currentCustomer?.customerMarkdown).toContain(defaultQuotationCustomerMarkdown.trim());
     expect(state?.currentOrder).toBeUndefined();
     expect(state?.activeRun).toBeUndefined();
     expect(state?.pendingMessages[0]?.status).toBe('completed');
     expect(publish).toHaveBeenCalledTimes(1);
+    expect(await mongoose.models.Message.findOne({
+      messageId: publish.mock.calls[0]?.[0].messageId,
+      user: scope.userId,
+    }).lean()).toEqual(expect.objectContaining({
+      parentMessageId: 'choose-b',
+      text: expect.stringContaining('## customer_data'),
+    }));
   });
 
   it.each(['## quote_signal', '  ## quote_signal ##', '## quote_signal｜報價'])('retains saved-data admission gates for a queued signal %s', async (heading) => {
     await service.enqueuePendingMessage({ scope, sourceMessageId: 'queued-change', sourceMessageText: '修改訂單' });
     invokeMock.mockResolvedValue({ markdown: `${heading}\n\nstart`, lookups: [], pythonEvidence: [] });
-    const publish = jest.fn(async () => undefined);
+    const publish = jest.fn<Promise<void>, [PendingPublishInput]>(async () => undefined);
 
     await expect(processQuotationPendingMessages(processInput(publish))).rejects.toMatchObject({
       code: heading.includes('｜') ? 'invalid_quote_signal' : 'quotation_data_required',
@@ -249,7 +308,7 @@ describe('quotation pending processor', () => {
     const pendingAfterFailure = afterFailure?.pendingMessages[0];
     expect(pendingAfterFailure?.status).toBe('claimed');
     expect(pendingAfterFailure?.resultRef?.sha256).toBe(
-      createHash('sha256').update(canonical, 'utf8').digest('hex'),
+      createHash('sha256').update(publish.mock.calls[0]?.[0].markdown ?? '', 'utf8').digest('hex'),
     );
 
     await State.updateOne(
@@ -269,17 +328,56 @@ describe('quotation pending processor', () => {
         generationId: 'target-1',
       }),
     }));
-    expect(persisted.map(({ completed }) => completed)).toEqual([false, true, false, true]);
     const completed = await service.readState(scope);
     expect(completed?.pendingMessages[0]).toEqual(expect.objectContaining({
       status: 'completed',
       completedTargetMessageId: 'target-1',
     }));
     const Artifact = createSteelQuotationArtifactModel(mongoose);
-    expect(await Artifact.countDocuments({
+    const resultRef = completed?.pendingMessages[0]?.resultRef;
+    expect(resultRef).toEqual(expect.objectContaining({ operationId: 'result', kind: 'main' }));
+    if (!resultRef) throw new Error('completed pending message has no result reference');
+    const resultArtifact = await Artifact.findOne({
       userId: scope.userId,
       conversationId: scope.conversationId,
-    })).toBe(2);
+      runId: resultRef.runId,
+      operationId: resultRef.operationId,
+      kind: resultRef.kind,
+      sha256: resultRef.sha256,
+    }).lean();
+    expect(resultArtifact).toEqual(expect.objectContaining({
+      runId: resultRef.runId,
+      operationId: resultRef.operationId,
+      kind: resultRef.kind,
+      sha256: resultRef.sha256,
+      payload: publish.mock.calls[1]?.[0].markdown,
+    }));
+    const aiArtifacts = await Artifact.find({
+      userId: scope.userId,
+      conversationId: scope.conversationId,
+      runId: 'markdown:target-1',
+      operationId: 'ai:ocr_result',
+      kind: 'main',
+    }).lean();
+    expect(aiArtifacts).toHaveLength(1);
+    expect(aiArtifacts[0]).toEqual(expect.objectContaining({
+      markdownPublication: expect.objectContaining({
+        baselineMarkdown: canonical,
+        reference: expect.objectContaining({
+          outputId: 'ocr_result:target-1',
+          messageId: 'target-1',
+          source: 'ai',
+          savedAt: expect.any(Date),
+        }),
+      }),
+    }));
+    const savedMessage = await mongoose.models.Message.findOne({ messageId: 'target-1', user: scope.userId }).lean();
+    expect(savedMessage).toEqual(expect.objectContaining({
+      messageId: 'target-1',
+      conversationId: scope.conversationId,
+      parentMessageId: 'source-1',
+      text: expect.stringContaining('## ocr_result'),
+    }));
   });
 
   it('does not save an invalid model result and invokes the model again for a valid retry', async () => {
@@ -306,7 +404,7 @@ describe('quotation pending processor', () => {
     invokeMock.mockResolvedValueOnce({ markdown: invalid, lookups: [], pythonEvidence: [] })
       .mockResolvedValueOnce({ markdown: valid, lookups: [], pythonEvidence: [] });
     const persisted: PendingPersistInput[] = [];
-    const publish = jest.fn(async () => undefined);
+    const publish = jest.fn<Promise<void>, [PendingPublishInput]>(async () => undefined);
 
     await expect(processQuotationPendingMessages(processInput(publish, undefined, persisted))).rejects.toMatchObject({
       code: 'invalid_ocr_result_table',
@@ -323,60 +421,58 @@ describe('quotation pending processor', () => {
     await processQuotationPendingMessages(processInput(publish, undefined, persisted));
 
     expect(invokeMock).toHaveBeenCalledTimes(2);
-    expect(persisted.map(({ completed }) => completed)).toEqual([false, true]);
     const retried = await service.readState(scope);
     expect(retried?.pendingMessages[0]?.status).toBe('completed');
     expect(retried?.currentOrder?.markdown).toBe(valid);
     expect(publish).toHaveBeenCalledTimes(1);
+    const savedRetryMessage = await mongoose.models.Message.findOne({
+      messageId: 'invalid-output-target',
+      user: scope.userId,
+    }).lean<{ text?: string }>();
+    expect(retried?.pendingMessages[0]?.resultRef?.sha256).toBe(
+      createHash('sha256').update(savedRetryMessage?.text ?? '', 'utf8').digest('hex'),
+    );
+    expect(savedRetryMessage).toEqual(expect.objectContaining({ text: expect.stringContaining('## ocr_result') }));
   });
 
-  it('publishes canonical state without OCR update sections and keeps one raw audit', async () => {
+  it('rejects a retired OCR control and retries the same claim with a complete result', async () => {
     const ocrService = createSteelOcrStateService(mongoose);
     const base = '## ocr_result\n\n| 來源 | 零件編號 | 類別 | 數量 |\n| --- | --- | --- | --- |\n| F1 | A-6M74 | 鋼板 | 3 |\n| F1 | P2 | 鋼板 | 5 |';
-    const delta = '已修正\n\n## ocr_result_updates\n\n| 數量 | 來源 | 零件編號 | 類別 |\n| --- | --- | --- | --- |\n| 1 | F1 | A-6M74 | 鋼板 |';
-    const raw = `${delta}\n\n${defaultQuotationCustomerMarkdown}`;
     const canonical = base.replace('| A-6M74 | 鋼板 | 3 |', '| A-6M74 | 鋼板 | 1 |');
     await ocrService.upsertCurrentOcrResult({ conversationId: scope.conversationId, generationId: 'base', attemptNumber: 1, markdown: base, messageId: 'base-message' });
     await service.setOrder({ scope, fullMarkdown: base, revision: 'base', messageId: 'base-message' });
     await service.enqueuePendingMessage({ scope, sourceMessageId: 'correct-qty', targetMessageId: 'corrected', sourceMessageText: '修改數量為 1，使用 B tier' });
-    invokeMock.mockResolvedValue({ markdown: raw, lookups: [], pythonEvidence: [] });
-    const publish = jest.fn<Promise<void>, [{ messageId: string; parentMessageId: string; markdown: string }]>()
-      .mockImplementationOnce(async () => {
-        expect((await ocrService.readConversationOcrState(scope.conversationId))?.currentOcrResultMarkdown).toBe(canonical);
-        throw new Error('publication unavailable');
-      }).mockResolvedValue(undefined);
-    await expect(processQuotationPendingMessages(processInput(publish))).rejects.toThrow('publication unavailable');
+    const retired = '說明文字\n\n## ocr_result_updates\n\n| 數量 | 來源 | 零件編號 | 類別 |\n| --- | --- | --- | --- |\n| 1 | F1 | A-6M74 | 鋼板 |';
+    invokeMock.mockResolvedValueOnce({ markdown: retired, lookups: [], pythonEvidence: [] })
+      .mockResolvedValueOnce({ markdown: canonical, lookups: [], pythonEvidence: [] });
+    const publish = jest.fn<Promise<void>, [PendingPublishInput]>(async () => undefined);
+    await expect(processQuotationPendingMessages(processInput(publish))).rejects.toMatchObject({
+      code: 'retired_control_section',
+    });
+    expect((await ocrService.readConversationOcrState(scope.conversationId))?.currentOcrResultMarkdown).toBe(base);
     await createSteelQuotationStateModel(mongoose).updateOne(
       { userId: scope.userId, conversationId: scope.conversationId },
       { $set: { 'pendingMessages.0.claimExpiresAt': new Date(0) } },
     );
     await processQuotationPendingMessages(processInput(publish));
-    expect(invokeMock).toHaveBeenCalledTimes(1);
-    const publishedMarkdown = publish.mock.calls.map(([value]) => value.markdown);
-    expect(publishedMarkdown).toHaveLength(2);
-    for (const value of publishedMarkdown) {
-      expect(value).toContain('## ocr_result');
-      expect(value).toContain('| F1 | A-6M74 | 鋼板 | 1 |');
-      expect(value).not.toContain('## ocr_result_updates');
-      expect(value).not.toContain('## ocr_deletions');
-    }
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+    expect(publish).toHaveBeenCalledTimes(1);
+    expect(publish.mock.calls[0]?.[0].markdown).toContain('| F1 | A-6M74 | 鋼板 | 1 |');
     const current = await service.readState(scope);
     expect(current?.currentOrder?.markdown).toBe(canonical);
-    expect(current?.currentCustomer?.customerMarkdown).toBe(defaultQuotationCustomerMarkdown);
     expect((await ocrService.readConversationOcrState(scope.conversationId))?.currentOcrResultMarkdown).toBe(canonical);
-    const audits = await createSteelOcrResponseAuditModel(mongoose).find({ conversationId: scope.conversationId }).lean();
-    expect(audits).toHaveLength(1);
-    expect(audits[0]).toMatchObject({ rawResponse: raw, baseRevision: 'base', messageId: 'corrected', sourceStage: 'pending' });
+    expect(await mongoose.models.Message.findOne({ messageId: 'corrected', user: scope.userId }).lean())
+      .toEqual(expect.objectContaining({ text: expect.stringContaining('| F1 | A-6M74 | 鋼板 | 1 |') }));
   });
 
-  it('gives the model the live completed system-order revision and publishes the merged correction', async () => {
+  it('publishes a complete system-order correction without a delta section', async () => {
     const { snapshot } = await prepareCompletedSystemOrder();
-    const updates = [
-      '## system_order_updates',
+    const correction = [
+      '## system_order｜報價單',
       '',
-      '| base_hash | row_index | 品名規格 | 數量 | 總數 | 單價 |',
-      '| --- | --- | --- | --- | --- | --- |',
-      `| ${snapshot.sha256} | 1 | A | 3 | 3 | 10 |`,
+      '| 品名規格 | 數量 | 總數 | 單價 |',
+      '| --- | --- | --- | --- |',
+      '| A | 3 | 3 | 10 |',
     ].join('\n');
     await service.enqueuePendingMessage({
       scope,
@@ -384,16 +480,11 @@ describe('quotation pending processor', () => {
       targetMessageId: 'system-order-corrected',
       sourceMessageText: 'A 數量改為 3',
     });
-    invokeMock.mockResolvedValue({ markdown: updates, lookups: [], pythonEvidence: [] });
-    const publish = jest.fn<Promise<void>, [{ messageId: string; parentMessageId: string; markdown: string }]>()
-      .mockResolvedValue(undefined);
+    invokeMock.mockResolvedValue({ markdown: correction, lookups: [], pythonEvidence: [] });
+    const publish = jest.fn<Promise<void>, [PendingPublishInput]>(async () => undefined);
 
     await processQuotationPendingMessages(processInput(publish));
 
-    const modelPrompt = invokeMock.mock.calls[0]?.[0]?.prompt ?? '';
-    expect(modelPrompt).toContain(snapshot.markdown);
-    expect(modelPrompt).toContain('## system_order_revision');
-    expect(modelPrompt).toContain(`| ${snapshot.sha256} | 1 |`);
     expect(publish).toHaveBeenCalledWith(expect.objectContaining({
       messageId: 'system-order-corrected',
       parentMessageId: 'system-order-correction',
@@ -403,10 +494,18 @@ describe('quotation pending processor', () => {
     expect(publishedMarkdown).toContain('## system_order｜報價單');
     expect(publishedMarkdown).not.toContain('## customer_quote');
     expect(publishedMarkdown).not.toContain('## system_order_updates');
+    expect(snapshot.markdown).toContain('| A | 2 | 2 | 10 |');
     const state = await service.readState(scope);
     expect(state?.currentSystemOrder?.responseId).toBe('system-order-corrected');
     expect(state?.currentSystemOrder?.markdown).toContain('| A | 3 | 3 | 10 |');
     expect(state?.currentSystemOrder?.customerQuoteMarkdown).toContain('| 總計 |  | 30 |');
+    expect(await mongoose.models.Message.findOne({
+      messageId: 'system-order-corrected',
+      user: scope.userId,
+    }).lean()).toEqual(expect.objectContaining({
+      parentMessageId: 'system-order-correction',
+      text: expect.stringContaining('| A | 3 | 3 | 10 |'),
+    }));
   });
 
   it('claims pending corrections in FIFO order and carries each stable target message', async () => {
@@ -492,7 +591,7 @@ describe('quotation pending processor', () => {
     }));
   });
 
-  it('audits a correction, publishes the canonical full order, and stores canonical markdown', async () => {
+  it('publishes a complete OCR correction and stores canonical markdown', async () => {
     const ocrService = createSteelOcrStateService(mongoose);
     const previous = '## ocr_result\n\n| 來源 | 零件編號 | 數量 |\n| --- | --- | --- |\n| F1 | P1 | 2 |';
     await ocrService.upsertCurrentOcrResult({
@@ -504,12 +603,12 @@ describe('quotation pending processor', () => {
     });
     await service.enqueuePendingMessage({
       scope,
-      sourceMessageId: 'delta-source',
+      sourceMessageId: 'full-source',
       sourceMessageText: '修改數量為 4',
-      targetMessageId: 'delta-target',
+      targetMessageId: 'full-target',
     });
-    const updates = '說明文字\n\n## ocr_result_updates\n\n| 數量 | 零件編號 | 來源 |\n| --- | --- | --- |\n| 4 | P1 | F1 |';
-    invokeMock.mockResolvedValue({ markdown: updates, lookups: [], pythonEvidence: [] });
+    const full = '## ocr_result\n\n| 來源 | 零件編號 | 數量 |\n| --- | --- | --- |\n| F1 | P1 | 4 |';
+    invokeMock.mockResolvedValue({ markdown: full, lookups: [], pythonEvidence: [] });
     const published: Array<{ messageId: string; parentMessageId: string; markdown: string }> = [];
 
     await processQuotationPendingMessages(processInput(async (output) => {
@@ -518,11 +617,13 @@ describe('quotation pending processor', () => {
 
     expect(published).toHaveLength(1);
     expect(published[0]?.markdown).toContain('## ocr_result');
-    expect(published[0]?.markdown).not.toContain('## ocr_result_updates');
-    expect(published[0]?.markdown).not.toContain('## ocr_deletions');
     const current = await ocrService.readCurrentOcrResult(scope.conversationId);
     expect(current?.markdown).toContain('| F1 | P1 | 4 |');
-    expect(current?.markdown).not.toContain('ocr_result_updates');
     expect((await service.readState(scope))?.currentOrder?.markdown).toBe(current?.markdown);
+    expect(await mongoose.models.Message.findOne({ messageId: 'full-target', user: scope.userId }).lean())
+      .toEqual(expect.objectContaining({
+        parentMessageId: 'full-source',
+        text: expect.stringContaining('| F1 | P1 | 4 |'),
+      }));
   });
 });

@@ -1,10 +1,15 @@
 import { createHash } from 'node:crypto';
-import { parseMarkdownTables } from '../markdown/table';
+import type { MarkdownFence, MarkdownSection, ParsedAssistantMarkdown } from '../markdown/parser';
 import { escapeMarkdownTableCell, parsePipeTableRow, isMarkdownTableSeparatorCell } from '../markdown/row-codec';
+import { parseAssistantMarkdown, getFenceStart, closesFence } from '../markdown/parser';
+import { admitFullOnlyMarkdown } from '../markdown/admission';
+import { parseMarkdownTables } from '../markdown/table';
 
-const H2_PATTERN = /^ {0,3}##(?!#)[ \t]+(.+?)[ \t]*$/u;
-const FENCE_START_PATTERN = /^ {0,3}(`{3,}|~{3,})/u;
-const FENCE_END_PATTERN = /^ {0,3}(`{3,}|~{3,})[ \t]*$/u;
+
+export { parseAssistantMarkdown, parseMarkdownSections } from '../markdown/parser';
+export type { MarkdownSection, MarkdownSegment, ParsedAssistantMarkdown } from '../markdown/parser';
+export { admitFullOnlyMarkdown } from '../markdown/admission';
+
 const SOURCE_TITLE = 'source_file_mapping';
 const RESULT_TITLE = 'ocr_result';
 const UPDATES_TITLE = 'ocr_result_updates';
@@ -21,24 +26,6 @@ export interface SourceMappingEntry {
 export interface OcrTable {
   readonly headers: readonly string[];
   readonly rows: readonly (readonly string[])[];
-}
-
-export interface MarkdownSection {
-  readonly title: string;
-  readonly heading: string;
-  readonly body: string;
-  readonly raw: string;
-}
-
-export type MarkdownSegment =
-  | { readonly kind: 'text'; readonly text: string }
-  | { readonly kind: 'section'; readonly section: MarkdownSection };
-
-export interface ParsedAssistantMarkdown {
-  readonly newline: '\n' | '\r\n';
-  readonly preamble: string;
-  readonly sections: readonly MarkdownSection[];
-  readonly segments: readonly MarkdownSegment[];
 }
 
 export interface ParsedTableSuccess {
@@ -93,6 +80,7 @@ export type OcrAgentKind = 'delegate_ocr' | 'regular_ocr' | 'other';
 
 export interface FinalizeOcrResponseInput {
   readonly assistantResponse: string;
+  readonly messageId?: string;
   readonly previousOcrMarkdown?: string;
   readonly canonicalMapping: readonly SourceMappingEntry[];
   readonly delegateSummary?: boolean;
@@ -116,6 +104,8 @@ export type FinalizationFailureReason =
   | 'ambiguous_ocr_update'
   | 'missing_ocr_base'
   | 'conflicting_ocr_sections'
+  | 'retired_control_section'
+  | 'duplicate_ocr_result'
   | 'mapping_mismatch';
 
 export interface FinalizeOcrResponseFailure {
@@ -129,117 +119,10 @@ export type FinalizeOcrResponseResult =
   | FinalizeOcrResponseSuccess
   | FinalizeOcrResponseFailure;
 
-interface MarkdownFence {
-  readonly marker: '`' | '~';
-  readonly length: number;
-}
-
-interface LinePart {
-  readonly content: string;
-  readonly raw: string;
-  readonly start: number;
-  readonly end: number;
-}
-
 interface KeyedRow {
   readonly key: string;
   readonly row: readonly string[];
 }
-
-function getLines(markdown: string): LinePart[] {
-  const lines: LinePart[] = [];
-  const pattern = /([^\r\n]*)(\r\n|\n|$)/gu;
-  let match: RegExpExecArray | null;
-  while ((match = pattern.exec(markdown)) !== null) {
-    const content = match[1] ?? '';
-    const ending = match[2] ?? '';
-    const start = match.index;
-    const end = start + match[0].length;
-    lines.push({ content, raw: `${content}${ending}`, start, end });
-    if (ending === '') {
-      break;
-    }
-  }
-  return lines;
-}
-
-function normalizeTitle(line: string): string | undefined {
-  const match = H2_PATTERN.exec(line);
-  if (!match) {
-    return undefined;
-  }
-  return (match[1] ?? '').replace(/[ \t]+#+[ \t]*$/u, '').trim();
-}
-
-function getFenceStart(line: string): MarkdownFence | undefined {
-  const markerText = FENCE_START_PATTERN.exec(line)?.[1];
-  const marker = markerText?.[0];
-  if (!markerText || (marker !== '`' && marker !== '~')) {
-    return undefined;
-  }
-  return { marker, length: markerText.length };
-}
-
-function closesFence(line: string, fence: MarkdownFence): boolean {
-  const markerText = FENCE_END_PATTERN.exec(line)?.[1];
-  return markerText?.[0] === fence.marker && markerText.length >= fence.length;
-}
-
-/** Parse H2 sections while retaining exact section slices and non-section text. */
-export function parseAssistantMarkdown(markdown: string): ParsedAssistantMarkdown {
-  const lines = getLines(markdown);
-  const starts: Array<{ readonly index: number; readonly title: string }> = [];
-  let fence: MarkdownFence | undefined;
-
-  for (const [index, line] of lines.entries()) {
-    if (fence) {
-      if (closesFence(line.content, fence)) {
-        fence = undefined;
-      }
-      continue;
-    }
-    const nextFence = getFenceStart(line.content);
-    if (nextFence) {
-      fence = nextFence;
-      continue;
-    }
-    const title = normalizeTitle(line.content);
-    if (title !== undefined) {
-      starts.push({ index, title });
-    }
-  }
-
-  const sections: MarkdownSection[] = starts.map((start, position) => {
-    const next = starts[position + 1];
-    const headingLine = lines[start.index];
-    const sectionEnd = next ? lines[next.index]?.start ?? markdown.length : markdown.length;
-    const bodyStart = headingLine?.end ?? sectionEnd;
-    const raw = markdown.slice(headingLine?.start ?? sectionEnd, sectionEnd);
-    return {
-      title: start.title,
-      heading: headingLine?.content ?? '',
-      body: markdown.slice(bodyStart, sectionEnd),
-      raw,
-    };
-  });
-
-  const preamble = starts.length > 0 ? markdown.slice(0, lines[starts[0]?.index ?? 0]?.start ?? 0) : markdown;
-  const segments: MarkdownSegment[] = [];
-  if (preamble !== '') {
-    segments.push({ kind: 'text', text: preamble });
-  }
-  sections.forEach((section) => segments.push({ kind: 'section', section }));
-
-  return {
-    newline: markdown.includes('\r\n') ? '\r\n' : '\n',
-    preamble,
-    sections,
-    segments,
-  };
-}
-
-/** Alias retained for callers that use the shorter parser name. */
-export const parseMarkdownSections: typeof parseAssistantMarkdown = parseAssistantMarkdown;
 
 function validHeaders(headers: readonly string[], required: readonly string[], exact: boolean): boolean {
   if (headers.some((header) => header.length === 0) || new Set(headers).size !== headers.length) {
@@ -640,8 +523,8 @@ export function hasOcrResultUpdates(markdown: string): boolean {
   return parseAssistantMarkdown(markdown).sections.some((section) => section.title === UPDATES_TITLE);
 }
 
-function renderResultSection(table: OcrTable): string {
-  return `## ${RESULT_TITLE}\n\n${renderTable(table)}`;
+function renderResultSection(table: OcrTable, title = RESULT_TITLE): string {
+  return `## ${title}\n\n${renderTable(table)}`;
 }
 
 function explicitDeletionKeys(
@@ -702,14 +585,54 @@ export function finalizeOcrResponse(
   canonicalMapping?: readonly SourceMappingEntry[],
   delegateSummary = false,
 ): FinalizeOcrResponseResult {
-  const input = normalizeInput(inputOrResponse, previousOcrMarkdown, canonicalMapping, delegateSummary);
+  return finalizeOcrResponseInternal(
+    normalizeInput(inputOrResponse, previousOcrMarkdown, canonicalMapping, delegateSummary),
+    false,
+  );
+}
+
+/**
+ * Reconstructs a selected legacy fork history without admitting it as a new
+ * OCR result. The normal completion path must use finalizeOcrResponse.
+ */
+export function reconstructLegacyOcrResponse(
+  input: FinalizeOcrResponseInput,
+): FinalizeOcrResponseResult {
+  return finalizeOcrResponseInternal(input, true);
+}
+
+function finalizeOcrResponseInternal(
+  input: FinalizeOcrResponseInput,
+  legacyReconstruction: boolean,
+): FinalizeOcrResponseResult {
   const document = parseAssistantMarkdown(input.assistantResponse);
-  const updates = document.sections.filter((section) => section.title === UPDATES_TITLE);
-  const isUpdate = updates.length > 0;
+  const updates = legacyReconstruction
+    ? document.sections.filter((section) => section.title === UPDATES_TITLE)
+    : [];
+  const isUpdate = legacyReconstruction && updates.length > 0;
+  const resultTitle = legacyReconstruction ? RESULT_TITLE
+    : document.sections.find((section) => section.title.split(/[｜|]/u)[0]?.trim() === RESULT_TITLE)?.title ?? RESULT_TITLE;
+  if (!legacyReconstruction) {
+    const admission = admitFullOnlyMarkdown({
+      markdown: input.assistantResponse,
+      kind: 'ocr_result',
+      title: resultTitle,
+      messageId: input.messageId ?? 'completion-response',
+    });
+    if (!admission.ok) {
+      if (admission.code === 'retired_control_section') {
+        return { ok: false, reason: 'retired_control_section' };
+      }
+      if (admission.code === 'duplicate_full_target') {
+        return { ok: false, reason: 'duplicate_ocr_result' };
+      }
+      return { ok: false, reason: 'missing_ocr_result' };
+    }
+  }
   if (updates.length > 1 || (isUpdate && document.sections.some((section) => section.title === RESULT_TITLE))) {
     return { ok: false, reason: 'conflicting_ocr_sections' };
   }
-  const resultParsed = tableInSection(document, isUpdate ? UPDATES_TITLE : RESULT_TITLE, (markdown) => tableFromMarkdown(markdown, [], false, true));
+  const resultParsed = tableInSection(document, isUpdate ? UPDATES_TITLE : resultTitle, (markdown) => tableFromMarkdown(markdown, [], false, legacyReconstruction));
   if (resultParsed.ok === false) {
     return { ok: false, reason: resultParsed.reason === 'missing_table' ? 'missing_ocr_result' : 'invalid_ocr_result_table' };
   }
@@ -745,11 +668,11 @@ export function finalizeOcrResponse(
     ? mappingValidation
     : { ok: true, entries: mappingParsed.ok ? mappingEntries(mappingParsed.table) : [] };
 
-  const previous = parsePreviousTable(input.previousOcrMarkdown);
+  const previous = legacyReconstruction ? parsePreviousTable(input.previousOcrMarkdown) : undefined;
   if (isUpdate && !previous) {
     return { ok: false, reason: 'missing_ocr_base' };
   }
-  const deletedKeys = explicitDeletionKeys(input, document, previous);
+  const deletedKeys = legacyReconstruction ? explicitDeletionKeys(input, document, previous) : new Set<string>();
   if (!deletedKeys || (resultParsed.table.rows.length === 0 &&
     (!previous || (!isUpdate && (deletedKeys.size === 0 || deletedKeys.size !== previous.rows.length)))) || resultParsed.table.rows.some((row) => {
     const key = tableKey(row, resultParsed.table.headers);
@@ -774,7 +697,8 @@ export function finalizeOcrResponse(
   const summaryResult = buildOcrUpdateSummary(previous, resultParsed.table, reconciliation);
   const review = getSection(document, REVIEW_TITLE);
   const used = new Set<MarkdownSection>([...document.sections.filter((section) =>
-    section.title === SOURCE_TITLE || section.title === RESULT_TITLE || section.title === REVIEW_TITLE || section.title === SUMMARY_TITLE || section.title === 'ocr_deletions')]);
+    section.title === SOURCE_TITLE || section.title === resultTitle || section.title === REVIEW_TITLE ||
+    (legacyReconstruction && (section.title === SUMMARY_TITLE || section.title === 'ocr_deletions')))]);
   const chunks: string[] = [];
   const sourceSection = getSection(document, SOURCE_TITLE);
   if (input.agentKind === 'regular_ocr') {
@@ -786,20 +710,17 @@ export function finalizeOcrResponse(
   } else if (requiresCanonicalMapping) {
     chunks.push(`## ${SOURCE_TITLE}\n\n${renderTable({ headers: SOURCE_HEADERS, rows: mapping.entries.map((entry) => [entry.sourceCode, entry.sourceFilename]) })}`);
   }
-  chunks.push(renderResultSection({ headers: reconciliation.headers, rows: reconciliation.rows }));
+  chunks.push(renderResultSection({ headers: reconciliation.headers, rows: reconciliation.rows }, resultTitle));
   if (review) {
     chunks.push(review.raw);
   }
   chunks.push(...safeOtherText(document, used));
-  if (input.delegateSummary) {
+  if (legacyReconstruction && input.delegateSummary) {
     chunks.push(summaryResult.markdown);
   }
-  const ocrResultMarkdown = renderResultSection({ headers: reconciliation.headers, rows: reconciliation.rows });
-  // Keep the model correction visible; the authoritative full snapshot is appended only after completion.
-  const visibleResponse = document.sections.filter((section) => section.title === 'ocr_deletions')
-    .reduce((text, section) => text.replace(section.raw, ''), input.assistantResponse);
+  const ocrResultMarkdown = renderResultSection({ headers: reconciliation.headers, rows: reconciliation.rows }, resultTitle);
   const finalResponse = isUpdate
-    ? `${visibleResponse}${document.newline}${document.newline}${input.delegateSummary ? `${summaryResult.markdown}${document.newline}${document.newline}` : ''}${ocrResultMarkdown.replace(/\n/gu, document.newline)}`
+    ? `${document.sections.filter((section) => section.title !== 'ocr_deletions').map((section) => section.raw).join(document.newline + document.newline)}${document.newline}${document.newline}${input.delegateSummary ? `${summaryResult.markdown}${document.newline}${document.newline}` : ''}${ocrResultMarkdown.replace(/\n/gu, document.newline)}`
     : joinChunks(chunks, document.newline);
   return {
     ok: true,
@@ -807,6 +728,6 @@ export function finalizeOcrResponse(
     ocrResultMarkdown,
     mapping,
     reconciliation,
-    summary: input.delegateSummary ? summaryResult.markdown : '',
+    summary: legacyReconstruction && input.delegateSummary ? summaryResult.markdown : '',
   };
 }

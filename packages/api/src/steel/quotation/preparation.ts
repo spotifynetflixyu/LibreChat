@@ -2,6 +2,8 @@ import mongoose from 'mongoose';
 import { createHash } from 'node:crypto';
 import type {
   ISteelQuotationState,
+  SteelMarkdownAdmission,
+  SteelMarkdownAdmissionInput,
   SteelQuotationCustomerLookupCandidate,
   SteelQuotationCustomerLookupEvidence,
   SteelQuotationCustomerPreparation,
@@ -10,12 +12,12 @@ import type {
 } from '@librechat/data-schemas';
 import type { SteelToolJsonObject, SteelToolJsonValue, SteelToolResult } from '../tools/results';
 import type { SteelQuotationSaveCustomerInput, SteelQuotationStateService } from './state';
-import { createSystemOrderRevisionService, formatSystemOrderRevisionInstruction, isCurrentSystemOrderRun } from './revision';
 import { parseAssistantMarkdown, parseOcrResultTable } from '../ocr/result';
 import { extractCustomerDataTable, quotationSignal } from './protocol';
 import { escapeMarkdownTableCell } from '../markdown/row-codec';
 import { createSteelQuotationStateService } from './state';
 import { createSteelOcrStateService } from '../ocr/state';
+import { isCurrentSystemOrderRun } from './revision';
 
 export type QuotationCustomerTier = 'A' | 'B' | 'C' | 'D' | 'E' | 'F';
 
@@ -128,6 +130,8 @@ export async function prepareQuotationTurn(input: {
   scope: SteelQuotationScope;
   messageId: string;
   responseId: string;
+  generationId?: string;
+  publicationStore?: { admitSteelMarkdown(input: SteelMarkdownAdmissionInput): Promise<SteelMarkdownAdmission | null> };
   text: string;
   files?: readonly SteelQuotationPendingMessageFile[];
 }): Promise<{
@@ -136,11 +140,13 @@ export async function prepareQuotationTurn(input: {
   state: ISteelQuotationState;
   instruction: string;
   resume: boolean;
+  publicationAdmission?: SteelMarkdownAdmission;
   messageText: string;
   messageFiles?: readonly SteelQuotationPendingMessageFile[];
 }> {
   const service = createSteelQuotationStateService(mongoose);
   let state = await service.ensureState(input.scope);
+  const admit = async () => input.publicationStore ? (await input.publicationStore.admitSteelMarkdown({ scope: input.scope, responseId: input.responseId, generationId: input.generationId ?? input.responseId })) ?? undefined : undefined;
   const originalMessage = {
     messageText: input.text,
     ...(input.files ? { messageFiles: input.files } : {}),
@@ -151,6 +157,7 @@ export async function prepareQuotationTurn(input: {
       messageId: input.messageId,
       state,
       resume: false,
+      publicationAdmission: await admit(),
       instruction: quotationPreparationInstruction(
         state.currentOrder?.markdown,
         state.currentCustomer?.customerMarkdown,
@@ -189,25 +196,17 @@ export async function prepareQuotationTurn(input: {
     });
   }
   const hasSystemOrder = hasSavedSystemOrder && isCurrentSystemOrderRun(state);
-  const currentSystemOrder = hasSystemOrder
-    ? await createSystemOrderRevisionService({
-        read: service.readState,
-        readCurrentSystemOrder: service.readCurrentSystemOrder,
-        readCheckpoint: service.readCheckpoint,
-        saveCurrentSystemOrder: service.saveCurrentSystemOrder,
-      }).readCurrentSystemOrder(input.scope, state)
-    : undefined;
   return {
     scope: input.scope,
     messageId: input.messageId,
     state,
     resume: false,
+    publicationAdmission: await admit(),
     ...originalMessage,
     instruction: [
       quotationPreparationInstruction(
         state.currentOrder?.markdown, state.currentCustomer?.customerMarkdown, hasSystemOrder,
       ),
-      currentSystemOrder ? formatSystemOrderRevisionInstruction(currentSystemOrder) : '',
     ].filter(Boolean).join('\n\n'),
   };
 }
@@ -223,11 +222,9 @@ export function quotationPreparationInstruction(
     JSON.stringify(status),
     'These flags report saved data, not user consent. hasSystemOrder is true only for the latest accepted quotation whose run is completed and whose full final result is saved and whose accepted order and customer/tier still match the saved complete order and customer data. A completed result may belong to a previous user turn. Earlier archived results do not make this flag true if the latest accepted quotation is unfinished, interrupted, or cancelled. Do not ask whether to start quoting or emit a next-step template asking the user to reply 報價 or quote. hasSystemOrder describes saved quotation state, not whether the current request has been fulfilled. An explicit current request to quote, requote, or resubmit the unchanged confirmed order and customer/tier is fresh start consent even when hasSystemOrder=true. Treat 報價 and the English word quote case-insensitively as quotation intent. Ordinary inquiries about an old quotation do not authorize a new quote_signal. Do not resume or start a run in the AI response.',
     '# Current quotation preparation workflow',
-    'For a new order with no saved ocr_result, output one complete ## ocr_result table for the user to confirm. The general agent directly handles textual corrections to a saved order. Output only changed or added rows in one ## ocr_result_updates table. Do not delegate OCR unless the original attachment must be read again. Never output both titles or duplicate update sections yourself. Reuse an unchanged saved order rather than presenting it again on every turn. Text orders use the same complete table; use stable 來源=文字訂單 and stable 零件編號 for new text rows.',
+    'For a new order or any correction to a saved order, output exactly one complete ## ocr_result table containing every current row. A correction replaces the complete saved order; never emit ocr_result_updates, ocr_deletions, or any other delta/control section. Do not delegate OCR unless the original attachment must be read again. Text orders use the same complete table; use stable 來源=文字訂單 and stable 零件編號 for new text rows.',
     'The ocr_result table must contain 來源, 零件編號, 類別, and the available specification/quantity fields. Preserve existing columns and all user-provided material, size, unit, quantity, and notes; leave unknown facts blank. Keep dimensions in explicitly labeled mm columns where applicable.',
-    'For corrections, reuse the saved column names and order and output each changed or added row with all columns, preserving its unchanged values. Omit unchanged rows. Preserve the existing 來源 and 零件編號 values. Never change these identifiers to locate a different row, or blank an unchanged cell. If an identity has multiple independent rows, include the whole group with all its columns and distinguishing values, never a partial group. Explicit deletions require ocr_deletions; omission is not deletion. A deletion-only delta contains the existing columns under ocr_result_updates with header and separator without data rows. Never quote in that response; wait for the user to confirm quotation of the revised order.',
-    order ? `For an explicit deletion only, also emit ## ocr_deletions with columns order_hash, 來源, 零件編號 listing exactly the deleted prior rows. Use order_hash=${quotationFingerprint(order)}. Never use omission alone to delete rows.` : '',
-    'If the input reports no saved customer_data, resolve the customer or tier first and do not revise an old system_order. The regular preparation response never outputs system_order. If the input supplies ## system_order_revision and the user only corrects an existing quotation row, use one ## system_order_updates table with columns base_hash, row_index, then every original system_order column in the supplied order; row_index is 1-based and existing-row only, preserve all unchanged cells, omit unchanged rows, and do not add or delete rows. When changing quantity, dimensions, or unit weight, update the affected 總數 using confirmed pricing rules, or leave it blank if the required inputs are missing; never retain a stale total or claim a fresh price lookup. Additions and deletions require an OCR order correction and a later confirmed quotation. Never emit system_order_updates with quote_signal.',
+    'If the input reports no saved customer_data, resolve the customer or tier first. The regular preparation response never outputs system_order or customer_quote. A system-order correction must be a fresh complete system_order output using the existing pricing rules and the confirmed customer context; do not emit system_order_revision or system_order_updates. When changing quantity, dimensions, or unit weight, update the affected 總數 using confirmed pricing rules, or leave it blank if the required inputs are missing; never retain a stale total or claim a fresh price lookup.',
     'Treat order confirmation, customer/tier selection, presentation of customer_data, and consent to start quoting as prerequisites, not a fixed interview sequence. Reuse unchanged information and explicit confirmations; ask only for missing or changed facts. Customer details may arrive before the order, but do not call search_customers before a saved ocr_result exists.',
     'If multiple customer matches are returned, ask the user to choose and do not output customer_data or quote_signal. After the user chooses, search the exact selected customer again to resolve the selection.',
     'Ask for a customer name or an explicit A-F tier choice only if neither is known. Customer names and identities require search_customers; never invent or infer a customer identity. After a unique match or successful no-match search, present the tool-provided customerDataMarkdown exactly. A successful no-match explicitly uses default B; a tool error is not no-match.',
@@ -235,7 +232,7 @@ export function quotationPreparationInstruction(
     'Whenever this response presents customer_data, wait for the next user turn; even an explicit simultaneous quotation request cannot emit quoteSignal in this response. Reuse already-presented unchanged customer data on the next turn. A customer name or any tier choice alone is not start consent. Never emit customer_data_updates. Customer_data and quoteSignal must be in separate responses; any order or customer change requires a fresh confirmation.',
     'Emit quoteSignal only after all prerequisites are satisfied, then finish. Order confirmation and start consent may be in one user message; do not ask the same question again. Changes to the order or customer/tier invalidate prior start consent. A new explicit request to re-quote unchanged confirmed data is fresh start consent, including after cancellation.',
     'Use exactly ## quote_signal followed by a blank line and start; include no index or token. Never invent customer identity. Do not call search_price_candidates, calculate or output system_order/customer_quote, or output a quotation completion summary in this preparation response.',
-    'A saved order is not confirmation by itself. Never reuse confirmation after a correction, and never emit a signal if this response contains ocr_result, ocr_result_updates, system_order_updates, or customer_data. Do not emit a fixed 下一步 template or ask whether to start quoting. Ask only for missing, changed, or ambiguous order facts, customer choices, or pricing conditions.',
+    'A saved order is not confirmation by itself. Never reuse confirmation after a correction, and never emit a signal if this response contains ocr_result, system_order, or customer_data. Do not emit a fixed 下一步 template or ask whether to start quoting. Ask only for missing, changed, or ambiguous order facts, customer choices, or pricing conditions.',
     status.hasOcrResult ? `# Saved complete order\n${order}` : '# No saved complete order exists. Prepare the complete ocr_result first.',
     status.hasCustomerData ? `# Saved customer data\n${customer}` : '# No saved customer_data exists. Ask for a customer name or a clear A-F tier choice if it is not already known.',
   ].join('\n\n');

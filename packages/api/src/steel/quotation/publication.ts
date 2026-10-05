@@ -1,3 +1,4 @@
+import { parseSteelReviewMarkdownTables } from 'librechat-data-provider';
 import type {
   SteelQuotationPublicationMessage,
   SteelQuotationPublicationProof,
@@ -8,6 +9,8 @@ import type {
 import type { ResponseAggregator } from '../../agents/responses/service';
 import type { ResponseTracker } from '../../agents/responses/handlers';
 import type { OutputItem } from '../../agents/responses/types';
+import { createSteelReviewBaselineRows } from '../review';
+import { parseAssistantMarkdown } from '../ocr/result';
 
 export interface SteelQuotationPublicationContentPart {
   type: string;
@@ -172,8 +175,18 @@ export function createSteelQuotationPublicationPublisher(
       throw new Error('Quotation publication scope is unavailable');
     }
 
+    const tables = parseSteelReviewMarkdownTables(proof.markdown).filter((table) => table.title?.split(/[｜|]/u)[0]?.trim() === 'system_order');
+    if (tables.length !== 1 || !tables[0].title) throw new Error('Quotation publication full target is unavailable');
+    const table = tables[0];
+    const section = parseAssistantMarkdown(proof.markdown).sections.find((entry) => entry.title === table.title);
+    if (!section) throw new Error('Quotation publication full section is unavailable');
+    const baselineMarkdown = section.raw.trimEnd();
+    const outputId = `system_order:${proof.runId}`;
     return input.savePublication({
       ...proof,
+      reviewBaseline: { kind: 'system_order', title: section.title, outputId, revision: proof.runId,
+        baselineMarkdown, headers: table.headers, sourceMappings: proof.sourceSnapshot?.mappings ?? [],
+        rows: createSteelReviewBaselineRows(table, 'system_order', outputId, proof.sourceSnapshot?.mappings ?? [], proof.calculationCheckpoint) },
       scope,
       targetMessageId,
       saveContext: input.saveContext ?? proof.saveContext,

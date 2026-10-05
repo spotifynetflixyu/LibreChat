@@ -29,6 +29,7 @@ const catalogService = createSteelReviewCatalogService({
 });
 const handlers = createSteelRouteHandlers({
   getModelsConfig,
+  versionsReader: db,
   catalogService,
   reviewService: createSteelReviewService({ reader: db, writer: db, sourceAuthority: sourceService, catalogService }),
   sourceService,
@@ -40,6 +41,7 @@ const quotation = createQuotationRouteHandlers({
 router.get('/ai/models', requireJwtAuth, handlers.listModels);
 router.get('/ai/oauth-usage', requireJwtAuth, handlers.readOpenAIOAuthUsage);
 router.post('/rule-proposals', requireJwtAuth, handlers.createRuleProposal);
+router.get('/conversations/:conversationId/versions', requireJwtAuth, handlers.readVersions);
 router.get('/conversations/:conversationId/review/:kind', requireJwtAuth, handlers.readReview);
 router.get('/conversations/:conversationId/review/system_order/catalog', requireJwtAuth, handlers.readReviewCatalog);
 router.get('/conversations/:conversationId/review/:kind/receipt', requireJwtAuth, handlers.readReviewReceipt);

@@ -9,22 +9,21 @@ import type {
   SteelQuotationScope,
   SteelQuotationSourceSnapshot,
 } from '@librechat/data-schemas';
-import type { PreparedQuotationCustomerResponse } from '../quotation/preparation';
-import type { PreparedSystemOrderRevisionSuccess } from '../quotation/revision';
 import type { SteelQuotationStateService } from '../quotation/state';
 import type { SteelResponseRequest } from '../quotation/completion';
 import type { SteelOcrResponseAuditService } from '../ocr/audit';
 import type { SteelDelegateOcrStateService } from '../ocr/state';
-import type { FinalizeOcrResponseSuccess } from '../ocr/result';
+import type { SteelFullPublisher } from './types';
 import { acceptQuotationSignal, acceptQuotationResponse, publishCompletedQuotation, SteelQuotationPublicationError } from '../quotation/runner';
 import { appendSteelNextStep, hasSteelDataMarkdown, hasSteelCustomerTier, steelSectionTitle } from '../quotation/next';
-import { isUnfinishedQuotation, prepareQuotationCustomerResponse, hasQuotationOrder } from '../quotation/preparation';
-import { finalizeOcrResponse, parseAssistantMarkdown } from '../ocr/result';
-import { createSystemOrderRevisionService } from '../quotation/revision';
+import { isUnfinishedQuotation, hasQuotationOrder } from '../quotation/preparation';
 import { SteelResponseCompletionError } from '../quotation/completion';
 import { resolveRequestTenantId } from '../../middleware/tenant';
 import { parseQuotationSignal } from '../quotation/protocol';
+import { retiredMarkdownSectionTitles } from './admission';
+import { parseAssistantMarkdown } from '../ocr/result';
 import { parseMarkdownTables } from './table';
+import { publishFullMarkdown } from './full';
 
 export interface SteelMarkdownCompletionInput {
   req: SteelResponseRequest;
@@ -35,6 +34,7 @@ export interface SteelMarkdownCompletionInput {
   stage?: 'workflow' | 'ui' | 'pending';
   applyMarkdown(markdown: string): void;
   persistMarkdown(options?: { completed: boolean }): Promise<object | null | undefined>;
+  publishMarkdown?: SteelFullPublisher;
   publishQuotation?(input: SteelQuotationPublicationProof & { markdown: string }):
     Promise<SteelQuotationPublicationSaveResult>;
   publishedResponse?: SteelPublishedResponsePort;
@@ -94,22 +94,11 @@ interface CompletionReceipt {
   inputMarkdown: string;
   stage: 'workflow' | 'ui' | 'pending';
   canonicalMarkdown: string;
-  ocr?: FinalizeOcrResponseSuccess;
-  preparedCustomer?: PreparedQuotationCustomerResponse;
-  preparedRevision?: PreparedSystemOrderRevisionSuccess;
   expectedSystemOrderHash?: string;
   expectedSystemOrderRunId?: string;
   expectedOcrGeneration?: string;
   expectedOrderHash?: string;
   expectedCustomerPreparationId?: string;
-  candidateToken?: string;
-  candidateValidated?: boolean;
-  ocrSaved?: boolean;
-  orderSaved?: boolean;
-  customerSaved?: boolean;
-  customerPreparationId?: string;
-  delegateCompleted?: boolean;
-  revisionSaved?: boolean;
   systemOrderSnapshot?: SteelQuotationCurrentSystemOrder;
   acceptedRun?: SteelQuotationActiveRun;
   latest?: ISteelQuotationState;
@@ -178,16 +167,6 @@ export function shouldDeferSteelMarkdownPersistence(req: SteelResponseRequest, m
   return Boolean(context?.quotation?.scope && (hasSteelDataMarkdown(markdown) ||
     parseQuotationSignal(markdown) || context.ocrTurnActive || context.delegateOcrContext?.didExecute ||
     context.quotation.resume || adoptedPublications.has(req)));
-}
-
-function canonicalPendingMarkdown(markdown: string): string {
-  return parseAssistantMarkdown(markdown).segments.filter((segment) => segment.kind !== 'section' ||
-    !['ocr_result_updates', 'ocr_deletions', 'system_order_updates'].includes(steelSectionTitle(segment.section.title)))
-    .map((segment) => segment.kind === 'section' ? segment.section.raw : segment.text).join('').trimEnd();
-}
-
-function preserveStreamedMarkdown(original: string, canonical: string): string {
-  return canonical.startsWith(original) ? canonical : `${original}\n\n${canonical}`;
 }
 
 async function verifyPublication(publication: SteelMarkdownPublication, scope: SteelQuotationScope, dependencies: SteelMarkdownCompletionDependencies): Promise<void> {
@@ -338,6 +317,13 @@ export async function finalizeSteelMarkdownTurn(
   if (scope.userId !== input.req.user?.id || scope.tenantId !== resolveRequestTenantId(input.req)) {
     throw new SteelResponseCompletionError('invalid_response_scope');
   }
+  if (parseAssistantMarkdown(input.markdown).sections.some((section) =>
+    retiredMarkdownSectionTitles.some((title) => title === steelSectionTitle(section.title)))) {
+    throw new SteelResponseCompletionError('retired_control_section');
+  }
+  if (parseQuotationSignal(input.markdown) && ['ocr_result', 'system_order', 'customer_data'].some((kind) => sectionTitles(input.markdown).has(kind))) {
+    throw new SteelResponseCompletionError('invalid_quote_signal');
+  }
   // The flow appends a new quotation to primary text already committed by this request.
   const workflowReceipt = [...(receipts.get(input.req)?.values() ?? [])].find((entry) =>
     entry.stage === 'workflow' && entry.acceptedRun && entry.responseId === input.responseId &&
@@ -369,7 +355,7 @@ export async function finalizeSteelMarkdownTurn(
     return { markdown: input.markdown };
   }
   if (!adoptedPublications.has(input.req) && (context?.ocrTurnActive || context?.delegateOcrContext?.didExecute) &&
-    !titles.has('ocr_result') && !titles.has('ocr_result_updates') &&
+    !titles.has('ocr_result') &&
     !titles.has('system_order') && !titles.has('quote_signal')) {
     throw new SteelResponseCompletionError('missing_ocr_result');
   }
@@ -407,6 +393,27 @@ export async function finalizeSteelMarkdownTurn(
       }
       await verifyPublication(publication, scope, dependencies);
       return { markdown: input.markdown, publication };
+    }
+    if (['ocr_result', 'customer_data', 'system_order'].some((title) => titles.has(title)) &&
+      !parseQuotationSignal(input.markdown) && (!context?.quotation?.resume || titles.has('ocr_result') || titles.has('customer_data'))) {
+      const state = await dependencies.quotation.readState(scope);
+      if (isUnfinishedQuotation(state?.activeRun?.status)) {
+        const acceptedRun = await acceptQuotationResponse({ scope, response: input.markdown, responseId: input.responseId,
+          messageId: context?.quotation?.messageId, messageText: context?.quotation?.messageText, messageFiles: context?.quotation?.messageFiles,
+          expectedOrderHash: context?.quotation?.state?.currentOrder?.sha256,
+          expectedCustomerPreparationId: context?.quotation?.state?.currentCustomer?.preparationId, finishReason: 'stop', service: dependencies.quotation });
+        if (!acceptedRun) throw new SteelResponseCompletionError('superseded_response');
+        await persist(input, input.markdown, input.stage !== 'workflow');
+        return { markdown: input.markdown, acceptedRun };
+      }
+      const markdown = await publishFullMarkdown(input, dependencies);
+      const [ocr, latest] = await Promise.all([dependencies.ocr.readCurrentOcrResult(scope.conversationId), dependencies.quotation.readState(scope)]);
+      const publication: SteelMarkdownPublication = Object.freeze({ scopeKey: scopeKey(scope), responseId: input.responseId,
+        generationId, markdown, ocrGeneration: ocr?.generationId, ocrHash: ocr?.markdown ? hash(ocr.markdown) : undefined,
+        orderHash: latest?.currentOrder?.sha256, customerPreparationId: latest?.currentCustomer?.preparationId,
+        runId: latest?.activeRun?.runId, systemOrderHash: latest?.currentSystemOrder?.sha256 });
+      publications.add(publication);
+      return { markdown, publication };
     }
     const key = JSON.stringify([scopeKey(scope), input.responseId, generationId, hash(input.markdown)]);
     let requestReceipts = receipts.get(input.req);
@@ -483,22 +490,6 @@ export async function finalizeSteelMarkdownTurn(
         await verifyPublication(publication, scope, dependencies);
         return { markdown, acceptedRun, publication };
       }
-      if (isUnfinishedQuotation(quotationState?.activeRun?.status) &&
-        (titles.has('ocr_result') || titles.has('ocr_result_updates') || titles.has('customer_data'))) {
-        const acceptedRun = await acceptQuotationResponse({
-          scope, response: input.markdown, responseId: input.responseId,
-          messageId: context?.quotation?.messageId, messageText: context?.quotation?.messageText,
-          messageFiles: context?.quotation?.messageFiles,
-          expectedOrderHash: context?.quotation?.state?.currentOrder?.sha256,
-          expectedCustomerPreparationId: context?.quotation?.state?.currentCustomer?.preparationId,
-          sourceSnapshot: admittedSourceSnapshot(ocrState, quotationState?.currentOrder?.sha256),
-          finishReason: 'stop', service: dependencies.quotation,
-        });
-        if (acceptedRun) {
-          await persist(input, input.markdown, input.stage !== 'workflow');
-          return { markdown: input.markdown, acceptedRun };
-        }
-      }
       receipt = {
         scopeKey: scopeKey(scope), responseId: input.responseId, generationId,
         inputHash: hash(input.markdown), inputMarkdown: input.markdown,
@@ -509,76 +500,12 @@ export async function finalizeSteelMarkdownTurn(
           ? context.quotation.state.currentCustomer?.preparationId
           : quotationState?.currentCustomer?.preparationId,
       };
-      const hasOcr = titles.has('ocr_result') || titles.has('ocr_result_updates');
-      if (hasOcr) {
-        const delegate = context?.delegateOcrContext;
-        const run = delegate?.activeRun ?? delegate?.delegateOcrRun;
-        const workflow = delegate?.delegateOcrWorkflow ?? delegate;
-        const trusted = workflow?.finalizedByBackend === true &&
-          workflow.finalizedResponse?.finalResponse === input.markdown
-          ? workflow.finalizedResponse : undefined;
-        if (!trusted) {
-          await dependencies.audit?.save({
-            rawResponse: input.markdown, sourceStage: 'normal_request',
-            userId: scope.userId, tenantId: scope.tenantId,
-            conversationId: scope.conversationId, messageId: input.responseId, generationId,
-            attemptNumber: run?.agentAttemptNumber ?? delegate?.agentAttemptNumber ?? 1,
-            attemptId: run?.agentAttemptToken ?? delegate?.attemptToken,
-            baseRevision: ocrState?.currentOcrResultGenerationId,
-            baseResponse: ocrState?.currentOcrResultMarkdown ?? '',
-          });
-        }
-        let agentKind: 'delegate_ocr' | 'regular_ocr' | 'other' = 'other';
-        if (context?.ocrTurnActive) agentKind = 'regular_ocr';
-        if (delegate?.didExecute || run) agentKind = 'delegate_ocr';
-        const finalized = trusted ?? finalizeOcrResponse({
-          assistantResponse: input.markdown,
-          previousOcrMarkdown: ocrState?.currentOcrResultMarkdown,
-          canonicalMapping: (ocrState?.sourceMappings ?? []).map(({ sourceCode, sourceFilename }) => ({ sourceCode, sourceFilename })),
-          agentKind,
-          delegateSummary: Boolean(delegate?.didExecute || run),
-          currentUserTurn: delegate?.currentUserTurnText ?? context?.quotation?.messageText,
-        });
-        if (!finalized.ok) throw new SteelResponseCompletionError(finalized.reason);
-        receipt.ocr = finalized;
-        receipt.canonicalMarkdown = finalized.finalResponse;
-        // Already-published pending/delegate results retain their durable generation and owner.
-        if (ocrState?.currentOcrResultMarkdown === finalized.ocrResultMarkdown &&
-          ocrState.currentOcrResultMessageId && (!run?.claimToken ||
-            (ocrState.currentOcrResultGenerationId === generationId && ocrState.currentOcrResultMessageId === input.responseId))) {
-          receipt.ocrSaved = true;
-          receipt.expectedOcrGeneration = ocrState.currentOcrResultGenerationId;
-        }
-      }
-      if (titles.has('customer_data')) {
-        receipt.preparedCustomer = await prepareQuotationCustomerResponse({
-          scope, response: receipt.canonicalMarkdown, responseId: input.responseId,
-          messageId: context?.quotation?.messageId, messageText: context?.quotation?.messageText,
-          messageFiles: context?.quotation?.messageFiles, service: dependencies.quotation,
-          expectedOrderHash: receipt.expectedOrderHash,
-          expectedCustomerPreparationId: receipt.expectedCustomerPreparationId, finishReason: 'stop',
-        });
-        requireSaved(receipt.preparedCustomer, 'customer_save_failed');
-      }
-      const revision = createSystemOrderRevisionService({ read: dependencies.quotation.readState,
-        readCurrentSystemOrder: dependencies.quotation.readCurrentSystemOrder,
-        readCheckpoint: dependencies.quotation.readCheckpoint, saveCurrentSystemOrder: dependencies.quotation.saveCurrentSystemOrder,
-      });
-      if (titles.has('system_order_updates')) {
-        const prepared = await revision.prepareSystemOrderUpdates({ scope,
-          response: receipt.canonicalMarkdown, responseId: input.responseId, messageId: input.responseId });
-        if (!prepared.ok) throw new SteelResponseCompletionError(prepared.code);
-        receipt.preparedRevision = prepared;
-        receipt.canonicalMarkdown = input.stage === 'pending' ? prepared.markdown
-          : preserveStreamedMarkdown(input.markdown, prepared.markdown);
-      }
       if (titles.has('system_order')) {
-        const savedOrder = await revision.readCurrentSystemOrder(scope);
+        const savedOrder = await dependencies.quotation.readCurrentSystemOrder(scope);
         const sections = parseAssistantMarkdown(receipt.canonicalMarkdown).sections.filter((entry) => steelSectionTitle(entry.title) === 'system_order');
         const section = sections[0];
         if (sections.length !== 1 || !savedOrder || !section || !await dependencies.quotation.hasSystemOrder(scope) ||
-          (receipt.ocr && receipt.ocr.ocrResultMarkdown !== quotationState?.currentOrder?.markdown) ||
-          receipt.preparedCustomer?.kind === 'save' || JSON.stringify(parseMarkdownTables(section.body)) !==
+          JSON.stringify(parseMarkdownTables(section.body)) !==
           JSON.stringify(parseMarkdownTables(savedOrder.markdown))) {
           throw new SteelResponseCompletionError('invalid_system_order');
         }
@@ -588,10 +515,8 @@ export async function finalizeSteelMarkdownTurn(
       }
       if (titles.has('quote_signal')) {
         if (!parseQuotationSignal(input.markdown)) throw new SteelResponseCompletionError('invalid_quote_signal');
-        let customer = quotationState?.currentCustomer?.customerMarkdown;
-        if (receipt.preparedCustomer?.kind === 'save') customer = receipt.preparedCustomer.input.customerMarkdown;
-        if (receipt.preparedCustomer?.kind === 'unchanged') customer = receipt.preparedCustomer.customer.customerMarkdown;
-        if (!hasQuotationOrder(receipt.ocr?.ocrResultMarkdown ?? quotationState?.currentOrder?.markdown) ||
+        const customer = quotationState?.currentCustomer?.customerMarkdown;
+        if (!hasQuotationOrder(quotationState?.currentOrder?.markdown) ||
           !hasSteelCustomerTier(customer)) throw new SteelResponseCompletionError('quotation_data_required');
         if (input.stage !== 'workflow' && titles.has('system_order') &&
           (context?.quotation?.resume || [...requestReceipts.values()].some((entry) =>
@@ -599,99 +524,12 @@ export async function finalizeSteelMarkdownTurn(
           receipt.acceptedRun = quotationState?.activeRun;
         }
       }
-      if (input.stage === 'pending') receipt.canonicalMarkdown = canonicalPendingMarkdown(receipt.canonicalMarkdown);
       await input.onPrepared?.(receipt.canonicalMarkdown);
       requestReceipts.set(key, receipt);
     }
     if (receipt.scopeKey !== scopeKey(scope) || receipt.responseId !== input.responseId ||
       receipt.generationId !== generationId || receipt.inputHash !== hash(input.markdown)) {
       throw new SteelResponseCompletionError('invalid_completion_receipt');
-    }
-    const delegate = context?.delegateOcrContext;
-    const run = delegate?.activeRun ?? delegate?.delegateOcrRun;
-    const claimToken = run?.claimToken ?? delegate?.claimToken;
-    const executionLeaseToken = delegate?.delegateOcrExecutionLease?.executionLeaseToken ?? run?.executionLeaseToken;
-    const delegateOcrIndex = run?.delegateOcrIndex ?? delegate?.delegateOcrIndex;
-    const claim = { claimToken: claimToken ?? '', ...(executionLeaseToken ? { executionLeaseToken } : {}) };
-    if (receipt.ocr && claimToken && !receipt.ocrSaved && !receipt.candidateToken) {
-      const candidateToken = `${generationId}:${input.responseId}:${hash(receipt.canonicalMarkdown)}`;
-      requireSaved(await dependencies.ocr.setDelegateFinalizedCandidate({
-        ...claim, candidate: { token: candidateToken, markdown: receipt.canonicalMarkdown,
-          source: 'backend', generationId, targetMessageId: input.responseId, createdAt: new Date() },
-      }), 'stale_delegate_lease');
-      receipt.candidateToken = candidateToken;
-    }
-    if (receipt.ocr && claimToken && receipt.candidateToken && !receipt.candidateValidated) {
-      requireSaved(await dependencies.ocr.updateDelegateFinalizationJournal({
-        ...claim, candidateToken: receipt.candidateToken,
-        journal: { candidateValidated: true, candidateValidatedToken: receipt.candidateToken },
-      }), 'stale_delegate_lease');
-      receipt.candidateValidated = true;
-    }
-    // Save the complete merged message before canonical OCR points at its message id.
-    const prePersistState = await dependencies.quotation.readState(scope);
-    await persistQuotationResponse(input, dependencies, receipt.canonicalMarkdown,
-      prePersistState, receipt.acceptedRun, false, receipt.systemOrderSnapshot);
-    if (receipt.ocr && !receipt.ocrSaved) {
-      if (claimToken && receipt.candidateToken) {
-        requireSaved(await dependencies.ocr.updateDelegateFinalizationJournal({
-          ...claim, candidateToken: receipt.candidateToken,
-          journal: { messagePersisted: true, messagePersistedToken: receipt.candidateToken },
-        }), 'stale_delegate_lease');
-      }
-      await input.assertActive?.();
-      requireSaved(await dependencies.ocr.upsertCurrentOcrResult({
-        conversationId: scope.conversationId, generationId, attemptNumber: run?.agentAttemptNumber ?? delegate?.agentAttemptNumber ?? 1,
-        markdown: receipt.ocr.ocrResultMarkdown, messageId: input.responseId,
-        ...(claimToken ? { claimToken } : {}), ...(executionLeaseToken ? { executionLeaseToken } : {}),
-        ...(delegateOcrIndex !== undefined ? { delegateOcrIndex } : {}),
-        ...(receipt.expectedOcrGeneration ? { expectedGenerationId: receipt.expectedOcrGeneration } : {}),
-      }), 'order_save_failed');
-      receipt.ocrSaved = true;
-      receipt.expectedOcrGeneration = generationId;
-    }
-    if (receipt.ocr && !receipt.orderSaved) {
-      const currentOcr = await dependencies.ocr.readCurrentOcrResult(scope.conversationId);
-      if (!currentOcr || currentOcr.generationId !== receipt.expectedOcrGeneration ||
-        currentOcr.markdown !== receipt.ocr.ocrResultMarkdown) {
-        throw new SteelResponseCompletionError('superseded_order');
-      }
-      const state = await dependencies.quotation.readState(scope);
-      if (state?.currentOrder?.markdown !== receipt.ocr.ocrResultMarkdown) {
-        if (state?.currentOrder?.sha256 !== receipt.expectedOrderHash) {
-          throw new SteelResponseCompletionError('superseded_order');
-        }
-        await dependencies.quotation.setOrder({ scope, fullMarkdown: receipt.ocr.ocrResultMarkdown,
-          revision: currentOcr.generationId, messageId: currentOcr.messageId,
-          expectedOrderHash: receipt.expectedOrderHash ?? null });
-      }
-      receipt.orderSaved = true;
-    }
-    if (receipt.preparedCustomer && !receipt.customerSaved) {
-      const current = await dependencies.quotation.readState(scope);
-      const committedCustomer = receipt.preparedCustomer.kind === 'unchanged' ? receipt.preparedCustomer.customer
-        : await dependencies.quotation.saveCustomer({ ...receipt.preparedCustomer.input,
-          ...(current?.currentOrder?.sha256 ? { orderHash: current.currentOrder.sha256 } : {}) });
-      receipt.customerPreparationId = requireSaved(committedCustomer, 'customer_save_failed').preparationId;
-      receipt.customerSaved = true;
-    }
-    if (receipt.preparedRevision && !receipt.revisionSaved) {
-      const result = await receipt.preparedRevision.commit();
-      if (!result.ok) throw new SteelResponseCompletionError(result.code);
-      receipt.revisionSaved = true;
-      receipt.systemOrderSnapshot = result.snapshot;
-    }
-    if (receipt.ocr && claimToken && receipt.candidateToken && !receipt.delegateCompleted) {
-      requireSaved(await dependencies.ocr.updateDelegateFinalizationJournal({ ...claim,
-        candidateToken: receipt.candidateToken, journal: { resultPersisted: true, resultPersistedToken: receipt.candidateToken } }), 'stale_delegate_lease');
-      requireSaved(await dependencies.ocr.transitionDelegateOcrRun({ ...claim, status: 'completed', currentStage: 'completed' }), 'stale_delegate_lease');
-      if (delegateOcrIndex !== undefined) {
-        requireSaved(await dependencies.ocr.clearCompletedDelegateClaim({ ...claim,
-          conversationId: scope.conversationId, delegateOcrIndex }), 'stale_delegate_lease');
-      }
-      requireSaved(await dependencies.ocr.updateDelegateFinalizationJournal({ ...claim,
-        candidateToken: receipt.candidateToken, journal: { claimCleared: true, claimClearedToken: receipt.candidateToken } }), 'stale_delegate_lease');
-      receipt.delegateCompleted = true;
     }
     let latest = await dependencies.quotation.readState(scope);
     if (receipt.expectedSystemOrderHash && (!await dependencies.quotation.hasSystemOrder(scope) ||
@@ -704,15 +542,13 @@ export async function finalizeSteelMarkdownTurn(
     }
     if (titles.has('quote_signal') && !receipt.acceptedRun) {
       if (!parseQuotationSignal(input.markdown)) throw new SteelResponseCompletionError('invalid_quote_signal');
-      const expectedOrder = receipt.ocr ? hash(receipt.ocr.ocrResultMarkdown) : receipt.expectedOrderHash;
-      const expectedCustomer = receipt.customerPreparationId ?? receipt.expectedCustomerPreparationId;
+      const expectedOrder = receipt.expectedOrderHash;
+      const expectedCustomer = receipt.expectedCustomerPreparationId;
       if (latest?.currentOrder?.sha256 !== expectedOrder ||
         latest?.currentCustomer?.preparationId !== expectedCustomer) {
         throw new SteelResponseCompletionError('superseded_response');
       }
-      const admittedOcrState = receipt.ocr
-        ? await dependencies.ocr.readConversationOcrState(scope.conversationId)
-        : await dependencies.ocr.readConversationOcrState(scope.conversationId);
+      const admittedOcrState = await dependencies.ocr.readConversationOcrState(scope.conversationId);
       receipt.acceptedRun = await acceptQuotationSignal({
         scope, response: input.markdown, responseId: input.responseId,
         messageId: context?.quotation?.messageId, service: dependencies.quotation,
@@ -721,22 +557,15 @@ export async function finalizeSteelMarkdownTurn(
         sourceSnapshot: admittedSourceSnapshot(admittedOcrState, latest?.currentOrder?.sha256),
         completionReceipt: {
           inputHash: receipt.inputHash, markdown: receipt.canonicalMarkdown,
-          ...(receipt.ocr ? { ocrGeneration: receipt.expectedOcrGeneration,
-            ocrHash: hash(receipt.ocr.ocrResultMarkdown) } : {}),
-          ...(receipt.preparedRevision ? { systemOrderHash: latest?.currentSystemOrder?.sha256 } : {}),
+          ...(admittedOcrState?.currentOcrResultGenerationId ? { ocrGeneration: admittedOcrState.currentOcrResultGenerationId,
+            ocrHash: hash(admittedOcrState.currentOcrResultMarkdown ?? '') } : {}),
+          ...(latest?.currentSystemOrder ? { systemOrderHash: latest.currentSystemOrder.sha256 } : {}),
         },
       });
       requireSaved(receipt.acceptedRun, 'signal_not_accepted');
       latest = await dependencies.quotation.readState(scope);
     }
     const currentOcr = await dependencies.ocr.readCurrentOcrResult(scope.conversationId);
-    if (receipt.ocr && (!currentOcr || currentOcr.generationId !== receipt.expectedOcrGeneration ||
-      currentOcr.markdown !== receipt.ocr.ocrResultMarkdown || latest?.currentOrder?.markdown !== currentOcr.markdown)) {
-      throw new SteelResponseCompletionError('superseded_order');
-    }
-    if (receipt.customerSaved && receipt.customerPreparationId !== latest?.currentCustomer?.preparationId) {
-      throw new SteelResponseCompletionError('superseded_customer');
-    }
     receipt.latest = latest ?? undefined;
     const markdown = input.stage === 'workflow' || receipt.acceptedRun
       ? receipt.canonicalMarkdown : appendSteelNextStep({ markdown: receipt.canonicalMarkdown,

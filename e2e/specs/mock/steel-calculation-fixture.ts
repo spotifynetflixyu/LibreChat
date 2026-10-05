@@ -8,6 +8,7 @@ import {
   runQuotationPreflight,
   renderQuotationCustomerMarkdown,
   createSteelQuotationStateService,
+  createSteelQuotationPublicationPublisher,
   quotationChildSystemOrderColumns,
 } from '@librechat/api';
 import type { ISteelQuotationState, ISteelReviewOutput, IMessage } from '@librechat/data-schemas';
@@ -15,7 +16,6 @@ import type { SteelReviewTable, SteelReviewOperationPrepare, SteelReviewOperatio
 import type { Page, Locator } from '@playwright/test';
 import { seedConversations, withMongo } from './db';
 import { getE2EUser } from '../../setup/user';
-import { getAccessToken } from './helpers';
 
 export type Mode = 'plate' | 'profile' | 'unknown' | 'square' | 'squareDensityOnly' | 'round' | 'flat';
 export type Auth = { Authorization: string };
@@ -94,13 +94,15 @@ export async function seedCalculation(mode: Mode = 'plate', notes = '', processi
             '2', '1', mode === 'unknown' ? '3' : '2', '10', '2', '', '6', '100', '200', '', category, part, notes]).concat(processingRows ? [['PROCESS', 'REVIEW-PROCESS', '', '刀', '2', '', '2', '10', '1', '', '', '', '', '', '加工/切工', 'A', notes]] : []))}`,
         lookups: [], pythonEvidence: [] };
       },
-      publishFinal: (publication) => {
-        const text = `MATERIAL-PREFIX\n\n${publication.markdown}\n\nMATERIAL-SUFFIX`;
-        return methods.saveSteelQuotationMessage({ ...publication,
-          message: { user: userId, messageId, conversationId,
+      publishFinal: createSteelQuotationPublicationPublisher({ scope,
+        buildMessage: ({ markdown }) => {
+          const text = `MATERIAL-PREFIX\n\n${markdown}\n\nMATERIAL-SUFFIX`;
+          return { user: userId, messageId, conversationId,
             parentMessageId: '00000000-0000-0000-0000-000000000000',
-            text, content: [{ type: 'text', text }], isCreatedByUser: false, sender: 'Assistant' } });
-      },
+            text, content: [{ type: 'text', text }], isCreatedByUser: false, sender: 'Assistant' };
+        },
+        savePublication: methods.saveSteelQuotationMessage,
+      }),
     });
     expect(result.status).toBe('completed');
     expect(lookups).toBe(1);
@@ -189,7 +191,7 @@ export async function editBusinessValue(dialog: Locator, rowId: string, header: 
 
 export async function expectBusinessEditable(dialog: Locator, rowId: string, headers: readonly string[]): Promise<void> {
   for (const header of headers) {
-    if (header === '類別') {
+    if (['類別', '型號', '品名規格'].includes(header)) {
       await expect(dialog.getByRole('combobox', { name: `${header} ${rowId}`, exact: true })).toBeEnabled();
     } else {
       await expect(dialog.getByRole('textbox', { name: `${header} ${rowId}`, exact: true })).toBeEditable();

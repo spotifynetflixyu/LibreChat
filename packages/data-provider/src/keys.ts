@@ -99,6 +99,7 @@ export enum QueryKeys {
   steelModels = 'steelModels',
   steelQuotationStatus = 'steelQuotationStatus',
   steelReview = 'steelReview',
+  steelMarkdownVersions = 'steelMarkdownVersions',
   openAIOAuthUsage = 'openAIOAuthUsage',
   openAIOAuthTokenStatus = 'openAIOAuthTokenStatus',
   openAIOAuthCodexLoginStatus = 'openAIOAuthCodexLoginStatus',
@@ -119,6 +120,8 @@ export const DynamicQueryKeys = {
   agentFiles: (agentId: string) => ['agentFiles', agentId] as const,
   steelQuotationStatus: (conversationId: string) =>
     [QueryKeys.steelQuotationStatus, conversationId] as const,
+  steelMarkdownVersions: (conversationId: string) =>
+    [QueryKeys.steelMarkdownVersions, conversationId] as const,
   steelReview: (conversationId: string, kind: string, messageId: string, title: string) =>
     [QueryKeys.steelReview, conversationId, kind, messageId, title] as const,
   steelReviewCatalog: (conversationId: string, input: SteelCatalogQuery) =>

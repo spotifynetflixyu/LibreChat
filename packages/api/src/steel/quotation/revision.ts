@@ -1,11 +1,10 @@
 import { createHash } from 'node:crypto';
 import type {
   SteelQuotationCurrentSystemOrder,
-  SteelQuotationSnapshotPayload,
   SteelQuotationSourceSnapshot,
   SteelQuotationScope,
 } from '@librechat/data-schemas';
-import { buildCustomerQuoteFromMarkdown } from '../markdown/quote';
+import { retiredMarkdownSectionTitles } from '../markdown/admission';
 import { normalizeSystemOrderMarkdown } from '../markdown/order';
 import { escapeMarkdownTableCell } from '../markdown/row-codec';
 import { parseMarkdownTables } from '../markdown/table';
@@ -13,7 +12,6 @@ import { parseAssistantMarkdown } from '../ocr/result';
 
 const MAX_RESPONSE_ID_BYTES = 300;
 const MAX_MESSAGE_ID_BYTES = 1_000;
-const SHA256_PATTERN = /^[a-f0-9]{64}$/u;
 const DECIMAL_PATTERN = /^(?:\d+(?:\.\d+)?|\d{1,3}(?:,\d{3})+(?:\.\d+)?)$/u;
 const NUMERIC_HEADERS = new Set(['數量', '單重', '總數', '單價', '厚度', '寬度', '長度', '肚']);
 
@@ -30,7 +28,8 @@ export type SystemOrderRevisionFailureCode =
   | 'invalid_number'
   | 'dependent_total_required'
   | 'concurrent_change'
-  | 'invalid_system_order';
+  | 'invalid_system_order'
+  | 'retired_control_section';
 
 export interface SystemOrderRevisionFailure {
   ok: false;
@@ -135,12 +134,6 @@ interface ParsedSystemOrder {
   rows: string[][];
 }
 
-interface ParsedUpdate {
-  baseHash: string;
-  rowIndex: number;
-  values: string[];
-}
-
 function bytes(value: string): number {
   return Buffer.byteLength(value, 'utf8');
 }
@@ -222,80 +215,20 @@ function fail(code: SystemOrderRevisionFailureCode): SystemOrderRevisionFailure 
   return { ok: false, code };
 }
 
-function rowIndex(value: string): number | undefined {
-  if (!/^[1-9]\d*$/u.test(value)) return undefined;
-  const parsed = Number(value);
-  return Number.isSafeInteger(parsed) ? parsed : undefined;
-}
-
-function parseUpdatesSection(
-  response: string,
-  expected: ParsedSystemOrder,
-): ParsedUpdate[] | SystemOrderRevisionFailure {
-  const sections = parseAssistantMarkdown(response).sections.filter(
-    (section) => sectionBaseName(section.title) === 'system_order_updates',
-  );
-  if (sections.length !== 1) return fail('invalid_updates');
-  const section = sections[0];
-  if (!section) return fail('invalid_updates');
-  const tables = parseMarkdownTables(section.body);
-  if (tables.length !== 1) return fail('invalid_updates');
-  const table = tables[0];
-  if (!table || table.rows.length === 0 || table.headers.length !== expected.headers.length + 2 ||
-    table.headers[0] !== 'base_hash' || table.headers[1] !== 'row_index' ||
-    JSON.stringify(table.headers.slice(2)) !== JSON.stringify(expected.headers)) {
-    return fail('invalid_updates');
-  }
-  const updates: ParsedUpdate[] = [];
-  const seen = new Set<number>();
-  for (const row of table.rows) {
-    if (row.length !== table.headers.length) return fail('invalid_updates');
-    const baseHash = row[0]?.trim() ?? '';
-    if (!SHA256_PATTERN.test(baseHash)) return fail('invalid_base_hash');
-    const index = rowIndex(row[1]?.trim() ?? '');
-    if (index === undefined) return fail('invalid_updates');
-    if (seen.has(index)) return fail('duplicate_row_index');
-    if (index > expected.rows.length) return fail('out_of_range_row_index');
-    const values = row.slice(2).map((value) => value.trim());
-    if (values.some((value, valueIndex) => !validCell(expected.headers[valueIndex] ?? '', value))) {
-      return fail('invalid_number');
-    }
-    seen.add(index);
-    updates.push({ baseHash, rowIndex: index, values });
-  }
-  return updates;
-}
-
 function formatSnapshot(snapshot: SteelQuotationCurrentSystemOrder): string {
   const canonical = canonicalSnapshot(snapshot.markdown);
   if (!canonical) return snapshot.markdown.trimEnd();
   return canonical.markdown;
 }
 
-function revisionResponse(snapshot: SteelQuotationCurrentSystemOrder): string {
-  const count = parseSystemOrder(snapshot.markdown)?.rows.length ?? 0;
-  return [
-    formatSnapshot(snapshot),
-    `## quote_summary\n\n報價表修正完成：共 ${count} 筆 system_order。`,
-  ].filter(Boolean).join('\n\n');
-}
-
 export function formatSystemOrderRevisionInstruction(
   snapshot: SteelQuotationCurrentSystemOrder,
 ): string {
   const canonical = canonicalSnapshot(snapshot.markdown);
-  const markdown = canonical?.markdown ?? formatSnapshot(snapshot);
-  const rows = canonical?.parsed.rows ?? [];
-  const revisionRows = rows.map((_, index) => `| ${snapshot.sha256} | ${index + 1} |`);
   return [
-    markdown,
-    '',
-    '## system_order_revision',
-    '',
-    '| base_hash | row_index |',
-    '| --- | --- |',
-    ...revisionRows,
-  ].join('\n');
+    canonical?.markdown ?? formatSnapshot(snapshot),
+    'For any system-order correction, output one complete ## system_order table using the existing pricing rules and confirmed customer context. Do not output system_order_revision or system_order_updates.',
+  ].join('\n\n');
 }
 
 export function createSystemOrderRevisionService(
@@ -311,7 +244,7 @@ export function createSystemOrderRevisionService(
     if (!activeRun || !isCurrentSystemOrderRun(state)) return undefined;
 
     const stored = state.currentSystemOrder;
-  if (stored && stored.runId === activeRun.runId) {
+    if (stored && stored.runId === activeRun.runId) {
       const canonical = canonicalSnapshot(stored.markdown);
       if (canonical && canonical.sha256 === stored.sha256) {
         return { ...stored, markdown: canonical.markdown };
@@ -349,132 +282,18 @@ export function createSystemOrderRevisionService(
 
     const response = normalizeSystemOrderMarkdown(input.response);
     const responseSections = parseAssistantMarkdown(response).sections;
-    const hasRevision = responseSections.some(
-      (section) => sectionBaseName(section.title) === 'system_order_updates',
+    const hasRetiredControl = responseSections.some((section) =>
+      retiredMarkdownSectionTitles.includes(
+        sectionBaseName(section.title) as (typeof retiredMarkdownSectionTitles)[number],
+      ),
     );
-    if (!hasRevision) return fail('no_revision');
-    if (responseSections.some((section) => sectionBaseName(section.title) === 'system_order')) {
-      return fail('invalid_revision');
-    }
+    if (hasRetiredControl) return fail('retired_control_section');
 
-    const state = await dependencies.read(input.scope);
-    if (state?.activeRun && state.activeRun.status !== 'completed') {
-      return fail('unfinished_active_run');
-    }
-    const current = await readCurrentSystemOrder(input.scope, state);
-    if (!current) return fail('missing_current_system_order');
-    if (current.responseId === input.responseId) {
-      const result: SystemOrderRevisionSuccess = {
-        ok: true,
-        markdown: revisionResponse(current),
-        snapshot: current,
-        customerQuoteMarkdown: current.customerQuoteMarkdown ?? '',
-      };
-      return {
-        ...result,
-        commit: async () => result,
-      };
-    }
-
-    const activeRun = state?.activeRun;
-    if (!activeRun || activeRun.status !== 'completed') return fail('unfinished_active_run');
-    if (!state?.currentOrder) return fail('stale_run');
-    if (activeRun.runId !== current.runId) return fail('stale_run');
-
-    const currentParsed = canonicalSnapshot(current.markdown);
-    if (!currentParsed || currentParsed.sha256 !== current.sha256) return fail('invalid_system_order');
-    const updates = parseUpdatesSection(response, currentParsed.parsed);
-    if (!Array.isArray(updates)) return updates;
-    for (const update of updates) {
-      if (update.baseHash !== current.sha256) return fail('invalid_base_hash');
-    }
-
-    const rows = currentParsed.parsed.rows.map((row) => [...row]);
-    for (const update of updates) {
-      const row = rows[update.rowIndex - 1];
-      if (!row) return fail('out_of_range_row_index');
-      rows[update.rowIndex - 1] = update.values;
-    }
-
-    const markdown = canonicalSystemOrder({
-      heading: currentParsed.parsed.heading,
-      headers: currentParsed.parsed.headers,
-      rows,
-    });
-    const quote = buildCustomerQuoteFromMarkdown(markdown);
-    if (!quote) return fail('invalid_system_order');
-    const admittedSnapshotPayload = await dependencies.readCheckpoint({
-      scope: input.scope,
-      runId: current.runId,
-      operationId: 'snapshot',
-    });
-    let admittedSourceSnapshot = dependencies.sourceSnapshot ?? current.sourceSnapshot;
-    if (admittedSnapshotPayload) {
-      const runSnapshot = JSON.parse(admittedSnapshotPayload) as SteelQuotationSnapshotPayload;
-      if (runSnapshot.orderHash === state.currentOrder.sha256) {
-        admittedSourceSnapshot = runSnapshot.sourceSnapshot ?? admittedSourceSnapshot;
-      }
-    }
-    const now = input.now ? new Date(input.now) : new Date();
-    const snapshot: SteelQuotationCurrentSystemOrder = {
-      runId: current.runId,
-      sha256: createHash('sha256').update(markdown, 'utf8').digest('hex'),
-      markdown,
-      ...(input.messageId ?? current.messageId
-        ? { messageId: input.messageId ?? current.messageId }
-        : {}),
-      responseId: input.responseId,
-      customerQuoteMarkdown: quote.markdown,
-      ...(admittedSourceSnapshot ? { sourceSnapshot: admittedSourceSnapshot } : {}),
-      updatedAt: now,
-    };
-    const saveInput: SystemOrderRevisionSaveInput = {
-      scope: input.scope,
-      snapshot,
-      expectedRunId: current.runId,
-      expectedCurrentOrderSha256: state.currentOrder.sha256,
-      ...(state.currentCustomer ? { expectedCustomer: {
-        customerIdentity: state.currentCustomer.customerIdentity,
-        customerMarkdown: state.currentCustomer.customerMarkdown,
-      } } : {}),
-      ...(state?.currentSystemOrder?.sha256
-        ? { expectedCurrentSystemOrderSha256: state.currentSystemOrder.sha256 }
-        : {}),
-      expectedCurrentSystemOrderPresent: state?.currentSystemOrder !== undefined,
-    };
-    let committed: SystemOrderRevisionResult | undefined;
-    const commit = async (): Promise<SystemOrderRevisionResult> => {
-      if (committed) return committed;
-      const saved = await dependencies.saveCurrentSystemOrder(saveInput);
-      if (saved) {
-        committed = {
-          ok: true,
-          markdown: revisionResponse(saved),
-          snapshot: saved,
-          customerQuoteMarkdown: saved.customerQuoteMarkdown ?? quote.markdown,
-        };
-        return committed;
-      }
-
-      const raced = await readCurrentSystemOrder(input.scope);
-      if (raced?.responseId === input.responseId) {
-        committed = {
-          ok: true,
-          markdown: revisionResponse(raced),
-          snapshot: raced,
-          customerQuoteMarkdown: raced.customerQuoteMarkdown ?? '',
-        };
-        return committed;
-      }
-      return fail('concurrent_change');
-    };
-    return {
-      ok: true,
-      markdown: revisionResponse(snapshot),
-      snapshot,
-      customerQuoteMarkdown: quote.markdown,
-      commit,
-    };
+    // This service is retained as a read-only compatibility boundary for callers
+    // that still need the current frozen order. Corrections are admitted and
+    // published by the full-output completion transaction; row deltas never reach
+    // current state or customer-quote mirrors here.
+    return fail('no_revision');
   }
 
   async function finalizeSystemOrderUpdates(
