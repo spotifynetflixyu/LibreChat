@@ -5,7 +5,7 @@ Spec: https://github.com/spotifynetflixyu/LibreChat/issues/1
 Integration branch: `codex/steel-source-review`.
 Draft PR: https://github.com/spotifynetflixyu/LibreChat/pull/16.
 
-Current execution (2026-10-05): continue sequentially from slice09 through slice14; verify,
+Current execution (2026-10-05): continue sequentially from slice10 through slice14; verify,
 review and integrate each slice, then update GitHub before starting the next slice. The canonical Markdown locator is **messageId + exact full title**.
 Each reply contains at most one Markdown section with that full title; another message's same
 title is independent. Authorization, output ownership and expected revision remain backend guards.
@@ -34,7 +34,7 @@ Baseline: `056eb076ac0b9f7b7ccaba74672ae1288fab662a`.
 | 06 | [System order 修正與內部報價原子同步](https://github.com/spotifynetflixyu/LibreChat/issues/7) | #4 | Verified (`dfec53c9a`) |
 | 07 | [材料與加工列綁定及整組增刪復原](https://github.com/spotifynetflixyu/LibreChat/issues/8) | #5, #7 | Verified (`d46c9d99a`) |
 | 08 | [材料單重與計價總數依賴重算](https://github.com/spotifynetflixyu/LibreChat/issues/9) | #7 | Verified (`e6ba86e35`) |
-| 09 | [加工計量輸入與 save 前重算](https://github.com/spotifynetflixyu/LibreChat/issues/10) | #8, #9 | Pending |
+| 09 | [加工計量輸入與 save 前重算](https://github.com/spotifynetflixyu/LibreChat/issues/10) | #8, #9 | Verified; OPEN until PR merge |
 | 10 | [材料 async selector 與精確 customer tier 價格](https://github.com/spotifynetflixyu/LibreChat/issues/11) | #9 | Pending |
 | 11 | [加工 async selector 與材料適用性](https://github.com/spotifynetflixyu/LibreChat/issues/12) | #10, #11 | Pending |
 | 12 | [AI 完整輸出、退役舊編輯與每版覆核隔離](https://github.com/spotifynetflixyu/LibreChat/issues/13) | #6, #8, #11, #12 | Pending |
@@ -107,3 +107,12 @@ GitHub #9 remains OPEN under the PR merge policy; PR16 stays Draft while09–14 
 最新 Save／驗證決定（2026-10-05）：API 保存期間不可修改值或關閉彈窗，取代先前保存期間保留新輸入的產品要求。Markdown 綁定 messageId＋完整 title，AI 原版保留供比較；每次成功 Save 更新人工 Markdown 與原有聊天文字，統一回傳最新成功保存版本，不建立新訊息／AI 輸出 generation。指定版本不同於目前人工版本（沒有人工版本則為 AI 版）才有可能衝突，後端按實際變更判斷並套用最新版。09 納入此修正，03／05 原有證據保留為歷史，更新後以代表性正常流程與聚焦測試驗證，不重複展開所有瀏覽器排列。
 
 2026-10-05 加工材料對應補充：AI system_order 初次載入依備註的零件編號與同表唯一未刪除材料建立綁定及來源；不增加 Markdown 欄位，不按位置／品名猜配。沿用保存的人工作業及材料 selector 更正。09 驗證以正常產生的 A/B 零件確認初始加工綁定，取代先做人工 API 綁定的測試準備。
+
+
+Slice09 final source: `e87b3c22a8da567f321fcf895fa46075448aa306` (tree `e3f02215c64d5ac729c7782568f497dd2a6b1d21`). Both independent SPEC and STANDARDS reviews approved this exact source. Processing supports explicit per-piece, batch and confirmed cutting-plan inputs; unsupported or incomplete calculations preserve manual outputs. Normal AI rows initialize processing/material association from the same unique trimmed 備註 part identifier, and processing source follows that material. Calculation candidate evidence stays internal metadata and does not add Markdown columns or artificial changed-row counts. Measurement metadata survives unrelated processing edits, same-update price edits and reload; confirmed empty cutting plans at zero quantity require no unused length input.
+
+Following the user's simplified verification decision, root passed 8/8 representative authenticated Chrome/real Express/disposable wiredTiger Mongo/DB-readback/chat-reload cases: seven processing cases and one explicit material rebind. They cover editable business fields, exact input-derived quantities, draft/history, missing-input preservation, processing price edits with measurement retention, prepare/commit value and closure locks (footer Close, X and Escape), one normal conflict/retry, immutable popup AI comparison and clean in-place existing-message updates. All 540 source/private-build files and HEAD were identical before/after. Focused checks passed: provider65, API36, real-Mongo read21/write27, session/form54 and host UI45; relevant workspace noEmit, scoped imports/semantic lint and diff checks passed. Two obsolete in-flight-input host cases were retired under the latest lock contract; they are not current acceptance requirements.
+
+A separate guarded Git-only fast-forward integrated the source. Root rebuilt all five private workspaces, passed all five owning noEmit checks and two integrated browser smoke cases for per-piece/price persistence/reload and pending Save locks. The same 540 source/build files and HEAD remained unchanged during the integrated proof. Primary stays clean at feat/v8.8 / `326d27f51605599c70544792f0e280f428596639`. This completion record changes only documentation after the approved executable source.
+
+GitHub #10 stays OPEN under the PR merge policy; 10–14 remain pending. PR16 stays Draft. Whole-feature Lighthouse/static gates, fresh remote CI and the final whole-feature review are still pending; no remote failure was relabeled as a baseline result and accessibility lint has not been claimed after the known axe setup failure. No Prettier, deployment, primary/master/PROD write or PR merge occurred.
