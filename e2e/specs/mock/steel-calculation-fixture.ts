@@ -200,4 +200,3 @@ export async function expectBusinessEditable(dialog: Locator, rowId: string, hea
 export function effective(owner: Pick<SteelReviewTable, 'rows'>, header: string): string | null {
   return owner.rows[0].values[header].effective;
 }
-
