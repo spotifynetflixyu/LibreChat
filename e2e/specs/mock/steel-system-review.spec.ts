@@ -1091,7 +1091,7 @@ test.describe('System order atomic manual review', () => {
       }
       if (mode === 'classified-binding' || mode === 'restored-binding') {
         await dialog.getByRole('combobox', { name: `Bind processing ${childId}`, exact: true }).click();
-        await page.getByRole('option', { name: 'REVIEW-MATERIAL-A', exact: true }).click();
+        await page.getByRole('option', { name: 'T1', exact: true }).click();
       }
       const editsChild = mode === 'restored-child-edit' || mode === 'parent-child-redelete' || mode === 'child-only-redelete';
       if (editsChild) {
