@@ -289,6 +289,31 @@ describe('Steel review local editor gates', () => {
     expect(onSourceEdit).not.toHaveBeenCalled();
   });
 
+  it('hides row delete and restore controls when a read-only editor has no row callbacks', () => {
+    const deletedRow = { ...table.rows[0], rowId: 'deleted-row', deleted: true };
+    render(
+      <SteelReviewEditor
+        table={{ ...table, isLatest: false, readOnly: true, rows: [table.rows[0], deletedRow] }}
+        rows={[table.rows[0], deletedRow]}
+        draft={createSteelReviewDraftState('readonly-owner')}
+        labels={{
+          ...sourceLabels,
+          table: 'Steel review table',
+          readonly: 'Read-only cell',
+          rowActions: 'Row actions',
+          deleteRow: 'Delete',
+          restoreRow: 'Restore',
+        }}
+        onCellChange={jest.fn()}
+        onMeasurementChange={jest.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('columnheader', { name: 'Row actions' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete row-1' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Restore deleted-row' })).toBeNull();
+  });
+
   it('ends focused history on Enter and blur', () => {
     const onCellHistoryBoundary = jest.fn();
     render(

@@ -22,6 +22,7 @@ import {
   steelQuotationArtifactSchema,
   steelReviewOutputSchema,
 } from '~/schema/steel';
+import { applyTenantIsolation } from '~/models/plugins/tenantIsolation';
 
 type Mongoose = typeof import('mongoose');
 
@@ -73,6 +74,7 @@ export function createSteelConversationOcrStateModel(
 export function createSteelOcrResponseAuditModel(
   mongoose: Mongoose,
 ): Model<t.ISteelOcrResponseAudit> {
+  applyTenantIsolation(steelOcrResponseAuditSchema);
   return createSteelModel(
     mongoose,
     'SteelOcrResponseAudit',

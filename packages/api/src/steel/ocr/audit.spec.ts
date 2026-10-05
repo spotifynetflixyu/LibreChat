@@ -95,6 +95,36 @@ describe('Steel OCR response audit', () => {
     await expect(Audit.countDocuments()).resolves.toBe(2);
   });
 
+  it('includes tenant scope in idempotent duplicate lookup', async () => {
+    const findOne = jest.fn(() => ({
+      exec: async () => null,
+    }));
+    const service = createSteelOcrResponseAuditService(mongoose, {
+      create: async () => {
+        throw Object.assign(new Error('duplicate'), { code: 11000 });
+      },
+      findOne,
+    });
+    const input = {
+      rawResponse: 'answer',
+      sourceStage: 'delegate' as const,
+      userId: 'user-1',
+      tenantId: 'tenant-a',
+      messageId: 'message-1',
+      conversationId: 'conversation-1',
+      generationId: 'generation-1',
+      attemptId: 'attempt-1',
+    };
+
+    await expect(service.save(input)).rejects.toBeInstanceOf(SteelOcrResponseAuditPersistenceError);
+    expect(findOne).toHaveBeenCalledWith(
+      expect.objectContaining({
+        tenantId: 'tenant-a',
+        idempotencyKey: expect.any(String),
+      }),
+    );
+  });
+
   it('propagates storage failures so callers can fail closed', async () => {
     const service = createSteelOcrResponseAuditService(mongoose, {
       create: async () => {

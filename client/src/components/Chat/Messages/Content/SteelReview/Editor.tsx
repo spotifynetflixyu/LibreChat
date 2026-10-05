@@ -514,22 +514,22 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
                       )}
                     </>
                   )}
-                  {row.deleted && canRestoreSteelReviewRow(row, systemMaterials) && (
+                  {row.deleted && onRestoreRow && canRestoreSteelReviewRow(row, systemMaterials) && (
                     <Button
                       type="button"
                       variant="outline"
                       aria-label={`${labels.restoreRow} ${row.rowId}`}
-                      onClick={() => onRestoreRow?.(row)}
+                      onClick={() => onRestoreRow(row)}
                     >
                       {labels.restoreRow}
                     </Button>
                   )}
-                  {!row.deleted && (!row.system || row.system.kind !== 'material' || !onDeleteGroup) && (
+                  {!row.deleted && onDeleteRow && (!row.system || row.system.kind !== 'material' || !onDeleteGroup) && (
                     <Button
                       type="button"
                       variant="outline"
                       aria-label={`${labels.deleteRow} ${row.rowId}`}
-                      onClick={() => onDeleteRow?.(row)}
+                      onClick={() => onDeleteRow(row)}
                     >
                       {labels.deleteRow}
                     </Button>

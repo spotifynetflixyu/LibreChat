@@ -116,7 +116,14 @@ describe('ProgressText duration', () => {
     expect(icon).toHaveAttribute('aria-hidden', 'true');
     expect(icon).not.toHaveClass('h-full');
     expect(icon).not.toHaveClass('w-full');
-    expect(icon?.parentElement).toBe(button);
+    expect(icon?.parentElement).toHaveClass(
+      'flex',
+      'h-5',
+      'min-w-6',
+      'shrink-0',
+      'items-center',
+      'justify-center',
+    );
   });
 
   it('does not render on a failed card', () => {

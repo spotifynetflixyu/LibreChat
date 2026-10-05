@@ -170,8 +170,8 @@ export interface SteelDelegateOcrStateService {
   findActiveDelegateOcrRun(conversationId: string): Promise<ISteelDelegateOcrRun | null>;
 }
 
-function isDuplicateKeyError(error: object): boolean {
-  return 'code' in error && error.code === 11000;
+function isDuplicateKeyError(error: unknown): boolean {
+  return error !== null && typeof error === 'object' && 'code' in error && error.code === 11000;
 }
 
 function assertDelegateOcrIndex(delegateOcrIndex: number): void {
@@ -196,17 +196,26 @@ async function ensureConversationState(
   State: ConversationStateModel,
   conversationId: string,
 ): Promise<void> {
-  await State.updateOne(
-    { conversationId },
-    {
-      $setOnInsert: {
-        conversationId,
-        nextDelegateOcrIndex: 0,
-        sourceMappings: [],
+  try {
+    await State.updateOne(
+      { conversationId },
+      {
+        $setOnInsert: {
+          conversationId,
+          nextDelegateOcrIndex: 0,
+          sourceMappings: [],
+        },
       },
-    },
-    { upsert: true },
-  );
+      { upsert: true },
+    );
+  } catch (error) {
+    // Concurrent first claims may race on the unique conversationId index. The
+    // winner created the state document, so the loser can continue to its
+    // compare-and-swap claim without an extra read.
+    if (!isDuplicateKeyError(error)) {
+      throw error;
+    }
+  }
 }
 
 export function createSteelDelegateOcrStateService(mongoose: Mongoose): SteelDelegateOcrStateService {
@@ -220,8 +229,9 @@ export function createSteelDelegateOcrStateService(mongoose: Mongoose): SteelDel
     const claimToken = input.claimToken ?? randomUUID();
     const now = input.now ?? new Date();
     const existingState = await State.findOne({ conversationId: input.conversationId })
-      .select({ activeDelegateClaim: 1 })
+      .select({ activeDelegateClaim: 1, nextDelegateOcrIndex: 1 })
       .lean<ISteelConversationOcrState>();
+    const nextDelegateOcrIndex = existingState?.nextDelegateOcrIndex ?? 0;
     const existingClaim = existingState?.activeDelegateClaim;
     if (existingClaim) {
       const existingRun = await Run.findOne({ claimToken: existingClaim.claimToken })
@@ -242,30 +252,34 @@ export function createSteelDelegateOcrStateService(mongoose: Mongoose): SteelDel
       }
     }
     const activeClaimAbsent = { activeDelegateClaim: { $exists: false } };
+    const observedCounter =
+      nextDelegateOcrIndex === 0
+        ? {
+            $or: [
+              { nextDelegateOcrIndex: 0 },
+              { nextDelegateOcrIndex: null },
+              { nextDelegateOcrIndex: { $exists: false } },
+            ],
+          }
+        : { nextDelegateOcrIndex };
     const state = await State.findOneAndUpdate(
-      { conversationId: input.conversationId, ...activeClaimAbsent },
-      [
-        {
-          $set: {
-            nextDelegateOcrIndex: {
-              $add: [{ $ifNull: ['$nextDelegateOcrIndex', 0] }, 1],
-            },
-            activeDelegateClaim: {
-              claimToken: { $literal: claimToken },
-              triggeringMessageId: { $literal: input.triggeringMessageId },
-              delegateOcrIndex: {
-                $add: [{ $ifNull: ['$nextDelegateOcrIndex', 0] }, 1],
-              },
-              ...(input.responseGenerationId
-                ? { responseGenerationId: { $literal: input.responseGenerationId } }
-                : {}),
-              phase: { $literal: 'claimed' },
-              claimedAt: { $literal: now },
-              updatedAt: { $literal: now },
-            },
+      { conversationId: input.conversationId, ...activeClaimAbsent, ...observedCounter },
+      {
+        $set: {
+          nextDelegateOcrIndex: nextDelegateOcrIndex + 1,
+          activeDelegateClaim: {
+            claimToken,
+            triggeringMessageId: input.triggeringMessageId,
+            delegateOcrIndex: nextDelegateOcrIndex + 1,
+            ...(input.responseGenerationId
+              ? { responseGenerationId: input.responseGenerationId }
+              : {}),
+            phase: 'claimed',
+            claimedAt: now,
+            updatedAt: now,
           },
         },
-      ],
+      },
       { new: true },
     ).lean<ISteelConversationOcrState>();
 

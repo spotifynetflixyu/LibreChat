@@ -140,12 +140,9 @@ async function maybeStartMemoryMongo() {
     return;
   }
 
-  const { MongoMemoryServer } = require('mongodb-memory-server');
-  mongoServer = await MongoMemoryServer.create({
-    instance: {
-      dbName,
-      ip: '127.0.0.1',
-    },
+  const { MongoMemoryReplSet } = require('mongodb-memory-server');
+  mongoServer = await MongoMemoryReplSet.create({
+    replSet: { count: 1, storageEngine: 'wiredTiger', dbName, ip: '127.0.0.1' },
   });
   process.env.MONGO_URI = withDbName(mongoServer.getUri(), dbName);
   writeRuntimeEnv();

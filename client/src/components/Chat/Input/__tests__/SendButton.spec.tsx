@@ -11,6 +11,7 @@ jest.mock('@librechat/client', () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const R = require('react');
   return {
+    composerSubmitClasses: () => '',
     SendIcon: () => R.createElement('span', { 'data-testid': 'send-icon' }),
     TooltipAnchor: ({ render }: { render: React.ReactElement }) => render,
   };

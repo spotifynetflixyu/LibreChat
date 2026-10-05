@@ -22,6 +22,51 @@ afterAll(async () => {
 });
 
 describe('Steel delegate OCR state', () => {
+  it('allocates one index to competing first claimants and increments later claims', async () => {
+    const service = createSteelDelegateOcrStateService(mongoose);
+    const [first, second] = await Promise.all([
+      service.claimNewDelegateOcrIndex({
+        conversationId: 'conversation-claim-race',
+        triggeringMessageId: 'message-a',
+        claimToken: 'claim-a',
+      }),
+      service.claimNewDelegateOcrIndex({
+        conversationId: 'conversation-claim-race',
+        triggeringMessageId: 'message-b',
+        claimToken: 'claim-b',
+      }),
+    ]);
+
+    const winners = [first, second].filter((claim): claim is NonNullable<typeof claim> => !!claim);
+    expect(winners).toHaveLength(1);
+    expect(winners[0]).toEqual(expect.objectContaining({ delegateOcrIndex: 1 }));
+
+    await service.materializeDelegateOcrRun({
+      conversationId: 'conversation-claim-race',
+      delegateOcrIndex: 1,
+      claimToken: winners[0].claimToken,
+      triggeringMessageId: winners[0].triggeringMessageId,
+      toolParameters: {},
+      files: [],
+    });
+    await service.transitionDelegateOcrRun({
+      claimToken: winners[0].claimToken,
+      status: 'completed',
+    });
+    await expect(
+      service.claimNewDelegateOcrIndex({
+        conversationId: 'conversation-claim-race',
+        triggeringMessageId: 'message-c',
+        claimToken: 'claim-c',
+      }),
+    ).resolves.toEqual(expect.objectContaining({ delegateOcrIndex: 2, claimToken: 'claim-c' }));
+
+    const State = createSteelConversationOcrStateModel(mongoose);
+    await expect(
+      State.findOne({ conversationId: 'conversation-claim-race' }).lean(),
+    ).resolves.toEqual(expect.objectContaining({ nextDelegateOcrIndex: 2 }));
+  });
+
   it('claims indexes atomically and materializes idempotently', async () => {
     const service = createSteelDelegateOcrStateService(mongoose);
     const first = await service.claimNewDelegateOcrIndex({

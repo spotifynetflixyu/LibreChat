@@ -2606,6 +2606,11 @@ describe('OpenAI OAuth model adapter', () => {
   });
 
   it('creates a message run step before forwarding native OAuth graph text deltas', async () => {
+    type StreamGraph = NonNullable<Parameters<ChatModelStreamHandler['handle']>[3]>;
+    type RunStep = NonNullable<ReturnType<StreamGraph['getRunStep']>>;
+    type StepDetails = Parameters<StreamGraph['dispatchRunStep']>[1];
+    type MessageDelta = Parameters<StreamGraph['dispatchMessageDelta']>[1];
+
     const doGenerate = jest.fn();
     const doStream = jest.fn(async () => ({
       stream: new ReadableStream<LanguageModelV3StreamPart>({
@@ -2633,10 +2638,10 @@ describe('OpenAI OAuth model adapter', () => {
       getSystemRunnable: () => RunnableLambda.from((messages: BaseMessage[]) => messages),
     });
     const handler = new ChatModelStreamHandler();
-    const events: Array<{ event: string; data: any }> = [];
+    const events: Array<{ event: string; data: unknown }> = [];
     const stepIdsByKey = new Map<string, string>();
-    const runSteps = new Map<string, any>();
-    const graph: any = {
+    const runSteps = new Map<string, RunStep>();
+    const graph = {
       config: { configurable: { thread_id: 'thread_1' } },
       messageIdsByStepKey: new Map(),
       prelimMessageIdsByStepKey: new Map(),
@@ -2657,10 +2662,10 @@ describe('OpenAI OAuth model adapter', () => {
       getStepKey: jest.fn(() => 'agent_1:0'),
       getStepIdByKey: jest.fn((stepKey: string) => stepIdsByKey.get(stepKey) ?? ''),
       getRunStep: jest.fn((stepId: string) => runSteps.get(stepId)),
-      dispatchRunStep: jest.fn(async (stepKey: string, stepDetails: any) => {
+      dispatchRunStep: jest.fn(async (stepKey: string, stepDetails: StepDetails) => {
         const stepId = `step_${runSteps.size + 1}`;
         stepIdsByKey.set(stepKey, stepId);
-        const runStep = {
+        const runStep: RunStep = {
           id: stepId,
           index: runSteps.size,
           stepDetails,
@@ -2672,12 +2677,12 @@ describe('OpenAI OAuth model adapter', () => {
         events.push({ event: GraphEvents.ON_RUN_STEP, data: runStep });
         return stepId;
       }),
-      dispatchMessageDelta: jest.fn(async (stepId: string, delta: any) => {
+      dispatchMessageDelta: jest.fn(async (stepId: string, delta: MessageDelta) => {
         graph.messageStepHasTextDeltas.add(stepId);
         events.push({ event: GraphEvents.ON_MESSAGE_DELTA, data: { id: stepId, delta } });
       }),
       dispatchReasoningDelta: jest.fn(),
-    };
+    } as unknown as StreamGraph;
 
     const stream = await model.stream([new HumanMessage('輸出報價')]);
     for await (const chunk of stream) {

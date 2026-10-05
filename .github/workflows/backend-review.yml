@@ -744,6 +744,14 @@ jobs:
           else
             npm run test:ci -- --shard=${{ matrix.shard }}/4 $JEST_JSON
           fi
+      - name: Run native OAuth SDK suites in isolated Jest processes
+        if: matrix.shard == 1
+        run: |
+          cd packages/api
+          for spec in src/steel/native/credentials.spec.ts src/providers/openai/compaction/transport.spec.ts src/providers/openai/compaction/persistence.spec.ts; do
+            name="$(basename "${spec%.spec.ts}")"
+            NODE_OPTIONS="${NODE_OPTIONS:-} --experimental-vm-modules" npx jest --ci --coverage --runInBand --runTestsByPath "$spec" --testPathIgnorePatterns=/node_modules/ --json --outputFile="$GITHUB_WORKSPACE/jest-results/jest-results-packages-api-esm-$name.json"
+          done
       # Per-test results keyed by head SHA (run.head_sha), for the codegraph test-evidence feed.
       # Never part of the gate: it cannot fail the job, and a re-run overwrites its own artifact.
       - name: Upload Jest results

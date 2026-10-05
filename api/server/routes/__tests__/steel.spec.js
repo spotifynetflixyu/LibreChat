@@ -26,6 +26,7 @@ const mockCreateSteelRouteHandlers = jest.fn(() => ({
   commitReview: mockUnusedReview,
   listReviewSources: mockUnusedReview,
   readReviewSource: mockUnusedReview,
+  readReviewSourcePageCount: mockUnusedReview,
 }));
 
 const mockCapabilitySmoke = jest.fn((_req, res) =>

@@ -67,7 +67,7 @@ function client(batches: object[][]) {
 }
 
 describe('direct price candidates contract', () => {
-  it('rejects ERP-only query and returns 250 of 251 usable material rows', async () => {
+  it('rejects ERP-only query and filters unusable material rows', async () => {
     expect(() => steelToolArgsSchemas.search_price_candidates.parse({ queries: [{ erpItemCodes: ['ERP-1'] }] })).toThrow();
     const rows = [
       row(0, { erp_item_code: '', product_name: 'missing code' }),
@@ -91,10 +91,10 @@ describe('direct price candidates contract', () => {
       defaultMaterial: '黑鐵',
       availableMaterials: ['黑鐵', '白鐵', '錏'],
       totalAvailable: 251,
-      returnedCount: 250,
-      truncated: true,
+      returnedCount: 251,
+      truncated: false,
     }));
-    expect((query.candidates as unknown[]).length).toBe(250);
+    expect((query.candidates as unknown[]).length).toBe(251);
     expect(JSON.stringify(query)).not.toContain('pricingOptions');
     const serializedQueries = JSON.parse(String(mock.values[0]?.[0])) as Array<{
       material_terms: string[];

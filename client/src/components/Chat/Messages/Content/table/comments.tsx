@@ -176,6 +176,10 @@ const CommentableTableCell = memo(function CommentableTableCell({
                 collisionPadding={12}
                 className="markdown-table-cell-comment-popover"
                 onOpenAutoFocus={(event) => event.preventDefault()}
+                onEscapeKeyDown={(event) => {
+                  event.preventDefault();
+                  cancelEditing();
+                }}
                 onInteractOutside={saveDraft}
               >
                 <Input
