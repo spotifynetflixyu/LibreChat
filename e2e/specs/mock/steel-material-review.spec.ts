@@ -17,7 +17,7 @@ import { deleteConversations, deleteMessagesByConversation, seedConversations, w
 import { getE2EUser } from '../../setup/user';
 import { getAccessToken } from './helpers';
 
-type Mode = 'plate' | 'profile' | 'unknown' | 'square' | 'round' | 'flat';
+type Mode = 'plate' | 'profile' | 'unknown' | 'square' | 'squareDensityOnly' | 'round' | 'flat';
 type Auth = { Authorization: string };
 type Fixture = { conversationId: string; messageId: string; runId: string; lookups: number };
 
@@ -43,8 +43,8 @@ async function seedCalculation(mode: Mode = 'plate', notes = ''): Promise<Fixtur
   try {
     const scope = { userId, conversationId };
     const service = createSteelQuotationStateService(mongoose);
-    const category = { plate: '鐵板', profile: 'H型鋼', unknown: '鐵板', square: '方鐵', round: '圓條', flat: '平鐵' }[mode];
-    const code = { plate: 'PLATE', profile: 'PROFILE', unknown: 'UNKNOWN', square: 'SQUARE', round: 'ROUND', flat: 'FLAT' }[mode];
+    const category = { plate: '鐵板', profile: 'H型鋼', unknown: '鐵板', square: '方鐵', squareDensityOnly: '方鐵', round: '圓條', flat: '平鐵' }[mode];
+    const code = { plate: 'PLATE', profile: 'PROFILE', unknown: 'UNKNOWN', square: 'SQUARE', squareDensityOnly: 'SQUARE-DENSITY', round: 'ROUND', flat: 'FLAT' }[mode];
     const sourceRows = ['A', 'B'].map((part) => ['', part, category, '2', '6', '100', '200']);
     const order = `## ocr_result\n\n${table(['來源', '零件編號', '類別', '數量', '厚度', '寬度', '長度'], sourceRows)}`;
     const state = await service.setOrder({ scope, fullMarkdown: order });
@@ -66,9 +66,10 @@ async function seedCalculation(mode: Mode = 'plate', notes = ''): Promise<Fixtur
     const methods = createMethods(mongoose);
     let lookups = 0;
     const candidate = {
-      id: { plate: 1, profile: 2, unknown: 3, square: 4, round: 5, flat: 6 }[mode], erpItemCode: code, productName: `REVIEW-${code}`, category,
+      id: { plate: 1, profile: 2, unknown: 3, square: 4, squareDensityOnly: 7, round: 5, flat: 6 }[mode], erpItemCode: code, productName: `REVIEW-${code}`, category,
       material: 'M1', unit: mode === 'unknown' ? 'pc' : 'kg', quoteEligible: true,
       ...(mode === 'plate' ? { density: 7.85, exactPhysical: { density: '7.85' } } : {}),
+      ...(mode === 'squareDensityOnly' ? { density: 7.85, exactPhysical: { density: '7.85' } } : {}),
       ...(mode === 'square' ? { density: 7.85, widthMm: 100, exactPhysical: { density: '7.85', widthMm: '100' } } : {}),
       ...(['round', 'flat'].includes(mode) ? { unitWeightValue: 1, unitWeightBasis: 'kg_per_m',
         exactPhysical: { unitWeightValue: '1' } } : {}),
@@ -537,18 +538,21 @@ test.describe('Material review capable automatic calculation', () => {
     expect((await readTable(page, auth, fixture)).rows.find((entry) => entry.rowId === rowId)?.values['總數'].effective).toBe('6');
   });
 
-  test('square width calculation uses the edited dimension rather than the stock width', async ({ page }) => {
-    const fixture = await seedCalculation('square'); fixtures.push(fixture);
-    const initial = await readTable(page, auth, fixture);
-    const dialog = await openEditor(page, fixture);
-    await editBusinessValue(dialog, initial.rows[0].rowId, '寬度', '50');
-    const saved = await saveUi(page, dialog);
-    expect(effective(saved, '寬度')).toBe('50');
-    expect(effective(saved, '單重')).toBe('3.925');
-    expect(effective(saved, '總數')).toBe('7.85');
-    await page.keyboard.press('Escape'); await page.reload();
-    expect(effective(await readTable(page, auth, fixture), '單重')).toBe('3.925');
-  });
+  for (const mode of ['square', 'squareDensityOnly'] as const) {
+    test(`${mode} width calculation uses the edited dimension rather than the stock width`, async ({ page }) => {
+      const fixture = await seedCalculation(mode); fixtures.push(fixture);
+      const initial = await readTable(page, auth, fixture);
+      const dialog = await openEditor(page, fixture);
+      await editBusinessValue(dialog, initial.rows[0].rowId, '寬度', '50');
+      const saved = await saveUi(page, dialog);
+      expect(effective(saved, '寬度')).toBe('50');
+      expect(effective(saved, '單重')).toBe('3.925');
+      expect(effective(saved, '總數')).toBe('7.85');
+      await page.keyboard.press('Escape'); await page.reload();
+      expect(effective(await readTable(page, auth, fixture), '單重')).toBe('3.925');
+    });
+
+  }
 
   for (const mode of ['round', 'flat'] as const) {
     test(`canonical ${mode} per-metre evidence computes length without a stock length`, async ({ page }) => {

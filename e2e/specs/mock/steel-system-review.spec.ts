@@ -2185,7 +2185,7 @@ test.describe('System order atomic manual review', () => {
 
   }
 
-  test('system-order callers cannot supply another run, customer snapshot or immutable column', async ({ page }) => {
+  test('system-order callers reject owner metadata and unknown columns while allowing business model edits', async ({ page }) => {
     const fixture = await seedOrder();
     conversations.push(fixture.conversationId);
     const table = await readTable(page, headers, fixture.conversationId, fixture.messageId);
@@ -2199,11 +2199,19 @@ test.describe('System order atomic manual review', () => {
       data: { ...request, revision: '0'.repeat(64) } });
     expect(unknownVersion.status()).toBe(409);
     expect(await unknownVersion.json()).toMatchObject({ code: 'REVIEW_CONFLICT' });
-    const immutable = await page.request.post(`${reviewUrl(fixture.conversationId)}/prepare`, { headers,
-      data: requestFor(table, [{ header: '型號', value: 'FREE-TEXT-MODEL' }]) });
-    expect(immutable.status()).toBe(409);
-    expect(await immutable.json()).toMatchObject({ code: 'REVIEW_INVALID_OPERATION' });
+    const unknownColumn = await page.request.post(`${reviewUrl(fixture.conversationId)}/prepare`, { headers,
+      data: requestFor(table, [{ header: 'customerTier', value: 'F' }]) });
+    expect(unknownColumn.status()).toBe(409);
+    expect(await unknownColumn.json()).toMatchObject({ code: 'REVIEW_INVALID_OPERATION' });
     expect(await readback(fixture.conversationId)).toEqual(before);
+    const editableModel = await prepare(page, headers, requestFor(table, [{ header: '型號', value: 'FREE-TEXT-MODEL' }]));
+    expect(await readback(fixture.conversationId)).toEqual(before);
+    const savedModel = await commit(page, headers, editableModel);
+    expect(savedModel.status(), await savedModel.text()).toBe(200);
+    await page.goto(`/c/${fixture.conversationId}`);
+    await page.reload();
+    expect((await readTable(page, headers, fixture.conversationId, fixture.messageId)).rows[0].values['型號'].effective)
+      .toBe('FREE-TEXT-MODEL');
   });
 
   test('invalid system-order numeric draft is rejected without DB writes', async ({ page }) => {

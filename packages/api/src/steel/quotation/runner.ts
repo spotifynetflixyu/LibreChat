@@ -116,7 +116,7 @@ export function hasCompleteSteelFormula(candidate: SteelCalculationCandidateEvid
     return physical.density !== undefined;
   }
   if (candidate.category === '方鐵') {
-    return physical.density !== undefined && physical.widthMm !== undefined;
+    return physical.density !== undefined;
   }
   const unitWeightBasis = candidate.unitWeightBasis?.toLowerCase();
   if (!['H型鋼', 'C型鋼', '角鐵', '槽鐵', '平鐵', '方管', '圓管', '圓條'].includes(candidate.category) ||

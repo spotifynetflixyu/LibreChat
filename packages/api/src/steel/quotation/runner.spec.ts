@@ -324,7 +324,15 @@ describe('quotation runner integration', () => {
     oauthFactory.mockReset();
   });
 
-  it('accepts a per-metre candidate without requiring stock length in the publication basis', () => {
+  it('admits candidates using only the physical evidence consumed by their formula', () => {
+    expect(hasCompleteSteelFormula({
+      erpItemCode: 'SQ-1', category: '方鐵', ruleVersion: 'steel-weight-v1',
+      exactPhysical: { density: '7.85' },
+    })).toBe(true);
+    expect(hasCompleteSteelFormula({
+      erpItemCode: 'SQ-1', category: '方鐵', ruleVersion: 'steel-weight-v1',
+      exactPhysical: {},
+    })).toBe(false);
     expect(hasCompleteSteelFormula({
       erpItemCode: 'H-1',
       category: 'H型鋼',
