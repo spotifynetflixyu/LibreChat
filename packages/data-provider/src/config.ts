@@ -3439,6 +3439,10 @@ const sharedOpenAIModels = [
   'gpt-4o',
 ];
 
+const assistantsOpenAIModels = sharedOpenAIModels.filter(
+  (model) => !responsesPreferredOpenAIModels.includes(model),
+);
+
 const sharedAnthropicModels = [
   'claude-fable-5-1',
   'claude-fable-5',
@@ -3517,8 +3521,8 @@ export const bedrockModels = [
 
 export const defaultModels = {
   [EModelEndpoint.openAIOAuth]: sharedOpenAIModels,
-  [EModelEndpoint.azureAssistants]: sharedOpenAIModels,
-  [EModelEndpoint.assistants]: [...sharedOpenAIModels, 'chatgpt-4o-latest'],
+  [EModelEndpoint.azureAssistants]: assistantsOpenAIModels,
+  [EModelEndpoint.assistants]: [...assistantsOpenAIModels, 'chatgpt-4o-latest'],
   // TODO: Add agent models (agentsModels)
   [EModelEndpoint.agents]: [
     ...responsesOnlyOpenAIModels,

@@ -12,10 +12,14 @@ jest.mock('librechat-data-provider', () => {
   const actual = jest.requireActual('librechat-data-provider');
   return { ...actual, dataService: { ...actual.dataService, getConversationById: jest.fn() } };
 });
-jest.mock('recoil', () => ({
-  useSetRecoilState: () => jest.fn(),
-  useRecoilCallback: () => jest.fn(),
-}));
+jest.mock('recoil', () => {
+  const actual = jest.requireActual('recoil');
+  return {
+    ...actual,
+    useSetRecoilState: () => jest.fn(),
+    useRecoilCallback: () => jest.fn(),
+  };
+});
 jest.mock('react-router-dom', () => ({
   useParams: () => ({ conversationId: 'saved' }),
   useNavigate: () => jest.fn(),
@@ -56,6 +60,7 @@ jest.mock('~/utils', () => ({
   scrollToEnd: jest.fn(),
   getConversationDraftId: jest.fn(),
   hasRealTitle: () => false,
+  isValidTimestamp: () => false,
   withoutListFlags: (value: unknown) => value,
   setDocumentTitle: jest.fn(),
   requestChatFocus: jest.fn(),
@@ -65,6 +70,7 @@ jest.mock('~/utils', () => ({
   removeConvoFromAllQueries: jest.fn(),
   findConversationInInfinite: () => undefined,
   preserveStreamedContentIdentity: (_old: unknown, current: unknown) => current,
+  mergeRequestMessageTimestamp: jest.requireActual('~/utils/messages').mergeRequestMessageTimestamp,
   isEmptyContentPart: () => false,
   getPartKeyIndex: jest.fn(),
   CONVERSATION_LIST_KEYS: [],

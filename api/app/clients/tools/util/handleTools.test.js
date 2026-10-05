@@ -93,7 +93,7 @@ jest.mock('~/config', () => ({
 }));
 
 const { Calculator } = require('@librechat/agents');
-const { Tools, Constants } = require('librechat-data-provider');
+const { Tools, Constants, normalizeServerName } = require('librechat-data-provider');
 const { ASK_USER_QUESTION_TOOL_NAME } = require('@librechat/api');
 
 const { User } = require('~/db/models');
@@ -960,9 +960,9 @@ describe('Tool Handlers', () => {
       );
     });
 
-    it('maps provider-safe MCP server suffixes back to raw server names for execution', async () => {
-      const rawServerName = 'PaddleOCR-VL-1.6';
-      const safeServerName = 'PaddleOCR-VL-1_6';
+    it('maps normalized MCP server suffixes back to raw server names for execution', async () => {
+      const rawServerName = 'PaddleOCR VL 1.6';
+      const safeServerName = normalizeServerName(rawServerName);
       const toolKey = `paddleocr_vl${Constants.mcp_delimiter}${safeServerName}`;
       const requestBody = { conversationId: 'conv-ocr', messageId: 'msg-ocr' };
       const serverConfig = {
@@ -980,6 +980,13 @@ describe('Tool Handlers', () => {
           },
         },
       };
+
+      const { resolveMcpServerContext } = require('~/server/services/MCP');
+      resolveMcpServerContext.mockResolvedValueOnce({
+        configServers: { [rawServerName]: serverConfig },
+        serverNames: [safeServerName],
+        rawServerNames: [rawServerName],
+      });
 
       mockGetServerConfig.mockImplementation(async (serverName) =>
         serverName === rawServerName ? serverConfig : null,

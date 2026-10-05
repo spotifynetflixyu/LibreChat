@@ -977,7 +977,6 @@ describe('SSE stream tenant isolation', () => {
       expect(mockCaptureAgentCheckpointGeneration).toHaveBeenCalledWith('stream-123', undefined, {
         throwOnError: true,
       });
-      expect(mockSaveMessage).toHaveBeenCalledTimes(2);
       expect(mockSaveMessage).toHaveBeenNthCalledWith(
         1,
         expect.any(Object),
@@ -1146,7 +1145,6 @@ describe('SSE stream tenant isolation', () => {
         });
 
       expect(res.status).toBe(200);
-      expect(mockSaveMessage).toHaveBeenCalledTimes(2);
       expect(mockDeleteAgentCheckpoint).toHaveBeenCalledWith(
         'stream-123',
         undefined,

@@ -37,6 +37,7 @@ const {
   getUserMCPAuthMap,
   getServerCustomUserVars,
   requiresEphemeralUserConnection,
+  resolveMCPToolKeyServerNames,
   requiresOAuthMachinery,
   hasRuntimeUrlPlaceholders,
   containsGraphTokenPlaceholder,
@@ -601,16 +602,6 @@ function createUnavailableToolStub(toolName, serverName) {
   toolInstance.mcp = true;
   toolInstance.mcpRawServerName = serverName;
   return toolInstance;
-}
-
-function getMCPToolDefinition(availableTools, toolKeys) {
-  for (const toolKey of toolKeys) {
-    const toolDefinition = availableTools?.[toolKey]?.function;
-    if (toolDefinition) {
-      return toolDefinition;
-    }
-  }
-  return undefined;
 }
 
 function isEmptyObjectSchema(jsonSchema) {
@@ -1400,10 +1391,10 @@ async function createMCPTool({
   jobCreatedAt,
   recoveryPolicy,
 }) {
-  const knownServerNames = Object.keys(configServers ?? {}).flatMap((name) => [
-    name,
-    normalizeServerName(name),
-  ]);
+  const knownServerNames = resolveMCPToolKeyServerNames({
+    suppliedServerNames: [providedServerName, resolvedServerName],
+    configServerNames: Object.keys(configServers ?? {}),
+  });
   const [toolName, encodedServerName] = splitMCPToolKey(toolKey, knownServerNames);
   let serverName = resolvedServerName ?? providedServerName ?? encodedServerName;
   let serverConfig =
@@ -1820,7 +1811,7 @@ function createToolInstance({
       const hasSafeDiagnosticCode = isSafePaddleOcrDiagnosticCode(error?.diagnosticCode);
       const wrappedError = wrapMcpError(
         `[MCP][${serverName}][${toolName}] tool call failed${
-          hasSafeDiagnosticCode ? '.' : error?.message ? `: ${error.message}` : '.'
+          hasSafeDiagnosticCode || !error?.message ? '.' : `: ${error.message}`
         }`,
       );
       throw wrappedError;

@@ -61,6 +61,14 @@ function processInput(
       );
       return { messageId: input.messageId };
     },
+    publishQuotation: async (proof: Parameters<NonNullable<PendingProcessInput['publishQuotation']>>[0]) => {
+      await mongoose.connection.collection('pending_messages').updateOne(
+        { messageId: proof.message.messageId },
+        { $set: { markdown: proof.markdown, completed: true } },
+        { upsert: true },
+      );
+      return { ok: true as const, message: proof.message };
+    },
     publish,
   };
 }
@@ -73,7 +81,16 @@ async function prepareCompletedSystemOrder() {
     '| --- | --- | --- | --- |',
     '| A | 2 | 2 | 10 |',
   ].join('\n');
-  await service.setOrder({ scope, fullMarkdown: order, revision: 'base', messageId: 'base-message' });
+  const state = await service.setOrder({ scope, fullMarkdown: order, revision: 'base', messageId: 'base-message' });
+  await service.saveCustomer({
+    scope,
+    customerMarkdown: defaultQuotationCustomerMarkdown,
+    customerIdentity: 'explicit-default:B',
+    triggeringMessageId: 'quote-message',
+    responseId: 'customer-response',
+    selectionProvenance: { method: 'default_tier', selectionMessageId: 'quote-message' },
+    orderHash: state.currentOrder!.sha256,
+  });
   const ticket = await service.issueTicket({
     scope,
     customerMarkdown: defaultQuotationCustomerMarkdown,

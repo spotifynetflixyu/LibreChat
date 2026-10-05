@@ -1,29 +1,35 @@
 import React from 'react';
 import userEvent from '@testing-library/user-event';
-import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import Markdown from '../Markdown';
-import MarkdownLite from '../MarkdownLite';
 import { RecoilRoot, useRecoilValue } from 'recoil';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { TConversation } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
-import { readStoredMarkdownTableComments, writeStoredMarkdownTableComments } from '~/common';
 import type { MarkdownTableComment } from '~/common';
-import { UI_RESOURCE_MARKER } from '~/components/MCPUIResource/plugin';
 import {
   MessageContext,
   useOptionalMessagesConversation,
   useOptionalMessagesOperations,
 } from '~/Providers';
-import { useGetMessagesByConvoId } from '~/data-provider';
+import { readStoredMarkdownTableComments, writeStoredMarkdownTableComments } from '~/common';
+import { useGetMessagesByConvoId, useGetSteelReviewQuery } from '~/data-provider';
+import { UI_RESOURCE_MARKER } from '~/components/MCPUIResource/plugin';
+import MarkdownLite from '../MarkdownLite';
 import { useLocalize } from '~/hooks';
+import Markdown from '../Markdown';
 import store from '~/store';
 
 // Mocks for hooks used by MCPUIResource when rendered inside Markdown.
 // Keep Provider components intact while mocking only the hooks we use.
 jest.mock('~/Providers', () => ({
   ...jest.requireActual('~/Providers'),
-  useOptionalMessagesConversation: jest.fn(),
-  useOptionalMessagesOperations: jest.fn(),
+  useOptionalMessagesConversation: jest.fn(() => ({
+    conversation: { conversationId: 'conv1' },
+    conversationId: 'conv1',
+  })),
+  useOptionalMessagesOperations: jest.fn(() => ({
+    ask: jest.fn(),
+    getMessages: () => [],
+  })),
 }));
 jest.mock('~/data-provider');
 jest.mock('~/hooks');
@@ -97,6 +103,12 @@ const mockUseLocalize = useLocalize as jest.MockedFunction<typeof useLocalize>;
 const mockUseConversationUIResources = useConversationUIResources as jest.MockedFunction<
   typeof useConversationUIResources
 >;
+const mockUseSteelReviewQuery = useGetSteelReviewQuery as jest.MockedFunction<
+  typeof useGetSteelReviewQuery
+>;
+const mockUseGetMessagesByConvoId = useGetMessagesByConvoId as jest.MockedFunction<
+  typeof useGetMessagesByConvoId
+>;
 let currentTestMessages: TMessage[] = [];
 
 function PendingCommentsProbe({
@@ -149,7 +161,7 @@ function renderMarkdownWithMessageContext({
         }
       >
         <div className="message-render" id="msg-table">
-          <h2>Assistant</h2>
+          <h2>{conversationTitle}</h2>
           <div className="message-content">
             <Markdown content={content} isLatestMessage={false} />
           </div>
@@ -174,6 +186,16 @@ describe('Markdown with MCP UI markers (resource IDs)', () => {
       getMessages: () => currentTestMessages,
     } as any);
     mockUseLocalize.mockReturnValue(((key: string) => key) as any);
+    mockUseGetMessagesByConvoId.mockReturnValue({
+      data: undefined,
+    } as unknown as ReturnType<typeof useGetMessagesByConvoId>);
+    mockUseSteelReviewQuery.mockReturnValue({
+      data: undefined,
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: jest.fn(),
+    } as unknown as ReturnType<typeof useGetSteelReviewQuery>);
   });
 
   it('renders two UIResourceRenderer components for markers with resource IDs across separate attachments', () => {

@@ -524,6 +524,7 @@ const deleteUserController = async (req, res) => {
     await db.deleteTokens({ userId: user.id });
     await db.deleteAclEntries({ principalId: user._id });
     await db.deleteSchedulesByUser(user.id);
+    await db.removeUserFromAllGroups(user.id);
     const deleteResult = await db.deleteUserById(user.id);
     if (deleteResult.deletedCount !== 1) {
       throw new Error('User disappeared before account deletion could commit');

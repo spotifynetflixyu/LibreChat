@@ -1,14 +1,13 @@
+import type { SteelAgentRule, SteelQuoteRule } from '../repositories/rules';
+import type { SteelRuntimeContextDependencies } from '../runtime/context';
+import type { SteelRepositoryClient } from '../repositories/types';
+import type { SteelQuoteDefault } from '../repositories/defaults';
 import {
   buildDefaultSteelGlobalAgentContext,
   buildSteelGlobalAgentContext,
   createSteelContextDependencies,
   prepareLibreChatSteelChatContext,
 } from './context';
-
-import type { SteelRuntimeContextDependencies } from '../runtime/context';
-import type { SteelQuoteDefault } from '../repositories/defaults';
-import type { SteelAgentRule, SteelQuoteRule } from '../repositories/rules';
-import type { SteelRepositoryClient } from '../repositories/types';
 
 function createAgentRule(overrides: Partial<SteelAgentRule> = {}): SteelAgentRule {
   return {
@@ -240,6 +239,24 @@ describe('Steel native context adapter', () => {
 
     expect(prepared.activeHistory).toHaveLength(1);
     expect(prepared.currentUserTurn?.messageId).toBe('message_2');
+  });
+
+  it('allows ordinary chat when the default Steel database is not configured', async () => {
+    const steelPostgresUrl = process.env.STEEL_POSTGRES_URL;
+    delete process.env.STEEL_POSTGRES_URL;
+    try {
+      const context = await buildDefaultSteelGlobalAgentContext({
+        conversation: { requestId: 'request_without_steel_database', activeHistory: [] },
+      });
+      expect(context.mode).toBe('standard');
+      expect(context.runtimeContextText).toBe('');
+    } finally {
+      if (steelPostgresUrl === undefined) {
+        delete process.env.STEEL_POSTGRES_URL;
+      } else {
+        process.env.STEEL_POSTGRES_URL = steelPostgresUrl;
+      }
+    }
   });
 
   it('keeps the standard prefix deterministic and leaves the dynamic tail empty', async () => {

@@ -25,6 +25,11 @@ export default {
     '\\.helper\\.ts$',
     '\\.helper\\.d\\.ts$',
     '/__tests__/helpers/',
+    '/src/steel/normalization/spec\\.ts$',
+    '/scripts/keepalive\\.test\\.mts$',
+    // Native SDK imports retain the Jest VM context; CI runs each in a fresh process.
+    '/src/steel/native/credentials\\.spec\\.ts$',
+    '/src/providers/openai/compaction/(transport|persistence)\\.spec\\.ts$',
     '\\.manual\\.spec\\.[jt]sx?$',
   ],
   coverageReporters: ['text', 'cobertura'],

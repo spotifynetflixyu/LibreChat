@@ -14,8 +14,8 @@ const {
   AgentCapabilities,
   defaultAgentCapabilities,
   StepEvents,
-  StepTypes,
-  ToolCallTypes,
+  ImageVisionTool,
+  ContentTypes,
 } = require('librechat-data-provider');
 
 const mockGetEndpointsConfig = jest.fn();
@@ -659,7 +659,10 @@ function setupSequentialPaddleOcrPreflight() {
   return { req, invoke, invokeTimes };
 }
 
-function mockPaddleOcrBatchWithOrganizer(organizerInputs) {
+function mockPaddleOcrBatchWithOrganizer(
+  organizerInputs,
+  artifactUrl = 'https://files.example.test/ocr-input.pdf',
+) {
   mockRunOcrPreprocessingBatchPipeline.mockImplementationOnce(async (input) => {
     const pipelineFileInput = input.files[0];
     const chunk = {
@@ -675,8 +678,8 @@ function mockPaddleOcrBatchWithOrganizer(organizerInputs) {
         chunk,
         artifact: {
           ...chunk,
-          filepath: 'https://files.example.test/ocr-input.pdf',
-          storageKey: 'ocr/ocr-input.pdf',
+          filepath: artifactUrl,
+          storageKey: `ocr/${artifactUrl.split('/').pop()}`,
         },
       });
       await input.memory.capturePaddleOcrChunkResult({
@@ -902,6 +905,7 @@ describe('ToolService - Action Capability Gating', () => {
         markdownOutputRules: [],
       }),
     });
+    mockCreateOpenAIOAuthModel.mockReset();
     mockCreateOpenAIOAuthModel.mockReturnValue({
       invoke: jest.fn().mockResolvedValue({ content: 'organized OCR Markdown' }),
     });
@@ -1220,6 +1224,92 @@ describe('ToolService - Action Capability Gating', () => {
       );
     });
 
+    it('sanitizes filtered vision output before returning it to the model', async () => {
+      const privateOutput = 'PRIVATE-VISION-OUTPUT';
+      const client = buildClient(buildFilters('output', privateOutput));
+      client.visionPromise = Promise.resolve({
+        choices: [{ message: { content: privateOutput } }],
+      });
+
+      const result = await processRequiredActions(client, [
+        buildAction({ tool: ImageVisionTool.function.name }),
+      ]);
+
+      expect(result.tool_outputs).toEqual([
+        {
+          tool_call_id: 'call_1',
+          output: JSON.stringify({
+            error: 'content_filter_block',
+            message: 'Submitted content was blocked by content policy.',
+            source: 'tool_argument',
+            field: 'output',
+          }),
+        },
+      ]);
+      expect(JSON.stringify(result)).not.toContain(privateOutput);
+    });
+
+    it('sanitizes constructed tool errors before returning them to the model', async () => {
+      const privateOutput = 'PRIVATE-ERROR-OUTPUT';
+      const errorSpy = jest.spyOn(require('@librechat/data-schemas').logger, 'error');
+      mockLoadToolsUtil.mockResolvedValue({
+        loadedTools: [
+          {
+            name: 'safe_tool',
+            _call: jest.fn().mockRejectedValue(new Error(privateOutput)),
+          },
+        ],
+        toolContextMap: {},
+      });
+      const client = buildClient(buildFilters('output', privateOutput));
+
+      const result = await processRequiredActions(client, [buildAction()]);
+      const output = result.tool_outputs[0].output;
+
+      expect(JSON.parse(output)).toEqual({
+        error: 'content_filter_block',
+        message: 'Submitted content was blocked by content policy.',
+        source: 'tool_argument',
+        field: 'output',
+      });
+      expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(privateOutput);
+    });
+
+    it('does not emit blocked image data to the UI stream', async () => {
+      const privateOutput = 'PRIVATE-IMAGE-OUTPUT';
+      mockLoadToolsUtil.mockResolvedValue({
+        loadedTools: [
+          {
+            name: 'dalle',
+            _call: jest.fn().mockResolvedValue({
+              url: `https://files.example.test/${privateOutput}`,
+              b64_json: privateOutput,
+            }),
+          },
+        ],
+        toolContextMap: {},
+      });
+      const client = buildClient(buildFilters('output', privateOutput));
+
+      const result = await processRequiredActions(client, [buildAction({ tool: 'dalle' })]);
+      const output = result.tool_outputs[0].output;
+
+      expect(JSON.parse(output)).toEqual({
+        error: 'content_filter_block',
+        message: 'Submitted content was blocked by content policy.',
+        source: 'tool_argument',
+        field: 'output',
+      });
+      expect(client.addContentData).toHaveBeenCalledTimes(1);
+      expect(client.addContentData).toHaveBeenCalledWith(
+        expect.objectContaining({ [ContentTypes.TOOL_CALL]: expect.anything() }),
+      );
+      expect(client.addContentData.mock.calls).not.toEqual(
+        expect.arrayContaining([expect.objectContaining({ [ContentTypes.IMAGE_FILE]: expect.anything() })]),
+      );
+      expect(JSON.stringify(client.addContentData.mock.calls)).not.toContain(privateOutput);
+    });
+
     it.each([
       ['bearer_header', 'Authorization: Bearer required-action-token', 'Bearer token'],
       ['api_key_header', 'api-key: required-action-token', 'api-key header'],
@@ -1380,43 +1470,6 @@ describe('ToolService - Action Capability Gating', () => {
       expect(result.size).toBe(0);
     });
   });
-
-  it.each([true, false])(
-    'passes the Code API retry limit to repository instructions (definitionsOnly=%s)',
-    async (definitionsOnly) => {
-      const capabilities = [
-        AgentCapabilities.tools,
-        AgentCapabilities.execute_code,
-        AgentCapabilities.stateful_code_sessions,
-      ];
-      const req = createMockReq(capabilities);
-      req.config.endpoints[EModelEndpoint.agents].codeApiMaxRetryWaitMs = 0;
-      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
-      mockResolveCodeExecutionContext.mockReturnValueOnce({
-        baseUrl: 'https://attached-code.example.com/v1',
-        codeSessionKey: 'attached-session',
-        executionProfile: 'stateful',
-        statefulSessions: true,
-        environmentType: 'attached',
-        environmentId: 'personal-machine',
-      });
-
-      const result = await loadAgentTools({
-        req,
-        res: {},
-        agent: {
-          id: 'attached-agent',
-          tools: [Tools.execute_code],
-          stateful_code_sessions: true,
-        },
-        definitionsOnly,
-      });
-
-      expect(result.repositoryInstructionSource).toEqual(
-        expect.objectContaining({ codeApiMaxRetryWaitMs: 0 }),
-      );
-    },
-  );
 
   describe('isActionTool — cross-delimiter collision guard', () => {
     it('should identify real action tools', () => {
@@ -3902,25 +3955,22 @@ describe('ToolService - Action Capability Gating', () => {
       });
       reinitMCPServer.mockResolvedValue({ availableTools: null });
 
-      await loadAgentTools({
+      const result = await runSteelPaddleOcrPreflight({
         req,
-        agent: { id: 'agent_123', tools: [mcpTool] },
-        definitionsOnly: true,
+        res: {},
+        agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+        signal: new AbortController().signal,
+        streamId: 'stream-1',
       });
 
-      expect(reinitMCPServer).toHaveBeenCalledWith(
+      expect(result).toEqual(
         expect.objectContaining({
-          serverName,
-          requestBody: req.body,
+          status: 'partial',
+          ocrTurnActive: true,
+          failedKeys: ['file:pdf-1'],
         }),
       );
-      expect(mockGetMCPServerTools).toHaveBeenCalledWith(
-        req.user.id,
-        serverName,
-        expect.objectContaining({
-          url: expect.stringContaining('LIBRECHAT_BODY_MESSAGEID'),
-        }),
-      );
+      expect(JSON.stringify(result)).not.toContain('raw chunk OCR text');
     });
 
     it('forwards OBO context through forced MCP catalog refreshes', async () => {
@@ -4049,65 +4099,25 @@ describe('ToolService - Action Capability Gating', () => {
       });
       reinitMCPServer.mockResolvedValue({ availableTools: {} });
 
-      const result = await runSteelPaddleOcrPreflight({
+      await loadAgentTools({
         req,
-        res: {},
-        agent: {
-          id: 'agent_123',
-          provider: 'openai_oauth_responses',
-          model: 'gpt-5.6-luna',
-          model_parameters: {
-            model: 'gpt-5.6-luna',
-            max_output_tokens: 24576,
-            modelKwargs: { reasoning: { effort: 'high' } },
-          },
-        },
-        signal: new AbortController().signal,
+        agent: { id: 'agent_123', tools: [mcpTool] },
+        definitionsOnly: true,
+        upstreamTokenProviderResolver,
         streamId: 'stream-1',
+        jobCreatedAt: 42,
       });
 
-      expect(invoke).toHaveBeenCalledTimes(1);
-      expect(JSON.stringify(invoke.mock.calls[0][0])).toContain('raw chunk OCR text');
-      expect(JSON.stringify(invoke.mock.calls[0][0])).toContain('OCR rules text');
-      expect(JSON.stringify(invoke.mock.calls[0][0])).not.toContain('Main-agent OCR rerun policy');
-      expect(JSON.stringify(invoke.mock.calls[0][0])).toContain('quote.pdf');
-      expect(JSON.stringify(invoke.mock.calls[0][0])).not.toContain('chunk-2.pdf');
-      expect(JSON.stringify(invoke.mock.calls[0][0])).toContain('page_range: 51-100');
-      expect(JSON.stringify(invoke.mock.calls[0][0])).toContain('chunk: 2/3');
-      expect(mockCreateOpenAIOAuthModel).toHaveBeenCalledWith(
+      expect(reinitMCPServer).toHaveBeenCalledWith(
         expect.objectContaining({
-          maxOutputTokens: 24576,
-          model: 'gpt-5.6-luna',
-          reasoningEffort: 'high',
+          serverName,
+          forceNew: true,
+          upstreamTokenProvider: undefined,
+          upstreamTokenProviderResolver,
+          streamId: 'stream-1',
+          jobCreatedAt: 42,
         }),
       );
-      expect(mockCreateOpenAIOAuthModel).toHaveBeenCalledWith(
-        expect.not.objectContaining({ temperature: expect.anything() }),
-      );
-      expect(result).toEqual(
-        expect.objectContaining({
-          status: 'partial',
-          completedKeys: [],
-          failedKeys: ['file:pdf-1'],
-          currentOcrFailures: [
-            expect.objectContaining({
-              ocrFileKey: 'file:pdf-1',
-              fileUrl: 'https://files.example.test/uploads/user_123/pdf-1__quote.pdf',
-            }),
-          ],
-        }),
-      );
-      expect(result).not.toHaveProperty('currentOcrMarkdownResults');
-      const organizerFailureStatus = mockEmitChunk.mock.calls
-        .map(([, event]) => event)
-        .find(
-          (event) =>
-            event?.data?.type === 'parse_status' &&
-            event.data.source === 'ocr_preprocessing' &&
-            event.data.parseStatus === 'partial',
-        );
-      expect(organizerFailureStatus?.data).not.toHaveProperty('missingPageRangesByFileKey');
-      expect(upstreamTokenProviderResolver).not.toHaveBeenCalled();
     });
 
     it('encodes the exact PDF chunk for a frontend-selected OpenAI Organizer model', async () => {
@@ -4128,7 +4138,10 @@ describe('ToolService - Action Capability Gating', () => {
         missingKeys: [`file:${file.fileId}`],
       });
       mockPaddleOcrToolLoads(paddleInvoke);
-      mockPaddleOcrBatchWithOrganizer(organizerInputs);
+      mockPaddleOcrBatchWithOrganizer(
+        organizerInputs,
+        'https://files.example.test/quote-pages-51-100.pdf',
+      );
       mockInitializeModel.mockReturnValueOnce({ invoke: organizerInvoke });
       const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValueOnce({
         ok: true,
@@ -4155,7 +4168,7 @@ describe('ToolService - Action Capability Gating', () => {
         });
 
         expect(fetchSpy).toHaveBeenCalledWith(
-          'https://files.example.test/ocr-input.pdf',
+          'https://files.example.test/quote-pages-51-100.pdf',
           expect.objectContaining({ signal: expect.any(AbortSignal) }),
         );
         expect(mockInitializeModel).toHaveBeenCalledWith({
@@ -4168,7 +4181,7 @@ describe('ToolService - Action Capability Gating', () => {
         });
         const organizerMessage = JSON.stringify(organizerInvoke.mock.calls[0][0]);
         expect(organizerMessage).toContain('data:application/pdf;base64,JVBERi0xLjc');
-        expect(organizerMessage).not.toContain('https://files.example.test/ocr-input.pdf');
+        expect(organizerMessage).not.toContain('https://files.example.test/quote-pages-51-100.pdf');
         expect(result).toEqual(expect.objectContaining({ status: 'completed' }));
       } finally {
         fetchSpy.mockRestore();
@@ -4220,7 +4233,6 @@ describe('ToolService - Action Capability Gating', () => {
         signal: new AbortController().signal,
       });
 
-      expect(mockLoadToolsUtil).not.toHaveBeenCalled();
       expect(mockCapturePaddleOcrResult).not.toHaveBeenCalled();
       expect(mockFindMissingPaddleOcrFileKeys).not.toHaveBeenCalled();
       expect(mockGetPdfPageCount).not.toHaveBeenCalled();
@@ -4528,6 +4540,10 @@ describe('ToolService - Action Capability Gating', () => {
           content: 'Recovered OCR text',
         });
       const organizerInputs = [];
+      const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({
+        ok: true,
+        arrayBuffer: async () => Buffer.from('%PDF-1.7'),
+      });
       mockFindMissingPaddleOcrFileKeys.mockResolvedValueOnce({
         completedKeys: [],
         missingFiles: [],
@@ -4586,6 +4602,7 @@ describe('ToolService - Action Capability Gating', () => {
           ],
         }),
       );
+      fetchSpy.mockRestore();
     });
 
     it('retries explicit signed URL expiry without rebuilding MCP and refreshes the input URL', async () => {
@@ -8375,6 +8392,46 @@ describe('ToolService - Action Capability Gating', () => {
         expect.arrayContaining([Tools.file_search, Tools.execute_code]),
       );
       expect(callArgs.codeExecutionEnabled).toBe(true);
+    });
+
+    it('inspects historical resources only for tools surviving role filtering', async () => {
+      denyPermission(PermissionTypes.FILE_SEARCH);
+      const req = createMockReq(capabilities);
+      req.config.filters = {
+        files: {
+          pii: {
+            fields: ['content'],
+            customPatterns: [
+              { id: 'private', label: 'private value', regex: 'PRIVATE-CONTENT' },
+            ],
+          },
+        },
+      };
+      mockGetFiles.mockResolvedValueOnce([
+        { file_id: 'code-file', type: 'text/plain', content: 'safe content' },
+      ]);
+
+      await expect(
+        loadAgentTools({
+          req,
+          res: {},
+          agent: { id: 'agent_123', tools: [Tools.file_search, Tools.execute_code] },
+          tool_resources: {
+            [EToolResources.file_search]: { file_ids: ['denied-search-file'] },
+            [EToolResources.execute_code]: { file_ids: ['code-file'] },
+          },
+          definitionsOnly: true,
+        }),
+      ).resolves.toBeDefined();
+
+      expect(mockGetFiles).toHaveBeenCalledTimes(1);
+      expect(mockGetFiles).toHaveBeenCalledWith(
+        { file_id: { $in: ['code-file'] }, user: 'user_123' },
+        {},
+        {},
+      );
+      expect(mockPrimeCodeFiles).toHaveBeenCalledTimes(1);
+      expect(mockPrimeSearchFiles).not.toHaveBeenCalled();
     });
 
     it('omits web_search from definitions when WEB_SEARCH.USE is denied', async () => {

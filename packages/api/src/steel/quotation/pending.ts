@@ -122,6 +122,7 @@ export async function processQuotationPendingMessages(input: {
           rawResponse: rawPendingResponse,
           sourceStage: 'pending',
           userId: input.scope.userId,
+          tenantId: input.scope.tenantId,
           conversationId: input.scope.conversationId,
           messageId,
           generationId: messageId,
