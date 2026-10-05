@@ -133,6 +133,79 @@ describe('Steel exact calculation seam', () => {
     expect(result.values).toEqual(['PL', '鐵板', 'kg', '1', '1', '1', '10', '2 mm', '100 mm', '1000 mm']);
   });
 
+  it('preserves manual plate outputs when only belly changes', () => {
+    const result = calculateSteelSystemOrderRow({
+      headers: ['型號', '類別', '單位', '數量', '單重', '總數', '厚度', '寬度', '長度', '肚'],
+      values: ['PL', '鐵板', 'kg', '2', '99', '198', '1 mm', '100 mm', '1000 mm', '10 mm'],
+      candidate: {
+        erpItemCode: 'PL',
+        category: '鐵板',
+        ruleVersion: 'steel-weight-v1',
+        exactPhysical: { density: '7.85' },
+      },
+      changedHeaders: ['肚'],
+      systemKind: 'material',
+    });
+
+    expect(result.values).toEqual(['PL', '鐵板', 'kg', '2', '99', '198', '1 mm', '100 mm', '1000 mm', '10']);
+    expect(result.calculatedHeaders).toEqual([]);
+  });
+
+  it('preserves manual profile outputs when an unrelated width changes', () => {
+    const result = calculateSteelSystemOrderRow({
+      headers: ['型號', '類別', '單位', '數量', '單重', '總數', '寬度', '長度'],
+      values: ['H', 'H型鋼', 'kg', '2', '99', '198', '100 mm', '3 m'],
+      candidate: {
+        erpItemCode: 'H',
+        category: 'H型鋼',
+        ruleVersion: 'steel-weight-v1',
+        unitWeightBasis: 'kg_per_m',
+        exactPhysical: { unitWeightValue: '1' },
+      },
+      changedHeaders: ['寬度'],
+      systemKind: 'material',
+    });
+
+    expect(result.values).toEqual(['H', 'H型鋼', 'kg', '2', '99', '198', '100', '3 m']);
+    expect(result.calculatedHeaders).toEqual([]);
+  });
+
+  it('uses the current square width and records only consumed dimensions', () => {
+    const result = calculateSteelSystemOrderRow({
+      headers: ['型號', '類別', '單位', '數量', '單重', '總數', '寬度', '長度'],
+      values: ['SQ', '方鐵', 'kg', '2', '99', '198', '40 mm', '1000 mm'],
+      candidate: {
+        erpItemCode: 'SQ',
+        category: '方鐵',
+        ruleVersion: 'steel-weight-v1',
+        exactPhysical: { density: '7.85', widthMm: '20' },
+      },
+      changedHeaders: ['寬度'],
+      systemKind: 'material',
+    });
+
+    expect(result.values).toEqual(['SQ', '方鐵', 'kg', '2', '12.56', '25.12', '40', '1000 mm']);
+    expect(result.provenance?.['單重']?.dependencies).toEqual({ 寬度: '40', 長度: '1000' });
+  });
+
+  it.each(['平鐵', '圓條'])('calculates the canonical profile category %s', (category) => {
+    const result = calculateSteelSystemOrderRow({
+      headers: ['型號', '類別', '單位', '數量', '單重', '總數', '長度'],
+      values: ['PROFILE', category, 'kg', '2', '9', '18', '3 m'],
+      candidate: {
+        erpItemCode: 'PROFILE',
+        category,
+        ruleVersion: 'steel-weight-v1',
+        unitWeightBasis: 'kg_per_m',
+        exactPhysical: { unitWeightValue: '1' },
+      },
+      changedHeaders: ['長度'],
+      systemKind: 'material',
+    });
+
+    expect(result.values).toEqual(['PROFILE', category, 'kg', '2', '3', '6', '3000']);
+  });
+
   it('accepts the repository Kg/M basis without guessing a profile weight', () => {
     const result = calculateSteelSystemOrderRow({
       headers: ['型號', '類別', '單位', '數量', '單重', '總數', '長度'],

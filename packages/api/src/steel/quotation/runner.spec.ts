@@ -339,6 +339,15 @@ describe('quotation runner integration', () => {
       unitWeightBasis: 'kg_per_piece_or_stock_length',
       exactPhysical: { unitWeightValue: '1' },
     })).toBe(false);
+    for (const category of ['平鐵', '圓條']) {
+      expect(hasCompleteSteelFormula({
+        erpItemCode: `${category}-1`,
+        category,
+        ruleVersion: 'steel-weight-v1',
+        unitWeightBasis: 'kg_per_m',
+        exactPhysical: { unitWeightValue: '1' },
+      })).toBe(true);
+    }
   });
 
   it('runs only one quotation when another retry arrives while its child is active', async () => {

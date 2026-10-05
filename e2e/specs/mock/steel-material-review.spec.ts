@@ -17,7 +17,7 @@ import { deleteConversations, deleteMessagesByConversation, seedConversations, w
 import { getE2EUser } from '../../setup/user';
 import { getAccessToken } from './helpers';
 
-type Mode = 'plate' | 'profile' | 'unknown';
+type Mode = 'plate' | 'profile' | 'unknown' | 'square' | 'round' | 'flat';
 type Auth = { Authorization: string };
 type Fixture = { conversationId: string; messageId: string; runId: string; lookups: number };
 
@@ -43,8 +43,8 @@ async function seedCalculation(mode: Mode = 'plate', notes = ''): Promise<Fixtur
   try {
     const scope = { userId, conversationId };
     const service = createSteelQuotationStateService(mongoose);
-    const category = mode === 'profile' ? 'H型鋼' : '鐵板';
-    const code = { plate: 'PLATE', profile: 'PROFILE', unknown: 'UNKNOWN' }[mode];
+    const category = { plate: '鐵板', profile: 'H型鋼', unknown: '鐵板', square: '方鐵', round: '圓條', flat: '平鐵' }[mode];
+    const code = { plate: 'PLATE', profile: 'PROFILE', unknown: 'UNKNOWN', square: 'SQUARE', round: 'ROUND', flat: 'FLAT' }[mode];
     const sourceRows = ['A', 'B'].map((part) => ['', part, category, '2', '6', '100', '200']);
     const order = `## ocr_result\n\n${table(['來源', '零件編號', '類別', '數量', '厚度', '寬度', '長度'], sourceRows)}`;
     const state = await service.setOrder({ scope, fullMarkdown: order });
@@ -66,9 +66,12 @@ async function seedCalculation(mode: Mode = 'plate', notes = ''): Promise<Fixtur
     const methods = createMethods(mongoose);
     let lookups = 0;
     const candidate = {
-      id: { plate: 1, profile: 2, unknown: 3 }[mode], erpItemCode: code, productName: `REVIEW-${code}`, category,
+      id: { plate: 1, profile: 2, unknown: 3, square: 4, round: 5, flat: 6 }[mode], erpItemCode: code, productName: `REVIEW-${code}`, category,
       material: 'M1', unit: mode === 'unknown' ? 'pc' : 'kg', quoteEligible: true,
       ...(mode === 'plate' ? { density: 7.85, exactPhysical: { density: '7.85' } } : {}),
+      ...(mode === 'square' ? { density: 7.85, widthMm: 100, exactPhysical: { density: '7.85', widthMm: '100' } } : {}),
+      ...(['round', 'flat'].includes(mode) ? { unitWeightValue: 1, unitWeightBasis: 'kg_per_m',
+        exactPhysical: { unitWeightValue: '1' } } : {}),
       ...(mode === 'profile' ? { unitWeightValue: 1, lengthMm: 3,
         unitWeightBasis: 'kg_per_piece_or_stock_length', exactPhysical: { unitWeightValue: '1', lengthMm: '3' } } : {}),
       tierPrices: { A: 11, B: 10, C: 9, D: 8, E: 7, F: 6 },
@@ -450,14 +453,19 @@ test.describe('Material review capable automatic calculation', () => {
       const initial = await readTable(page, auth, fixture);
       const rowId = randomUUID();
       const values = { '型號': `${kind}-code`, '品名規格': `${kind}-manual-row`, '材質編號': 'M1',
-        '單位': 'kg', '數量': '1', '單重': '1', '總數': '2', '單價': '3', '計價基準': '2',
-        '公式編號': 'manual', '厚度': '1', '寬度': '2', '長度': '3', '肚': '4',
+        '單位': 'kg', '數量': '02.00', '單重': '1.00', '總數': '2.00', '單價': '3.00', '計價基準': '2',
+        '公式編號': 'manual', '厚度': '0.1 inch', '寬度': '2', '長度': '3', '肚': '4',
         '類別': kind === 'processing' ? '加工/孔' : '', '備註': 'original' };
       await saveApi(page, auth, { conversationId: initial.conversationId, messageId: initial.messageId,
         kind: initial.kind, title: initial.title, outputId: initial.outputId, revision: initial.revision,
         operations: [{ type: 'add', rowId, position: { kind: 'end' },
           system: { kind, parentRowId: kind === 'processing' ? initial.rows[0].rowId : null },
           changes: Object.entries(values).map(([header, value]) => ({ header, value })) }] });
+      const added = (await readTable(page, auth, fixture)).rows.find((entry) => entry.rowId === rowId);
+      expect(added?.values['厚度'].effective).toBe('2.54');
+      expect(added?.values['數量'].effective).toBe('2');
+      expect(added?.values['單重'].effective).toBe('1');
+      expect(added?.values['總數'].effective).toBe('2');
       const before = await readback(fixture);
       const dialog = await openEditor(page, fixture);
       await expectBusinessEditable(dialog, rowId, initial.headers);
@@ -483,6 +491,94 @@ test.describe('Material review capable automatic calculation', () => {
       expect(await readback(fixture)).toEqual(after);
     });
   }
+
+  test('a material added in the UI saves the computed total after its initial empty cells', async ({ page }) => {
+    const fixture = await seedCalculation(); fixtures.push(fixture);
+    const dialog = await openEditor(page, fixture);
+    await dialog.getByRole('button', { name: 'Add material', exact: true }).click();
+    const weight = dialog.getByRole('textbox', { name: /^單重 /u }).last();
+    const label = await weight.getAttribute('aria-label');
+    if (!label) throw new Error('Missing added material identity');
+    const rowId = label.replace(/^單重 /u, '');
+    await editBusinessValue(dialog, rowId, '單位', 'kg');
+    await editBusinessValue(dialog, rowId, '單重', '3.00');
+    await editBusinessValue(dialog, rowId, '數量', '02.00');
+    await editBusinessValue(dialog, rowId, '單價', '4.00');
+    await expect(dialog.getByRole('textbox', { name: `總數 ${rowId}`, exact: true })).toHaveValue('6');
+    const saved = await saveUi(page, dialog);
+    const row = saved.rows.find((entry) => entry.rowId === rowId);
+    expect(row?.values['數量'].effective).toBe('2');
+    expect(row?.values['單重'].effective).toBe('3');
+    expect(row?.values['總數'].effective).toBe('6');
+    await page.keyboard.press('Escape'); await page.reload();
+    expect((await readTable(page, auth, fixture)).rows.find((entry) => entry.rowId === rowId)?.values['總數'].effective).toBe('6');
+  });
+
+  test('normal added material rows clean dimensions and calculate ordered manual weight inputs', async ({ page }) => {
+    const fixture = await seedCalculation(); fixtures.push(fixture);
+    const initial = await readTable(page, auth, fixture);
+    const rowId = randomUUID();
+    const saved = await saveApi(page, auth, { conversationId: initial.conversationId, messageId: initial.messageId,
+      kind: initial.kind, title: initial.title, outputId: initial.outputId, revision: initial.revision,
+      operations: [{ type: 'add', rowId, position: { kind: 'end' }, system: { kind: 'material', parentRowId: null },
+        changes: [{ header: '品名規格', value: 'MANUAL-NEW' }, { header: '單位', value: 'kg' },
+          { header: '厚度', value: '0.1 inch' }, { header: '數量', value: '02.00' },
+          { header: '單重', value: '3.00' }, { header: '單價', value: '4.00' }] }] });
+    const row = saved.rows.find((entry) => entry.rowId === rowId);
+    expect(row?.values['厚度'].effective).toBe('2.54');
+    expect(row?.values['數量'].effective).toBe('2');
+    expect(row?.values['單重'].effective).toBe('3');
+    expect(row?.values['總數'].effective).toBe('6');
+    expect(row?.values['單價'].effective).toBe('4');
+    const dialog = await openEditor(page, fixture);
+    await expect(dialog.getByRole('textbox', { name: `厚度 ${rowId}`, exact: true })).toHaveValue('2.54');
+    await expect(dialog.getByRole('textbox', { name: `總數 ${rowId}`, exact: true })).toHaveValue('6');
+    await page.keyboard.press('Escape'); await page.reload();
+    expect((await readTable(page, auth, fixture)).rows.find((entry) => entry.rowId === rowId)?.values['總數'].effective).toBe('6');
+  });
+
+  test('square width calculation uses the edited dimension rather than the stock width', async ({ page }) => {
+    const fixture = await seedCalculation('square'); fixtures.push(fixture);
+    const initial = await readTable(page, auth, fixture);
+    const dialog = await openEditor(page, fixture);
+    await editBusinessValue(dialog, initial.rows[0].rowId, '寬度', '50');
+    const saved = await saveUi(page, dialog);
+    expect(effective(saved, '寬度')).toBe('50');
+    expect(effective(saved, '單重')).toBe('3.925');
+    expect(effective(saved, '總數')).toBe('7.85');
+    await page.keyboard.press('Escape'); await page.reload();
+    expect(effective(await readTable(page, auth, fixture), '單重')).toBe('3.925');
+  });
+
+  for (const mode of ['round', 'flat'] as const) {
+    test(`canonical ${mode} per-metre evidence computes length without a stock length`, async ({ page }) => {
+      const fixture = await seedCalculation(mode); fixtures.push(fixture);
+      const initial = await readTable(page, auth, fixture);
+      const dialog = await openEditor(page, fixture);
+      await editBusinessValue(dialog, initial.rows[0].rowId, '長度', '300');
+      const saved = await saveUi(page, dialog);
+      expect(effective(saved, '單重')).toBe('0.3');
+      expect(effective(saved, '總數')).toBe('0.6');
+      expect(saved.rows[0].calculation?.candidate?.erpItemCode).toBe(mode.toUpperCase());
+      await page.keyboard.press('Escape'); await page.reload();
+      expect(effective(await readTable(page, auth, fixture), '單重')).toBe('0.3');
+    });
+  }
+
+  test('unsupported profile dimensions preserve a saved manual weight and total', async ({ page }) => {
+    const fixture = await seedCalculation('round'); fixtures.push(fixture);
+    const initial = await readTable(page, auth, fixture);
+    await saveApi(page, auth, requestFor(initial, [{ header: '單重', value: '7' }]));
+    const before = await readback(fixture);
+    const dialog = await openEditor(page, fixture);
+    await editBusinessValue(dialog, initial.rows[0].rowId, '寬度', '50');
+    expect(await readback(fixture)).toEqual(before);
+    const saved = await saveUi(page, dialog);
+    expect(effective(saved, '單重')).toBe('7');
+    expect(effective(saved, '總數')).toBe('14');
+    await page.keyboard.press('Escape'); await page.reload();
+    expect(effective(await readTable(page, auth, fixture), '單重')).toBe('7');
+  });
 
   test('dirty dimension download saves and uses the confirmed clean calculated data', async ({ page }) => {
     const fixture = await seedCalculation(); fixtures.push(fixture);

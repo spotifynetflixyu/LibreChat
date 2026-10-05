@@ -474,7 +474,7 @@ async function openEditor(page: Page, conversationId: string) {
 
 function materialRow(dialog: Locator) {
   const rows = dialog.locator('tbody tr');
-  return rows.filter({ has: dialog.locator('input[value="REVIEW-MATERIAL-A"]') })
+  return rows.filter({ has: dialog.page().locator('input[value="REVIEW-MATERIAL-A"]') })
     .or(rows.filter({ hasText: 'REVIEW-MATERIAL-A' }));
 }
 

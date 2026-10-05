@@ -895,6 +895,74 @@ describe('Steel review contracts', () => {
     }
   });
 
+  it('normalizes ordered add-row inputs for every persisted system kind', () => {
+    const headers = ['型號', '類別', '單位', '數量', '單重', '總數', '厚度', '寬度', '長度'];
+    const parent = {
+      rowId: 'material-1',
+      values: { 型號: { baseline: 'parent', effective: 'parent' }, 類別: { baseline: '鐵板', effective: '鐵板' } },
+      source: null,
+      system: { kind: 'material' as const, parentRowId: null, cascadeDeletedBy: null },
+      origin: 'ai' as const,
+      deleted: false,
+    };
+    const result = applySteelReviewOperations({
+      currentRows: normalizeSteelReviewLedgerRows([parent]),
+      expectedRows: normalizeSteelReviewLedgerRows([parent]),
+      headers,
+      operations: [
+        {
+          type: 'add',
+          rowId: 'added-material',
+          position: { kind: 'end' },
+          system: { kind: 'material', parentRowId: null },
+          changes: [
+            { header: '型號', value: ' ADD-1 ' }, { header: '類別', value: '鐵板' }, { header: '單位', value: 'kg' },
+            { header: '數量', value: '02.00' }, { header: '單重', value: '3.00' },
+            { header: '厚度', value: '0.1 inch' }, { header: '寬度', value: '100 mm' }, { header: '長度', value: '1000 mm' },
+          ],
+        },
+        {
+          type: 'add',
+          rowId: 'added-processing',
+          position: { kind: 'end' },
+          system: { kind: 'processing', parentRowId: 'material-1' },
+          changes: [
+            { header: '型號', value: 'PROC' }, { header: '類別', value: '加工' }, { header: '單位', value: 'kg' },
+            { header: '數量', value: '02.00' }, { header: '單重', value: '3.00' }, { header: '總數', value: '' },
+            { header: '厚度', value: '0.1 inch' },
+          ],
+        },
+        {
+          type: 'add',
+          rowId: 'added-unassigned',
+          position: { kind: 'end' },
+          system: { kind: 'unassigned', parentRowId: null },
+          changes: [
+            { header: '型號', value: 'UNKNOWN' }, { header: '類別', value: '未知' }, { header: '單位', value: 'kg' },
+            { header: '數量', value: '02.00' }, { header: '單重', value: '3.00' }, { header: '總數', value: '2.00' },
+            { header: '厚度', value: '0.1 inch' },
+          ],
+        },
+      ],
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    if (result.ok) {
+      const byId = new Map(result.currentRows.map((row) => [row.rowId, row]));
+      expect(byId.get('added-material')?.values).toMatchObject({
+        型號: { effective: 'ADD-1' }, 類別: { effective: '鐵板' }, 數量: { effective: '2' },
+        單重: { effective: '3' }, 總數: { effective: '6' }, 厚度: { effective: '2.54' },
+        寬度: { effective: '100' }, 長度: { effective: '1000' },
+      });
+      expect(byId.get('added-processing')?.values).toMatchObject({
+        數量: { effective: '2' }, 單重: { effective: '3' }, 總數: { effective: '' }, 厚度: { effective: '2.54' },
+      });
+      expect(byId.get('added-unassigned')?.values).toMatchObject({
+        數量: { effective: '2' }, 單重: { effective: '3' }, 總數: { effective: '2' }, 厚度: { effective: '2.54' },
+      });
+    }
+  });
+
   it('accepts server-owned relation state only in persisted rows and applies binding intents', () => {
     const material = {
       rowId: 'material-1',

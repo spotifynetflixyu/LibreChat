@@ -873,9 +873,6 @@ export function applySteelReviewOperations({
       const values: Record<string, SteelReviewCell> = Object.fromEntries(
         headers.map((header) => [header, { baseline: null, effective: null }]),
       );
-      for (const change of operation.changes) {
-        values[change.header] = { baseline: null, effective: normalizeSteelReviewEffectiveValue(change.value) };
-      }
       const insertion = operation.position.kind === 'after'
         ? { kind: operation.position.kind, rowId: operation.position.rowId, ordinal: nextOrdinal('after', operation.position.rowId) }
         : { kind: operation.position.kind, ordinal: nextOrdinal(operation.position.kind) };
@@ -904,6 +901,18 @@ export function applySteelReviewOperations({
         ...(row.insertion ? { insertion: { ...row.insertion } } : {}),
         ...(row.system ? { system: { ...row.system } } : {}),
       };
+      for (const change of operation.changes) {
+        const requestedValue = normalizeSteelReviewEffectiveValue(change.value);
+        row.values[change.header] = {
+          ...(row.values[change.header] ?? { baseline: null, effective: null }),
+          effective: requestedValue,
+        };
+        expectedRow.values[change.header] = {
+          ...(expectedRow.values[change.header] ?? { baseline: null, effective: null }),
+          effective: requestedValue,
+        };
+        conflicts.push(...applyRowCalculation(row, expectedRow, headers, [change.header]));
+      }
       current.push(row);
       currentById.set(row.rowId, row);
       expected.push(expectedRow);

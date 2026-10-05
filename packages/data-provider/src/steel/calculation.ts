@@ -173,7 +173,7 @@ export function divideSteelDecimalsExactly(numerator: string, denominator: strin
   return rationalToDecimal(left.digits * powerOfTen(right.scale), right.digits * powerOfTen(left.scale), 0);
 }
 
-const profileCategories = new Set(['H型鋼', 'C型鋼', '角鐵', '槽鐵', '扁鐵', '方管', '圓管', '圓鐵']);
+const profileCategories = new Set(['H型鋼', 'C型鋼', '角鐵', '槽鐵', '平鐵', '方管', '圓管', '圓條']);
 
 function valueAt(headers: readonly string[], values: readonly string[], header: string): string {
   const index = headers.indexOf(header);
@@ -249,15 +249,6 @@ export function calculateSteelSystemOrderRow(input: SteelCalculationRowInput): S
       calculatedHeaders.push('總數');
     }
   }
-  const dimensionChanged = ['厚度', '寬度', '長度', '肚'].some((header) => changed.has(header));
-  if (!dimensionChanged) {
-    return {
-      values,
-      ...(Object.keys(nextProvenance).length > 0 ? { provenance: nextProvenance } : {}),
-      calculated: false,
-      calculatedHeaders,
-    };
-  }
   if (!candidate || valueAt(input.headers, values, '型號') !== candidate.erpItemCode ||
     valueAt(input.headers, values, '類別') !== candidate.category) {
     return {
@@ -268,6 +259,22 @@ export function calculateSteelSystemOrderRow(input: SteelCalculationRowInput): S
     };
   }
   const category = candidate.category;
+  let dimensionChanged = false;
+  if (category === '鐵板') {
+    dimensionChanged = ['厚度', '寬度', '長度'].some((header) => changed.has(header));
+  } else if (category === '方鐵') {
+    dimensionChanged = ['寬度', '長度'].some((header) => changed.has(header));
+  } else if (profileCategories.has(category)) {
+    dimensionChanged = changed.has('長度');
+  }
+  if (!dimensionChanged) {
+    return {
+      values,
+      ...(Object.keys(nextProvenance).length > 0 ? { provenance: nextProvenance } : {}),
+      calculated: false,
+      calculatedHeaders,
+    };
+  }
   const length = dimensionAt(input.headers, values, '長度');
   let weight: string | undefined;
   if (category === '鐵板') {
@@ -278,7 +285,7 @@ export function calculateSteelSystemOrderRow(input: SteelCalculationRowInput): S
       ? multiplySteelDecimals([thickness, width, length, density]) : undefined;
     if (product) weight = divideSteelDecimalsExactly(product, '1000000');
   } else if (category === '方鐵') {
-    const width = candidate.exactPhysical.widthMm;
+    const width = dimensionAt(input.headers, values, '寬度');
     const density = candidate.exactPhysical.density;
     const product = width && length && density
       ? multiplySteelDecimals([width, width, length, density]) : undefined;
@@ -302,8 +309,8 @@ export function calculateSteelSystemOrderRow(input: SteelCalculationRowInput): S
   setValue(input.headers, values, '單重', weight);
   calculatedHeaders.push('單重');
   nextProvenance['單重'] = provenanceFor(candidate, {
-    厚度: dimensionAt(input.headers, values, '厚度') ?? '',
-    寬度: dimensionAt(input.headers, values, '寬度') ?? '',
+    ...(category === '鐵板' ? { 厚度: dimensionAt(input.headers, values, '厚度') ?? '' } : {}),
+    ...(category === '鐵板' || category === '方鐵' ? { 寬度: dimensionAt(input.headers, values, '寬度') ?? '' } : {}),
     長度: length ?? '',
   });
   if (quantity !== undefined && !changed.has('總數')) {
