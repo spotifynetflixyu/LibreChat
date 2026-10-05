@@ -256,6 +256,7 @@ describe('Steel review local draft session', () => {
         單位: { baseline: '刀', effective: '刀' },
         總數: { baseline: '2', effective: '2' },
       },
+      calculation: { measurement: { mode: 'perPiece', amount: '1', unit: '刀' } },
     };
     const measurement = { mode: 'perPiece' as const, amount: '2', unit: '刀' };
     let draft = createSteelReviewDraftState('measurement-owner');

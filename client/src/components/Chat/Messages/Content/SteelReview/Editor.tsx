@@ -431,7 +431,7 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
                   canEdit={canEdit}
                 />
               )}
-              {(onDeleteRow || onRestoreRow || onSystemChange || onDeleteGroup || onAddProcessingUnder) && (
+              {(onDeleteRow || onRestoreRow || onSystemChange || onDeleteGroup || onAddProcessingUnder || onMeasurementChange) && (
                 <td className="border-b border-border-light px-3 py-2 align-top">
                   {row.system?.kind === 'processing' && !row.deleted && onSystemChange && (
                     <label className="mb-2 flex flex-col gap-1 text-xs text-text-secondary">

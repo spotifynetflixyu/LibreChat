@@ -290,7 +290,10 @@ export function setSteelReviewDraftMeasurement(
   if (!row.rowId || row.system?.kind !== 'processing') return draft;
   const currentMeasurement = row.calculation?.measurement ?? null;
   const nextMeasurement = cloneSteelProcessingMeasurement(measurement);
-  if (JSON.stringify(currentMeasurement) === JSON.stringify(nextMeasurement)) {
+  const draftMeasurement = Object.prototype.hasOwnProperty.call(draft.measurementDrafts, row.rowId)
+    ? draft.measurementDrafts[row.rowId]
+    : currentMeasurement;
+  if (JSON.stringify(draftMeasurement) === JSON.stringify(nextMeasurement)) {
     return draft;
   }
   const changeSequence = draft.changeSequence + 1;
@@ -560,7 +563,7 @@ export function applySteelReviewDrafts(
 
     const values = projectDraftBusinessValues(row, projectedRow, draft, previewCalculations);
     const measurement = getSteelReviewDraftMeasurement(draft, row.rowId);
-    const calculation = projectedRow.calculation
+    let calculation = projectedRow.calculation
       ? { ...projectedRow.calculation }
       : undefined;
     if (measurement !== undefined) {
@@ -569,7 +572,7 @@ export function applySteelReviewDrafts(
       } else if (calculation) {
         calculation.measurement = cloneSteelProcessingMeasurement(measurement) ?? undefined;
       } else {
-        projectedRow.calculation = { measurement: cloneSteelProcessingMeasurement(measurement) ?? undefined };
+        calculation = { measurement: cloneSteelProcessingMeasurement(measurement) ?? undefined };
       }
     }
     const draftSource = getSteelReviewDraftSource(draft, projectedRow.rowId);
