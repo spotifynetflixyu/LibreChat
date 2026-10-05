@@ -371,4 +371,70 @@ test.describe('Processing measurement normal review workflow', () => {
     expect(await readback(fixture)).toEqual(after);
   });
 
+  test('new measurement input during Save remains a draft after confirmation and history reset', async ({ page }) => {
+    const fixture = await seedCalculation('flat', '', true); fixtures.push(fixture);
+    const owner = await bindFixture(page, auth, fixture);
+    const process = named(owner, 'REVIEW-PROCESS');
+    const before = await readback(fixture);
+    const dialog = await openEditor(page, fixture);
+    await dialog.getByRole('combobox', { name: `Measurement mode ${process.rowId}`, exact: true }).click();
+    await page.getByRole('option', { name: 'Per piece', exact: true }).click();
+    const amount = dialog.getByRole('textbox', { name: `Measurement amount ${process.rowId}`, exact: true });
+    await amount.fill('2'); await amount.blur();
+    let release!: () => void;
+    let entered!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const received = new Promise<void>((resolve) => { entered = resolve; });
+    await page.route(`**${reviewUrl(fixture.conversationId)}/commit`, async (route) => {
+      entered(); await blocked; await route.continue();
+    }, { times: 1 });
+    const committed = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith('/review/system_order/commit'));
+    try {
+      await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+      await received;
+      await amount.fill('3'); await amount.blur();
+      expect(await readback(fixture)).toEqual(before);
+    } finally {
+      release();
+    }
+    const response = await committed;
+    expect(response.status(), await response.text()).toBe(200);
+    await expect(amount).toHaveValue('3');
+    await expect(dialog.getByText('Unsaved changes: 1 rows', { exact: true })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
+    await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
+    const first = await readTable(page, auth, fixture);
+    expect(named(first, 'REVIEW-PROCESS').calculation?.measurement).toMatchObject({ amount: '2' });
+    expect(named(first, 'REVIEW-PROCESS').values['總數'].effective).toBe('4');
+    const saved = await saveUi(page, dialog);
+    expect(named(saved, 'REVIEW-PROCESS').calculation?.measurement).toMatchObject({ amount: '3' });
+    expect(named(saved, 'REVIEW-PROCESS').values['總數'].effective).toBe('6');
+  });
+
+  test('measurement conflict keeps the UI draft and retries against the latest saved owner version', async ({ page }) => {
+    const fixture = await seedCalculation('flat', '', true); fixtures.push(fixture);
+    const owner = await bindFixture(page, auth, fixture);
+    const process = named(owner, 'REVIEW-PROCESS');
+    const dialog = await openEditor(page, fixture);
+    await dialog.getByRole('combobox', { name: `Measurement mode ${process.rowId}`, exact: true }).click();
+    await page.getByRole('option', { name: 'Per piece', exact: true }).click();
+    const amount = dialog.getByRole('textbox', { name: `Measurement amount ${process.rowId}`, exact: true });
+    await amount.fill('3'); await amount.blur();
+    await saveApi(page, auth, intents(owner, [{ type: 'update', rowId: process.rowId,
+      measurement: { mode: 'perPiece', amount: '2', unit: '刀' } }]));
+    const before = await readback(fixture);
+    const prepareResponse = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith('/review/system_order/prepare'));
+    await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+    const response = await prepareResponse;
+    expect(response.status()).toBe(409);
+    const failure = await response.json() as { recovery: SteelReviewRecovery };
+    expect(failure.recovery.conflicts).toEqual(expect.arrayContaining([expect.objectContaining({ kind: 'measurement', rowId: process.rowId })]));
+    await expect(amount).toHaveValue('3');
+    expect(await readback(fixture)).toEqual(before);
+    const saved = await saveUi(page, dialog);
+    expect(named(saved, 'REVIEW-PROCESS').calculation?.measurement).toMatchObject({ amount: '3' });
+    expect(named(saved, 'REVIEW-PROCESS').values['總數'].effective).toBe('6');
+    await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+  });
+
 });
