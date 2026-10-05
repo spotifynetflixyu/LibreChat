@@ -681,7 +681,8 @@ describe('MarkdownTableActions Steel review entry', () => {
     expect(screen.getByRole('textbox', { name: '單價 row-1' })).toBeEnabled();
     expect(screen.getByRole('button', { name: 'com_ui_steel_review_add_material' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'com_ui_steel_review_add_processing' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: /com_ui_steel_review_delete_row/u })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /com_ui_steel_review_delete_group/u })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /com_ui_steel_review_delete_row/u })).toBeNull();
     expect(screen.queryByRole('button', { name: /com_ui_steel_review_restore_row/u })).toBeNull();
     expect(screen.getByRole('columnheader', { name: 'com_ui_steel_review_source_actions' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /com_ui_steel_review_change_source/u })).toBeInTheDocument();

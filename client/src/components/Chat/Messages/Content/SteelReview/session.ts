@@ -681,13 +681,36 @@ export function compileSteelReviewOperations(
   const originalById = new Map(table.rows.map((row) => [row.rowId, row]));
   const operations: SteelReviewOperation[] = [];
   const deferredGroupDeletes: SteelReviewOperation[] = [];
-  const orderedRows = [...projectedRows].sort((left, right) => {
+  const baseOrderedRows = [...projectedRows].sort((left, right) => {
     const leftVersion = Math.max(...Object.entries(left.values).map(([header]) => draft.cellVersions[getSteelReviewDraftCellKey(left.rowId, header)] ?? 0), draft.sourceVersions[left.rowId] ?? 0, draft.systemVersions[left.rowId] ?? 0);
     const rightVersion = Math.max(...Object.entries(right.values).map(([header]) => draft.cellVersions[getSteelReviewDraftCellKey(right.rowId, header)] ?? 0), draft.sourceVersions[right.rowId] ?? 0, draft.systemVersions[right.rowId] ?? 0);
     return leftVersion - rightVersion;
   });
   const allRowsById = new Map([...table.rows, ...Object.values(draft.rowStates)].map((row) => [row.rowId, row]));
   const trustedIds = new Set(table.rows.map((row) => row.rowId));
+  const addedRowIds = new Set(baseOrderedRows
+    .filter((row) => !originalById.has(row.rowId) && row.origin === 'manual' && !row.deleted)
+    .map((row) => row.rowId));
+  const orderedRows: SteelReviewRow[] = [];
+  const pendingRows = [...baseOrderedRows];
+  const orderedRowIds = new Set<string>();
+  while (pendingRows.length > 0) {
+    const nextIndex = pendingRows.findIndex((row) => {
+      if (row.system?.kind !== 'processing' || !row.system.parentRowId || !addedRowIds.has(row.system.parentRowId)) {
+        return true;
+      }
+      return orderedRowIds.has(row.system.parentRowId);
+    });
+    if (nextIndex < 0) {
+      orderedRows.push(...pendingRows);
+      break;
+    }
+    const [next] = pendingRows.splice(nextIndex, 1);
+    if (next) {
+      orderedRows.push(next);
+      orderedRowIds.add(next.rowId);
+    }
+  }
   const groupDeleteParentIds = new Set(projectedRows.flatMap((next) => {
     const previous = originalById.get(next.rowId);
     return next.system?.kind === 'material' && previous && !previous.deleted && next.deleted ? [next.rowId] : [];

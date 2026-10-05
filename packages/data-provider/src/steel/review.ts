@@ -759,13 +759,24 @@ export function applySteelReviewOperations({
       };
       if (row.system?.kind === 'processing') {
         const parent = row.system.parentRowId ? currentById.get(row.system.parentRowId) : undefined;
-        if (!parent || parent.deleted || parent.system?.kind !== 'material') {
+        const expectedParent = row.system.parentRowId ? expectedById.get(row.system.parentRowId) : undefined;
+        if (!parent || parent.deleted || parent.system?.kind !== 'material' ||
+          !expectedParent || expectedParent.deleted || expectedParent.system?.kind !== 'material') {
           conflicts.push({ kind: 'binding', rowId: row.rowId, expected: null, current: null, requested: row.system.parentRowId });
           continue;
         }
       }
+      const expectedRow: SteelReviewLedgerRow = {
+        ...row,
+        values: Object.fromEntries(Object.entries(row.values).map(([header, cell]) => [header, { ...cell }])),
+        source: row.source ? { ...row.source } : null,
+        ...(row.insertion ? { insertion: { ...row.insertion } } : {}),
+        ...(row.system ? { system: { ...row.system } } : {}),
+      };
       current.push(row);
       currentById.set(row.rowId, row);
+      expected.push(expectedRow);
+      expectedById.set(expectedRow.rowId, expectedRow);
       continue;
     }
     const row = currentById.get(operation.rowId);

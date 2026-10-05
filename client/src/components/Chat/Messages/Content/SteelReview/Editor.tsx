@@ -76,6 +76,23 @@ function sourceLabel(source: SteelReviewSource | null | undefined): string {
   return source?.filename ?? source?.fileId ?? '';
 }
 
+function canRestoreSteelReviewRow(
+  row: SteelReviewRow,
+  systemMaterials: readonly SteelReviewRow[],
+): boolean {
+  if (!row.deleted || row.system?.kind !== 'processing') {
+    return Boolean(row.deleted);
+  }
+  if (row.system.cascadeDeletedBy !== null && row.system.cascadeDeletedBy !== undefined) {
+    return false;
+  }
+  if (!row.system.parentRowId) {
+    return true;
+  }
+  return systemMaterials.some((candidate) => candidate.rowId === row.system?.parentRowId &&
+    !candidate.deleted && candidate.system?.kind === 'material');
+}
+
 function SourceCell({
   table,
   row,
@@ -383,7 +400,7 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
               )}
               {(onDeleteRow || onRestoreRow || onSystemChange || onDeleteGroup || onAddProcessingUnder) && (
                 <td className="border-b border-border-light px-3 py-2 align-top">
-                  {row.system?.kind === 'processing' && onSystemChange && (
+                  {row.system?.kind === 'processing' && !row.deleted && onSystemChange && (
                     <label className="mb-2 flex flex-col gap-1 text-xs text-text-secondary">
                       <span>{labels.parent ?? labels.bindProcessing}</span>
                       <Select
@@ -402,7 +419,7 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
                       </Select>
                     </label>
                   )}
-                  {row.system?.kind === 'unassigned' && onClassify && (
+                  {row.system?.kind === 'unassigned' && !row.deleted && onClassify && (
                     <Select value="" onValueChange={(value) => onClassify(row, value as 'material' | 'processing')}>
                       <SelectTrigger aria-label={`${labels.classify} ${row.rowId}`}>
                         <SelectValue placeholder={labels.classify} />
@@ -439,7 +456,7 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
                       )}
                     </>
                   )}
-                  {row.deleted ? (
+                  {row.deleted && canRestoreSteelReviewRow(row, systemMaterials) && (
                     <Button
                       type="button"
                       variant="outline"
@@ -448,7 +465,8 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
                     >
                       {labels.restoreRow}
                     </Button>
-                  ) : (
+                  )}
+                  {!row.deleted && (!row.system || row.system.kind !== 'material' || !onDeleteGroup) && (
                     <Button
                       type="button"
                       variant="outline"

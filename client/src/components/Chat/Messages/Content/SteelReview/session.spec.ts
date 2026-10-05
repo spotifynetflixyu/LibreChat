@@ -240,6 +240,55 @@ describe('Steel review local draft session', () => {
     expect(processingAdd).not.toHaveProperty('source');
   });
 
+  it('orders a new material before dependent binding and classification after a later price edit', () => {
+    const systemTable: SteelReviewTable = {
+      ...table,
+      kind: 'system_order',
+      title: 'system_order',
+      outputId: 'system_order:dependency-order',
+      rows: [
+        {
+          rowId: 'processing-1', source: null, origin: 'ai', deleted: false,
+          system: { kind: 'processing', parentRowId: null, cascadeDeletedBy: null },
+          values: { 品名: { baseline: '加工/切割', effective: '加工/切割' }, 數量: { baseline: '1', effective: '1' } },
+        },
+        {
+          rowId: 'unassigned-1', source: null, origin: 'ai', deleted: false,
+          system: { kind: 'unassigned', parentRowId: null, cascadeDeletedBy: null },
+          values: { 品名: { baseline: '', effective: '' }, 數量: { baseline: '1', effective: '1' } },
+        },
+      ],
+    };
+    const identity = { ...selection, kind: 'system_order' as const, title: 'system_order' };
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(identity, systemTable));
+    draft = addSteelReviewDraftRow(draft, systemTable, undefined, null, {
+      kind: 'material', parentRowId: null, cascadeDeletedBy: null,
+    });
+    const addedMaterial = Object.values(draft.rowStates).find((row) => row.origin === 'manual')!;
+    draft = setSteelReviewDraftSystem(draft, systemTable.rows[0]!, {
+      kind: 'processing', parentRowId: addedMaterial.rowId, cascadeDeletedBy: null,
+    });
+    draft = setSteelReviewDraftSystem(draft, systemTable.rows[1]!, {
+      kind: 'processing', parentRowId: addedMaterial.rowId, cascadeDeletedBy: null,
+    });
+    draft = setSteelReviewDraftCell(draft, addedMaterial, '數量', '7');
+
+    const operations = compileSteelReviewOperations(
+      systemTable,
+      draft,
+      applySteelReviewDrafts(systemTable.rows, draft),
+    );
+    const operationOrder = operations.map((operation) => {
+      if (operation.type === 'classify') return 'classify';
+      return operation.rowId;
+    });
+    expect(operationOrder).toEqual([
+      addedMaterial.rowId,
+      'processing-1',
+      'classify',
+    ]);
+  });
+
   it('projects material source changes onto processing rows and preserves a later rebind', () => {
     const sourceOne: SteelReviewSource = { fileId: 'file-1', pageNumber: 1, filename: 'alpha.pdf' };
     const sourceTwo: SteelReviewSource = { fileId: 'file-2', pageNumber: 2, filename: 'beta.pdf' };
@@ -367,6 +416,36 @@ describe('Steel review local draft session', () => {
     expect(compileSteelReviewOperations(deletedTable, restoredDraft, restoredRows)).toEqual([
       { type: 'restore', rowId: 'material-1' },
     ]);
+  });
+
+  it('keeps an individually deleted bound child restorable while its parent stays active', () => {
+    const systemTable: SteelReviewTable = {
+      ...table,
+      kind: 'system_order',
+      title: 'system_order',
+      outputId: 'system_order:child-restore',
+      rows: [
+        {
+          rowId: 'material-1', source: null, origin: 'ai', deleted: false,
+          system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
+          values: { 品名: { baseline: '鋼板', effective: '鋼板' }, 數量: { baseline: '1', effective: '1' } },
+        },
+        {
+          rowId: 'processing-1', source: null, origin: 'ai', deleted: true,
+          system: { kind: 'processing', parentRowId: 'material-1', cascadeDeletedBy: null },
+          values: { 品名: { baseline: '加工/切割', effective: '加工/切割' }, 數量: { baseline: '1', effective: '1' } },
+        },
+      ],
+    };
+    const identity = { ...selection, kind: 'system_order' as const, title: 'system_order' };
+    const initialDraft = createSteelReviewDraftState(getSteelReviewDraftKey(identity, systemTable));
+    const child = systemTable.rows[1]!;
+    const restoredDraft = restoreSteelReviewDraftRow(initialDraft, child);
+    expect(compileSteelReviewOperations(
+      systemTable,
+      restoredDraft,
+      applySteelReviewDrafts(systemTable.rows, restoredDraft),
+    )).toEqual([{ type: 'restore', rowId: child.rowId }]);
   });
 
   it('allows an explicit clear source intent and rebases it after save', () => {

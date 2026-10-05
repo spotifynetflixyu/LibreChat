@@ -129,6 +129,133 @@ describe('Steel review local editor gates', () => {
     expect(onAddProcessingUnder).toHaveBeenCalledWith(material);
   });
 
+  it('hides mutable relation controls and child restore for cascade tombstones', () => {
+    const material = {
+      ...table.rows[0],
+      rowId: 'material-1',
+      system: { kind: 'material' as const, parentRowId: null, cascadeDeletedBy: null },
+      deleted: false,
+    };
+    const cascadeChild = {
+      ...table.rows[0],
+      rowId: 'processing-1',
+      system: { kind: 'processing' as const, parentRowId: material.rowId, cascadeDeletedBy: material.rowId },
+      deleted: true,
+    };
+    const deletedUnassigned = {
+      ...table.rows[0],
+      rowId: 'unassigned-1',
+      system: { kind: 'unassigned' as const, parentRowId: null, cascadeDeletedBy: null },
+      deleted: true,
+    };
+    render(
+      <SteelReviewEditor
+        table={{ ...table, kind: 'system_order', rows: [material, cascadeChild, deletedUnassigned] }}
+        rows={[material, cascadeChild, deletedUnassigned]}
+        systemMaterials={[material, cascadeChild, deletedUnassigned]}
+        draft={createSteelReviewDraftState('owner')}
+        labels={{
+          ...sourceLabels,
+          table: 'Steel review table',
+          readonly: 'Read-only cell',
+          rowActions: 'Row actions',
+          bindProcessing: 'Bind processing',
+          parent: 'Parent',
+          restoreRow: 'Restore',
+          deleteRow: 'Delete',
+          deleteGroup: 'Delete group',
+          addProcessingUnder: 'Add processing under',
+          classify: 'Classify',
+          material: 'Material',
+          processing: 'Processing',
+        }}
+        onCellChange={jest.fn()}
+        onSystemChange={jest.fn()}
+        onRestoreRow={jest.fn()}
+        onDeleteRow={jest.fn()}
+        onDeleteGroup={jest.fn()}
+        onAddProcessingUnder={jest.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole('combobox', { name: 'Bind processing processing-1' })).toBeNull();
+    expect(screen.queryByRole('combobox', { name: 'Classify unassigned-1' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Restore processing-1' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Delete group material-1' })).toBeInTheDocument();
+  });
+
+  it('allows an individually deleted bound child to restore under an active parent', () => {
+    const material = {
+      ...table.rows[0],
+      rowId: 'material-1',
+      system: { kind: 'material' as const, parentRowId: null, cascadeDeletedBy: null },
+      deleted: false,
+    };
+    const deletedChild = {
+      ...table.rows[0],
+      rowId: 'processing-1',
+      system: { kind: 'processing' as const, parentRowId: material.rowId, cascadeDeletedBy: null },
+      deleted: true,
+    };
+    const onRestoreRow = jest.fn();
+    render(
+      <SteelReviewEditor
+        table={{ ...table, kind: 'system_order', rows: [material, deletedChild] }}
+        rows={[material, deletedChild]}
+        systemMaterials={[material, deletedChild]}
+        draft={createSteelReviewDraftState('owner')}
+        labels={{
+          ...sourceLabels,
+          table: 'Steel review table',
+          readonly: 'Read-only cell',
+          rowActions: 'Row actions',
+          bindProcessing: 'Bind processing',
+          restoreRow: 'Restore',
+          deleteRow: 'Delete',
+          deleteGroup: 'Delete group',
+        }}
+        onCellChange={jest.fn()}
+        onSystemChange={jest.fn()}
+        onRestoreRow={onRestoreRow}
+        onDeleteRow={jest.fn()}
+      />,
+    );
+
+    expect(screen.queryByRole('combobox', { name: 'Bind processing processing-1' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Restore processing-1' }));
+    expect(onRestoreRow).toHaveBeenCalledWith(deletedChild);
+  });
+
+  it('offers one group action for a material row', () => {
+    const material = {
+      ...table.rows[0],
+      rowId: 'material-1',
+      system: { kind: 'material' as const, parentRowId: null, cascadeDeletedBy: null },
+      deleted: false,
+    };
+    render(
+      <SteelReviewEditor
+        table={{ ...table, kind: 'system_order', rows: [material] }}
+        rows={[material]}
+        draft={createSteelReviewDraftState('owner')}
+        labels={{
+          ...sourceLabels,
+          table: 'Steel review table',
+          readonly: 'Read-only cell',
+          rowActions: 'Row actions',
+          deleteRow: 'Delete',
+          deleteGroup: 'Delete group',
+        }}
+        onCellChange={jest.fn()}
+        onDeleteRow={jest.fn()}
+        onDeleteGroup={jest.fn()}
+      />,
+    );
+
+    expect(screen.getByRole('button', { name: 'Delete group material-1' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete material-1' })).toBeNull();
+  });
+
   it('keeps a captured prior-generation editor read-only even when the live table is latest', () => {
     const onCellChange = jest.fn();
     const onSourceEdit = jest.fn();

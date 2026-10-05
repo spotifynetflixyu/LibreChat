@@ -666,6 +666,80 @@ describe('Steel review contracts', () => {
     }
   });
 
+  it('stages a new material for a following binding operation', () => {
+    const processing = {
+      rowId: 'processing-1',
+      values: { Category: { baseline: '加工/切割', effective: '加工/切割' } },
+      source: null,
+      system: { kind: 'processing' as const, parentRowId: null, cascadeDeletedBy: null },
+      origin: 'ai' as const,
+      deleted: false,
+    };
+    const result = applySteelReviewOperations({
+      currentRows: normalizeSteelReviewLedgerRows([processing]),
+      expectedRows: normalizeSteelReviewLedgerRows([processing]),
+      headers: ['Category'],
+      operations: [
+        {
+          type: 'add',
+          rowId: 'material-new',
+          position: { kind: 'end' },
+          changes: [{ header: 'Category', value: '材料' }],
+          system: { kind: 'material', parentRowId: null },
+        },
+        {
+          type: 'update',
+          rowId: processing.rowId,
+          binding: { parentRowId: 'material-new' },
+        },
+      ],
+    });
+    expect(result).toMatchObject({ ok: true });
+    if (result.ok) {
+      expect(result.currentRows.find((row) => row.rowId === processing.rowId)?.system).toMatchObject({
+        kind: 'processing',
+        parentRowId: 'material-new',
+      });
+    }
+  });
+
+  it('stages a new material for a following unassigned classification', () => {
+    const unassigned = {
+      rowId: 'unassigned-1',
+      values: { Category: { baseline: null, effective: '' } },
+      source: null,
+      system: { kind: 'unassigned' as const, parentRowId: null, cascadeDeletedBy: null },
+      origin: 'ai' as const,
+      deleted: false,
+    };
+    const result = applySteelReviewOperations({
+      currentRows: normalizeSteelReviewLedgerRows([unassigned]),
+      expectedRows: normalizeSteelReviewLedgerRows([unassigned]),
+      headers: ['Category'],
+      operations: [
+        {
+          type: 'add',
+          rowId: 'material-new',
+          position: { kind: 'end' },
+          changes: [{ header: 'Category', value: '材料' }],
+          system: { kind: 'material', parentRowId: null },
+        },
+        {
+          type: 'classify',
+          rowId: unassigned.rowId,
+          system: { kind: 'processing', parentRowId: 'material-new' },
+        },
+      ],
+    });
+    expect(result).toMatchObject({ ok: true });
+    if (result.ok) {
+      expect(result.currentRows.find((row) => row.rowId === unassigned.rowId)?.system).toMatchObject({
+        kind: 'processing',
+        parentRowId: 'material-new',
+      });
+    }
+  });
+
   it('cascades material deletion and restores only its own processing tombstones', () => {
     const row = (rowId: string, system: SteelReviewLedgerRow['system'], deleted = false) => ({
       rowId,
