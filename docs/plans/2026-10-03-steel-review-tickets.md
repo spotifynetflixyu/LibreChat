@@ -5,7 +5,7 @@ Spec: https://github.com/spotifynetflixyu/LibreChat/issues/1
 Integration branch: `codex/steel-source-review`.
 Draft PR: https://github.com/spotifynetflixyu/LibreChat/pull/16.
 
-Current execution (2026-10-05): continue sequentially from slice08 through slice14; verify,
+Current execution (2026-10-05): continue sequentially from slice09 through slice14; verify,
 review and integrate each slice, then update GitHub before starting the next slice. The canonical Markdown locator is **messageId + exact full title**.
 Each reply contains at most one Markdown section with that full title; another message's same
 title is independent. Authorization, output ownership and expected revision remain backend guards.
@@ -33,7 +33,7 @@ Baseline: `056eb076ac0b9f7b7ccaba74672ae1288fab662a`.
 | 05 | [OCR 列增刪與本次 undo／redo](https://github.com/spotifynetflixyu/LibreChat/issues/6) | #3, #4 | Verified (`e4ed93c76`) |
 | 06 | [System order 修正與內部報價原子同步](https://github.com/spotifynetflixyu/LibreChat/issues/7) | #4 | Verified (`dfec53c9a`) |
 | 07 | [材料與加工列綁定及整組增刪復原](https://github.com/spotifynetflixyu/LibreChat/issues/8) | #5, #7 | Verified (`d46c9d99a`) |
-| 08 | [材料單重與計價總數依賴重算](https://github.com/spotifynetflixyu/LibreChat/issues/9) | #7 | Pending |
+| 08 | [材料單重與計價總數依賴重算](https://github.com/spotifynetflixyu/LibreChat/issues/9) | #7 | Verified (`e6ba86e35`) |
 | 09 | [加工計量輸入與 save 前重算](https://github.com/spotifynetflixyu/LibreChat/issues/10) | #8, #9 | Pending |
 | 10 | [材料 async selector 與精確 customer tier 價格](https://github.com/spotifynetflixyu/LibreChat/issues/11) | #9 | Pending |
 | 11 | [加工 async selector 與材料適用性](https://github.com/spotifynetflixyu/LibreChat/issues/12) | #10, #11 | Pending |
@@ -52,7 +52,7 @@ for fresh implementer context; GitHub is the authoritative tracker.
 
 Slice01 evidence at `d58ce51bca450f1b7b3de6b36b996a97a3d4a5f9`: 11/11 authenticated browser cases against the real backend and a disposable Mongo replica set; 13/13 focused real-Mongo cases; 7/7 API cases; owning workspace builds/typechecks; exact-head spec and standards repair reviews passed. No DB writes on read/reload. Full-feature Lighthouse and final review remain in slice14.
 
-Latest user preference: update related tickets first, then implement them sequentially. Human edits use explicit Save with unsaved-row caption; dirty close asks save/discard/continue. Save reuses backend field cleanup and atomically updates normalized DB/chat data. Slices01–07 are verified; sequential execution now proceeds from08.
+Latest user preference: update related tickets first, then implement them sequentially. Human edits use explicit Save with unsaved-row caption; dirty close asks save/discard/continue. Save reuses backend field cleanup and atomically updates normalized DB/chat data. Slices01–08 are verified; sequential execution now proceeds from09.
 
 Slice02 evidence at `c3bd8ad1c74c03d2eab65a3ef0ba92db38bddbb3`: 17/17 authenticated Chrome cases against real Express and a disposable Mongo replica set, including multi-PDF/image pages, independent same-page rows, unlocated and out-of-range rows, zoom/pan/fullscreen, narrow light/dark layouts, menu-first Escape, retry, active owner and cross-chat/tenant identity guards. Focused real-Mongo/client/shared-dialog tests and owning workspace builds/typechecks passed; independent spec and standards reviews approved frozen feature head `b1818e418`. Scoped ESLint and diff checks passed. Slice03 now proceeds in the user-requested sequence; later slices remain pending.
 
@@ -77,7 +77,7 @@ The current validation boundary covers normal frontend/backend-produced data and
 
 The canonical locator remains **messageId + exact full title**; normal DB records preserve the AI baseline, saved human Markdown and successful timestamps. Diff strikes appear only in the comparison dialog; saved chat/export show clean active values. Save submits changed-row operations against the latest data, clears this session’s undo/redo after confirmation, and preserves later drafts and other messages.
 
-Slices01–07 are verified and integrated; execution proceeds from08. Slices08–14, full-feature Lighthouse/static checks, remote CI and whole-feature review remain pending. PR16 stays Draft and OPEN; tickets remain OPEN under the final PR merge/closure workflow. No production deployment, parent issue update or primary-branch write occurred.
+Slices01–08 are verified and integrated; execution proceeds from09. Slices09–14, full-feature Lighthouse/static checks, remote CI and whole-feature review remain pending. PR16 stays Draft and OPEN; tickets remain OPEN under the final PR merge/closure workflow. No production deployment, parent issue update or primary-branch write occurred.
 
 Latest source-boundary correction: OCR result includes all source files. Identical new AI Markdown cannot bind a different file mapping; manual row deletion only reduces bindings. Do not add that hypothetical to acceptance or defensive logic. Keep the source evidence of the selected OCR snapshot. GitHub #7 records this correction.
 
@@ -94,3 +94,12 @@ Focused suites passed 191/191 (provider27, session44, API33, Editor14, Markdown 
 The normal-flow verification boundary excludes direct abnormal DB records and unpublished intermediate missing-system sidecars; current API/DB initialization produces trusted kinds and explicit parent-null. OCR includes all files, so identical new AI Markdown cannot acquire a different file mapping; manual row deletion only reduces bindings. No repair, compatibility, ownership inference or hypothetical defense was added for these excluded cases. Normal explicit human binding/source edits retain independent revision CAS when physical Markdown bytes stay unchanged. GitHub #8 remains OPEN under the PR merge policy; PR16 stays Draft while08–14 and whole-feature Lighthouse/static checks/remote CI/final review remain pending. No production deployment or primary/master/PROD change occurred.
 
 使用者最新補充（2026-10-05）：system_order 類別欄位使用 menu selector；彈窗比對 AI 原 Markdown 並顯示刪除線，Save 後聊天 Markdown 與下載為最新成功保存值。
+
+
+Slice08 final evidence at `e6ba86e3536ba2d4f34be03fb5d36d867afd2aa3` (tree `f74867bf566f9c1bcac5ca0651b13c62b106cb3a`): fresh independent whole-slice SPEC and STANDARDS reviews approved the exact clean source after the formula/producer/provenance/transaction invariant audit. Root passed 85/85 authenticated Chrome cases against real Express and disposable wiredTiger Mongo (23 material, 51 system_order and 11 normal OCR), with normal publication/checkpoint authority, DB readback and reload. All 542 source/test/private-dist/HEAD hashes remained unchanged during that proof. Focused provider53, runner65, Mongo read/write46, client112 and category-registry33 checks passed; owning noEmit, scoped imports/lint with Prettier disabled, and diff checks passed.
+
+A separate Git-only fast-forward integrated the identical source tree. Root rebuilt all five private workspaces, passed all five owning noEmit, then passed 41/41 integrated Chrome cases (23 material, seven critical system_order and 11 normal OCR); the same 542 source/dist/HEAD hashes remained unchanged. The primary checkout remains clean on feat/v8.8 at `326d27f51605599c70544792f0e280f428596639`.
+
+Latest system_order review exposes every business field; 類別 uses the existing shared menu and canonical 29 categories, preserving current/AI values and allowing clear. The popup retains AI-original strikethrough after Save; chat and downloads contain clean latest saved values. Supported material formulas use exact decimal inputs and their actual operands: plate thickness/width/length with density, square current width/length with density, and confirmed profiles length with per-metre or stock-length evidence. Quantity preserves manual unit weight; ordered explicit total/price edits retain their authority. Unsupported, incomplete and repeating computations preserve outputs; explicit blanks remain blank. Normal added rows use the same ordered cleanup/calculation as updates. Trusted derived changes merge; concurrent manual provenance and all independent conflicts remain visible. No Save-time lookup or abnormal-DB/hypothetical new-AI mapping repair was added.
+
+GitHub #9 remains OPEN under the PR merge policy; PR16 stays Draft while09–14 and whole-feature Lighthouse/static checks, current remote CI and final review remain pending. Existing CI failures have not been relabeled as baseline, and the prior axe setup failure did not execute accessibility lint. No Prettier, deployment, primary/master/PROD write or PR merge occurred.
