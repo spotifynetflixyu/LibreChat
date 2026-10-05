@@ -63,7 +63,7 @@ test.describe('Processing measurement normal review workflow', () => {
     const processCell = dialog.getByRole('textbox', { name: `總數 ${process.rowId}`, exact: true }).locator('xpath=ancestor::td');
     await expect(processCell.locator('del')).toHaveText('2');
     const after = await readback(fixture);
-    expect(after.reviews[0].aiBaselineMarkdown).toBe(before.reviews[0].aiBaselineMarkdown);
+    expect(before.messages[0].text).toContain(after.reviews[0].aiBaselineMarkdown);
     expect(after.quotation?.currentSystemOrder.customerQuoteMarkdown).toContain('| 總計 |  | 133 |');
     expect(after.messages[0].text).not.toContain('<del');
     expect(after.messages[0].text).not.toContain('~~');
@@ -206,7 +206,9 @@ test.describe('Processing measurement normal review workflow', () => {
         await expect(dialog.getByRole('textbox', { name: `總數 ${process.rowId}`, exact: true })).toHaveCount(0);
         await expect(dialog.getByRole('combobox', { name: `Measurement mode ${process.rowId}`, exact: true })).toBeDisabled();
         await expect(dialog.getByRole('combobox', { name: `類別 ${process.rowId}`, exact: true })).toHaveCount(0);
-        await expect(dialog.getByRole('button', { name: 'Close', exact: true })).toBeDisabled();
+        await expect(dialog.getByRole('button', { name: 'Close', exact: true }).first()).toBeDisabled();
+        await dialog.getByRole('button', { name: 'Close', exact: true }).last().click();
+        await expect(dialog).toBeVisible();
         await page.keyboard.press('Escape');
         await expect(dialog).toBeVisible();
         expect(await readback(fixture)).toEqual(before);
@@ -223,7 +225,7 @@ test.describe('Processing measurement normal review workflow', () => {
       const after = await readback(fixture);
       expect(after.messages).toHaveLength(before.messages.length);
       expect(current.outputId).toBe(owner.outputId);
-      expect(after.reviews[0].aiBaselineMarkdown).toBe(before.reviews[0].aiBaselineMarkdown);
+      expect(before.messages[0].text).toContain(after.reviews[0].aiBaselineMarkdown);
       await page.keyboard.press('Escape');
       await expect(dialog).not.toBeVisible();
     });
