@@ -1074,7 +1074,6 @@ test.describe('System order atomic manual review', () => {
         : await bindGroup(page, headers, fixture);
       const parentId = rowNamed(initial, 'REVIEW-MATERIAL-A').rowId;
       const childId = rowNamed(initial, 'REVIEW-PROCESS-A').rowId;
-      const otherChildId = rowNamed(initial, 'REVIEW-PROCESS-B').rowId;
       if (mode !== 'classified-binding') {
         const deletion = await prepare(page, headers, operationsFor(initial, [{ type: 'delete', rowId: parentId }]));
         const response = await commit(page, headers, deletion);
@@ -1092,7 +1091,7 @@ test.describe('System order atomic manual review', () => {
       }
       if (mode === 'classified-binding' || mode === 'restored-binding') {
         await dialog.getByRole('combobox', { name: `Bind processing ${childId}`, exact: true }).click();
-        await page.getByRole('option', { name: parentId, exact: true }).click();
+        await page.getByRole('option', { name: 'REVIEW-MATERIAL-A', exact: true }).click();
       }
       const editsChild = mode === 'restored-child-edit' || mode === 'parent-child-redelete' || mode === 'child-only-redelete';
       if (editsChild) {
@@ -1111,8 +1110,9 @@ test.describe('System order atomic manual review', () => {
       if (mode === 'individual-redelete') {
         await dialog.getByRole('button', { name: `Delete row ${childId}`, exact: true }).click();
       }
-      const changedRows = mode === 'child-only-redelete' ? 1
-        : mode === 'restored-child-edit' || mode === 'individual-redelete' ? 3 : 2;
+      let changedRows = 2;
+      if (mode === 'child-only-redelete') changedRows = 1;
+      if (mode === 'restored-child-edit' || mode === 'individual-redelete') changedRows = 3;
       await expect(dialog.getByText(`Unsaved changes: ${changedRows} rows`, { exact: true })).toBeVisible();
       expect(await readback(fixture.conversationId)).toEqual(before);
       const submitted = page.waitForRequest((request) => request.method() === 'POST' && request.url().endsWith('/review/system_order/prepare'));
@@ -1121,13 +1121,11 @@ test.describe('System order atomic manual review', () => {
       const activationIndex = operations.findIndex((operation) => operation.rowId === parentId &&
         (operation.type === 'restore' || operation.type === 'classify'));
       const childIndex = operations.findIndex((operation) => operation.rowId === childId);
-      if (!deletesGroup) {
-        expect(activationIndex).toBeGreaterThanOrEqual(0);
-        expect(childIndex).toBeGreaterThan(activationIndex);
-      }
       await test.info().attach('saved-ordered-operations', { body: JSON.stringify(operations), contentType: 'application/json' });
       expect(result.changedRows).toBe(changedRows);
       const saved = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+      const after = await readback(fixture.conversationId);
+      expect(after.reviews[0]?.rows).toEqual(saved.rows);
       const parent = rowNamed(saved, 'REVIEW-MATERIAL-A');
       const child = rowNamed(saved, 'REVIEW-PROCESS-A');
       expect(parent).toMatchObject({ deleted: deletesGroup, system: { kind: 'material', parentRowId: null },
@@ -1139,8 +1137,10 @@ test.describe('System order atomic manual review', () => {
         expect(rowNamed(saved, 'REVIEW-PROCESS-B')).toMatchObject({ deleted: deletesGroup,
           system: { parentRowId: parentId, cascadeDeletedBy: deletesGroup ? parentId : null } });
       }
-      const after = await readback(fixture.conversationId);
-      expect(after.reviews[0]?.rows).toEqual(saved.rows);
+      if (!deletesGroup) {
+        expect(activationIndex).toBeGreaterThanOrEqual(0);
+        expect(childIndex).toBeGreaterThan(activationIndex);
+      }
       expect(after.reviews[0]?.receipts.at(-1)?.changedRows).toBe(changedRows);
       expect(after.ocr).toEqual(before.ocr);
       expect(after.messages.find((message) => message.messageId === fixture.otherMessageId))
