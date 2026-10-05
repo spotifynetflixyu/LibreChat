@@ -203,9 +203,9 @@ test.describe('Processing measurement normal review workflow', () => {
         await dialog.getByRole('button', { name: 'Save', exact: true }).click();
         await received;
         await expect(amount).toBeDisabled();
-        await expect(dialog.getByRole('textbox', { name: `總數 ${process.rowId}`, exact: true })).toBeDisabled();
+        await expect(dialog.getByRole('textbox', { name: `總數 ${process.rowId}`, exact: true })).toHaveCount(0);
         await expect(dialog.getByRole('combobox', { name: `Measurement mode ${process.rowId}`, exact: true })).toBeDisabled();
-        await expect(dialog.getByRole('combobox', { name: `類別 ${process.rowId}`, exact: true })).toBeDisabled();
+        await expect(dialog.getByRole('combobox', { name: `類別 ${process.rowId}`, exact: true })).toHaveCount(0);
         await expect(dialog.getByRole('button', { name: 'Close', exact: true })).toBeDisabled();
         await page.keyboard.press('Escape');
         await expect(dialog).toBeVisible();

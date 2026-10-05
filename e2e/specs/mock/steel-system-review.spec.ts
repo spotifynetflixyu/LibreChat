@@ -1433,8 +1433,7 @@ test.describe('System order atomic manual review', () => {
       await dialog.getByRole('button', { name: 'Save', exact: true }).click();
       await received;
       await selectPreview('beta.pdf', '2');
-      await expect(binding).toHaveText('T2');
-      await expect(binding).toBeDisabled();
+      await expect(binding).toHaveCount(0);
       await expect(dialog.getByRole('button', { name: 'Close', exact: true })).toBeDisabled();
       await page.keyboard.press('Escape');
       await expect(dialog).toBeVisible();
