@@ -1087,6 +1087,7 @@ export function createSteelReviewService({
     if (!expectedRows) {
       throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review expected version is unavailable');
     }
+    const stagedExpectedKinds = new Map(expectedRows.map((row) => [row.rowId, row.system?.kind] as const));
     const sourceIntents: SteelReviewSourceIntent[] = [];
     for (const operation of payload.operations) {
       if (operation.type === 'add' && operation.source) {
@@ -1114,9 +1115,7 @@ export function createSteelReviewService({
         isSteelReviewSourceAssociationHeader(change.header))) {
         throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review row column is read-only');
       }
-      const existingRow = operation.type === 'update' || operation.type === 'classify' || operation.type === 'delete' || operation.type === 'restore'
-        ? currentRows.find((row) => row.rowId === operation.rowId)
-        : undefined;
+      const stagedKind = stagedExpectedKinds.get(operation.rowId);
       const operationSource = operation.type === 'add' || operation.type === 'update' ? operation.source : undefined;
       if (payload.kind !== 'system_order' && (
         (operation.type === 'add' && operation.system !== undefined) ||
@@ -1128,15 +1127,15 @@ export function createSteelReviewService({
       if (payload.kind === 'system_order' && operation.type === 'add' && !operation.system) {
         throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'System rows require an explicit kind');
       }
-      if (payload.kind === 'system_order' && operation.type === 'classify' && existingRow?.system?.kind !== 'unassigned') {
+      if (payload.kind === 'system_order' && operation.type === 'classify' && stagedKind !== 'unassigned') {
         throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Only unassigned rows may be classified');
       }
       if (payload.kind === 'system_order' && operation.type === 'update' && operation.binding !== undefined &&
-        existingRow?.system?.kind !== 'processing') {
+        stagedKind !== 'processing') {
         throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Only processing rows may be bound');
       }
       if (payload.kind === 'system_order' && operationSource !== undefined &&
-        operation.type === 'update' && existingRow?.system?.kind !== 'material') {
+        operation.type === 'update' && stagedKind !== 'material') {
         throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Only material rows may select a source');
       }
       if (payload.kind === 'system_order' && operationSource !== undefined &&
@@ -1157,6 +1156,11 @@ export function createSteelReviewService({
           (!SYSTEM_ORDER_DECIMAL.test(value) || cleanSystemOrderNumber(value) === '');
       })) {
         throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'System-order numeric input is invalid');
+      }
+      if (operation.type === 'add' && operation.system) {
+        stagedExpectedKinds.set(operation.rowId, operation.system.kind);
+      } else if (operation.type === 'classify') {
+        stagedExpectedKinds.set(operation.rowId, operation.system.kind);
       }
     }
     const applied = applySteelReviewOperations({

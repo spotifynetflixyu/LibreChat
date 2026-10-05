@@ -264,28 +264,41 @@ export function deleteSteelReviewDraftGroup(
   draft: SteelReviewDraftState,
   rows: readonly SteelReviewRow[],
   material: SteelReviewRow,
+  savedRows: readonly SteelReviewRow[],
 ): SteelReviewDraftState {
   if (!material.rowId) return draft;
   const group = rows.filter((row) => row.rowId === material.rowId ||
     (row.system?.kind === 'processing' && row.system.parentRowId === material.rowId));
   if (group.length === 0) return draft;
+  const savedById = new Map(savedRows.map((row) => [row.rowId, row]));
+  const hasSavedParent = savedById.has(material.rowId);
   const rowStates = { ...draft.rowStates };
+  const sourceDrafts = { ...draft.sourceDrafts };
   const changeSequence = draft.changeSequence + 1;
   for (const row of group) {
     if (!row.rowId) continue;
-    if ((row.origin ?? 'ai') === 'manual' && !rows.some((candidate) => candidate.rowId === row.rowId)) {
+    const savedRow = savedById.get(row.rowId);
+    if (!savedRow && (row.origin ?? 'ai') === 'manual') {
       delete rowStates[row.rowId];
+      delete sourceDrafts[row.rowId];
       continue;
     }
+    const canceledDerivedRelation = !hasSavedParent && savedRow?.system
+      ? { system: { ...savedRow.system }, source: savedRow.source }
+      : {};
     rowStates[row.rowId] = {
       ...(rowStates[row.rowId] ?? row),
       deleted: true,
-      ...(row.system?.kind === 'processing' && !row.deleted
+      ...canceledDerivedRelation,
+      ...(hasSavedParent && row.system?.kind === 'processing' && !row.deleted
         ? { system: { ...row.system, cascadeDeletedBy: material.rowId } }
         : {}),
     };
+    if (!hasSavedParent && row.system?.kind === 'processing') {
+      delete sourceDrafts[row.rowId];
+    }
   }
-  return recordMutation(draft, { ...draft, rowStates, changeSequence }, `delete-group:${material.rowId}`);
+  return recordMutation(draft, { ...draft, rowStates, sourceDrafts, changeSequence }, `delete-group:${material.rowId}`);
 }
 
 export function restoreSteelReviewDraftGroup(
@@ -758,6 +771,7 @@ export function compileSteelReviewOperations(
       previous.system.cascadeDeletedBy !== null && previous.system.cascadeDeletedBy !== undefined &&
       groupRestoreParentIds.has(previous.system.cascadeDeletedBy);
     if (!previous.deleted && next.deleted) {
+      if (classify) operations.push(classify);
       if (changes.length > 0 || sourceWasChanged || binding) {
         const update: Extract<SteelReviewOperation, { type: 'update' }> = {
           type: 'update', rowId: next.rowId,
@@ -767,7 +781,6 @@ export function compileSteelReviewOperations(
         };
         operations.push(update);
       }
-      if (classify) operations.push(classify);
       if (!isCascadeChildDelete) {
         const deletion = { type: 'delete' as const, rowId: next.rowId };
         if (groupDeleteParentIds.has(next.rowId)) {
@@ -782,6 +795,7 @@ export function compileSteelReviewOperations(
       if (!isCascadeChildRestore) {
         operations.push({ type: 'restore', rowId: next.rowId });
       }
+      if (classify) operations.push(classify);
       if (changes.length > 0 || sourceWasChanged || binding) {
         operations.push({
           type: 'update', rowId: next.rowId,
@@ -790,9 +804,23 @@ export function compileSteelReviewOperations(
           ...(binding ? { binding } : {}),
         });
       }
-      if (classify) operations.push(classify);
       continue;
     }
+    if (previous.deleted && next.deleted && (changes.length > 0 || sourceWasChanged || binding || classify)) {
+      operations.push({ type: 'restore', rowId: next.rowId });
+      if (classify) operations.push(classify);
+      if (changes.length > 0 || sourceWasChanged || binding) {
+        operations.push({
+          type: 'update', rowId: next.rowId,
+          ...(changes.length > 0 ? { changes } : {}),
+          ...(sourceWasChanged ? { source: sourceIntent(next.source) } : {}),
+          ...(binding ? { binding } : {}),
+        });
+      }
+      operations.push({ type: 'delete', rowId: next.rowId });
+      continue;
+    }
+    if (classify) operations.push(classify);
     if (changes.length > 0 || sourceWasChanged || binding) {
       operations.push({
         type: 'update', rowId: next.rowId,
@@ -801,7 +829,6 @@ export function compileSteelReviewOperations(
         ...(binding ? { binding } : {}),
       });
     }
-    if (classify) operations.push(classify);
   }
   return [...operations, ...deferredGroupDeletes];
 }

@@ -1121,8 +1121,14 @@ export default function SteelReviewDialog({
   const onDeleteGroup = useCallback((row: SteelReviewRow) => {
     const editTable = baseTable ?? table;
     if (!editTable || !canEditStructure || editTable.kind !== 'system_order' || row.system?.kind !== 'material') return;
-    setDraftStateScoped((current) => updateDraftRows(deleteSteelReviewDraftGroup(current, draftRows, row)));
-  }, [baseTable, canEditStructure, draftRows, setDraftStateScoped, table, updateDraftRows]);
+    setDraftStateScoped((current) => {
+      const ownerDraft = current.ownerKey === draftStateKey
+        ? current
+        : createSteelReviewDraftState(draftStateKey);
+      const currentRows = applySteelReviewDrafts(editTable.rows, ownerDraft);
+      return updateDraftRows(deleteSteelReviewDraftGroup(ownerDraft, currentRows, row, editTable.rows));
+    });
+  }, [baseTable, canEditStructure, draftStateKey, setDraftStateScoped, table, updateDraftRows]);
   const onDeleteRow = useCallback((row: SteelReviewRow) => {
     const editTable = baseTable ?? table;
     if (!editTable || !canEditStructure) return;

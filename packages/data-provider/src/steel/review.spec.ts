@@ -740,6 +740,74 @@ describe('Steel review contracts', () => {
     }
   });
 
+  it('allows a classification, business update and delete in one normal operation chain', () => {
+    const row = {
+      rowId: 'unassigned-1',
+      values: {
+        Category: { baseline: '', effective: '' },
+        Price: { baseline: '10', effective: '10' },
+      },
+      source: null,
+      system: { kind: 'unassigned' as const, parentRowId: null, cascadeDeletedBy: null },
+      origin: 'ai' as const,
+      deleted: false,
+    };
+    const result = applySteelReviewOperations({
+      currentRows: normalizeSteelReviewLedgerRows([row]),
+      expectedRows: normalizeSteelReviewLedgerRows([row]),
+      headers: ['Category', 'Price'],
+      operations: [
+        { type: 'classify', rowId: row.rowId, system: { kind: 'material', parentRowId: null } },
+        { type: 'update', rowId: row.rowId, changes: [{ header: 'Price', value: '7' }] },
+        { type: 'delete', rowId: row.rowId },
+      ],
+    });
+    expect(result).toMatchObject({ ok: true });
+    if (result.ok) {
+      expect(result.currentRows.find((entry) => entry.rowId === row.rowId)).toMatchObject({
+        deleted: true,
+        system: { kind: 'material', parentRowId: null },
+        values: { Price: { effective: '7' } },
+      });
+    }
+  });
+
+  it('treats a concurrent same-value classification as a no-op and conflicts on a different relation', () => {
+    const expected = {
+      rowId: 'unassigned-1',
+      values: { Category: { baseline: '', effective: '' } },
+      source: null,
+      system: { kind: 'unassigned' as const, parentRowId: null, cascadeDeletedBy: null },
+      origin: 'ai' as const,
+      deleted: false,
+    };
+    const current = {
+      ...expected,
+      system: { kind: 'material' as const, parentRowId: null, cascadeDeletedBy: null },
+    };
+    const same = applySteelReviewOperations({
+      currentRows: normalizeSteelReviewLedgerRows([current]),
+      expectedRows: normalizeSteelReviewLedgerRows([expected]),
+      headers: ['Category'],
+      operations: [{ type: 'classify', rowId: expected.rowId, system: { kind: 'material', parentRowId: null } }],
+    });
+    expect(same).toMatchObject({ ok: true });
+    if (same.ok) {
+      expect(same.currentRows).toEqual(normalizeSteelReviewLedgerRows([current]));
+    }
+
+    const different = applySteelReviewOperations({
+      currentRows: normalizeSteelReviewLedgerRows([current]),
+      expectedRows: normalizeSteelReviewLedgerRows([expected]),
+      headers: ['Category'],
+      operations: [{ type: 'classify', rowId: expected.rowId, system: { kind: 'processing', parentRowId: 'material-2' } }],
+    });
+    expect(different).toMatchObject({
+      ok: false,
+      conflicts: [{ kind: 'binding', rowId: expected.rowId, expected: null, current: null, requested: 'material-2' }],
+    });
+  });
+
   it('cascades material deletion and restores only its own processing tombstones', () => {
     const row = (rowId: string, system: SteelReviewLedgerRow['system'], deleted = false) => ({
       rowId,

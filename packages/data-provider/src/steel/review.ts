@@ -714,7 +714,8 @@ export function applySteelReviewOperations({
   for (const operation of operations) {
     const previousType = seen.get(operation.rowId);
     if (previousType && !(
-      (previousType === 'restore' && operation.type === 'update') ||
+      (previousType === 'restore' && (operation.type === 'classify' || operation.type === 'update')) ||
+      (previousType === 'classify' && (operation.type === 'update' || operation.type === 'delete')) ||
       (previousType === 'update' && operation.type === 'delete')
     )) {
       conflicts.push({ kind: 'activity', rowId: operation.rowId, reason: 'unavailable' });
@@ -843,7 +844,7 @@ export function applySteelReviewOperations({
       continue;
     }
     if (operation.type === 'classify') {
-      if (!expectedRow || row.system?.kind !== 'unassigned' || expectedRow.system?.kind !== 'unassigned') {
+      if (!expectedRow || expectedRow.system?.kind !== 'unassigned') {
         conflicts.push(relationConflict(row, expectedRow ?? row, operation.system));
         continue;
       }

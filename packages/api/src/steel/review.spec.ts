@@ -1108,4 +1108,117 @@ describe('Steel review read service', () => {
     }));
     expect(saved.revision).toBe('saved-revision');
   });
+
+  it('accepts a normal classify, price update and delete chain through staged expected kind', async () => {
+    const markdown = [
+      `## ${systemOrderTitle}`,
+      '',
+      '| 類別 | 品名規格 | 總數 | 單價 |',
+      '| --- | --- | --- | --- |',
+      '|  | 雷射板 | 2 | 10 |',
+    ].join('\n');
+    const row = {
+      rowId: 'row-1',
+      origin: 'ai' as const,
+      deleted: false,
+      values: {
+        類別: { baseline: '', effective: '' },
+        品名規格: { baseline: '雷射板', effective: '雷射板' },
+        總數: { baseline: '2', effective: '2' },
+        單價: { baseline: '10', effective: '10' },
+      },
+      source: null,
+      system: { kind: 'unassigned' as const, parentRowId: null, cascadeDeletedBy: null },
+    };
+    const service = createSteelReviewService({
+      reader: { readSteelReview: jest.fn().mockResolvedValue(makeSystemOrderRecord({
+        revision: 'compound-revision',
+        markdown,
+        messageText: markdown,
+        headers: ['類別', '品名規格', '總數', '單價'],
+        rows: [row],
+      })) },
+    });
+
+    const prepared = await service.prepare({
+      userId: scope.userId,
+      conversationId: scope.conversationId,
+      messageId: scope.messageId,
+      title: systemOrderTitle,
+      kind: 'system_order',
+      outputId: 'system_order:run-1',
+      revision: 'compound-revision',
+      operations: [
+        { type: 'classify', rowId: row.rowId, system: { kind: 'material', parentRowId: null } },
+        { type: 'update', rowId: row.rowId, changes: [{ header: '單價', value: '7' }] },
+        { type: 'delete', rowId: row.rowId },
+      ],
+    }) as SteelReviewOperationPrepared;
+
+    expect(prepared.operationRequest.operations.map((operation) => operation.type)).toEqual([
+      'classify', 'update', 'delete',
+    ]);
+  });
+
+  it('prepares a same-value stale classification as a no-op and rejects a different relation with recovery', async () => {
+    const initialMarkdown = [
+      `## ${systemOrderTitle}`,
+      '',
+      '| 類別 | 品名規格 | 總數 | 單價 |',
+      '| --- | --- | --- | --- |',
+      '|  | 雷射板 | 2 | 10 |',
+    ].join('\n');
+    const currentMarkdown = initialMarkdown.replace('|  | 雷射板 |', '| 材料 | 雷射板 |');
+    const initialRevision = createHash('sha256').update(initialMarkdown).digest('hex');
+    const rowId = createHash('sha256')
+      .update(`system_order:run-1:0:${JSON.stringify(['', '雷射板', '2', '10'])}`)
+      .digest('hex');
+    const currentRecord = makeSystemOrderRecord({
+      revision: 'current-revision',
+      aiBaselineMarkdown: initialMarkdown,
+      markdown: currentMarkdown,
+      messageText: currentMarkdown,
+      headers: ['類別', '品名規格', '總數', '單價'],
+      rows: [{
+        rowId,
+        origin: 'ai' as const,
+        deleted: false,
+        values: {
+          類別: { baseline: '', effective: '材料' },
+          品名規格: { baseline: '雷射板', effective: '雷射板' },
+          總數: { baseline: '2', effective: '2' },
+          單價: { baseline: '10', effective: '10' },
+        },
+        source: null,
+        system: { kind: 'material' as const, parentRowId: null, cascadeDeletedBy: null },
+      }],
+    });
+    const service = createSteelReviewService({
+      reader: { readSteelReview: jest.fn().mockResolvedValue(currentRecord) },
+    });
+    const base = {
+      userId: scope.userId,
+      conversationId: scope.conversationId,
+      messageId: scope.messageId,
+      title: systemOrderTitle,
+      kind: 'system_order' as const,
+      outputId: 'system_order:run-1',
+      revision: initialRevision,
+    };
+    const same = await service.prepare({
+      ...base,
+      operations: [{ type: 'classify', rowId, system: { kind: 'material', parentRowId: null } }],
+    });
+    expect(same.caption.changedRows).toBe(0);
+
+    await expect(service.prepare({
+      ...base,
+      operations: [{ type: 'classify', rowId, system: { kind: 'processing', parentRowId: 'material-2' } }],
+    })).rejects.toMatchObject({
+      code: 'REVIEW_CONFLICT',
+      recovery: {
+        conflicts: [{ kind: 'binding', rowId, expected: null, current: null, requested: 'material-2' }],
+      },
+    });
+  });
 });
