@@ -502,6 +502,35 @@ async function bindGroup(page: Page, headers: { Authorization: string }, fixture
   return readTable(page, headers, fixture.conversationId, fixture.messageId);
 }
 
+async function newMaterialIdentity(dialog: Locator, initial: SteelReviewTable) {
+  const existingIds = new Set(initial.rows.map((row) => row.rowId));
+  for (const action of await dialog.getByRole('button', { name: /^Add processing under /u }).all()) {
+    const rowId = (await action.getAttribute('aria-label'))?.replace(/^Add processing under /u, '');
+    if (rowId && !existingIds.has(rowId)) return rowId;
+  }
+  throw new Error('Missing new material identity');
+}
+
+async function selectPreview(page: Page, dialog: Locator, filename: string, pageNumber: string) {
+  // The global preview selector precedes each row's source correction selector.
+  await dialog.getByRole('combobox', { name: 'Source file', exact: true }).first().click();
+  await page.getByRole('option', { name: filename, exact: true }).click();
+  await dialog.getByRole('combobox', { name: 'Page', exact: true }).click();
+  await page.getByRole('option', { name: pageNumber, exact: true }).click();
+}
+
+async function saveUiDraft(page: Page, dialog: Locator): Promise<SteelReviewSaveResponse> {
+  const prepared = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith('/review/system_order/prepare'));
+  const committed = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith('/review/system_order/commit')).catch(() => null);
+  await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+  const preview = await prepared;
+  expect(preview.status(), await preview.text()).toBe(200);
+  const response = await committed;
+  if (!response) throw new Error('Missing review commit response');
+  expect(response.status(), await response.text()).toBe(200);
+  return response.json() as Promise<SteelReviewSaveResponse>;
+}
+
 test.describe('System order atomic manual review', () => {
   const conversations: string[] = [];
   let headers: { Authorization: string };
@@ -787,6 +816,187 @@ test.describe('System order atomic manual review', () => {
     expect(await readback(fixture.conversationId)).toEqual(after);
     expect((await readTable(page, headers, fixture.conversationId, fixture.messageId)).rows).toEqual(saved.rows);
   });
+
+  for (const classify of [false, true]) {
+    test(`unsaved material group cancellation preserves a valid existing ${classify ? 'unassigned' : 'processing'} tombstone`, async ({ page }) => {
+      const fixture = await seedOrder(true, true, undefined, {
+        orderMarkdown: classify ? groupedOrder.replace('| 加工/孔 |', '|  |') : groupedOrder, withSources: true,
+      });
+      conversations.push(fixture.conversationId);
+      const initial = classify ? await readTable(page, headers, fixture.conversationId, fixture.messageId)
+        : await bindGroup(page, headers, fixture);
+      const child = rowNamed(initial, 'REVIEW-PROCESS-A');
+      const before = await readback(fixture.conversationId);
+      const dialog = await openEditor(page, fixture.conversationId);
+      await selectPreview(page, dialog, 'beta.pdf', '2');
+      await dialog.getByRole('button', { name: 'Add material', exact: true }).click();
+      const materialId = await newMaterialIdentity(dialog, initial);
+      await selectPreview(page, dialog, 'alpha.pdf', '1');
+      if (classify) {
+        await dialog.getByRole('combobox', { name: 'Material', exact: true }).click();
+        await page.getByRole('option', { name: materialId, exact: true }).click();
+        await dialog.getByRole('combobox', { name: `Classify ${child.rowId}`, exact: true }).click();
+        await page.getByRole('option', { name: 'Processing', exact: true }).click();
+      } else {
+        await dialog.getByRole('combobox', { name: `Bind processing ${child.rowId}`, exact: true }).click();
+        await page.getByRole('option', { name: materialId, exact: true }).click();
+      }
+      await selectPreview(page, dialog, 'beta.pdf', '2');
+      await dialog.getByRole('button', { name: `Delete group ${materialId}`, exact: true }).click();
+      await expect(dialog.getByText('Unsaved changes: 1 rows', { exact: true })).toBeVisible();
+      expect(await readback(fixture.conversationId)).toEqual(before);
+      const undo = dialog.getByRole('button', { name: 'Undo', exact: true });
+      await undo.click();
+      await expect(dialog.getByRole('button', { name: `Delete group ${materialId}`, exact: true })).toBeVisible();
+      await expect(dialog.getByRole('combobox', { name: `Bind processing ${child.rowId}`, exact: true })).toBeVisible();
+      await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
+      const submitted = page.waitForRequest((request) => request.method() === 'POST' && request.url().endsWith('/review/system_order/prepare'));
+      const result = await saveUiDraft(page, dialog);
+      expect((await submitted).postDataJSON().operations).toEqual([{ type: 'delete', rowId: child.rowId }]);
+      expect(result.changedRows).toBe(1);
+      const saved = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+      expect(saved.rows.some((row) => row.rowId === materialId)).toBe(false);
+      expect(rowNamed(saved, 'REVIEW-PROCESS-A')).toEqual({ ...child, deleted: true });
+      expect(saved.rows.filter((row) => row.rowId !== child.rowId)).toEqual(initial.rows.filter((row) => row.rowId !== child.rowId));
+      const after = await readback(fixture.conversationId);
+      expect(after.ocr).toEqual(before.ocr);
+      await page.keyboard.press('Escape');
+      await page.reload();
+      expect(await readback(fixture.conversationId)).toEqual(after);
+      expect((await readTable(page, headers, fixture.conversationId, fixture.messageId)).rows).toEqual(saved.rows);
+    });
+  }
+
+  test('all-new material group cancellation is net zero and one Undo restores its exact draft identities', async ({ page }) => {
+    const fixture = await seedGroup();
+    conversations.push(fixture.conversationId);
+    const initial = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+    const before = await readback(fixture.conversationId);
+    const dialog = await openEditor(page, fixture.conversationId);
+    await selectPreview(page, dialog, 'beta.pdf', '2');
+    await dialog.getByRole('button', { name: 'Add material', exact: true }).click();
+    const materialId = await newMaterialIdentity(dialog, initial);
+    await dialog.getByRole('button', { name: `Add processing under ${materialId}`, exact: true }).click();
+    let childId: string | undefined;
+    const existingIds = new Set(initial.rows.map((row) => row.rowId));
+    for (const action of await dialog.getByRole('combobox', { name: /^Bind processing /u }).all()) {
+      const rowId = (await action.getAttribute('aria-label'))?.replace(/^Bind processing /u, '');
+      if (rowId && !existingIds.has(rowId)) childId = rowId;
+    }
+    if (!childId) throw new Error('Missing new processing identity');
+    await expect(dialog.getByText('Unsaved changes: 2 rows', { exact: true })).toBeVisible();
+    await dialog.getByRole('button', { name: `Delete group ${materialId}`, exact: true }).click();
+    await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+    expect(await readback(fixture.conversationId)).toEqual(before);
+    await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect(dialog.getByRole('button', { name: `Add processing under ${materialId}`, exact: true })).toBeVisible();
+    await expect(dialog.getByRole('combobox', { name: `Bind processing ${childId}`, exact: true })).toBeVisible();
+    await expect(dialog.getByText('Unsaved changes: 2 rows', { exact: true })).toBeVisible();
+    await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
+    await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+    await page.keyboard.press('Escape');
+    await expect(dialog).not.toBeVisible();
+    expect(await readback(fixture.conversationId)).toEqual(before);
+  });
+
+  for (const mode of ['edit', 'delete', 'restore-edit-delete'] as const) {
+    test(`classification composes with source and price edits before ${mode}`, async ({ page }) => {
+      const fixture = await seedOrder(true, true, undefined, {
+        orderMarkdown: groupedOrder.replace('| 材料 |  |', '|  |  |'), withSources: true,
+      });
+      conversations.push(fixture.conversationId);
+      let initial = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+      const rowId = rowNamed(initial, 'REVIEW-MATERIAL-A').rowId;
+      if (mode === 'restore-edit-delete') {
+        const deletion = await prepare(page, headers, operationsFor(initial, [{ type: 'delete', rowId }]));
+        const response = await commit(page, headers, deletion);
+        expect(response.status(), await response.text()).toBe(200);
+        initial = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+      }
+      const before = await readback(fixture.conversationId);
+      const dialog = await openEditor(page, fixture.conversationId);
+      if (mode === 'restore-edit-delete') {
+        await dialog.getByRole('button', { name: `Restore row ${rowId}`, exact: true }).click();
+      }
+      await dialog.getByRole('combobox', { name: `Classify ${rowId}`, exact: true }).click();
+      await page.getByRole('option', { name: 'Material', exact: true }).click();
+      const row = materialRow(dialog);
+      await row.getByRole('textbox', { name: `單價 ${rowId}`, exact: true }).fill('7');
+      await row.getByRole('textbox', { name: `單價 ${rowId}`, exact: true }).press('Enter');
+      await row.getByRole('button', { name: `Change source ${rowId}`, exact: true }).click();
+      await row.getByRole('combobox', { name: 'Source file', exact: true }).click();
+      await page.getByRole('option', { name: 'beta.pdf', exact: true }).click();
+      await row.getByRole('combobox', { name: 'Source page', exact: true }).click();
+      await page.getByRole('option', { name: '2', exact: true }).click();
+      await selectPreview(page, dialog, 'beta.pdf', '2');
+      if (mode !== 'edit') {
+        await dialog.getByRole('button', { name: `Delete group ${rowId}`, exact: true }).click();
+      }
+      await expect(dialog.getByText('Unsaved changes: 1 rows', { exact: true })).toBeVisible();
+      expect(await readback(fixture.conversationId)).toEqual(before);
+      const submitted = page.waitForRequest((request) => request.method() === 'POST' && request.url().endsWith('/review/system_order/prepare'));
+      const result = await saveUiDraft(page, dialog);
+      const operations = (await submitted).postDataJSON().operations as SteelReviewOperationPrepare['operations'];
+      let expectedTypes = ['classify', 'update'];
+      if (mode === 'delete') expectedTypes = ['classify', 'update', 'delete'];
+      if (mode === 'restore-edit-delete') expectedTypes = ['restore', 'classify', 'update', 'delete'];
+      expect(operations.map((operation) => operation.type)).toEqual(expectedTypes);
+      expect(operations.every((operation) => operation.rowId === rowId)).toBe(true);
+      expect(result.changedRows).toBe(1);
+      const saved = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+      expect(rowNamed(saved, 'REVIEW-MATERIAL-A')).toMatchObject({ deleted: mode !== 'edit',
+        system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
+        source: { fileId: `group-beta-${fixture.conversationId}`, pageNumber: 2 },
+        values: { 單價: { baseline: '10', effective: '7' } },
+      });
+      expect(saved.rows.filter((entry) => entry.rowId !== rowId)).toEqual(initial.rows.filter((entry) => entry.rowId !== rowId));
+      const after = await readback(fixture.conversationId);
+      expect(after.ocr).toEqual(before.ocr);
+      await page.keyboard.press('Escape');
+      await page.reload();
+      expect(await readback(fixture.conversationId)).toEqual(after);
+      expect((await readTable(page, headers, fixture.conversationId, fixture.messageId)).rows).toEqual(saved.rows);
+    });
+  }
+
+  for (const same of [true, false]) {
+    test(`concurrent classification is ${same ? 'a same-value zero-write receipt' : 'a different-value conflict with latest recovery'}`, async ({ page }) => {
+      const fixture = await seedOrder(true, true, undefined, {
+        orderMarkdown: groupedOrder.replace('| 材料 |  |', '|  |  |'), withSources: true,
+      });
+      conversations.push(fixture.conversationId);
+      const initial = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+      const rowId = rowNamed(initial, 'REVIEW-MATERIAL-A').rowId;
+      const parent = rowNamed(initial, 'REVIEW-MATERIAL-B');
+      const first = await prepare(page, headers, operationsFor(initial, [{ type: 'classify', rowId,
+        system: { kind: 'material', parentRowId: null } }]));
+      const second = await prepare(page, headers, operationsFor(initial, [{ type: 'classify', rowId,
+        system: same ? { kind: 'material', parentRowId: null } : { kind: 'processing', parentRowId: parent.rowId } }]));
+      const firstResponse = await commit(page, headers, first);
+      expect(firstResponse.status(), await firstResponse.text()).toBe(200);
+      const firstResult = await firstResponse.json() as SteelReviewSaveResponse;
+      const afterFirst = await readback(fixture.conversationId);
+      const secondResponse = await commit(page, headers, second);
+      expect(secondResponse.status(), await secondResponse.text()).toBe(same ? 200 : 409);
+      if (same) {
+        const result = await secondResponse.json() as SteelReviewSaveResponse;
+        expect(result.changedRows).toBe(0);
+        expect(result.revision).toBe(firstResult.revision);
+      } else {
+        const recovery = steelReviewRecoverySchema.parse((await secondResponse.json()).recovery);
+        expect(recovery.table.revision).toBe(firstResult.revision);
+        expect(recovery.table.rows.find((entry) => entry.rowId === rowId)?.system?.kind).toBe('material');
+        expect(recovery.conflicts).toContainEqual({ kind: 'binding', rowId,
+          expected: null, current: null, requested: parent.rowId });
+      }
+      expect(await readback(fixture.conversationId)).toEqual(afterFirst);
+      expect(await (await commit(page, headers, first)).json()).toEqual(firstResult);
+      expect(await readback(fixture.conversationId)).toEqual(afterFirst);
+      await page.goto(`/c/${fixture.conversationId}`);
+      await page.reload();
+      expect(await readback(fixture.conversationId)).toEqual(afterFirst);
+    });
+  }
 
   for (const classify of [false, true]) {
     test(`an ordered material Add supports an existing ${classify ? 'unassigned classification' : 'processing binding'} after a later material price edit`, async ({ page }) => {
