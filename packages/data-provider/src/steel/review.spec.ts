@@ -666,6 +666,81 @@ describe('Steel review contracts', () => {
     }
   });
 
+  it('clears obsolete cascade provenance when a restored child binds to another material', () => {
+    const materialA = {
+      rowId: 'material-a',
+      values: { Category: { baseline: '材料A', effective: '材料A' } },
+      source: null,
+      system: { kind: 'material' as const, parentRowId: null, cascadeDeletedBy: null },
+      origin: 'ai' as const,
+      deleted: true,
+    };
+    const materialB = {
+      rowId: 'material-b',
+      values: { Category: { baseline: '材料B', effective: '材料B' } },
+      source: null,
+      system: { kind: 'material' as const, parentRowId: null, cascadeDeletedBy: null },
+      origin: 'ai' as const,
+      deleted: false,
+    };
+    const processing = {
+      rowId: 'processing-1',
+      values: { Category: { baseline: '加工', effective: '加工' } },
+      source: null,
+      system: { kind: 'processing' as const, parentRowId: materialA.rowId, cascadeDeletedBy: materialA.rowId },
+      origin: 'ai' as const,
+      deleted: true,
+    };
+    const currentRows = normalizeSteelReviewLedgerRows([materialA, materialB, processing]);
+    const restored = applySteelReviewOperations({
+      currentRows,
+      expectedRows: normalizeSteelReviewLedgerRows([materialA, materialB, processing]),
+      headers: ['Category'],
+      operations: [
+        { type: 'restore', rowId: processing.rowId },
+        { type: 'update', rowId: processing.rowId, binding: { parentRowId: materialB.rowId } },
+      ],
+    });
+    expect(restored).toMatchObject({ ok: true });
+    if (!restored.ok) return;
+    const rebound = restored.currentRows.find((row) => row.rowId === processing.rowId);
+    const expectedRebound = restored.expectedRows.find((row) => row.rowId === processing.rowId);
+    expect(rebound).toMatchObject({
+      deleted: false,
+      system: { kind: 'processing', parentRowId: materialB.rowId, cascadeDeletedBy: null },
+    });
+    expect(expectedRebound).toMatchObject({
+      deleted: false,
+      system: { kind: 'processing', parentRowId: materialB.rowId, cascadeDeletedBy: null },
+    });
+
+    const deleted = applySteelReviewOperations({
+      currentRows: restored.currentRows,
+      expectedRows: restored.expectedRows,
+      headers: ['Category'],
+      operations: [{ type: 'delete', rowId: processing.rowId }],
+    });
+    expect(deleted).toMatchObject({ ok: true });
+    if (!deleted.ok) return;
+    const restoredAgain = applySteelReviewOperations({
+      currentRows: deleted.currentRows,
+      expectedRows: deleted.expectedRows,
+      headers: ['Category'],
+      operations: [{ type: 'restore', rowId: processing.rowId }],
+    });
+    expect(restoredAgain).toMatchObject({ ok: true });
+    if (restoredAgain.ok) {
+      expect(restoredAgain.currentRows.find((row) => row.rowId === processing.rowId)).toMatchObject({
+        deleted: false,
+        system: { kind: 'processing', parentRowId: materialB.rowId, cascadeDeletedBy: null },
+      });
+      expect(restoredAgain.expectedRows.find((row) => row.rowId === processing.rowId)).toMatchObject({
+        deleted: false,
+        system: { kind: 'processing', parentRowId: materialB.rowId, cascadeDeletedBy: null },
+      });
+    }
+  });
+
   it('stages a new material for a following binding operation', () => {
     const processing = {
       rowId: 'processing-1',

@@ -837,7 +837,7 @@ export function applySteelReviewOperations({
         const requested = {
           kind: 'processing' as const,
           parentRowId: operation.binding.parentRowId,
-          cascadeDeletedBy: row.system?.cascadeDeletedBy ?? null,
+          cascadeDeletedBy: null,
         };
         stageBinding(row, expectedRow, requested, currentById, expectedById, conflicts);
       }

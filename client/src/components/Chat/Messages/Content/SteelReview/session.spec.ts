@@ -613,6 +613,158 @@ describe('Steel review local draft session', () => {
     });
   });
 
+  it('compiles group restore, rebound child, and parent redelete for the shared applier', () => {
+    const systemTable: SteelReviewTable = {
+      ...table,
+      kind: 'system_order',
+      title: 'system_order',
+      outputId: 'system_order:rebound-applier',
+      rows: [
+        {
+          rowId: 'material-a', source: null, origin: 'ai', deleted: true,
+          system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
+          values: { 品名: { baseline: '材料A', effective: '材料A' }, 數量: { baseline: '1', effective: '1' } },
+        },
+        {
+          rowId: 'material-b', source: null, origin: 'ai', deleted: false,
+          system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
+          values: { 品名: { baseline: '材料B', effective: '材料B' }, 數量: { baseline: '2', effective: '2' } },
+        },
+        {
+          rowId: 'processing-1', source: null, origin: 'ai', deleted: true,
+          system: { kind: 'processing', parentRowId: 'material-a', cascadeDeletedBy: 'material-a' },
+          values: { 品名: { baseline: '加工', effective: '加工' }, 數量: { baseline: '1', effective: '1' } },
+        },
+        {
+          rowId: 'processing-2', source: null, origin: 'ai', deleted: true,
+          system: { kind: 'processing', parentRowId: 'material-a', cascadeDeletedBy: 'material-a' },
+          values: { 品名: { baseline: '加工二', effective: '加工二' }, 數量: { baseline: '2', effective: '2' } },
+        },
+      ],
+    };
+    const identity = { ...selection, kind: 'system_order' as const, title: 'system_order' };
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(identity, systemTable));
+    draft = restoreSteelReviewDraftGroup(draft, systemTable.rows, systemTable.rows[0]!);
+    let projected = applySteelReviewDrafts(systemTable.rows, draft);
+    draft = setSteelReviewDraftSystem(draft, projected.find((row) => row.rowId === 'processing-1')!, {
+      kind: 'processing', parentRowId: 'material-b', cascadeDeletedBy: null,
+    });
+    projected = applySteelReviewDrafts(systemTable.rows, draft);
+    draft = deleteSteelReviewDraftGroup(draft, projected, projected.find((row) => row.rowId === 'material-a')!, systemTable.rows);
+    const operations = compileSteelReviewOperations(
+      systemTable,
+      draft,
+      applySteelReviewDrafts(systemTable.rows, draft),
+    );
+    expect(operations).toEqual([
+      { type: 'restore', rowId: 'processing-1' },
+      { type: 'update', rowId: 'processing-1', binding: { parentRowId: 'material-b' } },
+    ]);
+
+    const applied = applySteelReviewOperations({
+      currentRows: normalizeSteelReviewLedgerRows(systemTable.rows),
+      expectedRows: normalizeSteelReviewLedgerRows(systemTable.rows),
+      headers: systemTable.headers,
+      operations,
+    });
+    expect(applied).toMatchObject({ ok: true });
+    if (!applied.ok) return;
+    expect(applied.currentRows.find((row) => row.rowId === 'material-a')).toMatchObject({ deleted: true });
+    expect(applied.currentRows.find((row) => row.rowId === 'processing-1')).toMatchObject({
+      deleted: false,
+      system: { kind: 'processing', parentRowId: 'material-b', cascadeDeletedBy: null },
+    });
+    expect(applied.currentRows.find((row) => row.rowId === 'processing-2')).toMatchObject({
+      deleted: true,
+      system: { cascadeDeletedBy: 'material-a' },
+    });
+    expect(applied.expectedRows.find((row) => row.rowId === 'processing-1')).toMatchObject({
+      deleted: false,
+      system: { kind: 'processing', parentRowId: 'material-b', cascadeDeletedBy: null },
+    });
+
+    const deleted = applySteelReviewOperations({
+      currentRows: applied.currentRows,
+      expectedRows: applied.expectedRows,
+      headers: systemTable.headers,
+      operations: [{ type: 'delete', rowId: 'processing-1' }],
+    });
+    expect(deleted).toMatchObject({ ok: true });
+    if (!deleted.ok) return;
+    const restored = applySteelReviewOperations({
+      currentRows: deleted.currentRows,
+      expectedRows: deleted.expectedRows,
+      headers: systemTable.headers,
+      operations: [{ type: 'restore', rowId: 'processing-1' }],
+    });
+    expect(restored).toMatchObject({ ok: true });
+    if (restored.ok) {
+      expect(restored.currentRows.find((row) => row.rowId === 'processing-1')).toMatchObject({
+        deleted: false,
+        system: { kind: 'processing', parentRowId: 'material-b', cascadeDeletedBy: null },
+      });
+      expect(restored.expectedRows.find((row) => row.rowId === 'processing-1')).toMatchObject({
+        deleted: false,
+        system: { kind: 'processing', parentRowId: 'material-b', cascadeDeletedBy: null },
+      });
+    }
+  });
+
+  it('retains cascade provenance for a no-binding child edit across group redelete', () => {
+    const systemTable: SteelReviewTable = {
+      ...table,
+      kind: 'system_order',
+      title: 'system_order',
+      outputId: 'system_order:no-binding-group-redelete',
+      rows: [
+        {
+          rowId: 'material-1', source: null, origin: 'ai', deleted: false,
+          system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
+          values: { 品名: { baseline: '鋼板', effective: '鋼板' }, 數量: { baseline: '1', effective: '1' } },
+        },
+        {
+          rowId: 'processing-1', source: null, origin: 'ai', deleted: false,
+          system: { kind: 'processing', parentRowId: 'material-1', cascadeDeletedBy: null },
+          values: { 品名: { baseline: '加工', effective: '加工' }, 數量: { baseline: '1', effective: '1' } },
+        },
+      ],
+    };
+    const identity = { ...selection, kind: 'system_order' as const, title: 'system_order' };
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(identity, systemTable));
+    draft = deleteSteelReviewDraftGroup(draft, systemTable.rows, systemTable.rows[0]!, systemTable.rows);
+    let projected = applySteelReviewDrafts(systemTable.rows, draft);
+    draft = restoreSteelReviewDraftGroup(draft, projected, systemTable.rows[0]!);
+    projected = applySteelReviewDrafts(systemTable.rows, draft);
+    draft = setSteelReviewDraftCell(draft, projected[1]!, '數量', '6');
+    projected = applySteelReviewDrafts(systemTable.rows, draft);
+    draft = setSteelReviewDraftCell(draft, projected[0]!, '數量', '7');
+    projected = applySteelReviewDrafts(systemTable.rows, draft);
+    draft = deleteSteelReviewDraftGroup(draft, projected, projected[0]!, systemTable.rows);
+    const operations = compileSteelReviewOperations(systemTable, draft, applySteelReviewDrafts(systemTable.rows, draft));
+    expect(operations).toEqual([
+      { type: 'update', rowId: 'processing-1', changes: [{ header: '數量', value: '6' }] },
+      { type: 'update', rowId: 'material-1', changes: [{ header: '數量', value: '7' }] },
+      { type: 'delete', rowId: 'material-1' },
+    ]);
+    const applied = applySteelReviewOperations({
+      currentRows: normalizeSteelReviewLedgerRows(systemTable.rows),
+      expectedRows: normalizeSteelReviewLedgerRows(systemTable.rows),
+      headers: systemTable.headers,
+      operations,
+    });
+    expect(applied).toMatchObject({ ok: true });
+    if (applied.ok) {
+      expect(applied.currentRows.find((row) => row.rowId === 'processing-1')).toMatchObject({
+        deleted: true,
+        system: { cascadeDeletedBy: 'material-1' },
+      });
+      expect(applied.expectedRows.find((row) => row.rowId === 'processing-1')).toMatchObject({
+        deleted: true,
+        system: { cascadeDeletedBy: 'material-1' },
+      });
+    }
+  });
+
   it('projects material source changes onto processing rows and preserves a later rebind', () => {
     const sourceOne: SteelReviewSource = { fileId: 'file-1', pageNumber: 1, filename: 'alpha.pdf' };
     const sourceTwo: SteelReviewSource = { fileId: 'file-2', pageNumber: 2, filename: 'beta.pdf' };
