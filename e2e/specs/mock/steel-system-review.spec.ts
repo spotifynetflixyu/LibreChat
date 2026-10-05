@@ -1167,6 +1167,77 @@ test.describe('System order atomic manual review', () => {
     });
   }
 
+  test('a restored child rebound before its original group is re-deleted keeps individual restore available after Save', async ({ page }) => {
+    const fixture = await seedGroup();
+    conversations.push(fixture.conversationId);
+    const bound = await bindGroup(page, headers, fixture);
+    const parentId = rowNamed(bound, 'REVIEW-MATERIAL-A').rowId;
+    const otherParentId = rowNamed(bound, 'REVIEW-MATERIAL-B').rowId;
+    const childId = rowNamed(bound, 'REVIEW-PROCESS-A').rowId;
+    const initialDeletion = await prepare(page, headers, operationsFor(bound, [{ type: 'delete', rowId: parentId }]));
+    expect((await commit(page, headers, initialDeletion)).status()).toBe(200);
+    const deleted = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+    expect(rowNamed(deleted, 'REVIEW-PROCESS-A')).toMatchObject({ deleted: true,
+      system: { parentRowId: parentId, cascadeDeletedBy: parentId } });
+    const before = await readback(fixture.conversationId);
+    const dialog = await openEditor(page, fixture.conversationId);
+    await dialog.getByRole('button', { name: `Restore row ${parentId}`, exact: true }).click();
+    await dialog.getByRole('combobox', { name: `Bind processing ${childId}`, exact: true }).click();
+    await page.getByRole('option', { name: 'T2', exact: true }).click();
+    await dialog.getByRole('button', { name: `Delete group ${parentId}`, exact: true }).click();
+    await expect(dialog.getByText('Unsaved changes: 1 rows', { exact: true })).toBeVisible();
+    expect(await readback(fixture.conversationId)).toEqual(before);
+    const submitted = page.waitForRequest((request) => request.method() === 'POST' && request.url().endsWith('/review/system_order/prepare'));
+    const result = await saveUiDraft(page, dialog);
+    const operations = (await submitted).postDataJSON().operations as SteelReviewOperationPrepare['operations'];
+    await test.info().attach('rebound-after-group-redelete-operations', { body: JSON.stringify(operations), contentType: 'application/json' });
+    expect(result.changedRows).toBe(1);
+    const saved = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+    const after = await readback(fixture.conversationId);
+    expect(after.reviews[0]?.rows).toEqual(saved.rows);
+    expect(rowNamed(saved, 'REVIEW-MATERIAL-A').deleted).toBe(true);
+    expect(rowNamed(saved, 'REVIEW-PROCESS-B')).toMatchObject({ deleted: true,
+      system: { parentRowId: parentId, cascadeDeletedBy: parentId } });
+    expect(rowNamed(saved, 'REVIEW-PROCESS-A')).toMatchObject({ deleted: false,
+      system: { kind: 'processing', parentRowId: otherParentId, cascadeDeletedBy: null },
+      source: rowNamed(saved, 'REVIEW-MATERIAL-B').source });
+    expect(after.reviews[0]?.receipts.at(-1)?.changedRows).toBe(1);
+    expect(after.ocr).toEqual(before.ocr);
+    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
+    await page.keyboard.press('Escape');
+    await page.reload();
+    expect(await readback(fixture.conversationId)).toEqual(after);
+    const reopened = await openEditor(page, fixture.conversationId);
+    await reopened.getByRole('button', { name: `Delete row ${childId}`, exact: true }).click();
+    expect((await saveUiDraft(page, reopened)).changedRows).toBe(1);
+    const childDeleted = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+    expect(rowNamed(childDeleted, 'REVIEW-PROCESS-A')).toMatchObject({ deleted: true,
+      system: { parentRowId: otherParentId, cascadeDeletedBy: null } });
+    const afterChildDelete = await readback(fixture.conversationId);
+    await page.keyboard.press('Escape');
+    await page.reload();
+    expect(await readback(fixture.conversationId)).toEqual(afterChildDelete);
+    const restoredEditor = await openEditor(page, fixture.conversationId);
+    const restore = restoredEditor.getByRole('button', { name: `Restore row ${childId}`, exact: true });
+    await expect(restore).toBeVisible();
+    await restore.click();
+    expect((await saveUiDraft(page, restoredEditor)).changedRows).toBe(1);
+    const final = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+    expect(rowNamed(final, 'REVIEW-PROCESS-A')).toMatchObject({ deleted: false,
+      system: { parentRowId: otherParentId, cascadeDeletedBy: null } });
+    expect(rowNamed(final, 'REVIEW-MATERIAL-A').deleted).toBe(true);
+    expect(rowNamed(final, 'REVIEW-PROCESS-B')).toMatchObject({ deleted: true,
+      system: { parentRowId: parentId, cascadeDeletedBy: parentId } });
+    const afterRestore = await readback(fixture.conversationId);
+    expect(afterRestore.reviews[0]?.rows).toEqual(final.rows);
+    expect(afterRestore.reviews[0]?.receipts.slice(0, afterChildDelete.reviews[0]?.receipts.length))
+      .toEqual(afterChildDelete.reviews[0]?.receipts);
+    await page.keyboard.press('Escape');
+    await page.reload();
+    expect(await readback(fixture.conversationId)).toEqual(afterRestore);
+    expect((await readTable(page, headers, fixture.conversationId, fixture.messageId)).rows).toEqual(final.rows);
+  });
+
   test('an individually deleted processing row can restore locally and after Save while its material stays active', async ({ page }) => {
     const fixture = await seedGroup();
     conversations.push(fixture.conversationId);
