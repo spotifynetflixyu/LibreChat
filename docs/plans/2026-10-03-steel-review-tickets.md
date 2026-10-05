@@ -105,3 +105,5 @@ Latest system_order review exposes every business field; 類別 uses the existin
 GitHub #9 remains OPEN under the PR merge policy; PR16 stays Draft while09–14 and whole-feature Lighthouse/static checks, current remote CI and final review remain pending. Existing CI failures have not been relabeled as baseline, and the prior axe setup failure did not execute accessibility lint. No Prettier, deployment, primary/master/PROD write or PR merge occurred.
 
 最新 Save／驗證決定（2026-10-05）：API 保存期間不可修改值或關閉彈窗，取代先前保存期間保留新輸入的產品要求。Markdown 綁定 messageId＋完整 title，AI 原版保留供比較；每次成功 Save 更新人工 Markdown 與原有聊天文字，統一回傳最新成功保存版本，不建立新訊息／AI 輸出 generation。指定版本不同於目前人工版本（沒有人工版本則為 AI 版）才有可能衝突，後端按實際變更判斷並套用最新版。09 納入此修正，03／05 原有證據保留為歷史，更新後以代表性正常流程與聚焦測試驗證，不重複展開所有瀏覽器排列。
+
+2026-10-05 加工材料對應補充：AI system_order 初次載入依備註的零件編號與同表唯一未刪除材料建立綁定及來源；不增加 Markdown 欄位，不按位置／品名猜配。沿用保存的人工作業及材料 selector 更正。09 驗證以正常產生的 A/B 零件確認初始加工綁定，取代先做人工 API 綁定的測試準備。

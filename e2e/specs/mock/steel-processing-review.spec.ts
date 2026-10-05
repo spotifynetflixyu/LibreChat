@@ -20,11 +20,11 @@ function intents(owner: SteelReviewTable, operations: SteelReviewOperation[]) {
     title: owner.title, outputId: owner.outputId, revision: owner.revision, operations };
 }
 
-async function bindFixture(page: Page, auth: Auth, fixture: Fixture): Promise<SteelReviewTable> {
+async function readBoundFixture(page: Page, auth: Auth, fixture: Fixture): Promise<SteelReviewTable> {
   const owner = await readTable(page, auth, fixture);
-  await saveApi(page, auth, intents(owner, [{ type: 'update', rowId: named(owner, 'REVIEW-PROCESS').rowId,
-    binding: { parentRowId: named(owner, 'REVIEW-FLAT-A').rowId } }]));
-  return readTable(page, auth, fixture);
+  expect(named(owner, 'REVIEW-PROCESS').system?.parentRowId).toBe(named(owner, 'REVIEW-FLAT-A').rowId);
+  expect(named(owner, 'REVIEW-PROCESS').source).toEqual(named(owner, 'REVIEW-FLAT-A').source);
+  return owner;
 }
 
 test.describe('Processing measurement normal review workflow', () => {
@@ -47,7 +47,7 @@ test.describe('Processing measurement normal review workflow', () => {
 
   test('processing without a measurement preserves manual values and popup baseline after Save and chat reload', async ({ page }) => {
     const fixture = await seedCalculation('flat', '', true); fixtures.push(fixture);
-    const owner = await bindFixture(page, auth, fixture);
+    const owner = await readBoundFixture(page, auth, fixture);
     const parent = named(owner, 'REVIEW-FLAT-A');
     const process = named(owner, 'REVIEW-PROCESS');
     const before = await readback(fixture);
@@ -79,7 +79,7 @@ test.describe('Processing measurement normal review workflow', () => {
   });
   test('per-piece calculation UI is draft-only with undo and redo and saves clean values with persistent AI comparison', async ({ page }) => {
     const fixture = await seedCalculation('flat', '', true); fixtures.push(fixture);
-    const owner = await bindFixture(page, auth, fixture);
+    const owner = await readBoundFixture(page, auth, fixture);
     const process = named(owner, 'REVIEW-PROCESS');
     const parent = named(owner, 'REVIEW-FLAT-A');
     const before = await readback(fixture);
@@ -116,7 +116,7 @@ test.describe('Processing measurement normal review workflow', () => {
 
   test('whole batch UI keeps its amount through quantity changes and invalid measurement input stays a draft', async ({ page }) => {
     const fixture = await seedCalculation('flat', '', true); fixtures.push(fixture);
-    const owner = await bindFixture(page, auth, fixture);
+    const owner = await readBoundFixture(page, auth, fixture);
     const process = named(owner, 'REVIEW-PROCESS');
     const parent = named(owner, 'REVIEW-FLAT-A');
     const before = await readback(fixture);
@@ -140,7 +140,7 @@ test.describe('Processing measurement normal review workflow', () => {
 
   test('cutting UI requires explicit stock inputs, persists plan version, and permits a missing input without clearing total', async ({ page }) => {
     const fixture = await seedCalculation('flat', '', true); fixtures.push(fixture);
-    const owner = await bindFixture(page, auth, fixture);
+    const owner = await readBoundFixture(page, auth, fixture);
     const process = named(owner, 'REVIEW-PROCESS');
     const before = await readback(fixture);
     const dialog = await openEditor(page, fixture);
@@ -183,7 +183,7 @@ test.describe('Processing measurement normal review workflow', () => {
   for (const phase of ['prepare', 'commit']) {
     test(`Save ${phase} locks measurement editing and prevents closing until latest Markdown is confirmed`, async ({ page }) => {
       const fixture = await seedCalculation('flat', '', true); fixtures.push(fixture);
-      const owner = await bindFixture(page, auth, fixture);
+      const owner = await readBoundFixture(page, auth, fixture);
       const process = named(owner, 'REVIEW-PROCESS');
       const before = await readback(fixture);
       const dialog = await openEditor(page, fixture);
@@ -231,7 +231,7 @@ test.describe('Processing measurement normal review workflow', () => {
 
   test('measurement conflict keeps the UI draft and retries against the latest saved owner version', async ({ page }) => {
     const fixture = await seedCalculation('flat', '', true); fixtures.push(fixture);
-    const owner = await bindFixture(page, auth, fixture);
+    const owner = await readBoundFixture(page, auth, fixture);
     const process = named(owner, 'REVIEW-PROCESS');
     const dialog = await openEditor(page, fixture);
     await dialog.getByRole('combobox', { name: `Measurement mode ${process.rowId}`, exact: true }).click();

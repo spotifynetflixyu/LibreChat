@@ -37,3 +37,5 @@ AI 原版與最新有效 Markdown 分開保存，對照彈窗取兩者以穩定�
 最新定位決策：同一回覆的每份 Markdown 具有唯一完整 title；新覆核直接以已授權 messageId ＋完整 title 定位，不以表格序號作為邏輯身分。同名 title 在其他 messageId 不受影響；後端仍核對聊天／user／tenant、latest output／generation、預期版本及精準 text／content mirror，並自行取得實際 part／offset。讀取不遷移或回填資料。所有覆核入口一律使用 messageId ＋完整 title，移除表格序號、caller partIndex／tableId alias 與舊整表提交的相容路徑；後端保存穩定列身分、原始 AI、人工結果及本協定的不可變收據。此決策取代先前保留新舊定位／提交入口相容性的提案，不放寬權限、最新輸出資格或精準更新指定訊息的限制。
 
 最新 Save 簡化（2026-10-05）：API 執行期間禁止修改值及關閉彈窗。保留 AI 原 Markdown，每次 Save 更新既有人工完整 Markdown，並直接更新原 messageId＋title 的聊天文字；不新增 AI 訊息或輸出 generation。成功回覆、DB 及 UI 使用相同的最新成功保存 Markdown／版本。提交版本與目前人工版本（尚無人工時為 AI 版）不同時，由後端判斷實際衝突。驗證集中代表性正常流程與聚焦計算／API／DB 測試，取代保存期間新输入及重複瀏覽器排列的驗收。
+
+2026-10-05：正常 AI system_order 的加工列初次依備註零件編號對應唯一材料，來源跟隨材料；保存後維持明確列身分與人工綁定，使用材料 selector 更正。計算候選依據僅屬內部 metadata，不新增 Markdown 欄位，也不因載入補充而計入未保存 rows。
