@@ -21,9 +21,11 @@ import {
   rebaseSteelReviewDraftState,
   restoreSteelReviewDraftGroup,
   setSteelReviewDraftCell,
+  getSteelReviewDraftMeasurement,
   finishSteelReviewDraftHistory,
   setSteelReviewDraftSource,
   setSteelReviewDraftSystem,
+  setSteelReviewDraftMeasurement,
   undoSteelReviewDraft,
   redoSteelReviewDraft,
   restoreSteelReviewDraftRow,
@@ -242,6 +244,33 @@ describe('Steel review local draft session', () => {
       system: { kind: 'processing', parentRowId: 'material-1' },
     });
     expect(processingAdd).not.toHaveProperty('source');
+  });
+
+  it('stages measurement metadata as one undoable operation and preserves an explicit clear', () => {
+    const processing: SteelReviewRow = {
+      rowId: 'processing-measurement',
+      source: null,
+      system: { kind: 'processing', parentRowId: 'material-1', cascadeDeletedBy: null },
+      values: {
+        類別: { baseline: '加工/切工', effective: '加工/切工' },
+        單位: { baseline: '刀', effective: '刀' },
+        總數: { baseline: '2', effective: '2' },
+      },
+    };
+    const measurement = { mode: 'perPiece' as const, amount: '2', unit: '刀' };
+    let draft = createSteelReviewDraftState('measurement-owner');
+    draft = setSteelReviewDraftMeasurement(draft, processing, measurement);
+    expect(getSteelReviewDraftMeasurement(draft, processing.rowId)).toEqual(measurement);
+    expect(compileSteelReviewOperations({ headers: Object.keys(processing.values), rows: [processing] }, draft,
+      applySteelReviewDrafts([processing], draft))).toEqual([{
+        type: 'update', rowId: processing.rowId, measurement,
+      }]);
+    draft = setSteelReviewDraftMeasurement(draft, processing, null);
+    expect(getSteelReviewDraftMeasurement(draft, processing.rowId)).toBeNull();
+    expect(compileSteelReviewOperations({ headers: Object.keys(processing.values), rows: [processing] }, draft,
+      applySteelReviewDrafts([processing], draft))).toEqual([{
+        type: 'update', rowId: processing.rowId, measurement: null,
+      }]);
   });
 
   it('orders a new material before dependent binding and classification after a later price edit', () => {

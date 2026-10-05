@@ -1138,6 +1138,12 @@ export function createSteelReviewService({
       }
       const stagedKind = stagedExpectedKinds.get(operation.rowId);
       const operationSource = operation.type === 'add' || operation.type === 'update' ? operation.source : undefined;
+      const hasMeasurement = (operation.type === 'add' || operation.type === 'update') &&
+        Object.prototype.hasOwnProperty.call(operation, 'measurement');
+      if (hasMeasurement && (payload.kind !== 'system_order' ||
+        (operation.type === 'add' ? operation.system?.kind : stagedKind) !== 'processing')) {
+        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Only processing rows may use a measurement');
+      }
       if (payload.kind !== 'system_order' && (
         (operation.type === 'add' && operation.system !== undefined) ||
         operation.type === 'classify' ||
@@ -1464,12 +1470,14 @@ export function createSteelReviewService({
           origin: row.origin,
           deleted: row.deleted,
           system: row.system ?? null,
+          calculation: row.calculation ?? null,
         }) !== JSON.stringify({
           values: previous.values,
           source: previous.source,
           origin: previous.origin,
           deleted: previous.deleted,
           system: previous.system ?? null,
+          calculation: previous.calculation ?? null,
         });
       })
       .map((row) => row.rowId);

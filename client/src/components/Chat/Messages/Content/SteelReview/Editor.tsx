@@ -2,9 +2,11 @@ import { memo } from 'react';
 import { steelPriceCategories, isSteelReviewSourceAssociationHeader } from 'librechat-data-provider';
 import { Button, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@librechat/client';
 import type { SteelReviewRow, SteelReviewSource, SteelReviewSourceFile, SteelReviewTable } from 'librechat-data-provider';
+import type { SteelProcessingMeasurement } from 'librechat-data-provider';
 import type { ChangeEvent, KeyboardEvent, ReactNode } from 'react';
 import type { SteelReviewDraftState } from './session';
-import { getSteelReviewDraftCell } from './session';
+import { getSteelReviewDraftCell, getSteelReviewDraftMeasurement } from './session';
+import SteelReviewMeasurement, { type SteelMeasurementLabels } from './Measurement';
 
 export interface SteelReviewEditorLabels {
   table: string;
@@ -29,6 +31,7 @@ export interface SteelReviewEditorLabels {
   material?: string;
   processing?: string;
   rowActions?: string;
+  measurement?: SteelMeasurementLabels;
 }
 
 export interface SteelReviewEditorProps {
@@ -38,6 +41,7 @@ export interface SteelReviewEditorProps {
   labels: SteelReviewEditorLabels;
   onCellChange: (row: SteelReviewRow, header: string, value: string) => void;
   onCellHistoryBoundary?: () => void;
+  onMeasurementChange?: (row: SteelReviewRow, measurement: SteelProcessingMeasurement | null) => void;
   canEdit?: boolean;
   sources?: readonly SteelReviewSourceFile[];
   sourceCorrectionRowId?: string;
@@ -368,6 +372,7 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
   onClassify,
   onDeleteGroup,
   onAddProcessingUnder,
+  onMeasurementChange,
   systemMaterials = rows,
 }: SteelReviewEditorProps) {
   return (
@@ -385,7 +390,7 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
                 {labels.sourceActions}
               </th>
             )}
-            {(onDeleteRow || onRestoreRow || onSystemChange || onDeleteGroup || onAddProcessingUnder) && (
+            {(onDeleteRow || onRestoreRow || onSystemChange || onDeleteGroup || onAddProcessingUnder || onMeasurementChange) && (
               <th scope="col" className="border-b border-border-light px-3 py-2 text-left font-semibold">
                 {labels.rowActions}
               </th>
@@ -445,6 +450,19 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
                         </SelectContent>
                       </Select>
                     </label>
+                  )}
+                  {row.system?.kind === 'processing' && !row.deleted && onMeasurementChange && labels.measurement && (
+                    <SteelReviewMeasurement
+                      rowId={row.rowId}
+                      rowUnit={row.values['單位']?.effective ?? ''}
+                      measurement={getSteelReviewDraftMeasurement(draft, row.rowId) === undefined
+                        ? row.calculation?.measurement ?? null
+                        : getSteelReviewDraftMeasurement(draft, row.rowId)}
+                      labels={labels.measurement}
+                      canEdit={canEdit}
+                      onChange={(measurement) => onMeasurementChange(row, measurement)}
+                      onHistoryBoundary={onCellHistoryBoundary}
+                    />
                   )}
                   {row.system?.kind === 'unassigned' && !row.deleted && onClassify && (
                     <Select value="" onValueChange={(value) => onClassify(row, value as 'material' | 'processing')}>

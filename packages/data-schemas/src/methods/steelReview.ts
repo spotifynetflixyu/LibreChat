@@ -2023,6 +2023,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
                   ])),
                 source: row.source,
                 system: row.system ?? null,
+                calculation: row.calculation ?? null,
                 ...(ledgerMode ? { origin: row.origin, deleted: row.deleted } : {}),
               }),
             ]),
@@ -2032,6 +2033,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               values: row.values,
               source: row.source,
               system: row.system ?? null,
+              calculation: row.calculation ?? null,
               ...(ledgerMode ? { origin: row.origin, deleted: row.deleted } : {}),
             }))
             .map((row) => row.rowId);

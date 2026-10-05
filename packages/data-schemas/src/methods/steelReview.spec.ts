@@ -116,6 +116,52 @@ afterAll(async () => {
 });
 
 describe('Steel review read methods', () => {
+  it('round-trips processing measurement metadata through the real Mongo review output', async () => {
+    const outputId = 'ocr_result:measurement-output';
+    const row: SteelReviewRow = {
+      rowId: createHash('sha256').update(`${outputId}:0:${JSON.stringify(['加工/切工', '2'])}`).digest('hex'),
+      values: {
+        Code: { baseline: '加工/切工', effective: '加工/切工' },
+        Value: { baseline: '2', effective: '2' },
+      },
+      source: null,
+      system: { kind: 'processing', parentRowId: 'material-row', cascadeDeletedBy: null },
+      calculation: {
+        measurement: { mode: 'batch', amount: '3', unit: '刀', ruleVersion: 'v1' },
+      },
+    };
+    const read = await seedTitleSidecarFixture({
+      conversationId: 'measurement-read-conversation',
+      messageId: 'measurement-read-message',
+      outputId,
+      messageText: [
+        '## ocr_result',
+        '',
+        '| Code | Value |',
+        '| --- | --- |',
+        '| 加工/切工 | 2 |',
+      ].join('\n'),
+      aiBaselineMarkdown: '## ocr_result\n\n| Code | Value |\n| --- | --- |\n| 加工/切工 | 2 |',
+      effectiveMarkdown: '## ocr_result\n\n| Code | Value |\n| --- | --- |\n| 加工/切工 | 2 |',
+      rows: [row],
+    });
+    const stored = await createSteelReviewOutputModel(mongoose).findOne({ outputId }).lean();
+    expect(stored?.rows?.[0]?.calculation?.measurement).toMatchObject(row.calculation?.measurement ?? {});
+
+    const record = await read.readSteelReview({
+      userId: 'title-proof-user',
+      conversationId: 'measurement-read-conversation',
+      kind: 'ocr_result',
+      messageId: 'measurement-read-message',
+      title: 'ocr_result',
+      tableId: 'legacy-positional-id',
+    });
+
+    expect(record?.rows?.[0]?.calculation?.measurement).toEqual({
+      mode: 'batch', amount: '3', unit: '刀', ruleVersion: 'v1',
+    });
+  });
+
   it('authorizes the message scope and returns the trusted current OCR owner', async () => {
     const models = createModels(mongoose);
     const State = createSteelConversationOcrStateModel(mongoose);

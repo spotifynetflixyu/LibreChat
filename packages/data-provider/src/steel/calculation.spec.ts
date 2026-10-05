@@ -1,4 +1,5 @@
 import {
+  calculateSteelProcessingMeasurement,
   calculateSteelSystemOrderRow,
   convertSteelDimensionToMillimetres,
   divideSteelDecimalsExactly,
@@ -63,6 +64,72 @@ describe('Steel exact calculation seam', () => {
     });
 
     expect(result.values).toEqual(['H', 'H型鋼', 'kg', '2', '9', '18', '1']);
+  });
+
+  it('calculates an exact per-piece processing amount from the linked parent quantity', () => {
+    expect(calculateSteelProcessingMeasurement({
+      headers: ['單位'],
+      values: ['刀'],
+      measurement: { mode: 'perPiece', amount: '0.125', unit: '刀', ruleVersion: 'v1' },
+      parentHeaders: ['數量'],
+      parentValues: ['8'],
+    })).toBe('1');
+  });
+
+  it('keeps batch measurements independent from the linked parent quantity', () => {
+    expect(calculateSteelProcessingMeasurement({
+      headers: ['單位'],
+      values: ['刀'],
+      measurement: { mode: 'batch', amount: '2.50', unit: '刀', ruleVersion: 'v1' },
+      parentHeaders: ['數量'],
+      parentValues: ['8'],
+    })).toBe('2.5');
+  });
+
+  it('preserves the existing total when the business unit basis is blank', () => {
+    expect(calculateSteelProcessingMeasurement({
+      headers: ['單位'],
+      values: [''],
+      measurement: { mode: 'batch', amount: '2', unit: '' },
+      parentHeaders: ['數量'],
+      parentValues: ['8'],
+    })).toBeUndefined();
+  });
+
+  it('counts only an explicitly confirmed balanced multi-stock cutting plan', () => {
+    expect(calculateSteelProcessingMeasurement({
+      headers: ['類別', '長度', '數量', '單位'],
+      values: ['加工/切工', '', '', '刀'],
+      measurement: {
+        mode: 'cutting', amount: null, unit: '刀', ruleVersion: 'v1', confirmed: true,
+        groups: [{
+          stockLengthMm: '12000', pieceLengthMm: '6000', pieceCount: '1', stockCount: '5',
+          lossMm: '0', remainderMm: '6000', headTrimMm: '0', tailTrimMm: '0',
+          pieceHeadTrimMm: '0', pieceTailTrimMm: '0',
+        }],
+      },
+      parentHeaders: ['類別', '長度', '數量'],
+      parentValues: ['H型鋼', '6000 mm', '5'],
+    })).toBe('5');
+  });
+
+  it('preserves unsupported or unbalanced cutting plans', () => {
+    const measurement = {
+      mode: 'cutting' as const, amount: null, unit: '刀' as const, ruleVersion: 'v1' as const, confirmed: true,
+      groups: [{
+        stockLengthMm: '12000', pieceLengthMm: '6000', pieceCount: '1', stockCount: '1',
+        lossMm: '1', remainderMm: '6000', headTrimMm: '0', tailTrimMm: '0',
+        pieceHeadTrimMm: '0', pieceTailTrimMm: '0',
+      }],
+    };
+    expect(calculateSteelProcessingMeasurement({
+      headers: ['單位'], values: ['刀'], measurement,
+      parentHeaders: ['類別', '長度', '數量'], parentValues: ['鐵板', '6000 mm', '1'],
+    })).toBeUndefined();
+    expect(calculateSteelProcessingMeasurement({
+      headers: ['單位'], values: ['片'], measurement: { ...measurement, unit: '刀' },
+      parentHeaders: ['類別', '長度', '數量'], parentValues: ['H型鋼', '6000 mm', '1'],
+    })).toBeUndefined();
   });
 
   it('derives total from manual weight and quantity without catalog evidence', () => {

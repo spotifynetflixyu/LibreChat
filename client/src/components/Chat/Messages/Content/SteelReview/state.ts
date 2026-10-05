@@ -132,6 +132,8 @@ export const steelReviewDraftStateFamily = createOwnedStateFamily<SteelReviewDra
   sourceDrafts: {},
   sourceVersions: {},
   systemVersions: {},
+  measurementDrafts: {},
+  measurementVersions: {},
   rowStates: {},
   past: [],
   future: [],

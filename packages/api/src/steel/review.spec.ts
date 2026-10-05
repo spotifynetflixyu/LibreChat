@@ -240,6 +240,83 @@ describe('Steel review read service', () => {
     })).rejects.toMatchObject({ code: 'REVIEW_INVALID_OPERATION' });
   });
 
+  it('rejects measurement metadata outside system-order processing rows', async () => {
+    const service = createSteelReviewService({
+      reader: { readSteelReview: jest.fn().mockResolvedValue(makeRecord()) },
+    });
+
+    await expect(service.prepare({
+      ...prepareInput(),
+      operations: [{
+        type: 'update' as const,
+        rowId: 'row-1',
+        measurement: { mode: 'batch', amount: '2', unit: '刀' },
+      }],
+    })).rejects.toMatchObject({ code: 'REVIEW_INVALID_OPERATION' });
+  });
+
+  it('counts a measurement-only save even when the rendered markdown is unchanged', async () => {
+    const title = 'system_order｜測量測試';
+    const headers = ['品名規格', '類別', '單位', '數量', '總數', '單價'];
+    const markdown = [
+      `## ${title}`,
+      '',
+      '| 品名規格 | 類別 | 單位 | 數量 | 總數 | 單價 |',
+      '| --- | --- | --- | --- | --- | --- |',
+      '| H | H型鋼 | 支 | 2 | 2 | 10 |',
+      '| cut | 加工/切工 | 刀 |  | 1 | 5 |',
+    ].join('\n');
+    const service = createSteelReviewService({
+      reader: {
+        readSteelReview: jest.fn().mockResolvedValue(makeSystemOrderRecord({
+          title,
+          markdown,
+          messageText: markdown,
+          headers,
+          rows: [
+            {
+              rowId: 'material-1', origin: 'ai', deleted: false,
+              values: Object.fromEntries(headers.map((header, index) => [header, {
+                baseline: ['H', 'H型鋼', '支', '2', '2', '10'][index] ?? '',
+                effective: ['H', 'H型鋼', '支', '2', '2', '10'][index] ?? '',
+              }])),
+              source: null,
+              system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
+            },
+            {
+              rowId: 'processing-1', origin: 'ai', deleted: false,
+              values: Object.fromEntries(headers.map((header, index) => [header, {
+                baseline: ['cut', '加工/切工', '刀', '', '1', '5'][index] ?? '',
+                effective: ['cut', '加工/切工', '刀', '', '1', '5'][index] ?? '',
+              }])),
+              source: null,
+              system: { kind: 'processing', parentRowId: 'material-1', cascadeDeletedBy: null },
+            },
+          ],
+        })),
+      },
+    });
+
+    const prepared = await service.prepare({
+      userId: scope.userId,
+      conversationId: scope.conversationId,
+      messageId: scope.messageId,
+      title,
+      kind: 'system_order',
+      outputId: 'system_order:run-1',
+      revision: 'system-order-revision-1',
+      operations: [{
+        type: 'update', rowId: 'processing-1',
+        measurement: { mode: 'batch', amount: '3', unit: '刀' },
+      }],
+    });
+
+    expect(prepared.caption).toEqual(expect.objectContaining({ changedRows: 1, changedRowIds: ['processing-1'] }));
+    expect(prepared.rows.find((row) => row.rowId === 'processing-1')?.calculation?.measurement).toEqual({
+      mode: 'batch', amount: '3', unit: '刀', ruleVersion: 'v1',
+    });
+  });
+
   it('merges a stale system-order operation from the immutable initial baseline', async () => {
     const initialRevision = createHash('sha256').update(systemOrderMarkdown).digest('hex');
     const rowId = createHash('sha256')

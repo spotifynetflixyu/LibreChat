@@ -35,6 +35,7 @@ import type {
   SteelReviewSource,
   SteelReviewSystemState,
   SteelReviewTable,
+  SteelProcessingMeasurement,
   TMessage,
 } from 'librechat-data-provider';
 import type { MutableRefObject } from 'react';
@@ -64,6 +65,7 @@ import {
   restoreSteelReviewDraftGroup,
   restoreSteelReviewDraftRow,
   setSteelReviewDraftCell,
+  setSteelReviewDraftMeasurement,
   setSteelReviewDraftSource,
   setSteelReviewDraftSystem,
   undoSteelReviewDraft,
@@ -429,6 +431,34 @@ export default function SteelReviewDialog({
     sourcePageLoading: localize('com_ui_steel_review_source_page_loading'),
     sourcePageUnavailable: localize('com_ui_steel_review_source_page_unavailable'),
     sourcePageRetry: localize('com_ui_retry'),
+    measurement: {
+      title: localize('com_ui_steel_review_measurement_title'),
+      mode: localize('com_ui_steel_review_measurement_mode'),
+      none: localize('com_ui_steel_review_measurement_none'),
+      perPiece: localize('com_ui_steel_review_measurement_per_piece'),
+      batch: localize('com_ui_steel_review_measurement_batch'),
+      cutting: localize('com_ui_steel_review_measurement_cutting'),
+      amount: localize('com_ui_steel_review_measurement_amount'),
+      unit: localize('com_ui_steel_review_measurement_unit'),
+      planId: localize('com_ui_steel_review_plan_id'),
+      planVersion: localize('com_ui_steel_review_plan_version'),
+      confirmed: localize('com_ui_steel_review_confirm_cutting_plan'),
+      stockGroup: localize('com_ui_steel_review_cutting_stock_group'),
+      addGroup: localize('com_ui_steel_review_add_stock_group'),
+      removeGroup: localize('com_ui_steel_review_remove_stock_group'),
+      groups: {
+        stockLengthMm: localize('com_ui_steel_review_stock_length_mm'),
+        pieceLengthMm: localize('com_ui_steel_review_piece_length_mm'),
+        pieceCount: localize('com_ui_steel_review_piece_count'),
+        stockCount: localize('com_ui_steel_review_stock_count'),
+        lossMm: localize('com_ui_steel_review_loss_mm'),
+        remainderMm: localize('com_ui_steel_review_remainder_mm'),
+        headTrimMm: localize('com_ui_steel_review_head_trim_mm'),
+        tailTrimMm: localize('com_ui_steel_review_tail_trim_mm'),
+        pieceHeadTrimMm: localize('com_ui_steel_review_piece_head_trim_mm'),
+        pieceTailTrimMm: localize('com_ui_steel_review_piece_tail_trim_mm'),
+      },
+    },
     rowActions: localize('com_ui_steel_review_row_actions'),
     deleteRow: localize('com_ui_steel_review_delete_row'),
     restoreRow: localize('com_ui_steel_review_restore_row'),
@@ -712,9 +742,11 @@ export default function SteelReviewDialog({
   }, [captureId, identity, setSelection]);
   const authorityMatchesLiveTable = !capturedAuthority || !table ||
     table.outputId === capturedAuthority.outputId;
+  const saveBusy = savePhase === 'preparing' || savePhase === 'committing' ||
+    savePhase === 'uncertain' || savePhase === 'reconciling';
   const canEdit = Boolean(table && (table.kind === 'ocr_result' || table.kind === 'system_order') && table.isLatest &&
     table.latestOutputId === table.outputId && !table.readOnly &&
-    (!capturedAuthority || table.outputId === capturedAuthority.outputId));
+    (!capturedAuthority || table.outputId === capturedAuthority.outputId) && !saveBusy);
   const canEditStructure = canEdit;
   const canEditSources = canEdit && (table?.kind === 'ocr_result' || table?.kind === 'system_order');
   const canSave = canEdit && authorityMatchesLiveTable;
@@ -920,7 +952,7 @@ export default function SteelReviewDialog({
   }, [saveRecovery]);
   const onCellChange = useCallback(
     (row: SteelReviewRow, header: string, value: string) => {
-      if (!table || !canEdit || !row.rowId) {
+      if (!table || !canEdit || saveBusy || !row.rowId) {
         return;
       }
       setDraftStateScoped((current) => {
@@ -935,7 +967,20 @@ export default function SteelReviewDialog({
         return next;
       });
     },
-    [baseTable, canEdit, captureId, draftStateKey, setDraftStateScoped, table],
+    [baseTable, canEdit, captureId, draftStateKey, saveBusy, setDraftStateScoped, table],
+  );
+
+  const onMeasurementChange = useCallback(
+    (row: SteelReviewRow, measurement: SteelProcessingMeasurement | null) => {
+      if (!table || !canEdit || saveBusy || !row.rowId || row.system?.kind !== 'processing') return;
+      setDraftStateScoped((current) => {
+        const ownerDraft = current.ownerKey === draftStateKey
+          ? current
+          : createSteelReviewDraftState(draftStateKey);
+        return setSteelReviewDraftMeasurement(ownerDraft, row, measurement);
+      });
+    },
+    [canEdit, draftStateKey, saveBusy, setDraftStateScoped, table],
   );
 
   const clearRecovery = useCallback(() => {
@@ -977,17 +1022,18 @@ export default function SteelReviewDialog({
   }, [captureId, identity, persistCapturedAuthority, queryClient, setDraftStateScoped, setSaveRecovery]);
 
   const onCellHistoryBoundary = useCallback(() => {
+    if (saveBusy) return;
     setDraftStateScoped((current) => finishSteelReviewDraftHistory(current));
-  }, [setDraftStateScoped]);
+  }, [saveBusy, setDraftStateScoped]);
   const onSourceEdit = useCallback((row: SteelReviewRow) => {
-    if (!canEditSources || !row.rowId || (table?.kind === 'system_order' && row.system?.kind !== 'material')) {
+    if (!canEditSources || saveBusy || !row.rowId || (table?.kind === 'system_order' && row.system?.kind !== 'material')) {
       return;
     }
     setDialogState((state) => ({ ...state, sourceCorrectionRowId: row.rowId }));
-  }, [canEditSources, setDialogState, table?.kind]);
+  }, [canEditSources, saveBusy, setDialogState, table?.kind]);
   const onSourceChange = useCallback(
     (row: SteelReviewRow, source: SteelReviewSource | null) => {
-      if (!table || !canEditSources || !row.rowId || (table.kind === 'system_order' && row.system?.kind !== 'material')) {
+      if (!table || !canEditSources || saveBusy || !row.rowId || (table.kind === 'system_order' && row.system?.kind !== 'material')) {
         return;
       }
       setDraftStateScoped((current) => {
@@ -1002,7 +1048,7 @@ export default function SteelReviewDialog({
         return next;
       });
     },
-    [baseTable, canEditSources, captureId, draftStateKey, setDraftStateScoped, table],
+    [baseTable, canEditSources, captureId, draftStateKey, saveBusy, setDraftStateScoped, table],
   );
   const applyLatestConflictValue = useCallback((conflict: SteelReviewConflict) => {
     const recovery = getCaptureScopedValue(recoveryRef, captureId);
@@ -1012,6 +1058,8 @@ export default function SteelReviewDialog({
     }
     if (conflict.kind === 'field') {
       onCellChange(row, conflict.header, conflict.current ?? '');
+    } else if (conflict.kind === 'measurement') {
+      onMeasurementChange(row, conflict.current);
     } else if (conflict.kind === 'source') {
       const latest = conflict.current;
       const source = latest && latest.fileId
@@ -1040,7 +1088,7 @@ export default function SteelReviewDialog({
   }, [captureId]);
   const onAddRow = useCallback(() => {
     const editTable = baseTable ?? table;
-    if (!editTable || !canEditStructure) return;
+    if (!editTable || !canEditStructure || saveBusy) return;
     setDraftStateScoped((current) => {
       const ownerDraft = current.ownerKey === draftStateKey
         ? current
@@ -1058,10 +1106,10 @@ export default function SteelReviewDialog({
         : null;
       return updateDraftRows(addSteelReviewDraftRow(ownerDraft, editTable, anchor, source));
     });
-  }, [baseTable, canEditStructure, draftRows, draftStateKey, pageNumber, selectedSource, setDraftStateScoped, table, updateDraftRows]);
+  }, [baseTable, canEditStructure, draftRows, draftStateKey, pageNumber, saveBusy, selectedSource, setDraftStateScoped, table, updateDraftRows]);
   const onAddSystemRow = useCallback((kind: 'material' | 'processing', selectedParentId?: string, anchorRow?: SteelReviewRow) => {
     const editTable = baseTable ?? table;
-    if (!editTable || !canEditStructure || editTable.kind !== 'system_order') return;
+    if (!editTable || !canEditStructure || saveBusy || editTable.kind !== 'system_order') return;
     const parent = kind === 'processing'
       ? draftRows.find((row) => !row.deleted && row.system?.kind === 'material' && row.rowId === selectedParentId)
       : undefined;
@@ -1088,12 +1136,12 @@ export default function SteelReviewDialog({
         : anchorRow ?? [...draftRows].reverse().find((row) => !row.deleted);
       return updateDraftRows(addSteelReviewDraftRow(ownerDraft, editTable, anchor, source, system));
     });
-  }, [baseTable, canEditStructure, draftRows, draftStateKey, pageNumber, selectedSource, setDraftStateScoped, table, updateDraftRows]);
+  }, [baseTable, canEditStructure, draftRows, draftStateKey, pageNumber, saveBusy, selectedSource, setDraftStateScoped, table, updateDraftRows]);
   const onAddProcessingUnder = useCallback((row: SteelReviewRow) => {
     onAddSystemRow('processing', row.rowId, row);
   }, [onAddSystemRow]);
   const onBindProcessing = useCallback((row: SteelReviewRow, parentRowId: string | null) => {
-    if (!canEditStructure || table?.kind !== 'system_order' || row.system?.kind !== 'processing') return;
+    if (!canEditStructure || saveBusy || table?.kind !== 'system_order' || row.system?.kind !== 'processing') return;
     setDraftStateScoped((current) => {
       const ownerDraft = current.ownerKey === draftStateKey
         ? current
@@ -1104,9 +1152,9 @@ export default function SteelReviewDialog({
         cascadeDeletedBy: row.system?.cascadeDeletedBy ?? null,
       }));
     });
-  }, [canEditStructure, draftStateKey, setDraftStateScoped, table?.kind, updateDraftRows]);
+  }, [canEditStructure, draftStateKey, saveBusy, setDraftStateScoped, table?.kind, updateDraftRows]);
   const onClassify = useCallback((row: SteelReviewRow, kind: 'material' | 'processing') => {
-    if (!canEditStructure || table?.kind !== 'system_order' || row.system?.kind !== 'unassigned') return;
+    if (!canEditStructure || saveBusy || table?.kind !== 'system_order' || row.system?.kind !== 'unassigned') return;
     const parentRowId = kind === 'processing' ? dialogState.processingParentId ?? null : null;
     setDraftStateScoped((current) => {
       const ownerDraft = current.ownerKey === draftStateKey
@@ -1118,10 +1166,10 @@ export default function SteelReviewDialog({
         cascadeDeletedBy: null,
       }));
     });
-  }, [canEditStructure, dialogState.processingParentId, draftStateKey, setDraftStateScoped, table?.kind, updateDraftRows]);
+  }, [canEditStructure, dialogState.processingParentId, draftStateKey, saveBusy, setDraftStateScoped, table?.kind, updateDraftRows]);
   const onDeleteGroup = useCallback((row: SteelReviewRow) => {
     const editTable = baseTable ?? table;
-    if (!editTable || !canEditStructure || editTable.kind !== 'system_order' || row.system?.kind !== 'material') return;
+    if (!editTable || !canEditStructure || saveBusy || editTable.kind !== 'system_order' || row.system?.kind !== 'material') return;
     setDraftStateScoped((current) => {
       const ownerDraft = current.ownerKey === draftStateKey
         ? current
@@ -1129,10 +1177,10 @@ export default function SteelReviewDialog({
       const currentRows = applySteelReviewDrafts(editTable.rows, ownerDraft);
       return updateDraftRows(deleteSteelReviewDraftGroup(ownerDraft, currentRows, row, editTable.rows));
     });
-  }, [baseTable, canEditStructure, draftStateKey, setDraftStateScoped, table, updateDraftRows]);
+  }, [baseTable, canEditStructure, draftStateKey, saveBusy, setDraftStateScoped, table, updateDraftRows]);
   const onDeleteRow = useCallback((row: SteelReviewRow) => {
     const editTable = baseTable ?? table;
-    if (!editTable || !canEditStructure) return;
+    if (!editTable || !canEditStructure || saveBusy) return;
     setDraftStateScoped((current) => {
       const ownerDraft = current.ownerKey === draftStateKey
         ? current
@@ -1140,9 +1188,9 @@ export default function SteelReviewDialog({
       const isSaved = editTable.rows.some((candidate) => candidate.rowId === row.rowId);
       return updateDraftRows(deleteSteelReviewDraftRow(ownerDraft, row, isSaved));
     });
-  }, [baseTable, canEditStructure, draftStateKey, setDraftStateScoped, table, updateDraftRows]);
+  }, [baseTable, canEditStructure, draftStateKey, saveBusy, setDraftStateScoped, table, updateDraftRows]);
   const onRestoreRow = useCallback((row: SteelReviewRow) => {
-    if (!(baseTable ?? table) || !canEditStructure) return;
+    if (!(baseTable ?? table) || !canEditStructure || saveBusy) return;
     setDraftStateScoped((current) => {
       const ownerDraft = current.ownerKey === draftStateKey
         ? current
@@ -1151,13 +1199,15 @@ export default function SteelReviewDialog({
         ? restoreSteelReviewDraftGroup(ownerDraft, draftRows, row)
         : restoreSteelReviewDraftRow(ownerDraft, row));
     });
-  }, [baseTable, canEditStructure, draftRows, draftStateKey, setDraftStateScoped, table, updateDraftRows]);
+  }, [baseTable, canEditStructure, draftRows, draftStateKey, saveBusy, setDraftStateScoped, table, updateDraftRows]);
   const onUndo = useCallback(() => {
+    if (saveBusy) return;
     setDraftStateScoped((current) => updateDraftRows(undoSteelReviewDraft(current)));
-  }, [setDraftStateScoped, updateDraftRows]);
+  }, [saveBusy, setDraftStateScoped, updateDraftRows]);
   const onRedo = useCallback(() => {
+    if (saveBusy) return;
     setDraftStateScoped((current) => updateDraftRows(redoSteelReviewDraft(current)));
-  }, [setDraftStateScoped, updateDraftRows]);
+  }, [saveBusy, setDraftStateScoped, updateDraftRows]);
   const latestDraftStateRef = useRef(draftState);
   latestDraftStateRef.current = draftState;
   const latestTableRef = useRef(table);
@@ -1608,6 +1658,9 @@ export default function SteelReviewDialog({
     setDiscardRequested(true);
   }, [captureId, receiptInput, setDiscardRequested, setReceiptFailed, setSaveErrorCode, setSavePhase]);
   const requestClose = useCallback(() => {
+    if (saveBusy) {
+      return;
+    }
     if (dirtyRowCount > 0 || savePhase === 'preparing' || savePhase === 'committing' ||
       savePhase === 'uncertain' || savePhase === 'reconciling') {
       setCloseRequested(true);
@@ -1615,7 +1668,7 @@ export default function SteelReviewDialog({
     }
     clearCapturedAuthority();
     clearSelectionForCapture(captureId, getCapturedAuthority(captureId)?.outputId);
-  }, [captureId, clearCapturedAuthority, clearSelectionForCapture, dirtyRowCount, getCapturedAuthority, savePhase, setCloseRequested]);
+  }, [captureId, clearCapturedAuthority, clearSelectionForCapture, dirtyRowCount, getCapturedAuthority, saveBusy, savePhase, setCloseRequested]);
   useEffect(() => {
     if (!discardRequested || !receiptInput) {
       return undefined;
@@ -1797,7 +1850,6 @@ export default function SteelReviewDialog({
       downloadFilename,
     );
   }, [captureId, downloadFilename, ensureSaved, getCapturedAuthority, getExportMatrix, hasCurrentCapturedSession]);
-  const saveBusy = savePhase === 'preparing' || savePhase === 'committing' || savePhase === 'reconciling';
   const saveDisabled = !canSave || dirtyRowCount === 0 || saveBusy;
   const saveErrorKey = getSaveErrorKey(savePhase, saveErrorCode);
   const preparedForCapture = getCaptureScopedValue(preparedRef, captureId);
@@ -1845,6 +1897,11 @@ export default function SteelReviewDialog({
         className={fullScreen
           ? 'fixed inset-0 left-0 top-0 flex h-screen w-screen max-h-none max-w-none translate-x-0 translate-y-0 flex-col gap-4 overflow-hidden rounded-none p-6'
           : 'flex max-h-[95vh] w-[min(96vw,96rem)] max-w-none flex-col gap-4 overflow-hidden p-6'}
+        onEscapeKeyDown={(event) => {
+          if (saveBusy) {
+            event.preventDefault();
+          }
+        }}
         onKeyDown={(event) => {
           const target = event.target as HTMLElement;
           if (target.isContentEditable || ['INPUT', 'SELECT', 'TEXTAREA'].includes(target.tagName)) {
@@ -1997,6 +2054,14 @@ export default function SteelReviewDialog({
                           2: formatSource(conflict.current),
                           3: formatSource(conflict.requested),
                         });
+                      } else if (conflict.kind === 'measurement') {
+                        conflictLabel = localize('com_ui_steel_review_conflict_measurement');
+                        conflictValues = localize('com_ui_steel_review_conflict_values', {
+                          0: conflictRowLabel,
+                          1: conflict.expected?.mode ?? '∅',
+                          2: conflict.current?.mode ?? '∅',
+                          3: conflict.requested?.mode ?? '∅',
+                        });
                       } else if (conflict.kind === 'activity') {
                         conflictLabel = localize('com_ui_steel_review_conflict_activity');
                         conflictValues = localize('com_ui_steel_review_conflict_row', {
@@ -2017,7 +2082,7 @@ export default function SteelReviewDialog({
                           3: conflict.requested ?? '∅',
                         });
                       }
-                      const actionable = conflict.kind === 'field' || conflict.kind === 'source';
+                      const actionable = conflict.kind === 'field' || conflict.kind === 'source' || conflict.kind === 'measurement';
                       return (
                         <div key={`${conflict.kind}:${conflict.rowId}:${conflictLabel}`} className="flex flex-wrap items-center gap-2">
                           <span>{conflictLabel} · {conflictValues}</span>
@@ -2158,6 +2223,7 @@ export default function SteelReviewDialog({
                       processing: localize('com_ui_steel_review_processing'),
                     }}
                     onCellChange={onCellChange}
+                    onMeasurementChange={onMeasurementChange}
                     onCellHistoryBoundary={onCellHistoryBoundary}
                     canEdit={canEdit}
                     sourcePageCountError={sourcePageCountQuery.isError}
@@ -2196,6 +2262,7 @@ export default function SteelReviewDialog({
                           processing: localize('com_ui_steel_review_processing'),
                         }}
                         onCellChange={onCellChange}
+                        onMeasurementChange={onMeasurementChange}
                         onCellHistoryBoundary={onCellHistoryBoundary}
                         canEdit={canEdit}
                         sourcePageCountError={sourcePageCountQuery.isError}
@@ -2235,6 +2302,7 @@ export default function SteelReviewDialog({
                     processing: localize('com_ui_steel_review_processing'),
                   }}
                   onCellChange={onCellChange}
+                  onMeasurementChange={onMeasurementChange}
                   onCellHistoryBoundary={onCellHistoryBoundary}
                   canEdit={canEdit}
                   sourcePageCountError={sourcePageCountQuery.isError}
@@ -2317,7 +2385,7 @@ export default function SteelReviewDialog({
               </Button>
             )}
           </div>
-          <Button type="button" onClick={requestClose}>{localize('com_ui_close')}</Button>
+          <Button type="button" disabled={saveBusy} onClick={requestClose}>{localize('com_ui_close')}</Button>
         </div>
         {closeRequested && (
           <div className="space-y-3 rounded-md border border-border-light bg-surface-secondary p-3" role="alertdialog" aria-label={localize('com_ui_steel_review_close_confirm')}>
@@ -2340,7 +2408,7 @@ export default function SteelReviewDialog({
               >
                 {localize('com_ui_steel_review_discard_unsaved')}
               </Button>
-              <Button type="button" onClick={() => setCloseRequested(false)}>
+              <Button type="button" disabled={saveBusy} onClick={() => setCloseRequested(false)}>
                 {localize('com_ui_steel_review_continue_editing')}
               </Button>
             </div>

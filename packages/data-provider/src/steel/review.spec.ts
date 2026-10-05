@@ -895,6 +895,92 @@ describe('Steel review contracts', () => {
     }
   });
 
+  it('recalculates a processing child from an explicit per-piece measurement when its parent quantity changes', () => {
+    const parent = {
+      rowId: 'material-1',
+      values: {
+        型號: { baseline: 'H', effective: 'H' }, 類別: { baseline: 'H型鋼', effective: 'H型鋼' },
+        單位: { baseline: '支', effective: '支' }, 數量: { baseline: '2', effective: '2' },
+      },
+      source: null,
+      system: { kind: 'material' as const, parentRowId: null, cascadeDeletedBy: null },
+      origin: 'ai' as const,
+      deleted: false,
+    };
+    const child = {
+      rowId: 'processing-1',
+      values: {
+        型號: { baseline: 'cut', effective: 'cut' }, 類別: { baseline: '加工/切工', effective: '加工/切工' },
+        單位: { baseline: '刀', effective: '刀' }, 數量: { baseline: '1', effective: '1' }, 總數: { baseline: '6', effective: '6' },
+      },
+      source: null,
+      system: { kind: 'processing' as const, parentRowId: parent.rowId, cascadeDeletedBy: null },
+      calculation: { measurement: { mode: 'perPiece' as const, amount: '3', unit: '刀', ruleVersion: 'v1' as const } },
+      origin: 'ai' as const,
+      deleted: false,
+    };
+    const result = applySteelReviewOperations({
+      currentRows: normalizeSteelReviewLedgerRows([parent, child]),
+      expectedRows: normalizeSteelReviewLedgerRows([parent, child]),
+      headers: ['型號', '類別', '單位', '數量', '總數'],
+      operations: [{ type: 'update', rowId: parent.rowId, changes: [{ header: '數量', value: '5' }] }],
+    });
+    expect(result).toMatchObject({ ok: true });
+    if (result.ok) {
+      expect(result.currentRows.find((row) => row.rowId === child.rowId)?.values['總數']?.effective).toBe('15');
+      expect(result.currentRows.find((row) => row.rowId === child.rowId)?.calculation?.fields?.['總數']).toMatchObject({
+        kind: 'derived',
+        dependencies: { parentRowId: parent.rowId },
+      });
+    }
+  });
+
+  it('lets a later measurement intent replace an earlier manual processing total', () => {
+    const parent = {
+      rowId: 'material-1',
+      values: { 類別: { baseline: 'H型鋼', effective: 'H型鋼' }, 單位: { baseline: '支', effective: '支' }, 數量: { baseline: '2', effective: '2' } },
+      source: null, system: { kind: 'material' as const, parentRowId: null, cascadeDeletedBy: null }, origin: 'ai' as const, deleted: false,
+    };
+    const child = {
+      rowId: 'processing-1',
+      values: { 類別: { baseline: '加工', effective: '加工' }, 單位: { baseline: '刀', effective: '刀' }, 總數: { baseline: '6', effective: '6' } },
+      source: null, system: { kind: 'processing' as const, parentRowId: parent.rowId, cascadeDeletedBy: null },
+      calculation: { measurement: { mode: 'perPiece' as const, amount: '3', unit: '刀', ruleVersion: 'v1' as const } }, origin: 'ai' as const, deleted: false,
+    };
+    const first = applySteelReviewOperations({
+      currentRows: normalizeSteelReviewLedgerRows([parent, child]), expectedRows: normalizeSteelReviewLedgerRows([parent, child]),
+      headers: ['類別', '單位', '數量', '總數'], operations: [{ type: 'update', rowId: child.rowId, changes: [{ header: '總數', value: '99' }] }],
+    });
+    expect(first).toMatchObject({ ok: true });
+    if (!first.ok) return;
+    const second = applySteelReviewOperations({
+      currentRows: first.currentRows, expectedRows: first.expectedRows,
+      headers: ['類別', '單位', '數量', '總數'], operations: [{ type: 'update', rowId: child.rowId, measurement: { mode: 'perPiece', amount: '4', unit: '刀', ruleVersion: 'v1' } }],
+    });
+    expect(second).toMatchObject({ ok: true });
+    if (second.ok) expect(second.currentRows.find((row) => row.rowId === child.rowId)?.values['總數']?.effective).toBe('8');
+  });
+
+  it('saves an incomplete measurement and preserves the existing processing total', () => {
+    const row = {
+      rowId: 'processing-1',
+      values: { 類別: { baseline: '加工', effective: '加工' }, 單位: { baseline: '刀', effective: '刀' }, 總數: { baseline: '4', effective: '4' } },
+      source: null, system: { kind: 'processing' as const, parentRowId: null, cascadeDeletedBy: null }, origin: 'ai' as const, deleted: false,
+    };
+    const result = applySteelReviewOperations({
+      currentRows: normalizeSteelReviewLedgerRows([row]), expectedRows: normalizeSteelReviewLedgerRows([row]),
+      headers: ['類別', '單位', '總數'], operations: [{ type: 'update', rowId: row.rowId, measurement: {
+        mode: 'cutting', amount: null, unit: '刀', ruleVersion: 'v1', planId: 'plan-1', planVersion: '1', confirmed: false,
+        groups: [{ stockLengthMm: null, pieceLengthMm: null, pieceCount: null, stockCount: null, lossMm: null, remainderMm: null, headTrimMm: null, tailTrimMm: null, pieceHeadTrimMm: null, pieceTailTrimMm: null }],
+      } }],
+    });
+    expect(result).toMatchObject({ ok: true });
+    if (result.ok) {
+      expect(result.currentRows[0]?.values['總數']?.effective).toBe('4');
+      expect(result.currentRows[0]?.calculation?.measurement).toMatchObject({ planId: 'plan-1' });
+    }
+  });
+
   it('normalizes ordered add-row inputs for every persisted system kind', () => {
     const headers = ['型號', '類別', '單位', '數量', '單重', '總數', '厚度', '寬度', '長度'];
     const parent = {

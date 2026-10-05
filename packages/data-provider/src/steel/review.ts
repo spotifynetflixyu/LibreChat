@@ -1,6 +1,7 @@
 import { z } from 'zod';
+import type { SteelProcessingMeasurement } from './calculation';
+import { calculateSteelProcessingMeasurement, calculateSteelSystemOrderRow, steelProcessingMeasurementSchema } from './calculation';
 import { steelCalculationRowMetadataSchema } from './calculation';
-import { calculateSteelSystemOrderRow } from './calculation';
 
 export const steelReviewKinds = ['ocr_result', 'system_order'] as const;
 export type SteelReviewKind = (typeof steelReviewKinds)[number];
@@ -277,11 +278,13 @@ const steelReviewOperationUpdateSchema = z.object({
   changes: z.array(steelReviewOperationChangeSchema).optional(),
   source: steelReviewOperationSourceSchema.optional(),
   binding: z.object({ parentRowId: z.string().min(1).nullable() }).strict().optional(),
+  measurement: steelProcessingMeasurementSchema.nullable().optional(),
 }).strict().superRefine((value, context) => {
   rejectPresentUndefinedOperationField(value, context);
   if ((!value.changes || value.changes.length === 0) &&
     !Object.prototype.hasOwnProperty.call(value, 'source') &&
-    !Object.prototype.hasOwnProperty.call(value, 'binding')) {
+    !Object.prototype.hasOwnProperty.call(value, 'binding') &&
+    !Object.prototype.hasOwnProperty.call(value, 'measurement')) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: 'An update requires changes or a source intent' });
   }
   if (value.changes && value.changes.length > 0 && new Set(value.changes.map((change) => change.header)).size !== value.changes.length) {
@@ -296,6 +299,7 @@ const steelReviewOperationAddSchema = z.object({
   changes: z.array(steelReviewOperationChangeSchema).min(1),
   source: steelReviewOperationSourceSchema.optional(),
   system: steelReviewOperationSystemSchema.optional(),
+  measurement: steelProcessingMeasurementSchema.optional(),
 }).strict().superRefine((value, context) => {
   rejectPresentUndefinedOperationField(value, context);
   if (new Set(value.changes.map((change) => change.header)).size !== value.changes.length) {
@@ -442,6 +446,13 @@ export const steelReviewConflictSchema = z.union([
     expected: z.string().nullable(),
     current: z.string().nullable(),
     requested: z.string().nullable(),
+  }).strict(),
+  z.object({
+    kind: z.literal('measurement'),
+    rowId: z.string().min(1),
+    expected: steelProcessingMeasurementSchema.nullable(),
+    current: steelProcessingMeasurementSchema.nullable(),
+    requested: steelProcessingMeasurementSchema.nullable(),
   }).strict(),
 ]);
 
@@ -662,12 +673,44 @@ function cloneReviewCalculation(calculation: SteelReviewRow['calculation']): Ste
         exactPhysical: { ...calculation.candidate.exactPhysical },
       },
     } : {}),
+    ...(calculation.measurement ? {
+      measurement: {
+        ...calculation.measurement,
+        ...(calculation.measurement.mode === 'cutting'
+          ? { groups: calculation.measurement.groups.map((group) => ({ ...group })) }
+          : {}),
+      },
+    } : {}),
     ...(calculation.fields ? {
       fields: Object.fromEntries(Object.entries(calculation.fields).map(([header, field]) => [header, {
         ...field,
         ...(field.dependencies ? { dependencies: { ...field.dependencies } } : {}),
       }])),
     } : {}),
+  };
+}
+
+function setProcessingMeasurement(
+  row: SteelReviewLedgerRow,
+  measurement: SteelProcessingMeasurement | null | undefined,
+): void {
+  if (measurement === undefined) return;
+  const calculation = cloneReviewCalculation(row.calculation) ?? {};
+  if (measurement === null) {
+    delete calculation.measurement;
+  } else {
+    calculation.measurement = {
+      ...measurement,
+      ruleVersion: 'v1',
+      ...(measurement.mode === 'cutting'
+        ? { groups: measurement.groups.map((group) => ({ ...group })) }
+        : {}),
+    };
+  }
+  row.calculation = {
+    ...(calculation.candidate ? { candidate: calculation.candidate } : {}),
+    ...(calculation.measurement ? { measurement: calculation.measurement } : {}),
+    ...(calculation.fields ? { fields: calculation.fields } : {}),
   };
 }
 
@@ -778,6 +821,116 @@ function applyRowCalculation(
   return conflicts;
 }
 
+function sameProcessingMeasurement(
+  left: NonNullable<SteelReviewLedgerRow['calculation']>['measurement'] | null | undefined,
+  right: NonNullable<SteelReviewLedgerRow['calculation']>['measurement'] | null | undefined,
+): boolean {
+  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+}
+
+function applyProcessingRowCalculation(
+  row: SteelReviewLedgerRow,
+  expectedRow: SteelReviewLedgerRow,
+  parent: SteelReviewLedgerRow | undefined,
+  expectedParent: SteelReviewLedgerRow | undefined,
+  headers: readonly string[],
+  allowManualOverride = true,
+): SteelReviewConflict[] {
+  if (row.system?.kind !== 'processing' || row.deleted) {
+    return [];
+  }
+  const measurement = row.calculation?.measurement;
+  if (!measurement) return [];
+  if (measurement.mode !== 'batch' && (!parent || !expectedParent || parent.deleted ||
+    parent.system?.kind !== 'material' || expectedParent.deleted || expectedParent.system?.kind !== 'material')) {
+    return [];
+  }
+  const totalHeader = headers.includes('總數') ? '總數' : undefined;
+  if (!totalHeader) return [];
+  const currentTotal = row.values[totalHeader]?.effective ?? null;
+  const expectedTotal = expectedRow.values[totalHeader]?.effective ?? null;
+  const currentField = row.calculation?.fields?.[totalHeader];
+  const expectedField = expectedRow.calculation?.fields?.[totalHeader];
+  const conflicts: SteelReviewConflict[] = [];
+  if (currentTotal !== expectedTotal && currentField?.kind === 'manual') {
+    conflicts.push({ kind: 'field', rowId: row.rowId, header: totalHeader, expected: expectedTotal, current: currentTotal, requested: currentTotal });
+    return conflicts;
+  }
+  const result = calculateSteelProcessingMeasurement({
+    headers,
+    values: headers.map((header) => row.values[header]?.effective ?? ''),
+    measurement,
+    parentHeaders: headers,
+    parentValues: parent ? headers.map((header) => parent.values[header]?.effective ?? '') : [],
+  });
+  if (result === undefined || (!allowManualOverride && currentField?.kind === 'manual')) return conflicts;
+  const provenance: SteelReviewFieldProvenance = {
+    kind: 'derived',
+    ruleVersion: 'v1',
+    dependencies: {
+      ...(parent ? { parentRowId: parent.rowId } : {}),
+      measurement: JSON.stringify(measurement),
+    },
+  };
+  if (currentTotal !== result && currentTotal !== expectedTotal && currentField?.kind !== 'derived') {
+    conflicts.push({ kind: 'field', rowId: row.rowId, header: totalHeader, expected: expectedTotal, current: currentTotal, requested: result });
+    return conflicts;
+  }
+  row.values[totalHeader] = {
+    ...(row.values[totalHeader] ?? { baseline: null, effective: null }),
+    effective: result,
+  };
+  expectedRow.values[totalHeader] = {
+    ...(expectedRow.values[totalHeader] ?? { baseline: null, effective: null }),
+    effective: result,
+  };
+  const fields = { ...(row.calculation?.fields ?? {}), [totalHeader]: provenance };
+  row.calculation = {
+    ...(row.calculation?.candidate ? { candidate: row.calculation.candidate } : {}),
+    measurement,
+    fields,
+  };
+  const expectedFields = { ...(expectedRow.calculation?.fields ?? {}), [totalHeader]: provenance };
+  expectedRow.calculation = {
+    ...(expectedRow.calculation?.candidate ? { candidate: expectedRow.calculation.candidate } : {}),
+    measurement,
+    fields: expectedFields,
+  };
+  return conflicts;
+}
+
+type SteelReviewFieldProvenance = NonNullable<NonNullable<SteelReviewRow['calculation']>['fields']>[string];
+
+function clearProcessingDerivedProvenance(row: SteelReviewLedgerRow): void {
+  const fields = { ...(row.calculation?.fields ?? {}) };
+  if (fields['總數']?.kind === 'derived') delete fields['總數'];
+  row.calculation = {
+    ...(row.calculation?.candidate ? { candidate: row.calculation.candidate } : {}),
+    ...(row.calculation?.measurement ? { measurement: row.calculation.measurement } : {}),
+    ...(Object.keys(fields).length > 0 ? { fields } : {}),
+  };
+}
+
+function recalculateChildrenForParent(
+  parent: SteelReviewLedgerRow,
+  currentRows: readonly SteelReviewLedgerRow[],
+  expectedById: ReadonlyMap<string, SteelReviewLedgerRow>,
+  currentById: ReadonlyMap<string, SteelReviewLedgerRow>,
+  headers: readonly string[],
+): SteelReviewConflict[] {
+  if (parent.system?.kind !== 'material' || parent.deleted) return [];
+  const conflicts: SteelReviewConflict[] = [];
+  for (const child of currentRows) {
+    if (child.system?.kind !== 'processing' || child.system.parentRowId !== parent.rowId || child.deleted) continue;
+    const expectedChild = expectedById.get(child.rowId);
+    const currentParent = currentById.get(parent.rowId);
+    const expectedParent = expectedById.get(parent.rowId);
+    if (!expectedChild || !currentParent || !expectedParent) continue;
+    conflicts.push(...applyProcessingRowCalculation(child, expectedChild, currentParent, expectedParent, headers));
+  }
+  return conflicts;
+}
+
 function stageBinding(
   row: SteelReviewLedgerRow,
   expectedRow: SteelReviewLedgerRow,
@@ -885,6 +1038,9 @@ export function applySteelReviewOperations({
         insertion,
         ...(operation.system ? { system: requestedRelationState(operation.system) } : {}),
       };
+      if (operation.measurement !== undefined) {
+        setProcessingMeasurement(row, operation.measurement);
+      }
       if (row.system?.kind === 'processing') {
         const parent = row.system.parentRowId ? currentById.get(row.system.parentRowId) : undefined;
         const expectedParent = row.system.parentRowId ? expectedById.get(row.system.parentRowId) : undefined;
@@ -912,6 +1068,18 @@ export function applySteelReviewOperations({
           effective: requestedValue,
         };
         conflicts.push(...applyRowCalculation(row, expectedRow, headers, [change.header]));
+      }
+      if (operation.system?.kind === 'processing' && operation.measurement !== undefined) {
+        const parent = operation.system.parentRowId ? currentById.get(operation.system.parentRowId) : undefined;
+        const expectedParent = operation.system.parentRowId ? expectedById.get(operation.system.parentRowId) : undefined;
+        conflicts.push(...applyProcessingRowCalculation(
+          row,
+          expectedRow,
+          parent,
+          expectedParent,
+          headers,
+          !operation.changes.some((change) => change.header === '總數'),
+        ));
       }
       current.push(row);
       currentById.set(row.rowId, row);
@@ -941,6 +1109,28 @@ export function applySteelReviewOperations({
         continue;
       }
       let hasPriorValueChange = false;
+      if (Object.prototype.hasOwnProperty.call(operation, 'measurement')) {
+        const requestedMeasurement = operation.measurement ?? null;
+        const currentMeasurement = row.calculation?.measurement ?? null;
+        const expectedMeasurement = expectedRow.calculation?.measurement ?? null;
+        if (!sameProcessingMeasurement(currentMeasurement, expectedMeasurement) &&
+          !sameProcessingMeasurement(currentMeasurement, requestedMeasurement)) {
+          conflicts.push({
+            kind: 'measurement',
+            rowId: row.rowId,
+            expected: expectedMeasurement,
+            current: currentMeasurement,
+            requested: requestedMeasurement,
+          });
+        } else {
+          setProcessingMeasurement(row, operation.measurement);
+          setProcessingMeasurement(expectedRow, operation.measurement);
+          if (operation.measurement === null) {
+            clearProcessingDerivedProvenance(row);
+            clearProcessingDerivedProvenance(expectedRow);
+          }
+        }
+      }
       for (const change of operation.changes ?? []) {
         const requestedValue = normalizeSteelReviewEffectiveValue(change.value);
         const currentValue = row.values[change.header]?.effective ?? null;
@@ -987,6 +1177,23 @@ export function applySteelReviewOperations({
           cascadeDeletedBy: null,
         };
         stageBinding(row, expectedRow, requested, currentById, expectedById, conflicts);
+      }
+      if (operation.measurement !== undefined || operation.binding !== undefined) {
+        const parentId = row.system?.kind === 'processing' ? row.system.parentRowId : null;
+        const parent = parentId ? currentById.get(parentId) : undefined;
+        const expectedParent = parentId ? expectedById.get(parentId) : undefined;
+        conflicts.push(...applyProcessingRowCalculation(
+          row,
+          expectedRow,
+          parent,
+          expectedParent,
+          headers,
+          !(operation.changes ?? []).some((change) => change.header === '總數'),
+        ));
+      }
+      const changedHeaders = operation.changes?.map((change) => change.header) ?? [];
+      if (row.system?.kind === 'material' && changedHeaders.some((header) => header === '數量' || header === '長度')) {
+        conflicts.push(...recalculateChildrenForParent(row, current, expectedById, currentById, headers));
       }
       continue;
     }

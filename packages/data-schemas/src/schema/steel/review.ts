@@ -42,6 +42,32 @@ const steelReviewSystemStateSchema = new Schema<SteelReviewSystemState>(
 const steelCalculationSchema = new Schema(
   {
     candidate: { type: Schema.Types.Mixed },
+    measurement: {
+      type: new Schema({
+        mode: { type: String, enum: ['perPiece', 'batch', 'cutting'], required: true },
+        amount: { type: String, default: null },
+        unit: { type: String, required: true },
+        ruleVersion: { type: String },
+        planId: { type: String },
+        planVersion: { type: String },
+        confirmed: { type: Boolean },
+        groups: {
+          type: [new Schema({
+            stockLengthMm: { type: String, default: null },
+            pieceLengthMm: { type: String, default: null },
+            pieceCount: { type: String, default: null },
+            stockCount: { type: String, default: null },
+            lossMm: { type: String, default: null },
+            remainderMm: { type: String, default: null },
+            headTrimMm: { type: String, default: null },
+            tailTrimMm: { type: String, default: null },
+            pieceHeadTrimMm: { type: String, default: null },
+            pieceTailTrimMm: { type: String, default: null },
+          }, { _id: false })],
+          default: undefined,
+        },
+      }, { _id: false }),
+    },
     fields: { type: Map, of: new Schema({
       kind: { type: String, enum: ['candidate', 'manual', 'derived', 'legacy'], required: true },
       candidateCode: { type: String },

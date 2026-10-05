@@ -28,8 +28,54 @@ export const steelCalculationFieldProvenanceSchema = z.object({
 }).strict();
 export type SteelCalculationFieldProvenance = z.infer<typeof steelCalculationFieldProvenanceSchema>;
 
+export const steelProcessingMeasurementRuleVersion = 'v1' as const;
+const steelMeasurementDecimalSchema = z.string().regex(/^(?:\d+|\d{1,3}(?:,\d{3})+)(?:\.\d+)?$/);
+const steelMeasurementIntegerSchema = z.string().regex(/^\d+$/);
+
+export const steelProcessingMeasurementModeSchema = z.enum(['perPiece', 'batch', 'cutting']);
+export type SteelProcessingMeasurementMode = z.infer<typeof steelProcessingMeasurementModeSchema>;
+
+export const steelProcessingMeasurementSimpleSchema = z.object({
+  mode: z.enum(['perPiece', 'batch']),
+  amount: steelMeasurementDecimalSchema.nullable(),
+  unit: z.string(),
+  ruleVersion: z.literal(steelProcessingMeasurementRuleVersion).optional(),
+}).strict();
+
+export const steelProcessingCuttingGroupSchema = z.object({
+  stockLengthMm: steelMeasurementDecimalSchema.nullable(),
+  pieceLengthMm: steelMeasurementDecimalSchema.nullable(),
+  pieceCount: steelMeasurementIntegerSchema.nullable(),
+  stockCount: steelMeasurementIntegerSchema.nullable(),
+  lossMm: steelMeasurementDecimalSchema.nullable(),
+  remainderMm: steelMeasurementDecimalSchema.nullable(),
+  headTrimMm: steelMeasurementDecimalSchema.nullable(),
+  tailTrimMm: steelMeasurementDecimalSchema.nullable(),
+  pieceHeadTrimMm: steelMeasurementDecimalSchema.nullable(),
+  pieceTailTrimMm: steelMeasurementDecimalSchema.nullable(),
+}).strict();
+
+export const steelProcessingCuttingMeasurementSchema = z.object({
+  mode: z.literal('cutting'),
+  amount: z.null(),
+  unit: z.literal('刀'),
+  ruleVersion: z.literal(steelProcessingMeasurementRuleVersion).optional(),
+  planId: z.string().min(1).nullable().optional(),
+  planVersion: z.string().min(1).nullable().optional(),
+  confirmed: z.boolean(),
+  groups: z.array(steelProcessingCuttingGroupSchema),
+}).strict();
+
+export const steelProcessingMeasurementSchema = z.union([
+  steelProcessingMeasurementSimpleSchema,
+  steelProcessingCuttingMeasurementSchema,
+]);
+export type SteelProcessingMeasurement = z.infer<typeof steelProcessingMeasurementSchema>;
+export type SteelProcessingCuttingGroup = z.infer<typeof steelProcessingCuttingGroupSchema>;
+
 export const steelCalculationRowMetadataSchema = z.object({
   candidate: steelCalculationCandidateEvidenceSchema.optional(),
+  measurement: steelProcessingMeasurementSchema.optional(),
   fields: z.record(z.string(), steelCalculationFieldProvenanceSchema).optional(),
 }).strict();
 export type SteelCalculationRowMetadata = z.infer<typeof steelCalculationRowMetadataSchema>;
@@ -174,6 +220,7 @@ export function divideSteelDecimalsExactly(numerator: string, denominator: strin
 }
 
 const profileCategories = new Set(['H型鋼', 'C型鋼', '角鐵', '槽鐵', '平鐵', '方管', '圓管', '圓條']);
+const cuttingCategories = new Set(['H型鋼', 'C型鋼', '角鐵', '槽鐵', '平鐵', '方管', '圓管', '扁方管', '圓條', '方鐵']);
 
 function valueAt(headers: readonly string[], values: readonly string[], header: string): string {
   const index = headers.indexOf(header);
@@ -187,6 +234,149 @@ function dimensionAt(headers: readonly string[], values: readonly string[], head
 function setValue(headers: readonly string[], values: string[], header: string, value: string): void {
   const index = headers.indexOf(header);
   if (index >= 0) values[index] = value;
+}
+
+function addDecimalValues(values: readonly string[]): string | undefined {
+  const parts = values.map(parseDecimal);
+  if (parts.some((part) => !part)) return undefined;
+  const scale = Math.max(...parts.map((part) => part?.scale ?? 0));
+  const digits = parts.reduce((sum, part) => {
+    if (!part) return sum;
+    return sum + part.digits * powerOfTen(scale - part.scale);
+  }, BigInt(0));
+  return decimalText({ digits, scale });
+}
+
+function subtractOne(value: string): string | undefined {
+  const parsed = parseDecimal(value);
+  if (!parsed || parsed.scale !== 0 || parsed.digits <= BigInt(0)) return undefined;
+  return decimalText({ digits: parsed.digits - BigInt(1), scale: 0 });
+}
+
+function compareDecimalValues(left: string, right: string): number | undefined {
+  const leftParts = parseDecimal(left);
+  const rightParts = parseDecimal(right);
+  if (!leftParts || !rightParts) return undefined;
+  const scale = Math.max(leftParts.scale, rightParts.scale);
+  const leftDigits = leftParts.digits * powerOfTen(scale - leftParts.scale);
+  const rightDigits = rightParts.digits * powerOfTen(scale - rightParts.scale);
+  return leftDigits === rightDigits ? 0 : leftDigits < rightDigits ? -1 : 1;
+}
+
+function isPositiveDecimal(value: string | undefined): boolean {
+  return value !== undefined && compareDecimalValues(value, '0') === 1;
+}
+
+function isIntegerDecimal(value: string | undefined): boolean {
+  return value !== undefined && !value.includes('.') && !value.includes(',');
+}
+
+function quantityValue(headers: readonly string[], values: readonly string[]): string | undefined {
+  return normalizeSteelDecimal(valueAt(headers, values, '數量'));
+}
+
+function exactCuttingGroupCount(group: SteelProcessingCuttingGroup): string | undefined {
+  const stockLength = normalizeSteelDecimal(group.stockLengthMm);
+  const pieceLength = normalizeSteelDecimal(group.pieceLengthMm);
+  const pieceCount = normalizeSteelDecimal(group.pieceCount);
+  const stockCount = normalizeSteelDecimal(group.stockCount);
+  const loss = normalizeSteelDecimal(group.lossMm);
+  const remainder = normalizeSteelDecimal(group.remainderMm);
+  const headTrim = normalizeSteelDecimal(group.headTrimMm);
+  const tailTrim = normalizeSteelDecimal(group.tailTrimMm);
+  const pieceHeadTrim = normalizeSteelDecimal(group.pieceHeadTrimMm);
+  const pieceTailTrim = normalizeSteelDecimal(group.pieceTailTrimMm);
+  if (!stockLength || !pieceLength || !pieceCount || !stockCount || !loss || !remainder ||
+    !headTrim || !tailTrim || !pieceHeadTrim || !pieceTailTrim ||
+    !isPositiveDecimal(stockLength) || !isPositiveDecimal(pieceLength) ||
+    !isPositiveDecimal(pieceCount) || !isPositiveDecimal(stockCount) ||
+    !isIntegerDecimal(pieceCount) || !isIntegerDecimal(stockCount)) {
+    return undefined;
+  }
+  const finishedPieceLength = addDecimalValues([pieceLength, pieceHeadTrim, pieceTailTrim]);
+  const usedPieces = finishedPieceLength && multiplySteelDecimals([pieceCount, finishedPieceLength]);
+  const balance = usedPieces && addDecimalValues([usedPieces, headTrim, tailTrim, loss, remainder]);
+  if (!balance || compareDecimalValues(balance, stockLength) !== 0) return undefined;
+  const perStock = addDecimalValues([
+    compareDecimalValues(remainder, '0') === 1 ? pieceCount : subtractOne(pieceCount) ?? '',
+    compareDecimalValues(headTrim, '0') === 1 ? '1' : '0',
+    compareDecimalValues(tailTrim, '0') === 1 ? '1' : '0',
+    multiplySteelDecimals([
+      pieceCount,
+      addDecimalValues([
+        compareDecimalValues(pieceHeadTrim, '0') === 1 ? '1' : '0',
+        compareDecimalValues(pieceTailTrim, '0') === 1 ? '1' : '0',
+      ]) ?? '',
+    ]) ?? '',
+  ]);
+  return perStock ? multiplySteelDecimals([perStock, stockCount]) : undefined;
+}
+
+function cuttingMeasurementTotal(
+  measurement: Extract<SteelProcessingMeasurement, { mode: 'cutting' }>,
+  parentHeaders: readonly string[],
+  parentValues: readonly string[],
+): string | undefined {
+  if (measurement.ruleVersion !== undefined && measurement.ruleVersion !== steelProcessingMeasurementRuleVersion) {
+    return undefined;
+  }
+  if (!measurement.confirmed) return undefined;
+  const parentCategory = valueAt(parentHeaders, parentValues, '類別').trim();
+  if (!cuttingCategories.has(parentCategory)) return undefined;
+  const parentQuantity = quantityValue(parentHeaders, parentValues);
+  const parentLength = dimensionAt(parentHeaders, parentValues, '長度');
+  if (parentQuantity === undefined || parentLength === undefined || !isIntegerDecimal(parentQuantity)) return undefined;
+  if (measurement.groups.length === 0) {
+    return compareDecimalValues(parentQuantity, '0') === 0 ? '0' : undefined;
+  }
+  let total = '0';
+  let pieces = '0';
+  for (const group of measurement.groups) {
+    const pieceLength = normalizeSteelDecimal(group.pieceLengthMm);
+    const pieceCount = normalizeSteelDecimal(group.pieceCount);
+    if (pieceLength === undefined || pieceCount === undefined || compareDecimalValues(pieceLength, parentLength) !== 0) {
+      return undefined;
+    }
+    const stockCount = normalizeSteelDecimal(group.stockCount);
+    const nextCount = stockCount
+      ? addDecimalValues([pieces, multiplySteelDecimals([pieceCount, stockCount]) ?? ''])
+      : undefined;
+    const groupCount = exactCuttingGroupCount(group);
+    if (!nextCount || !groupCount) return undefined;
+    pieces = nextCount;
+    total = addDecimalValues([total, groupCount]) ?? '';
+    if (!total) return undefined;
+  }
+  return compareDecimalValues(pieces, parentQuantity) === 0 ? total : undefined;
+}
+
+export function calculateSteelProcessingMeasurement({
+  headers,
+  values,
+  measurement,
+  parentHeaders,
+  parentValues,
+}: {
+  headers: readonly string[];
+  values: readonly string[];
+  measurement: SteelProcessingMeasurement;
+  parentHeaders: readonly string[];
+  parentValues: readonly string[];
+}): string | undefined {
+  if (measurement.ruleVersion !== undefined && measurement.ruleVersion !== steelProcessingMeasurementRuleVersion) {
+    return undefined;
+  }
+  const unit = valueAt(headers, values, '單位');
+  if (unit.trim().length === 0 || measurement.unit.trim().length === 0 || unit !== measurement.unit) return undefined;
+  if (measurement.mode === 'cutting') {
+    return cuttingMeasurementTotal(measurement, parentHeaders, parentValues);
+  }
+  if (measurement.amount === null) return undefined;
+  const amount = normalizeSteelDecimal(measurement.amount);
+  if (amount === undefined) return undefined;
+  if (measurement.mode === 'batch') return amount;
+  const quantity = quantityValue(parentHeaders, parentValues);
+  return quantity === undefined ? undefined : multiplySteelDecimals([amount, quantity]);
 }
 
 function provenanceFor(
