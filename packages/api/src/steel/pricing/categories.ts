@@ -1,6 +1,6 @@
 import { steelPriceCategories } from 'librechat-data-provider';
 
-export const priceCategories = steelPriceCategories;
+export const priceCategories: typeof steelPriceCategories = steelPriceCategories;
 
 export type PriceCategory = (typeof priceCategories)[number];
 
