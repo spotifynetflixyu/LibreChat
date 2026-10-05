@@ -788,6 +788,113 @@ test.describe('System order atomic manual review', () => {
     expect((await readTable(page, headers, fixture.conversationId, fixture.messageId)).rows).toEqual(saved.rows);
   });
 
+  for (const classify of [false, true]) {
+    test(`an ordered material Add supports an existing ${classify ? 'unassigned classification' : 'processing binding'} after a later material price edit`, async ({ page }) => {
+      const fixture = await seedOrder(true, true, undefined, {
+        orderMarkdown: classify ? groupedOrder.replace('| 加工/孔 |', '|  |') : groupedOrder,
+        withSources: true,
+      });
+      conversations.push(fixture.conversationId);
+      const initial = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+      const child = rowNamed(initial, 'REVIEW-PROCESS-A');
+      expect(child.system?.kind).toBe(classify ? 'unassigned' : 'processing');
+      const before = await readback(fixture.conversationId);
+      const dialog = await openEditor(page, fixture.conversationId);
+      await dialog.getByRole('button', { name: 'Add material', exact: true }).click();
+      const existingIds = new Set(initial.rows.map((row) => row.rowId));
+      let materialId: string | undefined;
+      for (const action of await dialog.getByRole('button', { name: /^Add processing under /u }).all()) {
+        const label = await action.getAttribute('aria-label');
+        const rowId = label?.replace(/^Add processing under /u, '');
+        if (rowId && !existingIds.has(rowId)) materialId = rowId;
+      }
+      if (!materialId) throw new Error('Missing ordered new material identity');
+      if (classify) {
+        await dialog.getByRole('combobox', { name: 'Material', exact: true }).click();
+        await page.getByRole('option', { name: materialId, exact: true }).click();
+        await dialog.getByRole('combobox', { name: `Classify ${child.rowId}`, exact: true }).click();
+        await page.getByRole('option', { name: 'Processing', exact: true }).click();
+      } else {
+        await dialog.getByRole('combobox', { name: `Bind processing ${child.rowId}`, exact: true }).click();
+        await page.getByRole('option', { name: materialId, exact: true }).click();
+      }
+      await dialog.getByRole('textbox', { name: `單價 ${materialId}`, exact: true }).fill('7');
+      await dialog.getByRole('textbox', { name: `單價 ${materialId}`, exact: true }).press('Enter');
+      await expect(dialog.getByText('Unsaved changes: 2 rows', { exact: true })).toBeVisible();
+      expect(await readback(fixture.conversationId)).toEqual(before);
+      const submitted = page.waitForRequest((request) => request.method() === 'POST' && request.url().endsWith('/review/system_order/prepare'));
+      const committed = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith('/review/system_order/commit'));
+      await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+      const request = (await submitted).postDataJSON() as SteelReviewOperationPrepare;
+      expect(request.operations).toHaveLength(2);
+      expect(request.operations[0]).toMatchObject({ type: 'add', rowId: materialId,
+        system: { kind: 'material', parentRowId: null } });
+      expect(request.operations[1]).toEqual(classify
+        ? { type: 'classify', rowId: child.rowId, system: { kind: 'processing', parentRowId: materialId } }
+        : { type: 'update', rowId: child.rowId, binding: { parentRowId: materialId } });
+      const response = await committed;
+      expect(response.status(), await response.text()).toBe(200);
+      expect((await response.json() as SteelReviewSaveResponse).changedRows).toBe(2);
+      const saved = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+      const material = saved.rows.find((row) => row.rowId === materialId);
+      expect(material).toMatchObject({ system: { kind: 'material' }, values: { 單價: { effective: '7' } } });
+      expect(rowNamed(saved, 'REVIEW-PROCESS-A')).toMatchObject({
+        rowId: child.rowId, system: { kind: 'processing', parentRowId: materialId }, source: material?.source,
+      });
+      await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+      const after = await readback(fixture.conversationId);
+      expect(after.ocr).toEqual(before.ocr);
+      expect(after.messages.find((message) => message.messageId === fixture.otherMessageId))
+        .toEqual(before.messages.find((message) => message.messageId === fixture.otherMessageId));
+      await page.keyboard.press('Escape');
+      await page.reload();
+      expect(await readback(fixture.conversationId)).toEqual(after);
+      expect((await readTable(page, headers, fixture.conversationId, fixture.messageId)).rows).toEqual(saved.rows);
+    });
+  }
+
+  test('an individually deleted processing row can restore locally and after Save while its material stays active', async ({ page }) => {
+    const fixture = await seedGroup();
+    conversations.push(fixture.conversationId);
+    const table = await bindGroup(page, headers, fixture);
+    const child = rowNamed(table, 'REVIEW-PROCESS-A');
+    const before = await readback(fixture.conversationId);
+    const dialog = await openEditor(page, fixture.conversationId);
+    await dialog.getByRole('button', { name: `Delete row ${child.rowId}`, exact: true }).click();
+    await expect(dialog.getByText('Unsaved changes: 1 rows', { exact: true })).toBeVisible();
+    await expect(dialog.getByRole('combobox', { name: `Bind processing ${child.rowId}`, exact: true })).toHaveCount(0);
+    await dialog.getByRole('button', { name: `Restore row ${child.rowId}`, exact: true }).click();
+    await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+    expect(await readback(fixture.conversationId)).toEqual(before);
+    await dialog.getByRole('button', { name: `Delete row ${child.rowId}`, exact: true }).click();
+    const deletedResponse = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith('/review/system_order/commit'));
+    await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+    const deletion = await deletedResponse;
+    expect(deletion.status(), await deletion.text()).toBe(200);
+    const deleted = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+    expect(rowNamed(deleted, 'REVIEW-PROCESS-A')).toMatchObject({ deleted: true,
+      system: { parentRowId: child.system?.parentRowId, cascadeDeletedBy: null } });
+    const afterDelete = await readback(fixture.conversationId);
+    await page.keyboard.press('Escape');
+    await page.reload();
+    const reopened = await openEditor(page, fixture.conversationId);
+    await expect(reopened.getByRole('combobox', { name: `Bind processing ${child.rowId}`, exact: true })).toHaveCount(0);
+    await reopened.getByRole('button', { name: `Restore row ${child.rowId}`, exact: true }).click();
+    await expect(reopened.getByText('Unsaved changes: 1 rows', { exact: true })).toBeVisible();
+    expect(await readback(fixture.conversationId)).toEqual(afterDelete);
+    const restoredResponse = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith('/review/system_order/commit'));
+    await reopened.getByRole('button', { name: 'Save', exact: true }).click();
+    const restoration = await restoredResponse;
+    expect(restoration.status(), await restoration.text()).toBe(200);
+    expect((await readTable(page, headers, fixture.conversationId, fixture.messageId)).rows).toEqual(table.rows);
+    const afterRestore = await readback(fixture.conversationId);
+    expect(afterRestore.reviews[0].receipts.slice(0, afterDelete.reviews[0].receipts.length)).toEqual(afterDelete.reviews[0].receipts);
+    expect(afterRestore.quotation?.currentSystemOrder.customerQuoteMarkdown).toContain('| 總計 |  | 43 |');
+    await page.keyboard.press('Escape');
+    await page.reload();
+    expect(await readback(fixture.conversationId)).toEqual(afterRestore);
+  });
+
   test('an imported unassigned row is classified explicitly in a reversible draft and cannot be classified again after Save', async ({ page }) => {
     const fixture = await seedOrder(true, true, undefined, {
       orderMarkdown: groupedOrder.replace('| 材料 |  |', '|  |  |'), withSources: true,
@@ -985,10 +1092,14 @@ test.describe('System order atomic manual review', () => {
     const dialog = await openEditor(page, fixture.conversationId);
     const undo = dialog.getByRole('button', { name: 'Undo', exact: true });
     const redo = dialog.getByRole('button', { name: 'Redo', exact: true });
+    await expect(dialog.getByRole('button', { name: `Delete row ${parent.rowId}`, exact: true })).toHaveCount(0);
     await dialog.getByRole('button', { name: `Delete group ${parent.rowId}`, exact: true }).click();
     await expect(dialog.getByText('Unsaved changes: 3 rows', { exact: true })).toBeVisible();
-    for (const row of group) {
-      await expect(dialog.getByRole('button', { name: `Restore row ${row.rowId}`, exact: true })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: `Restore row ${parent.rowId}`, exact: true })).toBeVisible();
+    for (const row of group.slice(1)) {
+      await expect(dialog.getByRole('button', { name: `Restore row ${row.rowId}`, exact: true })).toHaveCount(0);
+      await expect(dialog.getByRole('combobox', { name: `Bind processing ${row.rowId}`, exact: true })).toHaveCount(0);
+      await expect(dialog.locator('del').filter({ hasText: row.values['品名規格'].effective ?? '' })).toBeVisible();
     }
     expect(await readback(fixture.conversationId)).toEqual(before);
     await undo.click();
@@ -1025,6 +1136,10 @@ test.describe('System order atomic manual review', () => {
     await page.reload();
     expect(await readback(fixture.conversationId)).toEqual(afterDelete);
     const reopened = await openEditor(page, fixture.conversationId);
+    for (const row of group.slice(1)) {
+      await expect(reopened.getByRole('button', { name: `Restore row ${row.rowId}`, exact: true })).toHaveCount(0);
+      await expect(reopened.getByRole('combobox', { name: `Bind processing ${row.rowId}`, exact: true })).toHaveCount(0);
+    }
     await reopened.getByRole('button', { name: `Restore row ${parent.rowId}`, exact: true }).click();
     await expect(reopened.getByText('Unsaved changes: 3 rows', { exact: true })).toBeVisible();
     expect(await readback(fixture.conversationId)).toEqual(afterDelete);
