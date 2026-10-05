@@ -692,7 +692,7 @@ export function compileSteelReviewOperations(
   projectedRows: readonly SteelReviewRow[],
 ): SteelReviewOperation[] {
   const originalById = new Map(table.rows.map((row) => [row.rowId, row]));
-  const operations: SteelReviewOperation[] = [];
+  const operationEntries: Array<{ rowId: string; operation: SteelReviewOperation; activation: boolean }> = [];
   const deferredGroupDeletes: SteelReviewOperation[] = [];
   const baseOrderedRows = [...projectedRows].sort((left, right) => {
     const leftVersion = Math.max(...Object.entries(left.values).map(([header]) => draft.cellVersions[getSteelReviewDraftCellKey(left.rowId, header)] ?? 0), draft.sourceVersions[left.rowId] ?? 0, draft.systemVersions[left.rowId] ?? 0);
@@ -701,6 +701,26 @@ export function compileSteelReviewOperations(
   });
   const allRowsById = new Map([...table.rows, ...Object.values(draft.rowStates)].map((row) => [row.rowId, row]));
   const trustedIds = new Set(table.rows.map((row) => row.rowId));
+  const groupDeleteParentIds = new Set(projectedRows.flatMap((next) => {
+    const previous = originalById.get(next.rowId);
+    return next.system?.kind === 'material' && previous && !previous.deleted && next.deleted ? [next.rowId] : [];
+  }));
+  const groupRestoreParentIds = new Set(projectedRows.flatMap((next) => {
+    const previous = originalById.get(next.rowId);
+    return next.system?.kind === 'material' && previous?.deleted && !next.deleted ? [next.rowId] : [];
+  }));
+  const materialActivationIds = new Set(projectedRows.flatMap((next) => {
+    const previous = originalById.get(next.rowId);
+    if (next.system?.kind !== 'material') return [];
+    if (!previous) return next.origin === 'manual' && !next.deleted ? [next.rowId] : [];
+    const classified = previous.system?.kind === 'unassigned' &&
+      systemChanged(previous.system, next.system) && (draft.systemVersions[next.rowId] ?? 0) > 0;
+    const restored = previous.deleted && !next.deleted;
+    return classified || restored ? [next.rowId] : [];
+  }));
+  const pushOperation = (rowId: string, operation: SteelReviewOperation, activation = false) => {
+    operationEntries.push({ rowId, operation, activation });
+  };
   const addedRowIds = new Set(baseOrderedRows
     .filter((row) => !originalById.has(row.rowId) && row.origin === 'manual' && !row.deleted)
     .map((row) => row.rowId));
@@ -724,14 +744,6 @@ export function compileSteelReviewOperations(
       orderedRowIds.add(next.rowId);
     }
   }
-  const groupDeleteParentIds = new Set(projectedRows.flatMap((next) => {
-    const previous = originalById.get(next.rowId);
-    return next.system?.kind === 'material' && previous && !previous.deleted && next.deleted ? [next.rowId] : [];
-  }));
-  const groupRestoreParentIds = new Set(projectedRows.flatMap((next) => {
-    const previous = originalById.get(next.rowId);
-    return next.system?.kind === 'material' && previous?.deleted && !next.deleted ? [next.rowId] : [];
-  }));
   for (const next of orderedRows) {
     const previous = originalById.get(next.rowId);
     if (!previous) {
@@ -749,7 +761,7 @@ export function compileSteelReviewOperations(
       if (next.system && (next.system.kind === 'material' || next.system.kind === 'processing')) {
         add.system = { kind: next.system.kind, parentRowId: next.system.parentRowId };
       }
-      operations.push(add);
+      pushOperation(next.rowId, add, next.system?.kind === 'material');
       continue;
     }
     const changes = rowValuesChanged(table, previous, next, draft);
@@ -767,11 +779,11 @@ export function compileSteelReviewOperations(
     const isCascadeChildDelete = next.deleted && next.system?.kind === 'processing' &&
       next.system.cascadeDeletedBy !== null && next.system.cascadeDeletedBy !== undefined &&
       groupDeleteParentIds.has(next.system.cascadeDeletedBy);
-    const isCascadeChildRestore = previous.deleted && !next.deleted && previous.system?.kind === 'processing' &&
+    const isCascadeChildRestore = previous.deleted && previous.system?.kind === 'processing' &&
       previous.system.cascadeDeletedBy !== null && previous.system.cascadeDeletedBy !== undefined &&
       groupRestoreParentIds.has(previous.system.cascadeDeletedBy);
     if (!previous.deleted && next.deleted) {
-      if (classify) operations.push(classify);
+      if (classify) pushOperation(next.rowId, classify, classify.system.kind === 'material');
       if (changes.length > 0 || sourceWasChanged || binding) {
         const update: Extract<SteelReviewOperation, { type: 'update' }> = {
           type: 'update', rowId: next.rowId,
@@ -779,25 +791,25 @@ export function compileSteelReviewOperations(
           ...(sourceWasChanged ? { source: sourceIntent(next.source) } : {}),
           ...(binding ? { binding } : {}),
         };
-        operations.push(update);
+        pushOperation(next.rowId, update);
       }
       if (!isCascadeChildDelete) {
         const deletion = { type: 'delete' as const, rowId: next.rowId };
         if (groupDeleteParentIds.has(next.rowId)) {
           deferredGroupDeletes.push(deletion);
         } else {
-          operations.push(deletion);
+          pushOperation(next.rowId, deletion);
         }
       }
       continue;
     }
     if (previous.deleted && !next.deleted) {
       if (!isCascadeChildRestore) {
-        operations.push({ type: 'restore', rowId: next.rowId });
+        pushOperation(next.rowId, { type: 'restore', rowId: next.rowId }, materialActivationIds.has(next.rowId));
       }
-      if (classify) operations.push(classify);
+      if (classify) pushOperation(next.rowId, classify, classify.system.kind === 'material');
       if (changes.length > 0 || sourceWasChanged || binding) {
-        operations.push({
+        pushOperation(next.rowId, {
           type: 'update', rowId: next.rowId,
           ...(changes.length > 0 ? { changes } : {}),
           ...(sourceWasChanged ? { source: sourceIntent(next.source) } : {}),
@@ -806,23 +818,26 @@ export function compileSteelReviewOperations(
       }
       continue;
     }
-    if (previous.deleted && next.deleted && (changes.length > 0 || sourceWasChanged || binding || classify)) {
-      operations.push({ type: 'restore', rowId: next.rowId });
-      if (classify) operations.push(classify);
+    const isCascadeChildRestoreDelete = previous.deleted && next.deleted && isCascadeChildRestore;
+    if (previous.deleted && next.deleted && (changes.length > 0 || sourceWasChanged || binding || classify || isCascadeChildRestoreDelete)) {
+      if (!isCascadeChildRestore) {
+        pushOperation(next.rowId, { type: 'restore', rowId: next.rowId }, materialActivationIds.has(next.rowId));
+      }
+      if (classify) pushOperation(next.rowId, classify, classify.system.kind === 'material');
       if (changes.length > 0 || sourceWasChanged || binding) {
-        operations.push({
+        pushOperation(next.rowId, {
           type: 'update', rowId: next.rowId,
           ...(changes.length > 0 ? { changes } : {}),
           ...(sourceWasChanged ? { source: sourceIntent(next.source) } : {}),
           ...(binding ? { binding } : {}),
         });
       }
-      operations.push({ type: 'delete', rowId: next.rowId });
+      pushOperation(next.rowId, { type: 'delete', rowId: next.rowId });
       continue;
     }
-    if (classify) operations.push(classify);
+    if (classify) pushOperation(next.rowId, classify, classify.system.kind === 'material');
     if (changes.length > 0 || sourceWasChanged || binding) {
-      operations.push({
+      pushOperation(next.rowId, {
         type: 'update', rowId: next.rowId,
         ...(changes.length > 0 ? { changes } : {}),
         ...(sourceWasChanged ? { source: sourceIntent(next.source) } : {}),
@@ -830,7 +845,54 @@ export function compileSteelReviewOperations(
       });
     }
   }
-  return [...operations, ...deferredGroupDeletes];
+  const activationEntriesByRow = new Map<string, number[]>();
+  operationEntries.forEach((entry, index) => {
+    if (!entry.activation) return;
+    const entries = activationEntriesByRow.get(entry.rowId) ?? [];
+    entries.push(index);
+    activationEntriesByRow.set(entry.rowId, entries);
+  });
+  const dependencies = operationEntries.map(() => new Set<number>());
+  for (const next of projectedRows) {
+    if (next.system?.kind !== 'processing') continue;
+    const previous = originalById.get(next.rowId);
+    const parentIds = new Set<string>();
+    if (next.system.parentRowId) parentIds.add(next.system.parentRowId);
+    if (previous?.deleted && previous.system?.kind === 'processing' && previous.system.cascadeDeletedBy &&
+      groupRestoreParentIds.has(previous.system.cascadeDeletedBy)) {
+      parentIds.add(previous.system.cascadeDeletedBy);
+    }
+    const rowEntries = operationEntries
+      .map((entry, index) => ({ entry, index }))
+      .filter(({ entry }) => entry.rowId === next.rowId);
+    for (const parentId of parentIds) {
+      for (const activationIndex of activationEntriesByRow.get(parentId) ?? []) {
+        for (const { index } of rowEntries) {
+          if (activationIndex !== index) dependencies[index]!.add(activationIndex);
+        }
+      }
+    }
+  }
+  const dependents = operationEntries.map(() => [] as number[]);
+  const indegree = dependencies.map((dependencySet) => dependencySet.size);
+  dependencies.forEach((dependencySet, index) => {
+    for (const dependency of dependencySet) dependents[dependency]!.push(index);
+  });
+  const available = indegree.flatMap((degree, index) => degree === 0 ? [index] : []);
+  const sortedEntries: typeof operationEntries = [];
+  while (available.length > 0) {
+    available.sort((left, right) => left - right);
+    const index = available.shift()!;
+    sortedEntries.push(operationEntries[index]!);
+    for (const dependent of dependents[index]!) {
+      indegree[dependent] = indegree[dependent]! - 1;
+      if (indegree[dependent] === 0) available.push(dependent);
+    }
+  }
+  const orderedOperations = sortedEntries.length === operationEntries.length
+    ? sortedEntries.map((entry) => entry.operation)
+    : operationEntries.map((entry) => entry.operation);
+  return [...orderedOperations, ...deferredGroupDeletes];
 }
 
 export function getSteelReviewCommitInput(prepared: SteelReviewPrepared): SteelReviewCommit {

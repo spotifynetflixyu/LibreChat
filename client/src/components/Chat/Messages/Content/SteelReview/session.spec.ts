@@ -1,4 +1,8 @@
-import type { SteelReviewSource, SteelReviewTable } from 'librechat-data-provider';
+import {
+  applySteelReviewOperations,
+  normalizeSteelReviewLedgerRows,
+} from 'librechat-data-provider';
+import type { SteelReviewRow, SteelReviewSource, SteelReviewTable } from 'librechat-data-provider';
 import {
   addSteelReviewDraftRow,
   applySteelReviewDrafts,
@@ -287,6 +291,326 @@ describe('Steel review local draft session', () => {
       'processing-1',
       'classify',
     ]);
+  });
+
+  it('activates a classified material before binding its child while retaining the later parent edit order', () => {
+    const systemTable: SteelReviewTable = {
+      ...table,
+      kind: 'system_order',
+      title: 'system_order',
+      outputId: 'system_order:classify-activation',
+      headers: ['類別', '品名', '單價'],
+      rows: [
+        {
+          rowId: 'material-1', source: null, origin: 'ai', deleted: false,
+          system: { kind: 'unassigned', parentRowId: null, cascadeDeletedBy: null },
+          values: {
+            類別: { baseline: '', effective: '' }, 品名: { baseline: '鋼板', effective: '鋼板' },
+            單價: { baseline: '10', effective: '10' },
+          },
+        },
+        {
+          rowId: 'processing-1', source: null, origin: 'ai', deleted: false,
+          system: { kind: 'processing', parentRowId: null, cascadeDeletedBy: null },
+          values: {
+            類別: { baseline: '加工/切割', effective: '加工/切割' }, 品名: { baseline: '加工', effective: '加工' },
+            單價: { baseline: '', effective: '' },
+          },
+        },
+      ],
+    };
+    const identity = { ...selection, kind: 'system_order' as const, title: 'system_order' };
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(identity, systemTable));
+    draft = setSteelReviewDraftSystem(draft, systemTable.rows[0]!, {
+      kind: 'material', parentRowId: null, cascadeDeletedBy: null,
+    });
+    let projected = applySteelReviewDrafts(systemTable.rows, draft);
+    draft = setSteelReviewDraftSystem(draft, projected[1]!, {
+      kind: 'processing', parentRowId: 'material-1', cascadeDeletedBy: null,
+    });
+    projected = applySteelReviewDrafts(systemTable.rows, draft);
+    draft = setSteelReviewDraftCell(draft, projected[0]!, '單價', '7');
+    const operations = compileSteelReviewOperations(
+      systemTable,
+      draft,
+      applySteelReviewDrafts(systemTable.rows, draft),
+    );
+
+    expect(operations).toEqual([
+      { type: 'classify', rowId: 'material-1', system: { kind: 'material', parentRowId: null } },
+      { type: 'update', rowId: 'processing-1', binding: { parentRowId: 'material-1' } },
+      { type: 'update', rowId: 'material-1', changes: [{ header: '單價', value: '7' }] },
+    ]);
+  });
+
+  it('activates a restored material before existing and added processing rows while retaining the later parent edit order', () => {
+    const systemTable: SteelReviewTable = {
+      ...table,
+      kind: 'system_order',
+      title: 'system_order',
+      outputId: 'system_order:restore-activation',
+      headers: ['品名', '單價'],
+      rows: [
+        {
+          rowId: 'material-1', source: null, origin: 'ai', deleted: true,
+          system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
+          values: { 品名: { baseline: '鋼板', effective: '鋼板' }, 單價: { baseline: '10', effective: '10' } },
+        },
+        {
+          rowId: 'processing-1', source: null, origin: 'ai', deleted: false,
+          system: { kind: 'processing', parentRowId: null, cascadeDeletedBy: null },
+          values: { 品名: { baseline: '加工', effective: '加工' }, 單價: { baseline: '', effective: '' } },
+        },
+      ],
+    };
+    const identity = { ...selection, kind: 'system_order' as const, title: 'system_order' };
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(identity, systemTable));
+    draft = restoreSteelReviewDraftRow(draft, systemTable.rows[0]!);
+    let projected = applySteelReviewDrafts(systemTable.rows, draft);
+    draft = setSteelReviewDraftSystem(draft, projected[1]!, {
+      kind: 'processing', parentRowId: 'material-1', cascadeDeletedBy: null,
+    });
+    draft = addSteelReviewDraftRow(draft, systemTable, projected[0], null, {
+      kind: 'processing', parentRowId: 'material-1', cascadeDeletedBy: null,
+    });
+    projected = applySteelReviewDrafts(systemTable.rows, draft);
+    draft = setSteelReviewDraftCell(draft, projected[0]!, '單價', '7');
+    const addedProcessing = projected.find((row) => row.origin === 'manual')!;
+    const operations = compileSteelReviewOperations(
+      systemTable,
+      draft,
+      applySteelReviewDrafts(systemTable.rows, draft),
+    );
+
+    expect(operations).toEqual([
+      { type: 'restore', rowId: 'material-1' },
+      expect.objectContaining({ type: 'add', rowId: addedProcessing.rowId,
+        system: { kind: 'processing', parentRowId: 'material-1' } }),
+      { type: 'update', rowId: 'processing-1', binding: { parentRowId: 'material-1' } },
+      { type: 'update', rowId: 'material-1', changes: [{ header: '單價', value: '7' }] },
+    ]);
+  });
+
+  it('orders a group restore before a child edit and the later parent edit', () => {
+    const systemTable: SteelReviewTable = {
+      ...table,
+      kind: 'system_order',
+      title: 'system_order',
+      outputId: 'system_order:group-restore-activation',
+      headers: ['品名', '單價'],
+      rows: [
+        {
+          rowId: 'material-1', source: null, origin: 'ai', deleted: true,
+          system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
+          values: { 品名: { baseline: '鋼板', effective: '鋼板' }, 單價: { baseline: '10', effective: '10' } },
+        },
+        {
+          rowId: 'processing-1', source: null, origin: 'ai', deleted: true,
+          system: { kind: 'processing', parentRowId: 'material-1', cascadeDeletedBy: 'material-1' },
+          values: { 品名: { baseline: '加工', effective: '加工' }, 單價: { baseline: '5', effective: '5' } },
+        },
+      ],
+    };
+    const identity = { ...selection, kind: 'system_order' as const, title: 'system_order' };
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(identity, systemTable));
+    draft = restoreSteelReviewDraftGroup(draft, systemTable.rows, systemTable.rows[0]!);
+    let projected = applySteelReviewDrafts(systemTable.rows, draft);
+    draft = setSteelReviewDraftCell(draft, projected[1]!, '單價', '6');
+    projected = applySteelReviewDrafts(systemTable.rows, draft);
+    draft = setSteelReviewDraftCell(draft, projected[0]!, '單價', '7');
+    const operations = compileSteelReviewOperations(
+      systemTable,
+      draft,
+      applySteelReviewDrafts(systemTable.rows, draft),
+    );
+
+    expect(operations).toEqual([
+      { type: 'restore', rowId: 'material-1' },
+      { type: 'update', rowId: 'processing-1', changes: [{ header: '單價', value: '6' }] },
+      { type: 'update', rowId: 'material-1', changes: [{ header: '單價', value: '7' }] },
+    ]);
+  });
+
+  it('waits for the original cascade parent before rebinding a restored child elsewhere', () => {
+    const sourceTable: SteelReviewTable = {
+      ...table,
+      kind: 'system_order',
+      title: 'system_order',
+      outputId: 'system_order:original-cascade-activation',
+      headers: ['品名', '單價'],
+      rows: [
+        {
+          rowId: 'material-old', source: null, origin: 'ai', deleted: true,
+          system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
+          values: { 品名: { baseline: '舊鋼板', effective: '舊鋼板' }, 單價: { baseline: '10', effective: '10' } },
+        },
+        {
+          rowId: 'material-new', source: null, origin: 'ai', deleted: false,
+          system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
+          values: { 品名: { baseline: '新鋼板', effective: '新鋼板' }, 單價: { baseline: '20', effective: '20' } },
+        },
+        {
+          rowId: 'processing-1', source: null, origin: 'ai', deleted: true,
+          system: { kind: 'processing', parentRowId: 'material-old', cascadeDeletedBy: 'material-old' },
+          values: { 品名: { baseline: '加工', effective: '加工' }, 單價: { baseline: '5', effective: '5' } },
+        },
+      ],
+    };
+    const identity = { ...selection, kind: 'system_order' as const, title: 'system_order' };
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(identity, sourceTable));
+    draft = restoreSteelReviewDraftGroup(draft, sourceTable.rows, sourceTable.rows[0]!);
+    let projected = applySteelReviewDrafts(sourceTable.rows, draft);
+    draft = setSteelReviewDraftSystem(draft, projected[2]!, {
+      kind: 'processing', parentRowId: 'material-new', cascadeDeletedBy: null,
+    });
+    projected = applySteelReviewDrafts(sourceTable.rows, draft);
+    draft = setSteelReviewDraftCell(draft, projected[0]!, '單價', '11');
+    const operations = compileSteelReviewOperations(
+      sourceTable,
+      draft,
+      applySteelReviewDrafts(sourceTable.rows, draft),
+    );
+
+    expect(operations).toEqual([
+      { type: 'restore', rowId: 'material-old' },
+      { type: 'update', rowId: 'processing-1', binding: { parentRowId: 'material-new' } },
+      { type: 'update', rowId: 'material-old', changes: [{ header: '單價', value: '11' }] },
+    ]);
+  });
+
+  it('deletes a child after group restore without emitting a duplicate child restore', () => {
+    const systemTable: SteelReviewTable = {
+      ...table,
+      kind: 'system_order',
+      title: 'system_order',
+      outputId: 'system_order:group-restore-redelete',
+      rows: [
+        {
+          rowId: 'material-1', source: null, origin: 'ai', deleted: true,
+          system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
+          values: { 品名: { baseline: '鋼板', effective: '鋼板' }, 數量: { baseline: '1', effective: '1' } },
+        },
+        {
+          rowId: 'processing-1', source: null, origin: 'ai', deleted: true,
+          system: { kind: 'processing', parentRowId: 'material-1', cascadeDeletedBy: 'material-1' },
+          values: { 品名: { baseline: '加工', effective: '加工' }, 數量: { baseline: '1', effective: '1' } },
+        },
+      ],
+    };
+    const identity = { ...selection, kind: 'system_order' as const, title: 'system_order' };
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(identity, systemTable));
+    draft = restoreSteelReviewDraftGroup(draft, systemTable.rows, systemTable.rows[0]!);
+    const restoredRows = applySteelReviewDrafts(systemTable.rows, draft);
+    draft = deleteSteelReviewDraftRow(draft, restoredRows[1]!, true);
+    const operations = compileSteelReviewOperations(
+      systemTable,
+      draft,
+      applySteelReviewDrafts(systemTable.rows, draft),
+    );
+
+    expect(operations).toEqual([
+      { type: 'restore', rowId: 'material-1' },
+      { type: 'delete', rowId: 'processing-1' },
+    ]);
+  });
+
+  it('keeps an individually deleted child tombstoned through later group delete and restore in the shared applier', () => {
+    const systemTable: SteelReviewTable = {
+      ...table,
+      kind: 'system_order',
+      title: 'system_order',
+      outputId: 'system_order:group-restore-applier',
+      headers: ['品名', '數量'],
+      rows: [
+        {
+          rowId: 'material-1', source: null, origin: 'ai', deleted: true,
+          system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
+          values: { 品名: { baseline: '鋼板', effective: '鋼板' }, 數量: { baseline: '1', effective: '1' } },
+        },
+        {
+          rowId: 'processing-1', source: null, origin: 'ai', deleted: true,
+          system: { kind: 'processing', parentRowId: 'material-1', cascadeDeletedBy: 'material-1' },
+          values: { 品名: { baseline: '加工一', effective: '加工一' }, 數量: { baseline: '1', effective: '1' } },
+        },
+        {
+          rowId: 'processing-2', source: null, origin: 'ai', deleted: true,
+          system: { kind: 'processing', parentRowId: 'material-1', cascadeDeletedBy: 'material-1' },
+          values: { 品名: { baseline: '加工二', effective: '加工二' }, 數量: { baseline: '2', effective: '2' } },
+        },
+      ],
+    };
+    const identity = { ...selection, kind: 'system_order' as const, title: 'system_order' };
+    const apply = (
+      currentRows: readonly SteelReviewRow[],
+      operations: ReturnType<typeof compileSteelReviewOperations>,
+    ) => applySteelReviewOperations({
+      currentRows: normalizeSteelReviewLedgerRows(currentRows),
+      expectedRows: normalizeSteelReviewLedgerRows(currentRows),
+      headers: systemTable.headers,
+      operations,
+    });
+
+    let restoreDraft = createSteelReviewDraftState(getSteelReviewDraftKey(identity, systemTable));
+    restoreDraft = restoreSteelReviewDraftGroup(restoreDraft, systemTable.rows, systemTable.rows[0]!);
+    const restoredRows = applySteelReviewDrafts(systemTable.rows, restoreDraft);
+    restoreDraft = deleteSteelReviewDraftRow(restoreDraft, restoredRows[1]!, true);
+    const restoreOperations = compileSteelReviewOperations(
+      systemTable,
+      restoreDraft,
+      applySteelReviewDrafts(systemTable.rows, restoreDraft),
+    );
+    const restored = apply(systemTable.rows, restoreOperations);
+    expect(restored).toMatchObject({ ok: true });
+    if (!restored.ok) return;
+    expect(restored.currentRows.find((row) => row.rowId === 'processing-1')).toMatchObject({
+      deleted: true,
+      system: { cascadeDeletedBy: null },
+    });
+    expect(restored.currentRows.find((row) => row.rowId === 'processing-2')).toMatchObject({
+      deleted: false,
+      system: { cascadeDeletedBy: null },
+    });
+
+    const restoredTable = { ...systemTable, rows: restored.currentRows };
+    let deleteDraft = createSteelReviewDraftState(getSteelReviewDraftKey(identity, restoredTable));
+    deleteDraft = deleteSteelReviewDraftGroup(deleteDraft, restoredTable.rows, restoredTable.rows[0]!, restoredTable.rows);
+    const deleted = apply(restoredTable.rows, compileSteelReviewOperations(
+      restoredTable,
+      deleteDraft,
+      applySteelReviewDrafts(restoredTable.rows, deleteDraft),
+    ));
+    expect(deleted).toMatchObject({ ok: true });
+    if (!deleted.ok) return;
+    expect(deleted.currentRows.find((row) => row.rowId === 'processing-1')).toMatchObject({
+      deleted: true,
+      system: { cascadeDeletedBy: null },
+    });
+    expect(deleted.currentRows.find((row) => row.rowId === 'processing-2')).toMatchObject({
+      deleted: true,
+      system: { cascadeDeletedBy: 'material-1' },
+    });
+
+    const deletedTable = { ...systemTable, rows: deleted.currentRows };
+    const finalDraft = restoreSteelReviewDraftGroup(
+      createSteelReviewDraftState(getSteelReviewDraftKey(identity, deletedTable)),
+      deletedTable.rows,
+      deletedTable.rows[0]!,
+    );
+    const final = apply(deletedTable.rows, compileSteelReviewOperations(
+      deletedTable,
+      finalDraft,
+      applySteelReviewDrafts(deletedTable.rows, finalDraft),
+    ));
+    expect(final).toMatchObject({ ok: true });
+    if (!final.ok) return;
+    expect(final.currentRows.find((row) => row.rowId === 'processing-1')).toMatchObject({
+      deleted: true,
+      system: { cascadeDeletedBy: null },
+    });
+    expect(final.currentRows.find((row) => row.rowId === 'processing-2')).toMatchObject({
+      deleted: false,
+      system: { cascadeDeletedBy: null },
+    });
   });
 
   it('projects material source changes onto processing rows and preserves a later rebind', () => {
