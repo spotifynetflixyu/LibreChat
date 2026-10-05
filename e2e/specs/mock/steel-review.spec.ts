@@ -1072,7 +1072,7 @@ test.describe('Steel managed source review', () => {
     const reloaded = await page.request.get(readUrl(conversationId, messageId, 'ocr_result'), { headers });
     expect(reloaded.status()).toBe(200);
     const current = await reloaded.json() as { table: SteelReviewTable };
-    expect(current.table.rows[0].values['長度']).toEqual({ baseline: '1000', effective: null });
+    expect(current.table.rows[0].values['長度']).toEqual({ baseline: '1000', effective: '' });
     const noChange = await page.request.post(`${url}/prepare`, { headers, data: { ...requestForRows(current.table), operations: [{ type: 'update', rowId: current.table.rows[0].rowId,
       changes: [{ header: '長度', value: null }] }] } });
     expect(noChange.status()).toBe(200);

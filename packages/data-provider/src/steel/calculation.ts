@@ -260,7 +260,8 @@ function compareDecimalValues(left: string, right: string): number | undefined {
   const scale = Math.max(leftParts.scale, rightParts.scale);
   const leftDigits = leftParts.digits * powerOfTen(scale - leftParts.scale);
   const rightDigits = rightParts.digits * powerOfTen(scale - rightParts.scale);
-  return leftDigits === rightDigits ? 0 : leftDigits < rightDigits ? -1 : 1;
+  if (leftDigits === rightDigits) return 0;
+  return leftDigits < rightDigits ? -1 : 1;
 }
 
 function isPositiveDecimal(value: string | undefined): boolean {

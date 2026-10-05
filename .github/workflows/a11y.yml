@@ -23,13 +23,19 @@ concurrency:
 jobs:
   axe-linter:
     runs-on: ubuntu-latest
+    env:
+      AXE_LINTER_CONFIGURED: ${{ secrets.AXE_LINTER_API_KEY != '' }}
     if: >
       (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
       (github.event_name == 'workflow_dispatch' && github.event.inputs.run_workflow == 'true')
     
     steps:
       - uses: actions/checkout@v5
+      - name: Report unconfigured accessibility service
+        if: env.AXE_LINTER_CONFIGURED != 'true'
+        run: echo "::notice::AXE_LINTER_API_KEY is not configured; external axe-linter check skipped."
       - uses: dequelabs/axe-linter-action@b6738d4ba73eea514e14ca701345d6e7175b8b2f # v1
+        if: env.AXE_LINTER_CONFIGURED == 'true'
         with:
           api_key: ${{ secrets.AXE_LINTER_API_KEY }}
           github_token: ${{ secrets.GITHUB_TOKEN }}

@@ -1079,7 +1079,7 @@ export default function SteelReviewDialog({
     if (saveRecovery?.conflicts.length === 1) {
       recoveryRef.current = undefined;
     }
-  }, [captureId, onCellChange, onSourceChange, saveRecovery?.conflicts.length, setSaveRecovery, sources]);
+  }, [captureId, onCellChange, onMeasurementChange, onSourceChange, saveRecovery?.conflicts.length, setSaveRecovery, sources]);
   const updateDraftRows = useCallback((next: typeof draftState) => {
     if (getCaptureScopedValue(pendingSnapshotRef, captureId)) {
       exportRowsRef.current = applySteelReviewDrafts(exportBaseRowsRef.current, next);
@@ -1667,7 +1667,7 @@ export default function SteelReviewDialog({
     }
     clearCapturedAuthority();
     clearSelectionForCapture(captureId, getCapturedAuthority(captureId)?.outputId);
-  }, [captureId, clearCapturedAuthority, clearSelectionForCapture, dirtyRowCount, getCapturedAuthority, saveBusy, savePhase, setCloseRequested]);
+  }, [captureId, clearCapturedAuthority, clearSelectionForCapture, dirtyRowCount, getCapturedAuthority, saveBusy, setCloseRequested]);
   useEffect(() => {
     if (!discardRequested || !receiptInput) {
       return undefined;

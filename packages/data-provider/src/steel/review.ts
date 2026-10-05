@@ -900,7 +900,6 @@ function applyProcessingRowCalculation(
   const currentTotal = row.values[totalHeader]?.effective ?? null;
   const expectedTotal = expectedRow.values[totalHeader]?.effective ?? null;
   const currentField = row.calculation?.fields?.[totalHeader];
-  const expectedField = expectedRow.calculation?.fields?.[totalHeader];
   const conflicts: SteelReviewConflict[] = [];
   if (currentTotal !== expectedTotal && currentField?.kind === 'manual') {
     conflicts.push({ kind: 'field', rowId: row.rowId, header: totalHeader, expected: expectedTotal, current: currentTotal, requested: currentTotal });
