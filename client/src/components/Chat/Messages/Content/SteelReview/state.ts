@@ -24,6 +24,7 @@ export type SteelReviewCapturedAuthority = {
 };
 
 export const steelReviewSelectionAtom = atom<SteelReviewSelection | null>(null);
+export const steelReviewCatalogScopeAtom = atom<string | null>(null);
 
 export interface SteelReviewDialogState {
   isOpen: boolean;

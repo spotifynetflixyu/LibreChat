@@ -1496,6 +1496,21 @@ describe('Steel Review catalog candidate intent', () => {
     ]);
   });
 
+  it('serializes a selected new material as add then authenticated replacement and later edits', () => {
+    let draft = addSteelReviewDraftRow(createSteelReviewDraftState('owner'), table, material, null, { kind: 'material', parentRowId: null, cascadeDeletedBy: null });
+    const added = applySteelReviewDrafts(table.rows, draft).find((row) => row.origin === 'manual')!;
+    draft = setSteelReviewDraftCandidate(draft, table, added, candidate, customer);
+    const selected = applySteelReviewDrafts(table.rows, draft).find((row) => row.rowId === added.rowId)!;
+    draft = setSteelReviewDraftCell(draft, selected, '厚度', '3');
+    const operations = compileSteelReviewOperations(table, draft, applySteelReviewDrafts(table.rows, draft));
+    expect(operations.map((operation) => operation.type)).toEqual(['add', 'replace_material', 'update']);
+    expect(operations[0]).toMatchObject({ system: { kind: 'material', parentRowId: null } });
+    expect(operations[0].type === 'add' && operations[0].changes.some(({ header }) => header === '單價')).toBe(false);
+    expect(operations[1]).toEqual({ type: 'replace_material', rowId: added.rowId,
+      selection: { id: candidate.id, revision: candidate.revision, evidence: customer } });
+    expect(operations[2]).toEqual({ type: 'update', rowId: added.rowId, changes: [{ header: '厚度', value: '3' }] });
+  });
+
   it('undoes and redoes the candidate as one history event', () => {
     const selected = setSteelReviewDraftCandidate(createSteelReviewDraftState('owner'), table, material, candidate, customer);
     const undone = undoSteelReviewDraft(selected);

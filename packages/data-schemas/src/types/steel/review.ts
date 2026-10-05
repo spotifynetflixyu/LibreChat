@@ -24,6 +24,8 @@ export interface SteelReviewReadInput extends SteelReviewScope {
   /** Private physical hints retained only for existing repository internals; public requests never carry them. */
   tableId?: string;
   partIndex?: number;
+  /** Private catalog authorization hint for the immutable quotation run being resolved. */
+  customerRunId?: string;
 }
 
 /** Immutable quotation customer input captured by the run that owns a system-order review. */

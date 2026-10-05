@@ -162,6 +162,15 @@ function parseQuery(input: SteelCatalogQuery): SteelCatalogQuery {
   return parsed.data;
 }
 
+function requestedCustomerRunId(outputId: string): string | undefined {
+  const prefix = 'system_order:';
+  if (!outputId.startsWith(prefix)) {
+    return undefined;
+  }
+  const runId = outputId.slice(prefix.length);
+  return runId.length > 0 ? runId : undefined;
+}
+
 export function createSteelReviewCatalogService({
   reader,
   client,
@@ -178,12 +187,14 @@ export function createSteelReviewCatalogService({
     query: Pick<SteelCatalogQuery, 'messageId' | 'title' | 'outputId' | 'revision' | 'rowId'>,
     checkRevision: boolean,
   ): Promise<SteelReviewReadRecord> {
+    const customerRunId = requestedCustomerRunId(query.outputId);
     return requireCurrentMaterial(
       await reader.readSteelReview({
         ...scope,
         kind: 'system_order',
         messageId: query.messageId,
         title: query.title,
+        ...(customerRunId ? { customerRunId } : {}),
       }),
       query,
       checkRevision,

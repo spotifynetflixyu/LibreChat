@@ -1066,19 +1066,23 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
         return null;
       }
 
-      const [allSidecarCandidates, quotation] = await Promise.all([
-        sidecarCandidatesPromise,
-        QuotationState.findOne(scopeFilter(input)).lean<ISteelQuotationState>(),
-      ]);
-      const customerSnapshot = quotation?.currentSystemOrder?.runId
-        ? readQuotationCustomerSnapshot(await QuotationArtifact.findOne({
+      const customerSnapshotPromise = input.customerRunId
+        ? QuotationArtifact.findOne({
             ...scopeFilter(input),
-            runId: quotation.currentSystemOrder.runId,
+            runId: input.customerRunId,
             kind: 'snapshot',
             operationId: 'snapshot',
           })
             .select({ sha256: 1, payload: 1 })
-            .lean<{ sha256: string; payload: string } | null>())
+            .lean<{ sha256: string; payload: string } | null>()
+        : Promise.resolve(undefined);
+      const [allSidecarCandidates, quotation, customerSnapshotArtifact] = await Promise.all([
+        sidecarCandidatesPromise,
+        QuotationState.findOne(scopeFilter(input)).lean<ISteelQuotationState>(),
+        customerSnapshotPromise,
+      ]);
+      const customerSnapshot = input.customerRunId && quotation?.currentSystemOrder?.runId === input.customerRunId
+        ? readQuotationCustomerSnapshot(customerSnapshotArtifact)
         : undefined;
       const authority = quotation?.currentSystemOrder?.runId
         ? {

@@ -17,6 +17,7 @@ import type {
   SteelProcessingMeasurement,
   SteelCatalogCandidate,
   SteelCatalogCustomerEvidence,
+  SteelCatalogSelection,
 } from 'librechat-data-provider';
 import type { SteelReviewIdentity } from './state';
 
@@ -30,15 +31,7 @@ export interface SteelReviewDraftState {
   systemVersions: Record<string, number>;
   measurementDrafts: Record<string, SteelProcessingMeasurement | null>;
   measurementVersions: Record<string, number>;
-  materialSelections: Record<string, {
-    id: string;
-    revision: string;
-    evidence: {
-      snapshotId: string;
-      revision: string;
-      tier: 'A' | 'B' | 'C' | 'D' | 'E' | 'F';
-    };
-  }>;
+  materialSelections: Record<string, SteelCatalogSelection>;
   materialSelectionVersions: Record<string, number>;
   rowStates: Record<string, SteelReviewRow>;
   past: SteelReviewDraftSnapshot[];
@@ -982,8 +975,10 @@ export function compileSteelReviewOperations(
     const previous = originalById.get(next.rowId);
     if (!previous) {
       if (next.origin !== 'manual' || next.deleted) continue;
+      const materialSelection = draft.materialSelections[next.rowId];
+      const selectionVersion = draft.materialSelectionVersions[next.rowId] ?? 0;
       const changes = table.headers
-        .filter((header) => !isSourceHeader(header))
+        .filter((header) => !isSourceHeader(header) && (!materialSelection || !materialCandidateHeaders.has(header)))
         .sort((left, right) => (draft.cellVersions[getSteelReviewDraftCellKey(next.rowId, left)] ?? 0) -
           (draft.cellVersions[getSteelReviewDraftCellKey(next.rowId, right)] ?? 0))
         .map((header) => ({ header, value: next.values[header]?.effective ?? null }));
@@ -1001,6 +996,14 @@ export function compileSteelReviewOperations(
         add.measurement = next.calculation?.measurement;
       }
       pushOperation(next.rowId, add, next.system?.kind === 'material');
+      if (materialSelection && next.system?.kind === 'material') {
+        pushOperation(next.rowId, { type: 'replace_material', rowId: next.rowId, selection: materialSelection });
+        const afterChanges = table.headers
+          .filter((header) => materialCandidateHeaders.has(header) &&
+            (draft.cellVersions[getSteelReviewDraftCellKey(next.rowId, header)] ?? 0) > selectionVersion)
+          .map((header) => ({ header, value: next.values[header]?.effective ?? null }));
+        if (afterChanges.length > 0) pushOperation(next.rowId, { type: 'update', rowId: next.rowId, changes: afterChanges });
+      }
       continue;
     }
     const changes = rowValuesChanged(table, previous, next, draft);

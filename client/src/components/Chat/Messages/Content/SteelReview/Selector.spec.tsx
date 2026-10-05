@@ -100,3 +100,49 @@ it('keeps an incomplete single page manual and exposes empty, failure and retry 
   await screen.findByText('No matching catalog items');
   expect(onSelect).not.toHaveBeenCalled();
 });
+
+
+it('retains the latest keyword and options on reopen and keyboard navigation without querying again', async () => {
+  const options = [candidate('1', 'ABC-A'), candidate('2', 'ABC-B')];
+  const api = jest.spyOn(dataService, 'getSteelReviewCatalog').mockImplementation(async () => page(options));
+  const { onSelect, queryClient } = setup();
+  const search = await screen.findByPlaceholderText('Search catalog');
+  fireEvent.change(search, { target: { value: 'ABC' } });
+  await waitFor(() => expect(api).toHaveBeenCalledWith('conversation', expect.objectContaining({ keyword: 'ABC' })));
+  await screen.findByRole('option', { name: options[0].label });
+  fireEvent.click(screen.getByRole('option', { name: options[0].label }));
+  await waitFor(() => expect(screen.getByPlaceholderText('Search catalog')).not.toBeVisible());
+  const calls = api.mock.calls.length;
+  fireEvent.click(screen.getByRole('combobox', { name: '型號 material' }));
+  const reopened = await screen.findByPlaceholderText('Search catalog');
+  expect(reopened).toHaveValue('ABC');
+  await screen.findByRole('option', { name: options[1].label });
+  fireEvent.keyDown(reopened, { key: 'ArrowDown' });
+  await waitFor(() => expect(onSelect.mock.calls.length).toBeGreaterThan(1));
+  expect(screen.getByPlaceholderText('Search catalog')).toBeVisible();
+  await act(async () => { await queryClient.invalidateQueries(); });
+  expect(api).toHaveBeenCalledTimes(calls);
+});
+
+it('keeps option data for only the active row and resets the previous row on a new row query', async () => {
+  const api = jest.spyOn(dataService, 'getSteelReviewCatalog').mockImplementation(async () =>
+    page([candidate('1', 'ABC-A'), candidate('2', 'ABC-B')]));
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, cacheTime: 0 } } });
+  const other = { ...table.rows[0], rowId: 'other-material' };
+  render(<QueryClientProvider client={queryClient}>
+    {[table.rows[0], other].map((row) => <SteelReviewSelector key={row.rowId}
+      table={table} row={row} header="型號" value="OLD" canEdit onSelect={() => undefined} />)}
+  </QueryClientProvider>);
+  fireEvent.click(screen.getByRole('combobox', { name: '型號 material' }));
+  const search = await screen.findByRole('combobox', { name: '' });
+  fireEvent.change(search, { target: { value: 'ABC' } });
+  await waitFor(() => expect(api).toHaveBeenCalledWith('conversation', expect.objectContaining({ rowId: 'material', keyword: 'ABC' })));
+  fireEvent.keyDown(search, { key: 'Escape' });
+  const calls = api.mock.calls.length;
+  fireEvent.focus(screen.getByRole('combobox', { name: '型號 other-material' }));
+  expect(api).toHaveBeenCalledTimes(calls);
+  expect(queryClient.getQueryCache().getAll().filter((query) => query.state.data)).toHaveLength(1);
+  fireEvent.click(screen.getByRole('combobox', { name: '型號 other-material' }));
+  await waitFor(() => expect(api).toHaveBeenCalledWith('conversation', expect.objectContaining({ rowId: 'other-material', keyword: '' })));
+  await waitFor(() => expect(queryClient.getQueryCache().getAll().filter((query) => query.state.data)).toHaveLength(1));
+});

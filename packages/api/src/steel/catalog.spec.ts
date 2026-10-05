@@ -25,8 +25,8 @@ const review = {
   messageId: 'message-1',
   title: 'system_order｜報價單 A',
   tableId: 'system_order:1',
-  outputId: 'output-1',
-  latestOutputId: 'output-1',
+  outputId: 'system_order:run-1',
+  latestOutputId: 'system_order:run-1',
   revision: 'revision-1',
   state: 'current' as const,
   headers: ['類別'],
@@ -83,6 +83,7 @@ describe('Steel catalog authority', () => {
         keyword: 'plate',
       },
     });
+    expect(readSteelReview).toHaveBeenCalledWith(expect.objectContaining({ customerRunId: 'run-1' }));
     const [candidate] = page.options;
     expect(candidate).toMatchObject({ id: 'catalog-1', unitPrice: '2' });
     expect(page.customer).toEqual(customer);

@@ -48,8 +48,7 @@ test.describe('Material catalog normal review workflow', () => {
     await expect(page.getByRole('option', { name: 'SC-UNIQUE Selector steel plate catalog-special 400mm', exact: true })).toBeVisible();
     const search = page.locator('input[placeholder="Search catalog"]:visible');
     await search.focus();
-    await search.press('ArrowDown');
-    await search.press('Enter');
+    await page.getByRole('option', { name: 'SC-UNIQUE Selector steel plate catalog-special 400mm', exact: true }).click();
     await expect(model).toHaveText('SC-UNIQUE');
     await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
     await expect(model).toHaveText('PLATE');
@@ -94,4 +93,59 @@ test.describe('Material catalog normal review workflow', () => {
     await expect(reopened.getByRole('combobox', { name: `型號 ${material.rowId}`, exact: true }).locator('xpath=ancestor::td').locator('del')).toHaveText('PLATE');
     expect(await readback(fixture)).toEqual(after);
   });
+
+  test('retains one row option batch and verifies a newly added material candidate on Save', async ({ page }) => {
+    const fixture = await seedCalculation('plate', '', true); fixtures.push(fixture);
+    const initial = await readTable(page, auth, fixture);
+    const material = initial.rows.find((row) => row.system?.kind === 'material');
+    if (!material) throw new Error('Missing normal material');
+    const before = await readback(fixture);
+    const dialog = await openEditor(page, fixture);
+    let queries = 0;
+    page.on('request', (request) => {
+      if (request.method() === 'GET' && request.url().includes('/review/system_order/catalog?')) queries += 1;
+    });
+    const model = dialog.getByRole('combobox', { name: `型號 ${material.rowId}`, exact: true });
+    await model.click();
+    const search = page.locator('input[placeholder="Search catalog"]:visible');
+    await search.fill('SC-');
+    await expect(page.getByRole('option', { name: 'SC-OTHER Other steel plate catalog-special 400mm', exact: true })).toBeVisible();
+    await page.getByRole('option', { name: 'SC-UNIQUE Selector steel plate catalog-special 400mm', exact: true }).click();
+    await expect(model).toHaveText('SC-UNIQUE');
+    const calls = queries;
+    await model.click();
+    await expect(search).toHaveValue('SC-');
+    await search.press('ArrowUp');
+    await expect(model).toHaveText('SC-OTHER');
+    await expect(search).toBeVisible();
+    await search.press('ArrowDown');
+    await expect(model).toHaveText('SC-UNIQUE');
+    expect(queries).toBe(calls);
+    await page.keyboard.press('Escape');
+    await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect(model).toHaveText('PLATE');
+    await dialog.getByRole('button', { name: 'Add material', exact: true }).click();
+    const addedModel = dialog.getByRole('combobox', { name: /^型號 /u }).last();
+    await addedModel.click();
+    await expect(search).toHaveValue('');
+    await search.fill('SC-UNIQUE');
+    await expect(addedModel).toHaveText('SC-UNIQUE');
+    expect(await readback(fixture)).toEqual(before);
+    const saved = await saveUi(page, dialog);
+    const added = saved.rows.find((row) => row.origin === 'manual' && row.values['型號'].effective === 'SC-UNIQUE');
+    expect(added?.calculation?.candidate?.erpItemCode).toBe('SC-UNIQUE');
+    expect(added?.values['單價'].effective).toBe('');
+    const after = await readback(fixture);
+    expect(after.reviews[0].receipts?.at(-1)?.snapshot?.selectionEvidence).toEqual([
+      expect.objectContaining({ rowId: added?.rowId, candidateId: '9007199254740993', customerTier: 'B', unitPrice: null }),
+    ]);
+    await page.keyboard.press('Escape');
+    await page.reload();
+    const reopened = await openEditor(page, fixture);
+    await expect(reopened.getByRole('combobox', { name: `型號 ${added?.rowId}`, exact: true })).toHaveText('SC-UNIQUE');
+    expect(await readback(fixture)).toEqual(after);
+  });
+
 });

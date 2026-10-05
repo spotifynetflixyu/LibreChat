@@ -1063,6 +1063,7 @@ export function applySteelReviewOperations({
     if (previousType && !(
       (previousType === 'restore' && (operation.type === 'classify' || operation.type === 'update')) ||
       (previousType === 'classify' && (operation.type === 'update' || operation.type === 'delete')) ||
+      (previousType === 'add' && operation.type === 'replace_material') ||
       (previousType === 'update' && (operation.type === 'delete' || operation.type === 'replace_material')) ||
       (previousType === 'replace_material' && (operation.type === 'update' || operation.type === 'delete'))
     )) {

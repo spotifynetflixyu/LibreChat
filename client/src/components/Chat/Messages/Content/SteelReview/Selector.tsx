@@ -1,4 +1,5 @@
 import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { useAtom } from 'jotai';
 import { Button, ControlCombobox } from '@librechat/client';
 import type {
   SteelCatalogCandidate,
@@ -7,6 +8,7 @@ import type {
   SteelReviewTable,
 } from 'librechat-data-provider';
 import { useGetSteelReviewCatalogQuery } from '~/data-provider';
+import { steelReviewCatalogScopeAtom } from './state';
 import { useLocalize } from '~/hooks';
 
 export interface SteelReviewSelectorProps {
@@ -27,6 +29,7 @@ export default function SteelReviewSelector({
 }: SteelReviewSelectorProps) {
   const localize = useLocalize();
   const [open, setOpen] = useState(false);
+  const [activeScope, setActiveScope] = useAtom(steelReviewCatalogScopeAtom);
   const [keyword, setKeyword] = useState('');
   const deferredKeyword = useDeferredValue(keyword);
   const intent = useRef(0);
@@ -43,10 +46,13 @@ export default function SteelReviewSelector({
     keyword: deferredKeyword,
   }), [table.messageId, table.title, table.outputId, table.revision, row.rowId, header, deferredKeyword]);
   const catalog = useGetSteelReviewCatalogQuery(
-    table.conversationId, query, canEdit && open && keyword === deferredKeyword,
+    table.conversationId, query, canEdit && open &&
+      keyword === deferredKeyword && currentScope.current === scope,
+    () => setActiveScope(scope),
   );
-  const stable = keyword === deferredKeyword && currentScope.current === scope;
-  const pages = catalog.data?.pages;
+  const stable = activeScope === scope && keyword === deferredKeyword && currentScope.current === scope;
+  const { data: catalogData, remove: removeCatalog } = catalog;
+  const pages = catalogData?.pages;
   const options = stable && !catalog.isError
     ? pages?.flatMap((page) => page.options) ?? [] : [];
   const customer = pages?.[0]?.customer;
@@ -61,6 +67,14 @@ export default function SteelReviewSelector({
   }, [canEdit, scope]);
 
   useEffect(() => {
+    if (activeScope === scope || !catalogData) return;
+    appliedIntent.current = intent.current;
+    setKeyword('');
+    setOpen(false);
+    removeCatalog();
+  }, [activeScope, scope, open, keyword, catalogData, removeCatalog]);
+
+  useEffect(() => {
     const first = pages?.[0];
     if (!open || !canEdit || !stable || !keyword.trim() || intent.current === 0 ||
       intent.current === appliedIntent.current || catalog.isFetching || catalog.isError ||
@@ -71,13 +85,13 @@ export default function SteelReviewSelector({
     setOpen(false);
   }, [open, canEdit, stable, keyword, pages, catalog.isFetching, catalog.isError, row, onSelect]);
 
-  const select = (id: string) => {
+  const select = (id: string, close = true) => {
     if (!canEdit || !stable || catalog.isFetching || !customer) return;
     const candidate = options.find((option) => option.id === id);
     if (!candidate) return;
     appliedIntent.current = intent.current;
     onSelect(row, candidate, customer);
-    setOpen(false);
+    if (close) setOpen(false);
   };
 
   let status: JSX.Element | null = null;
@@ -98,7 +112,9 @@ export default function SteelReviewSelector({
     selectedValue={selectedId}
     displayValue={value}
     items={options.map((candidate) => ({ value: candidate.id, label: candidate.label }))}
-    setValue={select}
+    setValue={(id) => select(id)}
+    onNavigate={(id) => select(id, false)}
+    resetSearchOnHide={false}
     ariaLabel={`${header} ${row.rowId}`}
     searchPlaceholder={localize('com_ui_steel_review_catalog_search')}
     selectPlaceholder={localize('com_ui_steel_review_catalog_search')}
@@ -110,12 +126,14 @@ export default function SteelReviewSelector({
     filterItems={false}
     searchValue={keyword}
     onSearchChange={(next) => {
-      if (!canEdit) return;
+      if (!canEdit || next === keyword) return;
       intent.current += 1;
       setKeyword(next);
     }}
     open={open}
-    onOpenChange={setOpen}
+    onOpenChange={(next) => {
+      setOpen(next && canEdit);
+    }}
     listFooter={<div className="flex flex-col gap-2 px-3 py-2 text-sm text-text-secondary">
       {status}
       {catalog.hasNextPage && <Button

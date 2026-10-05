@@ -1377,6 +1377,85 @@ describe('Steel review read methods', () => {
     }));
   });
 
+  it('loads a current quotation customer snapshot only for the private catalog run', async () => {
+    const models = createModels(mongoose);
+    const QuotationState = createSteelQuotationStateModel(mongoose);
+    const QuotationArtifact = createSteelQuotationArtifactModel(mongoose);
+    const read = createSteelReviewReadMethods(mongoose);
+    const conversationId = 'catalog-customer-snapshot-conversation';
+    const messageId = 'catalog-customer-snapshot-message';
+    const markdown = '## system_order\n\n| 類別 | 零件編號 |\n| --- | --- |\n| 材料 | P-1 |';
+    const customerPayload = JSON.stringify({
+      customerIdentity: 'explicit-default:B',
+      customerMarkdown: '## customer_data\n\n| 客戶 | 計價基準 |\n| --- | --- |\n| 預設 | B |',
+    });
+    const customerSha256 = createHash('sha256').update(customerPayload).digest('hex');
+    await models.Conversation.create({
+      conversationId,
+      user: 'user-1',
+      tenantId: 'tenant-1',
+      title: 'Review',
+      endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId,
+      conversationId,
+      user: 'user-1',
+      tenantId: 'tenant-1',
+      isCreatedByUser: false,
+      text: markdown,
+      content: [{ type: 'text', text: markdown }],
+    });
+    await QuotationState.create({
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      conversationId,
+      currentSystemOrder: {
+        runId: 'run-catalog-current',
+        sha256: createHash('sha256').update(markdown).digest('hex'),
+        markdown,
+        messageId,
+        updatedAt: new Date(),
+      },
+    });
+    await QuotationArtifact.create({
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      conversationId,
+      runId: 'run-catalog-current',
+      operationId: 'snapshot',
+      kind: 'snapshot',
+      sha256: customerSha256,
+      payload: customerPayload,
+    });
+
+    const input = {
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      conversationId,
+      title: 'system_order',
+      kind: 'system_order' as const,
+      messageId,
+    };
+    const normal = await read.readSteelReview(input);
+    expect(normal).toEqual(expect.objectContaining({ outputId: 'system_order:run-catalog-current' }));
+    expect(normal?.customerSnapshot).toBeUndefined();
+
+    const wrongRun = await read.readSteelReview({ ...input, customerRunId: 'run-other' });
+    expect(wrongRun).toEqual(expect.objectContaining({ outputId: 'system_order:run-catalog-current' }));
+    expect(wrongRun?.customerSnapshot).toBeUndefined();
+
+    const catalog = await read.readSteelReview({ ...input, customerRunId: 'run-catalog-current' });
+    expect(catalog).toEqual(expect.objectContaining({
+      outputId: 'system_order:run-catalog-current',
+      customerSnapshot: {
+        snapshotId: customerSha256,
+        customerIdentity: 'explicit-default:B',
+        customerMarkdown: expect.stringContaining('| 預設 | B |'),
+      },
+    }));
+  });
+
   it('rejects a message whose conversation is missing or expired', async () => {
     const models = createModels(mongoose);
     const State = createSteelConversationOcrStateModel(mongoose);

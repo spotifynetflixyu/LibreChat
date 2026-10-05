@@ -45,7 +45,16 @@ const candidate = {
 const query = Pool.prototype.query;
 Pool.prototype.query = function (sql, values, callback) {
   if (typeof sql === 'string' && /FROM\s+steel\.prices\b/i.test(sql)) {
-    return Promise.resolve({ rows: [{ ...candidate }] });
+    const other = { ...candidate, id: '9007199254740994', erp_item_code: 'SC-OTHER', product_name: 'Other steel plate' };
+    const rows = [other, candidate];
+    if (/WHERE p\.id::text = \$2/u.test(sql)) {
+      return Promise.resolve({ rows: rows.filter((row) => row.id === values?.[1]) });
+    }
+    const keyword = String(values?.[1] ?? '').toLowerCase();
+    const model = /lower\(p\.erp_item_code\).*LIKE/u.test(sql);
+    return Promise.resolve({ rows: rows.filter((row) => !keyword || (model
+      ? row.erp_item_code.toLowerCase().startsWith(keyword)
+      : `${row.product_name} ${row.spec_key}`.toLowerCase().includes(keyword))) });
   }
   return query.call(this, sql, values, callback);
 };

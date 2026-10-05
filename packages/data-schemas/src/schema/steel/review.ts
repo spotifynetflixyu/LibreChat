@@ -1,6 +1,7 @@
 import { Schema } from 'mongoose';
 
 import type {
+  SteelCatalogSelectionEvidence,
   SteelReviewCell,
   SteelReviewRow,
   SteelReviewSource,
@@ -146,6 +147,19 @@ const steelReviewCaptionSchema = new Schema(
   { _id: false },
 );
 
+const steelCatalogSelectionEvidenceSchema = new Schema<SteelCatalogSelectionEvidence>(
+  {
+    rowId: { type: String, required: true },
+    candidateId: { type: String, required: true },
+    candidateRevision: { type: String, required: true, match: /^[a-f0-9]{64}$/u },
+    customerSnapshotId: { type: String, required: true },
+    customerRevision: { type: String, required: true, match: /^[a-f0-9]{64}$/u },
+    customerTier: { type: String, enum: ['A', 'B', 'C', 'D', 'E', 'F'], required: true },
+    unitPrice: { type: String, default: null, match: /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/u },
+  },
+  { _id: false },
+);
+
 const steelReviewReceiptSchema = new Schema(
   {
     operationId: { type: String, required: true },
@@ -171,7 +185,7 @@ const steelReviewReceiptSchema = new Schema(
           changedRows: { type: Number, required: true, min: 0 },
           changedRowIds: { type: [String], required: true, default: [] },
           savedAt: { type: Date, required: true },
-          selectionEvidence: { type: [Schema.Types.Mixed], default: undefined },
+          selectionEvidence: { type: [steelCatalogSelectionEvidenceSchema], default: undefined },
           messageSha256: { type: String, required: true },
           conversationId: { type: String, required: true },
           messageId: { type: String, required: true },

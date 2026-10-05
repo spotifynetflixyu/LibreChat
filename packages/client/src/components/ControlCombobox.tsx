@@ -61,6 +61,9 @@ interface ControlComboboxProps {
   /** Server-filtered options retain their supplied order. */
   filterItems?: boolean;
   listFooter?: ReactNode;
+  resetSearchOnHide?: boolean;
+  /** Apply keyboard navigation only while the options menu is open. */
+  onNavigate?: (value: string) => void;
 }
 
 const ROW_HEIGHT = 36;
@@ -99,6 +102,8 @@ function ControlCombobox({
   onSearchChange,
   filterItems = true,
   listFooter,
+  resetSearchOnHide = true,
+  onNavigate,
 }: ControlComboboxProps): JSX.Element {
   const [localSearchValue, setLocalSearchValue] = useState('');
   const searchValue = controlledSearchValue ?? localSearchValue;
@@ -119,7 +124,7 @@ function ControlCombobox({
 
   const combobox = Ariakit.useComboboxStore({
     defaultItems: items.map(getItem),
-    resetValueOnHide: true,
+    resetValueOnHide: resetSearchOnHide,
     value: searchValue,
     setValue: setSearchValue,
   });
@@ -274,6 +279,22 @@ function ControlCombobox({
             <Ariakit.Combobox
               store={combobox}
               autoSelect
+              onKeyDown={(event) => {
+                if (!onNavigate || disabled || !select.getState().open ||
+                  (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') || matches.length === 0) return;
+                event.preventDefault();
+                const activeId = combobox.getState().activeId;
+                const activeIndex = matches.findIndex((item) => item.id === activeId);
+                const selectedIndex = matches.findIndex((item) => item.value === selectedValue);
+                const index = selectedIndex >= 0 ? selectedIndex : activeIndex;
+                let nextIndex = matches.length - 1;
+                if (event.key === 'ArrowDown') nextIndex = (index + 1) % matches.length;
+                else if (index >= 0) nextIndex = (index - 1 + matches.length) % matches.length;
+                const next = matches[nextIndex];
+                if (next?.value === undefined) return;
+                combobox.move(next.id);
+                onNavigate(next.value);
+              }}
               disabled={disabled}
               placeholder={searchPlaceholder}
               className="w-full rounded-md bg-surface-secondary py-2 pl-9 pr-3 text-sm text-text-primary focus:outline-none"

@@ -102,3 +102,63 @@ it('merges a candidate over independent quantity and source changes', () => {
   expect(result.currentRows[0].source).toEqual(current.source);
   expect(result.currentRows[1]).toEqual(processing);
 });
+
+it('accepts an explicit material add followed by candidate replacement and a later quantity edit', () => {
+  const pricedCandidate: SteelCatalogCandidate = {
+    ...candidate,
+    thicknessMinMm: '2',
+    thicknessMaxMm: '2',
+    widthMm: '100',
+    lengthMm: '200',
+    unitPrice: '2',
+  };
+  const headers = [
+    '型號', '品名規格', '類別', '材質編號', '單位', '計價基準', '公式編號',
+    '厚度', '寬度', '長度', '單重', '單價', '數量', '總數',
+  ];
+  const result = applySteelReviewOperations({
+    headers,
+    currentRows: [],
+    expectedRows: [],
+    operations: [
+      {
+        type: 'add',
+        rowId: 'material-added',
+        position: { kind: 'end' },
+        system: { kind: 'material', parentRowId: null },
+        changes: [
+          { header: '類別', value: '鐵板' },
+          { header: '數量', value: '3' },
+        ],
+      },
+      {
+        type: 'replace_material',
+        rowId: 'material-added',
+        selection: {
+          id: pricedCandidate.id,
+          revision: pricedCandidate.revision,
+          evidence: { snapshotId: 'snapshot', revision: 'customer', tier: 'B' },
+        },
+      },
+      {
+        type: 'update',
+        rowId: 'material-added',
+        changes: [{ header: '數量', value: '4' }],
+      },
+    ],
+    materialCandidates: new Map([['material-added', pricedCandidate]]),
+  });
+
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('Added material candidate replacement did not apply');
+  const material = result.currentRows.find((row) => row.rowId === 'material-added');
+  expect(material).toMatchObject({
+    system: { kind: 'material' },
+    calculation: { candidate: pricedCandidate.calculation },
+  });
+  expect(material?.values['型號']?.effective).toBe('SC-UNIQUE');
+  expect(material?.values['單價']?.effective).toBe('2');
+  expect(material?.values['數量']?.effective).toBe('4');
+  expect(material?.values['單重']?.effective).toBe('0.314');
+  expect(material?.values['總數']?.effective).toBe('1.256');
+});

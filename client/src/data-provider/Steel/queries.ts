@@ -430,16 +430,28 @@ export const useGetSteelReviewCatalogQuery = (
   conversationId: string,
   input: SteelCatalogQuery,
   enabled: boolean,
-) => useInfiniteQuery(
-  DynamicQueryKeys.steelReviewCatalog(conversationId, input),
-  ({ pageParam }) => dataService.getSteelReviewCatalog(conversationId, {
-    ...input,
-    ...(typeof pageParam === 'string' ? { cursor: pageParam } : {}),
-  }),
-  {
-    enabled,
-    refetchOnWindowFocus: false,
-    retry: false,
-    getNextPageParam: (page) => page.nextCursor ?? undefined,
-  },
-);
+  onQuery?: () => void,
+) => {
+  const queryClient = useQueryClient();
+  const key = DynamicQueryKeys.steelReviewCatalog(conversationId, input);
+  return useInfiniteQuery(
+    key,
+    ({ pageParam }) => {
+      onQuery?.();
+      return dataService.getSteelReviewCatalog(conversationId, {
+        ...input,
+        ...(typeof pageParam === 'string' ? { cursor: pageParam } : {}),
+      });
+    },
+    {
+      enabled: enabled && queryClient.getQueryData(key) === undefined,
+      staleTime: Infinity,
+      cacheTime: 0,
+      refetchOnMount: false,
+      refetchOnReconnect: false,
+      refetchOnWindowFocus: false,
+      retry: false,
+      getNextPageParam: (page) => page.nextCursor ?? undefined,
+    },
+  );
+};
