@@ -458,6 +458,142 @@ describe('MarkdownTableActions Steel review entry', () => {
     expect(csv).not.toContain('P-2');
   });
 
+  it('downloads after saving a newly added processing row', async () => {
+    const systemIdentity: SteelReviewIdentity = {
+      ...reviewIdentity,
+      kind: 'system_order',
+      title: 'system_order｜下載測試',
+    };
+    const systemSelection: SteelReviewSelection = {
+      ...reviewSelection,
+      ...systemIdentity,
+    };
+    const addedProcessingRowId: ReturnType<typeof crypto.randomUUID> =
+      '00000000-0000-4000-8000-000000000001';
+    const material = {
+      rowId: 'material-1',
+      source: null,
+      system: { kind: 'material' as const, parentRowId: null, cascadeDeletedBy: null },
+      values: {
+        品名規格: { baseline: '材料A', effective: '材料A' },
+        總數: { baseline: '2', effective: '2' },
+        單價: { baseline: '10', effective: '10' },
+      },
+    };
+    const processing = {
+      rowId: 'processing-1',
+      source: null,
+      system: { kind: 'processing' as const, parentRowId: material.rowId, cascadeDeletedBy: null },
+      values: {
+        品名規格: { baseline: '加工A', effective: '加工A' },
+        總數: { baseline: '1', effective: '1' },
+        單價: { baseline: '3', effective: '3' },
+      },
+    };
+    const addedProcessing = {
+      rowId: addedProcessingRowId,
+      source: null,
+      origin: 'manual' as const,
+      deleted: false,
+      insertion: { kind: 'after' as const, rowId: material.rowId, ordinal: 0 },
+      system: { kind: 'processing' as const, parentRowId: material.rowId, cascadeDeletedBy: null },
+      values: {
+        品名規格: { baseline: null, effective: '加工B' },
+        總數: { baseline: null, effective: '1' },
+        單價: { baseline: null, effective: '4' },
+      },
+    };
+    const initialTable = {
+      ...systemIdentity,
+      outputId: 'system_order:download-run',
+      revision: 'download-revision-1',
+      latestOutputId: 'system_order:download-run',
+      isLatest: true,
+      readOnly: false,
+      headers: ['品名規格', '總數', '單價'],
+      rows: [material, processing],
+    };
+    const latestTable = {
+      ...initialTable,
+      revision: 'download-revision-2',
+      rows: [material, processing, addedProcessing],
+    };
+    const prepared = {
+      ...systemIdentity,
+      outputId: initialTable.outputId,
+      revision: initialTable.revision,
+      rows: latestTable.rows,
+      operationId: 'download-operation',
+      digest: 'a'.repeat(64),
+      messageSha256: 'b'.repeat(64),
+      target: { start: 0, end: 1, sha256: 'c'.repeat(64) },
+      replacementText: 'replacement',
+      cleanReplacementText: 'replacement',
+      targetText: 'target',
+      headers: initialTable.headers,
+      effectiveMarkdown: 'effective',
+      displayMarkdown: 'display',
+      caption: {
+        kind: 'system_order' as const,
+        changedRows: 1,
+        changedRowIds: [addedProcessing.rowId],
+        customerQuoteChangedRows: 0,
+        customerQuoteTotal: null,
+      },
+    };
+    const savedSnapshot = {
+      operationId: prepared.operationId,
+      digest: prepared.digest,
+      outputId: prepared.outputId,
+      revision: latestTable.revision,
+      headers: latestTable.headers,
+      rows: latestTable.rows,
+      changedRows: 1,
+      changedRowIds: [addedProcessing.rowId],
+      savedAt: '2026-10-03T00:00:00.000Z',
+      messageSha256: 'd'.repeat(64),
+      conversationId: systemIdentity.conversationId,
+      messageId: systemIdentity.messageId,
+      messageText: 'saved',
+      effectiveMarkdown: 'effective',
+      displayMarkdown: 'display',
+      caption: prepared.caption,
+    };
+    const prepare = jest.fn().mockResolvedValue(prepared);
+    const commit = jest.fn().mockResolvedValue({
+      changedRows: 1,
+      changedRowIds: [addedProcessing.rowId],
+      savedSnapshot,
+    });
+    const refetch = jest.fn().mockResolvedValue({ data: { table: latestTable }, error: null });
+    const createObjectURL = jest.fn(() => 'blob:review-processing-export');
+    jest.spyOn(globalThis.crypto, 'randomUUID').mockReturnValue(addedProcessing.rowId);
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
+    mockUsePrepareSteelReviewMutation.mockReturnValue({ mutateAsync: prepare });
+    mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
+    mockUseGetSteelReviewQuery.mockReturnValue({
+      data: { table: initialTable },
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch,
+    });
+
+    const queryClient = new QueryClient();
+    queryClient.setQueryData(DynamicQueryKeys.steelReview(
+      systemIdentity.conversationId,
+      systemIdentity.kind,
+      systemIdentity.messageId,
+      systemIdentity.title,
+    ), { table: initialTable });
+    renderDialog(queryClient, systemSelection, createStore(), systemIdentity);
+    fireEvent.click(await screen.findByRole('button', { name: 'com_ui_steel_review_add_processing_under material-1' }));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_download_table_csv' }));
+
+    await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
+  });
+
 
   it('renders loading, empty, and failure states without exposing edit controls', () => {
     mockUseGetSteelReviewQuery.mockReturnValue({

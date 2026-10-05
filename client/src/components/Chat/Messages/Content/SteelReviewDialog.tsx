@@ -451,11 +451,11 @@ export default function SteelReviewDialog({
     if (!expectedCaptureId) {
       return undefined;
     }
-    if (selection?.captureId === expectedCaptureId && selection.capturedAuthority) {
-      return selection.capturedAuthority;
+    if (capturedAuthorityRef.current?.captureId === expectedCaptureId) {
+      return capturedAuthorityRef.current.value;
     }
-    return capturedAuthorityRef.current?.captureId === expectedCaptureId
-      ? capturedAuthorityRef.current.value
+    return selection?.captureId === expectedCaptureId
+      ? selection.capturedAuthority
       : undefined;
   }, [captureId, selection]);
   const capturedAuthority = getCapturedAuthority();
@@ -1483,13 +1483,14 @@ export default function SteelReviewDialog({
     [getCurrentReviewTable],
   );
   const ensureSaved = useCallback(async (authority?: SteelReviewDownloadAuthority) => {
+    const initiatedCaptureId = captureId;
     const initialTable = getCurrentReviewTable();
     if (authority && (!initialTable || initialTable.outputId !== authority.outputId || initialTable.revision !== authority.revision)) {
       return false;
     }
-    const currentAuthority = getCapturedAuthority();
-    if (currentAuthority && (!initialTable ||
-      initialTable.outputId !== currentAuthority.outputId)) {
+    const expectedAuthority = getCapturedAuthority(initiatedCaptureId);
+    if (expectedAuthority && (!initialTable ||
+      initialTable.outputId !== expectedAuthority.outputId)) {
       return false;
     }
     if (!canSave && dirtyRowCount > 0) {
@@ -1498,22 +1499,20 @@ export default function SteelReviewDialog({
     if (savePhase === 'uncertain' || savePhase === 'reconciling') {
       return false;
     }
-    const expectedAuthority = getCapturedAuthority();
     const saved = await saveChanges();
-    if (!saved || (expectedAuthority && !hasCurrentCapturedSession(expectedAuthority))) {
+    if (!saved || (expectedAuthority && !hasCurrentCapturedSession(expectedAuthority, initiatedCaptureId))) {
       return false;
     }
     const latestDraft = latestDraftStateRef.current;
     const currentTable = getCurrentReviewTable();
+    const confirmedAuthority = getCapturedAuthority(initiatedCaptureId);
     if (!currentTable || (authority && currentTable.outputId !== authority.outputId) ||
-      (currentAuthority && (
-        currentTable.outputId !== currentAuthority.outputId
-      ))) {
+      (expectedAuthority && currentTable.outputId !== expectedAuthority.outputId)) {
       return false;
     }
-    const confirmedTable = currentAuthority?.table ?? currentTable;
+    const confirmedTable = confirmedAuthority?.table ?? currentTable;
     return getSteelReviewDirtyRowIds(confirmedTable, latestDraft).length === 0;
-  }, [canSave, dirtyRowCount, getCapturedAuthority, getCurrentReviewTable, hasCurrentCapturedSession, saveChanges, savePhase]);
+  }, [canSave, captureId, dirtyRowCount, getCapturedAuthority, getCurrentReviewTable, hasCurrentCapturedSession, saveChanges, savePhase]);
   useEffect(() => {
     if (!saveGateRef) {
       return undefined;
