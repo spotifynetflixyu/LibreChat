@@ -856,8 +856,8 @@ test.describe('System order atomic manual review', () => {
       expect(result.changedRows).toBe(1);
       const saved = await readTable(page, headers, fixture.conversationId, fixture.messageId);
       expect(saved.rows.some((row) => row.rowId === materialId)).toBe(false);
-      expect(rowNamed(saved, 'REVIEW-PROCESS-A')).toEqual({ ...child, deleted: true });
-      expect(saved.rows.filter((row) => row.rowId !== child.rowId)).toEqual(initial.rows.filter((row) => row.rowId !== child.rowId));
+      expect(rowNamed(saved, 'REVIEW-PROCESS-A')).toEqual({ ...child, origin: 'ai', deleted: true });
+      expect(saved.rows.filter((row) => row.rowId !== child.rowId)).toEqual(initial.rows.filter((row) => row.rowId !== child.rowId).map((row) => ({ ...row, origin: 'ai', deleted: false })));
       const after = await readback(fixture.conversationId);
       expect(after.ocr).toEqual(before.ocr);
       await page.keyboard.press('Escape');
@@ -949,7 +949,7 @@ test.describe('System order atomic manual review', () => {
         source: { fileId: `group-beta-${fixture.conversationId}`, pageNumber: 2 },
         values: { 單價: { baseline: '10', effective: '7' } },
       });
-      expect(saved.rows.filter((entry) => entry.rowId !== rowId)).toEqual(initial.rows.filter((entry) => entry.rowId !== rowId));
+      expect(saved.rows.filter((entry) => entry.rowId !== rowId)).toEqual(initial.rows.filter((entry) => entry.rowId !== rowId).map((entry) => ({ ...entry, origin: 'ai', deleted: false })));
       const after = await readback(fixture.conversationId);
       expect(after.ocr).toEqual(before.ocr);
       await page.keyboard.press('Escape');
@@ -1060,6 +1060,110 @@ test.describe('System order atomic manual review', () => {
       await page.reload();
       expect(await readback(fixture.conversationId)).toEqual(after);
       expect((await readTable(page, headers, fixture.conversationId, fixture.messageId)).rows).toEqual(saved.rows);
+    });
+  }
+
+  for (const mode of ['classified-binding', 'restored-binding', 'restored-child-edit', 'parent-child-redelete', 'individual-redelete', 'child-only-redelete'] as const) {
+    test(`activated material dependency and restored group compound draft: ${mode}`, async ({ page }) => {
+      const fixture = mode === 'classified-binding'
+        ? await seedOrder(true, true, undefined, { orderMarkdown: groupedOrder.replace('| 材料 |  |', '|  |  |'), withSources: true })
+        : await seedGroup();
+      conversations.push(fixture.conversationId);
+      let initial = mode === 'classified-binding' || mode === 'restored-binding'
+        ? await readTable(page, headers, fixture.conversationId, fixture.messageId)
+        : await bindGroup(page, headers, fixture);
+      const parentId = rowNamed(initial, 'REVIEW-MATERIAL-A').rowId;
+      const childId = rowNamed(initial, 'REVIEW-PROCESS-A').rowId;
+      const otherChildId = rowNamed(initial, 'REVIEW-PROCESS-B').rowId;
+      if (mode !== 'classified-binding') {
+        const deletion = await prepare(page, headers, operationsFor(initial, [{ type: 'delete', rowId: parentId }]));
+        const response = await commit(page, headers, deletion);
+        expect(response.status(), await response.text()).toBe(200);
+        initial = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+        expect(rowNamed(initial, 'REVIEW-MATERIAL-A').deleted).toBe(true);
+      }
+      const before = await readback(fixture.conversationId);
+      const dialog = await openEditor(page, fixture.conversationId);
+      if (mode === 'classified-binding') {
+        await dialog.getByRole('combobox', { name: `Classify ${parentId}`, exact: true }).click();
+        await page.getByRole('option', { name: 'Material', exact: true }).click();
+      } else {
+        await dialog.getByRole('button', { name: `Restore row ${parentId}`, exact: true }).click();
+      }
+      if (mode === 'classified-binding' || mode === 'restored-binding') {
+        await dialog.getByRole('combobox', { name: `Bind processing ${childId}`, exact: true }).click();
+        await page.getByRole('option', { name: parentId, exact: true }).click();
+      }
+      const editsChild = mode === 'restored-child-edit' || mode === 'parent-child-redelete' || mode === 'child-only-redelete';
+      if (editsChild) {
+        await dialog.getByRole('textbox', { name: `單價 ${childId}`, exact: true }).fill('8');
+        await dialog.getByRole('textbox', { name: `單價 ${childId}`, exact: true }).press('Enter');
+      }
+      const editsParent = mode !== 'individual-redelete' && mode !== 'child-only-redelete';
+      if (editsParent) {
+        await dialog.getByRole('textbox', { name: `單價 ${parentId}`, exact: true }).fill('7');
+        await dialog.getByRole('textbox', { name: `單價 ${parentId}`, exact: true }).press('Enter');
+      }
+      const deletesGroup = mode === 'parent-child-redelete' || mode === 'child-only-redelete';
+      if (deletesGroup) {
+        await dialog.getByRole('button', { name: `Delete group ${parentId}`, exact: true }).click();
+      }
+      if (mode === 'individual-redelete') {
+        await dialog.getByRole('button', { name: `Delete row ${childId}`, exact: true }).click();
+      }
+      const changedRows = mode === 'child-only-redelete' ? 1
+        : mode === 'restored-child-edit' || mode === 'individual-redelete' ? 3 : 2;
+      await expect(dialog.getByText(`Unsaved changes: ${changedRows} rows`, { exact: true })).toBeVisible();
+      expect(await readback(fixture.conversationId)).toEqual(before);
+      const submitted = page.waitForRequest((request) => request.method() === 'POST' && request.url().endsWith('/review/system_order/prepare'));
+      const result = await saveUiDraft(page, dialog);
+      const operations = (await submitted).postDataJSON().operations as SteelReviewOperationPrepare['operations'];
+      const activationIndex = operations.findIndex((operation) => operation.rowId === parentId &&
+        (operation.type === 'restore' || operation.type === 'classify'));
+      const childIndex = operations.findIndex((operation) => operation.rowId === childId);
+      if (!deletesGroup) {
+        expect(activationIndex).toBeGreaterThanOrEqual(0);
+        expect(childIndex).toBeGreaterThan(activationIndex);
+      }
+      await test.info().attach('saved-ordered-operations', { body: JSON.stringify(operations), contentType: 'application/json' });
+      expect(result.changedRows).toBe(changedRows);
+      const saved = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+      const parent = rowNamed(saved, 'REVIEW-MATERIAL-A');
+      const child = rowNamed(saved, 'REVIEW-PROCESS-A');
+      expect(parent).toMatchObject({ deleted: deletesGroup, system: { kind: 'material', parentRowId: null },
+        values: { 單價: { baseline: '10', effective: editsParent ? '7' : '10' } } });
+      expect(child).toMatchObject({ deleted: deletesGroup || mode === 'individual-redelete', source: parent.source,
+        system: { kind: 'processing', parentRowId: parentId, cascadeDeletedBy: deletesGroup ? parentId : null },
+        values: { 單價: { baseline: '5', effective: editsChild ? '8' : '5' } } });
+      if (mode !== 'classified-binding' && mode !== 'restored-binding') {
+        expect(rowNamed(saved, 'REVIEW-PROCESS-B')).toMatchObject({ deleted: deletesGroup,
+          system: { parentRowId: parentId, cascadeDeletedBy: deletesGroup ? parentId : null } });
+      }
+      const after = await readback(fixture.conversationId);
+      expect(after.reviews[0]?.rows).toEqual(saved.rows);
+      expect(after.reviews[0]?.receipts.at(-1)?.changedRows).toBe(changedRows);
+      expect(after.ocr).toEqual(before.ocr);
+      expect(after.messages.find((message) => message.messageId === fixture.otherMessageId))
+        .toEqual(before.messages.find((message) => message.messageId === fixture.otherMessageId));
+      await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
+      await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
+      await page.keyboard.press('Escape');
+      await page.reload();
+      expect(await readback(fixture.conversationId)).toEqual(after);
+      expect((await readTable(page, headers, fixture.conversationId, fixture.messageId)).rows).toEqual(saved.rows);
+      if (mode === 'individual-redelete') {
+        const nextDeletion = await prepare(page, headers, operationsFor(saved, [{ type: 'delete', rowId: parentId }]));
+        expect((await commit(page, headers, nextDeletion)).status()).toBe(200);
+        const groupDeleted = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+        const nextRestoration = await prepare(page, headers, operationsFor(groupDeleted, [{ type: 'restore', rowId: parentId }]));
+        expect((await commit(page, headers, nextRestoration)).status()).toBe(200);
+        const final = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+        expect(rowNamed(final, 'REVIEW-PROCESS-A')).toMatchObject({ deleted: true, system: { cascadeDeletedBy: null } });
+        expect(rowNamed(final, 'REVIEW-PROCESS-B').deleted).toBe(false);
+        expect((await readback(fixture.conversationId)).reviews[0]?.rows).toEqual(final.rows);
+        await page.reload();
+        expect((await readTable(page, headers, fixture.conversationId, fixture.messageId)).rows).toEqual(final.rows);
+      }
     });
   }
 
