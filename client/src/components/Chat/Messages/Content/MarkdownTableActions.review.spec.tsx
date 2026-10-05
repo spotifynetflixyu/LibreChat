@@ -125,6 +125,19 @@ jest.mock('~/data-provider', () => ({
     isLoading: false,
     refetch: jest.fn(),
   })),
+  useGetSteelReviewCatalogQuery: jest.fn(() => ({
+    data: undefined,
+    error: null,
+    isError: false,
+    isFetching: false,
+    isFetchingNextPage: false,
+    isLoading: false,
+    isSuccess: false,
+    fetchNextPage: jest.fn(),
+    hasNextPage: false,
+    refetch: jest.fn(),
+    remove: jest.fn(),
+  })),
 }));
 const {
   useGetSteelReviewQuery: mockUseGetSteelReviewQuery,

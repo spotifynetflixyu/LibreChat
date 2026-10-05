@@ -21,6 +21,7 @@ const mockCreateSteelRouteHandlers = jest.fn(() => ({
   listModels: mockListModels,
   readOpenAIOAuthUsage: mockReadOpenAIOAuthUsage,
   readReview: mockReadReview,
+  readReviewCatalog: mockUnusedReview,
   readReviewReceipt: mockUnusedReview,
   prepareReview: mockUnusedReview,
   commitReview: mockUnusedReview,
@@ -104,10 +105,17 @@ const mockRequireJwtAuth = jest.fn((_req, _res, next) => next());
 const mockQuotationStatus = jest.fn((_req, res) => res.json({ status: 'running' }));
 const mockQuotationCancel = jest.fn((_req, res) => res.json({ status: 'cancelled' }));
 const mockCreateQuotationHandlers = jest.fn(() => ({ status: mockQuotationStatus, cancel: mockQuotationCancel }));
+const mockCreateSteelReviewCatalogClient = jest.fn(() => ({ getClient: jest.fn() }));
+const mockCreateSteelReviewCatalogService = jest.fn(() => ({
+  resolve: jest.fn(),
+  search: jest.fn(),
+}));
 jest.mock('~/models', () => ({ getConvo: jest.fn().mockResolvedValue({ conversationId: 'c1' }) }));
 
 jest.mock('@librechat/api', () => ({
   createQuotationRouteHandlers: (...args) => mockCreateQuotationHandlers(...args),
+  createSteelReviewCatalogClient: (...args) => mockCreateSteelReviewCatalogClient(...args),
+  createSteelReviewCatalogService: (...args) => mockCreateSteelReviewCatalogService(...args),
   createSteelReviewService: jest.fn(({ reader }) => ({ read: jest.fn((input) => reader.readSteelReview(input)) })),
   createSteelReviewSourceService: jest.fn(() => ({})),
   createSteelReviewSourceStorageReader: jest.fn(() => jest.fn()),
