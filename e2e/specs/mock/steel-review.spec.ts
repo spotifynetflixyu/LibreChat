@@ -3074,6 +3074,60 @@ test.describe('Steel managed source review', () => {
     expect(await persistedSnapshot(conversationId)).toEqual(saved);
   });
 
+  test('OCR restored tombstone edit then delete saves one normal compound draft', async ({ page }) => {
+    const { conversationId, messageId } = await seedCurrent(ocr);
+    conversations.push(conversationId);
+    const initial = await page.request.get(titleReadUrl(conversationId, messageId), { headers });
+    expect(initial.status()).toBe(200);
+    const { table } = await initial.json() as { table: SteelReviewTable };
+    const rowId = table.rows[0].rowId;
+    const url = `/api/steel/conversations/${conversationId}/review/ocr_result`;
+    await page.goto(`/c/${conversationId}`);
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    const row = dialog.locator('tbody tr').filter({ has: page.locator('input[value="REVIEW-P1"]') });
+    await row.getByRole('button', { name: `Delete row ${rowId}`, exact: true }).click();
+    await dialog.getByRole('button', { name: /^Save/ }).click();
+    await expect(dialog.getByText('Updated 1 rows', { exact: true })).toBeVisible();
+    const deleted = await persistedSnapshot(conversationId);
+    expect(deleted.reviews[0]?.rows[0]).toMatchObject({ rowId, deleted: true });
+    await dialog.getByRole('button', { name: `Restore row ${rowId}`, exact: true }).click();
+    const quantity = row.locator('td').nth(3).getByRole('textbox');
+    await quantity.fill('9');
+    await quantity.press('Enter');
+    await row.getByRole('button', { name: `Delete row ${rowId}`, exact: true }).click();
+    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
+    expect(await persistedSnapshot(conversationId)).toEqual(deleted);
+    const preparedResponse = page.waitForResponse((response) => response.url().endsWith(`${url}/prepare`) && response.request().method() === 'POST');
+    const committedResponse = page.waitForResponse((response) => response.url().endsWith(`${url}/commit`) && response.request().method() === 'POST');
+    void committedResponse.catch(() => undefined);
+    await dialog.getByRole('button', { name: /^Save/ }).click();
+    const prepared = await preparedResponse;
+    expect(prepared.status(), await prepared.text()).toBe(200);
+    const request = prepared.request().postDataJSON() as SteelReviewOperationPrepare;
+    expect(request.operations).toEqual([
+      { type: 'restore', rowId },
+      { type: 'update', rowId, changes: [{ header: '數量', value: '9' }] },
+      { type: 'delete', rowId },
+    ]);
+    const committed = await committedResponse;
+    expect(committed.status(), await committed.text()).toBe(200);
+    const saved = await persistedSnapshot(conversationId);
+    expect(saved.reviews[0]?.rows[0]).toMatchObject({ rowId, deleted: true,
+      values: { 數量: { baseline: '2', effective: '9' } } });
+    expect(saved.reviews[0]?.rows[1]).toEqual(deleted.reviews[0]?.rows[1]);
+    expect(saved.reviews[0]?.receipts).toMatchObject([{ changedRows: 1 }, { changedRows: 1 }]);
+    expect(saved.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
+    expectPreservedAiState(deleted.ocr, saved.ocr);
+    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
+    await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
+    await page.keyboard.press('Escape');
+    await page.reload();
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    await expect(dialog.getByRole('button', { name: `Restore row ${rowId}`, exact: true })).toBeVisible();
+    expect(await persistedSnapshot(conversationId)).toEqual(saved);
+  });
+
   test('OCR source and business undo stay attached across pages and clear after Save', async ({ page }) => {
     const { conversationId, messageId } = await seedCurrent(ocr);
     conversations.push(conversationId);
