@@ -1,3 +1,5 @@
+import type { SteelCatalogQuery } from './steel';
+
 export enum QueryKeys {
   messages = 'messages',
   sharedMessages = 'sharedMessages',
@@ -119,6 +121,8 @@ export const DynamicQueryKeys = {
     [QueryKeys.steelQuotationStatus, conversationId] as const,
   steelReview: (conversationId: string, kind: string, messageId: string, title: string) =>
     [QueryKeys.steelReview, conversationId, kind, messageId, title] as const,
+  steelReviewCatalog: (conversationId: string, input: SteelCatalogQuery) =>
+    [QueryKeys.steelReview, 'catalog', conversationId, input] as const,
   steelReviewReceipt: (conversationId: string, kind: string, messageId: string, outputId: string, operationId: string, digest: string, title: string) =>
     [QueryKeys.steelReview, 'receipt', conversationId, kind, messageId, outputId, operationId, digest, title] as const,
   steelReviewSources: (conversationId: string, kind: string, messageId: string, title: string) =>

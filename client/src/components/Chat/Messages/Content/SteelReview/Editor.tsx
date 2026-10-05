@@ -1,13 +1,14 @@
 import { memo } from 'react';
 import { steelPriceCategories, isSteelReviewSourceAssociationHeader } from 'librechat-data-provider';
 import { Button, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@librechat/client';
+import type { SteelCatalogCandidate, SteelCatalogCustomerEvidence, SteelProcessingMeasurement } from 'librechat-data-provider';
 import type { SteelReviewRow, SteelReviewSource, SteelReviewSourceFile, SteelReviewTable } from 'librechat-data-provider';
-import type { SteelProcessingMeasurement } from 'librechat-data-provider';
 import type { ChangeEvent, KeyboardEvent, ReactNode } from 'react';
 import type { SteelMeasurementLabels } from './Measurement';
 import type { SteelReviewDraftState } from './session';
 import { getSteelReviewDraftCell, getSteelReviewDraftMeasurement } from './session';
 import SteelReviewMeasurement from './Measurement';
+import SteelReviewSelector from './Selector';
 
 export interface SteelReviewEditorLabels {
   table: string;
@@ -43,6 +44,7 @@ export interface SteelReviewEditorProps {
   onCellChange: (row: SteelReviewRow, header: string, value: string) => void;
   onCellHistoryBoundary?: () => void;
   onMeasurementChange?: (row: SteelReviewRow, measurement: SteelProcessingMeasurement | null) => void;
+  onCandidateChange?: (row: SteelReviewRow, candidate: SteelCatalogCandidate, customer: SteelCatalogCustomerEvidence) => void;
   canEdit?: boolean;
   sources?: readonly SteelReviewSourceFile[];
   sourceCorrectionRowId?: string;
@@ -270,6 +272,7 @@ function ReviewCell({
   emptyCategoryLabel,
   onCellChange,
   onCellHistoryBoundary,
+  onCandidateChange,
   canEdit = true,
 }: {
   table: SteelReviewTable;
@@ -280,6 +283,7 @@ function ReviewCell({
   emptyCategoryLabel: string;
   onCellChange: SteelReviewEditorProps['onCellChange'];
   onCellHistoryBoundary?: SteelReviewEditorProps['onCellHistoryBoundary'];
+  onCandidateChange?: SteelReviewEditorProps['onCandidateChange'];
   canEdit: boolean;
 }) {
   const cell = row.values[header];
@@ -298,7 +302,13 @@ function ReviewCell({
     ? <del className="mr-2 text-text-secondary">{cell.baseline}</del>
     : null;
   let editorContent: ReactNode = null;
-  if (!row.deleted && editable && table.kind === 'system_order' && header === '類別') {
+  if (!row.deleted && table.kind === 'system_order' && row.system?.kind === 'material' &&
+    (header === '型號' || header === '品名規格') && onCandidateChange) {
+    editorContent = <SteelReviewSelector
+      table={table} row={row} header={header} value={currentValue}
+      canEdit={editable} onSelect={onCandidateChange}
+    />;
+  } else if (!row.deleted && editable && table.kind === 'system_order' && header === '類別') {
     const categoryOptions = [...new Set([...steelPriceCategories, cell.baseline ?? '', currentValue])]
       .filter((category) => category !== '');
     editorContent = (
@@ -374,6 +384,7 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
   onDeleteGroup,
   onAddProcessingUnder,
   onMeasurementChange,
+  onCandidateChange,
   systemMaterials = rows,
 }: SteelReviewEditorProps) {
   return (
@@ -412,6 +423,7 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
                   emptyCategoryLabel={labels.emptyCategory}
                   onCellChange={onCellChange}
                   onCellHistoryBoundary={onCellHistoryBoundary}
+                  onCandidateChange={onCandidateChange}
                   canEdit={canEdit}
                 />
               ))}

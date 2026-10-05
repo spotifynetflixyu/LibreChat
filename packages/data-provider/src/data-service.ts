@@ -14,6 +14,8 @@ import type {
   SteelReviewSaveResponse,
   SteelReviewSourcesResponse,
   SteelReviewSourcePageCount,
+  SteelCatalogPage,
+  SteelCatalogQuery,
   SteelQuotationStatus,
 } from './steel';
 import type {
@@ -197,6 +199,13 @@ export function getSteelReview(
   title: string,
 ): Promise<SteelReviewResponse> {
   return request.get(endpoints.steelReview(conversationId, kind, messageId, title));
+}
+
+export function getSteelReviewCatalog(
+  conversationId: string,
+  input: SteelCatalogQuery,
+): Promise<SteelCatalogPage> {
+  return request.get(endpoints.steelReviewCatalog(conversationId, input));
 }
 
 export function prepareSteelReview(input: SteelReviewPrepare): Promise<SteelReviewPrepared> {

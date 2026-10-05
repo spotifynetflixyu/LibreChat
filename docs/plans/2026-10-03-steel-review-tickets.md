@@ -116,3 +116,6 @@ Following the user's simplified verification decision, root passed 8/8 represent
 A separate guarded Git-only fast-forward integrated the source. Root rebuilt all five private workspaces, passed all five owning noEmit checks and two integrated browser smoke cases for per-piece/price persistence/reload and pending Save locks. The same 540 source/build files and HEAD remained unchanged during the integrated proof. Primary stays clean at feat/v8.8 / `326d27f51605599c70544792f0e280f428596639`. This completion record changes only documentation after the approved executable source.
 
 GitHub #10 stays OPEN under the PR merge policy; 10–14 remain pending. PR16 stays Draft. Whole-feature Lighthouse/static gates, fresh remote CI and the final whole-feature review are still pending; no remote failure was relabeled as a baseline result and accessibility lint has not been claimed after the known axe setup failure. No Prettier, deployment, primary/master/PROD write or PR merge occurred.
+
+
+2026-10-05 selector 最新契約：型號 keyword 從首個字元開始匹配（prefix），匹配結果依型號字母排序；品名規格搜尋任意位置包含 keyword 的值，匹配優先。兩種搜尋的 option label 都顯示「型號＋品名規格」。10／11 GitHub tickets 已同步；驗證維持代表性正常流程與必要聚焦檢查。

@@ -1,8 +1,9 @@
 import mongoose from 'mongoose';
 import { SteelReviewWriteError } from '@librechat/data-schemas';
-import { steelReviewKinds, steelReviewReceiptQuerySchema } from 'librechat-data-provider';
+import { steelCatalogQuerySchema, steelReviewKinds, steelReviewReceiptQuerySchema } from 'librechat-data-provider';
 import type { SteelReviewKind } from 'librechat-data-provider';
 import type { Request, Response } from 'express';
+import type { SteelReviewCatalogService } from './catalog';
 import type { ServerRequest } from '~/types/http';
 import { createSteelRuleProposalService, SteelRuleProposalValidationError } from './rules/service';
 import {
@@ -20,6 +21,7 @@ import {
 } from './sources';
 import { createMongooseSteelRuleProposalRepository } from './rules/repository';
 import { getOpenAIOAuthUsageRemaining } from './native/usage';
+import { SteelReviewCatalogError } from './catalog';
 import { buildSteelModelOptions } from './models';
 
 type ModelsConfig = Record<string, string[] | undefined>;
@@ -32,6 +34,7 @@ interface SteelRequest extends Request {
   };
   tenantId?: string;
   config?: {
+    steelReview?: { catalogPageSize?: number };
     modelSpecs?: {
       list?: Array<{
         name: string;
@@ -69,6 +72,7 @@ export interface SteelRouteHandlersDeps {
   getOpenAIOAuthUsageRemaining?: typeof getOpenAIOAuthUsageRemaining;
   ruleProposalService?: ReturnType<typeof createSteelRuleProposalService>;
   reviewService?: SteelReviewService;
+  catalogService?: SteelReviewCatalogService;
   sourceService?: SteelReviewSourceService;
 }
 
@@ -77,6 +81,7 @@ export interface SteelRouteHandlers {
   readOpenAIOAuthUsage(req: SteelRequest, res: Response): Promise<void>;
   createRuleProposal(req: SteelRequest, res: Response): Promise<void>;
   readReview(req: SteelRequest, res: Response): Promise<void>;
+  readReviewCatalog(req: SteelRequest, res: Response): Promise<void>;
   readReviewReceipt(req: SteelRequest, res: Response): Promise<void>;
   prepareReview(req: SteelRequest, res: Response): Promise<void>;
   commitReview(req: SteelRequest, res: Response): Promise<void>;
@@ -147,6 +152,7 @@ export function createSteelRouteHandlers({
   getOpenAIOAuthUsageRemaining: readOpenAIOAuthUsageRemaining = getOpenAIOAuthUsageRemaining,
   ruleProposalService,
   reviewService,
+  catalogService,
   sourceService,
 }: SteelRouteHandlersDeps): SteelRouteHandlers {
   let resolvedRuleProposalService = ruleProposalService;
@@ -210,6 +216,46 @@ export function createSteelRouteHandlers({
           return;
         }
         res.status(500).json({ message: 'Steel review read failed' });
+      }
+    },
+
+    async readReviewCatalog(req, res) {
+      const userId = req.user?.id;
+      const conversationId = req.params.conversationId;
+      if (!userId) {
+        res.status(401).json({ message: 'Authentication required' });
+        return;
+      }
+      if (typeof conversationId !== 'string' || !conversationId || !catalogService) {
+        res.status(400).json({ message: 'Invalid catalog query', code: 'INVALID_REVIEW_QUERY' });
+        return;
+      }
+      const parsed = steelCatalogQuerySchema.safeParse(req.query as Record<string, unknown>);
+      if (!parsed.success) {
+        res.status(400).json({ message: 'Invalid catalog query', code: 'INVALID_REVIEW_QUERY' });
+        return;
+      }
+      try {
+        const result = await catalogService.search({
+          scope: {
+            userId,
+            ...(req.tenantId ?? req.user?.tenantId ? { tenantId: req.tenantId ?? req.user?.tenantId } : {}),
+            conversationId,
+          },
+          query: {
+            ...parsed.data,
+            ...(parsed.data.limit === undefined && req.config?.steelReview?.catalogPageSize !== undefined
+              ? { limit: req.config.steelReview.catalogPageSize }
+              : {}),
+          },
+        });
+        res.status(200).json(result);
+      } catch (error) {
+        if (error instanceof SteelReviewCatalogError) {
+          res.status(error.statusCode).json({ message: error.message, code: error.code });
+          return;
+        }
+        res.status(503).json({ message: 'Steel catalog query failed', code: 'CATALOG_QUERY_FAILED' });
       }
     },
 

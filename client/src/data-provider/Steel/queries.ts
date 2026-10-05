@@ -1,5 +1,5 @@
 import { useRecoilValue } from 'recoil';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   DynamicQueryKeys,
   MutationKeys,
@@ -13,6 +13,7 @@ import type {
   OpenAIOAuthTokenLogoutStatus,
   OpenAIOAuthTokenStatus,
   OpenAIOAuthUsageRemaining,
+  SteelCatalogQuery,
   SteelReviewKind,
   SteelReviewCommit,
   SteelReviewPrepare,
@@ -424,3 +425,21 @@ export const useLogoutOpenAIOAuthCodexMutation = (): UseMutationResult<
     },
   );
 };
+
+export const useGetSteelReviewCatalogQuery = (
+  conversationId: string,
+  input: SteelCatalogQuery,
+  enabled: boolean,
+) => useInfiniteQuery(
+  DynamicQueryKeys.steelReviewCatalog(conversationId, input),
+  ({ pageParam }) => dataService.getSteelReviewCatalog(conversationId, {
+    ...input,
+    ...(typeof pageParam === 'string' ? { cursor: pageParam } : {}),
+  }),
+  {
+    enabled,
+    refetchOnWindowFocus: false,
+    retry: false,
+    getNextPageParam: (page) => page.nextCursor ?? undefined,
+  },
+);

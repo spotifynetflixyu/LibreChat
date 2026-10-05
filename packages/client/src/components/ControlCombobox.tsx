@@ -3,6 +3,7 @@ import * as Ariakit from '@ariakit/react';
 import { matchSorter } from 'match-sorter';
 import { Search, ChevronDown } from 'lucide-react';
 import { SelectRenderer } from '@ariakit/react-components/select/select-renderer';
+import type { ReactNode } from 'react';
 import type { OptionWithIcon } from '~/common';
 import { usePopoverZIndex } from './OriginalDialog';
 import { fieldControl } from './Field';
@@ -53,7 +54,13 @@ interface ControlComboboxProps {
   /** Told when the popover opens and closes, for hosts that must behave
    *  differently while it is up — e.g. a focus-trapped panel whose own Escape
    *  handler must not fire while an open popover owns the key. */
+  open?: boolean;
   onOpenChange?: (open: boolean) => void;
+  searchValue?: string;
+  onSearchChange?: (value: string) => void;
+  /** Server-filtered options retain their supplied order. */
+  filterItems?: boolean;
+  listFooter?: ReactNode;
 }
 
 const ROW_HEIGHT = 36;
@@ -86,9 +93,19 @@ function ControlCombobox({
   variant = 'default',
   gutter = 4,
   portal = true,
+  open,
   onOpenChange,
+  searchValue: controlledSearchValue,
+  onSearchChange,
+  filterItems = true,
+  listFooter,
 }: ControlComboboxProps): JSX.Element {
-  const [searchValue, setSearchValue] = useState('');
+  const [localSearchValue, setLocalSearchValue] = useState('');
+  const searchValue = controlledSearchValue ?? localSearchValue;
+  const setSearchValue = (value: string) => {
+    if (controlledSearchValue === undefined) setLocalSearchValue(value);
+    onSearchChange?.(value);
+  };
   const buttonRef = useRef<HTMLButtonElement>(null);
   const [buttonWidth, setButtonWidth] = useState<number | null>(null);
   const popoverZIndex = usePopoverZIndex();
@@ -112,15 +129,16 @@ function ControlCombobox({
     defaultItems: items.map(getItem),
     value: selectedValue,
     setValue,
+    open,
     setOpen: onOpenChange,
     placement,
   });
 
   const matches = useMemo(() => {
-    const filteredItems = matchSorter(items, searchValue, {
+    const filteredItems = filterItems ? matchSorter(items, searchValue, {
       keys: ['value', 'label'],
       baseSort: (a, b) => (a.index < b.index ? -1 : 1),
-    });
+    }) : items;
     const mapped = filteredItems.map(getItem);
     if (unsearchedLimit != null && searchValue.trim() === '') {
       const capped = mapped.slice(0, unsearchedLimit);
@@ -136,7 +154,7 @@ function ControlCombobox({
       return capped;
     }
     return mapped;
-  }, [searchValue, items, unsearchedLimit, selectedValue]);
+  }, [filterItems, searchValue, items, unsearchedLimit, selectedValue]);
 
   useEffect(() => {
     const button = buttonRef.current;
@@ -256,6 +274,7 @@ function ControlCombobox({
             <Ariakit.Combobox
               store={combobox}
               autoSelect
+              disabled={disabled}
               placeholder={searchPlaceholder}
               className="w-full rounded-md bg-surface-secondary py-2 pl-9 pr-3 text-sm text-text-primary focus:outline-none"
             />
@@ -274,6 +293,7 @@ function ControlCombobox({
                 <Ariakit.ComboboxItem
                   key={item.id}
                   {...item}
+                  disabled={disabled}
                   className={cn(
                     'flex w-full cursor-pointer items-center px-3 text-sm',
                     'text-text-primary hover:bg-surface-tertiary',
@@ -293,6 +313,7 @@ function ControlCombobox({
             </SelectRenderer>
           </Ariakit.ComboboxList>
         </div>
+        {listFooter}
       </Ariakit.SelectPopover>
     </div>
   );

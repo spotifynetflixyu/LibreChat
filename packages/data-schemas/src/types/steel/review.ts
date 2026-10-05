@@ -4,6 +4,7 @@ import type {
   SteelReviewCaption,
   SteelReviewRequoteProvenance,
   SteelReviewRow,
+  SteelCatalogSelectionEvidence,
   SteelReviewSourceMapping,
   SteelReviewTarget,
 } from 'librechat-data-provider';
@@ -23,6 +24,13 @@ export interface SteelReviewReadInput extends SteelReviewScope {
   /** Private physical hints retained only for existing repository internals; public requests never carry them. */
   tableId?: string;
   partIndex?: number;
+}
+
+/** Immutable quotation customer input captured by the run that owns a system-order review. */
+export interface SteelReviewCustomerSnapshot {
+  snapshotId: string;
+  customerIdentity: string;
+  customerMarkdown: string;
 }
 
 export interface SteelReviewReceiptLookup extends SteelReviewScope {
@@ -82,6 +90,7 @@ export interface SteelReviewReadRecord extends SteelReviewScope {
   requoteProvenance?: SteelReviewRequoteProvenanceRecord;
   /** Internal quotation state retained for system-order saves; never public. */
   customerQuoteMarkdown?: string;
+  customerSnapshot?: SteelReviewCustomerSnapshot;
   /** Trusted exact lookup basis retained for the first review projection. */
   calculationCheckpoint?: SteelCalculationCheckpoint;
   lastSave?: SteelReviewReceipt;
@@ -123,6 +132,7 @@ export interface SteelReviewReceipt {
   changedRows: number;
   changedRowIds: string[];
   savedAt: Date;
+  selectionEvidence?: SteelCatalogSelectionEvidence[];
   snapshot?: SteelReviewSavedSnapshotRecord;
 }
 
@@ -140,6 +150,7 @@ export interface SteelReviewSavedSnapshotRecord {
   changedRows: number;
   changedRowIds: string[];
   savedAt: Date;
+  selectionEvidence?: SteelCatalogSelectionEvidence[];
   messageSha256: string;
   conversationId: string;
   messageId: string;

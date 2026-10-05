@@ -1,5 +1,8 @@
 import { z } from 'zod';
 import type { SteelProcessingMeasurement } from './calculation';
+import type { SteelCatalogSelectionEvidence } from './catalog';
+import type { SteelCatalogCandidate } from './catalog';
+import { steelMaterialCandidateHeaders, applyMaterialCandidate, steelCatalogSelectionEvidenceSchema, steelCatalogSelectionSchema } from './catalog';
 import { calculateSteelProcessingMeasurement, calculateSteelSystemOrderRow, steelProcessingMeasurementSchema } from './calculation';
 import { steelCalculationRowMetadataSchema } from './calculation';
 
@@ -69,6 +72,7 @@ export const steelReviewErrorCodeSchema = z.enum([
   'REVIEW_NOT_FOUND',
   'REVIEW_CONFLICT',
   'REVIEW_INVALID_OPERATION',
+  'CATALOG_CHANGED',
 ]);
 export type SteelReviewErrorCode = z.infer<typeof steelReviewErrorCodeSchema>;
 
@@ -366,6 +370,12 @@ const steelReviewOperationTransitionSchema = z.object({
   rowId: z.string().min(1),
 }).strict();
 
+const steelReviewOperationReplaceMaterialSchema = z.object({
+  type: z.literal('replace_material'),
+  rowId: z.string().min(1),
+  selection: steelCatalogSelectionSchema,
+}).strict();
+
 // The operation branches carry presence refinements (for example, an own
 // `source: undefined` is invalid). Zod's discriminatedUnion only accepts raw
 // ZodObject branches, so retain the closed discriminating field with a strict
@@ -375,6 +385,7 @@ export const steelReviewOperationSchema = z.union([
   steelReviewOperationAddSchema,
   steelReviewOperationClassifySchema,
   steelReviewOperationTransitionSchema,
+  steelReviewOperationReplaceMaterialSchema,
 ]);
 export type SteelReviewOperation = z.infer<typeof steelReviewOperationSchema>;
 
@@ -403,6 +414,7 @@ export const steelReviewSavedSnapshotSchema = z.object({
   effectiveMarkdown: z.string(),
   displayMarkdown: z.string(),
   sourceMappings: z.array(steelReviewSourceMappingSchema).optional(),
+  selectionEvidence: z.array(steelCatalogSelectionEvidenceSchema).optional(),
   ownerUpdated: steelReviewOwnerUpdatedSchema.optional(),
   // These fields are present only on the additive operation receipt lane so
   // an exact retry can return the original prepared projection without
@@ -553,6 +565,7 @@ const steelReviewPreparedBaseSchema = steelReviewOperationPrepareBaseSchema.exte
   aiRawMarkdown: z.string().optional(),
   sourceMappings: z.array(steelReviewSourceMappingSchema),
   caption: steelReviewCaptionSchema,
+  selectionEvidence: z.array(steelCatalogSelectionEvidenceSchema).optional(),
 });
 
 const steelReviewPreparedOperationBaseSchema = steelReviewPreparedBaseSchema.extend({
@@ -900,7 +913,6 @@ function applyProcessingRowCalculation(
   const currentTotal = row.values[totalHeader]?.effective ?? null;
   const expectedTotal = expectedRow.values[totalHeader]?.effective ?? null;
   const currentField = row.calculation?.fields?.[totalHeader];
-  const expectedField = expectedRow.calculation?.fields?.[totalHeader];
   const conflicts: SteelReviewConflict[] = [];
   if (currentTotal !== expectedTotal && currentField?.kind === 'manual') {
     conflicts.push({ kind: 'field', rowId: row.rowId, header: totalHeader, expected: expectedTotal, current: currentTotal, requested: currentTotal });
@@ -1023,11 +1035,13 @@ export function applySteelReviewOperations({
   expectedRows,
   headers,
   operations,
+  materialCandidates,
 }: {
   currentRows: readonly SteelReviewLedgerRow[];
   expectedRows: readonly SteelReviewLedgerRow[];
   headers: readonly string[];
   operations: readonly SteelReviewOperation[];
+  materialCandidates?: ReadonlyMap<string, SteelCatalogCandidate>;
 }): SteelReviewOperationApplyResult {
   const current = currentRows.map(cloneLedgerRow);
   const expected = expectedRows.map(cloneLedgerRow);
@@ -1049,7 +1063,8 @@ export function applySteelReviewOperations({
     if (previousType && !(
       (previousType === 'restore' && (operation.type === 'classify' || operation.type === 'update')) ||
       (previousType === 'classify' && (operation.type === 'update' || operation.type === 'delete')) ||
-      (previousType === 'update' && operation.type === 'delete')
+      (previousType === 'update' && (operation.type === 'delete' || operation.type === 'replace_material')) ||
+      (previousType === 'replace_material' && (operation.type === 'update' || operation.type === 'delete'))
     )) {
       conflicts.push({ kind: 'activity', rowId: operation.rowId, reason: 'unavailable' });
       continue;
@@ -1141,6 +1156,30 @@ export function applySteelReviewOperations({
     const expectedRow = expectedById.get(operation.rowId);
     if (!row) {
       conflicts.push({ kind: 'activity', rowId: operation.rowId, reason: 'unavailable' });
+      continue;
+    }
+    if (operation.type === 'replace_material') {
+      const candidate = materialCandidates?.get(operation.rowId);
+      if (!candidate || !expectedRow || expectedRow.deleted || row.deleted || expectedRow.system?.kind !== 'material' || row.system?.kind !== 'material') {
+        conflicts.push({ kind: 'activity', rowId: operation.rowId, reason: row.deleted ? 'current-deleted' : 'unavailable' });
+        continue;
+      }
+      const next = applyMaterialCandidate(row, candidate, headers, operation.selection.evidence.tier);
+      const nextExpected = applyMaterialCandidate(expectedRow, candidate, headers, operation.selection.evidence.tier);
+      const candidateConflicts = steelMaterialCandidateHeaders.filter((header) => headers.includes(header) &&
+        (row.values[header]?.effective ?? null) !== (expectedRow.values[header]?.effective ?? null) &&
+        (row.values[header]?.effective ?? null) !== (next.values[header]?.effective ?? null));
+      if (candidateConflicts.length > 0) {
+        conflicts.push(...candidateConflicts.map((header) => ({
+          kind: 'field' as const, rowId: row.rowId, header,
+          expected: expectedRow.values[header]?.effective ?? null,
+          current: row.values[header]?.effective ?? null,
+          requested: next.values[header]?.effective ?? null,
+        })));
+        continue;
+      }
+      Object.assign(row, next);
+      Object.assign(expectedRow, nextExpected);
       continue;
     }
     if (operation.type === 'update') {
@@ -1352,6 +1391,7 @@ export type SteelReviewDigestInput = {
   operations: SteelReviewOperation[];
   userId: string;
   tenantId?: string | null;
+  selectionEvidence?: readonly SteelCatalogSelectionEvidence[];
 };
 
 export function sameSteelReviewSource(
@@ -1560,6 +1600,7 @@ export function encodeSteelReviewDigest(input: SteelReviewDigestInput): string {
       input.operationId,
     ],
     operations: input.operations,
+    ...(input.selectionEvidence ? { selectionEvidence: input.selectionEvidence } : {}),
   });
 }
 export type SteelReviewSaveResponse = z.infer<typeof steelReviewSaveResponseSchema>;

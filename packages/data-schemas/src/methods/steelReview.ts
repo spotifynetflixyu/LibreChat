@@ -21,6 +21,7 @@ import type {
   SteelReviewTitleOwner,
   SteelReviewTarget,
   SteelReviewRecovery,
+  SteelCatalogSelectionEvidence,
 } from 'librechat-data-provider';
 import type {
   IMessage,
@@ -37,6 +38,7 @@ import type {
   SteelReviewTextPart,
   SteelReviewOwnerUpdatedRecord,
   SteelReviewRequoteProvenanceRecord,
+  SteelReviewCustomerSnapshot,
 } from '~/types';
 import type { SteelReviewAuthorizedFile } from './steelSourceAuthorization';
 import {
@@ -86,6 +88,7 @@ export interface SteelReviewCommitInput extends SteelReviewReadInput {
   systemOrderSha256?: string;
   customerQuoteMarkdown?: string;
   caption: SteelReviewCaption;
+  selectionEvidence?: SteelCatalogSelectionEvidence[];
   sourceIntents?: SteelReviewSourceIntent[];
   sourceMappings?: SteelReviewSourceMapping[];
   /** Private new-operation receipt namespace; legacy full-row digests omit it. */
@@ -122,6 +125,7 @@ export interface SteelReviewCommitResult {
   changedRows: number;
   changedRowIds: string[];
   savedAt: Date;
+  selectionEvidence?: SteelCatalogSelectionEvidence[];
   messageSha256: string;
   effectiveMarkdown: string;
   displayMarkdown: string;
@@ -138,7 +142,7 @@ export interface SteelReviewWriteMethods {
 }
 
 export class SteelReviewWriteError extends Error {
-  readonly code: 'REVIEW_CONFLICT' | 'REVIEW_NOT_FOUND' | 'REVIEW_INVALID_OPERATION';
+  readonly code: 'REVIEW_CONFLICT' | 'REVIEW_NOT_FOUND' | 'REVIEW_INVALID_OPERATION' | 'CATALOG_CHANGED';
   readonly recovery?: SteelReviewRecovery;
 
   constructor(
@@ -708,6 +712,7 @@ function sidecarRecord(
   requote?: { needsRequote?: boolean; requoteProvenance?: SteelReviewRequoteProvenanceRecord },
   trustedMappings?: readonly SteelReviewSourceMapping[],
   customerQuoteMarkdown?: string,
+  customerSnapshot?: SteelReviewCustomerSnapshot,
 ): SteelReviewReadRecord {
   const lastSave = output.receipts?.[output.receipts.length - 1];
   return {
@@ -740,6 +745,7 @@ function sidecarRecord(
     ...(requote?.needsRequote !== undefined ? { needsRequote: requote.needsRequote } : {}),
     ...(requote?.requoteProvenance ? { requoteProvenance: requote.requoteProvenance } : {}),
     ...(customerQuoteMarkdown !== undefined ? { customerQuoteMarkdown } : {}),
+    ...(customerSnapshot ? { customerSnapshot } : {}),
     ...(message?.ownerUpdated ? { ownerUpdated: message.ownerUpdated } : {}),
     ...(lastSave
       ? {
@@ -831,6 +837,31 @@ function archivedRunOwnsMessage(
       run.targetMessageId === messageId;
   } catch {
     return false;
+  }
+}
+
+function readQuotationCustomerSnapshot(
+  artifact: { sha256: string; payload: string } | null | undefined,
+): SteelReviewCustomerSnapshot | undefined {
+  if (!artifact || createHash('sha256').update(artifact.payload).digest('hex') !== artifact.sha256) {
+    return undefined;
+  }
+  try {
+    const payload = JSON.parse(artifact.payload) as {
+      customerIdentity?: unknown;
+      customerMarkdown?: unknown;
+    };
+    if (typeof payload.customerIdentity !== 'string' || typeof payload.customerMarkdown !== 'string' ||
+      payload.customerIdentity.length === 0 || payload.customerMarkdown.length === 0) {
+      return undefined;
+    }
+    return {
+      snapshotId: artifact.sha256,
+      customerIdentity: payload.customerIdentity,
+      customerMarkdown: payload.customerMarkdown,
+    };
+  } catch {
+    return undefined;
   }
 }
 
@@ -1039,6 +1070,16 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
         sidecarCandidatesPromise,
         QuotationState.findOne(scopeFilter(input)).lean<ISteelQuotationState>(),
       ]);
+      const customerSnapshot = quotation?.currentSystemOrder?.runId
+        ? readQuotationCustomerSnapshot(await QuotationArtifact.findOne({
+            ...scopeFilter(input),
+            runId: quotation.currentSystemOrder.runId,
+            kind: 'snapshot',
+            operationId: 'snapshot',
+          })
+            .select({ sha256: 1, payload: 1 })
+            .lean<{ sha256: string; payload: string } | null>())
+        : undefined;
       const authority = quotation?.currentSystemOrder?.runId
         ? {
             outputId: `system_order:${quotation.currentSystemOrder.runId}`,
@@ -1071,7 +1112,7 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
         }, authorizedFiles, undefined, {
           needsRequote: quotation?.currentSystemOrder?.needsRequote,
           requoteProvenance: quotation?.currentSystemOrder?.requoteProvenance,
-        }, undefined, quotation?.currentSystemOrder?.customerQuoteMarkdown);
+        }, undefined, quotation?.currentSystemOrder?.customerQuoteMarkdown, customerSnapshot);
       }
 
       if (
@@ -1114,6 +1155,7 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
           ...(quotation.currentSystemOrder.customerQuoteMarkdown !== undefined
             ? { customerQuoteMarkdown: quotation.currentSystemOrder.customerQuoteMarkdown }
             : {}),
+          ...(customerSnapshot ? { customerSnapshot } : {}),
           ...(quotation.currentSystemOrder.calculationCheckpoint
             ? { calculationCheckpoint: quotation.currentSystemOrder.calculationCheckpoint }
             : {}),
@@ -1285,6 +1327,7 @@ function resultFromReceipt(
     ...(snapshot.aiBaselineMarkdown !== undefined ? { aiBaselineMarkdown: snapshot.aiBaselineMarkdown } : {}),
     ...(snapshot.aiRawMarkdown !== undefined ? { aiRawMarkdown: snapshot.aiRawMarkdown } : {}),
     ...(snapshot.sourceMappings ? { sourceMappings: snapshot.sourceMappings } : {}),
+    ...(snapshot.selectionEvidence ? { selectionEvidence: snapshot.selectionEvidence } : {}),
     changedRows: snapshot.changedRows,
     changedRowIds: snapshot.changedRowIds,
     savedAt: snapshot.savedAt,
@@ -2153,6 +2196,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               headers: input.headers,
               rows: canonicalRows,
               ...(input.sourceMappings ? { sourceMappings: input.sourceMappings } : {}),
+              ...(input.selectionEvidence ? { selectionEvidence: input.selectionEvidence } : {}),
               changedRows: changedRowIds.length,
               changedRowIds,
               savedAt,
@@ -2325,6 +2369,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
                   ...(input.sourceMappings ? { sourceMappings: input.sourceMappings } : {}),
                 }
               : {}),
+            ...(input.selectionEvidence ? { selectionEvidence: input.selectionEvidence } : {}),
             snapshot: receipt.snapshot,
           };
         });

@@ -23,6 +23,8 @@ import {
   SelectValue,
 } from '@librechat/client';
 import type {
+  SteelCatalogCandidate,
+  SteelCatalogCustomerEvidence,
   SteelReviewErrorCode,
   SteelReviewConflict,
   SteelReviewKind,
@@ -64,6 +66,7 @@ import {
   redoSteelReviewDraft,
   restoreSteelReviewDraftGroup,
   restoreSteelReviewDraftRow,
+  setSteelReviewDraftCandidate,
   setSteelReviewDraftCell,
   setSteelReviewDraftMeasurement,
   setSteelReviewDraftSource,
@@ -396,11 +399,15 @@ type SteelReviewSaveErrorKey =
   | 'com_ui_steel_review_save_conflict'
   | 'com_ui_steel_review_save_stale'
   | 'com_ui_steel_review_receipt_error'
-  | 'com_ui_steel_review_save_error';
+  | 'com_ui_steel_review_save_error'
+  | 'com_ui_steel_review_catalog_changed';
 
 function getSaveErrorKey(phase: SavePhase, code?: SteelReviewErrorCode): SteelReviewSaveErrorKey {
   if (phase === 'uncertain') {
     return 'com_ui_steel_review_save_uncertain';
+  }
+  if (code === 'CATALOG_CHANGED') {
+    return 'com_ui_steel_review_catalog_changed';
   }
   if (code === 'REVIEW_CONFLICT') {
     return 'com_ui_steel_review_save_conflict';
@@ -983,6 +990,20 @@ export default function SteelReviewDialog({
     [canEdit, draftStateKey, saveBusy, setDraftStateScoped, table],
   );
 
+  const onCandidateChange = useCallback(
+    (row: SteelReviewRow, candidate: SteelCatalogCandidate, customer: SteelCatalogCustomerEvidence) => {
+      const editTable = baseTable ?? table;
+      if (!editTable || !canEdit || saveBusy || !row.rowId || row.deleted || row.system?.kind !== 'material') return;
+      setDraftStateScoped((current) => {
+        const ownerDraft = current.ownerKey === draftStateKey
+          ? current
+          : createSteelReviewDraftState(draftStateKey);
+        return setSteelReviewDraftCandidate(ownerDraft, editTable, row, candidate, customer);
+      });
+    },
+    [baseTable, table, canEdit, saveBusy, draftStateKey, setDraftStateScoped],
+  );
+
   const clearRecovery = useCallback(() => {
     recoveryRef.current = undefined;
     setSaveRecovery(undefined);
@@ -1079,7 +1100,7 @@ export default function SteelReviewDialog({
     if (saveRecovery?.conflicts.length === 1) {
       recoveryRef.current = undefined;
     }
-  }, [captureId, onCellChange, onSourceChange, saveRecovery?.conflicts.length, setSaveRecovery, sources]);
+  }, [captureId, onCellChange, onMeasurementChange, onSourceChange, saveRecovery?.conflicts.length, setSaveRecovery, sources]);
   const updateDraftRows = useCallback((next: typeof draftState) => {
     if (getCaptureScopedValue(pendingSnapshotRef, captureId)) {
       exportRowsRef.current = applySteelReviewDrafts(exportBaseRowsRef.current, next);
@@ -1667,7 +1688,7 @@ export default function SteelReviewDialog({
     }
     clearCapturedAuthority();
     clearSelectionForCapture(captureId, getCapturedAuthority(captureId)?.outputId);
-  }, [captureId, clearCapturedAuthority, clearSelectionForCapture, dirtyRowCount, getCapturedAuthority, saveBusy, savePhase, setCloseRequested]);
+  }, [captureId, clearCapturedAuthority, clearSelectionForCapture, dirtyRowCount, getCapturedAuthority, saveBusy, setCloseRequested]);
   useEffect(() => {
     if (!discardRequested || !receiptInput) {
       return undefined;
@@ -2223,6 +2244,7 @@ export default function SteelReviewDialog({
                     }}
                     onCellChange={onCellChange}
                     onMeasurementChange={onMeasurementChange}
+                  onCandidateChange={onCandidateChange}
                     onCellHistoryBoundary={onCellHistoryBoundary}
                     canEdit={canEdit}
                     sourcePageCountError={sourcePageCountQuery.isError}
@@ -2262,6 +2284,7 @@ export default function SteelReviewDialog({
                         }}
                         onCellChange={onCellChange}
                         onMeasurementChange={onMeasurementChange}
+                        onCandidateChange={onCandidateChange}
                         onCellHistoryBoundary={onCellHistoryBoundary}
                         canEdit={canEdit}
                         sourcePageCountError={sourcePageCountQuery.isError}
@@ -2302,6 +2325,7 @@ export default function SteelReviewDialog({
                   }}
                   onCellChange={onCellChange}
                   onMeasurementChange={onMeasurementChange}
+                  onCandidateChange={onCandidateChange}
                   onCellHistoryBoundary={onCellHistoryBoundary}
                   canEdit={canEdit}
                   sourcePageCountError={sourcePageCountQuery.isError}

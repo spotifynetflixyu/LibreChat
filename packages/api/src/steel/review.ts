@@ -49,10 +49,12 @@ import type {
   SteelReviewReceiptLookup,
 } from '@librechat/data-schemas';
 import type { SteelMarkdownTable } from './markdown/table';
+import type { SteelReviewCatalogService } from './catalog';
 import type { ServerRequest } from '~/types/http';
 import { buildCustomerQuoteFromMarkdown } from './markdown/quote';
 import { escapeMarkdownTableCell } from './markdown/row-codec';
 import { parseMarkdownTables } from './markdown/table';
+import { SteelReviewCatalogError } from './catalog';
 
 export interface SteelReviewReader {
   readSteelReview(input: SteelReviewReadInput): Promise<SteelReviewReadRecord | null>;
@@ -100,6 +102,7 @@ type SteelReviewInternalPrepare = {
   title: string;
   rows: SteelReviewRow[];
   sourceIntents?: SteelReviewSourceIntent[];
+  selectionEvidence?: SteelReviewCommitInput['selectionEvidence'];
 };
 type SteelReviewTrustedProjection = Omit<SteelReviewCommitInput, 'digest'> & {
   digest: string;
@@ -836,10 +839,12 @@ export function createSteelReviewService({
   reader,
   writer,
   sourceAuthority,
+  catalogService,
 }: {
   reader: SteelReviewReader;
   writer?: SteelReviewWriter;
   sourceAuthority?: SteelReviewSourceAuthority;
+  catalogService?: SteelReviewCatalogService;
 }) {
   function parsePreparePayload(input: SteelReviewPrepareInput): SteelReviewPrepare {
     assertOperationKeys(input, false);
@@ -903,6 +908,7 @@ export function createSteelReviewService({
     payload: SteelReviewOperationPrepare,
     operationId: string,
     scope: Pick<SteelReviewReadInput, 'userId' | 'tenantId'>,
+    selectionEvidence?: SteelReviewCommitInput['selectionEvidence'],
   ): string {
     return createHash('sha256')
       .update(encodeSteelReviewDigest({
@@ -916,6 +922,7 @@ export function createSteelReviewService({
         revision: payload.revision,
         operationId,
         operations: payload.operations,
+        ...(selectionEvidence ? { selectionEvidence } : {}),
       }))
       .digest('hex');
   }
@@ -952,6 +959,7 @@ export function createSteelReviewService({
       ...(snapshot.aiBaselineMarkdown ? { aiBaselineMarkdown: snapshot.aiBaselineMarkdown } : {}),
       ...(snapshot.aiRawMarkdown ? { aiRawMarkdown: snapshot.aiRawMarkdown } : {}),
       sourceMappings: snapshot.sourceMappings ?? [],
+      ...(snapshot.selectionEvidence ? { selectionEvidence: snapshot.selectionEvidence } : {}),
       caption: snapshot.caption,
       operations: payload.operations,
       operationRequest,
@@ -1110,6 +1118,39 @@ export function createSteelReviewService({
     if (!expectedRows) {
       throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review expected version is unavailable');
     }
+    const materialCandidates = new Map<string, NonNullable<Awaited<ReturnType<SteelReviewCatalogService['resolve']>>>['candidate']>();
+    const selectionEvidence: NonNullable<SteelReviewCommitInput['selectionEvidence']> = [];
+    for (const operation of payload.operations) {
+      if (operation.type !== 'replace_material') continue;
+      if (payload.kind !== 'system_order' || !catalogService) {
+        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Material catalog selection is unavailable');
+      }
+      try {
+        const resolved = await catalogService.resolve({
+          scope: {
+            userId: scope.userId,
+            ...(scope.tenantId !== undefined ? { tenantId: scope.tenantId } : {}),
+            conversationId: scope.conversationId,
+          },
+          messageId: payload.messageId,
+          title: payload.title,
+          outputId: payload.outputId,
+          // Catalog authorization follows the transaction-current review. The
+          // operation's captured revision remains bound by the review ledger
+          // conflict checks and operation digest.
+          revision: record.revision,
+          rowId: operation.rowId,
+          selection: operation.selection,
+        });
+        materialCandidates.set(operation.rowId, resolved.candidate);
+        selectionEvidence.push(resolved.evidence);
+      } catch (error) {
+        if (error instanceof SteelReviewCatalogError) {
+          throw new SteelReviewWriteError(error.code === 'CATALOG_CHANGED' ? 'CATALOG_CHANGED' : 'REVIEW_INVALID_OPERATION', error.message);
+        }
+        throw error;
+      }
+    }
     const stagedExpectedKinds = new Map(expectedRows.map((row) => [row.rowId, row.system?.kind] as const));
     const sourceIntents: SteelReviewSourceIntent[] = [];
     for (const operation of payload.operations) {
@@ -1186,6 +1227,7 @@ export function createSteelReviewService({
       expectedRows,
       headers,
       operations: payload.operations,
+      ...(materialCandidates.size > 0 ? { materialCandidates } : {}),
     });
     if (!applied.ok) {
       throw new SteelReviewWriteError(
@@ -1211,13 +1253,15 @@ export function createSteelReviewService({
       revision: record.revision,
       rows: stagedRows,
       ...(sourceIntents.length > 0 ? { sourceIntents } : {}),
+      ...(selectionEvidence.length > 0 ? { selectionEvidence } : {}),
     };
     const prepared = await buildTrustedInternalPrepared(scope, fullPayload, operationId, record, trustedSourceEvidence);
     return {
       ...prepared,
       operationRequest: payload,
-      digest: operationIntentDigest(payload, operationId, scope),
+      digest: operationIntentDigest(payload, operationId, scope, selectionEvidence),
       requestDigest: operationRequestDigest(payload, scope),
+      ...(selectionEvidence.length > 0 ? { selectionEvidence } : {}),
     };
   }
 
@@ -1520,6 +1564,7 @@ export function createSteelReviewService({
         ? { systemOrderSha256: createHash('sha256').update(record.effectiveMarkdown ?? record.markdown!).digest('hex') }
         : {}),
       ...(customerQuoteMarkdown ? { customerQuoteMarkdown } : {}),
+      ...(payload.selectionEvidence ? { selectionEvidence: payload.selectionEvidence } : {}),
       ...(record.aiBaselineMarkdown || record.markdown
         ? { aiBaselineMarkdown: record.aiBaselineMarkdown ?? record.markdown }
         : {}),
@@ -1569,6 +1614,7 @@ export function createSteelReviewService({
       operations: payload.operations,
       operationRequest: payload,
       ...(prepared.requestDigest ? { requestDigest: prepared.requestDigest } : {}),
+      ...(prepared.selectionEvidence ? { selectionEvidence: prepared.selectionEvidence } : {}),
     };
   }
 
@@ -1768,6 +1814,7 @@ export function createSteelReviewService({
                 ...(result.aiBaselineMarkdown !== undefined ? { aiBaselineMarkdown: result.aiBaselineMarkdown } : {}),
                 ...(result.aiRawMarkdown !== undefined ? { aiRawMarkdown: result.aiRawMarkdown } : {}),
                 ...(result.sourceMappings ? { sourceMappings: result.sourceMappings } : {}),
+                ...(result.selectionEvidence ? { selectionEvidence: result.selectionEvidence } : {}),
                 ...(result.caption ? { caption: result.caption } : {}),
               };
             })();

@@ -2,7 +2,7 @@ import {
   applySteelReviewOperations,
   normalizeSteelReviewLedgerRows,
 } from 'librechat-data-provider';
-import type { SteelReviewRow, SteelReviewSource, SteelReviewTable } from 'librechat-data-provider';
+import type { SteelCatalogCandidate, SteelReviewRow, SteelReviewSource, SteelReviewTable } from 'librechat-data-provider';
 import {
   addSteelReviewDraftRow,
   applySteelReviewDrafts,
@@ -26,6 +26,7 @@ import {
   setSteelReviewDraftSource,
   setSteelReviewDraftSystem,
   setSteelReviewDraftMeasurement,
+  setSteelReviewDraftCandidate,
   undoSteelReviewDraft,
   redoSteelReviewDraft,
   restoreSteelReviewDraftRow,
@@ -1448,5 +1449,70 @@ describe('material calculation draft intent', () => {
     const projected = applySteelReviewDrafts(materialTable.rows, draft);
     expect(getSteelReviewDirtyRowIds(materialTable, draft)).toEqual([]);
     expect(compileSteelReviewOperations(materialTable, draft, projected)).toEqual([]);
+  });
+});
+
+describe('Steel Review catalog candidate intent', () => {
+  const headers = ['型號', '品名規格', '材質編號', '類別', '單位', '數量', '單價', '厚度', '寬度', '長度', '備註'];
+  const candidate: SteelCatalogCandidate = {
+    id: 'catalog-1', revision: 'a'.repeat(64), erpItemCode: 'SC-1', productName: 'Plate', specKey: '400mm',
+    category: '鐵板', subcategory: null, formulaCode: null, material: 'SS400', unit: 'kg', costBasis: 'kg', valueState: 'confirmed',
+    unitWeightValue: null, unitWeightBasis: null, density: '7.85', thicknessMinMm: '2', thicknessMaxMm: '6',
+    widthMm: '400', heightMm: null, lengthMm: null, outerDiameterMm: null, webMm: null, flangeMm: null, lipMm: null,
+    sheetWidthMm: null, sheetLengthMm: null, unitPrice: '2',
+    calculation: { erpItemCode: 'SC-1', category: '鐵板', ruleVersion: 'steel-catalog-v1', exactPhysical: { density: '7.85' } },
+    label: 'SC-1 Plate 400mm',
+  };
+  const material: SteelReviewRow = {
+    rowId: 'material-1', origin: 'ai', deleted: false,
+    source: { fileId: 'drawing-1', pageNumber: 1, filename: 'drawing.pdf', mediaType: 'application/pdf' },
+    system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
+    values: Object.fromEntries(headers.map((header) => [header, {
+      baseline: header === '數量' ? '3' : '', effective: header === '數量' ? '3' : '',
+    }])),
+  };
+  const processing: SteelReviewRow = {
+    rowId: 'processing-1', origin: 'ai', deleted: false, source: material.source,
+    system: { kind: 'processing', parentRowId: material.rowId, cascadeDeletedBy: null },
+    values: Object.fromEntries(headers.map((header) => [header, {
+      baseline: header === '備註' ? 'SC-OLD' : '', effective: header === '備註' ? 'SC-OLD' : '',
+    }])),
+  };
+  const table: Pick<SteelReviewTable, 'headers' | 'rows'> = { headers, rows: [material, processing] };
+  const customer = { snapshotId: 'customer-1', revision: 'customer-revision-1', tier: 'B' as const };
+
+  it('records one identity-only replacement, preserves children, and retains later quantity edits in order', () => {
+    const selected = setSteelReviewDraftCandidate(createSteelReviewDraftState('owner'), table, material, candidate, customer);
+    const selectedRows = applySteelReviewDrafts(table.rows, selected);
+    const edited = setSteelReviewDraftCell(selected, selectedRows.find((row) => row.rowId === material.rowId)!, '數量', '5');
+    const projected = applySteelReviewDrafts(table.rows, edited);
+    expect(projected.find((row) => row.rowId === material.rowId)?.values['型號']?.effective).toBe('SC-1');
+    expect(projected.find((row) => row.rowId === material.rowId)?.values['品名規格']?.effective).toBe('Plate 400mm');
+    expect(projected.find((row) => row.rowId === material.rowId)?.values['材質編號']?.effective).toBe('SS400');
+    expect(projected.find((row) => row.rowId === processing.rowId)).toEqual(processing);
+    expect(compileSteelReviewOperations(table, edited, projected)).toEqual([
+      { type: 'replace_material', rowId: material.rowId, selection: { id: candidate.id, revision: candidate.revision, evidence: customer } },
+      { type: 'update', rowId: material.rowId, changes: [{ header: '數量', value: '5' }] },
+    ]);
+  });
+
+  it('undoes and redoes the candidate as one history event', () => {
+    const selected = setSteelReviewDraftCandidate(createSteelReviewDraftState('owner'), table, material, candidate, customer);
+    const undone = undoSteelReviewDraft(selected);
+    expect(applySteelReviewDrafts(table.rows, undone).find((row) => row.rowId === material.rowId)?.values['型號']?.effective).toBe('');
+    expect(applySteelReviewDrafts(table.rows, redoSteelReviewDraft(undone)).find((row) => row.rowId === material.rowId)?.values['型號']?.effective).toBe('SC-1');
+  });
+
+  it('lets candidate dimensions supersede earlier size edits while preserving quantity', () => {
+    const beforeSelection = setSteelReviewDraftCell(createSteelReviewDraftState('owner'), material, '厚度', '10');
+    const beforeRow = applySteelReviewDrafts(table.rows, beforeSelection).find((row) => row.rowId === material.rowId)!;
+    const selected = setSteelReviewDraftCandidate(beforeSelection, table, beforeRow, candidate, customer);
+    const projected = applySteelReviewDrafts(table.rows, selected).find((row) => row.rowId === material.rowId)!;
+
+    expect(projected.values['厚度']?.effective).toBe('');
+    expect(projected.values['數量']?.effective).toBe('3');
+    expect(compileSteelReviewOperations(table, selected, [projected, processing])).toEqual([
+      { type: 'replace_material', rowId: material.rowId, selection: { id: candidate.id, revision: candidate.revision, evidence: customer } },
+    ]);
   });
 });

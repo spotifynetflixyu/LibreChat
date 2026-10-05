@@ -141,6 +141,7 @@ export * from './steel/native';
 export * from './steel/normalization';
 export * from './steel/ocr';
 export * from './steel/quotation';
+export * from './steel/catalog';
 export * from './steel/postgres';
 export * from './steel/repositories';
 export * from './steel/routes';

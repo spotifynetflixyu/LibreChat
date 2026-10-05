@@ -171,6 +171,7 @@ const steelReviewReceiptSchema = new Schema(
           changedRows: { type: Number, required: true, min: 0 },
           changedRowIds: { type: [String], required: true, default: [] },
           savedAt: { type: Date, required: true },
+          selectionEvidence: { type: [Schema.Types.Mixed], default: undefined },
           messageSha256: { type: String, required: true },
           conversationId: { type: String, required: true },
           messageId: { type: String, required: true },

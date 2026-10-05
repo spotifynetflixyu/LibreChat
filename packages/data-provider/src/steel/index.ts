@@ -1,5 +1,6 @@
 export * from './ai';
 export * from './calculation';
+export * from './catalog';
 export * from './categories';
 export * from './quotation';
 export * from './review';

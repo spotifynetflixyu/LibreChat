@@ -2819,6 +2819,10 @@ export const ocrSchema = z.object({
   strategy: z.nativeEnum(OCRStrategy).default(OCRStrategy.MISTRAL_OCR),
 });
 
+export const steelReviewSchema = z.object({
+  catalogPageSize: z.number().int().positive().max(100).default(25),
+});
+
 export const fileAnalysisSchema = z.object({
   instructions: z.string().optional(),
 });
@@ -3148,6 +3152,7 @@ export const configSchema = z.object({
   permissions: z.object({ maxWriteAttempts: permissionWriteAttemptsSchema }).optional(),
   cache: z.boolean().default(true),
   ocr: ocrSchema.optional(),
+  steelReview: steelReviewSchema.default({}),
   fileAnalysis: fileAnalysisSchema.optional(),
   webSearch: webSearchSchema.optional(),
   langfuse: langfuseConfigSchema.optional(),

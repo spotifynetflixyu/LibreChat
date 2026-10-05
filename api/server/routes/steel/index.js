@@ -2,6 +2,9 @@ const express = require('express');
 const {
   createSteelRouteHandlers,
   createSteelReviewService,
+  createSteelReviewCatalogService,
+  createSteelReviewCatalogClient,
+  createSteelPostgresPool,
   createSteelReviewSourceService,
   createSteelReviewSourceStorageReader,
   createQuotationRouteHandlers,
@@ -20,9 +23,14 @@ const sourceService = createSteelReviewSourceService({
     resolvePath: resolveDownloadPath,
   }),
 });
+const catalogService = createSteelReviewCatalogService({
+  reader: db,
+  client: createSteelReviewCatalogClient(createSteelPostgresPool),
+});
 const handlers = createSteelRouteHandlers({
   getModelsConfig,
-  reviewService: createSteelReviewService({ reader: db, writer: db, sourceAuthority: sourceService }),
+  catalogService,
+  reviewService: createSteelReviewService({ reader: db, writer: db, sourceAuthority: sourceService, catalogService }),
   sourceService,
 });
 const quotation = createQuotationRouteHandlers({
@@ -33,6 +41,7 @@ router.get('/ai/models', requireJwtAuth, handlers.listModels);
 router.get('/ai/oauth-usage', requireJwtAuth, handlers.readOpenAIOAuthUsage);
 router.post('/rule-proposals', requireJwtAuth, handlers.createRuleProposal);
 router.get('/conversations/:conversationId/review/:kind', requireJwtAuth, handlers.readReview);
+router.get('/conversations/:conversationId/review/system_order/catalog', requireJwtAuth, handlers.readReviewCatalog);
 router.get('/conversations/:conversationId/review/:kind/receipt', requireJwtAuth, handlers.readReviewReceipt);
 router.post('/conversations/:conversationId/review/:kind/prepare', requireJwtAuth, handlers.prepareReview);
 router.post('/conversations/:conversationId/review/:kind/commit', requireJwtAuth, handlers.commitReview);

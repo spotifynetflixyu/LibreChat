@@ -1,5 +1,6 @@
 import type { StartupConfigContext } from './config';
 import type { AssistantsEndpoint } from './schemas';
+import type { SteelCatalogQuery } from './steel';
 import { ResourceType } from './accessPermissions';
 import * as q from './types/queries';
 
@@ -346,6 +347,9 @@ export const steelReview = (
   }).toString();
   return `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}?${query}`;
 };
+
+export const steelReviewCatalog = (conversationId: string, input: SteelCatalogQuery) =>
+  `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/system_order/catalog${buildQuery(input)}`;
 export const steelReviewPrepare = (conversationId: string, kind: string) =>
   `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}/prepare`;
 export const steelReviewCommit = (conversationId: string, kind: string) =>
