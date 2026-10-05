@@ -4,9 +4,10 @@ import { Button, Input, Select, SelectContent, SelectItem, SelectTrigger, Select
 import type { SteelReviewRow, SteelReviewSource, SteelReviewSourceFile, SteelReviewTable } from 'librechat-data-provider';
 import type { SteelProcessingMeasurement } from 'librechat-data-provider';
 import type { ChangeEvent, KeyboardEvent, ReactNode } from 'react';
+import type { SteelMeasurementLabels } from './Measurement';
 import type { SteelReviewDraftState } from './session';
 import { getSteelReviewDraftCell, getSteelReviewDraftMeasurement } from './session';
-import SteelReviewMeasurement, { type SteelMeasurementLabels } from './Measurement';
+import SteelReviewMeasurement from './Measurement';
 
 export interface SteelReviewEditorLabels {
   table: string;

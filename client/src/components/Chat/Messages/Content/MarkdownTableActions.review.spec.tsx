@@ -1165,7 +1165,7 @@ describe('MarkdownTableActions Steel review entry', () => {
 
     await waitFor(() => {
       expect(refetch).toHaveBeenCalledTimes(1);
-      expect(screen.queryByRole('textbox', { name: '數量 row-1' })).toBeNull();
+      expect(screen.getByRole('textbox', { name: '數量 row-1' })).toHaveValue(' 2 ');
       expect(screen.getByText('com_ui_steel_review_unsaved_caption')).toBeInTheDocument();
       expect(screen.getByRole('alert')).toHaveTextContent('com_ui_steel_review_save_uncertain');
     });
@@ -1173,7 +1173,8 @@ describe('MarkdownTableActions Steel review entry', () => {
     await waitFor(() => {
       expect(commit).toHaveBeenCalledTimes(1);
       expect(refetch).toHaveBeenCalledTimes(1);
-      expect(screen.getByRole('button', { name: 'com_ui_steel_review_save' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: 'com_ui_steel_review_save' })).toBeEnabled();
+      expect(screen.getByRole('button', { name: 'com_ui_close' })).toBeEnabled();
     });
   });
 
@@ -1383,7 +1384,7 @@ describe('MarkdownTableActions Steel review entry', () => {
     });
   });
 
-  it.skip.each([
+  it.each([
     ['conversationId', 'conversation-foreign'],
     ['messageId', 'message-foreign'],
     ['kind', 'system_order'],
@@ -1598,7 +1599,7 @@ describe('MarkdownTableActions Steel review entry', () => {
     expect(screen.getByText('com_ui_steel_review_unsaved_caption')).toBeInTheDocument();
   });
 
-  it.skip('does not apply an old receipt after selection changes while messages refetch waits', async () => {
+  it('does not apply an old receipt after selection changes while messages refetch waits', async () => {
     const table = {
       ...reviewIdentity,
       kind: 'ocr_result' as const,
@@ -1991,7 +1992,7 @@ describe('MarkdownTableActions Steel review entry', () => {
     reopened.unmount();
   });
 
-  it.skip('keeps a reopened same-owner capture isolated while a committed receipt finishes after messages refresh', async () => {
+  it('keeps a reopened same-owner capture isolated while a committed receipt finishes after messages refresh', async () => {
     const { table, prepared, savedSnapshot } = createReopenLifecycleFixture();
     const prepare = jest.fn().mockResolvedValue(prepared);
     const commit = jest.fn().mockRejectedValue(new Error('connection lost'));
@@ -2283,7 +2284,7 @@ describe('MarkdownTableActions Steel review entry', () => {
     });
   });
 
-  it.skip('closes the captured session after a committed receipt when new AI arrives without later input', async () => {
+  it('closes the captured session after a committed receipt when new AI arrives without later input', async () => {
     const { table, prepared, savedSnapshot } = createReopenLifecycleFixture();
     const newAiTable = {
       ...table,

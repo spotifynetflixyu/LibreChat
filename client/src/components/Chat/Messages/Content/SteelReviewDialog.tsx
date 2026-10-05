@@ -743,7 +743,7 @@ export default function SteelReviewDialog({
   const authorityMatchesLiveTable = !capturedAuthority || !table ||
     table.outputId === capturedAuthority.outputId;
   const saveBusy = savePhase === 'preparing' || savePhase === 'committing' ||
-    savePhase === 'uncertain' || savePhase === 'reconciling';
+    savePhase === 'reconciling';
   const canEdit = Boolean(table && (table.kind === 'ocr_result' || table.kind === 'system_order') && table.isLatest &&
     table.latestOutputId === table.outputId && !table.readOnly &&
     (!capturedAuthority || table.outputId === capturedAuthority.outputId) && !saveBusy);
@@ -1661,8 +1661,7 @@ export default function SteelReviewDialog({
     if (saveBusy) {
       return;
     }
-    if (dirtyRowCount > 0 || savePhase === 'preparing' || savePhase === 'committing' ||
-      savePhase === 'uncertain' || savePhase === 'reconciling') {
+    if (dirtyRowCount > 0) {
       setCloseRequested(true);
       return;
     }
