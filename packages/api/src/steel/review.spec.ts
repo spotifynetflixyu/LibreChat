@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import type { SteelReviewOperationPrepared } from 'librechat-data-provider';
+import type { SteelCatalogCandidate, SteelReviewOperationPrepared } from 'librechat-data-provider';
 import { createSteelReviewService } from './review';
 
 const managedMarkdown = [
@@ -1300,6 +1300,74 @@ describe('Steel review read service', () => {
     expect(prepared.operationRequest.operations.map((operation) => operation.type)).toEqual([
       'classify', 'update', 'delete',
     ]);
+  });
+
+  it('resolves processing candidates separately and passes the trusted map to staged application', async () => {
+    const headers = ['型號', '品名規格', '類別', '單位', '計價基準', '數量', '單價', '總數'];
+    const markdown = [
+      `## ${systemOrderTitle}`,
+      '',
+      `| ${headers.join(' | ')} |`,
+      `| ${headers.map(() => '---').join(' | ')} |`,
+      '| MAT-1 | Plate | 鐵板 | kg | 2 | 3 | 10 | 30 |',
+      '| OLD-P | Old weld | 加工/焊接 | kg | 2 | 1 | 5 | 5 |',
+    ].join('\n');
+    const materialRow = {
+      rowId: 'material-1', origin: 'ai' as const, deleted: false, source: null,
+      system: { kind: 'material' as const, parentRowId: null, cascadeDeletedBy: null },
+      values: Object.fromEntries(headers.map((header, index) => {
+        const values = ['MAT-1', 'Plate', '鐵板', 'kg', '2', '3', '10', '30'];
+        return [header, { baseline: values[index]!, effective: values[index]! }];
+      })),
+    };
+    const processingRow = {
+      rowId: 'processing-1', origin: 'ai' as const, deleted: false, source: null,
+      system: { kind: 'processing' as const, parentRowId: materialRow.rowId, cascadeDeletedBy: null },
+      values: Object.fromEntries(headers.map((header, index) => {
+        const values = ['OLD-P', 'Old weld', '加工/焊接', 'kg', '2', '1', '5', '5'];
+        return [header, { baseline: values[index]!, effective: values[index]! }];
+      })),
+    };
+    const candidate: SteelCatalogCandidate = {
+      id: 'processing-catalog-1', revision: 'b'.repeat(64), erpItemCode: 'PR-1',
+      productName: 'Weld', specKey: 'PR-1 weld', category: '加工/焊接', subcategory: '通用',
+      formulaCode: null, material: null, unit: 'kg', costBasis: 'kg', valueState: 'confirmed',
+      unitWeightValue: null, unitWeightBasis: null, density: null, thicknessMinMm: null,
+      thicknessMaxMm: null, widthMm: null, heightMm: null, lengthMm: null, outerDiameterMm: null,
+      webMm: null, flangeMm: null, lipMm: null, sheetWidthMm: null, sheetLengthMm: null,
+      unitPrice: '7', calculation: {
+        erpItemCode: 'PR-1', category: '加工/焊接', ruleVersion: 'steel-catalog-v1', exactPhysical: {},
+      }, label: 'PR-1 Weld PR-1 weld',
+    };
+    const resolve = jest.fn().mockResolvedValue({
+      candidate,
+      customer: { snapshotId: 'snapshot', revision: 'customer', tier: 'B' },
+      evidence: {
+        rowId: processingRow.rowId, candidateId: candidate.id, candidateRevision: candidate.revision,
+        customerSnapshotId: 'snapshot', customerRevision: 'customer', customerTier: 'B', unitPrice: '7',
+      },
+    });
+    const service = createSteelReviewService({
+      reader: { readSteelReview: jest.fn().mockResolvedValue(makeSystemOrderRecord({
+        revision: 'processing-revision', headers, rows: [materialRow, processingRow], markdown, messageText: markdown,
+      })) },
+      catalogService: { search: jest.fn(), resolve },
+    });
+
+    const prepared = await service.prepare({
+      userId: scope.userId, conversationId: scope.conversationId, messageId: scope.messageId,
+      title: systemOrderTitle, kind: 'system_order', outputId: 'system_order:run-1', revision: 'processing-revision',
+      operations: [{
+        type: 'replace_processing', rowId: processingRow.rowId,
+        selection: { id: candidate.id, revision: candidate.revision, evidence: {
+          snapshotId: 'snapshot', revision: 'customer', tier: 'B',
+        } },
+      }],
+    }) as SteelReviewOperationPrepared;
+
+    expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ kind: 'processing', rowId: processingRow.rowId }));
+    expect(prepared.rows.find((row) => row.rowId === processingRow.rowId)?.values['型號']?.effective).toBe('PR-1');
+    expect(prepared.rows.find((row) => row.rowId === processingRow.rowId)?.values['單價']?.effective).toBe('7');
   });
 
   it('prepares a same-value stale classification as a no-op and rejects a different relation with recovery', async () => {

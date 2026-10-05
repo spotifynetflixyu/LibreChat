@@ -7,7 +7,7 @@ const servers = Array.isArray(base.webServer) ? base.webServer : [base.webServer
 
 export default defineConfig({
   ...base,
-  testMatch: ['mock/steel-catalog-review.spec.ts'],
+  testMatch: ['mock/steel-catalog-review.spec.ts', 'mock/steel-processing-catalog.spec.ts'],
   webServer: servers.filter((server) => server !== undefined).map((server) => ({
     ...server,
     env: {

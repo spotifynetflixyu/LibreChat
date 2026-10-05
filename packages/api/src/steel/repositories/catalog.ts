@@ -1,11 +1,14 @@
 import { createHash } from 'node:crypto';
-import { steelCatalogOptionLabel } from 'librechat-data-provider';
+import { isSteelProcessingCatalogCandidateApplicable, steelCatalogOptionLabel } from 'librechat-data-provider';
 import type {
   SteelCatalogCandidate,
   SteelCatalogPriceTier,
   SteelCatalogSearchField,
+  SteelProcessingMaterial,
 } from 'librechat-data-provider';
 import type { SteelRepositoryClient, SteelSqlParameter } from './types';
+
+export type SteelCatalogKind = 'material' | 'processing';
 
 export interface SearchSteelReviewCatalogInput {
   field: SteelCatalogSearchField;
@@ -13,11 +16,16 @@ export interface SearchSteelReviewCatalogInput {
   cursor?: SteelCatalogCursor;
   limit: number;
   tier: SteelCatalogPriceTier;
+  kind?: SteelCatalogKind;
+  parentRowId?: string;
+  materialCategory?: string;
+  materialThicknessMm?: string;
 }
 
 export interface ResolveSteelReviewCatalogCandidateInput {
   id: string;
   tier: SteelCatalogPriceTier;
+  kind?: SteelCatalogKind;
 }
 
 export interface SteelCatalogCursor {
@@ -160,7 +168,10 @@ function toCandidate(row: SteelCatalogRow): SteelCatalogCandidate {
   };
 }
 
-function searchWhere(input: SearchSteelReviewCatalogInput, cursor: SteelCatalogCursor | undefined): {
+function searchWhere(
+  input: SearchSteelReviewCatalogInput,
+  cursor: Pick<SteelCatalogCursor, 'erpItemCode' | 'id'> | undefined,
+): {
   sql: string;
   values: SteelSqlParameter[];
 } {
@@ -168,7 +179,7 @@ function searchWhere(input: SearchSteelReviewCatalogInput, cursor: SteelCatalogC
   const keyword = escapeLikeLiteral(input.keyword.normalize('NFKC').trim().toLocaleLowerCase());
   values.push(keyword);
   const predicates = [
-    `p.category NOT LIKE '加工/%'`,
+    input.kind === 'processing' ? `p.category LIKE '加工/%'` : `p.category NOT LIKE '加工/%'`,
   ];
   if (keyword) {
     predicates.push(input.field === 'model'
@@ -189,13 +200,17 @@ function searchWhere(input: SearchSteelReviewCatalogInput, cursor: SteelCatalogC
   return { sql: predicates.join('\n  AND '), values };
 }
 
-function querySql(input: SearchSteelReviewCatalogInput, cursor: SteelCatalogCursor | undefined): {
+function querySql(
+  input: SearchSteelReviewCatalogInput,
+  cursor: Pick<SteelCatalogCursor, 'erpItemCode' | 'id'> | undefined,
+  batchSize: number,
+): {
   sql: string;
   values: SteelSqlParameter[];
 } {
   const where = searchWhere(input, cursor);
   const limitPlaceholder = where.values.length + 1;
-  where.values.push(input.limit + 1);
+  where.values.push(batchSize);
   return {
     sql: `
 SELECT ${catalogColumns}
@@ -211,26 +226,71 @@ LIMIT $${limitPlaceholder}
 export async function searchSteelReviewCatalog(
   client: SteelRepositoryClient,
   input: SearchSteelReviewCatalogInput,
-): Promise<{ candidates: SteelCatalogCandidate[]; hasMore: boolean }> {
-  const { sql, values } = querySql(input, input.cursor);
-  const result = await client.query<SteelCatalogRow>(sql, values);
-  const rows = result.rows;
-  const hasMore = rows.length > input.limit;
-  return {
-    candidates: rows.slice(0, input.limit).map(toCandidate),
-    hasMore,
+): Promise<{ candidates: SteelCatalogCandidate[]; hasMore: boolean; exhausted: boolean }> {
+  const candidates: SteelCatalogCandidate[] = [];
+  const batchSize = input.limit + 1;
+  let cursor: Pick<SteelCatalogCursor, 'erpItemCode' | 'id'> | undefined = input.cursor;
+
+  for (;;) {
+    const { sql, values } = querySql(input, cursor, batchSize);
+    const result = await client.query<SteelCatalogRow>(sql, values);
+    const rows = result.rows;
+    if (rows.length === 0) {
+      return { candidates, hasMore: false, exhausted: true };
+    }
+
+    for (const row of rows) {
+      if (input.kind === 'processing' && !isProcessingCandidateApplicable(row, input)) {
+        continue;
+      }
+      candidates.push(toCandidate(row));
+      if (candidates.length > input.limit) {
+        return { candidates: candidates.slice(0, input.limit), hasMore: true, exhausted: false };
+      }
+    }
+
+    const last = rows[rows.length - 1];
+    if (!last || rows.length < batchSize) {
+      return { candidates, hasMore: false, exhausted: true };
+    }
+    cursor = { erpItemCode: last.erp_item_code, id: last.id };
+  }
+}
+
+function isProcessingCandidateApplicable(
+  row: SteelCatalogRow,
+  input: SearchSteelReviewCatalogInput,
+): boolean {
+  const material: SteelProcessingMaterial = {
+    rowId: input.parentRowId ?? '',
+    category: input.materialCategory ?? '',
+    ...(input.materialThicknessMm !== undefined ? { thicknessMm: input.materialThicknessMm } : {}),
   };
+  return isSteelProcessingCatalogCandidateApplicable({
+    category: row.category,
+    subcategory: row.subcategory,
+    productName: row.product_name ?? undefined,
+    specKey: row.spec_key,
+    thicknessMinMm: row.thickness_min_mm,
+    thicknessMaxMm: row.thickness_max_mm,
+    erpItemCode: row.erp_item_code,
+  }, material);
+}
+
+function catalogKindPredicate(kind: SteelCatalogKind): string {
+  return kind === 'processing' ? `p.category LIKE '加工/%'` : `p.category NOT LIKE '加工/%'`;
 }
 
 export async function resolveSteelReviewCatalogCandidate(
   client: SteelRepositoryClient,
   input: ResolveSteelReviewCatalogCandidateInput,
 ): Promise<SteelCatalogCandidate | null> {
+  const kind = input.kind ?? 'material';
   const result = await client.query<SteelCatalogRow>(
     `SELECT ${catalogColumns}
 FROM steel.prices AS p
 WHERE p.id::text = $2
-  AND p.category NOT LIKE '加工/%'
+  AND ${catalogKindPredicate(kind)}
 LIMIT 1`,
     [input.tier, input.id],
   );

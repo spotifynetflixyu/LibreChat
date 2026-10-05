@@ -60,6 +60,17 @@ const catalogRow = {
   sheet_width_mm: null, sheet_length_mm: null, unit_price: '2',
 };
 
+const processingCatalogRow = {
+  ...catalogRow,
+  id: 'processing-1',
+  erp_item_code: 'PR-1',
+  product_name: 'Weld',
+  spec_key: 'PR-1 weld',
+  category: '加工/焊接',
+  subcategory: '通用',
+  unit_price: null,
+};
+
 describe('Steel catalog authority', () => {
   it('binds search and resolution to the current review and customer evidence', async () => {
     const query = jest.fn().mockResolvedValue({ rows: [catalogRow] });
@@ -127,5 +138,100 @@ describe('Steel catalog authority', () => {
         id: 'catalog-1', revision: 'a'.repeat(64), evidence: { ...customer, [field]: field === 'tier' ? 'A' : 'forged' },
       },
     })).rejects.toMatchObject<Partial<SteelReviewCatalogError>>({ code: 'CATALOG_CHANGED', statusCode: 409 });
+  });
+
+  it('authorizes processing search and resolve from the frozen review while using the requested kind', async () => {
+    const query = jest.fn().mockResolvedValue({ rows: [processingCatalogRow] });
+    const client: SteelRepositoryClient = { query };
+    const service = createSteelReviewCatalogService({
+      reader: { readSteelReview: jest.fn().mockResolvedValue(review) },
+      client: { getClient: () => client },
+      pageSize: 10,
+    });
+
+    const page = await service.search({
+      scope,
+      query: {
+        messageId: review.messageId,
+        title: review.title,
+        outputId: review.outputId,
+        revision: review.revision,
+        rowId: row.rowId,
+        kind: 'processing',
+        parentRowId: row.rowId,
+        materialCategory: '鐵板',
+        field: 'model',
+        keyword: 'PR-',
+      },
+    });
+
+    expect(page.options[0]).toMatchObject({ id: processingCatalogRow.id, category: '加工/焊接', unitPrice: null });
+    const candidate = page.options[0]!;
+    const resolved = await service.resolve({
+      scope,
+      messageId: review.messageId,
+      title: review.title,
+      outputId: review.outputId,
+      revision: review.revision,
+      rowId: row.rowId,
+      kind: 'processing',
+      selection: { id: candidate.id, revision: candidate.revision, evidence: customer },
+    });
+
+    expect(resolved.candidate.category).toBe('加工/焊接');
+    expect(query.mock.calls[0]?.[0]).toMatch(/p\.category LIKE '加工\/%'/u);
+  });
+
+  it('returns a safe operational failure when the catalog query fails', async () => {
+    const service = createSteelReviewCatalogService({
+      reader: { readSteelReview: jest.fn().mockResolvedValue(review) },
+      client: { getClient: () => ({ query: jest.fn().mockRejectedValue(new Error('secret database detail')) }) },
+    });
+
+    await expect(service.search({
+      scope,
+      query: {
+        messageId: review.messageId,
+        title: review.title,
+        outputId: review.outputId,
+        revision: review.revision,
+        rowId: row.rowId,
+        field: 'description',
+        keyword: 'plate',
+      },
+    })).rejects.toMatchObject<Partial<SteelReviewCatalogError>>({
+      code: 'CATALOG_QUERY_FAILED', statusCode: 503, message: 'Catalog query failed',
+    });
+  });
+
+  it('rejects a processing cursor reused with a different material scope', async () => {
+    const query = jest.fn().mockResolvedValue({ rows: [processingCatalogRow, { ...processingCatalogRow, id: 'processing-2' }] });
+    const service = createSteelReviewCatalogService({
+      reader: { readSteelReview: jest.fn().mockResolvedValue(review) },
+      client: { getClient: () => ({ query }) },
+      pageSize: 1,
+    });
+    const baseQuery = {
+      messageId: review.messageId,
+      title: review.title,
+      outputId: review.outputId,
+      revision: review.revision,
+      rowId: row.rowId,
+      kind: 'processing' as const,
+      parentRowId: row.rowId,
+      materialCategory: '鐵板',
+      field: 'model' as const,
+      keyword: 'PR-',
+    };
+    const page = await service.search({ scope, query: baseQuery });
+    expect(page.nextCursor).toBeTruthy();
+
+    await expect(service.search({
+      scope,
+      query: { ...baseQuery, materialCategory: '圓管', cursor: page.nextCursor! },
+    })).rejects.toMatchObject<Partial<SteelReviewCatalogError>>({
+      code: 'INVALID_REVIEW_QUERY', statusCode: 400,
+    });
+    expect(query).toHaveBeenCalledTimes(1);
   });
 });

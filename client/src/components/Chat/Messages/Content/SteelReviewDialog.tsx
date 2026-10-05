@@ -993,15 +993,17 @@ export default function SteelReviewDialog({
   const onCandidateChange = useCallback(
     (row: SteelReviewRow, candidate: SteelCatalogCandidate, customer: SteelCatalogCustomerEvidence) => {
       const editTable = baseTable ?? table;
-      if (!editTable || !canEdit || saveBusy || !row.rowId || row.deleted || row.system?.kind !== 'material') return;
+      if (!editTable || !canEdit || saveBusy || !row.rowId || row.deleted || !row.system || row.system.kind === 'unassigned') return;
+      const parent = row.system.kind === 'processing'
+        ? draftRows.find((material) => material.rowId === row.system?.parentRowId) : undefined;
       setDraftStateScoped((current) => {
         const ownerDraft = current.ownerKey === draftStateKey
           ? current
           : createSteelReviewDraftState(draftStateKey);
-        return setSteelReviewDraftCandidate(ownerDraft, editTable, row, candidate, customer);
+        return setSteelReviewDraftCandidate(ownerDraft, editTable, row, candidate, customer, parent);
       });
     },
-    [baseTable, table, canEdit, saveBusy, draftStateKey, setDraftStateScoped],
+    [baseTable, table, canEdit, saveBusy, draftRows, draftStateKey, setDraftStateScoped],
   );
 
   const clearRecovery = useCallback(() => {

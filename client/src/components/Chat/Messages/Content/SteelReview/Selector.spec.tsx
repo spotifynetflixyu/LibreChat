@@ -146,3 +146,37 @@ it('keeps option data for only the active row and resets the previous row on a n
   await waitFor(() => expect(api).toHaveBeenCalledWith('conversation', expect.objectContaining({ rowId: 'other-material', keyword: '' })));
   await waitFor(() => expect(queryClient.getQueryCache().getAll().filter((query) => query.state.data)).toHaveLength(1));
 });
+
+it('retains processing options without querying on a material edit and captures the new material on keyword input', async () => {
+  const plate = { ...candidate('hole', 'HOLE'), category: '加工/孔', subcategory: '鐵板' };
+  const weld = { ...candidate('weld', 'WELD'), category: '加工/焊接', subcategory: '通用' };
+  const api = jest.spyOn(dataService, 'getSteelReviewCatalog').mockImplementation(async (_conversationId, input) =>
+    page(input.keyword === 'next' ? [weld] : [plate, weld]));
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, cacheTime: 0 } } });
+  const onSelect = jest.fn();
+  const parent = { ...table.rows[0], values: { ...table.rows[0].values,
+    類別: { baseline: '鐵板', effective: '鐵板' }, 厚度: { baseline: '4', effective: '4' } } };
+  const processing = { ...table.rows[0], rowId: 'processing',
+    system: { kind: 'processing' as const, parentRowId: parent.rowId, cascadeDeletedBy: null } };
+  const content = (material: typeof parent) => <QueryClientProvider client={queryClient}>
+    <SteelReviewSelector table={table} row={processing} parent={material} header="型號"
+      value="OLD" canEdit onSelect={onSelect} />
+  </QueryClientProvider>;
+  const { rerender } = render(content(parent));
+  fireEvent.click(screen.getByRole('combobox', { name: '型號 processing' }));
+  const search = await screen.findByPlaceholderText('Search catalog');
+  fireEvent.change(search, { target: { value: 'catalog' } });
+  await screen.findByRole('option', { name: plate.label });
+  expect(api).toHaveBeenLastCalledWith('conversation', expect.objectContaining({
+    kind: 'processing', parentRowId: 'material', materialCategory: '鐵板', materialThicknessMm: '4', keyword: 'catalog',
+  }));
+  const calls = api.mock.calls.length;
+  rerender(content({ ...parent, values: { ...parent.values, 類別: { baseline: '鐵板', effective: 'C型鋼' } } }));
+  await waitFor(() => expect(screen.queryByRole('option', { name: plate.label })).toBeNull());
+  expect(screen.getByRole('option', { name: weld.label })).toBeVisible();
+  expect(api).toHaveBeenCalledTimes(calls);
+  expect(onSelect).not.toHaveBeenCalled();
+  fireEvent.change(search, { target: { value: 'next' } });
+  await waitFor(() => expect(onSelect).toHaveBeenCalledWith(processing, weld, customer));
+  expect(api).toHaveBeenLastCalledWith('conversation', expect.objectContaining({ materialCategory: 'C型鋼', keyword: 'next' }));
+});

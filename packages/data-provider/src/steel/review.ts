@@ -2,8 +2,9 @@ import { z } from 'zod';
 import type { SteelProcessingMeasurement } from './calculation';
 import type { SteelCatalogSelectionEvidence } from './catalog';
 import type { SteelCatalogCandidate } from './catalog';
-import { steelMaterialCandidateHeaders, applyMaterialCandidate, steelCatalogSelectionEvidenceSchema, steelCatalogSelectionSchema } from './catalog';
+import { steelMaterialCandidateHeaders, steelProcessingCandidateHeaders, applyMaterialCandidate, applyProcessingCandidate, steelCatalogSelectionEvidenceSchema, steelCatalogSelectionSchema } from './catalog';
 import { calculateSteelProcessingMeasurement, calculateSteelSystemOrderRow, steelProcessingMeasurementSchema } from './calculation';
+import { isSteelProcessingCatalogCandidateApplicable, steelProcessingMaterialForRow } from './processing';
 import { steelCalculationRowMetadataSchema } from './calculation';
 
 export const steelReviewKinds = ['ocr_result', 'system_order'] as const;
@@ -370,6 +371,12 @@ const steelReviewOperationTransitionSchema = z.object({
   rowId: z.string().min(1),
 }).strict();
 
+const steelReviewOperationReplaceProcessingSchema = z.object({
+  type: z.literal('replace_processing'),
+  rowId: z.string().min(1),
+  selection: steelCatalogSelectionSchema,
+}).strict();
+
 const steelReviewOperationReplaceMaterialSchema = z.object({
   type: z.literal('replace_material'),
   rowId: z.string().min(1),
@@ -386,6 +393,7 @@ export const steelReviewOperationSchema = z.union([
   steelReviewOperationClassifySchema,
   steelReviewOperationTransitionSchema,
   steelReviewOperationReplaceMaterialSchema,
+  steelReviewOperationReplaceProcessingSchema,
 ]);
 export type SteelReviewOperation = z.infer<typeof steelReviewOperationSchema>;
 
@@ -1036,12 +1044,14 @@ export function applySteelReviewOperations({
   headers,
   operations,
   materialCandidates,
+  processingCandidates,
 }: {
   currentRows: readonly SteelReviewLedgerRow[];
   expectedRows: readonly SteelReviewLedgerRow[];
   headers: readonly string[];
   operations: readonly SteelReviewOperation[];
   materialCandidates?: ReadonlyMap<string, SteelCatalogCandidate>;
+  processingCandidates?: ReadonlyMap<string, SteelCatalogCandidate>;
 }): SteelReviewOperationApplyResult {
   const current = currentRows.map(cloneLedgerRow);
   const expected = expectedRows.map(cloneLedgerRow);
@@ -1065,7 +1075,9 @@ export function applySteelReviewOperations({
       (previousType === 'classify' && (operation.type === 'update' || operation.type === 'delete')) ||
       (previousType === 'add' && operation.type === 'replace_material') ||
       (previousType === 'update' && (operation.type === 'delete' || operation.type === 'replace_material')) ||
-      (previousType === 'replace_material' && (operation.type === 'update' || operation.type === 'delete'))
+      (previousType === 'replace_material' && (operation.type === 'update' || operation.type === 'delete')) ||
+      (['add', 'restore', 'classify', 'update'].includes(previousType) && operation.type === 'replace_processing') ||
+      (previousType === 'replace_processing' && (operation.type === 'update' || operation.type === 'delete'))
     )) {
       conflicts.push({ kind: 'activity', rowId: operation.rowId, reason: 'unavailable' });
       continue;
@@ -1157,6 +1169,38 @@ export function applySteelReviewOperations({
     const expectedRow = expectedById.get(operation.rowId);
     if (!row) {
       conflicts.push({ kind: 'activity', rowId: operation.rowId, reason: 'unavailable' });
+      continue;
+    }
+    if (operation.type === 'replace_processing') {
+      const candidate = processingCandidates?.get(operation.rowId);
+      const parent = row.system?.parentRowId ? currentById.get(row.system.parentRowId) : undefined;
+      const expectedParent = expectedRow?.system?.parentRowId ? expectedById.get(expectedRow.system.parentRowId) : undefined;
+      if (!candidate || !expectedRow || row.deleted || expectedRow.deleted ||
+        row.system?.kind !== 'processing' || expectedRow.system?.kind !== 'processing' ||
+        !parent || parent.deleted || parent.system?.kind !== 'material' || !expectedParent ||
+        !isSteelProcessingCatalogCandidateApplicable(candidate, steelProcessingMaterialForRow(parent))) {
+        conflicts.push({ kind: 'activity', rowId: row.rowId, reason: row.deleted ? 'current-deleted' : 'unavailable' });
+        continue;
+      }
+      const next = applyProcessingCandidate(row, candidate, headers, operation.selection.evidence.tier, parent);
+      const nextExpected = applyProcessingCandidate(expectedRow, candidate, headers, operation.selection.evidence.tier, expectedParent);
+      const candidateConflicts: string[] = steelProcessingCandidateHeaders.filter((header) => headers.includes(header) &&
+        (row.values[header]?.effective ?? null) !== (expectedRow.values[header]?.effective ?? null) &&
+        (row.values[header]?.effective ?? null) !== (next.values[header]?.effective ?? null));
+      if (row.calculation?.fields?.['總數']?.kind === 'manual' &&
+        row.values['總數']?.effective !== expectedRow.values['總數']?.effective &&
+        row.values['總數']?.effective !== next.values['總數']?.effective) candidateConflicts.push('總數');
+      if (candidateConflicts.length > 0) {
+        conflicts.push(...candidateConflicts.map((header) => ({
+          kind: 'field' as const, rowId: row.rowId, header,
+          expected: expectedRow.values[header]?.effective ?? null,
+          current: row.values[header]?.effective ?? null,
+          requested: next.values[header]?.effective ?? null,
+        })));
+        continue;
+      }
+      Object.assign(row, next);
+      Object.assign(expectedRow, nextExpected);
       continue;
     }
     if (operation.type === 'replace_material') {

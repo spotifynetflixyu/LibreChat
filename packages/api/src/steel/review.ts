@@ -1119,9 +1119,10 @@ export function createSteelReviewService({
       throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review expected version is unavailable');
     }
     const materialCandidates = new Map<string, NonNullable<Awaited<ReturnType<SteelReviewCatalogService['resolve']>>>['candidate']>();
+    const processingCandidates = new Map<string, NonNullable<Awaited<ReturnType<SteelReviewCatalogService['resolve']>>>['candidate']>();
     const selectionEvidence: NonNullable<SteelReviewCommitInput['selectionEvidence']> = [];
     for (const operation of payload.operations) {
-      if (operation.type !== 'replace_material') continue;
+      if (operation.type !== 'replace_material' && operation.type !== 'replace_processing') continue;
       if (payload.kind !== 'system_order' || !catalogService) {
         throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Material catalog selection is unavailable');
       }
@@ -1140,9 +1141,14 @@ export function createSteelReviewService({
           // conflict checks and operation digest.
           revision: record.revision,
           rowId: operation.rowId,
+          kind: operation.type === 'replace_processing' ? 'processing' : 'material',
           selection: operation.selection,
         });
-        materialCandidates.set(operation.rowId, resolved.candidate);
+        if (operation.type === 'replace_processing') {
+          processingCandidates.set(operation.rowId, resolved.candidate);
+        } else {
+          materialCandidates.set(operation.rowId, resolved.candidate);
+        }
         selectionEvidence.push(resolved.evidence);
       } catch (error) {
         if (error instanceof SteelReviewCatalogError) {
@@ -1228,6 +1234,7 @@ export function createSteelReviewService({
       headers,
       operations: payload.operations,
       ...(materialCandidates.size > 0 ? { materialCandidates } : {}),
+      ...(processingCandidates.size > 0 ? { processingCandidates } : {}),
     });
     if (!applied.ok) {
       throw new SteelReviewWriteError(

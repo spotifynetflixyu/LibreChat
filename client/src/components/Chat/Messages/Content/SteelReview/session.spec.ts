@@ -1530,4 +1530,22 @@ describe('Steel Review catalog candidate intent', () => {
       { type: 'replace_material', rowId: material.rowId, selection: { id: candidate.id, revision: candidate.revision, evidence: customer } },
     ]);
   });
+  it('compiles processing selection with its existing measurement and never sends candidate values as manual edits', () => {
+    const parent = { ...material, values: { ...material.values, 類別: { baseline: '鐵板', effective: '鐵板' } } };
+    const child = { ...processing, values: { ...processing.values, 單位: { baseline: '次', effective: '次' },
+      總數: { baseline: '99', effective: '99' } }, calculation: { measurement: { mode: 'perPiece' as const, amount: '2.5', unit: '次' } } };
+    const currentTable = { ...table, rows: [parent, child] };
+    const nextCandidate = { ...candidate, category: '加工/孔', subcategory: '鐵板', unit: '次',
+      calculation: { ...candidate.calculation, category: '加工/孔' } };
+    const selected = setSteelReviewDraftCandidate(createSteelReviewDraftState('owner'), currentTable, child, nextCandidate, customer, parent);
+    const projected = applySteelReviewDrafts(currentTable.rows, selected);
+    expect(projected[1].values['總數']?.effective).toBe('7.5');
+    expect(projected[1].calculation?.measurement).toEqual(child.calculation.measurement);
+    expect(compileSteelReviewOperations(currentTable, selected, projected)).toEqual([
+      { type: 'replace_processing', rowId: child.rowId, selection: { id: candidate.id, revision: candidate.revision, evidence: customer } },
+    ]);
+    const cleared = setSteelReviewDraftCell(selected, projected[0], '數量', '');
+    expect(applySteelReviewDrafts(currentTable.rows, cleared)[1].values['總數']?.effective).toBe('');
+  });
+
 });

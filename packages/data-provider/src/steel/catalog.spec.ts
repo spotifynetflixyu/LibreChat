@@ -1,6 +1,6 @@
 import type { SteelCatalogCandidate } from './catalog';
 import type { SteelReviewLedgerRow } from './review';
-import { applyMaterialCandidate, steelCatalogOptionLabel } from './catalog';
+import { applyMaterialCandidate, applyProcessingCandidate, steelCatalogOptionLabel } from './catalog';
 import { applySteelReviewOperations } from './review';
 
 const candidate: SteelCatalogCandidate = {
@@ -161,4 +161,46 @@ it('accepts an explicit material add followed by candidate replacement and a lat
   expect(material?.values['數量']?.effective).toBe('4');
   expect(material?.values['單重']?.effective).toBe('0.314');
   expect(material?.values['總數']?.effective).toBe('1.256');
+});
+
+it('keeps explicit processing measurement and binding while recalculating a new candidate against its material', () => {
+  const parent = row('material-1', 'material');
+  const processing = row('processing-1', 'processing');
+  processing.values['總數'] = { baseline: '99', effective: '99' };
+  processing.calculation = { measurement: { mode: 'perPiece', amount: '2.5', unit: '次' } };
+  const nextCandidate: SteelCatalogCandidate = { ...candidate, category: '加工/孔', subcategory: '鐵板',
+    erpItemCode: 'HOLE-1', unit: '次', unitPrice: '1.234567890123456789',
+    calculation: { erpItemCode: 'HOLE-1', category: '加工/孔', ruleVersion: 'steel-catalog-v1', exactPhysical: {} } };
+  const applied = applyProcessingCandidate(processing, nextCandidate, Object.keys(processing.values), 'B', parent);
+  expect(applied.values['總數']?.effective).toBe('7.5');
+  expect(applied.values['單價']?.effective).toBe('1.234567890123456789');
+  expect(applied.calculation?.measurement).toEqual(processing.calculation.measurement);
+  expect(applied.system).toEqual(processing.system);
+  expect(applied.source).toEqual(processing.source);
+  expect(applied.values['數量']?.effective).toBe('3');
+});
+
+it('checks a processing selection against the material after ordered draft edits', () => {
+  const parent = row('material-1', 'material');
+  const child = row('processing-1', 'processing');
+  child.values['總數'] = { baseline: '99', effective: '99' };
+  child.calculation = { measurement: { mode: 'perPiece', amount: '2.5', unit: '次' } };
+  const selected: SteelCatalogCandidate = { ...candidate, category: '加工/孔', subcategory: 'C型鋼', unit: '次',
+    erpItemCode: 'HOLE-C', calculation: { erpItemCode: 'HOLE-C', category: '加工/孔', ruleVersion: 'steel-catalog-v1', exactPhysical: {} } };
+  const selection = { id: selected.id, revision: selected.revision,
+    evidence: { snapshotId: 'snapshot', revision: 'customer', tier: 'B' as const } };
+  const input = { headers: Object.keys(child.values), currentRows: [parent, child], expectedRows: [parent, child],
+    processingCandidates: new Map([[child.rowId, selected]]) };
+  const rejected = applySteelReviewOperations({ ...input,
+    operations: [{ type: 'replace_processing', rowId: child.rowId, selection }] });
+  expect(rejected.ok).toBe(false);
+  const accepted = applySteelReviewOperations({ ...input, operations: [
+    { type: 'update', rowId: parent.rowId, changes: [{ header: '類別', value: 'C型鋼' }] },
+    { type: 'replace_processing', rowId: child.rowId, selection },
+  ] });
+  expect(accepted.ok).toBe(true);
+  if (!accepted.ok) throw new Error('Staged material category did not authorize processing');
+  expect(accepted.currentRows[1].values['總數']?.effective).toBe('7.5');
+  expect(accepted.currentRows[1].values['單價']?.effective).toBe('');
+  expect(accepted.currentRows[1].system?.parentRowId).toBe(parent.rowId);
 });

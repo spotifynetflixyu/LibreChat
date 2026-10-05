@@ -1,4 +1,4 @@
-import { memo } from 'react';
+import { memo, useMemo } from 'react';
 import { steelPriceCategories, isSteelReviewSourceAssociationHeader } from 'librechat-data-provider';
 import { Button, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@librechat/client';
 import type { SteelCatalogCandidate, SteelCatalogCustomerEvidence, SteelProcessingMeasurement } from 'librechat-data-provider';
@@ -273,6 +273,7 @@ function ReviewCell({
   onCellChange,
   onCellHistoryBoundary,
   onCandidateChange,
+  parent,
   canEdit = true,
 }: {
   table: SteelReviewTable;
@@ -284,6 +285,7 @@ function ReviewCell({
   onCellChange: SteelReviewEditorProps['onCellChange'];
   onCellHistoryBoundary?: SteelReviewEditorProps['onCellHistoryBoundary'];
   onCandidateChange?: SteelReviewEditorProps['onCandidateChange'];
+  parent?: SteelReviewRow;
   canEdit: boolean;
 }) {
   const cell = row.values[header];
@@ -302,11 +304,11 @@ function ReviewCell({
     ? <del className="mr-2 text-text-secondary">{cell.baseline}</del>
     : null;
   let editorContent: ReactNode = null;
-  if (!row.deleted && table.kind === 'system_order' && row.system?.kind === 'material' &&
+  if (!row.deleted && table.kind === 'system_order' && (row.system?.kind === 'material' || row.system?.kind === 'processing') &&
     (header === '型號' || header === '品名規格') && onCandidateChange) {
     editorContent = <SteelReviewSelector
-      table={table} row={row} header={header} value={currentValue}
-      canEdit={editable} onSelect={onCandidateChange}
+      table={table} row={row} parent={parent} header={header} value={currentValue}
+      canEdit={editable && (row.system?.kind !== 'processing' || Boolean(parent && !parent.deleted && parent.system?.kind === 'material'))} onSelect={onCandidateChange}
     />;
   } else if (!row.deleted && editable && table.kind === 'system_order' && header === '類別') {
     const categoryOptions = [...new Set([...steelPriceCategories, cell.baseline ?? '', currentValue])]
@@ -387,6 +389,7 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
   onCandidateChange,
   systemMaterials = rows,
 }: SteelReviewEditorProps) {
+  const materialById = useMemo(() => new Map(systemMaterials.map((material) => [material.rowId, material])), [systemMaterials]);
   return (
     <div className="max-h-[60vh] overflow-auto rounded-md border border-border-light">
       <table className="min-w-full border-collapse text-sm" aria-label={labels.table}>
@@ -424,6 +427,7 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
                   onCellChange={onCellChange}
                   onCellHistoryBoundary={onCellHistoryBoundary}
                   onCandidateChange={onCandidateChange}
+                  parent={row.system?.parentRowId ? materialById.get(row.system.parentRowId) : undefined}
                   canEdit={canEdit}
                 />
               ))}

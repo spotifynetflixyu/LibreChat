@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { SteelReviewRow } from './review';
+import { calculateSteelProcessingMeasurement, calculateSteelSystemOrderRow } from './calculation';
 import { steelCalculationCandidateEvidenceSchema } from './calculation';
-import { calculateSteelSystemOrderRow } from './calculation';
 
 export const steelCatalogSearchFieldSchema = z.enum(['model', 'description']);
 export type SteelCatalogSearchField = z.infer<typeof steelCatalogSearchFieldSchema>;
@@ -66,11 +66,22 @@ export const steelCatalogQuerySchema = z.object({
   outputId: z.string().trim().min(1).max(300),
   revision: z.string().trim().min(1).max(300),
   rowId: z.string().trim().min(1).max(300),
+  kind: z.enum(['material', 'processing']).optional(),
+  parentRowId: z.string().trim().min(1).max(300).optional(),
+  materialCategory: z.string().max(300).optional(),
+  materialThicknessMm: z.string().max(300).optional(),
   field: steelCatalogSearchFieldSchema,
   keyword: z.string().max(300).default(''),
   cursor: z.string().min(1).optional(),
   limit: z.coerce.number().int().positive().max(100).optional(),
-}).strict();
+}).strict().superRefine((query, context) => {
+  if (query.kind === 'processing' && (!query.parentRowId || query.materialCategory === undefined)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Processing queries require a material scope' });
+  }
+  if (query.kind !== 'processing' && (query.parentRowId !== undefined || query.materialCategory !== undefined || query.materialThicknessMm !== undefined)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Only processing queries use a material scope' });
+  }
+});
 export type SteelCatalogQuery = z.infer<typeof steelCatalogQuerySchema>;
 
 export const steelCatalogSelectionSchema = z.object({
@@ -111,13 +122,12 @@ export const steelMaterialCandidateHeaders = [
   '厚度', '寬度', '長度', '肚', '外徑', '腹板', '翼板', '唇邊', '單重', '單價',
 ] as const;
 
-/** Apply one trusted catalog candidate to one material row without touching its siblings. */
-export function applyMaterialCandidate(
+function candidateFields(
   row: SteelReviewRow,
   candidate: SteelCatalogCandidate,
   headers: readonly string[],
   tier: SteelCatalogPriceTier,
-): SteelReviewRow {
+): { values: SteelReviewRow['values']; changedHeaders: string[] } {
   const values = { ...row.values };
   const candidateValues: Record<string, string> = {
     型號: candidate.erpItemCode,
@@ -145,6 +155,17 @@ export function applyMaterialCandidate(
       effective: candidateValues[header] ?? '',
     };
   }
+  return { values, changedHeaders };
+}
+
+/** Apply one trusted catalog candidate to one material row without touching its siblings. */
+export function applyMaterialCandidate(
+  row: SteelReviewRow,
+  candidate: SteelCatalogCandidate,
+  headers: readonly string[],
+  tier: SteelCatalogPriceTier,
+): SteelReviewRow {
+  const { values, changedHeaders } = candidateFields(row, candidate, headers, tier);
   const calculated = calculateSteelSystemOrderRow({
     headers,
     values: headers.map((header) => values[header]?.effective ?? ''),
@@ -169,5 +190,44 @@ export function applyMaterialCandidate(
       candidate: candidate.calculation,
       ...(calculated.provenance ? { fields: calculated.provenance } : {}),
     },
+  };
+}
+
+export const steelProcessingCandidateHeaders = steelMaterialCandidateHeaders;
+
+/** Replace an explicit processing candidate while retaining its material and measurement inputs. */
+export function applyProcessingCandidate(
+  row: SteelReviewRow,
+  candidate: SteelCatalogCandidate,
+  headers: readonly string[],
+  tier: SteelCatalogPriceTier,
+  parent: SteelReviewRow,
+): SteelReviewRow {
+  const { values, changedHeaders } = candidateFields(row, candidate, headers, tier);
+  const fields = { ...(row.calculation?.fields ?? {}) };
+  const measurement = row.calculation?.measurement;
+  const total = measurement ? calculateSteelProcessingMeasurement({
+    headers,
+    values: headers.map((header) => values[header]?.effective ?? ''),
+    measurement,
+    parentHeaders: headers,
+    parentValues: headers.map((header) => parent.values[header]?.effective ?? ''),
+  }) : undefined;
+  for (const header of changedHeaders) {
+    fields[header] = { kind: 'candidate', candidateCode: candidate.erpItemCode, ruleVersion: candidate.calculation.ruleVersion };
+  }
+  if (headers.includes('總數')) {
+    values['總數'] = { ...(values['總數'] ?? { baseline: null, effective: null }), effective: total ?? '' };
+    fields['總數'] = total === undefined ? {
+      kind: 'candidate', candidateCode: candidate.erpItemCode, ruleVersion: candidate.calculation.ruleVersion,
+    } : {
+      kind: 'derived', candidateCode: candidate.erpItemCode, ruleVersion: candidate.calculation.ruleVersion,
+      dependencies: { parentRowId: parent.rowId, measurement: JSON.stringify(measurement),
+        quantity: parent.values['數量']?.effective ?? '' },
+    };
+  }
+  return {
+    ...row, values,
+    calculation: { ...(row.calculation ?? {}), candidate: candidate.calculation, fields },
   };
 }

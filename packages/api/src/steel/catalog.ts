@@ -67,10 +67,11 @@ export interface SteelReviewCatalogResolveInput {
   outputId: string;
   revision: string;
   rowId: string;
+  kind?: 'material' | 'processing';
   selection: SteelCatalogSelection;
 }
 
-function scopeKey(input: SteelReviewCatalogScope, query: Pick<SteelCatalogQuery, 'messageId' | 'title' | 'outputId' | 'revision' | 'rowId'>): string {
+function scopeKey(input: SteelReviewCatalogScope, query: SteelCatalogQuery): string {
   return createHash('sha256')
     .update(JSON.stringify([
       input.userId,
@@ -81,6 +82,10 @@ function scopeKey(input: SteelReviewCatalogScope, query: Pick<SteelCatalogQuery,
       query.outputId,
       query.revision,
       query.rowId,
+      query.kind ?? 'material',
+      query.parentRowId ?? null,
+      query.materialCategory ?? null,
+      query.materialThicknessMm ?? null,
     ]))
     .digest('hex');
 }
@@ -93,15 +98,18 @@ function requireCurrentMaterial(
   record: SteelReviewReadRecord | null,
   input: Pick<SteelCatalogQuery, 'outputId' | 'revision' | 'rowId' | 'title'>,
   checkRevision: boolean,
+  checkRow = true,
 ): SteelReviewReadRecord {
   if (!record || record.state !== 'current' || record.outputId !== input.outputId ||
     (record.latestOutputId ?? record.outputId) !== record.outputId || (checkRevision && record.revision !== input.revision) ||
     record.title !== input.title) {
     throw new SteelReviewCatalogError('REVIEW_NOT_FOUND', 404, 'Review table is no longer current');
   }
-  const row = record.rows?.find((candidate) => candidate.rowId === input.rowId);
-  if (row && (row.deleted || row.system?.kind !== 'material')) {
-    throw new SteelReviewCatalogError('REVIEW_NOT_FOUND', 404, 'Review material row was not found');
+  if (checkRow) {
+    const row = record.rows?.find((candidate) => candidate.rowId === input.rowId);
+    if (row && (row.deleted || row.system?.kind !== 'material')) {
+      throw new SteelReviewCatalogError('REVIEW_NOT_FOUND', 404, 'Review material row was not found');
+    }
   }
   return record;
 }
@@ -186,6 +194,7 @@ export function createSteelReviewCatalogService({
     scope: SteelReviewCatalogScope,
     query: Pick<SteelCatalogQuery, 'messageId' | 'title' | 'outputId' | 'revision' | 'rowId'>,
     checkRevision: boolean,
+    checkRow = true,
   ): Promise<SteelReviewReadRecord> {
     const customerRunId = requestedCustomerRunId(query.outputId);
     return requireCurrentMaterial(
@@ -198,29 +207,39 @@ export function createSteelReviewCatalogService({
       }),
       query,
       checkRevision,
+      checkRow,
     );
   }
 
   return {
     async search(input): Promise<SteelCatalogPage> {
       const query = parseQuery(input.query);
-      const record = await authorize(input.scope, query, true);
+      const record = await authorize(input.scope, query, true, query.kind !== 'processing');
       const customerEvidence = customerEvidenceForRecord(record);
       const cursor = parseCursor({ ...input, query });
-      const catalogClient = await client.getClient();
-      const result = await searchSteelReviewCatalog(catalogClient, {
-        field: query.field,
-        keyword: query.keyword,
-        ...(cursor ? { cursor } : {}),
-        limit: query.limit ?? defaultPageSize,
-        tier: customerEvidence.tier,
-      });
+      let result: Awaited<ReturnType<typeof searchSteelReviewCatalog>>;
+      try {
+        const catalogClient = await client.getClient();
+        result = await searchSteelReviewCatalog(catalogClient, {
+          field: query.field,
+          keyword: query.keyword,
+          ...(cursor ? { cursor } : {}),
+          limit: query.limit ?? defaultPageSize,
+          tier: customerEvidence.tier,
+          ...(query.kind ? { kind: query.kind } : {}),
+          ...(query.parentRowId ? { parentRowId: query.parentRowId } : {}),
+          ...(query.materialCategory !== undefined ? { materialCategory: query.materialCategory } : {}),
+          ...(query.materialThicknessMm !== undefined ? { materialThicknessMm: query.materialThicknessMm } : {}),
+        });
+      } catch {
+        throw new SteelReviewCatalogError('CATALOG_QUERY_FAILED', 503, 'Catalog query failed');
+      }
       const last = result.candidates[result.candidates.length - 1];
       return {
         options: result.candidates,
         nextCursor: result.hasMore && last ? makeCursor({ ...input, query }, last) : null,
         hasMore: result.hasMore,
-        complete: query.cursor === undefined && !result.hasMore,
+        complete: query.cursor === undefined && result.exhausted,
         customer: customerEvidence,
       };
     },
@@ -233,22 +252,28 @@ export function createSteelReviewCatalogService({
         revision: input.revision,
         rowId: input.rowId,
       } as const;
-      const record = await authorize(input.scope, query, false);
+      const record = await authorize(input.scope, query, false, input.kind !== 'processing');
       const customerEvidence = customerEvidenceForRecord(record);
       if (input.selection.evidence.snapshotId !== customerEvidence.snapshotId ||
         input.selection.evidence.revision !== customerEvidence.revision ||
         input.selection.evidence.tier !== customerEvidence.tier) {
         throw new SteelReviewCatalogError('CATALOG_CHANGED', 409, 'Catalog customer evidence changed');
       }
-      const catalogClient = await client.getClient();
-      const candidate = await resolveSteelReviewCatalogCandidate(catalogClient, {
-        id: input.selection.id,
-        tier: customerEvidence.tier,
-      });
+      let candidate: SteelCatalogCandidate | null;
+      try {
+        const catalogClient = await client.getClient();
+        candidate = await resolveSteelReviewCatalogCandidate(catalogClient, {
+          id: input.selection.id,
+          tier: customerEvidence.tier,
+          ...(input.kind ? { kind: input.kind } : {}),
+        });
+      } catch {
+        throw new SteelReviewCatalogError('CATALOG_QUERY_FAILED', 503, 'Catalog query failed');
+      }
       if (!candidate || candidate.revision !== input.selection.revision) {
         throw new SteelReviewCatalogError('CATALOG_CHANGED', 409, 'Catalog candidate changed');
       }
-      if (candidate.category.startsWith('加工/')) {
+      if (input.kind !== 'processing' && candidate.category.startsWith('加工/')) {
         throw new SteelReviewCatalogError('CATALOG_CHANGED', 409, 'Catalog candidate is not a material');
       }
       return {

@@ -39,6 +39,16 @@ const rawCatalogRow = {
   unit_price: '12.34567890123456789',
 };
 
+const processingCatalogRow = {
+  ...rawCatalogRow,
+  category: '加工/焊接',
+  subcategory: '通用',
+  erp_item_code: 'PR-UNIQUE',
+  product_name: 'Processing weld',
+  spec_key: 'PR-UNIQUE weld 400mm',
+  unit_price: null,
+};
+
 describe('Steel catalog repository', () => {
   it('uses the dedicated steel.prices query with escaped model prefix matching and preserves raw prices', async () => {
     const query = jest.fn().mockResolvedValue({ rows: [rawCatalogRow, { ...rawCatalogRow, id: '9007199254740994' }] });
@@ -71,5 +81,49 @@ describe('Steel catalog repository', () => {
     expect(query.mock.calls[0]?.[1]).toEqual(['B', rawCatalogRow.id]);
     expect(result?.unitPrice).toBeNull();
     expect(result?.revision).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it('filters processing applicability before pagination across raw batches', async () => {
+    const inapplicable = { ...processingCatalogRow, id: '9007199254740994', category: '加工/折工', subcategory: '鐵板' };
+    const secondInapplicable = { ...inapplicable, id: '9007199254740995' };
+    const firstApplicable = { ...processingCatalogRow, id: '9007199254740996' };
+    const secondApplicable = { ...processingCatalogRow, id: '9007199254740997' };
+    const query = jest.fn()
+      .mockResolvedValueOnce({ rows: [inapplicable, secondInapplicable] })
+      .mockResolvedValueOnce({ rows: [firstApplicable, secondApplicable] });
+    const client: SteelRepositoryClient = { query };
+
+    const result = await searchSteelReviewCatalog(client, {
+      field: 'model',
+      keyword: 'PR-',
+      limit: 1,
+      tier: 'B',
+      kind: 'processing',
+      parentRowId: 'material-1',
+      materialCategory: '圓條',
+    });
+
+    expect(query).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ hasMore: true, exhausted: false });
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]).toMatchObject({ id: firstApplicable.id, unitPrice: null });
+    const [sql] = query.mock.calls[0] as [string, readonly unknown[]];
+    expect(sql).toMatch(/p\.category LIKE '加工\/%'/u);
+  });
+
+  it('resolves processing rows by kind while retaining missing tier prices', async () => {
+    const query = jest.fn().mockResolvedValue({ rows: [processingCatalogRow] });
+    const client: SteelRepositoryClient = { query };
+
+    const result = await resolveSteelReviewCatalogCandidate(client, {
+      id: processingCatalogRow.id,
+      tier: 'B',
+      kind: 'processing',
+    });
+
+    expect(result).toMatchObject({ id: processingCatalogRow.id, unitPrice: null, category: '加工/焊接' });
+    const [sql, values] = query.mock.calls[0] as [string, readonly unknown[]];
+    expect(sql).toMatch(/p\.category LIKE '加工\/%'/u);
+    expect(values).toEqual(['B', processingCatalogRow.id]);
   });
 });

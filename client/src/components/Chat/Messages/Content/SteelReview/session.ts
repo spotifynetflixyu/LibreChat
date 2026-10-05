@@ -1,5 +1,8 @@
 import {
   applyMaterialCandidate,
+  applyProcessingCandidate,
+  isSteelProcessingCatalogCandidateApplicable,
+  steelProcessingMaterialForRow,
   steelMaterialCandidateHeaders,
   calculateSteelProcessingMeasurement,
   calculateSteelSystemOrderRow,
@@ -31,8 +34,8 @@ export interface SteelReviewDraftState {
   systemVersions: Record<string, number>;
   measurementDrafts: Record<string, SteelProcessingMeasurement | null>;
   measurementVersions: Record<string, number>;
-  materialSelections: Record<string, SteelCatalogSelection>;
-  materialSelectionVersions: Record<string, number>;
+  candidateSelections: Record<string, SteelCatalogSelection>;
+  candidateSelectionVersions: Record<string, number>;
   rowStates: Record<string, SteelReviewRow>;
   past: SteelReviewDraftSnapshot[];
   future: SteelReviewDraftSnapshot[];
@@ -51,8 +54,8 @@ interface SteelReviewDraftSnapshot {
   systemVersions: Record<string, number>;
   measurementDrafts?: Record<string, SteelProcessingMeasurement | null>;
   measurementVersions?: Record<string, number>;
-  materialSelections?: SteelReviewDraftState['materialSelections'];
-  materialSelectionVersions?: Record<string, number>;
+  candidateSelections?: SteelReviewDraftState['candidateSelections'];
+  candidateSelectionVersions?: Record<string, number>;
   rowStates: Record<string, SteelReviewRow>;
   changeSequence: number;
 }
@@ -155,8 +158,8 @@ export function createSteelReviewDraftState(ownerKey: string): SteelReviewDraftS
     systemVersions: {},
     measurementDrafts: {},
     measurementVersions: {},
-    materialSelections: {},
-    materialSelectionVersions: {},
+    candidateSelections: {},
+    candidateSelectionVersions: {},
     rowStates: {},
     past: [],
     future: [],
@@ -174,8 +177,8 @@ function snapshotOf(draft: SteelReviewDraftState): SteelReviewDraftSnapshot {
     systemVersions: draft.systemVersions,
     measurementDrafts: draft.measurementDrafts,
     measurementVersions: draft.measurementVersions,
-    materialSelections: draft.materialSelections,
-    materialSelectionVersions: draft.materialSelectionVersions,
+    candidateSelections: draft.candidateSelections,
+    candidateSelectionVersions: draft.candidateSelectionVersions,
     rowStates: draft.rowStates,
     changeSequence: draft.changeSequence,
   };
@@ -221,8 +224,8 @@ function restoreSnapshot(
     ...snapshot,
     measurementDrafts: snapshot.measurementDrafts ?? draft.measurementDrafts,
     measurementVersions: snapshot.measurementVersions ?? draft.measurementVersions,
-    materialSelections: snapshot.materialSelections ?? draft.materialSelections,
-    materialSelectionVersions: snapshot.materialSelectionVersions ?? draft.materialSelectionVersions,
+    candidateSelections: snapshot.candidateSelections ?? draft.candidateSelections,
+    candidateSelectionVersions: snapshot.candidateSelectionVersions ?? draft.candidateSelectionVersions,
     past,
     future,
     historyGroup: undefined,
@@ -296,22 +299,26 @@ export function setSteelReviewDraftCandidate(
   row: SteelReviewRow,
   candidate: SteelCatalogCandidate,
   customer: SteelCatalogCustomerEvidence,
+  parent?: SteelReviewRow,
 ): SteelReviewDraftState {
-  if (!row.rowId || row.system?.kind !== 'material') return draft;
+  if (!row.rowId || !row.system || row.system.kind === 'unassigned') return draft;
+  if (row.system.kind === 'processing' && (!parent || parent.deleted || parent.system?.kind !== 'material' ||
+    !isSteelProcessingCatalogCandidateApplicable(candidate, steelProcessingMaterialForRow(parent)))) return draft;
   const changeSequence = draft.changeSequence + 1;
-  const baseRow = draft.rowStates[row.rowId] ?? row;
-  const nextRow = applyMaterialCandidate(baseRow, candidate, table.headers, customer.tier);
+  const nextRow = row.system.kind === 'material'
+    ? applyMaterialCandidate(row, candidate, table.headers, customer.tier)
+    : applyProcessingCandidate(row, candidate, table.headers, customer.tier, parent!);
   const cells = { ...draft.cells };
   const touched = { ...draft.touched };
   const cellVersions = { ...draft.cellVersions };
-  for (const header of materialCandidateHeaders) {
+  for (const header of candidateHeaders(row)) {
     const key = getSteelReviewDraftCellKey(row.rowId, header);
     delete cells[key];
     delete touched[key];
     delete cellVersions[key];
   }
-  const materialSelections = {
-    ...draft.materialSelections,
+  const candidateSelections = {
+    ...draft.candidateSelections,
     [row.rowId]: {
       id: candidate.id,
       revision: candidate.revision,
@@ -328,9 +335,9 @@ export function setSteelReviewDraftCandidate(
     touched,
     cellVersions,
     rowStates: { ...draft.rowStates, [row.rowId]: nextRow },
-    materialSelections,
-    materialSelectionVersions: {
-      ...draft.materialSelectionVersions,
+    candidateSelections,
+    candidateSelectionVersions: {
+      ...draft.candidateSelectionVersions,
       [row.rowId]: changeSequence,
     },
     changeSequence,
@@ -587,7 +594,7 @@ function projectDraftBusinessValues(
   draft: SteelReviewDraftState,
   previewCalculations: boolean,
 ): SteelReviewRow['values'] {
-  const values = draft.materialSelections[row.rowId]
+  const values = draft.candidateSelections[row.rowId]
     ? { ...projectedRow.values }
     : { ...row.values };
   const headers = Object.keys(values);
@@ -710,24 +717,26 @@ export function applySteelReviewDrafts(
   if (!previewCalculations) return projectedWithSystemSources;
   const byId = new Map(projectedWithSystemSources.map((row) => [row.rowId, row]));
   return projectedWithSystemSources.map((row) => {
-    if (row.system?.kind !== 'processing' || row.deleted || !row.calculation?.measurement ||
+    if (row.system?.kind !== 'processing' || row.deleted ||
       row.values['總數'] === undefined || Object.prototype.hasOwnProperty.call(draft.cells, getSteelReviewDraftCellKey(row.rowId, '總數'))) {
       return row;
     }
     const parent = row.system.parentRowId ? byId.get(row.system.parentRowId) : undefined;
-    if (row.calculation.measurement.mode !== 'batch' && (!parent || parent.deleted || parent.system?.kind !== 'material')) return row;
+    const measurement = row.calculation?.measurement;
+    const selectedCandidate = Boolean(draft.candidateSelections[row.rowId]);
+    if (measurement?.mode !== 'batch' && (!parent || parent.deleted || parent.system?.kind !== 'material')) return row;
     const headers = Object.keys(row.values);
-    const total = calculateSteelProcessingMeasurement({
+    const total = measurement ? calculateSteelProcessingMeasurement({
       headers,
       values: headers.map((header) => row.values[header]?.effective ?? ''),
-      measurement: row.calculation.measurement,
+      measurement,
       parentHeaders: parent ? Object.keys(parent.values) : [],
       parentValues: parent ? Object.keys(parent.values).map((header) => parent.values[header]?.effective ?? '') : [],
-    });
-    if (total === undefined) return row;
+    }) : undefined;
+    if (total === undefined && !selectedCandidate) return row;
     return {
       ...row,
-      values: { ...row.values, 總數: { ...row.values['總數'], effective: total } },
+      values: { ...row.values, 總數: { ...row.values['總數'], effective: total ?? '' } },
     };
   });
 }
@@ -884,6 +893,11 @@ function rowValuesChanged(
 }
 
 const materialCandidateHeaders = new Set<string>(steelMaterialCandidateHeaders);
+const processingCandidateHeaders = new Set<string>([...steelMaterialCandidateHeaders, '總數']);
+
+function candidateHeaders(row: SteelReviewRow): ReadonlySet<string> {
+  return row.system?.kind === 'processing' ? processingCandidateHeaders : materialCandidateHeaders;
+}
 
 function resolveInsertionPosition(
   row: SteelReviewRow,
@@ -975,10 +989,11 @@ export function compileSteelReviewOperations(
     const previous = originalById.get(next.rowId);
     if (!previous) {
       if (next.origin !== 'manual' || next.deleted) continue;
-      const materialSelection = draft.materialSelections[next.rowId];
-      const selectionVersion = draft.materialSelectionVersions[next.rowId] ?? 0;
+      const selection = draft.candidateSelections[next.rowId];
+      const ownedHeaders = candidateHeaders(next);
+      const selectionVersion = draft.candidateSelectionVersions[next.rowId] ?? 0;
       const changes = table.headers
-        .filter((header) => !isSourceHeader(header) && (!materialSelection || !materialCandidateHeaders.has(header)))
+        .filter((header) => !isSourceHeader(header) && (!selection || !ownedHeaders.has(header)))
         .sort((left, right) => (draft.cellVersions[getSteelReviewDraftCellKey(next.rowId, left)] ?? 0) -
           (draft.cellVersions[getSteelReviewDraftCellKey(next.rowId, right)] ?? 0))
         .map((header) => ({ header, value: next.values[header]?.effective ?? null }));
@@ -996,10 +1011,10 @@ export function compileSteelReviewOperations(
         add.measurement = next.calculation?.measurement;
       }
       pushOperation(next.rowId, add, next.system?.kind === 'material');
-      if (materialSelection && next.system?.kind === 'material') {
-        pushOperation(next.rowId, { type: 'replace_material', rowId: next.rowId, selection: materialSelection });
+      if (selection && next.system && next.system.kind !== 'unassigned') {
+        pushOperation(next.rowId, { type: next.system.kind === 'material' ? 'replace_material' : 'replace_processing', rowId: next.rowId, selection: selection });
         const afterChanges = table.headers
-          .filter((header) => materialCandidateHeaders.has(header) &&
+          .filter((header) => ownedHeaders.has(header) &&
             (draft.cellVersions[getSteelReviewDraftCellKey(next.rowId, header)] ?? 0) > selectionVersion)
           .map((header) => ({ header, value: next.values[header]?.effective ?? null }));
         if (afterChanges.length > 0) pushOperation(next.rowId, { type: 'update', rowId: next.rowId, changes: afterChanges });
@@ -1048,6 +1063,38 @@ export function compileSteelReviewOperations(
       }
       continue;
     }
+    const selection = draft.candidateSelections[next.rowId];
+    if (selection && next.system && next.system.kind !== 'unassigned' && !next.deleted) {
+      if (previous.deleted && !isCascadeChildRestore) {
+        pushOperation(next.rowId, { type: 'restore', rowId: next.rowId }, materialActivationIds.has(next.rowId));
+      }
+      if (classify) pushOperation(next.rowId, classify, classify.system.kind === 'material');
+      const ownedHeaders = candidateHeaders(next);
+      const selectionVersion = draft.candidateSelectionVersions[next.rowId] ?? 0;
+      const selectionChanges = changes.filter(({ header }) => {
+        const version = draft.cellVersions[getSteelReviewDraftCellKey(next.rowId, header)] ?? 0;
+        return !ownedHeaders.has(header) || version > selectionVersion;
+      });
+      const beforeChanges = selectionChanges.filter(({ header }) =>
+        (draft.cellVersions[getSteelReviewDraftCellKey(next.rowId, header)] ?? 0) <= selectionVersion);
+      const afterChanges = selectionChanges.filter(({ header }) =>
+        (draft.cellVersions[getSteelReviewDraftCellKey(next.rowId, header)] ?? 0) > selectionVersion);
+      const pushUpdate = (rowChanges: Array<{ header: string; value: string | null }>, includeSource: boolean, includeBasis: boolean) => {
+        if (rowChanges.length === 0 && (!includeSource || !sourceWasChanged) && (!includeBasis || (!binding && !measurementWasChanged))) return;
+        pushOperation(next.rowId, {
+          type: 'update', rowId: next.rowId,
+          ...(rowChanges.length > 0 ? { changes: rowChanges } : {}),
+          ...(includeSource && sourceWasChanged ? { source: sourceIntent(next.source) } : {}),
+          ...(includeBasis && binding ? { binding } : {}),
+          ...(includeBasis && measurementWasChanged ? { measurement: next.calculation?.measurement ?? null } : {}),
+        });
+      };
+      const sourceBefore = (draft.sourceVersions[next.rowId] ?? 0) <= selectionVersion;
+      pushUpdate(beforeChanges, sourceBefore, true);
+      pushOperation(next.rowId, { type: next.system.kind === 'material' ? 'replace_material' : 'replace_processing', rowId: next.rowId, selection: selection });
+      pushUpdate(afterChanges, !sourceBefore, false);
+      continue;
+    }
     if (previous.deleted && !next.deleted) {
       if (!isCascadeChildRestore) {
         pushOperation(next.rowId, { type: 'restore', rowId: next.rowId }, materialActivationIds.has(next.rowId));
@@ -1065,33 +1112,6 @@ export function compileSteelReviewOperations(
       continue;
     }
     const isCascadeChildRestoreDelete = previous.deleted && next.deleted && isCascadeChildRestore;
-    const materialSelection = draft.materialSelections[next.rowId];
-    if (materialSelection && next.system?.kind === 'material' && !next.deleted) {
-      const selectionVersion = draft.materialSelectionVersions[next.rowId] ?? 0;
-      const selectionChanges = changes.filter(({ header }) => {
-        const version = draft.cellVersions[getSteelReviewDraftCellKey(next.rowId, header)] ?? 0;
-        return !materialCandidateHeaders.has(header) || version > selectionVersion;
-      });
-      const beforeChanges = selectionChanges.filter(({ header }) =>
-        (draft.cellVersions[getSteelReviewDraftCellKey(next.rowId, header)] ?? 0) <= selectionVersion);
-      const afterChanges = selectionChanges.filter(({ header }) =>
-        (draft.cellVersions[getSteelReviewDraftCellKey(next.rowId, header)] ?? 0) > selectionVersion);
-      const pushUpdate = (rowChanges: Array<{ header: string; value: string | null }>, includeSource: boolean) => {
-        if (rowChanges.length === 0 && (!includeSource || !sourceWasChanged) && !binding && !measurementWasChanged) return;
-        pushOperation(next.rowId, {
-          type: 'update', rowId: next.rowId,
-          ...(rowChanges.length > 0 ? { changes: rowChanges } : {}),
-          ...(includeSource && sourceWasChanged ? { source: sourceIntent(next.source) } : {}),
-          ...(binding ? { binding } : {}),
-          ...(measurementWasChanged ? { measurement: next.calculation?.measurement ?? null } : {}),
-        });
-      };
-      const sourceBefore = (draft.sourceVersions[next.rowId] ?? 0) <= selectionVersion;
-      pushUpdate(beforeChanges, sourceBefore);
-      pushOperation(next.rowId, { type: 'replace_material', rowId: next.rowId, selection: materialSelection });
-      pushUpdate(afterChanges, !sourceBefore);
-      continue;
-    }
     if (previous.deleted && next.deleted && (changes.length > 0 || sourceWasChanged || binding || measurementWasChanged || classify || isCascadeChildRestoreDelete)) {
       if (!isCascadeChildRestore) {
         pushOperation(next.rowId, { type: 'restore', rowId: next.rowId }, materialActivationIds.has(next.rowId));
@@ -1245,12 +1265,12 @@ export function rebaseSteelReviewDraftState(
     }
   }
 
-  const materialSelections = { ...draft.materialSelections };
-  const materialSelectionVersions = { ...draft.materialSelectionVersions };
-  for (const rowId of Object.keys(materialSelections)) {
-    if ((materialSelectionVersions[rowId] ?? 0) <= submittedChangeSequence) {
-      delete materialSelections[rowId];
-      delete materialSelectionVersions[rowId];
+  const candidateSelections = { ...draft.candidateSelections };
+  const candidateSelectionVersions = { ...draft.candidateSelectionVersions };
+  for (const rowId of Object.keys(candidateSelections)) {
+    if ((candidateSelectionVersions[rowId] ?? 0) <= submittedChangeSequence) {
+      delete candidateSelections[rowId];
+      delete candidateSelectionVersions[rowId];
     }
   }
 
@@ -1330,8 +1350,8 @@ export function rebaseSteelReviewDraftState(
     systemVersions,
     measurementDrafts,
     measurementVersions,
-    materialSelections,
-    materialSelectionVersions,
+    candidateSelections,
+    candidateSelectionVersions,
     rowStates,
     past: draft.past.map(rebaseSnapshot),
     future: draft.future.map(rebaseSnapshot),

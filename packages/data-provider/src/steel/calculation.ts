@@ -253,7 +253,7 @@ function subtractOne(value: string): string | undefined {
   return decimalText({ digits: parsed.digits - BigInt(1), scale: 0 });
 }
 
-function compareDecimalValues(left: string, right: string): number | undefined {
+export function compareSteelDecimals(left: string, right: string): number | undefined {
   const leftParts = parseDecimal(left);
   const rightParts = parseDecimal(right);
   if (!leftParts || !rightParts) return undefined;
@@ -265,7 +265,7 @@ function compareDecimalValues(left: string, right: string): number | undefined {
 }
 
 function isPositiveDecimal(value: string | undefined): boolean {
-  return value !== undefined && compareDecimalValues(value, '0') === 1;
+  return value !== undefined && compareSteelDecimals(value, '0') === 1;
 }
 
 function isIntegerDecimal(value: string | undefined): boolean {
@@ -297,16 +297,16 @@ function exactCuttingGroupCount(group: SteelProcessingCuttingGroup): string | un
   const finishedPieceLength = addDecimalValues([pieceLength, pieceHeadTrim, pieceTailTrim]);
   const usedPieces = finishedPieceLength && multiplySteelDecimals([pieceCount, finishedPieceLength]);
   const balance = usedPieces && addDecimalValues([usedPieces, headTrim, tailTrim, loss, remainder]);
-  if (!balance || compareDecimalValues(balance, stockLength) !== 0) return undefined;
+  if (!balance || compareSteelDecimals(balance, stockLength) !== 0) return undefined;
   const perStock = addDecimalValues([
-    compareDecimalValues(remainder, '0') === 1 ? pieceCount : subtractOne(pieceCount) ?? '',
-    compareDecimalValues(headTrim, '0') === 1 ? '1' : '0',
-    compareDecimalValues(tailTrim, '0') === 1 ? '1' : '0',
+    compareSteelDecimals(remainder, '0') === 1 ? pieceCount : subtractOne(pieceCount) ?? '',
+    compareSteelDecimals(headTrim, '0') === 1 ? '1' : '0',
+    compareSteelDecimals(tailTrim, '0') === 1 ? '1' : '0',
     multiplySteelDecimals([
       pieceCount,
       addDecimalValues([
-        compareDecimalValues(pieceHeadTrim, '0') === 1 ? '1' : '0',
-        compareDecimalValues(pieceTailTrim, '0') === 1 ? '1' : '0',
+        compareSteelDecimals(pieceHeadTrim, '0') === 1 ? '1' : '0',
+        compareSteelDecimals(pieceTailTrim, '0') === 1 ? '1' : '0',
       ]) ?? '',
     ]) ?? '',
   ]);
@@ -327,7 +327,7 @@ function cuttingMeasurementTotal(
   const parentQuantity = quantityValue(parentHeaders, parentValues);
   if (parentQuantity === undefined || !isIntegerDecimal(parentQuantity)) return undefined;
   if (measurement.groups.length === 0) {
-    return compareDecimalValues(parentQuantity, '0') === 0 ? '0' : undefined;
+    return compareSteelDecimals(parentQuantity, '0') === 0 ? '0' : undefined;
   }
   const parentLength = dimensionAt(parentHeaders, parentValues, '長度');
   if (parentLength === undefined) return undefined;
@@ -336,7 +336,7 @@ function cuttingMeasurementTotal(
   for (const group of measurement.groups) {
     const pieceLength = normalizeSteelDecimal(group.pieceLengthMm);
     const pieceCount = normalizeSteelDecimal(group.pieceCount);
-    if (pieceLength === undefined || pieceCount === undefined || compareDecimalValues(pieceLength, parentLength) !== 0) {
+    if (pieceLength === undefined || pieceCount === undefined || compareSteelDecimals(pieceLength, parentLength) !== 0) {
       return undefined;
     }
     const stockCount = normalizeSteelDecimal(group.stockCount);
@@ -349,7 +349,7 @@ function cuttingMeasurementTotal(
     total = addDecimalValues([total, groupCount]) ?? '';
     if (!total) return undefined;
   }
-  return compareDecimalValues(pieces, parentQuantity) === 0 ? total : undefined;
+  return compareSteelDecimals(pieces, parentQuantity) === 0 ? total : undefined;
 }
 
 export function calculateSteelProcessingMeasurement({
