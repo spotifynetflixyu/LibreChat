@@ -113,6 +113,18 @@ describe('Steel exact calculation seam', () => {
     })).toBe('5');
   });
 
+  it('counts a confirmed empty cutting plan as zero for a supported zero-quantity parent', () => {
+    expect(calculateSteelProcessingMeasurement({
+      headers: ['類別', '長度', '數量', '單位'],
+      values: ['加工/切工', '', '', '刀'],
+      measurement: {
+        mode: 'cutting', amount: null, unit: '刀', ruleVersion: 'v1', confirmed: true, groups: [],
+      },
+      parentHeaders: ['類別', '長度', '數量'],
+      parentValues: ['H型鋼', '', '0'],
+    })).toBe('0');
+  });
+
   it('preserves unsupported or unbalanced cutting plans', () => {
     const measurement = {
       mode: 'cutting' as const, amount: null, unit: '刀' as const, ruleVersion: 'v1' as const, confirmed: true,

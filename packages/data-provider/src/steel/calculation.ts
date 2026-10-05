@@ -324,11 +324,12 @@ function cuttingMeasurementTotal(
   const parentCategory = valueAt(parentHeaders, parentValues, '類別').trim();
   if (!cuttingCategories.has(parentCategory)) return undefined;
   const parentQuantity = quantityValue(parentHeaders, parentValues);
-  const parentLength = dimensionAt(parentHeaders, parentValues, '長度');
-  if (parentQuantity === undefined || parentLength === undefined || !isIntegerDecimal(parentQuantity)) return undefined;
+  if (parentQuantity === undefined || !isIntegerDecimal(parentQuantity)) return undefined;
   if (measurement.groups.length === 0) {
     return compareDecimalValues(parentQuantity, '0') === 0 ? '0' : undefined;
   }
+  const parentLength = dimensionAt(parentHeaders, parentValues, '長度');
+  if (parentLength === undefined) return undefined;
   let total = '0';
   let pieces = '0';
   for (const group of measurement.groups) {
