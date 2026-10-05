@@ -1,34 +1,6 @@
-export const priceCategories = [
-  '加工/切工',
-  '加工/孔',
-  '加工/倒角',
-  '加工/開槽',
-  '加工/折工',
-  '加工/焊接',
-  '加工/其他',
-  '其他',
-  '圓條',
-  '捲門/伸縮門',
-  '網',
-  '格板/隔板',
-  '五金/配件',
-  '門窗/門板',
-  '鐵板',
-  'C型鋼',
-  '板/浪板',
-  '方鐵',
-  'H型鋼',
-  'T型鋼',
-  '平鐵',
-  '角鐵',
-  '鋼筋',
-  '圓管',
-  '鐵軌',
-  '槽鐵',
-  'I型鋼/工字鐵',
-  '方管',
-  '扁方管',
-] as const;
+import { steelPriceCategories } from 'librechat-data-provider';
+
+export const priceCategories = steelPriceCategories;
 
 export type PriceCategory = (typeof priceCategories)[number];
 

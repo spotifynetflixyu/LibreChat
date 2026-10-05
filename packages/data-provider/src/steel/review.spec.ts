@@ -638,6 +638,7 @@ describe('Steel review contracts', () => {
         長度: { baseline: '1000', effective: '1000' },
       },
       source: null,
+      system: { kind: 'material' as const, parentRowId: null, cascadeDeletedBy: null },
       calculation: { candidate },
       origin: 'ai' as const,
       deleted: false,
@@ -686,6 +687,7 @@ describe('Steel review contracts', () => {
         長度: { baseline: '1000', effective: '1000' },
       },
       source: null,
+      system: { kind: 'material' as const, parentRowId: null, cascadeDeletedBy: null },
       calculation: { candidate },
       origin: 'ai' as const,
       deleted: false,
@@ -703,6 +705,194 @@ describe('Steel review contracts', () => {
       ok: false,
       conflicts: [{ kind: 'field', rowId: 'row-1', header: '總數', expected: '0.785', current: '99', requested: '1.57' }],
     });
+  });
+
+  it('merges a latest trusted derived length with a stale expected width', () => {
+    const candidate = {
+      erpItemCode: 'PL-1',
+      category: '鐵板',
+      ruleVersion: 'steel-weight-v1',
+      exactPhysical: { density: '7.85' },
+    } as const;
+    const headers = ['型號', '類別', '單位', '數量', '單重', '總數', '厚度', '寬度', '長度'];
+    const expected = {
+      rowId: 'row-1',
+      values: Object.fromEntries([
+        ['型號', { baseline: 'PL-1', effective: 'PL-1' }],
+        ['類別', { baseline: '鐵板', effective: '鐵板' }],
+        ['單位', { baseline: 'kg', effective: 'kg' }],
+        ['數量', { baseline: '1', effective: '1' }],
+        ['單重', { baseline: '0.785', effective: '0.785' }],
+        ['總數', { baseline: '0.785', effective: '0.785' }],
+        ['厚度', { baseline: '1', effective: '1' }],
+        ['寬度', { baseline: '100', effective: '100' }],
+        ['長度', { baseline: '1000', effective: '1000' }],
+      ]),
+      source: null,
+      system: { kind: 'material' as const, parentRowId: null, cascadeDeletedBy: null },
+      calculation: {
+        candidate,
+        fields: {
+          單重: { kind: 'derived' as const, candidateCode: 'PL-1', ruleVersion: 'steel-weight-v1', dependencies: { 厚度: '1', 寬度: '100', 長度: '1000' } },
+          總數: { kind: 'derived' as const, candidateCode: 'PL-1', ruleVersion: 'steel-weight-v1', dependencies: { 單重: '0.785', 數量: '1' } },
+        },
+      },
+      origin: 'ai' as const,
+      deleted: false,
+    };
+    const current = {
+      ...expected,
+      values: {
+        ...expected.values,
+        單重: { baseline: '0.785', effective: '1.57' },
+        總數: { baseline: '0.785', effective: '1.57' },
+        長度: { baseline: '1000', effective: '2000' },
+      },
+      calculation: {
+        candidate,
+        fields: {
+          單重: { kind: 'derived' as const, candidateCode: 'PL-1', ruleVersion: 'steel-weight-v1', dependencies: { 厚度: '1', 寬度: '100', 長度: '2000' } },
+          總數: { kind: 'derived' as const, candidateCode: 'PL-1', ruleVersion: 'steel-weight-v1', dependencies: { 單重: '1.57', 數量: '1' } },
+        },
+      },
+    };
+    const result = applySteelReviewOperations({
+      currentRows: normalizeSteelReviewLedgerRows([current]),
+      expectedRows: normalizeSteelReviewLedgerRows([expected]),
+      headers,
+      operations: [{ type: 'update', rowId: 'row-1', changes: [{ header: '寬度', value: '200' }] }],
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const updated = result.currentRows[0]!;
+      const nextExpected = result.expectedRows[0]!;
+      expect(updated.values['單重']?.effective).toBe('3.14');
+      expect(updated.values['總數']?.effective).toBe('3.14');
+      expect(nextExpected.values['長度']?.effective).toBe('1000');
+      expect(nextExpected.values['單重']?.effective).toBe('3.14');
+      expect(nextExpected.calculation?.fields?.['長度']).toBeUndefined();
+      expect(nextExpected.calculation?.fields?.['單重']?.dependencies).toEqual({ 厚度: '1', 寬度: '200', 長度: '2000' });
+    }
+  });
+
+  it('merges a quantity change with a latest candidate-derived total', () => {
+    const candidate = {
+      erpItemCode: 'PL-1',
+      category: '鐵板',
+      ruleVersion: 'steel-weight-v1',
+      exactPhysical: { density: '7.85' },
+    } as const;
+    const headers = ['型號', '類別', '單位', '數量', '單重', '總數', '厚度', '寬度', '長度'];
+    const expected = {
+      rowId: 'row-1',
+      values: Object.fromEntries([
+        ['型號', { baseline: 'PL-1', effective: 'PL-1' }], ['類別', { baseline: '鐵板', effective: '鐵板' }],
+        ['單位', { baseline: 'kg', effective: 'kg' }], ['數量', { baseline: '1', effective: '1' }],
+        ['單重', { baseline: '0.785', effective: '0.785' }], ['總數', { baseline: '0.785', effective: '0.785' }],
+        ['厚度', { baseline: '1', effective: '1' }], ['寬度', { baseline: '100', effective: '100' }],
+        ['長度', { baseline: '1000', effective: '1000' }],
+      ]),
+      source: null,
+      system: { kind: 'material' as const, parentRowId: null, cascadeDeletedBy: null },
+      calculation: { candidate, fields: {
+        單重: { kind: 'derived' as const, candidateCode: 'PL-1', ruleVersion: 'steel-weight-v1' },
+        總數: { kind: 'derived' as const, candidateCode: 'PL-1', ruleVersion: 'steel-weight-v1' },
+      } },
+      origin: 'ai' as const,
+      deleted: false,
+    };
+    const current = {
+      ...expected,
+      values: {
+        ...expected.values,
+        單重: { baseline: '0.785', effective: '3.14' },
+        總數: { baseline: '0.785', effective: '3.14' },
+        寬度: { baseline: '100', effective: '200' },
+        長度: { baseline: '1000', effective: '2000' },
+      },
+    };
+    const result = applySteelReviewOperations({
+      currentRows: normalizeSteelReviewLedgerRows([current]),
+      expectedRows: normalizeSteelReviewLedgerRows([expected]),
+      headers,
+      operations: [{ type: 'update', rowId: 'row-1', changes: [{ header: '數量', value: '2' }] }],
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.currentRows[0]?.values['總數']?.effective).toBe('6.28');
+      expect(result.expectedRows[0]?.values['總數']?.effective).toBe('6.28');
+    }
+  });
+
+  it('collects a derived total and independent price conflict without advancing either expected cell', () => {
+    const candidate = {
+      erpItemCode: 'PL-1',
+      category: '鐵板',
+      ruleVersion: 'steel-weight-v1',
+      exactPhysical: { density: '7.85' },
+    } as const;
+    const row = {
+      rowId: 'row-1',
+      values: {
+        型號: { baseline: 'PL-1', effective: 'PL-1' }, 類別: { baseline: '鐵板', effective: '鐵板' },
+        單位: { baseline: 'kg', effective: 'kg' }, 數量: { baseline: '1', effective: '1' },
+        單重: { baseline: '0.785', effective: '0.785' }, 總數: { baseline: '0.785', effective: '99' },
+        單價: { baseline: '10', effective: '20' }, 厚度: { baseline: '1', effective: '1' },
+        寬度: { baseline: '100', effective: '100' }, 長度: { baseline: '1000', effective: '1000' },
+      },
+      source: null,
+      system: { kind: 'material' as const, parentRowId: null, cascadeDeletedBy: null },
+      calculation: { candidate, fields: { 總數: { kind: 'manual' as const } } },
+      origin: 'ai' as const,
+      deleted: false,
+    };
+    const expected = { ...row, values: Object.fromEntries(Object.entries(row.values).map(([header, cell]) => [header, { ...cell, effective: cell.baseline }])) };
+    const result = applySteelReviewOperations({
+      currentRows: normalizeSteelReviewLedgerRows([row]),
+      expectedRows: normalizeSteelReviewLedgerRows([expected]),
+      headers: Object.keys(row.values),
+      operations: [{ type: 'update', rowId: 'row-1', changes: [{ header: '寬度', value: '200' }, { header: '單價', value: '12' }] }],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      conflicts: expect.arrayContaining([
+        { kind: 'field', rowId: 'row-1', header: '總數', expected: '0.785', current: '99', requested: '1.57' },
+        { kind: 'field', rowId: 'row-1', header: '單價', expected: '10', current: '20', requested: '12' },
+      ]),
+    });
+    if (!result.ok) expect(result.conflicts).toHaveLength(2);
+  });
+
+  it('keeps processing totals manual when quantity changes', () => {
+    const row = {
+      rowId: 'processing-1',
+      values: {
+        型號: { baseline: 'cut', effective: 'cut' }, 類別: { baseline: '加工', effective: '加工' },
+        單位: { baseline: 'kg', effective: 'kg' }, 數量: { baseline: '2', effective: '2' },
+        單重: { baseline: '3', effective: '3' }, 總數: { baseline: '6', effective: '6' },
+      },
+      source: null,
+      system: { kind: 'processing' as const, parentRowId: 'material-1', cascadeDeletedBy: null },
+      origin: 'ai' as const,
+      deleted: false,
+    };
+    const result = applySteelReviewOperations({
+      currentRows: normalizeSteelReviewLedgerRows([row]),
+      expectedRows: normalizeSteelReviewLedgerRows([row]),
+      headers: Object.keys(row.values),
+      operations: [{ type: 'update', rowId: row.rowId, changes: [{ header: '數量', value: '4' }] }],
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    if (result.ok) {
+      expect(result.currentRows[0]?.values['數量']?.effective).toBe('4');
+      expect(result.currentRows[0]?.values['總數']?.effective).toBe('6');
+      expect(result.currentRows[0]?.calculation?.fields?.['數量']).toEqual({ kind: 'manual' });
+      expect(result.currentRows[0]?.calculation?.fields?.['總數']).toBeUndefined();
+    }
   });
 
   it('accepts server-owned relation state only in persisted rows and applies binding intents', () => {

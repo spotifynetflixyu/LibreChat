@@ -698,9 +698,13 @@ function applyRowCalculation(
     ...(candidate ? { candidate } : {}),
     changedHeaders,
     provenance: fields,
+    systemKind: row.system?.kind ?? 'unassigned',
   });
+  const recalculatedHeaders = new Set(calculated.calculatedHeaders);
+  const acceptedHeaders = new Set(changedHeaders);
   const conflicts: SteelReviewConflict[] = [];
   headers.forEach((header, index) => {
+    if (!acceptedHeaders.has(header) && !recalculatedHeaders.has(header)) return;
     const next = calculated.values[index] ?? '';
     const current = row.values[header]?.effective ?? null;
     const expected = expectedRow.values[header]?.effective ?? null;
@@ -708,30 +712,69 @@ function applyRowCalculation(
     const currentField = row.calculation?.fields?.[header];
     const expectedField = expectedRow.calculation?.fields?.[header];
     const provenanceChanged = JSON.stringify(currentField ?? null) !== JSON.stringify(expectedField ?? null);
-    if (current !== next && (changedHeaders.includes(header) || provenance)) {
-      if ((current !== expected || provenanceChanged) && current !== next && provenance) {
+    const sameDerivedBasis = (currentField?.candidateCode ?? null) === (provenance?.candidateCode ?? null) &&
+      (currentField?.ruleVersion ?? null) === (provenance?.ruleVersion ?? null);
+    const compatibleDerivedBasis = currentField?.candidateCode === undefined || provenance?.candidateCode === undefined;
+    const trustedDerivedMerge = provenance?.kind === 'derived' && currentField?.kind === 'derived' &&
+      (sameDerivedBasis || compatibleDerivedBasis);
+    const hasConcurrentChange = current !== expected || provenanceChanged;
+    if (current !== next) {
+      if (hasConcurrentChange && !trustedDerivedMerge && provenance?.kind === 'derived') {
         conflicts.push({ kind: 'field', rowId: row.rowId, header, expected, current, requested: next });
         return;
       }
       row.values[header] = { ...(row.values[header] ?? { baseline: null, effective: null }), effective: next };
     }
-    if (provenance) {
+    if (changedHeaders.includes(header)) {
+      fields[header] = { kind: 'manual' };
+    } else if (recalculatedHeaders.has(header) && provenance) {
       fields[header] = provenance;
     }
-    if (changedHeaders.includes(header) || provenance) {
-      expectedRow.values[header] = { ...(expectedRow.values[header] ?? { baseline: null, effective: null }), effective: next };
-    }
+    expectedRow.values[header] = {
+      ...(expectedRow.values[header] ?? { baseline: null, effective: null }),
+      effective: next,
+    };
   });
   const nextCandidate = candidate &&
     (row.values['型號']?.effective ?? '') === candidate.erpItemCode &&
     (row.values['類別']?.effective ?? '') === candidate.category
     ? candidate : undefined;
+  if (!nextCandidate && candidate && (changedHeaders.includes('型號') || changedHeaders.includes('類別'))) {
+    for (const [header, field] of Object.entries(fields)) {
+      if (field.kind === 'derived' && field.candidateCode === candidate.erpItemCode) delete fields[header];
+    }
+  }
   row.calculation = {
     ...(nextCandidate ? { candidate: nextCandidate } : {}),
-    ...(calculated.provenance && Object.keys(calculated.provenance).length > 0
-      ? { fields: calculated.provenance } : {}),
+    ...(Object.keys(fields).length > 0 ? { fields } : {}),
   };
-  expectedRow.calculation = cloneReviewCalculation(row.calculation);
+  const expectedCalculation = cloneReviewCalculation(expectedRow.calculation) ?? {};
+  if (nextCandidate && (changedHeaders.includes('型號') || changedHeaders.includes('類別') || recalculatedHeaders.size > 0)) {
+    expectedCalculation.candidate = {
+      ...nextCandidate,
+      exactPhysical: { ...nextCandidate.exactPhysical },
+    };
+  } else if (!nextCandidate && (changedHeaders.includes('型號') || changedHeaders.includes('類別'))) {
+    delete expectedCalculation.candidate;
+    if (expectedCalculation.fields) {
+      for (const [header, field] of Object.entries(expectedCalculation.fields)) {
+        if (field.kind === 'derived' && field.candidateCode === candidate?.erpItemCode) delete expectedCalculation.fields[header];
+      }
+    }
+  }
+  const expectedFields = { ...(expectedCalculation.fields ?? {}) };
+  for (const header of changedHeaders) expectedFields[header] = { kind: 'manual' };
+  recalculatedHeaders.forEach((header) => {
+    const provenance = fields[header];
+    if (provenance) expectedFields[header] = {
+      ...provenance,
+      ...(provenance.dependencies ? { dependencies: { ...provenance.dependencies } } : {}),
+    };
+  });
+  expectedRow.calculation = {
+    ...(expectedCalculation.candidate ? { candidate: expectedCalculation.candidate } : {}),
+    ...(Object.keys(expectedFields).length > 0 ? { fields: expectedFields } : {}),
+  };
   return conflicts;
 }
 

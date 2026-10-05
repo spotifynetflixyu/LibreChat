@@ -28,6 +28,7 @@ const table = {
 } as SteelReviewTable;
 
 const sourceLabels = {
+  emptyCategory: 'No category',
   changeSource: 'Change source',
   sourceFile: 'Source file',
   sourcePage: 'Source page',
@@ -430,5 +431,66 @@ describe('Steel review local editor gates', () => {
     expect(screen.getByRole('option', { name: '2' })).toBeInTheDocument();
     fireEvent.keyDown(document.activeElement ?? pageTrigger, { key: 'Escape' });
     expect(screen.queryByRole('option', { name: '2' })).toBeNull();
+  });
+});
+
+
+describe('system-order category menu', () => {
+  const categoryTable: SteelReviewTable = {
+    ...table,
+    title: 'system_order',
+    kind: 'system_order',
+    headers: ['類別'],
+    rows: [{
+      rowId: 'category-row',
+      source: null,
+      system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
+      values: { 類別: { baseline: '既有特殊類別', effective: '既有特殊類別' } },
+    }],
+  };
+
+  it('selects a category as a local draft and retains the AI comparison', () => {
+    const onCellChange = jest.fn();
+    function CategoryHarness() {
+      const [draft, setDraft] = useState(() => createSteelReviewDraftState('category-owner'));
+      return <SteelReviewEditor
+        table={categoryTable}
+        rows={categoryTable.rows}
+        draft={draft}
+        labels={{ ...sourceLabels, table: 'Review table', readonly: 'Read-only' }}
+        onCellChange={(row, header, value) => {
+          onCellChange(row, header, value);
+          setDraft((current) => setSteelReviewDraftCell(current, row, header, value));
+        }}
+      />;
+    }
+    const { container } = render(<CategoryHarness />);
+    expect(screen.queryByRole('textbox', { name: '類別 category-row' })).toBeNull();
+    const selector = screen.getByRole('combobox', { name: '類別 category-row' });
+    expect(selector).toHaveTextContent('既有特殊類別');
+    fireEvent.click(selector);
+    expect(screen.getByRole('option', { name: '加工/孔' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: '既有特殊類別' })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('option', { name: 'H型鋼' }));
+    expect(selector).toHaveTextContent('H型鋼');
+    expect(onCellChange).toHaveBeenLastCalledWith(categoryTable.rows[0], '類別', 'H型鋼');
+    expect(container.querySelector('del')).toHaveTextContent('既有特殊類別');
+    expect(categoryTable.rows[0].values.類別.effective).toBe('既有特殊類別');
+    fireEvent.click(selector);
+    fireEvent.click(screen.getByRole('option', { name: 'No category' }));
+    expect(selector).toHaveTextContent('No category');
+    expect(onCellChange).toHaveBeenLastCalledWith(categoryTable.rows[0], '類別', '');
+  });
+
+  it('keeps an older category read-only', () => {
+    render(<SteelReviewEditor
+      table={{ ...categoryTable, isLatest: false, readOnly: true }}
+      rows={categoryTable.rows}
+      draft={createSteelReviewDraftState('old-category-owner')}
+      labels={{ ...sourceLabels, table: 'Review table', readonly: 'Read-only' }}
+      onCellChange={jest.fn()}
+    />);
+    expect(screen.queryByRole('combobox', { name: '類別 category-row' })).toBeNull();
+    expect(screen.getByLabelText('類別: Read-only')).toHaveTextContent('既有特殊類別');
   });
 });

@@ -174,6 +174,25 @@ async function saveUi(page: Page, dialog: Locator): Promise<SteelReviewSaveRespo
   return saved;
 }
 
+async function editBusinessValue(dialog: Locator, rowId: string, header: string, value: string): Promise<void> {
+  if (header === '類別') {
+    await dialog.getByRole('combobox', { name: `${header} ${rowId}`, exact: true }).click();
+    await dialog.page().getByRole('option', { name: value || 'No category', exact: true }).click();
+    return;
+  }
+  await dialog.getByRole('textbox', { name: `${header} ${rowId}`, exact: true }).fill(value);
+}
+
+async function expectBusinessEditable(dialog: Locator, rowId: string, headers: readonly string[]): Promise<void> {
+  for (const header of headers) {
+    if (header === '類別') {
+      await expect(dialog.getByRole('combobox', { name: `${header} ${rowId}`, exact: true })).toBeEnabled();
+    } else {
+      await expect(dialog.getByRole('textbox', { name: `${header} ${rowId}`, exact: true })).toBeEditable();
+    }
+  }
+}
+
 function effective(owner: Pick<SteelReviewTable, 'rows'>, header: string): string | null {
   return owner.rows[0].values[header].effective;
 }
@@ -201,24 +220,31 @@ test.describe('Material review capable automatic calculation', () => {
     const initial = await readTable(page, auth, fixture);
     const before = await readback(fixture);
     const dialog = await openEditor(page, fixture);
-    for (const header of initial.headers) {
-      await expect(dialog.getByRole('textbox', { name: `${header} ${initial.rows[0].rowId}`, exact: true })).toBeEditable();
-    }
+    await expectBusinessEditable(dialog, initial.rows[0].rowId, initial.headers);
     const updates = { '型號': 'MANUAL-CODE', '品名規格': 'MANUAL-NAME', '材質編號': 'M2', '單位': 'M',
       '數量': '5', '單重': '7', '總數': '11', '單價': '12', '計價基準': '3', '公式編號': 'MANUAL-FORMULA',
-      '厚度': '2.54', '寬度': '125', '長度': '1000', '肚': '4', '類別': 'MANUAL-CATEGORY', '備註': 'MANUAL-NOTES' };
+      '厚度': '2.54', '寬度': '125', '長度': '1000', '肚': '4', '類別': '其他', '備註': 'MANUAL-NOTES' };
     for (const [header, value] of Object.entries(updates)) {
-      await dialog.getByRole('textbox', { name: `${header} ${initial.rows[0].rowId}`, exact: true }).fill(value);
+      await editBusinessValue(dialog, initial.rows[0].rowId, header, value);
     }
     await expect(dialog.getByText('Unsaved changes: 1 rows', { exact: true })).toBeVisible();
     expect(await readback(fixture)).toEqual(before);
     const saved = await saveUi(page, dialog);
     for (const [header, value] of Object.entries(updates)) expect(effective(saved, header)).toBe(value);
     expect(saved.rows[0].system).toEqual(initial.rows[0].system);
+    expect(saved.rows[0].values['類別'].baseline).toBe('鐵板');
+    await expect(dialog.getByRole('combobox', { name: `類別 ${initial.rows[0].rowId}`, exact: true })).toHaveText('其他');
+    await expect(dialog.locator('del').filter({ hasText: /^鐵板$/u })).toBeVisible();
     const after = await readback(fixture);
+    const savedMessage = after.messages.find((message) => message.messageId === fixture.messageId);
+    expect(savedMessage?.text).toContain('MANUAL-CODE');
+    expect(savedMessage?.text).not.toContain('~~');
     expect(after.quotation?.currentSystemOrder.customerQuoteMarkdown).toContain('| 總計 |  | 162 |');
     expect(after.artifacts).toEqual(before.artifacts);
-    await page.keyboard.press('Escape'); await page.reload();
+    await page.keyboard.press('Escape');
+    await expect(page.getByRole('cell', { name: 'MANUAL-CODE', exact: true })).toBeVisible();
+    await expect(page.locator('del')).toHaveCount(0);
+    await page.reload();
     await expect(page.locator('del')).toHaveCount(0);
     const reopened = await readTable(page, auth, fixture);
     for (const [header, value] of Object.entries(updates)) expect(effective(reopened, header)).toBe(value);
@@ -424,7 +450,7 @@ test.describe('Material review capable automatic calculation', () => {
       const initial = await readTable(page, auth, fixture);
       const rowId = randomUUID();
       const values = { '型號': `${kind}-code`, '品名規格': `${kind}-manual-row`, '材質編號': 'M1',
-        '單位': 'pc', '數量': '1', '單重': '1', '總數': '2', '單價': '3', '計價基準': '2',
+        '單位': 'kg', '數量': '1', '單重': '1', '總數': '2', '單價': '3', '計價基準': '2',
         '公式編號': 'manual', '厚度': '1', '寬度': '2', '長度': '3', '肚': '4',
         '類別': kind === 'processing' ? '加工/孔' : '', '備註': 'original' };
       await saveApi(page, auth, { conversationId: initial.conversationId, messageId: initial.messageId,
@@ -434,16 +460,17 @@ test.describe('Material review capable automatic calculation', () => {
           changes: Object.entries(values).map(([header, value]) => ({ header, value })) }] });
       const before = await readback(fixture);
       const dialog = await openEditor(page, fixture);
-      for (const header of initial.headers) {
-        await expect(dialog.getByRole('textbox', { name: `${header} ${rowId}`, exact: true })).toBeEditable();
-      }
-      await dialog.getByRole('textbox', { name: `類別 ${rowId}`, exact: true }).fill('USER-CATEGORY');
+      await expectBusinessEditable(dialog, rowId, initial.headers);
+      const selectedCategory = kind === 'processing' ? '鐵板' : '加工/孔';
+      await editBusinessValue(dialog, rowId, '類別', selectedCategory);
+      await editBusinessValue(dialog, rowId, '數量', '3');
       await dialog.getByRole('textbox', { name: `備註 ${rowId}`, exact: true }).fill('USER-NOTES');
       await dialog.getByRole('textbox', { name: `長度 ${rowId}`, exact: true }).fill('9');
       expect(await readback(fixture)).toEqual(before);
       const saved = await saveUi(page, dialog);
       const row = saved.rows.find((candidate) => candidate.rowId === rowId);
-      expect(row?.values['類別'].effective).toBe('USER-CATEGORY');
+      expect(row?.values['類別'].effective).toBe(selectedCategory);
+      expect(row?.values['數量'].effective).toBe('3');
       expect(row?.values['備註'].effective).toBe('USER-NOTES');
       expect(row?.values['長度'].effective).toBe('9');
       expect(row?.values['單重'].effective).toBe('1');

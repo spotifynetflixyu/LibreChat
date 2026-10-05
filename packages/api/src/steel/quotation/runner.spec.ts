@@ -16,7 +16,7 @@ import type { SteelNativeHistory } from '../native/events';
 import type { QuotationProgress } from './runner';
 import type { QuotationChunk } from './protocol';
 import { bindQuotationCustomerResult, commitQuotationCustomerResponse, defaultQuotationCustomerMarkdown, prepareQuotationTurn, quotationPreparationStatus, renderQuotationCustomerMarkdown } from './preparation';
-import { acceptQuotationResponse, acceptQuotationSignal, createQuotationPublicationProjector, publishCompletedQuotation, runQuotationPreflight } from './runner';
+import { acceptQuotationResponse, acceptQuotationSignal, createQuotationPublicationProjector, hasCompleteSteelFormula, publishCompletedQuotation, runQuotationPreflight } from './runner';
 import { createSteelNativeHistory, appendSteelNativeActivityEvent, upsertSteelNativePreflightToolCall } from '../native/events';
 import { buildQuotationChunks, splitQuotationChunk, quotationSignal } from './protocol';
 import { getQuotationHistoryDelta, readQuotationHistory } from './history';
@@ -322,6 +322,23 @@ function configureOAuthResponses(responses: AIMessageChunk[]): jest.Mock {
 describe('quotation runner integration', () => {
   beforeEach(() => {
     oauthFactory.mockReset();
+  });
+
+  it('accepts a per-metre candidate without requiring stock length in the publication basis', () => {
+    expect(hasCompleteSteelFormula({
+      erpItemCode: 'H-1',
+      category: 'H型鋼',
+      ruleVersion: 'steel-weight-v1',
+      unitWeightBasis: 'kg_per_m',
+      exactPhysical: { unitWeightValue: '1' },
+    })).toBe(true);
+    expect(hasCompleteSteelFormula({
+      erpItemCode: 'H-1',
+      category: 'H型鋼',
+      ruleVersion: 'steel-weight-v1',
+      unitWeightBasis: 'kg_per_piece_or_stock_length',
+      exactPhysical: { unitWeightValue: '1' },
+    })).toBe(false);
   });
 
   it('runs only one quotation when another retry arrives while its child is active', async () => {

@@ -1704,6 +1704,9 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               ...(output && input.kind === 'system_order' && quotation?.currentSystemOrder?.customerQuoteMarkdown
                 ? { customerQuoteMarkdown: quotation.currentSystemOrder.customerQuoteMarkdown }
                 : {}),
+              ...(input.kind === 'system_order' && quotation?.currentSystemOrder?.calculationCheckpoint
+                ? { calculationCheckpoint: quotation.currentSystemOrder.calculationCheckpoint }
+                : {}),
               messageText: mirror.text,
               messageTextParts: mirror.parts
                 .filter((part): part is typeof part & { contentIndex: number; text: string } =>

@@ -54,12 +54,14 @@ export interface SteelCalculationRowInput {
   candidate?: SteelCalculationCandidateEvidence;
   changedHeaders?: readonly string[];
   provenance?: Readonly<Record<string, SteelCalculationFieldProvenance>>;
+  systemKind?: 'material' | 'processing' | 'unassigned';
 }
 
 export interface SteelCalculationRowResult {
   values: string[];
   provenance?: Record<string, SteelCalculationFieldProvenance>;
   calculated: boolean;
+  calculatedHeaders: string[];
 }
 
 interface DecimalParts {
@@ -201,6 +203,7 @@ function provenanceFor(
 
 export function calculateSteelSystemOrderRow(input: SteelCalculationRowInput): SteelCalculationRowResult {
   const values = [...input.values];
+  const calculatedHeaders: string[] = [];
   const changedHeaders = new Set(input.changedHeaders ?? []);
   changedHeaders.forEach((header) => {
     const index = input.headers.indexOf(header);
@@ -217,7 +220,20 @@ export function calculateSteelSystemOrderRow(input: SteelCalculationRowInput): S
   const candidate = input.candidate;
   const changed = new Set(input.changedHeaders ?? []);
   if (valueAt(input.headers, values, '單位').toLowerCase() !== 'kg') {
-    return { values, ...(input.provenance ? { provenance: { ...input.provenance } } : {}), calculated: false };
+    return {
+      values,
+      ...(input.provenance ? { provenance: { ...input.provenance } } : {}),
+      calculated: false,
+      calculatedHeaders,
+    };
+  }
+  if (input.systemKind !== undefined && input.systemKind !== 'material') {
+    return {
+      values,
+      ...(input.provenance ? { provenance: { ...input.provenance } } : {}),
+      calculated: false,
+      calculatedHeaders,
+    };
   }
   const nextProvenance = { ...(input.provenance ?? {}) };
   const currentWeight = normalizeSteelDecimal(valueAt(input.headers, values, '單重'));
@@ -230,15 +246,26 @@ export function calculateSteelSystemOrderRow(input: SteelCalculationRowInput): S
         kind: 'derived',
         dependencies: { 單重: currentWeight, 數量: quantity },
       };
+      calculatedHeaders.push('總數');
     }
   }
   const dimensionChanged = ['厚度', '寬度', '長度', '肚'].some((header) => changed.has(header));
   if (!dimensionChanged) {
-    return { values, ...(Object.keys(nextProvenance).length > 0 ? { provenance: nextProvenance } : {}), calculated: false };
+    return {
+      values,
+      ...(Object.keys(nextProvenance).length > 0 ? { provenance: nextProvenance } : {}),
+      calculated: false,
+      calculatedHeaders,
+    };
   }
   if (!candidate || valueAt(input.headers, values, '型號') !== candidate.erpItemCode ||
     valueAt(input.headers, values, '類別') !== candidate.category) {
-    return { values, ...(Object.keys(nextProvenance).length > 0 ? { provenance: nextProvenance } : {}), calculated: false };
+    return {
+      values,
+      ...(Object.keys(nextProvenance).length > 0 ? { provenance: nextProvenance } : {}),
+      calculated: false,
+      calculatedHeaders,
+    };
   }
   const category = candidate.category;
   const length = dimensionAt(input.headers, values, '長度');
@@ -264,8 +291,16 @@ export function calculateSteelSystemOrderRow(input: SteelCalculationRowInput): S
       weight = multiplySteelDecimals([unitWeight, length, '0.001']);
     }
   }
-  if (!weight) return { values, ...(Object.keys(nextProvenance).length > 0 ? { provenance: nextProvenance } : {}), calculated: false };
+  if (!weight) {
+    return {
+      values,
+      ...(Object.keys(nextProvenance).length > 0 ? { provenance: nextProvenance } : {}),
+      calculated: false,
+      calculatedHeaders,
+    };
+  }
   setValue(input.headers, values, '單重', weight);
+  calculatedHeaders.push('單重');
   nextProvenance['單重'] = provenanceFor(candidate, {
     厚度: dimensionAt(input.headers, values, '厚度') ?? '',
     寬度: dimensionAt(input.headers, values, '寬度') ?? '',
@@ -275,8 +310,9 @@ export function calculateSteelSystemOrderRow(input: SteelCalculationRowInput): S
     const total = multiplySteelDecimals([weight, quantity]);
     if (total !== undefined) {
       setValue(input.headers, values, '總數', total);
+      calculatedHeaders.push('總數');
       nextProvenance['總數'] = provenanceFor(candidate, { 單重: weight, 數量: quantity });
     }
   }
-  return { values, provenance: nextProvenance, calculated: true };
+  return { values, provenance: nextProvenance, calculated: true, calculatedHeaders };
 }

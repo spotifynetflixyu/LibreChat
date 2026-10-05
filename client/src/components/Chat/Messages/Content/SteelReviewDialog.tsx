@@ -419,6 +419,7 @@ export default function SteelReviewDialog({
 }: SteelReviewDialogProps) {
   const localize = useLocalize();
   const sourceEditorLabels = useMemo(() => ({
+    emptyCategory: localize('com_ui_no_category'),
     changeSource: localize('com_ui_steel_review_change_source'),
     sourceFile: localize('com_ui_steel_review_source_file'),
     sourcePage: localize('com_ui_steel_review_source_page'),

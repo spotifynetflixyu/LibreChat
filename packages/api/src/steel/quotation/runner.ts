@@ -110,7 +110,7 @@ function readExactCandidate(value: unknown): SteelCalculationCandidateEvidence |
   return parsed.success ? parsed.data : undefined;
 }
 
-function hasCompleteSteelFormula(candidate: SteelCalculationCandidateEvidence): boolean {
+export function hasCompleteSteelFormula(candidate: SteelCalculationCandidateEvidence): boolean {
   const physical = candidate.exactPhysical;
   if (candidate.category === '鐵板') {
     return physical.density !== undefined;
@@ -119,10 +119,14 @@ function hasCompleteSteelFormula(candidate: SteelCalculationCandidateEvidence): 
     return physical.density !== undefined && physical.widthMm !== undefined;
   }
   const unitWeightBasis = candidate.unitWeightBasis?.toLowerCase();
-  return ['H型鋼', 'C型鋼', '角鐵', '槽鐵', '扁鐵', '方管', '圓管', '圓鐵'].includes(candidate.category) &&
-    physical.unitWeightValue !== undefined && physical.lengthMm !== undefined &&
-    (candidate.unitWeightBasis === 'kg_per_piece_or_stock_length' ||
-      ['m', 'kg_per_m', 'kg/m'].includes(unitWeightBasis ?? ''));
+  if (!['H型鋼', 'C型鋼', '角鐵', '槽鐵', '扁鐵', '方管', '圓管', '圓鐵'].includes(candidate.category) ||
+    physical.unitWeightValue === undefined) {
+    return false;
+  }
+  if (candidate.unitWeightBasis === 'kg_per_piece_or_stock_length') {
+    return physical.lengthMm !== undefined;
+  }
+  return ['m', 'kg_per_m', 'kg/m'].includes(unitWeightBasis ?? '');
 }
 
 function buildSteelCalculationCheckpoint(

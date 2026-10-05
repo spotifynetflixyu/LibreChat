@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { isSteelReviewSourceAssociationHeader } from 'librechat-data-provider';
+import { steelPriceCategories, isSteelReviewSourceAssociationHeader } from 'librechat-data-provider';
 import { Button, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@librechat/client';
 import type { SteelReviewRow, SteelReviewSource, SteelReviewSourceFile, SteelReviewTable } from 'librechat-data-provider';
 import type { ChangeEvent, KeyboardEvent, ReactNode } from 'react';
@@ -9,6 +9,7 @@ import { getSteelReviewDraftCell } from './session';
 export interface SteelReviewEditorLabels {
   table: string;
   readonly: string;
+  emptyCategory: string;
   changeSource: string;
   sourceFile: string;
   sourcePage: string;
@@ -71,6 +72,7 @@ function displayCellValue(value: string | null | undefined): string {
 
 const CLEAR_SOURCE_VALUE = '__steel_review_clear_source__';
 const NO_SOURCE_PAGE_VALUE = '__steel_review_no_source_page__';
+const EMPTY_CATEGORY_VALUE = '__steel_review_empty_category__';
 
 function sourceLabel(source: SteelReviewSource | null | undefined): string {
   return source?.filename ?? source?.fileId ?? '';
@@ -260,6 +262,7 @@ function ReviewCell({
   header,
   draft,
   readonlyLabel,
+  emptyCategoryLabel,
   onCellChange,
   onCellHistoryBoundary,
   canEdit = true,
@@ -269,6 +272,7 @@ function ReviewCell({
   header: string;
   draft: SteelReviewDraftState;
   readonlyLabel: string;
+  emptyCategoryLabel: string;
   onCellChange: SteelReviewEditorProps['onCellChange'];
   onCellHistoryBoundary?: SteelReviewEditorProps['onCellHistoryBoundary'];
   canEdit: boolean;
@@ -289,7 +293,29 @@ function ReviewCell({
     ? <del className="mr-2 text-text-secondary">{cell.baseline}</del>
     : null;
   let editorContent: ReactNode = null;
-  if (!row.deleted && editable) {
+  if (!row.deleted && editable && table.kind === 'system_order' && header === '類別') {
+    const categoryOptions = [...new Set([...steelPriceCategories, cell.baseline ?? '', currentValue])]
+      .filter((category) => category !== '');
+    editorContent = (
+      <Select
+        value={currentValue || EMPTY_CATEGORY_VALUE}
+        onValueChange={(value) => {
+          onCellChange(row, header, value === EMPTY_CATEGORY_VALUE ? '' : value);
+          onCellHistoryBoundary?.();
+        }}
+      >
+        <SelectTrigger aria-label={`${header} ${row.rowId}`} className="min-w-24">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent onEscapeKeyDown={(event) => event.stopPropagation()}>
+          <SelectItem value={EMPTY_CATEGORY_VALUE}>{emptyCategoryLabel}</SelectItem>
+          {categoryOptions.map((category) => (
+            <SelectItem key={category} value={category}>{category}</SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    );
+  } else if (!row.deleted && editable) {
     editorContent = (
       <Input
         aria-label={`${header} ${row.rowId}`}
@@ -377,6 +403,7 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
                   header={header}
                   draft={draft}
                   readonlyLabel={labels.readonly}
+                  emptyCategoryLabel={labels.emptyCategory}
                   onCellChange={onCellChange}
                   onCellHistoryBoundary={onCellHistoryBoundary}
                   canEdit={canEdit}
