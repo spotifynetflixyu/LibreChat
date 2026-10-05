@@ -130,6 +130,71 @@ const makeSystemOrderRecord = (overrides: Record<string, unknown> = {}) => ({
 });
 
 describe('Steel review read service', () => {
+  it('initializes fresh processing bindings from an exact material remark', async () => {
+    const title = 'system_order｜自動綁定';
+    const headers = ['來源', '類別', '備註', '總數'];
+    const rows = [
+      ['F1', 'H型鋼', 'A', '2'],
+      ['PROCESS', '加工/切工', 'A', '2'],
+    ];
+    const markdown = [
+      `## ${title}`,
+      '',
+      `| ${headers.join(' | ')} |`,
+      `| ${headers.map(() => '---').join(' | ')} |`,
+      ...rows.map((row) => `| ${row.join(' | ')} |`),
+    ].join('\n');
+    const processingRowId = createHash('sha256')
+      .update(`system_order:run-1:1:${JSON.stringify(rows[1])}`)
+      .digest('hex');
+    const materialRowId = createHash('sha256')
+      .update(`system_order:run-1:0:${JSON.stringify(rows[0])}`)
+      .digest('hex');
+    const service = createSteelReviewService({
+      reader: {
+        readSteelReview: jest.fn().mockResolvedValue(makeSystemOrderRecord({
+          title,
+          tableId: `system_order:${title}`,
+          headers,
+          rows: undefined,
+          markdown,
+          messageText: markdown,
+          sourceMappings: [{
+            fileId: 'file-1',
+            sourceCode: 'F1',
+            sourceFilename: 'drawing.pdf',
+          }],
+        })),
+      },
+    });
+
+    const prepared = await service.prepare({
+      userId: scope.userId,
+      conversationId: scope.conversationId,
+      messageId: scope.messageId,
+      title,
+      kind: 'system_order',
+      outputId: 'system_order:run-1',
+      revision: 'system-order-revision-1',
+      operations: [{
+        type: 'update',
+        rowId: processingRowId,
+        changes: [{ header: '總數', value: '3' }],
+      }],
+    });
+
+    expect(prepared.rows.find((row) => row.rowId === processingRowId)?.system).toEqual({
+      kind: 'processing',
+      parentRowId: materialRowId,
+      cascadeDeletedBy: null,
+    });
+    expect(prepared.rows.find((row) => row.rowId === processingRowId)?.source).toEqual({
+      fileId: 'file-1',
+      pageNumber: null,
+      filename: 'drawing.pdf',
+    });
+  });
+
   it('prepares direct system-order price and total edits with a clean internal quote projection', async () => {
     const service = createSteelReviewService({
       reader: { readSteelReview: jest.fn().mockResolvedValue(makeSystemOrderRecord()) },

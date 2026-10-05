@@ -6,6 +6,7 @@ import {
   applySteelReviewOperations,
   encodeSteelReviewDigest,
   inferSteelReviewSystemState,
+  initializeFreshSteelReviewSystemRows,
   isSteelReviewSourceAssociationHeader,
   normalizeSteelReviewLedgerRows,
   sameSteelReviewSource,
@@ -346,7 +347,7 @@ function toRows(
   sourceMappings: SteelReviewReadRecord['sourceMappings'],
   calculationCheckpoint?: SteelCalculationCheckpoint,
 ): SteelReviewRow[] {
-  return table.rows.flatMap((row, rowIndex) => {
+  const rows = table.rows.flatMap((row, rowIndex) => {
     if (row.length !== table.headers.length) {
       return [];
     }
@@ -372,6 +373,7 @@ function toRows(
       ...(checkpointRow ? { calculation: { candidate: checkpointRow.candidate } } : {}),
     }];
   });
+  return kind === 'system_order' ? initializeFreshSteelReviewSystemRows(table.headers, rows) : rows;
 }
 
 function projectRecord(

@@ -145,6 +145,127 @@ afterAll(async () => {
 });
 
 describe('Steel review write methods', () => {
+  it('uses the fresh remark binding when validating a system-order first save', async () => {
+    const models = createModels(mongoose);
+    const QuotationState = createSteelQuotationStateModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const writer = createSteelReviewWriteMethods(mongoose);
+    const conversationId = 'system-order-binding-conversation';
+    const messageId = 'system-order-binding-message';
+    const title = 'system_order｜自動綁定';
+    const headers = ['來源', '類別', '備註', '總數'];
+    const rawRows = [
+      ['F1', 'H型鋼', 'A', '2'],
+      ['PROCESS', '加工/切工', 'A', '2'],
+    ];
+    const currentMarkdown = [
+      `## ${title}`,
+      '',
+      `| ${headers.join(' | ')} |`,
+      `| ${headers.map(() => '---').join(' | ')} |`,
+      ...rawRows.map((row) => `| ${row.join(' | ')} |`),
+    ].join('\n');
+    const savedMarkdown = currentMarkdown.replace('| F1 | H型鋼 | A | 2 |', '| F1 | H型鋼 | A | 3 |');
+    const targetText = currentMarkdown.slice(currentMarkdown.indexOf(`| ${headers.join(' | ')} |`));
+    const replacementText = savedMarkdown.slice(savedMarkdown.indexOf(`| ${headers.join(' | ')} |`));
+    const currentHash = createHash('sha256').update(currentMarkdown).digest('hex');
+    const materialRowId = aiRowIdFor('system_order:run-1', rawRows[0]);
+    const processingRowId = aiRowIdFor('system_order:run-1', rawRows[1], 1);
+    const valuesFor = (row: readonly string[], effective = row) => Object.fromEntries(
+      headers.map((header, index) => [header, {
+        baseline: row[index] ?? '',
+        effective: effective[index] ?? '',
+      }]),
+    );
+
+    await models.Conversation.create({
+      conversationId,
+      user: 'user-1',
+      tenantId: 'tenant-1',
+      title: 'System order binding',
+      endpoint: 'openAI',
+    });
+    await models.Message.create({
+      messageId,
+      conversationId,
+      user: 'user-1',
+      tenantId: 'tenant-1',
+      isCreatedByUser: false,
+      text: currentMarkdown,
+    });
+    await QuotationState.create({
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      conversationId,
+      currentSystemOrder: {
+        runId: 'run-1',
+        sha256: currentHash,
+        markdown: currentMarkdown,
+        messageId,
+        customerQuoteMarkdown: '## customer_quote｜自動綁定\n\n| 項目 | 總數 | 小計 |\n| --- | --- | --- |\n| H型鋼 | 2 | 20 |\n| 總計 |  | 20 |',
+        updatedAt: new Date('2026-10-03T00:00:00.000Z'),
+      },
+    });
+
+    const result = await writer.commitSteelReview({
+      userId: 'user-1',
+      tenantId: 'tenant-1',
+      conversationId,
+      kind: 'system_order',
+      messageId,
+      title,
+      tableId: `system_order:${title}`,
+      outputId: 'system_order:run-1',
+      revision: currentHash,
+      operationId: 'system-order-binding-operation',
+      digest: 'system-order-binding-digest',
+      rows: [
+        {
+          rowId: materialRowId,
+          origin: 'ai',
+          deleted: false,
+          values: valuesFor(rawRows[0], ['F1', 'H型鋼', 'A', '3']),
+          source: null,
+          system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
+        },
+        {
+          rowId: processingRowId,
+          origin: 'ai',
+          deleted: false,
+          values: valuesFor(rawRows[1]),
+          source: null,
+          system: { kind: 'processing', parentRowId: materialRowId, cascadeDeletedBy: null },
+        },
+      ],
+      headers,
+      messageSha256: currentHash,
+      target: {
+        start: currentMarkdown.indexOf(`| ${headers.join(' | ')} |`),
+        end: currentMarkdown.length,
+        sha256: createHash('sha256').update(targetText).digest('hex'),
+      },
+      targetText,
+      replacementText,
+      cleanReplacementText: replacementText,
+      effectiveMarkdown: savedMarkdown,
+      displayMarkdown: savedMarkdown,
+      aiBaselineMarkdown: currentMarkdown,
+      aiRawMarkdown: currentMarkdown,
+      systemOrderMarkdown: savedMarkdown,
+      customerQuoteMarkdown: '## customer_quote｜自動綁定\n\n| 項目 | 總數 | 小計 |\n| --- | --- | --- |\n| H型鋼 | 3 | 30 |\n| 總計 |  | 30 |',
+      caption: { kind: 'system_order', changedRows: 1, changedRowIds: [materialRowId] },
+    });
+
+    expect(result).toMatchObject({ changedRows: 1, changedRowIds: [materialRowId] });
+    expect((await ReviewOutput.findOne({ conversationId, outputId: 'system_order:run-1' }).lean())?.rows)
+      .toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          rowId: processingRowId,
+          system: { kind: 'processing', parentRowId: materialRowId, cascadeDeletedBy: null },
+        }),
+      ]));
+  });
+
   it('atomically saves a system-order price edit and its internal quote projection', async () => {
     const models = createModels(mongoose);
     const QuotationState = createSteelQuotationStateModel(mongoose);

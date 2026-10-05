@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   isSteelReviewSourceAssociationHeader,
   inferSteelReviewSystemState,
+  initializeFreshSteelReviewSystemRows,
   parseSteelReviewMarkdownTables,
   normalizeSteelReviewRows,
   normalizeSteelReviewEffectiveValue,
@@ -351,7 +352,7 @@ function trustedInitialRowsFromMarkdown(
   const sourceColumn = sourceHeader(table.headers);
   const pageColumn = pageHeader(table.headers);
   const mappingsByCode = new Map(trustedMappings.map((mapping) => [mapping.sourceCode, mapping]));
-  return table.rows.flatMap((row, rowIndex) => {
+  const rows = table.rows.flatMap((row, rowIndex) => {
     if (row.length !== table.headers.length) {
       return [];
     }
@@ -383,6 +384,7 @@ function trustedInitialRowsFromMarkdown(
       : undefined;
     return [{ rowId, values, source, origin: 'ai' as const, deleted: false, ...(system ? { system } : {}) }];
   });
+  return input.kind === 'system_order' ? initializeFreshSteelReviewSystemRows(table.headers, rows) : rows;
 }
 
 function trustedPhysicalTarget(

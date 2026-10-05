@@ -206,6 +206,54 @@ export function inferSteelReviewSystemState(
   };
 }
 
+function steelReviewCellText(row: SteelReviewRow, header: string): string {
+  const cell = row.values[header];
+  return (cell?.effective ?? cell?.baseline ?? '').trim();
+}
+
+/**
+ * Bind fresh system-order processing rows to uniquely identified materials.
+ * The producer writes the child part number as the complete processing remark;
+ * ambiguous or missing identifiers intentionally remain unbound.
+ */
+export function initializeFreshSteelReviewSystemRows(
+  headers: readonly string[],
+  rows: readonly SteelReviewRow[],
+): SteelReviewRow[] {
+  if (!headers.includes('備註')) {
+    return rows.map((row) => ({ ...row }));
+  }
+  const materialsByPartNumber = new Map<string, SteelReviewRow[]>();
+  rows.forEach((row) => {
+    if (row.system?.kind !== 'material' || row.deleted) return;
+    const partNumber = steelReviewCellText(row, '備註');
+    if (!partNumber) return;
+    const matches = materialsByPartNumber.get(partNumber) ?? [];
+    matches.push(row);
+    materialsByPartNumber.set(partNumber, matches);
+  });
+  return rows.map((row) => {
+    if (row.system?.kind !== 'processing') {
+      return { ...row };
+    }
+    const partNumber = steelReviewCellText(row, '備註');
+    const matches = partNumber ? materialsByPartNumber.get(partNumber) ?? [] : [];
+    if (matches.length !== 1) {
+      return {
+        ...row,
+        source: null,
+        system: { ...row.system, parentRowId: null, cascadeDeletedBy: null },
+      };
+    }
+    const [parent] = matches;
+    return {
+      ...row,
+      source: parent.source ? { ...parent.source } : null,
+      system: { ...row.system, parentRowId: parent.rowId, cascadeDeletedBy: null },
+    };
+  });
+}
+
 export const steelReviewRowSchema = z.object({
   rowId: z.string().min(1),
   values: z.record(z.string(), steelReviewCellSchema),

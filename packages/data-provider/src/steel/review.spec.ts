@@ -1,9 +1,10 @@
 import { createHash } from 'node:crypto';
-import type { SteelReviewLedgerRow, SteelReviewOperation } from './review';
+import type { SteelReviewLedgerRow, SteelReviewOperation, SteelReviewRow } from './review';
 import {
   encodeSteelReviewDigest as encodeSteelReviewDigestValue,
   encodeSteelReviewTitleOwner,
   applySteelReviewOperations,
+  initializeFreshSteelReviewSystemRows,
   isSteelReviewSourceAssociationHeader,
   normalizeSteelReviewEffectiveValue,
   normalizeSteelReviewRows,
@@ -266,6 +267,64 @@ describe('Steel review contracts', () => {
     }]);
     expect(normalized).not.toBe(rows);
     expect(normalized[0]?.values).not.toBe(rows[0].values);
+  });
+
+  it('binds fresh processing rows only to a unique material remark', () => {
+    const source = { fileId: 'file-a', pageNumber: 1, filename: 'a.pdf' };
+    const rows: SteelReviewRow[] = [
+      {
+        rowId: 'material-a',
+        values: { 備註: { baseline: 'A', effective: ' A ' } },
+        source,
+        system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
+      },
+      {
+        rowId: 'material-duplicate-1',
+        values: { 備註: { baseline: 'DUP', effective: 'DUP' } },
+        source: { fileId: 'file-dup-1', pageNumber: 1, filename: 'dup-1.pdf' },
+        system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
+      },
+      {
+        rowId: 'material-duplicate-2',
+        values: { 備註: { baseline: 'DUP', effective: 'DUP' } },
+        source: { fileId: 'file-dup-2', pageNumber: 1, filename: 'dup-2.pdf' },
+        system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
+      },
+      {
+        rowId: 'processing-exact',
+        values: { 備註: { baseline: 'A', effective: 'A' } },
+        source: null,
+        system: { kind: 'processing', parentRowId: null, cascadeDeletedBy: null },
+      },
+      {
+        rowId: 'processing-missing',
+        values: { 備註: { baseline: 'MISSING', effective: 'MISSING' } },
+        source: { fileId: 'rogue', pageNumber: 1, filename: 'rogue.pdf' },
+        system: { kind: 'processing', parentRowId: 'rogue', cascadeDeletedBy: null },
+      },
+      {
+        rowId: 'processing-duplicate',
+        values: { 備註: { baseline: 'DUP', effective: 'DUP' } },
+        source: { fileId: 'rogue', pageNumber: 1, filename: 'rogue.pdf' },
+        system: { kind: 'processing', parentRowId: 'rogue', cascadeDeletedBy: null },
+      },
+    ];
+
+    const initialized = initializeFreshSteelReviewSystemRows(['備註'], rows);
+
+    expect(initialized.find((row) => row.rowId === 'processing-exact')).toMatchObject({
+      source,
+      system: { kind: 'processing', parentRowId: 'material-a', cascadeDeletedBy: null },
+    });
+    expect(initialized.find((row) => row.rowId === 'processing-missing')).toMatchObject({
+      source: null,
+      system: { kind: 'processing', parentRowId: null, cascadeDeletedBy: null },
+    });
+    expect(initialized.find((row) => row.rowId === 'processing-duplicate')).toMatchObject({
+      source: null,
+      system: { kind: 'processing', parentRowId: null, cascadeDeletedBy: null },
+    });
+    expect(rows.find((row) => row.rowId === 'processing-missing')?.system?.parentRowId).toBe('rogue');
   });
 
   it('materializes legacy ledger defaults only in the trusted effective view', () => {
