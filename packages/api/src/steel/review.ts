@@ -1470,14 +1470,14 @@ export function createSteelReviewService({
           origin: row.origin,
           deleted: row.deleted,
           system: row.system ?? null,
-          calculation: row.calculation ?? null,
+          measurement: row.calculation?.measurement ?? null,
         }) !== JSON.stringify({
           values: previous.values,
           source: previous.source,
           origin: previous.origin,
           deleted: previous.deleted,
           system: previous.system ?? null,
-          calculation: previous.calculation ?? null,
+          measurement: previous.calculation?.measurement ?? null,
         });
       })
       .map((row) => row.rowId);
