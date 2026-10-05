@@ -1,4 +1,7 @@
-import { isSteelReviewSourceAssociationHeader } from 'librechat-data-provider';
+import {
+  calculateSteelSystemOrderRow,
+  isSteelReviewSourceAssociationHeader,
+} from 'librechat-data-provider';
 import type {
   SteelReviewPrepared,
   SteelReviewOperation,
@@ -423,9 +426,76 @@ export function getSteelReviewDirtyRowIds(
   ];
 }
 
+const calculationOutputDependencies: Record<string, readonly string[]> = {
+  單重: ['厚度', '寬度', '長度'],
+  總數: ['厚度', '寬度', '長度', '單重', '數量'],
+};
+
+function hasEarlierDraftDependency(row: SteelReviewRow, header: string, draft: SteelReviewDraftState): boolean {
+  if (!row.system) return false;
+  const version = draft.cellVersions[getSteelReviewDraftCellKey(row.rowId, header)] ?? 0;
+  return (calculationOutputDependencies[header] ?? []).some((dependency) => {
+    const key = getSteelReviewDraftCellKey(row.rowId, dependency);
+    const dependencyVersion = draft.cellVersions[key] ?? 0;
+    return dependencyVersion > 0 && dependencyVersion < version &&
+      Object.prototype.hasOwnProperty.call(draft.touched, key) &&
+      draft.touched[key] !== (row.values[dependency]?.effective ?? '');
+  });
+}
+
+function orderedDraftCells(row: SteelReviewRow, draft: SteelReviewDraftState): Array<{ header: string; value: string }> {
+  return Object.keys(row.values)
+    .filter((header) => {
+      const key = getSteelReviewDraftCellKey(row.rowId, header);
+      const value = draft.cells[key] ?? draft.touched[key];
+      const hasIntent = Object.prototype.hasOwnProperty.call(draft.cells, key) ||
+        (draft.cellVersions[key] ?? 0) > 0 && Object.prototype.hasOwnProperty.call(draft.touched, key);
+      return hasIntent && (value !== (row.values[header]?.effective ?? '') ||
+        hasEarlierDraftDependency(row, header, draft));
+    })
+    .sort((left, right) => (draft.cellVersions[getSteelReviewDraftCellKey(row.rowId, left)] ?? 0) -
+      (draft.cellVersions[getSteelReviewDraftCellKey(row.rowId, right)] ?? 0))
+    .map((header) => {
+      const key = getSteelReviewDraftCellKey(row.rowId, header);
+      return { header, value: draft.cells[key] ?? draft.touched[key] ?? '' };
+    });
+}
+
+function projectDraftBusinessValues(
+  row: SteelReviewRow,
+  projectedRow: SteelReviewRow,
+  draft: SteelReviewDraftState,
+  previewCalculations: boolean,
+): SteelReviewRow['values'] {
+  const values = { ...row.values };
+  const headers = Object.keys(values);
+  let provenance = projectedRow.calculation?.fields;
+  for (const { header, value } of orderedDraftCells(row, draft)) {
+    values[header] = { ...values[header], effective: value };
+    if (!previewCalculations || !projectedRow.system) continue;
+    const calculationHeaders = projectedRow.system.kind === 'material' ? headers : [header];
+    const calculated = calculateSteelSystemOrderRow({
+      headers: calculationHeaders,
+      values: calculationHeaders.map((name) => values[name]?.effective ?? ''),
+      candidate: projectedRow.system.kind === 'material' ? projectedRow.calculation?.candidate : undefined,
+      changedHeaders: [header],
+      provenance,
+    });
+    provenance = calculated.provenance;
+    calculationHeaders.forEach((name, index) => {
+      const effective = calculated.values[index] ?? '';
+      if ((values[name]?.effective ?? '') !== effective) {
+        values[name] = { ...values[name], effective };
+      }
+    });
+  }
+  return values;
+}
+
 export function applySteelReviewDrafts(
   rows: readonly SteelReviewRow[],
   draft: SteelReviewDraftState,
+  previewCalculations = true,
 ): SteelReviewRow[] {
   const projectRow = (row: SteelReviewRow, sourceOverride?: SteelReviewSource | null): SteelReviewRow => {
     if (!row.rowId) {
@@ -434,12 +504,7 @@ export function applySteelReviewDrafts(
 
     const projectedRow = draft.rowStates[row.rowId] ?? row;
 
-    const values = Object.fromEntries(
-      Object.entries(projectedRow.values).map(([header, cell]) => {
-        const value = getSteelReviewDraftCell(draft, projectedRow.rowId, header);
-        return [header, value === undefined ? cell : { ...cell, effective: value }];
-      }),
-    );
+    const values = projectDraftBusinessValues(row, projectedRow, draft, previewCalculations);
     const draftSource = getSteelReviewDraftSource(draft, projectedRow.rowId);
     let source = sourceOverride;
     if (source === undefined) {
@@ -654,7 +719,8 @@ function rowValuesChanged(
 ): Array<{ header: string; value: string | null }> {
   const headers = table.headers.filter((header) => !isSourceHeader(header));
   return headers
-    .filter((header) => (previous.values[header]?.effective ?? null) !== (next.values[header]?.effective ?? null))
+    .filter((header) => (previous.values[header]?.effective ?? null) !== (next.values[header]?.effective ?? null) ||
+      hasEarlierDraftDependency(previous, header, draft))
     .sort((left, right) => (draft.cellVersions[getSteelReviewDraftCellKey(next.rowId, left)] ?? 0) -
       (draft.cellVersions[getSteelReviewDraftCellKey(next.rowId, right)] ?? 0))
     .map((header) => ({ header, value: next.values[header]?.effective ?? null }));
@@ -692,6 +758,7 @@ export function compileSteelReviewOperations(
   projectedRows: readonly SteelReviewRow[],
 ): SteelReviewOperation[] {
   const originalById = new Map(table.rows.map((row) => [row.rowId, row]));
+  const rawRowsById = new Map(applySteelReviewDrafts(table.rows, draft, false).map((row) => [row.rowId, row]));
   const operationEntries: Array<{ rowId: string; operation: SteelReviewOperation; activation: boolean }> = [];
   const deferredGroupDeletes: SteelReviewOperation[] = [];
   const baseOrderedRows = [...projectedRows].sort((left, right) => {
@@ -744,12 +811,15 @@ export function compileSteelReviewOperations(
       orderedRowIds.add(next.rowId);
     }
   }
-  for (const next of orderedRows) {
+  for (const projected of orderedRows) {
+    const next = rawRowsById.get(projected.rowId) ?? projected;
     const previous = originalById.get(next.rowId);
     if (!previous) {
       if (next.origin !== 'manual' || next.deleted) continue;
       const changes = table.headers
         .filter((header) => !isSourceHeader(header))
+        .sort((left, right) => (draft.cellVersions[getSteelReviewDraftCellKey(next.rowId, left)] ?? 0) -
+          (draft.cellVersions[getSteelReviewDraftCellKey(next.rowId, right)] ?? 0))
         .map((header) => ({ header, value: next.values[header]?.effective ?? null }));
       const add: Extract<SteelReviewOperation, { type: 'add' }> = {
         type: 'add',
@@ -758,7 +828,7 @@ export function compileSteelReviewOperations(
         changes,
       };
       if (next.source !== null && next.system?.kind !== 'processing') add.source = sourceIntent(next.source);
-      if (next.system && (next.system.kind === 'material' || next.system.kind === 'processing')) {
+      if (next.system) {
         add.system = { kind: next.system.kind, parentRowId: next.system.parentRowId };
       }
       pushOperation(next.rowId, add, next.system?.kind === 'material');
@@ -920,9 +990,13 @@ export function rebaseSteelReviewDraftState(
   }
 
   const cells = { ...draft.cells };
+  const touched = { ...draft.touched };
+  const cellVersions = { ...draft.cellVersions };
   for (const [key, value] of Object.entries(draft.touched)) {
     if ((draft.cellVersions[key] ?? 0) <= submittedChangeSequence) {
       delete cells[key];
+      delete touched[key];
+      delete cellVersions[key];
       continue;
     }
     if (value === rowsByCell.get(key)) {
@@ -1005,6 +1079,8 @@ export function rebaseSteelReviewDraftState(
   return {
     ...draft,
     cells,
+    touched,
+    cellVersions,
     sourceDrafts,
     systemVersions,
     rowStates,

@@ -7,6 +7,7 @@ import type {
   SteelReviewSourceMapping,
   SteelReviewTarget,
 } from 'librechat-data-provider';
+import type { SteelCalculationCheckpoint } from 'librechat-data-provider';
 import type { Document } from 'mongoose';
 
 export interface SteelReviewScope {
@@ -81,6 +82,8 @@ export interface SteelReviewReadRecord extends SteelReviewScope {
   requoteProvenance?: SteelReviewRequoteProvenanceRecord;
   /** Internal quotation state retained for system-order saves; never public. */
   customerQuoteMarkdown?: string;
+  /** Trusted exact lookup basis retained for the first review projection. */
+  calculationCheckpoint?: SteelCalculationCheckpoint;
   lastSave?: SteelReviewReceipt;
   /** Immutable receipt history used to resolve a captured same-owner revision. */
   receipts?: SteelReviewReceipt[];

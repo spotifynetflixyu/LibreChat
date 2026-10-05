@@ -1,5 +1,7 @@
 import { Schema } from 'mongoose';
 
+import type { SteelCalculationCheckpoint } from 'librechat-data-provider';
+
 import type {
   ISteelQuotationArtifact,
   ISteelQuotationState,
@@ -41,6 +43,40 @@ const steelQuotationSourceMappingSchema = new Schema<SteelQuotationSourceMapping
   { _id: false },
 );
 
+const steelCalculationCheckpointSchema = new Schema<SteelCalculationCheckpoint>(
+  {
+    version: { type: Number, enum: [1], required: true },
+    systemOrderHash: { type: String, required: true, match: /^[a-f0-9]{64}$/u },
+    rows: {
+      type: [new Schema({
+        rowIndex: { type: Number, required: true, min: 0 },
+        rowId: { type: String },
+        candidate: {
+          type: new Schema({
+            erpItemCode: { type: String, required: true },
+            category: { type: String, required: true },
+            ruleVersion: { type: String, required: true },
+            unitWeightBasis: { type: String },
+            exactPhysical: {
+              type: new Schema({
+                density: { type: String },
+                widthMm: { type: String },
+                lengthMm: { type: String },
+                unitWeightValue: { type: String },
+              }, { _id: false }),
+              required: true,
+            },
+          }, { _id: false }),
+          required: true,
+        },
+      }, { _id: false })],
+      required: true,
+      default: [],
+    },
+  },
+  { _id: false },
+);
+
 const steelQuotationCurrentSystemOrderSchema = new Schema<SteelQuotationCurrentSystemOrder>(
   {
     runId: { type: String, required: true },
@@ -49,6 +85,7 @@ const steelQuotationCurrentSystemOrderSchema = new Schema<SteelQuotationCurrentS
     messageId: { type: String },
     responseId: { type: String },
     customerQuoteMarkdown: { type: String },
+    calculationCheckpoint: { type: steelCalculationCheckpointSchema },
     sourceSnapshot: {
       type: new Schema<SteelQuotationSourceSnapshot>(
         {

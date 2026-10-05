@@ -617,6 +617,94 @@ describe('Steel review contracts', () => {
     expect(expected[0]?.values.Value.effective).toBe('ai');
   });
 
+  it('applies ordered dimension changes against the latest combined inputs', () => {
+    const candidate = {
+      erpItemCode: 'PL-1',
+      category: '鐵板',
+      ruleVersion: 'steel-weight-v1',
+      exactPhysical: { density: '7.85' },
+    } as const;
+    const row = {
+      rowId: 'row-1',
+      values: {
+        型號: { baseline: 'PL-1', effective: 'PL-1' },
+        類別: { baseline: '鐵板', effective: '鐵板' },
+        單位: { baseline: 'kg', effective: 'kg' },
+        數量: { baseline: '1', effective: '1' },
+        單重: { baseline: '0.785', effective: '0.785' },
+        總數: { baseline: '0.785', effective: '0.785' },
+        厚度: { baseline: '1', effective: '1' },
+        寬度: { baseline: '100', effective: '100' },
+        長度: { baseline: '1000', effective: '1000' },
+      },
+      source: null,
+      calculation: { candidate },
+      origin: 'ai' as const,
+      deleted: false,
+    };
+    const result = applySteelReviewOperations({
+      currentRows: normalizeSteelReviewLedgerRows([row]),
+      expectedRows: normalizeSteelReviewLedgerRows([row]),
+      headers: Object.keys(row.values),
+      operations: [{
+        type: 'update',
+        rowId: row.rowId,
+        changes: [
+          { header: '厚度', value: '2' },
+          { header: '寬度', value: '200' },
+        ],
+      }],
+    });
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      const updated = result.currentRows[0]!;
+      expect(updated.values['單重']?.effective).toBe('3.14');
+      expect(updated.values['總數']?.effective).toBe('3.14');
+      expect(updated.calculation?.fields?.['單重']?.kind).toBe('derived');
+    }
+  });
+
+  it('protects a concurrent manual derived output and accepts equal derived values', () => {
+    const candidate = {
+      erpItemCode: 'PL-1',
+      category: '鐵板',
+      ruleVersion: 'steel-weight-v1',
+      exactPhysical: { density: '7.85' },
+    } as const;
+    const row = {
+      rowId: 'row-1',
+      values: {
+        型號: { baseline: 'PL-1', effective: 'PL-1' },
+        類別: { baseline: '鐵板', effective: '鐵板' },
+        單位: { baseline: 'kg', effective: 'kg' },
+        數量: { baseline: '1', effective: '1' },
+        單重: { baseline: '0.785', effective: '0.785' },
+        總數: { baseline: '0.785', effective: '99' },
+        厚度: { baseline: '1', effective: '1' },
+        寬度: { baseline: '100', effective: '100' },
+        長度: { baseline: '1000', effective: '1000' },
+      },
+      source: null,
+      calculation: { candidate },
+      origin: 'ai' as const,
+      deleted: false,
+    };
+    const expected = { ...row, values: Object.fromEntries(Object.entries(row.values).map(([header, cell]) => [header, { ...cell }])) };
+    expected.values['總數'] = { baseline: '0.785', effective: '0.785' };
+    const result = applySteelReviewOperations({
+      currentRows: normalizeSteelReviewLedgerRows([row]),
+      expectedRows: normalizeSteelReviewLedgerRows([expected]),
+      headers: Object.keys(row.values),
+      operations: [{ type: 'update', rowId: row.rowId, changes: [{ header: '厚度', value: '2' }] }],
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      conflicts: [{ kind: 'field', rowId: 'row-1', header: '總數', expected: '0.785', current: '99', requested: '1.57' }],
+    });
+  });
+
   it('accepts server-owned relation state only in persisted rows and applies binding intents', () => {
     const material = {
       rowId: 'material-1',
@@ -940,6 +1028,60 @@ describe('Steel review contracts', () => {
     if (result.ok) {
       expect(result.currentRows.find((row) => row.rowId === 'new-start')?.insertion).toEqual({ kind: 'start', ordinal: 1 });
       expect(result.currentRows.find((row) => row.rowId === 'new-end')?.insertion).toEqual({ kind: 'end', ordinal: 1 });
+    }
+  });
+
+  it('does not stamp calculation provenance for a same-value cell intent', () => {
+    const row: SteelReviewLedgerRow = {
+      rowId: 'row-1',
+      values: { 長度: { baseline: '100', effective: '100' } },
+      source: null,
+      origin: 'ai',
+      deleted: false,
+      calculation: { fields: { 長度: { kind: 'manual' } } },
+    };
+    const expected = normalizeSteelReviewLedgerRows([row]);
+    const result = applySteelReviewOperations({
+      currentRows: expected,
+      expectedRows: normalizeSteelReviewLedgerRows([row]),
+      headers: ['長度'],
+      operations: [{ type: 'update', rowId: row.rowId, changes: [{ header: '長度', value: '100' }] }],
+    });
+    expect(result).toMatchObject({ ok: true });
+    if (result.ok) expect(result.currentRows).toEqual(expected);
+  });
+
+  it('keeps a same-value manual reassertion after an earlier dependency change', () => {
+    const row: SteelReviewLedgerRow = {
+      rowId: 'row-1',
+      values: {
+        單位: { baseline: 'kg', effective: 'kg' },
+        數量: { baseline: '2', effective: '2' },
+        單重: { baseline: '0.942', effective: '0.942' },
+        總數: { baseline: '1.884', effective: '1.884' },
+      },
+      source: null,
+      origin: 'ai',
+      deleted: false,
+    };
+    const expected = normalizeSteelReviewLedgerRows([row]);
+    const result = applySteelReviewOperations({
+      currentRows: expected,
+      expectedRows: normalizeSteelReviewLedgerRows([row]),
+      headers: Object.keys(row.values),
+      operations: [{
+        type: 'update',
+        rowId: row.rowId,
+        changes: [
+          { header: '數量', value: '3' },
+          { header: '總數', value: '2.826' },
+        ],
+      }],
+    });
+    expect(result).toMatchObject({ ok: true });
+    if (result.ok) {
+      expect(result.currentRows[0]?.values['總數']?.effective).toBe('2.826');
+      expect(result.currentRows[0]?.calculation?.fields?.['總數']).toEqual({ kind: 'manual' });
     }
   });
 });

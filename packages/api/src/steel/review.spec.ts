@@ -208,7 +208,7 @@ describe('Steel review read service', () => {
     expect(prepared.caption.customerQuoteChangedRows).toBe(1);
   });
 
-  it('rejects system-order edits outside price and total and rejects invalid numeric input', async () => {
+  it('allows system-order business edits and rejects invalid numeric input', async () => {
     const service = createSteelReviewService({
       reader: { readSteelReview: jest.fn().mockResolvedValue(makeSystemOrderRecord()) },
     });
@@ -229,7 +229,7 @@ describe('Steel review read service', () => {
         rowId: 'row-1',
         changes: [{ header: '品名規格', value: '錯誤' }],
       }],
-    })).rejects.toMatchObject({ code: 'REVIEW_INVALID_OPERATION' });
+    })).resolves.toEqual(expect.objectContaining({ rows: expect.any(Array) }));
     await expect(service.prepare({
       ...base,
       operations: [{

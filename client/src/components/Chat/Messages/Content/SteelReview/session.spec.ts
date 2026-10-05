@@ -1352,3 +1352,71 @@ describe('Steel review local draft session', () => {
     expect(applySteelReviewDrafts(savedRows, redoSteelReviewDraft(undone)).find((row) => row.origin === 'manual')?.deleted).toBe(false);
   });
 });
+
+describe('material calculation draft intent', () => {
+  const headers = ['型號', '品名規格', '材質編號', '單位', '數量', '單重', '總數', '單價', '計價基準', '公式編號', '厚度', '寬度', '長度', '肚', '類別', '備註'];
+  const values = ['PL', 'plate', 'M1', 'kg', '2', '0.942', '1.884', '10', '2', '', '6', '100', '200', '', '鐵板', '原厚度 99 mm'];
+  const material: SteelReviewRow = {
+    rowId: 'material', origin: 'ai', deleted: false, source: null,
+    system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
+    values: Object.fromEntries(headers.map((header, index) => [header, { baseline: values[index], effective: values[index] }])),
+    calculation: { candidate: { erpItemCode: 'PL', category: '鐵板', ruleVersion: 'steel-weight-v1', exactPhysical: { density: '7.85' } } },
+  };
+  const materialTable: SteelReviewTable = { ...table, kind: 'system_order', title: 'system_order', headers, rows: [material] };
+
+  it('previews exact dimensions while transporting only explicit raw input and preserving undo', () => {
+    const draft = setSteelReviewDraftCell(createSteelReviewDraftState('owner'), material, '厚度', '0.1 inch');
+    const projected = applySteelReviewDrafts(materialTable.rows, draft);
+    expect(projected[0].values['厚度'].effective).toBe('2.54');
+    expect(projected[0].values['單重'].effective).toBe('0.39878');
+    expect(projected[0].values['總數'].effective).toBe('0.79756');
+    expect(compileSteelReviewOperations(materialTable, draft, projected)).toEqual([
+      { type: 'update', rowId: 'material', changes: [{ header: '厚度', value: '0.1 inch' }] },
+    ]);
+    expect(getSteelReviewDirtyRowIds(materialTable, draft)).toEqual(['material']);
+    expect(applySteelReviewDrafts(materialTable.rows, undoSteelReviewDraft(draft))[0].values).toEqual(material.values);
+  });
+
+  it('retains a final manual return to saved total after quantity changed', () => {
+    let draft = setSteelReviewDraftCell(createSteelReviewDraftState('owner'), material, '數量', '3');
+    draft = finishSteelReviewDraftHistory(draft);
+    draft = setSteelReviewDraftCell(draft, material, '總數', '99');
+    draft = setSteelReviewDraftCell(draft, material, '總數', '1.884');
+    const projected = applySteelReviewDrafts(materialTable.rows, draft);
+    expect(projected[0].values['總數'].effective).toBe('1.884');
+    expect(compileSteelReviewOperations(materialTable, draft, projected)).toEqual([
+      { type: 'update', rowId: 'material', changes: [{ header: '數量', value: '3' }, { header: '總數', value: '1.884' }] },
+    ]);
+    expect(applySteelReviewDrafts(materialTable.rows, undoSteelReviewDraft(draft))[0].values['總數'].effective).toBe('2.826');
+    expect(applySteelReviewDrafts(materialTable.rows, redoSteelReviewDraft(undoSteelReviewDraft(draft)))[0].values['總數'].effective).toBe('1.884');
+  });
+
+  it('keeps explicitly manual weight when quantity changes even with candidate evidence', () => {
+    let draft = setSteelReviewDraftCell(createSteelReviewDraftState('owner'), material, '單重', '2.5');
+    draft = setSteelReviewDraftCell(draft, material, '數量', '3');
+    const projected = applySteelReviewDrafts(materialTable.rows, draft);
+    expect(projected[0].values['單重'].effective).toBe('2.5');
+    expect(projected[0].values['總數'].effective).toBe('7.5');
+    expect(compileSteelReviewOperations(materialTable, draft, projected)).toEqual([
+      { type: 'update', rowId: 'material', changes: [{ header: '單重', value: '2.5' }, { header: '數量', value: '3' }] },
+    ]);
+  });
+
+  it('preserves outputs with missing inputs and does not reweight price edits', () => {
+    const empty = setSteelReviewDraftCell(createSteelReviewDraftState('owner'), material, '長度', '');
+    const missing = applySteelReviewDrafts(materialTable.rows, empty)[0];
+    expect(missing.values['長度'].effective).toBe('');
+    expect(missing.values['單重']).toEqual(material.values['單重']);
+    expect(missing.values['總數']).toEqual(material.values['總數']);
+    const manual = { ...material, values: { ...material.values, '單重': { baseline: '0.942', effective: '2.5' } } };
+    const price = setSteelReviewDraftCell(createSteelReviewDraftState('owner'), manual, '單價', '11');
+    expect(applySteelReviewDrafts([manual], price)[0].values['單重'].effective).toBe('2.5');
+  });
+
+  it('does not create net changes or operations for a same-value edit alone', () => {
+    const draft = setSteelReviewDraftCell(createSteelReviewDraftState('owner'), material, '總數', '1.884');
+    const projected = applySteelReviewDrafts(materialTable.rows, draft);
+    expect(getSteelReviewDirtyRowIds(materialTable, draft)).toEqual([]);
+    expect(compileSteelReviewOperations(materialTable, draft, projected)).toEqual([]);
+  });
+});

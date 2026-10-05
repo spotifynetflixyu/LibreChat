@@ -1,4 +1,4 @@
-import type { TCustomConfig } from 'librechat-data-provider';
+import type { SteelCalculationCheckpoint, TCustomConfig } from 'librechat-data-provider';
 import type { Document } from 'mongoose';
 
 export type SteelQuotationRunStatus =
@@ -81,6 +81,7 @@ export interface SteelQuotationPublicationProof {
   finalSha256: string;
   currentOrderSha256: string;
   currentSystemOrderSha256: string;
+  calculationCheckpoint?: SteelCalculationCheckpoint;
   sourceSnapshot?: SteelQuotationSourceSnapshot;
   saveContext?: SteelQuotationPublicationSaveContext;
   run?: SteelQuotationActiveRun;
@@ -125,6 +126,7 @@ export interface SteelQuotationCurrentSystemOrder {
   messageId?: string;
   responseId?: string;
   customerQuoteMarkdown?: string;
+  calculationCheckpoint?: SteelCalculationCheckpoint;
   sourceSnapshot?: SteelQuotationSourceSnapshot;
   needsRequote?: boolean;
   requoteProvenance?: SteelQuotationRequoteProvenance;

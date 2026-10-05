@@ -14,6 +14,8 @@ import {
   validateSteelReviewLedger,
   steelReviewReceiptQuerySchema,
   steelReviewReadQuerySchema,
+  convertSteelDimensionToMillimetres,
+  normalizeSteelDecimal,
 } from 'librechat-data-provider';
 import type {
   SteelReviewCell,
@@ -36,6 +38,7 @@ import type {
   SteelReviewSourceIntent,
   SteelReviewSourceMapping,
   SteelReviewLedgerValidation,
+  SteelCalculationCheckpoint,
 } from 'librechat-data-provider';
 import type {
   SteelReviewCommitInput,
@@ -46,7 +49,6 @@ import type {
 } from '@librechat/data-schemas';
 import type { SteelMarkdownTable } from './markdown/table';
 import type { ServerRequest } from '~/types/http';
-import { cleanSystemOrderNumber, normalizeSystemOrderMarkdown } from './markdown/order';
 import { buildCustomerQuoteFromMarkdown } from './markdown/quote';
 import { escapeMarkdownTableCell } from './markdown/row-codec';
 import { parseMarkdownTables } from './markdown/table';
@@ -342,6 +344,7 @@ function toRows(
   kind: SteelReviewKind,
   outputId: string,
   sourceMappings: SteelReviewReadRecord['sourceMappings'],
+  calculationCheckpoint?: SteelCalculationCheckpoint,
 ): SteelReviewRow[] {
   return table.rows.flatMap((row, rowIndex) => {
     if (row.length !== table.headers.length) {
@@ -356,11 +359,17 @@ function toRows(
       .update(`${outputId}:${rowIndex}:${JSON.stringify(row)}`)
       .digest('hex');
     const system = kind === 'system_order' ? inferSteelReviewSystemState(table.headers, row) : undefined;
+    const checkpointRow = kind === 'system_order'
+      ? calculationCheckpoint?.rows.find((candidate) => candidate.rowIndex === rowIndex &&
+        candidate.candidate.erpItemCode === (row[table.headers.indexOf('型號')] ?? '') &&
+        candidate.candidate.category === (row[table.headers.indexOf('類別')] ?? ''))
+      : undefined;
     return [{
       rowId,
       values,
       source: sourceForRow(table, row, sourceMappings),
       ...(system ? { system } : {}),
+      ...(checkpointRow ? { calculation: { candidate: checkpointRow.candidate } } : {}),
     }];
   });
 }
@@ -377,7 +386,7 @@ function projectRecord(
     (!table.headers.includes('來源') || !table.headers.includes('零件編號'))) {
     return null;
   }
-  const rows = toRows(table, record.kind, record.outputId, record.sourceMappings);
+  const rows = toRows(table, record.kind, record.outputId, record.sourceMappings, record.calculationCheckpoint);
   const latestOutputId = record.latestOutputId ?? record.outputId;
   const isLatest = record.state === 'current' && latestOutputId === record.outputId;
   return {
@@ -586,8 +595,20 @@ function serializeReviewTable(headers: readonly string[], rows: readonly SteelRe
   return [header, separator, ...body].join('\n');
 }
 
-const SYSTEM_ORDER_EDITABLE_HEADERS = new Set(['單價', '總數']);
-const SYSTEM_ORDER_DECIMAL = /^(?:\d+(?:\.\d+)?|\d{1,3}(?:,\d{3})+(?:\.\d+)?)$/u;
+const SYSTEM_ORDER_DIMENSION_HEADERS = new Set(['厚度', '寬度', '長度', '肚']);
+const SYSTEM_ORDER_DECIMAL_HEADERS = new Set(['數量', '單重', '總數', '單價']);
+
+function isValidSystemOrderCellValue(header: string, value: string): boolean {
+  const text = value.trim();
+  if (text === '') return true;
+  if (SYSTEM_ORDER_DIMENSION_HEADERS.has(header)) {
+    return convertSteelDimensionToMillimetres(text) !== undefined;
+  }
+  if (SYSTEM_ORDER_DECIMAL_HEADERS.has(header)) {
+    return normalizeSteelDecimal(text) !== undefined;
+  }
+  return true;
+}
 
 function quoteProjection(markdown: string | undefined): { markdown: string; rows: string[][]; total: string | null } | undefined {
   if (!markdown) {
@@ -976,7 +997,7 @@ export function createSteelReviewService({
     if (initialTables.length !== 1) {
       return undefined;
     }
-    return normalizeSteelReviewLedgerRows(toRows(initialTables[0], record.kind, record.outputId, record.sourceMappings));
+    return normalizeSteelReviewLedgerRows(toRows(initialTables[0], record.kind, record.outputId, record.sourceMappings, record.calculationCheckpoint));
   }
 
   function operationRecovery(
@@ -1081,7 +1102,7 @@ export function createSteelReviewService({
     if (!target) {
       throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review table target not found');
     }
-    const currentRows = normalizeSteelReviewLedgerRows(record.rows ?? toRows(target, record.kind, record.outputId, record.sourceMappings));
+    const currentRows = normalizeSteelReviewLedgerRows(record.rows ?? toRows(target, record.kind, record.outputId, record.sourceMappings, record.calculationCheckpoint));
     const headers = record.headers ?? target.headers;
     const expectedRows = operationExpectedRows(record, payload, target, currentRows);
     if (!expectedRows) {
@@ -1142,19 +1163,8 @@ export function createSteelReviewService({
         operation.type === 'add' && operation.system?.kind === 'processing') {
         throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Processing source follows its material');
       }
-      const isStructuralSystemOperation = operation.type === 'add' || operation.type === 'classify' ||
-        operation.type === 'delete' || operation.type === 'restore';
-      if (payload.kind === 'system_order' && !isStructuralSystemOperation && (
-        operation.type !== 'update' ||
-        changes.some((change) => !SYSTEM_ORDER_EDITABLE_HEADERS.has(change.header))
-      )) {
-        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'System-order edits are limited to unit price and total');
-      }
-      if (payload.kind === 'system_order' && changes.some((change) => {
-        const value = change.value?.trim() ?? '';
-        return SYSTEM_ORDER_EDITABLE_HEADERS.has(change.header) && value !== '' &&
-          (!SYSTEM_ORDER_DECIMAL.test(value) || cleanSystemOrderNumber(value) === '');
-      })) {
+      if (payload.kind === 'system_order' && changes.some((change) =>
+        !isValidSystemOrderCellValue(change.header, change.value ?? ''))) {
         throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'System-order numeric input is invalid');
       }
       if (operation.type === 'add' && operation.system) {
@@ -1228,7 +1238,7 @@ export function createSteelReviewService({
     if (!target || target.partIndex !== payload.partIndex && payload.partIndex !== undefined) {
       throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review table target not found');
     }
-    const currentRows = record.rows ?? toRows(target, record.kind, record.outputId, record.sourceMappings);
+    const currentRows = record.rows ?? toRows(target, record.kind, record.outputId, record.sourceMappings, record.calculationCheckpoint);
     const headers = record.headers ?? target.headers;
     const ledgerValidation = validateSteelReviewLedger(currentRows, payload.rows, headers);
     if (!ledgerValidation.ok) {
@@ -1420,10 +1430,10 @@ export function createSteelReviewService({
     if (!normalizedRows.ok) {
       throwLedgerValidationFailure(normalizedRows);
     }
-    let canonicalLedgerRows = normalizedRows.orderedSubmittedRows;
+    const canonicalLedgerRows = normalizedRows.orderedSubmittedRows;
     const normalizedCurrentRows = normalizedRows.currentRows;
-    let cleanReplacementText = serializeReviewTable(headers, canonicalLedgerRows.filter((row) => !row.deleted));
-    let effectiveMarkdown = replaceOwnerTarget(record, cleanReplacementText, target);
+    const cleanReplacementText = serializeReviewTable(headers, canonicalLedgerRows.filter((row) => !row.deleted));
+    const effectiveMarkdown = replaceOwnerTarget(record, cleanReplacementText, target);
     if (!effectiveMarkdown) {
       throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review table target not found');
     }
@@ -1432,35 +1442,11 @@ export function createSteelReviewService({
     let customerQuoteChangedRows: number | undefined;
     let customerQuoteTotal: string | null | undefined;
     if (payload.kind === 'system_order') {
-      // The system-order target is the canonical quotation input. Normalize
-      // numeric cells before persisting the message mirror and derive the
-      // internal customer quote from that same normalized section.
-      const normalized = normalizeSystemOrderMarkdown(effectiveMarkdown);
-      const normalizedTarget = collectLocatedTables(normalized).find((candidate) =>
-        candidate.title === payload.title && JSON.stringify(candidate.headers) === JSON.stringify(headers));
-      if (!normalizedTarget) {
-        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'System-order table is invalid');
-      }
-      const normalizedTable = parseMarkdownTables(normalizedTarget.raw)[0];
-      if (!normalizedTable || normalizedTable.rows.length !== canonicalLedgerRows.filter((row) => !row.deleted).length) {
-        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'System-order table rows are invalid');
-      }
-      let normalizedRowIndex = 0;
-      canonicalLedgerRows = canonicalLedgerRows.map((row) => {
-        if (row.deleted) return row;
-        const normalizedValues = normalizedTable.rows[normalizedRowIndex++] ?? [];
-        return {
-          ...row,
-          values: Object.fromEntries(headers.map((header, index) => [
-            header,
-            { ...row.values[header], effective: normalizedValues[index] ?? '' },
-          ])),
-        };
-      });
-      cleanReplacementText = normalizedTarget.raw;
-      effectiveMarkdown = normalized;
-      systemOrderMarkdown = normalized;
-      const nextQuote = quoteProjection(normalized);
+      // The ledger already contains the trusted changed-cell normalization and
+      // derived values. Preserve all untouched cells byte-for-byte so legacy
+      // numeric text is not rewritten as a side effect of an unrelated edit.
+      systemOrderMarkdown = effectiveMarkdown;
+      const nextQuote = quoteProjection(effectiveMarkdown);
       if (!nextQuote) {
         throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'System-order quotation is invalid');
       }

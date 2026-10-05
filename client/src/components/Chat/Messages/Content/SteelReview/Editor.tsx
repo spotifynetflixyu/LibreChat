@@ -60,7 +60,7 @@ export function isSteelReviewCellEditable(table: SteelReviewTable, header: strin
     return false;
   }
   if (table.kind === 'system_order') {
-    return header === '單價' || header === '總數';
+    return true;
   }
   return table.kind === 'ocr_result';
 }

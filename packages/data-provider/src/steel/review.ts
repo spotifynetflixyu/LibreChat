@@ -1,4 +1,6 @@
 import { z } from 'zod';
+import { steelCalculationRowMetadataSchema } from './calculation';
+import { calculateSteelSystemOrderRow } from './calculation';
 
 export const steelReviewKinds = ['ocr_result', 'system_order'] as const;
 export type SteelReviewKind = (typeof steelReviewKinds)[number];
@@ -213,6 +215,7 @@ export const steelReviewRowSchema = z.object({
   deleted: z.boolean().optional(),
   insertion: steelReviewRowInsertionSchema.optional(),
   system: steelReviewSystemStateSchema.optional(),
+  calculation: steelCalculationRowMetadataSchema.optional(),
 });
 
 export const steelReviewTargetSchema = z.object({
@@ -603,12 +606,14 @@ function sameOperationBusinessState(
       .map((header) => [header, left.values[header]?.effective ?? null])),
     source: operationSourceValue(left.source),
     system: left.system ?? null,
+    calculation: left.calculation ?? null,
   }) === JSON.stringify({
     values: Object.fromEntries(headers
       .filter((header) => !isSteelReviewSourceAssociationHeader(header))
       .map((header) => [header, right.values[header]?.effective ?? null])),
     source: operationSourceValue(right.source),
     system: right.system ?? null,
+    calculation: right.calculation ?? null,
   });
 }
 
@@ -646,6 +651,88 @@ function relationConflict(
     current: relationParentId(row),
     requested: requested.kind === 'processing' ? requested.parentRowId : null,
   };
+}
+
+function cloneReviewCalculation(calculation: SteelReviewRow['calculation']): SteelReviewRow['calculation'] {
+  if (!calculation) return undefined;
+  return {
+    ...(calculation.candidate ? {
+      candidate: {
+        ...calculation.candidate,
+        exactPhysical: { ...calculation.candidate.exactPhysical },
+      },
+    } : {}),
+    ...(calculation.fields ? {
+      fields: Object.fromEntries(Object.entries(calculation.fields).map(([header, field]) => [header, {
+        ...field,
+        ...(field.dependencies ? { dependencies: { ...field.dependencies } } : {}),
+      }])),
+    } : {}),
+  };
+}
+
+function cloneLedgerRow(row: SteelReviewLedgerRow): SteelReviewLedgerRow {
+  return {
+    ...row,
+    values: Object.fromEntries(Object.entries(row.values).map(([header, cell]) => [header, { ...cell }])),
+    source: row.source ? { ...row.source } : null,
+    ...(row.insertion ? { insertion: { ...row.insertion } } : {}),
+    ...(row.system ? { system: { ...row.system } } : {}),
+    ...(row.calculation ? { calculation: cloneReviewCalculation(row.calculation) } : {}),
+  };
+}
+
+function applyRowCalculation(
+  row: SteelReviewLedgerRow,
+  expectedRow: SteelReviewLedgerRow,
+  headers: readonly string[],
+  changedHeaders: readonly string[],
+): SteelReviewConflict[] {
+  if (changedHeaders.length === 0) return [];
+  const fields = { ...(row.calculation?.fields ?? {}) };
+  for (const header of changedHeaders) fields[header] = { kind: 'manual' };
+  const candidate = row.calculation?.candidate;
+  const calculated = calculateSteelSystemOrderRow({
+    headers,
+    values: headers.map((header) => row.values[header]?.effective ?? ''),
+    ...(candidate ? { candidate } : {}),
+    changedHeaders,
+    provenance: fields,
+  });
+  const conflicts: SteelReviewConflict[] = [];
+  headers.forEach((header, index) => {
+    const next = calculated.values[index] ?? '';
+    const current = row.values[header]?.effective ?? null;
+    const expected = expectedRow.values[header]?.effective ?? null;
+    const provenance = calculated.provenance?.[header];
+    const currentField = row.calculation?.fields?.[header];
+    const expectedField = expectedRow.calculation?.fields?.[header];
+    const provenanceChanged = JSON.stringify(currentField ?? null) !== JSON.stringify(expectedField ?? null);
+    if (current !== next && (changedHeaders.includes(header) || provenance)) {
+      if ((current !== expected || provenanceChanged) && current !== next && provenance) {
+        conflicts.push({ kind: 'field', rowId: row.rowId, header, expected, current, requested: next });
+        return;
+      }
+      row.values[header] = { ...(row.values[header] ?? { baseline: null, effective: null }), effective: next };
+    }
+    if (provenance) {
+      fields[header] = provenance;
+    }
+    if (changedHeaders.includes(header) || provenance) {
+      expectedRow.values[header] = { ...(expectedRow.values[header] ?? { baseline: null, effective: null }), effective: next };
+    }
+  });
+  const nextCandidate = candidate &&
+    (row.values['型號']?.effective ?? '') === candidate.erpItemCode &&
+    (row.values['類別']?.effective ?? '') === candidate.category
+    ? candidate : undefined;
+  row.calculation = {
+    ...(nextCandidate ? { candidate: nextCandidate } : {}),
+    ...(calculated.provenance && Object.keys(calculated.provenance).length > 0
+      ? { fields: calculated.provenance } : {}),
+  };
+  expectedRow.calculation = cloneReviewCalculation(row.calculation);
+  return conflicts;
 }
 
 function stageBinding(
@@ -696,8 +783,8 @@ export function applySteelReviewOperations({
   headers: readonly string[];
   operations: readonly SteelReviewOperation[];
 }): SteelReviewOperationApplyResult {
-  const current = currentRows.map((row) => ({ ...row, values: { ...row.values } }));
-  const expected = expectedRows.map((row) => ({ ...row, values: { ...row.values } }));
+  const current = currentRows.map(cloneLedgerRow);
+  const expected = expectedRows.map(cloneLedgerRow);
   const currentById = new Map(current.map((row) => [row.rowId, row]));
   const expectedById = new Map(expected.map((row) => [row.rowId, row]));
   const knownIds = new Set(currentById.keys());
@@ -801,6 +888,7 @@ export function applySteelReviewOperations({
         });
         continue;
       }
+      let hasPriorValueChange = false;
       for (const change of operation.changes ?? []) {
         const requestedValue = normalizeSteelReviewEffectiveValue(change.value);
         const currentValue = row.values[change.header]?.effective ?? null;
@@ -812,8 +900,15 @@ export function applySteelReviewOperations({
           });
           continue;
         }
-        row.values[change.header] = { ...row.values[change.header], effective: requestedValue };
-        expectedRow.values[change.header] = { ...expectedRow.values[change.header], effective: requestedValue };
+        if (currentValue === requestedValue && !hasPriorValueChange) {
+          continue;
+        }
+        if (currentValue !== requestedValue) {
+          row.values[change.header] = { ...row.values[change.header], effective: requestedValue };
+          expectedRow.values[change.header] = { ...expectedRow.values[change.header], effective: requestedValue };
+          hasPriorValueChange = true;
+        }
+        conflicts.push(...applyRowCalculation(row, expectedRow, headers, [change.header]));
       }
       if (operation.source) {
         const expectedSource = operationSourceValue(expectedRow.source);

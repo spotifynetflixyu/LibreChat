@@ -11,6 +11,8 @@ Each reply contains at most one Markdown section with that full title; another m
 title is independent. Authorization, output ownership and expected revision remain backend guards.
 No positional aliases or older review wire compatibility are retained.
 
+User calculation revision (2026-10-05): all system_order business cells are editable on latest active rows; source associations use the existing authorized file/page selectors. The backend only automatically handles steel fields with sufficient confirmed evidence and an exact computable result. Unsupported or incomplete calculations preserve values instead of blanking them. Explicit manual input is retained; normal validation, authorization, CAS and atomicity remain required. GitHub #9 records the updated acceptance contract.
+
 Verification boundary (2026-10-04): validate data and structures produced by normal frontend/backend
 flows. Data inserted or corrupted outside those flows is excluded from acceptance; do not expand
 ownership inference, repair, compatibility or defensive logic for synthetic invalid DB records.

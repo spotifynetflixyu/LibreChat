@@ -39,6 +39,19 @@ const steelReviewSystemStateSchema = new Schema<SteelReviewSystemState>(
   { _id: false },
 );
 
+const steelCalculationSchema = new Schema(
+  {
+    candidate: { type: Schema.Types.Mixed },
+    fields: { type: Map, of: new Schema({
+      kind: { type: String, enum: ['candidate', 'manual', 'derived', 'legacy'], required: true },
+      candidateCode: { type: String },
+      ruleVersion: { type: String },
+      dependencies: { type: Map, of: String },
+    }, { _id: false }) },
+  },
+  { _id: false },
+);
+
 const steelReviewRowSchema: Schema<SteelReviewRow> = new Schema(
   {
     rowId: { type: String, required: true },
@@ -57,6 +70,7 @@ const steelReviewRowSchema: Schema<SteelReviewRow> = new Schema(
       ),
     },
     system: { type: steelReviewSystemStateSchema },
+    calculation: { type: steelCalculationSchema },
   },
   { _id: false },
 );

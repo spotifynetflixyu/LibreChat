@@ -1,5 +1,11 @@
 import mongoose from 'mongoose';
 import { createHash, randomUUID } from 'node:crypto';
+import {
+  steelCalculationCandidateEvidenceSchema,
+  steelCalculationCheckpointSchema,
+  type SteelCalculationCandidateEvidence,
+  type SteelCalculationCheckpoint,
+} from 'librechat-data-provider';
 import type {
   ISteelQuotationState,
   SteelQuotationActiveRun,
@@ -78,6 +84,86 @@ export class SteelQuotationPublicationError extends Error {
   }
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readExactCandidate(value: unknown): SteelCalculationCandidateEvidence | undefined {
+  if (!isRecord(value) || typeof value.erpItemCode !== 'string' || typeof value.category !== 'string' ||
+    !isRecord(value.exactPhysical)) {
+    return undefined;
+  }
+  const physical = value.exactPhysical;
+  const candidate = {
+    erpItemCode: value.erpItemCode,
+    category: value.category,
+    ruleVersion: 'steel-weight-v1',
+    ...(typeof value.unitWeightBasis === 'string' ? { unitWeightBasis: value.unitWeightBasis } : {}),
+    exactPhysical: {
+      ...(typeof physical.density === 'string' ? { density: physical.density } : {}),
+      ...(typeof physical.widthMm === 'string' ? { widthMm: physical.widthMm } : {}),
+      ...(typeof physical.lengthMm === 'string' ? { lengthMm: physical.lengthMm } : {}),
+      ...(typeof physical.unitWeightValue === 'string' ? { unitWeightValue: physical.unitWeightValue } : {}),
+    },
+  };
+  const parsed = steelCalculationCandidateEvidenceSchema.safeParse(candidate);
+  return parsed.success ? parsed.data : undefined;
+}
+
+function hasCompleteSteelFormula(candidate: SteelCalculationCandidateEvidence): boolean {
+  const physical = candidate.exactPhysical;
+  if (candidate.category === '鐵板') {
+    return physical.density !== undefined;
+  }
+  if (candidate.category === '方鐵') {
+    return physical.density !== undefined && physical.widthMm !== undefined;
+  }
+  const unitWeightBasis = candidate.unitWeightBasis?.toLowerCase();
+  return ['H型鋼', 'C型鋼', '角鐵', '槽鐵', '扁鐵', '方管', '圓管', '圓鐵'].includes(candidate.category) &&
+    physical.unitWeightValue !== undefined && physical.lengthMm !== undefined &&
+    (candidate.unitWeightBasis === 'kg_per_piece_or_stock_length' ||
+      ['m', 'kg_per_m', 'kg/m'].includes(unitWeightBasis ?? ''));
+}
+
+function buildSteelCalculationCheckpoint(
+  systemOrderHash: string,
+  rows: readonly (readonly string[])[],
+  results: readonly QuotationChildResultInput[],
+): SteelCalculationCheckpoint {
+  const candidatesByIdentity = new Map<string, Map<string, SteelCalculationCandidateEvidence>>();
+  for (const result of results) {
+    for (const evidence of result.lookupEvidence) {
+      if (!evidence.result.ok || !isRecord(evidence.result.data)) continue;
+      const queryResults = evidence.result.data.queryResults;
+      if (!Array.isArray(queryResults)) continue;
+      for (const queryResult of queryResults) {
+        if (!isRecord(queryResult) || !Array.isArray(queryResult.candidates)) continue;
+        for (const rawCandidate of queryResult.candidates) {
+          const candidate = readExactCandidate(rawCandidate);
+          if (!candidate || !hasCompleteSteelFormula(candidate)) continue;
+          const identity = `${candidate.erpItemCode}\u0000${candidate.category}`;
+          const entries = candidatesByIdentity.get(identity) ?? new Map<string, SteelCalculationCandidateEvidence>();
+          entries.set(JSON.stringify(candidate), candidate);
+          candidatesByIdentity.set(identity, entries);
+        }
+      }
+    }
+  }
+  const codeIndex = quotationSystemOrderColumns.indexOf('型號');
+  const categoryIndex = quotationSystemOrderColumns.indexOf('類別');
+  return {
+    version: 1,
+    systemOrderHash,
+    rows: rows.flatMap((row, rowIndex) => {
+      const identity = `${row[codeIndex] ?? ''}\u0000${row[categoryIndex] ?? ''}`;
+      const candidates = candidatesByIdentity.get(identity);
+      if (!candidates || candidates.size !== 1) return [];
+      const candidate = [...candidates.values()][0];
+      return candidate ? [{ rowIndex, candidate }] : [];
+    }),
+  };
+}
+
 async function materializeCompletedSystemOrder(
   input: SteelQuotationPublicationInput,
 ): Promise<{ state: ISteelQuotationState; currentSystemOrder: SteelQuotationCurrentSystemOrder }> {
@@ -102,6 +188,20 @@ async function materializeCompletedSystemOrder(
   if (!canonical || !quote || !runTargetMessageId) {
     throw new Error('Quotation publication has no canonical system order');
   }
+  const calculationRef = state.activeRun?.checkpointRefs.find((ref) => ref.operationId === 'calculation:basis');
+  let calculationCheckpoint: SteelCalculationCheckpoint | undefined;
+  if (calculationRef) {
+    const calculationPayload = await input.service.readArtifact({
+      scope: input.scope,
+      ref: { ...input.scope, runId: input.run.runId, ...calculationRef },
+    });
+    if (!calculationPayload) throw new Error('Quotation calculation checkpoint is missing');
+    const parsed = steelCalculationCheckpointSchema.safeParse(JSON.parse(calculationPayload));
+    if (!parsed.success || parsed.data.systemOrderHash !== canonical.sha256) {
+      throw new Error('Quotation calculation checkpoint is stale');
+    }
+    calculationCheckpoint = parsed.data;
+  }
   const existing = await input.service.readCurrentSystemOrder(input.scope);
   if (existing?.runId === input.run.runId) return { state, currentSystemOrder: existing };
   const saved = await input.service.saveCurrentSystemOrder({
@@ -112,6 +212,7 @@ async function materializeCompletedSystemOrder(
       markdown: canonical.markdown,
       messageId: runTargetMessageId,
       customerQuoteMarkdown: quote.markdown,
+      ...(calculationCheckpoint ? { calculationCheckpoint } : {}),
       ...(snapshot.sourceSnapshot ? { sourceSnapshot: snapshot.sourceSnapshot } : {}),
       updatedAt: new Date(),
     },
@@ -167,6 +268,9 @@ export async function publishCompletedQuotation(
       finalSha256,
       currentOrderSha256: currentOrder.sha256,
       currentSystemOrderSha256: currentSystemOrder.sha256,
+      ...(currentSystemOrder.calculationCheckpoint
+        ? { calculationCheckpoint: currentSystemOrder.calculationCheckpoint }
+        : {}),
       ...(currentSystemOrder.sourceSnapshot ? { sourceSnapshot: currentSystemOrder.sourceSnapshot } : {}),
       customer: {
         preparationId: customer.preparationId,
@@ -713,6 +817,13 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     const summary = `${completion}\n\n項次核對：材料項次 ${materialCount}／原始訂單 ${sourceCount} 項；加工列 ${processingCount} 筆。${failureSummary}`;
     const completedResponse = [final.systemOrderMarkdown, reviewDisplay, `## quote_summary\n\n${summary}`]
       .filter(Boolean).join('\n\n');
+    const calculationSystemOrderHash = createHash('sha256').update(final.systemOrderMarkdown, 'utf8').digest('hex');
+    const calculationCheckpoint = buildSteelCalculationCheckpoint(
+      calculationSystemOrderHash,
+      final.rows,
+      results,
+    );
+    await checkpoint('calculation:basis', 'main', JSON.stringify(calculationCheckpoint));
     await checkpoint('final', 'final', completedResponse);
     if (input.onTextDelta) {
       await deliverText(async () => input.onTextDelta!(`\n\n## quote_summary\n\n${summary}`));

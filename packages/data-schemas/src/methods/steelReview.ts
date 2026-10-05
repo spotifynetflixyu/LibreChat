@@ -1112,6 +1112,9 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
           ...(quotation.currentSystemOrder.customerQuoteMarkdown !== undefined
             ? { customerQuoteMarkdown: quotation.currentSystemOrder.customerQuoteMarkdown }
             : {}),
+          ...(quotation.currentSystemOrder.calculationCheckpoint
+            ? { calculationCheckpoint: quotation.currentSystemOrder.calculationCheckpoint }
+            : {}),
           ...(readOwnerUpdated(messageRecord.metadata, input.kind)
             ? { ownerUpdated: readOwnerUpdated(messageRecord.metadata, input.kind) }
             : {}),

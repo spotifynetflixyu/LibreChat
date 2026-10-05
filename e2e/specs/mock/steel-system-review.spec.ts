@@ -473,7 +473,9 @@ async function openEditor(page: Page, conversationId: string) {
 }
 
 function materialRow(dialog: Locator) {
-  return dialog.locator('tbody tr').filter({ hasText: 'REVIEW-MATERIAL-A' });
+  const rows = dialog.locator('tbody tr');
+  return rows.filter({ has: dialog.locator('input[value="REVIEW-MATERIAL-A"]') })
+    .or(rows.filter({ hasText: 'REVIEW-MATERIAL-A' }));
 }
 
 async function seedGroup() {
@@ -1616,7 +1618,7 @@ test.describe('System order atomic manual review', () => {
     const before = await readback(fixture.conversationId);
     const dialog = await openEditor(page, fixture.conversationId);
     const row = materialRow(dialog);
-    await row.getByRole('textbox').last().fill('10.01');
+    await row.getByRole('textbox', { name: /^單價 /u }).fill('10.01');
     await expect(dialog.getByText('Unsaved changes: 1 rows', { exact: true })).toBeVisible();
     expect(await readback(fixture.conversationId)).toEqual(before);
     const commitResponse = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith('/review/system_order/commit'));
@@ -1728,7 +1730,7 @@ test.describe('System order atomic manual review', () => {
     conversations.push(fixture.conversationId);
     const before = await readback(fixture.conversationId);
     const dialog = await openEditor(page, fixture.conversationId);
-    const total = materialRow(dialog).getByRole('textbox').first();
+    const total = materialRow(dialog).getByRole('textbox', { name: /^總數 /u });
     const undo = dialog.getByRole('button', { name: 'Undo', exact: true });
     const redo = dialog.getByRole('button', { name: 'Redo', exact: true });
     await total.fill('5');
@@ -1761,7 +1763,7 @@ test.describe('System order atomic manual review', () => {
     const fixture = await seedOrder();
     conversations.push(fixture.conversationId);
     const dialog = await openEditor(page, fixture.conversationId);
-    await materialRow(dialog).getByRole('textbox').first().fill('3.1');
+    await materialRow(dialog).getByRole('textbox', { name: /^總數 /u }).fill('3.1');
     const downloadReady = page.waitForEvent('download');
     await dialog.getByRole('button', { name: /Download.*CSV/i }).click();
     const download = await downloadReady;
@@ -1785,7 +1787,7 @@ test.describe('System order atomic manual review', () => {
     conversations.push(fixture.conversationId);
     const before = await readback(fixture.conversationId);
     const dialog = await openEditor(page, fixture.conversationId);
-    const price = materialRow(dialog).getByRole('textbox').last();
+    const price = materialRow(dialog).getByRole('textbox', { name: /^單價 /u });
     await price.fill('12');
     let downloads = 0;
     page.on('download', () => downloads++);
@@ -1809,7 +1811,7 @@ test.describe('System order atomic manual review', () => {
     const fixture = await seedOrder(false);
     conversations.push(fixture.conversationId);
     const dialog = await openEditor(page, fixture.conversationId);
-    await expect(materialRow(dialog).getByRole('textbox').last()).toBeEditable();
+    await expect(materialRow(dialog).getByRole('textbox', { name: /^單價 /u })).toBeEditable();
     await page.keyboard.press('Escape');
     const table = await readTable(page, headers, fixture.conversationId, fixture.messageId);
     const operation = await prepare(page, headers, requestFor(table, [{ header: '單價', value: '12' }]));
@@ -1848,7 +1850,7 @@ test.describe('System order atomic manual review', () => {
       .getByRole('button', { name: 'Open Steel review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
     await expect(dialog).toBeVisible();
-    await materialRow(dialog).getByRole('textbox').last().fill('12');
+    await materialRow(dialog).getByRole('textbox', { name: /^單價 /u }).fill('12');
     const savedResponse = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith('/review/system_order/commit'));
     await dialog.getByRole('button', { name: 'Save', exact: true }).click();
     expect((await savedResponse).status()).toBe(200);
@@ -1892,7 +1894,7 @@ test.describe('System order atomic manual review', () => {
     await page.getByTestId('message-body').filter({ hasText: 'SYSTEM-SUFFIX' })
       .getByRole('button', { name: 'Open Steel review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
-    await expect(materialRow(dialog).getByRole('textbox').last()).toHaveValue('12');
+    await expect(materialRow(dialog).getByRole('textbox', { name: /^單價 /u })).toHaveValue('12');
     await page.keyboard.press('Escape');
     await page.reload();
     await expect(page.getByText('SYSTEM-SUFFIX', { exact: true })).toBeVisible();
@@ -1952,7 +1954,7 @@ test.describe('System order atomic manual review', () => {
     await page.getByTestId('message-body').filter({ hasText: 'SYSTEM-SUFFIX' })
       .getByRole('button', { name: 'Open Steel review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
-    await expect(materialRow(dialog).getByRole('textbox').last()).toHaveValue('12');
+    await expect(materialRow(dialog).getByRole('textbox', { name: /^單價 /u })).toHaveValue('12');
     await page.keyboard.press('Escape');
     await page.reload();
     await expect(page.getByText('SYSTEM-SUFFIX', { exact: true })).toBeVisible();
@@ -2013,7 +2015,7 @@ test.describe('System order atomic manual review', () => {
     await page.getByTestId('message-body').filter({ hasText: 'REVISION-SUFFIX' })
       .getByRole('button', { name: 'Open Steel review', exact: true }).click();
     await expect(materialRow(page.getByRole('dialog', { name: 'Steel source review' }))
-      .getByRole('textbox').nth(0)).toHaveValue('3');
+      .getByRole('textbox', { name: /^總數 /u })).toHaveValue('3');
     await page.keyboard.press('Escape');
     await page.reload();
     await expect(page.getByText('REVISION-SUFFIX', { exact: true })).toBeVisible();
@@ -2052,7 +2054,7 @@ test.describe('System order atomic manual review', () => {
     await page.getByTestId('message-body').filter({ hasText: 'REVISION-SUFFIX' })
       .getByRole('button', { name: 'Open Steel review', exact: true }).click();
     await expect(materialRow(page.getByRole('dialog', { name: 'Steel source review' }))
-      .getByRole('textbox').last()).toHaveValue('12');
+      .getByRole('textbox', { name: /^單價 /u })).toHaveValue('12');
     await page.keyboard.press('Escape');
     await page.reload();
     await expect(page.getByText('REVISION-SUFFIX', { exact: true })).toBeVisible();
@@ -2097,7 +2099,7 @@ test.describe('System order atomic manual review', () => {
     await page.getByTestId('message-body').filter({ hasText: 'REVISION-SUFFIX' })
       .getByRole('button', { name: 'Open Steel review', exact: true }).click();
     await expect(materialRow(page.getByRole('dialog', { name: 'Steel source review' }))
-      .getByRole('textbox').last()).toHaveValue('12');
+      .getByRole('textbox', { name: /^單價 /u })).toHaveValue('12');
     await page.keyboard.press('Escape');
     await page.reload();
     await expect(page.getByText('REVISION-SUFFIX', { exact: true })).toBeVisible();
@@ -2142,7 +2144,7 @@ test.describe('System order atomic manual review', () => {
     await page.getByTestId('message-body').filter({ hasText: 'REVISION-SUFFIX' })
       .getByRole('button', { name: 'Open Steel review', exact: true }).click();
     await expect(materialRow(page.getByRole('dialog', { name: 'Steel source review' }))
-      .getByRole('textbox').last()).toHaveValue('12');
+      .getByRole('textbox', { name: /^單價 /u })).toHaveValue('12');
     await page.keyboard.press('Escape');
     await page.reload();
     await expect(page.getByText('REVISION-SUFFIX', { exact: true })).toBeVisible();
@@ -2175,7 +2177,7 @@ test.describe('System order atomic manual review', () => {
     expect(await outcome).toEqual({ ok: true });
     expect(await readback(fixture.conversationId)).toEqual(saved);
     const dialog = await openEditor(page, fixture.conversationId);
-    await expect(materialRow(dialog).getByRole('textbox').last()).toHaveValue('12');
+    await expect(materialRow(dialog).getByRole('textbox', { name: /^單價 /u })).toHaveValue('12');
     await page.keyboard.press('Escape');
     await page.reload();
     expect(await readback(fixture.conversationId)).toEqual(saved);

@@ -1299,7 +1299,9 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
           !currentSystemOrder || currentSystemOrder.runId !== input.runId ||
           currentSystemOrder.messageId !== input.targetMessageId ||
           currentSystemOrder.sha256 !== input.currentSystemOrderSha256 ||
-          JSON.stringify(currentSystemOrder.sourceSnapshot ?? null) !== JSON.stringify(input.sourceSnapshot ?? null);
+          JSON.stringify(currentSystemOrder.sourceSnapshot ?? null) !== JSON.stringify(input.sourceSnapshot ?? null) ||
+          JSON.stringify(currentSystemOrder.calculationCheckpoint ?? null) !==
+            JSON.stringify(input.calculationCheckpoint ?? null);
         if (superseded) {
           result = { ok: false, code: 'superseded' };
           return;

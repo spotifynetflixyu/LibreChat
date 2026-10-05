@@ -100,6 +100,7 @@ function candidate(): SteelToolJsonObject {
     formulaCode: 'PL',
     thicknessMinMm: 6,
     thicknessMaxMm: 6,
+    exactPhysical: { density: '7.85' },
     tierPrices: { A: 11, B: 12, C: 13, D: 14, E: 15, F: 16 },
   };
 }
@@ -1631,11 +1632,26 @@ describe('quotation runner integration', () => {
     expect(onHistory.mock.calls[0]?.[0].activityEvents).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'quotation_status', status: 'completed', completedChunks: 1, totalChunks: 1 })]));
     expect(onHistory.mock.invocationCallOrder[0]).toBeLessThan(publishFinal.mock.invocationCallOrder[1]!);
     expect((await service.readState(scope))?.activeRun?.checkpointRefs.some((ref) => ref.operationId === 'published')).toBe(true);
+    const calculationRef = (await service.readState(scope))?.activeRun?.checkpointRefs.find(
+      (ref) => ref.operationId === 'calculation:basis',
+    );
+    expect(calculationRef?.kind).toBe('main');
+    const calculationPayload = calculationRef
+      ? await service.readArtifact({ scope, ref: { ...scope, ...calculationRef, runId: run.runId } })
+      : undefined;
+    expect(JSON.parse(calculationPayload ?? '{}')).toEqual(expect.objectContaining({
+      version: 1,
+      systemOrderHash: expect.any(String),
+      rows: expect.arrayContaining([
+        expect.objectContaining({ rowIndex: 0, candidate: expect.objectContaining({ ruleVersion: 'steel-weight-v1' }) }),
+      ]),
+    }));
     const publishedState = await service.readState(scope);
     expect(publishedState?.currentSystemOrder).toEqual(expect.objectContaining({
       runId: run.runId,
       messageId: 'target-1',
       customerQuoteMarkdown: expect.stringContaining('## customer_quote'),
+      calculationCheckpoint: expect.objectContaining({ version: 1, rows: expect.any(Array) }),
     }));
   });
 

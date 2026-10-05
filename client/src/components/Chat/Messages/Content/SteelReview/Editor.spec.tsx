@@ -48,8 +48,8 @@ describe('Steel review local editor gates', () => {
     expect(isSteelReviewCellEditable(table, '頁碼')).toBe(false);
   });
 
-  it('keeps system order and historical output cells read-only', () => {
-    expect(isSteelReviewCellEditable({ ...table, kind: 'system_order' }, '品名規格')).toBe(false);
+  it('allows all latest system-order business cells while keeping source fields read-only', () => {
+    expect(isSteelReviewCellEditable({ ...table, kind: 'system_order' }, '品名規格')).toBe(true);
     expect(isSteelReviewCellEditable({ ...table, kind: 'system_order' }, '單價')).toBe(true);
     expect(isSteelReviewCellEditable({ ...table, kind: 'system_order' }, '總數')).toBe(true);
     expect(isSteelReviewCellEditable({ ...table, kind: 'system_order' }, '來源')).toBe(false);
@@ -87,7 +87,7 @@ describe('Steel review local editor gates', () => {
     expect(screen.queryByRole('textbox', { name: '來源 row-1' })).toBeNull();
   });
 
-  it('renders system-order price and total inputs while keeping other cells read-only', () => {
+  it('renders system-order business inputs while keeping source cells read-only', () => {
     render(
       <SteelReviewEditor
         table={{ ...table, kind: 'system_order' }}
@@ -100,7 +100,7 @@ describe('Steel review local editor gates', () => {
 
     expect(screen.getByRole('textbox', { name: '單價 row-1' })).toHaveValue('10');
     expect(screen.getByRole('textbox', { name: '總數 row-1' })).toHaveValue('2');
-    expect(screen.getByLabelText('品名規格: Read-only cell')).toHaveTextContent('鋼板');
+    expect(screen.getByRole('textbox', { name: '品名規格 row-1' })).toHaveValue('鋼板');
   });
 
   it('offers a material-scoped processing insertion action', () => {
