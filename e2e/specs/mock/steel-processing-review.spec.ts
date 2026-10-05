@@ -95,14 +95,18 @@ test.describe('Processing measurement normal review workflow', () => {
     await expect(amount).toHaveValue('');
     await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
     await expect(amount).toHaveValue('2');
-    await saveUi(page, dialog);
+    await editBusinessValue(dialog, process.rowId, '單價', '11');
+    const firstSaved = await saveUi(page, dialog);
+    expect(named(firstSaved, 'REVIEW-PROCESS').calculation?.measurement).toMatchObject({ mode: 'perPiece', amount: '2', unit: '刀' });
     await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
     await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
     await expect(dialog.getByRole('textbox', { name: `總數 ${process.rowId}`, exact: true }).locator('xpath=ancestor::td').locator('del')).toHaveText('2');
     await editBusinessValue(dialog, parent.rowId, '數量', '5');
+    await editBusinessValue(dialog, process.rowId, '單價', '12');
     await expect(dialog.getByRole('textbox', { name: `總數 ${process.rowId}`, exact: true })).toHaveValue('10');
     const saved = await saveUi(page, dialog);
     expect(saved.changedRowIds.sort()).toEqual([parent.rowId, process.rowId].sort());
+    expect(named(saved, 'REVIEW-PROCESS').calculation?.measurement).toMatchObject({ mode: 'perPiece', amount: '2', unit: '刀' });
     const after = await readback(fixture);
     await page.keyboard.press('Escape');
     await page.reload();
@@ -111,6 +115,7 @@ test.describe('Processing measurement normal review workflow', () => {
     const reloaded = await openEditor(page, fixture);
     await expect(reloaded.getByRole('textbox', { name: `Measurement amount ${process.rowId}`, exact: true })).toHaveValue('2');
     await expect(reloaded.getByRole('textbox', { name: `總數 ${process.rowId}`, exact: true })).toHaveValue('10');
+    await expect(reloaded.getByRole('textbox', { name: `單價 ${process.rowId}`, exact: true })).toHaveValue('12');
     expect(await readback(fixture)).toEqual(after);
   });
 
