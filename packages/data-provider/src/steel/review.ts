@@ -188,8 +188,16 @@ export function inferSteelReviewSystemState(
     return undefined;
   }
   const category = values[categoryIndex]?.trim() ?? '';
+  let kind: SteelReviewSystemKind;
+  if (category.length === 0) {
+    kind = 'unassigned';
+  } else if (category.startsWith('加工/')) {
+    kind = 'processing';
+  } else {
+    kind = 'material';
+  }
   return {
-    kind: category.length === 0 ? 'unassigned' : category.startsWith('加工/') ? 'processing' : 'material',
+    kind,
     parentRowId: null,
     cascadeDeletedBy: null,
   };
