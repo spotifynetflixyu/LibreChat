@@ -1384,7 +1384,7 @@ test.describe('System order atomic manual review', () => {
     expect((await readTable(page, headers, fixture.conversationId, fixture.messageId)).rows).toEqual(saved.rows);
   });
 
-  test('processing rebind across preview pages is one draft and preserves a later binding input during Save', async ({ page }) => {
+  test('processing rebind is one draft and Save prevents changing its binding or closing', async ({ page }) => {
     const fixture = await seedGroup();
     conversations.push(fixture.conversationId);
     const bound = await bindGroup(page, headers, fixture);
@@ -1434,34 +1434,24 @@ test.describe('System order atomic manual review', () => {
       await received;
       await selectPreview('beta.pdf', '2');
       await expect(binding).toHaveText('T2');
-      await binding.click();
-      await page.getByRole('option', { name: 'T1', exact: true }).click();
+      await expect(binding).toBeDisabled();
+      await expect(dialog.getByRole('button', { name: 'Close', exact: true })).toBeDisabled();
+      await page.keyboard.press('Escape');
+      await expect(dialog).toBeVisible();
       expect(await readback(fixture.conversationId)).toEqual(before);
     } finally {
       release();
     }
     const firstResponse = await committed;
     expect(firstResponse.status(), await firstResponse.text()).toBe(200);
-    await selectPreview('alpha.pdf', '1');
-    await expect(binding).toHaveText('T1');
-    await expect(dialog.getByText('Unsaved changes: 1 rows', { exact: true })).toBeVisible();
+    await selectPreview('beta.pdf', '2');
+    await expect(binding).toHaveText('T2');
+    await expect(binding).toBeEnabled();
     await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
     await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
-    const savedFirst = await readTable(page, headers, fixture.conversationId, fixture.messageId);
-    expect(rowNamed(savedFirst, 'REVIEW-PROCESS-A')).toMatchObject({
-      system: { parentRowId: parentB.rowId }, source: sourceB,
-    });
-    const retryRequest = page.waitForRequest((request) => request.method() === 'POST' && request.url().endsWith('/review/system_order/prepare'));
-    const retried = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith('/review/system_order/commit'));
-    await dialog.getByRole('button', { name: 'Save', exact: true }).click();
-    expect((await retryRequest).postDataJSON().operations).toEqual([
-      { type: 'update', rowId: child.rowId, binding: { parentRowId: parentA.rowId } },
-    ]);
-    const retryResponse = await retried;
-    expect(retryResponse.status(), await retryResponse.text()).toBe(200);
     const saved = await readTable(page, headers, fixture.conversationId, fixture.messageId);
     expect(rowNamed(saved, 'REVIEW-PROCESS-A')).toMatchObject({
-      system: { parentRowId: parentA.rowId }, source: sourceA,
+      system: { parentRowId: parentB.rowId }, source: sourceB,
     });
     await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
     const after = await readback(fixture.conversationId);
