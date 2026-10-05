@@ -1141,7 +1141,11 @@ export function compileSteelReviewOperations(
     }
   }
   const activationEntriesByRow = new Map<string, number[]>();
+  const entriesByRow = new Map<string, number[]>();
   operationEntries.forEach((entry, index) => {
+    const rowEntries = entriesByRow.get(entry.rowId) ?? [];
+    rowEntries.push(index);
+    entriesByRow.set(entry.rowId, rowEntries);
     if (!entry.activation) return;
     const entries = activationEntriesByRow.get(entry.rowId) ?? [];
     entries.push(index);
@@ -1160,8 +1164,10 @@ export function compileSteelReviewOperations(
     const rowEntries = operationEntries
       .map((entry, index) => ({ entry, index }))
       .filter(({ entry }) => entry.rowId === next.rowId);
+    const parentEntries = rowEntries.some(({ entry }) => entry.operation.type === 'replace_processing')
+      ? entriesByRow : activationEntriesByRow;
     for (const parentId of parentIds) {
-      for (const activationIndex of activationEntriesByRow.get(parentId) ?? []) {
+      for (const activationIndex of parentEntries.get(parentId) ?? []) {
         for (const { index } of rowEntries) {
           if (activationIndex !== index) dependencies[index]!.add(activationIndex);
         }

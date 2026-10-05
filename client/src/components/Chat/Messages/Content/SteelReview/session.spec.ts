@@ -1548,4 +1548,33 @@ describe('Steel Review catalog candidate intent', () => {
     expect(applySteelReviewDrafts(currentTable.rows, cleared)[1].values['總數']?.effective).toBe('');
   });
 
+  it('applies the current parent category draft before validating its new processing candidate', () => {
+    const parent = { ...material, values: { ...material.values, 類別: { baseline: 'C型鋼', effective: 'C型鋼' } } };
+    const currentTable = { ...table, rows: [parent, processing] };
+    let draft = setSteelReviewDraftCell(createSteelReviewDraftState('owner'), parent, '類別', '鐵板');
+    const stagedParent = applySteelReviewDrafts(currentTable.rows, draft)[0];
+    const nextCandidate = { ...candidate, category: '加工/孔', subcategory: '鐵板',
+      calculation: { ...candidate.calculation, category: '加工/孔' } };
+    draft = setSteelReviewDraftCandidate(draft, currentTable, processing, nextCandidate, customer, stagedParent);
+    const operations = compileSteelReviewOperations(currentTable, draft, applySteelReviewDrafts(currentTable.rows, draft));
+    expect(operations.map((operation) => operation.type)).toEqual(['update', 'replace_processing']);
+    const applied = applySteelReviewOperations({ currentRows: normalizeSteelReviewLedgerRows(currentTable.rows),
+      expectedRows: normalizeSteelReviewLedgerRows(currentTable.rows), headers, operations,
+      processingCandidates: new Map([[processing.rowId, nextCandidate]]) });
+    expect(applied.ok).toBe(true);
+  });
+  it('rejects a newly selected processing candidate when a later parent draft makes it inapplicable', () => {
+    const parent = { ...material, values: { ...material.values, 類別: { baseline: '鐵板', effective: '鐵板' } } };
+    const currentTable = { ...table, rows: [parent, processing] };
+    const nextCandidate = { ...candidate, category: '加工/孔', subcategory: '鐵板',
+      calculation: { ...candidate.calculation, category: '加工/孔' } };
+    let draft = setSteelReviewDraftCandidate(createSteelReviewDraftState('owner'), currentTable, processing, nextCandidate, customer, parent);
+    draft = setSteelReviewDraftCell(draft, parent, '類別', 'C型鋼');
+    const operations = compileSteelReviewOperations(currentTable, draft, applySteelReviewDrafts(currentTable.rows, draft));
+    const applied = applySteelReviewOperations({ currentRows: normalizeSteelReviewLedgerRows(currentTable.rows),
+      expectedRows: normalizeSteelReviewLedgerRows(currentTable.rows), headers, operations,
+      processingCandidates: new Map([[processing.rowId, nextCandidate]]) });
+    expect(applied.ok).toBe(false);
+  });
+
 });
