@@ -1,4 +1,6 @@
 import mongoose from 'mongoose';
+import { join } from 'node:path';
+import { ObjectId } from 'mongodb';
 import { readFile } from 'node:fs/promises';
 import { expect, test } from '@playwright/test';
 import { createHash, randomUUID } from 'node:crypto';
@@ -32,9 +34,11 @@ const order = [
   '| T1 | REVIEW-MATERIAL-A | M1 | kg | 2 | 1 | 2 | 10 | 1 |  |  |  |  |  | 材料 |  |',
   '| T2 | REVIEW-MATERIAL-B | M1 | pc | 1 |  | 1 |  | 1 |  |  |  |  |  | 材料 |  |',
 ].join('\n');
+const groupedOrder = `${order}
+| P1 | REVIEW-PROCESS-A | M1 | pc | 1 |  | 3 | 5 | 1 |  |  |  |  |  | 加工/孔 |  |
+| P2 | REVIEW-PROCESS-B | M1 | pc | 1 |  | 4 | 2 | 1 |  |  |  |  |  | 加工/孔 |  |`;
 const ocr = '## ocr_result\n\n| 來源 | 零件編號 | 數量 |\n| --- | --- | --- |\n|  | SOURCE-A | 2 |';
 const oldQuote = '## customer_quote｜歷史保留\n\n| 項目 | 小計 |\n| --- | --- |\n| OLD-KEEP | 456 |';
-const fullMessage = `SYSTEM-PREFIX\n\n${order}\n\n${oldQuote}\n\nSYSTEM-SUFFIX`;
 
 interface OrderFixture {
   conversationId: string;
@@ -45,21 +49,30 @@ interface OrderFixture {
 }
 
 async function seedOrder(withHistoricalQuote = true, withOcrReview = false,
-  beforePublication?: (fixture: OrderFixture) => Promise<void>) {
+  beforePublication?: (fixture: OrderFixture) => Promise<void>,
+  options?: { orderMarkdown?: string; withSources?: boolean }) {
   const conversationId = randomUUID();
   const messageId = randomUUID();
   const otherMessageId = randomUUID();
   const ocrMessageId = randomUUID();
   const ocrGenerationId = randomUUID();
   const email = getE2EUser().email;
-  const messageText = withHistoricalQuote ? fullMessage : `SYSTEM-PREFIX\n\n${order}\n\nSYSTEM-SUFFIX`;
+  const orderMarkdown = options?.orderMarkdown ?? order;
+  const sourceFiles = options?.withSources ? [
+    { fileId: `group-alpha-${conversationId}`, filename: 'alpha.pdf' },
+    { fileId: `group-beta-${conversationId}`, filename: 'beta.pdf' },
+  ] : [];
+  const ocrMarkdown = sourceFiles.length > 0
+    ? '## ocr_result\n\n| 來源 | 零件編號 | 類別 | 數量 | 頁碼 |\n| --- | --- | --- | --- | --- |\n| F1 | SOURCE-A | 材料 | 2 | 1 |\n| F2 | SOURCE-B | 材料 | 1 | 2 |'
+    : ocr;
+  const messageText = `SYSTEM-PREFIX\n\n${orderMarkdown}${withHistoricalQuote ? `\n\n${oldQuote}` : ''}\n\nSYSTEM-SUFFIX`;
   await seedConversations(email, [{ conversationId, title: 'System order real Save proof', updatedAt: new Date() }]);
   await seedMessages(email, conversationId, [...(withHistoricalQuote ? [{ messageId, parentMessageId: withOcrReview ? ocrMessageId : '00000000-0000-0000-0000-000000000000',
     text: messageText, content: [{ type: 'text', text: messageText }], isCreatedByUser: false, sender: 'Assistant' }] : []),
-  { messageId: otherMessageId, parentMessageId: messageId, text: order, content: [{ type: 'text', text: order }],
+  { messageId: otherMessageId, parentMessageId: messageId, text: orderMarkdown, content: [{ type: 'text', text: orderMarkdown }],
     isCreatedByUser: false, sender: 'Assistant' },
   ...(withOcrReview ? [{ messageId: ocrMessageId, parentMessageId: '00000000-0000-0000-0000-000000000000',
-    text: ocr, content: [{ type: 'text', text: ocr }], isCreatedByUser: false, sender: 'Assistant' }] : [])]);
+    text: ocrMarkdown, content: [{ type: 'text', text: ocrMarkdown }], isCreatedByUser: false, sender: 'Assistant' }] : [])]);
   const userId = await withMongo(async (db) => {
     const owner = await db.collection('users').findOne({ email });
     if (!owner) throw new Error('Missing authenticated user');
@@ -72,12 +85,24 @@ async function seedOrder(withHistoricalQuote = true, withOcrReview = false,
   try {
     const scope = { userId, conversationId };
     const service = createSteelQuotationStateService(db);
+    const ocrService = createSteelOcrStateService(db);
+    for (const sourceFile of sourceFiles) {
+      await withMongo(async (database) => database.collection('files').insertOne({
+        user: new ObjectId(userId), conversationId, messageId: ocrMessageId,
+        file_id: sourceFile.fileId, filename: sourceFile.filename,
+        filepath: join(__dirname, 'fixtures', sourceFile.filename), type: 'application/pdf',
+        bytes: 1024, object: 'file', source: 'local', context: 'message_attachment',
+        createdAt: new Date(), updatedAt: new Date(),
+      }));
+      await ocrService.allocateDelegateSourceMapping({ conversationId,
+        fileId: sourceFile.fileId, sourceFilename: sourceFile.filename });
+    }
     const customerMarkdown = renderQuotationCustomerMarkdown({ tier: 'B' });
     if (withOcrReview) {
-      await createSteelOcrStateService(db).upsertCurrentOcrResult({ conversationId, generationId: ocrGenerationId,
-        attemptNumber: 1, markdown: ocr, messageId: ocrMessageId });
+      await ocrService.upsertCurrentOcrResult({ conversationId, generationId: ocrGenerationId,
+        attemptNumber: 1, markdown: ocrMarkdown, messageId: ocrMessageId });
     }
-    const current = await service.setOrder({ scope, fullMarkdown: ocr,
+    const current = await service.setOrder({ scope, fullMarkdown: ocrMarkdown,
       ...(withOcrReview ? { revision: ocrGenerationId, messageId: ocrMessageId } : {}) });
     const savedCustomer = await service.saveCustomer({ scope, customerMarkdown, customerIdentity: 'explicit-default:B',
       triggeringMessageId: 'quote-user', responseId: withOcrReview ? messageId : randomUUID(),
@@ -93,10 +118,15 @@ async function seedOrder(withHistoricalQuote = true, withOcrReview = false,
       } } : {}) });
     const run = await service.acceptSignal({ scope, index: ticket.index, token: ticket.token,
       orderHash: ticket.orderHash, customerMarkdown, customerIdentity: ticket.customerIdentity,
-      prompts: { child: 'bounded child', main: 'bounded main' }, chunks: [{ index: 1, sourceRowCount: 1 }], targetMessageId: messageId });
+      prompts: { child: 'bounded child', main: 'bounded main' }, chunks: [{ index: 1, sourceRowCount: sourceFiles.length || 1 }],
+      ...(sourceFiles.length > 0 ? { sourceSnapshot: {
+        orderHash: current.currentOrder!.sha256, generationId: ocrGenerationId,
+        resultMessageId: ocrMessageId, resultHash: current.currentOrder!.sha256,
+        mappings: await ocrService.readSourceMappings(conversationId),
+      } } : {}), targetMessageId: messageId });
     const lease = await service.acquireLease({ scope, runId: run.runId, leaseToken: randomUUID() });
     if (!lease) throw new Error('Missing fixture lease');
-    await service.checkpoint({ scope, runId: run.runId, leaseToken: lease.leaseToken, operationId: 'final', kind: 'final', payload: order });
+    await service.checkpoint({ scope, runId: run.runId, leaseToken: lease.leaseToken, operationId: 'final', kind: 'final', payload: orderMarkdown });
     const ref = (await service.readState(scope))?.activeRun?.checkpointRefs.find((entry) => entry.operationId === 'final');
     if (!ref) throw new Error('Missing normal final checkpoint');
     const completed = await service.completeRun({ scope, runId: run.runId, leaseToken: lease.leaseToken,
@@ -113,7 +143,7 @@ async function seedOrder(withHistoricalQuote = true, withOcrReview = false,
       }, { context: 'steel-review-e2e-stream-snapshot' });
       if (!saved) throw new Error('Missing normal streamed quotation message');
     }
-    await publishCompletedQuotation({ scope, run: completed, markdown: order, service,
+    await publishCompletedQuotation({ scope, run: completed, markdown: orderMarkdown, service,
       publishFinal: async (publication) => {
         await beforePublication?.(fixture);
         const text = withHistoricalQuote ? messageText
@@ -446,6 +476,32 @@ function materialRow(dialog: Locator) {
   return dialog.locator('tbody tr').filter({ hasText: 'REVIEW-MATERIAL-A' });
 }
 
+async function seedGroup() {
+  return seedOrder(true, true, undefined, { orderMarkdown: groupedOrder, withSources: true });
+}
+
+function rowNamed(table: SteelReviewTable, name: string) {
+  const row = table.rows.find((entry) => entry.values['品名規格'].effective === name);
+  if (!row) throw new Error(`Missing normal group fixture row: ${name}`);
+  return row;
+}
+
+function operationsFor(table: SteelReviewTable, operations: SteelReviewOperationPrepare['operations']): SteelReviewOperationPrepare {
+  return { conversationId: table.conversationId, messageId: table.messageId, kind: table.kind,
+    title: table.title, outputId: table.outputId, revision: table.revision, operations };
+}
+
+async function bindGroup(page: Page, headers: { Authorization: string }, fixture: OrderFixture) {
+  const table = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+  const parent = rowNamed(table, 'REVIEW-MATERIAL-A');
+  const prepared = await prepare(page, headers, operationsFor(table,
+    ['REVIEW-PROCESS-A', 'REVIEW-PROCESS-B'].map((name) => ({ type: 'update' as const,
+      rowId: rowNamed(table, name).rowId, binding: { parentRowId: parent.rowId } }))));
+  const response = await commit(page, headers, prepared);
+  expect(response.status(), await response.text()).toBe(200);
+  return readTable(page, headers, fixture.conversationId, fixture.messageId);
+}
+
 test.describe('System order atomic manual review', () => {
   const conversations: string[] = [];
   let headers: { Authorization: string };
@@ -457,11 +513,596 @@ test.describe('System order atomic manual review', () => {
     const ids = conversations.splice(0);
     await deleteMessagesByConversation(ids);
     await withMongo(async (db) => {
-      for (const collection of ['steel_review_outputs', 'steel_quotation_states', 'steel_quotation_artifacts', 'steel_conversation_ocr_state']) {
+      for (const collection of ['steel_review_outputs', 'steel_quotation_states', 'steel_quotation_artifacts', 'steel_conversation_ocr_state', 'files']) {
         await db.collection(collection).deleteMany({ conversationId: { $in: ids } });
       }
     });
     await deleteConversations(ids);
+  });
+
+  test('explicit processing binding advances review revision without rewriting canonical Markdown and conflicts with a different parent', async ({ page }) => {
+    const fixture = await seedGroup();
+    conversations.push(fixture.conversationId);
+    const initial = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+    const parentA = rowNamed(initial, 'REVIEW-MATERIAL-A');
+    const parentB = rowNamed(initial, 'REVIEW-MATERIAL-B');
+    const child = rowNamed(initial, 'REVIEW-PROCESS-A');
+    expect(parentA.system).toMatchObject({ kind: 'material', parentRowId: null });
+    expect(child.system).toMatchObject({ kind: 'processing', parentRowId: null });
+    const before = await readback(fixture.conversationId);
+    const first = await prepare(page, headers, operationsFor(initial, [{ type: 'update', rowId: child.rowId,
+      binding: { parentRowId: parentA.rowId } }]));
+    const second = await prepare(page, headers, operationsFor(initial, [{ type: 'update', rowId: child.rowId,
+      binding: { parentRowId: parentB.rowId } }]));
+    expect(await readback(fixture.conversationId)).toEqual(before);
+    const response = await commit(page, headers, first);
+    expect(response.status(), await response.text()).toBe(200);
+    const saved = await response.json() as SteelReviewSaveResponse;
+    expect(saved.revision).not.toBe(initial.revision);
+    expect(saved.changedRowIds).toEqual([child.rowId]);
+    expect(saved.caption.customerQuoteChangedRows).toBe(0);
+    const after = await readback(fixture.conversationId);
+    expect(after.quotation?.currentSystemOrder.markdown).toBe(before.quotation?.currentSystemOrder.markdown);
+    expect(after.quotation?.currentSystemOrder.sha256).toBe(before.quotation?.currentSystemOrder.sha256);
+    const conflict = await commit(page, headers, second);
+    expect(conflict.status()).toBe(409);
+    const body = await conflict.json();
+    const recovery = steelReviewRecoverySchema.parse(body.recovery);
+    expect(recovery.conflicts).toContainEqual({ kind: 'binding', rowId: child.rowId,
+      expected: null, current: parentA.rowId, requested: parentB.rowId });
+    expect(recovery.table.revision).toBe(saved.revision);
+    expect(await readback(fixture.conversationId)).toEqual(after);
+    expect(await (await commit(page, headers, first)).json()).toEqual(saved);
+    expect(await readback(fixture.conversationId)).toEqual(after);
+    const current = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+    expect(rowNamed(current, 'REVIEW-PROCESS-A').system?.parentRowId).toBe(parentA.rowId);
+    const noop = await prepare(page, headers, operationsFor(current, [{ type: 'update', rowId: child.rowId,
+      binding: { parentRowId: parentA.rowId } }]));
+    expect((await (await commit(page, headers, noop)).json() as SteelReviewSaveResponse).changedRows).toBe(0);
+    expect(await readback(fixture.conversationId)).toEqual(after);
+    await page.goto(`/c/${fixture.conversationId}`);
+    await page.reload();
+    expect(rowNamed(await readTable(page, headers, fixture.conversationId, fixture.messageId), 'REVIEW-PROCESS-A').system?.parentRowId)
+      .toBe(parentA.rowId);
+    expect(await readback(fixture.conversationId)).toEqual(after);
+  });
+
+  test('completed replay preserves a metadata-only human binding Save and its immutable receipt', async ({ page }) => {
+    const fixture = await seedGroup();
+    conversations.push(fixture.conversationId);
+    const initial = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+    const parent = rowNamed(initial, 'REVIEW-MATERIAL-A');
+    const child = rowNamed(initial, 'REVIEW-PROCESS-A');
+    const before = await readback(fixture.conversationId);
+    const prepared = await prepare(page, headers, operationsFor(initial, [{ type: 'update', rowId: child.rowId,
+      binding: { parentRowId: parent.rowId } }]));
+    expect((await commit(page, headers, prepared)).status()).toBe(200);
+    const saved = await readback(fixture.conversationId);
+    expect(saved.quotation?.currentSystemOrder.markdown).toBe(before.quotation?.currentSystemOrder.markdown);
+    expect(saved.reviews[0].revision).not.toBe(saved.quotation?.currentSystemOrder.sha256);
+    const completion = await replayCompleted(fixture);
+    expect(completion.writes).toBe(0);
+    expect(completion.acceptedSameRecord).toBe(true);
+    expect(completion.result.markdown).toBe(saved.quotation?.currentSystemOrder.markdown);
+    const afterCompletion = await readback(fixture.conversationId);
+    // Receipt replay may refresh the quotation broker's bookkeeping timestamp.
+    expect({ ...afterCompletion, quotation: { ...afterCompletion.quotation, updatedAt: saved.quotation?.updatedAt } }).toEqual(saved);
+    const runner = await replayPublishedRun(fixture);
+    expect(runner.result.status).toBe('completed');
+    expect(runner.result.markdown).toBe(saved.quotation?.currentSystemOrder.markdown);
+    expect([runner.modelCalls, runner.lookupCalls, runner.publishCalls]).toEqual([0, 0, 0]);
+    expect(await readback(fixture.conversationId)).toEqual(afterCompletion);
+    await page.goto(`/c/${fixture.conversationId}`);
+    await page.reload();
+    await expect(page.getByText('SYSTEM-SUFFIX', { exact: true })).toBeVisible();
+    const reloaded = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+    expect(rowNamed(reloaded, 'REVIEW-PROCESS-A').system?.parentRowId).toBe(parent.rowId);
+    expect(reloaded.revision).toBe(saved.reviews[0].revision);
+    expect(await readback(fixture.conversationId)).toEqual(afterCompletion);
+  });
+
+  test('group restore preserves prior individual deletion and exact stable row identities and receipts', async ({ page }) => {
+    const fixture = await seedGroup();
+    conversations.push(fixture.conversationId);
+    let table = await bindGroup(page, headers, fixture);
+    const ids = table.rows.map((row) => row.rowId);
+    const parent = rowNamed(table, 'REVIEW-MATERIAL-A');
+    const childA = rowNamed(table, 'REVIEW-PROCESS-A');
+    const childB = rowNamed(table, 'REVIEW-PROCESS-B');
+    const individual = await prepare(page, headers, operationsFor(table, [{ type: 'delete', rowId: childB.rowId }]));
+    expect((await commit(page, headers, individual)).status()).toBe(200);
+    table = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+    const beforeCascade = await readback(fixture.conversationId);
+    const deletion = await prepare(page, headers, operationsFor(table, [{ type: 'delete', rowId: parent.rowId }]));
+    expect(deletion.caption.changedRowIds.sort()).toEqual([parent.rowId, childA.rowId].sort());
+    expect(deletion.caption.customerQuoteChangedRows).toBe(2);
+    expect((await commit(page, headers, deletion)).status()).toBe(200);
+    table = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+    expect(rowNamed(table, 'REVIEW-PROCESS-A')).toMatchObject({ deleted: true,
+      system: { kind: 'processing', parentRowId: parent.rowId, cascadeDeletedBy: parent.rowId } });
+    expect(rowNamed(table, 'REVIEW-PROCESS-B')).toMatchObject({ deleted: true,
+      system: { kind: 'processing', parentRowId: parent.rowId, cascadeDeletedBy: null } });
+    const restoration = await prepare(page, headers, operationsFor(table, [{ type: 'restore', rowId: parent.rowId }]));
+    expect(restoration.caption.changedRows).toBe(2);
+    expect(restoration.caption.customerQuoteChangedRows).toBe(2);
+    expect((await commit(page, headers, restoration)).status()).toBe(200);
+    const restored = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+    expect(restored.rows.map((row) => row.rowId)).toEqual(ids);
+    expect(rowNamed(restored, 'REVIEW-MATERIAL-A').deleted).toBe(false);
+    expect(rowNamed(restored, 'REVIEW-PROCESS-A')).toMatchObject({ deleted: false,
+      system: { kind: 'processing', parentRowId: parent.rowId, cascadeDeletedBy: null } });
+    expect(rowNamed(restored, 'REVIEW-PROCESS-B').deleted).toBe(true);
+    const after = await readback(fixture.conversationId);
+    expect(after.quotation?.currentSystemOrder.markdown).toContain('REVIEW-PROCESS-A');
+    expect(after.quotation?.currentSystemOrder.markdown).not.toContain('REVIEW-PROCESS-B');
+    expect(after.quotation?.currentSystemOrder.customerQuoteMarkdown).toContain('| 總計 |  | 35 |');
+    expect(after.reviews[0].aiBaselineMarkdown).toBe(beforeCascade.reviews[0].aiBaselineMarkdown);
+    expect(after.reviews[0].receipts.slice(0, beforeCascade.reviews[0].receipts.length)).toEqual(beforeCascade.reviews[0].receipts);
+    await page.goto(`/c/${fixture.conversationId}`);
+    await page.reload();
+    expect(await readback(fixture.conversationId)).toEqual(after);
+    expect((await readTable(page, headers, fixture.conversationId, fixture.messageId)).rows).toEqual(restored.rows);
+  });
+
+  test('processing added from another preview inherits its material source and dirty download saves the latest clean rows', async ({ page }) => {
+    const fixture = await seedGroup();
+    conversations.push(fixture.conversationId);
+    const table = await bindGroup(page, headers, fixture);
+    const parent = rowNamed(table, 'REVIEW-MATERIAL-A');
+    const before = await readback(fixture.conversationId);
+    const dialog = await openEditor(page, fixture.conversationId);
+    await dialog.getByRole('combobox', { name: 'Source file', exact: true }).click();
+    await page.getByRole('option', { name: 'beta.pdf', exact: true }).click();
+    await dialog.getByRole('combobox', { name: 'Page', exact: true }).click();
+    await page.getByRole('option', { name: '2', exact: true }).click();
+    const parentRow = materialRow(dialog);
+    await parentRow.getByRole('button', { name: `Change source ${parent.rowId}`, exact: true }).click();
+    await parentRow.getByRole('combobox', { name: 'Source file', exact: true }).click();
+    await page.getByRole('option', { name: 'alpha.pdf', exact: true }).click();
+    await parentRow.getByRole('combobox', { name: 'Source page', exact: true }).click();
+    await page.getByRole('option', { name: '1', exact: true }).click();
+    await expect(dialog.getByText('Unsaved changes: 3 rows', { exact: true })).toBeVisible();
+    await expect(materialRow(dialog)).toHaveCount(0);
+    await dialog.getByRole('combobox', { name: 'Material', exact: true }).click();
+    await page.getByRole('option', { name: 'T1', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Add processing', exact: true }).click();
+    await expect(dialog.getByText('Unsaved changes: 4 rows', { exact: true })).toBeVisible();
+    expect(await readback(fixture.conversationId)).toEqual(before);
+    const prepareRequest = page.waitForRequest((request) => request.method() === 'POST' && request.url().endsWith('/review/system_order/prepare'));
+    const commitResponse = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith('/review/system_order/commit'));
+    const downloadReady = page.waitForEvent('download');
+    await dialog.getByRole('button', { name: /Download.*CSV/i }).click();
+    const submitted = (await prepareRequest).postDataJSON() as SteelReviewOperationPrepare;
+    const committed = await commitResponse;
+    expect(committed.status(), await committed.text()).toBe(200);
+    const savedResponse = await committed.json() as SteelReviewSaveResponse;
+    expect(savedResponse.changedRows).toBe(4);
+    expect(savedResponse.caption.customerQuoteChangedRows).toBe(1);
+    expect(submitted.operations).toHaveLength(2);
+    expect(submitted.operations.find((operation) => operation.type === 'update')).toEqual({ type: 'update', rowId: parent.rowId,
+      source: { fileId: `group-alpha-${fixture.conversationId}`, pageNumber: 1 } });
+    const addition = submitted.operations.find((operation) => operation.type === 'add');
+    expect(addition).toMatchObject({ type: 'add', system: { kind: 'processing', parentRowId: parent.rowId } });
+    expect(addition).not.toHaveProperty('source');
+    const download = await downloadReady;
+    const path = await download.path();
+    if (!path) throw new Error('Missing clean group download');
+    const csv = await readFile(path, 'utf8');
+    expect(csv).toContain('REVIEW-MATERIAL-A');
+    expect(csv).toContain('REVIEW-PROCESS-A');
+    expect(csv).not.toMatch(/<del>|~~|Updated|Previous version/);
+    expect(csv.split(/\r?\n/u).filter((line) => line.length > 0)).toHaveLength(6);
+    const saved = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+    expect(saved.rows).toHaveLength(5);
+    const processing = saved.rows.filter((row) => row.system?.kind === 'processing');
+    expect(processing).toHaveLength(3);
+    for (const row of [rowNamed(saved, 'REVIEW-MATERIAL-A'), ...processing]) {
+      expect(row.source).toMatchObject({ fileId: `group-alpha-${fixture.conversationId}`, pageNumber: 1, filename: 'alpha.pdf' });
+    }
+    for (const row of processing) expect(row.system?.parentRowId).toBe(parent.rowId);
+    const after = await readback(fixture.conversationId);
+    expect(after.quotation?.currentSystemOrder.customerQuoteMarkdown).toContain('| 總計 |  | 43 |');
+    expect(after.ocr).toEqual(before.ocr);
+    expect(after.messages.find((message) => message.messageId === fixture.otherMessageId))
+      .toEqual(before.messages.find((message) => message.messageId === fixture.otherMessageId));
+    await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+    await dialog.getByRole('combobox', { name: 'Source file', exact: true }).click();
+    await page.getByRole('option', { name: 'alpha.pdf', exact: true }).click();
+    await dialog.getByRole('combobox', { name: 'Page', exact: true }).click();
+    await page.getByRole('option', { name: '1', exact: true }).click();
+    for (const row of processing) {
+      await expect(dialog.getByRole('combobox', { name: `Bind processing ${row.rowId}`, exact: true })).toBeVisible();
+    }
+    expect(await readback(fixture.conversationId)).toEqual(after);
+    await page.keyboard.press('Escape');
+    await page.reload();
+    expect(await readback(fixture.conversationId)).toEqual(after);
+    expect((await readTable(page, headers, fixture.conversationId, fixture.messageId)).rows).toEqual(saved.rows);
+  });
+
+  test('a material source conflict marks preview files and pages, retains the group draft and retries from the latest revision', async ({ page }) => {
+    const fixture = await seedGroup();
+    conversations.push(fixture.conversationId);
+    const table = await bindGroup(page, headers, fixture);
+    const parent = rowNamed(table, 'REVIEW-MATERIAL-A');
+    const dialog = await openEditor(page, fixture.conversationId);
+    await dialog.getByRole('combobox', { name: 'Source file', exact: true }).click();
+    await page.getByRole('option', { name: 'beta.pdf', exact: true }).click();
+    await dialog.getByRole('combobox', { name: 'Page', exact: true }).click();
+    await page.getByRole('option', { name: '2', exact: true }).click();
+    const parentRow = materialRow(dialog);
+    await parentRow.getByRole('button', { name: `Change source ${parent.rowId}`, exact: true }).click();
+    await parentRow.getByRole('combobox', { name: 'Source file', exact: true }).click();
+    await page.getByRole('option', { name: 'alpha.pdf', exact: true }).click();
+    await parentRow.getByRole('combobox', { name: 'Source page', exact: true }).click();
+    await page.getByRole('option', { name: '1', exact: true }).click();
+    const remote = await prepare(page, headers, operationsFor(table, [{ type: 'update', rowId: parent.rowId,
+      source: { fileId: `group-beta-${fixture.conversationId}`, pageNumber: 2 } }]));
+    const remoteResponse = await commit(page, headers, remote);
+    expect(remoteResponse.status(), await remoteResponse.text()).toBe(200);
+    const latest = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+    const afterRemote = await readback(fixture.conversationId);
+    const conflictResponse = page.waitForResponse((response) => response.status() === 409 &&
+      response.request().method() === 'POST' && response.url().includes('/review/system_order/'));
+    await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+    const conflict = await conflictResponse;
+    const recovery = steelReviewRecoverySchema.parse((await conflict.json()).recovery);
+    expect(recovery.table.revision).toBe(latest.revision);
+    expect(recovery.conflicts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'source', rowId: parent.rowId }),
+    ]));
+    await expect(dialog.getByRole('region', { name: 'Conflicts need review before saving again.', exact: true })).toBeVisible();
+    await expect(dialog.getByText('Unsaved changes: 3 rows', { exact: true })).toBeVisible();
+    expect(await readback(fixture.conversationId)).toEqual(afterRemote);
+    await dialog.getByRole('combobox', { name: 'Source file', exact: true }).click();
+    for (const filename of ['alpha.pdf', 'beta.pdf']) {
+      await expect(page.getByRole('option').filter({ hasText: filename })
+        .getByRole('img', { name: 'Conflicts on this file', exact: true })).toBeVisible();
+    }
+    await page.getByRole('option').filter({ hasText: 'alpha.pdf' }).click();
+    await dialog.getByRole('combobox', { name: 'Page', exact: true }).click();
+    await expect(page.getByRole('option').filter({ hasText: /^1/u })
+      .getByRole('img', { name: 'Conflicts on this page', exact: true })).toBeVisible();
+    await page.getByRole('option').filter({ hasText: /^1/u }).click();
+    const retried = page.waitForRequest((request) => request.method() === 'POST' && request.url().endsWith('/review/system_order/prepare'));
+    const committed = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith('/review/system_order/commit'));
+    await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+    const request = (await retried).postDataJSON() as SteelReviewOperationPrepare;
+    expect(request.revision).toBe(latest.revision);
+    expect(request.operations).toEqual([{ type: 'update', rowId: parent.rowId,
+      source: { fileId: `group-alpha-${fixture.conversationId}`, pageNumber: 1 } }]);
+    const response = await committed;
+    expect(response.status(), await response.text()).toBe(200);
+    expect((await response.json() as SteelReviewSaveResponse).changedRows).toBe(3);
+    const saved = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+    for (const row of saved.rows.filter((entry) => entry.rowId === parent.rowId || entry.system?.parentRowId === parent.rowId)) {
+      expect(row.source).toMatchObject({ fileId: `group-alpha-${fixture.conversationId}`, pageNumber: 1 });
+    }
+    await expect(dialog.getByRole('region', { name: 'Conflicts need review before saving again.', exact: true })).toHaveCount(0);
+    await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+    const after = await readback(fixture.conversationId);
+    expect(after.ocr).toEqual(afterRemote.ocr);
+    await page.keyboard.press('Escape');
+    await page.reload();
+    expect(await readback(fixture.conversationId)).toEqual(after);
+    expect((await readTable(page, headers, fixture.conversationId, fixture.messageId)).rows).toEqual(saved.rows);
+  });
+
+  test('an imported unassigned row is classified explicitly in a reversible draft and cannot be classified again after Save', async ({ page }) => {
+    const fixture = await seedOrder(true, true, undefined, {
+      orderMarkdown: groupedOrder.replace('| 材料 |  |', '|  |  |'), withSources: true,
+    });
+    conversations.push(fixture.conversationId);
+    const table = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+    const row = rowNamed(table, 'REVIEW-MATERIAL-A');
+    expect(row.system?.kind).toBe('unassigned');
+    const before = await readback(fixture.conversationId);
+    const dialog = await openEditor(page, fixture.conversationId);
+    const classify = dialog.getByRole('combobox', { name: `Classify ${row.rowId}`, exact: true });
+    await classify.click();
+    await page.getByRole('option', { name: 'Material', exact: true }).click();
+    await expect(dialog.getByRole('button', { name: `Delete group ${row.rowId}`, exact: true })).toBeVisible();
+    await expect(classify).toHaveCount(0);
+    await expect(dialog.getByText('Unsaved changes: 1 rows', { exact: true })).toBeVisible();
+    await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect(classify).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+    await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
+    expect(await readback(fixture.conversationId)).toEqual(before);
+    const submitted = page.waitForRequest((request) => request.method() === 'POST' && request.url().endsWith('/review/system_order/prepare'));
+    const committed = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith('/review/system_order/commit'));
+    await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+    const response = await committed;
+    expect(response.status(), await response.text()).toBe(200);
+    expect((await submitted).postDataJSON().operations).toEqual([
+      { type: 'classify', rowId: row.rowId, system: { kind: 'material', parentRowId: null } },
+    ]);
+    const saved = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+    expect(rowNamed(saved, 'REVIEW-MATERIAL-A').system).toMatchObject({ kind: 'material', parentRowId: null });
+    expect(saved.rows.filter((entry) => entry.system?.kind === 'processing').every((entry) => entry.system?.parentRowId === null)).toBe(true);
+    const after = await readback(fixture.conversationId);
+    expect(after.reviews[0].aiBaselineMarkdown).toBe(before.quotation?.currentSystemOrder.markdown);
+    expect(after.ocr).toEqual(before.ocr);
+    await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+    await page.keyboard.press('Escape');
+    await page.reload();
+    const reopened = await openEditor(page, fixture.conversationId);
+    await expect(reopened.getByRole('combobox', { name: `Classify ${row.rowId}`, exact: true })).toHaveCount(0);
+    await expect(reopened.getByRole('button', { name: `Delete group ${row.rowId}`, exact: true })).toBeVisible();
+    expect(await readback(fixture.conversationId)).toEqual(after);
+    expect((await readTable(page, headers, fixture.conversationId, fixture.messageId)).rows).toEqual(saved.rows);
+  });
+
+  test('a material added on a preview page and its under-row processing save in one ordered request', async ({ page }) => {
+    const fixture = await seedGroup();
+    conversations.push(fixture.conversationId);
+    const before = await readback(fixture.conversationId);
+    const initial = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+    const dialog = await openEditor(page, fixture.conversationId);
+    await dialog.getByRole('combobox', { name: 'Source file', exact: true }).click();
+    await page.getByRole('option', { name: 'beta.pdf', exact: true }).click();
+    await dialog.getByRole('combobox', { name: 'Page', exact: true }).click();
+    await page.getByRole('option', { name: '2', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Add material', exact: true }).click();
+    const existingIds = new Set(initial.rows.map((row) => row.rowId));
+    let materialId: string | undefined;
+    for (const action of await dialog.getByRole('button', { name: /^Add processing under /u }).all()) {
+      const label = await action.getAttribute('aria-label');
+      const rowId = label?.replace(/^Add processing under /u, '');
+      if (rowId && !existingIds.has(rowId)) materialId = rowId;
+    }
+    if (!materialId) throw new Error('Missing new material action identity');
+    await dialog.getByRole('button', { name: `Add processing under ${materialId}`, exact: true }).click();
+    await expect(dialog.getByText('Unsaved changes: 2 rows', { exact: true })).toBeVisible();
+    expect(await readback(fixture.conversationId)).toEqual(before);
+    const submitted = page.waitForRequest((request) => request.method() === 'POST' && request.url().endsWith('/review/system_order/prepare'));
+    const committed = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith('/review/system_order/commit'));
+    await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+    const request = (await submitted).postDataJSON() as SteelReviewOperationPrepare;
+    const response = await committed;
+    expect(response.status(), await response.text()).toBe(200);
+    const result = await response.json() as SteelReviewSaveResponse;
+    expect(result.changedRows).toBe(2);
+    expect(request.operations).toHaveLength(2);
+    expect(request.operations[0]).toMatchObject({ type: 'add', rowId: materialId,
+      system: { kind: 'material', parentRowId: null },
+      source: { fileId: `group-beta-${fixture.conversationId}`, pageNumber: 2 },
+    });
+    expect(request.operations[1]).toMatchObject({ type: 'add', system: { kind: 'processing', parentRowId: materialId } });
+    expect(request.operations[1]).not.toHaveProperty('source');
+    const saved = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+    const added = saved.rows.filter((row) => !initial.rows.some((old) => old.rowId === row.rowId));
+    expect(added).toHaveLength(2);
+    for (const row of added) expect(row.source).toMatchObject({ fileId: `group-beta-${fixture.conversationId}`, pageNumber: 2 });
+    expect(added.find((row) => row.system?.kind === 'processing')?.system?.parentRowId).toBe(materialId);
+    await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
+    const after = await readback(fixture.conversationId);
+    expect(after.ocr).toEqual(before.ocr);
+    expect(after.reviews[0].aiBaselineMarkdown).toBe(before.quotation?.currentSystemOrder.markdown);
+    await page.keyboard.press('Escape');
+    await page.reload();
+    expect(await readback(fixture.conversationId)).toEqual(after);
+    expect((await readTable(page, headers, fixture.conversationId, fixture.messageId)).rows).toEqual(saved.rows);
+  });
+
+  test('processing rebind across preview pages is one draft and preserves a later binding input during Save', async ({ page }) => {
+    const fixture = await seedGroup();
+    conversations.push(fixture.conversationId);
+    const bound = await bindGroup(page, headers, fixture);
+    const parentA = rowNamed(bound, 'REVIEW-MATERIAL-A');
+    const parentB = rowNamed(bound, 'REVIEW-MATERIAL-B');
+    const child = rowNamed(bound, 'REVIEW-PROCESS-A');
+    const sourceA = { fileId: `group-alpha-${fixture.conversationId}`, pageNumber: 1 };
+    const sourceB = { fileId: `group-beta-${fixture.conversationId}`, pageNumber: 2 };
+    const assigned = await prepare(page, headers, operationsFor(bound, [
+      { type: 'update', rowId: parentA.rowId, source: sourceA },
+      { type: 'update', rowId: parentB.rowId, source: sourceB },
+    ]));
+    expect((await commit(page, headers, assigned)).status()).toBe(200);
+    const before = await readback(fixture.conversationId);
+    const dialog = await openEditor(page, fixture.conversationId);
+    const selectPreview = async (filename: string, pageNumber: string) => {
+      await dialog.getByRole('combobox', { name: 'Source file', exact: true }).click();
+      await page.getByRole('option', { name: filename, exact: true }).click();
+      await dialog.getByRole('combobox', { name: 'Page', exact: true }).click();
+      await page.getByRole('option', { name: pageNumber, exact: true }).click();
+    };
+    await selectPreview('alpha.pdf', '1');
+    const binding = dialog.getByRole('combobox', { name: `Bind processing ${child.rowId}`, exact: true });
+    await expect(binding).toHaveText('T1');
+    await binding.click();
+    await page.getByRole('option', { name: 'T2', exact: true }).click();
+    await expect(binding).toHaveCount(0);
+    await expect(dialog.getByText('Unsaved changes: 1 rows', { exact: true })).toBeVisible();
+    await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
+    await expect(binding).toHaveText('T1');
+    await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+    await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
+    expect(await readback(fixture.conversationId)).toEqual(before);
+    let release!: () => void;
+    let entered!: () => void;
+    const blocked = new Promise<void>((resolve) => { release = resolve; });
+    const received = new Promise<void>((resolve) => { entered = resolve; });
+    const routePattern = `**${reviewUrl(fixture.conversationId)}/commit`;
+    await page.route(routePattern, async (route) => {
+      entered();
+      await blocked;
+      await route.continue();
+    }, { times: 1 });
+    const committed = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith('/review/system_order/commit'));
+    try {
+      await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+      await received;
+      await selectPreview('beta.pdf', '2');
+      await expect(binding).toHaveText('T2');
+      await binding.click();
+      await page.getByRole('option', { name: 'T1', exact: true }).click();
+      expect(await readback(fixture.conversationId)).toEqual(before);
+    } finally {
+      release();
+    }
+    const firstResponse = await committed;
+    expect(firstResponse.status(), await firstResponse.text()).toBe(200);
+    await selectPreview('alpha.pdf', '1');
+    await expect(binding).toHaveText('T1');
+    await expect(dialog.getByText('Unsaved changes: 1 rows', { exact: true })).toBeVisible();
+    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
+    await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
+    const savedFirst = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+    expect(rowNamed(savedFirst, 'REVIEW-PROCESS-A')).toMatchObject({
+      system: { parentRowId: parentB.rowId }, source: sourceB,
+    });
+    const retryRequest = page.waitForRequest((request) => request.method() === 'POST' && request.url().endsWith('/review/system_order/prepare'));
+    const retried = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith('/review/system_order/commit'));
+    await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+    expect((await retryRequest).postDataJSON().operations).toEqual([
+      { type: 'update', rowId: child.rowId, binding: { parentRowId: parentA.rowId } },
+    ]);
+    const retryResponse = await retried;
+    expect(retryResponse.status(), await retryResponse.text()).toBe(200);
+    const saved = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+    expect(rowNamed(saved, 'REVIEW-PROCESS-A')).toMatchObject({
+      system: { parentRowId: parentA.rowId }, source: sourceA,
+    });
+    await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+    const after = await readback(fixture.conversationId);
+    expect(after.quotation?.currentSystemOrder.customerQuoteMarkdown).toBe(before.quotation?.currentSystemOrder.customerQuoteMarkdown);
+    expect(after.ocr).toEqual(before.ocr);
+    await page.keyboard.press('Escape');
+    await page.reload();
+    expect(await readback(fixture.conversationId)).toEqual(after);
+    expect((await readTable(page, headers, fixture.conversationId, fixture.messageId)).rows).toEqual(saved.rows);
+  });
+
+  test('material group delete and restore are single UI drafts with one undo and exact Save captions', async ({ page }) => {
+    const fixture = await seedGroup();
+    conversations.push(fixture.conversationId);
+    const table = await bindGroup(page, headers, fixture);
+    const parent = rowNamed(table, 'REVIEW-MATERIAL-A');
+    const group = [parent, rowNamed(table, 'REVIEW-PROCESS-A'), rowNamed(table, 'REVIEW-PROCESS-B')];
+    const before = await readback(fixture.conversationId);
+    const dialog = await openEditor(page, fixture.conversationId);
+    const undo = dialog.getByRole('button', { name: 'Undo', exact: true });
+    const redo = dialog.getByRole('button', { name: 'Redo', exact: true });
+    await dialog.getByRole('button', { name: `Delete group ${parent.rowId}`, exact: true }).click();
+    await expect(dialog.getByText('Unsaved changes: 3 rows', { exact: true })).toBeVisible();
+    for (const row of group) {
+      await expect(dialog.getByRole('button', { name: `Restore row ${row.rowId}`, exact: true })).toBeVisible();
+    }
+    expect(await readback(fixture.conversationId)).toEqual(before);
+    await undo.click();
+    await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+    await expect(undo).toBeDisabled();
+    await expect(redo).toBeEnabled();
+    await expect(dialog.getByRole('button', { name: `Delete group ${parent.rowId}`, exact: true })).toBeVisible();
+    for (const row of group.slice(1)) {
+      await expect(dialog.getByRole('combobox', { name: `Bind processing ${row.rowId}`, exact: true })).toHaveText('T1');
+    }
+    expect(await readback(fixture.conversationId)).toEqual(before);
+    await redo.click();
+    await expect(dialog.getByText('Unsaved changes: 3 rows', { exact: true })).toBeVisible();
+    const prepareRequest = page.waitForRequest((request) => request.method() === 'POST' && request.url().endsWith('/review/system_order/prepare'));
+    const committed = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith('/review/system_order/commit'));
+    await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+    const submitted = (await prepareRequest).postDataJSON() as SteelReviewOperationPrepare;
+    const savedResponse = await committed;
+    expect(savedResponse.status(), await savedResponse.text()).toBe(200);
+    const saved = await savedResponse.json() as SteelReviewSaveResponse;
+    expect(submitted.operations).toEqual([{ type: 'delete', rowId: parent.rowId }]);
+    expect(saved.changedRows).toBe(3);
+    expect(saved.caption.customerQuoteChangedRows).toBe(3);
+    await expect(undo).toBeDisabled();
+    await expect(redo).toBeDisabled();
+    const deleted = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+    expect(deleted.rows.map((row) => row.rowId)).toEqual(table.rows.map((row) => row.rowId));
+    expect(deleted.rows.filter((row) => row.deleted).map((row) => row.rowId).sort()).toEqual(group.map((row) => row.rowId).sort());
+    const afterDelete = await readback(fixture.conversationId);
+    expect(afterDelete.quotation?.currentSystemOrder.customerQuoteMarkdown).toContain('| 總計 |  |  |');
+    expect(afterDelete.quotation?.currentSystemOrder.markdown).not.toContain('REVIEW-MATERIAL-A');
+    expect(afterDelete.quotation?.currentSystemOrder.markdown).not.toContain('REVIEW-PROCESS-');
+    await page.keyboard.press('Escape');
+    await page.reload();
+    expect(await readback(fixture.conversationId)).toEqual(afterDelete);
+    const reopened = await openEditor(page, fixture.conversationId);
+    await reopened.getByRole('button', { name: `Restore row ${parent.rowId}`, exact: true }).click();
+    await expect(reopened.getByText('Unsaved changes: 3 rows', { exact: true })).toBeVisible();
+    expect(await readback(fixture.conversationId)).toEqual(afterDelete);
+    const restoration = page.waitForResponse((response) => response.request().method() === 'POST' && response.url().endsWith('/review/system_order/commit'));
+    await reopened.getByRole('button', { name: 'Save', exact: true }).click();
+    const restoredResponse = await restoration;
+    expect(restoredResponse.status(), await restoredResponse.text()).toBe(200);
+    const restoredSave = await restoredResponse.json() as SteelReviewSaveResponse;
+    expect(restoredSave.changedRows).toBe(3);
+    expect(restoredSave.caption.customerQuoteChangedRows).toBe(3);
+    const restored = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+    expect(restored.rows).toEqual(table.rows);
+    const afterRestore = await readback(fixture.conversationId);
+    expect(afterRestore.quotation?.currentSystemOrder.customerQuoteMarkdown).toContain('| 總計 |  | 43 |');
+    expect(afterRestore.reviews[0].aiBaselineMarkdown).toBe(before.reviews[0].aiBaselineMarkdown);
+    expect(afterRestore.reviews[0].receipts.slice(0, afterDelete.reviews[0].receipts.length)).toEqual(afterDelete.reviews[0].receipts);
+    await page.keyboard.press('Escape');
+    await page.reload();
+    expect(await readback(fixture.conversationId)).toEqual(afterRestore);
+  });
+
+  test('a material cascade prepared before a new explicitly bound child refuses an unexamined destructive deletion', async ({ page }) => {
+    const fixture = await seedGroup();
+    conversations.push(fixture.conversationId);
+    const table = await bindGroup(page, headers, fixture);
+    const parent = rowNamed(table, 'REVIEW-MATERIAL-A');
+    const deletion = await prepare(page, headers, operationsFor(table, [{ type: 'delete', rowId: parent.rowId }]));
+    const childId = randomUUID();
+    const addition = await prepare(page, headers, operationsFor(table, [{ type: 'add', rowId: childId,
+      position: { kind: 'after', rowId: parent.rowId },
+      system: { kind: 'processing', parentRowId: parent.rowId },
+      changes: [{ header: '總數', value: '2' }, { header: '單價', value: '3' }] }]));
+    expect((await commit(page, headers, addition)).status()).toBe(200);
+    const before = await readback(fixture.conversationId);
+    const conflict = await commit(page, headers, deletion);
+    expect(conflict.status()).toBe(409);
+    const body = await conflict.json();
+    const recovery = steelReviewRecoverySchema.parse(body.recovery);
+    expect(recovery.table.rows.find((row) => row.rowId === childId)).toMatchObject({ deleted: false,
+      system: { kind: 'processing', parentRowId: parent.rowId } });
+    expect(recovery.conflicts.length).toBeGreaterThan(0);
+    expect(await readback(fixture.conversationId)).toEqual(before);
+    expect((await readTable(page, headers, fixture.conversationId, fixture.messageId)).rows.filter((row) => !row.deleted))
+      .toHaveLength(5);
+  });
+
+  test('system-order material addition remains a draft until Save and keeps its stable identity on reload', async ({ page }) => {
+    const fixture = await seedOrder();
+    conversations.push(fixture.conversationId);
+    const initial = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+    const before = await readback(fixture.conversationId);
+    const dialog = await openEditor(page, fixture.conversationId);
+    await dialog.getByRole('button', { name: 'Add material', exact: true }).click();
+    await expect(dialog.getByText('Unsaved changes: 1 rows', { exact: true })).toBeVisible();
+    expect(await readback(fixture.conversationId)).toEqual(before);
+    const response = page.waitForResponse((entry) => entry.request().method() === 'POST' && entry.url().endsWith('/review/system_order/commit'));
+    await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+    expect((await response).status()).toBe(200);
+    await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+    const saved = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+    expect(saved.rows).toHaveLength(3);
+    const added = saved.rows.find((row) => !initial.rows.some((original) => original.rowId === row.rowId));
+    expect(added).toMatchObject({ origin: 'manual', deleted: false });
+    expect(added?.rowId).toBeTruthy();
+    expect(added?.values['型號'].baseline).toBeNull();
+    const after = await readback(fixture.conversationId);
+    expect(after.quotation?.currentSystemOrder.customerQuoteMarkdown).toContain('| 總計 |  | 20 |');
+    expect(after.quotation?.currentOrder).toEqual(before.quotation?.currentOrder);
+    expect(after.ocr).toEqual(before.ocr);
+    expect(after.messages.find((message) => message.messageId === fixture.otherMessageId))
+      .toEqual(before.messages.find((message) => message.messageId === fixture.otherMessageId));
+    expect(after.reviews[0].aiBaselineMarkdown).toBe(initial.aiBaselineMarkdown ?? order);
+    await page.keyboard.press('Escape');
+    await page.reload();
+    expect(await readback(fixture.conversationId)).toEqual(after);
+    const reloaded = await readTable(page, headers, fixture.conversationId, fixture.messageId);
+    expect(reloaded.rows.map((row) => row.rowId)).toEqual(saved.rows.map((row) => row.rowId));
+    expect(reloaded.rows.find((row) => row.rowId === added?.rowId)).toEqual(added);
   });
 
   test('system-order price editing is a local draft until atomic Save and reload retains clean values', async ({ page }) => {
@@ -564,7 +1205,7 @@ test.describe('System order atomic manual review', () => {
     expect(conflictBody).toMatchObject({ code: 'REVIEW_CONFLICT' });
     const recovery = steelReviewRecoverySchema.parse(conflictBody.recovery);
     expect(recovery.table.effectiveMarkdown).toBe(before.quotation?.currentSystemOrder.markdown);
-    expect(recovery.table.revision).toBe(before.quotation?.currentSystemOrder.sha256);
+    expect(recovery.table.revision).toBe(before.reviews[0].revision);
     expect(recovery.conflicts).toEqual(expect.arrayContaining([
       expect.objectContaining({ kind: 'field', header: '總數', current: '7', requested: '8' }),
       expect.objectContaining({ kind: 'field', header: '單價', current: '11', requested: '12' }),
