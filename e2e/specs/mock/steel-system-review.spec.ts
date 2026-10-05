@@ -1195,6 +1195,10 @@ test.describe('System order atomic manual review', () => {
     const saved = await readTable(page, headers, fixture.conversationId, fixture.messageId);
     const after = await readback(fixture.conversationId);
     expect(after.reviews[0]?.rows).toEqual(saved.rows);
+    expect(after.quotation?.currentSystemOrder.customerQuoteMarkdown).toContain('| 總計 |  | 15 |');
+    expect(after.quotation?.currentSystemOrder.markdown).not.toContain('REVIEW-MATERIAL-A');
+    expect(after.quotation?.currentSystemOrder.markdown).not.toContain('REVIEW-PROCESS-B');
+    expect(after.quotation?.currentSystemOrder.markdown).toContain('REVIEW-PROCESS-A');
     expect(rowNamed(saved, 'REVIEW-MATERIAL-A').deleted).toBe(true);
     expect(rowNamed(saved, 'REVIEW-PROCESS-B')).toMatchObject({ deleted: true,
       system: { parentRowId: parentId, cascadeDeletedBy: parentId } });
