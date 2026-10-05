@@ -837,6 +837,7 @@ function applyRowCalculation(
   }
   row.calculation = {
     ...(nextCandidate ? { candidate: nextCandidate } : {}),
+    ...(row.calculation?.measurement ? { measurement: row.calculation.measurement } : {}),
     ...(Object.keys(fields).length > 0 ? { fields } : {}),
   };
   const expectedCalculation = cloneReviewCalculation(expectedRow.calculation) ?? {};
@@ -864,6 +865,7 @@ function applyRowCalculation(
   });
   expectedRow.calculation = {
     ...(expectedCalculation.candidate ? { candidate: expectedCalculation.candidate } : {}),
+    ...(expectedCalculation.measurement ? { measurement: expectedCalculation.measurement } : {}),
     ...(Object.keys(expectedFields).length > 0 ? { fields: expectedFields } : {}),
   };
   return conflicts;

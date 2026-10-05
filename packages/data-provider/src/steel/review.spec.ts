@@ -954,6 +954,70 @@ describe('Steel review contracts', () => {
     }
   });
 
+  it('preserves a saved processing measurement through an unrelated cell edit', () => {
+    const measurement = { mode: 'perPiece' as const, amount: '3', unit: '刀', ruleVersion: 'v1' as const };
+    const row = {
+      rowId: 'processing-1',
+      values: {
+        類別: { baseline: '加工', effective: '加工' },
+        單位: { baseline: '刀', effective: '刀' },
+        品名: { baseline: 'cut', effective: 'cut' },
+        總數: { baseline: '3', effective: '3' },
+      },
+      source: null,
+      system: { kind: 'processing' as const, parentRowId: null, cascadeDeletedBy: null },
+      calculation: { measurement },
+      origin: 'ai' as const,
+      deleted: false,
+    };
+    const result = applySteelReviewOperations({
+      currentRows: normalizeSteelReviewLedgerRows([row]),
+      expectedRows: normalizeSteelReviewLedgerRows([row]),
+      headers: Object.keys(row.values),
+      operations: [{ type: 'update', rowId: row.rowId, changes: [{ header: '品名', value: 'laser' }] }],
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    if (result.ok) {
+      expect(result.currentRows[0]?.calculation?.measurement).toEqual(measurement);
+      expect(result.expectedRows[0]?.calculation?.measurement).toEqual(measurement);
+    }
+  });
+
+  it('preserves a new processing measurement beside a same-update cell edit', () => {
+    const measurement = { mode: 'batch' as const, amount: '3', unit: '刀', ruleVersion: 'v1' as const };
+    const row = {
+      rowId: 'processing-1',
+      values: {
+        類別: { baseline: '加工', effective: '加工' },
+        單位: { baseline: '刀', effective: '刀' },
+        品名: { baseline: 'cut', effective: 'cut' },
+        總數: { baseline: '2', effective: '2' },
+      },
+      source: null,
+      system: { kind: 'processing' as const, parentRowId: null, cascadeDeletedBy: null },
+      origin: 'ai' as const,
+      deleted: false,
+    };
+    const result = applySteelReviewOperations({
+      currentRows: normalizeSteelReviewLedgerRows([row]),
+      expectedRows: normalizeSteelReviewLedgerRows([row]),
+      headers: Object.keys(row.values),
+      operations: [{
+        type: 'update',
+        rowId: row.rowId,
+        measurement,
+        changes: [{ header: '品名', value: 'laser' }],
+      }],
+    });
+
+    expect(result).toMatchObject({ ok: true });
+    if (result.ok) {
+      expect(result.currentRows[0]?.calculation?.measurement).toEqual(measurement);
+      expect(result.expectedRows[0]?.calculation?.measurement).toEqual(measurement);
+    }
+  });
+
   it('recalculates a processing child from an explicit per-piece measurement when its parent quantity changes', () => {
     const parent = {
       rowId: 'material-1',
