@@ -39,3 +39,29 @@ AI 原版與最新有效 Markdown 分開保存，對照彈窗取兩者以穩定�
 最新 Save 簡化（2026-10-05）：API 執行期間禁止修改值及關閉彈窗。保留 AI 原 Markdown，每次 Save 更新既有人工完整 Markdown，並直接更新原 messageId＋title 的聊天文字；不新增 AI 訊息或輸出 generation。成功回覆、DB 及 UI 使用相同的最新成功保存 Markdown／版本。提交版本與目前人工版本（尚無人工時為 AI 版）不同時，由後端判斷實際衝突。驗證集中代表性正常流程與聚焦計算／API／DB 測試，取代保存期間新输入及重複瀏覽器排列的驗收。
 
 2026-10-05：正常 AI system_order 的加工列初次依備註零件編號對應唯一材料，來源跟隨材料；保存後維持明確列身分與人工綁定，使用材料 selector 更正。計算候選依據僅屬內部 metadata，不新增 Markdown 欄位，也不因載入補充而計入未保存 rows。
+
+
+## 2026-10-06 已確認 UI 契約（取代舊介面要求）
+
+採固定上圖下表、單一可編輯表格、兩筆標準 row 高度與一行 sticky 欄名。移除 fullscreen、覆核 undo／redo 及彈窗下載功能／專用驗證；聊天下載沿原流程。新增項目統一空白 row，一般模式附目前來源頁，Unlinked／未綁定模式保持來源空白。未綁定清單依成功保存資料初始化，確認來源綁定、換預覽及切 checkbox 都不移除該 row，只有 Save 成功才刷新，失敗保留。來源確認採共用兩 selector 彈窗，預設當前預覽檔＋頁；加工不提供來源綁定 button，整組跟隨材料；材料刪除連同加工。Footer 只保留儲存／關閉與未儲存 caption。完整 title＋現有版本 badge 保留。
+
+此節優先於上述 fullscreen、undo／redo、分開 located／unlocated 表格與彈窗下載的歷史規格；資料保存、AI 原版比較、授權、Save 鎖定、整組復原及聊天下載契約維持。詳見 [已確認 UI 方案](../plans/2026-10-06-steel-review-ui.md)。
+
+
+## 2026-10-06 使用者確認：備註零件編號分組
+
+這段取代材料 selector／手動 parent 綁定規則。新增項目直接新增一列業務欄位空白 row，不先選新增材料或加工；row 內種類選為材料／加工後，system order 的材料與加工只以備註填入的完整零件編號判斷同組。沿用 trim 後完整相同的編號匹配，唯一未刪除材料為該組材料；加工自動跟隨材料來源檔＋頁，排到該材料下方，同組加工維持穩定順序。空白／沒有對應材料／不能唯一確定時保持未綁定，不猜選材料。更改備註即更新草稿分組與排列，按 Save 才保存。取消人工材料 parent selector；來源綁定彈窗仍適用於材料的來源檔＋頁。Unlinked 成員仍只有成功 Save 才刷新，確認分組不讓清單的 row 立即消失。
+
+- [ ] 新增項目一按就出現空白 row，沒有材料／加工前置選單。
+- [ ] 備註相同零件編號自動分組，改編號更新綁定／来源／排序，沒有人工材料 parent selector。
+- [ ] UI、Save、Markdown、DB readback 和 reload 保持相同分組／排列與 cascade 刪除。
+
+新增項目 button 位於 Markdown title 同行的最右方、Unlinked checkbox 左邊。
+
+分組判斷限定 system order：備註 input 失去焦點（或 Enter 完成輸入）才更新綁定與排序，輸入期間不移動列；材料優先、加工跟隨材料。OCR result 備註維持原有即時草稿編輯，不執行分組。
+
+模組維護：下方表格共用 Editor／Input／Action UI；ocr.ts 負責 OCR 編輯策略，system.ts 負責 system order 的 selector／分類策略、備註失焦判斷、同組來源與材料優先排序及加工計量。mode.ts 為共用 UI 的模式介面，session.ts 保持草稿／操作保存的共通責任。
+
+OCR result 也提供新增項目、Action 綁定／已綁定與刪除。共用的是表格、輸入框與操作 UI；欄名、欄位順序及編輯策略各自使用該 OCR result／system order 表格的 headers，不能統一成相同欄位。
+
+OCR 欄位契約補充：AI 至少固定輸出類別、品名規格、零件編號、來源、頁碼，另依來源資料彈性提供其他欄位。UI 與新增空白列沿用該次 OCR headers；OCR 類別也使用共用 menu selector，保留目前／AI 值與空值選项。OCR 不執行 system order 備註分組。

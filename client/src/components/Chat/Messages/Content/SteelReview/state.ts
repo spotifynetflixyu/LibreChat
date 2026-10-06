@@ -31,10 +31,13 @@ export interface SteelReviewDialogState {
   selectedFileId?: string;
   pageNumber: number;
   pageCount: number;
-  fullScreen: boolean;
+  unlinkedMode: boolean;
+  unlinkedRowIds: string[];
+  unlinkedMembershipOwner?: string;
   initializedSourceId?: string;
   sourceCorrectionRowId?: string;
-  processingParentId?: string;
+  sourceCorrectionFileId?: string;
+  sourceCorrectionPageNumber?: number;
 }
 
 export interface SteelReviewPan {
@@ -115,7 +118,8 @@ export const steelReviewDialogStateFamily = createOwnedStateFamily<SteelReviewDi
   isOpen: false,
   pageNumber: 1,
   pageCount: 0,
-  fullScreen: false,
+  unlinkedMode: false,
+  unlinkedRowIds: [],
 }));
 
 export const steelReviewPreviewStateFamily = createOwnedStateFamily<SteelReviewPreviewState>(() => ({
@@ -138,7 +142,5 @@ export const steelReviewDraftStateFamily = createOwnedStateFamily<SteelReviewDra
   candidateSelections: {},
   candidateSelectionVersions: {},
   rowStates: {},
-  past: [],
-  future: [],
   changeSequence: 0,
 }));

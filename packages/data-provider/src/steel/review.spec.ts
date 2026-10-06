@@ -1,14 +1,16 @@
 import { createHash } from 'node:crypto';
-import type { SteelReviewLedgerRow, SteelReviewOperation, SteelReviewRow } from './review';
+import type { SteelReviewLedgerRow, SteelReviewOperation, SteelReviewRow, SteelReviewSystemKind } from './review';
 import {
   encodeSteelReviewDigest as encodeSteelReviewDigestValue,
   encodeSteelReviewTitleOwner,
   applySteelReviewOperations,
+  bindSteelReviewSystemRows,
   initializeFreshSteelReviewSystemRows,
   isSteelReviewSourceAssociationHeader,
   normalizeSteelReviewEffectiveValue,
   normalizeSteelReviewRows,
   normalizeSteelReviewLedgerRows,
+  orderSteelReviewSystemRows,
   sameSteelReviewSource,
   steelReviewReadQuerySchema,
   steelReviewResponseSchema,
@@ -325,6 +327,272 @@ describe('Steel review contracts', () => {
       system: { kind: 'processing', parentRowId: null, cascadeDeletedBy: null },
     });
     expect(rows.find((row) => row.rowId === 'processing-missing')?.system?.parentRowId).toBe('rogue');
+  });
+
+  it('binds final material remarks and mirrors source association columns', () => {
+    const rows: SteelReviewRow[] = [
+      {
+        rowId: 'material-a',
+        values: {
+          備註: { baseline: 'A', effective: ' A ' },
+          來源檔案: { baseline: 'old-a.pdf', effective: 'a.pdf' },
+          原始頁碼: { baseline: '1', effective: '2' },
+        },
+        source: { fileId: 'file-a', pageNumber: 2, filename: 'a.pdf' },
+        system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
+      },
+      {
+        rowId: 'processing-a',
+        values: {
+          備註: { baseline: 'A', effective: 'A' },
+          來源檔案: { baseline: 'old.pdf', effective: 'old.pdf' },
+          原始頁碼: { baseline: '9', effective: '9' },
+        },
+        source: { fileId: 'stale', pageNumber: 9, filename: 'stale.pdf' },
+        system: { kind: 'processing', parentRowId: 'stale', cascadeDeletedBy: null },
+      },
+    ];
+
+    const bound = bindSteelReviewSystemRows(['備註', '來源檔案', '原始頁碼'], rows);
+    expect(bound[1]).toMatchObject({
+      source: { fileId: 'file-a', pageNumber: 2, filename: 'a.pdf' },
+      system: { kind: 'processing', parentRowId: 'material-a', cascadeDeletedBy: null },
+      values: {
+        來源檔案: { baseline: 'old.pdf', effective: 'a.pdf' },
+        原始頁碼: { baseline: '9', effective: '2' },
+      },
+    });
+    expect(rows[1]?.system?.parentRowId).toBe('stale');
+  });
+
+  it('clears empty, missing, and ambiguous remark bindings without choosing a material', () => {
+    const base = (rowId: string, kind: 'material' | 'processing', remark: string, source: SteelReviewRow['source']): SteelReviewRow => ({
+      rowId,
+      values: { 備註: { baseline: remark, effective: remark }, 來源: { baseline: 'old', effective: 'old' } },
+      source,
+      system: { kind, parentRowId: kind === 'processing' ? 'stale' : null, cascadeDeletedBy: null },
+    });
+    const rows = [
+      base('material-1', 'material', 'DUP', { fileId: 'file-1', pageNumber: 1 }),
+      base('material-2', 'material', 'DUP', { fileId: 'file-2', pageNumber: 1 }),
+      base('processing-empty', 'processing', '', { fileId: 'rogue-empty', pageNumber: 1 }),
+      base('processing-missing', 'processing', 'MISSING', { fileId: 'rogue-missing', pageNumber: 1 }),
+      base('processing-duplicate', 'processing', 'DUP', { fileId: 'rogue-duplicate', pageNumber: 1 }),
+    ];
+
+    const bound = bindSteelReviewSystemRows(['備註', '來源'], rows);
+    for (const rowId of ['processing-empty', 'processing-missing', 'processing-duplicate']) {
+      const row = bound.find((candidate) => candidate.rowId === rowId);
+      expect(row).toMatchObject({
+        source: null,
+        system: { kind: 'processing', parentRowId: null, cascadeDeletedBy: null },
+        values: { 來源: { effective: '' } },
+      });
+    }
+  });
+
+  it('preserves an existing no-remarks parent while following its source', () => {
+    const rows: SteelReviewRow[] = [
+      {
+        rowId: 'material-a',
+        values: { 來源: { baseline: 'a.pdf', effective: 'a.pdf' } },
+        source: { fileId: 'file-a', pageNumber: 1, filename: 'a.pdf' },
+        system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
+      },
+      {
+        rowId: 'processing-a',
+        values: { 來源: { baseline: 'stale.pdf', effective: 'stale.pdf' } },
+        source: { fileId: 'stale', pageNumber: 2, filename: 'stale.pdf' },
+        system: { kind: 'processing', parentRowId: 'material-a', cascadeDeletedBy: null },
+      },
+    ];
+
+    expect(bindSteelReviewSystemRows(['來源'], rows)[1]).toMatchObject({
+      source: { fileId: 'file-a', pageNumber: 1, filename: 'a.pdf' },
+      system: { parentRowId: 'material-a' },
+      values: { 來源: { effective: 'a.pdf' } },
+    });
+    const partial = rows[1];
+    expect(bindSteelReviewSystemRows(['來源'], [partial])[0]).toEqual(partial);
+  });
+
+  it('keeps deleted tombstone binding and source metadata unchanged', () => {
+    const deleted: SteelReviewRow = {
+      rowId: 'processing-deleted',
+      values: { 備註: { baseline: 'A', effective: 'A' }, 來源: { baseline: 'old', effective: 'old' } },
+      source: { fileId: 'old-file', pageNumber: 4, filename: 'old.pdf' },
+      deleted: true,
+      system: { kind: 'processing', parentRowId: 'material-old', cascadeDeletedBy: 'material-old' },
+    };
+    const bound = bindSteelReviewSystemRows(['備註', '來源'], [
+      {
+        rowId: 'material-new',
+        values: { 備註: { baseline: 'A', effective: 'A' } },
+        source: { fileId: 'new-file', pageNumber: 1, filename: 'new.pdf' },
+        system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
+      },
+      deleted,
+    ]);
+    expect(bound[1]).toEqual(deleted);
+  });
+
+  it('orders material groups first and keeps unresolved rows stable', () => {
+    const row = (rowId: string, kind: SteelReviewSystemKind, parentRowId: string | null = null, deleted = false): SteelReviewRow => ({
+      rowId,
+      values: { 備註: { baseline: rowId, effective: rowId } },
+      source: null,
+      deleted,
+      system: { kind, parentRowId, cascadeDeletedBy: kind === 'processing' && deleted ? parentRowId : null },
+    });
+    const rows = [
+      row('unresolved', 'processing'),
+      row('unassigned', 'unassigned'),
+      row('material-b', 'material'),
+      row('child-b', 'processing', 'material-b'),
+      row('material-a', 'material'),
+      row('child-a', 'processing', 'material-a'),
+      row('deleted-child-b', 'processing', 'material-b', true),
+    ];
+
+    expect(orderSteelReviewSystemRows(rows).map(({ rowId }) => rowId)).toEqual([
+      'material-b', 'child-b', 'deleted-child-b', 'material-a', 'child-a', 'unresolved', 'unassigned',
+    ]);
+  });
+
+  it('defers classification binding until a later final remark edit', () => {
+    const material: SteelReviewLedgerRow = {
+      rowId: 'material-a',
+      values: { 備註: { baseline: 'A', effective: 'A' } },
+      source: null,
+      origin: 'ai',
+      deleted: false,
+      system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
+    };
+    const unassigned: SteelReviewLedgerRow = {
+      rowId: 'row-unassigned',
+      values: { 備註: { baseline: '', effective: '' } },
+      source: null,
+      origin: 'ai',
+      deleted: false,
+      system: { kind: 'unassigned', parentRowId: null, cascadeDeletedBy: null },
+    };
+    const first = applySteelReviewOperations({
+      currentRows: [material, unassigned],
+      expectedRows: [material, unassigned],
+      headers: ['備註'],
+      operations: [{ type: 'classify', rowId: unassigned.rowId, system: { kind: 'processing', parentRowId: null } }],
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    expect(first.currentRows.find((row) => row.rowId === unassigned.rowId)?.system?.parentRowId).toBeNull();
+
+    const second = applySteelReviewOperations({
+      currentRows: first.currentRows,
+      expectedRows: first.expectedRows,
+      headers: ['備註'],
+      operations: [{ type: 'update', rowId: unassigned.rowId, changes: [{ header: '備註', value: ' A ' }] }],
+    });
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    expect(second.currentRows.map((row) => row.rowId)).toEqual(['material-a', 'row-unassigned']);
+    expect(second.currentRows.find((row) => row.rowId === unassigned.rowId)?.system?.parentRowId).toBe('material-a');
+  });
+
+  it('rejects an explicit parent that disagrees with the final remark binding', () => {
+    const material = (rowId: string, remark: string): SteelReviewLedgerRow => ({
+      rowId,
+      values: { 備註: { baseline: remark, effective: remark } },
+      source: null,
+      origin: 'ai',
+      deleted: false,
+      system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
+    });
+    const child: SteelReviewLedgerRow = {
+      rowId: 'processing-a',
+      values: { 備註: { baseline: 'A', effective: 'A' } },
+      source: null,
+      origin: 'ai',
+      deleted: false,
+      system: { kind: 'processing', parentRowId: 'material-a', cascadeDeletedBy: null },
+    };
+    const rows = [material('material-a', 'A'), material('material-b', 'B'), child];
+    const result = applySteelReviewOperations({
+      currentRows: rows,
+      expectedRows: rows,
+      headers: ['備註'],
+      operations: [{ type: 'update', rowId: child.rowId, binding: { parentRowId: 'material-b' } }],
+    });
+    expect(result).toEqual({
+      ok: false,
+      conflicts: [{ kind: 'binding', rowId: child.rowId, expected: 'material-a', current: 'material-a', requested: 'material-b' }],
+    });
+  });
+
+  it('canonicalizes system-order grouping before existing-order authority checks', () => {
+    const material: SteelReviewRow = {
+      rowId: 'material-a',
+      values: { 備註: { baseline: 'A', effective: 'A' } },
+      source: null,
+      origin: 'ai',
+      deleted: false,
+      system: { kind: 'material', parentRowId: null, cascadeDeletedBy: null },
+    };
+    const processing: SteelReviewRow = {
+      rowId: 'processing-a',
+      values: { 備註: { baseline: 'A', effective: 'A' } },
+      source: null,
+      origin: 'ai',
+      deleted: false,
+      system: { kind: 'processing', parentRowId: 'material-a', cascadeDeletedBy: null },
+    };
+    const result = validateSteelReviewLedger([material, processing], [processing, material], ['備註']);
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.orderedSubmittedRows.map((row) => row.rowId)).toEqual(['material-a', 'processing-a']);
+    }
+  });
+
+  it('allows processing groups to cross while preserving final-parent sibling order', () => {
+    const row = (rowId: string, kind: SteelReviewSystemKind, remark: string, parentRowId: string | null): SteelReviewLedgerRow => ({
+      rowId,
+      values: { 備註: { baseline: remark, effective: remark } },
+      source: null,
+      origin: 'ai',
+      deleted: false,
+      system: { kind, parentRowId, cascadeDeletedBy: null },
+    });
+    const materialA = row('material-a', 'material', 'A', null);
+    const materialB = row('material-b', 'material', 'B', null);
+    const processingA = row('processing-a', 'processing', 'A', 'material-a');
+    const processingB = row('processing-b', 'processing', 'B', 'material-b');
+    const current = [
+      materialA,
+      processingA,
+      materialB,
+      processingB,
+    ];
+    const submitted: SteelReviewLedgerRow[] = [
+      materialA,
+      {
+        ...processingA,
+        values: { 備註: { baseline: 'A', effective: 'B' } },
+        system: { kind: 'processing', parentRowId: 'material-b', cascadeDeletedBy: null },
+      },
+      materialB,
+      {
+        ...processingB,
+        values: { 備註: { baseline: 'B', effective: 'A' } },
+        system: { kind: 'processing', parentRowId: 'material-a', cascadeDeletedBy: null },
+      },
+    ];
+    const result = validateSteelReviewLedger(current, submitted, ['備註']);
+
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.orderedSubmittedRows.map((row) => row.rowId)).toEqual([
+        'material-a', 'processing-b', 'material-b', 'processing-a',
+      ]);
+    }
   });
 
   it('materializes legacy ledger defaults only in the trusted effective view', () => {

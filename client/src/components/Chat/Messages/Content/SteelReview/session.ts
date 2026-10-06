@@ -4,7 +4,6 @@ import {
   isSteelProcessingCatalogCandidateApplicable,
   steelProcessingMaterialForRow,
   steelMaterialCandidateHeaders,
-  calculateSteelProcessingMeasurement,
   calculateSteelSystemOrderRow,
   isSteelReviewSourceAssociationHeader,
 } from 'librechat-data-provider';
@@ -23,6 +22,7 @@ import type {
   SteelCatalogSelection,
 } from 'librechat-data-provider';
 import type { SteelReviewIdentity } from './state';
+import { getSteelReviewMode } from './mode';
 
 export interface SteelReviewDraftState {
   ownerKey: string;
@@ -37,28 +37,10 @@ export interface SteelReviewDraftState {
   candidateSelections: Record<string, SteelCatalogSelection>;
   candidateSelectionVersions: Record<string, number>;
   rowStates: Record<string, SteelReviewRow>;
-  past: SteelReviewDraftSnapshot[];
-  future: SteelReviewDraftSnapshot[];
-  historyGroup?: string;
   changeSequence: number;
 }
 
 type SteelReviewDraftLogicalOwner = SteelReviewIdentity & { outputId: string };
-
-interface SteelReviewDraftSnapshot {
-  cells: Record<string, string>;
-  touched: Record<string, string>;
-  cellVersions: Record<string, number>;
-  sourceDrafts: Record<string, SteelReviewSource | null>;
-  sourceVersions: Record<string, number>;
-  systemVersions: Record<string, number>;
-  measurementDrafts?: Record<string, SteelProcessingMeasurement | null>;
-  measurementVersions?: Record<string, number>;
-  candidateSelections?: SteelReviewDraftState['candidateSelections'];
-  candidateSelectionVersions?: Record<string, number>;
-  rowStates: Record<string, SteelReviewRow>;
-  changeSequence: number;
-}
 
 export function getSteelReviewDraftKey(
   selection: SteelReviewIdentity,
@@ -161,77 +143,10 @@ export function createSteelReviewDraftState(ownerKey: string): SteelReviewDraftS
     candidateSelections: {},
     candidateSelectionVersions: {},
     rowStates: {},
-    past: [],
-    future: [],
     changeSequence: 0,
   };
 }
 
-function snapshotOf(draft: SteelReviewDraftState): SteelReviewDraftSnapshot {
-  return {
-    cells: draft.cells,
-    touched: draft.touched,
-    cellVersions: draft.cellVersions,
-    sourceDrafts: draft.sourceDrafts,
-    sourceVersions: draft.sourceVersions,
-    systemVersions: draft.systemVersions,
-    measurementDrafts: draft.measurementDrafts,
-    measurementVersions: draft.measurementVersions,
-    candidateSelections: draft.candidateSelections,
-    candidateSelectionVersions: draft.candidateSelectionVersions,
-    rowStates: draft.rowStates,
-    changeSequence: draft.changeSequence,
-  };
-}
-
-function recordMutation(
-  draft: SteelReviewDraftState,
-  next: Omit<SteelReviewDraftState, 'past' | 'future' | 'historyGroup'>,
-  group: string,
-  snapshot = snapshotOf(draft),
-): SteelReviewDraftState {
-  // Preserve the first pre-group snapshot. Replacing it with the previous
-  // keystroke makes Undo stop at the penultimate character instead of the
-  // value that was present when the focused edit began.
-  const past = draft.historyGroup === group ? draft.past : [...draft.past, snapshot];
-  return {
-    ...next,
-    past,
-    future: [],
-    historyGroup: group,
-  };
-}
-
-export function finishSteelReviewDraftHistory(draft: SteelReviewDraftState): SteelReviewDraftState {
-  if (draft.historyGroup === undefined) {
-    return draft;
-  }
-  return { ...draft, historyGroup: undefined };
-}
-
-export function clearSteelReviewDraftHistory(draft: SteelReviewDraftState): SteelReviewDraftState {
-  return { ...draft, past: [], future: [], historyGroup: undefined };
-}
-
-function restoreSnapshot(
-  draft: SteelReviewDraftState,
-  snapshot: SteelReviewDraftSnapshot,
-  past: SteelReviewDraftSnapshot[],
-  future: SteelReviewDraftSnapshot[],
-): SteelReviewDraftState {
-  return {
-    ...draft,
-    ...snapshot,
-    measurementDrafts: snapshot.measurementDrafts ?? draft.measurementDrafts,
-    measurementVersions: snapshot.measurementVersions ?? draft.measurementVersions,
-    candidateSelections: snapshot.candidateSelections ?? draft.candidateSelections,
-    candidateSelectionVersions: snapshot.candidateSelectionVersions ?? draft.candidateSelectionVersions,
-    past,
-    future,
-    historyGroup: undefined,
-    changeSequence: draft.changeSequence + 1,
-  };
-}
 
 export function setSteelReviewDraftSource(
   draft: SteelReviewDraftState,
@@ -254,13 +169,7 @@ export function setSteelReviewDraftSource(
     sourceDrafts[row.rowId] = normalizedSource;
   }
 
-  const historyBase = Object.prototype.hasOwnProperty.call(draft.sourceDrafts, row.rowId)
-    ? draft
-    : { ...draft, sourceDrafts: { ...draft.sourceDrafts, [row.rowId]: row.source } };
-  // A source menu selection is a complete semantic operation. Keep successive
-  // file/page choices separate so Undo walks the user's source history one
-  // choice at a time; focused cell edits are the only coalesced mutations.
-  return recordMutation(historyBase, { ...draft, sourceDrafts, sourceVersions, changeSequence }, `source:${row.rowId}:${changeSequence}`);
+  return { ...draft, sourceDrafts, sourceVersions, changeSequence };
 }
 
 export function getSteelReviewDraftSource(
@@ -285,12 +194,12 @@ export function setSteelReviewDraftSystem(
   if (JSON.stringify(baseRow.system ?? null) === JSON.stringify(system)) {
     return draft;
   }
-  return recordMutation(draft, {
+  return {
     ...draft,
     rowStates: { ...draft.rowStates, [row.rowId]: { ...baseRow, system } },
     systemVersions: { ...draft.systemVersions, [row.rowId]: changeSequence },
     changeSequence,
-  }, `system:${row.rowId}`);
+  };
 }
 
 export function setSteelReviewDraftCandidate(
@@ -329,7 +238,7 @@ export function setSteelReviewDraftCandidate(
       },
     },
   };
-  return recordMutation(draft, {
+  return {
     ...draft,
     cells,
     touched,
@@ -341,7 +250,7 @@ export function setSteelReviewDraftCandidate(
       [row.rowId]: changeSequence,
     },
     changeSequence,
-  }, `candidate:${row.rowId}:${changeSequence}`);
+  };
 }
 
 function cloneSteelProcessingMeasurement(
@@ -368,15 +277,12 @@ export function setSteelReviewDraftMeasurement(
   const changeSequence = draft.changeSequence + 1;
   const measurementDrafts = { ...draft.measurementDrafts, [row.rowId]: nextMeasurement };
   const measurementVersions = { ...draft.measurementVersions, [row.rowId]: changeSequence };
-  const historyBase = Object.prototype.hasOwnProperty.call(draft.measurementDrafts, row.rowId)
-    ? draft
-    : { ...draft, measurementDrafts: { ...draft.measurementDrafts, [row.rowId]: currentMeasurement } };
-  return recordMutation(historyBase, {
+  return {
     ...draft,
     measurementDrafts,
     measurementVersions,
     changeSequence,
-  }, `measurement:${row.rowId}`);
+  };
 }
 
 export function getSteelReviewDraftMeasurement(
@@ -426,7 +332,7 @@ export function deleteSteelReviewDraftGroup(
       delete sourceDrafts[row.rowId];
     }
   }
-  return recordMutation(draft, { ...draft, rowStates, sourceDrafts, changeSequence }, `delete-group:${material.rowId}`);
+  return { ...draft, rowStates, sourceDrafts, changeSequence };
 }
 
 export function restoreSteelReviewDraftGroup(
@@ -449,11 +355,11 @@ export function restoreSteelReviewDraftGroup(
         : {}),
     };
   }
-  return recordMutation(draft, {
+  return {
     ...draft,
     rowStates,
     changeSequence: draft.changeSequence + 1,
-  }, `restore-group:${material.rowId}`);
+  };
 }
 
 export function setSteelReviewDraftCell(
@@ -475,7 +381,6 @@ export function setSteelReviewDraftCell(
   const touched = { ...draft.touched, [getSteelReviewDraftCellKey(row.rowId, header)]: value };
   const cellVersions = { ...draft.cellVersions };
   const key = getSteelReviewDraftCellKey(row.rowId, header);
-  const currentEffective = getSteelReviewDraftCell(draft, row.rowId, header) ?? cell.effective ?? '';
   const confirmedEffective = cell.effective ?? '';
   const changeSequence = draft.changeSequence + 1;
   cellVersions[key] = changeSequence;
@@ -485,25 +390,7 @@ export function setSteelReviewDraftCell(
     cells[key] = value;
   }
 
-  const group = `cell:${key}`;
-  const isSameCellGroup = draft.historyGroup === group;
-  const historyBase = isSameCellGroup
-    ? draft
-    : {
-        ...draft,
-        cells: { ...draft.cells, [key]: currentEffective },
-        touched: { ...draft.touched, [key]: currentEffective },
-      };
-  const historySnapshot = isSameCellGroup
-    ? undefined
-    : snapshotOf({
-        ...historyBase,
-        sourceDrafts: {
-          ...historyBase.sourceDrafts,
-          [row.rowId]: row.source,
-        },
-      });
-  return recordMutation(historyBase, { ...draft, cells, touched, cellVersions, changeSequence }, group, historySnapshot);
+  return { ...draft, cells, touched, cellVersions, changeSequence };
 }
 
 export function getSteelReviewDraftCell(
@@ -696,48 +583,11 @@ export function applySteelReviewDrafts(
     ...Object.values(draft.rowStates).filter((row) => !rows.some((candidate) => candidate.rowId === row.rowId) && !row.deleted),
   ];
   const projectedRows = baseRows.map((row) => projectRow(row));
-  const projectedById = new Map(projectedRows.map((row) => [row.rowId, row]));
-  const projectedWithSystemSources = projectedRows.map((row) => {
-    if (row.system?.kind !== 'processing' || row.deleted) {
-      return row;
-    }
-    const parent = row.system.parentRowId ? projectedById.get(row.system.parentRowId) : undefined;
-    if (!parent || parent.deleted) {
-      return row;
-    }
-    const projected = projectRow(row, parent.source);
-    const values = { ...projected.values };
-    for (const [header, cell] of Object.entries(parent.values)) {
-      if (isSteelReviewSourceAssociationHeader(header) && values[header]) {
-        values[header] = { ...values[header], effective: cell.effective };
-      }
-    }
-    return { ...projected, values };
-  });
-  if (!previewCalculations) return projectedWithSystemSources;
-  const byId = new Map(projectedWithSystemSources.map((row) => [row.rowId, row]));
-  return projectedWithSystemSources.map((row) => {
-    if (row.system?.kind !== 'processing' || row.deleted ||
-      row.values['總數'] === undefined || Object.prototype.hasOwnProperty.call(draft.cells, getSteelReviewDraftCellKey(row.rowId, '總數'))) {
-      return row;
-    }
-    const parent = row.system.parentRowId ? byId.get(row.system.parentRowId) : undefined;
-    const measurement = row.calculation?.measurement;
-    const selectedCandidate = Boolean(draft.candidateSelections[row.rowId]);
-    if (measurement?.mode !== 'batch' && (!parent || parent.deleted || parent.system?.kind !== 'material')) return row;
-    const headers = Object.keys(row.values);
-    const total = measurement ? calculateSteelProcessingMeasurement({
-      headers,
-      values: headers.map((header) => row.values[header]?.effective ?? ''),
-      measurement,
-      parentHeaders: parent ? Object.keys(parent.values) : [],
-      parentValues: parent ? Object.keys(parent.values).map((header) => parent.values[header]?.effective ?? '') : [],
-    }) : undefined;
-    if (total === undefined && !selectedCandidate) return row;
-    return {
-      ...row,
-      values: { ...row.values, 總數: { ...row.values['總數'], effective: total ?? '' } },
-    };
+  const mode = getSteelReviewMode(projectedRows.some((row) => row.system) ? 'system_order' : 'ocr_result');
+  return mode.projectRows(projectedRows, {
+    previewCalculations,
+    hasManualTotal: (rowId) => Object.prototype.hasOwnProperty.call(draft.cells, getSteelReviewDraftCellKey(rowId, '總數')),
+    hasSelectedCandidate: (rowId) => Boolean(draft.candidateSelections[rowId]),
   });
 }
 
@@ -779,11 +629,11 @@ export function addSteelReviewDraftRow(
     rowId, origin: 'manual', deleted: false, insertion, values, source,
     ...(system ? { system } : {}),
   };
-  return recordMutation(draft, {
+  return {
     ...draft,
     rowStates: { ...draft.rowStates, [rowId]: row },
     changeSequence: draft.changeSequence + 1,
-  }, `add:${rowId}`);
+  };
 }
 
 export function deleteSteelReviewDraftRow(
@@ -798,13 +648,7 @@ export function deleteSteelReviewDraftRow(
   } else {
     rowStates[row.rowId] = { ...row, deleted: true };
   }
-  const historySnapshot = isSaved
-    ? snapshotOf({
-        ...draft,
-        rowStates: { ...draft.rowStates, [row.rowId]: { ...row, deleted: false } },
-      })
-    : undefined;
-  return recordMutation(draft, { ...draft, rowStates, changeSequence: draft.changeSequence + 1 }, `delete:${row.rowId}`, historySnapshot);
+  return { ...draft, rowStates, changeSequence: draft.changeSequence + 1 };
 }
 
 export function restoreSteelReviewDraftRow(
@@ -812,31 +656,11 @@ export function restoreSteelReviewDraftRow(
   row: SteelReviewRow,
 ): SteelReviewDraftState {
   if (!row.rowId) return draft;
-  return recordMutation(draft, {
+  return {
     ...draft,
     rowStates: { ...draft.rowStates, [row.rowId]: { ...row, deleted: false } },
     changeSequence: draft.changeSequence + 1,
-  }, `restore:${row.rowId}`);
-}
-
-export function canUndoSteelReviewDraft(draft: SteelReviewDraftState): boolean {
-  return draft.past.length > 0;
-}
-
-export function canRedoSteelReviewDraft(draft: SteelReviewDraftState): boolean {
-  return draft.future.length > 0;
-}
-
-export function undoSteelReviewDraft(draft: SteelReviewDraftState): SteelReviewDraftState {
-  const previous = draft.past[draft.past.length - 1];
-  if (!previous) return draft;
-  return restoreSnapshot(draft, previous, draft.past.slice(0, -1), [snapshotOf(draft), ...draft.future]);
-}
-
-export function redoSteelReviewDraft(draft: SteelReviewDraftState): SteelReviewDraftState {
-  const next = draft.future[0];
-  if (!next) return draft;
-  return restoreSnapshot(draft, next, [...draft.past, snapshotOf(draft)], draft.future.slice(1));
+  };
 }
 
 export function getSteelReviewPrepareInput(
@@ -1211,7 +1035,6 @@ export function rebaseSteelReviewDraftState(
   draft: SteelReviewDraftState,
   savedRows: readonly SteelReviewRow[],
   submittedChangeSequence: number,
-  options?: { preserveUnchangedRows?: boolean },
 ): SteelReviewDraftState {
   const rowsByCell = new Map<string, string>();
   for (const row of savedRows) {
@@ -1295,58 +1118,6 @@ export function rebaseSteelReviewDraftState(
     }
   }
 
-  const rebaseSnapshot = (snapshot: SteelReviewDraftSnapshot): SteelReviewDraftSnapshot => {
-    const snapshotCells: Record<string, string> = {};
-    for (const [key, value] of Object.entries(snapshot.cells)) {
-      if (value !== rowsByCell.get(key)) {
-        snapshotCells[key] = value;
-      }
-    }
-    const snapshotRows = { ...snapshot.rowStates };
-    for (const saved of savedRows) {
-      if (Object.prototype.hasOwnProperty.call(snapshotRows, saved.rowId)) {
-        snapshotRows[saved.rowId] = {
-          ...saved,
-          deleted: snapshotRows[saved.rowId]?.deleted ?? saved.deleted ?? false,
-          system: snapshotRows[saved.rowId]?.system ?? saved.system,
-        };
-        continue;
-      }
-      if (!options?.preserveUnchangedRows) {
-        const origin = saved.origin ?? 'ai';
-        if (origin === 'manual' && !saved.deleted) {
-          snapshotRows[saved.rowId] = { ...saved, deleted: true };
-        } else if (origin === 'ai' && saved.deleted) {
-          snapshotRows[saved.rowId] = { ...saved, deleted: false };
-        }
-      }
-    }
-    const snapshotSources = { ...snapshot.sourceDrafts };
-    for (const [rowId, source] of Object.entries(snapshotSources)) {
-      const savedSource = savedRows.find((row) => row.rowId === rowId)?.source ?? null;
-      if (JSON.stringify(source) === JSON.stringify(savedSource)) {
-        delete snapshotSources[rowId];
-      }
-    }
-    const snapshotMeasurements = { ...(snapshot.measurementDrafts ?? {}) };
-    const snapshotMeasurementVersions = { ...(snapshot.measurementVersions ?? {}) };
-    for (const [rowId, measurement] of Object.entries(snapshotMeasurements)) {
-      const savedMeasurement = savedRows.find((row) => row.rowId === rowId)?.calculation?.measurement ?? null;
-      if (JSON.stringify(measurement) === JSON.stringify(savedMeasurement)) {
-        delete snapshotMeasurements[rowId];
-        delete snapshotMeasurementVersions[rowId];
-      }
-    }
-    return {
-      ...snapshot,
-      cells: snapshotCells,
-      sourceDrafts: snapshotSources,
-      measurementDrafts: snapshotMeasurements,
-      measurementVersions: snapshotMeasurementVersions,
-      rowStates: snapshotRows,
-    };
-  };
-
   return {
     ...draft,
     cells,
@@ -1359,8 +1130,5 @@ export function rebaseSteelReviewDraftState(
     candidateSelections,
     candidateSelectionVersions,
     rowStates,
-    past: draft.past.map(rebaseSnapshot),
-    future: draft.future.map(rebaseSnapshot),
-    historyGroup: undefined,
   };
 }

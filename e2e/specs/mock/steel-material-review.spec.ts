@@ -1,4 +1,3 @@
-import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
 import type { SteelReviewSaveResponse } from 'librechat-data-provider';
@@ -305,7 +304,7 @@ test.describe('Material review capable automatic calculation', () => {
   test('a material added in the UI saves the computed total after its initial empty cells', async ({ page }) => {
     const fixture = await seedCalculation(); fixtures.push(fixture);
     const dialog = await openEditor(page, fixture);
-    await dialog.getByRole('button', { name: 'Add material', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Add item', exact: true }).click();
     const weight = dialog.getByRole('textbox', { name: /^單重 /u }).last();
     const label = await weight.getAttribute('aria-label');
     if (!label) throw new Error('Missing added material identity');
@@ -393,27 +392,5 @@ test.describe('Material review capable automatic calculation', () => {
     expect(effective(await readTable(page, auth, fixture), '單重')).toBe('7');
   });
 
-  test('dirty dimension download saves and uses the confirmed clean calculated data', async ({ page }) => {
-    const fixture = await seedCalculation(); fixtures.push(fixture);
-    const initial = await readTable(page, auth, fixture);
-    const before = await readback(fixture);
-    const dialog = await openEditor(page, fixture);
-    await dialog.getByRole('textbox', { name: `寬度 ${initial.rows[0].rowId}`, exact: true }).fill('125');
-    const downloadReady = page.waitForEvent('download');
-    await dialog.getByRole('button', { name: /Download.*CSV/iu }).click();
-    const download = await downloadReady;
-    const filePath = await download.path();
-    if (!filePath) throw new Error('Missing confirmed material download');
-    const csv = await readFile(filePath, 'utf8');
-    expect(csv).toContain('1.1775'); expect(csv).toContain('2.355'); expect(csv).not.toContain('~~');
-    const saved = await readTable(page, auth, fixture);
-    expect(effective(saved, '總數')).toBe('2.355');
-    const after = await readback(fixture);
-    expect(after.reviews[0].receipts).toHaveLength(1);
-    expect(after.artifacts).toEqual(before.artifacts);
-    const cleanDownload = page.waitForEvent('download');
-    await dialog.getByRole('button', { name: /Download.*CSV/iu }).click();
-    await cleanDownload;
-    expect(await readback(fixture)).toEqual(after);
-  });
+
 });

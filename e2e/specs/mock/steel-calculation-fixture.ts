@@ -1,4 +1,6 @@
 import mongoose from 'mongoose';
+import { ObjectId } from 'mongodb';
+import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { expect } from '@playwright/test';
 import { randomUUID } from 'node:crypto';
@@ -7,6 +9,7 @@ import {
   buildQuotationChunks,
   runQuotationPreflight,
   renderQuotationCustomerMarkdown,
+  createSteelOcrStateService,
   createSteelQuotationStateService,
   createSteelQuotationPublicationPublisher,
   quotationChildSystemOrderColumns,
@@ -19,7 +22,13 @@ import { getE2EUser } from '../../setup/user';
 
 export type Mode = 'plate' | 'profile' | 'unknown' | 'square' | 'squareDensityOnly' | 'round' | 'flat';
 export type Auth = { Authorization: string };
-export type Fixture = { conversationId: string; messageId: string; runId: string; lookups: number };
+export type Fixture = {
+  conversationId: string;
+  messageId: string;
+  runId: string;
+  lookups: number;
+  sourceFiles?: readonly { fileId: string; filename: string }[];
+};
 
 function table(headers: readonly string[], rows: readonly (readonly string[])[]): string {
   return [`| ${headers.join(' | ')} |`, `| ${headers.map(() => '---').join(' | ')} |`,
@@ -27,7 +36,8 @@ function table(headers: readonly string[], rows: readonly (readonly string[])[])
 }
 
 /** A normal runner/lookup/checkpoint/publication produces the review authority. */
-export async function seedCalculation(mode: Mode = 'plate', notes = '', processingRows = false): Promise<Fixture> {
+export async function seedCalculation(mode: Mode = 'plate', notes = '', processingRows = false,
+  options?: { withSources?: boolean }): Promise<Fixture> {
   const conversationId = randomUUID();
   const messageId = randomUUID();
   const email = getE2EUser().email;
@@ -45,8 +55,28 @@ export async function seedCalculation(mode: Mode = 'plate', notes = '', processi
     const service = createSteelQuotationStateService(mongoose);
     const category = { plate: '鐵板', profile: 'H型鋼', unknown: '鐵板', square: '方鐵', squareDensityOnly: '方鐵', round: '圓條', flat: '平鐵' }[mode];
     const code = { plate: 'PLATE', profile: 'PROFILE', unknown: 'UNKNOWN', square: 'SQUARE', squareDensityOnly: 'SQUARE-DENSITY', round: 'ROUND', flat: 'FLAT' }[mode];
-    const sourceRows = ['A', 'B'].map((part) => ['', part, category, '2', '6', '100', '200']);
+    const sourceFiles = options?.withSources ? [
+      { fileId: `group-alpha-${conversationId}`, filename: 'alpha.pdf' },
+      { fileId: `group-beta-${conversationId}`, filename: 'beta.pdf' },
+    ] : [];
+    const sourceRows = ['A', 'B'].map((part, index) => [sourceFiles.length > 0 ? `F${index + 1}` : '', part, category, '2', '6', '100', '200']);
     const order = `## ocr_result\n\n${table(['來源', '零件編號', '類別', '數量', '厚度', '寬度', '長度'], sourceRows)}`;
+    const ocrService = createSteelOcrStateService(mongoose);
+    for (const sourceFile of sourceFiles) {
+      await withMongo(async (database) => database.collection('files').insertOne({
+        user: new ObjectId(userId), conversationId, messageId,
+        file_id: sourceFile.fileId, filename: sourceFile.filename,
+        filepath: join(__dirname, 'fixtures', sourceFile.filename), type: 'application/pdf',
+        bytes: 1024, object: 'file', source: 'local', context: 'message_attachment',
+        createdAt: new Date(), updatedAt: new Date(),
+      }));
+      await ocrService.allocateDelegateSourceMapping({ conversationId,
+        fileId: sourceFile.fileId, sourceFilename: sourceFile.filename });
+    }
+    if (sourceFiles.length > 0) {
+      await ocrService.upsertCurrentOcrResult({ conversationId, generationId: messageId,
+        attemptNumber: 1, markdown: order, messageId });
+    }
     const state = await service.setOrder({ scope, fullMarkdown: order });
     const customerMarkdown = renderQuotationCustomerMarkdown({ tier: 'B' });
     await service.saveCustomer({ scope, customerMarkdown, customerIdentity: 'explicit-default:B',
@@ -61,6 +91,10 @@ export async function seedCalculation(mode: Mode = 'plate', notes = '', processi
       orderHash: ticket.orderHash, customerMarkdown, customerIdentity: ticket.customerIdentity,
       prompts: { child: 'material fixture child', main: 'material fixture review' },
       chunks: chunks.map((chunk) => ({ index: chunk.chunkIndex, sourceRowCount: chunk.sourceRows.length })),
+      ...(sourceFiles.length > 0 ? { sourceSnapshot: {
+        orderHash: state.currentOrder!.sha256, generationId: messageId, resultMessageId: messageId,
+        resultHash: state.currentOrder!.sha256, mappings: await ocrService.readSourceMappings(conversationId),
+      } } : {}),
       targetMessageId: messageId });
     createModels(mongoose);
     const methods = createMethods(mongoose);
@@ -89,9 +123,11 @@ export async function seedCalculation(mode: Mode = 'plate', notes = '', processi
         if (input.role === 'main') return { markdown: '無待複核事項。', lookups: [], pythonEvidence: [] };
         if (!input.lookup) throw new Error('Missing real runner lookup seam');
         await input.lookup('material-lookup', { queries: [{ queryId: 'q1', categories: [category] }] });
+        const materialNotes = sourceFiles.length > 0 || processingRows ? ['A', 'B'] : [notes, notes];
         return { markdown: `## system_order_chunk\n\n${table(quotationChildSystemOrderColumns,
           ['A', 'B'].map((part) => [code, `REVIEW-${code}-${part}`, 'M1', mode === 'unknown' ? 'pc' : 'kg',
-            '2', '1', mode === 'unknown' ? '3' : '2', '10', '2', '', '6', '100', '200', '', category, part, notes]).concat(processingRows ? [['PROCESS', 'REVIEW-PROCESS', '', '刀', '2', '', '2', '10', '1', '', '', '', '', '', '加工/切工', 'A', notes]] : []))}`,
+            '2', '1', mode === 'unknown' ? '3' : '2', '10', '2', '', '6', '100', '200', '', category, part,
+            materialNotes[part === 'A' ? 0 : 1]]).concat(processingRows ? [['PROCESS', 'REVIEW-PROCESS', '', '刀', '2', '', '2', '10', '1', '', '', '', '', '', '加工/切工', 'A', 'A']] : []))}`,
         lookups: [], pythonEvidence: [] };
       },
       publishFinal: createSteelQuotationPublicationPublisher({ scope,
@@ -106,7 +142,7 @@ export async function seedCalculation(mode: Mode = 'plate', notes = '', processi
     });
     expect(result.status).toBe('completed');
     expect(lookups).toBe(1);
-    return { conversationId, messageId, runId: run.runId, lookups };
+    return { conversationId, messageId, runId: run.runId, lookups, sourceFiles };
   } finally {
     await mongoose.disconnect();
   }

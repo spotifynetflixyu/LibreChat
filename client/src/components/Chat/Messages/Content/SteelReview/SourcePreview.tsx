@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { useAtom } from 'jotai';
 import { Button } from '@librechat/client';
-import { ZoomIn, ZoomOut } from 'lucide-react';
+import { ScanSearch, ZoomIn, ZoomOut } from 'lucide-react';
 import pdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.mjs?url';
 import type { SteelReviewSourceFile } from 'librechat-data-provider';
 import type * as pdfjsLib from 'pdfjs-dist/build/pdf.mjs';
@@ -11,6 +11,7 @@ import { steelReviewPreviewStateFamily } from './state';
 export interface SteelReviewSourcePreviewLabels {
   zoomIn: string;
   zoomOut: string;
+  fit: string;
   loading: string;
   retry: string;
   unavailable: string;
@@ -163,7 +164,7 @@ export default function SteelReviewSourcePreview({
 
   const handlePointerDown = useCallback(
     (event: React.PointerEvent<HTMLDivElement>) => {
-      event.currentTarget.setPointerCapture(event.pointerId);
+      event.currentTarget.setPointerCapture?.(event.pointerId);
       dragRef.current = { x: event.clientX, y: event.clientY, pan };
       setPreviewState((state) => ({ ...state, dragging: true }));
     },
@@ -177,21 +178,43 @@ export default function SteelReviewSourcePreview({
     }
     setPreviewState((state) => ({
       ...state,
-      pan: { x: drag.pan.x + event.clientX - drag.x, y: drag.pan.y + event.clientY - drag.y },
+      pan: {
+        x: drag.pan.x + event.clientX - drag.x,
+        y: drag.pan.y + event.clientY - drag.y,
+      },
     }));
   }, [setPreviewState]);
 
   const handlePointerUp = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    if (event.currentTarget.hasPointerCapture(event.pointerId)) {
-      event.currentTarget.releasePointerCapture(event.pointerId);
+    if (event.currentTarget.hasPointerCapture?.(event.pointerId)) {
+      event.currentTarget.releasePointerCapture?.(event.pointerId);
     }
     dragRef.current = undefined;
     setPreviewState((state) => ({ ...state, dragging: false }));
   }, [setPreviewState]);
 
+  const handleKeyDown = useCallback((event: React.KeyboardEvent<HTMLDivElement>) => {
+    const panBy = 40;
+    const panDelta = {
+      ArrowDown: { x: 0, y: panBy },
+      ArrowLeft: { x: -panBy, y: 0 },
+      ArrowRight: { x: panBy, y: 0 },
+      ArrowUp: { x: 0, y: -panBy },
+    }[event.key];
+    if (!panDelta) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    setPreviewState((state) => ({
+      ...state,
+      pan: { x: state.pan.x + panDelta.x, y: state.pan.y + panDelta.y },
+    }));
+  }, [setPreviewState]);
+
   if (!source) {
     return (
-      <div className="flex min-h-48 items-center justify-center rounded-md bg-surface-secondary p-6 text-sm text-text-secondary">
+      <div className="flex h-full min-h-0 w-full flex-1 items-center justify-center rounded-md bg-surface-secondary p-6 text-sm text-text-secondary">
         {labels.unavailable}
       </div>
     );
@@ -199,7 +222,7 @@ export default function SteelReviewSourcePreview({
   if (loading) {
     return (
       <div
-        className="flex min-h-48 items-center justify-center rounded-md bg-surface-secondary p-6 text-sm text-text-secondary"
+        className="flex h-full min-h-0 w-full flex-1 items-center justify-center rounded-md bg-surface-secondary p-6 text-sm text-text-secondary"
         aria-live="polite"
       >
         {labels.loading}
@@ -213,7 +236,7 @@ export default function SteelReviewSourcePreview({
     };
     return (
       <div
-        className="flex min-h-48 flex-col items-center justify-center gap-3 rounded-md bg-surface-secondary p-6 text-sm text-text-secondary"
+        className="flex h-full min-h-0 w-full flex-1 flex-col items-center justify-center gap-3 rounded-md bg-surface-secondary p-6 text-sm text-text-secondary"
         role="alert"
       >
         <span>{labels.unavailable}</span>
@@ -226,27 +249,13 @@ export default function SteelReviewSourcePreview({
 
   const transform = `translate(${pan.x}px, ${pan.y}px) scale(${zoom})`;
   return (
-    <div className="space-y-2">
-      <div className="flex justify-end gap-2">
-        <Button
-          type="button"
-          variant="outline"
-          aria-label={labels.zoomOut}
-          onClick={() => updateZoom(-0.25)}
-        >
-          <ZoomOut className="size-4" aria-hidden="true" />
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          aria-label={labels.zoomIn}
-          onClick={() => updateZoom(0.25)}
-        >
-          <ZoomIn className="size-4" aria-hidden="true" />
-        </Button>
-      </div>
+    <div className="relative flex h-full min-h-0 w-full flex-1 flex-col">
       <div
-        className="flex min-h-[22rem] touch-none items-center justify-center overflow-hidden rounded-md bg-surface-secondary"
+        className="relative flex h-full min-h-0 w-full flex-1 touch-none items-center justify-center overflow-hidden rounded-md bg-surface-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary"
+        role="region"
+        aria-label={labels.canvas}
+        tabIndex={0}
+        onKeyDown={handleKeyDown}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={handlePointerUp}
@@ -257,19 +266,49 @@ export default function SteelReviewSourcePreview({
           ref={canvasRef}
           aria-label={labels.canvas}
           aria-hidden={imageUrl ? true : undefined}
-          className={imageUrl ? 'hidden' : 'max-h-[60vh] max-w-full select-none object-contain'}
+          className={imageUrl ? 'hidden' : 'h-auto w-auto max-h-full max-w-full select-none object-contain'}
           style={{ transform }}
         />
         {imageUrl && (
           <img
             src={imageUrl}
             alt={labels.canvas}
-            className="max-h-[60vh] max-w-full select-none object-contain"
+            className="h-auto w-auto max-h-full max-w-full select-none object-contain"
             draggable={false}
             onError={() => setPreviewState((state) => ({ ...state, renderError: true }))}
             style={{ transform }}
           />
         )}
+        <div
+          className="absolute bottom-3 right-3 z-10 flex gap-2"
+          onClick={(event) => event.stopPropagation()}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          <Button
+            type="button"
+            variant="outline"
+            aria-label={labels.zoomOut}
+            onClick={() => updateZoom(-0.25)}
+          >
+            <ZoomOut className="size-4" aria-hidden="true" />
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            aria-label={labels.zoomIn}
+            onClick={() => updateZoom(0.25)}
+          >
+            <ZoomIn className="size-4" aria-hidden="true" />
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
+            aria-label={labels.fit}
+            onClick={() => setPreviewState((state) => ({ ...state, zoom: 1, pan: { x: 0, y: 0 } }))}
+          >
+            <ScanSearch className="size-4" aria-hidden="true" />
+          </Button>
+        </div>
       </div>
     </div>
   );

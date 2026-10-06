@@ -5,8 +5,7 @@ Spec: https://github.com/spotifynetflixyu/LibreChat/issues/1
 Integration branch: `codex/steel-source-review`.
 Draft PR: https://github.com/spotifynetflixyu/LibreChat/pull/16.
 
-Current execution (2026-10-05): continue sequentially from slice10 through slice14; verify,
-review and integrate each slice, then update GitHub before starting the next slice. The canonical Markdown locator is **messageId + exact full title**.
+Current execution (2026-10-06): slices01–12 are integrated. Complete the approved Steel review UI amendment, update GitHub evidence, then pause before slice13 (#14) and whole-feature slice14 (#15). The canonical Markdown locator is **messageId + exact full title**.
 Each reply contains at most one Markdown section with that full title; another message's same
 title is independent. Authorization, output ownership and expected revision remain backend guards.
 No positional aliases or older review wire compatibility are retained.
@@ -30,14 +29,14 @@ Baseline: `056eb076ac0b9f7b7ccaba74672ae1288fab662a`.
 | 02 | [多檔單頁原檔預覽](https://github.com/spotifynetflixyu/LibreChat/issues/3) | #2 | Verified (`c3bd8ad1c`) |
 | 03 | [OCR 草稿、手動儲存與精準聊天更新](https://github.com/spotifynetflixyu/LibreChat/issues/4) | #2 | Verified (`1db96bd67`) |
 | 04 | [單一來源 selector 與未定位列補標](https://github.com/spotifynetflixyu/LibreChat/issues/5) | #3, #4 | Verified (`65c9b2140`) |
-| 05 | [OCR 列增刪與本次 undo／redo](https://github.com/spotifynetflixyu/LibreChat/issues/6) | #3, #4 | Verified (`e4ed93c76`) |
+| 05 | [OCR 列新增、綁定、刪除與明確 Save](https://github.com/spotifynetflixyu/LibreChat/issues/6) | #3, #4 | UI amendment implemented; exact-head evidence in GitHub |
 | 06 | [System order 修正與內部報價原子同步](https://github.com/spotifynetflixyu/LibreChat/issues/7) | #4 | Verified (`dfec53c9a`) |
-| 07 | [材料與加工列綁定及整組增刪復原](https://github.com/spotifynetflixyu/LibreChat/issues/8) | #5, #7 | Verified (`d46c9d99a`) |
+| 07 | [材料與加工列綁定及整組增刪復原](https://github.com/spotifynetflixyu/LibreChat/issues/8) | #5, #7 | Notes grouping implemented; exact-head evidence in GitHub |
 | 08 | [材料單重與計價總數依賴重算](https://github.com/spotifynetflixyu/LibreChat/issues/9) | #7 | Verified (`e6ba86e35`) |
 | 09 | [加工計量輸入與 save 前重算](https://github.com/spotifynetflixyu/LibreChat/issues/10) | #8, #9 | Verified; OPEN until PR merge |
-| 10 | [材料 async selector 與精確 customer tier 價格](https://github.com/spotifynetflixyu/LibreChat/issues/11) | #9 | Pending |
-| 11 | [加工 async selector 與材料適用性](https://github.com/spotifynetflixyu/LibreChat/issues/12) | #10, #11 | Pending |
-| 12 | [AI 完整輸出、退役舊編輯與每版覆核隔離](https://github.com/spotifynetflixyu/LibreChat/issues/13) | #6, #8, #11, #12 | Pending |
+| 10 | [材料 async selector 與精確 customer tier 價格](https://github.com/spotifynetflixyu/LibreChat/issues/11) | #9 | Verified; OPEN until PR merge |
+| 11 | [加工 async selector 與材料適用性](https://github.com/spotifynetflixyu/LibreChat/issues/12) | #10, #11 | Verified; OPEN until PR merge |
+| 12 | [AI 完整輸出、退役舊編輯與每版覆核隔離](https://github.com/spotifynetflixyu/LibreChat/issues/13) | #6, #8, #11, #12 | Verified; OPEN until PR merge |
 | 13 | [更新時間選 OCR 報價輸入與固定 resume](https://github.com/spotifynetflixyu/LibreChat/issues/14) | #4, #13 | Pending |
 | 14 | [聊天精準更新獨立審查與 UI／DB 整體验收](https://github.com/spotifynetflixyu/LibreChat/issues/15) | #13, #14 | Pending |
 
@@ -126,3 +125,8 @@ Slice10 final integrated evidence at `7a0494dd0db20b4292e376943fd08f8e1cb11eaa`:
 Slice11 actor implementation evidence at `6017dc26d15f831616cfd90652eebb5335c8bb1f`: processing selectors share the catalog UI/cache contract and filter by staged material category and exact cutting thickness boundaries. Explicit processing selection retains binding/source/quantity/measurement inputs, uses the frozen tier, and recalculates supported totals; missing prices or incomplete new-candidate measurement remain blank and saveable. Save resolves candidate identities again and validates the selected processing against all staged parent operations, without revalidating existing processing during material changes. Shared applicability preserves existing pricing-tool exports and exact decimal comparisons. Focused provider71/API58/client80, five private builds, three changed-workspace noEmit, scoped imports/semantic lint and committed diff checks passed. Built material/processing Chrome4 passed at the preceding implementation checkpoint; the final ordering correction passed both processing cases against Chrome, real Express and disposable wiredTiger Mongo, with producer input, DB readback and reload. Only the external PostgreSQL catalog boundary is stubbed; this is not evidence of execution against Supabase. Independent SPEC and STANDARDS approved the exact actor head. Integration, remote push and ticket completion follow the guarded merger workflow.
 
 The existing route and Markdown review host test fixtures now supply the idle external catalog boundary introduced by the selectors. Their original behavior assertions remain unchanged; owning focused suites pass API5 and host45 (two previously retired in-flight-edit cases remain skipped). Semantic lint/import checks pass without executing Prettier. Remote CI at the preceding pushed head still reports failures and is not claimed green; full-feature CI/static investigation remains in slice14.
+
+2026-10-06 UI amendment: see [approved UI plan](2026-10-06-steel-review-ui.md). OCR and system_order share table controls but retain their own headers and editing policies. Both have Add item and Bind/Bound/Delete; only system_order derives material groups from Notes on blur. Undo/redo, fullscreen and dialog download are retired. GitHub #6/#8 are temporarily implementation:in-progress for this amendment; #14/#15 remain pending.
+
+
+2026-10-06 UI amendment implemented: fixed preview＋two-row scrolling editor, OCR／system own headers, Add item／Unlinked／source popup／Delete, Notes blur grouping only for system order, OCR category menu, undo／redo／fullscreen／dialog-download retirement. Client 109 passed／2 previously skipped、provider51、API37；three representative actual browser flows and a normal-publication full-header OCR recheck passed. Lighthouse passed median LCP3793.685ms／CLS0.0168823／TBT51.531ms. Repository OCR fixed list now includes 頁碼；rule dry-run passed but no DEV／PROD sync. Exact-head independent review, pushed head and issue state readback are recorded in GitHub completion evidence. Pause before13/#14 and whole-feature14/#15, both Pending; issue closure awaits PR merge.

@@ -1,10 +1,19 @@
+import mongoose from 'mongoose';
 import { ObjectId } from 'mongodb';
 import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { expect, test } from '@playwright/test';
+import { createMethods, createModels } from '@librechat/data-schemas';
 import type { SteelReviewErrorResponse, SteelReviewOperationCommit, SteelReviewOperationPrepare, SteelReviewOperationPrepared, SteelReviewSaveResponse, SteelReviewTable } from 'librechat-data-provider';
 import type { Locator, Page } from '@playwright/test';
+import {
+  createSteelMarkdownCompletionServices,
+  createSteelOcrStateService,
+  createSteelQuotationStateService,
+  prepareQuotationTurn,
+} from '@librechat/api';
+import { createSteelFullMarkdownPublisher } from '../../../packages/api/src/steel/markdown/full';
 import {
   deleteConversations,
   deleteMessagesByConversation,
@@ -85,6 +94,88 @@ async function seedCurrent(markdown: string) {
   return { conversationId, messageId };
 }
 
+interface PublishedSourceFixture {
+  fileId: string;
+  filename: string;
+  type: string;
+}
+
+/** Seed the representative OCR response through the normal admission/publication boundary. */
+async function seedCurrentPublished(markdown: string, sourceFiles: PublishedSourceFixture[] = [
+  { fileId: 'review-alpha', filename: 'alpha.pdf', type: 'application/pdf' },
+]) {
+  const conversationId = randomUUID();
+  const messageId = randomUUID();
+  const email = getE2EUser().email;
+  await seedConversations(email, [{ conversationId, title: 'Steel source review proof', updatedAt: new Date() }]);
+  const { userId, userObjectId } = await withMongo(async (db) => {
+    const user = await db.collection('users').findOne({ email });
+    if (!user) throw new Error('Missing authenticated fixture user');
+    return { userId: String(user._id), userObjectId: user._id };
+  });
+  await withMongo(async (db) => {
+    await db.collection('files').insertMany(sourceFiles.map((source) => ({
+      user: userObjectId,
+      conversationId,
+      messageId,
+      file_id: source.fileId,
+      filename: source.filename,
+      filepath: join(__dirname, 'fixtures', source.type === 'image/heic' ? 'alpha.pdf' : source.filename),
+      type: source.type,
+      bytes: 1024,
+      object: 'file',
+      source: 'local',
+      context: 'message_attachment',
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    })));
+  });
+  const runtimePath = process.env.E2E_RUNTIME_ENV_PATH ?? `${process.cwd()}/e2e/specs/.test-results/runtime-env.json`;
+  const runtime = JSON.parse(await readFile(runtimePath, 'utf8')) as { MONGO_URI: string };
+  await mongoose.connect(runtime.MONGO_URI);
+  try {
+    createModels(mongoose);
+    const methods = createMethods(mongoose);
+    const ocrService = createSteelOcrStateService(mongoose);
+    for (const source of sourceFiles) {
+      await ocrService.allocateDelegateSourceMapping({ conversationId,
+        fileId: source.fileId, sourceFilename: source.filename });
+    }
+    const scope = { userId, conversationId };
+    const generationId = randomUUID();
+    const quotation = await prepareQuotationTurn({ scope, messageId: `ocr-user-${generationId}`,
+      responseId: messageId, generationId, publicationStore: methods, text: '確認 OCR 來源表格' });
+    let physical = markdown;
+    const finalizer = createSteelMarkdownCompletionServices({
+      ocr: ocrService,
+      quotation: createSteelQuotationStateService(mongoose),
+    });
+    const result = await finalizer.finalize({
+      req: { user: { id: userId }, cookies: { lang: 'zh-TW' },
+        steelNativeContext: { requestId: messageId, ocrTurnActive: true, quotation } },
+      responseId: messageId,
+      generationId,
+      markdown,
+      completed: true,
+      applyMarkdown: (value) => { physical = value; },
+      persistMarkdown: (options) => methods.saveMessage({ userId }, {
+        user: userId, conversationId, messageId, text: physical,
+        content: [{ type: 'text', text: physical }], isCreatedByUser: false, sender: 'Assistant',
+        unfinished: options?.completed === false,
+      }, { context: 'steel-review-e2e-normal-ocr' }),
+      publishMarkdown: createSteelFullMarkdownPublisher({
+        buildMessage: ({ markdown: clean }) => ({ user: userId, conversationId, messageId,
+          text: clean, isCreatedByUser: false, sender: 'Assistant' }),
+        savePublication: methods.publishSteelMarkdown,
+      }),
+    });
+    if (!result.publication) throw new Error('Missing normal OCR publication');
+  } finally {
+    await mongoose.disconnect();
+  }
+  return { conversationId, messageId };
+}
+
 async function seedSavedReviewData(page: Page, headers: { Authorization: string }) {
   const { conversationId, messageId } = await seedCurrent(ocr);
   const read = await page.request.get(titleReadUrl(conversationId, messageId), { headers });
@@ -142,6 +233,16 @@ function expectPreservedAiState(
 
 function reviewValue(dialog: Locator, value: string) {
   return dialog.locator(`input[value=${JSON.stringify(value)}]`).or(dialog.getByText(value, { exact: true }));
+}
+
+async function bindSource(page: Page, row: Locator, rowId: string, filename: string, pageNumber: string): Promise<void> {
+  await row.getByRole('button', { name: new RegExp(`^(?:Bind|Bound) ${rowId}$`, 'u') }).click();
+  const popup = page.getByRole('dialog', { name: 'Bind source', exact: true });
+  await popup.getByRole('combobox', { name: 'Source file', exact: true }).click();
+  await page.getByRole('option', { name: filename, exact: true }).click();
+  await popup.getByRole('combobox', { name: /page/iu }).click();
+  await page.getByRole('option', { name: pageNumber, exact: true }).click();
+  await popup.getByRole('button', { name: 'Confirm', exact: true }).click();
 }
 
 function readUrl(conversationId: string, messageId: string, title = 'ocr_result') {
@@ -250,6 +351,7 @@ test.describe('Steel managed source review', () => {
       await db.collection('steel_review_outputs').deleteMany({ conversationId: { $in: ids } });
       await db.collection('steel_delegate_ocr_runs').deleteMany({ conversationId: { $in: ids } });
       await db.collection('steel_quotation_states').deleteMany({ conversationId: { $in: ids } });
+      await db.collection('steel_quotation_artifacts').deleteMany({ conversationId: { $in: ids } });
       await db.collection('files').deleteMany({ conversationId: { $in: ids } });
     });
     await deleteConversations(ids);
@@ -700,45 +802,41 @@ test.describe('Steel managed source review', () => {
     }
     expect(await persistedSnapshot(conversationId)).toEqual(before);
   });
-
   test('real multi-PDF/image preview filters independent page rows and never writes the chat', async ({ page }) => {
     const markdown = [
       'PREVIEW-KEEP-PREFIX',
+      '## source_file_mapping',
+      '| 來源 | 檔名 |',
+      '| --- | --- |',
+      '| F1 | alpha.pdf |',
+      '| F2 | beta.pdf |',
+      '| F3 | gamma.png |',
+      '| F4 | delta.heic |',
       '## ocr_result',
-      '| 來源 | 零件編號 | 長度 | 數量 | 頁碼 |',
-      '| --- | --- | --- | --- | --- |',
-      '| A | ALPHA-ONE-A | 1000 | 2 | 1 |',
-      '| A | ALPHA-ONE-B | 1000 | 2 | 1 |',
-      '| A | ALPHA-TWO | 2000 | 3 | 2 |',
-      '| B | BETA-TWO | 2000 | 3 | 2 |',
-      '| B | BETA-ONE | 2000 | 3 | 1 |',
-      '| C | GAMMA-ONE | 3000 | 4 | 1 |',
-      '| D | UNPREVIEWABLE-SOURCE | 3000 | 4 | 1 |',
-      '| A | OUT-OF-RANGE-PAGE | 3000 | 4 | 99 |',
-      '|  | UNLOCATED-PREVIEW | 4000 | 5 |  |',
+      '| 來源 | 頁碼 | 類別 | 零件編號 | 品名規格 | 厚度 | 長度 | 寬度 | 數量 | 加工 | 備註 |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+      '| F1 | 1 | 鐵板 | ALPHA-ONE-A | 鋼板 6x1000x1000 | 6 | 1000 | 1000 | 2 |  |  |',
+      '| F1 | 1 | 鐵板 | ALPHA-ONE-B | 鋼板 6x1000x1000 | 6 | 1000 | 1000 | 2 |  |  |',
+      '| F1 | 2 | 鐵板 | ALPHA-TWO | 鋼板 6x1000x2000 | 6 | 2000 | 1000 | 3 |  |  |',
+      '| F2 | 2 | 鐵板 | BETA-TWO | 鋼板 6x1000x2000 | 6 | 2000 | 1000 | 3 |  |  |',
+      '| F2 | 1 | 鐵板 | BETA-ONE | 鋼板 6x1000x2000 | 6 | 2000 | 1000 | 3 |  |  |',
+      '| F3 | 1 | 鐵板 | GAMMA-ONE | 鋼板 6x1000x3000 | 6 | 3000 | 1000 | 4 |  |  |',
+      '| F4 | 1 | 鐵板 | UNPREVIEWABLE-SOURCE | 鋼板 6x1000x3000 | 6 | 3000 | 1000 | 4 |  |  |',
+      '| F1 | 99 | 鐵板 | OUT-OF-RANGE-PAGE | 鋼板 6x1000x3000 | 6 | 3000 | 1000 | 4 |  |  |',
+      '|  |  | 鐵板 | UNLOCATED-PREVIEW | 鋼板 6x1000x4000 | 6 | 4000 | 1000 | 5 |  |  |',
       'PREVIEW-KEEP-SUFFIX',
     ].join('\n');
-    const { conversationId, messageId } = await seedCurrent(markdown);
+    const { conversationId, messageId } = await seedCurrentPublished(markdown, [
+      { fileId: 'review-alpha', filename: 'alpha.pdf', type: 'application/pdf' },
+      { fileId: 'review-beta', filename: 'beta.pdf', type: 'application/pdf' },
+      { fileId: 'review-gamma', filename: 'gamma.png', type: 'image/png' },
+      { fileId: 'review-unpreviewable', filename: 'delta.heic', type: 'image/heic' },
+    ]);
     conversations.push(conversationId);
     await withMongo(async (db) => {
       const alpha = await db.collection('files').findOne({ conversationId, file_id: 'review-alpha' });
       if (!alpha) throw new Error('Missing fixture file');
-      const file = alpha;
-      await db.collection('files').insertMany([
-        { ...file, _id: new ObjectId(), file_id: 'review-beta', filename: 'beta.pdf', filepath: join(__dirname, 'fixtures', 'beta.pdf') },
-        { ...file, _id: new ObjectId(), file_id: 'review-gamma', filename: 'gamma.png', filepath: join(__dirname, 'fixtures', 'gamma.png'), type: 'image/png' },
-        { ...file, _id: new ObjectId(), file_id: 'review-unpreviewable', filename: 'delta.heic', type: 'image/heic' },
-        { ...file, _id: new ObjectId(), file_id: 'review-foreign-tenant', filename: 'foreign-tenant.pdf', tenantId: 'different-tenant' },
-      ]);
-      await db.collection('steel_conversation_ocr_state').updateOne({ conversationId }, { $set: {
-        currentOcrResultMarkdown: markdown,
-        sourceMappings: [
-          { fileId: 'review-alpha', sourceCode: 'A', sourceFilename: 'alpha.pdf' },
-          { fileId: 'review-beta', sourceCode: 'B', sourceFilename: 'beta.pdf' },
-          { fileId: 'review-gamma', sourceCode: 'C', sourceFilename: 'gamma.png' },
-          { fileId: 'review-unpreviewable', sourceCode: 'D', sourceFilename: 'delta.heic' },
-        ],
-      } });
+      await db.collection('files').insertOne({ ...alpha, _id: new ObjectId(), file_id: 'review-foreign-tenant', filename: 'foreign-tenant.pdf', tenantId: 'different-tenant' });
     });
     const before = await persistedSnapshot(conversationId);
     const sourcesUrl = `/api/steel/conversations/${conversationId}/review/ocr_result/sources?${new URLSearchParams({ messageId, title: 'ocr_result' })}`;
@@ -761,6 +859,10 @@ test.describe('Steel managed source review', () => {
     await page.goto(`/c/${conversationId}`);
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    const tableHeaders = await dialog.locator('thead tr th').allTextContents();
+    expect(tableHeaders.slice(1)).toEqual(['來源', '頁碼', '類別', '零件編號', '品名規格', '厚度', '長度', '寬度', '數量', '加工', '備註']);
+    const heading = page.locator('h2[data-markdown-title]').filter({ hasText: 'ocr_result' });
+    await expect(heading).toContainText('Latest version');
     const canvas = dialog.locator('canvas');
     await expect.poll(() => canvas.evaluate((element: HTMLCanvasElement) => element.width)).toBeGreaterThan(0);
     const checksum = () => canvas.evaluate((element: HTMLCanvasElement) => {
@@ -780,15 +882,13 @@ test.describe('Steel managed source review', () => {
     await expect(reviewValue(dialog, 'ALPHA-ONE-A')).toBeVisible();
     await expect(reviewValue(dialog, 'ALPHA-ONE-B')).toBeVisible();
     await expect(reviewValue(dialog, 'ALPHA-TWO')).toHaveCount(0);
-    await expect(reviewValue(dialog, 'UNLOCATED-PREVIEW')).toBeVisible();
-    await expect(reviewValue(dialog, 'UNPREVIEWABLE-SOURCE')).toBeVisible();
-    await expect(reviewValue(dialog, 'OUT-OF-RANGE-PAGE')).toBeVisible();
+    await expect(reviewValue(dialog, 'UNPREVIEWABLE-SOURCE')).toHaveCount(0);
+    await expect(reviewValue(dialog, 'OUT-OF-RANGE-PAGE')).toHaveCount(0);
     await dialog.getByRole('button', { name: 'Next page', exact: true }).click();
     await expect(reviewValue(dialog, 'ALPHA-TWO')).toBeVisible();
     await expect(reviewValue(dialog, 'ALPHA-ONE-A')).toHaveCount(0);
     await expect.poll(checksum).not.toBe('');
     await expect.poll(checksum).not.toBe(firstPage);
-    await dialog.getByRole('button', { name: 'Next page', exact: true }).click();
     await dialog.getByRole('combobox', { name: 'Source file', exact: true }).click();
     await page.getByRole('option', { name: 'beta.pdf', exact: true }).click();
     await dialog.getByRole('combobox', { name: 'Page', exact: true }).click();
@@ -807,8 +907,6 @@ test.describe('Steel managed source review', () => {
     await page.mouse.move(panStart.x + 30, panStart.y + 20);
     await page.mouse.up();
     await expect(canvas).toHaveCSS('transform', /30, 20\)$/);
-    await dialog.getByRole('button', { name: 'Enter fullscreen', exact: true }).click();
-    await expect(dialog.getByRole('button', { name: 'Exit fullscreen', exact: true })).toBeVisible();
     await dialog.getByRole('combobox', { name: 'Source file', exact: true }).click();
     await page.getByRole('option', { name: 'gamma.png', exact: true }).click();
     const image = dialog.getByRole('img', { name: 'Source page preview', exact: true });
@@ -820,39 +918,52 @@ test.describe('Steel managed source review', () => {
     await page.getByRole('option', { name: 'alpha.pdf', exact: true }).click();
     await expect.poll(() => canvas.evaluate((element: HTMLCanvasElement) => element.width)).toBeGreaterThan(0);
     await expect(reviewValue(dialog, 'ALPHA-ONE-A')).toBeVisible();
-    const fullscreenBounds = await dialog.boundingBox();
-    expect(fullscreenBounds?.x).toBeCloseTo(0, 0);
-    expect(fullscreenBounds?.y).toBeCloseTo(0, 0);
+    if (process.env.STEEL_REVIEW_UI_SCREENSHOT) {
+      await page.setViewportSize({ width: 1660, height: 1000 });
+      await page.screenshot({
+        path: process.env.STEEL_REVIEW_UI_SCREENSHOT.replace(/(\.[^.]+)?$/u, '-ocr$1'),
+        fullPage: false,
+        animations: 'disabled',
+      });
+    }
+    await dialog.getByRole('checkbox', { name: 'Unlinked', exact: true }).check();
+    await expect(reviewValue(dialog, 'UNLOCATED-PREVIEW')).toBeVisible();
+    const existingRowIds = new Set(await dialog.locator('tbody tr[data-row-id]').evaluateAll((rows) => rows
+      .map((entry) => entry.getAttribute('data-row-id'))
+      .filter((rowId): rowId is string => Boolean(rowId))));
+    await dialog.getByRole('button', { name: 'Add item', exact: true }).click();
+    await expect.poll(async () => (await dialog.locator('tbody tr[data-row-id]').evaluateAll((rows) => rows
+      .map((entry) => entry.getAttribute('data-row-id'))
+      .filter((rowId): rowId is string => Boolean(rowId)))).find((rowId) => !existingRowIds.has(rowId)) ?? '')
+      .not.toBe('');
+    const addedRowId = (await dialog.locator('tbody tr[data-row-id]').evaluateAll((rows) => rows
+      .map((entry) => entry.getAttribute('data-row-id'))
+      .filter((rowId): rowId is string => Boolean(rowId)))).find((rowId) => !existingRowIds.has(rowId));
+    if (!addedRowId) throw new Error('Missing OCR Add item row identity');
+    const addedRow = dialog.locator(`tr[data-row-id="${addedRowId}"]`);
+    await addedRow.getByRole('combobox', { name: `類別 ${addedRowId}`, exact: true }).click();
+    await page.getByRole('option', { name: 'H型鋼', exact: true }).click();
+    await addedRow.getByRole('button', { name: `Bind ${addedRowId}`, exact: true }).click();
+    const bindDialog = page.getByRole('dialog', { name: 'Bind source', exact: true });
+    await expect(bindDialog).toBeVisible();
+    await bindDialog.getByRole('combobox', { name: 'Source file', exact: true }).click();
+    await page.getByRole('option', { name: 'beta.pdf', exact: true }).click();
+    await bindDialog.getByRole('combobox', { name: /page/iu }).click();
+    await page.getByRole('option', { name: '2', exact: true }).click();
+    await bindDialog.getByRole('button', { name: 'Confirm', exact: true }).click();
+    await expect(addedRow.getByRole('button', { name: `Bound ${addedRowId}`, exact: true })).toBeVisible();
+    await addedRow.getByRole('button', { name: `Delete row ${addedRowId}`, exact: true }).click();
+    await expect(addedRow).toHaveCount(0);
+    await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+    await dialog.getByRole('checkbox', { name: 'Unlinked', exact: true }).uncheck();
     await dialog.getByRole('combobox', { name: 'Source file', exact: true }).click();
     await expect(page.getByRole('listbox')).toBeVisible();
-    // Radix positions and focuses the selected item after opening its portal.
-    // Exercise Escape after the menu's observable keyboard readiness.
     await expect(page.getByRole('option', { name: 'alpha.pdf', exact: true })).toBeFocused();
     await page.keyboard.press('Escape');
     await expect(page.getByRole('listbox')).toHaveCount(0);
     await expect(dialog).toBeVisible();
     await page.keyboard.press('Escape');
     await expect(dialog).not.toBeVisible();
-    await page.reload();
-    await expect(page.getByText('PREVIEW-KEEP-PREFIX', { exact: true })).toBeVisible();
-    await page.setViewportSize({ width: 390, height: 844 });
-    const themeColors: string[] = [];
-    for (const mode of ['light', 'dark']) {
-      await page.evaluate((value) => localStorage.setItem('color-theme', value), mode);
-      await page.reload();
-      await expect(page.locator('html')).toHaveClass(new RegExp(mode));
-      await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
-      await expect(reviewValue(dialog, 'ALPHA-ONE-A')).toBeVisible();
-      await expect.poll(checksum).not.toBe('');
-      const narrowBounds = await dialog.boundingBox();
-      expect(narrowBounds?.width).toBeLessThanOrEqual(390);
-      await expect(dialog.getByRole('combobox', { name: 'Source file', exact: true })).toBeVisible();
-      themeColors.push(await dialog.evaluate((element) => getComputedStyle(element).backgroundColor));
-      await dialog.getByRole('combobox', { name: 'Source file', exact: true }).focus();
-      await page.keyboard.press('Escape');
-      await expect(dialog).not.toBeVisible();
-    }
-    expect(themeColors[0]).not.toBe(themeColors[1]);
     expect(await persistedSnapshot(conversationId)).toEqual(before);
   });
 
@@ -1484,30 +1595,20 @@ test.describe('Steel managed source review', () => {
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
     const row = dialog.locator('tbody tr').filter({ has: page.locator('input[value="REVIEW-P1"]') });
+    await dialog.getByRole('checkbox', { name: 'Unlinked', exact: true }).check();
     await expect(row).toBeVisible();
-    await row.getByRole('button', { name: `Change source ${table.rows[0].rowId}`, exact: true }).click();
-    await row.getByRole('combobox', { name: 'Source file', exact: true }).click();
-    await page.getByRole('option', { name: 'alpha.pdf', exact: true }).click();
-    const sourcePage = row.getByRole('combobox', { name: 'Source page', exact: true });
-    await sourcePage.click();
-    await expect(page.getByRole('option', { name: '3', exact: true })).toBeVisible();
-    await page.keyboard.press('Escape');
-    await expect(dialog).toBeVisible();
-    await expect(page.getByRole('button', { name: 'Discard unsaved changes', exact: true })).toHaveCount(0);
-    await sourcePage.click();
-    await page.getByRole('option', { name: '2', exact: true }).click();
+    await bindSource(page, row, table.rows[0].rowId, 'alpha.pdf', '2');
+    await dialog.getByRole('checkbox', { name: 'Unlinked', exact: true }).uncheck();
     await dialog.getByRole('combobox', { name: 'Page', exact: true }).click();
     await page.getByRole('option', { name: '2', exact: true }).click();
     await expect(reviewValue(dialog, 'REVIEW-P1')).toBeVisible();
-    await expect(row.locator('td').nth(4).getByText('2', { exact: true })).toBeVisible();
-    await expect(row.locator('td').nth(4).locator('del')).toHaveText('1');
     await expect(dialog.getByText('Unsaved changes: 1 rows', { exact: true })).toBeVisible();
     expect(await persistedSnapshot(conversationId)).toEqual(before);
     await expect(page.getByRole('listbox', { includeHidden: true })).toHaveCount(0);
     await page.keyboard.press('Escape');
     await expect(page.getByRole('button', { name: 'Continue editing', exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Continue editing', exact: true }).click();
-    await expect(row.getByRole('combobox', { name: 'Source page', exact: true })).toHaveText('2');
+    await expect(row.getByRole('button', { name: `Bound ${table.rows[0].rowId}`, exact: true })).toBeVisible();
     expect(await persistedSnapshot(conversationId)).toEqual(before);
     await page.keyboard.press('Escape');
     const prepareRequest = page.waitForRequest((request) => request.method() === 'POST' &&
@@ -1540,11 +1641,13 @@ test.describe('Steel managed source review', () => {
     await expect(page.locator('del')).toHaveCount(0);
     await page.reload();
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    await dialog.getByRole('combobox', { name: 'Page', exact: true }).click();
+    await page.getByRole('option', { name: '2', exact: true }).click();
     await expect(reviewValue(dialog, 'REVIEW-P1')).toBeVisible();
     expect(await persistedSnapshot(conversationId)).toEqual(after);
   });
 
-  test('a source file swap clears its page and clearing the association remains a legal explicit Save', async ({ page }) => {
+  test('a source file and page binding remains a local draft until explicit Save', async ({ page }) => {
     const { conversationId, messageId } = await seedCurrent(ocr);
     conversations.push(conversationId);
     await seedSelectorFiles(conversationId);
@@ -1557,35 +1660,26 @@ test.describe('Steel managed source review', () => {
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
     const row = dialog.locator('tbody tr').filter({ has: page.locator('input[value="REVIEW-P1"]') });
     await expect(row).toBeVisible();
-    await row.getByRole('button', { name: `Change source ${table.rows[0].rowId}`, exact: true }).click();
-    await row.getByRole('combobox', { name: 'Source file', exact: true }).click();
-    await page.getByRole('option', { name: 'beta.pdf', exact: true }).click();
-    await expect(row.getByRole('combobox', { name: 'Source page', exact: true })).toHaveText('No page');
+    await bindSource(page, row, table.rows[0].rowId, 'beta.pdf', '2');
     await expect(dialog.getByText('Unsaved changes: 1 rows', { exact: true })).toBeVisible();
     expect(await persistedSnapshot(conversationId)).toEqual(before);
     await dialog.getByRole('button', { name: /^Save/ }).click();
     await expect(dialog.getByText('Updated 1 rows', { exact: true })).toBeVisible();
     const saved = await persistedSnapshot(conversationId);
-    expect(saved.reviews[0]?.rows[0].source).toMatchObject({ fileId: 'review-beta', pageNumber: null });
-    expect(saved.reviews[0]?.rows[0].values['頁碼'].effective).toBe('');
+    expect(saved.reviews[0]?.rows[0].source).toMatchObject({ fileId: 'review-beta', pageNumber: 2 });
+    expect(saved.reviews[0]?.rows[0].values['頁碼'].effective).toBe('2');
     expect(saved.reviews[0]?.rows[1]).toEqual({ ...table.rows[1], origin: 'ai', deleted: false });
-    await row.getByRole('combobox', { name: 'Source file', exact: true }).click();
-    await page.getByRole('option', { name: 'Clear source', exact: true }).click();
-    await expect(row.getByRole('combobox', { name: 'Source page', exact: true })).toHaveCount(0);
-    expect(await persistedSnapshot(conversationId)).toEqual(saved);
-    await dialog.getByRole('button', { name: /^Save/ }).click();
-    await expect.poll(async () => (await persistedSnapshot(conversationId)).reviews[0]?.rows[0].source).toBeNull();
-    const cleared = await persistedSnapshot(conversationId);
-    expect(cleared.reviews[0]?.rows[0].values['來源']).toEqual({ baseline: 'A', effective: '' });
-    expect(cleared.reviews[0]?.rows[0].values['頁碼']).toEqual({ baseline: '1', effective: '' });
-    expect(cleared.reviews[0]?.receipts).toHaveLength(2);
-    expectPreservedAiState(before.ocr, cleared.ocr);
+    expectPreservedAiState(before.ocr, saved.ocr);
     await page.keyboard.press('Escape');
     await expect(dialog).not.toBeVisible();
     await page.reload();
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+    await dialog.getByRole('combobox', { name: 'Source file', exact: true }).click();
+    await page.getByRole('option', { name: 'beta.pdf', exact: true }).click();
+    await dialog.getByRole('combobox', { name: 'Page', exact: true }).click();
+    await page.getByRole('option', { name: '2', exact: true }).click();
     await expect(reviewValue(dialog, 'REVIEW-P1')).toBeVisible();
-    expect(await persistedSnapshot(conversationId)).toEqual(cleared);
+    expect(await persistedSnapshot(conversationId)).toEqual(saved);
   });
 
   test('OCR ledger authority rejects forged identities and anchors while independent manual rows save atomically', async ({ page }) => {
@@ -1710,15 +1804,17 @@ test.describe('Steel managed source review', () => {
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
     const row = dialog.locator('tbody tr').filter({ has: page.locator('input[value="REVIEW-P1"]') });
-    await row.getByRole('button', { name: `Change source ${table.rows[0].rowId}`, exact: true }).click();
-    await row.getByRole('combobox', { name: 'Source file', exact: true }).click();
+    await bindSource(page, row, table.rows[0].rowId, 'beta.pdf', '2');
+    await dialog.getByRole('combobox', { name: 'Source file', exact: true }).click();
     await page.getByRole('option', { name: 'beta.pdf', exact: true }).click();
     await expect(dialog.getByText('Unsaved changes: 1 rows', { exact: true })).toBeVisible();
     expect(await persistedSnapshot(conversationId)).toEqual(before);
-    await row.getByRole('combobox', { name: 'Source file', exact: true }).click();
+    await dialog.getByRole('combobox', { name: 'Source file', exact: true }).click();
     await page.getByRole('option', { name: 'alpha.pdf', exact: true }).click();
-    await row.getByRole('combobox', { name: 'Source page', exact: true }).click();
+    await dialog.getByRole('combobox', { name: 'Page', exact: true }).click();
     await page.getByRole('option', { name: '1', exact: true }).click();
+    await expect(row).toBeVisible();
+    await bindSource(page, row, table.rows[0].rowId, 'alpha.pdf', '1');
     await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
     expect(await persistedSnapshot(conversationId)).toEqual(before);
     await page.keyboard.press('Escape');
@@ -2711,18 +2807,14 @@ test.describe('Steel managed source review', () => {
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
     await expect(dialog.locator('tbody tr')).toHaveCount(2);
-    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
-    await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
-    await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Add item', exact: true }).click();
     await expect(dialog.locator('tbody tr')).toHaveCount(3);
     await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
     expect(await persistedSnapshot(conversationId)).toEqual(before);
     await dialog.locator('tbody tr').last().getByRole('button', { name: /^Delete row(?:\s|$)/ }).click();
     await expect(dialog.locator('tbody tr')).toHaveCount(2);
     await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
-    await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
     await expect(dialog.locator('tbody tr')).toHaveCount(3);
-    await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
     await expect(dialog.locator('tbody tr')).toHaveCount(2);
     expect(await persistedSnapshot(conversationId)).toEqual(before);
     await page.keyboard.press('Escape');
@@ -2730,8 +2822,6 @@ test.describe('Steel managed source review', () => {
     await expect(page.getByRole('button', { name: 'Discard unsaved changes', exact: true })).toHaveCount(0);
     expect(await persistedSnapshot(conversationId)).toEqual(before);
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
-    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
-    await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
   });
 
   test('two identical OCR additions retain independent identities and one selected source through Save and reload', async ({ page }) => {
@@ -2743,7 +2833,7 @@ test.describe('Steel managed source review', () => {
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
     await expect.poll(() => dialog.locator('canvas').evaluate((element: HTMLCanvasElement) => element.width)).toBeGreaterThan(0);
     for (let index = 0; index < 2; index += 1) {
-      await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
+      await dialog.getByRole('button', { name: 'Add item', exact: true }).click();
       const row = dialog.locator('tbody tr').last();
       await row.locator('td').nth(1).getByRole('textbox').fill('MANUAL-DUPLICATE');
       await row.locator('td').nth(2).getByRole('textbox').fill('3000');
@@ -2809,8 +2899,6 @@ test.describe('Steel managed source review', () => {
     await page.reload();
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
     await expect(dialog.locator('tbody tr')).toHaveCount(4);
-    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
-    await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
     expect(await persistedSnapshot(conversationId)).toEqual(after);
   });
 
@@ -2838,8 +2926,6 @@ test.describe('Steel managed source review', () => {
       rows: [{ origin: 'ai', deleted: true }, { origin: 'ai', deleted: true }],
       receipts: [{ changedRows: 2 }] });
     expectPreservedAiState(before.ocr, after.ocr);
-    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
-    await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
     await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
     expect(await persistedSnapshot(conversationId)).toEqual(after);
     await page.keyboard.press('Escape');
@@ -2857,11 +2943,10 @@ test.describe('Steel managed source review', () => {
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
     await expect(dialog.locator('del').filter({ hasText: 'REVIEW-P1' })).toBeVisible();
     await expect(dialog.locator('del').filter({ hasText: 'REVIEW-P2' })).toBeVisible();
-    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
-    await expect(dialog.getByRole('button', { name: 'Add row', exact: true })).toBeEnabled();
+    await expect(dialog.getByRole('button', { name: 'Add item', exact: true })).toBeEnabled();
     expect(await persistedSnapshot(conversationId)).toEqual(after);
     await expect.poll(() => dialog.locator('canvas').evaluate((element: HTMLCanvasElement) => element.width)).toBeGreaterThan(0);
-    await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Add item', exact: true }).click();
     const addedRow = dialog.locator('tbody tr').last();
     await addedRow.locator('td').nth(1).getByRole('textbox').fill('AFTER-ALL-DELETE');
     await addedRow.locator('td').nth(2).getByRole('textbox').fill('500');
@@ -2884,89 +2969,6 @@ test.describe('Steel managed source review', () => {
     await expect(dialog.locator('del').filter({ hasText: 'REVIEW-P1' })).toBeVisible();
     expect(await persistedSnapshot(conversationId)).toEqual(afterAdd);
   });
-
-  test('OCR cell history groups a focused edit, clears on Save, and starts fresh for later edits', async ({ page }) => {
-    const { conversationId, messageId } = await seedCurrent(ocr);
-    conversations.push(conversationId);
-    const before = await persistedSnapshot(conversationId);
-    await page.goto(`/c/${conversationId}`);
-    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
-    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
-    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
-    const undo = dialog.getByRole('button', { name: 'Undo', exact: true });
-    const redo = dialog.getByRole('button', { name: 'Redo', exact: true });
-    await quantity.fill('7');
-    await quantity.press('8');
-    await quantity.press('Enter');
-    await expect(quantity).toHaveValue('78');
-    await undo.click();
-    await expect(quantity).toHaveValue('2');
-    await expect(undo).toBeDisabled();
-    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
-    await redo.click();
-    await expect(quantity).toHaveValue('78');
-    await quantity.fill('79');
-    await quantity.press('Enter');
-    await undo.click();
-    await expect(quantity).toHaveValue('78');
-    await expect(undo).toBeEnabled();
-    await expect(redo).toBeEnabled();
-    expect(await persistedSnapshot(conversationId)).toEqual(before);
-    await dialog.getByRole('button', { name: /^Save/ }).click();
-    await expect(dialog.getByText('Updated 1 rows', { exact: true })).toBeVisible();
-    const saved = await persistedSnapshot(conversationId);
-    expect(saved.messages.find((message) => message.messageId === messageId)?.text)
-      .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 78 | 1 |'));
-    await expect(undo).toBeDisabled();
-    await expect(redo).toBeDisabled();
-    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
-    expect(await persistedSnapshot(conversationId)).toEqual(saved);
-    await quantity.fill('9');
-    await quantity.press('Enter');
-    await expect(redo).toBeDisabled();
-    await undo.click();
-    await expect(quantity).toHaveValue('78');
-    await expect(undo).toBeDisabled();
-    await redo.click();
-    await expect(quantity).toHaveValue('9');
-    expect(await persistedSnapshot(conversationId)).toEqual(saved);
-    await page.keyboard.press('Escape');
-    await page.getByRole('button', { name: 'Discard unsaved changes', exact: true }).click();
-    await expect(dialog).not.toBeVisible();
-    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
-    await expect(quantity).toHaveValue('78');
-    await expect(undo).toBeDisabled();
-    await expect(redo).toBeDisabled();
-    expect(await persistedSnapshot(conversationId)).toEqual(saved);
-  });
-
-  for (const boundary of ['enter', 'blur']) {
-    test(`OCR refocusing a cell starts a new undo group after ${boundary}`, async ({ page }) => {
-      const { conversationId } = await seedCurrent(ocr);
-      conversations.push(conversationId);
-      const before = await persistedSnapshot(conversationId);
-      await page.goto(`/c/${conversationId}`);
-      await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
-      const dialog = page.getByRole('dialog', { name: 'Steel source review' });
-      const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
-      await quantity.fill('7');
-      if (boundary === 'enter') await quantity.press('Enter');
-      else await dialog.getByRole('heading', { name: 'Steel source review' }).click();
-      await quantity.fill('8');
-      await quantity.press('Enter');
-      await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
-      await expect(quantity).toHaveValue('7');
-      await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
-      await expect(quantity).toHaveValue('2');
-      await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
-      await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
-      await expect(quantity).toHaveValue('7');
-      await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
-      await expect(quantity).toHaveValue('8');
-      expect(await persistedSnapshot(conversationId)).toEqual(before);
-    });
-  }
-
   test('OCR additions allocate new ordinals after saved manual rows and tombstones', async ({ page }) => {
     const { conversationId, messageId } = await seedCurrent(ocr);
     conversations.push(conversationId);
@@ -2980,12 +2982,12 @@ test.describe('Steel managed source review', () => {
           .getByRole('button', { name: /^Delete row(?:\s|$)/ }).click();
         await dialog.getByRole('button', { name: /^Save/ }).click();
         await expect.poll(async () => (await persistedSnapshot(conversationId)).reviews[0]?.receipts.length).toBe(3);
-        await expect(dialog.getByRole('button', { name: 'Add row', exact: true })).toBeEnabled();
+        await expect(dialog.getByRole('button', { name: 'Add item', exact: true })).toBeEnabled();
         await page.keyboard.press('Escape');
         await expect(dialog).not.toBeVisible();
         await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
       }
-      await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
+      await dialog.getByRole('button', { name: 'Add item', exact: true }).click();
       const row = dialog.locator('tbody tr').last();
       await row.locator('td').nth(1).getByRole('textbox').fill(part);
       await row.locator('td').nth(3).getByRole('textbox').fill('4');
@@ -3013,38 +3015,7 @@ test.describe('Steel managed source review', () => {
     expect(await persistedSnapshot(conversationId)).toEqual(saved);
   });
 
-  test('consecutive OCR Saves clear history without changing the immutable AI baseline', async ({ page }) => {
-    const { conversationId, messageId } = await seedCurrent(ocr);
-    conversations.push(conversationId);
-    await page.goto(`/c/${conversationId}`);
-    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
-    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
-    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
-    for (const value of ['78', '9']) {
-      await quantity.fill(value);
-      await quantity.press('Enter');
-      await dialog.getByRole('button', { name: /^Save/ }).click();
-      await expect(dialog.getByText('Updated 1 rows', { exact: true })).toBeVisible();
-      await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
-      await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
-      await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
-      await expect.poll(async () => (await persistedSnapshot(conversationId)).messages
-        .find((message) => message.messageId === messageId)?.text)
-        .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', `| A | REVIEW-P1 | 1000 | ${value} | 1 |`));
-    }
-    const saved = await persistedSnapshot(conversationId);
-    expect(saved.reviews[0]?.receipts).toHaveLength(2);
-    expect(saved.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
-    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
-    await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
-    await page.keyboard.press('Escape');
-    await expect(dialog).not.toBeVisible();
-    await page.reload();
-    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
-    await expect(quantity).toHaveValue('9');
-    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
-    expect(await persistedSnapshot(conversationId)).toEqual(saved);
-  });
+
 
   test('OCR restored tombstone edit then delete saves one normal compound draft', async ({ page }) => {
     const { conversationId, messageId } = await seedCurrent(ocr);
@@ -3091,8 +3062,6 @@ test.describe('Steel managed source review', () => {
     expect(saved.reviews[0]?.receipts).toMatchObject([{ changedRows: 1 }, { changedRows: 1 }]);
     expect(saved.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
     expectPreservedAiState(deleted.ocr, saved.ocr);
-    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
-    await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
     await page.keyboard.press('Escape');
     await page.reload();
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
@@ -3100,61 +3069,9 @@ test.describe('Steel managed source review', () => {
     expect(await persistedSnapshot(conversationId)).toEqual(saved);
   });
 
-  test('OCR source and business undo stay attached across pages and clear after Save', async ({ page }) => {
-    const { conversationId, messageId } = await seedCurrent(ocr);
-    conversations.push(conversationId);
-    const before = await persistedSnapshot(conversationId);
-    const read = await page.request.get(readUrl(conversationId, messageId, 'ocr_result'), { headers });
-    expect(read.status()).toBe(200);
-    const { table } = await read.json() as { table: SteelReviewTable };
-    await page.goto(`/c/${conversationId}`);
-    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
-    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
-    const row = dialog.locator('tbody tr').filter({ has: page.locator('input[value="REVIEW-P1"]') });
-    const quantity = row.locator('td').nth(3).getByRole('textbox');
-    await quantity.fill('7');
-    await quantity.press('Enter');
-    await row.getByRole('button', { name: `Change source ${table.rows[0].rowId}`, exact: true }).click();
-    await row.getByRole('combobox', { name: 'Source page', exact: true }).click();
-    await page.getByRole('option', { name: '2', exact: true }).click();
-    const selectPage = async (value: string) => {
-      await dialog.getByRole('combobox', { name: 'Page', exact: true }).click();
-      await page.getByRole('option', { name: value, exact: true }).click();
-      await expect(page.getByRole('listbox', { includeHidden: true })).toHaveCount(0);
-    };
-    await selectPage('2');
-    await expect(quantity).toHaveValue('7');
-    await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
-    await expect(row).toHaveCount(0);
-    await selectPage('1');
-    await expect(quantity).toHaveValue('7');
-    await expect(row.locator('td').nth(4).getByText('1', { exact: true })).toBeVisible();
-    await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
-    await expect(row).toHaveCount(0);
-    await selectPage('2');
-    await expect(quantity).toHaveValue('7');
-    expect(await persistedSnapshot(conversationId)).toEqual(before);
-    await dialog.getByRole('button', { name: /^Save/ }).click();
-    await expect(dialog.getByText('Updated 1 rows', { exact: true })).toBeVisible();
-    const saved = await persistedSnapshot(conversationId);
-    expect(saved.reviews[0]?.rows[0]).toMatchObject({ rowId: table.rows[0].rowId,
-      source: { fileId: 'review-alpha', pageNumber: 2 }, values: { 數量: { baseline: '2', effective: '7' } } });
-    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
-    await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
-    await expect(quantity).toHaveValue('7');
-    await expect(row.locator('td').nth(4).getByText('2', { exact: true })).toBeVisible();
-    await quantity.fill('8');
-    await quantity.press('Enter');
-    await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
-    await expect(quantity).toHaveValue('7');
-    await expect(row.locator('td').nth(4).getByText('2', { exact: true })).toBeVisible();
-    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
-    expect(await persistedSnapshot(conversationId)).toEqual(saved);
-    await page.keyboard.press('Escape');
-    await expect(dialog).not.toBeVisible();
-  });
 
-  test('a failed OCR prepare keeps grouped history and retry saves only the chosen draft', async ({ page }) => {
+
+  test('a failed OCR prepare keeps retained draft and retry saves only the chosen draft', async ({ page }) => {
     const { conversationId, messageId } = await seedCurrent(ocr);
     conversations.push(conversationId);
     const before = await persistedSnapshot(conversationId);
@@ -3170,10 +3087,8 @@ test.describe('Steel managed source review', () => {
     await expect(dialog.getByRole('alert')).toBeVisible();
     await expect(quantity).toHaveValue('78');
     expect(await persistedSnapshot(conversationId)).toEqual(before);
-    await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
     await expect(quantity).toHaveValue('2');
     await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
-    await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
     await expect(quantity).toHaveValue('78');
     expect(await persistedSnapshot(conversationId)).toEqual(before);
     await page.unroute(prepareUrl);
@@ -3192,7 +3107,7 @@ test.describe('Steel managed source review', () => {
     await page.goto(`/c/${conversationId}`);
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
-    await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Add item', exact: true }).click();
     const added = dialog.locator('tbody tr').last();
     await added.locator('td').nth(1).getByRole('textbox').fill('MANUAL-ONLY');
     await added.locator('td').nth(3).getByRole('textbox').fill('4');
@@ -3209,10 +3124,8 @@ test.describe('Steel managed source review', () => {
     await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
     await expect(dialog.locator('del').filter({ hasText: 'MANUAL-ONLY' })).toHaveCount(0);
     expect(await persistedSnapshot(conversationId)).toEqual(first);
-    await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
     await expect(dialog.locator('input[value="MANUAL-ONLY"]')).toBeVisible();
     await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
-    await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
     await expect(dialog.locator('input[value="MANUAL-ONLY"]')).toHaveCount(0);
     await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
     expect(await persistedSnapshot(conversationId)).toEqual(first);
@@ -3224,8 +3137,6 @@ test.describe('Steel managed source review', () => {
     expect(second.reviews[0]?.rows).toContainEqual(expect.objectContaining({ rowId: manual?.rowId,
       origin: 'manual', deleted: true }));
     expect(second.reviews[0]?.receipts[1]).toMatchObject({ changedRows: 1, changedRowIds: [manual?.rowId] });
-    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
-    await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
     await expect(dialog.locator('input[value="MANUAL-ONLY"]')).toHaveCount(0);
     await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
     await page.keyboard.press('Escape');
@@ -3509,8 +3420,6 @@ test.describe('Steel managed source review', () => {
     }
     await expect(oneUnsavedRow).toHaveCount(0);
     await expect(quantity).toHaveValue('7');
-    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
-    await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
     expect(await persistedSnapshot(conversationId)).toEqual(firstCommitted);
     await page.unroute(commitUrl);
     await page.keyboard.press('Escape');
@@ -3569,20 +3478,15 @@ test.describe('Steel managed source review', () => {
           .replace('| A | REVIEW-P2 | 2000 | 3 | 1 |', '| A | REVIEW-P2 | 2000 | 7 | 1 |')
         : ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', `| A | REVIEW-P1 | ${merge === 'other_field' ? '1234' : '1000'} | 9 | 1 |`);
       expect(merged.messages.find((message) => message.messageId === messageId)?.text).toBe(clean);
-      await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
-      await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
       if (merge !== 'same_value') {
         await quantity.fill('10');
         await quantity.press('Enter');
-        await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
         await expect(quantity).toHaveValue('9');
         if (merge === 'other_field') {
           await expect(dialog.locator('tbody tr').first().locator('td').nth(2).getByRole('textbox')).toHaveValue('1234');
         }
         expect(await persistedSnapshot(conversationId)).toEqual(merged);
-        await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
         await expect(quantity).toHaveValue('10');
-        await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
         await expect(quantity).toHaveValue('9');
       }
       await page.keyboard.press('Escape');
@@ -3642,13 +3546,6 @@ test.describe('Steel managed source review', () => {
               .replace('| A | REVIEW-P2 | 2000 | 3 | 1 |', '| A | REVIEW-P2 | 2000 | 7 | 1 |'));
           expect(merged.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
           await expect(dialog.locator('tbody tr').last().locator('td').nth(3).getByRole('textbox')).toHaveValue('7');
-          const ready = page.waitForEvent('download');
-          await dialog.getByRole('button', { name: 'Download table as CSV', exact: true }).click();
-          const path = await (await ready).path();
-          if (!path) throw new Error('Missing merged confirmed CSV');
-          const csv = await readFile(path, 'utf8');
-          expect(csv).toMatch(/REVIEW-P1,1000,9/);
-          expect(csv).toMatch(/REVIEW-P2,2000,7/);
           expect(await persistedSnapshot(conversationId)).toEqual(merged);
         }
       } finally {
@@ -3887,77 +3784,6 @@ test.describe('Steel managed source review', () => {
     });
   }
 
-  test('OCR download saves the focused draft and exports the confirmed clean snapshot', async ({ page }) => {
-    const { conversationId, messageId } = await seedCurrent(ocr);
-    conversations.push(conversationId);
-    await page.goto(`/c/${conversationId}`);
-    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
-    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
-    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
-    await quantity.fill('8');
-    const downloadReady = page.waitForEvent('download');
-    await dialog.getByRole('button', { name: /Download.*CSV/i }).click();
-    const download = await downloadReady;
-    expect(download.suggestedFilename()).toMatch(/\.csv$/);
-    const downloadedPath = await download.path();
-    if (!downloadedPath) throw new Error('Missing completed CSV download');
-    const csv = await readFile(downloadedPath, 'utf8');
-    // Fixture values contain no commas, quotes or line breaks.
-    const [columns, ...records] = csv.replace(/^\uFEFF/, '').trim().split(/\r?\n/).map((line) =>
-      line.split(',').map((value) => value.replace(/^"|"$/g, '')));
-    expect(records.map((record) => Object.fromEntries(columns.map((column, index) => [column, record[index]])))).toEqual([
-      { 來源: 'A', 零件編號: 'REVIEW-P1', 長度: '1000', 數量: '8', 頁碼: '1' },
-      { 來源: 'A', 零件編號: 'REVIEW-P2', 長度: '2000', 數量: '3', 頁碼: '1' },
-    ]);
-    expect(csv).not.toMatch(/<del>|~~|Updated|Previous version/);
-    const saved = await persistedSnapshot(conversationId);
-    expect(saved.messages.find((message) => message.messageId === messageId)?.text)
-      .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 8 | 1 |'));
-    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
-    const unchangedDownload = page.waitForEvent('download');
-    await dialog.getByRole('button', { name: /Download.*CSV/i }).click();
-    await unchangedDownload;
-    expect(await persistedSnapshot(conversationId)).toEqual(saved);
-  });
-  test('closed managed toolbars download confirmed OCR data without creating a human Save', async ({ page }) => {
-    const { conversationId } = await seedCurrent(ocr);
-    conversations.push(conversationId);
-    const before = await persistedSnapshot(conversationId);
-    await page.goto(`/c/${conversationId}`);
-    await expect(page.getByRole('button', { name: 'Open Steel review', exact: true })).toBeVisible();
-    for (const expanded of [false, true]) {
-      if (expanded) await page.getByRole('button', { name: 'Expand table', exact: true }).click();
-      const scope = expanded ? page.getByRole('dialog', { name: 'Expand table' }) : page;
-      const downloadReady = page.waitForEvent('download');
-      await scope.getByRole('button', { name: 'Download table as CSV', exact: true }).click();
-      const download = await downloadReady;
-      const downloadedPath = await download.path();
-      if (!downloadedPath) throw new Error('Missing completed confirmed CSV');
-      const csv = await readFile(downloadedPath, 'utf8');
-      expect(csv).toContain('A,REVIEW-P1,1000,2,1');
-      expect(csv).toContain('A,REVIEW-P2,2000,3,1');
-      expect(csv).not.toMatch(/<del>|~~|Updated|Previous version/);
-      expect(await persistedSnapshot(conversationId)).toEqual(before);
-      if (expanded) await scope.getByRole('button', { name: 'Close table', exact: true }).click();
-    }
-    await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
-    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
-    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
-    await quantity.fill('9');
-    await dialog.getByRole('button', { name: /^Save/ }).click();
-    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
-    await page.keyboard.press('Escape');
-    await expect(dialog).not.toBeVisible();
-    const saved = await persistedSnapshot(conversationId);
-    const downloadReady = page.waitForEvent('download');
-    await page.getByRole('button', { name: 'Download table as CSV', exact: true }).click();
-    const download = await downloadReady;
-    const downloadedPath = await download.path();
-    if (!downloadedPath) throw new Error('Missing completed saved CSV');
-    expect(await readFile(downloadedPath, 'utf8')).toContain('A,REVIEW-P1,1000,9,1');
-    expect(await persistedSnapshot(conversationId)).toEqual(saved);
-  });
-
   test('a failed receipt lookup can retry without committing an unsaved OCR draft', async ({ page }) => {
     const { conversationId } = await seedCurrent(ocr);
     conversations.push(conversationId);
@@ -4148,7 +3974,6 @@ test.describe('Steel managed source review', () => {
     await expect(dialog.getByRole('alert')).toBeVisible();
     await expect(quantity).toHaveValue('9');
     await expect(dialog.locator('tbody tr').first().locator('td').nth(2).getByRole('textbox')).toHaveValue('1234');
-    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeEnabled();
     await expect(dialog.getByRole('img', { name: /Conflicts on this file/i }).first()).toBeVisible();
     await expect(dialog.getByRole('img', { name: /Conflicts on this page/i }).first()).toBeVisible();
     const fileMenu = dialog.getByRole('combobox', { name: 'Source file', exact: true });
@@ -4170,7 +3995,6 @@ test.describe('Steel managed source review', () => {
       changes: [{ header: '數量', value: '9' }] }]);
     await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
     await expect(dialog.getByRole('img', { name: /Conflicts on this (file|page)/i })).toHaveCount(0);
-    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
     const after = await persistedSnapshot(conversationId);
     expect(after.messages.find((message) => message.messageId === messageId)?.text)
       .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1234 | 9 | 1 |'));
@@ -4339,10 +4163,8 @@ test.describe('Steel managed source review', () => {
           await expect(quantity).toHaveValue('9');
           if (publication === 'foreign_save') await expect(dialog.locator('tbody tr').first().locator('td').nth(2).getByRole('textbox')).toHaveValue('1234');
           await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
-          await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
-          await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
         } else {
-          await expect(dialog.getByRole('button', { name: 'Add row', exact: true })).toHaveCount(0);
+          await expect(dialog.getByRole('button', { name: 'Add item', exact: true })).toHaveCount(0);
           await expect(dialog.getByRole('textbox')).toHaveCount(0);
           await expect(dialog.getByRole('button', { name: /^Save/ })).toBeDisabled();
         }

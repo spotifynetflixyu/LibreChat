@@ -1211,8 +1211,8 @@ export function createSteelReviewService({
         throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Only processing rows may be bound');
       }
       if (payload.kind === 'system_order' && operationSource !== undefined &&
-        operation.type === 'update' && stagedKind !== 'material') {
-        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Only material rows may select a source');
+        operation.type === 'update' && stagedKind === 'processing') {
+        throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Processing source follows its material');
       }
       if (payload.kind === 'system_order' && operationSource !== undefined &&
         operation.type === 'add' && operation.system?.kind === 'processing') {
@@ -1299,6 +1299,7 @@ export function createSteelReviewService({
     }
     const currentRows = record.rows ?? createSteelReviewBaselineRows(target, record.kind, record.outputId, record.sourceMappings, record.calculationCheckpoint);
     const headers = record.headers ?? target.headers;
+    const remarksBindingMode = payload.kind === 'system_order' && headers.includes('備註');
     const ledgerValidation = validateSteelReviewLedger(currentRows, payload.rows, headers);
     if (!ledgerValidation.ok) {
       throwLedgerValidationFailure(ledgerValidation);
@@ -1466,6 +1467,11 @@ export function createSteelReviewService({
       }
       const parent = canonicalById.get(row.system.parentRowId);
       if (!parent || parent.deleted || parent.system?.kind !== 'material') {
+        if (remarksBindingMode) {
+          const index = canonicalRows.findIndex((candidate) => candidate.rowId === row.rowId);
+          canonicalRows[index] = rowWithSource(row, null, headers);
+          continue;
+        }
         throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Processing row requires an active material parent');
       }
       const source = parent.source;

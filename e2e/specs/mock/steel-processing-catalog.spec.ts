@@ -1,8 +1,15 @@
 import { expect, test } from '@playwright/test';
+import type { Locator } from '@playwright/test';
 import type { Auth, Fixture } from './steel-calculation-fixture';
 import { seedCalculation, readTable, readback, openEditor, saveUi, saveApi } from './steel-calculation-fixture';
 import { deleteConversations, deleteMessagesByConversation, withMongo } from './db';
 import { getAccessToken } from './helpers';
+
+async function fillNotes(dialog: Locator, rowId: string, value: string): Promise<void> {
+  const notes = dialog.getByRole('textbox', { name: `備註 ${rowId}`, exact: true });
+  await notes.fill(value);
+  await notes.blur();
+}
 
 test.describe('Processing catalog normal review workflow', () => {
   const fixtures: Fixture[] = [];
@@ -22,7 +29,7 @@ test.describe('Processing catalog normal review workflow', () => {
     await deleteConversations(ids);
   });
 
-  test('filters processing options and retains query, measurement and binding through keyboard correction and Save', async ({ page }) => {
+  test('filters processing options and retains query, measurement and notes grouping through keyboard correction and Save', async ({ page }) => {
     const fixture = await seedCalculation('plate', '', true); fixtures.push(fixture);
     const initial = await readTable(page, auth, fixture);
     const child = initial.rows.find((row) => row.system?.kind === 'processing');
@@ -56,9 +63,7 @@ test.describe('Processing catalog normal review workflow', () => {
     await expect(search).toBeVisible();
     expect(queries).toBe(calls);
     await search.press('Escape');
-    await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
     await expect(model).toHaveText('PC-MULTI-A');
-    await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
     await expect(model).toHaveText('PC-MULTI-B');
     await dialog.getByRole('textbox', { name: `數量 ${parent.rowId}`, exact: true }).fill('3');
     await dialog.getByRole('textbox', { name: `總數 ${processing.rowId}`, exact: true }).blur();
@@ -89,7 +94,7 @@ test.describe('Processing catalog normal review workflow', () => {
     const initial = await readTable(page, auth, fixture);
     const oldProcessing = initial.rows.find((row) => row.system?.kind === 'processing');
     const dialog = await openEditor(page, fixture);
-    await dialog.getByRole('button', { name: 'Add material', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Add item', exact: true }).click();
     const materialModel = dialog.getByRole('combobox', { name: /^型號 /u }).last();
     const materialId = (await materialModel.locator('xpath=ancestor::tr').getByRole('textbox', { name: /^數量 /u }).getAttribute('aria-label'))!.slice('數量 '.length);
     await materialModel.click();
@@ -97,9 +102,13 @@ test.describe('Processing catalog normal review workflow', () => {
     await expect(materialModel).toHaveText('SC-UNIQUE');
     await dialog.getByRole('combobox', { name: `類別 ${materialId}`, exact: true }).click();
     await page.getByRole('option', { name: 'C型鋼', exact: true }).click();
-    await dialog.getByRole('button', { name: `Add processing under ${materialId}`, exact: true }).click();
+    await fillNotes(dialog, materialId, 'SC-UNIQUE');
+    await dialog.getByRole('button', { name: 'Add item', exact: true }).click();
     const childModel = dialog.getByRole('combobox', { name: /^型號 /u }).last();
     const childId = (await childModel.locator('xpath=ancestor::tr').getByRole('textbox', { name: /^數量 /u }).getAttribute('aria-label'))!.slice('數量 '.length);
+    await dialog.getByRole('combobox', { name: `Classify ${childId}`, exact: true }).click();
+    await page.getByRole('option', { name: 'Processing', exact: true }).click();
+    await fillNotes(dialog, childId, 'SC-UNIQUE');
     const queried = page.waitForResponse((response) => response.request().method() === 'GET' &&
       response.url().includes('/review/system_order/catalog?') && response.url().includes('PC-NOPRICE'));
     await childModel.click();

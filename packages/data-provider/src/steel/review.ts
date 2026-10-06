@@ -213,7 +213,81 @@ export function inferSteelReviewSystemState(
 
 function steelReviewCellText(row: SteelReviewRow, header: string): string {
   const cell = row.values[header];
-  return (cell?.effective ?? cell?.baseline ?? '').trim();
+  return (cell?.effective ?? '').trim();
+}
+
+function steelReviewSourceAssociationValues<T extends SteelReviewRow>(
+  row: T,
+  parent: T | undefined,
+  headers: readonly string[],
+): T['values'] {
+  const values = { ...row.values };
+  for (const header of headers) {
+    if (!isSteelReviewSourceAssociationHeader(header) || !values[header]) {
+      continue;
+    }
+    values[header] = {
+      ...values[header],
+      effective: parent?.values[header]?.effective ?? '',
+    };
+  }
+  return values;
+}
+
+/**
+ * Derive system-order processing relationships from the final row values.
+ * Material remarks are complete part numbers; a processing remark binds only
+ * when exactly one active material has the same trimmed value.
+ */
+export function bindSteelReviewSystemRows<T extends SteelReviewRow>(
+  headers: readonly string[],
+  rows: readonly T[],
+): T[] {
+  const hasRemarks = headers.includes('備註');
+  const materialsByPartNumber = new Map<string, T[]>();
+  const rowsById = new Map(rows.map((row) => [row.rowId, row]));
+  if (hasRemarks) {
+    for (const row of rows) {
+      if (row.deleted || row.system?.kind !== 'material') {
+        continue;
+      }
+      const partNumber = steelReviewCellText(row, '備註');
+      if (!partNumber) {
+        continue;
+      }
+      const matches = materialsByPartNumber.get(partNumber) ?? [];
+      matches.push(row);
+      materialsByPartNumber.set(partNumber, matches);
+    }
+  }
+
+  return rows.map((row) => {
+    if (row.deleted || row.system?.kind !== 'processing') {
+      return { ...row };
+    }
+
+    const partNumber = hasRemarks ? steelReviewCellText(row, '備註') : '';
+    if (!hasRemarks && row.system.parentRowId) {
+      const existingParent = rowsById.get(row.system.parentRowId);
+      if (!existingParent || existingParent.system?.kind !== 'material') {
+        return { ...row };
+      }
+    }
+    let parent: T | undefined;
+    if (hasRemarks) {
+      const matches = partNumber ? materialsByPartNumber.get(partNumber) ?? [] : [];
+      if (matches.length === 1) parent = matches[0];
+    } else if (row.system.parentRowId) {
+      parent = rowsById.get(row.system.parentRowId);
+    }
+    const parentRowId = parent?.system?.kind === 'material' ? parent.rowId : null;
+    return {
+      ...row,
+      source: parent?.source ? { ...parent.source } : null,
+      values: steelReviewSourceAssociationValues(row, parent, headers),
+      system: { ...row.system, parentRowId, cascadeDeletedBy: null },
+    };
+  });
 }
 
 /**
@@ -225,38 +299,7 @@ export function initializeFreshSteelReviewSystemRows(
   headers: readonly string[],
   rows: readonly SteelReviewRow[],
 ): SteelReviewRow[] {
-  if (!headers.includes('備註')) {
-    return rows.map((row) => ({ ...row }));
-  }
-  const materialsByPartNumber = new Map<string, SteelReviewRow[]>();
-  rows.forEach((row) => {
-    if (row.system?.kind !== 'material' || row.deleted) return;
-    const partNumber = steelReviewCellText(row, '備註');
-    if (!partNumber) return;
-    const matches = materialsByPartNumber.get(partNumber) ?? [];
-    matches.push(row);
-    materialsByPartNumber.set(partNumber, matches);
-  });
-  return rows.map((row) => {
-    if (row.system?.kind !== 'processing') {
-      return { ...row };
-    }
-    const partNumber = steelReviewCellText(row, '備註');
-    const matches = partNumber ? materialsByPartNumber.get(partNumber) ?? [] : [];
-    if (matches.length !== 1) {
-      return {
-        ...row,
-        source: null,
-        system: { ...row.system, parentRowId: null, cascadeDeletedBy: null },
-      };
-    }
-    const [parent] = matches;
-    return {
-      ...row,
-      source: parent.source ? { ...parent.source } : null,
-      system: { ...row.system, parentRowId: parent.rowId, cascadeDeletedBy: null },
-    };
-  });
+  return bindSteelReviewSystemRows(headers, rows);
 }
 
 export const steelReviewRowSchema = z.object({
@@ -1008,6 +1051,7 @@ function stageBinding(
   currentById: Map<string, SteelReviewLedgerRow>,
   expectedById: Map<string, SteelReviewLedgerRow>,
   conflicts: SteelReviewConflict[],
+  allowUnresolvedParent = false,
 ): void {
   const next = requestedRelationState(requested);
   if (row.deleted || expectedRow.deleted) {
@@ -1015,15 +1059,17 @@ function stageBinding(
     return;
   }
   if (next.kind === 'processing') {
-    if (!next.parentRowId) {
+    if (!next.parentRowId && !allowUnresolvedParent) {
       conflicts.push(relationConflict(row, expectedRow, next));
       return;
     }
-    const parent = currentById.get(next.parentRowId);
-    const expectedParent = expectedById.get(next.parentRowId);
-    if (!parent || !expectedParent || parent.deleted || expectedParent.deleted || parent.system?.kind !== 'material' || expectedParent.system?.kind !== 'material') {
-      conflicts.push({ kind: 'binding', rowId: row.rowId, expected: relationParentId(expectedRow), current: relationParentId(row), requested: next.parentRowId });
-      return;
+    if (next.parentRowId) {
+      const parent = currentById.get(next.parentRowId);
+      const expectedParent = expectedById.get(next.parentRowId);
+      if (!parent || !expectedParent || parent.deleted || expectedParent.deleted || parent.system?.kind !== 'material' || expectedParent.system?.kind !== 'material') {
+        conflicts.push({ kind: 'binding', rowId: row.rowId, expected: relationParentId(expectedRow), current: relationParentId(row), requested: next.parentRowId });
+        return;
+      }
     }
   } else if (next.kind === 'material' && next.parentRowId !== null) {
     conflicts.push(relationConflict(row, expectedRow, next));
@@ -1035,6 +1081,16 @@ function stageBinding(
   }
   row.system = next;
   expectedRow.system = next;
+}
+
+function operationRequestedParent(operation: SteelReviewOperation): string | undefined {
+  if ((operation.type === 'add' || operation.type === 'classify') && operation.system?.kind === 'processing') {
+    return operation.system.parentRowId ?? undefined;
+  }
+  if (operation.type === 'update' && operation.binding) {
+    return operation.binding.parentRowId ?? undefined;
+  }
+  return undefined;
 }
 
 /** Apply a strict operation request to trusted expected/current ledgers. */
@@ -1060,6 +1116,16 @@ export function applySteelReviewOperations({
   const knownIds = new Set(currentById.keys());
   const seen = new Map<string, SteelReviewOperation['type']>();
   const conflicts: SteelReviewConflict[] = [];
+  const deferredProcessingCandidates = new Set<string>();
+  const initialCurrentParents = new Map(current.map((row) => [row.rowId, relationParentId(row)]));
+  const initialExpectedParents = new Map(expected.map((row) => [row.rowId, relationParentId(row)]));
+  const remarksBindingMode = headers.includes('備註') && (
+    current.some((row) => row.system !== undefined) ||
+    expected.some((row) => row.system !== undefined) ||
+    operations.some((operation) => operation.type === 'classify' ||
+      (operation.type === 'add' && operation.system !== undefined) ||
+      (operation.type === 'update' && operation.binding !== undefined))
+  );
   const nextOrdinal = (kind: string, anchor?: string): number => {
     const key = kind === 'after' && anchor ? `after:${anchor}` : kind;
     const ordinals = current
@@ -1124,8 +1190,10 @@ export function applySteelReviewOperations({
         const expectedParent = row.system.parentRowId ? expectedById.get(row.system.parentRowId) : undefined;
         if (!parent || parent.deleted || parent.system?.kind !== 'material' ||
           !expectedParent || expectedParent.deleted || expectedParent.system?.kind !== 'material') {
-          conflicts.push({ kind: 'binding', rowId: row.rowId, expected: null, current: null, requested: row.system.parentRowId });
-          continue;
+          if (!remarksBindingMode || row.system.parentRowId) {
+            conflicts.push({ kind: 'binding', rowId: row.rowId, expected: null, current: null, requested: row.system.parentRowId });
+            continue;
+          }
         }
       }
       const expectedRow: SteelReviewLedgerRow = {
@@ -1175,11 +1243,18 @@ export function applySteelReviewOperations({
       const candidate = processingCandidates?.get(operation.rowId);
       const parent = row.system?.parentRowId ? currentById.get(row.system.parentRowId) : undefined;
       const expectedParent = expectedRow?.system?.parentRowId ? expectedById.get(expectedRow.system.parentRowId) : undefined;
+      const currentParentUsable = Boolean(parent && !parent.deleted && parent.system?.kind === 'material' &&
+        candidate && (parent ? isSteelProcessingCatalogCandidateApplicable(candidate, steelProcessingMaterialForRow(parent)) : false));
+      const expectedParentUsable = Boolean(expectedParent && !expectedParent.deleted && expectedParent.system?.kind === 'material' &&
+        candidate && (expectedParent ? isSteelProcessingCatalogCandidateApplicable(candidate, steelProcessingMaterialForRow(expectedParent)) : false));
       if (!candidate || !expectedRow || row.deleted || expectedRow.deleted ||
         row.system?.kind !== 'processing' || expectedRow.system?.kind !== 'processing' ||
-        !parent || parent.deleted || parent.system?.kind !== 'material' || !expectedParent ||
-        !isSteelProcessingCatalogCandidateApplicable(candidate, steelProcessingMaterialForRow(parent))) {
+        (!currentParentUsable || !expectedParentUsable) && !remarksBindingMode) {
         conflicts.push({ kind: 'activity', rowId: row.rowId, reason: row.deleted ? 'current-deleted' : 'unavailable' });
+        continue;
+      }
+      if (!currentParentUsable || !expectedParentUsable || !parent || !expectedParent) {
+        deferredProcessingCandidates.add(operation.rowId);
         continue;
       }
       const next = applyProcessingCandidate(row, candidate, headers, operation.selection.evidence.tier, parent);
@@ -1310,7 +1385,7 @@ export function applySteelReviewOperations({
           parentRowId: operation.binding.parentRowId,
           cascadeDeletedBy: null,
         };
-        stageBinding(row, expectedRow, requested, currentById, expectedById, conflicts);
+        stageBinding(row, expectedRow, requested, currentById, expectedById, conflicts, remarksBindingMode);
       }
       if (operation.measurement !== undefined || operation.binding !== undefined) {
         const parentId = row.system?.kind === 'processing' ? row.system.parentRowId : null;
@@ -1336,7 +1411,7 @@ export function applySteelReviewOperations({
         conflicts.push(relationConflict(row, expectedRow ?? row, operation.system));
         continue;
       }
-      stageBinding(row, expectedRow, operation.system, currentById, expectedById, conflicts);
+      stageBinding(row, expectedRow, operation.system, currentById, expectedById, conflicts, remarksBindingMode);
       continue;
     }
     if (operation.type === 'delete') {
@@ -1403,12 +1478,125 @@ export function applySteelReviewOperations({
       }
     }
   }
+  if (remarksBindingMode) {
+    const boundCurrent = bindSteelReviewSystemRows(headers, current);
+    const boundExpected = bindSteelReviewSystemRows(headers, expected);
+    current.splice(0, current.length, ...boundCurrent);
+    expected.splice(0, expected.length, ...boundExpected);
+    currentById.clear();
+    expectedById.clear();
+    current.forEach((row) => currentById.set(row.rowId, row));
+    expected.forEach((row) => expectedById.set(row.rowId, row));
+
+    for (const row of current) {
+      if (row.system?.kind !== 'processing') continue;
+      const expectedRow = expectedById.get(row.rowId);
+      if (!expectedRow || expectedRow.system?.kind !== 'processing') continue;
+      const currentParentId = relationParentId(row);
+      const expectedParentId = relationParentId(expectedRow);
+      if (currentParentId !== expectedParentId) {
+        conflicts.push({
+          kind: 'binding',
+          rowId: row.rowId,
+          expected: expectedParentId,
+          current: currentParentId,
+          requested: currentParentId,
+        });
+      }
+      const parentChanged = !initialCurrentParents.has(row.rowId) ||
+        initialCurrentParents.get(row.rowId) !== currentParentId ||
+        !initialExpectedParents.has(row.rowId) ||
+        initialExpectedParents.get(row.rowId) !== expectedParentId;
+      if (!parentChanged || row.deleted) continue;
+      const parent = currentParentId ? currentById.get(currentParentId) : undefined;
+      const expectedParent = expectedParentId ? expectedById.get(expectedParentId) : undefined;
+      const hasManualTotal = row.calculation?.fields?.['總數']?.kind === 'manual' ||
+        expectedRow.calculation?.fields?.['總數']?.kind === 'manual';
+      conflicts.push(...applyProcessingRowCalculation(row, expectedRow, parent, expectedParent, headers, !hasManualTotal));
+    }
+
+    for (const operation of operations) {
+      const requestedParentId = operationRequestedParent(operation);
+      if (!requestedParentId) continue;
+      const row = currentById.get(operation.rowId);
+      const expectedRow = expectedById.get(operation.rowId);
+      if (!row || !expectedRow || row.deleted || row.system?.kind !== 'processing') continue;
+      const currentParentId = relationParentId(row);
+      if (requestedParentId === currentParentId) continue;
+      conflicts.push({
+        kind: 'binding',
+        rowId: row.rowId,
+        expected: relationParentId(expectedRow),
+        current: currentParentId,
+        requested: requestedParentId,
+      });
+    }
+
+    for (const operation of operations) {
+      if (operation.type !== 'replace_processing') continue;
+      const candidate = processingCandidates?.get(operation.rowId);
+      const row = currentById.get(operation.rowId);
+      const expectedRow = expectedById.get(operation.rowId);
+      if (!row || !expectedRow || row.deleted || expectedRow.deleted) {
+        continue;
+      }
+      const parent = row?.system?.parentRowId ? currentById.get(row.system.parentRowId) : undefined;
+      const expectedParent = expectedRow?.system?.parentRowId ? expectedById.get(expectedRow.system.parentRowId) : undefined;
+      const parentUsable = Boolean(row && expectedRow && !row.deleted && !expectedRow.deleted &&
+        row.system?.kind === 'processing' && expectedRow.system?.kind === 'processing' &&
+        parent && !parent.deleted && parent.system?.kind === 'material' &&
+        expectedParent && !expectedParent.deleted && expectedParent.system?.kind === 'material' &&
+        candidate && isSteelProcessingCatalogCandidateApplicable(candidate, steelProcessingMaterialForRow(parent)) &&
+        isSteelProcessingCatalogCandidateApplicable(candidate, steelProcessingMaterialForRow(expectedParent)));
+      if (!parentUsable || !candidate || !row || !expectedRow || !parent || !expectedParent) {
+        conflicts.push({ kind: 'activity', rowId: operation.rowId, reason: row?.deleted ? 'current-deleted' : 'unavailable' });
+        continue;
+      }
+      if (!deferredProcessingCandidates.has(operation.rowId)) continue;
+      const next = applyProcessingCandidate(row, candidate, headers, operation.selection.evidence.tier, parent);
+      const nextExpected = applyProcessingCandidate(expectedRow, candidate, headers, operation.selection.evidence.tier, expectedParent);
+      const operationIndex = operations.indexOf(operation);
+      const laterChanges = new Set(operations.slice(operationIndex + 1).flatMap((later) =>
+        later.type === 'update' && later.rowId === operation.rowId
+          ? (later.changes ?? []).map((change) => change.header)
+          : []));
+      const mergeCandidate = (target: SteelReviewRow, candidateResult: SteelReviewRow): void => {
+        const values = { ...target.values };
+        for (const header of steelProcessingCandidateHeaders) {
+          if (!headers.includes(header) || laterChanges.has(header) || !candidateResult.values[header]) continue;
+          values[header] = { ...candidateResult.values[header] };
+        }
+        if (!laterChanges.has('總數') && candidateResult.values['總數']) {
+          values['總數'] = { ...candidateResult.values['總數'] };
+        }
+        const fields = { ...(target.calculation?.fields ?? {}) };
+        for (const header of steelProcessingCandidateHeaders) {
+          if (!laterChanges.has(header) && candidateResult.calculation?.fields?.[header]) {
+            fields[header] = candidateResult.calculation.fields[header];
+          }
+        }
+        if (!laterChanges.has('總數') && candidateResult.calculation?.fields?.['總數']) {
+          fields['總數'] = candidateResult.calculation.fields['總數'];
+        }
+        const candidateStillSelected = values['型號']?.effective === candidate.erpItemCode &&
+          values['類別']?.effective === candidate.category;
+        target.values = values;
+        target.calculation = {
+          ...(candidateStillSelected ? { candidate: candidate.calculation } : {}),
+          ...(target.calculation?.measurement ? { measurement: target.calculation.measurement } : {}),
+          ...(Object.keys(fields).length > 0 ? { fields } : {}),
+        };
+      };
+      mergeCandidate(row, next);
+      mergeCandidate(expectedRow, nextExpected);
+    }
+  }
   return conflicts.length > 0
     ? { ok: false, conflicts }
     : {
         ok: true,
-        currentRows: orderSteelReviewLedgerRows(current),
-        expectedRows: orderSteelReviewLedgerRows(expected),
+        currentRows: remarksBindingMode ? orderSteelReviewSystemRows(current) : orderSteelReviewLedgerRows(current),
+        expectedRows: remarksBindingMode ? orderSteelReviewSystemRows(expected) : orderSteelReviewLedgerRows(expected),
       };
 }
 export type SteelReviewResponse = z.infer<typeof steelReviewResponseSchema>;
@@ -1560,6 +1748,82 @@ function orderSteelReviewLedgerRows(rows: readonly SteelReviewLedgerRow[]): Stee
   return ordered;
 }
 
+function orderSteelReviewRowsByInsertion<T extends SteelReviewRow>(rows: readonly T[]): T[] {
+  const currentIndex = new Map(rows.map((row, index) => [row.rowId, index]));
+  const children = new Map<string, T[]>();
+  const starts: T[] = [];
+  const ends: T[] = [];
+  const roots: T[] = [];
+  const rowIds = new Set(rows.map((row) => row.rowId));
+  for (const row of rows) {
+    const insertion = row.insertion;
+    if (!insertion || row.origin !== 'manual') {
+      roots.push(row);
+      continue;
+    }
+    if (insertion.kind === 'start') {
+      starts.push(row);
+    } else if (insertion.kind === 'end') {
+      ends.push(row);
+    } else if (insertion.rowId && rowIds.has(insertion.rowId)) {
+      const siblings = children.get(insertion.rowId) ?? [];
+      siblings.push(row);
+      children.set(insertion.rowId, siblings);
+    } else {
+      ends.push(row);
+    }
+  }
+  const sortByOrdinal = (left: T, right: T) =>
+    (left.insertion?.ordinal ?? 0) - (right.insertion?.ordinal ?? 0) ||
+    (currentIndex.get(left.rowId) ?? 0) - (currentIndex.get(right.rowId) ?? 0);
+  const ordered: T[] = [];
+  const emitted = new Set<string>();
+  const emit = (row: T) => {
+    if (emitted.has(row.rowId)) return;
+    emitted.add(row.rowId);
+    ordered.push(row);
+    for (const child of [...(children.get(row.rowId) ?? [])].sort(sortByOrdinal)) emit(child);
+  };
+  for (const row of [...starts].sort(sortByOrdinal)) emit(row);
+  for (const row of roots) emit(row);
+  for (const row of [...ends].sort(sortByOrdinal)) emit(row);
+  for (const row of rows) emit(row);
+  return ordered;
+}
+
+/**
+ * Put each material beside its processing children while retaining stable
+ * material and insertion order. Rows without a resolvable parent remain in
+ * their stable order after the material groups.
+ */
+export function orderSteelReviewSystemRows<T extends SteelReviewRow>(rows: readonly T[]): T[] {
+  const insertionOrderedRows = orderSteelReviewRowsByInsertion(rows);
+  const materials = insertionOrderedRows.filter((row) => row.system?.kind === 'material');
+  const materialById = new Map(materials.map((row) => [row.rowId, row]));
+  const processingByParent = new Map<string, T[]>();
+  const unresolved: T[] = [];
+  for (const row of insertionOrderedRows) {
+    if (row.system?.kind !== 'processing') {
+      if (row.system?.kind !== 'material') unresolved.push(row);
+      continue;
+    }
+    const parentRowId = row.system.parentRowId;
+    if (!parentRowId || !materialById.has(parentRowId)) {
+      unresolved.push(row);
+      continue;
+    }
+    const children = processingByParent.get(parentRowId) ?? [];
+    children.push(row);
+    processingByParent.set(parentRowId, children);
+  }
+
+  const ordered: T[] = [];
+  for (const material of materials) {
+    ordered.push(material, ...(processingByParent.get(material.rowId) ?? []));
+  }
+  return [...ordered, ...unresolved];
+}
+
 /**
  * Validate and deterministically order a trusted ledger before a boundary
  * applies source authorization or persistence-specific error handling.
@@ -1570,9 +1834,16 @@ export function validateSteelReviewLedger(
   submittedRows: readonly SteelReviewRow[],
   headers: readonly string[],
 ): SteelReviewLedgerValidation {
-  const current = normalizeSteelReviewLedgerRows(currentRows);
-  const submitted = normalizeSteelReviewLedgerRows(submittedRows);
+  const normalizedCurrent = normalizeSteelReviewLedgerRows(currentRows);
+  const normalizedSubmitted = normalizeSteelReviewLedgerRows(submittedRows);
+  const canonicalizeSystemOrder = headers.includes('備註') && (
+    normalizedCurrent.some((row) => row.system !== undefined) ||
+    normalizedSubmitted.some((row) => row.system !== undefined)
+  );
+  const current = canonicalizeSystemOrder ? orderSteelReviewSystemRows(normalizedCurrent) : normalizedCurrent;
+  const submitted = canonicalizeSystemOrder ? orderSteelReviewSystemRows(normalizedSubmitted) : normalizedSubmitted;
   const currentById = new Map(current.map((row) => [row.rowId, row]));
+  const submittedById = new Map(submitted.map((row) => [row.rowId, row]));
   const seenIds = new Set<string>();
   for (const row of submitted) {
     if (seenIds.has(row.rowId)) {
@@ -1596,10 +1867,63 @@ export function validateSteelReviewLedger(
       return { ok: false, code: 'new-row-authority', rowId: row.rowId };
     }
   }
+  for (const row of current) {
+    if (!seenIds.has(row.rowId)) {
+      return { ok: false, code: 'existing-order', rowId: row.rowId };
+    }
+  }
 
-  const existingIds = submitted.filter((row) => currentById.has(row.rowId)).map((row) => row.rowId);
-  if (JSON.stringify(existingIds) !== JSON.stringify(current.map((row) => row.rowId))) {
-    return { ok: false, code: 'existing-order' };
+  if (canonicalizeSystemOrder) {
+    const currentKinds = new Map(normalizedCurrent.map((row) => [row.rowId, row.system?.kind]));
+    const submittedKinds = new Map(normalizedSubmitted.map((row) => [row.rowId, row.system?.kind]));
+    const existingKindIds = (kind: SteelReviewSystemKind) => ({
+      current: current
+        .filter((row) => currentById.has(row.rowId) && currentKinds.get(row.rowId) === kind && submittedKinds.get(row.rowId) === kind)
+        .map((row) => row.rowId),
+      submitted: submitted
+        .filter((row) => currentById.has(row.rowId) && currentKinds.get(row.rowId) === kind && submittedKinds.get(row.rowId) === kind)
+        .map((row) => row.rowId),
+    });
+    for (const kind of ['material', 'unassigned'] as const) {
+      const ids = existingKindIds(kind);
+      if (JSON.stringify(ids.current) !== JSON.stringify(ids.submitted)) {
+        return { ok: false, code: 'existing-order' };
+      }
+    }
+
+    // A remarks edit can move a processing row across material groups. Preserve
+    // sibling order within each row's final parent group, while allowing the
+    // groups themselves to move as their material binding changes.
+    const currentProcessingByFinalParent = new Map<string, string[]>();
+    const submittedProcessingByFinalParent = new Map<string, string[]>();
+    const finalParentKey = (row: SteelReviewRow) => row.system?.parentRowId ?? '';
+    for (const row of current) {
+      const finalRow = submittedById.get(row.rowId);
+      if (currentKinds.get(row.rowId) !== 'processing' || submittedKinds.get(row.rowId) !== 'processing' || !finalRow) continue;
+      const ids = currentProcessingByFinalParent.get(finalParentKey(finalRow)) ?? [];
+      ids.push(row.rowId);
+      currentProcessingByFinalParent.set(finalParentKey(finalRow), ids);
+    }
+    for (const row of submitted) {
+      if (!currentById.has(row.rowId) || currentKinds.get(row.rowId) !== 'processing' || submittedKinds.get(row.rowId) !== 'processing') continue;
+      const ids = submittedProcessingByFinalParent.get(finalParentKey(row)) ?? [];
+      ids.push(row.rowId);
+      submittedProcessingByFinalParent.set(finalParentKey(row), ids);
+    }
+    const processingParentKeys = Array.from(new Set(
+      Array.from(currentProcessingByFinalParent.keys()).concat(Array.from(submittedProcessingByFinalParent.keys())),
+    ));
+    for (const parentKey of processingParentKeys) {
+      if (JSON.stringify(currentProcessingByFinalParent.get(parentKey) ?? []) !==
+        JSON.stringify(submittedProcessingByFinalParent.get(parentKey) ?? [])) {
+        return { ok: false, code: 'existing-order' };
+      }
+    }
+  } else {
+    const existingIds = submitted.filter((row) => currentById.has(row.rowId)).map((row) => row.rowId);
+    if (JSON.stringify(existingIds) !== JSON.stringify(current.map((row) => row.rowId))) {
+      return { ok: false, code: 'existing-order' };
+    }
   }
 
   const usedOrdinals = new Set<string>();
@@ -1622,10 +1946,13 @@ export function validateSteelReviewLedger(
     usedOrdinals.add(key);
   }
 
-  const submittedById = new Map(submitted.map((row) => [row.rowId, row]));
   const newRows = submitted.filter((row) => !currentById.has(row.rowId));
-  const orderedRows = orderSteelReviewLedgerRows([...current, ...newRows]);
-  const orderedSubmittedRows = orderedRows.map((row) => submittedById.get(row.rowId) ?? row);
+  const orderedRows = canonicalizeSystemOrder
+    ? orderSteelReviewSystemRows([...current, ...newRows])
+    : orderSteelReviewLedgerRows([...current, ...newRows]);
+  const orderedSubmittedRows = canonicalizeSystemOrder
+    ? submitted
+    : orderedRows.map((row) => submittedById.get(row.rowId) ?? row);
   return { ok: true, currentRows: current, submittedRows: submitted, orderedRows, orderedSubmittedRows };
 }
 

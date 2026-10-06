@@ -1,8 +1,8 @@
 import { RecoilRoot } from 'recoil';
 import { createStore, Provider } from 'jotai';
 import { dataService, DynamicQueryKeys } from 'librechat-data-provider';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { MutableRefObject } from 'react';
 import type { SteelReviewIdentity, SteelReviewSelection } from './SteelReview/state';
 import { steelReviewDraftStateFamily, steelReviewSelectionAtom } from './SteelReview/state';
@@ -26,6 +26,14 @@ jest.mock('@librechat/client', () => {
     React.createElement('button', props, children);
   const Input = (props: React.InputHTMLAttributes<HTMLInputElement>) =>
     React.createElement('input', props);
+  const Checkbox = ({ checked, onCheckedChange, ...props }: React.InputHTMLAttributes<HTMLInputElement> & {
+    onCheckedChange?: (checked: boolean) => void;
+  }) => React.createElement('input', {
+    ...props,
+    type: 'checkbox',
+    checked,
+    onChange: (event: React.ChangeEvent<HTMLInputElement>) => onCheckedChange?.(event.target.checked),
+  });
   const Tag = ({ label, ...props }: { label: string; variant?: string }) =>
     React.createElement('div', props, label);
   const Select = ({ value, onValueChange, children }: {
@@ -46,6 +54,7 @@ jest.mock('@librechat/client', () => {
     (open ? React.createElement('div', { role: 'dialog' }, children) : null);
   return {
     Button,
+    Checkbox,
     Input,
     Tag,
     ControlCombobox: Pass,
@@ -65,7 +74,7 @@ jest.mock('@librechat/client', () => {
     SelectTrigger,
     SelectValue,
   };
-}, { virtual: true });
+});
 
 let mockMessageContext: {
   conversationId: string;
@@ -83,6 +92,7 @@ let mockMessageContext: {
 let activeReviewQueryClient: QueryClient | undefined;
 
 beforeEach(() => {
+  Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: jest.fn() });
   jest.spyOn(dataService, 'getMessagesByConvoId').mockResolvedValue([]);
   Object.defineProperty(URL, 'revokeObjectURL', {
     configurable: true,
@@ -265,25 +275,12 @@ function seedReopenedDraft(
   const draftAtomKey = getSteelReviewDraftOwnerKey(selection, table, selection.captureId);
   const ownerKey = `${getSteelReviewDraftKey(selection, table)}:${selection.captureId}`;
   const draftAtom = steelReviewDraftStateFamily(draftAtomKey);
-  const history = {
-    cells: { 'row-1\u0000數量': 'history' },
-    touched: { 'row-1\u0000數量': 'history' },
-    cellVersions: { 'row-1\u0000數量': 1 },
-    sourceDrafts: {},
-    sourceVersions: {},
-    systemVersions: {},
-    rowStates: {},
-    changeSequence: 41,
-  };
   store.set(draftAtom, (current) => ({
     ...current,
     ownerKey,
     cells: { 'row-1\u0000數量': 'reopened' },
     touched: { 'row-1\u0000數量': 'reopened' },
     cellVersions: { 'row-1\u0000數量': 42 },
-    past: [history],
-    future: [history],
-    historyGroup: 'reopened',
     changeSequence: 42,
   }));
   return { draftAtom, before: store.get(draftAtom) };
@@ -471,7 +468,7 @@ describe('MarkdownTableActions Steel review entry', () => {
     expect(csv).not.toContain('P-2');
   });
 
-  it('downloads after saving a newly added processing row', async () => {
+  it('saves a newly added processing row after classification and completed matching remarks', async () => {
     const systemIdentity: SteelReviewIdentity = {
       ...reviewIdentity,
       kind: 'system_order',
@@ -489,6 +486,7 @@ describe('MarkdownTableActions Steel review entry', () => {
       system: { kind: 'material' as const, parentRowId: null, cascadeDeletedBy: null },
       values: {
         品名規格: { baseline: '材料A', effective: '材料A' },
+        備註: { baseline: 'P1', effective: 'P1' },
         總數: { baseline: '2', effective: '2' },
         單價: { baseline: '10', effective: '10' },
       },
@@ -499,6 +497,7 @@ describe('MarkdownTableActions Steel review entry', () => {
       system: { kind: 'processing' as const, parentRowId: material.rowId, cascadeDeletedBy: null },
       values: {
         品名規格: { baseline: '加工A', effective: '加工A' },
+        備註: { baseline: 'P1', effective: 'P1' },
         總數: { baseline: '1', effective: '1' },
         單價: { baseline: '3', effective: '3' },
       },
@@ -512,6 +511,7 @@ describe('MarkdownTableActions Steel review entry', () => {
       system: { kind: 'processing' as const, parentRowId: material.rowId, cascadeDeletedBy: null },
       values: {
         品名規格: { baseline: null, effective: '加工B' },
+        備註: { baseline: null, effective: 'P1' },
         總數: { baseline: null, effective: '1' },
         單價: { baseline: null, effective: '4' },
       },
@@ -523,7 +523,7 @@ describe('MarkdownTableActions Steel review entry', () => {
       latestOutputId: 'system_order:download-run',
       isLatest: true,
       readOnly: false,
-      headers: ['品名規格', '總數', '單價'],
+      headers: ['品名規格', '總數', '單價', '備註'],
       rows: [material, processing],
     };
     const latestTable = {
@@ -579,9 +579,7 @@ describe('MarkdownTableActions Steel review entry', () => {
       savedSnapshot,
     });
     const refetch = jest.fn().mockResolvedValue({ data: { table: latestTable }, error: null });
-    const createObjectURL = jest.fn(() => 'blob:review-processing-export');
     jest.spyOn(globalThis.crypto, 'randomUUID').mockReturnValue(addedProcessing.rowId);
-    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: createObjectURL });
     mockUsePrepareSteelReviewMutation.mockReturnValue({ mutateAsync: prepare });
     mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
     mockUseGetSteelReviewQuery.mockReturnValue({
@@ -600,11 +598,21 @@ describe('MarkdownTableActions Steel review entry', () => {
       systemIdentity.title,
     ), { table: initialTable });
     renderDialog(queryClient, systemSelection, createStore(), systemIdentity);
-    fireEvent.click(await screen.findByRole('button', { name: 'com_ui_steel_review_add_processing_under material-1' }));
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_download_table_csv' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'com_ui_steel_review_add_item' }));
+    const addedRow = document.querySelector<HTMLElement>(`tr[data-row-id="${addedProcessingRowId}"]`)!;
+    fireEvent.change(within(addedRow).getByRole('combobox'), { target: { value: 'processing' } });
+    const remark = within(addedRow).getByRole('textbox', { name: `備註 ${addedProcessingRowId}` });
+    fireEvent.focus(remark);
+    fireEvent.change(remark, { target: { value: 'P1' } });
+    fireEvent.blur(remark);
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
 
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1));
+    expect(prepare).toHaveBeenCalledWith(expect.objectContaining({
+      operations: [expect.objectContaining({ type: 'add', rowId: addedProcessingRowId,
+        system: { kind: 'processing', parentRowId: material.rowId } })],
+    }));
+    expect(screen.queryByRole('button', { name: 'com_ui_download_table_csv' })).toBeNull();
   });
 
 
@@ -692,13 +700,11 @@ describe('MarkdownTableActions Steel review entry', () => {
 
     expect(await screen.findByRole('textbox', { name: '總數 row-1' })).toBeEnabled();
     expect(screen.getByRole('textbox', { name: '單價 row-1' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'com_ui_steel_review_add_material' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'com_ui_steel_review_add_processing' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: /com_ui_steel_review_delete_group/u })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /com_ui_steel_review_delete_row/u })).toBeNull();
+    expect(screen.getByRole('button', { name: 'com_ui_steel_review_add_item' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'com_ui_steel_review_delete_row row-1' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /com_ui_steel_review_restore_row/u })).toBeNull();
-    expect(screen.getByRole('columnheader', { name: 'com_ui_steel_review_source_actions' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /com_ui_steel_review_change_source/u })).toBeInTheDocument();
+    expect(screen.getByRole('columnheader', { name: 'com_ui_steel_review_action' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /com_ui_steel_review_bound/u })).toBeInTheDocument();
   });
 
   it('renders the managed empty table state without edit controls', () => {
@@ -1608,7 +1614,7 @@ describe('MarkdownTableActions Steel review entry', () => {
     await waitFor(() => expect(store.get(steelReviewSelectionAtom)?.capturedAuthority?.revision)
       .toBe(table.revision));
     const draftAtom = steelReviewDraftStateFamily(getSteelReviewDraftOwnerKey(reviewIdentity, table, reviewSelection.captureId));
-    expect(store.get(draftAtom).past.length).toBeGreaterThan(0);
+    expect(store.get(draftAtom).changeSequence).toBeGreaterThan(0);
     expect(screen.getByText('com_ui_steel_review_unsaved_caption')).toBeInTheDocument();
   });
 
@@ -2113,8 +2119,6 @@ describe('MarkdownTableActions Steel review entry', () => {
     });
     expect(prepare.mock.calls[1]?.[0]?.operationId).not.toBe(prepared.operationId);
     await waitFor(() => {
-      expect(rendered.store.get(reopenedDraft.draftAtom).past).toEqual([]);
-      expect(rendered.store.get(reopenedDraft.draftAtom).future).toEqual([]);
       expect(screen.queryByRole('alert')).toBeNull();
     });
     reopened.unmount();
@@ -2291,9 +2295,6 @@ describe('MarkdownTableActions Steel review entry', () => {
       const draft = store.get(draftAtom);
       expect(draft.cells['row-1\u0000數量']).toBe('10');
       expect(draft.changeSequence).toBeGreaterThan(submittedChangeSequence);
-      expect(draft.past).toEqual([]);
-      expect(draft.future).toEqual([]);
-      expect(draft.historyGroup).toBeUndefined();
     });
   });
 
@@ -2570,8 +2571,9 @@ describe('MarkdownTableActions Steel review entry', () => {
       refetch: jest.fn(),
     });
     const rendered = renderDialog(new QueryClient(), selection, createStore(), identity);
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_add_material' }));
-    expect(screen.getAllByText('preview.pdf', { exact: true })).toHaveLength(2);
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_add_item' }));
+    const draft = rendered.store.get(steelReviewDraftStateFamily(getSteelReviewDraftOwnerKey(identity, table, selection.captureId)));
+    expect(Object.values(draft.rowStates)[0].source).toEqual(expect.objectContaining({ fileId: 'preview-file', pageNumber: 1 }));
 
     rendered.unmount();
     mockUseGetSteelReviewSourcesQuery.mockReturnValue({
@@ -2582,8 +2584,9 @@ describe('MarkdownTableActions Steel review entry', () => {
       refetch: jest.fn(),
     });
     const emptyRendered = renderDialog(new QueryClient(), { ...selection, captureId: 'capture-system-add-empty' }, createStore(), identity);
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_add_material' }));
-    expect(screen.queryByText('preview.pdf', { exact: true })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_add_item' }));
+    const emptyDraft = emptyRendered.store.get(steelReviewDraftStateFamily(getSteelReviewDraftOwnerKey(identity, table, 'capture-system-add-empty')));
+    expect(Object.values(emptyDraft.rowStates)[0].source).toBeNull();
     emptyRendered.unmount();
   });
 

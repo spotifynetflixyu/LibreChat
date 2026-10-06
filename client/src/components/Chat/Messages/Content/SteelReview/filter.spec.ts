@@ -1,5 +1,5 @@
 import type { SteelReviewRow } from 'librechat-data-provider';
-import { getSteelReviewPreviewRows } from './filter';
+import { getSteelReviewPreviewRows, getSteelReviewUnlinkedRowIds } from './filter';
 
 const rows: SteelReviewRow[] = [
   {
@@ -35,6 +35,26 @@ const rows: SteelReviewRow[] = [
 ];
 
 describe('Steel review source row filtering', () => {
+  it('retains the saved unlinked membership while draft binding and preview change', () => {
+    const membership = new Set(getSteelReviewUnlinkedRowIds(rows));
+    const bound = { ...rows[4], source: rows[0].source };
+    const draft = [...rows.slice(0, 4), bound, rows[5]];
+    expect(getSteelReviewPreviewRows(draft, 'drawing-b', 2, undefined, 0, membership).unlocated)
+      .toEqual([bound]);
+    expect(getSteelReviewPreviewRows(draft, 'drawing-a', 1).located).toContain(bound);
+    const savedMembership = new Set(getSteelReviewUnlinkedRowIds(draft));
+    expect(getSteelReviewPreviewRows(draft, 'drawing-a', 1, undefined, 0, savedMembership).unlocated)
+      .toEqual([]);
+  });
+
+  it('keeps pending processing visible for parent selection without assigning a source', () => {
+    const pending = { ...rows[4], system: { kind: 'processing' as const, parentRowId: null, cascadeDeletedBy: null } };
+    expect(getSteelReviewPreviewRows([pending], 'drawing-a', 1, undefined, 0, undefined,
+      new Set([pending.rowId])).located).toEqual([pending]);
+    expect(pending.source).toBeNull();
+    expect(getSteelReviewPreviewRows([pending], 'drawing-b', 1).located).toEqual([]);
+  });
+
   it('keeps every row on the selected file and page together and preserves unlocated rows', () => {
     expect(getSteelReviewPreviewRows(rows, 'drawing-a', 1)).toEqual({
       located: [rows[0], rows[1]],

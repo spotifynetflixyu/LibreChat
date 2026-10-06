@@ -82,7 +82,7 @@ test.describe('Processing measurement normal review workflow', () => {
     await expect(reloaded.getByRole('textbox', { name: `總數 ${process.rowId}`, exact: true }).locator('xpath=ancestor::td').locator('del')).toHaveText('2');
     expect(await readback(fixture)).toEqual(after);
   });
-  test('per-piece calculation UI is draft-only with undo and redo and saves clean values with persistent AI comparison', async ({ page }) => {
+  test('per-piece calculation UI is draft-only without history controls and saves clean values with persistent AI comparison', async ({ page }) => {
     const fixture = await seedCalculation('flat', '', true); fixtures.push(fixture);
     const owner = await readBoundFixture(page, auth, fixture);
     const process = named(owner, 'REVIEW-PROCESS');
@@ -96,15 +96,11 @@ test.describe('Processing measurement normal review workflow', () => {
     await amount.blur();
     await expect(dialog.getByRole('textbox', { name: `總數 ${process.rowId}`, exact: true })).toHaveValue('4');
     expect(await readback(fixture)).toEqual(before);
-    await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
     await expect(amount).toHaveValue('');
-    await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
     await expect(amount).toHaveValue('2');
     await editBusinessValue(dialog, process.rowId, '單價', '11');
     const firstSaved = await saveUi(page, dialog);
     expect(named(firstSaved, 'REVIEW-PROCESS').calculation?.measurement).toMatchObject({ mode: 'perPiece', amount: '2', unit: '刀' });
-    await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
-    await expect(dialog.getByRole('button', { name: 'Redo', exact: true })).toBeDisabled();
     await expect(dialog.getByRole('textbox', { name: `總數 ${process.rowId}`, exact: true }).locator('xpath=ancestor::td').locator('del')).toHaveText('2');
     await editBusinessValue(dialog, parent.rowId, '數量', '5');
     await editBusinessValue(dialog, process.rowId, '單價', '12');
@@ -229,7 +225,6 @@ test.describe('Processing measurement normal review workflow', () => {
       expect(response.status(), await response.text()).toBe(200);
       await expect(amount).toHaveValue('2');
       await expect(amount).toBeEditable();
-      await expect(dialog.getByRole('button', { name: 'Undo', exact: true })).toBeDisabled();
       const current = await readTable(page, auth, fixture);
       expect(named(current, 'REVIEW-PROCESS').values['總數'].effective).toBe('4');
       const after = await readback(fixture);

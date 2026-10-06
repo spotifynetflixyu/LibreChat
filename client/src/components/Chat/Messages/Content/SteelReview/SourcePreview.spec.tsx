@@ -16,6 +16,7 @@ jest.mock('@librechat/client', () => ({
   ),
 }));
 jest.mock('lucide-react', () => ({
+  ScanSearch: () => <span aria-hidden="true" />,
   ZoomIn: () => <span aria-hidden="true" />,
   ZoomOut: () => <span aria-hidden="true" />,
 }));
@@ -23,6 +24,7 @@ jest.mock('lucide-react', () => ({
 const labels: SteelReviewSourcePreviewLabels = {
   zoomIn: 'Zoom in',
   zoomOut: 'Zoom out',
+  fit: 'Fit preview',
   loading: 'Loading preview',
   retry: 'Retry preview',
   unavailable: 'Preview unavailable',
@@ -58,6 +60,21 @@ function renderPreview(props: Partial<React.ComponentProps<typeof SteelReviewSou
       />
     </Provider>,
   );
+}
+
+function dispatchPointerEvent(
+  target: HTMLElement,
+  type: 'pointerdown' | 'pointermove' | 'pointerup',
+  clientX: number,
+  clientY: number,
+) {
+  const event = new Event(type, { bubbles: true });
+  Object.defineProperties(event, {
+    clientX: { configurable: true, value: clientX },
+    clientY: { configurable: true, value: clientY },
+    pointerId: { configurable: true, value: 1 },
+  });
+  target.dispatchEvent(event);
 }
 
 describe('SteelReviewSourcePreview', () => {
@@ -105,11 +122,39 @@ describe('SteelReviewSourcePreview', () => {
   it('renders an authorized image as one page', async () => {
     const onPageCount = jest.fn();
     renderPreview({ source: imageSource, onPageCount });
-    expect(await screen.findByRole('img', { name: 'Source page preview' })).toHaveAttribute(
+    const image = await screen.findByRole('img', { name: 'Source page preview' });
+    expect(image).toHaveAttribute(
       'src',
       'blob:source-preview',
     );
+    expect(image).toHaveClass('max-h-full', 'max-w-full', 'object-contain');
+    expect(screen.getByRole('button', { name: 'Fit preview' }).parentElement).toHaveClass(
+      'absolute',
+      'bottom-3',
+      'right-3',
+    );
     expect(onPageCount).toHaveBeenCalledWith(1);
+  });
+
+  it('resets zoom and pointer or keyboard pan to the fitted page', async () => {
+    renderPreview({ stateKey: 'preview-fit' });
+    const image = await screen.findByRole('img', { name: 'Source page preview' });
+    const region = screen.getByRole('region', { name: 'Source page preview' });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }));
+      dispatchPointerEvent(region, 'pointerdown', 10, 10);
+      dispatchPointerEvent(region, 'pointermove', 30, 40);
+      dispatchPointerEvent(region, 'pointerup', 30, 40);
+      fireEvent.keyDown(region, { key: 'ArrowRight' });
+    });
+
+    expect(image).toHaveStyle({ transform: 'translate(60px, 30px) scale(1.25)' });
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Fit preview' }));
+    });
+    expect(image).toHaveStyle({ transform: 'translate(0px, 0px) scale(1)' });
   });
 
   it('renders one selected PDF page through the controlled canvas', async () => {
@@ -138,7 +183,11 @@ describe('SteelReviewSourcePreview', () => {
     });
 
     await waitFor(() => expect(onPageCount).toHaveBeenCalledWith(2));
-    const renderedCanvas = screen.getByLabelText('Source page preview');
+    const renderedCanvas = screen.getByRole('region', { name: 'Source page preview' }).querySelector('canvas');
+    expect(renderedCanvas).not.toBeNull();
+    if (!renderedCanvas) {
+      return;
+    }
     expect(renderedCanvas.tagName).toBe('CANVAS');
     expect(renderedCanvas).toHaveProperty('width', 240);
     expect(renderedCanvas).toHaveProperty('height', 320);

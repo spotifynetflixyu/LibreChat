@@ -1,38 +1,33 @@
-import { memo, useMemo } from 'react';
-import { steelPriceCategories, isSteelReviewSourceAssociationHeader } from 'librechat-data-provider';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { steelPriceCategories } from 'librechat-data-provider';
 import { Button, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@librechat/client';
-import type { SteelCatalogCandidate, SteelCatalogCustomerEvidence, SteelProcessingMeasurement } from 'librechat-data-provider';
-import type { SteelReviewRow, SteelReviewSource, SteelReviewSourceFile, SteelReviewTable } from 'librechat-data-provider';
+import type {
+  SteelCatalogCandidate,
+  SteelCatalogCustomerEvidence,
+  SteelProcessingMeasurement,
+  SteelReviewRow,
+  SteelReviewTable,
+} from 'librechat-data-provider';
 import type { ChangeEvent, KeyboardEvent, ReactNode } from 'react';
 import type { SteelMeasurementLabels } from './Measurement';
 import type { SteelReviewDraftState } from './session';
 import { getSteelReviewDraftCell, getSteelReviewDraftMeasurement } from './session';
 import SteelReviewMeasurement from './Measurement';
 import SteelReviewSelector from './Selector';
+import { getSteelReviewMode } from './mode';
 
 export interface SteelReviewEditorLabels {
   table: string;
   readonly: string;
   emptyCategory: string;
-  changeSource: string;
-  sourceFile: string;
-  sourcePage: string;
-  sourceNoPage: string;
-  clearSource: string;
-  sourceActions: string;
-  sourcePageLoading: string;
-  sourcePageUnavailable: string;
-  sourcePageRetry: string;
+  action: string;
   deleteRow?: string;
   restoreRow?: string;
-  bindProcessing?: string;
-  parent?: string;
-  deleteGroup?: string;
-  addProcessingUnder?: string;
+  bind?: string;
+  bound?: string;
   classify?: string;
   material?: string;
   processing?: string;
-  rowActions?: string;
   measurement?: SteelMeasurementLabels;
 }
 
@@ -42,225 +37,33 @@ export interface SteelReviewEditorProps {
   draft: SteelReviewDraftState;
   labels: SteelReviewEditorLabels;
   onCellChange: (row: SteelReviewRow, header: string, value: string) => void;
-  onCellHistoryBoundary?: () => void;
   onMeasurementChange?: (row: SteelReviewRow, measurement: SteelProcessingMeasurement | null) => void;
   onCandidateChange?: (row: SteelReviewRow, candidate: SteelCatalogCandidate, customer: SteelCatalogCustomerEvidence) => void;
   canEdit?: boolean;
-  sources?: readonly SteelReviewSourceFile[];
-  sourceCorrectionRowId?: string;
-  sourcePageCount?: number;
-  sourcePageCountLoading?: boolean;
-  sourcePageCountError?: boolean;
-  onSourcePageRetry?: () => void;
   onSourceEdit?: (row: SteelReviewRow) => void;
-  onSourceChange?: (row: SteelReviewRow, source: SteelReviewSource | null) => void;
   onDeleteRow?: (row: SteelReviewRow) => void;
   onRestoreRow?: (row: SteelReviewRow) => void;
-  onSystemChange?: (row: SteelReviewRow, parentRowId: string | null) => void;
   onClassify?: (row: SteelReviewRow, kind: 'material' | 'processing') => void;
   onDeleteGroup?: (row: SteelReviewRow) => void;
-  onAddProcessingUnder?: (row: SteelReviewRow) => void;
   systemMaterials?: readonly SteelReviewRow[];
 }
 
 export function isSteelReviewCellEditable(table: SteelReviewTable, header: string): boolean {
-  if (!table.isLatest || table.readOnly || isSteelReviewSourceAssociationHeader(header)) {
-    return false;
-  }
-  if (table.kind === 'system_order') {
-    return true;
-  }
-  return table.kind === 'ocr_result';
+  return table.isLatest && !table.readOnly && getSteelReviewMode(table.kind).isEditableHeader(header);
 }
 
 function displayCellValue(value: string | null | undefined): string {
   return value ?? '';
 }
 
-const CLEAR_SOURCE_VALUE = '__steel_review_clear_source__';
-const NO_SOURCE_PAGE_VALUE = '__steel_review_no_source_page__';
 const EMPTY_CATEGORY_VALUE = '__steel_review_empty_category__';
 
-function sourceLabel(source: SteelReviewSource | null | undefined): string {
-  return source?.filename ?? source?.fileId ?? '';
-}
-
-function canRestoreSteelReviewRow(
-  row: SteelReviewRow,
-  systemMaterials: readonly SteelReviewRow[],
-): boolean {
-  if (!row.deleted || row.system?.kind !== 'processing') {
-    return Boolean(row.deleted);
-  }
-  if (row.system.cascadeDeletedBy !== null && row.system.cascadeDeletedBy !== undefined) {
-    return false;
-  }
-  if (!row.system.parentRowId) {
-    return true;
-  }
+function canRestoreSteelReviewRow(row: SteelReviewRow, systemMaterials: readonly SteelReviewRow[]): boolean {
+  if (!row.deleted || row.system?.kind !== 'processing') return Boolean(row.deleted);
+  if (row.system.cascadeDeletedBy !== null && row.system.cascadeDeletedBy !== undefined) return false;
+  if (!row.system.parentRowId) return true;
   return systemMaterials.some((candidate) => candidate.rowId === row.system?.parentRowId &&
     !candidate.deleted && candidate.system?.kind === 'material');
-}
-
-function SourceCell({
-  table,
-  row,
-  labels,
-  sources,
-  sourceCorrectionRowId,
-  sourcePageCount,
-  sourcePageCountLoading,
-  sourcePageCountError,
-  onSourcePageRetry,
-  onSourceEdit,
-  onSourceChange,
-  canEdit,
-}: {
-  table: SteelReviewTable;
-  row: SteelReviewRow;
-  labels: SteelReviewEditorLabels;
-  sources: readonly SteelReviewSourceFile[];
-  sourceCorrectionRowId?: string;
-  sourcePageCount?: number;
-  sourcePageCountLoading?: boolean;
-  sourcePageCountError?: boolean;
-  onSourcePageRetry?: () => void;
-  onSourceEdit?: (row: SteelReviewRow) => void;
-  onSourceChange?: (row: SteelReviewRow, source: SteelReviewSource | null) => void;
-  canEdit: boolean;
-}) {
-  const editable = Boolean(
-    row.rowId &&
-    !row.deleted &&
-    sourceCorrectionRowId === row.rowId &&
-    canEdit &&
-    (table.kind === 'ocr_result' || (table.kind === 'system_order' && row.system?.kind === 'material')) &&
-    table.isLatest &&
-    !table.readOnly &&
-    onSourceChange,
-  );
-  const source = row.source;
-  const selectedFile = source ? sources.find((candidate) => candidate.fileId === source.fileId) : undefined;
-  const pageCount = selectedFile?.mediaType.startsWith('image/')
-    ? 1
-    : sourcePageCount;
-  const pageValues = pageCount && pageCount > 0
-    ? Array.from({ length: pageCount }, (_, index) => index + 1)
-    : [];
-  let pageControl: ReactNode;
-  if (!source) {
-    pageControl = null;
-  } else if (sourcePageCountLoading && !pageCount) {
-    pageControl = <span role="status">{labels.sourcePageLoading}</span>;
-  } else if (sourcePageCountError && !pageCount) {
-    pageControl = (
-      <div className="flex items-center gap-2" role="alert">
-        <span>{labels.sourcePageUnavailable}</span>
-        {onSourcePageRetry && (
-          <Button
-            type="button"
-            variant="outline"
-            aria-label={labels.sourcePageRetry}
-            onClick={onSourcePageRetry}
-          >
-            {labels.sourcePageRetry}
-          </Button>
-        )}
-      </div>
-    );
-  } else {
-    pageControl = (
-      <Select
-        value={source.pageNumber === null ? NO_SOURCE_PAGE_VALUE : String(source.pageNumber)}
-        onValueChange={(value) => onSourceChange?.(row, {
-          ...source,
-          pageNumber: value === NO_SOURCE_PAGE_VALUE ? null : Number(value),
-                          })}
-      >
-        <SelectTrigger aria-label={labels.sourcePage}>
-          <SelectValue placeholder={labels.sourceNoPage} />
-        </SelectTrigger>
-        <SelectContent onEscapeKeyDown={(event) => event.stopPropagation()}>
-          <SelectItem value={NO_SOURCE_PAGE_VALUE}>{labels.sourceNoPage}</SelectItem>
-          {pageValues.map((page) => (
-            <SelectItem key={page} value={String(page)}>{page}</SelectItem>
-          ))}
-        </SelectContent>
-      </Select>
-    );
-  }
-
-  if (!editable) {
-    return (
-      <td className="border-b border-border-light px-3 py-2 align-top">
-        <div className="flex min-w-40 items-center gap-2">
-          <span aria-label={`${labels.sourceFile}: ${sourceLabel(source) || labels.readonly}`}>
-            {sourceLabel(source) || labels.readonly}
-          </span>
-          {canEdit && onSourceEdit && row.rowId && !row.deleted &&
-            (table.kind === 'ocr_result' || (table.kind === 'system_order' && row.system?.kind === 'material')) &&
-            table.isLatest && !table.readOnly && (
-            <Button
-              type="button"
-              variant="outline"
-              className="shrink-0"
-              aria-label={`${labels.changeSource} ${row.rowId}`}
-              onClick={() => onSourceEdit(row)}
-            >
-              {labels.changeSource}
-            </Button>
-          )}
-        </div>
-      </td>
-    );
-  }
-
-  return (
-    <td className="border-b border-border-light px-3 py-2 align-top">
-      <div className="flex min-w-64 flex-col gap-2" aria-label={labels.sourceActions}>
-        <label className="flex flex-col gap-1 text-xs text-text-secondary">
-          <span>{labels.sourceFile}</span>
-          <Select
-            value={source?.fileId ?? CLEAR_SOURCE_VALUE}
-            onValueChange={(value) => {
-              if (value === CLEAR_SOURCE_VALUE) {
-                onSourceChange?.(row, null);
-                return;
-              }
-              const next = sources.find((candidate) => candidate.fileId === value);
-              if (!next) {
-                return;
-              }
-              onSourceChange?.(row, {
-                fileId: next.fileId,
-                pageNumber: null,
-                filename: next.filename,
-                mediaType: next.mediaType,
-              });
-            }}
-          >
-            <SelectTrigger aria-label={labels.sourceFile}>
-              <SelectValue placeholder={labels.sourceFile} />
-            </SelectTrigger>
-            <SelectContent onEscapeKeyDown={(event) => event.stopPropagation()}>
-              <SelectItem value={CLEAR_SOURCE_VALUE}>{labels.clearSource}</SelectItem>
-              {sources.map((candidate) => (
-                <SelectItem key={candidate.fileId} value={candidate.fileId}>
-                  {candidate.filename}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </label>
-        {source && (
-          <label className="flex flex-col gap-1 text-xs text-text-secondary">
-            <span>{labels.sourcePage}</span>
-            {pageControl}
-          </label>
-        )}
-      </div>
-    </td>
-  );
 }
 
 function ReviewCell({
@@ -268,67 +71,50 @@ function ReviewCell({
   row,
   header,
   draft,
-  readonlyLabel,
-  emptyCategoryLabel,
+  labels,
   onCellChange,
-  onCellHistoryBoundary,
   onCandidateChange,
   parent,
-  canEdit = true,
+  canEdit,
 }: {
   table: SteelReviewTable;
   row: SteelReviewRow;
   header: string;
   draft: SteelReviewDraftState;
-  readonlyLabel: string;
-  emptyCategoryLabel: string;
+  labels: SteelReviewEditorLabels;
   onCellChange: SteelReviewEditorProps['onCellChange'];
-  onCellHistoryBoundary?: SteelReviewEditorProps['onCellHistoryBoundary'];
   onCandidateChange?: SteelReviewEditorProps['onCandidateChange'];
   parent?: SteelReviewRow;
   canEdit: boolean;
 }) {
+  const [remarkEditing, setRemarkEditing] = useState(false);
+  const [remarkValue, setRemarkValue] = useState('');
+  const mode = getSteelReviewMode(table.kind);
+  const deferRemark = mode.defersHeader(header);
   const cell = row.values[header];
-  if (!cell) {
-    return <td className="border-b border-border-light px-3 py-2 align-top" />;
-  }
-
+  if (!cell) return <td className="min-h-16 border-b border-border-light px-3 py-2 align-top" />;
   const draftValue = row.rowId ? getSteelReviewDraftCell(draft, row.rowId, header) : undefined;
   const currentValue = draftValue ?? displayCellValue(cell.effective);
   const changed = displayCellValue(cell.baseline) !== currentValue;
   const editable = Boolean(row.rowId) && canEdit && !row.deleted && isSteelReviewCellEditable(table, header);
-  const deletedValue = row.deleted && row.origin !== 'manual'
-    ? <del className="text-text-secondary">{displayCellValue(cell.baseline)}</del>
-    : null;
   const previousValue = !row.deleted && changed && cell.baseline !== null && cell.baseline !== undefined
     ? <del className="mr-2 text-text-secondary">{cell.baseline}</del>
     : null;
   let editorContent: ReactNode = null;
-  if (!row.deleted && table.kind === 'system_order' && (row.system?.kind === 'material' || row.system?.kind === 'processing') &&
-    (header === '型號' || header === '品名規格') && onCandidateChange) {
-    editorContent = <SteelReviewSelector
-      table={table} row={row} parent={parent} header={header} value={currentValue}
-      canEdit={editable && (row.system?.kind !== 'processing' || Boolean(parent && !parent.deleted && parent.system?.kind === 'material'))} onSelect={onCandidateChange}
-    />;
-  } else if (!row.deleted && editable && table.kind === 'system_order' && header === '類別') {
-    const categoryOptions = [...new Set([...steelPriceCategories, cell.baseline ?? '', currentValue])]
-      .filter((category) => category !== '');
+  if (!row.deleted && mode.usesCatalog(row, header) && onCandidateChange) {
+    editorContent = <SteelReviewSelector table={table} row={row} parent={parent} header={header} value={currentValue}
+      canEdit={editable && (row.system?.kind !== 'processing' || Boolean(parent && !parent.deleted && parent.system?.kind === 'material'))}
+      onSelect={onCandidateChange} />;
+  } else if (!row.deleted && editable && mode.usesCategoryMenu(header)) {
+    const categoryOptions = [...new Set([...steelPriceCategories, cell.baseline ?? '', currentValue])].filter(Boolean);
     editorContent = (
-      <Select
-        value={currentValue || EMPTY_CATEGORY_VALUE}
-        onValueChange={(value) => {
-          onCellChange(row, header, value === EMPTY_CATEGORY_VALUE ? '' : value);
-          onCellHistoryBoundary?.();
-        }}
-      >
-        <SelectTrigger aria-label={`${header} ${row.rowId}`} className="min-w-24">
-          <SelectValue />
-        </SelectTrigger>
+      <Select value={currentValue || EMPTY_CATEGORY_VALUE} onValueChange={(value) => {
+        onCellChange(row, header, value === EMPTY_CATEGORY_VALUE ? '' : value);
+      }}>
+        <SelectTrigger aria-label={`${header} ${row.rowId}`} className="min-w-24"><SelectValue /></SelectTrigger>
         <SelectContent onEscapeKeyDown={(event) => event.stopPropagation()}>
-          <SelectItem value={EMPTY_CATEGORY_VALUE}>{emptyCategoryLabel}</SelectItem>
-          {categoryOptions.map((category) => (
-            <SelectItem key={category} value={category}>{category}</SelectItem>
-          ))}
+          <SelectItem value={EMPTY_CATEGORY_VALUE}>{labels.emptyCategory}</SelectItem>
+          {categoryOptions.map((category) => <SelectItem key={category} value={category}>{category}</SelectItem>)}
         </SelectContent>
       </Select>
     );
@@ -336,31 +122,39 @@ function ReviewCell({
     editorContent = (
       <Input
         aria-label={`${header} ${row.rowId}`}
+        data-steel-review-deferred={deferRemark || undefined}
         className="min-w-24"
-        value={currentValue}
-        onChange={(event: ChangeEvent<HTMLInputElement>) =>
-          onCellChange(row, header, event.target.value)}
+        value={deferRemark && remarkEditing ? remarkValue : currentValue}
+        onFocus={() => {
+          if (!deferRemark) return;
+          setRemarkValue(currentValue);
+          setRemarkEditing(true);
+        }}
+        onChange={(event: ChangeEvent<HTMLInputElement>) => {
+          if (deferRemark) {
+            setRemarkValue(event.target.value);
+            setRemarkEditing(true);
+          } else onCellChange(row, header, event.target.value);
+        }}
+        onBlur={(event) => {
+          if (!deferRemark) return;
+          setRemarkEditing(false);
+          onCellChange(row, header, event.target.value);
+        }}
         onKeyDown={(event: KeyboardEvent<HTMLInputElement>) => {
           if (event.key === 'Enter') {
             event.preventDefault();
-            onCellHistoryBoundary?.();
             event.currentTarget.blur();
           }
         }}
-        onBlur={onCellHistoryBoundary}
       />
     );
   } else if (!row.deleted) {
-    editorContent = <span aria-label={`${header}: ${readonlyLabel}`}>{currentValue}</span>;
+    editorContent = <span aria-label={`${header}: ${labels.readonly}`}>{currentValue}</span>;
+  } else {
+    editorContent = <del className="text-text-secondary">{displayCellValue(cell.baseline)}</del>;
   }
-
-  return (
-    <td className="border-b border-border-light px-3 py-2 align-top">
-      {deletedValue}
-      {previousValue}
-      {editorContent}
-    </td>
-  );
+  return <td className="min-h-16 border-b border-border-light px-3 py-2 align-top">{previousValue}{editorContent}</td>;
 }
 
 const SteelReviewEditor = memo(function SteelReviewEditor({
@@ -369,179 +163,101 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
   draft,
   labels,
   onCellChange,
-  onCellHistoryBoundary,
   canEdit = true,
-  sources = [],
-  sourceCorrectionRowId,
-  sourcePageCount,
-  sourcePageCountLoading = false,
-  sourcePageCountError = false,
-  onSourcePageRetry,
   onSourceEdit,
-  onSourceChange,
   onDeleteRow,
   onRestoreRow,
-  onSystemChange,
   onClassify,
   onDeleteGroup,
-  onAddProcessingUnder,
   onMeasurementChange,
   onCandidateChange,
   systemMaterials = rows,
 }: SteelReviewEditorProps) {
   const materialById = useMemo(() => new Map(systemMaterials.map((material) => [material.rowId, material])), [systemMaterials]);
+  const viewportRef = useRef<HTMLDivElement>(null);
+  const seenManualRows = useRef(new Set(rows.filter((row) => row.origin === 'manual').map((row) => row.rowId)));
+  const showActions = Boolean(onSourceEdit || onDeleteRow || onRestoreRow || onDeleteGroup || onMeasurementChange || onClassify);
+
+  useEffect(() => {
+    const manualRows = rows.filter((row) => row.origin === 'manual' && !row.deleted && row.rowId);
+    const newest = manualRows.find((row) => !seenManualRows.current.has(row.rowId));
+    manualRows.forEach((row) => seenManualRows.current.add(row.rowId));
+    if (!newest) return;
+    const escapedId = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(newest.rowId) : newest.rowId.replace(/"/gu, '\\"');
+    const rowElement = viewportRef.current?.querySelector<HTMLElement>(`tr[data-row-id="${escapedId}"]`);
+    rowElement?.scrollIntoView({ block: 'nearest' });
+    const businessSelector = showActions
+      ? 'td:not(:first-child) input,td:not(:first-child) textarea,td:not(:first-child) [role="combobox"]'
+      : 'td input,td textarea,td [role="combobox"]';
+    rowElement?.querySelector<HTMLElement>(businessSelector)?.focus();
+  }, [rows, showActions]);
+
   return (
-    <div className="max-h-[60vh] overflow-auto rounded-md border border-border-light">
+    <div ref={viewportRef} className="h-44 min-h-44 max-h-44 min-w-0 shrink-0 overflow-auto rounded-md border border-border-light">
       <table className="min-w-full border-collapse text-sm" aria-label={labels.table}>
-        <thead className="bg-surface-secondary">
+        <thead className="sticky top-0 z-10 bg-surface-secondary">
           <tr>
+            {showActions && <th scope="col" className="border-b border-border-light whitespace-nowrap px-3 py-2 text-left font-semibold">{labels.action}</th>}
             {table.headers.map((header) => (
-              <th key={header} scope="col" className="border-b border-border-light px-3 py-2 text-left font-semibold">
-                {header}
-              </th>
+              <th key={header} scope="col" className="border-b border-border-light whitespace-nowrap px-3 py-2 text-left font-semibold">{header}</th>
             ))}
-            {onSourceChange && (
-              <th scope="col" className="border-b border-border-light px-3 py-2 text-left font-semibold">
-                {labels.sourceActions}
-              </th>
-            )}
-            {(onDeleteRow || onRestoreRow || onSystemChange || onDeleteGroup || onAddProcessingUnder || onMeasurementChange) && (
-              <th scope="col" className="border-b border-border-light px-3 py-2 text-left font-semibold">
-                {labels.rowActions}
-              </th>
-            )}
           </tr>
         </thead>
         <tbody>
-          {rows.map((row, rowIndex) => (
-            <tr key={row.rowId || `ephemeral-${rowIndex}`} className={row.deleted ? 'opacity-70' : undefined}>
-              {table.headers.map((header) => (
-                <ReviewCell
-                  key={`${row.rowId || `ephemeral-${rowIndex}`}-${header}`}
-                  table={table}
-                  row={row}
-                  header={header}
-                  draft={draft}
-                  readonlyLabel={labels.readonly}
-                  emptyCategoryLabel={labels.emptyCategory}
-                  onCellChange={onCellChange}
-                  onCellHistoryBoundary={onCellHistoryBoundary}
-                  onCandidateChange={onCandidateChange}
-                  parent={row.system?.parentRowId ? materialById.get(row.system.parentRowId) : undefined}
-                  canEdit={canEdit}
-                />
-              ))}
-              {onSourceChange && (
-                <SourceCell
-                  table={table}
-                  row={row}
-                  labels={labels}
-                  sources={sources}
-                  sourceCorrectionRowId={sourceCorrectionRowId}
-                  sourcePageCount={sourcePageCount}
-                  sourcePageCountLoading={sourcePageCountLoading}
-                  sourcePageCountError={sourcePageCountError}
-                  onSourcePageRetry={onSourcePageRetry}
-                  onSourceEdit={onSourceEdit}
-                  onSourceChange={onSourceChange}
-                  canEdit={canEdit}
-                />
-              )}
-              {(onDeleteRow || onRestoreRow || onSystemChange || onDeleteGroup || onAddProcessingUnder || onMeasurementChange) && (
-                <td className="border-b border-border-light px-3 py-2 align-top">
-                  {row.system?.kind === 'processing' && !row.deleted && onSystemChange && (
-                    <label className="mb-2 flex flex-col gap-1 text-xs text-text-secondary">
-                      <span>{labels.parent ?? labels.bindProcessing}</span>
-                      <Select
-                        value={row.system.parentRowId ?? ''}
-                        onValueChange={(value) => onSystemChange(row, value || null)}
-                      >
-                        <SelectTrigger aria-label={`${labels.bindProcessing} ${row.rowId}`}>
-                          <SelectValue placeholder={labels.bindProcessing} />
-                        </SelectTrigger>
-                        <SelectContent onEscapeKeyDown={(event) => event.stopPropagation()}>
-                          {systemMaterials.filter((candidate) => !candidate.deleted && candidate.system?.kind === 'material').map((candidate) => {
-                            const name = Object.values(candidate.values).find((cell) => (cell.effective ?? '').trim())?.effective ?? candidate.rowId;
-                            return <SelectItem key={candidate.rowId} value={candidate.rowId}>{name}</SelectItem>;
-                          })}
-                        </SelectContent>
-                      </Select>
-                    </label>
-                  )}
-                  {row.system?.kind === 'processing' && !row.deleted && onMeasurementChange && labels.measurement && (
-                    <SteelReviewMeasurement
-                      rowId={row.rowId}
-                      rowUnit={row.values['單位']?.effective ?? ''}
-                      measurement={getSteelReviewDraftMeasurement(draft, row.rowId) === undefined
-                        ? row.calculation?.measurement ?? null
-                        : getSteelReviewDraftMeasurement(draft, row.rowId)}
-                      labels={labels.measurement}
-                      canEdit={canEdit}
-                      onChange={(measurement) => onMeasurementChange(row, measurement)}
-                      onHistoryBoundary={onCellHistoryBoundary}
-                    />
-                  )}
-                  {row.system?.kind === 'unassigned' && !row.deleted && onClassify && (
-                    <Select value="" onValueChange={(value) => onClassify(row, value as 'material' | 'processing')}>
-                      <SelectTrigger aria-label={`${labels.classify} ${row.rowId}`}>
-                        <SelectValue placeholder={labels.classify} />
-                      </SelectTrigger>
-                      <SelectContent onEscapeKeyDown={(event) => event.stopPropagation()}>
-                        <SelectItem value="material">{labels.material}</SelectItem>
-                        <SelectItem value="processing">{labels.processing}</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  )}
-                  {row.system?.kind === 'material' && !row.deleted && (
-                    <>
-                      {onAddProcessingUnder && (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          className="mb-2"
-                          aria-label={`${labels.addProcessingUnder} ${row.rowId}`}
-                          onClick={() => onAddProcessingUnder(row)}
-                        >
-                          {labels.addProcessingUnder}
+          {rows.map((row, rowIndex) => {
+            const rowKey = row.rowId || `ephemeral-${rowIndex}`;
+            const parent = row.system?.parentRowId ? materialById.get(row.system.parentRowId) : undefined;
+            const bindable = Boolean(onSourceEdit && row.rowId && !row.deleted && row.system?.kind !== 'processing' && canEdit);
+            const bound = Boolean(row.source?.fileId && row.source.pageNumber !== null);
+            return (
+              <tr key={rowKey} data-row-id={row.rowId || undefined} className={row.deleted ? 'opacity-70' : undefined}>
+                {showActions && (
+                  <td className="min-h-16 border-b border-border-light px-3 py-2 align-top">
+                    <div className="flex min-w-44 flex-wrap items-start gap-1">
+                      {bindable && (
+                        <Button type="button" size="sm" variant="outline" className="shrink-0" aria-label={`${bound ? labels.bound : labels.bind} ${row.rowId}`} onClick={() => onSourceEdit?.(row)}>
+                          {bound ? labels.bound : labels.bind}
                         </Button>
                       )}
-                      {onDeleteGroup && (
-                        <Button
-                          type="button"
-                          variant="outline"
-                          className="mb-2"
-                          aria-label={`${labels.deleteGroup} ${row.rowId}`}
-                          onClick={() => onDeleteGroup(row)}
-                        >
-                          {labels.deleteGroup}
-                        </Button>
+                      {row.system?.kind === 'processing' && !row.deleted && onMeasurementChange && labels.measurement && (
+                        <SteelReviewMeasurement
+                          rowId={row.rowId}
+                          rowUnit={row.values['單位']?.effective ?? ''}
+                          measurement={getSteelReviewDraftMeasurement(draft, row.rowId) === undefined ? row.calculation?.measurement ?? null : getSteelReviewDraftMeasurement(draft, row.rowId)}
+                          labels={labels.measurement}
+                          canEdit={canEdit}
+                          onChange={(measurement) => onMeasurementChange(row, measurement)}
+                        />
                       )}
-                    </>
-                  )}
-                  {row.deleted && onRestoreRow && canRestoreSteelReviewRow(row, systemMaterials) && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      aria-label={`${labels.restoreRow} ${row.rowId}`}
-                      onClick={() => onRestoreRow(row)}
-                    >
-                      {labels.restoreRow}
-                    </Button>
-                  )}
-                  {!row.deleted && onDeleteRow && (!row.system || row.system.kind !== 'material' || !onDeleteGroup) && (
-                    <Button
-                      type="button"
-                      variant="outline"
-                      aria-label={`${labels.deleteRow} ${row.rowId}`}
-                      onClick={() => onDeleteRow(row)}
-                    >
-                      {labels.deleteRow}
-                    </Button>
-                  )}
-                </td>
-              )}
-            </tr>
-          ))}
+                      {row.system?.kind === 'unassigned' && !row.deleted && onClassify && (
+                        <Select value="" onValueChange={(value) => onClassify(row, value as 'material' | 'processing')}>
+                          <SelectTrigger className="min-w-24" aria-label={`${labels.classify} ${row.rowId}`}><SelectValue placeholder={labels.classify} /></SelectTrigger>
+                          <SelectContent onEscapeKeyDown={(event) => event.stopPropagation()}>
+                            <SelectItem value="material">{labels.material}</SelectItem>
+                            <SelectItem value="processing">{labels.processing}</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      )}
+                      {row.system?.kind === 'material' && !row.deleted && onDeleteGroup && (
+                        <Button type="button" size="sm" variant="outline" className="shrink-0" aria-label={`${labels.deleteRow} ${row.rowId}`} onClick={() => onDeleteGroup(row)}>{labels.deleteRow}</Button>
+                      )}
+                      {row.deleted && onRestoreRow && canRestoreSteelReviewRow(row, systemMaterials) && (
+                        <Button type="button" size="sm" variant="outline" className="shrink-0" aria-label={`${labels.restoreRow} ${row.rowId}`} onClick={() => onRestoreRow(row)}>{labels.restoreRow}</Button>
+                      )}
+                      {!row.deleted && onDeleteRow && (!row.system || row.system.kind !== 'material' || !onDeleteGroup) && (
+                        <Button type="button" size="sm" variant="outline" className="shrink-0" aria-label={`${labels.deleteRow} ${row.rowId}`} onClick={() => onDeleteRow(row)}>{labels.deleteRow}</Button>
+                      )}
+                    </div>
+                  </td>
+                )}
+                {table.headers.map((header) => (
+                  <ReviewCell key={`${rowKey}-${header}`} table={table} row={row} header={header} draft={draft} labels={labels}
+                    onCellChange={onCellChange} onCandidateChange={onCandidateChange}
+                    parent={parent} canEdit={canEdit} />
+                ))}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

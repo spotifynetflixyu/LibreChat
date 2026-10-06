@@ -20,22 +20,20 @@ const labels: SteelMeasurementLabels = {
 
 function setup(measurement: SteelProcessingMeasurement | null, canEdit = true) {
   const onChange = jest.fn();
-  const onHistoryBoundary = jest.fn();
   render(<SteelMeasurement rowId="process" rowUnit="刀" measurement={measurement}
-    labels={labels} canEdit={canEdit} onChange={onChange} onHistoryBoundary={onHistoryBoundary} />);
-  return { onChange, onHistoryBoundary };
+    labels={labels} canEdit={canEdit} onChange={onChange} />);
+  return { onChange };
 }
 
 describe('Explicit processing measurement inputs', () => {
   it('clears only the entered amount and preserves explicit zero', () => {
-    const { onChange, onHistoryBoundary } = setup({ mode: 'perPiece', amount: '2', unit: '刀' });
+    const { onChange } = setup({ mode: 'perPiece', amount: '2', unit: '刀' });
     const input = screen.getByRole('textbox', { name: 'Measurement amount process' });
     fireEvent.change(input, { target: { value: '' } });
     expect(onChange).toHaveBeenLastCalledWith({ mode: 'perPiece', amount: null, unit: '刀' });
     fireEvent.change(input, { target: { value: '0' } });
     expect(onChange).toHaveBeenLastCalledWith({ mode: 'perPiece', amount: '0', unit: '刀' });
     fireEvent.blur(input);
-    expect(onHistoryBoundary).toHaveBeenCalledTimes(1);
   });
   it('adds unknown stock inputs without inventing a confirmed layout', () => {
     const { onChange } = setup({ mode: 'cutting', amount: null, unit: '刀', confirmed: false,

@@ -26,7 +26,6 @@ export interface SteelMeasurementProps {
   labels: SteelMeasurementLabels;
   canEdit: boolean;
   onChange: (measurement: SteelProcessingMeasurement | null) => void;
-  onHistoryBoundary?: () => void;
 }
 
 const groupFields: (keyof SteelProcessingCuttingGroup)[] = [
@@ -47,7 +46,7 @@ function nullableValue(value: string): string | null {
 }
 
 export default function SteelMeasurement({
-  rowId, rowUnit, measurement, labels, canEdit, onChange, onHistoryBoundary,
+  rowId, rowUnit, measurement, labels, canEdit, onChange,
 }: SteelMeasurementProps) {
   const selectMode = (value: string): void => {
     if (value === 'none') {
@@ -60,7 +59,6 @@ export default function SteelMeasurement({
     } else {
       return;
     }
-    onHistoryBoundary?.();
   };
 
   return (
@@ -83,14 +81,12 @@ export default function SteelMeasurement({
           <label className="flex flex-col gap-1">
             <span>{labels.amount}</span>
             <Input aria-label={`${labels.amount} ${rowId}`} value={measurement.amount ?? ''}
-              onChange={(event) => onChange({ ...measurement, amount: nullableValue(event.target.value) })}
-              onBlur={onHistoryBoundary} />
+              onChange={(event) => onChange({ ...measurement, amount: nullableValue(event.target.value) })} />
           </label>
           <label className="flex flex-col gap-1">
             <span>{labels.unit}</span>
             <Input aria-label={`${labels.unit} ${rowId}`} value={measurement.unit}
-              onChange={(event) => onChange({ ...measurement, unit: event.target.value })}
-              onBlur={onHistoryBoundary} />
+              onChange={(event) => onChange({ ...measurement, unit: event.target.value })} />
           </label>
         </>
       )}
@@ -99,20 +95,17 @@ export default function SteelMeasurement({
           <label className="flex flex-col gap-1">
             <span>{labels.planId}</span>
             <Input aria-label={`${labels.planId} ${rowId}`} value={measurement.planId ?? ''}
-              onChange={(event) => onChange({ ...measurement, planId: nullableValue(event.target.value) })}
-              onBlur={onHistoryBoundary} />
+              onChange={(event) => onChange({ ...measurement, planId: nullableValue(event.target.value) })} />
           </label>
           <label className="flex flex-col gap-1">
             <span>{labels.planVersion}</span>
             <Input aria-label={`${labels.planVersion} ${rowId}`} value={measurement.planVersion ?? ''}
-              onChange={(event) => onChange({ ...measurement, planVersion: nullableValue(event.target.value) })}
-              onBlur={onHistoryBoundary} />
+              onChange={(event) => onChange({ ...measurement, planVersion: nullableValue(event.target.value) })} />
           </label>
           <label className="flex items-center gap-2">
             <Checkbox aria-label={`${labels.confirmed} ${rowId}`} checked={measurement.confirmed}
               onCheckedChange={(value) => {
                 onChange({ ...measurement, confirmed: value === true });
-                onHistoryBoundary?.();
               }} />
             <span>{labels.confirmed}</span>
           </label>
@@ -124,21 +117,18 @@ export default function SteelMeasurement({
                   <span>{labels.groups[field]}</span>
                   <Input aria-label={`${labels.groups[field]} ${rowId} ${index + 1}`} value={group[field] ?? ''}
                     onChange={(event) => onChange({ ...measurement, groups: measurement.groups.map((entry, entryIndex) =>
-                      entryIndex === index ? { ...entry, [field]: nullableValue(event.target.value) } : entry) })}
-                    onBlur={onHistoryBoundary} />
+                      entryIndex === index ? { ...entry, [field]: nullableValue(event.target.value) } : entry) })} />
                 </label>
               ))}
               <Button type="button" variant="outline" size="sm" disabled={!canEdit}
                 aria-label={`${labels.removeGroup} ${rowId} ${index + 1}`} onClick={() => {
                   onChange({ ...measurement, groups: measurement.groups.filter((_, entryIndex) => entryIndex !== index) });
-                  onHistoryBoundary?.();
                 }}>{labels.removeGroup}</Button>
             </fieldset>
           ))}
           <Button type="button" variant="outline" size="sm" disabled={!canEdit}
             aria-label={`${labels.addGroup} ${rowId}`} onClick={() => {
               onChange({ ...measurement, groups: [...measurement.groups, emptyGroup()] });
-              onHistoryBoundary?.();
             }}>{labels.addGroup}</Button>
         </>
       )}

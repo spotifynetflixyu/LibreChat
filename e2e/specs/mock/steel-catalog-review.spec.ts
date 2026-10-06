@@ -50,7 +50,6 @@ test.describe('Material catalog normal review workflow', () => {
     await search.focus();
     await page.getByRole('option', { name: 'SC-UNIQUE Selector steel plate catalog-special 400mm', exact: true }).click();
     await expect(model).toHaveText('SC-UNIQUE');
-    await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
     await expect(model).toHaveText('PLATE');
     await model.click();
     await page.locator('input[placeholder="Search catalog"]:visible').fill('SC-UNIQUE');
@@ -64,9 +63,7 @@ test.describe('Material catalog normal review workflow', () => {
       await expect(dialog.getByRole('textbox', { name: `${header} ${material.rowId}`, exact: true })).toHaveValue(value);
     }
     expect(await readback(fixture)).toEqual(before);
-    await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
     await expect(model).toHaveText('PLATE');
-    await dialog.getByRole('button', { name: 'Redo', exact: true }).click();
     await expect(model).toHaveText('SC-UNIQUE');
     const saved = await saveUi(page, dialog);
     expect(saved.changedRowIds).toEqual([material.rowId]);
@@ -122,11 +119,8 @@ test.describe('Material catalog normal review workflow', () => {
     await expect(model).toHaveText('SC-UNIQUE');
     expect(queries).toBe(calls);
     await page.keyboard.press('Escape');
-    await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
-    await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
-    await dialog.getByRole('button', { name: 'Undo', exact: true }).click();
     await expect(model).toHaveText('PLATE');
-    await dialog.getByRole('button', { name: 'Add material', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Add item', exact: true }).click();
     const addedModel = dialog.getByRole('combobox', { name: /^型號 /u }).last();
     await addedModel.click();
     await expect(search).toHaveValue('');
