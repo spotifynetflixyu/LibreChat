@@ -103,9 +103,7 @@ export const steelCatalogSelectionEvidenceSchema = z.object({
 export type SteelCatalogSelectionEvidence = z.infer<typeof steelCatalogSelectionEvidenceSchema>;
 
 export function steelCatalogDescription(candidate: Pick<SteelCatalogCandidate, 'productName' | 'specKey'>): string {
-  return [candidate.productName?.trim(), candidate.specKey.trim()]
-    .filter((value, index, values): value is string => Boolean(value) && values.indexOf(value) === index)
-    .join(' ');
+  return candidate.productName?.trim() ?? '';
 }
 
 export function steelCatalogOptionLabel(candidate: Pick<SteelCatalogCandidate, 'erpItemCode' | 'productName' | 'specKey'>): string {

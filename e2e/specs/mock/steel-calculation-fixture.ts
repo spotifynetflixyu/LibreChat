@@ -176,6 +176,16 @@ export async function commit(page: Page, auth: Auth, prepared: SteelReviewOperat
     data: { ...prepared.operationRequest, operationId: prepared.operationId, digest: prepared.digest } });
 }
 
+export async function classifyAddedRow(page: Page, dialog: Locator, kind: 'Material' | 'Processing'): Promise<string> {
+  const classify = dialog.getByRole('combobox', { name: /^Classify /u }).last();
+  const label = await classify.getAttribute('aria-label');
+  if (!label) throw new Error('Missing new row classification');
+  const rowId = label.slice('Classify '.length);
+  await classify.click();
+  await page.getByRole('option', { name: kind, exact: true }).click();
+  return rowId;
+}
+
 export async function saveApi(page: Page, auth: Auth, input: SteelReviewOperationPrepare): Promise<SteelReviewSaveResponse> {
   const prepared = await prepare(page, auth, input);
   const response = await commit(page, auth, prepared);

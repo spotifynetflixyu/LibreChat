@@ -1274,6 +1274,58 @@ describe('Steel review read methods', () => {
     })).resolves.toBeNull();
   });
 
+  it('reads a saved system order after grouping processing under its material without changing baseline row identities', async () => {
+    const models = createModels(mongoose);
+    const QuotationState = createSteelQuotationStateModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const conversationId = 'grouped-order-conversation';
+    const messageId = 'grouped-order-message';
+    const outputId = 'system_order:grouped-run';
+    const headers = ['型號', '品名規格', '類別', '備註'];
+    const originalRows = [
+      ['PLATE', 'Plate A', '鐵板', 'A'],
+      ['PLATE', 'Plate B', '鐵板', 'B'],
+      ['PROCESS', 'Cutting A', '加工/切工', 'A'],
+    ];
+    const rows: SteelReviewRow[] = originalRows.map((cells, index) => ({
+      rowId: createHash('sha256').update(`${outputId}:${index}:${JSON.stringify(cells)}`).digest('hex'),
+      origin: 'ai',
+      source: null,
+      values: Object.fromEntries(headers.map((header, column) => [
+        header, { baseline: cells[column], effective: cells[column] },
+      ])),
+      system: { kind: index === 2 ? 'processing' : 'material', parentRowId: null, cascadeDeletedBy: null },
+    }));
+    rows[2].system!.parentRowId = rows[0].rowId;
+    const groupedRows = [rows[0], rows[2], rows[1]];
+    const render = (cells: string[][]) => [
+      '## system_order', '',
+      `| ${headers.join(' | ')} |`,
+      `| ${headers.map(() => '---').join(' | ')} |`,
+      ...cells.map((row) => `| ${row.join(' | ')} |`),
+    ].join('\n');
+    const aiBaselineMarkdown = render(originalRows);
+    const effectiveMarkdown = render([originalRows[0], originalRows[2], originalRows[1]]);
+    await models.Conversation.create({ conversationId, user: 'user-1', title: 'Review', endpoint: 'openAI' });
+    await models.Message.create({ messageId, conversationId, user: 'user-1', isCreatedByUser: false,
+      text: effectiveMarkdown, content: [{ type: 'text', text: effectiveMarkdown }] });
+    await QuotationState.create({ userId: 'user-1', conversationId, currentSystemOrder: {
+      runId: 'grouped-run', messageId, markdown: effectiveMarkdown,
+      sha256: createHash('sha256').update(effectiveMarkdown).digest('hex'), updatedAt: new Date(),
+    } });
+    await ReviewOutput.create({ userId: 'user-1', conversationId, kind: 'system_order',
+      title: 'system_order', messageId, tableId: 'system_order:1', outputId, revision: 'saved-revision',
+      state: 'current', headers, rows: groupedRows, aiBaselineMarkdown, effectiveMarkdown });
+
+    const read = createSteelReviewReadMethods(mongoose);
+    const input = { userId: 'user-1', conversationId, messageId, kind: 'system_order' as const, title: 'system_order' };
+    const result = await read.readSteelReview(input);
+    expect(result).toEqual(expect.objectContaining({ outputId, revision: 'saved-revision', aiBaselineMarkdown }));
+    expect(result?.rows?.map((row) => row.rowId)).toEqual(groupedRows.map((row) => row.rowId));
+    expect(result?.rows?.map((row) => row.values)).toEqual(groupedRows.map((row) => row.values));
+    await expect(read.readSteelReview({ ...input, title: 'system_order_other' })).resolves.toBeNull();
+  });
+
   it('reads a published historical system order from its owned quotation run artifact', async () => {
     const models = createModels(mongoose);
     const QuotationState = createSteelQuotationStateModel(mongoose);

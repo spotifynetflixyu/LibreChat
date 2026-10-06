@@ -37,7 +37,7 @@ const candidate: SteelCatalogCandidate = {
     ruleVersion: 'steel-catalog-v1',
     exactPhysical: { density: '7.85' },
   },
-  label: 'SC-UNIQUE Selector steel plate catalog-special 400mm',
+  label: 'SC-UNIQUE Selector steel plate',
 };
 
 const row = (rowId: string, kind: 'material' | 'processing'): SteelReviewLedgerRow => ({
@@ -65,14 +65,14 @@ const row = (rowId: string, kind: 'material' | 'processing'): SteelReviewLedgerR
 });
 
 describe('Steel catalog candidate application', () => {
-  it('labels with ERP and full description while saving the description separately', () => {
-    expect(steelCatalogOptionLabel(candidate)).toBe('SC-UNIQUE Selector steel plate catalog-special 400mm');
+  it('labels with ERP and product name while saving only the product name', () => {
+    expect(steelCatalogOptionLabel(candidate)).toBe('SC-UNIQUE Selector steel plate');
     const material = row('material-1', 'material');
     const processing = row('processing-1', 'processing');
     const applied = applyMaterialCandidate(material, candidate, Object.keys(material.values), 'B');
 
     expect(applied.values['型號']?.effective).toBe('SC-UNIQUE');
-    expect(applied.values['品名規格']?.effective).toBe('Selector steel plate catalog-special 400mm');
+    expect(applied.values['品名規格']?.effective).toBe('Selector steel plate');
     expect(applied.values['材質編號']?.effective).toBe('SS400');
     expect(applied.values['計價基準']?.effective).toBe('2');
     expect(applied.values['單價']?.effective).toBe('');
@@ -100,7 +100,7 @@ it('merges a candidate over independent quantity and source changes', () => {
   if (!result.ok) throw new Error('Independent candidate changes did not merge');
   expect(result.currentRows[0].values['數量'].effective).toBe('5');
   expect(result.currentRows[0].source).toEqual(current.source);
-  expect(result.currentRows[1]).toEqual(processing);
+  expect(result.currentRows[1]).toEqual({ ...processing, source: current.source });
 });
 
 it('accepts an explicit material add followed by candidate replacement and a later quantity edit', () => {

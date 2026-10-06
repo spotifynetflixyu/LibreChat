@@ -17,7 +17,7 @@ const customer = { snapshotId: 'snapshot', revision: 'customer-1', tier: 'B' as 
 const candidate = (id: string, code: string) => steelCatalogCandidateSchema.parse({
   id, revision: 'a'.repeat(64), erpItemCode: code, productName: 'Steel plate',
   specKey: '400mm', category: '鐵板', costBasis: 'kg', valueState: 'confirmed',
-  label: `${code} Steel plate 400mm`, unitPrice: null,
+  label: `${code} Steel plate`, unitPrice: null,
   calculation: { erpItemCode: code, category: '鐵板', ruleVersion: 'steel-catalog-v1', exactPhysical: {} },
   ...Object.fromEntries(['subcategory', 'formulaCode', 'material', 'unit', 'unitWeightValue',
     'unitWeightBasis', 'density', 'thicknessMinMm', 'thicknessMaxMm', 'widthMm', 'heightMm',
@@ -68,13 +68,13 @@ it('shows code and full specification labels and ignores an older query response
   fireEvent.change(search, { target: { value: 'old' } });
   await waitFor(() => expect(api).toHaveBeenCalledWith('conversation', expect.objectContaining({ keyword: 'old' })));
   fireEvent.change(search, { target: { value: 'new' } });
-  await screen.findByRole('option', { name: 'NEW-B Steel plate 400mm' });
+  await screen.findByRole('option', { name: 'NEW-B Steel plate' });
   expect(screen.getAllByRole('option').map((item) => item.textContent)).toEqual([
-    'NEW-B Steel plate 400mm', 'NEW-A Steel plate 400mm',
+    'NEW-B Steel plate', 'NEW-A Steel plate',
   ]);
   await act(async () => finishOld?.(page([candidate('3', 'OLD-RESULT')])));
   expect(onSelect).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByRole('option', { name: 'NEW-A Steel plate 400mm' }));
+  fireEvent.click(screen.getByRole('option', { name: 'NEW-A Steel plate' }));
   expect(onSelect).toHaveBeenCalledWith(table.rows[0], candidate('1', 'NEW-A'), customer);
 });
 
@@ -89,7 +89,7 @@ it('keeps an incomplete single page manual and exposes empty, failure and retry 
   const search = await screen.findByPlaceholderText('Search catalog');
   await screen.findByText('No matching catalog items');
   fireEvent.change(search, { target: { value: 'single' } });
-  await screen.findByRole('option', { name: 'ABC Steel plate 400mm' });
+  await screen.findByRole('option', { name: 'ABC Steel plate' });
   expect(onSelect).not.toHaveBeenCalled();
   expect(screen.getByRole('button', { name: 'Load more' })).toBeEnabled();
   fireEvent.change(search, { target: { value: 'bad' } });

@@ -68,7 +68,7 @@ describe('Steel catalog repository', () => {
       id: rawCatalogRow.id,
       erpItemCode: rawCatalogRow.erp_item_code,
       unitPrice: rawCatalogRow.unit_price_a,
-      label: 'SC-UNIQUE Selector steel plate catalog-special 400mm',
+      label: 'SC-UNIQUE Selector steel plate',
     });
   });
 

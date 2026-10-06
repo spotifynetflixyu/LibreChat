@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 import type { Auth, Fixture } from './steel-calculation-fixture';
-import { seedCalculation, readTable, readback, openEditor, saveUi, saveApi } from './steel-calculation-fixture';
+import { seedCalculation, readTable, readback, openEditor, saveUi, saveApi, classifyAddedRow } from './steel-calculation-fixture';
 import { deleteConversations, deleteMessagesByConversation, withMongo } from './db';
 import { getAccessToken } from './helpers';
 
@@ -38,9 +38,9 @@ test.describe('Material catalog normal review workflow', () => {
     await expect(page.getByText('No matching catalog items', { exact: true })).toBeVisible();
     await expect(page.getByRole('option')).toHaveCount(0);
     await search.fill('steel plate');
-    await expect(page.getByRole('option', { name: 'SC-OTHER Other steel plate catalog-special 400mm', exact: true })).toBeVisible();
-    await page.getByRole('option', { name: 'SC-UNIQUE Selector steel plate catalog-special 400mm', exact: true }).click();
-    await expect(description).toHaveText('Selector steel plate catalog-special 400mm');
+    await expect(page.getByRole('option', { name: 'SC-OTHER Other steel plate', exact: true })).toBeVisible();
+    await page.getByRole('option', { name: 'SC-UNIQUE Selector steel plate', exact: true }).click();
+    await expect(description).toHaveText('Selector steel plate');
     await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
     expect(await readback(fixture)).toEqual(before);
   });
@@ -48,6 +48,9 @@ test.describe('Material catalog normal review workflow', () => {
   test('a complete material candidate stays a draft until Save and preserves its processing row', async ({ page }) => {
     const fixture = await seedCalculation('plate', '', true); fixtures.push(fixture);
     const initial = await readTable(page, auth, fixture);
+    const originalRowIds = initial.rows.map((row) => row.rowId);
+    const originalBaseline = initial.aiBaselineMarkdown;
+    expect(originalBaseline).toBeTruthy();
     const initialProcessing = initial.rows.find((row) => row.system?.kind === 'processing');
     if (!initialProcessing) throw new Error('Missing normal producer processing');
     await saveApi(page, auth, {
@@ -61,6 +64,10 @@ test.describe('Material catalog normal review workflow', () => {
     const processing = owner.rows.find((row) => row.system?.kind === 'processing');
     if (!material || !processing) throw new Error('Missing normal producer material or processing');
     expect(processing.system?.parentRowId).toBe(material.rowId);
+    expect(owner.rows.map((row) => row.rowId)).toEqual([
+      originalRowIds[0], initialProcessing.rowId, originalRowIds[1],
+    ]);
+    expect((await readback(fixture)).reviews[0].aiBaselineMarkdown).toBe(originalBaseline);
     expect(processing.calculation?.measurement).toEqual({ mode: 'batch', amount: '7', unit: '刀', ruleVersion: 'v1' });
     expect(processing.values['總數'].effective).toBe('7');
     expect(processing.values['單價'].effective).toBe('13');
@@ -68,28 +75,31 @@ test.describe('Material catalog normal review workflow', () => {
     const dialog = await openEditor(page, fixture);
     const model = dialog.getByRole('combobox', { name: `型號 ${material.rowId}`, exact: true });
     await model.click();
-    await expect(page.getByRole('option', { name: 'SC-UNIQUE Selector steel plate catalog-special 400mm', exact: true })).toBeVisible();
+    await expect(page.getByRole('option', { name: 'SC-UNIQUE Selector steel plate', exact: true })).toBeVisible();
     const search = page.locator('input[placeholder="Search catalog"]:visible');
     await search.focus();
-    await page.getByRole('option', { name: 'SC-UNIQUE Selector steel plate catalog-special 400mm', exact: true }).click();
+    await page.getByRole('option', { name: 'SC-UNIQUE Selector steel plate', exact: true }).click();
     await expect(model).toHaveText('SC-UNIQUE');
-    await expect(model).toHaveText('PLATE');
+    await expect(model.locator('xpath=ancestor::td').locator('del')).toHaveText('PLATE');
     await model.click();
     await page.locator('input[placeholder="Search catalog"]:visible').fill('SC-UNIQUE');
     await expect(model).toHaveText('SC-UNIQUE');
-    await expect(dialog.getByRole('combobox', { name: `品名規格 ${material.rowId}`, exact: true })).toHaveText('Selector steel plate catalog-special 400mm');
+    await expect(dialog.getByRole('combobox', { name: `品名規格 ${material.rowId}`, exact: true })).toHaveText('Selector steel plate');
     await dialog.getByRole('combobox', { name: `品名規格 ${material.rowId}`, exact: true }).click();
-    await expect(page.getByRole('option', { name: 'SC-UNIQUE Selector steel plate catalog-special 400mm', exact: true })).toBeVisible();
+    await expect(page.getByRole('option', { name: 'SC-UNIQUE Selector steel plate', exact: true })).toBeVisible();
     await page.keyboard.press('Escape');
     await expect(dialog).toBeVisible();
     for (const [header, value] of Object.entries({ 數量: '2', 材質編號: 'SS400', 寬度: '400', 厚度: '', 長度: '', 單價: '' })) {
       await expect(dialog.getByRole('textbox', { name: `${header} ${material.rowId}`, exact: true })).toHaveValue(value);
     }
     expect(await readback(fixture)).toEqual(before);
-    await expect(model).toHaveText('PLATE');
+    await expect(model.locator('xpath=ancestor::td').locator('del')).toHaveText('PLATE');
     await expect(model).toHaveText('SC-UNIQUE');
     const saved = await saveUi(page, dialog);
     expect(saved.changedRowIds).toEqual([material.rowId]);
+    const reread = await readTable(page, auth, fixture);
+    expect(reread.outputId).toBe(owner.outputId);
+    expect(reread.rows.map((row) => row.rowId)).toEqual(owner.rows.map((row) => row.rowId));
     expect(saved.rows.find((row) => row.rowId === processing.rowId)).toEqual(processing);
     const replacement = saved.rows.find((row) => row.rowId === material.rowId);
     expect(replacement?.values['單價'].effective).toBe('');
@@ -100,9 +110,9 @@ test.describe('Material catalog normal review workflow', () => {
     expect(after.messages[0].messageId).toBe(fixture.messageId);
     expect(after.messages[0].text).toContain('SC-UNIQUE');
     const quoteLine = after.quotation?.currentSystemOrder?.customerQuoteMarkdown?.split('\n')
-      .find((line) => line.includes('Selector steel plate catalog-special 400mm'));
+      .find((line) => line.includes('Selector steel plate'));
     expect(quoteLine?.split('|').slice(1, -1).map((cell) => cell.trim())).toEqual([
-      'Selector steel plate catalog-special 400mm', replacement?.values['總數'].effective, '',
+      'Selector steel plate', replacement?.values['總數'].effective, '',
     ]);
     expect(after.reviews[0].aiBaselineMarkdown).toBe(before.reviews[0].aiBaselineMarkdown);
     await page.keyboard.press('Escape');
@@ -129,8 +139,8 @@ test.describe('Material catalog normal review workflow', () => {
     await model.click();
     const search = page.locator('input[placeholder="Search catalog"]:visible');
     await search.fill('SC-');
-    await expect(page.getByRole('option', { name: 'SC-OTHER Other steel plate catalog-special 400mm', exact: true })).toBeVisible();
-    await page.getByRole('option', { name: 'SC-UNIQUE Selector steel plate catalog-special 400mm', exact: true }).click();
+    await expect(page.getByRole('option', { name: 'SC-OTHER Other steel plate', exact: true })).toBeVisible();
+    await page.getByRole('option', { name: 'SC-UNIQUE Selector steel plate', exact: true }).click();
     await expect(model).toHaveText('SC-UNIQUE');
     const calls = queries;
     await model.click();
@@ -142,9 +152,10 @@ test.describe('Material catalog normal review workflow', () => {
     await expect(model).toHaveText('SC-UNIQUE');
     expect(queries).toBe(calls);
     await page.keyboard.press('Escape');
-    await expect(model).toHaveText('PLATE');
+    await expect(model.locator('xpath=ancestor::td').locator('del')).toHaveText('PLATE');
     await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
-    const addedModel = dialog.getByRole('combobox', { name: /^型號 /u }).last();
+    const addedRowId = await classifyAddedRow(page, dialog, 'Material');
+    const addedModel = dialog.getByRole('combobox', { name: `型號 ${addedRowId}`, exact: true });
     await addedModel.click();
     await expect(search).toHaveValue('');
     await search.fill('SC-UNIQUE');

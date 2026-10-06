@@ -221,29 +221,35 @@ function provenSidecarTitle(output: SidecarProofOutput): string | undefined {
   const effectiveTables = parseSteelReviewMarkdownTables(effective)
     .filter((candidate) => isManagedReviewTitle(output.kind, candidate.title));
   const aiRows = output.rows.filter((row) => (row.origin ?? 'ai') === 'ai');
+  // Saving groups processing under materials; immutable ownership must survive that reorder.
+  const aiRowsById = new Map(aiRows.map((row) => [row.rowId, row]));
+  if (aiRowsById.size !== aiRows.length) {
+    return undefined;
+  }
   const matchesBaseline = (candidate: { headers: string[]; rows: string[][] }): boolean => {
     if (!sameReviewHeaders(candidate.headers, output.headers)) {
       return false;
     }
-    let aiIndex = 0;
+    const baselineRowIds = new Set<string>();
     for (const [originalRowIndex, row] of candidate.rows.entries()) {
       // Malformed physical rows are skipped by the trusted ledger importer;
       // their original index still remains part of the following row ID.
       if (row.length !== candidate.headers.length) {
         continue;
       }
-      const stored = aiRows[aiIndex];
-      if (!stored || stored.rowId !== createHash('sha256')
-        .update(`${output.outputId}:${originalRowIndex}:${JSON.stringify(row)}`).digest('hex')) {
+      const rowId = createHash('sha256')
+        .update(`${output.outputId}:${originalRowIndex}:${JSON.stringify(row)}`).digest('hex');
+      const stored = aiRowsById.get(rowId);
+      if (!stored || baselineRowIds.has(rowId)) {
         return false;
       }
+      baselineRowIds.add(rowId);
       if (!output.headers.every((header, columnIndex) =>
         (stored.values[header]?.baseline ?? '') === (row[columnIndex] ?? ''))) {
         return false;
       }
-      aiIndex += 1;
     }
-    return aiIndex === aiRows.length;
+    return baselineRowIds.size === aiRowsById.size;
   };
   const matchesEffective = (candidate: { headers: string[]; rows: string[][] }): boolean => {
     if (!sameReviewHeaders(candidate.headers, output.headers)) {

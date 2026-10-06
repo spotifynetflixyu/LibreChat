@@ -1,7 +1,7 @@
 import { expect, test } from '@playwright/test';
 import type { Locator } from '@playwright/test';
 import type { Auth, Fixture } from './steel-calculation-fixture';
-import { seedCalculation, readTable, readback, openEditor, saveUi, saveApi } from './steel-calculation-fixture';
+import { seedCalculation, readTable, readback, openEditor, saveUi, saveApi, classifyAddedRow } from './steel-calculation-fixture';
 import { deleteConversations, deleteMessagesByConversation, withMongo } from './db';
 import { getAccessToken } from './helpers';
 
@@ -48,12 +48,12 @@ test.describe('Processing catalog normal review workflow', () => {
     });
     const model = dialog.getByRole('combobox', { name: `型號 ${processing.rowId}`, exact: true });
     await model.click();
-    await expect(page.getByRole('option', { name: 'PC-MULTI-A Plate cutting A 6mm', exact: true })).toBeVisible();
-    await expect(page.getByRole('option', { name: 'PC-WRONG Other material drilling 6mm', exact: true })).toHaveCount(0);
-    await expect(page.getByRole('option', { name: 'PC-BAND Excluded thickness band 6mm', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('option', { name: 'PC-MULTI-A Plate cutting A', exact: true })).toBeVisible();
+    await expect(page.getByRole('option', { name: 'PC-WRONG Other material drilling', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('option', { name: 'PC-BAND Excluded thickness band', exact: true })).toHaveCount(0);
     const search = page.locator('input[placeholder="Search catalog"]:visible');
     await search.fill('PC-MULTI');
-    await page.getByRole('option', { name: 'PC-MULTI-A Plate cutting A 6mm', exact: true }).click();
+    await page.getByRole('option', { name: 'PC-MULTI-A Plate cutting A', exact: true }).click();
     await expect(model).toHaveText('PC-MULTI-A');
     const calls = queries;
     await model.click();
@@ -63,7 +63,7 @@ test.describe('Processing catalog normal review workflow', () => {
     await expect(search).toBeVisible();
     expect(queries).toBe(calls);
     await search.press('Escape');
-    await expect(model).toHaveText('PC-MULTI-A');
+    await expect(model.locator('xpath=ancestor::td').locator('del')).toHaveText('PROCESS');
     await expect(model).toHaveText('PC-MULTI-B');
     await dialog.getByRole('textbox', { name: `數量 ${parent.rowId}`, exact: true }).fill('3');
     await dialog.getByRole('textbox', { name: `總數 ${processing.rowId}`, exact: true }).blur();
@@ -79,7 +79,7 @@ test.describe('Processing catalog normal review workflow', () => {
     const after = await readback(fixture);
     expect(after.messages[0].messageId).toBe(before.messages[0].messageId);
     expect(after.reviews[0].aiBaselineMarkdown).toBe(before.reviews[0].aiBaselineMarkdown);
-    expect(after.quotation?.currentSystemOrder?.customerQuoteMarkdown).toContain('| Plate cutting B 6mm | 9 | 29 |');
+    expect(after.quotation?.currentSystemOrder?.customerQuoteMarkdown).toContain('| Plate cutting B | 9 | 29 |');
     await page.keyboard.press('Escape');
     await page.reload();
     const reopened = await openEditor(page, fixture);
@@ -95,8 +95,8 @@ test.describe('Processing catalog normal review workflow', () => {
     const oldProcessing = initial.rows.find((row) => row.system?.kind === 'processing');
     const dialog = await openEditor(page, fixture);
     await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
-    const materialModel = dialog.getByRole('combobox', { name: /^型號 /u }).last();
-    const materialId = (await materialModel.locator('xpath=ancestor::tr').getByRole('textbox', { name: /^數量 /u }).getAttribute('aria-label'))!.slice('數量 '.length);
+    const materialId = await classifyAddedRow(page, dialog, 'Material');
+    const materialModel = dialog.getByRole('combobox', { name: `型號 ${materialId}`, exact: true });
     await materialModel.click();
     await page.locator('input[placeholder="Search catalog"]:visible').fill('SC-UNIQUE');
     await expect(materialModel).toHaveText('SC-UNIQUE');
@@ -104,10 +104,8 @@ test.describe('Processing catalog normal review workflow', () => {
     await page.getByRole('option', { name: 'C型鋼', exact: true }).click();
     await fillNotes(dialog, materialId, 'SC-UNIQUE');
     await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
-    const childModel = dialog.getByRole('combobox', { name: /^型號 /u }).last();
-    const childId = (await childModel.locator('xpath=ancestor::tr').getByRole('textbox', { name: /^數量 /u }).getAttribute('aria-label'))!.slice('數量 '.length);
-    await dialog.getByRole('combobox', { name: `Classify ${childId}`, exact: true }).click();
-    await page.getByRole('option', { name: 'Processing', exact: true }).click();
+    const childId = await classifyAddedRow(page, dialog, 'Processing');
+    const childModel = dialog.getByRole('combobox', { name: `型號 ${childId}`, exact: true });
     await fillNotes(dialog, childId, 'SC-UNIQUE');
     const queried = page.waitForResponse((response) => response.request().method() === 'GET' &&
       response.url().includes('/review/system_order/catalog?') && response.url().includes('PC-NOPRICE'));
