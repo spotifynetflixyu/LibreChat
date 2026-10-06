@@ -64,4 +64,4 @@ client focused 109 passed、2 個先前停用案例 skipped；provider review 51
 Lighthouse 隔離載入 gate 已通過：三次 cold navigation median LCP 3793.685 ms（limit 4500）、CLS 0.0168823（limit 0.1）、TBT 51.531 ms（limit 500）。此為此次必要載入 gate，不代表整體 #15 完成。
 
 
-Static checks 使用實際 base `origin/feat/v8.8`（此 repo 沒有 origin/dev），imports／package JSON 通過；`completion.ts → full.ts → completion.ts` circular dependency 在 amendment baseline `42897571` 已存在，兩檔此次沒有 diff。未把這個既存失敗標成通過。整體 #14／#15 仍 pending，PR16 保持 Draft／OPEN；此批完成後暫停。
+Static checks 使用實際 base `origin/feat/v8.8`（此 repo 沒有 origin/dev）。初次 gate 發現 baseline 已存在的 `completion.ts → full.ts → completion.ts` cycle；使用者追加要求一併修正。共用 completion 型別移至既有 markdown/types.ts，completion 保留原公開 type re-exports，full 不再回頭引用 completion；發布流程沒有改動。9 個 real-Mongo completion／publication tests 通過，最終 owning 型別／build／static 與 exact-head 審查證據記錄於 GitHub。整體 #14／#15 仍 pending，PR16 保持 Draft／OPEN；此批完成後暫停。

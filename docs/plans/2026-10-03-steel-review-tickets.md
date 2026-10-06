@@ -130,3 +130,6 @@ The existing route and Markdown review host test fixtures now supply the idle ex
 
 
 2026-10-06 UI amendment implemented: fixed preview＋two-row scrolling editor, OCR／system own headers, Add item／Unlinked／source popup／Delete, Notes blur grouping only for system order, OCR category menu, undo／redo／fullscreen／dialog-download retirement. Client 109 passed／2 previously skipped、provider51、API37；three representative actual browser flows and a normal-publication full-header OCR recheck passed. Lighthouse passed median LCP3793.685ms／CLS0.0168823／TBT51.531ms. Repository OCR fixed list now includes 頁碼；rule dry-run passed but no DEV／PROD sync. Exact-head independent review, pushed head and issue state readback are recorded in GitHub completion evidence. Pause before13/#14 and whole-feature14/#15, both Pending; issue closure awaits PR merge.
+
+
+使用者追加要求修正循環相依：completion／full 共用型別抽至既有 markdown/types.ts，保留公開 re-exports，執行方向維持 completion → full。Real-Mongo completion／publication 9 tests 通過；最終 type/build/static／review 證據與 pushed head 記錄於 GitHub，#14／#15 仍 Pending。
