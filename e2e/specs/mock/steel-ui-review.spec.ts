@@ -190,7 +190,8 @@ test.describe('Steel source review normal UI acceptance', () => {
     await expect(bindDialog).toHaveCount(0);
     const linkedButton = target.getByRole('button', { name: `Linked ${targetId}`, exact: true });
     await expect(linkedButton).toBeVisible();
-    await expect(linkedButton).toHaveClass(/bg-surface-submit/u);
+    await expect(linkedButton).toHaveClass(/bg-surface-inverted/u);
+    await expect(linkedButton).not.toHaveClass(/bg-surface-submit/u);
     await expect(linkedButton.locator('svg')).toHaveClass(/lucide-link-2/u);
     await linkedButton.press('Shift+Tab');
     await page.keyboard.press('Tab');

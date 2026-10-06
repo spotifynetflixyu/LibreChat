@@ -110,7 +110,8 @@ describe('Steel review local editor gates', () => {
     expect(link.textContent).toBe('');
     expect(linkedButton.textContent).toBe('');
     expect(link).toHaveClass('bg-transparent');
-    expect(linkedButton).toHaveClass('bg-surface-submit');
+    expect(linkedButton).toHaveClass('bg-surface-inverted');
+    expect(linkedButton).not.toHaveClass('bg-surface-submit');
     expect(link.querySelector('svg')?.getAttribute('class')).toBe(linkedButton.querySelector('svg')?.getAttribute('class'));
     expect(link.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
     fireEvent.click(linkedButton);

@@ -76,7 +76,7 @@ function ReviewActionButton({ label, rowId, onClick, children, linked = false, d
   danger?: boolean;
 }) {
   return <TooltipAnchor description={label} side="top" render={
-    <Button type="button" size="icon-sm" variant={linked ? 'submit' : 'outline'} className={danger ? 'hover:border-status-error-border hover:bg-status-error-subtle hover:text-text-destructive' : undefined} aria-label={`${label} ${rowId}`} onClick={onClick}>
+    <Button type="button" size="icon-sm" variant={linked ? 'default' : 'outline'} className={danger ? 'hover:border-status-error-border hover:bg-status-error-subtle hover:text-text-destructive' : undefined} aria-label={`${label} ${rowId}`} onClick={onClick}>
       {children}
     </Button>
   } />;
