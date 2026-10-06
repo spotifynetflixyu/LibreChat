@@ -64,6 +64,11 @@ function safeEnvironment() {
     USE_REDIS_STREAMS: 'false',
     USE_REDIS_CLUSTER: 'false',
     STEEL_POSTGRES_URL: '',
+    E2E_CODE_BASEURL: '',
+    E2E_CODE_API_KEY: '',
+    E2E_CODE_BRIDGE_URL: '',
+    E2E_CODE_BRIDGE_ADMIN_TOKEN: '',
+    E2E_PASSTHROUGH_ENV: '',
   };
 
   const providerCredential =
