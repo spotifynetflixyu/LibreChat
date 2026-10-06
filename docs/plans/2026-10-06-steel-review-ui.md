@@ -80,3 +80,7 @@ Delete 預設維持中性，hover 使用共享 danger 文字、邊框與淡色�
 最新配色修正：只有 Save 使用 primary（submit）；Linked 改為共享 Button default 的中性實色底（surface-inverted／text-inverted），未綁定維持透明 outline，Delete hover 的 danger 行為不變。
 
 中性 Linked 配色修正驗證：Editor 9 passed、正常綁定／Save／reload Chrome 流程 1 passed（34.1s），client noEmit／private build 與 scoped semantic lint／diff 通過；已確認實際畫面為 Linked 中性深色底、未綁定透明底，Save 保留 primary。
+
+型號／品名規格 async selector 移除箭頭 icon：使用共享 ControlCombobox 的既有 showCarat=false，保留點擊開選單、搜尋、鍵盤／滾輪與候選快取行為。
+
+無箭頭修正驗證：既有 Selector 聚焦 6 passed，client noEmit、scoped semantic lint（Prettier off）／imports／diff 通過。只調整既有共享元件顯示選項，不新增搜尋或狀態流程。

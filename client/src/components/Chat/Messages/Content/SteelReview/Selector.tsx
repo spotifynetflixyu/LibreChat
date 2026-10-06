@@ -134,7 +134,7 @@ export default function SteelReviewSelector({
     isCollapsed={false}
     variant="field"
     portal={false}
-    showCarat
+    showCarat={false}
     disabled={!canEdit}
     filterItems={false}
     searchValue={keyword}
