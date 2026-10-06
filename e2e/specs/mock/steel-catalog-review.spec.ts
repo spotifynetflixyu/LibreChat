@@ -167,6 +167,7 @@ test.describe('Material catalog normal review workflow', () => {
     expect(added?.values['單價'].effective).toBe('');
     const after = await readback(fixture);
     expect(after.reviews[0].receipts?.at(-1)?.snapshot?.selectionEvidence).toEqual([
+      expect.objectContaining({ rowId: material.rowId, candidateId: '9007199254740993', customerTier: 'B', unitPrice: null }),
       expect.objectContaining({ rowId: added?.rowId, candidateId: '9007199254740993', customerTier: 'B', unitPrice: null }),
     ]);
     await page.keyboard.press('Escape');

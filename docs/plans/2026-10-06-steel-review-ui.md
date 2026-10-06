@@ -87,4 +87,15 @@ Delete 預設維持中性，hover 使用共享 danger 文字、邊框與淡色�
 
 Async selector 搜尋契約修正：型號維持 erp_item_code 首字元起匹配與字母排序；品名規格 keyword 僅對 product_name 做包含匹配，spec_key 不參與搜尋條件。材料／加工候選搜尋與選取均不按 value_state 篩選或限制。
 
-Product-name-only 搜尋驗證：API catalog／repository 13 passed，材料與加工 description predicate 只包含 product_name、不包含 spec_key／value_state；API noEmit／private build、scoped semantic lint／imports／diff 與 fixture parser 通過。正常 Chrome→Express→disposable Mongo、既有 Steel 價目表 fixture 的聚焦搜尋／候選草稿選取 1 passed（22.1s），spec-only keyword 無候選，product_name keyword 回傳可選候選、保存前 DB 保持原值。最初通用 browser 設定未載入 catalog fixture，已改用既有 playwright.config.steel.ts。額外完整材料保存案例在搜尋前的前置 Save 後 readTable 回 REVIEW_NOT_FOUND（404）；在正確 Steel 設定也重現，此前置問題沒有修復、沒有列為成功，另記錄於仍 pending 的 #15。
+Product-name-only 搜尋驗證：API catalog／repository 13 passed，材料與加工 description predicate 只包含 product_name、不包含 spec_key／value_state；API noEmit／private build、scoped semantic lint／imports／diff 與 fixture parser 通過。正常 Chrome→Express→disposable Mongo、既有 Steel 價目表 fixture 的聚焦搜尋／候選草稿選取 1 passed（22.1s），spec-only keyword 無候選，product_name keyword 回傳可選候選、保存前 DB 保持原值。最初通用 browser 設定未載入 catalog fixture，已改用既有 playwright.config.steel.ts。額外完整材料保存案例在搜尋前的前置 Save 後 readTable 回 REVIEW_NOT_FOUND（404）；在正確 Steel 設定也重現，此初次失敗觸發下述保存後讀取修復，沒有將失敗案例列為成功。
+
+
+## 2026-10-06 保存後讀取 404 與品名規格填入修正
+
+正常保存將材料 A／材料 B／加工 A 排成材料 A／加工 A／材料 B；原讀取以 AI baseline 的物理列順序 zip 保存列，誤判同一張 system_order 的歸屬並回 REVIEW_NOT_FOUND。保存的 sidecar、有效 Markdown 和 AI baseline 實際仍存在。改以不可變 rowId 查找每筆 baseline，核對完整表頭與 baseline cells、唯一 ID 和完整一對一 coverage；有效人工表格仍核對目前列順序與完整標題。材料優先排序、人工值、manual rows、AI 對照、訊息／output／tenant 權限不變，沒有改成位置 fallback 或資料修復流程。
+
+品名規格搜尋及填入均只用 product_name；option label 為型號＋product_name。spec_key 保留候選 metadata，但不參與品名規格搜尋、label 或填入；value_state 不作候選篩選或選取限制。
+
+新 Mongo 正常保存重排讀取回歸在修正前失敗、修正後通過；同一完整標題讀取成功，另一標題不返回。五個正常 Chrome→Express→disposable wiredTiger Mongo 流程已取得成功證據（完整 suite 的四個成功流程，加上修正舊 receipt 預期後新增材料聚焦重跑 1 passed／26.1s），涵蓋 product-name-only 搜尋／草稿、前置 Save→read→候選第二次 Save→read→reload、新材料、加工 keyboard 改選／計量、未保存材料範圍與缺 tier 加工。AI baseline 與原有 row IDs 保持一致，manual rows 保存後可重新載入。
+
+provider catalog 5、API catalog／repository 13、Selector 6 passed；Mongo read／write suites 48 passed、2 既有失敗已在原 HEAD 同樣重現（直接 writer source-cell fixture 與 wrong customerRunId 的舊預期），沒有擴張到這些非本次正常操作。四個受影響 workspace noEmit、隔離 provider／schemas／API／client builds、scoped semantic lint／imports／diff 與實際 PR base committed static checks 通過；Prettier 未執行。固定 head 獨立審查與 GitHub readback 證據記錄於 PR／相關 issues；#14／#15 仍 pending，PR16 Draft／OPEN，完成後暫停。
