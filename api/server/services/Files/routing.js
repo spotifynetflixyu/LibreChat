@@ -2,8 +2,8 @@ const {
   resolveUploadAgent: resolveAgent,
   resolveEffectiveToolResource: resolveToolResource,
   resolveUploadEndpoint: resolveEndpoint,
-  resolveUploadLLMDeliveryPath,
 } = require('@librechat/api');
+const { resolveUploadLLMDeliveryPath } = require('librechat-data-provider');
 const db = require('~/models');
 
 /* Wiring only: binds this workspace's agent model to the upload routing implemented in

@@ -81,8 +81,6 @@ def fixtures():
         result[f'actions/runs/{index}'] = copy.deepcopy(run)
         jobs = [{'name': name, 'head_sha': DEV, 'status': 'completed', 'conclusion': 'success'}
                 for name in sorted(required)]
-        jobs.append({'name': 'Codegraph select', 'head_sha': DEV,
-                     'status': 'completed', 'conclusion': 'skipped'})
         result[f'actions/runs/{index}/attempts/2/jobs?per_page=100'] = {
             'total_count': len(jobs), 'jobs': jobs,
         }
@@ -257,7 +255,7 @@ class PolicyTests(unittest.TestCase):
             self.refuse()
             self.data['actions/runs/1'][key] = old
 
-    def test_every_required_shard_must_exist_and_succeed(self):
+    def test_every_required_job_must_exist_and_succeed(self):
         for index in (1, 2):
             jobs = self.ci_jobs(index)
             original = copy.deepcopy(jobs)
@@ -434,11 +432,14 @@ class WorkflowBoundaryTests(unittest.TestCase):
                         TEXT.index('uses: actions/create-github-app-token@'))
         self.assertNotIn('skip-token-revoke: true', TEXT)
 
-    def test_selected_pr_tests_cannot_masquerade_as_full_ci(self):
+    def test_retained_workflows_expose_all_required_jobs(self):
         for filename in POLICY.CI:
             text = (ROOT / '.github/workflows' / filename).read_text()
             self.assertIn('  workflow_dispatch:', text)
-            self.assertIn("github.event_name == 'pull_request'", text)
+            self.assertIn('  pull_request:', text)
+            self.assertNotIn('codegraph_select:', text)
+            for name in POLICY.CI[filename][1]:
+                self.assertIn(f'name: {name}', text)
 
     def test_control_plane_is_code_owned(self):
         owners = (ROOT / '.github/CODEOWNERS').read_text()

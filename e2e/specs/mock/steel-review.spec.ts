@@ -32,6 +32,21 @@ const ocr = [
   '| A | REVIEW-P2 | 2000 | 3 | 1 |',
 ].join('\n');
 
+const publishedOcr = [
+  '## source_file_mapping',
+  '',
+  '| 來源 | 檔名 |',
+  '| --- | --- |',
+  '| F1 | alpha.pdf |',
+  '',
+  '## ocr_result',
+  '',
+  '| 來源 | 零件編號 | 長度 | 數量 | 頁碼 | 類別 | 品名規格 |',
+  '| --- | --- | --- | --- | --- | --- | --- |',
+  '| F1 | REVIEW-P1 | 1000 | 2 | 1 | 鐵板 | 鋼板 6x1000x1000 |',
+  '| F1 | REVIEW-P2 | 2000 | 3 | 1 | 鐵板 | 鋼板 6x1000x2000 |',
+].join('\n');
+
 async function seedCurrent(markdown: string) {
   const conversationId = randomUUID();
   const messageId = randomUUID();
@@ -2496,14 +2511,14 @@ test.describe('Steel managed source review', () => {
   test('manual OCR Save changes only the clicked message and chat reload shows clean saved values', async ({ page }) => {
     const markdown = [
       'SAVE-KEEP-PREFIX',
-      ocr,
+      publishedOcr,
       '## Keep this table\n| Label | Value |\n| --- | --- |\n| Unrelated | 4242 |',
       'SAVE-KEEP-SUFFIX',
     ].join('\n\n');
-    const { conversationId, messageId } = await seedCurrent(markdown);
+    const { conversationId, messageId } = await seedCurrentPublished(markdown);
     conversations.push(conversationId);
     const previousMessageId = randomUUID();
-    const previousMarkdown = ocr.replace('REVIEW-P1', 'PREVIOUS-SAME-TITLE').replace('| 1000 | 2 |', '| 1000 | 97 |');
+    const previousMarkdown = publishedOcr.replace('REVIEW-P1', 'PREVIOUS-SAME-TITLE').replace('| 1000 | 2 |', '| 1000 | 97 |');
     await seedMessages(getE2EUser().email, conversationId, [{
       messageId: previousMessageId,
       parentMessageId: '00000000-0000-0000-0000-000000000000',
@@ -2522,7 +2537,7 @@ test.describe('Steel managed source review', () => {
         $set: { createdAt: new Date(Date.now() - 60_000), updatedAt: new Date(Date.now() - 60_000) },
       });
     });
-    const otherChat = await seedCurrent(ocr.replace('REVIEW-P1', 'OTHER-CHAT-SAME-TITLE'));
+    const otherChat = await seedCurrentPublished(publishedOcr.replace('REVIEW-P1', 'OTHER-CHAT-SAME-TITLE'));
     conversations.push(otherChat.conversationId);
     const before = await persistedSnapshot(conversationId);
     const otherBefore = await persistedSnapshot(otherChat.conversationId);
@@ -2532,7 +2547,7 @@ test.describe('Steel managed source review', () => {
     await page.goto(`/c/${conversationId}`);
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).last().click();
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
-    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+    const quantity = dialog.locator('tbody tr').first().getByRole('textbox', { name: /^數量 / });
     await expect(quantity).toHaveValue('2');
     await quantity.fill('9');
     await quantity.press('Enter');
@@ -2551,10 +2566,10 @@ test.describe('Steel managed source review', () => {
     await expect.poll(async () => {
       const snapshot = await persistedSnapshot(conversationId);
       return snapshot.messages.find((message) => message.messageId === messageId)?.text;
-    }).toContain('| A | REVIEW-P1 | 1000 | 9 | 1 |');
+    }).toContain('| F1 | REVIEW-P1 | 1000 | 9 | 1 |');
     const after = await persistedSnapshot(conversationId);
     const savedMessage = after.messages.find((message) => message.messageId === messageId);
-    const expectedMarkdown = markdown.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 9 | 1 |');
+    const expectedMarkdown = markdown.replace('| F1 | REVIEW-P1 | 1000 | 2 | 1 |', '| F1 | REVIEW-P1 | 1000 | 9 | 1 |');
     expect(savedMessage?.text).toBe(`${expectedMarkdown} SAVE-SECOND-PART-KEEP`);
     expect(savedMessage?.content).toEqual([
       { type: 'text', text: expectedMarkdown },
@@ -2576,9 +2591,9 @@ test.describe('Steel managed source review', () => {
     await expect(dialog.locator('del').filter({ hasText: /^2$/ })).toBeVisible();
     await page.keyboard.press('Escape');
     await expect(dialog).not.toBeVisible();
-    await expect(page.getByText('Updated', { exact: true })).toBeVisible();
+    await expect(page.getByText('Latest version v2', { exact: true })).toBeVisible();
     await page.reload();
-    await expect(page.getByText('Updated', { exact: true })).toBeVisible();
+    await expect(page.getByText('Latest version v2', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).last().click();
     await expect(quantity).toHaveValue('9');
     await expect(dialog.locator('del').filter({ hasText: /^2$/ })).toBeVisible();
@@ -2800,7 +2815,7 @@ test.describe('Steel managed source review', () => {
   });
 
   test('OCR row CRUD is local and adding then deleting before Save is a net-zero no-op', async ({ page }) => {
-    const { conversationId } = await seedCurrent(ocr);
+    const { conversationId } = await seedCurrentPublished(publishedOcr);
     conversations.push(conversationId);
     const before = await persistedSnapshot(conversationId);
     await page.goto(`/c/${conversationId}`);
@@ -2814,8 +2829,6 @@ test.describe('Steel managed source review', () => {
     await dialog.locator('tbody tr').last().getByRole('button', { name: /^Delete row(?:\s|$)/ }).click();
     await expect(dialog.locator('tbody tr')).toHaveCount(2);
     await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
-    await expect(dialog.locator('tbody tr')).toHaveCount(3);
-    await expect(dialog.locator('tbody tr')).toHaveCount(2);
     expect(await persistedSnapshot(conversationId)).toEqual(before);
     await page.keyboard.press('Escape');
     await expect(dialog).not.toBeVisible();
@@ -3102,15 +3115,16 @@ test.describe('Steel managed source review', () => {
   });
 
   test('deleting a previously saved manual OCR row changes one row without inventing an AI comparison', async ({ page }) => {
-    const { conversationId, messageId } = await seedCurrent(ocr);
+    const { conversationId, messageId } = await seedCurrentPublished(publishedOcr);
     conversations.push(conversationId);
+    const original = await persistedSnapshot(conversationId);
     await page.goto(`/c/${conversationId}`);
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
     await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
     const added = dialog.locator('tbody tr').last();
-    await added.locator('td').nth(1).getByRole('textbox').fill('MANUAL-ONLY');
-    await added.locator('td').nth(3).getByRole('textbox').fill('4');
+    await added.getByRole('textbox', { name: /^零件編號 / }).fill('MANUAL-ONLY');
+    await added.getByRole('textbox', { name: /^數量 / }).fill('4');
     await dialog.getByRole('button', { name: /^Save/ }).click();
     await expect(dialog.getByText('Updated 1 rows', { exact: true })).toBeVisible();
     const first = await persistedSnapshot(conversationId);
@@ -3124,16 +3138,14 @@ test.describe('Steel managed source review', () => {
     await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
     await expect(dialog.locator('del').filter({ hasText: 'MANUAL-ONLY' })).toHaveCount(0);
     expect(await persistedSnapshot(conversationId)).toEqual(first);
-    await expect(dialog.locator('input[value="MANUAL-ONLY"]')).toBeVisible();
-    await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
     await expect(dialog.locator('input[value="MANUAL-ONLY"]')).toHaveCount(0);
     await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
     expect(await persistedSnapshot(conversationId)).toEqual(first);
     await dialog.getByRole('button', { name: /^Save/ }).click();
     await expect.poll(async () => (await persistedSnapshot(conversationId)).reviews[0]?.receipts.length).toBe(2);
     const second = await persistedSnapshot(conversationId);
-    expect(second.messages.find((message) => message.messageId === messageId)?.text).toBe(ocr);
-    expect(second.reviews[0]?.aiBaselineMarkdown).toBe(ocr);
+    expect(second.messages.find((message) => message.messageId === messageId)?.text).toBe(original.messages.find((message) => message.messageId === messageId)?.text);
+    expect(second.reviews[0]?.aiBaselineMarkdown).toBe(first.reviews[0]?.aiBaselineMarkdown);
     expect(second.reviews[0]?.rows).toContainEqual(expect.objectContaining({ rowId: manual?.rowId,
       origin: 'manual', deleted: true }));
     expect(second.reviews[0]?.receipts[1]).toMatchObject({ changedRows: 1, changedRowIds: [manual?.rowId] });
@@ -3181,13 +3193,13 @@ test.describe('Steel managed source review', () => {
   });
 
   test('dirty OCR Escape offers continue and discard without saving the chat', async ({ page }) => {
-    const { conversationId } = await seedCurrent(ocr);
+    const { conversationId } = await seedCurrentPublished(publishedOcr);
     conversations.push(conversationId);
     const before = await persistedSnapshot(conversationId);
     await page.goto(`/c/${conversationId}`);
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
-    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+    const quantity = dialog.locator('tbody tr').first().getByRole('textbox', { name: /^數量 / });
     await quantity.fill('8');
     await quantity.press('Escape');
     await expect(page.getByRole('button', { name: 'Continue editing', exact: true })).toBeVisible();
@@ -3218,7 +3230,7 @@ test.describe('Steel managed source review', () => {
     await page.getByRole('button', { name: 'Save updates', exact: true }).click();
     await expect(dialog).not.toBeVisible();
     expect((await persistedSnapshot(conversationId)).messages[0]?.text)
-      .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 11 | 1 |'));
+      .toBe(before.messages[0]?.text?.replace('| F1 | REVIEW-P1 | 1000 | 2 | 1 |', '| F1 | REVIEW-P1 | 1000 | 11 | 1 |'));
   });
 
 

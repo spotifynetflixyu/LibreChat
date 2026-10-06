@@ -134,6 +134,8 @@ export * from './steel/access';
 export * from './steel/admin';
 export * from './steel/ai/config';
 export * from './steel/markdown/completion';
+export * from './steel/markdown/full';
+export * from './steel/markdown/history';
 export * from './steel/memory/service';
 export * from './steel/messageGuard';
 export * from './steel/models';

@@ -103,7 +103,10 @@ export async function uploadProviderFile(page: Page, fixture: UploadFixture): Pr
   await fileChooser.setFiles(fixture);
   const uploadResponse = await uploadResponsePromise;
   expect(uploadResponse.ok()).toBeTruthy();
-  await expect(page.getByRole('button', { name: fixture.name })).toBeVisible();
+  const name = fixture.mimeType.startsWith('image/')
+    ? 'View Preview image in full size'
+    : fixture.name;
+  await expect(page.getByRole('button', { name }).last()).toBeVisible();
   return uploadResponse;
 }
 
