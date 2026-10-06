@@ -22,6 +22,29 @@ test.describe('Material catalog normal review workflow', () => {
     await deleteConversations(ids);
   });
 
+  test('description matches only product names and keeps selection in the draft', async ({ page }) => {
+    const fixture = await seedCalculation('plate', '', false, { withSources: true });
+    fixtures.push(fixture);
+    const initial = await readTable(page, auth, fixture);
+    const material = initial.rows.find((entry) => entry.system?.kind === 'material');
+    if (!material) throw new Error('Missing normal material');
+    const before = await readback(fixture);
+    const dialog = await openEditor(page, fixture);
+    await dialog.getByRole('checkbox', { name: 'View unlinked', exact: true }).check();
+    const description = dialog.getByRole('combobox', { name: `品名規格 ${material.rowId}`, exact: true });
+    await description.click();
+    const search = page.locator('input[placeholder="Search catalog"]:visible');
+    await search.fill('catalog-special');
+    await expect(page.getByText('No matching catalog items', { exact: true })).toBeVisible();
+    await expect(page.getByRole('option')).toHaveCount(0);
+    await search.fill('steel plate');
+    await expect(page.getByRole('option', { name: 'SC-OTHER Other steel plate catalog-special 400mm', exact: true })).toBeVisible();
+    await page.getByRole('option', { name: 'SC-UNIQUE Selector steel plate catalog-special 400mm', exact: true }).click();
+    await expect(description).toHaveText('Selector steel plate catalog-special 400mm');
+    await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeEnabled();
+    expect(await readback(fixture)).toEqual(before);
+  });
+
   test('a complete material candidate stays a draft until Save and preserves its processing row', async ({ page }) => {
     const fixture = await seedCalculation('plate', '', true); fixtures.push(fixture);
     const initial = await readTable(page, auth, fixture);

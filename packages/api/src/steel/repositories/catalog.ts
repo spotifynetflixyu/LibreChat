@@ -184,8 +184,7 @@ function searchWhere(
   if (keyword) {
     predicates.push(input.field === 'model'
       ? `lower(p.erp_item_code) COLLATE "C" LIKE $2 COLLATE "C" || '%' ESCAPE '\\'`
-      : `(lower(COALESCE(p.product_name, '')) LIKE '%' || $2 || '%' ESCAPE '\\'
-          OR lower(p.spec_key) LIKE '%' || $2 || '%' ESCAPE '\\')`);
+      : `lower(COALESCE(p.product_name, '')) LIKE '%' || $2 || '%' ESCAPE '\\'`);
   }
   if (cursor) {
     values.push(cursor.erpItemCode, cursor.id);

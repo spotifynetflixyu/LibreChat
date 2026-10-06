@@ -84,3 +84,7 @@ Delete 預設維持中性，hover 使用共享 danger 文字、邊框與淡色�
 型號／品名規格 async selector 移除箭頭 icon：使用共享 ControlCombobox 的既有 showCarat=false，保留點擊開選單、搜尋、鍵盤／滾輪與候選快取行為。
 
 無箭頭修正驗證：既有 Selector 聚焦 6 passed，client noEmit、scoped semantic lint（Prettier off）／imports／diff 通過。只調整既有共享元件顯示選項，不新增搜尋或狀態流程。
+
+Async selector 搜尋契約修正：型號維持 erp_item_code 首字元起匹配與字母排序；品名規格 keyword 僅對 product_name 做包含匹配，spec_key 不參與搜尋條件。材料／加工候選搜尋與選取均不按 value_state 篩選或限制。
+
+Product-name-only 搜尋驗證：API catalog／repository 13 passed，材料與加工 description predicate 只包含 product_name、不包含 spec_key／value_state；API noEmit／private build、scoped semantic lint／imports／diff 與 fixture parser 通過。正常 Chrome→Express→disposable Mongo、既有 Steel 價目表 fixture 的聚焦搜尋／候選草稿選取 1 passed（22.1s），spec-only keyword 無候選，product_name keyword 回傳可選候選、保存前 DB 保持原值。最初通用 browser 設定未載入 catalog fixture，已改用既有 playwright.config.steel.ts。額外完整材料保存案例在搜尋前的前置 Save 後 readTable 回 REVIEW_NOT_FOUND（404）；在正確 Steel 設定也重現，此前置問題沒有修復、沒有列為成功，另記錄於仍 pending 的 #15。

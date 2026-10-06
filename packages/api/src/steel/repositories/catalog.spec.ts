@@ -72,6 +72,29 @@ describe('Steel catalog repository', () => {
     });
   });
 
+  it.each(['material', 'processing'] as const)('searches only product names for %s descriptions without filtering value state', async (kind) => {
+    const catalogRow = {
+      ...(kind === 'processing' ? processingCatalogRow : rawCatalogRow),
+      value_state: 'unknown',
+      unit_price: null,
+    };
+    const query = jest.fn().mockResolvedValue({ rows: [catalogRow] });
+    const client: SteelRepositoryClient = { query };
+
+    const result = await searchSteelReviewCatalog(client, {
+      field: 'description', keyword: 'steel_%', limit: 1, tier: 'B', kind,
+      ...(kind === 'processing' ? { parentRowId: 'material-1', materialCategory: '鐵板' } : {}),
+    });
+
+    const [sql, values] = query.mock.calls[0] as [string, readonly unknown[]];
+    const predicate = sql.split('WHERE')[1]?.split('ORDER BY')[0] ?? '';
+    expect(predicate).toMatch(/product_name.*LIKE.*'%' .*\$2.*'%'/u);
+    expect(predicate).not.toMatch(/spec_key|value_state/u);
+    expect(values).toContain('steel\\_\\%');
+    expect(result.candidates).toHaveLength(1);
+    expect(result.candidates[0]).toMatchObject({ id: catalogRow.id, valueState: 'unknown', unitPrice: null });
+  });
+
   it('selects the requested tier without a fallback when that price is absent', async () => {
     const query = jest.fn().mockResolvedValue({ rows: [{ ...rawCatalogRow, unit_price: null }] });
     const client: SteelRepositoryClient = { query };

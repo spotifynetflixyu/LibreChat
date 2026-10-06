@@ -69,7 +69,7 @@ Pool.prototype.query = function (sql, values, callback) {
       const keyword = String(values?.[1] ?? '').toLowerCase();
       const model = /lower\(p\.erp_item_code\).*LIKE/u.test(sql);
       rows = rows.filter((row) => !keyword || (model ? row.erp_item_code.toLowerCase().startsWith(keyword)
-        : `${row.product_name} ${row.spec_key}`.toLowerCase().includes(keyword)));
+        : (row.product_name ?? '').toLowerCase().includes(keyword)));
       rows.sort((left, right) => {
         const a = left.erp_item_code.toLowerCase(), b = right.erp_item_code.toLowerCase();
         if (a !== b) return a < b ? -1 : 1;
