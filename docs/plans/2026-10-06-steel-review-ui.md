@@ -99,3 +99,8 @@ Product-name-only 搜尋驗證：API catalog／repository 13 passed，材料與�
 新 Mongo 正常保存重排讀取回歸在修正前失敗、修正後通過；同一完整標題讀取成功，另一標題不返回。五個正常 Chrome→Express→disposable wiredTiger Mongo 流程已取得成功證據（完整 suite 的四個成功流程，加上修正舊 receipt 預期後新增材料聚焦重跑 1 passed／26.1s），涵蓋 product-name-only 搜尋／草稿、前置 Save→read→候選第二次 Save→read→reload、新材料、加工 keyboard 改選／計量、未保存材料範圍與缺 tier 加工。AI baseline 與原有 row IDs 保持一致，manual rows 保存後可重新載入。
 
 provider catalog 5、API catalog／repository 13、Selector 6 passed；Mongo read／write suites 48 passed、2 既有失敗已在原 HEAD 同樣重現（直接 writer source-cell fixture 與 wrong customerRunId 的舊預期），沒有擴張到這些非本次正常操作。四個受影響 workspace noEmit、隔離 provider／schemas／API／client builds、scoped semantic lint／imports／diff 與實際 PR base committed static checks 通過；Prettier 未執行。固定 head 獨立審查與 GitHub readback 證據記錄於 PR／相關 issues；#14／#15 仍 pending，PR16 Draft／OPEN，完成後暫停。
+
+
+刪除線對照位置修正：OCR／system order 共用 ReviewCell 先顯示目前值或輸入欄位，再於下方單獨一行顯示 AI 原值刪除線；維持原有語意色與保存／差異判斷。
+
+刪除線置下驗證：Editor 9 passed、client noEmit／隔離 build、scoped semantic lint／imports／diff 通過；正常 Chrome→Express→disposable Mongo 草稿 UI 1 passed（27.5s），實際 bounding box 確認原值刪除線在目前輸入欄位下方，最新截圖已取得。此為小幅呈現調整，由 root 聚焦核驗；c434df97e 的獨立審查保留為其原 head 證據。

@@ -114,7 +114,7 @@ function ReviewCell({
   const changed = displayCellValue(cell.baseline) !== currentValue;
   const editable = Boolean(row.rowId) && canEdit && !row.deleted && isSteelReviewCellEditable(table, header);
   const previousValue = !row.deleted && changed && cell.baseline !== null && cell.baseline !== undefined
-    ? <del className="mr-2 text-text-secondary">{cell.baseline}</del>
+    ? <del className="mt-1 block text-text-secondary">{cell.baseline}</del>
     : null;
   let editorContent: ReactNode = null;
   if (!row.deleted && mode.usesCatalog(row, header) && onCandidateChange) {
@@ -170,7 +170,7 @@ function ReviewCell({
   } else {
     editorContent = <del className="text-text-secondary">{displayCellValue(cell.baseline)}</del>;
   }
-  return <td className="min-h-16 border-b border-border-light px-3 py-2 align-top">{previousValue}{editorContent}</td>;
+  return <td className="min-h-16 border-b border-border-light px-3 py-2 align-top">{editorContent}{previousValue}</td>;
 }
 
 const SteelReviewEditor = memo(function SteelReviewEditor({
