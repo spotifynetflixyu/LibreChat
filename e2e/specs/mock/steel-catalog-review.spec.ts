@@ -120,7 +120,7 @@ test.describe('Material catalog normal review workflow', () => {
     expect(queries).toBe(calls);
     await page.keyboard.press('Escape');
     await expect(model).toHaveText('PLATE');
-    await dialog.getByRole('button', { name: 'Add item', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
     const addedModel = dialog.getByRole('combobox', { name: /^型號 /u }).last();
     await addedModel.click();
     await expect(search).toHaveValue('');

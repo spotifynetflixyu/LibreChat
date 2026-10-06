@@ -1,6 +1,7 @@
 import { memo, useEffect, useMemo, useRef, useState } from 'react';
+import { Link2, Trash2 } from 'lucide-react';
 import { steelPriceCategories } from 'librechat-data-provider';
-import { Button, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@librechat/client';
+import { Button, Input, Select, SelectContent, SelectItem, SelectTrigger, SelectValue, TooltipAnchor } from '@librechat/client';
 import type {
   SteelCatalogCandidate,
   SteelCatalogCustomerEvidence,
@@ -64,6 +65,21 @@ function canRestoreSteelReviewRow(row: SteelReviewRow, systemMaterials: readonly
   if (!row.system.parentRowId) return true;
   return systemMaterials.some((candidate) => candidate.rowId === row.system?.parentRowId &&
     !candidate.deleted && candidate.system?.kind === 'material');
+}
+
+function ReviewActionButton({ label, rowId, onClick, children, linked = false, danger = false }: {
+  label: string;
+  rowId: string;
+  onClick: () => void;
+  children: ReactNode;
+  linked?: boolean;
+  danger?: boolean;
+}) {
+  return <TooltipAnchor description={label} side="top" render={
+    <Button type="button" size="icon-sm" variant={linked ? 'submit' : 'outline'} className={danger ? 'hover:border-status-error-border hover:bg-status-error-subtle hover:text-text-destructive' : undefined} aria-label={`${label} ${rowId}`} onClick={onClick}>
+      {children}
+    </Button>
+  } />;
 }
 
 function ReviewCell({
@@ -213,11 +229,11 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
               <tr key={rowKey} data-row-id={row.rowId || undefined} className={row.deleted ? 'opacity-70' : undefined}>
                 {showActions && (
                   <td className="min-h-16 border-b border-border-light px-3 py-2 align-top">
-                    <div className="flex min-w-44 flex-wrap items-start gap-1">
+                    <div className="flex min-w-20 flex-wrap items-start gap-1">
                       {bindable && (
-                        <Button type="button" size="sm" variant="outline" className="shrink-0" aria-label={`${bound ? labels.bound : labels.bind} ${row.rowId}`} onClick={() => onSourceEdit?.(row)}>
-                          {bound ? labels.bound : labels.bind}
-                        </Button>
+                        <ReviewActionButton linked={bound} label={(bound ? labels.bound : labels.bind) ?? labels.action} rowId={row.rowId} onClick={() => onSourceEdit?.(row)}>
+                          <Link2 className="size-4" aria-hidden="true" />
+                        </ReviewActionButton>
                       )}
                       {row.system?.kind === 'processing' && !row.deleted && onMeasurementChange && labels.measurement && (
                         <SteelReviewMeasurement
@@ -239,13 +255,13 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
                         </Select>
                       )}
                       {row.system?.kind === 'material' && !row.deleted && onDeleteGroup && (
-                        <Button type="button" size="sm" variant="outline" className="shrink-0" aria-label={`${labels.deleteRow} ${row.rowId}`} onClick={() => onDeleteGroup(row)}>{labels.deleteRow}</Button>
+                        <ReviewActionButton danger label={labels.deleteRow ?? labels.action} rowId={row.rowId} onClick={() => onDeleteGroup(row)}><Trash2 className="size-4" aria-hidden="true" /></ReviewActionButton>
                       )}
                       {row.deleted && onRestoreRow && canRestoreSteelReviewRow(row, systemMaterials) && (
                         <Button type="button" size="sm" variant="outline" className="shrink-0" aria-label={`${labels.restoreRow} ${row.rowId}`} onClick={() => onRestoreRow(row)}>{labels.restoreRow}</Button>
                       )}
                       {!row.deleted && onDeleteRow && (!row.system || row.system.kind !== 'material' || !onDeleteGroup) && (
-                        <Button type="button" size="sm" variant="outline" className="shrink-0" aria-label={`${labels.deleteRow} ${row.rowId}`} onClick={() => onDeleteRow(row)}>{labels.deleteRow}</Button>
+                        <ReviewActionButton danger label={labels.deleteRow ?? labels.action} rowId={row.rowId} onClick={() => onDeleteRow(row)}><Trash2 className="size-4" aria-hidden="true" /></ReviewActionButton>
                       )}
                     </div>
                   </td>

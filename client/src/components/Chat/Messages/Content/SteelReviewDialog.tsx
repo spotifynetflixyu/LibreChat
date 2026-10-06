@@ -2156,11 +2156,6 @@ export default function SteelReviewDialog({
                   })()}
                 </div>
                 <div className="ml-auto flex items-center gap-3">
-                  {canEditStructure && (
-                    <Button type="button" variant="outline" onClick={onAddRow} disabled={saveBusy}>
-                      {localize('com_ui_steel_review_add_item')}
-                    </Button>
-                  )}
                   <label className="inline-flex items-center gap-2 text-sm">
                     <Checkbox
                       aria-label={localize('com_ui_steel_review_unlinked')}
@@ -2170,6 +2165,11 @@ export default function SteelReviewDialog({
                     />
                     <span>{localize('com_ui_steel_review_unlinked')}</span>
                   </label>
+                  {canEditStructure && (
+                    <Button type="button" variant="outline" onClick={onAddRow} disabled={saveBusy}>
+                      {localize('com_ui_steel_review_add_row')}
+                    </Button>
+                  )}
                 </div>
               </div>
               <SteelReviewEditor
@@ -2200,62 +2200,65 @@ export default function SteelReviewDialog({
             </div>
           )}
         </div>
-        <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
-          <div className="flex flex-wrap items-center gap-2" aria-live="polite">
+        <div className="flex shrink-0 items-center justify-between gap-3">
+          <Button type="button" variant="outline" disabled={saveBusy} onClick={requestClose}>{localize('com_ui_close')}</Button>
+          <div className="ml-auto flex min-w-0 items-center gap-2">
+            <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 text-right" aria-live="polite">
+              {dirtyRowCount > 0 && (
+                <span className="text-sm text-text-secondary">
+                  {localize('com_ui_steel_review_unsaved_caption', { 0: dirtyRowCount })}
+                </span>
+              )}
+              {preparedRowCount !== undefined && (
+                <span className="text-sm text-text-secondary" role="status">
+                  {isSystemOrder
+                    ? localize('com_ui_steel_review_system_save_caption', {
+                      0: preparedRowCount,
+                      1: preparedQuoteRowCount ?? 0,
+                      2: quoteTotal ?? '—',
+                    })
+                    : localize('com_ui_steel_review_save_caption', { 0: preparedRowCount })}
+                </span>
+              )}
+              {confirmedRowCount !== undefined && preparedRowCount === undefined && (
+                <span className="text-sm text-text-secondary" role="status">
+                  {isSystemOrder
+                    ? localize('com_ui_steel_review_system_updated_caption', {
+                      0: confirmedRowCount,
+                      1: confirmedQuoteRowCount ?? 0,
+                      2: quoteTotal ?? '—',
+                    })
+                    : localize('com_ui_steel_review_updated_caption', { 0: confirmedRowCount })}
+                </span>
+              )}
+              {saveBusy && (
+                <span role="status">
+                  {localize(savePhase === 'reconciling'
+                    ? 'com_ui_steel_review_reconciling'
+                    : 'com_ui_steel_review_saving')}
+                </span>
+              )}
+              {(saveErrorCode || savePhase === 'uncertain' || savePhase === 'stale' || savePhase === 'error' ||
+                (savePhase === 'reconciling' && receiptFailed)) && (
+                <span role="alert">{localize(saveErrorKey)}</span>
+              )}
+              {receiptFailed && receiptInput && (
+                <Button type="button" variant="outline" onClick={retryReceiptLookup}>
+                  {localize('com_ui_steel_review_receipt_retry')}
+                </Button>
+              )}
+            </div>
             <Button
               type="button"
-              variant="outline"
+              variant="submit"
+              className="shrink-0"
               disabled={saveDisabled}
               aria-busy={saveBusy}
               onClick={() => void saveChanges()}
             >
               {localize('com_ui_steel_review_save')}
             </Button>
-            {dirtyRowCount > 0 && (
-              <span className="text-sm text-text-secondary">
-                {localize('com_ui_steel_review_unsaved_caption', { 0: dirtyRowCount })}
-              </span>
-            )}
-            {preparedRowCount !== undefined && (
-              <span className="text-sm text-text-secondary" role="status">
-                {isSystemOrder
-                  ? localize('com_ui_steel_review_system_save_caption', {
-                    0: preparedRowCount,
-                    1: preparedQuoteRowCount ?? 0,
-                    2: quoteTotal ?? '—',
-                  })
-                  : localize('com_ui_steel_review_save_caption', { 0: preparedRowCount })}
-              </span>
-            )}
-            {confirmedRowCount !== undefined && preparedRowCount === undefined && (
-              <span className="text-sm text-text-secondary" role="status">
-                {isSystemOrder
-                  ? localize('com_ui_steel_review_system_updated_caption', {
-                    0: confirmedRowCount,
-                    1: confirmedQuoteRowCount ?? 0,
-                    2: quoteTotal ?? '—',
-                  })
-                  : localize('com_ui_steel_review_updated_caption', { 0: confirmedRowCount })}
-              </span>
-            )}
-            {saveBusy && (
-              <span role="status">
-                {localize(savePhase === 'reconciling'
-                  ? 'com_ui_steel_review_reconciling'
-                  : 'com_ui_steel_review_saving')}
-              </span>
-            )}
-            {(saveErrorCode || savePhase === 'uncertain' || savePhase === 'stale' || savePhase === 'error' ||
-              (savePhase === 'reconciling' && receiptFailed)) && (
-              <span role="alert">{localize(saveErrorKey)}</span>
-            )}
-            {receiptFailed && receiptInput && (
-              <Button type="button" variant="outline" onClick={retryReceiptLookup}>
-                {localize('com_ui_steel_review_receipt_retry')}
-              </Button>
-            )}
           </div>
-          <Button type="button" disabled={saveBusy} onClick={requestClose}>{localize('com_ui_close')}</Button>
         </div>
         {closeRequested && (
           <div className="space-y-3 rounded-md border border-border-light bg-surface-secondary p-3" role="alertdialog" aria-label={localize('com_ui_steel_review_close_confirm')}>

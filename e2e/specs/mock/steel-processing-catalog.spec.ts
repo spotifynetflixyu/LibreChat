@@ -94,7 +94,7 @@ test.describe('Processing catalog normal review workflow', () => {
     const initial = await readTable(page, auth, fixture);
     const oldProcessing = initial.rows.find((row) => row.system?.kind === 'processing');
     const dialog = await openEditor(page, fixture);
-    await dialog.getByRole('button', { name: 'Add item', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
     const materialModel = dialog.getByRole('combobox', { name: /^型號 /u }).last();
     const materialId = (await materialModel.locator('xpath=ancestor::tr').getByRole('textbox', { name: /^數量 /u }).getAttribute('aria-label'))!.slice('數量 '.length);
     await materialModel.click();
@@ -103,7 +103,7 @@ test.describe('Processing catalog normal review workflow', () => {
     await dialog.getByRole('combobox', { name: `類別 ${materialId}`, exact: true }).click();
     await page.getByRole('option', { name: 'C型鋼', exact: true }).click();
     await fillNotes(dialog, materialId, 'SC-UNIQUE');
-    await dialog.getByRole('button', { name: 'Add item', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
     const childModel = dialog.getByRole('combobox', { name: /^型號 /u }).last();
     const childId = (await childModel.locator('xpath=ancestor::tr').getByRole('textbox', { name: /^數量 /u }).getAttribute('aria-label'))!.slice('數量 '.length);
     await dialog.getByRole('combobox', { name: `Classify ${childId}`, exact: true }).click();

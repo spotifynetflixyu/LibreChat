@@ -527,8 +527,8 @@ async function selectPreview(page: Page, dialog: Locator, filename: string, page
 }
 
 async function bindSource(page: Page, row: Locator, rowId: string, filename: string, pageNumber: string): Promise<void> {
-  await row.getByRole('button', { name: new RegExp(`^(?:Bind|Bound) ${rowId}$`, 'u') }).click();
-  const popup = page.getByRole('dialog', { name: 'Bind source', exact: true });
+  await row.getByRole('button', { name: new RegExp(`^(?:Link|Linked) ${rowId}$`, 'u') }).click();
+  const popup = page.getByRole('dialog', { name: 'Link source', exact: true });
   await popup.getByRole('combobox', { name: 'Source file', exact: true }).click();
   await page.getByRole('option', { name: filename, exact: true }).click();
   await popup.getByRole('combobox', { name: /page/iu }).click();
@@ -617,7 +617,7 @@ test.describe('System order atomic manual review', () => {
     const parent = rowNamed(table, 'REVIEW-MATERIAL-A');
     const before = await readback(fixture.conversationId);
     const dialog = await openEditor(page, fixture.conversationId);
-    await dialog.getByRole('checkbox', { name: 'Unlinked', exact: true }).check();
+    await dialog.getByRole('checkbox', { name: 'View unlinked', exact: true }).check();
     const parentRow = materialRow(dialog);
     await expect(parentRow).toBeVisible();
     await bindSource(page, parentRow, parent.rowId, 'alpha.pdf', '1');
@@ -782,7 +782,7 @@ test.describe('System order atomic manual review', () => {
       expect(child.system?.kind).toBe(classify ? 'unassigned' : 'processing');
       const before = await readback(fixture.conversationId);
       const dialog = await openEditor(page, fixture.conversationId);
-      await dialog.getByRole('button', { name: 'Add item', exact: true }).click();
+      await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
       const materialId = await newMaterialIdentity(dialog, initial);
       const materialNote = `ADDED-${materialId}`;
       await dialog.getByRole('combobox', { name: `Classify ${materialId}`, exact: true }).click();
@@ -1075,13 +1075,13 @@ test.describe('System order atomic manual review', () => {
     await page.getByRole('option', { name: 'beta.pdf', exact: true }).click();
     await dialog.getByRole('combobox', { name: 'Page', exact: true }).click();
     await page.getByRole('option', { name: '2', exact: true }).click();
-    await dialog.getByRole('button', { name: 'Add item', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
     const materialId = await newMaterialIdentity(dialog, initial);
     const materialNote = `PREVIEW-MATERIAL-${materialId}`;
     await dialog.getByRole('combobox', { name: `Classify ${materialId}`, exact: true }).click();
     await page.getByRole('option', { name: 'Material', exact: true }).click();
     await fillNotes(dialog, materialId, materialNote);
-    await dialog.getByRole('button', { name: 'Add item', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
     const processingId = await newMaterialIdentity(dialog, new Set([...initial.rows.map((row) => row.rowId), materialId]));
     await dialog.getByRole('combobox', { name: `Classify ${processingId}`, exact: true }).click();
     await page.getByRole('option', { name: 'Processing', exact: true }).click();
@@ -1150,7 +1150,7 @@ test.describe('System order atomic manual review', () => {
     const initial = await readTable(page, headers, fixture.conversationId, fixture.messageId);
     const before = await readback(fixture.conversationId);
     const dialog = await openEditor(page, fixture.conversationId);
-    await dialog.getByRole('button', { name: 'Add item', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
     await expect(dialog.getByText('Unsaved changes: 1 rows', { exact: true })).toBeVisible();
     expect(await readback(fixture.conversationId)).toEqual(before);
     const response = page.waitForResponse((entry) => entry.request().method() === 'POST' && entry.url().endsWith('/review/system_order/commit'));

@@ -32,8 +32,8 @@ const labels = {
   readonly: 'Read-only cell',
   emptyCategory: 'No category',
   action: 'Action',
-  bind: 'Bind',
-  bound: 'Bound',
+  bind: 'Link',
+  bound: 'Linked',
   classify: 'Classify',
   material: 'Material',
   processing: 'Processing',
@@ -90,22 +90,33 @@ describe('Steel review local editor gates', () => {
     expect(screen.getByRole('table', { name: labels.table }).querySelector('tr[data-row-id="row-1"]')).toBeInTheDocument();
   });
 
-  it('offers Bind and Bound for non-processing rows and no Bind for processing rows', () => {
+  it('offers Link and Linked for non-processing rows and no Link for processing rows', () => {
     const material = systemRow('material-1', 'material');
     const processing = systemRow('processing-1', 'processing', { parentRowId: material.rowId });
+    const linked = { ...systemRow('material-2', 'material'), source: { fileId: 'file-1', pageNumber: 1 } };
+    const onSourceEdit = jest.fn();
     render(<SteelReviewEditor
-      table={{ ...table, kind: 'system_order', rows: [material, processing] }}
-      rows={[material, processing]}
-      systemMaterials={[material, processing]}
+      table={{ ...table, kind: 'system_order', rows: [material, linked, processing] }}
+      rows={[material, linked, processing]}
+      systemMaterials={[material, linked, processing]}
       draft={createSteelReviewDraftState('owner')}
       labels={labels}
       onCellChange={jest.fn()}
-      onSourceEdit={jest.fn()}
+      onSourceEdit={onSourceEdit}
     />);
 
-    expect(screen.getByRole('button', { name: 'Bind material-1' })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Bind processing-1' })).toBeNull();
-    expect(screen.queryByRole('combobox', { name: 'Bind processing processing-1' })).toBeNull();
+    const link = screen.getByRole('button', { name: 'Link material-1' });
+    const linkedButton = screen.getByRole('button', { name: 'Linked material-2' });
+    expect(link.textContent).toBe('');
+    expect(linkedButton.textContent).toBe('');
+    expect(link).toHaveClass('bg-transparent');
+    expect(linkedButton).toHaveClass('bg-surface-submit');
+    expect(link.querySelector('svg')?.getAttribute('class')).toBe(linkedButton.querySelector('svg')?.getAttribute('class'));
+    expect(link.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+    fireEvent.click(linkedButton);
+    expect(onSourceEdit).toHaveBeenCalledWith(linked);
+    expect(screen.queryByRole('button', { name: 'Link processing-1' })).toBeNull();
+    expect(screen.queryByRole('combobox', { name: 'Link processing processing-1' })).toBeNull();
   });
 
   it('uses one generic Delete action for a material cascade and hides restore for cascade tombstones', () => {
@@ -126,7 +137,11 @@ describe('Steel review local editor gates', () => {
       onRestoreRow={jest.fn()}
     />);
 
-    fireEvent.click(screen.getByRole('button', { name: 'Delete material-1' }));
+    const deleteButton = screen.getByRole('button', { name: 'Delete material-1' });
+    expect(deleteButton.textContent).toBe('');
+    expect(deleteButton).toHaveClass('hover:text-text-destructive', 'hover:bg-status-error-subtle');
+    expect(deleteButton.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+    fireEvent.click(deleteButton);
     expect(onDeleteGroup).toHaveBeenCalledWith(material);
     expect(screen.queryByRole('button', { name: 'Restore processing-1' })).toBeNull();
   });

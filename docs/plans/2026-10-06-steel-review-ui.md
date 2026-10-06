@@ -65,3 +65,14 @@ Lighthouse 隔離載入 gate 已通過：三次 cold navigation median LCP 3793.
 
 
 Static checks 使用實際 base `origin/feat/v8.8`（此 repo 沒有 origin/dev）。初次 gate 發現 baseline 已存在的 `completion.ts → full.ts → completion.ts` cycle；使用者追加要求一併修正。共用 completion 型別移至既有 markdown/types.ts，completion 保留原公開 type re-exports，full 不再回頭引用 completion；發布流程沒有改動。9 個 real-Mongo completion／publication tests 通過，最終 owning 型別／build／static 與 exact-head 審查證據記錄於 GitHub。整體 #14／#15 仍 pending，PR16 保持 Draft／OPEN；此批完成後暫停。
+
+
+## 2026-10-06 後續視覺調整
+
+來源／刪除改為共享 Button icon-sm＋TooltipAnchor；英文字組統一 Link／Linked／Unlinked，中文維持綁定／已綁定／未綁定。Linked／未綁定共用完整 chain，以 Linked 主色實色底／未綁定透明底區分；trash 圖示保留 localized tooltip 與含 rowId 的 accessible name，原 callbacks 與加工來源限制不變。新增改為 Add row／新增列，標題右側 checkbox 在 button 左邊，Add row 最右。Footer Close 使用中性 outline、在最左；Save 使用共享主色 submit、在最右，caption 與保存狀態位於 Save 左邊。
+
+Checkbox 最新文案：View unlinked／顯示未綁定（简体：显示未绑定）。仍只篩選未綁完整來源檔＋頁的保存成員，行為不變。
+
+Delete 預設維持中性，hover 使用共享 danger 文字、邊框與淡色背景 semantic roles。
+
+本次視覺調整驗證：client 兩個聚焦 suites 54 passed、2 先前 skipped；fresh client noEmit／private build、scoped semantic lint（Prettier off）／imports／JSON／diff 通過。三個正常 Chrome→Express→disposable Mongo 流程 3 passed（47.1s），包含 OCR 完整欄位、System 同 chain 的實色／透明底、Delete danger hover、滑鼠與鍵盤 tooltip、未保存 Close 確認／繼續編輯保留草稿、真實 Save／readback／reload、Add row／Notes／cascade；已擷取 OCR、System、Delete hover、Close 未保存確認画面。Tooltip hover 的初始測試因表格自動捲動重置 Ariakit mouse intent 未展開，改以正常捲動後的持續滑鼠移動，產品共用 tooltip 無需修改。此前 e77fe128e 的獨立審查屬上一版；本次小幅視覺變更由 root 聚焦核驗，不宣稱舊審查涵蓋新 head。

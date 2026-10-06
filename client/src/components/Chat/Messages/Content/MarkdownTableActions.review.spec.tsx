@@ -54,6 +54,7 @@ jest.mock('@librechat/client', () => {
     (open ? React.createElement('div', { role: 'dialog' }, children) : null);
   return {
     Button,
+    TooltipAnchor: ({ render }: { render: React.ReactNode }) => render,
     Checkbox,
     Input,
     Tag,
@@ -598,7 +599,7 @@ describe('MarkdownTableActions Steel review entry', () => {
       systemIdentity.title,
     ), { table: initialTable });
     renderDialog(queryClient, systemSelection, createStore(), systemIdentity);
-    fireEvent.click(await screen.findByRole('button', { name: 'com_ui_steel_review_add_item' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'com_ui_steel_review_add_row' }));
     const addedRow = document.querySelector<HTMLElement>(`tr[data-row-id="${addedProcessingRowId}"]`)!;
     fireEvent.change(within(addedRow).getByRole('combobox'), { target: { value: 'processing' } });
     const remark = within(addedRow).getByRole('textbox', { name: `備註 ${addedProcessingRowId}` });
@@ -700,7 +701,7 @@ describe('MarkdownTableActions Steel review entry', () => {
 
     expect(await screen.findByRole('textbox', { name: '總數 row-1' })).toBeEnabled();
     expect(screen.getByRole('textbox', { name: '單價 row-1' })).toBeEnabled();
-    expect(screen.getByRole('button', { name: 'com_ui_steel_review_add_item' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'com_ui_steel_review_add_row' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'com_ui_steel_review_delete_row row-1' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /com_ui_steel_review_restore_row/u })).toBeNull();
     expect(screen.getByRole('columnheader', { name: 'com_ui_steel_review_action' })).toBeInTheDocument();
@@ -2571,7 +2572,7 @@ describe('MarkdownTableActions Steel review entry', () => {
       refetch: jest.fn(),
     });
     const rendered = renderDialog(new QueryClient(), selection, createStore(), identity);
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_add_item' }));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_add_row' }));
     const draft = rendered.store.get(steelReviewDraftStateFamily(getSteelReviewDraftOwnerKey(identity, table, selection.captureId)));
     expect(Object.values(draft.rowStates)[0].source).toEqual(expect.objectContaining({ fileId: 'preview-file', pageNumber: 1 }));
 
@@ -2584,7 +2585,7 @@ describe('MarkdownTableActions Steel review entry', () => {
       refetch: jest.fn(),
     });
     const emptyRendered = renderDialog(new QueryClient(), { ...selection, captureId: 'capture-system-add-empty' }, createStore(), identity);
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_add_item' }));
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_add_row' }));
     const emptyDraft = emptyRendered.store.get(steelReviewDraftStateFamily(getSteelReviewDraftOwnerKey(identity, table, 'capture-system-add-empty')));
     expect(Object.values(emptyDraft.rowStates)[0].source).toBeNull();
     emptyRendered.unmount();

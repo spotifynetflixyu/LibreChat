@@ -20,7 +20,7 @@ function row(dialog: Locator, rowId: string): Locator {
 }
 
 async function addItem(dialog: Awaited<ReturnType<typeof openEditor>>, existingIds: Set<string>): Promise<string> {
-  await dialog.getByRole('button', { name: 'Add item', exact: true }).click();
+  await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
   const candidateRows = dialog.locator('tbody tr[data-row-id]');
   await expect.poll(async () => {
     const ids = await candidateRows.evaluateAll((elements) => elements
@@ -32,7 +32,7 @@ async function addItem(dialog: Awaited<ReturnType<typeof openEditor>>, existingI
     .map((element) => element.getAttribute('data-row-id'))
     .filter((value): value is string => Boolean(value)));
   const added = ids.find((id) => !existingIds.has(id));
-  if (!added) throw new Error('Missing Add item row identity');
+  if (!added) throw new Error('Missing Add row row identity');
   return added;
 }
 
@@ -60,6 +60,23 @@ async function expectFixedReviewGeometry(dialog: Locator, rowCount: number): Pro
   await expect(table.locator('thead tr')).toHaveCount(1);
   await expect(table.locator('tbody tr')).toHaveCount(rowCount);
   await expect(footerSave).toBeVisible();
+  const close = footerSave.locator('xpath=../..').getByRole('button', { name: 'Close', exact: true });
+  const addRow = dialog.getByRole('button', { name: 'Add row', exact: true });
+  const viewUnlinked = dialog.getByRole('checkbox', { name: 'View unlinked', exact: true });
+  const [closeBox, saveBox, addBox, checkboxBox] = await Promise.all([
+    close.boundingBox(), footerSave.boundingBox(), addRow.boundingBox(), viewUnlinked.boundingBox(),
+  ]);
+  if (!closeBox || !saveBox || !addBox || !checkboxBox) throw new Error('Missing review action layout');
+  expect(closeBox.x + closeBox.width).toBeLessThan(saveBox.x);
+  expect(checkboxBox.x + checkboxBox.width).toBeLessThan(addBox.x);
+  await expect(footerSave).toHaveClass(/bg-surface-submit/u);
+  await expect(close).toHaveClass(/border-border-light/u);
+  const caption = dialog.getByText(/^Unsaved changes:/u);
+  if (await caption.count()) {
+    const captionBox = await caption.boundingBox();
+    if (!captionBox) throw new Error('Missing dirty-caption bounds');
+    expect(captionBox.x + captionBox.width).toBeLessThanOrEqual(saveBox.x);
+  }
 
   const viewport = await dialog.page().evaluate(() => ({ width: window.innerWidth, height: window.innerHeight }));
   const previewBox = await preview.boundingBox();
@@ -127,7 +144,7 @@ test.describe('Steel source review normal UI acceptance', () => {
 
     await expect(dialog.locator('thead tr')).toHaveCount(1);
     await expect(dialog.getByRole('button', { name: /Undo|Redo|Expand|Fullscreen|Download/iu })).toHaveCount(0);
-    await expect(dialog.getByRole('checkbox', { name: 'Unlinked', exact: true })).toBeVisible();
+    await expect(dialog.getByRole('checkbox', { name: 'View unlinked', exact: true })).toBeVisible();
     await expect(dialog.getByRole('combobox', { name: 'Source file', exact: true })).toBeVisible();
     await expect(dialog.getByRole('combobox', { name: 'Page', exact: true })).toBeVisible();
 
@@ -135,7 +152,7 @@ test.describe('Steel source review normal UI acceptance', () => {
     await page.getByRole('option', { name: 'alpha.pdf', exact: true }).click();
     await dialog.getByRole('combobox', { name: 'Page', exact: true }).click();
     await page.getByRole('option', { name: '1', exact: true }).click();
-    await dialog.getByRole('checkbox', { name: 'Unlinked', exact: true }).check();
+    await dialog.getByRole('checkbox', { name: 'View unlinked', exact: true }).check();
     await expect(dialog.locator('tbody tr')).toHaveCount(2);
     const targetId = [...initialIds][0];
     if (!targetId) throw new Error('Missing initial review row identity');
@@ -153,36 +170,69 @@ test.describe('Steel source review normal UI acceptance', () => {
     await expectFixedReviewGeometry(dialog, 2);
 
     const target = row(dialog, targetId);
-    await target.getByRole('button', { name: `Bind ${targetId}`, exact: true }).click();
-    const bindDialog = page.getByRole('dialog', { name: /Bind source/iu });
+    const linkButton = target.getByRole('button', { name: `Link ${targetId}`, exact: true });
+    await expect(linkButton).toHaveText('');
+    await expect(linkButton).toHaveClass(/bg-transparent/u);
+    await expect(linkButton.locator('svg')).toHaveClass(/lucide-link-2/u);
+    await linkButton.scrollIntoViewIfNeeded();
+    await linkButton.hover();
+    const linkBox = await linkButton.boundingBox();
+    if (!linkBox) throw new Error('Missing Link button bounds');
+    await page.mouse.move(linkBox.x + 5, linkBox.y + 5, { steps: 5 });
+    await page.mouse.move(linkBox.x + linkBox.width / 2, linkBox.y + linkBox.height / 2, { steps: 5 });
+    await expect(page.locator('[role="tooltip"]').filter({ hasText: /^Link$/u })).toBeVisible();
+    await linkButton.click();
+    const bindDialog = page.getByRole('dialog', { name: /Link source/iu });
     await expect(bindDialog).toBeVisible();
     await expect(bindDialog.getByRole('combobox', { name: 'Source file', exact: true })).toHaveText('alpha.pdf');
     await expect(bindDialog.getByRole('combobox', { name: /page/iu })).toHaveText('1');
     await bindDialog.getByRole('button', { name: 'Confirm', exact: true }).click();
     await expect(bindDialog).toHaveCount(0);
-    await expect(target.getByRole('button', { name: `Bound ${targetId}`, exact: true })).toBeVisible();
+    const linkedButton = target.getByRole('button', { name: `Linked ${targetId}`, exact: true });
+    await expect(linkedButton).toBeVisible();
+    await expect(linkedButton).toHaveClass(/bg-surface-submit/u);
+    await expect(linkedButton.locator('svg')).toHaveClass(/lucide-link-2/u);
+    await linkedButton.press('Shift+Tab');
+    await page.keyboard.press('Tab');
+    await expect(page.locator('[role="tooltip"]').filter({ hasText: /^Linked$/u })).toBeVisible();
+    await dialog.getByRole('heading', { name: 'Steel source review', exact: true }).click();
+    await expect(page.getByRole('tooltip')).toHaveCount(0);
     await expect(target).toBeVisible();
     await expectFixedReviewGeometry(dialog, 2);
     await captureIfRequested(page);
+    const deleteButton = target.getByRole('button', { name: `Delete row ${targetId}`, exact: true });
+    const normalDeleteColor = await deleteButton.evaluate((element) => getComputedStyle(element).color);
+    await deleteButton.hover();
+    await expect.poll(() => deleteButton.evaluate((element) => getComputedStyle(element).color)).not.toBe(normalDeleteColor);
+    await captureIfRequested(page, 'delete-hover');
+    await dialog.getByRole('heading', { name: 'Steel source review', exact: true }).click();
+    const footerSave = dialog.getByRole('button', { name: 'Save', exact: true });
+    await footerSave.locator('xpath=../..').getByRole('button', { name: 'Close', exact: true }).click();
+    const closeConfirm = dialog.getByRole('alertdialog', { name: 'You have unsaved changes.', exact: true });
+    await expect(closeConfirm).toBeVisible();
+    await captureIfRequested(page, 'close-unsaved');
+    await closeConfirm.getByRole('button', { name: 'Continue editing', exact: true }).click();
+    await expect(closeConfirm).toHaveCount(0);
+    await expect(target).toBeVisible();
 
     const draft = await readback(fixture);
     expect(draft).toEqual(before);
-    await target.getByRole('button', { name: `Bound ${targetId}`, exact: true }).click();
-    const reopenedBindDialog = page.getByRole('dialog', { name: /Bind source/iu });
+    await target.getByRole('button', { name: `Linked ${targetId}`, exact: true }).click();
+    const reopenedBindDialog = page.getByRole('dialog', { name: /Link source/iu });
     await expect(reopenedBindDialog.getByRole('combobox', { name: 'Source file', exact: true })).toHaveText('alpha.pdf');
     await expect(reopenedBindDialog.getByRole('combobox', { name: /page/iu })).toHaveText('1');
     await reopenedBindDialog.getByRole('combobox', { name: 'Source file', exact: true }).click();
     await page.getByRole('option', { name: 'beta.pdf', exact: true }).click();
     await reopenedBindDialog.getByRole('button', { name: 'Cancel', exact: true }).click();
     await expect(reopenedBindDialog).toHaveCount(0);
-    await expect(target.getByRole('button', { name: `Bound ${targetId}`, exact: true })).toBeVisible();
+    await expect(target.getByRole('button', { name: `Linked ${targetId}`, exact: true })).toBeVisible();
     expect(await readback(fixture)).toEqual(before);
     await dialog.getByRole('combobox', { name: 'Source file', exact: true }).click();
     await page.getByRole('option', { name: 'beta.pdf', exact: true }).click();
     await dialog.getByRole('combobox', { name: 'Page', exact: true }).click();
     await page.getByRole('option', { name: '2', exact: true }).click();
-    await dialog.getByRole('checkbox', { name: 'Unlinked', exact: true }).uncheck();
-    await dialog.getByRole('checkbox', { name: 'Unlinked', exact: true }).check();
+    await dialog.getByRole('checkbox', { name: 'View unlinked', exact: true }).uncheck();
+    await dialog.getByRole('checkbox', { name: 'View unlinked', exact: true }).check();
     await expect(target).toBeVisible();
     expect(await readback(fixture)).toEqual(before);
 
@@ -200,14 +250,14 @@ test.describe('Steel source review normal UI acceptance', () => {
     await page.keyboard.press('Escape');
     await page.reload();
     const reopened = await openEditor(page, fixture);
-    await reopened.getByRole('checkbox', { name: 'Unlinked', exact: true }).check();
+    await reopened.getByRole('checkbox', { name: 'View unlinked', exact: true }).check();
     await expect(reopened.locator('tbody tr')).toHaveCount(1);
-    await reopened.getByRole('checkbox', { name: 'Unlinked', exact: true }).uncheck();
+    await reopened.getByRole('checkbox', { name: 'View unlinked', exact: true }).uncheck();
     await expect(reopened.locator(`tr[data-row-id="${targetId}"]`)).toBeVisible();
     expect(await readback(fixture)).toEqual(after);
   });
 
-  test('Add item classification and trimmed notes derive processing source, order, and cascade', async ({ page }) => {
+  test('Add row classification and trimmed notes derive processing source, order, and cascade', async ({ page }) => {
     const fixture = await seedCalculation('plate', '', false, { withSources: true });
     fixtures.push(fixture);
     const initial = await readTable(page, auth, fixture);
@@ -224,7 +274,7 @@ test.describe('Steel source review normal UI acceptance', () => {
     const material = row(dialog, materialId);
     await expect(material).toBeVisible();
     await expect(material.locator('td').nth(1).locator('input, textarea, [role="combobox"]').first()).toBeFocused();
-    await expect(material.getByRole('button', { name: `Bound ${materialId}`, exact: true })).toBeVisible();
+    await expect(material.getByRole('button', { name: `Linked ${materialId}`, exact: true })).toBeVisible();
     await material.getByRole('combobox', { name: `Classify ${materialId}`, exact: true }).click();
     await page.getByRole('option', { name: 'Material', exact: true }).click();
     await fillNotes(dialog, materialId, `  ${materialNote}  `);
@@ -239,7 +289,7 @@ test.describe('Steel source review normal UI acceptance', () => {
     expect(normalRows.indexOf(materialId)).toBeGreaterThanOrEqual(0);
     expect(normalRows.indexOf(normalProcessingId)).toBe(normalRows.indexOf(materialId) + 1);
 
-    await dialog.getByRole('checkbox', { name: 'Unlinked', exact: true }).check();
+    await dialog.getByRole('checkbox', { name: 'View unlinked', exact: true }).check();
     const unlinkedMaterialId = await addItem(dialog, new Set([...existingIds, materialId, normalProcessingId]));
     const unlinkedMaterial = row(dialog, unlinkedMaterialId);
     await unlinkedMaterial.getByRole('combobox', { name: `Classify ${unlinkedMaterialId}`, exact: true }).click();

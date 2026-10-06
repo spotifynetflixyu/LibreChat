@@ -236,8 +236,8 @@ function reviewValue(dialog: Locator, value: string) {
 }
 
 async function bindSource(page: Page, row: Locator, rowId: string, filename: string, pageNumber: string): Promise<void> {
-  await row.getByRole('button', { name: new RegExp(`^(?:Bind|Bound) ${rowId}$`, 'u') }).click();
-  const popup = page.getByRole('dialog', { name: 'Bind source', exact: true });
+  await row.getByRole('button', { name: new RegExp(`^(?:Link|Linked) ${rowId}$`, 'u') }).click();
+  const popup = page.getByRole('dialog', { name: 'Link source', exact: true });
   await popup.getByRole('combobox', { name: 'Source file', exact: true }).click();
   await page.getByRole('option', { name: filename, exact: true }).click();
   await popup.getByRole('combobox', { name: /page/iu }).click();
@@ -926,12 +926,12 @@ test.describe('Steel managed source review', () => {
         animations: 'disabled',
       });
     }
-    await dialog.getByRole('checkbox', { name: 'Unlinked', exact: true }).check();
+    await dialog.getByRole('checkbox', { name: 'View unlinked', exact: true }).check();
     await expect(reviewValue(dialog, 'UNLOCATED-PREVIEW')).toBeVisible();
     const existingRowIds = new Set(await dialog.locator('tbody tr[data-row-id]').evaluateAll((rows) => rows
       .map((entry) => entry.getAttribute('data-row-id'))
       .filter((rowId): rowId is string => Boolean(rowId))));
-    await dialog.getByRole('button', { name: 'Add item', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
     await expect.poll(async () => (await dialog.locator('tbody tr[data-row-id]').evaluateAll((rows) => rows
       .map((entry) => entry.getAttribute('data-row-id'))
       .filter((rowId): rowId is string => Boolean(rowId)))).find((rowId) => !existingRowIds.has(rowId)) ?? '')
@@ -939,23 +939,23 @@ test.describe('Steel managed source review', () => {
     const addedRowId = (await dialog.locator('tbody tr[data-row-id]').evaluateAll((rows) => rows
       .map((entry) => entry.getAttribute('data-row-id'))
       .filter((rowId): rowId is string => Boolean(rowId)))).find((rowId) => !existingRowIds.has(rowId));
-    if (!addedRowId) throw new Error('Missing OCR Add item row identity');
+    if (!addedRowId) throw new Error('Missing OCR Add row row identity');
     const addedRow = dialog.locator(`tr[data-row-id="${addedRowId}"]`);
     await addedRow.getByRole('combobox', { name: `類別 ${addedRowId}`, exact: true }).click();
     await page.getByRole('option', { name: 'H型鋼', exact: true }).click();
-    await addedRow.getByRole('button', { name: `Bind ${addedRowId}`, exact: true }).click();
-    const bindDialog = page.getByRole('dialog', { name: 'Bind source', exact: true });
+    await addedRow.getByRole('button', { name: `Link ${addedRowId}`, exact: true }).click();
+    const bindDialog = page.getByRole('dialog', { name: 'Link source', exact: true });
     await expect(bindDialog).toBeVisible();
     await bindDialog.getByRole('combobox', { name: 'Source file', exact: true }).click();
     await page.getByRole('option', { name: 'beta.pdf', exact: true }).click();
     await bindDialog.getByRole('combobox', { name: /page/iu }).click();
     await page.getByRole('option', { name: '2', exact: true }).click();
     await bindDialog.getByRole('button', { name: 'Confirm', exact: true }).click();
-    await expect(addedRow.getByRole('button', { name: `Bound ${addedRowId}`, exact: true })).toBeVisible();
+    await expect(addedRow.getByRole('button', { name: `Linked ${addedRowId}`, exact: true })).toBeVisible();
     await addedRow.getByRole('button', { name: `Delete row ${addedRowId}`, exact: true }).click();
     await expect(addedRow).toHaveCount(0);
     await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
-    await dialog.getByRole('checkbox', { name: 'Unlinked', exact: true }).uncheck();
+    await dialog.getByRole('checkbox', { name: 'View unlinked', exact: true }).uncheck();
     await dialog.getByRole('combobox', { name: 'Source file', exact: true }).click();
     await expect(page.getByRole('listbox')).toBeVisible();
     await expect(page.getByRole('option', { name: 'alpha.pdf', exact: true })).toBeFocused();
@@ -1595,10 +1595,10 @@ test.describe('Steel managed source review', () => {
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
     const row = dialog.locator('tbody tr').filter({ has: page.locator('input[value="REVIEW-P1"]') });
-    await dialog.getByRole('checkbox', { name: 'Unlinked', exact: true }).check();
+    await dialog.getByRole('checkbox', { name: 'View unlinked', exact: true }).check();
     await expect(row).toBeVisible();
     await bindSource(page, row, table.rows[0].rowId, 'alpha.pdf', '2');
-    await dialog.getByRole('checkbox', { name: 'Unlinked', exact: true }).uncheck();
+    await dialog.getByRole('checkbox', { name: 'View unlinked', exact: true }).uncheck();
     await dialog.getByRole('combobox', { name: 'Page', exact: true }).click();
     await page.getByRole('option', { name: '2', exact: true }).click();
     await expect(reviewValue(dialog, 'REVIEW-P1')).toBeVisible();
@@ -1608,7 +1608,7 @@ test.describe('Steel managed source review', () => {
     await page.keyboard.press('Escape');
     await expect(page.getByRole('button', { name: 'Continue editing', exact: true })).toBeVisible();
     await page.getByRole('button', { name: 'Continue editing', exact: true }).click();
-    await expect(row.getByRole('button', { name: `Bound ${table.rows[0].rowId}`, exact: true })).toBeVisible();
+    await expect(row.getByRole('button', { name: `Linked ${table.rows[0].rowId}`, exact: true })).toBeVisible();
     expect(await persistedSnapshot(conversationId)).toEqual(before);
     await page.keyboard.press('Escape');
     const prepareRequest = page.waitForRequest((request) => request.method() === 'POST' &&
@@ -2807,7 +2807,7 @@ test.describe('Steel managed source review', () => {
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
     await expect(dialog.locator('tbody tr')).toHaveCount(2);
-    await dialog.getByRole('button', { name: 'Add item', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
     await expect(dialog.locator('tbody tr')).toHaveCount(3);
     await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toBeVisible();
     expect(await persistedSnapshot(conversationId)).toEqual(before);
@@ -2833,7 +2833,7 @@ test.describe('Steel managed source review', () => {
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
     await expect.poll(() => dialog.locator('canvas').evaluate((element: HTMLCanvasElement) => element.width)).toBeGreaterThan(0);
     for (let index = 0; index < 2; index += 1) {
-      await dialog.getByRole('button', { name: 'Add item', exact: true }).click();
+      await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
       const row = dialog.locator('tbody tr').last();
       await row.locator('td').nth(1).getByRole('textbox').fill('MANUAL-DUPLICATE');
       await row.locator('td').nth(2).getByRole('textbox').fill('3000');
@@ -2943,10 +2943,10 @@ test.describe('Steel managed source review', () => {
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
     await expect(dialog.locator('del').filter({ hasText: 'REVIEW-P1' })).toBeVisible();
     await expect(dialog.locator('del').filter({ hasText: 'REVIEW-P2' })).toBeVisible();
-    await expect(dialog.getByRole('button', { name: 'Add item', exact: true })).toBeEnabled();
+    await expect(dialog.getByRole('button', { name: 'Add row', exact: true })).toBeEnabled();
     expect(await persistedSnapshot(conversationId)).toEqual(after);
     await expect.poll(() => dialog.locator('canvas').evaluate((element: HTMLCanvasElement) => element.width)).toBeGreaterThan(0);
-    await dialog.getByRole('button', { name: 'Add item', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
     const addedRow = dialog.locator('tbody tr').last();
     await addedRow.locator('td').nth(1).getByRole('textbox').fill('AFTER-ALL-DELETE');
     await addedRow.locator('td').nth(2).getByRole('textbox').fill('500');
@@ -2982,12 +2982,12 @@ test.describe('Steel managed source review', () => {
           .getByRole('button', { name: /^Delete row(?:\s|$)/ }).click();
         await dialog.getByRole('button', { name: /^Save/ }).click();
         await expect.poll(async () => (await persistedSnapshot(conversationId)).reviews[0]?.receipts.length).toBe(3);
-        await expect(dialog.getByRole('button', { name: 'Add item', exact: true })).toBeEnabled();
+        await expect(dialog.getByRole('button', { name: 'Add row', exact: true })).toBeEnabled();
         await page.keyboard.press('Escape');
         await expect(dialog).not.toBeVisible();
         await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
       }
-      await dialog.getByRole('button', { name: 'Add item', exact: true }).click();
+      await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
       const row = dialog.locator('tbody tr').last();
       await row.locator('td').nth(1).getByRole('textbox').fill(part);
       await row.locator('td').nth(3).getByRole('textbox').fill('4');
@@ -3107,7 +3107,7 @@ test.describe('Steel managed source review', () => {
     await page.goto(`/c/${conversationId}`);
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
-    await dialog.getByRole('button', { name: 'Add item', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
     const added = dialog.locator('tbody tr').last();
     await added.locator('td').nth(1).getByRole('textbox').fill('MANUAL-ONLY');
     await added.locator('td').nth(3).getByRole('textbox').fill('4');
@@ -4164,7 +4164,7 @@ test.describe('Steel managed source review', () => {
           if (publication === 'foreign_save') await expect(dialog.locator('tbody tr').first().locator('td').nth(2).getByRole('textbox')).toHaveValue('1234');
           await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
         } else {
-          await expect(dialog.getByRole('button', { name: 'Add item', exact: true })).toHaveCount(0);
+          await expect(dialog.getByRole('button', { name: 'Add row', exact: true })).toHaveCount(0);
           await expect(dialog.getByRole('textbox')).toHaveCount(0);
           await expect(dialog.getByRole('button', { name: /^Save/ })).toBeDisabled();
         }

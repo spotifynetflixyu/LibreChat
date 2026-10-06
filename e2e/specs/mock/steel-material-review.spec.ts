@@ -304,7 +304,7 @@ test.describe('Material review capable automatic calculation', () => {
   test('a material added in the UI saves the computed total after its initial empty cells', async ({ page }) => {
     const fixture = await seedCalculation(); fixtures.push(fixture);
     const dialog = await openEditor(page, fixture);
-    await dialog.getByRole('button', { name: 'Add item', exact: true }).click();
+    await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
     const weight = dialog.getByRole('textbox', { name: /^單重 /u }).last();
     const label = await weight.getAttribute('aria-label');
     if (!label) throw new Error('Missing added material identity');
