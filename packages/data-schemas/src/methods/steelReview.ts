@@ -1686,40 +1686,38 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
           // attempt; the first attempt may replace `input` with its prepared
           // transaction-current projection.
           input = originalInput;
-          const [conversations, messages, ocrStates, quotations] = await Promise.all([
-            Conversation.find({
-              $and: [
-                { conversationId: input.conversationId, user: input.userId },
-                tenantFilter(input.tenantId),
-                activeExpirationFilter(),
-              ],
-            }).limit(2).session(session).lean(),
-            Message.find(messageFilter(input))
-              .select({
-                messageId: 1,
-                conversationId: 1,
-                user: 1,
-                tenantId: 1,
-                expiredAt: 1,
-                files: 1,
-                text: 1,
-                content: 1,
-                metadata: 1,
-              })
+          const conversations = await Conversation.find({
+            $and: [
+              { conversationId: input.conversationId, user: input.userId },
+              tenantFilter(input.tenantId),
+              activeExpirationFilter(),
+            ],
+          }).limit(2).session(session).lean();
+          const messages = await Message.find(messageFilter(input))
+            .select({
+              messageId: 1,
+              conversationId: 1,
+              user: 1,
+              tenantId: 1,
+              expiredAt: 1,
+              files: 1,
+              text: 1,
+              content: 1,
+              metadata: 1,
+            })
+            .limit(2)
+            .session(session)
+            .lean<Array<Pick<IMessage, 'messageId' | 'conversationId' | 'user' | 'tenantId' | 'expiredAt' | 'files' | 'text' | 'content' | 'metadata'>>>();
+          const ocrStates = await (input.kind === 'ocr_result'
+            ? OcrState.find({ conversationId: input.conversationId })
               .limit(2)
               .session(session)
-              .lean<Array<Pick<IMessage, 'messageId' | 'conversationId' | 'user' | 'tenantId' | 'expiredAt' | 'files' | 'text' | 'content' | 'metadata'>>>(),
-            input.kind === 'ocr_result'
-              ? OcrState.find({ conversationId: input.conversationId })
-                .limit(2)
-                .session(session)
-                .lean<ISteelConversationOcrState[]>()
-              : Promise.resolve([] as ISteelConversationOcrState[]),
-            QuotationState.find(reviewScope(input))
-              .limit(2)
-              .session(session)
-              .lean<ISteelQuotationState[]>(),
-          ]);
+              .lean<ISteelConversationOcrState[]>()
+            : Promise.resolve([] as ISteelConversationOcrState[]));
+          const quotations = await QuotationState.find(reviewScope(input))
+            .limit(2)
+            .session(session)
+            .lean<ISteelQuotationState[]>();
           if (conversations.length > 1 || messages.length > 1 || ocrStates.length > 1 || quotations.length > 1) {
             throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Review authority is ambiguous');
           }

@@ -272,13 +272,16 @@ export function createSteelReviewSourceAuthorization(mongoose: Mongoose) {
       messageAnchorsQuery?.session(session);
       attachmentAnchorsQuery.session(session);
     }
-    const [globalLegacyFiles, messageAnchors, attachmentAnchors] = await Promise.all([
+    const queries = [
       globalLegacyFilesQuery.lean<SteelReviewAuthorizedFile[]>(),
       messageAnchorsQuery
         ? messageAnchorsQuery.lean<ScopedMessage[]>()
         : Promise.resolve([] as ScopedMessage[]),
       attachmentAnchorsQuery.lean<ScopedMessage[]>(),
-    ]);
+    ] as const;
+    const [globalLegacyFiles, messageAnchors, attachmentAnchors] = session
+      ? [await queries[0], await queries[1], await queries[2]]
+      : await Promise.all(queries);
     const globalGroups = groupByFileId(globalLegacyFiles);
     const authorized = new Map<string, SteelReviewAuthorizedFile>();
     for (const [fileId, candidate] of uniqueCandidates) {

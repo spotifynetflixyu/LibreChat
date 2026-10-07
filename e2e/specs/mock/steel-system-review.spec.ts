@@ -1213,7 +1213,7 @@ test.describe('System order atomic manual review', () => {
     await page.keyboard.press('Escape');
     await page.reload();
     await expect(page.locator('del')).toHaveCount(0);
-    await expect(page.getByText('Updated', { exact: true })).toBeVisible();
+    await expect(page.getByText('Latest version v2', { exact: true })).toBeVisible();
     expect(await readback(fixture.conversationId)).toEqual(after);
     const reopened = await readTable(page, headers, fixture.conversationId, fixture.messageId);
     expect(reopened.rows[0].values['單價']).toMatchObject({ baseline: '10', effective: '10.01' });

@@ -156,14 +156,19 @@ export function setSteelReviewDraftSource(
   if (!row.rowId) {
     return draft;
   }
-  const normalizedSource = source && row.source?.fileId === source.fileId && row.source.mediaType === undefined
+  const normalizedSource: SteelReviewSource | null = source && row.source?.fileId === source.fileId && row.source.mediaType === undefined
     ? (({ mediaType: _mediaType, ...legacySource }) => legacySource)(source)
     : source;
   const sourceDrafts = { ...draft.sourceDrafts };
   const sourceVersions = { ...draft.sourceVersions };
   const changeSequence = draft.changeSequence + 1;
   sourceVersions[row.rowId] = changeSequence;
-  if (JSON.stringify(normalizedSource) === JSON.stringify(row.source)) {
+  const sameSource = normalizedSource === row.source || Boolean(normalizedSource && row.source &&
+    normalizedSource.fileId === row.source.fileId &&
+    normalizedSource.pageNumber === row.source.pageNumber &&
+    normalizedSource.filename === row.source.filename &&
+    normalizedSource.mediaType === row.source.mediaType);
+  if (sameSource) {
     delete sourceDrafts[row.rowId];
   } else {
     sourceDrafts[row.rowId] = normalizedSource;

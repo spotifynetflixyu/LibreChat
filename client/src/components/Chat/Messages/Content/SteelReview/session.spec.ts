@@ -1086,6 +1086,27 @@ describe('Steel review local draft session', () => {
     expect(projected?.values.頁碼?.effective).toBe('2');
   });
 
+  it('clears a reverted source binding regardless of property order', () => {
+    const sourcedRow = {
+      ...table.rows[0],
+      source: { fileId: 'file-1', pageNumber: 1, filename: 'drawing.pdf' },
+    };
+    const sourcedTable = { ...table, rows: [sourcedRow] };
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey(selection, sourcedTable));
+    draft = setSteelReviewDraftSource(draft, sourcedRow, {
+      fileId: 'file-2', filename: 'other.pdf', mediaType: 'application/pdf', pageNumber: 2,
+    });
+    expect(getSteelReviewDirtyRowIds(sourcedTable, draft)).toEqual(['row-1']);
+
+    draft = setSteelReviewDraftSource(draft, sourcedRow, {
+      fileId: 'file-1', filename: 'drawing.pdf', mediaType: 'application/pdf', pageNumber: 1,
+    });
+    expect(draft.sourceDrafts).toEqual({});
+    expect(getSteelReviewDirtyRowIds(sourcedTable, draft)).toEqual([]);
+    expect(getSteelReviewPrepareInput(selection, sourcedTable, draft,
+      applySteelReviewDrafts(sourcedTable.rows, draft)).operations).toEqual([]);
+  });
+
   it('preserves edits made after a confirmed save while rebasing submitted cells', () => {
     let draft = createSteelReviewDraftState(getSteelReviewDraftKey(selection, table));
     draft = setSteelReviewDraftCell(draft, table.rows[0], '數量', '3');

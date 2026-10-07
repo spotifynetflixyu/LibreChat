@@ -696,8 +696,9 @@ test.describe('Steel managed source review', () => {
   test('a normal upload attached to a prior user message locates its source without File conversation metadata', async ({ page }) => {
     const { conversationId, messageId } = await seedCurrent(ocr);
     conversations.push(conversationId);
+    const userMessageId = randomUUID();
     await seedMessages(getE2EUser().email, conversationId, [{
-      messageId: randomUUID(),
+      messageId: userMessageId,
       parentMessageId: '00000000-0000-0000-0000-000000000000',
       text: 'Review uploaded source',
       isCreatedByUser: true,
@@ -705,6 +706,9 @@ test.describe('Steel managed source review', () => {
       files: [{ file_id: 'review-alpha' }],
     }]);
     await withMongo(async (db) => {
+      await db.collection('messages').updateOne({ conversationId, messageId }, {
+        $set: { parentMessageId: userMessageId },
+      });
       await db.collection('files').updateOne({ conversationId, file_id: 'review-alpha' }, {
         $unset: { conversationId: '', messageId: '' },
       });
@@ -718,6 +722,27 @@ test.describe('Steel managed source review', () => {
         { source: { fileId: 'review-alpha', pageNumber: 1 } },
       ] } });
       expect(await persistedSnapshot(conversationId)).toEqual(before);
+      await page.goto(`/c/${conversationId}`);
+      await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
+      const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+      await dialog.locator('tbody tr').first().getByRole('textbox', { name: /^數量 /u }).fill('7');
+      await dialog.getByRole('button', { name: 'Save', exact: true }).click();
+      await expect(dialog.getByText('Updated 1 rows', { exact: true })).toBeVisible();
+      await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
+      const saved = await persistedSnapshot(conversationId);
+      expect(saved.messages.find((message) => message.messageId === messageId)?.text)
+        .toBe(ocr.replace('| A | REVIEW-P1 | 1000 | 2 | 1 |', '| A | REVIEW-P1 | 1000 | 7 | 1 |'));
+      const reloaded = await page.request.get(readUrl(conversationId, messageId, 'ocr_result'), { headers });
+      expect(reloaded.status()).toBe(200);
+      expect(await reloaded.json()).toMatchObject({ table: { rows: [
+        { source: { fileId: 'review-alpha', pageNumber: 1 }, values: { 數量: { effective: '7' } } },
+        { source: { fileId: 'review-alpha', pageNumber: 1 } },
+      ] } });
+      await page.keyboard.press('Escape');
+      await page.reload();
+      await expect(page.getByRole('row').filter({ hasText: 'REVIEW-P1' })
+        .getByRole('cell', { name: '7', exact: true })).toBeVisible();
+      expect(await persistedSnapshot(conversationId)).toEqual(saved);
     } finally {
       await withMongo(async (db) => {
         await db.collection('files').updateOne({ file_id: 'review-alpha' }, { $set: { conversationId } });
@@ -1942,17 +1967,20 @@ test.describe('Steel managed source review', () => {
     await bindSource(page, row, table.rows[0].rowId, 'beta.pdf', '2');
     await dialog.getByRole('combobox', { name: 'Source file', exact: true }).click();
     await page.getByRole('option', { name: 'beta.pdf', exact: true }).click();
+    await dialog.getByRole('combobox', { name: 'Page', exact: true }).click();
+    await page.getByRole('option', { name: '2', exact: true }).click();
     await expect(dialog.getByText('Unsaved changes: 1 rows', { exact: true })).toBeVisible();
     expect(await persistedSnapshot(conversationId)).toEqual(before);
+    await expect(row).toBeVisible();
+    await bindSource(page, row, table.rows[0].rowId, 'alpha.pdf', '1');
     await dialog.getByRole('combobox', { name: 'Source file', exact: true }).click();
     await page.getByRole('option', { name: 'alpha.pdf', exact: true }).click();
     await dialog.getByRole('combobox', { name: 'Page', exact: true }).click();
     await page.getByRole('option', { name: '1', exact: true }).click();
     await expect(row).toBeVisible();
-    await bindSource(page, row, table.rows[0].rowId, 'alpha.pdf', '1');
     await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
     expect(await persistedSnapshot(conversationId)).toEqual(before);
-    await page.keyboard.press('Escape');
+    await dialog.getByRole('button', { name: 'Close', exact: true }).last().click();
     await expect(dialog).not.toBeVisible();
     await expect(page.getByRole('button', { name: 'Discard unsaved changes', exact: true })).toHaveCount(0);
     expect(await persistedSnapshot(conversationId)).toEqual(before);
@@ -2573,7 +2601,7 @@ test.describe('Steel managed source review', () => {
     await page.goto(`/c/${conversationId}`);
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
-    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+    const quantity = dialog.locator('tbody tr').first().getByRole('textbox', { name: /^數量 /u });
     await quantity.fill(' 2 ');
     await dialog.getByRole('button', { name: /^Save/ }).click();
     await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
@@ -2582,7 +2610,7 @@ test.describe('Steel managed source review', () => {
     await page.keyboard.press('Escape');
     await expect(dialog).not.toBeVisible();
     await expect(page.getByRole('button', { name: 'Save updates', exact: true })).toHaveCount(0);
-    await expect(page.getByText('Updated', { exact: true })).toHaveCount(0);
+    await expect(page.getByText('Latest version v2', { exact: true })).toHaveCount(0);
     expect(await persistedSnapshot(conversationId)).toEqual(before);
   });
 
@@ -3082,11 +3110,11 @@ test.describe('Steel managed source review', () => {
     expect(await persistedSnapshot(conversationId)).toEqual(after);
     await expect.poll(() => dialog.locator('canvas').evaluate((element: HTMLCanvasElement) => element.width)).toBeGreaterThan(0);
     await dialog.getByRole('button', { name: 'Add row', exact: true }).click();
-    const addedRow = dialog.locator('tbody tr').last();
-    await addedRow.locator('td').nth(1).getByRole('textbox').fill('AFTER-ALL-DELETE');
-    await addedRow.locator('td').nth(2).getByRole('textbox').fill('500');
-    await addedRow.locator('td').nth(3).getByRole('textbox').fill('4');
-    await addedRow.locator('td').nth(3).getByRole('textbox').press('Enter');
+    const addedRow = dialog.locator('tbody tr').filter({ has: page.getByRole('textbox', { name: /^零件編號 /u }) }).last();
+    await addedRow.getByRole('textbox', { name: /^零件編號 /u }).fill('AFTER-ALL-DELETE');
+    await addedRow.getByRole('textbox', { name: /^長度 /u }).fill('500');
+    await addedRow.getByRole('textbox', { name: /^數量 /u }).fill('4');
+    await addedRow.getByRole('textbox', { name: /^數量 /u }).press('Enter');
     await dialog.getByRole('button', { name: /^Save/ }).click();
     await expect(dialog.getByText('Updated 1 rows', { exact: true })).toBeVisible();
     const afterAdd = await persistedSnapshot(conversationId);
@@ -3476,7 +3504,7 @@ test.describe('Steel managed source review', () => {
     await page.goto(`/c/${conversationId}`);
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
-    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+    const quantity = dialog.locator('tbody tr').first().getByRole('textbox', { name: /^數量 /u });
     await quantity.fill('7');
     await dialog.getByRole('button', { name: /^Save/ }).click();
     await expect(dialog.getByRole('alert')).toBeVisible();
@@ -3539,7 +3567,7 @@ test.describe('Steel managed source review', () => {
     await page.goto(`/c/${conversationId}`);
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
-    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+    const quantity = dialog.locator('tbody tr').first().getByRole('textbox', { name: /^數量 /u });
     const oneUnsavedRow = dialog.getByText(/Unsaved.*1|1.*unsaved/i);
     await quantity.fill('7');
     await quantity.press('Enter');
@@ -4087,7 +4115,7 @@ test.describe('Steel managed source review', () => {
     await page.goto(`/c/${conversationId}`);
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
-    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+    const quantity = dialog.locator('tbody tr').first().getByRole('textbox', { name: /^數量 /u });
     await quantity.fill('9');
     await quantity.press('Enter');
     const read = await page.request.get(readUrl(conversationId, messageId, 'ocr_result'), { headers });
@@ -4107,7 +4135,7 @@ test.describe('Steel managed source review', () => {
     const body = await conflict.json();
     await expect(dialog.getByRole('alert')).toBeVisible();
     await expect(quantity).toHaveValue('9');
-    await expect(dialog.locator('tbody tr').first().locator('td').nth(2).getByRole('textbox')).toHaveValue('1234');
+    await expect(dialog.locator('tbody tr').first().getByRole('textbox', { name: /^長度 /u })).toHaveValue('1234');
     await expect(dialog.getByRole('img', { name: /Conflicts on this file/i }).first()).toBeVisible();
     await expect(dialog.getByRole('img', { name: /Conflicts on this page/i }).first()).toBeVisible();
     const fileMenu = dialog.getByRole('combobox', { name: 'Source file', exact: true });
