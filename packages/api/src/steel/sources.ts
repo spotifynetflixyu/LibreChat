@@ -110,6 +110,7 @@ function publicSource(source: SteelReviewSourceRecord): SteelReviewSourceFile {
     filename: source.filename,
     mediaType: source.mediaType,
     ...(source.bytes !== undefined ? { bytes: source.bytes } : {}),
+    ...(source.mediaType === 'application/pdf' && source.pageCount !== undefined ? { pageCount: source.pageCount } : {}),
   };
 }
 
@@ -204,16 +205,19 @@ export function createSteelReviewSourceService({
       if (!source) {
         throw new SteelReviewSourceError('REVIEW_SOURCE_NOT_FOUND', 404, 'Review source not found');
       }
-      if (!readStream) {
-        throw new SteelReviewSourceError('REVIEW_SOURCE_UNAVAILABLE', 501, 'Review source preview unavailable');
+      if (source.mediaType.toLowerCase().startsWith('image/')) {
+        return { source: publicSource(source), pageCount: 1 };
       }
+      if (source.pageCount !== undefined) {
+        return { source: publicSource(source), pageCount: source.pageCount };
+      }
+      let pageCount: number;
       try {
-        if (source.mediaType.toLowerCase().startsWith('image/')) {
-          return { source: publicSource(source), pageCount: 1 };
+        if (!readStream) {
+          throw new SteelReviewSourceError('REVIEW_SOURCE_UNAVAILABLE', 501, 'Review source preview unavailable');
         }
         const bytes = await readStreamBytes(await readStream(request, source));
-        const pageCount = await getPdfPageCount({ pdfBytes: bytes });
-        return { source: publicSource(source), pageCount };
+        pageCount = await getPdfPageCount({ pdfBytes: bytes });
       } catch {
         throw new SteelReviewSourceError(
           'REVIEW_SOURCE_UNAVAILABLE',
@@ -221,6 +225,17 @@ export function createSteelReviewSourceService({
           'Review source page count unavailable',
         );
       }
+      await reader.setSteelReviewSourcePageCount({
+        userId: input.userId,
+        ...(input.tenantId !== undefined ? { tenantId: input.tenantId } : {}),
+        fileId: source.fileId,
+        filepath: source.filepath,
+        storageSource: source.storageSource,
+        ...(source.storageKey !== undefined ? { storageKey: source.storageKey } : {}),
+        ...(source.storageRegion !== undefined ? { storageRegion: source.storageRegion } : {}),
+        pageCount,
+      });
+      return { source: publicSource({ ...source, pageCount }), pageCount };
     },
   };
 }

@@ -675,6 +675,7 @@ export const steelReviewSourceFileSchema = z.object({
   filename: z.string().min(1),
   mediaType: z.string().min(1),
   bytes: z.number().int().nonnegative().optional(),
+  pageCount: z.number().int().positive().optional(),
 });
 
 export const steelReviewSourcesResponseSchema = z.object({

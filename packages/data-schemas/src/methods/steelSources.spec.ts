@@ -70,6 +70,7 @@ describe('Steel review source methods', () => {
         object: 'file',
         type: 'application/pdf',
         source: 'local',
+        metadata: { pageCount: 2 },
         usage: 0,
       },
       {
@@ -82,6 +83,7 @@ describe('Steel review source methods', () => {
         filepath: '/uploads/legacy.png',
         object: 'file',
         type: 'image/png',
+        metadata: { pageCount: 9 },
         source: 'local',
         usage: 0,
       },
@@ -264,18 +266,227 @@ describe('Steel review source methods', () => {
       mediaType: 'application/pdf',
       filepath: '/uploads/drawing.pdf',
       storageSource: 'local',
+      pageCount: 2,
     });
     expect(sources.find((source) => source.fileId === 'canonical-pdf-source')).toMatchObject({
       mediaType: 'application/pdf',
     });
+    expect(sources.find((source) => source.fileId === 'legacy-source')).not.toHaveProperty('pageCount');
     expect(await methods.listSteelReviewSources({ ...input, userId: new mongoose.Types.ObjectId().toString() })).toEqual([]);
     expect(await methods.readSteelReviewSource({ ...input, fileId: 'duplicate-source' })).toBeNull();
     expect(await methods.readSteelReviewSource({ ...input, fileId: 'duplicate-mime-source' })).toBeNull();
     expect(await methods.readSteelReviewSource({ ...input, fileId: 'explicit-source' })).toMatchObject({
       fileId: 'explicit-source',
       filepath: '/uploads/drawing.pdf',
+      pageCount: 2,
+    });
+    const update = {
+      userId: userId.toString(),
+      tenantId: 'tenant-a',
+      fileId: 'canonical-pdf-source',
+      filepath: '/uploads/spoofed.pdf',
+      storageSource: 'local',
+      pageCount: 3,
+    };
+    await expect(methods.setSteelReviewSourcePageCount(update)).resolves.toBe(true);
+    await expect(File.findOne({ file_id: update.fileId }).lean()).resolves.toMatchObject({
+      metadata: { pageCount: 3 },
+    });
+    await expect(methods.setSteelReviewSourcePageCount({ ...update, pageCount: 4 })).resolves.toBe(false);
+    await expect(File.findOne({ file_id: update.fileId }).lean()).resolves.toMatchObject({
+      metadata: { pageCount: 3 },
     });
     expect(await methods.listSteelReviewSources({ ...input, messageId: 'missing-message' })).toEqual([]);
+  });
+
+  it('authorizes a unique legacy file when the requested conversation is one of its active anchors', async () => {
+    const methods = createSteelReviewSourceMethods(mongoose);
+    const userId = new mongoose.Types.ObjectId();
+    const otherUserId = new mongoose.Types.ObjectId();
+    const user = userId.toString();
+    const conversationId = 'shared-source-conversation';
+    const otherConversationId = 'shared-source-other-conversation';
+    const expiredMessageId = 'shared-source-expired-message';
+
+    await Conversation.create([
+      {
+        conversationId,
+        user,
+        tenantId: 'tenant-a',
+        title: 'Shared source review',
+        endpoint: 'openAI',
+      },
+      {
+        conversationId: otherConversationId,
+        user,
+        tenantId: 'tenant-a',
+        title: 'Other source review',
+        endpoint: 'openAI',
+      },
+    ]);
+    await Message.create([
+      {
+        messageId: 'shared-source-current-message',
+        conversationId,
+        user,
+        tenantId: 'tenant-a',
+        isCreatedByUser: true,
+        text: 'current source attachments',
+        files: [
+          { file_id: 'shared-legacy-source' },
+          { file_id: 'matching-anchor-source' },
+          { file_id: 'explicit-other-conversation-source' },
+          { file_id: 'duplicate-global-source' },
+        ],
+      },
+      {
+        messageId: 'shared-source-other-message',
+        conversationId: otherConversationId,
+        user,
+        tenantId: 'tenant-a',
+        isCreatedByUser: true,
+        text: 'other source attachments',
+        files: [
+          { file_id: 'shared-legacy-source' },
+          { file_id: 'elsewhere-only-source' },
+        ],
+      },
+      {
+        messageId: expiredMessageId,
+        conversationId,
+        user,
+        tenantId: 'tenant-a',
+        isCreatedByUser: true,
+        text: 'expired source anchor',
+        files: [{ file_id: 'expired-anchor-source' }],
+        expiredAt: new Date(Date.now() - 60_000),
+      },
+    ]);
+    await File.create([
+      {
+        user: userId,
+        tenantId: 'tenant-a',
+        messageId: 'shared-source-other-message',
+        file_id: 'shared-legacy-source',
+        bytes: 8,
+        filename: 'shared.pdf',
+        filepath: '/uploads/shared.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        source: 'local',
+        usage: 0,
+      },
+      {
+        user: userId,
+        tenantId: 'tenant-a',
+        file_id: 'matching-anchor-source',
+        bytes: 8,
+        filename: 'matching.pdf',
+        filepath: '/uploads/matching.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        source: 'local',
+        usage: 0,
+      },
+      {
+        user: userId,
+        tenantId: 'tenant-a',
+        messageId: 'shared-source-other-message',
+        file_id: 'elsewhere-only-source',
+        bytes: 8,
+        filename: 'elsewhere.pdf',
+        filepath: '/uploads/elsewhere.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        source: 'local',
+        usage: 0,
+      },
+      {
+        user: userId,
+        tenantId: 'tenant-a',
+        conversationId: otherConversationId,
+        file_id: 'explicit-other-conversation-source',
+        bytes: 8,
+        filename: 'explicit-other.pdf',
+        filepath: '/uploads/explicit-other.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        source: 'local',
+        usage: 0,
+      },
+      {
+        user: userId,
+        tenantId: 'tenant-a',
+        messageId: 'shared-source-current-message',
+        file_id: 'duplicate-global-source',
+        bytes: 8,
+        filename: 'duplicate-global.pdf',
+        filepath: '/uploads/duplicate-global.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        source: 'local',
+        usage: 0,
+      },
+      {
+        user: userId,
+        tenantId: 'tenant-a',
+        conversationId: otherConversationId,
+        file_id: 'duplicate-global-source',
+        bytes: 8,
+        filename: 'duplicate-global-other.pdf',
+        filepath: '/uploads/duplicate-global-other.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        source: 'local',
+        usage: 0,
+      },
+      {
+        user: userId,
+        tenantId: 'tenant-a',
+        messageId: expiredMessageId,
+        file_id: 'expired-anchor-source',
+        bytes: 8,
+        filename: 'expired-anchor.pdf',
+        filepath: '/uploads/expired-anchor.pdf',
+        object: 'file',
+        type: 'application/pdf',
+        source: 'local',
+        usage: 0,
+      },
+    ]);
+
+    const input = {
+      userId: user,
+      tenantId: 'tenant-a',
+      conversationId,
+      messageId: 'shared-source-current-message',
+      kind: 'ocr_result' as const,
+      title: 'ocr_result',
+    };
+    expect((await methods.listSteelReviewSources(input)).map((source) => source.fileId)).toEqual([
+      'matching-anchor-source',
+      'shared-legacy-source',
+    ]);
+    await expect(methods.readSteelReviewSource({ ...input, fileId: 'shared-legacy-source' })).resolves.toMatchObject({
+      fileId: 'shared-legacy-source',
+      filepath: '/uploads/shared.pdf',
+    });
+    await expect(methods.readSteelReviewSource({ ...input, fileId: 'elsewhere-only-source' })).resolves.toBeNull();
+    await expect(methods.readSteelReviewSource({ ...input, fileId: 'explicit-other-conversation-source' })).resolves.toBeNull();
+    await expect(methods.readSteelReviewSource({ ...input, fileId: 'duplicate-global-source' })).resolves.toBeNull();
+    await expect(methods.readSteelReviewSource({ ...input, fileId: 'expired-anchor-source' })).resolves.toBeNull();
+    await expect(methods.listSteelReviewSources({
+      ...input,
+      userId: otherUserId.toString(),
+    })).resolves.toEqual([]);
+    await expect(methods.listSteelReviewSources({
+      ...input,
+      tenantId: 'tenant-b',
+    })).resolves.toEqual([]);
+    await expect(methods.listSteelReviewSources({
+      ...input,
+      messageId: expiredMessageId,
+    })).resolves.toEqual([]);
   });
 
   it('resolves files written in the supplied transaction session', async () => {

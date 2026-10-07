@@ -44,8 +44,9 @@ const imageSource: SteelReviewSourceFile = {
 };
 
 function renderPreview(props: Partial<React.ComponentProps<typeof SteelReviewSourcePreview>> = {}) {
-  return render(
-    <Provider store={createStore()}>
+  const store = createStore();
+  const rendered = render(
+    <Provider store={store}>
       <SteelReviewSourcePreview
         stateKey={`preview-${Math.random()}`}
         source={imageSource}
@@ -60,6 +61,7 @@ function renderPreview(props: Partial<React.ComponentProps<typeof SteelReviewSou
       />
     </Provider>,
   );
+  return { ...rendered, store };
 }
 
 function dispatchPointerEvent(
@@ -127,7 +129,8 @@ describe('SteelReviewSourcePreview', () => {
       'src',
       'blob:source-preview',
     );
-    expect(image).toHaveClass('max-h-full', 'max-w-full', 'object-contain');
+    expect(image).toHaveClass('max-w-none', 'shrink-0');
+    expect(image).toHaveStyle({ transform: 'translate(0px, 0px) scale(1)' });
     expect(screen.getByRole('button', { name: 'Fit preview' }).parentElement).toHaveClass(
       'absolute',
       'bottom-3',
@@ -151,10 +154,19 @@ describe('SteelReviewSourcePreview', () => {
 
     expect(image).toHaveStyle({ transform: 'translate(60px, 30px) scale(1.25)' });
 
+    Object.defineProperties(region, {
+      clientWidth: { configurable: true, value: 400 },
+      clientHeight: { configurable: true, value: 200 },
+    });
+    Object.defineProperties(image, {
+      offsetWidth: { configurable: true, value: 800 },
+      offsetHeight: { configurable: true, value: 800 },
+    });
+
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Fit preview' }));
     });
-    expect(image).toHaveStyle({ transform: 'translate(0px, 0px) scale(1)' });
+    expect(image).toHaveStyle({ transform: 'translate(0px, 0px) scale(0.25)' });
   });
 
   it('renders one selected PDF page through the controlled canvas', async () => {
@@ -175,7 +187,7 @@ describe('SteelReviewSourcePreview', () => {
     const onPageCount = jest.fn();
 
     const pdfBlob = { arrayBuffer: async () => new ArrayBuffer(8) } as Blob;
-    renderPreview({
+    const { rerender, store } = renderPreview({
       stateKey: 'preview-pdf',
       source: pdfSource,
       blob: pdfBlob,
@@ -191,6 +203,27 @@ describe('SteelReviewSourcePreview', () => {
     expect(renderedCanvas.tagName).toBe('CANVAS');
     expect(renderedCanvas).toHaveProperty('width', 240);
     expect(renderedCanvas).toHaveProperty('height', 320);
+    expect(renderedCanvas).toHaveStyle({ width: '160px', transform: 'translate(0px, 0px) scale(1)' });
     expect(documentProxy.getPage).toHaveBeenCalledWith(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Zoom in' }));
+    fireEvent.keyDown(screen.getByRole('region', { name: 'Source page preview' }), { key: 'ArrowRight' });
+    rerender(
+      <Provider store={store}>
+        <SteelReviewSourcePreview
+          stateKey="preview-pdf"
+          source={pdfSource}
+          pageNumber={2}
+          blob={pdfBlob}
+          loading={false}
+          error={false}
+          labels={labels}
+          onRetry={jest.fn()}
+          onPageCount={onPageCount}
+        />
+      </Provider>,
+    );
+    await waitFor(() => expect(documentProxy.getPage).toHaveBeenCalledWith(2));
+    expect(renderedCanvas).toHaveStyle({ transform: 'translate(40px, 0px) scale(1.25)' });
   });
 });

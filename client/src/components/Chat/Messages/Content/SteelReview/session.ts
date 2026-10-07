@@ -14,6 +14,7 @@ import type {
   SteelReviewCommit,
   SteelReviewRow,
   SteelReviewSource,
+  SteelReviewSourceMapping,
   SteelReviewSystemState,
   SteelReviewTable,
   SteelProcessingMeasurement,
@@ -517,7 +518,21 @@ export function applySteelReviewDrafts(
   rows: readonly SteelReviewRow[],
   draft: SteelReviewDraftState,
   previewCalculations = true,
+  sourceMappings: readonly SteelReviewSourceMapping[] = [],
 ): SteelReviewRow[] {
+  const sourceCodes = new Map(sourceMappings.map((mapping) => [mapping.fileId, mapping.sourceCode]));
+  let nextSourceCode = BigInt(1);
+  for (const row of rows) {
+    const header = Object.keys(row.values).find((key) => ['來源', 'source'].includes(key.trim().toLowerCase()));
+    const code = header ? row.values[header]?.effective : undefined;
+    if (row.source && code && !sourceCodes.has(row.source.fileId)) sourceCodes.set(row.source.fileId, code);
+    const reserved = code?.match(/^F([1-9]\d*)$/u);
+    if (reserved && BigInt(reserved[1]) >= nextSourceCode) nextSourceCode = BigInt(reserved[1]) + BigInt(1);
+  }
+  for (const code of sourceCodes.values()) {
+    const match = code.match(/^F([1-9]\d*)$/u);
+    if (match && BigInt(match[1]) >= nextSourceCode) nextSourceCode = BigInt(match[1]) + BigInt(1);
+  }
   const projectRow = (row: SteelReviewRow, sourceOverride?: SteelReviewSource | null): SteelReviewRow => {
     if (!row.rowId) {
       return row;
@@ -570,9 +585,15 @@ export function applySteelReviewDrafts(
     const projectedValues = { ...values };
     if (sourceColumn) {
       const sameFile = source !== null && source.fileId === projectedRow.source?.fileId;
+      let sourceCode = source === null ? '' : sourceCodes.get(source.fileId);
+      if (source && sourceCode === undefined) {
+        sourceCode = sameFile ? projectedValues[sourceColumn]?.effective ?? '' : `F${nextSourceCode.toString()}`;
+        sourceCodes.set(source.fileId, sourceCode);
+        if (!sameFile) nextSourceCode += BigInt(1);
+      }
       projectedValues[sourceColumn] = {
         ...projectedValues[sourceColumn],
-        effective: source === null || !sameFile ? '' : projectedValues[sourceColumn]?.effective ?? '',
+        effective: sourceCode ?? '',
       };
     }
     if (pageColumn) {

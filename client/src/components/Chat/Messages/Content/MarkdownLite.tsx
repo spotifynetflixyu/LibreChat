@@ -6,10 +6,11 @@ import supersub from 'remark-supersub';
 import ReactMarkdown from 'react-markdown';
 import rehypeHighlight from 'rehype-highlight';
 import type { PluggableList } from 'unified';
-import { code, codeNoExecution, a, p, img, table } from './MarkdownComponents';
 import { CodeBlockProvider, ArtifactProvider, MarkdownTableProvider } from '~/Providers';
+import { code, codeNoExecution, a, p, img, table } from './MarkdownComponents';
 import MarkdownErrorBoundary from './MarkdownErrorBoundary';
 import { langSubset, remarkApproxTilde } from '~/utils';
+import MarkdownCell from './table/Cell';
 
 const MarkdownLite = memo(
   ({ content = '', codeExecution = true }: { content?: string; codeExecution?: boolean }) => {
@@ -47,6 +48,7 @@ const MarkdownLite = memo(
                     p,
                     img,
                     table,
+                    td: MarkdownCell,
                   } as {
                     [nodeType: string]: React.ElementType;
                   }

@@ -59,6 +59,11 @@ jest.mock('@librechat/api', () => {
       return upload(await openSource());
     }
   });
+  const createUploadFileWriters = jest.fn(({ createFile }) => ({
+    prepareOriginalFile: jest.fn().mockResolvedValue({ kind: 'not-pdf' }),
+    writeOriginalFile: jest.fn((fileInfo, disableTTL = true) => createFile(fileInfo, disableTTL)),
+    writeDerivedFile: jest.fn((fileInfo, disableTTL = true) => createFile(fileInfo, disableTTL)),
+  }));
   const UPLOAD_EXTRACTED_TEXT_PLANS = {
     configuredOCR: 'configured_ocr',
     configuredRAG: 'configured_rag',
@@ -159,6 +164,7 @@ jest.mock('@librechat/api', () => {
     createCodeApiRateLimitBudget,
     getCodeApiUploadOptions,
     withCodeApiUploadRecovery,
+    createUploadFileWriters,
     getAgentFileRetentionExpiry: jest.fn(({ req, messageAttachment, toolResource }) => {
       const interfaceConfig = req?.config?.interfaceConfig;
       if (

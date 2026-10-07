@@ -1,14 +1,17 @@
+import { Profiler } from 'react';
 import { RecoilRoot } from 'recoil';
 import { createStore, Provider } from 'jotai';
 import { dataService, DynamicQueryKeys } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider, useQuery } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { MutableRefObject } from 'react';
 import type { SteelReviewIdentity, SteelReviewSelection } from './SteelReview/state';
 import { steelReviewDraftStateFamily, steelReviewSelectionAtom } from './SteelReview/state';
 import { getSteelReviewDraftKey, getSteelReviewDraftOwnerKey } from './SteelReview/session';
 import SteelReviewDialog, { type SteelReviewSaveGate } from './SteelReviewDialog';
 import MarkdownTableActions from './MarkdownTableActions';
+
+let mockIsDesktop = false;
 
 jest.mock('pdfjs-dist/build/pdf.worker.mjs?url', () => ({ default: 'pdf-worker.js' }), { virtual: true });
 jest.mock('pdfjs-dist/build/pdf.mjs', () => ({
@@ -17,6 +20,7 @@ jest.mock('pdfjs-dist/build/pdf.mjs', () => ({
 }));
 
 jest.mock('@librechat/client', () => {
+  const { Spinner } = jest.requireActual('@librechat/client');
   const React = jest.requireActual<typeof import('react')>('react');
   const Pass = ({ children, asChild: _asChild, ...props }: {
     children?: React.ReactNode;
@@ -36,13 +40,14 @@ jest.mock('@librechat/client', () => {
   });
   const Tag = ({ label, ...props }: { label: string; variant?: string }) =>
     React.createElement('div', props, label);
-  const Select = ({ value, onValueChange, children }: {
+  const Select = ({ value, onValueChange, children, disabled }: {
     value?: string;
+    disabled?: boolean;
     onValueChange?: (value: string) => void;
     children?: React.ReactNode;
   }) => React.createElement(
     'select',
-    { value, onChange: (event: React.ChangeEvent<HTMLSelectElement>) => onValueChange?.(event.target.value) },
+    { value, disabled, onChange: (event: React.ChangeEvent<HTMLSelectElement>) => onValueChange?.(event.target.value) },
     children,
   );
   const SelectContent = ({ children }: { children?: React.ReactNode }) => children;
@@ -53,7 +58,10 @@ jest.mock('@librechat/client', () => {
   const Dialog = ({ open, children }: { open: boolean; children?: React.ReactNode }) =>
     (open ? React.createElement('div', { role: 'dialog' }, children) : null);
   return {
+    Spinner,
     Button,
+    useMediaQuery: () => mockIsDesktop,
+    useNestedPopoverStyle: () => ({ zIndex: 150, pointerEvents: 'auto' }),
     TooltipAnchor: ({ render }: { render: React.ReactNode }) => render,
     Checkbox,
     Input,
@@ -93,6 +101,7 @@ let mockMessageContext: {
 let activeReviewQueryClient: QueryClient | undefined;
 
 beforeEach(() => {
+  mockIsDesktop = false;
   Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', { configurable: true, value: jest.fn() });
   jest.spyOn(dataService, 'getMessagesByConvoId').mockResolvedValue([]);
   Object.defineProperty(URL, 'revokeObjectURL', {
@@ -154,6 +163,7 @@ const {
   useGetSteelReviewQuery: mockUseGetSteelReviewQuery,
   useGetSteelReviewSourcesQuery: mockUseGetSteelReviewSourcesQuery,
   useGetSteelReviewSourceQuery: mockUseGetSteelReviewSourceQuery,
+  useGetSteelReviewSourcePageCountQuery: mockUseGetSteelReviewSourcePageCountQuery,
   usePrepareSteelReviewMutation: mockUsePrepareSteelReviewMutation,
   useCommitSteelReviewMutation: mockUseCommitSteelReviewMutation,
   useGetSteelReviewReceiptQuery: mockUseGetSteelReviewReceiptQuery,
@@ -161,12 +171,14 @@ const {
   useGetSteelReviewQuery: jest.Mock;
   useGetSteelReviewSourcesQuery: jest.Mock;
   useGetSteelReviewSourceQuery: jest.Mock;
+  useGetSteelReviewSourcePageCountQuery: jest.Mock;
   usePrepareSteelReviewMutation: jest.Mock;
   useCommitSteelReviewMutation: jest.Mock;
   useGetSteelReviewReceiptQuery: jest.Mock;
 };
 jest.mock('~/hooks', () => ({
-  useLocalize: () => (key: string) => key,
+  useLocalize: () => (key: string, values?: Record<string, string | number>) =>
+    key === 'com_ui_steel_review_save_count' ? `com_ui_steel_review_save (${values?.[0] ?? 0})` : key,
 }));
 jest.mock('react-i18next', () => ({
   useTranslation: () => ({ i18n: { language: 'en' } }),
@@ -209,6 +221,20 @@ function renderDialog(
     </QueryClientProvider>,
   );
   return { ...rendered, queryClient, store };
+}
+
+function getEditableTextbox(name: string): HTMLElement {
+  const existing = screen.queryByRole('textbox', { name });
+  if (existing) return existing;
+  const rowId = name.slice(name.lastIndexOf(' ') + 1);
+  fireEvent.click(screen.getByRole('button', { name: `com_ui_edit ${rowId}` }));
+  return screen.getByRole('textbox', { name });
+}
+
+async function findEditableTextbox(name: string): Promise<HTMLElement> {
+  const rowId = name.slice(name.lastIndexOf(' ') + 1);
+  await screen.findByRole('button', { name: `com_ui_edit ${rowId}` });
+  return getEditableTextbox(name);
 }
 
 function createReopenLifecycleFixture() {
@@ -302,28 +328,31 @@ function createReopenedSelection(
   };
 }
 
-function renderTable() {
+function renderTable(title = testHeading) {
   const queryClient = new QueryClient();
+  const store = createStore();
   const rendered = render(
     <QueryClientProvider client={queryClient}>
-      <RecoilRoot>
-        <div className="message-render">
-          <div className="message-content">
-            <h2>{testHeading}</h2>
-            <MarkdownTableActions markdownIndex={1}>
-              <thead>
-                <tr><th>{sourceHeader}</th><th>{partHeader}</th></tr>
-              </thead>
-              <tbody>
-                <tr><td>A</td><td>{firstPart}</td></tr>
-              </tbody>
-            </MarkdownTableActions>
+      <Provider store={store}>
+        <RecoilRoot>
+          <div className="message-render">
+            <div className="message-content">
+              <h2>{title}</h2>
+              <MarkdownTableActions markdownIndex={1}>
+                <thead>
+                  <tr><th>{sourceHeader}</th><th>{partHeader}</th></tr>
+                </thead>
+                <tbody>
+                  <tr><td>A</td><td>{firstPart}</td></tr>
+                </tbody>
+              </MarkdownTableActions>
+            </div>
           </div>
-        </div>
-      </RecoilRoot>
+        </RecoilRoot>
+      </Provider>
     </QueryClientProvider>,
   );
-  return { ...rendered, queryClient };
+  return { ...rendered, queryClient, store };
 }
 
 function readBlob(blob: Blob): Promise<string> {
@@ -336,19 +365,54 @@ function readBlob(blob: Blob): Promise<string> {
 }
 
 describe('MarkdownTableActions Steel review entry', () => {
-  it('does not offer an entry when the scoped backend read rejects a same-heading table', async () => {
+  it.each(['ocr_result', 'system_order', 'system_order｜報價單 A'])(
+    'opens review for %s when the backend has no saved table', async (title) => {
+      mockUseGetSteelReviewQuery.mockReturnValue({
+        data: undefined,
+        error: { response: { status: 404 } },
+        isError: true,
+        isLoading: false,
+      });
+
+      const { store } = renderTable(title);
+      fireEvent.click(await screen.findByRole('button', { name: 'com_ui_steel_review_open' }));
+
+      expect(store.get(steelReviewSelectionAtom)).toMatchObject({
+        conversationId: 'conversation-1', messageId: 'message-1', title,
+        kind: title === 'ocr_result' ? 'ocr_result' : 'system_order',
+      });
+      expect(screen.getByRole('dialog')).toHaveTextContent('com_ui_steel_review_empty');
+      expect(screen.queryByRole('textbox')).toBeNull();
+      expect(screen.getByRole('button', { name: /^com_ui_steel_review_save(?: \(\d+\))?$/ })).toBeDisabled();
+    },
+  );
+
+  it.each(['ocr_result', 'system_order'])(
+    'opens the loading state for %s before recognition finishes', async (title) => {
+      mockUseGetSteelReviewQuery.mockReturnValue({
+        data: undefined, error: null, isError: false, isLoading: true,
+      });
+      renderTable(title);
+      fireEvent.click(await screen.findByRole('button', { name: 'com_ui_steel_review_open' }));
+      expect(screen.getByRole('dialog')).toHaveTextContent('com_ui_steel_review_loading');
+      expect(screen.queryByRole('textbox')).toBeNull();
+    },
+  );
+
+  it('does not offer review for ordinary tables or user-authored Steel headings', () => {
     mockUseGetSteelReviewQuery.mockReturnValue({
-      data: undefined,
-      error: { response: { status: 404 } },
-      isError: true,
-      isLoading: false,
+      data: undefined, error: null, isError: false, isLoading: false,
     });
-
-    renderTable();
-
-    await waitFor(() =>
-      expect(screen.queryByRole('button', { name: 'com_ui_steel_review_open' })).toBeNull(),
-    );
+    const ordinary = renderTable('Other table');
+    expect(screen.queryByRole('button', { name: 'com_ui_steel_review_open' })).toBeNull();
+    ordinary.unmount();
+    mockMessageContext = { ...mockMessageContext, isCreatedByUser: true };
+    try {
+      renderTable();
+      expect(screen.queryByRole('button', { name: 'com_ui_steel_review_open' })).toBeNull();
+    } finally {
+      mockMessageContext = { ...mockMessageContext, isCreatedByUser: false };
+    }
   });
 
   it('exports a recognized confirmed table while the review dialog is closed', async () => {
@@ -601,12 +665,13 @@ describe('MarkdownTableActions Steel review entry', () => {
     renderDialog(queryClient, systemSelection, createStore(), systemIdentity);
     fireEvent.click(await screen.findByRole('button', { name: 'com_ui_steel_review_add_row' }));
     const addedRow = document.querySelector<HTMLElement>(`tr[data-row-id="${addedProcessingRowId}"]`)!;
+    fireEvent.click(within(addedRow).getByRole('button', { name: `com_ui_edit ${addedProcessingRowId}` }));
     fireEvent.change(within(addedRow).getByRole('combobox'), { target: { value: 'processing' } });
     const remark = within(addedRow).getByRole('textbox', { name: `備註 ${addedProcessingRowId}` });
     fireEvent.focus(remark);
     fireEvent.change(remark, { target: { value: 'P1' } });
     fireEvent.blur(remark);
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    fireEvent.click(screen.getByRole('button', { name: /^com_ui_steel_review_save(?: \(\d+\))?$/ }));
 
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
     expect(prepare).toHaveBeenCalledWith(expect.objectContaining({
@@ -699,8 +764,8 @@ describe('MarkdownTableActions Steel review entry', () => {
 
     renderDialog(new QueryClient(), systemSelection, createStore(), systemIdentity);
 
-    expect(await screen.findByRole('textbox', { name: '總數 row-1' })).toBeEnabled();
-    expect(screen.getByRole('textbox', { name: '單價 row-1' })).toBeEnabled();
+    expect(await findEditableTextbox('總數 row-1')).toBeEnabled();
+    expect(getEditableTextbox('單價 row-1')).toBeEnabled();
     expect(screen.getByRole('button', { name: 'com_ui_steel_review_add_row' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'com_ui_steel_review_delete_row row-1' })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /com_ui_steel_review_restore_row/u })).toBeNull();
@@ -755,7 +820,7 @@ describe('MarkdownTableActions Steel review entry', () => {
     const firstRender = renderDialog();
     await waitFor(() => expect(firstRender.store.get(steelReviewSelectionAtom)?.capturedAuthority?.outputId)
       .toBe(firstTable.outputId));
-    fireEvent.change(await screen.findByRole('textbox', { name: '品名 row-1' }), { target: { value: '本地草稿' } });
+    fireEvent.change(await findEditableTextbox('品名 row-1'), { target: { value: '本地草稿' } });
     firstRender.unmount();
     liveTable = newAiTable;
 
@@ -769,7 +834,6 @@ describe('MarkdownTableActions Steel review entry', () => {
 
     await waitFor(() => expect(screen.queryByRole('textbox')).toBeNull());
     expect(screen.getByText('本地草稿')).toBeInTheDocument();
-    expect(screen.getByText('com_ui_steel_review_readonly')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'com_ui_steel_review_add_row' })).toBeNull();
     expect(firstRender.store.get(steelReviewSelectionAtom)?.capturedAuthority?.outputId)
       .toBe(firstTable.outputId);
@@ -799,21 +863,29 @@ describe('MarkdownTableActions Steel review entry', () => {
     });
 
     const { store } = renderDialog();
-    const input = screen.getByRole('textbox', { name: '品名 row-1' });
+    const input = getEditableTextbox('品名 row-1');
     fireEvent.change(input, { target: { value: '鍍鋅鋼板' } });
     fireEvent.change(input, { target: { value: '另一種鋼板' } });
     fireEvent.change(input, { target: { value: '鋼板' } });
     expect(screen.queryByText('com_ui_steel_review_unsaved_caption')).toBeNull();
     fireEvent.change(input, { target: { value: '鍍鋅鋼板' } });
-    expect(screen.getByText('com_ui_steel_review_unsaved_caption')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'com_ui_steel_review_save' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: /^com_ui_steel_review_save \([1-9]\d*\)$/ })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^com_ui_steel_review_save(?: \(\d+\))?$/ })).toBeEnabled();
 
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_close' }));
     expect(screen.getByRole('alertdialog')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'com_ui_steel_review_save_updates' })).toBeEnabled();
+    const closeButtons = within(screen.getByRole('alertdialog')).getAllByRole('button');
+    expect(closeButtons.map((button) => button.textContent)).toEqual([
+      'com_ui_steel_review_discard_unsaved',
+      'com_ui_steel_review_continue_editing',
+      'com_ui_steel_review_save (1)',
+    ]);
+    expect(closeButtons[0]).toHaveAttribute('variant', 'destructive');
+    expect(closeButtons[2]).toHaveAttribute('variant', 'submit');
+    expect(within(screen.getByRole('alertdialog')).getByRole('button', { name: /^com_ui_steel_review_save(?: \(\d+\))?$/ })).toBeEnabled();
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_continue_editing' }));
     expect(screen.queryByRole('alertdialog')).toBeNull();
-    expect(screen.getByRole('textbox', { name: '品名 row-1' })).toHaveValue('鍍鋅鋼板');
+    expect(getEditableTextbox('品名 row-1')).toHaveValue('鍍鋅鋼板');
 
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_close' }));
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_discard_unsaved' }));
@@ -889,8 +961,8 @@ describe('MarkdownTableActions Steel review entry', () => {
     });
 
     renderDialog();
-    fireEvent.change(screen.getByRole('textbox', { name: '品名 row-1' }), { target: { value: '鍍鋅鋼板' } });
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    fireEvent.change(getEditableTextbox('品名 row-1'), { target: { value: '鍍鋅鋼板' } });
+    fireEvent.click(screen.getByRole('button', { name: /^com_ui_steel_review_save(?: \(\d+\))?$/ }));
 
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
     expect(prepare).toHaveBeenCalledWith(expect.objectContaining({
@@ -908,7 +980,29 @@ describe('MarkdownTableActions Steel review entry', () => {
     expect(screen.queryByText('com_ui_steel_review_unsaved_caption')).toBeNull();
   });
 
-  it('shows authoritative prepared and confirmed row counts across a delayed commit', async () => {
+  it('does not restore a persisted save caption when the review closes and reopens', async () => {
+    const { table, savedSnapshot } = createReopenLifecycleFixture();
+    const savedTable = {
+      ...table,
+      revision: savedSnapshot.revision,
+      rows: savedSnapshot.rows,
+      lastSave: { revision: savedSnapshot.revision, changedRows: 1, snapshot: savedSnapshot },
+    };
+    mockUseGetSteelReviewQuery.mockReturnValue({
+      data: { table: savedTable }, error: null, isError: false, isLoading: false,
+      refetch: jest.fn().mockResolvedValue({ data: { table: savedTable }, error: null }),
+    });
+    const { store } = renderDialog();
+    expect(screen.queryByText('com_ui_steel_review_updated_caption')).toBeNull();
+    fireEvent.click(screen.getAllByRole('button', { name: 'com_ui_close' }).at(-1)!);
+    await waitFor(() => expect(store.get(steelReviewSelectionAtom)).toBeNull());
+    act(() => store.set(steelReviewSelectionAtom, { ...reviewSelection, captureId: 'capture-after-close' }));
+    await screen.findByRole('dialog');
+    expect(screen.queryByText('com_ui_steel_review_updated_caption')).toBeNull();
+    expect(screen.queryByText('com_ui_steel_review_save_caption')).toBeNull();
+  });
+
+  it('shows the prepared row count while saving and closes only after a confirmed commit', async () => {
     const prepared = {
       ...reviewIdentity,
       outputId: 'ocr_result:generation-1',
@@ -976,16 +1070,21 @@ describe('MarkdownTableActions Steel review entry', () => {
       refetch: jest.fn().mockResolvedValue({ data: { table: authorityTable }, error: null }),
     });
 
-    renderDialog();
-    fireEvent.change(screen.getByRole('textbox', { name: '品名 row-1' }), { target: { value: '鍍鋅鋼板' } });
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    const { store } = renderDialog();
+    fireEvent.change(getEditableTextbox('品名 row-1'), { target: { value: '鍍鋅鋼板' } });
+    fireEvent.click(screen.getByRole('button', { name: /^com_ui_steel_review_save(?: \(\d+\))?$/ }));
 
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
-    expect(screen.getByText('com_ui_steel_review_save_caption')).toBeInTheDocument();
+    expect(screen.getByText('com_ui_steel_review_saving_count_one')).toBeInTheDocument();
+    expect(screen.queryByText('com_ui_steel_review_save_caption')).toBeNull();
+    expect(screen.queryByText('com_ui_steel_review_saving')).toBeNull();
+    expect(screen.getAllByRole('status')).toHaveLength(1);
     expect(screen.queryByText('com_ui_steel_review_updated_caption')).toBeNull();
+    expect(store.get(steelReviewSelectionAtom)).not.toBeNull();
 
     resolveCommit({ changedRows: 1, changedRowIds: ['row-1'], savedSnapshot });
-    await waitFor(() => expect(screen.getByText('com_ui_steel_review_updated_caption')).toBeInTheDocument());
+    await waitFor(() => expect(store.get(steelReviewSelectionAtom)).toBeNull());
+    expect(screen.queryByRole('dialog')).toBeNull();
     expect(screen.queryByText('com_ui_steel_review_save_caption')).toBeNull();
   });
 
@@ -1046,14 +1145,14 @@ describe('MarkdownTableActions Steel review entry', () => {
       reviewIdentity.title,
     );
     queryClient.setQueryData(reviewQueryKey, { table });
-    renderDialog(queryClient);
+    const { store } = renderDialog(queryClient);
 
-    const input = screen.getByRole('textbox', { name: '數量 row-1' });
+    const input = getEditableTextbox('數量 row-1');
     fireEvent.change(input, { target: { value: ' 2 ' } });
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    fireEvent.click(screen.getByRole('button', { name: /^com_ui_steel_review_save(?: \(\d+\))?$/ }));
 
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
-    await waitFor(() => expect(screen.getByRole('textbox', { name: '數量 row-1' })).toHaveValue('2'));
+    await waitFor(() => expect(store.get(steelReviewSelectionAtom)).toBeNull());
     expect(refetch).toHaveBeenCalledTimes(1);
     expect(screen.queryByText('com_ui_steel_review_unsaved_caption')).toBeNull();
     expect(screen.queryByText('com_ui_steel_review_updated')).toBeNull();
@@ -1113,9 +1212,9 @@ describe('MarkdownTableActions Steel review entry', () => {
     mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
 
     renderDialog();
-    const input = screen.getByRole('textbox', { name: '數量 row-1' });
+    const input = getEditableTextbox('數量 row-1');
     fireEvent.change(input, { target: { value: ' 2 ' } });
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    fireEvent.click(screen.getByRole('button', { name: /^com_ui_steel_review_save(?: \(\d+\))?$/ }));
     await waitFor(() => expect(refetch).toHaveBeenCalledTimes(1));
 
     fireEvent.change(input, { target: { value: '10' } });
@@ -1123,7 +1222,7 @@ describe('MarkdownTableActions Steel review entry', () => {
 
     await waitFor(() => {
       expect(input).toHaveValue('10');
-      expect(screen.getByText('com_ui_steel_review_unsaved_caption')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /^com_ui_steel_review_save \([1-9]\d*\)$/ })).toBeInTheDocument();
     });
   });
 
@@ -1179,22 +1278,24 @@ describe('MarkdownTableActions Steel review entry', () => {
     mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
 
     renderDialog();
-    const input = screen.getByRole('textbox', { name: '數量 row-1' });
+    const input = getEditableTextbox('數量 row-1');
     fireEvent.change(input, { target: { value: ' 2 ' } });
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    fireEvent.click(screen.getByRole('button', { name: /^com_ui_steel_review_save(?: \(\d+\))?$/ }));
 
     await waitFor(() => {
       expect(refetch).toHaveBeenCalledTimes(1);
-      expect(screen.getByRole('textbox', { name: '數量 row-1' })).toHaveValue(' 2 ');
-      expect(screen.getByText('com_ui_steel_review_unsaved_caption')).toBeInTheDocument();
+      expect(getEditableTextbox('數量 row-1')).toHaveValue(' 2 ');
+      expect(screen.getByRole('button', { name: /^com_ui_steel_review_save \([1-9]\d*\)$/ })).toBeInTheDocument();
       expect(screen.getByRole('alert')).toHaveTextContent('com_ui_steel_review_save_uncertain');
     });
 
     await waitFor(() => {
       expect(commit).toHaveBeenCalledTimes(1);
       expect(refetch).toHaveBeenCalledTimes(1);
-      expect(screen.getByRole('button', { name: 'com_ui_steel_review_save' })).toBeEnabled();
+      expect(screen.getByRole('button', { name: /^com_ui_steel_review_save(?: \(\d+\))?$/ })).toBeEnabled();
       expect(screen.getByRole('button', { name: 'com_ui_close' })).toBeEnabled();
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+      expect(screen.getByRole('alert')).toHaveClass('text-text-destructive');
     });
   });
 
@@ -1290,11 +1391,11 @@ describe('MarkdownTableActions Steel review entry', () => {
     activeReviewQueryClient = queryClient;
     const rendered = renderDialog(queryClient);
 
-    fireEvent.change(screen.getByRole('textbox', { name: '品名 row-1' }), { target: { value: '7' } });
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    fireEvent.change(getEditableTextbox('品名 row-1'), { target: { value: '7' } });
+    fireEvent.click(screen.getByRole('button', { name: /^com_ui_steel_review_save(?: \(\d+\))?$/ }));
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'com_ui_steel_review_save' })).toBeDisabled();
+      expect(screen.getByRole('button', { name: /^com_ui_steel_review_save(?: \(\d+\))?$/ })).toBeDisabled();
       expect(screen.getByRole('button', { name: 'com_ui_close' })).toBeDisabled();
     });
     expect(screen.queryByRole('textbox', { name: '品名 row-1' })).toBeNull();
@@ -1305,7 +1406,7 @@ describe('MarkdownTableActions Steel review entry', () => {
     resolveCommit(commitResult);
 
     await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'com_ui_close' })).toBeEnabled();
+      expect(rendered.store.get(steelReviewSelectionAtom)).toBeNull();
     });
     await new Promise((resolve) => setTimeout(resolve, 25));
     rendered.unmount();
@@ -1380,9 +1481,9 @@ describe('MarkdownTableActions Steel review entry', () => {
     });
 
     renderDialog();
-    const input = screen.getByRole('textbox', { name: '品名 row-1' });
+    const input = getEditableTextbox('品名 row-1');
     fireEvent.change(input, { target: { value: '7' } });
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    fireEvent.click(screen.getByRole('button', { name: /^com_ui_steel_review_save(?: \(\d+\))?$/ }));
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
 
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_close' }));
@@ -1399,7 +1500,7 @@ describe('MarkdownTableActions Steel review entry', () => {
 
     await waitFor(() => {
       expect(input).toHaveValue('10');
-      expect(screen.getByText('com_ui_steel_review_unsaved_caption')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /^com_ui_steel_review_save \([1-9]\d*\)$/ })).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'com_ui_steel_review_receipt_retry' })).toBeNull();
     });
   });
@@ -1507,9 +1608,9 @@ describe('MarkdownTableActions Steel review entry', () => {
         table: foreignTable,
       },
     });
-    const input = screen.getByRole('textbox', { name: '數量 row-1' });
+    const input = getEditableTextbox('數量 row-1');
     fireEvent.change(input, { target: { value: '9' } });
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    fireEvent.click(screen.getByRole('button', { name: /^com_ui_steel_review_save(?: \(\d+\))?$/ }));
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
 
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_close' }));
@@ -1607,16 +1708,16 @@ describe('MarkdownTableActions Steel review entry', () => {
     mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
 
     const { store } = renderDialog();
-    const input = screen.getByRole('textbox', { name: '數量 row-1' });
+    const input = getEditableTextbox('數量 row-1');
     fireEvent.change(input, { target: { value: mode === 'no-op' ? ' 2 ' : '9' } });
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    fireEvent.click(screen.getByRole('button', { name: /^com_ui_steel_review_save(?: \(\d+\))?$/ }));
 
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(store.get(steelReviewSelectionAtom)?.capturedAuthority?.revision)
       .toBe(table.revision));
     const draftAtom = steelReviewDraftStateFamily(getSteelReviewDraftOwnerKey(reviewIdentity, table, reviewSelection.captureId));
     expect(store.get(draftAtom).changeSequence).toBeGreaterThan(0);
-    expect(screen.getByText('com_ui_steel_review_unsaved_caption')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^com_ui_steel_review_save \([1-9]\d*\)$/ })).toBeInTheDocument();
   });
 
   it('does not apply an old receipt after selection changes while messages refetch waits', async () => {
@@ -1715,9 +1816,9 @@ describe('MarkdownTableActions Steel review entry', () => {
 
     const rendered = renderDialog();
     const { queryClient, store } = rendered;
-    const input = screen.getByRole('textbox', { name: '數量 row-1' });
+    const input = getEditableTextbox('數量 row-1');
     fireEvent.change(input, { target: { value: '9' } });
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    fireEvent.click(screen.getByRole('button', { name: /^com_ui_steel_review_save(?: \(\d+\))?$/ }));
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_close' }));
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_discard_unsaved' }));
@@ -1828,10 +1929,10 @@ describe('MarkdownTableActions Steel review entry', () => {
     mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
 
     const rendered = renderDialog();
-    const input = screen.getByRole('textbox', { name: '數量 row-1' });
+    const input = getEditableTextbox('數量 row-1');
     fireEvent.change(input, { target: { value: '9' } });
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_close' }));
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save_updates' }));
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: /^com_ui_steel_review_save(?: \(\d+\))?$/ }));
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
 
     const foreignSelection = {
@@ -1931,10 +2032,10 @@ describe('MarkdownTableActions Steel review entry', () => {
     mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
 
     const rendered = renderDialog();
-    const input = screen.getByRole('textbox', { name: '數量 row-1' });
+    const input = getEditableTextbox('數量 row-1');
     fireEvent.change(input, { target: { value: '9' } });
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_close' }));
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save_updates' }));
+    fireEvent.click(within(screen.getByRole('alertdialog')).getByRole('button', { name: /^com_ui_steel_review_save(?: \(\d+\))?$/ }));
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
 
     const reopenedSelection: SteelReviewSelection = {
@@ -1986,8 +2087,8 @@ describe('MarkdownTableActions Steel review entry', () => {
     mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
 
     const rendered = renderDialog();
-    fireEvent.change(screen.getByRole('textbox', { name: '數量 row-1' }), { target: { value: '9' } });
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    fireEvent.change(getEditableTextbox('數量 row-1'), { target: { value: '9' } });
+    fireEvent.click(screen.getByRole('button', { name: /^com_ui_steel_review_save(?: \(\d+\))?$/ }));
     await waitFor(() => {
       expect(commit).toHaveBeenCalledTimes(1);
       expect(reviewRefetch).toHaveBeenCalledTimes(1);
@@ -2047,8 +2148,8 @@ describe('MarkdownTableActions Steel review entry', () => {
     });
 
     const rendered = renderDialog();
-    fireEvent.change(screen.getByRole('textbox', { name: '數量 row-1' }), { target: { value: '9' } });
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    fireEvent.change(getEditableTextbox('數量 row-1'), { target: { value: '9' } });
+    fireEvent.click(screen.getByRole('button', { name: /^com_ui_steel_review_save(?: \(\d+\))?$/ }));
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_close' }));
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_discard_unsaved' }));
@@ -2096,8 +2197,8 @@ describe('MarkdownTableActions Steel review entry', () => {
     mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
 
     const rendered = renderDialog();
-    fireEvent.change(screen.getByRole('textbox', { name: '數量 row-1' }), { target: { value: '9' } });
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    fireEvent.change(getEditableTextbox('數量 row-1'), { target: { value: '9' } });
+    fireEvent.click(screen.getByRole('button', { name: /^com_ui_steel_review_save(?: \(\d+\))?$/ }));
     await waitFor(() => expect(prepare).toHaveBeenCalledTimes(1));
 
     const reopenedSelection = createReopenedSelection(table, 'capture-reopened-prepare');
@@ -2113,7 +2214,7 @@ describe('MarkdownTableActions Steel review entry', () => {
       expect(saveGateRef.current?.getMatrix()).toEqual([['數量'], ['reopened']]);
     });
 
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    fireEvent.click(screen.getByRole('button', { name: /^com_ui_steel_review_save(?: \(\d+\))?$/ }));
     await waitFor(() => {
       expect(prepare).toHaveBeenCalledTimes(2);
       expect(commit).toHaveBeenCalledTimes(1);
@@ -2145,8 +2246,8 @@ describe('MarkdownTableActions Steel review entry', () => {
     mockUseCommitSteelReviewMutation.mockReturnValue({ mutateAsync: commit });
 
     const rendered = renderDialog();
-    fireEvent.change(screen.getByRole('textbox', { name: '數量 row-1' }), { target: { value: '9' } });
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    fireEvent.change(getEditableTextbox('數量 row-1'), { target: { value: '9' } });
+    fireEvent.click(screen.getByRole('button', { name: /^com_ui_steel_review_save(?: \(\d+\))?$/ }));
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
 
     const reopenedSelection = createReopenedSelection(table, `capture-reopened-${_label}`);
@@ -2261,11 +2362,11 @@ describe('MarkdownTableActions Steel review entry', () => {
     });
 
     const { store } = renderDialog();
-    const input = screen.getByRole('textbox', { name: '數量 row-1' });
+    const input = getEditableTextbox('數量 row-1');
     fireEvent.change(input, { target: { value: '9' } });
     const draftAtom = steelReviewDraftStateFamily(getSteelReviewDraftOwnerKey(reviewIdentity, table, reviewSelection.captureId));
     const submittedChangeSequence = store.get(draftAtom).changeSequence;
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    fireEvent.click(screen.getByRole('button', { name: /^com_ui_steel_review_save(?: \(\d+\))?$/ }));
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
 
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_close' }));
@@ -2288,7 +2389,7 @@ describe('MarkdownTableActions Steel review entry', () => {
 
     await waitFor(() => {
       expect(input).toHaveValue('10');
-      expect(screen.getByText('com_ui_steel_review_unsaved_caption')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /^com_ui_steel_review_save \([1-9]\d*\)$/ })).toBeInTheDocument();
       expect(store.get(steelReviewSelectionAtom)?.capturedAuthority?.revision)
         .toBe(snapshot.revision);
       expect(store.get(steelReviewSelectionAtom)?.capturedAuthority?.table.rows[0]?.values.數量?.effective)
@@ -2350,9 +2451,9 @@ describe('MarkdownTableActions Steel review entry', () => {
     });
 
     const rendered = renderDialog();
-    const input = screen.getByRole('textbox', { name: '數量 row-1' });
+    const input = getEditableTextbox('數量 row-1');
     fireEvent.change(input, { target: { value: '9' } });
-    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_save' }));
+    fireEvent.click(screen.getByRole('button', { name: /^com_ui_steel_review_save(?: \(\d+\))?$/ }));
     await waitFor(() => expect(commit).toHaveBeenCalledTimes(1));
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_close' }));
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_discard_unsaved' }));
@@ -2387,7 +2488,7 @@ describe('MarkdownTableActions Steel review entry', () => {
     });
   });
 
-  it('keeps source rows visible while sources load or fail, then renders an image preview', async () => {
+  it('reserves the source layout without showing unfiltered rows while sources load or fail', async () => {
     const row = {
       rowId: 'drawing-row',
       values: { Part: { baseline: 'P-1', effective: 'P-1' } },
@@ -2401,7 +2502,17 @@ describe('MarkdownTableActions Steel review entry', () => {
       isLatest: true,
       readOnly: true,
       headers: ['Part'],
-      rows: [row],
+      rows: [row, {
+        ...row,
+        rowId: 'other-page',
+        values: { Part: { baseline: 'P-2', effective: 'P-2' } },
+        source: { ...row.source, pageNumber: 2 },
+      }, {
+        ...row,
+        rowId: 'other-file',
+        values: { Part: { baseline: 'P-3', effective: 'P-3' } },
+        source: { ...row.source, fileId: 'drawing-b' },
+      }],
     };
     const sourceRefetch = jest.fn();
     const sourceBlob = new Blob(['image'], { type: 'image/png' });
@@ -2424,7 +2535,14 @@ describe('MarkdownTableActions Steel review entry', () => {
     });
     const { queryClient, rerender, store } = renderDialog();
     expect(screen.getByRole('status')).toHaveTextContent('com_ui_steel_review_sources_loading');
-    expect(screen.getByText('P-1')).toBeInTheDocument();
+    expect(screen.queryByText('P-1')).not.toBeInTheDocument();
+    expect(screen.queryByText('P-2')).not.toBeInTheDocument();
+    expect(screen.queryByText('P-3')).not.toBeInTheDocument();
+    expect(screen.getByText('com_ui_steel_review_source')).toBeInTheDocument();
+    expect(screen.getByText('com_ui_steel_review_page')).toBeInTheDocument();
+    expect(screen.getAllByRole('combobox')).toHaveLength(2);
+    screen.getAllByRole('combobox').forEach((selector) => expect(selector).toBeDisabled());
+    expect(screen.getByRole('checkbox', { name: 'com_ui_steel_review_unlinked' })).toBeDisabled();
 
     mockUseGetSteelReviewSourcesQuery.mockReturnValue({
       data: undefined,
@@ -2441,7 +2559,9 @@ describe('MarkdownTableActions Steel review entry', () => {
       </QueryClientProvider>,
     );
     expect(screen.getByRole('alert')).toHaveTextContent('com_ui_steel_review_sources_error');
-    expect(screen.getByText('P-1')).toBeInTheDocument();
+    expect(screen.queryByText('P-1')).not.toBeInTheDocument();
+    expect(screen.queryByText('P-2')).not.toBeInTheDocument();
+    expect(screen.queryByText('P-3')).not.toBeInTheDocument();
     screen.getByRole('button', { name: 'com_ui_retry' }).click();
     expect(sourceRefetch).toHaveBeenCalledTimes(1);
 
@@ -2467,6 +2587,63 @@ describe('MarkdownTableActions Steel review entry', () => {
       </QueryClientProvider>,
     );
     expect(await screen.findByRole('img', { name: 'com_ui_steel_review_preview_canvas' })).toBeInTheDocument();
+    expect(screen.getByText('P-1')).toBeInTheDocument();
+    expect(screen.queryByText('P-2')).not.toBeInTheDocument();
+    expect(screen.queryByText('P-3')).not.toBeInTheDocument();
+  });
+
+  it.each(['ocr_result', 'system_order'] as const)('uses the initial source page in every %s render', (kind) => {
+    const identity = { ...reviewIdentity, kind, title: kind };
+    const table = {
+      ...identity,
+      outputId: `${kind}:initial-page`,
+      revision: 'initial-page',
+      latestOutputId: `${kind}:initial-page`,
+      isLatest: true,
+      readOnly: true,
+      headers: ['Part'],
+      rows: [3, 1].map((pageNumber) => ({
+        rowId: `page-${pageNumber}`,
+        source: { fileId: 'drawing-a', pageNumber, filename: 'drawing-a.pdf' },
+        values: { Part: { baseline: `Part-${pageNumber}`, effective: `Part-${pageNumber}` } },
+      })),
+    };
+    mockUseGetSteelReviewQuery.mockReturnValue({ data: { table }, error: null, isError: false, isLoading: false });
+    mockUseGetSteelReviewSourcesQuery.mockReturnValue({ data: undefined, isError: false, isLoading: true });
+    mockUseGetSteelReviewSourceQuery.mockReturnValue({ data: undefined, isError: false, isLoading: true });
+    const store = createStore();
+    store.set(steelReviewSelectionAtom, { ...identity, captureId: `capture-${kind}-initial-page` });
+    const queryClient = new QueryClient();
+    const commits: { page: string; firstPageVisible: boolean; thirdPageVisible: boolean }[] = [];
+    const renderTree = () => (
+      <QueryClientProvider client={queryClient}>
+        <Provider store={store}>
+          <Profiler id="review-source-page" onRender={() => {
+            commits.push({
+              page: (screen.getAllByRole('combobox')[1] as HTMLSelectElement).value,
+              firstPageVisible: screen.queryByText('Part-1') !== null,
+              thirdPageVisible: screen.queryByText('Part-3') !== null,
+            });
+          }}>
+            <SteelReviewDialog identity={identity} />
+          </Profiler>
+        </Provider>
+      </QueryClientProvider>
+    );
+    const rendered = render(renderTree());
+    expect(commits.every((commit) => !commit.firstPageVisible && !commit.thirdPageVisible)).toBe(true);
+    commits.length = 0;
+    mockUseGetSteelReviewSourcesQuery.mockReturnValue({
+      data: { sources: [{ fileId: 'drawing-a', filename: 'drawing-a.pdf', mediaType: 'application/pdf' }] },
+      isError: false,
+      isLoading: false,
+    });
+    rendered.rerender(renderTree());
+    expect(commits.length).toBeGreaterThan(0);
+    expect(commits.every((commit) => commit.page === '3' && !commit.firstPageVisible && commit.thirdPageVisible)).toBe(true);
+    fireEvent.change(screen.getAllByRole('combobox')[1], { target: { value: '1' } });
+    expect(screen.getByText('Part-1')).toBeInTheDocument();
+    expect(screen.queryByText('Part-3')).not.toBeInTheDocument();
   });
 
   it('renders source loading, failure, and selectors for system-order reviews', async () => {
@@ -2509,6 +2686,7 @@ describe('MarkdownTableActions Steel review entry', () => {
     });
     const rendered = renderDialog(new QueryClient(), selection, createStore(), identity);
     expect(screen.getByRole('status')).toHaveTextContent('com_ui_steel_review_sources_loading');
+    expect(screen.queryByText('鋼板')).not.toBeInTheDocument();
 
     mockUseGetSteelReviewSourcesQuery.mockReturnValue({
       data: undefined,
@@ -2525,6 +2703,7 @@ describe('MarkdownTableActions Steel review entry', () => {
       </QueryClientProvider>,
     );
     expect(screen.getByRole('alert')).toHaveTextContent('com_ui_steel_review_sources_error');
+    expect(screen.queryByText('鋼板')).not.toBeInTheDocument();
     screen.getByRole('button', { name: 'com_ui_retry' }).click();
     expect(sourceRefetch).toHaveBeenCalledTimes(1);
 
@@ -2544,6 +2723,89 @@ describe('MarkdownTableActions Steel review entry', () => {
     );
     expect(screen.getAllByRole('combobox').length).toBeGreaterThanOrEqual(2);
     expect(screen.getByRole('option', { name: 'drawing-a.png' })).toBeInTheDocument();
+  });
+
+  it.each([true, false])('places source controls in the footer only on desktop: %s', (isDesktop) => {
+    mockIsDesktop = isDesktop;
+    const table = {
+      ...reviewIdentity,
+      outputId: 'ocr_result:source-layout',
+      revision: 'source-layout',
+      latestOutputId: 'ocr_result:source-layout',
+      isLatest: true,
+      readOnly: false,
+      headers: ['Part'],
+      rows: [{
+        rowId: 'layout-row',
+        values: { Part: { baseline: 'D3', effective: 'D3' } },
+        source: { fileId: 'layout-pdf', pageNumber: 1, filename: 'PL.pdf' },
+      }],
+    };
+    mockUseGetSteelReviewQuery.mockReturnValue({ data: { table }, error: null, isError: false, isLoading: false });
+    mockUseGetSteelReviewSourcesQuery.mockReturnValue({
+      data: { sources: [{ fileId: 'layout-pdf', filename: 'PL.pdf', mediaType: 'application/pdf' }] },
+      isError: false,
+      isLoading: false,
+    });
+    mockUseGetSteelReviewSourceQuery.mockReturnValue({ data: undefined, isLoading: true, isError: false });
+    renderDialog();
+    const sourceSelector = screen.getByRole('option', { name: 'PL.pdf' }).parentElement;
+    const closeButtons = screen.getAllByRole('button', { name: 'com_ui_close' });
+    const footer = closeButtons.at(-1)?.parentElement;
+    expect(footer?.contains(sourceSelector)).toBe(isDesktop);
+    const addRow = screen.getByRole('button', { name: 'com_ui_steel_review_add_row' });
+    expect(addRow.textContent).toBe('');
+    expect(addRow.querySelector('svg')).not.toBeNull();
+    expect(screen.queryByText('com_ui_steel_review_editable')).not.toBeInTheDocument();
+    if (isDesktop) {
+      fireEvent.click(addRow);
+      fireEvent.click(closeButtons[0]);
+      expect(screen.getByRole('alertdialog', { name: 'com_ui_steel_review_close_confirm' })).toBeInTheDocument();
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+    }
+  });
+
+  it.each(['metadata', 'cache'])('opens a linked source with its known page range from %s without another request', (countOrigin) => {
+    const table = {
+      ...reviewIdentity,
+      outputId: 'ocr_result:known-page-range',
+      revision: 'known-page-range',
+      latestOutputId: 'ocr_result:known-page-range',
+      isLatest: true,
+      readOnly: false,
+      headers: ['Part'],
+      rows: [{
+        rowId: 'linked-row',
+        values: { Part: { baseline: 'D3', effective: 'D3' } },
+        source: { fileId: 'known-pdf', pageNumber: 2, filename: 'PL.pdf' },
+      }],
+    };
+    mockUseGetSteelReviewQuery.mockReturnValue({ data: { table }, error: null, isError: false, isLoading: false });
+    mockUseGetSteelReviewSourcesQuery.mockReturnValue({
+      data: { sources: [{ fileId: 'known-pdf', filename: 'PL.pdf', mediaType: 'application/pdf', pageCount: countOrigin === 'metadata' ? 4 : undefined }] },
+      isError: false,
+      isLoading: false,
+    });
+    mockUseGetSteelReviewSourceQuery.mockReturnValue({ data: undefined, isLoading: true, isError: false });
+    mockUseGetSteelReviewSourcePageCountQuery.mockReturnValue({ data: undefined, isLoading: true, isError: false });
+    const queryClient = new QueryClient();
+    if (countOrigin === 'cache') {
+      queryClient.setQueryData(DynamicQueryKeys.steelReviewSourcePageCount(
+        reviewIdentity.conversationId, reviewIdentity.kind, reviewIdentity.messageId, 'known-pdf',
+      ), { pageCount: 4 });
+    }
+    renderDialog(queryClient);
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_bound linked-row' }));
+    const linkDialog = screen.getAllByRole('dialog')[1];
+    expect(within(linkDialog).queryByText('com_ui_steel_review_source_page_loading')).not.toBeInTheDocument();
+    const pageSelector = within(linkDialog).getAllByRole('combobox')[1];
+    expect(within(pageSelector).getAllByRole('option').map((option) => option.textContent)).toEqual(['1', '2', '3', '4']);
+    expect(pageSelector).toHaveValue('2');
+    expect(within(linkDialog).getByRole('button', { name: 'com_ui_confirm' })).toBeEnabled();
+    expect(mockUseGetSteelReviewSourcePageCountQuery).toHaveBeenLastCalledWith(
+      expect.objectContaining({ fileId: 'known-pdf' }), expect.objectContaining({ enabled: false }),
+    );
+    mockUseGetSteelReviewSourcePageCountQuery.mockReturnValue({ data: undefined, isLoading: false, isError: false });
   });
 
   it('inherits the active preview source when adding a material, and leaves it empty without one', async () => {
@@ -2591,24 +2853,27 @@ describe('MarkdownTableActions Steel review entry', () => {
     emptyRendered.unmount();
   });
 
-  it('keeps transient recognition failures retryable without opening ordinary Markdown review', async () => {
-    const refetch = jest.fn();
-    mockUseGetSteelReviewQuery.mockReturnValue({
-      data: undefined,
-      error: { response: { status: 500 } },
-      isError: true,
-      isLoading: false,
-      refetch,
-    });
+  it.each(['ocr_result', 'system_order'])(
+    'keeps the %s entry available and offers retry inside the dialog on read failure', async (title) => {
+      const refetch = jest.fn();
+      mockUseGetSteelReviewQuery.mockReturnValue({
+        data: undefined,
+        error: { response: { status: 500 } },
+        isError: true,
+        isLoading: false,
+        refetch,
+      });
 
-    renderTable();
-
-    const retry = await screen.findByRole('button', { name: 'com_ui_steel_review_retry' });
-    expect(screen.queryByRole('button', { name: 'com_ui_steel_review_open' })).toBeNull();
-    expect(screen.queryByRole('dialog')).toBeNull();
-    retry.click();
-    expect(refetch).toHaveBeenCalledTimes(1);
-  });
+      renderTable(title);
+      const open = await screen.findByRole('button', { name: 'com_ui_steel_review_open' });
+      expect(screen.queryByRole('dialog')).toBeNull();
+      fireEvent.click(open);
+      expect(screen.getByRole('dialog')).toHaveTextContent('com_ui_steel_review_error');
+      expect(screen.queryByRole('textbox')).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'com_ui_retry' }));
+      expect(refetch).toHaveBeenCalledTimes(1);
+    },
+  );
 
   it('refreshes recognition once when trusted message submission completes', async () => {
     const refetch = jest.fn();
@@ -2625,17 +2890,19 @@ describe('MarkdownTableActions Steel review entry', () => {
     mockMessageContext = { ...mockMessageContext, isSubmitting: false };
     rendered.rerender(
       <QueryClientProvider client={rendered.queryClient}>
-        <RecoilRoot>
-          <div className="message-render">
-            <div className="message-content">
-              <h2>{testHeading}</h2>
-              <MarkdownTableActions markdownIndex={1}>
-                <thead><tr><th>{sourceHeader}</th><th>{partHeader}</th></tr></thead>
-                <tbody><tr><td>A</td><td>{firstPart}</td></tr></tbody>
-              </MarkdownTableActions>
+        <Provider store={rendered.store}>
+          <RecoilRoot>
+            <div className="message-render">
+              <div className="message-content">
+                <h2>{testHeading}</h2>
+                <MarkdownTableActions markdownIndex={1}>
+                  <thead><tr><th>{sourceHeader}</th><th>{partHeader}</th></tr></thead>
+                  <tbody><tr><td>A</td><td>{firstPart}</td></tr></tbody>
+                </MarkdownTableActions>
+              </div>
             </div>
-          </div>
-        </RecoilRoot>
+          </RecoilRoot>
+        </Provider>
       </QueryClientProvider>,
     );
 
@@ -2658,17 +2925,19 @@ describe('MarkdownTableActions Steel review entry', () => {
 
     rendered.rerender(
       <QueryClientProvider client={rendered.queryClient}>
-        <RecoilRoot>
-          <div className="message-render">
-            <div className="message-content">
-              <h2>{testHeading}</h2>
-              <MarkdownTableActions markdownIndex={1}>
-                <thead><tr><th>{sourceHeader}</th><th>{partHeader}</th></tr></thead>
-                <tbody><tr><td>A</td><td>{secondPart}</td></tr></tbody>
-              </MarkdownTableActions>
+        <Provider store={rendered.store}>
+          <RecoilRoot>
+            <div className="message-render">
+              <div className="message-content">
+                <h2>{testHeading}</h2>
+                <MarkdownTableActions markdownIndex={1}>
+                  <thead><tr><th>{sourceHeader}</th><th>{partHeader}</th></tr></thead>
+                  <tbody><tr><td>A</td><td>{secondPart}</td></tr></tbody>
+                </MarkdownTableActions>
+              </div>
             </div>
-          </div>
-        </RecoilRoot>
+          </RecoilRoot>
+        </Provider>
       </QueryClientProvider>,
     );
 
@@ -2676,7 +2945,7 @@ describe('MarkdownTableActions Steel review entry', () => {
     rendered.unmount();
   });
 
-  it('offers an entry only after the scoped backend read recognizes the table', async () => {
+  it('keeps the entry available after the scoped backend read recognizes the table', async () => {
     mockUseGetSteelReviewQuery.mockReturnValue({
       data: {
         table: {

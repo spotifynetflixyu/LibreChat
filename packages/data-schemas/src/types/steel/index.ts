@@ -51,6 +51,7 @@ export type SteelJsonValue =
 
 export type {
   SteelReviewSourceMethods,
+  SteelReviewSourcePageCountUpdate,
   SteelReviewSourceReadInput,
   SteelReviewSourceRecord,
   SteelReviewSourceScope,

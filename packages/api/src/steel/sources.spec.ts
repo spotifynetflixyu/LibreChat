@@ -23,6 +23,7 @@ describe('Steel review source service', () => {
     const reader: SteelReviewSourceMethods = {
       listSteelReviewSources: jest.fn().mockResolvedValue([source]),
       readSteelReviewSource: jest.fn(),
+      setSteelReviewSourcePageCount: jest.fn().mockResolvedValue(true),
     };
     const service = createSteelReviewSourceService({ reader });
     const result = await service.list({
@@ -58,6 +59,7 @@ describe('Steel review source service', () => {
     const reader: SteelReviewSourceMethods = {
       listSteelReviewSources: jest.fn(),
       readSteelReviewSource,
+      setSteelReviewSourcePageCount: jest.fn().mockResolvedValue(true),
     };
     const service = createSteelReviewSourceService({ reader, readStream });
     const request = {} as ServerRequest;
@@ -92,6 +94,7 @@ describe('Steel review source service', () => {
     const reader: SteelReviewSourceMethods = {
       listSteelReviewSources: jest.fn(),
       readSteelReviewSource: jest.fn().mockResolvedValue(null),
+      setSteelReviewSourcePageCount: jest.fn().mockResolvedValue(true),
     };
     const service = createSteelReviewSourceService({ reader });
     await expect(service.list({
@@ -147,10 +150,12 @@ describe('Steel review source service', () => {
     const image = { ...source, filename: 'drawing.png', mediaType: 'image/png' };
     const readSteelReviewSource = jest.fn().mockResolvedValue(image);
     const readStream = jest.fn();
+    const setSteelReviewSourcePageCount = jest.fn().mockResolvedValue(true);
     const service = createSteelReviewSourceService({
       reader: {
         listSteelReviewSources: jest.fn(),
         readSteelReviewSource,
+        setSteelReviewSourcePageCount,
       },
       readStream,
     });
@@ -166,6 +171,56 @@ describe('Steel review source service', () => {
       pageCount: 1,
     });
     expect(readStream).not.toHaveBeenCalled();
+    expect(setSteelReviewSourcePageCount).not.toHaveBeenCalled();
+  });
+
+  it('returns a known page count without requiring storage streaming', async () => {
+    const known = { ...source, pageCount: 3 };
+    const readSteelReviewSource = jest.fn().mockResolvedValue(known);
+    const service = createSteelReviewSourceService({
+      reader: {
+        listSteelReviewSources: jest.fn(),
+        readSteelReviewSource,
+        setSteelReviewSourcePageCount: jest.fn(),
+      },
+    });
+
+    await expect(service.readPageCount({
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result',
+      fileId: known.fileId,
+      messageId: 'message-1',
+    }, {} as ServerRequest)).resolves.toEqual({
+      source: expect.objectContaining({ fileId: known.fileId, pageCount: 3 }),
+      pageCount: 3,
+    });
+  });
+
+  it('authorizes before reading or persisting a legacy page count', async () => {
+    const readStream = jest.fn();
+    const setSteelReviewSourcePageCount = jest.fn();
+    const service = createSteelReviewSourceService({
+      reader: {
+        listSteelReviewSources: jest.fn(),
+        readSteelReviewSource: jest.fn().mockResolvedValue(null),
+        setSteelReviewSourcePageCount,
+      },
+      readStream,
+    });
+
+    await expect(service.readPageCount({
+      userId: 'user-1',
+      conversationId: 'conversation-1',
+      kind: 'ocr_result',
+      fileId: 'unauthorized-file',
+      messageId: 'message-1',
+    }, {} as ServerRequest)).rejects.toMatchObject<Partial<SteelReviewSourceError>>({
+      code: 'REVIEW_SOURCE_NOT_FOUND',
+      statusCode: 404,
+    });
+    expect(readStream).not.toHaveBeenCalled();
+    expect(setSteelReviewSourcePageCount).not.toHaveBeenCalled();
   });
 
   it('returns a safe unavailable error when an authorized PDF cannot be parsed', async () => {
@@ -173,6 +228,7 @@ describe('Steel review source service', () => {
       reader: {
         listSteelReviewSources: jest.fn(),
         readSteelReviewSource: jest.fn().mockResolvedValue(source),
+        setSteelReviewSourcePageCount: jest.fn().mockResolvedValue(true),
       },
       readStream: jest.fn().mockResolvedValue(Readable.from(Buffer.from('not-a-pdf'))),
     });
@@ -195,10 +251,12 @@ describe('Steel review source service', () => {
     pdf.addPage();
     const bytes = await pdf.save();
     const readStream = jest.fn().mockResolvedValue(Readable.from(Buffer.from(bytes)));
+    const setSteelReviewSourcePageCount = jest.fn().mockResolvedValue(true);
     const service = createSteelReviewSourceService({
       reader: {
         listSteelReviewSources: jest.fn(),
         readSteelReviewSource: jest.fn().mockResolvedValue(source),
+        setSteelReviewSourcePageCount,
       },
       readStream,
     });
@@ -213,5 +271,9 @@ describe('Steel review source service', () => {
       source: expect.objectContaining({ fileId: source.fileId }),
       pageCount: 2,
     });
+    expect(setSteelReviewSourcePageCount).toHaveBeenCalledWith(expect.objectContaining({
+      fileId: source.fileId,
+      pageCount: 2,
+    }));
   });
 });

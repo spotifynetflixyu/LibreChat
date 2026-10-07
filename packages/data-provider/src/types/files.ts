@@ -215,6 +215,8 @@ export type TFile = {
     destinationChosen?: boolean;
     /** The type the delivery route was resolved against, when conversion changed it. */
     routingMimeType?: string;
+    /** Server-owned page count for the original PDF upload. */
+    pageCount?: number;
   };
   llmDeliveryPath?: 'provider' | 'text' | 'none';
   createdAt?: string | Date;

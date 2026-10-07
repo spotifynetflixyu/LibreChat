@@ -1,6 +1,7 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import userEvent from '@testing-library/user-event';
+import { QueryClient, QueryObserver } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { TConversation } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
@@ -243,6 +244,12 @@ describe('Markdown table rendering', () => {
     mockUseLocalize.mockReturnValue(((key: string) => key) as any);
 
     downloadedFilename = '';
+    const reviewObserver = new QueryObserver(new QueryClient(), {
+      queryKey: ['markdown-table-review'],
+      queryFn: async () => ({ table: null }),
+      enabled: false,
+    });
+    mockUseSteelReviewQuery.mockReturnValue({ ...reviewObserver.getCurrentResult(), refetch: jest.fn() });
     clickAnchor = jest
       .spyOn(HTMLAnchorElement.prototype, 'click')
       .mockImplementation(function captureFilename(this: HTMLAnchorElement) {
@@ -301,6 +308,60 @@ describe('Markdown table rendering', () => {
     expect(screen.getByLabelText('com_ui_copy_markdown_table')).toBeInTheDocument();
     expect(screen.getByLabelText('com_ui_download_table_csv')).toBeInTheDocument();
     expect(screen.getByLabelText('com_ui_expand_table')).toBeInTheDocument();
+  });
+
+  it('keeps numeric values together in chat and the expanded table without changing copied content', async () => {
+    const content = '| Length | Value | Detail |\n| --- | --- | --- |\n| 5280 | **-1,234.50** | Plate 15 mm, 40 holes |';
+    const { container } = renderMarkdownWithMessageContext({ content });
+    expect(screen.getByText('5280')).toHaveClass('whitespace-nowrap');
+    expect(screen.getByText('-1,234.50')).toHaveClass('whitespace-nowrap');
+    expect(container.querySelector('[data-markdown-cell-content] strong')).toHaveTextContent('-1,234.50');
+    await act(async () => { fireEvent.click(screen.getByLabelText('com_ui_copy_markdown_table')); });
+    expect(writeClipboardText).toHaveBeenCalledWith(content.replace('**-1,234.50**', '-1,234.50'));
+    fireEvent.click(screen.getByLabelText('com_ui_expand_table'));
+    expect(within(screen.getByRole('dialog')).getByText('5280')).toHaveClass('whitespace-nowrap');
+    expect(within(screen.getByRole('dialog')).getByText('-1,234.50')).toHaveClass('whitespace-nowrap');
+  });
+
+  it('toggles long cells independently in chat and the expanded modal while copying their full content', async () => {
+    const firstText = 'First long cell content. '.repeat(12).trim();
+    const secondText = 'Second long cell content. '.repeat(12).trim();
+    const heightSpy = jest.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute('data-markdown-cell-content') && (this.textContent?.length ?? 0) > 80 ? 96 : 24;
+    });
+    try {
+      renderMarkdownWithMessageContext({ content: `| First | Second | Short |\n| --- | --- | --- |\n| ${firstText} | ${secondText} | Brief |` });
+      const buttons = screen.getAllByRole('button', { name: 'com_ui_table_cell_show_all' });
+      expect(buttons).toHaveLength(2);
+      const firstContent = screen.getByText(firstText);
+      const secondContent = screen.getByText(secondText);
+      expect(firstContent).toHaveClass('line-clamp-3');
+      expect(secondContent).toHaveClass('line-clamp-3');
+      fireEvent.click(buttons[0]);
+      expect(firstContent).not.toHaveClass('line-clamp-3');
+      expect(secondContent).toHaveClass('line-clamp-3');
+      expect(screen.getByRole('button', { name: 'com_ui_table_cell_show_less' })).toHaveAttribute('aria-expanded', 'true');
+      fireEvent.click(screen.getByRole('button', { name: 'com_ui_table_cell_show_less' }));
+      expect(firstContent).toHaveClass('line-clamp-3');
+
+      await act(async () => { fireEvent.click(screen.getByLabelText('com_ui_copy_markdown_table')); });
+      const copiedText = writeClipboardText.mock.calls[0][0];
+      expect(copiedText).toContain(firstText);
+      expect(copiedText).toContain(secondText);
+      expect(copiedText).not.toContain('com_ui_table_cell_show_all');
+      fireEvent.click(screen.getByLabelText('com_ui_expand_table'));
+      const modal = screen.getByRole('dialog');
+      expect(within(modal).getByText(firstText)).toHaveClass('line-clamp-3');
+      const modalButtons = within(modal).getAllByRole('button', { name: 'com_ui_table_cell_show_all' });
+      expect(modalButtons).toHaveLength(2);
+      fireEvent.click(modalButtons[0]);
+      expect(within(modal).getByText(firstText)).not.toHaveClass('line-clamp-3');
+      expect(within(modal).getByText(secondText)).toHaveClass('line-clamp-3');
+      fireEvent.click(within(modal).getByRole('button', { name: 'com_ui_table_cell_show_less' }));
+      expect(within(modal).getByText(firstText)).toHaveClass('line-clamp-3');
+    } finally {
+      heightSpy.mockRestore();
+    }
   });
 
   it('uses the message context table base index for Markdown table labels', () => {

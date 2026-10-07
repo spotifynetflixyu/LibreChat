@@ -44,15 +44,16 @@ export default function SteelReviewSourcePreview({
   const [previewState, setPreviewState] = useAtom(steelReviewPreviewStateFamily(stateKey));
   const { imageUrl, zoom, pan, dragging, renderError } = previewState;
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const imageRef = useRef<HTMLImageElement>(null);
+  const viewportRef = useRef<HTMLDivElement>(null);
   const imageUrlRef = useRef<string>();
   const renderRef = useRef<{ cancel: () => void } | null>(null);
   const dragRef = useRef<{ x: number; y: number; pan: SteelReviewPan }>();
 
   useEffect(() => {
+    dragRef.current = undefined;
     setPreviewState((state) => ({
       ...state,
-      zoom: 1,
-      pan: { x: 0, y: 0 },
       dragging: false,
     }));
   }, [pageNumber, setPreviewState, source?.fileId]);
@@ -66,6 +67,8 @@ export default function SteelReviewSourcePreview({
     if (canvas) {
       canvas.width = 0;
       canvas.height = 0;
+      canvas.style.width = '';
+      canvas.style.height = '';
     }
     setPreviewState((state) => ({ ...state, imageUrl: undefined, renderError: false }));
     if (imageUrlRef.current) {
@@ -133,6 +136,8 @@ export default function SteelReviewSourcePreview({
         }
         canvas.width = viewport.width;
         canvas.height = viewport.height;
+        canvas.style.width = `${viewport.width / 1.5}px`;
+        canvas.style.height = `${viewport.height / 1.5}px`;
         const renderHandle = page.render({ canvasContext: context, viewport });
         renderTask = renderHandle;
         renderRef.current = renderHandle;
@@ -158,8 +163,17 @@ export default function SteelReviewSourcePreview({
   const updateZoom = useCallback((delta: number) => {
     setPreviewState((state) => ({
       ...state,
-      zoom: Math.min(4, Math.max(0.5, state.zoom + delta)),
+      zoom: Math.min(4, Math.max(0.1, state.zoom + delta)),
     }));
+  }, [setPreviewState]);
+
+  const fitPreview = useCallback(() => {
+    const viewport = viewportRef.current;
+    const content = imageRef.current ?? canvasRef.current;
+    const zoom = viewport && content && content.offsetWidth > 0 && content.offsetHeight > 0
+      ? Math.min(1, viewport.clientWidth / content.offsetWidth, viewport.clientHeight / content.offsetHeight)
+      : 1;
+    setPreviewState((state) => ({ ...state, zoom, pan: { x: 0, y: 0 } }));
   }, [setPreviewState]);
 
   const handlePointerDown = useCallback(
@@ -251,6 +265,7 @@ export default function SteelReviewSourcePreview({
   return (
     <div className="relative flex h-full min-h-0 w-full flex-1 flex-col">
       <div
+        ref={viewportRef}
         className="relative flex h-full min-h-0 w-full flex-1 touch-none items-center justify-center overflow-hidden rounded-md bg-surface-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring-primary"
         role="region"
         aria-label={labels.canvas}
@@ -266,14 +281,15 @@ export default function SteelReviewSourcePreview({
           ref={canvasRef}
           aria-label={labels.canvas}
           aria-hidden={imageUrl ? true : undefined}
-          className={imageUrl ? 'hidden' : 'h-auto w-auto max-h-full max-w-full select-none object-contain'}
+          className={imageUrl ? 'hidden' : 'h-auto w-auto max-w-none shrink-0 select-none'}
           style={{ transform }}
         />
         {imageUrl && (
           <img
+            ref={imageRef}
             src={imageUrl}
             alt={labels.canvas}
-            className="h-auto w-auto max-h-full max-w-full select-none object-contain"
+            className="h-auto w-auto max-w-none shrink-0 select-none"
             draggable={false}
             onError={() => setPreviewState((state) => ({ ...state, renderError: true }))}
             style={{ transform }}
@@ -286,7 +302,7 @@ export default function SteelReviewSourcePreview({
         >
           <Button
             type="button"
-            variant="outline"
+            variant="secondary"
             aria-label={labels.zoomOut}
             onClick={() => updateZoom(-0.25)}
           >
@@ -294,7 +310,7 @@ export default function SteelReviewSourcePreview({
           </Button>
           <Button
             type="button"
-            variant="outline"
+            variant="secondary"
             aria-label={labels.zoomIn}
             onClick={() => updateZoom(0.25)}
           >
@@ -302,9 +318,9 @@ export default function SteelReviewSourcePreview({
           </Button>
           <Button
             type="button"
-            variant="outline"
+            variant="secondary"
             aria-label={labels.fit}
-            onClick={() => setPreviewState((state) => ({ ...state, zoom: 1, pan: { x: 0, y: 0 } }))}
+            onClick={fitPreview}
           >
             <ScanSearch className="size-4" aria-hidden="true" />
           </Button>

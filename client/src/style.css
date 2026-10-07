@@ -1535,13 +1535,13 @@ button {
 .markdown .markdown-table-wrapper table {
   margin-top: 0.75rem;
   min-width: 100%;
-  width: max-content;
+  width: 100%;
 }
 
 .markdown .markdown-table-wrapper th,
 .markdown .markdown-table-wrapper td {
   max-width: 28rem;
-  min-width: 9rem;
+  min-width: 0;
   vertical-align: top;
   white-space: normal;
   word-break: normal;
@@ -1595,16 +1595,22 @@ button {
 
 .markdown-table-modal-scroll table {
   min-width: 100%;
-  width: max-content;
+  width: 100%;
 }
 
 .markdown-table-modal-scroll th,
 .markdown-table-modal-scroll td {
   max-width: 32rem;
-  min-width: 10rem;
+  min-width: 0;
   vertical-align: top;
   white-space: normal;
   word-break: normal;
+}
+
+.markdown .markdown-table-wrapper th,
+.markdown-table-modal-scroll th {
+  max-width: none;
+  white-space: nowrap;
 }
 
 .markdown-table-commentable-cell {

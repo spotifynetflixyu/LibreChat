@@ -26,7 +26,19 @@ export interface SteelReviewSourceRecord extends SteelReviewSourceFile {
   model?: string;
 }
 
+export interface SteelReviewSourcePageCountUpdate {
+  userId: string;
+  tenantId?: string;
+  fileId: string;
+  filepath: string;
+  storageSource: string;
+  storageKey?: string;
+  storageRegion?: string;
+  pageCount: number;
+}
+
 export interface SteelReviewSourceMethods {
   listSteelReviewSources(input: SteelReviewSourceScope): Promise<SteelReviewSourceRecord[]>;
   readSteelReviewSource(input: SteelReviewSourceReadInput): Promise<SteelReviewSourceRecord | null>;
+  setSteelReviewSourcePageCount(input: SteelReviewSourcePageCountUpdate): Promise<boolean>;
 }

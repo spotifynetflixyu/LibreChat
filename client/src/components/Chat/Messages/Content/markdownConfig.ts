@@ -18,6 +18,7 @@ import { Artifact, artifactPlugin } from '~/components/Artifacts/Artifact';
 import { code, a, p, img, table } from './MarkdownComponents';
 import { SteelHeading } from './SteelReview/heading';
 import { unicodeCitation } from '~/components/Web';
+import MarkdownCell from './table/Cell';
 
 /**
  * Single source of truth for the markdown rendering pipeline, shared by the
@@ -60,6 +61,7 @@ export const getMarkdownComponents = (): { [nodeType: string]: ElementType } => 
   p,
   img,
   table,
+  td: MarkdownCell,
   h2: SteelHeading,
   artifact: Artifact,
   citation: Citation,

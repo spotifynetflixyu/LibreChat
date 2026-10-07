@@ -74,6 +74,7 @@ export interface SteelReviewSourceAuthority {
     fileId: string;
     filename: string;
     mediaType: string;
+    pageCount?: number;
   } | null>;
   readPageCount(
     input: SteelReviewSourceIntentInput,
@@ -114,6 +115,7 @@ type SteelReviewSourceMetadata = {
   fileId: string;
   filename: string;
   mediaType: string;
+  pageCount?: number;
 };
 
 interface SteelReviewSourceEvidence {
@@ -1071,13 +1073,16 @@ export function createSteelReviewService({
       [fileId, await sourceAuthority.readMetadata(sourceInput)] as const));
     for (const [fileId, metadata] of metadataResults) {
       metadataByFile.set(fileId, metadata);
+      if (metadata?.pageCount !== undefined) {
+        pageCountsByFile.set(fileId, { pageCount: metadata.pageCount });
+      }
     }
     if (!scope.sourceRequest) {
       return { metadataByFile, pageCountsByFile };
     }
     const pageInputs = [...sourceInputs.entries()].filter(([fileId]) => {
       const metadata = metadataByFile.get(fileId);
-      return metadata !== null && metadata !== undefined && !metadata.mediaType.toLowerCase().startsWith('image/') &&
+      return metadata !== null && metadata !== undefined && metadata.pageCount === undefined && !metadata.mediaType.toLowerCase().startsWith('image/') &&
         payload.operations.some((operation) => {
           const source = operation.type === 'add' || operation.type === 'update'
             ? operation.source
@@ -1325,6 +1330,7 @@ export function createSteelReviewService({
     });
     const metadataByFile = sourceEvidence?.metadataByFile ??
       new Map<string, SteelReviewSourceMetadata | null>();
+    const pageCountsByFile = sourceEvidence?.pageCountsByFile ?? new Map<string, { pageCount: number } | null>();
     const metadataInputs = new Map<string, SteelReviewSourceIntentInput>();
     for (const intent of sourceIntents) {
       if (intent.fileId === null || metadataInputs.has(intent.fileId)) {
@@ -1344,13 +1350,15 @@ export function createSteelReviewService({
         [fileId, await sourceAuthority.readMetadata(sourceInput)] as const));
       for (const [fileId, metadata] of metadataResults) {
         metadataByFile.set(fileId, metadata);
+        if (metadata?.pageCount !== undefined) {
+          pageCountsByFile.set(fileId, { pageCount: metadata.pageCount });
+        }
       }
     }
-    const pageCountsByFile = sourceEvidence?.pageCountsByFile ?? new Map<string, { pageCount: number } | null>();
     if (!sourceEvidence && sourceAuthority && scope.sourceRequest) {
       const pageInputs = [...metadataInputs.entries()].filter(([fileId]) => {
         const metadata = metadataByFile.get(fileId);
-        return metadata !== null && [...intentsByRow.values()].some((intent) =>
+        return metadata !== null && metadata?.pageCount === undefined && [...intentsByRow.values()].some((intent) =>
           intent.fileId === fileId && intent.pageNumber !== null &&
           !metadata?.mediaType.toLowerCase().startsWith('image/'));
       });

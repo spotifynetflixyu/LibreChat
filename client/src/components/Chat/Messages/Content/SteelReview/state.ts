@@ -53,6 +53,13 @@ export interface SteelReviewPreviewState {
   renderError: boolean;
 }
 
+export interface SteelReviewCellEditState {
+  ownerKey: string;
+  open: boolean;
+  value: string;
+  consumed: boolean;
+}
+
 export function steelReviewIdentityKey(selection: SteelReviewIdentity): string {
   return [
     selection.conversationId,
@@ -144,3 +151,12 @@ export const steelReviewDraftStateFamily = createOwnedStateFamily<SteelReviewDra
   rowStates: {},
   changeSequence: 0,
 }));
+
+export const steelReviewCellEditStateFamily = createOwnedStateFamily<SteelReviewCellEditState>(() => ({
+  ownerKey: '',
+  open: false,
+  value: '',
+  consumed: false,
+}));
+
+export const steelReviewRowEditStateFamily = createOwnedStateFamily<boolean>(() => false);

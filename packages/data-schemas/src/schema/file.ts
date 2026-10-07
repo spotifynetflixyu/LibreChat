@@ -177,6 +177,11 @@ const file: Schema<IMongoFile> = new Schema(
         type: String,
         default: undefined,
       },
+      pageCount: {
+        type: Number,
+        min: 1,
+        default: undefined,
+      },
     },
     llmDeliveryPath: {
       /* What upload time inferred about delivery, from the endpoint and MIME type it saw.

@@ -52,6 +52,7 @@ const {
   getCodeApiUploadOptions,
   withCodeApiUploadRecovery,
   isLeader,
+  createUploadFileWriters,
 } = require('@librechat/api');
 const {
   convertImage,
@@ -621,6 +622,11 @@ const processFileUpload = async ({ req, res, metadata, sseStream, openai: provid
   }
 
   const { file } = req;
+  const uploadFileWriters = createUploadFileWriters({
+    file,
+    createFile: db.createFile,
+  });
+  await uploadFileWriters.prepareOriginalFile();
   const sanitizedUploadFn = createSanitizedUploadWrapper(handleFileUpload);
   const {
     id,
@@ -678,27 +684,24 @@ const processFileUpload = async ({ req, res, metadata, sseStream, openai: provid
     });
   }
 
-  const result = await db.createFile(
-    {
-      user: req.user.id,
-      file_id: id ?? file_id,
-      temp_file_id,
-      bytes,
-      filepath,
-      ...storageMetadata,
-      filename: filename ?? sanitizeFilename(file.originalname),
-      context: isAssistantUpload ? FileContext.assistants : FileContext.message_attachment,
-      model: isAssistantUpload ? req.body.model : undefined,
-      type: file.mimetype,
-      ...(await retentionExpiryPromise),
-      embedded,
-      source,
-      height,
-      width,
-      tenantId: req.user.tenantId,
-    },
-    true,
-  );
+  const result = await uploadFileWriters.writeOriginalFile({
+    user: req.user.id,
+    file_id: id ?? file_id,
+    temp_file_id,
+    bytes,
+    filepath,
+    ...storageMetadata,
+    filename: filename ?? sanitizeFilename(file.originalname),
+    context: isAssistantUpload ? FileContext.assistants : FileContext.message_attachment,
+    model: isAssistantUpload ? req.body.model : undefined,
+    type: file.mimetype,
+    ...(await retentionExpiryPromise),
+    embedded,
+    source,
+    height,
+    width,
+    tenantId: req.user.tenantId,
+  });
   sendUploadSuccess(res, sseStream, 'File uploaded and processed successfully', result);
 };
 
@@ -872,6 +875,10 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
   });
 
   const isImage = file.mimetype.startsWith('image');
+  const uploadFileWriters = createUploadFileWriters({
+    file,
+    createFile: db.createFile,
+  });
   let fileInfoMetadata;
   const entity_id = messageAttachment === true ? undefined : agent_id;
   const basePath = mime.getType(file.originalname)?.startsWith('image') ? 'images' : 'uploads';
@@ -1001,7 +1008,7 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
           updatingUserId: req?.user?.id,
         });
       }
-      const result = await db.createFile(fileInfo, true);
+      const result = await uploadFileWriters.writeDerivedFile(fileInfo, true);
       sendUploadSuccess(res, sseStream, 'Agent file uploaded and processed successfully', result);
     };
 
@@ -1148,6 +1155,7 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
   });
 
   // Dual storage pattern for RAG files: Storage + Vector DB
+  await uploadFileWriters.prepareOriginalFile();
   let storageResult, embeddingResult;
   let storedType = file.mimetype;
   const isImageFile = file.mimetype.startsWith('image');
@@ -1348,7 +1356,7 @@ const processAgentFileUpload = async ({ req, res, metadata, sseStream }) => {
     ...retentionExpiry,
   };
 
-  const result = await db.createFile(fileInfo, true);
+  const result = await uploadFileWriters.writeOriginalFile(fileInfo, true);
 
   sendUploadSuccess(res, sseStream, 'Agent file uploaded and processed successfully', result);
 };

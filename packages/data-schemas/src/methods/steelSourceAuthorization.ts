@@ -23,6 +23,7 @@ export type SteelReviewAuthorizedFile = Pick<
   | 'storageRegion'
   | 'model'
 > & {
+  metadata?: Pick<NonNullable<IMongoFile['metadata']>, 'pageCount'>;
   conversationId?: string;
   messageId?: string;
 };
@@ -97,8 +98,8 @@ function groupByFileId(files: readonly SteelReviewAuthorizedFile[]): Map<string,
   return grouped;
 }
 
-function hasOnlyRequestedConversation(conversations: ReadonlySet<string>, requestedConversationId: string): boolean {
-  return conversations.size > 0 && [...conversations].every((conversationId) => conversationId === requestedConversationId);
+function hasRequestedConversation(conversations: ReadonlySet<string>, requestedConversationId: string): boolean {
+  return conversations.has(requestedConversationId);
 }
 
 function matchesTenantScope(actual: string | null | undefined, expected?: string): boolean {
@@ -127,8 +128,9 @@ function isValidOwnerContext(
 /**
  * Resolves the internal file projection shared by the review row and source
  * readers. Legacy files without a conversationId require one physical record
- * and a same-owner active message anchor; a file.messageId is evidence only
- * after that message is resolved in the authorized owner scope.
+ * and an active same-owner message anchor that includes the requested
+ * conversation; a file.messageId is evidence only after that message is
+ * resolved in the authorized owner scope.
  */
 export function createSteelReviewSourceAuthorization(mongoose: Mongoose) {
   const Conversation = createConversationModel(mongoose);
@@ -216,6 +218,7 @@ export function createSteelReviewSourceAuthorization(mongoose: Mongoose) {
         storageKey: 1,
         storageRegion: 1,
         model: 1,
+        'metadata.pageCount': 1,
         conversationId: 1,
         messageId: 1,
       });
@@ -250,7 +253,7 @@ export function createSteelReviewSourceAuthorization(mongoose: Mongoose) {
         tenantFilter(input.tenantId),
         activeExpirationFilter(),
       ],
-    }).select({ file_id: 1, filename: 1, type: 1, bytes: 1, source: 1, filepath: 1, storageKey: 1, storageRegion: 1, model: 1, conversationId: 1, messageId: 1 });
+    }).select({ file_id: 1, filename: 1, type: 1, bytes: 1, source: 1, filepath: 1, storageKey: 1, storageRegion: 1, model: 1, 'metadata.pageCount': 1, conversationId: 1, messageId: 1 });
     const messageAnchorsQuery = legacyMessageIds.length > 0
       ? Message.find({
         $and: [
@@ -308,7 +311,7 @@ export function createSteelReviewSourceAuthorization(mongoose: Mongoose) {
           continue;
         }
       }
-      if (hasOnlyRequestedConversation(conversations, input.conversationId)) {
+      if (hasRequestedConversation(conversations, input.conversationId)) {
         authorized.set(fileId, globalFile);
       }
     }

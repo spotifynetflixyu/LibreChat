@@ -4,6 +4,7 @@ import type { SteelMarkdownVersion, TMessage } from 'librechat-data-provider';
 import { useGetSteelMarkdownVersionsQuery } from '~/data-provider';
 import { useMessageContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
+import { cn } from '~/utils';
 
 export const SteelVersionsContext = createContext<ReadonlyMap<string, SteelMarkdownVersion>>(new Map());
 type SteelMarkdownOwner = Pick<SteelMarkdownVersion, 'outputId' | 'title'>;
@@ -115,6 +116,7 @@ function headingText(node: React.ReactNode): string {
 export function SteelHeading({
   children,
   node: _node,
+  className,
   ...props
 }: React.HTMLAttributes<HTMLHeadingElement> & { node?: object }) {
   const localize = useLocalize();
@@ -136,11 +138,16 @@ export function SteelHeading({
         )}${hasSaveCount ? ` v${version.saves + 1}` : ''}`;
 
   return (
-    <h2 {...props} data-markdown-title={title}>
-      {children}
+    <h2
+      {...props}
+      className={cn(label && 'flex items-center justify-between gap-2', className)}
+      data-markdown-title={title}
+    >
+      {label ? <span className="min-w-0 break-words">{children}</span> : children}
       {label && (
         <Tag
-          className="ml-2 align-middle"
+          className="shrink-0"
+          labelClassName="whitespace-nowrap"
           label={label}
           variant={version?.latest ? 'success' : 'neutral'}
         />

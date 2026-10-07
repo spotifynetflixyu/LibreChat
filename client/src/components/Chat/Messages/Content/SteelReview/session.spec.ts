@@ -1086,6 +1086,32 @@ describe('Steel review local draft session', () => {
     expect(projected?.values.頁碼?.effective).toBe('2');
   });
 
+  it.each(['ocr_result', 'system_order'] as const)('synchronizes source and page text after a %s binding change', (kind) => {
+    const sourcedRow: SteelReviewRow = {
+      ...table.rows[0]!,
+      values: {
+        ...table.rows[0]!.values,
+        來源: { baseline: 'F1', effective: 'F1' },
+        頁碼: { baseline: '1', effective: '1' },
+      },
+      source: { fileId: 'file-1', pageNumber: 1, filename: 'drawing.pdf' },
+    };
+    const sourcedTable = { ...table, kind, rows: [sourcedRow] };
+    const mappings = [
+      { fileId: 'file-1', sourceCode: 'F1', sourceFilename: 'drawing.pdf' },
+      { fileId: 'file-2', sourceCode: 'F2', sourceFilename: 'second.pdf' },
+    ];
+    let draft = createSteelReviewDraftState(getSteelReviewDraftKey({ ...selection, kind }, sourcedTable));
+    draft = setSteelReviewDraftSource(draft, sourcedRow, { fileId: 'file-2', pageNumber: 3, filename: 'second.pdf' });
+    const [projected] = applySteelReviewDrafts([sourcedRow], draft, true, mappings);
+    expect(projected?.values.來源).toEqual({ baseline: 'F1', effective: 'F2' });
+    expect(projected?.values.頁碼).toEqual({ baseline: '1', effective: '3' });
+    draft = setSteelReviewDraftSource(draft, sourcedRow, null);
+    const [unlinked] = applySteelReviewDrafts([sourcedRow], draft, true, mappings);
+    expect(unlinked?.values.來源?.effective).toBe('');
+    expect(unlinked?.values.頁碼?.effective).toBe('');
+  });
+
   it('clears a reverted source binding regardless of property order', () => {
     const sourcedRow = {
       ...table.rows[0],

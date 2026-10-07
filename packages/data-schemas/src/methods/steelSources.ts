@@ -1,5 +1,8 @@
+import type { FilterQuery } from 'mongoose';
 import type {
+  IMongoFile,
   SteelReviewSourceMethods,
+  SteelReviewSourcePageCountUpdate,
   SteelReviewSourceReadInput,
   SteelReviewSourceRecord,
 } from '~/types';
@@ -7,6 +10,8 @@ import {
   createSteelReviewSourceAuthorization,
   type SteelReviewAuthorizedFile,
 } from './steelSourceAuthorization';
+import { activeExpirationFilter } from '~/utils/retention';
+import { createFileModel } from '~/models/file';
 
 export type { SteelReviewSourceMethods };
 
@@ -67,6 +72,7 @@ function canonicalMediaType(type: string, filename: string, kind: 'pdf' | 'image
 function toRecord(file: SteelReviewAuthorizedFile): SteelReviewSourceRecord | null {
   const kind = sourceType(file.type, file.filename);
   const mediaType = kind ? canonicalMediaType(file.type, file.filename, kind) : undefined;
+  const pageCount = file.metadata?.pageCount;
   if (!kind || !mediaType) {
     return null;
   }
@@ -75,16 +81,20 @@ function toRecord(file: SteelReviewAuthorizedFile): SteelReviewSourceRecord | nu
     filename: file.filename,
     mediaType,
     ...(typeof file.bytes === 'number' ? { bytes: file.bytes } : {}),
+    ...(kind === 'pdf' && typeof pageCount === 'number' && Number.isInteger(pageCount) && pageCount > 0
+      ? { pageCount }
+      : {}),
     storageSource: file.source,
     filepath: file.filepath,
-    ...(file.storageKey ? { storageKey: file.storageKey } : {}),
-    ...(file.storageRegion ? { storageRegion: file.storageRegion } : {}),
-    ...(file.model ? { model: file.model } : {}),
+    ...(file.storageKey !== undefined ? { storageKey: file.storageKey } : {}),
+    ...(file.storageRegion !== undefined ? { storageRegion: file.storageRegion } : {}),
+    ...(file.model !== undefined ? { model: file.model } : {}),
   };
 }
 
 export function createSteelReviewSourceMethods(mongoose: Mongoose): SteelReviewSourceMethods {
   const authorizeFiles = createSteelReviewSourceAuthorization(mongoose);
+  const File = createFileModel(mongoose);
 
   const findAuthorized = async (
     input: Parameters<SteelReviewSourceMethods['listSteelReviewSources']>[0],
@@ -112,6 +122,36 @@ export function createSteelReviewSourceMethods(mongoose: Mongoose): SteelReviewS
     async readSteelReviewSource(input: SteelReviewSourceReadInput) {
       const [record] = await findAuthorized(input, input.fileId);
       return record ?? null;
+    },
+
+    async setSteelReviewSourcePageCount(input: SteelReviewSourcePageCountUpdate) {
+      if (!Number.isInteger(input.pageCount) || input.pageCount < 1) {
+        throw new Error('Steel review source page count must be a positive integer');
+      }
+      const physicalIdentity: FilterQuery<IMongoFile>[] = [
+        { user: input.userId },
+        { file_id: input.fileId },
+        { filepath: input.filepath },
+        { source: input.storageSource },
+        activeExpirationFilter(),
+        { 'metadata.pageCount': { $exists: false } },
+      ];
+      physicalIdentity.push(input.tenantId === undefined
+        ? { $or: [{ tenantId: { $exists: false } }, { tenantId: null }] }
+        : { tenantId: input.tenantId });
+      for (const [field, value] of [
+        ['storageKey', input.storageKey],
+        ['storageRegion', input.storageRegion],
+      ] as const) {
+        physicalIdentity.push(value === undefined
+          ? { $or: [{ [field]: { $exists: false } }, { [field]: null }] }
+          : { [field]: value });
+      }
+      const result = await File.updateOne(
+        { $and: physicalIdentity },
+        { $set: { 'metadata.pageCount': input.pageCount } },
+      );
+      return result.matchedCount === 1;
     },
   };
 }

@@ -1,6 +1,6 @@
 import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useAtom, useStore } from 'jotai';
-import { AlertTriangle } from 'lucide-react';
+import { X, Plus, AlertTriangle } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
 import {
   DynamicQueryKeys,
@@ -23,6 +23,8 @@ import {
   SelectTrigger,
   SelectValue,
   Tag,
+  TooltipAnchor,
+  useMediaQuery,
 } from '@librechat/client';
 import type {
   SteelCatalogCandidate,
@@ -37,6 +39,7 @@ import type {
   SteelReviewRow,
   SteelReviewSavedSnapshot,
   SteelReviewSource,
+  SteelReviewSourcePageCount,
   SteelReviewTable,
   SteelProcessingMeasurement,
   TMessage,
@@ -45,6 +48,7 @@ import type { MutableRefObject } from 'react';
 import type { SteelReviewCapturedAuthority, SteelReviewIdentity, SteelReviewSelection } from './SteelReview/state';
 import type { SteelReviewDraftState } from './SteelReview/session';
 import type { SteelReviewPreviewRows } from './SteelReview/filter';
+import type { SteelReviewSaveStatus } from './SteelReview/Status';
 import type { TableMatrix } from './table/export';
 import {
   addSteelReviewDraftRow,
@@ -91,7 +95,9 @@ import {
 import { getSteelReviewPreviewRows, getSteelReviewUnlinkedRowIds } from './SteelReview/filter';
 import SteelReviewSourcePreview from './SteelReview/SourcePreview';
 import { SteelVersionsContext } from './SteelReview/heading';
+import translationEn from '~/locales/en/translation.json';
 import SteelReviewEditor from './SteelReview/Editor';
+import ReviewStatus from './SteelReview/Status';
 import { useLocalize } from '~/hooks';
 
 export interface SteelReviewDownloadAuthority {
@@ -240,42 +246,6 @@ function isCurrentOwner(
   );
 }
 
-function getCurrentLastSaveCount(table: SteelReviewTable | null | undefined): number | undefined {
-  const lastSave = table?.lastSave;
-  const snapshot = lastSave?.snapshot;
-  if (!lastSave || !snapshot || lastSave.revision !== table?.revision ||
-    lastSave.changedRows !== snapshot.changedRows ||
-    snapshot.conversationId !== table?.conversationId ||
-    snapshot.messageId !== table?.messageId ||
-    snapshot.outputId !== table?.outputId || snapshot.revision !== table?.revision) {
-    return undefined;
-  }
-  return snapshot.changedRows > 0 ? snapshot.changedRows : undefined;
-}
-
-function getCurrentLastSaveCaption(table: SteelReviewTable | null | undefined): {
-  customerQuoteChangedRows?: number;
-  customerQuoteTotal?: string | null;
-} | undefined {
-  const lastSave = table?.lastSave;
-  const snapshot = lastSave?.snapshot;
-  if (!lastSave || !snapshot || lastSave.revision !== table?.revision ||
-    snapshot.conversationId !== table?.conversationId || snapshot.messageId !== table?.messageId ||
-    snapshot.outputId !== table?.outputId || snapshot.revision !== table?.revision) {
-    return undefined;
-  }
-  return snapshot.caption
-    ? {
-        ...(snapshot.caption.customerQuoteChangedRows !== undefined
-          ? { customerQuoteChangedRows: snapshot.caption.customerQuoteChangedRows }
-          : {}),
-        ...(snapshot.caption.customerQuoteTotal !== undefined
-          ? { customerQuoteTotal: snapshot.caption.customerQuoteTotal }
-          : {}),
-      }
-    : undefined;
-}
-
 function isAuthorizedCurrentTable(
   table: SteelReviewTable | null | undefined,
   prepared: SteelReviewPrepared,
@@ -419,6 +389,7 @@ export default function SteelReviewDialog({
   saveGateRef,
 }: SteelReviewDialogProps) {
   const localize = useLocalize();
+  const isDesktop = useMediaQuery('(min-width: 768px)');
   const versions = useContext(SteelVersionsContext);
   const sourceEditorLabels = useMemo(() => ({
     emptyCategory: localize('com_ui_no_category'),
@@ -507,6 +478,9 @@ export default function SteelReviewDialog({
     });
   }, [captureId, identity, setDraftState, store]);
   const [captureUiState, setCaptureUiState] = useState<CaptureScoped<CaptureUiState>>();
+  useEffect(() => {
+    if (!isOpen) setCaptureUiState(undefined);
+  }, [isOpen]);
   const currentCaptureUi = captureId && captureUiState?.captureId === captureId
     ? captureUiState.value
     : emptyCaptureUiState;
@@ -611,8 +585,8 @@ export default function SteelReviewDialog({
   }, [captureId, setCloseRequested, setConfirmedSave, setDiscardRequested, setReceiptFailed, setReceiptInput, setSaveErrorCode, setSavePhase, setSaveRecovery]);
   const {
     selectedFileId,
-    pageNumber,
-    pageCount,
+    pageNumber: storedPageNumber,
+    pageCount: storedPageCount,
     unlinkedMode,
     unlinkedRowIds,
   } = dialogState;
@@ -766,7 +740,7 @@ export default function SteelReviewDialog({
   );
   const dirtyRowCount = dirtyRowIds.length;
   const draftRows = useMemo(
-    () => (baseTable ? applySteelReviewDrafts(baseTable.rows, draftState) : []),
+    () => (baseTable ? applySteelReviewDrafts(baseTable.rows, draftState, true, baseTable.sourceMappings) : []),
     [baseTable, draftState],
   );
   useEffect(() => {
@@ -793,18 +767,37 @@ export default function SteelReviewDialog({
     { enabled: isOpen && Boolean(table?.kind) },
   );
   const sources = useMemo(() => sourcesQuery.data?.sources ?? [], [sourcesQuery.data?.sources]);
+  const sourcesReady = sourcesQuery.data !== undefined;
   const selectedSource = useMemo(
     () => sources.find((source) => source.fileId === selectedFileId) ?? sources[0],
     [selectedFileId, sources],
   );
   const selectedSourceId = selectedSource?.fileId;
+  const pageCount = selectedSource?.pageCount ?? (
+    dialogState.initializedSourceId === selectedSourceId ? storedPageCount : 0
+  );
   const selectedSourcePage = useMemo(
     () => draftRows.find((row) => row.source?.fileId === selectedSource?.fileId)?.source?.pageNumber,
     [draftRows, selectedSource?.fileId],
   );
+  const pageNumber = selectedSourceId && dialogState.initializedSourceId !== selectedSourceId
+    ? selectedSourcePage ?? 1
+    : storedPageNumber;
   const sourceCorrectionFile = dialogState.sourceCorrectionFileId
     ? sources.find((source) => source.fileId === dialogState.sourceCorrectionFileId)
     : undefined;
+  let sourceCorrectionKnownPageCount = 0;
+  if (sourceCorrectionFile?.mediaType.startsWith('image/')) {
+    sourceCorrectionKnownPageCount = 1;
+  } else if (sourceCorrectionFile?.pageCount) {
+    sourceCorrectionKnownPageCount = sourceCorrectionFile.pageCount;
+  } else if (sourceCorrectionFile?.fileId === selectedSourceId && pageCount > 0) {
+    sourceCorrectionKnownPageCount = pageCount;
+  } else if (sourceCorrectionFile) {
+    sourceCorrectionKnownPageCount = queryClient.getQueryData<SteelReviewSourcePageCount>(DynamicQueryKeys.steelReviewSourcePageCount(
+      identity.conversationId, identity.kind, identity.messageId, sourceCorrectionFile.fileId,
+    ))?.pageCount ?? 0;
+  }
   const sourcePageCountQuery = useGetSteelReviewSourcePageCountQuery(
     isOpen && canEditSources && dialogState.sourceCorrectionFileId && sourceCorrectionFile?.mediaType !== undefined &&
       !sourceCorrectionFile.mediaType.startsWith('image/')
@@ -818,7 +811,7 @@ export default function SteelReviewDialog({
     {
       enabled: isOpen && canEditSources && !!dialogState.sourceCorrectionFileId &&
         sourceCorrectionFile?.mediaType !== undefined &&
-        !sourceCorrectionFile.mediaType.startsWith('image/'),
+        !sourceCorrectionFile.mediaType.startsWith('image/') && sourceCorrectionKnownPageCount === 0,
     },
   );
   useEffect(() => {
@@ -915,7 +908,8 @@ export default function SteelReviewDialog({
     [baseTable, draftRows, draftState.rowStates, pageCount, pageNumber, selectedSource?.fileId, sources, unlinkedMode, unlinkedRowIds],
   );
   let editorRows = draftRows;
-  if (unlinkedMode) editorRows = previewRows.unlocated;
+  if (!sourcesReady) editorRows = [];
+  else if (unlinkedMode) editorRows = previewRows.unlocated;
   else if (selectedSource) editorRows = previewRows.located;
   const recoveryIndicators = useMemo(() => {
     const fileIds = new Set<string>();
@@ -1087,16 +1081,14 @@ export default function SteelReviewDialog({
     () => draftRows.find((row) => row.rowId === dialogState.sourceCorrectionRowId),
     [dialogState.sourceCorrectionRowId, draftRows],
   );
-  const sourceCorrectionPageCount = sourceCorrectionFile?.mediaType.startsWith('image/')
-    ? 1
-    : sourcePageCountQuery.data?.pageCount ?? 0;
-  const sourceCorrectionPageLoading = sourcePageCountQuery.isLoading && !sourceCorrectionFile?.mediaType.startsWith('image/');
-  const sourceCorrectionPageError = sourcePageCountQuery.isError && !sourceCorrectionFile?.mediaType.startsWith('image/');
+  const sourceCorrectionPageCount = sourceCorrectionKnownPageCount || sourcePageCountQuery.data?.pageCount || 0;
+  const sourceCorrectionPageLoading = sourceCorrectionPageCount === 0 && sourcePageCountQuery.isLoading;
+  const sourceCorrectionPageError = sourceCorrectionPageCount === 0 && sourcePageCountQuery.isError;
   const sourceCorrectionCanConfirm = Boolean(
     sourceCorrectionRow?.rowId && dialogState.sourceCorrectionFileId &&
     dialogState.sourceCorrectionPageNumber && sourceCorrectionPageCount > 0 &&
     dialogState.sourceCorrectionPageNumber <= sourceCorrectionPageCount &&
-    !sourcePageCountQuery.isLoading && !sourcePageCountQuery.isError,
+    !sourceCorrectionPageLoading && !sourceCorrectionPageError,
   );
   const closeSourceCorrection = useCallback(() => {
     setDialogState((state) => ({
@@ -1154,7 +1146,7 @@ export default function SteelReviewDialog({
   }, [captureId]);
   const onAddRow = useCallback(() => {
     const editTable = baseTable ?? table;
-    if (!editTable || !canEditStructure || saveBusy) return;
+    if (!editTable || !canEditStructure || saveBusy || !sourcesReady) return;
     setDraftStateScoped((current) => {
       const ownerDraft = current.ownerKey === draftStateKey
         ? current
@@ -1175,7 +1167,7 @@ export default function SteelReviewDialog({
         : undefined;
       return updateDraftRows(addSteelReviewDraftRow(ownerDraft, editTable, anchor, source, system));
     });
-  }, [baseTable, canEditStructure, draftRows, draftStateKey, pageNumber, saveBusy, selectedSource, setDraftStateScoped, table, unlinkedMode, updateDraftRows]);
+  }, [baseTable, canEditStructure, draftRows, draftStateKey, pageNumber, saveBusy, selectedSource, setDraftStateScoped, sourcesReady, table, unlinkedMode, updateDraftRows]);
   const onClassify = useCallback((row: SteelReviewRow, kind: 'material' | 'processing') => {
     if (!canEditStructure || saveBusy || table?.kind !== 'system_order' || row.system?.kind !== 'unassigned') return;
     setDraftStateScoped((current) => {
@@ -1849,6 +1841,10 @@ export default function SteelReviewDialog({
     }
   }, [captureId, clearCapturedAuthority, clearSelectionForCapture, getCapturedAuthority, hasCurrentCapturedSession, saveChanges, setCloseRequested, table]);
   const saveDisabled = !canSave || dirtyRowCount === 0 || saveBusy;
+  const saveLabel = dirtyRowCount === 0 ? localize('com_ui_steel_review_save') : localize('com_ui_steel_review_save_count', {
+    0: dirtyRowCount,
+    defaultValue: `${localize('com_ui_steel_review_save')} ({{0}})`,
+  });
   const saveErrorKey = getSaveErrorKey(savePhase, saveErrorCode);
   const preparedForCapture = getCaptureScopedValue(preparedRef, captureId);
   const preparedRowCount = saveBusy && preparedForCapture && table &&
@@ -1857,22 +1853,25 @@ export default function SteelReviewDialog({
     : undefined;
   const confirmedRowCount = confirmedSave && isCurrentOwner(table, confirmedSave)
     ? confirmedSave.changedRows
-    : getCurrentLastSaveCount(table);
+    : undefined;
   const isSystemOrder = table?.kind === 'system_order';
   const preparedQuoteRowCount = preparedForCapture?.caption.customerQuoteChangedRows;
-  const lastSaveCaption = getCurrentLastSaveCaption(table);
   const confirmedQuoteRowCount = confirmedSave && isCurrentOwner(table, confirmedSave)
     ? confirmedSave.customerQuoteChangedRows
-    : lastSaveCaption?.customerQuoteChangedRows;
-  const quoteTotal = preparedForCapture?.caption.customerQuoteTotal ?? confirmedSave?.customerQuoteTotal ??
-    lastSaveCaption?.customerQuoteTotal ?? null;
+    : undefined;
+  const quoteTotal = preparedForCapture?.caption.customerQuoteTotal ?? confirmedSave?.customerQuoteTotal ?? null;
   const onPageCount = useCallback((count: number) => {
+    if (count > 0 && selectedSourceId) {
+      queryClient.setQueryData<SteelReviewSourcePageCount>(DynamicQueryKeys.steelReviewSourcePageCount(
+        identity.conversationId, identity.kind, identity.messageId, selectedSourceId,
+      ), { pageCount: count });
+    }
     setDialogState((state) => ({
       ...state,
       pageCount: count,
       pageNumber: count > 0 ? Math.min(state.pageNumber, count) : state.pageNumber,
     }));
-  }, [setDialogState]);
+  }, [identity.conversationId, identity.kind, identity.messageId, queryClient, selectedSourceId, setDialogState]);
   const goPrevious = useCallback(() => {
     setDialogState((state) => ({ ...state, pageNumber: Math.max(1, state.pageNumber - 1) }));
   }, [setDialogState]);
@@ -1883,6 +1882,122 @@ export default function SteelReviewDialog({
     }));
   }, [setDialogState]);
 
+  const hasSaveError = Boolean(saveErrorCode || ['uncertain', 'stale', 'error'].includes(savePhase) ||
+    (savePhase === 'reconciling' && receiptFailed));
+  const savingRowCount = preparedRowCount ?? dirtyRowCount;
+  let saveStatus: SteelReviewSaveStatus | undefined;
+  if (hasSaveError) {
+    saveStatus = { kind: 'error', message: localize(saveErrorKey) };
+  } else if (saveBusy) {
+    let message = localize('com_ui_steel_review_saving');
+    if (savePhase === 'reconciling') {
+      message = localize('com_ui_steel_review_reconciling');
+    } else if (preparedRowCount !== undefined && isSystemOrder) {
+      const key = preparedRowCount === 1
+        ? 'com_ui_steel_review_system_saving_caption_one'
+        : 'com_ui_steel_review_system_saving_caption';
+      message = localize(key, {
+        0: preparedRowCount, 1: preparedQuoteRowCount ?? 0, 2: quoteTotal ?? '—',
+        defaultValue: translationEn[key],
+      });
+    } else if (savingRowCount > 0) {
+      const key = savingRowCount === 1 ? 'com_ui_steel_review_saving_count_one' : 'com_ui_steel_review_saving_count';
+      message = localize(key, {
+        0: savingRowCount,
+        defaultValue: translationEn[key],
+      });
+    }
+    saveStatus = { kind: 'saving', message };
+  } else if (confirmedRowCount !== undefined) {
+    saveStatus = {
+      kind: 'success',
+      message: isSystemOrder
+        ? localize('com_ui_steel_review_system_updated_caption', {
+          0: confirmedRowCount, 1: confirmedQuoteRowCount ?? 0, 2: quoteTotal ?? '—',
+        })
+        : localize('com_ui_steel_review_updated_caption', { 0: confirmedRowCount }),
+    };
+  }
+
+  const sourceControls = !query.isLoading && !query.isError && table &&
+    (sources.length > 0 || !sourcesReady) ? (
+    <div className={isDesktop
+      ? 'grid min-w-0 flex-1 grid-cols-[minmax(0,16rem)_auto] items-center justify-center gap-3'
+      : 'grid min-w-0 grid-cols-[minmax(0,12rem)_auto] items-center justify-center gap-3 rounded-md border border-border-light p-3'}>
+      <label className="flex min-w-0 flex-col gap-1 text-sm text-text-secondary">
+        <span className="sr-only">{localize('com_ui_steel_review_source')}</span>
+        <Select
+          value={selectedSource?.fileId ?? ''}
+          disabled={!sourcesReady}
+          onValueChange={(value) => setDialogState((state) => ({
+            ...state,
+            selectedFileId: value || undefined,
+            pageNumber: 1,
+            initializedSourceId: undefined,
+          }))}
+        >
+          <SelectTrigger
+            aria-label={localize('com_ui_steel_review_source')}
+            className="w-full"
+          >
+            <SelectValue placeholder={localize('com_ui_steel_review_source')} />
+          </SelectTrigger>
+          <SelectContent onEscapeKeyDown={(event) => event.stopPropagation()}>
+            {sources.map((source) => (
+              <SelectItem key={source.fileId} value={source.fileId}>
+                <span className="inline-flex items-center gap-2">
+                  {source.filename}
+                  {recoveryIndicators.fileIds.has(source.fileId) && (
+                    <span className="text-text-destructive" role="img" aria-label={localize('com_ui_steel_review_conflicts_on_file')}>
+                      <AlertTriangle className="size-4" aria-hidden="true" />
+                    </span>
+                  )}
+                </span>
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </label>
+      <div className="flex items-center gap-2">
+        <Button type="button" variant="outline" aria-label={localize('com_ui_steel_review_previous_page')} onClick={goPrevious} disabled={!sourcesReady || pageNumber <= 1}>
+          ‹
+        </Button>
+        <label className="flex flex-col gap-1 text-sm text-text-secondary">
+          <span className="sr-only">{localize('com_ui_steel_review_page')}</span>
+          <Select
+            value={String(pageNumber)}
+            disabled={!sourcesReady}
+            onValueChange={(value) => setDialogState((state) => ({ ...state, pageNumber: Number(value) }))}
+          >
+            <SelectTrigger
+              aria-label={localize('com_ui_steel_review_page')}
+              className="w-20"
+            >
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent onEscapeKeyDown={(event) => event.stopPropagation()}>
+              {Array.from({ length: Math.max(1, pageCount, pageNumber) }, (_, index) => index + 1).map((page) => (
+                <SelectItem key={page} value={String(page)}>
+                  <span className="inline-flex items-center gap-2">
+                    {page}
+                    {recoveryIndicators.pageKeys.has(`${selectedSource?.fileId}:${page}`) && (
+                      <span className="text-text-destructive" role="img" aria-label={localize('com_ui_steel_review_conflicts_on_page')}>
+                        <AlertTriangle className="size-4" aria-hidden="true" />
+                      </span>
+                    )}
+                  </span>
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </label>
+        <Button type="button" variant="outline" aria-label={localize('com_ui_steel_review_next_page')} onClick={goNext} disabled={!sourcesReady || (pageCount > 0 && pageNumber >= pageCount)}>
+          ›
+        </Button>
+      </div>
+    </div>
+  ) : null;
+
   return (
     <OGDialog
       open={isOpen}
@@ -1892,21 +2007,23 @@ export default function SteelReviewDialog({
     >
       <OGDialogContent
         aria-label={localize('com_ui_steel_review_title')}
-        className="flex h-[min(90vh,60rem)] max-h-[95vh] w-[min(96vw,96rem)] max-w-none flex-col gap-4 overflow-hidden p-6"
+        aria-describedby={undefined}
+        showCloseButton={false}
+        className="flex h-dvh max-h-dvh w-screen max-w-none flex-col gap-4 overflow-hidden rounded-none p-4"
         onEscapeKeyDown={(event) => {
           if (saveBusy || dialogState.sourceCorrectionRowId) {
             event.preventDefault();
             return;
           }
           const input = event.target;
-          if (input instanceof HTMLInputElement && input.dataset.steelReviewDeferred) {
+          if ((input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement) && input.dataset.steelReviewDeferred) {
             event.preventDefault();
             input.blur();
           }
         }}
         onPointerDownOutside={(event) => {
           const input = document.activeElement;
-          if (input instanceof HTMLInputElement && input.dataset.steelReviewDeferred) {
+          if ((input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement) && input.dataset.steelReviewDeferred) {
             event.preventDefault();
             input.blur();
           }
@@ -1926,14 +2043,7 @@ export default function SteelReviewDialog({
           }
         }}
       >
-        <OGDialogHeader className="shrink-0 pr-10">
-          <OGDialogTitle className="text-left text-xl font-semibold">
-            {localize('com_ui_steel_review_title')}
-          </OGDialogTitle>
-          <OGDialogDescription className="text-left">
-            {localize(canEdit ? 'com_ui_steel_review_editable' : 'com_ui_steel_review_readonly')}
-          </OGDialogDescription>
-        </OGDialogHeader>
+        <OGDialogTitle className="sr-only">{localize('com_ui_steel_review_title')}</OGDialogTitle>
         <div className="min-h-0 flex-1" aria-live="polite">
           {query.isLoading && <p>{localize('com_ui_steel_review_loading')}</p>}
           {!query.isLoading && (isNotFound || (!query.isError && (!table || table.rows.length === 0))) && (
@@ -1949,12 +2059,7 @@ export default function SteelReviewDialog({
           )}
           {!query.isLoading && !query.isError && table && (
             <div className="flex h-full min-h-0 flex-col gap-3">
-              {(table.kind === 'ocr_result' || table.kind === 'system_order') && sourcesQuery.isLoading && (
-                <p aria-live="polite" role="status">
-                  {localize('com_ui_steel_review_sources_loading')}
-                </p>
-              )}
-              {(table.kind === 'ocr_result' || table.kind === 'system_order') && sourcesQuery.isError && (
+              {sourcesReady && sourcesQuery.isError && (
                 <div className="space-y-2" role="alert">
                   <p>{localize('com_ui_steel_review_sources_error')}</p>
                   <Button type="button" variant="outline" onClick={() => void sourcesQuery.refetch()}>
@@ -2051,108 +2156,57 @@ export default function SteelReviewDialog({
                   )}
                 </div>
               )}
-              {(table.kind === 'ocr_result' || table.kind === 'system_order') && sources.length > 0 && (
-                <div className="grid gap-3 rounded-md border border-border-light p-3 sm:grid-cols-[minmax(0,1fr)_auto]">
-                  <label className="flex min-w-0 flex-col gap-1 text-sm text-text-secondary">
-                    <span>{localize('com_ui_steel_review_source')}</span>
-                    <Select
-                      value={selectedSource?.fileId ?? ''}
-                      onValueChange={(value) => setDialogState((state) => ({
-                        ...state,
-                        selectedFileId: value || undefined,
-                        pageNumber: 1,
-                        initializedSourceId: undefined,
-                      }))}
-                    >
-                      <SelectTrigger
-                        aria-label={localize('com_ui_steel_review_source')}
-                        className="w-full"
-                      >
-                        <SelectValue placeholder={localize('com_ui_steel_review_source')} />
-                      </SelectTrigger>
-                      <SelectContent onEscapeKeyDown={(event) => event.stopPropagation()}>
-                        {sources.map((source) => (
-                          <SelectItem key={source.fileId} value={source.fileId}>
-                            <span className="inline-flex items-center gap-2">
-                              {source.filename}
-                              {recoveryIndicators.fileIds.has(source.fileId) && (
-                                <span className="text-text-destructive" role="img" aria-label={localize('com_ui_steel_review_conflicts_on_file')}>
-                                  <AlertTriangle className="size-4" aria-hidden="true" />
-                                </span>
-                              )}
-                            </span>
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                  </label>
-                  <div className="flex items-end gap-2">
-                    <Button type="button" variant="outline" aria-label={localize('com_ui_steel_review_previous_page')} onClick={goPrevious} disabled={pageNumber <= 1}>
-                      ‹
+              {!isDesktop && sourceControls}
+              {!sourcesReady && (
+                <div
+                  className="flex h-full min-h-0 w-full flex-1 flex-col items-center justify-center gap-3 rounded-md bg-surface-secondary p-6 text-sm text-text-secondary"
+                  role={sourcesQuery.isError ? 'alert' : 'status'}
+                  aria-live="polite"
+                >
+                  <p>{localize(sourcesQuery.isError ? 'com_ui_steel_review_sources_error' : 'com_ui_steel_review_sources_loading')}</p>
+                  {sourcesQuery.isError && (
+                    <Button type="button" variant="outline" onClick={() => void sourcesQuery.refetch()}>
+                      {localize('com_ui_retry')}
                     </Button>
-                    <label className="flex flex-col gap-1 text-sm text-text-secondary">
-                      <span>{localize('com_ui_steel_review_page')}</span>
-                      <Select
-                        value={String(pageNumber)}
-                        onValueChange={(value) => setDialogState((state) => ({ ...state, pageNumber: Number(value) }))}
-                      >
-                        <SelectTrigger
-                          aria-label={localize('com_ui_steel_review_page')}
-                          className="w-20"
-                        >
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent onEscapeKeyDown={(event) => event.stopPropagation()}>
-                          {Array.from({ length: Math.max(1, pageCount) }, (_, index) => index + 1).map((page) => (
-                            <SelectItem key={page} value={String(page)}>
-                              <span className="inline-flex items-center gap-2">
-                                {page}
-                                {recoveryIndicators.pageKeys.has(`${selectedSource.fileId}:${page}`) && (
-                                  <span className="text-text-destructive" role="img" aria-label={localize('com_ui_steel_review_conflicts_on_page')}>
-                                    <AlertTriangle className="size-4" aria-hidden="true" />
-                                  </span>
-                                )}
-                              </span>
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                    </label>
-                    <Button type="button" variant="outline" aria-label={localize('com_ui_steel_review_next_page')} onClick={goNext} disabled={pageCount > 0 && pageNumber >= pageCount}>
-                      ›
-                    </Button>
-                  </div>
+                  )}
                 </div>
               )}
               {selectedSource && (
-                <SteelReviewSourcePreview
+                <div className="relative flex min-h-0 flex-1">
+                  <SteelReviewSourcePreview
                     stateKey={`${steelReviewSourcePreviewKey(identity, selectedSource.fileId)}:${captureId ?? 'pending'}`}
-                  source={selectedSource}
-                  pageNumber={pageNumber}
-                  blob={sourceQuery.data}
-                  loading={sourceQuery.isLoading}
-                  error={sourceQuery.isError}
-                  onRetry={() => void sourceQuery.refetch()}
-                  onPageCount={onPageCount}
-                  labels={{
-                    zoomIn: localize('com_ui_steel_review_zoom_in'),
-                    zoomOut: localize('com_ui_steel_review_zoom_out'),
-                    fit: localize('com_ui_fit'),
-                    loading: localize('com_ui_steel_review_preview_loading'),
-                    retry: localize('com_ui_retry'),
-                    unavailable: localize('com_ui_steel_review_preview_unavailable'),
-                    canvas: localize('com_ui_steel_review_preview_canvas'),
-                  }}
-                />
+                    source={selectedSource}
+                    pageNumber={pageNumber}
+                    blob={sourceQuery.data}
+                    loading={sourceQuery.isLoading}
+                    error={sourceQuery.isError}
+                    onRetry={() => void sourceQuery.refetch()}
+                    onPageCount={onPageCount}
+                    labels={{
+                      zoomIn: localize('com_ui_steel_review_zoom_in'),
+                      zoomOut: localize('com_ui_steel_review_zoom_out'),
+                      fit: localize('com_ui_fit'),
+                      loading: localize('com_ui_steel_review_preview_loading'),
+                      retry: localize('com_ui_retry'),
+                      unavailable: localize('com_ui_steel_review_preview_unavailable'),
+                      canvas: localize('com_ui_steel_review_preview_canvas'),
+                    }}
+                  />
+                  {isDesktop && (
+                    <Button type="button" size="icon" variant="secondary" aria-label={localize('com_ui_close')} className="absolute right-3 top-3" disabled={saveBusy} onClick={requestClose}>
+                      <X className="size-4" aria-hidden="true" />
+                    </Button>
+                  )}
+                </div>
               )}
               <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
-                <div className="flex min-w-0 flex-1 items-center gap-2">
-                  <h2 className="min-w-0 break-words text-base font-semibold">{table.title}</h2>
+                <div className="flex shrink-0 items-center gap-2 md:flex-1">
+                  <h2 className="whitespace-nowrap text-base font-semibold">{table.title}</h2>
                   {(() => {
                     const version = versions.get(JSON.stringify([table.messageId, table.kind, table.title, table.outputId]));
                     if (!version) return null;
                     const label = `${localize(version.latest ? 'com_ui_steel_review_latest_version' : 'com_ui_steel_review_previous_version')}${version.saves > 0 ? ` v${version.saves + 1}` : ''}`;
-                    return <Tag label={label} variant={version.latest ? 'success' : 'neutral'} />;
+                    return <Tag className="shrink-0" labelClassName="whitespace-nowrap" label={label} variant={version.latest ? 'success' : 'neutral'} />;
                   })()}
                 </div>
                 <div className="ml-auto flex items-center gap-3">
@@ -2161,24 +2215,32 @@ export default function SteelReviewDialog({
                       aria-label={localize('com_ui_steel_review_unlinked')}
                       checked={unlinkedMode}
                       onCheckedChange={(checked) => setDialogState((state) => ({ ...state, unlinkedMode: checked === true }))}
-                      disabled={saveBusy}
+                      disabled={saveBusy || !sourcesReady}
                     />
                     <span>{localize('com_ui_steel_review_unlinked')}</span>
                   </label>
                   {canEditStructure && (
-                    <Button type="button" variant="outline" onClick={onAddRow} disabled={saveBusy}>
-                      {localize('com_ui_steel_review_add_row')}
-                    </Button>
+                    <TooltipAnchor
+                      description={localize('com_ui_steel_review_add_row')}
+                      render={(
+                        <Button type="button" size="icon" variant="outline" aria-label={localize('com_ui_steel_review_add_row')} onClick={onAddRow} disabled={saveBusy || !sourcesReady}>
+                          <Plus className="size-4" aria-hidden="true" />
+                        </Button>
+                      )}
+                    />
                   )}
                 </div>
               </div>
               <SteelReviewEditor
+                isDesktop={isDesktop}
                 table={table}
                 rows={editorRows}
                 draft={draftState}
                 labels={{
                   table: localize('com_ui_steel_review_table_label'),
                   readonly: localize('com_ui_steel_review_cell_readonly'),
+                  edit: localize('com_ui_edit'),
+                  reset: localize('com_ui_reset'),
                   ...sourceEditorLabels,
                   bind: localize('com_ui_steel_review_bind'),
                   bound: localize('com_ui_steel_review_bound'),
@@ -2201,64 +2263,18 @@ export default function SteelReviewDialog({
           )}
         </div>
         <div className="flex shrink-0 items-center justify-between gap-3">
-          <Button type="button" variant="outline" disabled={saveBusy} onClick={requestClose}>{localize('com_ui_close')}</Button>
-          <div className="ml-auto flex min-w-0 items-center gap-2">
-            <div className="flex min-w-0 flex-wrap items-center justify-end gap-2 text-right" aria-live="polite">
-              {dirtyRowCount > 0 && (
-                <span className="text-sm text-text-secondary">
-                  {localize('com_ui_steel_review_unsaved_caption', { 0: dirtyRowCount })}
-                </span>
-              )}
-              {preparedRowCount !== undefined && (
-                <span className="text-sm text-text-secondary" role="status">
-                  {isSystemOrder
-                    ? localize('com_ui_steel_review_system_save_caption', {
-                      0: preparedRowCount,
-                      1: preparedQuoteRowCount ?? 0,
-                      2: quoteTotal ?? '—',
-                    })
-                    : localize('com_ui_steel_review_save_caption', { 0: preparedRowCount })}
-                </span>
-              )}
-              {confirmedRowCount !== undefined && preparedRowCount === undefined && (
-                <span className="text-sm text-text-secondary" role="status">
-                  {isSystemOrder
-                    ? localize('com_ui_steel_review_system_updated_caption', {
-                      0: confirmedRowCount,
-                      1: confirmedQuoteRowCount ?? 0,
-                      2: quoteTotal ?? '—',
-                    })
-                    : localize('com_ui_steel_review_updated_caption', { 0: confirmedRowCount })}
-                </span>
-              )}
-              {saveBusy && (
-                <span role="status">
-                  {localize(savePhase === 'reconciling'
-                    ? 'com_ui_steel_review_reconciling'
-                    : 'com_ui_steel_review_saving')}
-                </span>
-              )}
-              {(saveErrorCode || savePhase === 'uncertain' || savePhase === 'stale' || savePhase === 'error' ||
-                (savePhase === 'reconciling' && receiptFailed)) && (
-                <span role="alert">{localize(saveErrorKey)}</span>
-              )}
-              {receiptFailed && receiptInput && (
-                <Button type="button" variant="outline" onClick={retryReceiptLookup}>
-                  {localize('com_ui_steel_review_receipt_retry')}
-                </Button>
-              )}
-            </div>
-            <Button
-              type="button"
-              variant="submit"
-              className="shrink-0"
-              disabled={saveDisabled}
-              aria-busy={saveBusy}
-              onClick={() => void saveChanges()}
-            >
-              {localize('com_ui_steel_review_save')}
-            </Button>
-          </div>
+          <Button type="button" variant="outline" className="w-28 shrink-0" disabled={saveBusy} onClick={requestClose}>{localize('com_ui_close')}</Button>
+          {isDesktop && sourceControls}
+          <Button
+            type="button"
+            variant="submit"
+            className="w-28 shrink-0"
+            disabled={saveDisabled}
+            aria-busy={saveBusy}
+            onClick={() => void saveAndClose()}
+          >
+            {saveLabel}
+          </Button>
         </div>
         {closeRequested && (
           <div className="space-y-3 rounded-md border border-border-light bg-surface-secondary p-3" role="alertdialog" aria-label={localize('com_ui_steel_review_close_confirm')}>
@@ -2266,27 +2282,34 @@ export default function SteelReviewDialog({
             <div className="flex flex-wrap justify-end gap-2">
               <Button
                 type="button"
-                variant="outline"
-                disabled={saveBusy || !canSave || dirtyRowCount === 0}
-                aria-busy={saveBusy}
-                onClick={() => void saveAndClose()}
-              >
-                {localize('com_ui_steel_review_save_updates')}
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
+                variant="destructive"
                 disabled={saveBusy}
                 onClick={discardDraftAndClose}
               >
                 {localize('com_ui_steel_review_discard_unsaved')}
               </Button>
-              <Button type="button" disabled={saveBusy} onClick={() => setCloseRequested(false)}>
+              <Button type="button" variant="outline" disabled={saveBusy} onClick={() => setCloseRequested(false)}>
                 {localize('com_ui_steel_review_continue_editing')}
+              </Button>
+              <Button
+                type="button"
+                variant="submit"
+                disabled={saveDisabled}
+                aria-busy={saveBusy}
+                onClick={() => void saveAndClose()}
+              >
+                {saveLabel}
               </Button>
             </div>
           </div>
         )}
+        <ReviewStatus status={saveStatus}>
+            {receiptFailed && receiptInput && (
+              <Button type="button" variant="outline" size="sm" onClick={retryReceiptLookup}>
+                {localize('com_ui_steel_review_receipt_retry')}
+              </Button>
+            )}
+        </ReviewStatus>
         <OGDialog
           open={Boolean(dialogState.sourceCorrectionRowId)}
           onOpenChange={(open) => {

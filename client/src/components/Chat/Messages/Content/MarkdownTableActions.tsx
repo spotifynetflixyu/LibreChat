@@ -45,8 +45,6 @@ type TableToolbarProps = {
   onExpand?: () => void;
   reviewLabel?: string;
   onReview?: () => void;
-  reviewRetryLabel?: string;
-  onReviewRetry?: () => void;
   onBeforeDownload?: () => Promise<boolean>;
   getDownloadMatrix?: () => TableMatrix;
   onStickyColumnChange?: (columnIndex: number | undefined) => void;
@@ -177,7 +175,8 @@ function normalizeCellText(value: string): string {
 }
 
 function getNormalizedCellText(cell: HTMLTableCellElement): string {
-  return normalizeCellText(cell.textContent ?? '');
+  const content = cell.querySelector(':scope > [data-markdown-cell-content], :scope > [data-markdown-cell-wrapper] > [data-markdown-cell-content]') ?? cell;
+  return normalizeCellText(content.textContent ?? '');
 }
 
 
@@ -339,8 +338,6 @@ function TableToolbar({
   stickyColumnIndex,
   reviewLabel,
   onReview,
-  reviewRetryLabel,
-  onReviewRetry,
   onBeforeDownload,
   getDownloadMatrix,
 }: TableToolbarProps) {
@@ -458,16 +455,6 @@ function TableToolbar({
           <Copy className="size-4" aria-hidden="true" />
         )}
       </TableActionButton>
-      {reviewLabel && onReview && (
-        <TableActionButton label={reviewLabel} onClick={onReview}>
-          <FileSearch className="size-4" aria-hidden="true" />
-        </TableActionButton>
-      )}
-      {!reviewLabel && reviewRetryLabel && onReviewRetry && (
-        <TableActionButton label={reviewRetryLabel} onClick={onReviewRetry}>
-          <FileSearch className="size-4" aria-hidden="true" />
-        </TableActionButton>
-      )}
       {downloadMenu ? (
         <DropdownMenu
           onOpenChange={(open) => {
@@ -512,6 +499,11 @@ function TableToolbar({
         </TableActionButton>
       )}
       {downloadFailed && <span role="alert">{localize('com_ui_download_table_error')}</span>}
+      {reviewLabel && onReview && (
+        <TableActionButton label={reviewLabel} onClick={onReview}>
+          <FileSearch className="size-4" aria-hidden="true" />
+        </TableActionButton>
+      )}
       {expanded ? (
         <TableActionButton label={closeLabel} onClick={onClose ?? (() => undefined)}>
           <X className="size-4" aria-hidden="true" />
@@ -593,7 +585,6 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
       ...reviewCandidate,
     };
   }
-  const reviewRetryAvailable = reviewQuery.isError === true && reviewErrorStatus !== 404 && !reviewIdentity;
   useEffect(() => {
     if (!reviewCandidate) {
       setRecognizedReview(null);
@@ -623,7 +614,6 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
     void refetchReview();
   }, [candidateKey, children, isSubmitting, reviewCandidate, refetchReview]);
   const reviewLabel = localize('com_ui_steel_review_open');
-  const reviewRetryLabel = localize('com_ui_steel_review_retry');
   const reviewTable = reviewQuery.data?.table;
   reviewTableRef.current = reviewTable ?? undefined;
   useEffect(() => {
@@ -658,13 +648,10 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
     setIsExpanded(true);
   }, []);
   const openReview = useCallback(() => {
-    if (reviewIdentity) {
-      setSelection({ ...reviewIdentity, captureId: crypto.randomUUID() });
+    if (reviewCandidate) {
+      setSelection({ ...reviewCandidate, captureId: crypto.randomUUID() });
     }
-  }, [reviewIdentity, setSelection]);
-  const retryReviewRecognition = useCallback(() => {
-    void refetchReview();
-  }, [refetchReview]);
+  }, [reviewCandidate, setSelection]);
   const prepareReviewDownload = useCallback(async () => {
     const currentTable = reviewTableRef.current;
     if (!currentTable || !reviewIdentity) {
@@ -770,14 +757,8 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
         downloadFilename={downloadFilename}
         expanded={false}
         downloadMenu={downloadMenu}
-        reviewLabel={reviewIdentity ? reviewLabel : undefined}
-        onReview={reviewIdentity ? openReview : undefined}
-        reviewRetryLabel={reviewCandidate && reviewRetryAvailable
-          ? reviewRetryLabel
-          : undefined}
-        onReviewRetry={reviewCandidate && reviewRetryAvailable
-          ? retryReviewRecognition
-          : undefined}
+        reviewLabel={reviewCandidate ? reviewLabel : undefined}
+        onReview={reviewCandidate ? openReview : undefined}
         onBeforeDownload={reviewIdentity ? prepareReviewDownload : undefined}
         getDownloadMatrix={reviewIdentity ? getReviewDownloadMatrix : undefined}
         onCopied={handleCopied}
@@ -802,14 +783,8 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
                 downloadFilename={downloadFilename}
                 expanded={true}
                 downloadMenu={downloadMenu}
-                reviewLabel={reviewIdentity ? reviewLabel : undefined}
-                onReview={reviewIdentity ? openReview : undefined}
-                reviewRetryLabel={reviewCandidate && reviewRetryAvailable
-                  ? reviewRetryLabel
-                  : undefined}
-                onReviewRetry={reviewCandidate && reviewRetryAvailable
-                  ? retryReviewRecognition
-                  : undefined}
+                reviewLabel={reviewCandidate ? reviewLabel : undefined}
+                onReview={reviewCandidate ? openReview : undefined}
                 onBeforeDownload={reviewIdentity ? prepareReviewDownload : undefined}
                 getDownloadMatrix={reviewIdentity ? getReviewDownloadMatrix : undefined}
                 headerOptions={headerOptions}
@@ -825,9 +800,9 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
           </div>,
           document.body,
         )}
-      {reviewIdentity && (
+      {reviewCandidate && (
         <SteelReviewDialog
-          identity={reviewIdentity}
+          identity={reviewCandidate}
           downloadFilename={downloadFilename}
           saveGateRef={saveGateRef}
         />

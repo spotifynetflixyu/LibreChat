@@ -70,6 +70,34 @@ it('publishes the full clean response and fresh review baseline atomically', asy
   expect(await db.readSteelMarkdownVersions(scope)).toEqual([expect.objectContaining({ latest: true, saves: 0, outputId: 'ocr_result:ai-2' })]);
 });
 
+it('persists a full OCR response when its legacy source is reused in another same-owner conversation', async () => {
+  const fixture = await turn(order('2'));
+  const fileId = 'shared-order-file';
+  const otherConversationId = '6bf991da-be8c-5300-bd85-ff6ee2d17bb6';
+  await mongoose.models.Conversation.create({ conversationId: otherConversationId, user: scope.userId, endpoint: 'agents' });
+  await mongoose.models.Message.create([
+    { messageId: 'user-ai-2', conversationId: scope.conversationId, user: scope.userId,
+      isCreatedByUser: true, text: 'Read the attached order', files: [{ file_id: fileId }] },
+    { messageId: 'other-upload', conversationId: otherConversationId, user: scope.userId,
+      isCreatedByUser: true, text: 'Earlier use of the same file', files: [{ file_id: fileId }] },
+  ]);
+  await mongoose.models.File.create({ user: scope.userId, messageId: 'other-upload',
+    file_id: fileId, filename: 'order.pdf', filepath: '/test/order.pdf', type: 'application/pdf', bytes: 1, source: 'local' });
+  await services().ocr.allocateDelegateSourceMapping({ conversationId: scope.conversationId, fileId, sourceFilename: 'order.pdf' });
+  fixture.input.markdown = `## source_file_mapping\n\n| 來源 | 檔名 |\n| --- | --- |\n| F1 | order.pdf |\n\n${order('2').replace('文字訂單', 'F1')}`;
+
+  const result = await fixture.run();
+  const saved = await db.getMessage({ user: scope.userId, messageId: 'assistant-2' });
+  expect(saved).toMatchObject({ text: result.markdown, parentMessageId: 'user-ai-2', unfinished: false });
+  expect(saved?.metadata?.steelMarkdownOwners).toMatchObject({ ocr_result: { outputId: 'ocr_result:ai-2' } });
+  expect(fixture.persist).not.toHaveBeenCalled();
+  expect((await services().ocr.readCurrentOcrResult(scope.conversationId))?.markdown).toBe(order('2').replace('文字訂單', 'F1'));
+  expect((await services().quotation.readState(scope))?.currentOrder?.markdown).toBe(order('2').replace('文字訂單', 'F1'));
+  const review = createSteelReviewService({ reader: db, writer: createSteelReviewWriteMethods(mongoose) });
+  const { table } = await review.read({ ...scope, messageId: 'assistant-2', kind: 'ocr_result', title: 'ocr_result' });
+  expect(table.rows[0].source).toMatchObject({ fileId, filename: 'order.pdf' });
+});
+
 it.each(['## ocr_result_updates\n\n| x |\n| --- |\n| y |', `${order('2')}\n\n## ocr_deletions\n\nP1`])('rejects retired controls before any managed writes', async (markdown) => {
   const fixture = await turn(markdown);
   await expect(fixture.run()).rejects.toMatchObject({ code: 'retired_control_section' });

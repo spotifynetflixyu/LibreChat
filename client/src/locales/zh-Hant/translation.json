@@ -1743,6 +1743,8 @@
   "com_ui_shop": "購物",
   "com_ui_show": "顯示",
   "com_ui_show_all": "顯示全部",
+  "com_ui_table_cell_show_all": "顯示全文",
+  "com_ui_table_cell_show_less": "收合",
   "com_ui_show_code": "顯示程式碼",
   "com_ui_show_image_details": "顯示圖片詳情",
   "com_ui_show_less": "顯示較少",
