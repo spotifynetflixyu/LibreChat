@@ -1,6 +1,6 @@
 import type { SteelCalculationCheckpoint, TCustomConfig } from 'librechat-data-provider';
 import type { Document } from 'mongoose';
-import type { SteelMarkdownState, SteelMarkdownSnapshot, SteelMarkdownPublicationTarget } from './versions';
+import type { SteelMarkdownReference, SteelMarkdownState, SteelMarkdownSnapshot, SteelMarkdownPublicationTarget } from './versions';
 
 export type SteelQuotationRunStatus =
   | 'queued'
@@ -104,6 +104,8 @@ export interface SteelQuotationOrder {
   sha256: string;
   revision?: string;
   messageId?: string;
+  ocrSelection?: SteelQuotationOcrSelection;
+  sourceSnapshot?: SteelQuotationSourceSnapshot;
 }
 
 export interface SteelQuotationSourceMapping {
@@ -121,6 +123,21 @@ export interface SteelQuotationSourceSnapshot {
   mappings: SteelQuotationSourceMapping[];
 }
 
+export interface SteelQuotationOcrSelection {
+  candidates: {
+    ai?: SteelMarkdownReference;
+    human?: SteelMarkdownReference;
+  };
+  selected: SteelMarkdownReference;
+  version: number;
+}
+
+export interface SteelQuotationOcrInput {
+  selection: SteelQuotationOcrSelection;
+  markdown: string;
+  sourceSnapshot: SteelQuotationSourceSnapshot;
+}
+
 export interface SteelQuotationCurrentSystemOrder {
   reviewOutputId?: string;
   runId: string;
@@ -131,6 +148,7 @@ export interface SteelQuotationCurrentSystemOrder {
   customerQuoteMarkdown?: string;
   calculationCheckpoint?: SteelCalculationCheckpoint;
   sourceSnapshot?: SteelQuotationSourceSnapshot;
+  ocrSelection?: SteelQuotationOcrSelection;
   needsRequote?: boolean;
   requoteProvenance?: SteelQuotationRequoteProvenance;
   updatedAt: Date;
@@ -218,6 +236,7 @@ export interface SteelQuotationSnapshotPayload {
   customerMarkdown: string;
   customerIdentity: string;
   sourceSnapshot?: SteelQuotationSourceSnapshot;
+  ocrSelection?: SteelQuotationOcrSelection;
 }
 
 export interface SteelQuotationArtifactRef {
@@ -252,6 +271,7 @@ export interface SteelQuotationActiveRun {
   status: SteelQuotationRunStatus;
   triggerMessageId: string;
   targetMessageId?: string;
+  ocrSelection?: SteelQuotationOcrSelection;
   snapshotRef: SteelQuotationArtifactRef;
   chunks: SteelQuotationChunkState[];
   checkpointRefs: SteelQuotationCheckpointRef[];

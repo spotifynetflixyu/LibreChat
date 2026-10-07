@@ -156,7 +156,7 @@ describe('Steel review write methods', () => {
     const headers = ['來源', '類別', '備註', '總數'];
     const rawRows = [
       ['F1', 'H型鋼', 'A', '2'],
-      ['PROCESS', '加工/切工', 'A', '2'],
+      ['F1', '加工/切工', 'A', '2'],
     ];
     const currentMarkdown = [
       `## ${title}`,

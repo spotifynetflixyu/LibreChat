@@ -71,6 +71,7 @@ export {
   createSteelReviewWriteMethods,
   SteelReviewWriteError,
   createSteelReviewSourceMethods,
+  createSteelQuotationInputMethods,
   MAX_MCP_AUTHORITY_TARGETS,
   createMCPAuthorityBootRevision,
   createMCPAuthorityConfigSourceRevision,

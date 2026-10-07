@@ -148,7 +148,7 @@ export function createSteelPublicationMethods(mongoose: Mongoose, saveMessage: S
         const references: SteelMarkdownReference[] = input.targets.map((target) => ({
           kind: target.kind, source: 'ai', snapshotId: `markdown:${input.admission.generationId}:ai:${target.kind}`,
           generationId: input.admission.generationId, outputId: target.outputId, messageId: input.message.messageId, title: target.title,
-          revision: target.revision, sha256: sha(target.baselineMarkdown), lineageId: input.admission.lineageId, savedAt: now,
+          revision: target.revision, sha256: sha(target.baselineMarkdown), lineageId: input.admission.lineageId, version: 1, savedAt: now,
         }));
         const metadata = { ...oldMessage?.metadata, ...input.message.metadata };
         const priorSteelReview = oldMessage?.metadata?.steelReview;
@@ -175,7 +175,8 @@ export function createSteelPublicationMethods(mongoose: Mongoose, saveMessage: S
           const payload = JSON.stringify({ rawMarkdown: input.rawMarkdown, baselineMarkdown: target.baselineMarkdown });
           await Artifact.create([{ userId: input.scope.userId, conversationId: input.scope.conversationId, ...(input.scope.tenantId ? { tenantId: input.scope.tenantId } : {}),
             runId: `markdown:${input.admission.generationId}`, operationId: `ai:${target.kind}`, kind: 'main', sha256: sha(payload), payload,
-            markdownPublication: { reference, rawMarkdown: input.rawMarkdown, baselineMarkdown: target.baselineMarkdown } }], { session });
+            markdownPublication: { reference, rawMarkdown: input.rawMarkdown, baselineMarkdown: target.baselineMarkdown,
+              ...(target.sourceMappings ? { sourceMappings: target.sourceMappings } : {}) } }], { session });
           if (target.kind !== 'customer_data') {
             await Output.updateMany({ ...scopeFilter(input.scope), kind: target.kind, state: 'current' }, { $set: { state: 'historical', latestOutputId: target.outputId } }, { session, timestamps: false });
             await Output.create([{ userId: input.scope.userId, conversationId: input.scope.conversationId,

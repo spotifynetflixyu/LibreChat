@@ -14,6 +14,8 @@ export interface SteelMarkdownReference {
   revision: string;
   sha256: string;
   lineageId: string;
+  /** AI baselines are version 1; human references use the changed-save ordinal. */
+  version?: number;
   savedAt: Date;
   operationId?: string;
 }

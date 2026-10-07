@@ -1071,7 +1071,7 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
         sidecarCandidatesPromise,
         QuotationState.findOne(scopeFilter(input)).lean<ISteelQuotationState>(),
       ]);
-      const customerSnapshotArtifact = input.customerRunId && quotation?.currentSystemOrder?.runId
+      const customerSnapshotArtifact = input.customerRunId && quotation?.currentSystemOrder?.runId === input.customerRunId
         ? await QuotationArtifact.findOne({
             ...scopeFilter(input), runId: quotation.currentSystemOrder.runId, kind: 'snapshot', operationId: 'snapshot',
           }).select({ sha256: 1, payload: 1 }).lean<{ sha256: string; payload: string } | null>()
@@ -1347,6 +1347,12 @@ function quotationIsLinkedToOcr(
   const current = quotation?.currentSystemOrder;
   if (!current) {
     return false;
+  }
+  if (current.ocrSelection) {
+    const owner = quotation?.markdownPublication?.current?.ocr_result?.ai;
+    return owner?.lineageId === current.ocrSelection.selected.lineageId &&
+      owner.outputId === input.outputId && owner.messageId === input.messageId &&
+      owner.title === input.title;
   }
   const generationId = input.outputId.replace(/^ocr_result:/u, '');
   const sourceHashes = new Set(
@@ -2313,7 +2319,8 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               throw new SteelReviewWriteError('REVIEW_CONFLICT', 'Quotation state changed');
             }
           }
-          if (input.kind === 'ocr_result' && businessChangedRowIds.length > 0 && quotationIsLinkedToOcr(quotation, input, output)) {
+          if (input.kind === 'ocr_result' && (businessChangedRowIds.length > 0 || quotation?.currentSystemOrder?.ocrSelection) &&
+            quotationIsLinkedToOcr(quotation, input, output)) {
             const requoteProvenance = {
               sourceKind: 'ocr_result' as const,
               sourceMessageId: input.messageId,
@@ -2349,6 +2356,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               operationId: input.operationId,
               revision: nextRevision,
               sha256: markdownSha256(input.effectiveMarkdown),
+              version: (output?.receipts?.length ?? 0) + 2,
               savedAt,
             };
             const referenced = await QuotationState.updateOne({

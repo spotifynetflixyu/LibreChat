@@ -267,6 +267,8 @@ jest.mock('@librechat/api', () => ({
   })),
   createSteelQuotationPublicationPublisher: (...args) =>
     mockCreateSteelQuotationPublicationPublisher(...args),
+  createSteelFullMarkdownPublisher: (...args) =>
+    jest.requireActual('@librechat/api').createSteelFullMarkdownPublisher(...args),
   shouldDeferSteelMarkdownPersistence: (...args) => mockShouldDeferSteelMarkdownPersistence(...args),
   resolvePersistedTurnConversation: jest.requireActual('@librechat/api').resolvePersistedTurnConversation,
   getSteerRecoveryFailure: jest.requireActual(
@@ -399,6 +401,7 @@ jest.mock('~/cache', () => ({
 jest.mock('~/models', () => ({
   saveMessage: (...args) => mockSaveMessage(...args),
   saveSteelQuotationMessage: (...args) => mockSaveSteelQuotationMessage(...args),
+  publishSteelMarkdown: jest.fn().mockResolvedValue({ ok: true, message: {} }),
   saveConvo: (...args) => mockSaveConvo(...args),
   appendConvoMessageReference: (...args) => mockAppendConvoMessageReference(...args),
   getMessages: (...args) => mockGetMessages(...args),
@@ -4658,7 +4661,7 @@ describe('ResumableAgentController resume metadata', () => {
       { type: 'steer', steer: 'keep this steer' },
       { type: 'text', text: 'old quotation' },
     ];
-    const projectedText = 'primary answer\n\nfinal quotation';
+    const projectedText = '## system_order\n\n| A |\n| --- |\n| 1 |';
     const projectedContent = [
       { type: 'text', text: projectedText },
       sourceContent[1],

@@ -14,6 +14,9 @@ import {
   prepareQuotationTurn,
 } from '@librechat/api';
 import { createSteelFullMarkdownPublisher } from '../../../packages/api/src/steel/markdown/full';
+import { buildQuotationChunks } from '../../../packages/api/src/steel/quotation/protocol';
+import { renderQuotationCustomerMarkdown } from '../../../packages/api/src/steel/quotation/preparation';
+import { buildSteelQuotationStatusEvent } from '../../../packages/api/src/steel/native/events';
 import {
   deleteConversations,
   deleteMessagesByConversation,
@@ -118,17 +121,17 @@ interface PublishedSourceFixture {
 /** Seed the representative OCR response through the normal admission/publication boundary. */
 async function seedCurrentPublished(markdown: string, sourceFiles: PublishedSourceFixture[] = [
   { fileId: 'review-alpha', filename: 'alpha.pdf', type: 'application/pdf' },
-]) {
-  const conversationId = randomUUID();
-  const messageId = randomUUID();
+], reuse?: { conversationId: string; messageId?: string; parentMessageId?: string }) {
+  const conversationId = reuse?.conversationId ?? randomUUID();
+  const messageId = reuse?.messageId ?? randomUUID();
   const email = getE2EUser().email;
-  await seedConversations(email, [{ conversationId, title: 'Steel source review proof', updatedAt: new Date() }]);
+  if (!reuse) await seedConversations(email, [{ conversationId, title: 'Steel source review proof', updatedAt: new Date() }]);
   const { userId, userObjectId } = await withMongo(async (db) => {
     const user = await db.collection('users').findOne({ email });
     if (!user) throw new Error('Missing authenticated fixture user');
     return { userId: String(user._id), userObjectId: user._id };
   });
-  await withMongo(async (db) => {
+  if (!reuse) await withMongo(async (db) => {
     await db.collection('files').insertMany(sourceFiles.map((source) => ({
       user: userObjectId,
       conversationId,
@@ -158,7 +161,11 @@ async function seedCurrentPublished(markdown: string, sourceFiles: PublishedSour
     }
     const scope = { userId, conversationId };
     const generationId = randomUUID();
-    const quotation = await prepareQuotationTurn({ scope, messageId: `ocr-user-${generationId}`,
+    const userMessageId = `ocr-user-${generationId}`;
+    await seedMessages(email, conversationId, [{ messageId: userMessageId,
+      parentMessageId: reuse?.parentMessageId ?? null, text: '確認 OCR 來源表格',
+      isCreatedByUser: true, sender: 'User' }]);
+    const quotation = await prepareQuotationTurn({ scope, messageId: userMessageId,
       responseId: messageId, generationId, publicationStore: methods, text: '確認 OCR 來源表格' });
     let physical = markdown;
     const finalizer = createSteelMarkdownCompletionServices({
@@ -180,6 +187,7 @@ async function seedCurrentPublished(markdown: string, sourceFiles: PublishedSour
       }, { context: 'steel-review-e2e-normal-ocr' }),
       publishMarkdown: createSteelFullMarkdownPublisher({
         buildMessage: ({ markdown: clean }) => ({ user: userId, conversationId, messageId,
+          ...(reuse?.parentMessageId ? { parentMessageId: reuse.parentMessageId } : {}),
           text: clean, isCreatedByUser: false, sender: 'Assistant' }),
         savePublication: methods.publishSteelMarkdown,
       }),
@@ -370,6 +378,118 @@ test.describe('Steel managed source review', () => {
       await db.collection('files').deleteMany({ conversationId: { $in: ids } });
     });
     await deleteConversations(ids);
+  });
+
+  test('normal new AI publication retains the saved historical OCR sidecar and opens it read-only after reload', async ({ page }) => {
+    const original = await seedCurrentPublished(publishedOcr);
+    conversations.push(original.conversationId);
+    const read = await page.request.get(titleReadUrl(original.conversationId, original.messageId), { headers });
+    const table = (await read.json() as { table: SteelReviewTable }).table;
+    await commitOperation(page, headers, await prepareQuantity(page, headers, table, '7'));
+    const newer = await seedCurrentPublished(publishedOcr.replace('| F1 | REVIEW-P1 | 1000 | 2 |', '| F1 | REVIEW-P1 | 1000 | 4 |'), undefined,
+      { conversationId: original.conversationId, parentMessageId: original.messageId });
+    const historical = await page.request.get(titleReadUrl(original.conversationId, original.messageId), { headers });
+    expect(historical.status()).toBe(200);
+    const old = (await historical.json() as { table: SteelReviewTable }).table;
+    expect(old).toMatchObject({ readOnly: true, isLatest: false });
+    expect(old.rows[0].values['數量'].effective).toBe('7');
+    const current = await page.request.get(titleReadUrl(newer.conversationId, newer.messageId), { headers });
+    expect((await current.json() as { table: SteelReviewTable }).table).toMatchObject({ readOnly: false, isLatest: true });
+    const saved = await persistedSnapshot(original.conversationId);
+    await page.goto(`/c/${original.conversationId}`);
+    await expect(page.getByText('Previous version v2', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).first().click();
+    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
+    await expect(dialog.getByRole('textbox')).toHaveCount(0);
+    await expect(dialog.getByRole('button', { name: /^Save/ })).toBeDisabled();
+    await expect(reviewValue(dialog, '7')).toBeVisible();
+    await dialog.getByRole('button', { name: 'Close', exact: true }).first().click();
+    await page.reload();
+    await expect(page.getByText('Previous version v2', { exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Open Steel review', exact: true }).first().click();
+    await expect(page.getByRole('dialog', { name: 'Steel source review' }).getByRole('textbox')).toHaveCount(0);
+    expect(await persistedSnapshot(original.conversationId)).toEqual(saved);
+  });
+
+  test('saved human OCR admission remains fixed after another Save and reload shows its actual quotation source', async ({ page }) => {
+    const fixture = await seedCurrentPublished(publishedOcr);
+    conversations.push(fixture.conversationId);
+    const read = await page.request.get(titleReadUrl(fixture.conversationId, fixture.messageId), { headers });
+    expect(read.status()).toBe(200);
+    const original = (await read.json() as { table: SteelReviewTable }).table;
+    const saved = await commitOperation(page, headers, await prepareQuantity(page, headers, original, '7'));
+    expect(saved.savedSnapshot).toBeDefined();
+    const userId = await withMongo(async (db) => {
+      const message = await db.collection('messages').findOne({ conversationId: fixture.conversationId, messageId: fixture.messageId });
+      if (!message) throw new Error('Missing saved OCR message');
+      return String(message.user);
+    });
+    const runtimePath = process.env.E2E_RUNTIME_ENV_PATH ?? `${process.cwd()}/e2e/specs/.test-results/runtime-env.json`;
+    const runtime = JSON.parse(await readFile(runtimePath, 'utf8')) as { MONGO_URI: string };
+    const targetMessageId = randomUUID();
+    await mongoose.connect(runtime.MONGO_URI);
+    let runId: string;
+    let inputHash: string;
+    try {
+      createModels(mongoose);
+      const methods = createMethods(mongoose);
+      const service = createSteelQuotationStateService(mongoose);
+      const scope = { userId, conversationId: fixture.conversationId };
+      const before = await service.ensureState(scope);
+      const prepared = await service.prepareOcrOrder(scope, before.currentOrder?.sha256 ?? null);
+      expect(prepared.input?.selection.selected.source).toBe('human');
+      expect(prepared.input?.selection.version).toBe(2);
+      expect(prepared.input?.sourceSnapshot.mappings).toEqual([expect.objectContaining({ fileId: 'review-alpha', sourceCode: 'F1' })]);
+      const customerMarkdown = renderQuotationCustomerMarkdown({ tier: 'B' });
+      await service.saveCustomer({ scope, customerMarkdown, customerIdentity: 'explicit-default:B',
+        triggeringMessageId: 'source-customer', responseId: 'source-customer-response',
+        orderHash: prepared.state.currentOrder!.sha256,
+        selectionProvenance: { method: 'default_tier', selectionMessageId: 'source-customer' } });
+      const ticket = await service.issueTicket({ scope, customerMarkdown, customerIdentity: 'explicit-default:B',
+        triggeringMessageId: 'source-quote', selectionProvenance: { method: 'default_tier', selectionMessageId: 'source-customer' } });
+      const run = await service.acceptSignal({ scope, index: ticket.index, token: ticket.token,
+        orderHash: ticket.orderHash, customerMarkdown, customerIdentity: ticket.customerIdentity,
+        prompts: { child: 'External provider fixture child', main: 'External provider fixture main' },
+        chunks: buildQuotationChunks(prepared.state.currentOrder!.markdown, 30).map((chunk) => ({ index: chunk.chunkIndex, sourceRowCount: chunk.sourceRows.length })),
+        targetMessageId });
+      runId = run.runId;
+      inputHash = run.snapshotRef.sha256;
+      await methods.saveMessage({ userId }, { user: userId, conversationId: fixture.conversationId,
+        messageId: targetMessageId, parentMessageId: fixture.messageId, text: 'Saved quotation admission',
+        content: [{ type: 'text', text: 'Saved quotation admission' }], isCreatedByUser: false, sender: 'Assistant',
+        metadata: { steel: { activityEvents: [buildSteelQuotationStatusEvent({ conversationId: fixture.conversationId,
+          messageId: targetMessageId, index: run.index, runId, stage: 'accepted', status: 'queued', completedChunks: 0, totalChunks: run.chunks.length })] } },
+      }, { context: 'normal quotation admission browser proof' });
+    } finally {
+      await mongoose.disconnect();
+    }
+    const currentRead = await page.request.get(titleReadUrl(fixture.conversationId, fixture.messageId), { headers });
+    const current = (await currentRead.json() as { table: SteelReviewTable }).table;
+    await commitOperation(page, headers, await prepareQuantity(page, headers, current, '8'));
+    const statusResponse = await page.request.get(`/api/steel/conversations/${fixture.conversationId}/quotation`, { headers });
+    expect(statusResponse.status()).toBe(200);
+    expect(await statusResponse.json()).toMatchObject({ runId, ocrSource: { source: 'human', version: 2 } });
+    await withMongo(async (db) => {
+      const state = await db.collection('steel_quotation_states').findOne({ conversationId: fixture.conversationId, userId });
+      expect(state?.activeRun.snapshotRef.sha256).toBe(inputHash);
+      expect(state?.markdownPublication.lastHumanOcr.version).toBe(3);
+      const artifact = await db.collection('steel_quotation_artifacts').findOne({ conversationId: fixture.conversationId, runId, operationId: 'snapshot' });
+      const snapshot = JSON.parse(artifact!.payload);
+      expect(snapshot.ocrSelection.selected.sha256).toBe(state?.activeRun.ocrSelection.selected.sha256);
+      expect(snapshot.orderMarkdown).toContain('| 7 |');
+      expect(snapshot.orderMarkdown).not.toContain('| 8 |');
+    });
+    await page.goto(`/c/${fixture.conversationId}`);
+    await expect(page.getByText('Quotation source: Saved human OCR v2', { exact: true })).toBeVisible();
+    await page.reload();
+    await expect(page.getByText('Quotation source: Saved human OCR v2', { exact: true })).toBeVisible();
+    await page.getByText('Quotation source: Saved human OCR v2', { exact: true }).scrollIntoViewIfNeeded();
+    await page.screenshot({ path: 'e2e/specs/.test-results/steel-quotation-source-human.png' });
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.emulateMedia({ colorScheme: 'dark', reducedMotion: 'reduce' });
+    await page.getByText('Quotation source: Saved human OCR v2', { exact: true }).scrollIntoViewIfNeeded();
+    await expect(page.getByText('Quotation source: Saved human OCR v2', { exact: true })).toBeInViewport();
+    await page.screenshot({ path: 'e2e/specs/.test-results/steel-quotation-source-narrow.png' });
   });
 
   test('only the canonical table opens and read/reload leaves DB and unrelated text unchanged', async ({ page }) => {
@@ -2528,8 +2648,10 @@ test.describe('Steel managed source review', () => {
       sender: 'Assistant',
     }]);
     await withMongo(async (db) => {
+      const currentOwner = await db.collection('messages').findOne({ conversationId, messageId });
+      await db.collection('messages').updateOne({ conversationId, messageId: currentOwner!.parentMessageId },
+        { $set: { parentMessageId: previousMessageId } });
       await db.collection('messages').updateOne({ conversationId, messageId }, { $set: {
-        parentMessageId: previousMessageId,
         text: `${markdown} SAVE-SECOND-PART-KEEP`,
         content: [{ type: 'text', text: markdown }, { type: 'text', text: 'SAVE-SECOND-PART-KEEP' }],
       } });
@@ -3815,7 +3937,7 @@ test.describe('Steel managed source review', () => {
     await page.goto(`/c/${conversationId}`);
     await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
     const dialog = page.getByRole('dialog', { name: 'Steel source review' });
-    const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+    const quantity = dialog.locator('tbody tr').first().getByRole('textbox', { name: /^數量 / });
     await quantity.fill('7');
     await dialog.getByRole('button', { name: /^Save/ }).click();
     await expect(dialog.getByRole('alert')).toBeVisible();
@@ -4131,7 +4253,7 @@ test.describe('Steel managed source review', () => {
         await page.goto(`/c/${conversationId}`);
         await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
         const dialog = page.getByRole('dialog', { name: 'Steel source review' });
-        const quantity = dialog.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox');
+        const quantity = dialog.locator('tbody tr').first().getByRole('textbox', { name: /^數量 / });
         await quantity.fill('9');
         await quantity.press('Enter');
         await dialog.getByRole('button', { name: /^Save/ }).click();
@@ -4173,7 +4295,7 @@ test.describe('Steel managed source review', () => {
         expect(await persistedSnapshot(conversationId)).toEqual(latest);
         if (publication !== 'new_ai') {
           await expect(quantity).toHaveValue('9');
-          if (publication === 'foreign_save') await expect(dialog.locator('tbody tr').first().locator('td').nth(2).getByRole('textbox')).toHaveValue('1234');
+          if (publication === 'foreign_save') await expect(dialog.locator('tbody tr').first().getByRole('textbox', { name: /^長度 / })).toHaveValue('1234');
           await expect(dialog.getByText(/Unsaved.*1|1.*unsaved/i)).toHaveCount(0);
         } else {
           await expect(dialog.getByRole('button', { name: 'Add row', exact: true })).toHaveCount(0);
@@ -4195,7 +4317,7 @@ test.describe('Steel managed source review', () => {
         await page.reload();
         await page.getByRole('button', { name: 'Open Steel review', exact: true }).click();
         const reopened = page.getByRole('dialog', { name: 'Steel source review' });
-        await expect(reopened.locator('tbody tr').first().locator('td').nth(3).getByRole('textbox'))
+        await expect(reopened.locator('tbody tr').first().getByRole('textbox', { name: /^數量 / }))
           .toHaveValue(publication === 'new_ai' ? '4' : '9');
         if (publication === 'new_ai') {
           await expect(reopened.locator('del', { hasText: '9' })).toHaveCount(0);

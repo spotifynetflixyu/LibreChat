@@ -8,6 +8,7 @@ import type {
   SteelQuotationPublicationSaveResult,
   SteelQuotationScope,
   SteelQuotationSourceSnapshot,
+  SteelQuotationOcrSelection,
 } from '@librechat/data-schemas';
 import type { SteelMarkdownCompletionInput, SteelMarkdownCompletionDependencies, SteelMarkdownCompletionResult, SteelMarkdownPublication, SteelPublishedResponseIdentity } from './types';
 import type { SteelResponseRequest } from '../quotation/completion';
@@ -16,6 +17,7 @@ import { appendSteelNextStep, hasSteelDataMarkdown, hasSteelCustomerTier, steelS
 import { isUnfinishedQuotation, hasQuotationOrder } from '../quotation/preparation';
 import { SteelResponseCompletionError } from '../quotation/completion';
 import { resolveRequestTenantId } from '../../middleware/tenant';
+import { sameQuotationOcrSelection } from '../quotation/input';
 import { parseQuotationSignal } from '../quotation/protocol';
 import { retiredMarkdownSectionTitles } from './admission';
 import { parseAssistantMarkdown } from '../ocr/result';
@@ -43,6 +45,7 @@ interface CompletionReceipt {
   expectedSystemOrderHash?: string;
   expectedSystemOrderRunId?: string;
   expectedOcrGeneration?: string;
+  expectedOcrSelection?: SteelQuotationOcrSelection;
   expectedOrderHash?: string;
   expectedCustomerPreparationId?: string;
   systemOrderSnapshot?: SteelQuotationCurrentSystemOrder;
@@ -118,7 +121,9 @@ export function shouldDeferSteelMarkdownPersistence(req: SteelResponseRequest, m
 async function verifyPublication(publication: SteelMarkdownPublication, scope: SteelQuotationScope, dependencies: SteelMarkdownCompletionDependencies): Promise<void> {
   const [ocr, state] = await Promise.all([dependencies.ocr.readCurrentOcrResult(scope.conversationId), dependencies.quotation.readState(scope)]);
   if (publication.scopeKey !== scopeKey(scope) || !publications.has(publication) ||
-    publication.ocrGeneration !== ocr?.generationId || publication.ocrHash !== (ocr?.markdown ? hash(ocr.markdown) : undefined) ||
+    (publication.ocrSelection
+      ? !sameQuotationOcrSelection(publication.ocrSelection, state?.activeRun?.ocrSelection)
+      : publication.ocrGeneration !== ocr?.generationId || publication.ocrHash !== (ocr?.markdown ? hash(ocr.markdown) : undefined)) ||
     publication.orderHash !== state?.currentOrder?.sha256 ||
     publication.customerPreparationId !== state?.currentCustomer?.preparationId ||
     publication.runId !== state?.activeRun?.runId || publication.systemOrderHash !== state?.currentSystemOrder?.sha256) {
@@ -357,7 +362,7 @@ export async function finalizeSteelMarkdownTurn(
       const publication: SteelMarkdownPublication = Object.freeze({ scopeKey: scopeKey(scope), responseId: input.responseId,
         generationId, markdown, ocrGeneration: ocr?.generationId, ocrHash: ocr?.markdown ? hash(ocr.markdown) : undefined,
         orderHash: latest?.currentOrder?.sha256, customerPreparationId: latest?.currentCustomer?.preparationId,
-        runId: latest?.activeRun?.runId, systemOrderHash: latest?.currentSystemOrder?.sha256 });
+        runId: latest?.activeRun?.runId, ocrSelection: latest?.activeRun?.ocrSelection, systemOrderHash: latest?.currentSystemOrder?.sha256 });
       publications.add(publication);
       return { markdown, publication };
     }
@@ -386,7 +391,7 @@ export async function finalizeSteelMarkdownTurn(
           quotationState.currentCustomer?.preparationId !== replayTicket.preparationId ||
           quotationState.currentCustomer?.customerIdentity !== replayTicket.customerIdentity ||
           quotationState.currentCustomer?.customerMarkdown !== replayTicket.customerMarkdown ||
-          (savedCompletion.ocrGeneration && (savedCompletion.ocrGeneration !== ocrState?.currentOcrResultGenerationId ||
+          (!quotationState.activeRun?.ocrSelection && savedCompletion.ocrGeneration && (savedCompletion.ocrGeneration !== ocrState?.currentOcrResultGenerationId ||
             savedCompletion.ocrHash !== hash(ocrState?.currentOcrResultMarkdown ?? ''))) ||
           (savedCompletion.systemOrderHash && quotationState.currentSystemOrder?.runId !== replayTicket.acceptedRunId &&
             savedCompletion.systemOrderHash !== quotationState.currentSystemOrder?.sha256)) {
@@ -431,6 +436,7 @@ export async function finalizeSteelMarkdownTurn(
           orderHash: publishedState?.currentOrder?.sha256,
           customerPreparationId: publishedState?.currentCustomer?.preparationId,
           runId: publishedState?.activeRun?.runId,
+          ocrSelection: publishedState?.activeRun?.ocrSelection,
           systemOrderHash: projectedSystemOrderHash ?? publishedState?.currentSystemOrder?.sha256 });
         publications.add(publication);
         await verifyPublication(publication, scope, dependencies);
@@ -441,6 +447,7 @@ export async function finalizeSteelMarkdownTurn(
         inputHash: hash(input.markdown), inputMarkdown: input.markdown,
         stage: input.stage ?? 'ui', canonicalMarkdown: input.markdown,
         expectedOcrGeneration: ocrState?.currentOcrResultGenerationId,
+        expectedOcrSelection: context?.quotation?.state?.currentOrder?.ocrSelection ?? quotationState?.currentOrder?.ocrSelection,
         expectedOrderHash: quotationState?.currentOrder?.sha256,
         expectedCustomerPreparationId: context?.quotation?.state
           ? context.quotation.state.currentCustomer?.preparationId
@@ -500,7 +507,8 @@ export async function finalizeSteelMarkdownTurn(
         messageId: context?.quotation?.messageId, service: dependencies.quotation,
         expectedOrderHash: latest?.currentOrder?.sha256,
         expectedCustomerPreparationId: latest?.currentCustomer?.preparationId, finishReason: 'stop',
-        sourceSnapshot: admittedSourceSnapshot(admittedOcrState, latest?.currentOrder?.sha256),
+        ocrSelection: receipt.expectedOcrSelection,
+        sourceSnapshot: latest?.currentOrder?.sourceSnapshot ?? admittedSourceSnapshot(admittedOcrState, latest?.currentOrder?.sha256),
         completionReceipt: {
           inputHash: receipt.inputHash, markdown: receipt.canonicalMarkdown,
           ...(admittedOcrState?.currentOcrResultGenerationId ? { ocrGeneration: admittedOcrState.currentOcrResultGenerationId,
@@ -523,8 +531,9 @@ export async function finalizeSteelMarkdownTurn(
     const [publishedOcr, publishedState] = await Promise.all([
       dependencies.ocr.readCurrentOcrResult(scope.conversationId), dependencies.quotation.readState(scope),
     ]);
-    if (publishedOcr?.generationId !== currentOcr?.generationId ||
-      publishedOcr?.markdown !== currentOcr?.markdown ||
+    if ((!latest?.activeRun?.ocrSelection && (publishedOcr?.generationId !== currentOcr?.generationId ||
+      publishedOcr?.markdown !== currentOcr?.markdown)) ||
+      !sameQuotationOcrSelection(publishedState?.activeRun?.ocrSelection, latest?.activeRun?.ocrSelection) ||
       publishedState?.currentOrder?.sha256 !== latest?.currentOrder?.sha256 ||
       publishedState?.currentCustomer?.preparationId !== latest?.currentCustomer?.preparationId ||
       publishedState?.activeRun?.runId !== latest?.activeRun?.runId ||
@@ -536,7 +545,7 @@ export async function finalizeSteelMarkdownTurn(
       scopeKey: scopeKey(scope), responseId: input.responseId, generationId, markdown,
       ocrGeneration: publishedOcr?.generationId, ocrHash: publishedOcr?.markdown ? hash(publishedOcr.markdown) : undefined,
       orderHash: publishedState?.currentOrder?.sha256, customerPreparationId: publishedState?.currentCustomer?.preparationId,
-      runId: publishedState?.activeRun?.runId, systemOrderHash: publishedState?.currentSystemOrder?.sha256,
+      runId: publishedState?.activeRun?.runId, ocrSelection: publishedState?.activeRun?.ocrSelection, systemOrderHash: publishedState?.currentSystemOrder?.sha256,
     });
     publications.add(publication);
     return { markdown, publication, ...(receipt.acceptedRun ? { acceptedRun: receipt.acceptedRun } : {}) };

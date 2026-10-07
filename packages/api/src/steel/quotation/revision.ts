@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type {
   SteelQuotationCurrentSystemOrder,
   SteelQuotationSourceSnapshot,
+  SteelQuotationOcrSelection,
   SteelQuotationScope,
 } from '@librechat/data-schemas';
 import { retiredMarkdownSectionTitles } from '../markdown/admission';
@@ -9,6 +10,7 @@ import { normalizeSystemOrderMarkdown } from '../markdown/order';
 import { escapeMarkdownTableCell } from '../markdown/row-codec';
 import { parseMarkdownTables } from '../markdown/table';
 import { parseAssistantMarkdown } from '../ocr/result';
+import { sameQuotationOcrSource } from './input';
 
 const MAX_RESPONSE_ID_BYTES = 300;
 const MAX_MESSAGE_ID_BYTES = 1_000;
@@ -56,7 +58,7 @@ export type SystemOrderRevisionPreparation =
 export type SystemOrderRevisionPreparedSuccess = PreparedSystemOrderRevisionSuccess;
 
 export interface SystemOrderRevisionState {
-  currentOrder?: { sha256: string };
+  currentOrder?: { sha256: string; ocrSelection?: SteelQuotationOcrSelection };
   currentCustomer?: { customerIdentity: string; customerMarkdown: string };
   tickets?: readonly {
     acceptedRunId?: string;
@@ -68,6 +70,7 @@ export interface SystemOrderRevisionState {
     runId: string;
     status: string;
     targetMessageId?: string;
+    ocrSelection?: SteelQuotationOcrSelection;
   };
   currentSystemOrder?: SteelQuotationCurrentSystemOrder;
   updatedAt?: Date;
@@ -75,7 +78,8 @@ export interface SystemOrderRevisionState {
 
 export function isCurrentSystemOrderRun(state?: SystemOrderRevisionState | null): boolean {
   const run = state?.activeRun;
-  return run?.status === 'completed' && Boolean(state?.currentOrder?.sha256) &&
+  return run?.status === 'completed' && !state?.currentSystemOrder?.needsRequote &&
+    sameQuotationOcrSource(run.ocrSelection, state?.currentOrder?.ocrSelection) && Boolean(state?.currentOrder?.sha256) &&
     state?.tickets?.some((ticket) => ticket.acceptedRunId === run.runId &&
       ticket.orderHash === state.currentOrder?.sha256 && (!state.currentCustomer ||
         (ticket.customerIdentity === state.currentCustomer.customerIdentity &&

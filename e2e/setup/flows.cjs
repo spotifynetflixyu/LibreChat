@@ -83,6 +83,8 @@ const MANIFEST = Object.freeze([
     name: 'steel-ocr-review',
     file: 'steel-review.spec.ts',
     titles: [
+      'normal new AI publication retains the saved historical OCR sidecar and opens it read-only after reload',
+      'saved human OCR admission remains fixed after another Save and reload shows its actual quotation source',
       'manual OCR Save changes only the clicked message and chat reload shows clean saved values',
       'dirty OCR Escape offers continue and discard without saving the chat',
       'deleting a previously saved manual OCR row changes one row without inventing an AI comparison',

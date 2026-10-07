@@ -1241,7 +1241,7 @@ describe('quotation runner integration', () => {
     expect(after?.nextSignalIndex).toBe(1);
   });
 
-  it('replays a receipt-backed OCR update response without legacy table validation', async () => {
+  it('rejects a receipt-backed retired OCR update without allocating a run', async () => {
     const state = await service.setOrder({ scope, fullMarkdown: orderMarkdown(1) });
     const customer = await service.saveCustomer({
       scope,
@@ -1271,12 +1271,13 @@ describe('quotation runner integration', () => {
       finishReason: 'stop',
       service,
     };
-    const first = await acceptQuotationSignal(request);
-    const replay = await acceptQuotationSignal({ ...request, response: canonicalResponse });
+    await expect(acceptQuotationSignal(request)).rejects.toMatchObject({ code: 'retired_control_section' });
+    await expect(acceptQuotationSignal({ ...request, response: canonicalResponse }))
+      .rejects.toMatchObject({ code: 'retired_control_section' });
     const after = await service.readState(scope);
-    expect(first?.runId).toBeDefined();
-    expect(replay?.runId).toBe(first?.runId);
     expect(after?.currentCustomer).toEqual(customer);
+    expect(after?.activeRun).toBeUndefined();
+    expect(after?.nextSignalIndex).toBe(0);
     expect(after?.pendingMessages).toHaveLength(0);
   });
 
@@ -1446,11 +1447,18 @@ describe('quotation runner integration', () => {
     ]) {
       await expect(acceptQuotationResponse({ scope, response: invalid, responseId: 'response-1', finishReason: 'stop' })).rejects.toThrow();
     }
-    for (const heading of ['## ocr_result', '  ## ocr_result', '## ocr_result ##', '## ocr_result_updates', '  ## ocr_result_updates', '## ocr_result_updates ##']) {
+    for (const heading of ['## ocr_result', '  ## ocr_result', '## ocr_result ##']) {
       await expect(acceptQuotationResponse({ scope,
         response: `${orderMarkdown(1).replace('## ocr_result', heading)}\n\n${response}`,
         responseId: 'response-1', expectedOrderHash: prepared?.currentOrder?.sha256,
         expectedCustomerPreparationId: prepared?.currentCustomer?.preparationId, finishReason: 'stop' })).resolves.toBeUndefined();
+    }
+    for (const heading of ['## ocr_result_updates', '  ## ocr_result_updates', '## ocr_result_updates ##']) {
+      await expect(acceptQuotationResponse({ scope,
+        response: `${orderMarkdown(1).replace('## ocr_result', heading)}\n\n${response}`,
+        responseId: 'response-1', expectedOrderHash: prepared?.currentOrder?.sha256,
+        expectedCustomerPreparationId: prepared?.currentCustomer?.preparationId, finishReason: 'stop' }))
+        .rejects.toMatchObject({ code: 'retired_control_section' });
     }
     await expect(acceptQuotationResponse({ scope, response, responseId: 'other-response',
       expectedOrderHash: prepared?.currentOrder?.sha256,

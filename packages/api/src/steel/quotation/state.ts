@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'crypto';
 
 import {
+  createSteelQuotationInputMethods,
   createSteelQuotationArtifactModel,
   createSteelQuotationStateModel,
 } from '@librechat/data-schemas';
@@ -16,6 +17,8 @@ import type {
   SteelQuotationCustomerLookupEvidence,
   SteelQuotationCustomerPreparation,
   SteelQuotationCurrentSystemOrder,
+  SteelQuotationOcrInput,
+  SteelQuotationOcrSelection,
   SteelQuotationOrder,
   SteelQuotationPendingMessage,
   SteelQuotationPendingMessageFile,
@@ -26,6 +29,8 @@ import type {
   SteelQuotationTicketCompletionReceipt,
   SteelQuotationTicket,
 } from '@librechat/data-schemas';
+
+import { SteelQuotationInputError } from './input';
 
 type Mongoose = typeof import('mongoose');
 export const MAX_QUOTATION_ORDER_BYTES = 250_000;
@@ -138,6 +143,7 @@ export interface SteelQuotationAcceptSignalInput {
   prompts: SteelQuotationSnapshotPayload['prompts'];
   chunks: readonly SteelQuotationChunkInput[];
   sourceSnapshot?: SteelQuotationSnapshotPayload['sourceSnapshot'];
+  ocrSelection?: SteelQuotationOcrSelection;
   targetMessageId?: string;
   now?: Date;
 }
@@ -288,6 +294,10 @@ export interface SteelQuotationStateService {
   readCurrentSystemOrder(scope: SteelQuotationScope): Promise<SteelQuotationCurrentSystemOrder | undefined>;
   hasSystemOrder(scope: SteelQuotationScope): Promise<boolean>;
   setOrder(input: SteelQuotationOrderInput): Promise<ISteelQuotationState>;
+  readOcrInput(scope: SteelQuotationScope): Promise<SteelQuotationOcrInput | undefined>;
+  markOcrStale(scope: SteelQuotationScope, runId: string, selection: SteelQuotationOcrSelection): Promise<boolean>;
+  prepareOcrOrder(scope: SteelQuotationScope, expectedOrderHash: string | null):
+    Promise<{ state: ISteelQuotationState; input?: SteelQuotationOcrInput }>;
   saveCurrentSystemOrder(
     input: SteelQuotationSaveCurrentSystemOrderInput,
   ): Promise<SteelQuotationCurrentSystemOrder | undefined>;
@@ -532,9 +542,7 @@ function stateFilter(scope: SteelQuotationScope) {
   return {
     userId: scope.userId,
     conversationId: scope.conversationId,
-    tenantId: scope.tenantId === undefined
-      ? null
-      : { $in: [scope.tenantId, null] },
+    tenantId: scope.tenantId ?? null,
   };
 }
 
@@ -598,9 +606,7 @@ function cloneScopeRef(scope: SteelQuotationScope, ref: SteelQuotationArtifactRe
   if (ref.userId !== scope.userId || ref.conversationId !== scope.conversationId) {
     return false;
   }
-  return scope.tenantId === undefined
-    ? ref.tenantId === undefined
-    : ref.tenantId === undefined || ref.tenantId === scope.tenantId;
+  return (ref.tenantId ?? null) === (scope.tenantId ?? null);
 }
 
 function artifactRef(
@@ -661,7 +667,10 @@ function matchesCustomerPreparation(
     sameSelectionProvenance(preparation.selectionProvenance, input.selectionProvenance);
 }
 
-export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuotationStateService {
+export function createSteelQuotationStateService(
+  mongoose: Mongoose,
+  inputs: ReturnType<typeof createSteelQuotationInputMethods> = createSteelQuotationInputMethods(mongoose),
+): SteelQuotationStateService {
   const State = createSteelQuotationStateModel(mongoose);
   const Artifact = createSteelQuotationArtifactModel(mongoose);
 
@@ -702,6 +711,24 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
       assertAuthorityBounds(state);
     }
     return state;
+  }
+
+  async function readOcrInput(scope: SteelQuotationScope): Promise<SteelQuotationOcrInput | undefined> {
+    const result = await inputs.readSteelQuotationOcrInput(scope);
+    if (!result.ok) throw new SteelQuotationInputError(result.code);
+    return result.input;
+  }
+
+  async function markOcrStale(scope: SteelQuotationScope, runId: string, selection: SteelQuotationOcrSelection): Promise<boolean> {
+    const result = await inputs.markSteelQuotationOcrStale({ scope, runId, selection });
+    if (!result.ok) throw new SteelQuotationInputError(result.code);
+    return result.needsRequote;
+  }
+
+  async function prepareOcrOrder(scope: SteelQuotationScope, expectedOrderHash: string | null) {
+    const result = await inputs.prepareSteelQuotationOcrInput({ scope, expectedOrderHash });
+    if (!result.ok) throw new SteelQuotationInputError(result.code);
+    return { state: result.state, ...(result.input ? { input: result.input } : {}) };
   }
 
   async function readCurrentSystemOrder(
@@ -1588,6 +1615,24 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
     }
     if (isUnfinished(current.activeRun?.status)) {
       throw new Error('another quotation run is unfinished');
+    }
+    const selection = input.ocrSelection ?? current.currentOrder.ocrSelection;
+    if (selection) {
+      const admitted = await inputs.admitSteelQuotationOcrInput({
+        scope: input.scope,
+        index: input.index,
+        token: input.token,
+        orderHash: input.orderHash,
+        customerMarkdown: input.customerMarkdown,
+        customerIdentity: input.customerIdentity,
+        prompts: input.prompts,
+        chunks: input.chunks,
+        selection,
+        ...(input.targetMessageId ? { targetMessageId: input.targetMessageId } : {}),
+        now,
+      });
+      if (!admitted.ok) throw new SteelQuotationInputError(admitted.code);
+      return admitted.run;
     }
     const runId = ticket.token;
     const snapshotPayload: SteelQuotationSnapshotPayload = {
@@ -2666,6 +2711,9 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
     readCurrentSystemOrder,
     hasSystemOrder,
     setOrder,
+    readOcrInput,
+    prepareOcrOrder,
+    markOcrStale,
     saveCurrentSystemOrder,
     saveCustomer,
     saveCustomerLookupEvidence,

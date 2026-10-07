@@ -18,10 +18,52 @@ import type {
   SteelQuotationPendingMessage,
   SteelQuotationPendingMessageFile,
   SteelQuotationSelectionProvenance,
+  SteelQuotationOcrSelection,
   SteelQuotationSourceMapping,
   SteelQuotationSourceSnapshot,
   SteelQuotationTicket,
 } from '~/types';
+
+const steelMarkdownReferenceSchema = new Schema({
+  kind: { type: String, enum: ['ocr_result', 'system_order', 'customer_data'], required: true },
+  source: { type: String, enum: ['ai', 'human'], required: true },
+  snapshotId: { type: String, required: true },
+  generationId: { type: String, required: true },
+  outputId: { type: String, required: true },
+  messageId: { type: String, required: true },
+  title: { type: String, required: true },
+  revision: { type: String, required: true },
+  sha256: { type: String, required: true },
+  lineageId: { type: String, required: true },
+  version: { type: Number, min: 1 },
+  savedAt: { type: Date, required: true },
+  operationId: { type: String },
+}, { _id: false });
+
+const steelQuotationOcrSelectionSchema = new Schema<SteelQuotationOcrSelection>({
+  candidates: {
+    type: new Schema({
+      ai: { type: steelMarkdownReferenceSchema },
+      human: { type: steelMarkdownReferenceSchema },
+    }, { _id: false }),
+    required: true,
+  },
+  selected: { type: steelMarkdownReferenceSchema, required: true },
+  version: { type: Number, min: 1, required: true },
+}, { _id: false });
+
+const steelQuotationSourceSnapshotSchema = new Schema<SteelQuotationSourceSnapshot>({
+  orderHash: { type: String, required: true },
+  generationId: { type: String },
+  resultMessageId: { type: String },
+  resultHash: { type: String },
+  mappings: { type: [new Schema({
+    fileId: { type: String, required: true },
+    sourceCode: { type: String, required: true },
+    sourceFilename: { type: String, required: true },
+    mediaType: { type: String },
+  }, { _id: false })], required: true, default: [] },
+}, { _id: false });
 
 const steelQuotationOrderSchema = new Schema<SteelQuotationOrder>(
   {
@@ -29,6 +71,8 @@ const steelQuotationOrderSchema = new Schema<SteelQuotationOrder>(
     sha256: { type: String, required: true },
     revision: { type: String },
     messageId: { type: String },
+    ocrSelection: { type: steelQuotationOcrSelectionSchema },
+    sourceSnapshot: { type: steelQuotationSourceSnapshotSchema },
   },
   { _id: false },
 );
@@ -87,22 +131,8 @@ const steelQuotationCurrentSystemOrderSchema = new Schema<SteelQuotationCurrentS
     responseId: { type: String },
     customerQuoteMarkdown: { type: String },
     calculationCheckpoint: { type: steelCalculationCheckpointSchema },
-    sourceSnapshot: {
-      type: new Schema<SteelQuotationSourceSnapshot>(
-        {
-          orderHash: { type: String, required: true },
-          generationId: { type: String },
-          resultMessageId: { type: String },
-          resultHash: { type: String },
-          mappings: {
-            type: [steelQuotationSourceMappingSchema],
-            required: true,
-            default: [],
-          },
-        },
-        { _id: false },
-      ),
-    },
+    sourceSnapshot: { type: steelQuotationSourceSnapshotSchema },
+    ocrSelection: { type: steelQuotationOcrSelectionSchema },
     needsRequote: { type: Boolean },
     requoteProvenance: {
       type: new Schema<SteelQuotationRequoteProvenance>(
@@ -261,6 +291,7 @@ const steelQuotationActiveRunSchema = new Schema<SteelQuotationActiveRun>(
     },
     triggerMessageId: { type: String, required: true },
     targetMessageId: { type: String },
+    ocrSelection: { type: steelQuotationOcrSelectionSchema },
     snapshotRef: { type: steelQuotationArtifactRefSchema, required: true },
     chunks: { type: [steelQuotationChunkSchema], required: true, default: [] },
     checkpointRefs: {
@@ -314,20 +345,6 @@ const steelQuotationPendingMessageSchema = new Schema<SteelQuotationPendingMessa
   { _id: false },
 );
 
-const steelMarkdownReferenceSchema = new Schema({
-  kind: { type: String, enum: ['ocr_result', 'system_order', 'customer_data'], required: true },
-  source: { type: String, enum: ['ai', 'human'], required: true },
-  snapshotId: { type: String, required: true },
-  generationId: { type: String, required: true },
-  outputId: { type: String, required: true },
-  messageId: { type: String, required: true },
-  title: { type: String, required: true },
-  revision: { type: String, required: true },
-  sha256: { type: String, required: true },
-  lineageId: { type: String, required: true },
-  savedAt: { type: Date, required: true },
-  operationId: { type: String },
-}, { _id: false });
 const steelMarkdownOwnerSchema = new Schema({
   ai: { type: steelMarkdownReferenceSchema, required: true },
   effective: { type: steelMarkdownReferenceSchema, required: true },
@@ -402,6 +419,7 @@ const steelQuotationArtifactSchema: Schema<ISteelQuotationArtifact> =
         reference: { type: steelMarkdownReferenceSchema, required: true },
         rawMarkdown: { type: String, required: true },
         baselineMarkdown: { type: String, required: true },
+        sourceMappings: { type: [steelQuotationSourceMappingSchema], default: undefined },
       }, { _id: false }) },
     },
     { timestamps: true },

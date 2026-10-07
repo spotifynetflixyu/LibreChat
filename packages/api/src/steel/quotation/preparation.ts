@@ -119,7 +119,7 @@ export function isUnfinishedQuotation(status?: string): boolean {
 
 export function hasQuotationOrder(markdown?: string): boolean {
   if (!markdown) return false;
-  const sections = parseAssistantMarkdown(markdown).sections.filter((section) => section.title === 'ocr_result');
+  const sections = parseAssistantMarkdown(markdown).sections.filter((section) => section.title.split(/[｜|]/u)[0]?.trim() === 'ocr_result');
   if (sections.length !== 1) return false;
   const result = parseOcrResultTable(sections[0].body);
   return result.ok && result.table.rows.length > 0 &&
@@ -132,6 +132,7 @@ export async function prepareQuotationTurn(input: {
   responseId: string;
   generationId?: string;
   publicationStore?: { admitSteelMarkdown(input: SteelMarkdownAdmissionInput): Promise<SteelMarkdownAdmission | null> };
+  service?: SteelQuotationStateService;
   text: string;
   files?: readonly SteelQuotationPendingMessageFile[];
 }): Promise<{
@@ -144,7 +145,7 @@ export async function prepareQuotationTurn(input: {
   messageText: string;
   messageFiles?: readonly SteelQuotationPendingMessageFile[];
 }> {
-  const service = createSteelQuotationStateService(mongoose);
+  const service = input.service ?? createSteelQuotationStateService(mongoose);
   let state = await service.ensureState(input.scope);
   const admit = async () => input.publicationStore ? (await input.publicationStore.admitSteelMarkdown({ scope: input.scope, responseId: input.responseId, generationId: input.generationId ?? input.responseId })) ?? undefined : undefined;
   const originalMessage = {
@@ -181,8 +182,10 @@ export async function prepareQuotationTurn(input: {
     }
     return { scope: input.scope, messageId: input.messageId, state, instruction: '', resume: true, ...originalMessage };
   }
+  const selected = await service.prepareOcrOrder(input.scope, state.currentOrder?.sha256 ?? null);
+  state = selected.state;
   const [ocr, hasSavedSystemOrder] = await Promise.all([
-    createSteelOcrStateService(mongoose).readConversationOcrState(input.scope.conversationId),
+    selected.input ? Promise.resolve(null) : createSteelOcrStateService(mongoose).readConversationOcrState(input.scope.conversationId),
     service.hasSystemOrder(input.scope),
   ]);
   const markdown = ocr?.currentOcrResultMarkdown;
@@ -204,6 +207,7 @@ export async function prepareQuotationTurn(input: {
     publicationAdmission: await admit(),
     ...originalMessage,
     instruction: [
+      ...(selected.input ? [`# Saved OCR source mappings\n${JSON.stringify(selected.input.sourceSnapshot.mappings)}`] : []),
       quotationPreparationInstruction(
         state.currentOrder?.markdown, state.currentCustomer?.customerMarkdown, hasSystemOrder,
       ),

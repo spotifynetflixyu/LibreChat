@@ -25,6 +25,18 @@ export type {
   SteelReviewWriteMethods,
 } from './steelReview';
 export { createSteelReviewSourceMethods } from './steelSources';
+import type { SteelQuotationInputMethods } from './steelQuotationInput';
+import { createSteelQuotationInputMethods } from './steelQuotationInput';
+export { createSteelQuotationInputMethods } from './steelQuotationInput';
+export type {
+  SteelQuotationInputAdmission,
+  SteelQuotationInputChunk,
+  SteelQuotationInputMethods,
+  SteelQuotationInputPrepareResult,
+  SteelQuotationInputReadResult,
+  SteelQuotationInputStaleCheck,
+  SteelQuotationInputStaleResult,
+} from './steelQuotationInput';
 import {
   createRefreshTokenBridgeMethods,
   type RefreshTokenBridgeMethods,
@@ -296,7 +308,8 @@ export type AllMethods = UserMethods &
   MCPAuthorityMethods &
   InsightsMethods &
   SteelReviewReadMethods &
-  SteelReviewSourceMethods;
+  SteelReviewSourceMethods &
+  SteelQuotationInputMethods;
 
 /** Dependencies injected from the api layer into createMethods */
 export interface CreateMethodsDeps {
@@ -543,6 +556,7 @@ export function createMethods(
     ...createSteelReviewReadMethods(mongoose),
     ...createSteelReviewWriteMethods(mongoose),
     ...createSteelReviewSourceMethods(mongoose),
+    ...createSteelQuotationInputMethods(mongoose),
   };
 }
 

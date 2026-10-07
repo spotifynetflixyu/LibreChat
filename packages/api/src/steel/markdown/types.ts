@@ -1,4 +1,4 @@
-import type { SteelMarkdownPublicationInput, SteelMarkdownPublicationResult, SteelQuotationActiveRun, SteelQuotationPublicationProof, SteelQuotationPublicationSaveResult } from '@librechat/data-schemas';
+import type { SteelMarkdownPublicationInput, SteelMarkdownPublicationResult, SteelQuotationActiveRun, SteelQuotationOcrSelection, SteelQuotationPublicationProof, SteelQuotationPublicationSaveResult } from '@librechat/data-schemas';
 import type { SteelQuotationStateService } from '../quotation/state';
 import type { SteelResponseRequest } from '../quotation/completion';
 import type { SteelOcrResponseAuditService } from '../ocr/audit';
@@ -54,6 +54,7 @@ export interface SteelMarkdownPublication {
   readonly responseId: string;
   readonly generationId: string;
   readonly markdown: string;
+  readonly ocrSelection?: SteelQuotationOcrSelection;
   readonly ocrGeneration?: string;
   readonly ocrHash?: string;
   readonly orderHash?: string;

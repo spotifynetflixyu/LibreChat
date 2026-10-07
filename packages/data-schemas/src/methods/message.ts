@@ -1298,6 +1298,8 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
           !run || run.runId !== input.runId || run.status !== 'completed' ||
           run.targetMessageId !== input.runTargetMessageId || finalCheckpoint?.sha256 !== input.finalSha256 ||
           quotation.currentOrder?.sha256 !== input.currentOrderSha256 ||
+          JSON.stringify(run.ocrSelection ?? null) !== JSON.stringify(quotation.currentOrder?.ocrSelection ?? null) ||
+          JSON.stringify(run.ocrSelection ?? null) !== JSON.stringify(currentSystemOrder?.ocrSelection ?? null) ||
           !customer || customer.preparationId !== input.customer.preparationId ||
           customer.customerIdentity !== input.customer.customerIdentity ||
           customer.customerMarkdown !== input.customer.customerMarkdown ||

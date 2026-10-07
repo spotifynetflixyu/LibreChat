@@ -1273,7 +1273,7 @@ describe('Steel Review catalog candidate intent', () => {
     const edited = setSteelReviewDraftCell(selected, selectedRows.find((row) => row.rowId === material.rowId)!, '數量', '5');
     const projected = applySteelReviewDrafts(table.rows, edited);
     expect(projected.find((row) => row.rowId === material.rowId)?.values['型號']?.effective).toBe('SC-1');
-    expect(projected.find((row) => row.rowId === material.rowId)?.values['品名規格']?.effective).toBe('Plate 400mm');
+    expect(projected.find((row) => row.rowId === material.rowId)?.values['品名規格']?.effective).toBe('Plate');
     expect(projected.find((row) => row.rowId === material.rowId)?.values['材質編號']?.effective).toBe('SS400');
     expect(projected.find((row) => row.rowId === processing.rowId)).toEqual(processing);
     expect(compileSteelReviewOperations(table, edited, projected)).toEqual([

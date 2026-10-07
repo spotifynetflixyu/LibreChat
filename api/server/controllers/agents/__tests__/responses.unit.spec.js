@@ -304,6 +304,13 @@ jest.mock('@librechat/api', () => ({
   createSteelMarkdownCompletionServices: jest.fn(() => ({
     finalize: (...args) => mockMarkdownFinalize(...args),
   })),
+  prepareSteelMarkdownHistory: (...args) =>
+    jest.requireActual('@librechat/api').prepareSteelMarkdownHistory(...args),
+  createSteelFullMarkdownPublisher: (...args) =>
+    jest.requireActual('@librechat/api').createSteelFullMarkdownPublisher(...args),
+  reportLocatorTraversalFailure: jest.fn(),
+  getRemoteAgentPermissions: (...args) =>
+    jest.requireActual('@librechat/api').getRemoteAgentPermissions(...args),
   createSteelQuotationPublicationMessageBuilder: (...args) =>
     mockCreateSteelQuotationPublicationMessageBuilder(...args),
   createSteelQuotationPublicationPublisher: (...args) =>
@@ -707,8 +714,10 @@ jest.mock('~/models', () => ({
   getUserKey: jest.fn(),
   getMessages: jest.fn().mockResolvedValue([]),
   getMessage: jest.fn().mockResolvedValue(null),
+  readSteelMarkdownHistory: jest.fn().mockResolvedValue([]),
   saveMessage: jest.fn().mockResolvedValue({}),
   saveSteelQuotationMessage: (...args) => mockSaveSteelQuotationMessage(...args),
+  publishSteelMarkdown: jest.fn().mockResolvedValue({ ok: true, message: {} }),
   updateFilesUsage: jest.fn(),
   getUserKeyValues: jest.fn(),
   getUserCodeFiles: jest.fn(),
@@ -2994,7 +3003,7 @@ describe('createResponse controller', () => {
     it('publishes terminal Responses output with source identity before applying canonical target identity', async () => {
       const api = require('@librechat/api');
       const rawText = 'primary answer\n\nold quotation';
-      const projectedText = 'final quotation';
+      const projectedText = '## system_order\n\n| A |\n| --- |\n| 1 |';
       const publicationProof = {
         scope: { userId: 'user-123', conversationId: 'mock-uuid-456' },
         runId: 'run-a',

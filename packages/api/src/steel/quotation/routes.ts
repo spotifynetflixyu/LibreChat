@@ -1,11 +1,13 @@
 import mongoose from 'mongoose';
 import type { ISteelQuotationState, SteelQuotationScope } from '@librechat/data-schemas';
+import type { SteelQuotationOcrSource } from 'librechat-data-provider';
 import type { Request, Response } from 'express';
 import { resolveRequestTenantId } from '../../middleware/tenant';
 import { createSteelQuotationStateService } from './state';
 import { isUnfinishedQuotation } from './preparation';
 import { abortQuotationExecution } from './control';
 import { getQuotationProgress } from './progress';
+import { quotationOcrSource } from './input';
 
 interface QuotationRequest extends Request {
   user?: { id?: string; tenantId?: string };
@@ -15,6 +17,7 @@ interface QuotationRequest extends Request {
 export interface QuotationStatus {
   conversationId: string; index: number | null; runId?: string; status: string;
   completedChunks: number; totalChunks: number; canCancel: boolean;
+  ocrSource?: SteelQuotationOcrSource;
 }
 
 export function quotationStatus(state: ISteelQuotationState | null, conversationId: string): QuotationStatus {
@@ -28,6 +31,7 @@ export function quotationStatus(state: ISteelQuotationState | null, conversation
     completedChunks: progress.completedChunks,
     totalChunks: progress.totalChunks,
     canCancel: isUnfinishedQuotation(run?.status),
+    ...(run?.ocrSelection ? { ocrSource: quotationOcrSource(run.ocrSelection) } : {}),
   };
 }
 

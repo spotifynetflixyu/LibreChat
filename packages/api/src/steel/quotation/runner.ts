@@ -17,6 +17,7 @@ import type {
   SteelQuotationTicket,
   SteelQuotationTicketCompletionReceipt,
   SteelQuotationPublicationProof,
+  SteelQuotationOcrSelection,
   SteelQuotationPublicationSaveResult,
 } from '@librechat/data-schemas';
 import type { QuotationBackendFailure, QuotationChildResultInput, QuotationLookupEvidence, QuotationPythonEvidence } from './protocol';
@@ -60,6 +61,7 @@ import { parseMarkdownTables } from '../markdown/table';
 import { parseAssistantMarkdown } from '../ocr/result';
 import { registerQuotationExecution } from './control';
 import { createSteelPostgresPool } from '../postgres';
+import { sameQuotationOcrSelection } from './input';
 import { readQuotationHistory } from './history';
 import { invokeQuotationModel } from './model';
 
@@ -70,7 +72,7 @@ export interface SteelQuotationPublicationInput {
   run: SteelQuotationActiveRun;
   markdown: string;
   service: Pick<SteelQuotationStateService,
-    'readState' | 'readCurrentSystemOrder' | 'readArtifact' | 'saveCurrentSystemOrder' | 'getArtifact'>;
+    'readState' | 'markOcrStale' | 'readCurrentSystemOrder' | 'readArtifact' | 'saveCurrentSystemOrder' | 'getArtifact'>;
   publishFinal: (input: SteelQuotationPublicationProof & { markdown: string }) =>
     Promise<SteelQuotationPublicationSaveResult | void>;
   projectFinal?: (input: { run: SteelQuotationActiveRun; markdown: string }) => Promise<void>;
@@ -185,6 +187,10 @@ async function materializeCompletedSystemOrder(
       snapshot.customerMarkdown !== state.currentCustomer.customerMarkdown))) {
     throw new Error('Quotation publication snapshot is stale');
   }
+  if (!sameQuotationOcrSelection(snapshot.ocrSelection, input.run.ocrSelection) ||
+    !sameQuotationOcrSelection(snapshot.ocrSelection, state.currentOrder?.ocrSelection)) {
+    throw new Error('Quotation publication input identity is invalid');
+  }
   if (snapshot.sourceSnapshot && snapshot.sourceSnapshot.orderHash !== snapshot.orderHash) {
     throw new Error('Quotation publication source snapshot is stale');
   }
@@ -208,8 +214,13 @@ async function materializeCompletedSystemOrder(
     }
     calculationCheckpoint = parsed.data;
   }
+  const classify = async (currentSystemOrder: SteelQuotationCurrentSystemOrder): Promise<SteelQuotationCurrentSystemOrder> => {
+    if (!snapshot.ocrSelection) return currentSystemOrder;
+    const needsRequote = await input.service.markOcrStale(input.scope, input.run.runId, snapshot.ocrSelection);
+    return { ...currentSystemOrder, needsRequote };
+  };
   const existing = await input.service.readCurrentSystemOrder(input.scope);
-  if (existing?.runId === input.run.runId) return { state, currentSystemOrder: existing };
+  if (existing?.runId === input.run.runId) return { state, currentSystemOrder: await classify(existing) };
   const saved = await input.service.saveCurrentSystemOrder({
     scope: input.scope,
     snapshot: {
@@ -220,6 +231,7 @@ async function materializeCompletedSystemOrder(
       customerQuoteMarkdown: quote.markdown,
       ...(calculationCheckpoint ? { calculationCheckpoint } : {}),
       ...(snapshot.sourceSnapshot ? { sourceSnapshot: snapshot.sourceSnapshot } : {}),
+      ...(snapshot.ocrSelection ? { ocrSelection: snapshot.ocrSelection } : {}),
       updatedAt: new Date(),
     },
     expectedRunId: input.run.runId,
@@ -234,7 +246,7 @@ async function materializeCompletedSystemOrder(
     expectedCurrentSystemOrderPresent: existing !== undefined,
   });
   if (!saved) throw new Error('Quotation publication current system order CAS failed');
-  return { state, currentSystemOrder: saved };
+  return { state, currentSystemOrder: await classify(saved) };
 }
 
 export async function publishCompletedQuotation(
@@ -428,6 +440,7 @@ export async function acceptQuotationResponse(input: {
   expectedCustomerPreparationId?: string;
   completionReceipt?: SteelQuotationTicketCompletionReceipt;
   sourceSnapshot?: SteelQuotationSourceSnapshot;
+  ocrSelection?: SteelQuotationOcrSelection;
   finishReason?: string;
   service?: ReturnType<typeof createSteelQuotationStateService>;
 }): Promise<SteelQuotationActiveRun | undefined> {
@@ -511,6 +524,7 @@ export async function acceptQuotationSignal(input: {
   expectedCustomerPreparationId?: string;
   completionReceipt?: SteelQuotationTicketCompletionReceipt;
   sourceSnapshot?: SteelQuotationSourceSnapshot;
+  ocrSelection?: SteelQuotationOcrSelection;
   finishReason?: string;
   service?: ReturnType<typeof createSteelQuotationStateService>;
 }): Promise<SteelQuotationActiveRun | undefined> {
@@ -545,6 +559,9 @@ export async function acceptQuotationSignal(input: {
     throw new Error('Quotation signal is based on stale preparation data');
   }
   if (isUnfinishedQuotation(state.activeRun?.status)) return state.activeRun;
+  if (input.ocrSelection && !sameQuotationOcrSelection(input.ocrSelection, state.currentOrder.ocrSelection)) {
+    throw new Error('Quotation signal OCR selection is stale');
+  }
   const chunks = buildQuotationChunks(state.currentOrder.markdown);
   const conversation = { requestId: input.responseId, conversationId: input.scope.conversationId, activeHistory: [] };
   const [child, main] = await Promise.all([
@@ -573,6 +590,7 @@ export async function acceptQuotationSignal(input: {
     prompts: { child: child.instructionPrefix, main: main.instructionPrefix },
     chunks: chunks.map((chunk) => ({ index: chunk.chunkIndex, sourceRowCount: chunk.sourceRows.length })),
     ...(input.sourceSnapshot ? { sourceSnapshot: input.sourceSnapshot } : {}),
+    ...(input.ocrSelection ? { ocrSelection: input.ocrSelection } : {}),
   });
 }
 
@@ -773,6 +791,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
           prompt: snapshot.prompts.main,
           input: JSON.stringify({
             order: snapshot.orderMarkdown,
+            ...(snapshot.sourceSnapshot ? { source_mappings: snapshot.sourceSnapshot.mappings } : {}),
             customer: snapshot.customerMarkdown,
             system_order: systemOrder,
             review_remarks: aggregate.reviewRemarks,
@@ -958,6 +977,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
           prompt: snapshot.prompts.child,
           input: JSON.stringify({
             chunk: chunk.markdown,
+            ...(snapshot.sourceSnapshot ? { source_mappings: snapshot.sourceSnapshot.mappings } : {}),
             customer: snapshot.customerMarkdown,
           }),
           modelOptions: input.modelOptions,

@@ -8,6 +8,7 @@ const mockClear = jest.fn();
 const mockClearEvidence = jest.fn();
 const mockEnqueue = jest.fn();
 const mockSetOrder = jest.fn();
+const mockPrepareOcrOrder = jest.fn();
 const mockReadOcr = jest.fn();
 const mockArtifact = jest.fn();
 const mockHasSystemOrder = jest.fn();
@@ -18,6 +19,7 @@ jest.mock('./state', () => ({ createSteelQuotationStateService: () => ({
   ensureState: mockRead, readState: mockRead, saveCustomer: mockSave, clearCustomer: mockClear,
   saveCustomerLookupEvidence: mockSaveEvidence, clearCustomerLookupEvidence: mockClearEvidence,
   enqueuePendingMessage: mockEnqueue, setOrder: mockSetOrder, getArtifact: mockArtifact,
+  prepareOcrOrder: mockPrepareOcrOrder,
   hasSystemOrder: mockHasSystemOrder, readCurrentSystemOrder: mockReadCurrentSystemOrder,
   readCheckpoint: mockReadCheckpoint, saveCurrentSystemOrder: mockSaveCurrentSystemOrder,
 }) }));
@@ -32,6 +34,7 @@ beforeEach(() => {
   mockSave.mockResolvedValue({ preparationId: 'saved-customer' });
   mockSaveEvidence.mockImplementation(async ({ evidence }: { evidence: unknown }) => evidence);
   mockClearEvidence.mockResolvedValue({ currentOrder: { markdown: order, sha256: 'order-hash' }, tickets: [], pendingMessages: [] });
+  mockPrepareOcrOrder.mockImplementation(async () => ({ state: await mockRead() }));
   mockReadOcr.mockResolvedValue(null);
   mockArtifact.mockResolvedValue(null);
   mockHasSystemOrder.mockResolvedValue(false);
