@@ -6,6 +6,7 @@ import type { TMessage } from 'librechat-data-provider';
 import { useScreenshot, useMessageScrolling, useScrollbarGutter, useLocalize } from '~/hooks';
 import { MessagesViewProvider, useChatContext, useFileMapContext } from '~/Providers';
 import { RowMountProvider, useProgressiveRowMount } from '~/hooks/Messages';
+import { SteelVersionsProvider } from './Content/SteelReview/heading';
 import { useChatSurface } from '~/components/Chat/Subagents/surface';
 import useThreadRows from '~/hooks/Messages/useThreadRows';
 import { steerOverlayHeightFamily } from '~/store/steer';
@@ -71,7 +72,7 @@ function MessagesViewContent({
   const steerOverlayHeight = useAtomValue(steerOverlayHeightFamily(overlayConversationId));
 
   return (
-    <>
+    <SteelVersionsProvider conversationId={treeConversationId} messages={messages ?? _messagesTree} isSubmitting={isSubmitting}>
       <div className="relative flex-1 overflow-hidden overflow-y-auto">
         <div className="relative h-full">
           <div
@@ -155,7 +156,7 @@ function MessagesViewContent({
           <MessageNav scrollableRef={scrollableRef} />
         </div>
       </div>
-    </>
+    </SteelVersionsProvider>
   );
 }
 

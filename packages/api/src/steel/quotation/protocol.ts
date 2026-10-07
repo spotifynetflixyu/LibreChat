@@ -883,7 +883,7 @@ export function finalizeQuotationMainResponse(input: FinalizeQuotationMainInput)
     const title = baseSectionTitle(section.title);
     if (title === 'system_order') {
       if (!inserted) {
-        outputParts.push(systemOrderMarkdown, customerQuote.markdown);
+        outputParts.push(systemOrderMarkdown);
         inserted = true;
       }
       return;
@@ -894,7 +894,7 @@ export function finalizeQuotationMainResponse(input: FinalizeQuotationMainInput)
     }
     outputParts.push(section.raw.trim());
   });
-  if (!inserted) outputParts.unshift(systemOrderMarkdown, customerQuote.markdown);
+  if (!inserted) outputParts.unshift(systemOrderMarkdown);
   if (manualReviewSection) outputParts.push(manualReviewSection);
   const manualReviewCount = review?.table.rows.length ?? 0;
   const summary = manualReviewCount > 0

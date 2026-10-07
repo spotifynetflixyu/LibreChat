@@ -1,4 +1,5 @@
 import { atomFamily } from 'recoil';
+import type { SteelQuotationOcrSource } from 'librechat-data-provider';
 
 export const steelNativeStreamEventName = 'steel_event' as const;
 
@@ -91,6 +92,7 @@ export type SteelNativeActivityEvent =
       attempt?: string;
       repairAttempt?: number;
       maxRepairAttempts?: number;
+      ocrSource?: SteelQuotationOcrSource;
       toolName?: string;
       providerToolCallId?: string;
       savedCounts?: SteelNativeSavedCounts;

@@ -354,3 +354,23 @@ describe('ControlCombobox portal placement', () => {
     expect(screen.queryByRole('option', { name: 'Option A' })).not.toBeInTheDocument();
   });
 });
+
+describe('ControlCombobox asynchronous options', () => {
+  it('keeps remote options and order when their labels do not match the search draft', () => {
+    const onSearchChange = jest.fn();
+    const { offsetWidthSpy } = renderCombobox(300, false, {
+      items: [{ value: '2', label: 'ZZ 型號規格' }, { value: '1', label: 'AA 型號規格' }],
+      searchValue: 'query', onSearchChange, filterItems: false,
+      listFooter: <span role="status">Loading next page</span>,
+    });
+    openPopover();
+    const options = screen.getAllByRole('option');
+    expect(options.map((option) => option.textContent)).toEqual(['ZZ 型號規格', 'AA 型號規格']);
+    const search = document.querySelector('input');
+    if (!search) throw new Error('Missing catalog search input');
+    fireEvent.change(search, { target: { value: 'pasted keyword' } });
+    expect(onSearchChange).toHaveBeenCalledWith('pasted keyword');
+    expect(screen.getByRole('status')).toHaveTextContent('Loading next page');
+    offsetWidthSpy.mockRestore();
+  });
+});

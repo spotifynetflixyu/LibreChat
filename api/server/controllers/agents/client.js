@@ -149,6 +149,7 @@ const {
   prepareLibreChatSteelChatContext,
   prepareSteelNativeToolConfig,
   prepareQuotationTurn,
+  prepareSteelMarkdownHistory,
   hasQuotationOrder,
   stripSteelOcrPartsFromProviderMessages,
   buildAgentScopedAttachmentMap,
@@ -194,6 +195,7 @@ const {
   isAgentRunCancellation,
   markCompactionOutcome,
   resolvePersistableCodeEnvironmentDecision,
+  projectSteelQuotationMessage,
 } = require('@librechat/api');
 const {
   Run,
@@ -1727,6 +1729,26 @@ class AgentClient extends BaseClient {
           ...this.contentParts[quotationTextIndex], type: ContentTypes.TEXT, text,
         };
       },
+      buildPublicationMessage: ({ targetMessageId, markdown }) => projectSteelQuotationMessage({
+          message: {
+            messageId: targetMessageId,
+            sourceMessageId: this.responseMessageId,
+            conversationId: this.conversationId,
+            user: this.options.req?.user?.id,
+            text: markdown,
+            parentMessageId: this.parentMessageId,
+            isCreatedByUser: false,
+            unfinished: false,
+            sender: this.options.agent?.name ?? 'Agent',
+            endpoint: 'agents',
+            model: this.options.agent?.id,
+            finish_reason: 'stop',
+            metadata: this.buildResponseMetadata(),
+            content: Array.isArray(this.contentParts) ? this.contentParts : [],
+          },
+        markdown,
+        quotationContentIndex: quotationTextIndex,
+      }),
     };
   }
 
@@ -2441,12 +2463,16 @@ class AgentClient extends BaseClient {
       this.compactionSemanticIndexSnapshot = undefined;
     }
     /** Always pass mapMethod; getMessagesForConversation applies it only to messages with addedConvo flag */
-    const orderedMessages = this.constructor.getMessagesForConversation({
+    const orderedMessages = await prepareSteelMarkdownHistory({
+      scope: { userId: this.options.req.user?.id, conversationId: this.conversationId, tenantId: resolveRequestTenantId(this.options.req) },
+      reader: db,
+      messages: this.constructor.getMessagesForConversation({
       messages,
       parentMessageId,
       summary: this.shouldSummarize,
       mapMethod: createMultiAgentMapper(this.options.agent, this.agentConfigs),
       mapCondition: (message) => message.addedConvo === true,
+      }),
     });
     /**
      * Answers the user gave to earlier `ask_user_question` calls. Read from the
@@ -3073,6 +3099,8 @@ class AgentClient extends BaseClient {
         },
         messageId: latestOrdered?.messageId ?? this.responseMessageId,
         responseId: this.responseMessageId,
+        generationId: String(this.options.req._resumableJobCreatedAt ?? this.responseMessageId),
+        publicationStore: db,
         text: currentUserTurnText,
         files: currentTurnSteelFileReferences,
       });

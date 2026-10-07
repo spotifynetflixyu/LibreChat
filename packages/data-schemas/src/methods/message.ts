@@ -1,17 +1,39 @@
+import { createHash } from 'node:crypto';
 import {
   backgroundResultMetadata,
   HITL_MESSAGE_FILTER_FIELDS,
   RetentionMode,
+  normalizeSteelReviewLedgerRows,
 } from 'librechat-data-provider';
-import type { DeleteResult, FilterQuery, Model, Types, UpdateQuery } from 'mongoose';
+import type { ClientSession, DeleteResult, FilterQuery, Model, Types, UpdateQuery } from 'mongoose';
 import type { UserSubmittedMessageFieldPath } from 'librechat-data-provider';
 import type { SearchParams } from 'meilisearch';
+import type {
+  ISteelQuotationArtifact,
+  SteelMarkdownReference,
+  ISteelQuotationState,
+  ISteelReviewOutput,
+  SteelQuotationSavedMessage,
+  SteelQuotationPublicationProof,
+  SteelQuotationPublicationSaveResult,
+} from '~/types';
 import type { SchemaWithMeiliMethods } from '~/models/plugins/mongoMeili';
 import type { AppConfig, IConversation, IMessage } from '~/types';
-import { compactMessageToolResults, compactToolCallOutput } from '~/utils/tool';
+import {
+  createSteelQuotationArtifactModel,
+  createSteelQuotationStateModel,
+  createSteelReviewOutputModel,
+} from '~/models';
 import { createChatExpirationDate, createTempChatExpirationDate } from '~/utils/tempChatRetention';
 import { activeExpirationFilter, createFallbackRetentionDate } from '~/utils/retention';
+import { compactMessageToolResults, compactToolCallOutput } from '~/utils/tool';
+import { STEEL_QUOTATION_INPUT_TTL_MS } from './steelQuotationInput';
+import { createSteelPublicationMethods } from './steelPublication';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import { steelReviewTitleStorageId } from '~/utils/identity';
+import { createSteelHistoryMethods } from './steelHistory';
+import { createConversationModel } from '~/models/convo';
+import { createMessageModel } from '~/models/message';
 import logger from '~/config/winston';
 
 /** Simple UUID v4 regex to replace zod validation */
@@ -22,6 +44,30 @@ const MAX_STORED_USER_SUBMITTED_FIELD_PATHS = MAX_NORMALIZED_USER_SUBMITTED_PATH
 const MAX_USER_SUBMITTED_PATH_LENGTH = 2048;
 const MAX_PROVENANCE_CAS_ATTEMPTS = 8;
 const MAX_SUBAGENT_CONTROL_RECEIPTS = 64;
+
+function hasCurrentSteelReviewOwner(
+  message: Pick<IMessage, 'metadata'>,
+  output: Pick<ISteelReviewOutput, 'title' | 'outputId' | 'revision'>,
+  scope: { conversationId: string; messageId: string },
+): boolean {
+  const metadata = message.metadata;
+  if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
+    return false;
+  }
+  const steelReview = metadata.steelReview;
+  if (!steelReview || typeof steelReview !== 'object' || Array.isArray(steelReview)) {
+    return false;
+  }
+  const owner = (steelReview as Record<string, unknown>).system_order;
+  if (!owner || typeof owner !== 'object' || Array.isArray(owner)) {
+    return false;
+  }
+  const value = owner as Record<string, unknown>;
+  return value.version === 1 && value.kind === 'system_order' &&
+    value.conversationId === scope.conversationId && value.messageId === scope.messageId &&
+    value.outputId === output.outputId && value.revision === output.revision &&
+    typeof value.title === 'string' && (output.title === undefined || value.title === output.title);
+}
 const MAX_SUBAGENT_CONTROL_MESSAGE_LENGTH = 4 * 1024;
 /** One owner admits at most 64 terminal control invocations. The optimistic
  * writer therefore has enough rounds for every admitted receipt to converge. */
@@ -317,6 +363,7 @@ async function findOneAndMergeMessageProvenance(
   userSubmittedMessageFieldPaths: readonly UserSubmittedMessageFieldPath[],
   options: {
     upsert: boolean;
+    session?: ClientSession;
     stampModelOutputOnInsert?: boolean;
     unsetContextMeta?: boolean;
     unsetProcessingDurationMs?: boolean;
@@ -340,6 +387,7 @@ async function findOneAndMergeMessageProvenance(
         userSubmittedMessageFieldPaths: 1,
         _id: 0,
       })
+      .session(options.session ?? null)
       .lean<MessageProvenance | null>();
     if (current == null && !options.upsert) {
       return null;
@@ -372,7 +420,12 @@ async function findOneAndMergeMessageProvenance(
             },
           }),
         },
-        { upsert: options.upsert && current == null, new: true, runValidators: true },
+        {
+          upsert: options.upsert && current == null,
+          new: true,
+          runValidators: true,
+          session: options.session,
+        },
       );
       if (message != null) {
         return message;
@@ -659,7 +712,7 @@ function toSettledAt(value: unknown): Date | undefined {
   return undefined;
 }
 
-export interface MessageMethods {
+export interface MessageMethods extends ReturnType<typeof createSteelPublicationMethods>, ReturnType<typeof createSteelHistoryMethods> {
   saveMessage(
     ctx: {
       userId: string;
@@ -673,6 +726,9 @@ export interface MessageMethods {
     },
     metadata?: { context?: string; unsetProcessingDurationMs?: boolean },
   ): Promise<IMessage | null | undefined>;
+  saveSteelQuotationMessage(
+    input: SteelQuotationPublicationProof,
+  ): Promise<SteelQuotationPublicationSaveResult>;
   /**
    * Reads the references a trace viewer needs for one of the user's
    * conversations: when it began and which responses were sampled into traces.
@@ -920,7 +976,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
   /**
    * Saves a message in the database.
    */
-  async function saveMessage(
+  async function saveMessageInternal(
     {
       userId,
       isTemporary,
@@ -938,6 +994,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
       contextMeta?: IMessage['contextMeta'] | null;
     },
     metadata?: { context?: string; unsetProcessingDurationMs?: boolean },
+    session?: ClientSession,
   ) {
     if (!userId) {
       throw new Error('User not authenticated');
@@ -1052,6 +1109,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
             userSubmittedMessageFieldPaths,
             {
               upsert: true,
+              session,
               stampModelOutputOnInsert,
               unsetContextMeta,
               unsetProcessingDurationMs: metadata?.unsetProcessingDurationMs,
@@ -1066,7 +1124,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
               unsetProcessingDurationMs: metadata?.unsetProcessingDurationMs,
               retentionOnInsert,
             }),
-            { upsert: true, new: true, runValidators: true },
+            { upsert: true, new: true, runValidators: true, session },
           );
 
       if (message == null) {
@@ -1088,7 +1146,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
             isTemporary: message.isTemporary === true ? true : { $ne: true },
           },
           { $set: { expiredAt: deadline } },
-          { timestamps: false },
+          { timestamps: false, session },
         );
         if (result.modifiedCount > 0) {
           message.expiredAt = deadline;
@@ -1104,6 +1162,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
         await Message.updateOne(
           { _id: message._id, isTemporary: { $ne: false } },
           { $set: { isTemporary: false } },
+          { session },
         );
         message.isTemporary = false;
       }
@@ -1114,6 +1173,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
       logger.info(`---\`saveMessage\` context: ${metadata?.context}`);
 
       const mongoErr = err as { code?: number; message?: string };
+      if (session) throw err;
       if (mongoErr.code === 11000 && mongoErr.message?.includes('duplicate key error')) {
         logger.warn(`Duplicate messageId detected: ${params.messageId}. Continuing execution.`);
 
@@ -1138,6 +1198,295 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
       }
 
       throw err;
+    }
+  }
+
+  async function saveMessage(
+    ctx: {
+      userId: string;
+      isTemporary?: boolean;
+      expiredAt?: Date;
+      interfaceConfig?: AppConfig['interfaceConfig'];
+    },
+    params: Omit<Partial<IMessage>, 'contextMeta'> & {
+      newMessageId?: string;
+      contextMeta?: IMessage['contextMeta'] | null;
+    },
+    metadata?: { context?: string; unsetProcessingDurationMs?: boolean },
+  ) {
+    return saveMessageInternal(ctx, params, metadata);
+  }
+
+  async function saveSteelQuotationMessage(
+    input: SteelQuotationPublicationProof,
+  ): Promise<SteelQuotationPublicationSaveResult> {
+    const { scope, message } = input;
+    if (!scope.userId || !scope.conversationId || !input.runId || !input.runTargetMessageId ||
+      input.targetMessageId !== message.messageId || message.conversationId !== scope.conversationId ||
+      typeof message.text !== 'string' || !/^[a-f0-9]{64}$/u.test(input.finalSha256) ||
+      !/^[a-f0-9]{64}$/u.test(input.currentOrderSha256) ||
+      !/^[a-f0-9]{64}$/u.test(input.currentSystemOrderSha256)) {
+      throw new Error('Quotation publication proof is invalid');
+    }
+    const Message = createMessageModel(mongoose);
+    const Conversation = createConversationModel(mongoose);
+    const QuotationState = createSteelQuotationStateModel(mongoose);
+    const QuotationArtifact = createSteelQuotationArtifactModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const tenantFilter = scope.tenantId === undefined
+      ? { $or: [{ tenantId: { $exists: false } }, { tenantId: null }] }
+      : { tenantId: scope.tenantId };
+    const stateFilter = {
+      userId: scope.userId,
+      conversationId: scope.conversationId,
+      ...tenantFilter,
+    };
+    const now = new Date();
+    const publicationPayload = JSON.stringify({ finalSha256: input.finalSha256 });
+    const publicationSha256 = createHash('sha256').update(publicationPayload).digest('hex');
+    const publicationArtifactId = `${input.runId}:published:${publicationSha256}`;
+    const supersededError = new Error('Quotation publication was superseded');
+    let result: SteelQuotationPublicationSaveResult | undefined;
+    const session = await mongoose.startSession();
+    try {
+      await session.withTransaction(async () => {
+        // Mongoose does not support parallel operations in one transaction.
+        // Keep every read on this session so the proof and CAS share one snapshot.
+        const conversation = await Conversation.findOne({
+          $and: [
+            { user: scope.userId, conversationId: scope.conversationId },
+            tenantFilter,
+            activeExpirationFilter(),
+          ],
+        }).session(session).lean<IConversation | null>();
+        const quotation = await QuotationState.findOne(stateFilter).session(session).lean<ISteelQuotationState | null>();
+        const currentMessage = await Message.findOne({
+          user: scope.userId,
+          conversationId: scope.conversationId,
+          messageId: input.targetMessageId,
+          ...tenantFilter,
+        }).session(session).lean<IMessage | null>();
+        const finalArtifact = await QuotationArtifact.findOne({
+          ...stateFilter,
+          runId: input.runId,
+          operationId: 'final',
+          kind: 'final',
+          sha256: input.finalSha256,
+        }).session(session).lean<ISteelQuotationArtifact | null>();
+        const publicationArtifact = await QuotationArtifact.findOne({
+          ...stateFilter,
+          runId: input.runId,
+          operationId: 'published',
+          kind: 'final',
+          sha256: publicationSha256,
+        }).session(session).lean<ISteelQuotationArtifact | null>();
+        const output = await ReviewOutput.findOne({
+          ...stateFilter,
+          kind: 'system_order',
+          messageId: input.targetMessageId,
+          outputId: `system_order:${input.runId}`,
+          state: 'current',
+        }).session(session).lean<ISteelReviewOutput | null>();
+        const run = quotation?.activeRun;
+        const finalCheckpoint = run?.checkpointRefs.find((ref: { operationId: string; kind: string; sha256: string }) => ref.operationId === 'final' &&
+          ref.kind === 'final');
+        const customer = quotation?.currentCustomer;
+        const currentSystemOrder = quotation?.currentSystemOrder;
+        const targetMessageBound = currentMessage !== null ||
+          (message.messageId === input.targetMessageId &&
+            message.conversationId === scope.conversationId);
+        const superseded = !conversation || !quotation || !targetMessageBound || !finalArtifact ||
+          (!publicationArtifact && run && new Date(run.acceptedAt).getTime() + STEEL_QUOTATION_INPUT_TTL_MS <= now.getTime()) ||
+          !run || run.runId !== input.runId || run.status !== 'completed' ||
+          run.targetMessageId !== input.runTargetMessageId || finalCheckpoint?.sha256 !== input.finalSha256 ||
+          quotation.currentOrder?.sha256 !== input.currentOrderSha256 ||
+          JSON.stringify(run.ocrSelection ?? null) !== JSON.stringify(quotation.currentOrder?.ocrSelection ?? null) ||
+          JSON.stringify(run.ocrSelection ?? null) !== JSON.stringify(currentSystemOrder?.ocrSelection ?? null) ||
+          !customer || customer.preparationId !== input.customer.preparationId ||
+          customer.customerIdentity !== input.customer.customerIdentity ||
+          customer.customerMarkdown !== input.customer.customerMarkdown ||
+          !currentSystemOrder || currentSystemOrder.runId !== input.runId ||
+          currentSystemOrder.messageId !== input.targetMessageId ||
+          currentSystemOrder.sha256 !== input.currentSystemOrderSha256 ||
+          JSON.stringify(currentSystemOrder.sourceSnapshot ?? null) !== JSON.stringify(input.sourceSnapshot ?? null) ||
+          JSON.stringify(currentSystemOrder.calculationCheckpoint ?? null) !==
+            JSON.stringify(input.calculationCheckpoint ?? null);
+        if (superseded) {
+          result = { ok: false, code: 'superseded' };
+          return;
+        }
+        const baseline = input.reviewBaseline;
+        let aiOwner: SteelMarkdownReference | undefined;
+        if (!publicationArtifact && baseline) {
+          if (baseline.kind !== 'system_order' || baseline.outputId !== `system_order:${input.runId}` ||
+            baseline.baselineMarkdown !== currentSystemOrder.markdown || !baseline.rows || !baseline.headers) {
+            throw new Error('Quotation review baseline is invalid');
+          }
+          aiOwner = { kind: 'system_order', source: 'ai', snapshotId: `markdown:quotation:${input.runId}:ai:system_order`,
+            generationId: `quotation:${input.runId}`, outputId: baseline.outputId, messageId: input.targetMessageId,
+            title: baseline.title, revision: baseline.revision, sha256: input.currentSystemOrderSha256,
+            lineageId: quotation.markdownPublication?.current?.ocr_result?.ai.lineageId ?? input.runId, savedAt: now };
+          const payload = JSON.stringify({ rawMarkdown: message.text, baselineMarkdown: baseline.baselineMarkdown });
+          await QuotationArtifact.create([{ ...scope, runId: `markdown:quotation:${input.runId}`, operationId: 'ai:system_order', kind: 'main',
+            sha256: createHash('sha256').update(payload).digest('hex'), payload,
+            markdownPublication: { reference: aiOwner, rawMarkdown: message.text, baselineMarkdown: baseline.baselineMarkdown } }], { session });
+          await ReviewOutput.updateMany({ ...stateFilter, kind: 'system_order', state: 'current' },
+            { $set: { state: 'historical', latestOutputId: baseline.outputId } }, { session, timestamps: false });
+          await ReviewOutput.create([{ ...scope, kind: 'system_order', messageId: input.targetMessageId, title: baseline.title,
+            tableId: steelReviewTitleStorageId({ ...scope, messageId: input.targetMessageId,
+              kind: 'system_order', outputId: baseline.outputId, title: baseline.title }),
+            outputId: baseline.outputId, revision: baseline.revision, state: 'current', latestOutputId: baseline.outputId,
+            headers: baseline.headers, rows: normalizeSteelReviewLedgerRows(baseline.rows), sourceMappings: baseline.sourceMappings,
+            aiUpdatedAt: now, aiRawMarkdown: message.text, aiBaselineMarkdown: baseline.baselineMarkdown,
+            effectiveMarkdown: baseline.baselineMarkdown, displayMarkdown: baseline.baselineMarkdown, receipts: [] }], { session });
+          await QuotationState.updateOne(stateFilter, { $set: { 'markdownPublication.current.system_order': { ai: aiOwner, effective: aiOwner },
+            'currentSystemOrder.reviewOutputId': baseline.outputId } }, { session });
+        }
+        let savedMessage: SteelQuotationSavedMessage;
+        if (publicationArtifact && !currentMessage) {
+          result = { ok: false, code: 'superseded' };
+          return;
+        }
+        if (currentMessage && output?.humanSavedAt && output.effectiveMarkdown &&
+          output.effectiveMarkdown === currentSystemOrder.markdown &&
+          createHash('sha256').update(output.effectiveMarkdown).digest('hex') === currentSystemOrder.sha256 &&
+          hasCurrentSteelReviewOwner(currentMessage, output, {
+            conversationId: scope.conversationId,
+            messageId: input.targetMessageId,
+          })) {
+          savedMessage = currentMessage;
+        } else {
+          const sourceMessageId = message.sourceMessageId ?? input.targetMessageId;
+          const messageFields = { ...message };
+          delete messageFields.sourceMessageId;
+          const publicationMessage = currentMessage
+            ? (() => {
+                const { _id, createdAt: _createdAt, updatedAt: _updatedAt, ...storedMessage } = currentMessage;
+                const currentMetadata = storedMessage.metadata;
+                const nextMetadata = message.metadata;
+                const nextMetadataRecord = nextMetadata && typeof nextMetadata === 'object' && !Array.isArray(nextMetadata)
+                  ? nextMetadata as Record<string, unknown>
+                  : undefined;
+                const currentSteel = currentMetadata?.steel;
+                const nextSteel = nextMetadataRecord?.steel;
+                const mergedMetadata = currentMetadata && nextMetadataRecord
+                  ? {
+                      ...currentMetadata,
+                      ...nextMetadataRecord,
+                      ...(currentSteel && nextSteel && typeof currentSteel === 'object' &&
+                        !Array.isArray(currentSteel) && typeof nextSteel === 'object' &&
+                        !Array.isArray(nextSteel)
+                        ? { steel: { ...currentSteel, ...nextSteel } }
+                        : {}),
+                    }
+                  : nextMetadata ?? currentMetadata;
+                if (sourceMessageId !== input.targetMessageId) {
+                  return {
+                    ...storedMessage,
+                    ...(typeof message.unfinished === 'boolean' ? { unfinished: message.unfinished } : {}),
+                    ...(typeof message.finish_reason === 'string' ? { finish_reason: message.finish_reason } : {}),
+                  };
+                }
+                return {
+                  ...storedMessage,
+                  ...messageFields,
+                  ...(mergedMetadata !== undefined ? { metadata: mergedMetadata } : {}),
+                };
+              })()
+            : messageFields;
+          if (aiOwner) {
+            const metadata = { ...publicationMessage.metadata };
+            const oldOwners = currentMessage?.metadata?.steelMarkdownOwners;
+            metadata.steelMarkdownOwners = { ...(oldOwners && typeof oldOwners === 'object' && !Array.isArray(oldOwners) ? oldOwners : {}), system_order: aiOwner };
+            const oldReview = currentMessage?.metadata?.steelReview;
+            const steelReview = oldReview && typeof oldReview === 'object' && !Array.isArray(oldReview) ? { ...oldReview } : {};
+            Reflect.deleteProperty(steelReview, 'system_order');
+            if (Object.keys(steelReview).length > 0) metadata.steelReview = steelReview;
+            else delete metadata.steelReview;
+            publicationMessage.metadata = metadata;
+          }
+          const saved = await saveMessageInternal(
+            { userId: scope.userId, ...input.saveContext },
+            publicationMessage as Omit<Partial<IMessage>, 'contextMeta'> & { newMessageId?: string; contextMeta?: IMessage['contextMeta'] | null },
+            { context: 'Steel quotation guarded publication' },
+            session,
+          );
+          if (!saved) throw new Error('Quotation message publication failed');
+          savedMessage = saved;
+        }
+        if (publicationArtifact) {
+          const guardedCurrent = await QuotationState.findOneAndUpdate(
+            {
+              $and: [
+                stateFilter,
+                { 'activeRun.runId': input.runId, 'activeRun.status': 'completed', 'activeRun.targetMessageId': input.runTargetMessageId },
+                { 'activeRun.checkpointRefs': { $elemMatch: { operationId: 'final', kind: 'final', sha256: input.finalSha256 } } },
+                { 'activeRun.checkpointRefs': { $elemMatch: { operationId: 'published', kind: 'final', sha256: publicationSha256 } } },
+                { 'currentOrder.sha256': input.currentOrderSha256 },
+                { 'currentSystemOrder.runId': input.runId, 'currentSystemOrder.messageId': input.targetMessageId, 'currentSystemOrder.sha256': input.currentSystemOrderSha256 },
+                { 'currentCustomer.preparationId': input.customer.preparationId, 'currentCustomer.customerIdentity': input.customer.customerIdentity, 'currentCustomer.customerMarkdown': input.customer.customerMarkdown },
+              ],
+            },
+            { $set: { updatedAt: now } },
+            { new: true, session },
+          ).lean<ISteelQuotationState | null>();
+          if (!guardedCurrent) {
+            throw supersededError;
+          }
+          await QuotationArtifact.deleteOne({ ...stateFilter, runId: input.runId,
+            operationId: 'snapshot', kind: 'snapshot', sha256: run.snapshotRef.sha256 }, { session });
+          result = { ok: true, message: savedMessage };
+          return;
+        }
+        if (!publicationArtifact) {
+          await QuotationArtifact.create([{
+            userId: scope.userId,
+            conversationId: scope.conversationId,
+            ...(scope.tenantId !== undefined ? { tenantId: scope.tenantId } : {}),
+            runId: input.runId,
+            operationId: 'published',
+            kind: 'final',
+            sha256: publicationSha256,
+            payload: publicationPayload,
+            createdAt: now,
+            updatedAt: now,
+          }], { session });
+        }
+        const publishedRef = {
+          operationId: 'published',
+          kind: 'final' as const,
+          artifactId: publicationArtifactId,
+          sha256: publicationSha256,
+          updatedAt: now,
+        };
+        const updated = await QuotationState.findOneAndUpdate(
+          {
+            $and: [
+              stateFilter,
+              { 'activeRun.runId': input.runId, 'activeRun.status': 'completed', 'activeRun.targetMessageId': input.runTargetMessageId },
+              { 'activeRun.checkpointRefs': { $elemMatch: { operationId: 'final', kind: 'final', sha256: input.finalSha256 } } },
+              { 'activeRun.checkpointRefs': { $not: { $elemMatch: { operationId: 'published' } } } },
+              { 'currentOrder.sha256': input.currentOrderSha256 },
+              { 'currentSystemOrder.runId': input.runId, 'currentSystemOrder.messageId': input.targetMessageId, 'currentSystemOrder.sha256': input.currentSystemOrderSha256 },
+              { 'currentCustomer.preparationId': input.customer.preparationId, 'currentCustomer.customerIdentity': input.customer.customerIdentity, 'currentCustomer.customerMarkdown': input.customer.customerMarkdown },
+            ],
+          },
+          { $set: { updatedAt: now, 'activeRun.updatedAt': now }, $push: { 'activeRun.checkpointRefs': publishedRef } },
+          { new: true, session },
+        ).lean<ISteelQuotationState | null>();
+        if (!updated) {
+          throw supersededError;
+        }
+        await QuotationArtifact.deleteOne({ ...stateFilter, runId: input.runId,
+          operationId: 'snapshot', kind: 'snapshot', sha256: run.snapshotRef.sha256 }, { session });
+        result = { ok: true, message: savedMessage };
+      });
+      return result ?? { ok: false, code: 'superseded' };
+    } catch (error) {
+      if (error === supersededError) return { ok: false, code: 'superseded' };
+      throw error;
+    } finally {
+      await session.endSession();
     }
   }
 
@@ -3783,7 +4132,15 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
   }
 
   return {
+    ...createSteelHistoryMethods(mongoose),
+    ...createSteelPublicationMethods(mongoose, async (input, message, session) => saveMessageInternal(
+      { userId: input.scope.userId, ...input.saveContext },
+      message as Omit<Partial<IMessage>, 'contextMeta'>,
+      { context: 'Steel full Markdown publication' },
+      session,
+    )),
     saveMessage,
+    saveSteelQuotationMessage,
     bulkSaveMessages,
     recordMessage,
     updateMessageText,

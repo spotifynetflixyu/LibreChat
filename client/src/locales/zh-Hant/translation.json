@@ -2077,5 +2077,21 @@
   "com_ui_good_evening": "晚安",
   "com_ui_good_morning": "早安",
   "com_ui_weekend_morning": "週末愉快",
-  "com_ui_tool_result_not_saved": "結果未保存"
+  "com_ui_tool_result_not_saved": "結果未保存",
+  "com_ui_steel_review_delete_row": "刪除",
+  "com_ui_steel_review_save": "儲存",
+  "com_ui_steel_review_close": "關閉",
+  "com_ui_steel_review_unsaved_caption": "未儲存變更：{{0}} 列",
+  "com_ui_steel_review_add_row": "新增列",
+  "com_ui_steel_review_action": "操作",
+  "com_ui_steel_review_bind": "綁定",
+  "com_ui_steel_review_bound": "已綁定",
+  "com_ui_steel_review_bind_title": "綁定來源",
+  "com_ui_steel_review_bind_description": "選擇此列的授權來源檔案與頁碼。",
+  "com_ui_steel_review_unlinked": "顯示未綁定",
+  "com_ui_steel_review_source_page_retry": "重試",
+  "com_ui_fit": "適合畫面",
+  "com_ui_steel_review_updated": "已更新",
+  "com_ui_steel_review_latest_version": "最新版本",
+  "com_ui_steel_review_previous_version": "歷史版本"
 }

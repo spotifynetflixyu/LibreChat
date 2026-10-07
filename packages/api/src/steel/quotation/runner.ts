@@ -1,19 +1,31 @@
 import mongoose from 'mongoose';
 import { createHash, randomUUID } from 'node:crypto';
+import {
+  steelCalculationCandidateEvidenceSchema,
+  steelCalculationCheckpointSchema,
+  type SteelCalculationCandidateEvidence,
+  type SteelCalculationCheckpoint,
+} from 'librechat-data-provider';
 import type {
   ISteelQuotationState,
   SteelQuotationActiveRun,
+  SteelQuotationCurrentSystemOrder,
   SteelQuotationPendingMessageFile,
   SteelQuotationScope,
   SteelQuotationSnapshotPayload,
+  SteelQuotationSourceSnapshot,
   SteelQuotationTicket,
   SteelQuotationTicketCompletionReceipt,
+  SteelQuotationPublicationProof,
+  SteelQuotationOcrSelection,
+  SteelQuotationPublicationSaveResult,
 } from '@librechat/data-schemas';
 import type { QuotationBackendFailure, QuotationChildResultInput, QuotationLookupEvidence, QuotationPythonEvidence } from './protocol';
 import type { SteelToolJsonObject, SteelToolResult } from '../tools/results';
 import type { QuotationModelInput, QuotationRepairProgress } from './model';
 import type { OpenAIOAuthModelOptions } from '../native/oauth';
 import type { SteelNativeHistory } from '../native/events';
+import type { SteelQuotationStateService } from './state';
 import type { SavedQuotationLookup } from './history';
 import {
   buildQuotationChunks,
@@ -36,10 +48,15 @@ import {
   isUnfinishedQuotation,
 } from './preparation';
 import { getQuotationProgress, QUOTATION_V2_SPLIT_SIZES, QUOTATION_V2_MAX_DEPTH } from './progress';
+import { SteelQuotationInputError, quotationOcrSource, sameQuotationOcrSelection } from './input';
 import { executeSteelTool, createSteelToolRunState } from '../tools/execute';
 import { buildDefaultSteelGlobalAgentContext } from '../native/context';
+import { stripCustomerQuoteSections } from '../markdown/outputFilter';
+import { retiredMarkdownSectionTitles } from '../markdown/admission';
+import { buildCustomerQuoteFromMarkdown } from '../markdown/quote';
 import { buildSteelQuotationStatusEvent } from '../native/events';
 import { normalizeSteelChunkMarkdown } from '../markdown/chunk';
+import { canonicalizeSystemOrderMarkdown } from './revision';
 import { createSteelQuotationStateService } from './state';
 import { parseMarkdownTables } from '../markdown/table';
 import { parseAssistantMarkdown } from '../ocr/result';
@@ -49,6 +66,272 @@ import { readQuotationHistory } from './history';
 import { invokeQuotationModel } from './model';
 
 export { commitQuotationCustomerResponse, prepareQuotationCustomerResponse } from './preparation';
+
+export interface SteelQuotationPublicationInput {
+  scope: SteelQuotationScope;
+  run: SteelQuotationActiveRun;
+  markdown: string;
+  service: Pick<SteelQuotationStateService,
+    'readState' | 'markOcrStale' | 'readCurrentSystemOrder' | 'readArtifact' | 'saveCurrentSystemOrder' | 'getArtifact'>;
+  publishFinal: (input: SteelQuotationPublicationProof & { markdown: string }) =>
+    Promise<SteelQuotationPublicationSaveResult | void>;
+  projectFinal?: (input: { run: SteelQuotationActiveRun; markdown: string }) => Promise<void>;
+}
+
+export class SteelQuotationPublicationError extends Error {
+  readonly code: string;
+
+  constructor(code = 'superseded_response') {
+    super('Steel response could not be finalized.');
+    this.name = 'SteelQuotationPublicationError';
+    this.code = code;
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function readExactCandidate(value: unknown): SteelCalculationCandidateEvidence | undefined {
+  if (!isRecord(value) || typeof value.erpItemCode !== 'string' || typeof value.category !== 'string' ||
+    !isRecord(value.exactPhysical)) {
+    return undefined;
+  }
+  const physical = value.exactPhysical;
+  const candidate = {
+    erpItemCode: value.erpItemCode,
+    category: value.category,
+    ruleVersion: 'steel-weight-v1',
+    ...(typeof value.unitWeightBasis === 'string' ? { unitWeightBasis: value.unitWeightBasis } : {}),
+    exactPhysical: {
+      ...(typeof physical.density === 'string' ? { density: physical.density } : {}),
+      ...(typeof physical.widthMm === 'string' ? { widthMm: physical.widthMm } : {}),
+      ...(typeof physical.lengthMm === 'string' ? { lengthMm: physical.lengthMm } : {}),
+      ...(typeof physical.unitWeightValue === 'string' ? { unitWeightValue: physical.unitWeightValue } : {}),
+    },
+  };
+  const parsed = steelCalculationCandidateEvidenceSchema.safeParse(candidate);
+  return parsed.success ? parsed.data : undefined;
+}
+
+export function hasCompleteSteelFormula(candidate: SteelCalculationCandidateEvidence): boolean {
+  const physical = candidate.exactPhysical;
+  if (candidate.category === '鐵板') {
+    return physical.density !== undefined;
+  }
+  if (candidate.category === '方鐵') {
+    return physical.density !== undefined;
+  }
+  const unitWeightBasis = candidate.unitWeightBasis?.toLowerCase();
+  if (!['H型鋼', 'C型鋼', '角鐵', '槽鐵', '平鐵', '方管', '圓管', '圓條'].includes(candidate.category) ||
+    physical.unitWeightValue === undefined) {
+    return false;
+  }
+  if (candidate.unitWeightBasis === 'kg_per_piece_or_stock_length') {
+    return physical.lengthMm !== undefined;
+  }
+  return ['m', 'kg_per_m', 'kg/m'].includes(unitWeightBasis ?? '');
+}
+
+function buildSteelCalculationCheckpoint(
+  systemOrderHash: string,
+  rows: readonly (readonly string[])[],
+  results: readonly QuotationChildResultInput[],
+): SteelCalculationCheckpoint {
+  const candidatesByIdentity = new Map<string, Map<string, SteelCalculationCandidateEvidence>>();
+  for (const result of results) {
+    for (const evidence of result.lookupEvidence) {
+      if (!evidence.result.ok || !isRecord(evidence.result.data)) continue;
+      const queryResults = evidence.result.data.queryResults;
+      if (!Array.isArray(queryResults)) continue;
+      for (const queryResult of queryResults) {
+        if (!isRecord(queryResult) || !Array.isArray(queryResult.candidates)) continue;
+        for (const rawCandidate of queryResult.candidates) {
+          const candidate = readExactCandidate(rawCandidate);
+          if (!candidate || !hasCompleteSteelFormula(candidate)) continue;
+          const identity = `${candidate.erpItemCode}\u0000${candidate.category}`;
+          const entries = candidatesByIdentity.get(identity) ?? new Map<string, SteelCalculationCandidateEvidence>();
+          entries.set(JSON.stringify(candidate), candidate);
+          candidatesByIdentity.set(identity, entries);
+        }
+      }
+    }
+  }
+  const codeIndex = quotationSystemOrderColumns.indexOf('型號');
+  const categoryIndex = quotationSystemOrderColumns.indexOf('類別');
+  return {
+    version: 1,
+    systemOrderHash,
+    rows: rows.flatMap((row, rowIndex) => {
+      const identity = `${row[codeIndex] ?? ''}\u0000${row[categoryIndex] ?? ''}`;
+      const candidates = candidatesByIdentity.get(identity);
+      if (!candidates || candidates.size !== 1) return [];
+      const candidate = [...candidates.values()][0];
+      return candidate ? [{ rowIndex, candidate }] : [];
+    }),
+  };
+}
+
+async function materializeCompletedSystemOrder(
+  input: SteelQuotationPublicationInput,
+): Promise<{ state: ISteelQuotationState; currentSystemOrder: SteelQuotationCurrentSystemOrder }> {
+  const state = await input.service.readState(input.scope);
+  if (!state || state.activeRun?.runId !== input.run.runId || state.activeRun.status !== 'completed') {
+    throw new Error('Quotation publication run is not the trusted completed run');
+  }
+  const existing = state.currentSystemOrder;
+  const published = state.activeRun.checkpointRefs.find((ref) => ref.operationId === 'published' && ref.kind === 'final');
+  if (published) {
+    const final = state.activeRun.checkpointRefs.find((ref) => ref.operationId === 'final' && ref.kind === 'final');
+    const finalHash = createHash('sha256').update(input.markdown, 'utf8').digest('hex');
+    const receiptPayload = await input.service.readArtifact({ scope: input.scope,
+      ref: { ...input.scope, runId: input.run.runId, ...published } });
+    if (!existing || existing.runId !== input.run.runId || !final || final.sha256 !== finalHash ||
+      !receiptPayload || createHash('sha256').update(receiptPayload, 'utf8').digest('hex') !== published.sha256 ||
+      receiptPayload !== JSON.stringify({ finalSha256: finalHash }) ||
+      !sameQuotationOcrSelection(existing.ocrSelection, state.activeRun.ocrSelection)) {
+      throw new SteelQuotationInputError('invalid_snapshot');
+    }
+    return { state, currentSystemOrder: existing };
+  }
+  const payload = await input.service.readArtifact({ scope: input.scope, ref: input.run.snapshotRef });
+  if (!payload) throw new Error('Quotation input snapshot is missing');
+  const snapshot = JSON.parse(payload) as SteelQuotationSnapshotPayload;
+  if (!snapshot.orderHash || snapshot.orderHash !== state.currentOrder?.sha256 ||
+    (state.currentCustomer && (snapshot.customerIdentity !== state.currentCustomer.customerIdentity ||
+      snapshot.customerMarkdown !== state.currentCustomer.customerMarkdown))) {
+    throw new Error('Quotation publication snapshot is stale');
+  }
+  if (!sameQuotationOcrSelection(snapshot.ocrSelection, input.run.ocrSelection) ||
+    !sameQuotationOcrSelection(snapshot.ocrSelection, state.currentOrder?.ocrSelection)) {
+    throw new Error('Quotation publication input identity is invalid');
+  }
+  if (snapshot.sourceSnapshot && snapshot.sourceSnapshot.orderHash !== snapshot.orderHash) {
+    throw new Error('Quotation publication source snapshot is stale');
+  }
+  const canonical = canonicalizeSystemOrderMarkdown(input.markdown);
+  const quote = canonical && buildCustomerQuoteFromMarkdown(canonical.markdown);
+  const runTargetMessageId = input.run.targetMessageId;
+  if (!canonical || !quote || !runTargetMessageId) {
+    throw new Error('Quotation publication has no canonical system order');
+  }
+  const calculationRef = state.activeRun?.checkpointRefs.find((ref) => ref.operationId === 'calculation:basis');
+  let calculationCheckpoint: SteelCalculationCheckpoint | undefined;
+  if (calculationRef) {
+    const calculationPayload = await input.service.readArtifact({
+      scope: input.scope,
+      ref: { ...input.scope, runId: input.run.runId, ...calculationRef },
+    });
+    if (!calculationPayload) throw new Error('Quotation calculation checkpoint is missing');
+    const parsed = steelCalculationCheckpointSchema.safeParse(JSON.parse(calculationPayload));
+    if (!parsed.success || parsed.data.systemOrderHash !== canonical.sha256) {
+      throw new Error('Quotation calculation checkpoint is stale');
+    }
+    calculationCheckpoint = parsed.data;
+  }
+  const classify = async (currentSystemOrder: SteelQuotationCurrentSystemOrder): Promise<SteelQuotationCurrentSystemOrder> => {
+    if (!snapshot.ocrSelection) return currentSystemOrder;
+    const needsRequote = await input.service.markOcrStale(input.scope, input.run.runId, snapshot.ocrSelection);
+    return { ...currentSystemOrder, needsRequote };
+  };
+  if (existing?.runId === input.run.runId) return { state, currentSystemOrder: await classify(existing) };
+  const saved = await input.service.saveCurrentSystemOrder({
+    scope: input.scope,
+    snapshot: {
+      runId: input.run.runId,
+      sha256: canonical.sha256,
+      markdown: canonical.markdown,
+      messageId: runTargetMessageId,
+      customerQuoteMarkdown: quote.markdown,
+      ...(calculationCheckpoint ? { calculationCheckpoint } : {}),
+      ...(snapshot.sourceSnapshot ? { sourceSnapshot: snapshot.sourceSnapshot } : {}),
+      ...(snapshot.ocrSelection ? { ocrSelection: snapshot.ocrSelection } : {}),
+      updatedAt: new Date(),
+    },
+    expectedRunId: input.run.runId,
+    expectedCurrentOrderSha256: snapshot.orderHash,
+    ...(state.currentCustomer ? {
+      expectedCustomer: {
+        customerIdentity: snapshot.customerIdentity,
+        customerMarkdown: snapshot.customerMarkdown,
+      },
+    } : {}),
+    ...(existing ? { expectedCurrentSystemOrderSha256: existing.sha256 } : {}),
+    expectedCurrentSystemOrderPresent: existing !== undefined,
+  });
+  if (!saved) throw new Error('Quotation publication current system order CAS failed');
+  return { state, currentSystemOrder: await classify(saved) };
+}
+
+export async function publishCompletedQuotation(
+  input: SteelQuotationPublicationInput,
+): Promise<{ status: 'completed'; markdown: string; systemOrderHash: string; alreadyPublished: boolean }> {
+  const materialized = await materializeCompletedSystemOrder(input);
+  const { state, currentSystemOrder } = materialized;
+  const publicMarkdown = projectPublishedMarkdown(
+    stripCustomerQuoteSections(input.markdown),
+    currentSystemOrder.markdown,
+  );
+  const runTargetMessageId = input.run.targetMessageId;
+  const targetMessageId = currentSystemOrder.messageId ?? runTargetMessageId;
+  if (!runTargetMessageId) {
+    throw new Error('Quotation publication target is unavailable');
+  }
+  const finalSha256 = createHash('sha256').update(input.markdown, 'utf8').digest('hex');
+  const receipt = await input.service.getArtifact({
+    scope: input.scope,
+    runId: input.run.runId,
+    operationId: 'published',
+  });
+  const alreadyPublished = receipt != null;
+  if (!receipt) {
+    const customer = state.currentCustomer;
+    const currentOrder = state.currentOrder;
+    if (!customer || !currentOrder || !targetMessageId) {
+      throw new Error('Quotation publication proof is unavailable');
+    }
+    const saved = await input.publishFinal({
+      scope: input.scope,
+      runId: input.run.runId,
+      runTargetMessageId,
+      run: input.run,
+      targetMessageId,
+      markdown: publicMarkdown,
+      finalSha256,
+      currentOrderSha256: currentOrder.sha256,
+      currentSystemOrderSha256: currentSystemOrder.sha256,
+      ...(currentSystemOrder.calculationCheckpoint
+        ? { calculationCheckpoint: currentSystemOrder.calculationCheckpoint }
+        : {}),
+      ...(currentSystemOrder.sourceSnapshot ? { sourceSnapshot: currentSystemOrder.sourceSnapshot } : {}),
+      customer: {
+        preparationId: customer.preparationId,
+        customerIdentity: customer.customerIdentity,
+        customerMarkdown: customer.customerMarkdown,
+      },
+      message: {
+        messageId: targetMessageId,
+        conversationId: input.scope.conversationId,
+        text: publicMarkdown,
+        user: input.scope.userId,
+      },
+    });
+    if (!saved || !saved.ok) throw new SteelQuotationPublicationError();
+    await input.projectFinal?.({ run: input.run, markdown: publicMarkdown });
+  } else {
+    await input.projectFinal?.({ run: input.run, markdown: publicMarkdown });
+  }
+  return { status: 'completed', markdown: publicMarkdown, systemOrderHash: currentSystemOrder.sha256, alreadyPublished };
+}
+
+function projectPublishedMarkdown(markdown: string, systemOrderMarkdown: string): string {
+  const document = parseAssistantMarkdown(markdown);
+  const sections = document.sections.map((section) => {
+    const baseName = section.title.split(/[｜|]/u)[0]?.trim();
+    return baseName === 'system_order' ? systemOrderMarkdown : section.raw.trim();
+  });
+  return [document.preamble.trim(), ...sections].filter(Boolean).join('\n\n');
+}
 
 class QuotationChildFailure extends Error {}
 
@@ -91,7 +374,8 @@ export interface QuotationRunnerInput {
     arguments: SteelToolJsonObject;
     result?: SteelToolResult;
   }): Promise<void>;
-  publishFinal(input: { run: SteelQuotationActiveRun; markdown: string }): Promise<void>;
+  publishFinal(input: SteelQuotationPublicationProof & { markdown: string }):
+    Promise<SteelQuotationPublicationSaveResult | void>;
   projectFinal?(input: { run: SteelQuotationActiveRun; markdown: string }): Promise<void>;
   onUsage?: QuotationModelInput['onUsage'];
   onTextDelta?: QuotationModelInput['onTextDelta'];
@@ -112,6 +396,27 @@ export function createQuotationPublicationProjector(
     await publish(input);
     projectedRunId = input.run.runId;
     projectedMarkdownHash = markdownHash;
+  };
+}
+
+/**
+ * Selects the host's preview and committed-text callbacks in one typed seam.
+ * Chat uses the ordinary stream callback for deltas and replaces its reserved
+ * slot on commit; Responses can keep its final callback for the durable text.
+ */
+export function createSteelQuotationPublicationTransport(input: {
+  onText: (text: string) => Promise<void>;
+  onFinalText?: (text: string) => Promise<void>;
+}): {
+  onTextDelta?: (text: string) => Promise<void>;
+  projectFinal: (input: { run: SteelQuotationActiveRun; markdown: string }) => Promise<void>;
+} {
+  const projectFinal = createQuotationPublicationProjector(async ({ markdown }) => {
+    await (input.onFinalText ?? input.onText)(`\n\n${markdown}`);
+  });
+  return {
+    onTextDelta: input.onFinalText ? input.onText : undefined,
+    projectFinal,
   };
 }
 
@@ -148,15 +453,20 @@ export async function acceptQuotationResponse(input: {
   expectedOrderHash?: string;
   expectedCustomerPreparationId?: string;
   completionReceipt?: SteelQuotationTicketCompletionReceipt;
+  sourceSnapshot?: SteelQuotationSourceSnapshot;
+  ocrSelection?: SteelQuotationOcrSelection;
   finishReason?: string;
   service?: ReturnType<typeof createSteelQuotationStateService>;
 }): Promise<SteelQuotationActiveRun | undefined> {
   if (input.finishReason !== 'stop') return undefined;
+  if (parseAssistantMarkdown(input.response).sections.some((section) => retiredMarkdownSectionTitles.some((title) => title === section.title.split(/[｜|]/u)[0]?.trim()))) {
+    throw new SteelQuotationPublicationError('retired_control_section');
+  }
   const signal = parseQuotationSignal(input.response);
   const sections = parseAssistantMarkdown(input.response).sections;
   const hasSection = (title: string) => sections.some((section) => section.title.split(/[｜|]/u)[0]?.trim() === title);
-  const hasOrder = hasSection('ocr_result') || hasSection('ocr_result_updates') || hasSection('system_order_updates');
-  const hasCustomerSection = hasSection('customer_data') || hasSection('customer_data_updates');
+  const hasOrder = hasSection('ocr_result');
+  const hasCustomerSection = hasSection('customer_data');
   const customer = extractCustomerDataTable(input.response);
   if (!signal && !hasCustomerSection && !hasOrder) return undefined;
   if (hasCustomerSection && !customer) {
@@ -181,7 +491,7 @@ export async function acceptQuotationResponse(input: {
       }
     }
     if (hasOrder) {
-      const orderSections = sections.filter((section) => ['ocr_result', 'ocr_result_updates', 'system_order_updates']
+      const orderSections = sections.filter((section) => ['ocr_result']
         .includes(section.title.split(/[｜|]/u)[0]?.trim() ?? ''));
       const orderSection = orderSections.length === 1 && orderSections[0]?.title === 'ocr_result'
         ? orderSections[0]
@@ -194,22 +504,10 @@ export async function acceptQuotationResponse(input: {
     if (!signal) return undefined;
     return acceptQuotationSignal({ ...input, service });
   }
-  if (isUnfinishedQuotation(state?.activeRun?.status) &&
+  if ((isUnfinishedQuotation(state?.activeRun?.status) || (state?.activeRun?.status === 'completed' &&
+    !await service.isPublishedRun(input.scope, state.activeRun))) &&
     (hasOrder || (customer && !matchesCustomer(state?.currentCustomer?.customerMarkdown ?? '')))) {
-    if (!input.messageId || (input.messageText === undefined && !input.messageFiles?.length) ||
-      input.expectedOrderHash !== state?.currentOrder?.sha256 ||
-      input.expectedCustomerPreparationId !== state?.currentCustomer?.preparationId) {
-      throw new Error('Queued quotation correction is based on missing or stale preparation data');
-    }
-    await service.enqueuePendingMessage({
-      scope: input.scope,
-      sourceMessageId: input.messageId,
-      sourceMessageText: input.messageText,
-      sourceMessageFiles: input.messageFiles,
-      targetMessageId: input.responseId,
-      preserveExistingTarget: true,
-    });
-    return state?.activeRun;
+    throw new SteelQuotationPublicationError('quotation_busy');
   }
   const committedCustomer = await commitQuotationCustomerResponse({ ...input, service });
   return acceptQuotationSignal({
@@ -227,10 +525,15 @@ export async function acceptQuotationSignal(input: {
   expectedOrderHash?: string;
   expectedCustomerPreparationId?: string;
   completionReceipt?: SteelQuotationTicketCompletionReceipt;
+  sourceSnapshot?: SteelQuotationSourceSnapshot;
+  ocrSelection?: SteelQuotationOcrSelection;
   finishReason?: string;
   service?: ReturnType<typeof createSteelQuotationStateService>;
 }): Promise<SteelQuotationActiveRun | undefined> {
   if (input.finishReason !== 'stop' || !parseQuotationSignal(input.response)) return undefined;
+  if (parseAssistantMarkdown(input.response).sections.some((section) => retiredMarkdownSectionTitles.some((title) => title === section.title.split(/[｜|]/u)[0]?.trim()))) {
+    throw new SteelQuotationPublicationError('retired_control_section');
+  }
   const service = input.service ?? createSteelQuotationStateService(mongoose);
   const state = await service.readState(input.scope);
   const existingTicket = state?.tickets.find((entry) => entry.responseId === input.responseId);
@@ -245,6 +548,7 @@ export async function acceptQuotationSignal(input: {
       customerIdentity: existingTicket.customerIdentity,
       prompts: { child: 'replay', main: 'replay' },
       chunks: [],
+      ...(input.sourceSnapshot ? { sourceSnapshot: input.sourceSnapshot } : {}),
       targetMessageId: input.responseId,
     });
   }
@@ -256,7 +560,11 @@ export async function acceptQuotationSignal(input: {
     input.expectedCustomerPreparationId !== preparedCustomer.preparationId) {
     throw new Error('Quotation signal is based on stale preparation data');
   }
-  if (isUnfinishedQuotation(state.activeRun?.status)) return state.activeRun;
+  if (isUnfinishedQuotation(state.activeRun?.status) || (state.activeRun?.status === 'completed' &&
+    !await service.isPublishedRun(input.scope, state.activeRun))) return state.activeRun;
+  if (input.ocrSelection && !sameQuotationOcrSelection(input.ocrSelection, state.currentOrder.ocrSelection)) {
+    throw new Error('Quotation signal OCR selection is stale');
+  }
   const chunks = buildQuotationChunks(state.currentOrder.markdown);
   const conversation = { requestId: input.responseId, conversationId: input.scope.conversationId, activeHistory: [] };
   const [child, main] = await Promise.all([
@@ -284,6 +592,8 @@ export async function acceptQuotationSignal(input: {
     targetMessageId: input.responseId,
     prompts: { child: child.instructionPrefix, main: main.instructionPrefix },
     chunks: chunks.map((chunk) => ({ index: chunk.chunkIndex, sourceRowCount: chunk.sourceRows.length })),
+    ...(input.sourceSnapshot ? { sourceSnapshot: input.sourceSnapshot } : {}),
+    ...(input.ocrSelection ? { ocrSelection: input.ocrSelection } : {}),
   });
 }
 
@@ -302,15 +612,14 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
   const scope = input.scope;
   const runId = run.runId;
   const publish = async (markdown: string, completedRun: SteelQuotationActiveRun) => {
-    const receipt = await service.getArtifact({ scope, runId, operationId: 'published' });
-    if (!receipt) {
-      await input.publishFinal({ run: completedRun, markdown });
-      const marked = await service.markPublished({ scope, runId, targetMessageId: completedRun.targetMessageId, finalSha256: createHash('sha256').update(markdown).digest('hex') });
-      if (!marked) throw new Error('Quotation publication was superseded');
-    } else if (input.projectFinal) {
-      await input.projectFinal({ run: completedRun, markdown });
-    }
-    return { status: 'completed' as const, markdown };
+    return publishCompletedQuotation({
+      scope,
+      run: completedRun,
+      markdown,
+      service,
+      publishFinal: input.publishFinal,
+      projectFinal: input.projectFinal,
+    });
   };
   if (run.status === 'completed') {
     const markdown = await service.readCheckpoint({ scope, runId, operationId: 'final' });
@@ -452,7 +761,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     const systemOrder = final.systemOrderMarkdown;
     await checkpoint('system-order:normalized', 'main', systemOrder);
     if (input.onTextDelta) {
-      await deliverText(async () => input.onTextDelta!(`${systemOrder}\n\n${final.customerQuoteMarkdown}`));
+      await deliverText(async () => input.onTextDelta!(systemOrder));
     }
     let mainStreamStarted = false;
     let reviewOutput = await service.readCheckpoint({ scope, runId, operationId: 'main-reviews' });
@@ -485,6 +794,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
           prompt: snapshot.prompts.main,
           input: JSON.stringify({
             order: snapshot.orderMarkdown,
+            ...(snapshot.sourceSnapshot ? { source_mappings: snapshot.sourceSnapshot.mappings } : {}),
             customer: snapshot.customerMarkdown,
             system_order: systemOrder,
             review_remarks: aggregate.reviewRemarks,
@@ -524,9 +834,14 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
       .reduce((count, table) => count + table.rows.length, 0);
     const failedMaterialCount = results.reduce((count, child) =>
       count + (child.backendFailure ? child.chunk.sourceRows.length : 0), 0);
-    const completion = reviewCount > 0
-      ? `查價輸出完成：共 ${final.rows.length} 筆 system_order、${reviewCount} 項待複核事項。`
-      : reviews || failedMaterialCount > 0 ? `查價輸出完成：共 ${final.rows.length} 筆 system_order。` : final.summary;
+    let completion: string;
+    if (reviewCount > 0) {
+      completion = `查價輸出完成：共 ${final.rows.length} 筆 system_order、${reviewCount} 項待複核事項。`;
+    } else if (reviews || failedMaterialCount > 0) {
+      completion = `查價輸出完成：共 ${final.rows.length} 筆 system_order。`;
+    } else {
+      completion = final.summary;
+    }
     const categoryColumn = quotationSystemOrderColumns.indexOf('類別');
     const materialCount = final.rows.filter((row) => !row[categoryColumn]?.trim().startsWith('加工/')).length;
     const sourceCount = chunks.reduce((count, chunk) => count + chunk.sourceRows.length, 0);
@@ -534,8 +849,15 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     const failureSummary = failedMaterialCount > 0
       ? `\n\n${failedMaterialCount} 個材料項次報價失敗，已保留 OCR 原值及空白報價欄位，需人工複核。` : '';
     const summary = `${completion}\n\n項次核對：材料項次 ${materialCount}／原始訂單 ${sourceCount} 項；加工列 ${processingCount} 筆。${failureSummary}`;
-    const completedResponse = [final.systemOrderMarkdown, final.customerQuoteMarkdown, reviewDisplay, `## quote_summary\n\n${summary}`]
+    const completedResponse = [final.systemOrderMarkdown, reviewDisplay, `## quote_summary\n\n${summary}`]
       .filter(Boolean).join('\n\n');
+    const calculationSystemOrderHash = createHash('sha256').update(final.systemOrderMarkdown, 'utf8').digest('hex');
+    const calculationCheckpoint = buildSteelCalculationCheckpoint(
+      calculationSystemOrderHash,
+      final.rows,
+      results,
+    );
+    await checkpoint('calculation:basis', 'main', JSON.stringify(calculationCheckpoint));
     await checkpoint('final', 'final', completedResponse);
     if (input.onTextDelta) {
       await deliverText(async () => input.onTextDelta!(`\n\n## quote_summary\n\n${summary}`));
@@ -658,6 +980,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
           prompt: snapshot.prompts.child,
           input: JSON.stringify({
             chunk: chunk.markdown,
+            ...(snapshot.sourceSnapshot ? { source_mappings: snapshot.sourceSnapshot.mappings } : {}),
             customer: snapshot.customerMarkdown,
           }),
           modelOptions: input.modelOptions,
@@ -673,6 +996,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
               ...repair,
               conversationId: scope.conversationId,
               runId, index: active.index, status: active.status,
+              ...(active.ocrSelection ? { ocrSource: quotationOcrSource(active.ocrSelection) } : {}),
               ...getQuotationProgress(active),
               chunkIndex: chunk.chunkIndex, attempt,
             });

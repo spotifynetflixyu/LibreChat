@@ -37,6 +37,8 @@ const {
   createSteelOcrStateService,
   createSteelQuotationStateService,
   createSteelMarkdownCompletionServices,
+  createSteelQuotationPublicationPublisher,
+  createSteelFullMarkdownPublisher,
   shouldDeferSteelMarkdownPersistence,
   createSteelOcrResponseAuditService,
   createMCPRuntimeRequestBody,
@@ -70,6 +72,9 @@ const { logViolation } = require('~/cache');
 const { recordScheduleOutcome, isScheduleLive } = require('~/server/services/Schedules');
 const {
   saveMessage,
+  saveSteelQuotationMessage,
+  publishSteelMarkdown,
+  getMessage,
   saveConvo,
   getMessages,
   getConvo,
@@ -3245,6 +3250,16 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           }
           return saved;
         };
+        const publishQuotation = createSteelQuotationPublicationPublisher({
+          saveContext: reqCtx,
+          buildMessage: ({ markdown }) => ({
+            ...response,
+            messageId: response.messageId,
+            sourceMessageId: response.messageId,
+            text: markdown,
+          }),
+          savePublication: (proof) => saveSteelQuotationMessage(proof),
+        });
         const markdownCompletion = createSteelMarkdownCompletionServices({
           ocr: createSteelOcrStateService(mongoose),
           quotation: createSteelQuotationStateService(mongoose),
@@ -3268,6 +3283,18 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           },
           applyMarkdown: (markdown) => replaceResponseMarkdown(response, markdown),
           persistMarkdown: persistResponseMessage,
+          publishQuotation,
+          publishMarkdown: createSteelFullMarkdownPublisher({ saveContext: reqCtx,
+            buildMessage: ({ markdown }) => ({ ...response, text: markdown }),
+            savePublication: publishSteelMarkdown }),
+          publishedResponse: {
+            load: ({ userId: publishedUserId, responseId: publishedResponseId }) =>
+              getMessage({ user: publishedUserId, messageId: publishedResponseId }),
+            accept: (saved) => {
+              responseMessagePersisted = true;
+              savedResponseMessage = saved;
+            },
+          },
         });
         if (!responseMessagePersisted) {
           await persistResponseMessage();

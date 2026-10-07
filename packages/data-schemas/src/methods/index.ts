@@ -1,3 +1,5 @@
+export { createSteelHistoryMethods } from './steelHistory';
+export type { SteelMarkdownHistoryReadInput, SteelMarkdownHistoryRecord, SteelMarkdownHistoryMethods } from './steelHistory';
 import type { OAuthCompactionMethods } from './oauthCompaction';
 import type { RoleMethods, RoleDeps } from './role';
 import {
@@ -10,6 +12,33 @@ export {
   type MCPAuthorizationFenceRetryStorage,
 } from './mcpAuthorizationFenceRetry';
 export { createOAuthCompactionMethods };
+export {
+  createSteelReviewReadMethods,
+  createSteelReviewWriteMethods,
+  SteelReviewWriteError,
+} from './steelReview';
+export type {
+  SteelReviewCommitInput,
+  SteelReviewCommitResult,
+  SteelReviewMessageMutationCheckResult,
+  SteelReviewReadMethods,
+  SteelReviewWriteMethods,
+} from './steelReview';
+export { createSteelReviewSourceMethods } from './steelSources';
+export { createSteelScopedOcrMethods } from './ocr';
+export type { SteelScopedOcrMethods } from './ocr';
+import type { SteelQuotationInputMethods } from './steelQuotationInput';
+import { createSteelQuotationInputMethods } from './steelQuotationInput';
+export { createSteelQuotationInputMethods, STEEL_QUOTATION_INPUT_TTL_MS } from './steelQuotationInput';
+export type {
+  SteelQuotationInputAdmission,
+  SteelQuotationInputChunk,
+  SteelQuotationInputMethods,
+  SteelQuotationInputPrepareResult,
+  SteelQuotationInputReadResult,
+  SteelQuotationInputStaleCheck,
+  SteelQuotationInputStaleResult,
+} from './steelQuotationInput';
 import {
   createRefreshTokenBridgeMethods,
   type RefreshTokenBridgeMethods,
@@ -190,6 +219,12 @@ import {
 } from './mcpAuthority';
 /* Insights */
 import { createInsightsMethods, type InsightsMethods } from './insights';
+import {
+  createSteelReviewReadMethods,
+  createSteelReviewWriteMethods,
+  type SteelReviewReadMethods,
+} from './steelReview';
+import { createSteelReviewSourceMethods, type SteelReviewSourceMethods } from './steelSources';
 
 export {
   runAfterTransaction,
@@ -273,7 +308,10 @@ export type AllMethods = UserMethods &
   AgentMethods &
   ConfigMethods &
   MCPAuthorityMethods &
-  InsightsMethods;
+  InsightsMethods &
+  SteelReviewReadMethods &
+  SteelReviewSourceMethods &
+  SteelQuotationInputMethods;
 
 /** Dependencies injected from the api layer into createMethods */
 export interface CreateMethodsDeps {
@@ -517,6 +555,10 @@ export function createMethods(
     ...createMCPAuthorityMethods(mongoose),
     /* Insights */
     ...createInsightsMethods(mongoose),
+    ...createSteelReviewReadMethods(mongoose),
+    ...createSteelReviewWriteMethods(mongoose),
+    ...createSteelReviewSourceMethods(mongoose),
+    ...createSteelQuotationInputMethods(mongoose),
   };
 }
 
@@ -600,6 +642,7 @@ export type {
   MCPAuthorityConfigSourceDocument,
   MCPAuthorityCredentialSourceDocument,
   InsightsMethods,
+  SteelReviewSourceMethods,
 };
 
 export { recordAgentEventActorReceiptMetric, setAgentEventActorReceiptMetricObserver };

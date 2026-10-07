@@ -1,19 +1,3 @@
-import { normalizeOcrOrganizerFileKey } from '../ocr/organizer';
-import { OCR_COMPLETION_DIRECTIVE_MARKER } from '../markdown/ocr';
-import { prepareLibreChatSteelRuntimeContext } from '../runtime/context';
-import { createSteelPostgresPool } from '../postgres';
-import {
-  listReviewedSteelAgentRules,
-  listReviewedSteelOtherRules,
-  listReviewedSteelOutputRules,
-  listReviewedSteelQuoteDefaults,
-  listReviewedSteelQuoteRules,
-} from '../repositories';
-
-import type { SteelRuntimeMessageRole } from '../runtime/types';
-import type { SteelQuoteDefault } from '../repositories/defaults';
-import type { SteelAgentRule, SteelQuoteRule } from '../repositories/rules';
-import type { SteelRepositoryClient } from '../repositories';
 import type {
   PrepareSteelRuntimeContextInput,
   SteelRuntimeContext,
@@ -21,6 +5,21 @@ import type {
   SteelRuntimeJsonObject,
   SteelRuntimeOcrSourceFileMapping,
 } from '../runtime/context';
+import type { SteelAgentRule, SteelQuoteRule } from '../repositories/rules';
+import type { SteelQuoteDefault } from '../repositories/defaults';
+import type { SteelRuntimeMessageRole } from '../runtime/types';
+import type { SteelRepositoryClient } from '../repositories';
+import {
+  listReviewedSteelAgentRules,
+  listReviewedSteelOtherRules,
+  listReviewedSteelOutputRules,
+  listReviewedSteelQuoteDefaults,
+  listReviewedSteelQuoteRules,
+} from '../repositories';
+import { prepareLibreChatSteelRuntimeContext } from '../runtime/context';
+import { OCR_COMPLETION_DIRECTIVE_MARKER } from '../markdown/ocr';
+import { normalizeOcrOrganizerFileKey } from '../ocr/organizer';
+import { createSteelPostgresPool } from '../postgres';
 
 export const steelNativeContextVersion = 1 as const;
 
@@ -154,20 +153,8 @@ export interface SteelNativeGlobalAgentContext {
   instructionPrefixSections: readonly SteelNativeInstructionPrefixSlot[];
 }
 
-type SteelNativeJsonValue =
-  | string
-  | number
-  | boolean
-  | null
-  | readonly SteelNativeJsonValue[]
-  | { readonly [key: string]: SteelNativeJsonValue | undefined };
-
 function compactText(values: readonly (string | undefined)[]): string[] {
   return values.map((value) => value?.trim()).filter((value): value is string => Boolean(value));
-}
-
-function renderJson(value: SteelNativeJsonValue): string {
-  return JSON.stringify(value, null, 2);
 }
 
 function renderAgentRule(rule: SteelAgentRule): string {
@@ -319,14 +306,15 @@ function renderNativePaddleOcrStatus(result: SteelRuntimeJsonObject): string {
     `file_key: ${safeFileKey}`,
     `chunk_index: ${chunkIndex}`,
     `chunk_count: ${chunkCount}`,
-    `page_range: ${
-      range
-        ? range.pageStart === range.pageEnd
-          ? range.pageStart
-          : `${range.pageStart}-${range.pageEnd}`
-        : 'unavailable'
-    }`,
+    `page_range: ${renderOcrPageRange(range)}`,
   ].join('\n');
+}
+
+function renderOcrPageRange(range: ReturnType<typeof readNativeOcrFailureRange>): string | number {
+  if (!range) {
+    return 'unavailable';
+  }
+  return range.pageStart === range.pageEnd ? range.pageStart : `${range.pageStart}-${range.pageEnd}`;
 }
 
 function mergeNativeOcrFailureRanges(
@@ -534,56 +522,58 @@ export function buildSteelNativeInstructionPrefix({
   instructionPrefix: string;
   sections: SteelNativeInstructionPrefixSlot[];
 } {
-  const sections =
-    mode === 'ocr'
-      ? [
-          buildSlot('agent', 'Steel Agent Rules', []),
-          buildSlot('quote_rules', 'Steel Quote Defaults and Category Rules', []),
-          buildSlot('output', 'Steel Output Rules', []),
-          buildSlot(
-            'other',
-            'Steel OCR Rules',
-            buildOcrMainRuleItems(runtimeContext, ['ocr_main_merge', 'final_ocr_markdown']),
-          ),
-        ]
-      : mode === 'delegate_ocr'
-        ? [
-            buildSlot('agent', 'Steel Agent Rules', []),
-            buildSlot('quote_rules', 'Steel Quote Defaults and Category Rules', []),
-            buildSlot('output', 'Steel Output Rules', []),
-            buildSlot(
-              'other',
-              'Steel Delegate OCR Rules',
-              buildDelegateOcrRuleItems(runtimeContext),
-            ),
-          ]
-        : mode === 'quote_main'
-          ? [
-              buildSlot('agent', 'Steel Quotation Consolidation Rules', []),
-              buildSlot('quote_rules', 'Steel Quote Defaults and Category Rules', []),
-              buildSlot('output', 'Steel Quotation Consolidated Output Rules', [...buildQuotationWorkbookRuleItems(runtimeContext), ...buildQuotationRuleItems(runtimeContext, 'main')]),
-              buildSlot('other', 'Steel Other Rules', []),
-            ]
-          : mode === 'quote_child'
-            ? [
-                buildSlot('agent', 'Steel Item Pricing Rules', []),
-                buildSlot('quote_rules', 'Steel Quote Defaults and Category Rules', buildQuotationQuoteRuleItems(runtimeContext)),
-                buildSlot('output', 'Steel Quotation Calculation Rules', [...buildQuotationWorkbookRuleItems(runtimeContext), ...buildQuotationCalculationRuleItems(runtimeContext), ...buildQuotationRuleItems(runtimeContext, 'child')]),
-                buildSlot('other', 'Steel Other Rules', []),
-              ]
-      : [
-          buildSlot('agent', 'Steel Agent Rules', runtimeContext.rules.agentRules.filter((rule) => !isQuotationAgentRule(rule)).map(renderAgentRule)),
-          buildSlot('quote_rules', 'Steel Quote Defaults and Category Rules', [
-            ...runtimeContext.rules.steelGlobalRules.quoteDefaults.map(renderQuoteDefault),
-            ...runtimeContext.rules.steelGlobalRules.quoteRules.map(renderQuoteRule),
-          ]),
-          buildSlot(
-            'output',
-            'Steel Output Rules',
-            runtimeContext.rules.outputRules.map(renderAgentRule),
-          ),
-          buildSlot('other', 'Steel Other Rules', []),
-        ];
+  let sections: SteelNativeInstructionPrefixSlot[];
+  if (mode === 'ocr') {
+    sections = [
+      buildSlot('agent', 'Steel Agent Rules', []),
+      buildSlot('quote_rules', 'Steel Quote Defaults and Category Rules', []),
+      buildSlot('output', 'Steel Output Rules', []),
+      buildSlot(
+        'other',
+        'Steel OCR Rules',
+        buildOcrMainRuleItems(runtimeContext, ['ocr_main_merge', 'final_ocr_markdown']),
+      ),
+    ];
+  } else if (mode === 'delegate_ocr') {
+    sections = [
+      buildSlot('agent', 'Steel Agent Rules', []),
+      buildSlot('quote_rules', 'Steel Quote Defaults and Category Rules', []),
+      buildSlot('output', 'Steel Output Rules', []),
+      buildSlot(
+        'other',
+        'Steel Delegate OCR Rules',
+        buildDelegateOcrRuleItems(runtimeContext),
+      ),
+    ];
+  } else if (mode === 'quote_main') {
+    sections = [
+      buildSlot('agent', 'Steel Quotation Consolidation Rules', []),
+      buildSlot('quote_rules', 'Steel Quote Defaults and Category Rules', []),
+      buildSlot('output', 'Steel Quotation Consolidated Output Rules', [...buildQuotationWorkbookRuleItems(runtimeContext), ...buildQuotationRuleItems(runtimeContext, 'main')]),
+      buildSlot('other', 'Steel Other Rules', []),
+    ];
+  } else if (mode === 'quote_child') {
+    sections = [
+      buildSlot('agent', 'Steel Item Pricing Rules', []),
+      buildSlot('quote_rules', 'Steel Quote Defaults and Category Rules', buildQuotationQuoteRuleItems(runtimeContext)),
+      buildSlot('output', 'Steel Quotation Calculation Rules', [...buildQuotationWorkbookRuleItems(runtimeContext), ...buildQuotationCalculationRuleItems(runtimeContext), ...buildQuotationRuleItems(runtimeContext, 'child')]),
+      buildSlot('other', 'Steel Other Rules', []),
+    ];
+  } else {
+    sections = [
+      buildSlot('agent', 'Steel Agent Rules', runtimeContext.rules.agentRules.filter((rule) => !isQuotationAgentRule(rule)).map(renderAgentRule)),
+      buildSlot('quote_rules', 'Steel Quote Defaults and Category Rules', [
+        ...runtimeContext.rules.steelGlobalRules.quoteDefaults.map(renderQuoteDefault),
+        ...runtimeContext.rules.steelGlobalRules.quoteRules.map(renderQuoteRule),
+      ]),
+      buildSlot(
+        'output',
+        'Steel Output Rules',
+        runtimeContext.rules.outputRules.map(renderAgentRule),
+      ),
+      buildSlot('other', 'Steel Other Rules', []),
+    ];
+  }
 
   return {
     instructionPrefix: compactText(sections.map((section) => section.text)).join('\n\n'),
@@ -698,7 +688,7 @@ function getDefaultSteelNativeRulesClient() {
 
 function resolveSteelNativeContextList<T>(load: () => Promise<T[]>): Promise<T[]> {
   // Global Steel context is fail-open so unavailable Steel rule tables do not block ordinary chat.
-  return load().catch(() => []);
+  return Promise.resolve().then(load).catch(() => []);
 }
 
 export function createSteelContextDependencies({
@@ -930,13 +920,7 @@ export function buildSteelNativeRuntimeContextText({
                     'paddleocr_status: ok',
                     `file_key: ${safeFileKey}`,
                     `chunk_index: ${index + 1}`,
-                    `page_range: ${
-                      range
-                        ? range.pageStart === range.pageEnd
-                          ? range.pageStart
-                          : `${range.pageStart}-${range.pageEnd}`
-                        : 'unavailable'
-                    }`,
+                    `page_range: ${renderOcrPageRange(range)}`,
                   ].join('\n'),
             )
             .filter(Boolean)
@@ -1023,13 +1007,7 @@ export function buildSteelNativeRuntimeContextText({
           'paddleocr_status: fail',
           `file_key: ${fileKey}`,
           `chunk_index: ${chunkIndex}`,
-          `page_range: ${
-            range
-              ? range.pageStart === range.pageEnd
-                ? range.pageStart
-                : `${range.pageStart}-${range.pageEnd}`
-              : 'unavailable'
-          }`,
+          `page_range: ${renderOcrPageRange(range)}`,
         ].join('\n'),
       );
       continue;

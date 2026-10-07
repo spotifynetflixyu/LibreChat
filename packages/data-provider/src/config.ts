@@ -2819,6 +2819,10 @@ export const ocrSchema = z.object({
   strategy: z.nativeEnum(OCRStrategy).default(OCRStrategy.MISTRAL_OCR),
 });
 
+export const steelReviewSchema = z.object({
+  catalogPageSize: z.number().int().positive().max(100).default(25),
+});
+
 export const fileAnalysisSchema = z.object({
   instructions: z.string().optional(),
 });
@@ -3148,6 +3152,7 @@ export const configSchema = z.object({
   permissions: z.object({ maxWriteAttempts: permissionWriteAttemptsSchema }).optional(),
   cache: z.boolean().default(true),
   ocr: ocrSchema.optional(),
+  steelReview: steelReviewSchema.default({}),
   fileAnalysis: fileAnalysisSchema.optional(),
   webSearch: webSearchSchema.optional(),
   langfuse: langfuseConfigSchema.optional(),
@@ -3439,6 +3444,10 @@ const sharedOpenAIModels = [
   'gpt-4o',
 ];
 
+const assistantsOpenAIModels = sharedOpenAIModels.filter(
+  (model) => !responsesPreferredOpenAIModels.includes(model),
+);
+
 const sharedAnthropicModels = [
   'claude-fable-5-1',
   'claude-fable-5',
@@ -3517,8 +3526,8 @@ export const bedrockModels = [
 
 export const defaultModels = {
   [EModelEndpoint.openAIOAuth]: sharedOpenAIModels,
-  [EModelEndpoint.azureAssistants]: sharedOpenAIModels,
-  [EModelEndpoint.assistants]: [...sharedOpenAIModels, 'chatgpt-4o-latest'],
+  [EModelEndpoint.azureAssistants]: assistantsOpenAIModels,
+  [EModelEndpoint.assistants]: [...assistantsOpenAIModels, 'chatgpt-4o-latest'],
   // TODO: Add agent models (agentsModels)
   [EModelEndpoint.agents]: [
     ...responsesOnlyOpenAIModels,

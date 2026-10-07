@@ -14,10 +14,20 @@ const mockReadOpenAIOAuthUsage = jest.fn((_req, res) =>
 const mockCreateRuleProposal = jest.fn((_req, res) =>
   res.status(201).json({ id: 'proposal_1', status: 'needs_review' }),
 );
+const mockReadReview = jest.fn((_req, res) => res.status(200).json({ table: null }));
+const mockUnusedReview = jest.fn((_req, res) => res.status(501).end());
 const mockCreateSteelRouteHandlers = jest.fn(() => ({
   createRuleProposal: mockCreateRuleProposal,
   listModels: mockListModels,
   readOpenAIOAuthUsage: mockReadOpenAIOAuthUsage,
+  readReview: mockReadReview,
+  readReviewCatalog: mockUnusedReview,
+  readReviewReceipt: mockUnusedReview,
+  prepareReview: mockUnusedReview,
+  commitReview: mockUnusedReview,
+  listReviewSources: mockUnusedReview,
+  readReviewSource: mockUnusedReview,
+  readReviewSourcePageCount: mockUnusedReview,
 }));
 
 const mockCapabilitySmoke = jest.fn((_req, res) =>
@@ -95,10 +105,21 @@ const mockRequireJwtAuth = jest.fn((_req, _res, next) => next());
 const mockQuotationStatus = jest.fn((_req, res) => res.json({ status: 'running' }));
 const mockQuotationCancel = jest.fn((_req, res) => res.json({ status: 'cancelled' }));
 const mockCreateQuotationHandlers = jest.fn(() => ({ status: mockQuotationStatus, cancel: mockQuotationCancel }));
+const mockCreateSteelReviewCatalogClient = jest.fn(() => ({ getClient: jest.fn() }));
+const mockCreateSteelReviewCatalogService = jest.fn(() => ({
+  resolve: jest.fn(),
+  search: jest.fn(),
+}));
 jest.mock('~/models', () => ({ getConvo: jest.fn().mockResolvedValue({ conversationId: 'c1' }) }));
 
 jest.mock('@librechat/api', () => ({
   createQuotationRouteHandlers: (...args) => mockCreateQuotationHandlers(...args),
+  createSteelReviewCatalogClient: (...args) => mockCreateSteelReviewCatalogClient(...args),
+  createSteelReviewCatalogService: (...args) => mockCreateSteelReviewCatalogService(...args),
+  createSteelReviewService: jest.fn(({ reader }) => ({ read: jest.fn((input) => reader.readSteelReview(input)) })),
+  createSteelReviewSourceService: jest.fn(() => ({})),
+  createSteelReviewSourceStorageReader: jest.fn(() => jest.fn()),
+  resolveDownloadPath: jest.fn(),
   createSteelAdminHandlers: (...args) => mockCreateSteelAdminHandlers(...args),
   createSteelRouteHandlers: (...args) => mockCreateSteelRouteHandlers(...args),
 }));
@@ -119,6 +140,10 @@ jest.mock('~/server/middleware/roles/capabilities', () => ({
 
 jest.mock('~/server/controllers/ModelController', () => ({
   getModelsConfig: jest.fn(),
+}));
+
+jest.mock('~/server/services/Files/strategies', () => ({
+  getStrategyFunctions: jest.fn(),
 }));
 
 const steelRouter = require('../steel');

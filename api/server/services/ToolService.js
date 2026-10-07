@@ -59,13 +59,12 @@ const {
   executeSteelTool,
   bindQuotationCustomerResult,
   runQuotationPreflight,
-  createQuotationPublicationProjector,
-  processQuotationPendingMessages,
+  createSteelQuotationPublicationPublisher,
+  createSteelFullMarkdownPublisher,
+  createSteelQuotationPublicationTransport,
   quotationMessageText,
   buildSteelQuotationStatusEventEnvelope,
   createSteelMarkdownCompletionServices,
-  registerSteelMarkdownPublication,
-  clearSteelMarkdownPublication,
   createSteelOcrStateService,
   createSteelQuotationStateService,
   hasQuotationOrder,
@@ -88,7 +87,6 @@ const {
   buildOcrOrganizerAttachment,
   normalizeOcrOrganizerFileKey,
   resolveOcrOrganizerRulesText,
-  mergeOcrPreprocessingStateMarkdown,
   runOcrPreprocessingBatchPipeline,
   getPaddleOcrResultContent,
   getPaddleOcrResultError,
@@ -120,6 +118,17 @@ const {
   AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE,
   isFatalAgentInitializationError,
   resolveCodeExecutionContext,
+  resolveToolRolePermissions,
+  inspectRequiredActionMetadata,
+  RequiredActionContentPolicyError,
+  findRequiredActionContentFailure,
+  inspectAndSanitizeRequiredActionOutput,
+  findRequiredActionMetadataFailure,
+  hasRequiredActionContentPolicy,
+  getRequiredActionPolicyBody,
+  resolveLegacyMCPAuthContext,
+  inspectHistoricalToolResources,
+  getSafeErrorMetadata,
 } = require('@librechat/api');
 const {
   Time,
@@ -165,6 +174,7 @@ const { primeFiles: primeCodeFiles } = require('~/server/services/Files/Code/pro
 const { manifestToolMap, toolkits } = require('~/app/clients/tools/manifest');
 const { createOnSearchResults } = require('~/server/services/Tools/search');
 const { reinitMCPServer } = require('~/server/services/Tools/mcp');
+const { createOpenIDSessionTokenProvider } = require('~/server/services/OpenIDSessionRefresh');
 const {
   createMCPPermissionContext,
   resolveMcpServerContext,
@@ -278,17 +288,45 @@ async function resolveAgentCapabilities(req, appConfig, agentId) {
   return capabilities;
 }
 
+function resolveMCPAuthContext({
+  req,
+  res,
+  upstreamTokenProvider,
+  upstreamTokenProviderResolver,
+  oboIdentityContext,
+}) {
+  return resolveLegacyMCPAuthContext({
+    user: req?.user,
+    tenantId: req?.user?.tenantId,
+    upstreamTokenProvider,
+    upstreamTokenProviderResolver,
+    oboIdentityContext,
+    createSessionProvider: (identityContext) =>
+      createOpenIDSessionTokenProvider({
+        req,
+        res,
+        user: req?.user,
+        identityContext,
+        tokenPreference: 'access_token',
+      }),
+  });
+}
+
 /**
  * Processes the required actions by calling the appropriate tools and returning the outputs.
  * @param {OpenAIClient} client - OpenAI or StreamRunManager Client.
  * @param {RequiredAction} requiredActions - The current required action.
  * @returns {Promise<ToolOutput>} The outputs of the tools.
  */
-const processVisionRequest = async (client, currentAction) => {
+const processVisionRequest = async (client, currentAction, filters) => {
   if (!client.visionPromise) {
+    const { output: safeOutput } = inspectAndSanitizeRequiredActionOutput(
+      filters,
+      'No image details found.',
+    );
     return {
       tool_call_id: currentAction.toolCallId,
-      output: 'No image details found.',
+      output: safeOutput,
     };
   }
 
@@ -303,9 +341,10 @@ const processVisionRequest = async (client, currentAction) => {
     });
   }
   const output = completion?.choices?.[0]?.message?.content ?? 'No image details found.';
+  const { output: safeOutput } = inspectAndSanitizeRequiredActionOutput(filters, output);
   return {
     tool_call_id: currentAction.toolCallId,
-    output,
+    output: safeOutput,
   };
 };
 
@@ -316,6 +355,11 @@ const processVisionRequest = async (client, currentAction) => {
  * @returns {Promise<ToolOutputs>} The outputs of the tools.
  */
 async function processRequiredActions(client, requiredActions) {
+  const filters = client.req.config?.filters;
+  const preExecutionFailure = findRequiredActionContentFailure(filters, requiredActions);
+  if (preExecutionFailure != null) {
+    throw new RequiredActionContentPolicyError(preExecutionFailure);
+  }
   logger.debug(
     `[required actions] user: ${client.req.user.id} | thread_id: ${requiredActions[0].thread_id} | run_id: ${requiredActions[0].run_id}`,
     requiredActions,
@@ -350,6 +394,7 @@ async function processRequiredActions(client, requiredActions) {
     options: {
       processFileURL,
       req: client.req,
+      res: client.res,
       uploadImageBuffer,
       openAIApiKey: client.apiKey,
       returnMetadata: true,
@@ -374,20 +419,22 @@ async function processRequiredActions(client, requiredActions) {
   for (let i = 0; i < requiredActions.length; i++) {
     const currentAction = requiredActions[i];
     if (currentAction.tool === ImageVisionTool.function.name) {
-      promises.push(processVisionRequest(client, currentAction));
+      promises.push(processVisionRequest(client, currentAction, filters));
       continue;
     }
     let tool = ToolMap[currentAction.tool] ?? ActionToolMap[currentAction.tool];
 
     const handleToolOutput = async (output) => {
-      requiredActions[i].output = output;
+      const { output: safeOutput, failure: outputFailure } =
+        inspectAndSanitizeRequiredActionOutput(filters, output);
+      requiredActions[i].output = safeOutput;
 
       /** @type {FunctionToolCall & PartMetadata} */
       const toolCall = {
         function: {
           name: currentAction.tool,
           arguments: JSON.stringify(currentAction.toolInput),
-          output,
+          output: safeOutput,
         },
         id: currentAction.toolCallId,
         type: 'function',
@@ -398,6 +445,20 @@ async function processRequiredActions(client, requiredActions) {
       const toolCallIndex = client.mappedOrder.get(toolCall.id);
 
       if (imageGenTools.has(currentAction.tool)) {
+        if (outputFailure != null) {
+          toolCall.function.output = safeOutput;
+          client.addContentData({
+            [ContentTypes.TOOL_CALL]: toolCall,
+            index: toolCallIndex,
+            type: ContentTypes.TOOL_CALL,
+          });
+          client.seenToolCalls && client.seenToolCalls.set(toolCall.id, toolCall);
+          return {
+            tool_call_id: currentAction.toolCallId,
+            output: safeOutput,
+          };
+        }
+
         const imageOutput = output;
         toolCall.function.output = `${currentAction.tool} displayed an image. All generated images are already plainly visible, so don't repeat the descriptions in detail. Do not list download links as they are available in the UI already. The user may download the images by clicking on them, but do not mention anything about downloading to the user.`;
 
@@ -445,7 +506,7 @@ async function processRequiredActions(client, requiredActions) {
 
       return {
         tool_call_id: currentAction.toolCallId,
-        output,
+        output: safeOutput,
       };
     };
 
@@ -463,6 +524,13 @@ async function processRequiredActions(client, requiredActions) {
         const toolToAction = new Map();
 
         for (const action of actionSets) {
+          const decryptedAction = { ...action };
+          decryptedAction.metadata = await decryptMetadata(action.metadata);
+          const metadataFailure = inspectRequiredActionMetadata(filters, decryptedAction.metadata);
+          if (metadataFailure != null) {
+            throw new RequiredActionContentPolicyError(metadataFailure);
+          }
+
           const domain = await domainParser(action.metadata.domain, true);
           const normalizedDomain = domain.replace(domainSeparatorRegex, '_');
           const legacyDomain = legacyDomainEncode(action.metadata.domain);
@@ -507,10 +575,6 @@ async function processRequiredActions(client, requiredActions) {
             oauth_client_id: action.metadata.oauth_client_id,
             oauth_client_secret: action.metadata.oauth_client_secret,
           };
-
-          // Decrypt metadata
-          const decryptedAction = { ...action };
-          decryptedAction.metadata = await decryptMetadata(action.metadata);
 
           registerActionTools({
             toolToAction,
@@ -566,13 +630,24 @@ async function processRequiredActions(client, requiredActions) {
     }
 
     const handleToolError = (error) => {
+      const policyBody = getRequiredActionPolicyBody(error);
+      if (policyBody != null) {
+        return {
+          tool_call_id: currentAction.toolCallId,
+          output: JSON.stringify(policyBody),
+        };
+      }
       logger.error(
         `tool_call_id: ${currentAction.toolCallId} | Error processing tool ${currentAction.tool}`,
-        error,
+        getSafeErrorMetadata(error),
+      );
+      const { output: safeOutput } = inspectAndSanitizeRequiredActionOutput(
+        filters,
+        `Error processing tool ${currentAction.tool}: ${redactMessage(error.message, 256)}`,
       );
       return {
         tool_call_id: currentAction.toolCallId,
-        output: `Error processing tool ${currentAction.tool}: ${redactMessage(error.message, 256)}`,
+        output: safeOutput,
       };
     };
 
@@ -1048,7 +1123,7 @@ function inferDelegateSuggestedOcrResultColumns(markdown) {
   }
   try {
     return getSuggestedOcrResultColumns(markdown);
-  } catch (error) {
+  } catch {
     return [];
   }
 }
@@ -1244,20 +1319,22 @@ function createDefaultDelegateOcrPreprocessing({
       }),
       paddleOcr,
       onProgress: ({ file: progressFile, progress }) => {
-        const stage = progress.stage.startsWith('paddleocr') || progress.stage === 'pdf_chunks_ready'
-          ? 'paddleocr'
-          : progress.stage.startsWith('organizer') || progress.stage.includes('markdown')
-            ? 'organizer'
-            : 'reconciliation';
-        const status = progress.stage.endsWith('_started')
-          ? 'started'
-          : progress.stage.endsWith('_saved') &&
-              progress.chunkIndex !== undefined &&
-              progress.chunkIndex === progress.chunkCount
-            ? 'succeeded'
-            : progress.stage.endsWith('_saved') || progress.stage.endsWith('_loaded')
-              ? 'progress'
-            : 'progress';
+        let stage = 'reconciliation';
+        if (progress.stage.startsWith('paddleocr') || progress.stage === 'pdf_chunks_ready') {
+          stage = 'paddleocr';
+        } else if (progress.stage.startsWith('organizer') || progress.stage.includes('markdown')) {
+          stage = 'organizer';
+        }
+        let status = 'progress';
+        if (progress.stage.endsWith('_started')) {
+          status = 'started';
+        } else if (
+          progress.stage.endsWith('_saved') &&
+          progress.chunkIndex !== undefined &&
+          progress.chunkIndex === progress.chunkCount
+        ) {
+          status = 'succeeded';
+        }
         return emitSteelNativeEvents({
           req,
           res,
@@ -1417,9 +1494,11 @@ function createDelegateOcrExecute({ req, res, streamId = null, signal, agent }) 
             ...(typeof claimToken === 'string' ? { claimToken } : {}),
             ...(typeof workflowContext.responseGenerationId === 'string'
               ? { generationId: workflowContext.responseGenerationId }
-              : typeof workflowContext.generationId === 'string'
-                ? { generationId: workflowContext.generationId }
-                : {}),
+              : {}),
+            ...(typeof workflowContext.responseGenerationId !== 'string' &&
+            typeof workflowContext.generationId === 'string'
+              ? { generationId: workflowContext.generationId }
+              : {}),
             ...(typeof workflowContext.delegateOcrAttemptToken === 'string'
               ? { attemptToken: workflowContext.delegateOcrAttemptToken }
               : {}),
@@ -2710,13 +2789,14 @@ async function createOriginalPdfChunkArtifact({
 }) {
   const chunk = chunks[0];
   const storageKey = getOriginalPdfStorageKey(file, fileRecord);
-  const filepath = storageKey
-    ? await storage.getDownloadUrl({ storageKey })
-    : isHttpUrl(fileRecord?.filepath)
-      ? fileRecord.filepath
-      : isHttpUrl(file?.filepath)
-        ? file.filepath
-        : undefined;
+  let filepath;
+  if (storageKey) {
+    filepath = await storage.getDownloadUrl({ storageKey });
+  } else if (isHttpUrl(fileRecord?.filepath)) {
+    filepath = fileRecord.filepath;
+  } else if (isHttpUrl(file?.filepath)) {
+    filepath = file.filepath;
+  }
   if (!chunk || !filepath) {
     return undefined;
   }
@@ -2952,7 +3032,7 @@ function toReusableOcrPreprocessingChunks(state, fallbackChunkSizePages) {
         chunkSizePages: chunk.chunkSizePages ?? fallbackChunkSizePages,
       })),
     );
-  } catch (error) {
+  } catch {
     return undefined;
   }
 }
@@ -2989,10 +3069,6 @@ function createSteelOcrOriginalFileArtifactStore({ file, fileRecord }) {
       return refreshSteelOcrPdfChunkArtifact({ artifact, storage });
     },
   };
-}
-
-function hashPaddleOcrResult(result) {
-  return hashPaddleOcrText(getPaddleOcrResultContent(result));
 }
 
 function hashPaddleOcrText(text) {
@@ -3310,7 +3386,8 @@ async function rebuildSteelPaddleOcrPreflightTool({
 
   let configServers;
   try {
-    configServers = await resolveConfigServers(req);
+    const serverContext = await resolveMcpServerContext(req);
+    configServers = serverContext?.configServers;
   } catch (configError) {
     logger.warn('[Steel OCR] Failed to resolve MCP config servers before PaddleOCR retry', {
       conversationId,
@@ -3950,7 +4027,7 @@ function normalizeSafeSteelAiUrl(value) {
       return undefined;
     }
     return url.toString();
-  } catch (error) {
+  } catch {
     return undefined;
   }
 }
@@ -4092,27 +4169,30 @@ function createCurrentOcrMergedMarkdownResult({
 
 function getCurrentOcrPartialMarkdownResult({ fileResult, ocrRuleVersion }) {
   const partial = fileResult?.partial;
-  const markdown =
-    typeof fileResult?.partialMarkdown === 'string'
-      ? fileResult.partialMarkdown
-      : typeof partial?.markdown === 'string'
-        ? partial.markdown
-        : '';
+  let markdown = '';
+  if (typeof fileResult?.partialMarkdown === 'string') {
+    markdown = fileResult.partialMarkdown;
+  } else if (typeof partial?.markdown === 'string') {
+    markdown = partial.markdown;
+  }
   if (!markdown.trim()) {
     return undefined;
   }
 
-  const pageRanges = Array.isArray(fileResult?.partialPageRanges)
-    ? fileResult.partialPageRanges
-    : Array.isArray(partial?.pageRanges)
-      ? partial.pageRanges
-      : [];
-  const chunkCount =
-    Number.isInteger(fileResult?.partialChunkCount) && fileResult.partialChunkCount > 0
-      ? fileResult.partialChunkCount
-      : Number.isInteger(partial?.chunkCount) && partial.chunkCount > 0
-        ? partial.chunkCount
-        : pageRanges.length;
+  let pageRanges = [];
+  if (Array.isArray(partial?.pageRanges)) {
+    pageRanges = partial.pageRanges;
+  }
+  if (Array.isArray(fileResult?.partialPageRanges)) {
+    pageRanges = fileResult.partialPageRanges;
+  }
+  let chunkCount = pageRanges.length;
+  if (Number.isInteger(partial?.chunkCount) && partial.chunkCount > 0) {
+    chunkCount = partial.chunkCount;
+  }
+  if (Number.isInteger(fileResult?.partialChunkCount) && fileResult.partialChunkCount > 0) {
+    chunkCount = fileResult.partialChunkCount;
+  }
   if (chunkCount < 1) {
     return undefined;
   }
@@ -4702,7 +4782,19 @@ async function loadToolDefinitionsWrapper({
   requestAttachments,
   codeExecutionContext,
   accessibleMcpServerNames,
+  requestBody,
+  upstreamTokenProvider,
+  upstreamTokenProviderResolver,
+  oboIdentityContext,
 }) {
+  const mcpAuthContext = resolveMCPAuthContext({
+    req,
+    res,
+    upstreamTokenProvider,
+    upstreamTokenProviderResolver,
+    oboIdentityContext,
+  });
+  const resolvedRequestBody = requestBody ?? req.body;
   const selectedTools = addSteelPaddleOcrMcpTool(
     Array.isArray(agent.tools) ? agent.tools : [],
     req,
@@ -4721,26 +4813,14 @@ async function loadToolDefinitionsWrapper({
   const actionsEnabled = checkCapability(AgentCapabilities.actions);
   const deferredToolsEnabled = checkCapability(AgentCapabilities.deferred_tools);
   const programmaticToolsEnabled = enabledCapabilities.has(AgentCapabilities.programmatic_tools);
-  const codeExecutionEnabled =
+  let codeExecutionEnabled =
     selectedTools.includes(Tools.execute_code) === true &&
     enabledCapabilities.has(AgentCapabilities.execute_code);
-  const resolvedCodeExecutionContext =
-    codeExecutionContext ??
-    resolveCodeExecutionContext({
-      statefulSessions:
-        codeExecutionEnabled &&
-        enabledCapabilities.has(AgentCapabilities.stateful_code_sessions) &&
-        agent.stateful_code_sessions === true,
-      environment: agent.stateful_code_environment,
-      userId: req.user.id,
-      agentId: agent.id,
-      conversationId: req.body?.conversationId,
-    });
   const hasMCPTools = selectedTools.some((tool) => tool?.includes(Constants.mcp_delimiter));
   const mcpPermissionContext = createMCPPermissionContext(req);
   const canUseMCP = hasMCPTools ? await mcpPermissionContext.canUseServers(req.user) : true;
 
-  const filteredTools = selectedTools.filter((tool) => {
+  let filteredTools = selectedTools.filter((tool) => {
     if (tool === AgentCapabilities.context || tool === AgentCapabilities.ocr) {
       return false;
     }
@@ -4776,6 +4856,58 @@ async function loadToolDefinitionsWrapper({
     }
     return true;
   });
+
+  const rolePermission = await resolveToolRolePermissions({
+    req,
+    tools: selectedTools,
+    getRoleByName: db.getRoleByName,
+    isEligible: (tool) => filteredTools.includes(tool),
+    context: 'loadAgentTools',
+  });
+  filteredTools = filteredTools.filter(rolePermission);
+  codeExecutionEnabled = codeExecutionEnabled && filteredTools.includes(Tools.execute_code);
+  if (
+    tool_resources &&
+    (filteredTools.includes(Tools.execute_code) || filteredTools.includes(Tools.file_search))
+  ) {
+    await inspectHistoricalToolResources({
+      filters: req.config?.filters,
+      user: req.user,
+      toolResources: tool_resources,
+      resourceNames: filteredTools.filter(
+        (tool) => tool === Tools.execute_code || tool === Tools.file_search,
+      ),
+      getFiles: db.getFiles,
+    });
+  }
+  const resolvedCodeExecutionContext =
+    codeExecutionContext ??
+    resolveCodeExecutionContext({
+      statefulSessions:
+        codeExecutionEnabled &&
+        enabledCapabilities.has(AgentCapabilities.stateful_code_sessions) &&
+        agent.stateful_code_sessions === true,
+      environment: agent.stateful_code_environment,
+      userId: req.user.id,
+      agentId: agent.id,
+      conversationId: req.body?.conversationId,
+    });
+
+    const actionMetadataFilters = req.config?.filters;
+  const actionToolsRequested = filteredTools.some(isActionTool);
+  if (
+    actionToolsRequested &&
+    hasRequiredActionContentPolicy(actionMetadataFilters)
+  ) {
+    const metadataFailure = await findRequiredActionMetadataFailure({
+      filters: actionMetadataFilters,
+      actions: (await loadActionSets({ agent_id: agent.id })) ?? [],
+      decryptMetadata,
+    });
+    if (metadataFailure != null) {
+      throw new RequiredActionContentPolicyError(metadataFailure);
+    }
+  }
 
   if (!filteredTools || filteredTools.length === 0) {
     if (hasExpectedMCPTools) {
@@ -5060,8 +5192,11 @@ async function loadToolDefinitionsWrapper({
       serverName,
       configServers,
       userMCPAuthMap,
-      requestBody: req.body,
+      requestBody: resolvedRequestBody,
       requestScopedConnections,
+      ...mcpAuthContext,
+      streamId,
+      jobCreatedAt,
     });
 
     rememberMCPAvailableTools(serverName, result?.availableTools);
@@ -5087,8 +5222,11 @@ async function loadToolDefinitionsWrapper({
       serverName,
       configServers,
       userMCPAuthMap,
-      requestBody: req.body,
+      requestBody: resolvedRequestBody,
       requestScopedConnections,
+      ...mcpAuthContext,
+      streamId,
+      jobCreatedAt,
     });
 
     rememberMCPAvailableTools(serverName, result?.availableTools);
@@ -5143,8 +5281,9 @@ async function loadToolDefinitionsWrapper({
           continue;
         }
 
+        const selectedToolName = normalizedToolNames.has(toolName) ? toolName : legacyToolName;
         definitions.push({
-          name: toolName,
+          name: selectedToolName,
           description: sig.description,
           parameters: sig.parameters,
         });
@@ -5215,11 +5354,14 @@ async function loadToolDefinitionsWrapper({
           configServers,
           userMCPAuthMap,
           flowManager,
-          requestBody: req.body,
           returnOnOAuth: false,
           oauthStart,
           oauthEnd: createOAuthEndEmitter(serverName),
           connectionTimeout: Time.TWO_MINUTES,
+          requestBody: resolvedRequestBody,
+          ...mcpAuthContext,
+          streamId,
+          jobCreatedAt,
         });
 
         if (result?.availableTools && Object.keys(result.availableTools).length > 0) {
@@ -5307,6 +5449,9 @@ async function loadToolDefinitionsWrapper({
         agentResourceType,
         codeApiBaseUrl: resolvedCodeExecutionContext.baseUrl,
         executionProfile: resolvedCodeExecutionContext.executionProfile,
+        bridgeWorkerId: resolvedCodeExecutionContext.bridgeWorkerId,
+        codeFileLocation:
+          resolvedCodeExecutionContext.environmentType === 'attached' ? 'programmatic' : 'sandbox',
       });
       if (toolContext) {
         dynamicToolContextMap[Tools.execute_code] = toolContext;
@@ -5318,7 +5463,10 @@ async function loadToolDefinitionsWrapper({
       if (isFatalAgentInitializationError(error)) {
         throw error;
       }
-      logger.error('[loadToolDefinitionsWrapper] Error priming code files:', error);
+      logger.error(
+        '[loadToolDefinitionsWrapper] Error priming code files:',
+        getSafeErrorMetadata(error),
+      );
     }
   }
 
@@ -5334,7 +5482,10 @@ async function loadToolDefinitionsWrapper({
         dynamicToolContextMap[Tools.file_search] = toolContext;
       }
     } catch (error) {
-      logger.error('[loadToolDefinitionsWrapper] Error priming search files:', error);
+      logger.error(
+        '[loadToolDefinitionsWrapper] Error priming search files:',
+        getSafeErrorMetadata(error),
+      );
     }
   }
 
@@ -5423,6 +5574,10 @@ async function loadAgentTools({
   definitionsOnly = true,
   codeExecutionContext: providedCodeExecutionContext,
   accessibleMcpServerNames,
+  requestBody,
+  upstreamTokenProvider,
+  upstreamTokenProviderResolver,
+  oboIdentityContext,
 }) {
   if (definitionsOnly) {
     try {
@@ -5437,9 +5592,17 @@ async function loadAgentTools({
         requestAttachments,
         codeExecutionContext: providedCodeExecutionContext,
         accessibleMcpServerNames,
+        requestBody,
+        upstreamTokenProvider,
+        upstreamTokenProviderResolver,
+        oboIdentityContext,
       });
     } catch (error) {
-      if (isFatalAgentInitializationError(error) || !agent.tools?.some(isExpectedMCPTool)) {
+      if (
+        error instanceof RequiredActionContentPolicyError ||
+        isFatalAgentInitializationError(error) ||
+        !agent.tools?.some(isExpectedMCPTool)
+      ) {
         throw error;
       }
       throw createExpectedMCPToolsUnavailableError(agent.name, error);
@@ -5486,7 +5649,7 @@ async function loadAgentTools({
   const canUseMCP = hasMCPTools ? await mcpPermissionContext.canUseServers(req.user) : true;
 
   let includesWebSearch = false;
-  const _agentTools = selectedTools.filter((tool) => {
+  let _agentTools = selectedTools.filter((tool) => {
     if (tool === Tools.file_search) {
       return checkCapability(AgentCapabilities.file_search);
     } else if (tool === Tools.execute_code) {
@@ -5507,6 +5670,30 @@ async function loadAgentTools({
     }
     return true;
   });
+
+  const rolePermission = await resolveToolRolePermissions({
+    req,
+    tools: selectedTools,
+    getRoleByName: db.getRoleByName,
+    isEligible: (tool) => _agentTools.includes(tool),
+    context: 'loadAgentTools',
+  });
+  _agentTools = _agentTools.filter(rolePermission);
+
+  if (
+    tool_resources &&
+    (_agentTools.includes(Tools.execute_code) || _agentTools.includes(Tools.file_search))
+  ) {
+    await inspectHistoricalToolResources({
+      filters: req.config?.filters,
+      user: req.user,
+      toolResources: tool_resources,
+      resourceNames: _agentTools.filter(
+        (tool) => tool === Tools.execute_code || tool === Tools.file_search,
+      ),
+      getFiles: db.getFiles,
+    });
+  }
 
   if (!_agentTools || _agentTools.length === 0) {
     return {};
@@ -5540,7 +5727,7 @@ async function loadAgentTools({
   }
 
   const codeExecutionEnabled =
-    agent.tools?.includes(Tools.execute_code) === true &&
+    _agentTools.includes(Tools.execute_code) &&
     enabledCapabilities.has(AgentCapabilities.execute_code);
   const statefulCodeSessions =
     codeExecutionEnabled &&
@@ -5569,6 +5756,11 @@ async function loadAgentTools({
       agentResourceType,
       mcpServerContext,
       jobCreatedAt,
+      requestBody: requestBody ?? req.body,
+      upstreamTokenProvider,
+      upstreamTokenProviderResolver,
+      oboIdentityContext,
+      streamId,
       openAIApiKey,
       tool_resources,
       processFileURL,
@@ -5855,6 +6047,10 @@ async function loadToolsForExecution({
   requestScopedConnections,
   userMCPAuthMap,
   tool_resources,
+  requestBody,
+  upstreamTokenProvider,
+  upstreamTokenProviderResolver,
+  oboIdentityContext,
   streamId = null,
   jobCreatedAt,
   conversationId,
@@ -6149,6 +6345,11 @@ async function loadToolsForExecution({
          *  turn already advertised. */
         accessibleMcpServerNames,
         requestScopedConnections: mcpRequestScopedConnections,
+        requestBody: requestBody ?? req.body,
+        upstreamTokenProvider,
+        upstreamTokenProviderResolver,
+        oboIdentityContext,
+        streamId,
         [Tools.web_search]: webSearchCallbacks,
       },
       webSearch: appConfig?.webSearch,
@@ -6333,12 +6534,18 @@ async function loadActionToolsForExecution({
 
 /** Shared post-response/pre-turn quotation adapter for chat and Responses transports. */
 async function executeSteelQuotationWorkflow({
-  req, res, streamId, signal, agent, run, onText, onFinalText, onUsage, onSteerApplied, userMCPAuthMap, requestScopedConnections, contentParts,
+  req, res, streamId, signal, agent, run, onText, onFinalText, onUsage, contentParts,
+  buildPublicationMessage,
 }) {
   const context = req?.steelNativeContext;
   const quotation = context?.quotation;
   if (!quotation) return;
   const { scope } = quotation;
+  const publicationSaveContext = {
+    isTemporary: req.body?.isTemporary,
+    expiredAt: req._agentEventBindingRetention?.expiredAt ?? req.resolvedConversation?.expiredAt,
+    interfaceConfig: req.config?.interfaceConfig,
+  };
   const service = createSteelQuotationStateService(mongoose);
   if (!quotation.resume) {
     const messages = run?.getRunMessages?.() ?? [];
@@ -6373,7 +6580,12 @@ async function executeSteelQuotationWorkflow({
     }).finalize({
       req,
       responseId: context.requestId,
-      generationId: context.requestId,
+      generationId: String(req._resumableJobCreatedAt ?? context.requestId),
+      publishMarkdown: createSteelFullMarkdownPublisher({
+        saveContext: { isTemporary: req.body?.isTemporary, interfaceConfig: req.config?.interfaceConfig },
+        buildMessage: ({ markdown }) => ({ messageId: context.requestId, conversationId: scope.conversationId, user: scope.userId,
+          parentMessageId: quotation.messageId ?? null, isCreatedByUser: false, text: markdown, sender: agent?.name ?? 'Agent', endpoint: 'agents', model: agent?.id }),
+        savePublication: db.publishSteelMarkdown }),
       markdown: response,
       completed: last.response_metadata?.finish_reason === 'stop',
       stage: 'workflow',
@@ -6389,67 +6601,24 @@ async function executeSteelQuotationWorkflow({
   }
   const modelOptions = context.delegateOcrContext?.modelOptions;
   if (!modelOptions) throw new Error('Quotation requires resolved model options');
-  const persist = async ({ messageId, parentMessageId, markdown, completed }, emit = true) => {
-    const saved = await db.saveMessage({
-      userId: req.user?.id,
-      isTemporary: req.body?.isTemporary,
-      interfaceConfig: req.config?.interfaceConfig,
-    }, {
-      messageId,
-      conversationId: scope.conversationId,
-      parentMessageId,
-      isCreatedByUser: false,
-      unfinished: completed === false,
-      text: markdown,
-      content: [{ type: 'text', text: markdown }],
-      sender: agent?.name ?? 'Agent',
-      endpoint: 'agents',
-      model: agent?.id,
-      finish_reason: 'stop',
-      metadata: { steel: { activityEvents: context.steelHistory?.activityEvents, preflightToolCalls: context.steelHistory?.preflightToolCalls } },
-    }, { context: 'Quotation preflight durable publication' });
-    if (!saved) throw new Error('Quotation message publication failed');
-    if (emit) await (onFinalText ?? onText)(`\n\n${markdown}`);
-    return saved;
-  };
-  const collectSteers = async (terminal = false) => {
-    if (!streamId || !onSteerApplied) return;
-    const lifecycle = GenerationJobManager.steering;
-    const pending = terminal
-      ? await lifecycle.closeAndDrain(streamId, req._resumableJobCreatedAt)
-      : await lifecycle.drain(streamId, req._resumableJobCreatedAt);
-    for (let index = 0; index < pending.length; index += 1) {
-      const message = pending[index];
-      try {
-        if (String(message.userId) !== scope.userId) throw new Error('Queued message owner mismatch');
-        await service.enqueuePendingMessage({
-          scope,
-          sourceMessageId: message.steerId,
-          sourceMessageText: message.text,
-          sourceMessageFiles: message.files?.map((file) => ({
-            fileId: file.file_id ?? file.fileId ?? file.id,
-            filename: file.filename ?? file.name,
-            mediaType: file.type ?? file.mediaType ?? file.mimeType,
-          })),
-          targetMessageId: `${message.steerId}-quotation-response`,
-        });
-        await onSteerApplied(message);
-        await GenerationJobManager.noteSteersRemoved(streamId, [message.steerId], req._resumableJobCreatedAt);
-      } catch (error) {
-        await lifecycle.restoreClaimed(streamId, pending.slice(index), req._resumableJobCreatedAt);
-        throw error;
-      }
-    }
-  };
   const quotationToolIndexes = new Map();
-  const publishFinal = createQuotationPublicationProjector(async ({ run: active, markdown }) => persist({
-    messageId: active.targetMessageId ?? context.requestId,
-    parentMessageId: active.triggerMessageId,
-    markdown,
-  }));
+  const publishFinal = createSteelQuotationPublicationPublisher({
+    scope,
+    saveContext: publicationSaveContext,
+    buildMessage: ({ targetMessageId, markdown, proof }) => buildPublicationMessage({
+      targetMessageId,
+      markdown,
+      run: proof.run,
+      scope,
+      agent,
+      context,
+    }),
+    savePublication: (proof) => db.saveSteelQuotationMessage(proof),
+  });
+  const publicationTransport = createSteelQuotationPublicationTransport({ onText, onFinalText });
   const runPreflight = () => runQuotationPreflight({
     scope, modelOptions, signal, onUsage,
-    onTextDelta: onFinalText ? onText : undefined,
+    onTextDelta: publicationTransport.onTextDelta,
     onHistory: async (restored) => {
       const history = ensureSteelNativeHistory(context);
       const delta = getQuotationHistoryDelta(history, restored);
@@ -6457,9 +6626,12 @@ async function executeSteelQuotationWorkflow({
       let historyChanged = false;
       for (const call of delta.preflightToolCalls) {
         const index = history.preflightToolCalls.findIndex((saved) => saved.id === call.id);
-        const toolIndex = contentParts
-          ? upsertQuotationToolContent(contentParts, call)
-          : index < 0 ? history.preflightToolCalls.length : index;
+        let toolIndex;
+        if (contentParts) {
+          toolIndex = upsertQuotationToolContent(contentParts, call);
+        } else {
+          toolIndex = index < 0 ? history.preflightToolCalls.length : index;
+        }
         quotationToolIndexes.set(call.id, toolIndex);
         historyChanged = upsertSteelNativePreflightToolCall(history, call) || historyChanged;
         const stepId = `${call.id}:step`;
@@ -6472,13 +6644,13 @@ async function executeSteelQuotationWorkflow({
       await emitSteelNativeEvents({ req, res, streamId, events, historyChanged });
     },
     onProgress: async ({ run: active, completedChunks, totalChunks, chunkIndex, attempt, stage, repairAttempt, maxRepairAttempts, message }) => {
-      await collectSteers();
       await emitSteelNativeEvents({ req, res, streamId, events: [buildSteelQuotationStatusEventEnvelope({
         conversationId: scope.conversationId,
         requestId: context.requestId,
         messageId: context.requestId,
         index: active.index,
         runId: active.runId,
+        ocrSelection: active.ocrSelection,
         stage: stage ?? active.status,
         status: active.status,
         completedChunks, totalChunks, chunkIndex, attempt, repairAttempt, maxRepairAttempts, message,
@@ -6500,7 +6672,7 @@ async function executeSteelQuotationWorkflow({
           createSteelPaddleOcrRunStepDeltaEvent({ stepId, providerToolCallId, toolName: call.name, args, index })] });
     },
     publishFinal,
-    projectFinal: publishFinal,
+    projectFinal: publicationTransport.projectFinal,
   });
   const result = await runPreflight();
   if (result.status === 'busy') {
@@ -6508,64 +6680,6 @@ async function executeSteelQuotationWorkflow({
     return;
   }
   if (result.status === 'cancelled') await onText('\n\n報價已取消。');
-  await collectSteers(true);
-  let latestPendingMarkdown;
-  let pendingSignalAccepted = false;
-  await processQuotationPendingMessages({
-    scope, modelOptions, signal, onUsage,
-    persist: async (output) => persist(output, false),
-    publish: async (output) => {
-      if (output.acceptedRun) {
-        latestPendingMarkdown = undefined;
-        return;
-      }
-      if (output.publication) {
-        registerSteelMarkdownPublication(req, output.publication, context.requestId);
-      }
-      latestPendingMarkdown = output.markdown;
-    },
-    onSignalAccepted: async () => {
-      pendingSignalAccepted = true;
-      latestPendingMarkdown = undefined;
-      clearSteelMarkdownPublication(req);
-    },
-    preparePendingInput: async ({ sourceMessageId, sourceMessageText, sourceMessageFiles, signal: pendingSignal, assertActive }) => {
-      await assertActive();
-      const previousContext = req.steelNativeContext;
-      req.steelNativeContext = {
-        ...previousContext,
-        currentTurnFiles: sourceMessageFiles,
-        requestId: `${sourceMessageId}-quotation-ocr`,
-        assistantTurnIndex: previousContext.assistantTurnIndex ?? 0,
-      };
-      try {
-        const prepared = await runSteelPaddleOcrPreflight({ req, res, streamId, signal: pendingSignal, agent, userMCPAuthMap, requestScopedConnections });
-        await assertActive();
-        const results = prepared.currentOcrMarkdownResults ?? [];
-        if (prepared.failedKeys?.length || results.length === 0 || results.some((entry) => entry.ocrPreprocessing?.partial === true || typeof entry.content !== 'string' || !entry.content.trim())) {
-          throw new Error('Queued attachments could not finish OCR; their message remains pending');
-        }
-        return {
-          currentUserTurn: sourceMessageText,
-          input: [sourceMessageText ?? '', ...results.map((entry) => entry.content)].join('\n\n'),
-        };
-      } finally {
-        req.steelNativeContext = previousContext;
-      }
-    },
-  });
-  if (pendingSignalAccepted) {
-    const followup = await runPreflight();
-    if (followup.status === 'busy') {
-      await onText('\n\n報價正在處理中，將接續同一個報價進程。');
-    } else if (followup.status === 'cancelled') {
-      await onText('\n\n報價已取消。');
-    }
-  }
-  if (latestPendingMarkdown) {
-    if (onFinalText) await onFinalText(`\n\n${latestPendingMarkdown}`);
-    else await onText(`\n\n${latestPendingMarkdown}`);
-  }
 }
 
 module.exports = {

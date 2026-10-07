@@ -1,4 +1,6 @@
+import type { SteelCalculationCheckpoint, TCustomConfig } from 'librechat-data-provider';
 import type { Document } from 'mongoose';
+import type { SteelMarkdownReference, SteelMarkdownState, SteelMarkdownSnapshot, SteelMarkdownPublicationTarget } from './versions';
 
 export type SteelQuotationRunStatus =
   | 'queued'
@@ -26,21 +28,140 @@ export interface SteelQuotationScope {
   tenantId?: string;
 }
 
+/** Plain response payload used by the guarded quotation publication seam. */
+export interface SteelQuotationPublicationMessage {
+  messageId: string;
+  conversationId: string;
+  text: string;
+  user: string;
+  parentMessageId?: string | null;
+  isCreatedByUser?: boolean;
+  unfinished?: boolean;
+  sender?: string;
+  endpoint?: string;
+  model?: string;
+  finish_reason?: string;
+  tokenCount?: number;
+  processingDurationMs?: number;
+  langfuseSampled?: boolean;
+  langfuseDestinationIds?: string[];
+  langfuseRunId?: string;
+  content?: unknown[];
+  metadata?: Record<string, unknown> | null;
+  iconURL?: string;
+  /** Host response owner that supplied the transport snapshot. */
+  sourceMessageId?: string;
+  tenantId?: string;
+}
+
+/** The full saved record is retained at runtime while this result exposes only
+ * the identity fields consumed by completion persistence bookkeeping. */
+export interface SteelQuotationSavedMessage {
+  messageId: string;
+  conversationId: string;
+  user: string;
+  text?: string;
+  tenantId?: string;
+}
+
+/** Request-scoped message retention inputs carried into the private save core. */
+export interface SteelQuotationPublicationSaveContext {
+  isTemporary?: boolean;
+  expiredAt?: Date;
+  interfaceConfig?: TCustomConfig['interface'];
+}
+
+/** Trusted current inputs captured before a quotation publication callback runs. */
+export interface SteelQuotationPublicationProof {
+  reviewBaseline?: SteelMarkdownPublicationTarget;
+  scope: SteelQuotationScope;
+  runId: string;
+  /** Immutable response owner captured when the quotation run was accepted. */
+  runTargetMessageId: string;
+  /** Current canonical response owner captured from currentSystemOrder. */
+  targetMessageId: string;
+  finalSha256: string;
+  currentOrderSha256: string;
+  currentSystemOrderSha256: string;
+  calculationCheckpoint?: SteelCalculationCheckpoint;
+  sourceSnapshot?: SteelQuotationSourceSnapshot;
+  saveContext?: SteelQuotationPublicationSaveContext;
+  run?: SteelQuotationActiveRun;
+  customer: {
+    preparationId: string;
+    customerIdentity: string;
+    customerMarkdown: string;
+  };
+  message: SteelQuotationPublicationMessage;
+}
+
+export type SteelQuotationPublicationSaveResult =
+  | { ok: true; message: SteelQuotationSavedMessage }
+  | { ok: false; code: 'superseded' };
+
 export interface SteelQuotationOrder {
   markdown: string;
   sha256: string;
   revision?: string;
   messageId?: string;
+  ocrSelection?: SteelQuotationOcrSelection;
+  sourceSnapshot?: SteelQuotationSourceSnapshot;
+}
+
+export interface SteelQuotationSourceMapping {
+  fileId: string;
+  sourceCode: string;
+  sourceFilename: string;
+  mediaType?: string;
+}
+
+export interface SteelQuotationSourceSnapshot {
+  orderHash: string;
+  generationId?: string;
+  resultMessageId?: string;
+  resultHash?: string;
+  mappings: SteelQuotationSourceMapping[];
+}
+
+export interface SteelQuotationOcrSelection {
+  candidates: {
+    ai?: SteelMarkdownReference;
+    human?: SteelMarkdownReference;
+  };
+  selected: SteelMarkdownReference;
+  version: number;
+}
+
+export interface SteelQuotationOcrInput {
+  selection: SteelQuotationOcrSelection;
+  markdown: string;
+  sourceSnapshot: SteelQuotationSourceSnapshot;
 }
 
 export interface SteelQuotationCurrentSystemOrder {
+  reviewOutputId?: string;
   runId: string;
   sha256: string;
   markdown: string;
   messageId?: string;
   responseId?: string;
   customerQuoteMarkdown?: string;
+  calculationCheckpoint?: SteelCalculationCheckpoint;
+  sourceSnapshot?: SteelQuotationSourceSnapshot;
+  ocrSelection?: SteelQuotationOcrSelection;
+  needsRequote?: boolean;
+  requoteProvenance?: SteelQuotationRequoteProvenance;
   updatedAt: Date;
+}
+
+export interface SteelQuotationRequoteProvenance {
+  sourceKind: 'ocr_result';
+  sourceMessageId: string;
+  sourceTableId: string;
+  sourceOutputId: string;
+  sourceRevision: string;
+  changedRows: number;
+  at: Date;
 }
 
 export interface SteelQuotationSelectionProvenance {
@@ -114,6 +235,8 @@ export interface SteelQuotationSnapshotPayload {
   orderHash: string;
   customerMarkdown: string;
   customerIdentity: string;
+  sourceSnapshot?: SteelQuotationSourceSnapshot;
+  ocrSelection?: SteelQuotationOcrSelection;
 }
 
 export interface SteelQuotationArtifactRef {
@@ -148,6 +271,7 @@ export interface SteelQuotationActiveRun {
   status: SteelQuotationRunStatus;
   triggerMessageId: string;
   targetMessageId?: string;
+  ocrSelection?: SteelQuotationOcrSelection;
   snapshotRef: SteelQuotationArtifactRef;
   chunks: SteelQuotationChunkState[];
   checkpointRefs: SteelQuotationCheckpointRef[];
@@ -185,6 +309,7 @@ export interface SteelQuotationPendingMessageFile {
 }
 
 export interface ISteelQuotationState extends Document, SteelQuotationScope {
+  markdownPublication?: SteelMarkdownState;
   currentOrder?: SteelQuotationOrder;
   currentSystemOrder?: SteelQuotationCurrentSystemOrder;
   currentCustomer?: SteelQuotationCustomerPreparation;
@@ -198,6 +323,8 @@ export interface ISteelQuotationState extends Document, SteelQuotationScope {
 }
 
 export interface ISteelQuotationArtifact extends Document, SteelQuotationScope {
+  expiresAt?: Date;
+  markdownPublication?: SteelMarkdownSnapshot;
   runId: string;
   operationId: string;
   kind: SteelQuotationArtifactKind;

@@ -1,5 +1,25 @@
 import type { AxiosResponse } from 'axios';
 import type {
+  OpenAIOAuthTokenLoginStatus,
+  OpenAIOAuthTokenLoginMethod,
+  OpenAIOAuthTokenLogoutStatus,
+  OpenAIOAuthTokenStatus,
+  OpenAIOAuthUsageRemaining,
+  SteelReviewKind,
+  SteelReviewResponse,
+  SteelMarkdownVersions,
+  SteelReviewReceiptStatus,
+  SteelReviewPrepare,
+  SteelReviewPrepared,
+  SteelReviewCommit,
+  SteelReviewSaveResponse,
+  SteelReviewSourcesResponse,
+  SteelReviewSourcePageCount,
+  SteelCatalogPage,
+  SteelCatalogQuery,
+  SteelQuotationStatus,
+} from './steel';
+import type {
   TTracePage,
   TTracePageParams,
   TTraceAvailability,
@@ -10,14 +30,6 @@ import type { TInsightsAccessResponse, TInsightsParams, TInsightsResponse } from
 import type { TFileConfig } from './file-config';
 import type * as tl from './types/tools';
 import type * as t from './types';
-import type {
-  OpenAIOAuthTokenLoginStatus,
-  OpenAIOAuthTokenLoginMethod,
-  OpenAIOAuthTokenLogoutStatus,
-  OpenAIOAuthTokenStatus,
-  OpenAIOAuthUsageRemaining,
-  SteelQuotationStatus,
-} from './steel';
 import * as permissions from './accessPermissions';
 import * as endpoints from './api-endpoints';
 import { uploadEventStream } from './upload';
@@ -179,6 +191,84 @@ export function getOpenAIOAuthUsage(): Promise<OpenAIOAuthUsageRemaining> {
 
 export function getSteelQuotationStatus(conversationId: string): Promise<SteelQuotationStatus> {
   return request.get(endpoints.steelQuotationStatus(conversationId));
+}
+
+export function getSteelMarkdownVersions(conversationId: string): Promise<SteelMarkdownVersions> {
+  return request.get(endpoints.steelMarkdownVersions(conversationId));
+}
+
+export function getSteelReview(
+  conversationId: string,
+  kind: SteelReviewKind,
+  messageId: string,
+  title: string,
+): Promise<SteelReviewResponse> {
+  return request.get(endpoints.steelReview(conversationId, kind, messageId, title));
+}
+
+export function getSteelReviewCatalog(
+  conversationId: string,
+  input: SteelCatalogQuery,
+): Promise<SteelCatalogPage> {
+  return request.get(endpoints.steelReviewCatalog(conversationId, input));
+}
+
+export function prepareSteelReview(input: SteelReviewPrepare): Promise<SteelReviewPrepared> {
+  return request.post(endpoints.steelReviewPrepare(input.conversationId, input.kind), input);
+}
+
+export function commitSteelReview(input: SteelReviewCommit): Promise<SteelReviewSaveResponse> {
+  return request.post(endpoints.steelReviewCommit(input.conversationId, input.kind), input);
+}
+
+export function getSteelReviewReceipt(
+  conversationId: string,
+  kind: SteelReviewKind,
+  messageId: string,
+  outputId: string,
+  operationId: string,
+  digest: string,
+  title: string,
+): Promise<SteelReviewReceiptStatus> {
+  return request.get(endpoints.steelReviewReceipt(
+    conversationId,
+    kind,
+    messageId,
+    outputId,
+    operationId,
+    digest,
+    title,
+  ));
+}
+
+export function getSteelReviewSources(
+  conversationId: string,
+  kind: SteelReviewKind,
+  messageId: string,
+  title: string,
+): Promise<SteelReviewSourcesResponse> {
+  return request.get(endpoints.steelReviewSources(conversationId, kind, messageId, title));
+}
+
+export function getSteelReviewSource(
+  conversationId: string,
+  kind: SteelReviewKind,
+  fileId: string,
+  messageId: string,
+): Promise<AxiosResponse<Blob>> {
+  return request.getResponse(endpoints.steelReviewSource(conversationId, kind, fileId, messageId), {
+    responseType: 'blob',
+    headers: { Accept: 'application/octet-stream' },
+  });
+}
+
+export function getSteelReviewSourcePageCount(
+  conversationId: string,
+  kind: SteelReviewKind,
+  fileId: string,
+  messageId: string,
+): Promise<SteelReviewSourcePageCount> {
+  return request.get(endpoints.steelReviewSourcePageCount(conversationId, kind, fileId, messageId));
 }
 
 export function cancelSteelQuotation(

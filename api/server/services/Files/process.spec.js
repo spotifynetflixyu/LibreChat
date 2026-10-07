@@ -1,5 +1,7 @@
 jest.mock('uuid', () => ({ v4: jest.fn(() => 'mock-uuid') }));
 
+const { Readable } = require('stream');
+
 jest.mock('@librechat/data-schemas', () => ({
   logger: { warn: jest.fn(), debug: jest.fn(), error: jest.fn(), info: jest.fn() },
   runAsSystem: jest.fn((fn) => fn()),
@@ -1836,7 +1838,7 @@ describe('processAgentFileUpload', () => {
           text: 'plain extracted text',
           bytes: 128,
           filepath: '/uploads/user-123/file-uuid-123__upload.bin',
-          source: FileSources.local,
+          source: FileSources.s3,
           filename: 'upload.bin',
           type: 'text/plain',
           llmDeliveryPath: 'text',
@@ -1875,7 +1877,7 @@ describe('processAgentFileUpload', () => {
           text: 'ocr extracted text',
           bytes: 4096,
           filepath: '/uploads/user-123/file-uuid-123__upload.bin',
-          source: FileSources.local,
+          source: FileSources.s3,
           filename: 'upload.bin',
           type: PDF_MIME,
           llmDeliveryPath: 'text',
@@ -1919,7 +1921,7 @@ describe('processAgentFileUpload', () => {
       expect(createFile).toHaveBeenCalledWith(
         expect.objectContaining({
           filepath: '/uploads/user-123/file-uuid-123__upload.bin',
-          source: FileSources.local,
+          source: FileSources.s3,
           type: 'text/markdown',
           embedded: true,
           llmDeliveryPath: 'none',
@@ -1962,7 +1964,7 @@ describe('processAgentFileUpload', () => {
       expect(createFile).toHaveBeenCalledWith(
         expect.objectContaining({
           filepath: '/uploads/user-123/file-uuid-123__upload.bin',
-          source: FileSources.local,
+          source: FileSources.s3,
           type: 'text/markdown',
           llmDeliveryPath: 'provider',
         }),
@@ -2089,7 +2091,10 @@ describe('processAgentFileUpload', () => {
         if (source === FileSources.execute_code) {
           return { handleFileUpload: codeUpload };
         }
-        return { handleFileUpload: storageUpload };
+        return {
+          handleFileUpload: storageUpload,
+          getDownloadStream: jest.fn(async () => Readable.from(Buffer.from('stored'))),
+        };
       });
       mergeFileConfig.mockReturnValue({
         ...makeFileConfig(),
@@ -2116,7 +2121,7 @@ describe('processAgentFileUpload', () => {
       expect(createFile).toHaveBeenCalledWith(
         expect.objectContaining({
           filepath: '/uploads/user-123/file-uuid-123__upload.bin',
-          source: FileSources.local,
+          source: FileSources.s3,
           type: 'text/csv',
           metadata: expect.objectContaining({
             codeEnvRef: {
@@ -2173,7 +2178,7 @@ describe('processAgentFileUpload', () => {
         expect.objectContaining({
           text: 'markdown text',
           filepath: '/uploads/user-123/file-uuid-123__upload.bin',
-          source: FileSources.local,
+          source: FileSources.s3,
           type: 'text/markdown',
           llmDeliveryPath: 'text',
         }),
@@ -2216,7 +2221,7 @@ describe('processAgentFileUpload', () => {
       expect(createFile).toHaveBeenCalledWith(
         expect.objectContaining({
           text: 'markdown text',
-          source: FileSources.local,
+          source: FileSources.s3,
           type: 'text/markdown',
           llmDeliveryPath: 'text',
         }),
@@ -2226,7 +2231,7 @@ describe('processAgentFileUpload', () => {
   });
 });
 
-describe('processImageFile', () => {
+describe('processImageFile delivery metadata', () => {
   beforeEach(() => {
     jest.clearAllMocks();
     mockRes.status.mockReturnThis();
@@ -2266,7 +2271,7 @@ describe('processImageFile', () => {
         file_id: 'image-file-id',
         temp_file_id: 'temp-image-file-id',
         filepath: '/images/user-123/image.webp',
-        source: FileSources.local,
+        source: FileSources.s3,
         type: 'image/webp',
         llmDeliveryPath: 'none',
       }),
@@ -2310,7 +2315,7 @@ describe('processImageFile', () => {
         file_id: 'image-file-id',
         temp_file_id: 'temp-image-file-id',
         filepath: '/images/user-123/image.webp',
-        source: FileSources.local,
+        source: FileSources.s3,
         type: 'image/webp',
         llmDeliveryPath: 'provider',
       }),

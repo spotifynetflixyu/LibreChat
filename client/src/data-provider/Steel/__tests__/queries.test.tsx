@@ -1,23 +1,25 @@
 import { act, renderHook } from '@testing-library/react';
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { QueryKeys, dataService } from 'librechat-data-provider';
-import type { PropsWithChildren } from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { OpenAIOAuthTokenStatus } from 'librechat-data-provider';
-
+import type { PropsWithChildren } from 'react';
 import {
   useCancelSteelQuotationMutation,
+  useGetSteelReviewReceiptQuery,
   useLogoutOpenAIOAuthCodexMutation,
   useRefreshOpenAIOAuthTokenMutation,
 } from '../queries';
 
 jest.mock('recoil', () => ({
-  useRecoilValue: () => true,
+  useRecoilValue: jest.fn(() => true),
 }));
 
 jest.mock('~/store', () => ({
   __esModule: true,
   default: { queriesEnabled: {} },
 }));
+
+const recoil = jest.requireMock('recoil') as { useRecoilValue: jest.Mock };
 
 const token: OpenAIOAuthTokenStatus = {
   provider: 'openai_oauth_responses',
@@ -127,5 +129,29 @@ describe('Steel quotation cancellation', () => {
     expect(queryClient.getQueryData([QueryKeys.steelQuotationStatus, conversationId])).toEqual(
       runningStatus,
     );
+  });
+});
+
+describe('Steel review receipt query', () => {
+  it('uses only its input and config enabled state', () => {
+    recoil.useRecoilValue.mockImplementation(() => {
+      throw new Error('receipt query must not read the global Recoil toggle');
+    });
+    try {
+      const { result } = renderHook(() => useGetSteelReviewReceiptQuery({
+        conversationId: 'conversation-1',
+        kind: 'ocr_result',
+        messageId: 'message-1',
+        title: 'ocr_result',
+        outputId: 'ocr_result:generation-1',
+        operationId: 'operation-1',
+        digest: 'a'.repeat(64),
+      }, { enabled: false }), {
+        wrapper: createWrapper(new QueryClient()),
+      });
+      expect(result.current.fetchStatus).toBe('idle');
+    } finally {
+      recoil.useRecoilValue.mockImplementation(() => true);
+    }
   });
 });

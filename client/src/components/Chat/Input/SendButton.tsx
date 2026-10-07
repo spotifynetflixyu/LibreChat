@@ -8,7 +8,6 @@ import { useLocalize } from '~/hooks';
 type SendButtonProps = {
   disabled: boolean;
   hasFiles?: boolean;
-  hasPendingMarkdownTableComments?: boolean;
   control: Control<{ text: string }>;
   /** Number of attached files; attachments allow sending without text */
   fileCount?: number;
@@ -43,16 +42,8 @@ const SubmitButton = React.memo(
 const SendButton = React.memo(
   forwardRef((props: SendButtonProps, ref: React.ForwardedRef<HTMLButtonElement>) => {
     const data = useWatch({ control: props.control });
-    const canSubmit =
-      isSubmittableMessage(data?.text, props.fileCount) ||
-      props.hasFiles === true ||
-      props.hasPendingMarkdownTableComments === true;
-    return (
-      <SubmitButton
-        ref={ref}
-        disabled={props.disabled || !canSubmit}
-      />
-    );
+    const canSubmit = isSubmittableMessage(data?.text, props.fileCount) || props.hasFiles === true;
+    return <SubmitButton ref={ref} disabled={props.disabled || !canSubmit} />;
   }),
 );
 

@@ -26,6 +26,7 @@ module.exports = {
   //   },
   // },
   moduleNameMapper: {
+    '^pdfjs-dist/build/pdf\\.worker\\.mjs\\?url$': '<rootDir>/test/asset.cjs',
     '\\.(css)$': 'identity-obj-proxy',
     /** Mirror the vite resolve.alias so tests parse math with the same tokenizer as production. */
     '^micromark-extension-math$': 'micromark-extension-llm-math',

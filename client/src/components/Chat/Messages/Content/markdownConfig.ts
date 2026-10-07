@@ -16,6 +16,7 @@ import { Citation, CompositeCitation, HighlightedText } from '~/components/Web/C
 import { langSubset, remarkApproxTilde, remarkSingleDollarMath } from '~/utils';
 import { Artifact, artifactPlugin } from '~/components/Artifacts/Artifact';
 import { code, a, p, img, table } from './MarkdownComponents';
+import { SteelHeading } from './SteelReview/heading';
 import { unicodeCitation } from '~/components/Web';
 
 /**
@@ -59,6 +60,7 @@ export const getMarkdownComponents = (): { [nodeType: string]: ElementType } => 
   p,
   img,
   table,
+  h2: SteelHeading,
   artifact: Artifact,
   citation: Citation,
   'highlighted-text': HighlightedText,

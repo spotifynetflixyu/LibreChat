@@ -84,7 +84,6 @@ jest.mock('~/store', () => ({
     showStopButtonByIndex: () => 'showStopButton',
     pendingManualSkillsByConvoId: () => 'pendingManualSkills',
     pendingQuotesByConvoId: () => 'pendingQuotes',
-    pendingMarkdownTableCommentsByConvoId: () => 'pendingMarkdownTableComments',
     messagesSiblingIdxFamily: () => 'messagesSiblingIdx',
     conversationByKeySelector: () => 'conversation',
   },
@@ -169,7 +168,7 @@ describe('useChatFunctions ask', () => {
 
   it('returns a refused regeneration so retry callers can release their pending state', () => {
     const messages = [userMessage('u1'), assistantMessage('a1', 'u1')];
-    const { result, setSubmission } = renderAsk(messages, 'conversation-1', { isSubmitting: true });
+    const { result } = renderAsk(messages, 'conversation-1', { isSubmitting: true });
     let accepted: ReturnType<typeof result.current.regenerate>;
     act(() => {
       accepted = result.current.regenerate(messages[1]);
@@ -519,82 +518,9 @@ describe('useChatFunctions regenerate', () => {
   );
 });
 
-  it('appends and clears pending markdown table comments on a fresh submit', () => {
-    const messages = [userMessage('user-1'), assistantMessage('assistant-1', 'user-1')];
-    const setMessages = jest.fn((nextMessages: TMessage[]) => {
-      messages.splice(0, messages.length, ...nextMessages);
-    });
-    const setSubmission = jest.fn();
-    const conversation = {
-      conversationId: 'conversation-1',
-      endpoint: EModelEndpoint.agents,
-      model: 'gpt-4o',
-      agent_id: 'agent-1',
-    } as TConversation;
-    mockRecoilLoadables.pendingMarkdownTableComments = [
-      {
-        id: 'assistant-1:1:2:3',
-        conversationId: 'conversation-1',
-        messageId: 'assistant-1',
-        messageTimestampLabel: '2026-06-27 14:32',
-        markdownIndex: 1,
-        markdownLabel: '2026-06-27 14:32 / Markdown 1',
-        tableFingerprint: '| A | B |',
-        rowIndex: 2,
-        columnIndex: 3,
-        columnHeader: 'Qty',
-        oldValue: '10',
-        comment: '改成 12',
-      },
-    ];
-
-    const { result } = renderHook(() =>
-      useChatFunctions({
-        isSubmitting: false,
-        latestMessage: messages[1],
-        conversation,
-        getMessages: () => messages,
-        setMessages,
-        setSubmission,
-        setConversation: mockSetConversation,
-      }),
-    );
-
-    act(() => {
-      result.current.ask({ text: '請更新表格' });
-    });
-
-    const submission = setSubmission.mock.calls.at(-1)?.[0] as TSubmission;
-    expect(submission.userMessage.text).toContain('請更新表格');
-    expect(submission.userMessage.text).toContain('## 原始 Markdown 標題未載入');
-    expect(submission.userMessage.text).toContain('1. Cell: row 2, column "Qty"');
-    expect(submission.userMessage.text).toContain('Old value: 10');
-    expect(submission.userMessage.text).toContain('Comment: 改成 12');
-    expect(submission.userMessage.text).toContain(
-      '分別輸出每個表格修改後的 row；每個 row 保留完整欄位，不要輸出未修改的 row 或整張表格。',
-    );
-    expect(mockResetRecoil).toHaveBeenCalledWith('pendingMarkdownTableComments');
-  });
-
-  it('uses an explicit queued comment snapshot without draining newer composer comments', () => {
+  it('ignores retired queued comment metadata while preserving the submitted text', () => {
     const messages = [userMessage('user-1'), assistantMessage('assistant-1', 'user-1')];
     const setSubmission = jest.fn();
-    mockRecoilLoadables.pendingMarkdownTableComments = [
-      {
-        id: 'newer-comment',
-        conversationId: 'conversation-1',
-        messageId: 'assistant-1',
-        messageTimestampLabel: '10:01',
-        markdownIndex: 0,
-        markdownLabel: 'Newer table comment',
-        tableFingerprint: '| A |',
-        rowIndex: 1,
-        columnIndex: 1,
-        columnHeader: 'A',
-        oldValue: 'old',
-        comment: 'newer composer comment',
-      },
-    ];
     const { result } = renderHook(() =>
       useChatFunctions({
         isSubmitting: false,
@@ -607,13 +533,11 @@ describe('useChatFunctions regenerate', () => {
       }),
     );
 
-    act(() => {
-      result.current.ask({ text: 'queued text' }, { overrideMarkdownTableComments: [] });
-    });
+    const legacyOptions = { overrideMarkdownTableComments: [{ id: 'retired-comment' }] };
+    act(() => result.current.ask({ text: 'queued text' }, legacyOptions as never));
 
     const submission = setSubmission.mock.calls.at(-1)?.[0] as TSubmission;
     expect(submission.userMessage.text).toBe('queued text');
-    expect(mockResetRecoil).not.toHaveBeenCalledWith('pendingMarkdownTableComments');
   });
 
   it('marks files consumed through overrideFiles as submitted', () => {

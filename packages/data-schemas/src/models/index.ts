@@ -18,6 +18,7 @@ import {
   createSteelOcrResponseAuditModel,
   createSteelQuotationStateModel,
   createSteelQuotationArtifactModel,
+  createSteelReviewOutputModel,
 } from './steel';
 import { createAgentQueuedTurnModel, createAgentQueuedTurnSequenceModel } from './queuedTurn';
 import { createAgentTriggerLaneSequenceModel } from './triggerLaneSequence';
@@ -118,6 +119,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
   SteelOcrResponseAudit: ReturnType<typeof createSteelOcrResponseAuditModel>;
   SteelQuotationState: ReturnType<typeof createSteelQuotationStateModel>;
   SteelQuotationArtifact: ReturnType<typeof createSteelQuotationArtifactModel>;
+  SteelReviewOutput: ReturnType<typeof createSteelReviewOutputModel>;
   SteelAIRun: ReturnType<typeof createSteelAIRunModel>;
   SteelAICapability: ReturnType<typeof createSteelAICapabilityModel>;
   SteelSourceVersion: ReturnType<typeof createSteelSourceVersionModel>;
@@ -187,6 +189,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
     SteelOcrResponseAudit: createSteelOcrResponseAuditModel(mongoose),
     SteelQuotationState: createSteelQuotationStateModel(mongoose),
     SteelQuotationArtifact: createSteelQuotationArtifactModel(mongoose),
+    SteelReviewOutput: createSteelReviewOutputModel(mongoose),
     SteelAIRun: createSteelAIRunModel(mongoose),
     SteelAICapability: createSteelAICapabilityModel(mongoose),
     SteelSourceVersion: createSteelSourceVersionModel(mongoose),
@@ -253,4 +256,5 @@ export {
   createSteelOcrResponseAuditModel,
   createSteelQuotationStateModel,
   createSteelQuotationArtifactModel,
+  createSteelReviewOutputModel,
 } from './steel';

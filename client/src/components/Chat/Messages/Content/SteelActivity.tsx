@@ -1,24 +1,24 @@
 import { memo, useContext, useEffect, useMemo, useRef, useState } from 'react';
-import { AlertTriangle, CheckCircle2, ChevronDown, LoaderCircle } from 'lucide-react';
-import { Button } from '@librechat/client';
 import { useRecoilValue } from 'recoil';
+import { Button } from '@librechat/client';
+import { AlertTriangle, CheckCircle2, ChevronDown, LoaderCircle } from 'lucide-react';
 import type { SteelQuotationStatus } from 'librechat-data-provider';
 import type {
   SteelNativeActivityEvent,
   SteelNativeSavedCounts,
   SteelNativeTableCounts,
 } from '~/store/steel';
-import { steelNativeActivityByMessageId } from '~/store/steel';
-import useLocalize from '~/hooks/useLocalize';
-import {
-  useCancelSteelQuotationMutation,
-  useGetSteelQuotationStatusQuery,
-} from '~/data-provider/Steel';
-import { ChatContext } from '~/Providers';
 import {
   appendSteelNativeActivityEvent,
   normalizePersistedSteelActivityEvent,
 } from '~/hooks/SSE/useSteelEventHandler';
+import {
+  useCancelSteelQuotationMutation,
+  useGetSteelQuotationStatusQuery,
+} from '~/data-provider/Steel';
+import { steelNativeActivityByMessageId } from '~/store/steel';
+import useLocalize from '~/hooks/useLocalize';
+import { ChatContext } from '~/Providers';
 import { EmptyText } from './Parts';
 
 type SteelActivityProps = {
@@ -158,7 +158,7 @@ function getQuotationStatusText(
     });
   }
   if (status === 'queued') {
-    return localize('com_ui_steel_quote_status_queued');
+    return localize('com_ui_steel_quote_status_preparing');
   }
   if (status === 'running') {
     const repairText = getQuotationRepairStatusText(
@@ -264,7 +264,8 @@ const SteelQuotationProgress = memo(function SteelQuotationProgress({
   const hasMismatchedQuery = Boolean(
     event &&
       queryData &&
-      (event.index !== queryData.index ||
+      (event.conversationId !== queryData.conversationId ||
+        event.index !== queryData.index ||
         (event.runId !== undefined && event.runId !== queryData.runId)),
   );
   const terminalEventWins = Boolean(
@@ -280,6 +281,17 @@ const SteelQuotationProgress = memo(function SteelQuotationProgress({
   const statusIndex = status?.index;
   const statusRunId = status?.runId;
   const statusName = status?.status;
+  const sameRunQuery = Boolean(
+    queryData &&
+      event &&
+      event.conversationId === conversationId &&
+      queryData.conversationId === conversationId &&
+      event.index === queryData.index &&
+      event.runId !== undefined &&
+      event.runId === queryData.runId,
+  );
+  let ocrSource = event?.conversationId === conversationId ? event.ocrSource : undefined;
+  if (sameRunQuery) ocrSource = queryData?.ocrSource ?? ocrSource;
 
   useEffect(() => {
     setRetryError(undefined);
@@ -436,6 +448,16 @@ const SteelQuotationProgress = memo(function SteelQuotationProgress({
         {event?.message && (
           <span className="min-w-0 whitespace-normal break-words text-text-tertiary">
             {event.message}
+          </span>
+        )}
+        {ocrSource && (
+          <span className="min-w-0 whitespace-normal break-words text-text-tertiary">
+            {localize(
+              ocrSource.source === 'ai'
+                ? 'com_ui_steel_quote_source_ai'
+                : 'com_ui_steel_quote_source_human',
+              { version: ocrSource.version },
+            )}
           </span>
         )}
         {!hasMismatchedQuery &&

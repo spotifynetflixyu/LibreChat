@@ -6,10 +6,10 @@ import {
   createSteelDelegateOcrRunModel,
   createSteelWorkingOrderMemoryModel,
 } from '@librechat/data-schemas';
-import { createSteelOcrForkService } from './fork';
 import { prepareQuotationTurn } from '../quotation/preparation';
-import { finalizeOcrResponse } from './result';
 import { createSteelOcrStateService } from './state';
+import { createSteelOcrForkService } from './fork';
+import { finalizeOcrResponse } from './result';
 
 let server: MongoMemoryServer;
 const userId = new mongoose.Types.ObjectId().toString();
@@ -85,7 +85,7 @@ it('reconstructs the selected order, copies independent evidence, and supplies i
   });
   expect(turn.instruction).toContain('"hasOcrResult":true');
   expect(turn.state.currentOrder?.markdown).toBe(full(3));
-  const correction = finalizeOcrResponse({ assistantResponse: full(2, 'ocr_result_updates'), previousOcrMarkdown: turn.state.currentOrder?.markdown, canonicalMapping: [], agentKind: 'other' });
+  const correction = finalizeOcrResponse({ assistantResponse: full(2), previousOcrMarkdown: turn.state.currentOrder?.markdown, canonicalMapping: [], agentKind: 'other' });
   expect(correction.ok).toBe(true);
   if (!correction.ok) throw new Error('Correction failed');
   await createSteelOcrStateService(mongoose).upsertCurrentOcrResult({

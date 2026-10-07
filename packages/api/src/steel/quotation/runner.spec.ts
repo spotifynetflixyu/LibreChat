@@ -1,9 +1,14 @@
 import mongoose from 'mongoose';
 import { createHash } from 'node:crypto';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { AIMessageChunk } from '@librechat/agents/langchain/messages';
 import { createSteelQuotationStateModel, createSteelQuotationArtifactModel } from '@librechat/data-schemas';
-import type { SteelQuotationScope, SteelQuotationActiveRun } from '@librechat/data-schemas';
+import type {
+  SteelQuotationScope,
+  SteelQuotationActiveRun,
+  SteelQuotationPublicationProof,
+  SteelQuotationPublicationSaveResult,
+} from '@librechat/data-schemas';
 import type { SteelToolJsonObject, SteelToolResult } from '../tools/results';
 import type { QuotationModelInput, QuotationModelResult } from './model';
 import type { OpenAIOAuthModelOptions } from '../native/oauth';
@@ -11,7 +16,7 @@ import type { SteelNativeHistory } from '../native/events';
 import type { QuotationProgress } from './runner';
 import type { QuotationChunk } from './protocol';
 import { bindQuotationCustomerResult, commitQuotationCustomerResponse, defaultQuotationCustomerMarkdown, prepareQuotationTurn, quotationPreparationStatus, renderQuotationCustomerMarkdown } from './preparation';
-import { acceptQuotationResponse, acceptQuotationSignal, createQuotationPublicationProjector, runQuotationPreflight } from './runner';
+import { acceptQuotationResponse, acceptQuotationSignal, createQuotationPublicationProjector, hasCompleteSteelFormula, publishCompletedQuotation, runQuotationPreflight } from './runner';
 import { createSteelNativeHistory, appendSteelNativeActivityEvent, upsertSteelNativePreflightToolCall } from '../native/events';
 import { buildQuotationChunks, splitQuotationChunk, quotationSignal } from './protocol';
 import { getQuotationHistoryDelta, readQuotationHistory } from './history';
@@ -95,6 +100,7 @@ function candidate(): SteelToolJsonObject {
     formulaCode: 'PL',
     thicknessMinMm: 6,
     thicknessMaxMm: 6,
+    exactPhysical: { density: '7.85' },
     tierPrices: { A: 11, B: 12, C: 13, D: 14, E: 15, F: 16 },
   };
 }
@@ -209,11 +215,11 @@ function systemRowFromSourceRow(row: readonly string[]): readonly string[] {
   ];
 }
 
-let mongoServer: MongoMemoryServer;
+let mongoServer: MongoMemoryReplSet;
 let service: ReturnType<typeof createSteelQuotationStateService>;
 
 beforeAll(async () => {
-  mongoServer = await MongoMemoryServer.create({ instance: { ip: '127.0.0.1' } });
+  mongoServer = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } });
   await mongoose.connect(mongoServer.getUri());
   service = createSteelQuotationStateService(mongoose);
 });
@@ -230,6 +236,15 @@ afterAll(async () => {
 async function prepareRun(rowCount: number, rowsPerChunk = 30): Promise<SteelQuotationActiveRun> {
   const order = orderMarkdown(rowCount);
   await service.setOrder({ scope, fullMarkdown: order, revision: 'runner-test' });
+  await service.saveCustomer({
+    scope,
+    customerMarkdown,
+    customerIdentity: 'C1',
+    triggeringMessageId: 'customer-trigger',
+    responseId: 'customer-response',
+    orderHash: createHash('sha256').update(order).digest('hex'),
+    selectionProvenance: { method: 'unique', lookupMessageId: 'customer-lookup' },
+  });
   const ticket = await service.issueTicket({
     scope,
     customerMarkdown,
@@ -259,11 +274,12 @@ function runnerInput(
   options: {
     signal?: AbortSignal;
     onProgress?: (progress: { run: SteelQuotationActiveRun }) => Promise<void>;
-    publishFinal?: (input: { run: SteelQuotationActiveRun; markdown: string }) => Promise<void>;
+    publishFinal?: (input: SteelQuotationPublicationProof & { markdown: string }) => Promise<SteelQuotationPublicationSaveResult | void>;
     projectFinal?: (input: { run: SteelQuotationActiveRun; markdown: string }) => Promise<void>;
     onTextDelta?: (text: string) => Promise<void>;
   } = {},
 ) {
+  const publishFinal = options.publishFinal ?? (async () => undefined);
   return {
     scope,
     modelOptions: {} as OpenAIOAuthModelOptions,
@@ -272,7 +288,23 @@ function runnerInput(
     executeLookup,
     onProgress: options.onProgress,
     onTextDelta: options.onTextDelta,
-    publishFinal: options.publishFinal ?? jest.fn(async () => undefined),
+    publishFinal: async (input: SteelQuotationPublicationProof & { markdown: string }) => {
+      if (!input.run) throw new Error('Quotation publication test proof is missing its run');
+      const run = input.run;
+      const saved = await publishFinal(input);
+      if (!saved && run.targetMessageId) {
+        await service.markPublished({
+          scope: input.scope,
+          runId: run.runId,
+          targetMessageId: input.targetMessageId,
+          finalSha256: input.finalSha256,
+        });
+      }
+      return saved ?? { ok: true as const, message: {
+        messageId: run.targetMessageId ?? 'target-1', conversationId: scope.conversationId,
+        text: input.markdown, user: scope.userId,
+      } };
+    },
     projectFinal: options.projectFinal,
   };
 }
@@ -290,6 +322,40 @@ function configureOAuthResponses(responses: AIMessageChunk[]): jest.Mock {
 describe('quotation runner integration', () => {
   beforeEach(() => {
     oauthFactory.mockReset();
+  });
+
+  it('admits candidates using only the physical evidence consumed by their formula', () => {
+    expect(hasCompleteSteelFormula({
+      erpItemCode: 'SQ-1', category: '方鐵', ruleVersion: 'steel-weight-v1',
+      exactPhysical: { density: '7.85' },
+    })).toBe(true);
+    expect(hasCompleteSteelFormula({
+      erpItemCode: 'SQ-1', category: '方鐵', ruleVersion: 'steel-weight-v1',
+      exactPhysical: {},
+    })).toBe(false);
+    expect(hasCompleteSteelFormula({
+      erpItemCode: 'H-1',
+      category: 'H型鋼',
+      ruleVersion: 'steel-weight-v1',
+      unitWeightBasis: 'kg_per_m',
+      exactPhysical: { unitWeightValue: '1' },
+    })).toBe(true);
+    expect(hasCompleteSteelFormula({
+      erpItemCode: 'H-1',
+      category: 'H型鋼',
+      ruleVersion: 'steel-weight-v1',
+      unitWeightBasis: 'kg_per_piece_or_stock_length',
+      exactPhysical: { unitWeightValue: '1' },
+    })).toBe(false);
+    for (const category of ['平鐵', '圓條']) {
+      expect(hasCompleteSteelFormula({
+        erpItemCode: `${category}-1`,
+        category,
+        ruleVersion: 'steel-weight-v1',
+        unitWeightBasis: 'kg_per_m',
+        exactPhysical: { unitWeightValue: '1' },
+      })).toBe(true);
+    }
   });
 
   it('runs only one quotation when another retry arrives while its child is active', async () => {
@@ -379,7 +445,7 @@ describe('quotation runner integration', () => {
     const prepared = await prepareQuotationTurn({
       scope, messageId: 'resume-message', responseId: 'resume-response', text: '接續報價',
     });
-    expect(prepared.resume).toBe(false);
+    expect(prepared.resume).toBe(true);
     expect((await service.readState(scope))?.pendingMessages).toHaveLength(0);
     const resumed = createModel();
     const events: QuotationProgress[] = [];
@@ -730,7 +796,8 @@ describe('quotation runner integration', () => {
       const payload = JSON.parse(input.input);
       expect(payload).not.toHaveProperty('chunks');
       expect(parseMarkdownTables(payload.system_order)[0]!.rows).toHaveLength(31);
-      expect(onTextDelta.mock.calls[0]![0]).toContain(payload.system_order + '\n\n## customer_quote');
+      expect(onTextDelta.mock.calls[0]![0]).toContain(payload.system_order);
+      expect(onTextDelta.mock.calls[0]![0]).not.toContain('## customer_quote');
       expect(input.onTextDelta).toEqual(expect.any(Function));
       return { markdown: '無待複核事項。', lookups: [], pythonEvidence: [] };
     });
@@ -738,7 +805,7 @@ describe('quotation runner integration', () => {
     const final = publishFinal.mock.calls[0]![0] as unknown as { markdown: string };
     expect(final.markdown.match(/## system_order/g)).toHaveLength(1);
     expect(parseMarkdownTables(final.markdown)[0]!.rows).toHaveLength(31);
-    expect(final.markdown).toContain('## customer_quote');
+    expect(final.markdown).not.toContain('## customer_quote');
     expect(final.markdown).not.toContain('manual_reviews_chunk');
   });
 
@@ -755,7 +822,8 @@ describe('quotation runner integration', () => {
     const baseModel = createModel({ onMainInput: (input) => {
       reviewedOrder = JSON.parse(input).system_order;
       expect(previews).toHaveLength(1);
-      expect(previews[0]).toContain(reviewedOrder + '\n\n## customer_quote');
+      expect(previews[0]).toContain(reviewedOrder);
+      expect(previews[0]).not.toContain('## customer_quote');
       const rows = parseMarkdownTables(reviewedOrder)[0]!.rows;
       expect(rows).toHaveLength(25);
       for (const row of rows) {
@@ -782,7 +850,8 @@ describe('quotation runner integration', () => {
       onTextDelta: async (text) => { previews.push(text); },
     }));
     expect(result.status).toBe('completed');
-    expect(result.markdown!.startsWith(reviewedOrder + '\n\n## customer_quote')).toBe(true);
+    expect(result.markdown!.startsWith(reviewedOrder)).toBe(true);
+    expect(result.markdown).not.toContain('## customer_quote');
     expect(result.markdown).not.toMatch(/2支|1,234\.50元|6 mm/);
     expect(await service.readCheckpoint({ scope, runId: run.runId, operationId: 'system-order:normalized' }))
       .toBe(reviewedOrder);
@@ -805,7 +874,7 @@ describe('quotation runner integration', () => {
     expect(model.mock.calls.find(([input]) => input.role === 'main')![0]).not.toHaveProperty('validateMainOutput');
     const markdown = result.markdown!;
     const headings = [...markdown.matchAll(/^## (.+)$/gm)].map((match) => match[1]);
-    expect(headings).toEqual(['system_order', 'customer_quote', 'manual_reviews', 'notes', 'quote_summary']);
+    expect(headings).toEqual(['system_order', 'manual_reviews', 'notes', 'quote_summary']);
     expect(markdown).toContain('保留這段未使用表格的模型輸出。');
     expect(markdown).toContain('主 agent 補充。');
     expect(markdown).toContain('查價輸出完成：共 1 筆 system_order。');
@@ -858,7 +927,7 @@ describe('quotation runner integration', () => {
     });
     expect(onTextDelta.mock.calls).toHaveLength(4);
     expect(progress.filter((value) => value.stage === 'main_streaming')).toHaveLength(1);
-    expect(publishFinal).toHaveBeenCalledWith(expect.objectContaining({ markdown: expect.stringContaining('## customer_quote') }));
+    expect(publishFinal).toHaveBeenCalledWith(expect.objectContaining({ markdown: expect.not.stringContaining('## customer_quote') }));
     expect(publishFinal).toHaveBeenCalledTimes(1);
   });
   it('awaits delayed review delivery before its next delta, summary, and final replacement', async () => {
@@ -872,7 +941,7 @@ describe('quotation runner integration', () => {
     const reviewParts = ['## manual_reviews\n\n需確認', '尺寸。\n\n## notes\n\n備註。'];
     const model = async (input: QuotationModelInput) => {
       if (input.role !== 'main') return baseModel(input);
-      expect(delivered[0]).toContain('## customer_quote');
+      expect(delivered[0]).not.toContain('## customer_quote');
       const first = input.onTextDelta!(reviewParts[0]!);
       const second = input.onTextDelta!(reviewParts[1]!);
       await Promise.all([first, second]);
@@ -922,7 +991,7 @@ describe('quotation runner integration', () => {
       publishFinal, onTextDelta: async (text) => { delivered.push(text); },
     }));
     expect(executeLookup).toHaveBeenCalledTimes(1);
-    expect(delivered[0]).toContain('## customer_quote');
+    expect(delivered[0]).not.toContain('## customer_quote');
     expect(delivered.join('').match(/## manual_reviews/g)).toHaveLength(1);
       expect(delivered[delivered.length - 1]).toContain('## quote_summary');
   });
@@ -1168,11 +1237,15 @@ describe('quotation runner integration', () => {
     const after = await service.readState(scope);
     expect(retried?.runId).toBe(first?.runId);
     expect(after?.pendingMessages).toHaveLength(0);
-    expect(after?.currentCustomer).toBeUndefined();
+    expect(after?.currentCustomer).toEqual(prepared);
     expect(after?.nextSignalIndex).toBe(1);
+    const result = await runQuotationPreflight(runnerInput(createModel(), createLookupExecutor()));
+    expect(result.status).toBe('completed');
+    expect((await service.readState(scope))?.currentCustomer).toEqual(prepared);
+    expect(await service.getArtifact({ scope, runId: first!.runId, operationId: 'published' })).not.toBeNull();
   });
 
-  it('replays a receipt-backed OCR update response without legacy table validation', async () => {
+  it('rejects a receipt-backed retired OCR update without allocating a run', async () => {
     const state = await service.setOrder({ scope, fullMarkdown: orderMarkdown(1) });
     const customer = await service.saveCustomer({
       scope,
@@ -1202,12 +1275,13 @@ describe('quotation runner integration', () => {
       finishReason: 'stop',
       service,
     };
-    const first = await acceptQuotationSignal(request);
-    const replay = await acceptQuotationSignal({ ...request, response: canonicalResponse });
+    await expect(acceptQuotationSignal(request)).rejects.toMatchObject({ code: 'retired_control_section' });
+    await expect(acceptQuotationSignal({ ...request, response: canonicalResponse }))
+      .rejects.toMatchObject({ code: 'retired_control_section' });
     const after = await service.readState(scope);
-    expect(first?.runId).toBeDefined();
-    expect(replay?.runId).toBe(first?.runId);
     expect(after?.currentCustomer).toEqual(customer);
+    expect(after?.activeRun).toBeUndefined();
+    expect(after?.nextSignalIndex).toBe(0);
     expect(after?.pendingMessages).toHaveLength(0);
   });
 
@@ -1254,7 +1328,7 @@ describe('quotation runner integration', () => {
       interruption: { reason: 'paused' } });
     const prepared = await prepareQuotationTurn({ scope, messageId: 'continue-user',
       responseId: 'continue-response', text: '請繼續處理這份報價' });
-    expect(prepared.resume).toBe(false);
+    expect(prepared.resume).toBe(true);
     const request = { scope, responseId: 'continue-response', messageId: 'continue-user',
       expectedOrderHash: prepared.state.currentOrder?.sha256,
       expectedCustomerPreparationId: prepared.state.currentCustomer?.preparationId, finishReason: 'stop' };
@@ -1272,31 +1346,21 @@ describe('quotation runner integration', () => {
     expect(concurrent.filter(Boolean)).toHaveLength(1);
   });
 
-  it.each([false, true])('durably queues changed inputs before continuing a frozen run (mixed signal=%s)', async (mixedSignal) => {
+  it.each([false, true])('rejects changed inputs while a quotation run is unfinished (mixed signal=%s)', async (mixedSignal) => {
     await prepareCustomer();
     const first = (await acceptPreparedSignal('response-1'))!;
     const state = await service.readState(scope);
     const files = [{ fileId: 'original-file', filename: 'revision.pdf', mediaType: 'application/pdf' }];
     const response = `${orderMarkdown(2)}${mixedSignal ? `\n\n${quotationSignal}` : ''}`;
-    if (mixedSignal) {
-      const accepted = await acceptQuotationResponse({ scope, response,
-        responseId: 'correction-response', messageId: 'correction-user', messageText: '改用附件的訂單', messageFiles: files,
-        expectedOrderHash: state?.currentOrder?.sha256,
-        expectedCustomerPreparationId: state?.currentCustomer?.preparationId, finishReason: 'stop' });
-      expect(accepted?.runId).toBe(first.runId);
-      expect((await service.readState(scope))?.pendingMessages).toHaveLength(1);
-      return;
-    }
-    const accepted = await acceptQuotationResponse({ scope, response,
+    await expect(acceptQuotationResponse({ scope, response,
       responseId: 'correction-response', messageId: 'correction-user', messageText: '改用附件的訂單', messageFiles: files,
       expectedOrderHash: state?.currentOrder?.sha256,
-      expectedCustomerPreparationId: state?.currentCustomer?.preparationId, finishReason: 'stop' });
-    expect(accepted?.runId).toBe(first.runId);
+      expectedCustomerPreparationId: state?.currentCustomer?.preparationId, finishReason: 'stop' }))
+      .rejects.toMatchObject({ code: 'quotation_busy' });
     const after = await service.readState(scope);
     expect(after?.currentOrder?.sha256).toBe(state?.currentOrder?.sha256);
     expect(after?.nextSignalIndex).toBe(first.index);
-    expect(after?.pendingMessages).toEqual([expect.objectContaining({ sourceMessageId: 'correction-user',
-      sourceMessageText: '改用附件的訂單', sourceMessageFiles: files, targetMessageId: 'correction-response' })]);
+    expect(after?.pendingMessages).toHaveLength(0);
   });
 
   it('persists explicit default-B Markdown before OCR and retains it for later quotation', async () => {
@@ -1377,11 +1441,18 @@ describe('quotation runner integration', () => {
     ]) {
       await expect(acceptQuotationResponse({ scope, response: invalid, responseId: 'response-1', finishReason: 'stop' })).rejects.toThrow();
     }
-    for (const heading of ['## ocr_result', '  ## ocr_result', '## ocr_result ##', '## ocr_result_updates', '  ## ocr_result_updates', '## ocr_result_updates ##']) {
+    for (const heading of ['## ocr_result', '  ## ocr_result', '## ocr_result ##']) {
       await expect(acceptQuotationResponse({ scope,
         response: `${orderMarkdown(1).replace('## ocr_result', heading)}\n\n${response}`,
         responseId: 'response-1', expectedOrderHash: prepared?.currentOrder?.sha256,
         expectedCustomerPreparationId: prepared?.currentCustomer?.preparationId, finishReason: 'stop' })).resolves.toBeUndefined();
+    }
+    for (const heading of ['## ocr_result_updates', '  ## ocr_result_updates', '## ocr_result_updates ##']) {
+      await expect(acceptQuotationResponse({ scope,
+        response: `${orderMarkdown(1).replace('## ocr_result', heading)}\n\n${response}`,
+        responseId: 'response-1', expectedOrderHash: prepared?.currentOrder?.sha256,
+        expectedCustomerPreparationId: prepared?.currentCustomer?.preparationId, finishReason: 'stop' }))
+        .rejects.toMatchObject({ code: 'retired_control_section' });
     }
     await expect(acceptQuotationResponse({ scope, response, responseId: 'other-response',
       expectedOrderHash: prepared?.currentOrder?.sha256,
@@ -1570,7 +1641,7 @@ describe('quotation runner integration', () => {
   });
 
   it('retries publication from the saved final artifact without rerunning model work', async () => {
-    await prepareRun(1);
+    const run = await prepareRun(1);
     const invokeModel = createModel();
     const executeLookup = createLookupExecutor();
     let firstPublication = true;
@@ -1597,10 +1668,31 @@ describe('quotation runner integration', () => {
     expect(onHistory.mock.calls[0]?.[0].activityEvents).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'quotation_status', status: 'completed', completedChunks: 1, totalChunks: 1 })]));
     expect(onHistory.mock.invocationCallOrder[0]).toBeLessThan(publishFinal.mock.invocationCallOrder[1]!);
     expect((await service.readState(scope))?.activeRun?.checkpointRefs.some((ref) => ref.operationId === 'published')).toBe(true);
+    const calculationRef = (await service.readState(scope))?.activeRun?.checkpointRefs.find(
+      (ref) => ref.operationId === 'calculation:basis',
+    );
+    expect(calculationRef?.kind).toBe('main');
+    const calculationPayload = calculationRef
+      ? await service.readArtifact({ scope, ref: { ...scope, ...calculationRef, runId: run.runId } })
+      : undefined;
+    expect(JSON.parse(calculationPayload ?? '{}')).toEqual(expect.objectContaining({
+      version: 1,
+      systemOrderHash: expect.any(String),
+      rows: expect.arrayContaining([
+        expect.objectContaining({ rowIndex: 0, candidate: expect.objectContaining({ ruleVersion: 'steel-weight-v1' }) }),
+      ]),
+    }));
+    const publishedState = await service.readState(scope);
+    expect(publishedState?.currentSystemOrder).toEqual(expect.objectContaining({
+      runId: run.runId,
+      messageId: 'target-1',
+      customerQuoteMarkdown: expect.stringContaining('## customer_quote'),
+      calculationCheckpoint: expect.objectContaining({ version: 1, rows: expect.any(Array) }),
+    }));
   });
 
   it('projects an already published final without rerunning models or publishing again', async () => {
-    await prepareRun(1);
+    const run = await prepareRun(1);
     const model = createModel();
     const lookup = createLookupExecutor();
     await runQuotationPreflight(runnerInput(model, lookup));
@@ -1612,6 +1704,54 @@ describe('quotation runner integration', () => {
     expect(model.mock.calls.length).toBe(callsAfterCompletion);
     expect(publishFinal).not.toHaveBeenCalled();
     expect(projectFinal).toHaveBeenCalledTimes(1);
+    const current = await service.readCurrentSystemOrder(scope);
+    expect(current).toBeDefined();
+    const editedMarkdown = current!.markdown.replace('10', '77');
+    const stateBeforeEdit = await service.readState(scope);
+    const expectedCustomer = stateBeforeEdit?.currentCustomer
+      ? {
+          customerIdentity: stateBeforeEdit.currentCustomer.customerIdentity,
+          customerMarkdown: stateBeforeEdit.currentCustomer.customerMarkdown,
+        }
+      : undefined;
+    const edited = await service.saveCurrentSystemOrder({
+      scope,
+      snapshot: {
+        ...current!,
+        markdown: editedMarkdown,
+        sha256: createHash('sha256').update(editedMarkdown).digest('hex'),
+        customerQuoteMarkdown: current!.customerQuoteMarkdown,
+        updatedAt: new Date(),
+      },
+      expectedRunId: run.runId,
+      expectedCurrentOrderSha256: stateBeforeEdit!.currentOrder!.sha256,
+      expectedCustomer,
+      expectedCurrentSystemOrderSha256: current!.sha256,
+      expectedCurrentSystemOrderPresent: true,
+    });
+    expect(edited?.markdown).toBe(editedMarkdown);
+    await runQuotationPreflight({ ...runnerInput(model, lookup, { publishFinal, projectFinal }) });
+    expect(projectFinal).toHaveBeenCalledTimes(2);
+    const final = (await service.readState(scope))!.activeRun!.checkpointRefs.find(
+      (entry) => entry.operationId === 'final',
+    );
+    expect(final).toBeDefined();
+    const finalRef = { ...scope, ...final!, runId: run.runId };
+    const finalMarkdown = await service.readArtifact({ scope, ref: finalRef });
+    const publishedReplay = await publishCompletedQuotation({
+      scope,
+      run,
+      markdown: finalMarkdown!,
+      service,
+      publishFinal,
+      projectFinal,
+    });
+    expect(publishedReplay.markdown).toContain(editedMarkdown);
+    expect(publishedReplay.markdown).not.toContain('## customer_quote');
+    expect(publishedReplay.systemOrderHash).toBe(
+      createHash('sha256').update(editedMarkdown, 'utf8').digest('hex'),
+    );
+    expect(projectFinal).toHaveBeenCalledTimes(3);
   });
 
   it('retries a failed projector and deduplicates only after successful projection', async () => {

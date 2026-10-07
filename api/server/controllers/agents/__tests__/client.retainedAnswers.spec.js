@@ -26,6 +26,12 @@ jest.mock('@librechat/api', () => ({
       ...input,
       countTokens: (text) => mockCountFormattedMessageTokens({ role: 'user', content: text }),
     }),
+  prepareQuotationTurn: jest.fn().mockResolvedValue({}),
+  buildDefaultSteelGlobalAgentContext: jest.fn().mockResolvedValue({
+    metadata: {},
+    instructionPrefix: '',
+    runtimeContextText: '',
+  }),
   createRun: (...args) => mockCreateRun(...args),
   countFormattedMessageTokens: (...args) => mockCountFormattedMessageTokens(...args),
   countTokens: jest.fn((text) => Math.ceil(String(text ?? '').length / 4)),
@@ -39,6 +45,20 @@ jest.mock('@librechat/api', () => ({
 }));
 
 jest.mock('~/server/services/Config', () => ({ getMCPServerTools: jest.fn() }));
+jest.mock('~/server/services/ToolService', () => {
+  const actual = jest.requireActual('~/server/services/ToolService');
+  return {
+    ...actual,
+    resolveDelegateOcrPolicyForRequest: jest.fn().mockResolvedValue({
+      resolved: true,
+      allowed: false,
+      allowedFileKeys: [],
+      reason: 'retained_answers_test',
+    }),
+    runSteelPaddleOcrPreflight: jest.fn().mockResolvedValue({ ocrTurnActive: false }),
+    prepareDelegateOcrResume: jest.fn().mockResolvedValue(undefined),
+  };
+});
 jest.mock('~/server/services/MCP', () => ({
   resolveConfigServers: jest.fn().mockResolvedValue({}),
 }));

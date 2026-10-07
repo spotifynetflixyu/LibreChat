@@ -36,11 +36,16 @@ jest.mock('~/hooks', () => ({
 }));
 
 jest.mock('~/store', () => {
-  const { atom } = jest.requireActual<typeof import('recoil')>('recoil');
+  const { atom, atomFamily } = jest.requireActual<typeof import('recoil')>('recoil');
   return {
     __esModule: true,
     default: {
       maximizeChatSpace: atom({ key: 'message-parts-maximize-chat-space', default: false }),
+      autoExpandTools: atom({ key: 'message-parts-auto-expand-tools', default: false }),
+      submissionStartFamily: atomFamily({
+        key: 'message-parts-submission-start',
+        default: null,
+      }),
     },
   };
 });
@@ -51,6 +56,7 @@ jest.mock('~/components/Chat/Messages/Content/Parts/AuthorHeader', () => ({
 }));
 jest.mock('~/components/Chat/Messages/ui/HeaderLabel', () => ({
   getHeaderModelName: () => undefined,
+  getHeaderHoverLabel: () => undefined,
 }));
 jest.mock('../styles', () => ({
   revealOnRowHoverClasses: '',

@@ -38,7 +38,7 @@ function isSeparatorRow(cells: readonly string[]): boolean {
 }
 
 function parseMarkdownTable(block: string[]): SteelMarkdownTable | undefined {
-  if (block.length < 3) {
+  if (block.length < 2) {
     return undefined;
   }
 
@@ -60,7 +60,7 @@ export function parseMarkdownTables(content: string): SteelMarkdownTable[] {
     .filter((table): table is SteelMarkdownTable => table !== undefined);
 }
 
-export function countMarkdownTables(contentOrTables: string | readonly SteelMarkdownTable[]) {
+export function countMarkdownTables(contentOrTables: string | readonly SteelMarkdownTable[]): number {
   return typeof contentOrTables === 'string'
     ? parseMarkdownTables(contentOrTables).length
     : contentOrTables.length;

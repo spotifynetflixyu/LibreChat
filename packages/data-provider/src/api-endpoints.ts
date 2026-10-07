@@ -1,5 +1,6 @@
 import type { StartupConfigContext } from './config';
 import type { AssistantsEndpoint } from './schemas';
+import type { SteelCatalogQuery } from './steel';
 import { ResourceType } from './accessPermissions';
 import * as q from './types/queries';
 
@@ -334,6 +335,71 @@ export const steelQuotationStatus = (conversationId: string) =>
   `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/quotation`;
 export const steelQuotationCancel = (conversationId: string, index: number) =>
   `${steelQuotationStatus(conversationId)}/${encodeURIComponent(String(index))}/cancel`;
+export const steelMarkdownVersions = (conversationId: string) =>
+  `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/versions`;
+export const steelReview = (
+  conversationId: string,
+  kind: string,
+  messageId: string,
+  title: string,
+) => {
+  const query = new URLSearchParams({
+    messageId,
+    title,
+  }).toString();
+  return `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}?${query}`;
+};
+
+export const steelReviewCatalog = (conversationId: string, input: SteelCatalogQuery) =>
+  `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/system_order/catalog${buildQuery(input)}`;
+export const steelReviewPrepare = (conversationId: string, kind: string) =>
+  `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}/prepare`;
+export const steelReviewCommit = (conversationId: string, kind: string) =>
+  `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}/commit`;
+export const steelReviewReceipt = (
+  conversationId: string,
+  kind: string,
+  messageId: string,
+  outputId: string,
+  operationId: string,
+  digest: string,
+  title: string,
+) => {
+  const query = new URLSearchParams({
+    messageId, outputId, operationId, digest, title,
+  }).toString();
+  return `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}/receipt?${query}`;
+};
+export const steelReviewSources = (
+  conversationId: string,
+  kind: string,
+  messageId: string,
+  title: string,
+) => {
+  const query = new URLSearchParams({
+    messageId,
+    title,
+  }).toString();
+  return `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}/sources?${query}`;
+};
+export const steelReviewSource = (
+  conversationId: string,
+  kind: string,
+  fileId: string,
+  messageId: string,
+) => {
+  const query = new URLSearchParams({ messageId }).toString();
+  return `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}/sources/${encodeURIComponent(fileId)}?${query}`;
+};
+export const steelReviewSourcePageCount = (
+  conversationId: string,
+  kind: string,
+  fileId: string,
+  messageId: string,
+) => {
+  const query = new URLSearchParams({ messageId }).toString();
+  return `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}/sources/${encodeURIComponent(fileId)}/page-count?${query}`;
+};
 
 export const adminSteelBase = () => `${BASE_URL}/api/admin/steel`;
 export const adminSteelCapabilitySmoke = () => `${adminSteelBase()}/ai/capability-smoke`;

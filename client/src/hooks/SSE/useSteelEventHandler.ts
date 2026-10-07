@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
 import { useRecoilCallback } from 'recoil';
-import type { EventSubmission } from 'librechat-data-provider';
+import { steelQuotationOcrSourceSchema } from 'librechat-data-provider';
+import type { EventSubmission, SteelQuotationOcrSource } from 'librechat-data-provider';
 import type {
   SteelNativeActivityEnvelope,
   SteelNativeActivityEvent,
@@ -99,7 +100,7 @@ function sanitizeSteelActivityError(value: unknown): string | undefined {
     )
     .replace(/\bBearer\s+[^\s"'`]+/giu, 'Bearer [REDACTED]')
     .replace(/\bsk-[a-z0-9_-]+/giu, 'sk-[REDACTED]')
-    .replace(/[\u0000-\u001f\u007f-\u009f\u2028\u2029]/gu, ' ')
+    .replace(/[\p{Cc}\u2028\u2029]/gu, ' ')
     .replace(/\s+/gu, ' ')
     .trim();
 
@@ -117,6 +118,11 @@ function normalizedCountMetadata(data: Partial<SteelNativeActivityEvent>) {
     ...(isSavedCounts(data.totalSavedCounts) ? { totalSavedCounts: data.totalSavedCounts } : {}),
     ...(isSavedCounts(data.totalTableCounts) ? { totalTableCounts: data.totalTableCounts } : {}),
   };
+}
+
+function normalizedQuotationOcrSource(value: unknown): SteelQuotationOcrSource | undefined {
+  const parsed = steelQuotationOcrSourceSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
 }
 
 export function normalizeSteelActivityEvent(
@@ -138,6 +144,8 @@ export function normalizeSteelActivityEvent(
   }
 
   if (data.type === 'quotation_status') {
+    const ocrSource =
+      data.ocrSource === undefined ? undefined : normalizedQuotationOcrSource(data.ocrSource);
     if (
       data.source !== 'quotation_preflight' ||
       typeof data.conversationId !== 'string' ||
@@ -173,6 +181,7 @@ export function normalizeSteelActivityEvent(
       (data.repairAttempt !== undefined &&
         data.maxRepairAttempts !== undefined &&
         (data.repairAttempt as number) > (data.maxRepairAttempts as number)) ||
+      (data.ocrSource !== undefined && ocrSource === undefined) ||
       (quotationRepairStages.has(data.stage) && data.chunkIndex === undefined)
     ) {
       return null;
@@ -197,6 +206,7 @@ export function normalizeSteelActivityEvent(
       ...(typeof data.maxRepairAttempts === 'number'
         ? { maxRepairAttempts: data.maxRepairAttempts }
         : {}),
+      ...(ocrSource ? { ocrSource } : {}),
       ...(isSavedCounts(data.savedCounts) ? { savedCounts: data.savedCounts } : {}),
       ...normalizedCountMetadata(data),
       ...(typeof data.toolName === 'string' ? { toolName: data.toolName } : {}),
@@ -413,6 +423,7 @@ function stableEventKey(event: SteelNativeActivityEvent): string {
       attempt: event.attempt,
       repairAttempt: event.repairAttempt,
       maxRepairAttempts: event.maxRepairAttempts,
+      ocrSource: event.ocrSource,
       savedCounts: event.savedCounts,
       savedTableCounts: event.savedTableCounts,
       totalSavedCounts: event.totalSavedCounts,

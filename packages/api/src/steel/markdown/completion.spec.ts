@@ -1,446 +1,157 @@
 import mongoose from 'mongoose';
-import { createHash } from 'node:crypto';
-import { MongoMemoryServer } from 'mongodb-memory-server';
-import type { Response as ServerResponse } from 'express';
-import type { SteelMarkdownCompletionDependencies } from './completion';
-import type { SteelResponseRequest } from '../quotation/completion';
-import type { ResponseEvent } from '../../agents/responses/types';
-import { createSteelMarkdownCompletionServices, registerSteelMarkdownPublication, shouldDeferSteelMarkdownPersistence } from './completion';
-import { renderQuotationCustomerMarkdown, prepareQuotationTurn, bindQuotationCustomerResult } from '../quotation/preparation';
-import { buildResponse, createResponseTracker, emitOutputTextDone } from '../../agents/responses/handlers';
-import { finalizeSteelResponsesTurn, replaceSteelResponsesMarkdown } from '../quotation/transport';
-import { extractSteelNativeResponseOutputText } from '../native/markdown';
-import { createSystemOrderRevisionService } from '../quotation/revision';
-import { SteelResponseCompletionError } from '../quotation/completion';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
+import { createMethods, createModels, createSteelReviewWriteMethods } from '@librechat/data-schemas';
+import type { SteelMarkdownCompletionInput } from './completion';
+import { prepareQuotationTurn, renderQuotationCustomerMarkdown } from '../quotation/preparation';
 import { createSteelQuotationStateService } from '../quotation/state';
+import { createSteelMarkdownCompletionServices } from './completion';
 import { createSteelOcrResponseAuditService } from '../ocr/audit';
+import { createSteelFullMarkdownPublisher } from './full';
 import { createSteelOcrStateService } from '../ocr/state';
+import { createSteelReviewService } from '../review';
 
-jest.mock('../native/context', () => ({
-  buildDefaultSteelGlobalAgentContext: jest.fn(async () => ({ instructionPrefix: 'test quotation rules' })),
-}));
-
-const scope = { userId: 'completion-user', conversationId: 'completion-conversation' };
-const order = '## ocr_result\n\n| 來源 | 零件編號 | 類別 | 數量 |\n| --- | --- | --- | --- |\n| 文字訂單 | P1 | 鋼板 | 2 |';
-let mongo: MongoMemoryServer;
-let dependencies: SteelMarkdownCompletionDependencies;
-
+const scope = { userId: '507f1f77bcf86cd799439011', conversationId: '6bf991da-be8c-5300-bd85-ff6ee2d17bb5' };
+const order = (quantity: string) => `## ocr_result\n\n| 來源 | 零件編號 | 類別 | 數量 |\n| --- | --- | --- | --- |\n| 文字訂單 | P1 | 鋼板 | ${quantity} |`;
+let server: MongoMemoryReplSet;
+let db: ReturnType<typeof createMethods>;
+const services = () => ({ ocr: createSteelOcrStateService(mongoose), quotation: createSteelQuotationStateService(mongoose) });
 beforeAll(async () => {
-  mongo = await MongoMemoryServer.create();
-  await mongoose.connect(mongo.getUri());
+  server = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } });
+  await mongoose.connect(server.getUri());
+  const models = createModels(mongoose);
+  await Promise.all(Object.values(models).map((model) => model.init()));
+  db = createMethods(mongoose);
+}, 60000);
+beforeEach(async () => {
+  await Promise.all(Object.values(mongoose.connection.collections).map((collection) => collection.deleteMany({})));
+  await mongoose.models.Conversation.create({ ...scope, user: scope.userId, endpoint: 'agents' });
 });
-beforeEach(() => {
-  dependencies = { ocr: createSteelOcrStateService(mongoose), quotation: createSteelQuotationStateService(mongoose),
-    audit: createSteelOcrResponseAuditService(mongoose) };
-});
-afterEach(async () => { await mongoose.connection.dropDatabase(); });
-afterAll(async () => { await mongoose.disconnect(); await mongo.stop(); });
+afterAll(async () => { await mongoose.disconnect(); await server.stop(); });
 
-async function turn(markdown: string, text = '確認訂單', language = 'zh-TW') {
-  const quotation = await prepareQuotationTurn({ scope, messageId: 'user-message', responseId: 'response', text });
-  const req: SteelResponseRequest = { user: { id: scope.userId }, cookies: { lang: language },
-    steelNativeContext: { requestId: 'response', quotation } };
-  let current = markdown;
-  const writes: string[] = [];
-  const input = { req, responseId: 'response', generationId: 'generation', markdown, completed: true,
-    applyMarkdown: (value: string) => { current = value; },
-    persistMarkdown: async (options?: { completed: boolean }) => {
-      writes.push(current);
-      await mongoose.connection.collection('completion_messages').updateOne({ messageId: 'response' },
-        { $set: { markdown: current, unfinished: options?.completed === false } }, { upsert: true });
-      return { messageId: 'response' };
-    } };
-  return { input, writes, req, quotation, run: () => createSteelMarkdownCompletionServices(dependencies).finalize(input) };
+async function turn(markdown: string, responseId = 'assistant-2', generationId = 'ai-2', text = '數量2') {
+  const quotation = await prepareQuotationTurn({ scope, messageId: `user-${generationId}`, responseId, generationId, publicationStore: db, text });
+  let physical = markdown;
+  const persist = jest.fn(async () => db.saveMessage({ userId: scope.userId }, { ...scope, messageId: responseId, user: scope.userId, text: physical, isCreatedByUser: false }, { context: 'ordinary completion test' }));
+  const input: SteelMarkdownCompletionInput = { req: { user: { id: scope.userId }, cookies: { lang: 'zh-TW' }, steelNativeContext: { requestId: responseId, quotation } },
+    responseId, generationId, markdown, completed: true,
+    applyMarkdown: (value) => { physical = value; }, persistMarkdown: persist,
+    publishMarkdown: createSteelFullMarkdownPublisher({ buildMessage: ({ markdown: clean }) => ({ ...scope, messageId: responseId, user: scope.userId, text: clean, isCreatedByUser: false }), savePublication: db.publishSteelMarkdown }) };
+  return { input, persist, run: () => createSteelMarkdownCompletionServices(services()).finalize(input) };
 }
 
-async function seedCustomer(tier: 'A' | 'B' = 'B') {
-  const state = await dependencies.quotation.readState(scope);
-  await dependencies.quotation.saveCustomer({ scope, customerMarkdown: renderQuotationCustomerMarkdown({ tier }),
-    customerIdentity: `explicit-default:${tier}`, triggeringMessageId: 'prior-user', responseId: 'prior-response',
-    orderHash: state?.currentOrder?.sha256,
-    selectionProvenance: { method: 'default_tier', selectionMessageId: 'prior-user' } });
-}
-
-it.each([false, true])('saves attachment OCR before footer with existing customer=%s', async (customer) => {
-  await dependencies.ocr.allocateDelegateSourceMapping({ conversationId: scope.conversationId, fileId: 'file', sourceFilename: 'order.pdf' });
-  if (customer) await seedCustomer();
-  const expectedOrder = order.replace('文字訂單', 'F1');
-  const markdown = `## source_file_mapping\n\n| 來源 | 檔名 |\n| --- | --- |\n| F1 | order.pdf |\n\n${expectedOrder}`;
-  const fixture = await turn(markdown);
-  fixture.req.steelNativeContext!.ocrTurnActive = true;
-  fixture.req.steelNativeContext!.contextMetadata = { mode: 'ocr' };
-  expect(fixture.quotation.state.currentOrder).toBeUndefined();
-  const originalPersist = fixture.input.persistMarkdown;
-  const observed: (string | undefined)[] = [];
-  fixture.input.persistMarkdown = async () => {
-    observed.push((await dependencies.ocr.readCurrentOcrResult(scope.conversationId))?.markdown);
-    return originalPersist();
-  };
-  const result = await fixture.run();
-  expect(result.markdown).toContain(customer ? '請確認資料後回覆「報價」' : '請提供客戶名稱以確認客戶等級');
-  expect(result.markdown.match(/\*\*下一步：\*\*/gu)).toHaveLength(1);
-  expect(observed).toEqual([undefined, expectedOrder]);
-  expect((await dependencies.quotation.readState(scope))?.currentOrder?.markdown).toBe(expectedOrder);
-  expect((await mongoose.connection.collection('completion_messages').findOne({ messageId: 'response' }))?.markdown).toBe(result.markdown);
-});
-
-it.each(['A', 'B', 'C', 'D', 'E', 'F'] as const)('commits tier %s before deciding next steps', async (tier) => {
-  await dependencies.ocr.upsertCurrentOcrResult({ conversationId: scope.conversationId, generationId: 'earlier', attemptNumber: 1, markdown: order });
-  const fixture = await turn(renderQuotationCustomerMarkdown({ tier }), tier.toLowerCase());
-  expect(fixture.quotation.state.currentCustomer).toBeUndefined();
-  const result = await fixture.run();
-  expect((await dependencies.quotation.readState(scope))?.currentCustomer?.customerMarkdown).toBe(renderQuotationCustomerMarkdown({ tier }));
-  expect(result.markdown).toContain('請確認資料後回覆「報價」');
-});
-
-it('commits the presented trusted lookup before footer', async () => {
-  await dependencies.ocr.upsertCurrentOcrResult({ conversationId: scope.conversationId, generationId: 'earlier', attemptNumber: 1, markdown: order });
-  const fixture = await turn('', '客戶一');
-  const result = await bindQuotationCustomerResult({ scope, messageId: 'user-message', responseId: 'response',
-    expectedOrderHash: fixture.quotation.state.currentOrder!.sha256,
-    result: { ok: true, toolName: 'search_customers', durationMs: 1, redactionVersion: 1,
-      data: { customers: [{ id: 1, erpCustomerCode: 'C1', displayName: '客戶一', customerTier: 'A' }] } } });
-  if (!result.ok || typeof result.data.customerDataMarkdown !== 'string') throw new Error('lookup fixture failed');
-  expect((await dependencies.quotation.readState(scope))?.currentCustomer).toBeUndefined();
-  fixture.input.markdown = result.data.customerDataMarkdown;
-  const finalized = await fixture.run();
-  expect(finalized.markdown).toContain('請確認資料後回覆「報價」');
-  expect((await dependencies.quotation.readState(scope))?.currentCustomer?.customerIdentity).toBe('1');
-});
-
-it('merges changed OCR rows and saves the complete order before the footer', async () => {
-  const base = `${order}\n| 文字訂單 | P2 | 角鐵 | 4 |`;
-  await dependencies.ocr.upsertCurrentOcrResult({ conversationId: scope.conversationId, generationId: 'earlier', attemptNumber: 1, markdown: base, messageId: 'base-message' });
-  await seedCustomer();
-  const fixture = await turn(order.replace('ocr_result', 'ocr_result_updates').replace('鋼板 | 2', '鋼板 | 3'), 'P1 數量改成3');
-  const result = await fixture.run();
-  const saved = await dependencies.ocr.readCurrentOcrResult(scope.conversationId);
-  expect(saved?.markdown).toContain('| P1 | 鋼板 | 3 |');
-  expect(saved?.markdown).toContain('| P2 | 角鐵 | 4 |');
-  expect(result.markdown).toContain('## ocr_result\n');
-  expect(result.markdown).toContain('請確認資料後回覆「報價」');
-});
-
-it.each(['en', 'zh-TW'])('uses the current response language %s', async (language) => {
-  const fixture = await turn(order, '確認', language);
-  const result = await fixture.run();
-  expect(result.markdown).toContain(language === 'en' ? '**Next steps:**' : '**下一步：**');
-});
-
-it.each(['plain text', '## notes\n\n### **ocr_result_chunk**\n\n| x |\n| --- |\n| y |',
-  '## ocr_result_chunk\n\n| 來源 | 零件編號 |\n| --- | --- |\n| F1 | P1 |'])('does not treat child or ordinary text as a full order: %s', async (markdown) => {
-  const fixture = await turn(markdown);
-  const result = await fixture.run();
-  // A named notes data section still uses the missing-order branch, never the chunk table as an order.
-  if (markdown.startsWith('## notes')) expect(result.markdown).toContain('請先提供材料訂單');
-  else expect(result.markdown).toBe(markdown);
-  expect(await dependencies.ocr.readCurrentOcrResult(scope.conversationId)).toBeUndefined();
-});
-
-it('does not persist an unfinished OCR as canonical or add a footer', async () => {
-  const fixture = await turn(order);
-  fixture.input.completed = false;
-  expect((await fixture.run()).markdown).toBe(order);
-  expect(await dependencies.ocr.readCurrentOcrResult(scope.conversationId)).toBeUndefined();
-});
-
-it('does not duplicate canonical writes or footer on a request retry', async () => {
-  const fixture = await turn(order);
-  const write = jest.spyOn(dependencies.ocr, 'upsertCurrentOcrResult');
-  const first = await fixture.run();
-  const second = await fixture.run();
-  expect(second.markdown).toBe(first.markdown);
-  expect(write).toHaveBeenCalledTimes(1);
-  expect(second.markdown.match(/\*\*下一步：\*\*/gu)).toHaveLength(1);
-});
-
-it('retries a failed decorated save without merging or saving the order again', async () => {
-  const fixture = await turn(order);
-  const write = jest.spyOn(dependencies.ocr, 'upsertCurrentOcrResult');
-  const original = fixture.input.persistMarkdown;
-  let fail = true;
-  fixture.input.persistMarkdown = async () => {
-    if (fail && fixture.writes.length === 1) { fail = false; throw new Error('private failure'); }
-    return original();
-  };
-  await expect(fixture.run()).rejects.toMatchObject({ code: 'response_save_failed' });
-  const result = await fixture.run();
-  expect(result.markdown).toContain('**下一步：**');
-  expect(write).toHaveBeenCalledTimes(1);
-});
-
-it('keeps the base message unfinished until canonical OCR state is saved', async () => {
-  const fixture = await turn(order);
-  jest.spyOn(dependencies.quotation, 'setOrder').mockRejectedValueOnce(new Error('private failure'));
-  await expect(fixture.run()).rejects.toBeInstanceOf(SteelResponseCompletionError);
-  const message = await mongoose.connection.collection('completion_messages').findOne({ messageId: 'response' });
-  expect(message?.unfinished).toBe(true);
-  expect(message?.markdown).not.toContain('**下一步：**');
-});
-
-it.each(['chat', 'responses'])('adopts a branded pending publication in multi-part %s output without repeating canonical writes', async (transport) => {
-  const pending = await turn(order);
-  const write = jest.spyOn(dependencies.ocr, 'upsertCurrentOcrResult');
-  const result = await createSteelMarkdownCompletionServices(dependencies).finalize({ ...pending.input, stage: 'pending' });
-  if (!result.publication) throw new Error('publication missing');
-  const prefix = `${order.replace('ocr_result', 'ocr_result_updates')}\n\n`;
-  const composite = prefix + result.markdown;
-  const parent = await turn(composite);
-  parent.req.steelNativeContext!.ocrTurnActive = true;
-  parent.req._resumableJobCreatedAt = 123;
-  parent.input.generationId = '123';
-  registerSteelMarkdownPublication(parent.req, result.publication, 'response');
-  if (transport === 'responses') {
-    const tracker = createResponseTracker();
-    tracker.items.push({ type: 'message', role: 'assistant', id: 'intro', status: 'completed',
-      content: [{ type: 'output_text', text: prefix, annotations: [], logprobs: [] }] });
-    tracker.currentMessage = { type: 'message', role: 'assistant', id: 'last', status: 'in_progress',
-      content: [{ type: 'output_text', text: result.markdown, annotations: [], logprobs: [] }] };
-    tracker.items.push(tracker.currentMessage);
-    const response = buildResponse({ responseId: 'response', model: 'agent', createdAt: 0 }, tracker, 'completed');
-    await finalizeSteelResponsesTurn({ req: parent.req, response, responseId: 'response', store: false,
-      saveConversation: async () => {}, saveInput: async () => {}, saveOutput: async () => { await parent.run(); } });
-    expect(extractSteelNativeResponseOutputText(response)).toBe(composite);
-  } else expect((await parent.run()).markdown).toBe(composite);
-  expect((await mongoose.connection.collection('completion_messages').findOne({ messageId: 'response' }))?.markdown).toBe(composite);
-  expect(write).toHaveBeenCalledTimes(1);
-  expect(Object.isFrozen(result.publication)).toBe(true);
-  expect(shouldDeferSteelMarkdownPersistence(parent.req, result.markdown)).toBe(true);
-});
-
-it('rejects copied publication objects and superseded pending data', async () => {
-  const pending = await turn(order);
-  const result = await createSteelMarkdownCompletionServices(dependencies).finalize({ ...pending.input, stage: 'pending' });
-  if (!result.publication) throw new Error('publication missing');
-  const parent = await turn(result.markdown);
-  parent.input.generationId = 'response';
-  expect(() => registerSteelMarkdownPublication(parent.req, { ...result.publication! }, 'response'))
-    .toThrow(SteelResponseCompletionError);
-  registerSteelMarkdownPublication(parent.req, result.publication, 'response');
-  await dependencies.ocr.upsertCurrentOcrResult({ conversationId: scope.conversationId, generationId: 'newer',
-    expectedGenerationId: 'generation', attemptNumber: 1, markdown: order.replace('鋼板 | 2', '鋼板 | 8') });
-  await expect(parent.run()).rejects.toMatchObject({ code: 'superseded_response' });
-  expect(parent.writes).toHaveLength(0);
-});
-
-it.each(['message', 'ocr', 'quotation'] as const)('does not publish a success footer after %s persistence failure', async (stage) => {
-  const fixture = await turn(order);
-  if (stage === 'message') fixture.input.persistMarkdown = async () => { throw new Error('private connection string'); };
-  if (stage === 'ocr') jest.spyOn(dependencies.ocr, 'upsertCurrentOcrResult').mockResolvedValueOnce(null);
-  if (stage === 'quotation') jest.spyOn(dependencies.quotation, 'setOrder').mockRejectedValueOnce(new Error('private query'));
-  await expect(fixture.run()).rejects.toBeInstanceOf(SteelResponseCompletionError);
-  expect(fixture.writes.some((markdown) => markdown.includes('**下一步：**'))).toBe(false);
-});
-
-it('rejects a superseded OCR generation before publishing a footer', async () => {
-  const fixture = await turn(order);
-  const original = dependencies.quotation.setOrder;
-  jest.spyOn(dependencies.quotation, 'setOrder').mockImplementationOnce(async (input) => {
-    const state = await original(input);
-    await dependencies.ocr.upsertCurrentOcrResult({ conversationId: scope.conversationId, generationId: 'newer',
-      expectedGenerationId: 'generation', attemptNumber: 1, markdown: order.replace('鋼板 | 2', '鋼板 | 9') });
-    return state;
+it('rejects a new owner collision without reading its OCR into publication audit or mirrors', async () => {
+  const fixture = await turn(order('2'));
+  const dependencies = services();
+  await dependencies.ocr.upsertCurrentOcrResult({
+    conversationId: scope.conversationId, generationId: 'foreign-ai', attemptNumber: 1, markdown: order('999'),
   });
-  await expect(fixture.run()).rejects.toMatchObject({ code: 'superseded_order' });
-  expect(fixture.writes.some((markdown) => markdown.includes('**下一步：**'))).toBe(false);
+  await mongoose.models.Conversation.create({
+    conversationId: scope.conversationId, user: '507f1f77bcf86cd799439012', endpoint: 'agents',
+  });
+  const audit = createSteelOcrResponseAuditService(mongoose);
+  const auditSave = jest.spyOn(audit, 'save');
+  await expect(createSteelMarkdownCompletionServices({ ...dependencies, audit }).finalize(fixture.input))
+    .rejects.toMatchObject({ code: 'superseded_response' });
+  expect(auditSave).toHaveBeenCalledWith(expect.objectContaining({ baseResponse: '', baseRevision: undefined }));
+  expect(fixture.persist).not.toHaveBeenCalled();
+  expect(await db.getMessage({ user: scope.userId, messageId: 'assistant-2' })).toBeNull();
+  expect((await dependencies.quotation.readState(scope))?.currentOrder).toBeUndefined();
+  expect((await dependencies.ocr.readCurrentOcrResult(scope.conversationId))?.markdown).toBe(order('999'));
+  expect(await dependencies.ocr.readScopedCurrentOcrResult(scope)).toBeUndefined();
 });
 
-it('validates scope before making any writes', async () => {
-  const fixture = await turn(order);
-  fixture.req.user = { id: 'another-user' };
-  await expect(fixture.run()).rejects.toMatchObject({ code: 'invalid_response_scope' });
-  expect(fixture.writes).toEqual([]);
+it('publishes the full clean response and fresh review baseline atomically', async () => {
+  const fixture = await turn(order('2'));
+  const result = await fixture.run();
+  expect(fixture.persist).not.toHaveBeenCalled();
+  expect((await db.getMessage({ user: scope.userId, messageId: 'assistant-2' }))?.text).toBe(result.markdown);
+  expect((await services().ocr.readCurrentOcrResult(scope.conversationId))?.markdown).toBe(order('2'));
+  expect((await services().quotation.readState(scope))?.currentOrder?.markdown).toBe(order('2'));
+  expect(await db.readSteelMarkdownVersions(scope)).toEqual([expect.objectContaining({ latest: true, saves: 0, outputId: 'ocr_result:ai-2' })]);
 });
 
-it('commits same-turn order and tier before admitting its quotation signal', async () => {
-  const fixture = await turn(`${order}\n\n${renderQuotationCustomerMarkdown({ tier: 'B' })}\n\n## quote_signal\n\nstart`, '使用 B 級，報價');
-  const result = await createSteelMarkdownCompletionServices(dependencies).finalize({ ...fixture.input, stage: 'workflow' });
-  expect(result.acceptedRun?.status).toBe('queued');
-  expect(result.markdown).not.toContain('**下一步：**');
-  const state = await dependencies.quotation.readState(scope);
-  expect(state?.currentOrder?.markdown).toBe(order);
-  expect(state?.currentCustomer?.customerMarkdown).toBe(renderQuotationCustomerMarkdown({ tier: 'B' }));
-  expect(state?.activeRun?.runId).toBe(result.acceptedRun?.runId);
-  expect(fixture.writes).toHaveLength(1);
+it.each(['## ocr_result_updates\n\n| x |\n| --- |\n| y |', `${order('2')}\n\n## ocr_deletions\n\nP1`])('rejects retired controls before any managed writes', async (markdown) => {
+  const fixture = await turn(markdown);
+  await expect(fixture.run()).rejects.toMatchObject({ code: 'retired_control_section' });
+  expect(fixture.persist).not.toHaveBeenCalled();
+  expect(await db.getMessage({ user: scope.userId, messageId: 'assistant-2' })).toBeNull();
+  expect((await services().quotation.readState(scope))?.currentOrder).toBeUndefined();
 });
 
-it('retains the saved data gate for a signal with no order/customer', async () => {
-  const fixture = await turn('## quote_signal\n\nstart', 'Quote');
-  await expect(fixture.run()).rejects.toMatchObject({ code: 'quotation_data_required' });
-  expect((await dependencies.quotation.readState(scope))?.activeRun).toBeUndefined();
-  expect(fixture.writes.some((markdown) => markdown.includes('**下一步：**'))).toBe(false);
+it('allows fenced historical instructions while requiring a complete real target', async () => {
+  const markdown = `\x60\x60\x60markdown\n## ocr_result_updates\nold example\n\x60\x60\x60\n\n${order('2')}`;
+  const result = await (await turn(markdown)).run();
+  expect(result.markdown).toContain('old example');
+  expect((await services().ocr.readCurrentOcrResult(scope.conversationId))?.markdown).toContain(order('2'));
 });
 
-it('replays a fresh-request data-plus-signal retry after final-save failure without enqueueing itself', async () => {
-  const markdown = `${order}\n\n${renderQuotationCustomerMarkdown({ tier: 'B' })}\n\n## quote_signal\n\nstart`;
-  const fixture = await turn(markdown, '使用 B 級，報價');
-  const original = fixture.input.persistMarkdown;
-  fixture.input.persistMarkdown = async (options) => {
-    if (options?.completed) throw new Error('final message save failed');
-    return original(options);
-  };
-  await expect(fixture.run()).rejects.toMatchObject({ code: 'response_save_failed' });
-  const accepted = await dependencies.quotation.readState(scope);
-  expect(accepted?.activeRun?.status).toBe('queued');
-  const retry = await turn(markdown, '使用 B 級，報價');
-  const result = await retry.run();
-  expect(result.acceptedRun?.runId).toBe(accepted?.activeRun?.runId);
-  const saved = await dependencies.quotation.readState(scope);
-  expect(saved?.pendingMessages).toHaveLength(0);
-  expect(saved?.currentCustomer?.preparationId).toBe(accepted?.currentCustomer?.preparationId);
-});
-
-it('replays committed OCR updates with a signal and rejects changed inputs or OCR versions', async () => {
-  await dependencies.ocr.upsertCurrentOcrResult({ conversationId: scope.conversationId, generationId: 'earlier', attemptNumber: 1, markdown: order });
-  await dependencies.quotation.setOrder({ scope, fullMarkdown: order });
-  await seedCustomer();
-  const markdown = `${order.replace('ocr_result', 'ocr_result_updates').replace('鋼板 | 2', '鋼板 | 3')}\n\n## quote_signal\n\nstart`;
-  const fixture = await turn(markdown, '數量改成3，報價');
-  const original = fixture.input.persistMarkdown;
-  fixture.input.persistMarkdown = async (options) => {
-    if (options?.completed) throw new Error('final save failed');
-    return original(options);
-  };
-  await expect(fixture.run()).rejects.toMatchObject({ code: 'response_save_failed' });
-  const accepted = await dependencies.quotation.readState(scope);
-  expect(accepted?.activeRun?.status).toBe('queued');
-  const retry = await turn(markdown, '數量改成3，報價');
-  const result = await retry.run();
-  expect(result.acceptedRun?.runId).toBe(accepted?.activeRun?.runId);
-  expect(result.markdown).toContain('## ocr_result\n');
-  expect((await dependencies.quotation.readState(scope))?.pendingMessages).toHaveLength(0);
-  const changed = await turn(markdown.replace('鋼板 | 3', '鋼板 | 4'), '數量改成4，報價');
-  await expect(changed.run()).rejects.toMatchObject({ code: 'invalid_completion_receipt' });
-  expect(changed.writes).toHaveLength(0);
-  await dependencies.ocr.upsertCurrentOcrResult({ conversationId: scope.conversationId, generationId: 'newer',
-    expectedGenerationId: 'generation', attemptNumber: 1, markdown: order.replace('鋼板 | 2', '鋼板 | 8') });
-  const stale = await turn(markdown, '數量改成3，報價');
-  await expect(stale.run()).rejects.toMatchObject({ code: 'superseded_response' });
-  expect(stale.writes).toHaveLength(0);
-});
-
-async function completedOrder() {
-  await dependencies.quotation.setOrder({ scope, fullMarkdown: order });
-  await seedCustomer();
-  const ticket = await dependencies.quotation.issueTicket({ scope,
-    customerMarkdown: renderQuotationCustomerMarkdown({ tier: 'B' }), customerIdentity: 'explicit-default:B',
-    triggeringMessageId: 'quote-user', selectionProvenance: { method: 'default_tier', selectionMessageId: 'quote-user' } });
-  const run = await dependencies.quotation.acceptSignal({ scope, index: ticket.index, token: ticket.token,
-    orderHash: ticket.orderHash, customerMarkdown: ticket.customerMarkdown, customerIdentity: ticket.customerIdentity,
-    prompts: { child: 'child', main: 'main' }, chunks: [{ index: 1, sourceRowCount: 1 }], targetMessageId: 'quote-response' });
-  const lease = await dependencies.quotation.acquireLease({ scope, runId: run.runId, leaseToken: 'lease' });
-  if (!lease) throw new Error('lease missing');
-  const systemOrder = '## system_order\n\n| 品名規格 | 數量 | 總數 | 單價 |\n| --- | --- | --- | --- |\n| A | 2 | 2 | 10 |';
-  await dependencies.quotation.checkpoint({ scope, runId: run.runId, leaseToken: lease.leaseToken,
-    operationId: 'final', kind: 'final', payload: systemOrder });
-  const ref = (await dependencies.quotation.readState(scope))?.activeRun?.checkpointRefs.find((entry) => entry.operationId === 'final');
-  if (!ref) throw new Error('checkpoint missing');
-  await dependencies.quotation.completeRun({ scope, runId: run.runId, leaseToken: lease.leaseToken,
-    finalRef: { ...scope, runId: run.runId, ...ref, kind: 'final' } });
-  await dependencies.quotation.markPublished({ scope, runId: run.runId, targetMessageId: 'quote-response',
-    finalSha256: createHash('sha256').update(systemOrder).digest('hex') });
-  const revision = createSystemOrderRevisionService({ read: dependencies.quotation.readState,
-    readCurrentSystemOrder: dependencies.quotation.readCurrentSystemOrder, readCheckpoint: dependencies.quotation.readCheckpoint,
-    saveCurrentSystemOrder: dependencies.quotation.saveCurrentSystemOrder });
-  const snapshot = await revision.readCurrentSystemOrder(scope);
-  if (!snapshot) throw new Error('snapshot missing');
-  return { systemOrder, snapshot, revision };
-}
-
-it('replays system-order updates plus signal after a final-save failure', async () => {
-  const { snapshot } = await completedOrder();
-  const markdown = `## system_order_updates\n\n| base_hash | row_index | 品名規格 | 數量 | 總數 | 單價 |\n| --- | --- | --- | --- | --- | --- |\n| ${snapshot.sha256} | 1 | A | 2 | 3 | 10 |\n\n## quote_signal\n\nstart`;
-  const fixture = await turn(markdown, '總數改成3，報價');
-  const original = fixture.input.persistMarkdown;
-  fixture.input.persistMarkdown = async (options) => {
-    if (options?.completed) throw new Error('final save failed');
-    return original(options);
-  };
-  await expect(fixture.run()).rejects.toMatchObject({ code: 'response_save_failed' });
-  const accepted = await dependencies.quotation.readState(scope);
-  expect(accepted?.activeRun?.status).toBe('queued');
-  const retry = await turn(markdown, '總數改成3，報價');
-  const result = await retry.run();
-  expect(result.acceptedRun?.runId).toBe(accepted?.activeRun?.runId);
-  expect(result.markdown).toContain('| A | 2 | 3 | 10 |');
-  expect((await dependencies.quotation.readState(scope))?.pendingMessages).toHaveLength(0);
-});
-
-it.each(['ocr', 'system'])('publishes a new flow quotation after committed %s updates without merging the primary correction twice', async (kind) => {
-  const { snapshot, systemOrder } = await completedOrder();
-  await dependencies.ocr.upsertCurrentOcrResult({ conversationId: scope.conversationId, generationId: 'base', attemptNumber: 1, markdown: order });
-  const correction = kind === 'ocr' ? order.replace('ocr_result', 'ocr_result_updates').replace('鋼板 | 2', '鋼板 | 3')
-    : `## system_order_updates\n\n| base_hash | row_index | 品名規格 | 數量 | 總數 | 單價 |\n| --- | --- | --- | --- | --- | --- |\n| ${snapshot.sha256} | 1 | A | 2 | 3 | 10 |`;
-  const markdown = `${correction}\n\n## quote_signal\n\nstart`;
-  const fixture = await turn(markdown, '數量改成3，報價');
-  const finalizer = createSteelMarkdownCompletionServices(dependencies);
-  const started = await finalizer.finalize({ ...fixture.input, stage: 'workflow' });
-  if (!started.acceptedRun) throw new Error('flow not accepted');
-  const runId = started.acceptedRun.runId;
-  const lease = await dependencies.quotation.acquireLease({ scope, runId, leaseToken: 'new-flow-lease' });
-  if (!lease) throw new Error('new flow lease missing');
-  const final = systemOrder.replace('| A | 2 | 2 | 10 |', '| A | 3 | 3 | 10 |');
-  await dependencies.quotation.checkpoint({ scope, runId, leaseToken: lease.leaseToken, operationId: 'final', kind: 'final', payload: final });
-  const ref = (await dependencies.quotation.readState(scope))?.activeRun?.checkpointRefs.find((entry) => entry.operationId === 'final');
-  if (!ref) throw new Error('new flow checkpoint missing');
-  await dependencies.quotation.completeRun({ scope, runId, leaseToken: lease.leaseToken,
-    finalRef: { ...scope, runId, ...ref, kind: 'final' } });
-  await dependencies.quotation.markPublished({ scope, runId, targetMessageId: 'response', finalSha256: createHash('sha256').update(final).digest('hex') });
-  const composite = `${markdown}\n\n${final}`;
-  const result = await finalizer.finalize({ ...fixture.input, markdown: composite, stage: 'ui' });
-  expect(result.markdown).toBe(composite);
-  expect(result.markdown).not.toContain('**下一步：**');
-  expect((await dependencies.quotation.readState(scope))?.pendingMessages).toHaveLength(0);
-  const fresh = await turn(markdown, '數量改成3，報價');
-  fresh.input.generationId = 'fresh-generation';
-  const replay = await fresh.run();
-  expect(replay.markdown).toBe(final);
-  expect((await mongoose.connection.collection('completion_messages').findOne({ messageId: 'response' }))?.markdown).toBe(final);
-});
-
-it('keeps streamed revision deltas, done text, completed output and persisted message identical', async () => {
-  const { systemOrder, snapshot, revision } = await completedOrder();
-  for (const [markdown, text] of [
-    [`${systemOrder}\n\n${systemOrder.replace('| A | 2 | 2 | 10 |', '| B | 1 | 1 | 99 |')}`, '核對報價'],
-    [`${systemOrder}\n\n${order.replace('鋼板 | 2', '鋼板 | 9')}`, '數量改成9'],
-    [`${systemOrder}\n\n${renderQuotationCustomerMarkdown({ tier: 'C' })}`, '使用 C 級'],
-  ]) {
-    const invalid = await turn(markdown, text);
-    await expect(invalid.run()).rejects.toMatchObject({ code: 'invalid_system_order' });
-    expect(invalid.writes).toHaveLength(0);
-    expect((await dependencies.quotation.readState(scope))?.currentOrder?.markdown).toBe(order);
-    expect((await dependencies.quotation.readState(scope))?.currentCustomer?.customerMarkdown).toBe(renderQuotationCustomerMarkdown({ tier: 'B' }));
+it('preserves immutable AI and human history while a new AI owner resets its difference', async () => {
+  await (await turn(order('2'))).run();
+  const review = createSteelReviewService({ reader: db, writer: createSteelReviewWriteMethods(mongoose) });
+  async function save(messageId: string, value: string) {
+    const { table } = await review.read({ ...scope, messageId, kind: 'ocr_result', title: 'ocr_result' });
+    const prepared = await review.prepare({ ...scope, messageId, title: table.title, kind: table.kind, outputId: table.outputId, revision: table.revision,
+      operations: [{ type: 'update', rowId: table.rows[0].rowId, changes: [{ header: '數量', value }] }] });
+    if (!('operationRequest' in prepared)) throw new Error('Missing operation request');
+    return review.commit({ ...scope, ...prepared.operationRequest, operationId: prepared.operationId, digest: prepared.digest });
   }
-  const complete = await turn(systemOrder);
-  expect((await complete.run()).markdown).toBe(systemOrder);
-  const correction = `## system_order_updates\n\n| base_hash | row_index | 品名規格 | 數量 | 總數 | 單價 |\n| --- | --- | --- | --- | --- | --- |\n| ${snapshot.sha256} | 1 | A | 2 | 3 | 10 |`;
-  const intro = '已核對報價。\n\n';
-  const fixture = await turn(`${intro}${correction}`, '總數改成3');
-  const tracker = createResponseTracker();
-  tracker.items.push({ type: 'message', role: 'assistant', id: 'intro', status: 'completed',
-    content: [{ type: 'output_text', text: intro, annotations: [], logprobs: [] }] });
-  tracker.currentMessage = { type: 'message', role: 'assistant', id: 'last', status: 'in_progress',
-    content: [{ type: 'output_text', text: correction, annotations: [], logprobs: [] }] };
-  tracker.items.push(tracker.currentMessage);
-  tracker.accumulatedText = correction;
-  const context = { responseId: 'response', model: 'agent', createdAt: 0 };
-  const response = buildResponse(context, tracker, 'completed');
-  const events: ResponseEvent[] = [];
-  const res = { write: (chunk: string) => { if (chunk.startsWith('data: ')) events.push(JSON.parse(chunk.slice(6)) as ResponseEvent); return true; } } as ServerResponse;
-  const streamConfig = { res, tracker, context };
-  await finalizeSteelResponsesTurn({ req: fixture.req, response, responseId: 'response', store: false, tracker, streamConfig,
-    saveConversation: async () => {}, saveInput: async () => {},
-    saveOutput: async () => { await createSteelMarkdownCompletionServices(dependencies).finalize({ ...fixture.input,
-      applyMarkdown: (markdown) => { fixture.input.applyMarkdown(markdown); replaceSteelResponsesMarkdown(response, markdown); } }); } });
-  emitOutputTextDone(streamConfig);
-  const delta = events.filter((entry) => entry.type === 'response.output_text.delta').map((entry) => entry.delta).join('');
-  const done = events.find((entry) => entry.type === 'response.output_text.done');
-  const persisted = await mongoose.connection.collection('completion_messages').findOne({ messageId: 'response' });
-  expect(done).toMatchObject({ text: correction + delta });
-  expect(extractSteelNativeResponseOutputText(response)).toBe(intro + correction + delta);
-  expect(extractSteelNativeResponseOutputText(buildResponse(context, tracker, 'completed'))).toBe(persisted?.markdown);
-  expect(persisted?.markdown).toContain('## system_order\n');
-  expect(persisted?.markdown).not.toContain('**下一步：**');
-  expect(persisted?.unfinished).toBe(false);
-  expect((await revision.readCurrentSystemOrder(scope))?.markdown).toContain('| A | 2 | 3 | 10 |');
+  await save('assistant-2', '3');
+  const savedHumanMessage = await db.getMessage({ user: scope.userId, messageId: 'assistant-2' });
+  const humanHistory = await db.readSteelMarkdownHistory({ ...scope, messages: [{ messageId: 'assistant-2', metadata: savedHumanMessage?.metadata ?? undefined }] });
+  expect(humanHistory).toEqual([expect.objectContaining({ reference: expect.objectContaining({ source: 'human' }), effectiveMarkdown: order('3') })]);
+  const firstVersions = await db.readSteelMarkdownVersions(scope);
+  expect(firstVersions).toEqual([expect.objectContaining({ latest: true, saves: 1 })]);
+  await (await turn(order('4'), 'assistant-4', 'ai-4', '數量4')).run();
+  const historical = await review.read({ ...scope, messageId: 'assistant-2', kind: 'ocr_result', title: 'ocr_result' });
+  expect(historical.table.rows[0].values['數量']).toEqual({ baseline: '2', effective: '3' });
+  const fresh = await review.read({ ...scope, messageId: 'assistant-4', kind: 'ocr_result', title: 'ocr_result' });
+  expect(fresh.table.rows[0].values['數量']).toEqual({ baseline: '4', effective: '4' });
+  await save('assistant-4', '5');
+  expect(await db.readSteelMarkdownVersions(scope)).toEqual(expect.arrayContaining([
+    expect.objectContaining({ messageId: 'assistant-2', latest: false, saves: 1 }),
+    expect.objectContaining({ messageId: 'assistant-4', latest: true, saves: 1 }),
+  ]));
+});
+
+it('creates a fresh baseline for the same text and physical message in a different generation', async () => {
+  await (await turn(order('2'))).run();
+  await (await turn(order('2'), 'assistant-2', 'ai-4')).run();
+  expect(await db.readSteelMarkdownVersions(scope)).toEqual([expect.objectContaining({ outputId: 'ocr_result:ai-4', latest: true, saves: 0 })]);
+});
+
+it('publishes confirmed direct tier data with a version badge and no editor', async () => {
+  await (await turn(renderQuotationCustomerMarkdown({ tier: 'B' }), 'assistant-customer', 'customer-2', '使用預設 B tier')).run();
+  expect(await db.readSteelMarkdownVersions(scope)).toEqual([expect.objectContaining({ kind: 'customer_data', latest: true, saves: 0 })]);
+});
+
+it('refuses an older admitted normal turn without overwriting the latest owner', async () => {
+  const older = await turn(order('2'));
+  const newer = await turn(order('4'), 'assistant-4', 'ai-4');
+  await newer.run();
+  await expect(older.run()).rejects.toMatchObject({ code: 'superseded_response' });
+  expect((await services().ocr.readCurrentOcrResult(scope.conversationId))?.markdown).toBe(order('4'));
+});
+
+it('commits delegate completion and claim cleanup with its full clean publication', async () => {
+  const fixture = await turn(order('2'));
+  const ocr = services().ocr;
+  await mongoose.models.File.create({ user: scope.userId, conversationId: scope.conversationId,
+    file_id: 'order-file', filename: 'order.pdf', filepath: '/test/order.pdf', type: 'application/pdf', bytes: 1, source: 'local' });
+  await ocr.allocateDelegateSourceMapping({ conversationId: scope.conversationId, fileId: 'order-file', sourceFilename: 'order.pdf' });
+  fixture.input.markdown = `## source_file_mapping\n\n| 來源 | 檔名 |\n| --- | --- |\n| F1 | order.pdf |\n\n${order('2').replace('文字訂單', 'F1')}`;
+  const claim = await ocr.claimNewDelegateOcrIndex({ conversationId: scope.conversationId, triggeringMessageId: 'user-ai-2', claimToken: 'delegate-claim' });
+  if (!claim) throw new Error('Missing delegate claim');
+  await ocr.materializeDelegateOcrRun({ ...claim, toolParameters: {}, files: [{ fileId: 'order-file', filename: 'order.pdf' }] });
+  const lease = await ocr.acquireDelegateExecutionLease({ claimToken: claim.claimToken, leaseToken: 'delegate-lease' });
+  if (!lease) throw new Error('Missing delegate lease');
+  fixture.input.req.steelNativeContext!.delegateOcrContext = { didExecute: true,
+    delegateOcrExecutionLease: lease, activeRun: { claimToken: claim.claimToken,
+      delegateOcrIndex: claim.delegateOcrIndex, executionLeaseToken: lease.executionLeaseToken, agentAttemptNumber: 1 } };
+  const result = await fixture.run();
+  const run = await ocr.findDelegateOcrRunByClaimToken(claim.claimToken);
+  expect(run?.status).toBe('completed');
+  expect(run?.finalizationJournal).toMatchObject({ candidateValidated: true, messagePersisted: true, resultPersisted: true, claimCleared: true });
+  expect(await ocr.readActiveDelegateClaim(scope.conversationId)).toBeUndefined();
+  expect((await db.getMessage({ user: scope.userId, messageId: 'assistant-2' }))?.text).toBe(result.markdown);
+  expect(await fixture.run()).toMatchObject({ markdown: result.markdown });
 });

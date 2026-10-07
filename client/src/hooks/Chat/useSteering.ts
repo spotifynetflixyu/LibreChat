@@ -24,8 +24,6 @@ import type {
 } from '~/store/families';
 import type { AgentQueuedTurnReceipt, GenerationProtocolVersion } from '~/data-provider';
 import type { ExtendedFile, FileSetter } from '~/common';
-import type { MarkdownTableComment } from '~/common';
-import { appendMarkdownTableComments } from '~/common';
 import {
   useCancelSteerMutation,
   useSteerMessageMutation,
@@ -68,7 +66,6 @@ export type DuringRunAction = 'steer' | 'queue';
 export interface QueuedMessageContext {
   quotes?: string[];
   manualSkills?: string[];
-  markdownTableComments?: MarkdownTableComment[];
   clientRequestId?: string;
   recoverySteerId?: string;
   expectedPredecessorCreatedAt?: number;
@@ -994,7 +991,6 @@ export default function useSteering({
           files?: TMessage['files'];
           quotes?: string[];
           manualSkills?: string[];
-          markdownTableComments?: MarkdownTableComment[];
           /** Set when the files were ALREADY queued/steered: their TTL was
            *  held when they first entered the queue (or at the steer 202). */
           skipUsageMark?: boolean;
@@ -1041,10 +1037,6 @@ export default function useSteering({
           ...(options?.quotes && options.quotes.length > 0 && { quotes: options.quotes }),
           ...(options?.manualSkills &&
             options.manualSkills.length > 0 && { manualSkills: options.manualSkills }),
-          ...(options?.markdownTableComments &&
-            options.markdownTableComments.length > 0 && {
-              markdownTableComments: options.markdownTableComments,
-            }),
           ...(options?.front && { priority: true }),
         };
         set(store.queuedMessagesByConvoId(queueKey), (prev) =>
@@ -1182,22 +1174,15 @@ export default function useSteering({
         const manualSkills = snapshot
           .getLoadable(store.pendingManualSkillsByConvoId(conversationId))
           .getValue();
-        const markdownTableComments = snapshot
-          .getLoadable(store.pendingMarkdownTableCommentsByConvoId(conversationId))
-          .getValue();
         if (quotes.length > 0) {
           reset(store.pendingQuotesByConvoId(conversationId));
         }
         if (manualSkills.length > 0) {
           reset(store.pendingManualSkillsByConvoId(conversationId));
         }
-        if (markdownTableComments.length > 0) {
-          reset(store.pendingMarkdownTableCommentsByConvoId(conversationId));
-        }
         return {
           ...(quotes.length > 0 && { quotes }),
           ...(manualSkills.length > 0 && { manualSkills }),
-          ...(markdownTableComments.length > 0 && { markdownTableComments }),
         };
       },
     [conversationId],
@@ -1720,10 +1705,7 @@ export default function useSteering({
       if (trimmed.length === 0 || !hasRealConvoId) {
         return false;
       }
-      const preparedText = appendMarkdownTableComments(
-        trimmed,
-        context?.markdownTableComments ?? [],
-      ).trim();
+      const preparedText = trimmed;
       const preempt = opts?.preempt === true;
       const targetGenerationCreatedAt =
         opts?.generationCreatedAt ?? activeGenerationCreatedAt ?? undefined;
@@ -1801,9 +1783,6 @@ export default function useSteering({
         }),
         generationProtocolVersion: targetGenerationProtocolVersion,
         ...(opts?.queuedOrigin && { queuedOrigin: opts.queuedOrigin }),
-        ...(context?.markdownTableComments && {
-          markdownTableComments: context.markdownTableComments,
-        }),
         ...carried,
       });
       scheduleSteerDispatch(conversationId, (settleDispatch) => {
@@ -1848,9 +1827,6 @@ export default function useSteering({
                       }),
                       generationProtocolVersion: targetGenerationProtocolVersion,
                       ...(opts?.queuedOrigin && { queuedOrigin: opts.queuedOrigin }),
-                      ...(context?.markdownTableComments && {
-                        markdownTableComments: context.markdownTableComments,
-                      }),
                       ...carried,
                     });
                   } else {
@@ -1881,9 +1857,6 @@ export default function useSteering({
                   }),
                   generationProtocolVersion: targetGenerationProtocolVersion,
                   ...(opts?.queuedOrigin && { queuedOrigin: opts.queuedOrigin }),
-                  ...(context?.markdownTableComments && {
-                    markdownTableComments: context.markdownTableComments,
-                  }),
                   ...carried,
                 } satisfies PendingSteer;
                 if (acknowledgeSteer(conversationId, localId, acknowledged)) {
@@ -2205,7 +2178,6 @@ export default function useSteering({
           {
             quotes: taken.quotes,
             manualSkills: taken.manualSkills,
-            markdownTableComments: taken.markdownTableComments,
           },
           {
             ...(opts?.preempt === true && { preempt: true }),
@@ -2230,7 +2202,6 @@ export default function useSteering({
           accepted = sendNow(taken.text, taken.files ?? [], {
             quotes: taken.quotes,
             manualSkills: taken.manualSkills,
-            markdownTableComments: taken.markdownTableComments,
             clientRequestId: taken.clientRequestId,
             recoverySteerId: taken.recoverySteerId,
             expectedPredecessorCreatedAt: taken.expectedPredecessorCreatedAt,
