@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
   isSteelReviewSourceAssociationHeader,
+  bindSteelReviewRowsToOcrContext,
+  createSteelReviewOcrContext,
   inferSteelReviewSystemState,
   initializeFreshSteelReviewSystemRows,
   parseSteelReviewMarkdownTables,
@@ -17,10 +19,12 @@ import type {
   SteelReviewRow,
   SteelReviewSourceIntent,
   SteelReviewSourceMapping,
+  SteelReviewOcrContext,
   SteelReviewTarget,
   SteelReviewRecovery,
   SteelCatalogSelectionEvidence,
 } from 'librechat-data-provider';
+import type { SteelReviewMetadata } from 'librechat-data-provider';
 import type {
   IMessage,
   ISteelConversationOcrState,
@@ -610,7 +614,7 @@ function sanitizeRows(
   return rows.map((row) => {
     if (!row.source || !authorizedFiles.has(row.source.fileId) ||
       (trustedFileIds && !trustedFileIds.has(row.source.fileId))) {
-      return { ...row, source: null };
+      return { ...row, source: null, ocrLink: null };
     }
     const file = authorizedFiles.get(row.source.fileId);
     return {
@@ -621,6 +625,46 @@ function sanitizeRows(
       },
     };
   });
+}
+
+function sanitizeReviewMetadata(
+  metadata: SteelReviewMetadata,
+  authorizedFiles: ReadonlyMap<string, AuthorizedFile>,
+): SteelReviewMetadata {
+  const sanitizeSource = (row: SteelReviewMetadata['rows'][number]): SteelReviewMetadata['rows'][number] => {
+    if (!row.source || !authorizedFiles.has(row.source.fileId)) {
+      return {
+        ...row,
+        source: null,
+        ocrLink: row.ocrLink === undefined ? undefined : null,
+      };
+    }
+    const file = authorizedFiles.get(row.source.fileId);
+    return {
+      ...row,
+      source: { ...row.source, ...(file ? { filename: file.filename } : {}) },
+    };
+  };
+  const contextRows = metadata.ocrContext?.rows
+    .filter((row) => row.source && authorizedFiles.has(row.source.fileId))
+    .map(sanitizeSource) ?? [];
+  const context = metadata.ocrContext && contextRows.length > 0
+    ? { ...metadata.ocrContext, rows: contextRows }
+    : null;
+  const validLinks = context
+    ? new Set(context.rows
+        .filter((row) => row.source !== null)
+        .map((row) => `${context.outputId}\u0000${context.revision}\u0000${row.rowId}`))
+    : new Set<string>();
+  return {
+    ...metadata,
+    rows: metadata.rows.map((row) => {
+      const sanitized = sanitizeSource(row);
+      if (!sanitized.ocrLink || validLinks.has(`${sanitized.ocrLink.outputId}\u0000${sanitized.ocrLink.revision}\u0000${sanitized.ocrLink.rowId}`)) return sanitized;
+      return { ...sanitized, ocrLink: null };
+    }),
+    ocrContext: context,
+  };
 }
 
 function legacySnapshotMappings(
@@ -707,7 +751,7 @@ function projectAuthorizedFiles(
 }
 
 function sidecarRecord(
-  output: Pick<ISteelReviewOutput, 'userId' | 'tenantId' | 'conversationId' | 'kind' | 'messageId' | 'tableId' | 'title' | 'outputId' | 'revision' | 'state' | 'headers' | 'rows' | 'sourceMappings' | 'latestOutputId' | 'aiUpdatedAt' | 'aiRawMarkdown' | 'aiBaselineMarkdown' | 'humanMarkdown' | 'humanSavedAt' | 'effectiveMarkdown' | 'displayMarkdown' | 'receipts'>,
+  output: Pick<ISteelReviewOutput, 'userId' | 'tenantId' | 'conversationId' | 'kind' | 'messageId' | 'tableId' | 'title' | 'outputId' | 'revision' | 'state' | 'headers' | 'rows' | 'sourceMappings' | 'latestOutputId' | 'aiUpdatedAt' | 'aiRawMarkdown' | 'aiBaselineMarkdown' | 'humanMarkdown' | 'humanSavedAt' | 'effectiveMarkdown' | 'displayMarkdown' | 'receipts' | 'reviewMetadata'>,
   message?: { selected: string; parts: SteelReviewTextPart[]; selectedPartIndex?: number; ownerUpdated?: SteelReviewOwnerUpdatedRecord },
   authorizedFiles: ReadonlyMap<string, AuthorizedFile> = new Map(),
   aiUpdatedAt?: Date,
@@ -715,8 +759,22 @@ function sidecarRecord(
   trustedMappings?: readonly SteelReviewSourceMapping[],
   customerQuoteMarkdown?: string,
   customerSnapshot?: SteelReviewCustomerSnapshot,
+  reviewMetadata?: SteelReviewMetadata,
 ): SteelReviewReadRecord {
   const lastSave = output.receipts?.[output.receipts.length - 1];
+  const metadata = reviewMetadata ?? output.reviewMetadata;
+  const associatedRows = output.kind === 'system_order' && metadata &&
+    metadata.lineage.outputId === output.outputId && metadata.lineage.revision === output.revision
+    ? new Map(metadata.rows.map((row) => [row.rowId, row]))
+    : undefined;
+  const rows = associatedRows
+    ? output.rows.map((row) => {
+        const associated = associatedRows.get(row.rowId);
+        return associated
+          ? { ...row, source: associated.source, ocrLink: associated.ocrLink, system: associated.system ?? row.system }
+          : row;
+      })
+    : output.rows;
   return {
     userId: output.userId,
     ...(output.tenantId ? { tenantId: output.tenantId } : {}),
@@ -729,11 +787,13 @@ function sidecarRecord(
     revision: output.revision,
     state: output.state,
     headers: output.headers,
-    rows: sanitizeRows(output.rows, authorizedFiles, trustedMappings).map((row) => ({
+    rows: sanitizeRows(rows, authorizedFiles, trustedMappings).map((row) => ({
       ...row,
       values: row.values instanceof Map ? Object.fromEntries(row.values) : row.values,
     })),
-    ...(output.sourceMappings ? { sourceMappings: output.sourceMappings } : {}),
+    ...(output.sourceMappings ? {
+      sourceMappings: output.sourceMappings.filter((mapping) => authorizedFiles.has(mapping.fileId)),
+    } : {}),
     ...(trustedMappings ? { trustedSourceMappings: [...trustedMappings] } : {}),
     ...(output.latestOutputId ? { latestOutputId: output.latestOutputId } : {}),
     ...(output.aiUpdatedAt ? { aiUpdatedAt: output.aiUpdatedAt } : {}),
@@ -748,6 +808,7 @@ function sidecarRecord(
     ...(requote?.requoteProvenance ? { requoteProvenance: requote.requoteProvenance } : {}),
     ...(customerQuoteMarkdown !== undefined ? { customerQuoteMarkdown } : {}),
     ...(customerSnapshot ? { customerSnapshot } : {}),
+    ...(metadata ? { reviewMetadata: metadata, ...(metadata.ocrContext ? { ocrContext: metadata.ocrContext } : {}) } : {}),
     ...(message?.ownerUpdated ? { ownerUpdated: message.ownerUpdated } : {}),
     ...(lastSave
       ? {
@@ -806,6 +867,15 @@ function selectSidecar(
     }
   }
   return candidates.length === 1 ? candidates[0] : undefined;
+}
+
+function reviewMetadataBelongsToSidecar(
+  metadata: SteelReviewMetadata | undefined,
+  output: Pick<ISteelReviewOutput, 'outputId' | 'revision' | 'messageId'>,
+): metadata is SteelReviewMetadata {
+  return Boolean(metadata && metadata.initialized && metadata.lineage.outputId === output.outputId &&
+    metadata.lineage.revision === output.revision &&
+    (!metadata.lineage.messageId || metadata.lineage.messageId === output.messageId));
 }
 
 function isPublishedFinalArtifact(
@@ -1005,6 +1075,173 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
     fileIds: readonly string[],
   ): Promise<Map<string, AuthorizedFile>> => {
     return projectAuthorizedFiles(await authorizeFiles(input, fileIds));
+  };
+
+  const backfillCurrentSystemReviewMetadata = async (
+    input: SteelReviewReadInput,
+    quotation: ISteelQuotationState | null,
+  ): Promise<SteelReviewMetadata | undefined> => {
+    const current = quotation?.currentSystemOrder;
+    if (input.kind !== 'system_order' || !current || current.reviewMetadata ||
+      current.messageId !== input.messageId) {
+      return undefined;
+    }
+    const systemOutputId = current.reviewOutputId ?? `system_order:${current.runId}`;
+    const systemOutput = await ReviewOutput.findOne({
+      ...scopeFilter(input),
+      kind: 'system_order',
+      outputId: systemOutputId,
+      messageId: input.messageId,
+    }).lean<ISteelReviewOutput | null>();
+    const selected = current.ocrSelection?.selected;
+    const selectedOcr = selected?.outputId
+      ? await ReviewOutput.findOne({
+          ...scopeFilter(input),
+          kind: 'ocr_result',
+          outputId: selected.outputId,
+        }).lean<ISteelReviewOutput | null>()
+      : null;
+    const selectedReceipt = selectedOcr?.receipts?.find((receipt) =>
+      receipt.revision === selected?.revision && receipt.snapshot?.revision === selected?.revision);
+    const currentOcrRevisionMatches = Boolean(selectedOcr && selected?.revision && selectedOcr.revision === selected.revision);
+    const currentSelectedMarkdown = selected?.source === 'human'
+      ? selectedOcr?.effectiveMarkdown
+      : selectedOcr?.aiBaselineMarkdown ?? selectedOcr?.aiRawMarkdown ?? selectedOcr?.effectiveMarkdown;
+    const currentHashMatches = currentOcrRevisionMatches && Boolean(selectedOcr && selected?.sha256 && currentSelectedMarkdown &&
+      createHash('sha256').update(currentSelectedMarkdown).digest('hex') === selected.sha256);
+    const exactOcrSnapshot = selectedReceipt?.snapshot;
+    const receiptSelectedMarkdown = selected?.source === 'human'
+      ? exactOcrSnapshot?.effectiveMarkdown
+      : exactOcrSnapshot?.aiBaselineMarkdown ?? exactOcrSnapshot?.aiRawMarkdown ?? exactOcrSnapshot?.effectiveMarkdown;
+    const receiptHashMatches = Boolean(exactOcrSnapshot && selected?.sha256 && receiptSelectedMarkdown &&
+      createHash('sha256').update(receiptSelectedMarkdown).digest('hex') === selected.sha256);
+    const useCurrentOcr = currentHashMatches;
+    const useReceiptOcr = !useCurrentOcr && receiptHashMatches;
+    const exactOcr = (() => {
+      if (useCurrentOcr) return selectedOcr;
+      if (useReceiptOcr) return exactOcrSnapshot;
+      return undefined;
+    })();
+    const ocrHeaders = exactOcr?.headers ?? [];
+    const selectedRows = exactOcr?.rows ?? [];
+    const selectedHashMatches = !selected
+      ? true
+      : useCurrentOcr || useReceiptOcr;
+    const mappings = exactOcr?.sourceMappings ?? [];
+    const sourceHeader = ocrHeaders.find((header) => header === '來源' || header.trim().toLowerCase() === 'source');
+    const pageHeader = ocrHeaders.find((header) =>
+      header === '頁碼' || header.trim().toLowerCase() === 'page' || header.trim().toLowerCase() === 'page number');
+    const recoveredOcrRows = selectedHashMatches && selectedRows.length > 0
+      ? selectedRows.map((row) => {
+          if (row.source || !sourceHeader) return row;
+          const sourceCode = row.values[sourceHeader]?.effective?.trim() ?? '';
+          const matches = mappings.filter((mapping) => mapping.sourceCode === sourceCode);
+          if (matches.length !== 1) return row;
+          const [mapping] = matches;
+          const rawPage = pageHeader ? row.values[pageHeader]?.effective?.trim() : '';
+          const pageNumberValue = rawPage && /^\d+$/u.test(rawPage) ? Number(rawPage) : null;
+          const pageNumber = typeof pageNumberValue === 'number' && Number.isSafeInteger(pageNumberValue) && pageNumberValue > 0
+            ? pageNumberValue
+            : null;
+          return {
+            ...row,
+            source: {
+              fileId: mapping.fileId,
+              pageNumber,
+              filename: mapping.sourceFilename,
+              ...(mapping.mediaType ? { mediaType: mapping.mediaType } : {}),
+            },
+          };
+        })
+      : [];
+    const ocrContext: SteelReviewOcrContext | null = selectedHashMatches && selected && selectedOcr && selectedRows.length > 0
+      ? createSteelReviewOcrContext({
+          title: selectedOcr?.title ?? 'ocr_result',
+          outputId: selected.outputId,
+          revision: selected.revision,
+          headers: ocrHeaders,
+          rows: recoveredOcrRows,
+        })
+      : null;
+    const parsedSystemTable = parseSteelReviewMarkdownTables(current.markdown)
+      .find((table) => table.title === input.title || table.title === 'system_order');
+    const parsedSystemRows = parsedSystemTable
+      ? parsedSystemTable.rows.flatMap((row, rowIndex): SteelReviewRow[] => {
+          if (row.length !== parsedSystemTable.headers.length) return [];
+          const values: Record<string, SteelReviewCell> = Object.fromEntries(parsedSystemTable.headers.map((header, index) => [header, {
+            baseline: row[index] ?? '',
+            effective: row[index] ?? '',
+          }]));
+          const rowId = createHash('sha256')
+            .update(`${systemOutputId}:${rowIndex}:${JSON.stringify(row)}`).digest('hex');
+          const system = inferSteelReviewSystemState(parsedSystemTable.headers, row);
+          return [{ rowId, values, source: null, ...(system ? { system } : {}) }];
+        })
+      : [];
+    const systemRows = systemOutput?.rows?.length ? systemOutput.rows : parsedSystemRows;
+    if (systemRows.length === 0) return undefined;
+    const sourceIds = [...new Set([
+      ...mappings.map((mapping) => mapping.fileId),
+      ...recoveredOcrRows.flatMap((row) => row.source?.fileId ? [row.source.fileId] : []),
+      ...systemRows.flatMap((row) => row.source?.fileId ? [row.source.fileId] : []),
+    ])];
+    const authorizedFiles = await readAuthorizedFiles(input, sourceIds);
+    const systemHeaders = systemOutput?.headers ?? parsedSystemTable?.headers ?? [];
+    const rowsWithLinks = ocrContext
+      ? bindSteelReviewRowsToOcrContext(systemHeaders, systemRows, ocrContext).map((row, index) => {
+          const original = systemRows[index];
+          if (!original?.source) return row;
+          const link = row.ocrLink && sameSteelReviewSource(row.source, original.source)
+            ? row.ocrLink
+            : null;
+          return { ...row, source: original.source, ocrLink: link };
+        })
+      : systemRows.map((row) => ({ ...row, ocrLink: null }));
+    const metadata: SteelReviewMetadata = sanitizeReviewMetadata({
+      version: 1,
+      initialized: true,
+      lineage: {
+        runId: current.runId,
+        outputId: systemOutput?.outputId ?? systemOutputId,
+        revision: systemOutput?.revision ?? current.sha256,
+        ...(current.messageId ? { messageId: current.messageId } : {}),
+        ...(selected && selectedOcr && selectedHashMatches ? {
+          ocrOutputId: selected.outputId,
+          ocrRevision: selected.revision,
+          ocrHash: selected.sha256,
+        } : {}),
+      },
+      ocrContext,
+      rows: rowsWithLinks,
+    }, authorizedFiles);
+    const changed = await QuotationState.updateOne({
+      ...scopeFilter(input),
+      'currentSystemOrder.runId': current.runId,
+      'currentSystemOrder.messageId': current.messageId,
+      'currentSystemOrder.sha256': current.sha256,
+      'currentSystemOrder.reviewMetadata': { $exists: false },
+    }, { $set: { 'currentSystemOrder.reviewMetadata': metadata } });
+    if (changed.matchedCount !== 1) {
+      const latest = await QuotationState.findOne(scopeFilter(input))
+        .select({ currentSystemOrder: 1 }).lean<ISteelQuotationState | null>();
+      return latest?.currentSystemOrder && reviewMetadataBelongsToSidecar(
+        latest.currentSystemOrder.reviewMetadata,
+        { outputId: systemOutput?.outputId ?? systemOutputId, revision: systemOutput?.revision ?? current.sha256, messageId: current.messageId ?? input.messageId },
+      )
+        ? latest.currentSystemOrder.reviewMetadata
+        : undefined;
+    }
+    if (systemOutput) {
+      await ReviewOutput.updateOne({
+        ...scopeFilter(input),
+        kind: 'system_order',
+        outputId: systemOutput.outputId,
+        messageId: systemOutput.messageId,
+        revision: systemOutput.revision,
+        reviewMetadata: { $exists: false },
+      }, { $set: { reviewMetadata: metadata, rows: metadata.rows } });
+    }
+    return metadata;
   };
 
   return {
@@ -1225,11 +1462,27 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
       const sidecarCandidates = allSidecarCandidates.filter((candidate) =>
         sidecarHasTitle(candidate, input.title));
       const selected = selectSidecar(sidecarCandidates, authority, input.messageId);
+      const recoveredMetadata = await backfillCurrentSystemReviewMetadata(input, quotation);
       const authorizedFiles = await readAuthorizedFiles(input, [
         ...(selected?.rows ?? []).flatMap((row) => row.source?.fileId ? [row.source.fileId] : []),
+        ...(selected?.reviewMetadata?.rows ?? []).flatMap((row) => row.source?.fileId ? [row.source.fileId] : []),
+        ...(selected?.reviewMetadata?.ocrContext?.rows ?? []).flatMap((row) => row.source?.fileId ? [row.source.fileId] : []),
+        ...(recoveredMetadata?.rows ?? []).flatMap((row) => row.source?.fileId ? [row.source.fileId] : []),
+        ...(recoveredMetadata?.ocrContext?.rows ?? []).flatMap((row) => row.source?.fileId ? [row.source.fileId] : []),
+        ...(input.kind === 'system_order' ? (quotation?.currentSystemOrder?.reviewMetadata?.rows ?? []) : [])
+          .flatMap((row) => row.source?.fileId ? [row.source.fileId] : []),
+        ...(input.kind === 'system_order' ? (quotation?.currentSystemOrder?.reviewMetadata?.ocrContext?.rows ?? []) : [])
+          .flatMap((row) => row.source?.fileId ? [row.source.fileId] : []),
       ]);
       if (selected) {
         const { latestOutputId: _ignoredLatestOutputId, ...selectedWithoutLatest } = selected;
+        const metadataCandidates = input.kind === 'system_order'
+          ? [selected.reviewMetadata, recoveredMetadata, quotation?.currentSystemOrder?.reviewMetadata]
+          : [];
+        const selectedMetadata = metadataCandidates.find((metadata) => reviewMetadataBelongsToSidecar(metadata, selected));
+        const selectedReviewMetadata = selectedMetadata
+          ? sanitizeReviewMetadata(selectedMetadata, authorizedFiles)
+          : undefined;
         return sidecarRecord({
           ...selectedWithoutLatest,
           ...(authority ? { latestOutputId: authority.outputId } : {}),
@@ -1242,7 +1495,7 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
         }, authorizedFiles, undefined, {
           needsRequote: quotation?.currentSystemOrder?.needsRequote,
           requoteProvenance: quotation?.currentSystemOrder?.requoteProvenance,
-        }, undefined, quotation?.currentSystemOrder?.customerQuoteMarkdown, customerSnapshot);
+        }, undefined, quotation?.currentSystemOrder?.customerQuoteMarkdown, customerSnapshot, selectedReviewMetadata);
       }
 
       if (
@@ -1255,6 +1508,19 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
       ) {
         const { runId, markdown } = quotation.currentSystemOrder;
         const outputId = quotation.currentSystemOrder.reviewOutputId ?? `system_order:${runId}`;
+        const reviewMetadata = recoveredMetadata ?? quotation.currentSystemOrder.reviewMetadata;
+        const metadataFileIds = reviewMetadata
+          ? [...new Set([
+              ...reviewMetadata.rows.flatMap((row) => row.source?.fileId ? [row.source.fileId] : []),
+              ...(reviewMetadata.ocrContext?.rows ?? []).flatMap((row) => row.source?.fileId ? [row.source.fileId] : []),
+            ])]
+          : [];
+        const metadataAuthorizedFiles = metadataFileIds.length > 0
+          ? await readAuthorizedFiles(input, metadataFileIds)
+          : new Map<string, AuthorizedFile>();
+        const sanitizedMetadata = reviewMetadata
+          ? sanitizeReviewMetadata(reviewMetadata, metadataAuthorizedFiles)
+          : undefined;
         return {
           userId: input.userId,
           ...(input.tenantId ? { tenantId: input.tenantId } : {}),
@@ -1288,6 +1554,16 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
           ...(customerSnapshot ? { customerSnapshot } : {}),
           ...(quotation.currentSystemOrder.calculationCheckpoint
             ? { calculationCheckpoint: quotation.currentSystemOrder.calculationCheckpoint }
+            : {}),
+          ...(sanitizedMetadata
+            ? { reviewMetadata: sanitizedMetadata }
+            : {}),
+          ...(sanitizedMetadata?.ocrContext
+            ? { ocrContext: sanitizedMetadata.ocrContext }
+            : {}),
+          ...(sanitizedMetadata?.rows ? { rows: sanitizedMetadata.rows } : {}),
+          ...(sanitizedMetadata?.rows && sanitizedMetadata.rows.length > 0
+            ? { headers: Object.keys(sanitizedMetadata.rows[0]?.values ?? {}) }
             : {}),
           ...(readOwnerUpdated(messageRecord.metadata, input.kind)
             ? { ownerUpdated: readOwnerUpdated(messageRecord.metadata, input.kind) }
@@ -1774,6 +2050,10 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
           const currentSourceFileIds = [...new Set([
             ...(output?.rows ?? []).flatMap((row) => row.source?.fileId ? [row.source.fileId] : []),
             ...(ocrState?.sourceMappings ?? []).map((mapping) => mapping.fileId),
+            ...(quotation?.currentSystemOrder?.reviewMetadata?.rows ?? [])
+              .flatMap((row) => row.source?.fileId ? [row.source.fileId] : []),
+            ...(quotation?.currentSystemOrder?.reviewMetadata?.ocrContext?.rows ?? [])
+              .flatMap((row) => row.source?.fileId ? [row.source.fileId] : []),
             ...(input.sourceIntents ?? []).flatMap((intent) => intent.fileId ? [intent.fileId] : []),
             ...(input.sourceMappings ?? []).map((mapping) => mapping.fileId),
           ])];
@@ -1829,6 +2109,9 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
           const currentAiRawMarkdown = output?.aiRawMarkdown ?? (input.kind === 'ocr_result'
             ? ocrState?.currentOcrResultMarkdown
             : quotation?.currentSystemOrder?.markdown);
+          const sanitizedReviewMetadata = input.kind === 'system_order' && quotation?.currentSystemOrder?.reviewMetadata
+            ? sanitizeReviewMetadata(quotation.currentSystemOrder.reviewMetadata, currentAuthorizedFiles)
+            : undefined;
 
           const mirror = readTextMirror(message);
           if (!mirror) {
@@ -1885,6 +2168,12 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
                 : {}),
               ...(input.kind === 'system_order' && quotation?.currentSystemOrder?.calculationCheckpoint
                 ? { calculationCheckpoint: quotation.currentSystemOrder.calculationCheckpoint }
+                : {}),
+              ...(sanitizedReviewMetadata
+                ? { reviewMetadata: sanitizedReviewMetadata }
+                : {}),
+              ...(sanitizedReviewMetadata?.ocrContext
+                ? { ocrContext: sanitizedReviewMetadata.ocrContext }
                 : {}),
               messageText: mirror.text,
               messageTextParts: mirror.parts
@@ -2307,6 +2596,21 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             revision: nextRevision,
             updatedAt: savedAt,
           };
+          const previousReviewMetadata = input.kind === 'system_order'
+            ? output?.reviewMetadata ?? quotation?.currentSystemOrder?.reviewMetadata
+            : undefined;
+          const nextReviewMetadata: SteelReviewMetadata | undefined = previousReviewMetadata
+            ? {
+                ...previousReviewMetadata,
+                lineage: {
+                  ...previousReviewMetadata.lineage,
+                  outputId: input.outputId,
+                  revision: nextRevision,
+                  messageId: input.messageId,
+                },
+                rows: canonicalRows,
+              }
+            : undefined;
           const messageTextParts = safeNextParts.flatMap((part) =>
             part.contentIndex !== undefined && part.type === 'text' && typeof part.text === 'string'
               ? [{ partIndex: part.contentIndex, text: part.text }]
@@ -2369,6 +2673,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
               state: 'current' as const,
               headers: input.headers,
               rows: canonicalRows,
+              ...(nextReviewMetadata ? { reviewMetadata: nextReviewMetadata } : {}),
               ...(input.sourceMappings ? { sourceMappings: input.sourceMappings } : {}),
               latestOutputId: input.outputId,
               humanMarkdown: input.effectiveMarkdown,
@@ -2438,6 +2743,9 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
                   'currentSystemOrder.markdown': systemOrderMarkdown,
                   'currentSystemOrder.sha256': nextSystemOrderSha256,
                   'currentSystemOrder.updatedAt': savedAt,
+                  ...(nextReviewMetadata
+                    ? { 'currentSystemOrder.reviewMetadata': nextReviewMetadata }
+                    : {}),
                   ...(input.customerQuoteMarkdown !== undefined
                     ? { 'currentSystemOrder.customerQuoteMarkdown': input.customerQuoteMarkdown }
                     : {}),

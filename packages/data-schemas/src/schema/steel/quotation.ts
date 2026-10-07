@@ -23,6 +23,7 @@ import type {
   SteelQuotationSourceSnapshot,
   SteelQuotationTicket,
 } from '~/types';
+import { steelReviewMetadataSchema, steelReviewRowSchema } from './review';
 
 const steelMarkdownReferenceSchema = new Schema({
   kind: { type: String, enum: ['ocr_result', 'system_order', 'customer_data'], required: true },
@@ -148,6 +149,7 @@ const steelQuotationCurrentSystemOrderSchema = new Schema<SteelQuotationCurrentS
         { _id: false },
       ),
     },
+    reviewMetadata: { type: steelReviewMetadataSchema },
     updatedAt: { type: Date, required: true },
   },
   { _id: false },

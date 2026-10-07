@@ -53,6 +53,7 @@ import type { SteelReviewCatalogService } from './catalog';
 import type { ServerRequest } from '~/types/http';
 import { buildCustomerQuoteFromMarkdown } from './markdown/quote';
 import { escapeMarkdownTableCell } from './markdown/row-codec';
+import { reconcileSteelReviewOcrLinks } from './review/ocr';
 import { parseMarkdownTables } from './markdown/table';
 import { SteelReviewCatalogError } from './catalog';
 
@@ -381,6 +382,17 @@ export function createSteelReviewBaselineRows(
   return kind === 'system_order' ? initializeFreshSteelReviewSystemRows(table.headers, rows) : rows;
 }
 
+function createRecordBaselineRows(record: SteelReviewReadRecord, table: SteelMarkdownTable): SteelReviewRow[] {
+  const rows = createSteelReviewBaselineRows(table, record.kind, record.outputId, record.sourceMappings, record.calculationCheckpoint);
+  const metadata = record.kind === 'system_order' ? record.reviewMetadata : undefined;
+  if (!metadata || metadata.lineage.outputId !== record.outputId) return rows;
+  const metadataById = new Map(metadata.rows.map((row) => [row.rowId, row]));
+  return rows.map((row) => {
+    const persisted = metadataById.get(row.rowId);
+    return persisted ? { ...row, source: persisted.source, ocrLink: persisted.ocrLink ?? null } : row;
+  });
+}
+
 function projectRecord(
   record: SteelReviewReadRecord,
   table: ReviewTableCandidate,
@@ -393,7 +405,7 @@ function projectRecord(
     (!table.headers.includes('來源') || !table.headers.includes('零件編號'))) {
     return null;
   }
-  const rows = createSteelReviewBaselineRows(table, record.kind, record.outputId, record.sourceMappings, record.calculationCheckpoint);
+  const rows = createRecordBaselineRows(record, table);
   const latestOutputId = record.latestOutputId ?? record.outputId;
   const isLatest = record.state === 'current' && latestOutputId === record.outputId;
   return {
@@ -426,6 +438,7 @@ function projectRecord(
     headers: table.headers,
     rows,
     ...(record.sourceMappings ? { sourceMappings: record.sourceMappings } : {}),
+    ...(record.kind === 'system_order' && record.ocrContext ? { ocrContext: record.ocrContext } : {}),
   };
 }
 
@@ -508,6 +521,7 @@ function projectSidecar(
     headers: record.headers,
     rows: record.rows,
     ...(record.sourceMappings ? { sourceMappings: record.sourceMappings } : {}),
+    ...(record.kind === 'system_order' && record.ocrContext ? { ocrContext: record.ocrContext } : {}),
   };
 }
 
@@ -1009,7 +1023,7 @@ export function createSteelReviewService({
     if (initialTables.length !== 1) {
       return undefined;
     }
-    return normalizeSteelReviewLedgerRows(createSteelReviewBaselineRows(initialTables[0], record.kind, record.outputId, record.sourceMappings, record.calculationCheckpoint));
+    return normalizeSteelReviewLedgerRows(createRecordBaselineRows(record, initialTables[0]));
   }
 
   function operationRecovery(
@@ -1038,6 +1052,7 @@ export function createSteelReviewService({
         ...(record.aiRawMarkdown ? { aiRawMarkdown: record.aiRawMarkdown } : {}),
         ...(record.aiBaselineMarkdown ? { aiBaselineMarkdown: record.aiBaselineMarkdown } : {}),
         ...(record.sourceMappings ? { sourceMappings: record.sourceMappings } : {}),
+        ...(record.kind === 'system_order' && record.ocrContext ? { ocrContext: record.ocrContext } : {}),
       },
       conflicts: [...conflicts],
     };
@@ -1117,7 +1132,7 @@ export function createSteelReviewService({
     if (!target) {
       throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review table target not found');
     }
-    const currentRows = normalizeSteelReviewLedgerRows(record.rows ?? createSteelReviewBaselineRows(target, record.kind, record.outputId, record.sourceMappings, record.calculationCheckpoint));
+    const currentRows = normalizeSteelReviewLedgerRows(record.rows ?? createRecordBaselineRows(record, target));
     const headers = record.headers ?? target.headers;
     const expectedRows = operationExpectedRows(record, payload, target, currentRows);
     if (!expectedRows) {
@@ -1302,7 +1317,7 @@ export function createSteelReviewService({
     if (!target || target.partIndex !== payload.partIndex && payload.partIndex !== undefined) {
       throw new SteelReviewReadError('REVIEW_NOT_FOUND', 404, 'Review table target not found');
     }
-    const currentRows = record.rows ?? createSteelReviewBaselineRows(target, record.kind, record.outputId, record.sourceMappings, record.calculationCheckpoint);
+    const currentRows = record.rows ?? createRecordBaselineRows(record, target);
     const headers = record.headers ?? target.headers;
     const remarksBindingMode = payload.kind === 'system_order' && headers.includes('備註');
     const ledgerValidation = validateSteelReviewLedger(currentRows, payload.rows, headers);
@@ -1499,7 +1514,11 @@ export function createSteelReviewService({
     if (intentsByRow.size !== sourceIntents.length) {
       throw new SteelReviewWriteError('REVIEW_INVALID_OPERATION', 'Review source intent is duplicated');
     }
-    const normalizedRows = validateSteelReviewLedger(currentRows, canonicalRows, headers);
+    const hasOcrMetadata = record.kind === 'system_order' && Boolean(record.ocrContext || record.reviewMetadata);
+    const rowsWithOcrLinks = hasOcrMetadata
+      ? reconcileSteelReviewOcrLinks(headers, canonicalRows, record.ocrContext ?? null)
+      : canonicalRows;
+    const normalizedRows = validateSteelReviewLedger(currentRows, rowsWithOcrLinks, headers);
     if (!normalizedRows.ok) {
       throwLedgerValidationFailure(normalizedRows);
     }

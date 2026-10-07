@@ -7,6 +7,8 @@ import type {
   SteelReviewSource,
   SteelReviewSourceMapping,
   SteelReviewSystemState,
+  SteelReviewMetadata,
+  SteelReviewOcrContext,
 } from 'librechat-data-provider';
 import type {
   ISteelReviewOutput,
@@ -79,7 +81,7 @@ const steelCalculationSchema = new Schema(
   { _id: false },
 );
 
-const steelReviewRowSchema: Schema<SteelReviewRow> = new Schema(
+export const steelReviewRowSchema: Schema<SteelReviewRow> = new Schema(
   {
     rowId: { type: String, required: true },
     values: { type: Map, of: steelReviewCellSchema, required: true },
@@ -98,6 +100,14 @@ const steelReviewRowSchema: Schema<SteelReviewRow> = new Schema(
     },
     system: { type: steelReviewSystemStateSchema },
     calculation: { type: steelCalculationSchema },
+    ocrLink: {
+      type: new Schema({
+        outputId: { type: String, required: true },
+        revision: { type: String, required: true },
+        rowId: { type: String, required: true },
+      }, { _id: false }),
+      default: undefined,
+    },
   },
   { _id: false },
 );
@@ -111,6 +121,32 @@ const steelReviewSourceMappingSchema = new Schema<SteelReviewSourceMapping>(
   },
   { _id: false },
 );
+
+export const steelReviewLineageSchema: Schema<SteelReviewMetadata['lineage']> = new Schema({
+  runId: { type: String, required: true },
+  outputId: { type: String, required: true },
+  revision: { type: String, required: true },
+  messageId: { type: String },
+  ocrOutputId: { type: String },
+  ocrRevision: { type: String },
+  ocrHash: { type: String, match: /^[a-f0-9]{64}$/u },
+}, { _id: false });
+
+export const steelReviewOcrContextSchema: Schema<SteelReviewOcrContext> = new Schema({
+  title: { type: String, required: true },
+  outputId: { type: String, required: true },
+  revision: { type: String, required: true },
+  headers: { type: [String], required: true, default: [] },
+  rows: { type: [steelReviewRowSchema], required: true, default: [] },
+}, { _id: false });
+
+export const steelReviewMetadataSchema: Schema<SteelReviewMetadata> = new Schema({
+  version: { type: Number, enum: [1], required: true },
+  initialized: { type: Boolean, required: true, default: true },
+  lineage: { type: steelReviewLineageSchema, required: true },
+  ocrContext: { type: steelReviewOcrContextSchema, default: null },
+  rows: { type: [steelReviewRowSchema], required: true, default: [] },
+}, { _id: false });
 
 const steelReviewOwnerUpdatedSchema = new Schema<SteelReviewOwnerUpdatedRecord>(
   {
@@ -244,6 +280,7 @@ const steelReviewOutputSchema: Schema<ISteelReviewOutput> = new Schema<ISteelRev
     effectiveMarkdown: { type: String },
     displayMarkdown: { type: String },
     receipts: { type: [steelReviewReceiptSchema], required: true, default: [] },
+    reviewMetadata: { type: steelReviewMetadataSchema },
   },
   { timestamps: true },
 );

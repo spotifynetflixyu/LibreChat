@@ -388,6 +388,27 @@ ON steel.prices USING GIN (spec_key gin_trgm_ops);
 CREATE INDEX IF NOT EXISTS prices_product_name_trgm_idx
 ON steel.prices USING GIN (product_name gin_trgm_ops)
 WHERE product_name IS NOT NULL;
+CREATE INDEX prices_catalog_model_idx
+ON steel.prices ((lower(erp_item_code) COLLATE "C"), (id::text COLLATE "C"));
+CREATE INDEX prices_catalog_description_trgm_idx
+ON steel.prices USING GIN (lower(COALESCE(product_name, '')) gin_trgm_ops);
+CREATE FUNCTION steel.catalog_description_short_tokens(input_text text)
+RETURNS text[]
+LANGUAGE sql IMMUTABLE PARALLEL SAFE
+SET search_path = pg_catalog
+AS $$
+  WITH source AS (SELECT lower(COALESCE(input_text, '')) AS value)
+  SELECT COALESCE(array_agg(DISTINCT substring(value FROM position FOR width)), ARRAY[]::text[])
+  FROM source
+  CROSS JOIN LATERAL generate_series(1, char_length(value)) AS positions(position)
+  CROSS JOIN (VALUES (1), (2)) AS widths(width)
+  WHERE position + width - 1 <= char_length(value);
+$$;
+ALTER TABLE steel.prices
+ADD COLUMN product_name_short_tokens text[]
+GENERATED ALWAYS AS (steel.catalog_description_short_tokens(product_name)) STORED;
+CREATE INDEX prices_catalog_description_short_idx
+ON steel.prices USING GIN (product_name_short_tokens);
 CREATE INDEX IF NOT EXISTS prices_subcategory_trgm_idx
 ON steel.prices USING GIN (subcategory gin_trgm_ops)
 WHERE subcategory IS NOT NULL;

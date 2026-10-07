@@ -176,15 +176,20 @@ function searchWhere(
   values: SteelSqlParameter[];
 } {
   const values: SteelSqlParameter[] = [input.tier];
-  const keyword = escapeLikeLiteral(input.keyword.normalize('NFKC').trim().toLocaleLowerCase());
-  values.push(keyword);
+  const normalizedKeyword = input.keyword.normalize('NFKC').trim().toLocaleLowerCase();
+  const keyword = escapeLikeLiteral(normalizedKeyword);
   const predicates = [
     input.kind === 'processing' ? `p.category LIKE '加工/%'` : `p.category NOT LIKE '加工/%'`,
   ];
   if (keyword) {
+    values.push(keyword);
     predicates.push(input.field === 'model'
       ? `lower(p.erp_item_code) COLLATE "C" LIKE $2 COLLATE "C" || '%' ESCAPE '\\'`
       : `lower(COALESCE(p.product_name, '')) LIKE '%' || $2 || '%' ESCAPE '\\'`);
+    if (input.field === 'description' && Array.from(normalizedKeyword).length <= 2) {
+      values.push(normalizedKeyword);
+      predicates.push(`p.product_name_short_tokens @> ARRAY[$${values.length}]::text[]`);
+    }
   }
   if (cursor) {
     values.push(cursor.erpItemCode, cursor.id);

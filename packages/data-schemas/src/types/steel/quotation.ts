@@ -1,4 +1,4 @@
-import type { SteelCalculationCheckpoint, TCustomConfig } from 'librechat-data-provider';
+import type { SteelCalculationCheckpoint, SteelReviewMetadata, TCustomConfig } from 'librechat-data-provider';
 import type { Document } from 'mongoose';
 import type { SteelMarkdownReference, SteelMarkdownState, SteelMarkdownSnapshot, SteelMarkdownPublicationTarget } from './versions';
 
@@ -85,6 +85,7 @@ export interface SteelQuotationPublicationProof {
   currentSystemOrderSha256: string;
   calculationCheckpoint?: SteelCalculationCheckpoint;
   sourceSnapshot?: SteelQuotationSourceSnapshot;
+  reviewMetadata?: SteelReviewMetadata;
   saveContext?: SteelQuotationPublicationSaveContext;
   run?: SteelQuotationActiveRun;
   customer: {
@@ -151,6 +152,8 @@ export interface SteelQuotationCurrentSystemOrder {
   ocrSelection?: SteelQuotationOcrSelection;
   needsRequote?: boolean;
   requoteProvenance?: SteelQuotationRequoteProvenance;
+  /** Immutable, versioned review/OCR identity captured with this publication. */
+  reviewMetadata?: SteelReviewMetadata;
   updatedAt: Date;
 }
 

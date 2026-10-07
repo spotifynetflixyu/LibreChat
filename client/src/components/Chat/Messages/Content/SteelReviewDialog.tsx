@@ -89,6 +89,11 @@ import {
   sameSteelReviewIdentity,
 } from './SteelReview/state';
 import {
+  createSteelReviewOcrContextTable,
+  getSteelReviewOcrContext,
+  getSteelReviewReferenceRows,
+} from './SteelReview/reference';
+import {
   applySteelReviewSnapshotToMessages,
   applySteelReviewSnapshotToResponse,
 } from './SteelReview/cache';
@@ -768,16 +773,29 @@ export default function SteelReviewDialog({
   );
   const sources = useMemo(() => sourcesQuery.data?.sources ?? [], [sourcesQuery.data?.sources]);
   const sourcesReady = sourcesQuery.data !== undefined;
+  const firstBoundSystemSourceId = useMemo(() => {
+    if (baseTable?.kind !== 'system_order') {
+      return undefined;
+    }
+    const authorizedFileIds = new Set(sources.map((source) => source.fileId));
+    return draftRows.find((row) => !row.deleted && row.system && row.system.kind !== 'unassigned' && row.source?.fileId &&
+      row.source.pageNumber !== null && authorizedFileIds.has(row.source.fileId))?.source?.fileId;
+  }, [baseTable?.kind, draftRows, sources]);
   const selectedSource = useMemo(
-    () => sources.find((source) => source.fileId === selectedFileId) ?? sources[0],
-    [selectedFileId, sources],
+    () => sources.find((source) => source.fileId === selectedFileId) ??
+      (!selectedFileId && firstBoundSystemSourceId
+        ? sources.find((source) => source.fileId === firstBoundSystemSourceId)
+        : undefined) ?? sources[0],
+    [firstBoundSystemSourceId, selectedFileId, sources],
   );
   const selectedSourceId = selectedSource?.fileId;
   const pageCount = selectedSource?.pageCount ?? (
     dialogState.initializedSourceId === selectedSourceId ? storedPageCount : 0
   );
   const selectedSourcePage = useMemo(
-    () => draftRows.find((row) => row.source?.fileId === selectedSource?.fileId)?.source?.pageNumber,
+    () => draftRows.find((row) => !row.deleted && row.system && row.system.kind !== 'unassigned' && row.source?.fileId === selectedSource?.fileId &&
+      row.source?.pageNumber !== null)?.source?.pageNumber ??
+      draftRows.find((row) => row.source?.fileId === selectedSource?.fileId)?.source?.pageNumber,
     [draftRows, selectedSource?.fileId],
   );
   const pageNumber = selectedSourceId && dialogState.initializedSourceId !== selectedSourceId
@@ -911,6 +929,28 @@ export default function SteelReviewDialog({
   if (!sourcesReady) editorRows = [];
   else if (unlinkedMode) editorRows = previewRows.unlocated;
   else if (selectedSource) editorRows = previewRows.located;
+  const ocrContext = baseTable?.kind === 'system_order' ? getSteelReviewOcrContext(baseTable) : null;
+  const ocrReferenceTable = useMemo(
+    () => ocrContext && baseTable
+      ? createSteelReviewOcrContextTable(baseTable, ocrContext)
+      : undefined,
+    [baseTable, ocrContext],
+  );
+  const ocrReference = baseTable && ocrReferenceTable && !unlinkedMode
+    ? getSteelReviewReferenceRows(
+        baseTable,
+        editorRows,
+        selectedSource?.fileId,
+        pageNumber,
+        baseTable.rows,
+      )
+    : { mode: 'none' as const, rows: [] };
+  const ocrReferenceDraft = useMemo(
+    () => ocrReferenceTable
+      ? createSteelReviewDraftState(`ocr-reference:${getSteelReviewDraftKey(identity, ocrReferenceTable)}`)
+      : undefined,
+    [identity, ocrReferenceTable],
+  );
   const recoveryIndicators = useMemo(() => {
     const fileIds = new Set<string>();
     const pageKeys = new Set<string>();
@@ -1100,14 +1140,22 @@ export default function SteelReviewDialog({
   }, [setDialogState]);
   const confirmSourceCorrection = useCallback(() => {
     if (!sourceCorrectionCanConfirm || !sourceCorrectionRow || !sourceCorrectionFile) return;
+    const selectedPage = dialogState.sourceCorrectionPageNumber ?? 1;
     onSourceChange(sourceCorrectionRow, {
       fileId: sourceCorrectionFile.fileId,
       filename: sourceCorrectionFile.filename,
       mediaType: sourceCorrectionFile.mediaType,
-      pageNumber: dialogState.sourceCorrectionPageNumber ?? 1,
+      pageNumber: selectedPage,
     });
+    setDialogState((state) => ({
+      ...state,
+      selectedFileId: sourceCorrectionFile.fileId,
+      pageNumber: selectedPage,
+      initializedSourceId: sourceCorrectionFile.fileId,
+      unlinkedMode: false,
+    }));
     closeSourceCorrection();
-  }, [closeSourceCorrection, dialogState.sourceCorrectionPageNumber, onSourceChange, sourceCorrectionCanConfirm, sourceCorrectionFile, sourceCorrectionRow]);
+  }, [closeSourceCorrection, dialogState.sourceCorrectionPageNumber, onSourceChange, setDialogState, sourceCorrectionCanConfirm, sourceCorrectionFile, sourceCorrectionRow]);
   const applyLatestConflictValue = useCallback((conflict: SteelReviewConflict) => {
     const recovery = getCaptureScopedValue(recoveryRef, captureId);
     const row = recovery?.table.rows.find((candidate) => candidate.rowId === conflict.rowId);
@@ -1933,7 +1981,7 @@ export default function SteelReviewDialog({
             ...state,
             selectedFileId: value || undefined,
             pageNumber: 1,
-            initializedSourceId: undefined,
+            initializedSourceId: value || undefined,
           }))}
         >
           <SelectTrigger
@@ -2198,6 +2246,24 @@ export default function SteelReviewDialog({
                     </Button>
                   )}
                 </div>
+              )}
+              {sourcesReady && ocrReferenceTable && ocrReferenceDraft && ocrReference.rows.length > 0 && (
+                <section className="shrink-0 space-y-2" aria-label={ocrReferenceTable.title}>
+                  <h2 className="text-base font-semibold">{ocrReferenceTable.title}</h2>
+                  <SteelReviewEditor
+                    isDesktop={isDesktop}
+                    table={ocrReferenceTable}
+                    rows={ocrReference.rows}
+                    draft={ocrReferenceDraft}
+                    labels={{
+                      table: localize('com_ui_steel_review_table_label'),
+                      readonly: localize('com_ui_steel_review_cell_readonly'),
+                      ...sourceEditorLabels,
+                    }}
+                    onCellChange={() => undefined}
+                    canEdit={false}
+                  />
+                </section>
               )}
               <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
                 <div className="flex shrink-0 items-center gap-2 md:flex-1">

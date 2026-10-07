@@ -5,6 +5,8 @@ import {
   encodeSteelReviewTitleOwner,
   applySteelReviewOperations,
   bindSteelReviewSystemRows,
+  bindSteelReviewRowsToOcrContext,
+  createSteelReviewOcrContext,
   initializeFreshSteelReviewSystemRows,
   isSteelReviewSourceAssociationHeader,
   normalizeSteelReviewEffectiveValue,
@@ -93,6 +95,46 @@ function encodeSteelReviewDigest(input: DigestFixture): string {
 }
 
 describe('Steel review contracts', () => {
+  it('binds unique OCR parts and clears ambiguous or missing matches', () => {
+    const ocrRow = (rowId: string, part: string): SteelReviewRow => ({
+      rowId,
+      values: {
+        零件編號: { baseline: part, effective: part },
+        來源: { baseline: 'F1', effective: 'F1' },
+      },
+      source: { fileId: 'file-1', pageNumber: 2, filename: 'order.pdf' },
+    });
+    const context = createSteelReviewOcrContext({
+      title: 'ocr_result',
+      outputId: 'ocr_result:v3',
+      revision: 'v3',
+      headers: ['來源', '零件編號'],
+      rows: [ocrRow('ocr-1', 'P-1'), ocrRow('ocr-2', 'P-1'), ocrRow('ocr-3', 'P-3')],
+    });
+    const row = (rowId: string, kind: SteelReviewSystemKind, part: string): SteelReviewRow => ({
+      rowId,
+      values: { 備註: { baseline: part, effective: part } },
+      source: { fileId: 'stale', pageNumber: 9 },
+      system: { kind, parentRowId: kind === 'processing' ? 'material-3' : null, cascadeDeletedBy: null },
+    });
+    const linked = bindSteelReviewRowsToOcrContext(['備註'], [
+      row('material-1', 'material', 'P-1'),
+      row('material-3', 'material', 'P-3'),
+      row('processing-3', 'processing', 'P-3'),
+      row('material-missing', 'material', 'P-4'),
+    ], context);
+    expect(linked.find((candidate) => candidate.rowId === 'material-1')).toMatchObject({ ocrLink: null, source: null });
+    expect(linked.find((candidate) => candidate.rowId === 'material-3')).toMatchObject({
+      ocrLink: { outputId: 'ocr_result:v3', revision: 'v3', rowId: 'ocr-3' },
+      source: { fileId: 'file-1', pageNumber: 2 },
+    });
+    expect(linked.find((candidate) => candidate.rowId === 'processing-3')).toMatchObject({
+      ocrLink: { outputId: 'ocr_result:v3', revision: 'v3', rowId: 'ocr-3' },
+      source: { fileId: 'file-1', pageNumber: 2 },
+    });
+    expect(linked.find((candidate) => candidate.rowId === 'material-missing')).toMatchObject({ ocrLink: null, source: null });
+  });
+
   it('classifies exact source association headers without locking business fields', () => {
     const associationHeaders = [
       '來源', '頁碼', '原始檔案', '原檔頁碼', 'source', 'source_file', 'Original File',

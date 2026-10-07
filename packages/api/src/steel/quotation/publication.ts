@@ -182,11 +182,20 @@ export function createSteelQuotationPublicationPublisher(
     if (!section) throw new Error('Quotation publication full section is unavailable');
     const baselineMarkdown = section.raw.trimEnd();
     const outputId = `system_order:${proof.runId}`;
+    const revision = proof.reviewMetadata?.lineage.outputId === outputId
+      ? proof.reviewMetadata.lineage.revision
+      : proof.runId;
     return input.savePublication({
       ...proof,
-      reviewBaseline: { kind: 'system_order', title: section.title, outputId, revision: proof.runId,
+      reviewBaseline: { kind: 'system_order', title: section.title, outputId, revision,
         baselineMarkdown, headers: table.headers, sourceMappings: proof.sourceSnapshot?.mappings ?? [],
-        rows: createSteelReviewBaselineRows(table, 'system_order', outputId, proof.sourceSnapshot?.mappings ?? [], proof.calculationCheckpoint) },
+        rows: proof.reviewMetadata?.rows ?? createSteelReviewBaselineRows(
+          table,
+          'system_order',
+          outputId,
+          proof.sourceSnapshot?.mappings ?? [],
+          proof.calculationCheckpoint,
+        ) },
       scope,
       targetMessageId,
       saveContext: input.saveContext ?? proof.saveContext,

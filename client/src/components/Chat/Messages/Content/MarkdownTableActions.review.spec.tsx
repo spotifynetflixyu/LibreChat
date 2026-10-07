@@ -2808,6 +2808,101 @@ describe('MarkdownTableActions Steel review entry', () => {
     mockUseGetSteelReviewSourcePageCountQuery.mockReturnValue({ data: undefined, isLoading: false, isError: false });
   });
 
+  it('renders a readonly OCR reference for bound system rows and updates it after manual rebinding', async () => {
+    const identity = {
+      ...reviewIdentity,
+      kind: 'system_order' as const,
+      title: 'system_order｜報價單',
+    };
+    const selection: SteelReviewSelection = { ...identity, captureId: 'capture-system-ocr-reference' };
+    const ocrOutputId = 'ocr_result:reference-output';
+    const ocrRevision = 'reference-revision';
+    const table = {
+      ...identity,
+      outputId: 'system_order:reference-output',
+      revision: 'system-reference-revision',
+      latestOutputId: 'system_order:reference-output',
+      isLatest: true,
+      readOnly: false,
+      headers: ['零件編號'],
+      rows: [{
+        rowId: 'system-row-1',
+        system: { kind: 'material' as const, parentRowId: null, cascadeDeletedBy: null },
+        source: { fileId: 'drawing-a', pageNumber: 1, filename: 'drawing-a.png', mediaType: 'image/png' },
+        values: { 零件編號: { baseline: 'D3', effective: 'D3' } },
+        ocrLink: { outputId: ocrOutputId, revision: ocrRevision, rowId: 'ocr-row-1' },
+      }],
+      ocrContext: {
+        title: 'ocr_result｜PL.pdf',
+        outputId: ocrOutputId,
+        revision: ocrRevision,
+        headers: ['零件編號'],
+        rows: [{
+          rowId: 'ocr-row-1',
+          source: { fileId: 'drawing-a', pageNumber: 1, filename: 'drawing-a.png', mediaType: 'image/png' },
+          values: { 零件編號: { baseline: 'OCR-D3', effective: 'OCR-D3' } },
+        }, {
+          rowId: 'ocr-row-2',
+          source: { fileId: 'drawing-b', pageNumber: 2, filename: 'PL.pdf', mediaType: 'application/pdf' },
+          values: { 零件編號: { baseline: 'OCR-S3', effective: 'OCR-S3' } },
+        }],
+      },
+    };
+    const sourceBlob = new Blob(['image'], { type: 'image/png' });
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: jest.fn(() => 'blob:steel-reference') });
+    mockUseGetSteelReviewQuery.mockReturnValue({ data: { table }, error: null, isError: false, isLoading: false });
+    mockUseGetSteelReviewSourcesQuery.mockReturnValue({
+      data: {
+        sources: [
+          { fileId: 'drawing-a', filename: 'drawing-a.png', mediaType: 'image/png' },
+          { fileId: 'drawing-b', filename: 'PL.pdf', mediaType: 'application/pdf', pageCount: 2 },
+        ],
+      },
+      error: null,
+      isError: false,
+      isLoading: false,
+    });
+    mockUseGetSteelReviewSourceQuery.mockReturnValue({
+      data: sourceBlob,
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: jest.fn(),
+    });
+
+    renderDialog(new QueryClient(), selection, createStore(), identity);
+
+    expect(await screen.findByRole('img', { name: 'com_ui_steel_review_preview_canvas' })).toBeInTheDocument();
+    const sourceSelectors = screen.getAllByRole('combobox');
+    expect(sourceSelectors[0]).toHaveValue('drawing-a');
+    expect(sourceSelectors[1]).toHaveValue('1');
+    const initialReadonlyCells = screen.getAllByLabelText('零件編號: com_ui_steel_review_cell_readonly');
+    expect(initialReadonlyCells[0]).toHaveTextContent('OCR-D3');
+    expect(screen.queryByRole('button', { name: 'com_ui_edit ocr-row-1' })).not.toBeInTheDocument();
+    const referenceTitle = screen.getByRole('heading', { name: 'ocr_result｜PL.pdf' });
+    const systemTitle = screen.getByRole('heading', { name: 'system_order｜報價單' });
+    expect(referenceTitle.compareDocumentPosition(systemTitle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_bound system-row-1' }));
+    const linkDialog = screen.getAllByRole('dialog').at(-1);
+    expect(linkDialog).toBeDefined();
+    const linkSelectors = within(linkDialog!).getAllByRole('combobox');
+    fireEvent.change(linkSelectors[0], { target: { value: 'drawing-b' } });
+    fireEvent.change(linkSelectors[1], { target: { value: '2' } });
+    fireEvent.click(within(linkDialog!).getByRole('button', { name: 'com_ui_confirm' }));
+
+    await waitFor(() => {
+      const nextSelectors = screen.getAllByRole('combobox');
+      expect(nextSelectors[0]).toHaveValue('drawing-b');
+      expect(nextSelectors[1]).toHaveValue('2');
+      expect(screen.getAllByLabelText('零件編號: com_ui_steel_review_cell_readonly')[0]).toHaveTextContent('OCR-S3');
+    });
+    expect(document.body).not.toHaveTextContent('OCR-D3');
+    const nextReadonlyCells = screen.getAllByLabelText('零件編號: com_ui_steel_review_cell_readonly');
+    expect(nextReadonlyCells[0]).toHaveTextContent('OCR-S3');
+    expect(screen.queryByRole('button', { name: 'com_ui_edit ocr-row-2' })).not.toBeInTheDocument();
+  });
+
   it('inherits the active preview source when adding a material, and leaves it empty without one', async () => {
     const identity = {
       ...reviewIdentity,

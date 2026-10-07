@@ -182,13 +182,13 @@ function requestedCustomerRunId(outputId: string): string | undefined {
 export function createSteelReviewCatalogService({
   reader,
   client,
-  pageSize = 25,
+  pageSize = 50,
 }: {
   reader: SteelReviewReadMethods;
   client: SteelReviewCatalogClient;
   pageSize?: number;
 }): SteelReviewCatalogService {
-  const defaultPageSize = Number.isInteger(pageSize) && pageSize > 0 && pageSize <= 100 ? pageSize : 25;
+  const defaultPageSize = Number.isInteger(pageSize) && pageSize > 0 && pageSize <= 100 ? pageSize : 50;
 
   async function authorize(
     scope: SteelReviewCatalogScope,

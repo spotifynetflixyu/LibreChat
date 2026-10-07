@@ -446,7 +446,7 @@ describe('desktop steel review cells', () => {
     />);
 
     expect(screen.getByText('11')).toBeInTheDocument();
-    expect(screen.getByText('10', { selector: 'del' })).toBeInTheDocument();
+    expect(screen.getByText('10').closest('del')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Edit 單價 row-1' }));
     expect(screen.getByRole('textbox', { name: '單價 row-1' })).toBeInTheDocument();
     rendered.rerender(<SteelReviewEditor

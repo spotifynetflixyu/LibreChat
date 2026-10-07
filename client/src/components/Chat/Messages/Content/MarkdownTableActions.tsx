@@ -1,6 +1,6 @@
 import React, { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { useAtom } from 'jotai';
 import filenamify from 'filenamify';
+import { atom, useAtom } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import { createPortal } from 'react-dom';
 import { Check, Copy, Download, FileSearch, Maximize2, X } from 'lucide-react';
@@ -10,11 +10,13 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
+  TooltipAnchor,
 } from '@librechat/client';
 import type { SteelReviewKind, SteelReviewTable } from 'librechat-data-provider';
 import type { SteelReviewDownloadAuthority, SteelReviewSaveGate } from './SteelReviewDialog';
 import type { TableMatrix } from './table/export';
 import { canGroupByThickness, createCsvBlob, createThicknessZip } from './table/export';
+import { orderSystemMatrix, orderSystemTable } from './table/order';
 import { steelReviewSelectionAtom } from './SteelReview/state';
 import { useGetSteelReviewQuery } from '~/data-provider';
 import SteelReviewDialog from './SteelReviewDialog';
@@ -189,12 +191,13 @@ function getTableMatrix(table: HTMLTableElement | null): TableMatrix {
 }
 
 function getReviewTableMatrix(table: SteelReviewTable): TableMatrix {
-  return [
+  const matrix = [
     table.headers,
     ...table.rows
       .filter((row) => !row.deleted)
       .map((row) => table.headers.map((header) => row.values[header]?.effective ?? '')),
   ];
+  return table.kind === 'system_order' ? orderSystemMatrix(matrix) : matrix;
 }
 
 function getTableHeaderOptions(table: HTMLTableElement | null): TableHeaderOption[] {
@@ -306,21 +309,29 @@ function TableActionButton({
   children,
   label,
   onClick,
+  portalElement,
 }: {
   children: React.ReactNode;
   label: string;
   onClick: () => void;
+  portalElement?: HTMLElement | null;
 }) {
   return (
-    <button
-      type="button"
-      className="markdown-table-action"
-      aria-label={label}
-      title={label}
-      onClick={onClick}
-    >
-      {children}
-    </button>
+    <TooltipAnchor
+      side="top"
+      description={label}
+      portalElement={portalElement}
+      render={
+        <button
+          type="button"
+          className="markdown-table-action"
+          aria-label={label}
+          onClick={onClick}
+        >
+          {children}
+        </button>
+      }
+    />
   );
 }
 
@@ -342,6 +353,8 @@ function TableToolbar({
   getDownloadMatrix,
 }: TableToolbarProps) {
   const localize = useLocalize();
+  const tooltipHostAtom = useMemo(() => atom<HTMLElement | null>(null), []);
+  const [tooltipHost, setTooltipHost] = useAtom(tooltipHostAtom);
   const copyLabel = localize('com_ui_copy_markdown_table');
   const downloadLabel = localize(downloadMenu ? 'com_ui_download' : 'com_ui_download_table_csv');
   const [canGroup, setCanGroup] = useState(false);
@@ -424,6 +437,7 @@ function TableToolbar({
 
   return (
     <div
+      ref={expanded ? setTooltipHost : undefined}
       className={
         expanded
           ? 'markdown-table-toolbar markdown-table-toolbar-expanded'
@@ -448,7 +462,7 @@ function TableToolbar({
           />
         </div>
       )}
-      <TableActionButton label={copyLabel} onClick={handleCopy}>
+      <TableActionButton label={copyLabel} onClick={handleCopy} portalElement={tooltipHost}>
         {copied ? (
           <Check className="size-4" aria-hidden="true" />
         ) : (
@@ -459,23 +473,28 @@ function TableToolbar({
         <DropdownMenu
           onOpenChange={(open) => {
             if (open) {
-              const matrix = getDownloadMatrix?.() ?? getTableMatrix(tableRef.current);
-              setCanGroup(canGroupByThickness(matrix));
+              setCanGroup(canGroupByThickness(getTableMatrix(tableRef.current)));
             }
           }}
         >
-          <DropdownMenuTrigger asChild>
-            <button
-              type="button"
-              className="markdown-table-action"
-              aria-label={downloadLabel}
-              title={downloadLabel}
-              disabled={isDownloading}
-              aria-busy={isDownloading}
-            >
-              <Download className="size-4" aria-hidden="true" />
-            </button>
-          </DropdownMenuTrigger>
+          <TooltipAnchor
+            side="top"
+            description={downloadLabel}
+            portalElement={tooltipHost}
+            render={
+              <DropdownMenuTrigger asChild>
+                <button
+                  type="button"
+                  className="markdown-table-action"
+                  aria-label={downloadLabel}
+                  disabled={isDownloading}
+                  aria-busy={isDownloading}
+                >
+                  <Download className="size-4" aria-hidden="true" />
+                </button>
+              </DropdownMenuTrigger>
+            }
+          />
           <DropdownMenuContent
             align="end"
             style={expanded ? { zIndex: 1001 } : undefined}
@@ -494,22 +513,22 @@ function TableToolbar({
           </DropdownMenuContent>
         </DropdownMenu>
       ) : (
-        <TableActionButton label={downloadLabel} onClick={handleDownload}>
+        <TableActionButton label={downloadLabel} onClick={handleDownload} portalElement={tooltipHost}>
           <Download className="size-4" aria-hidden="true" />
         </TableActionButton>
       )}
       {downloadFailed && <span role="alert">{localize('com_ui_download_table_error')}</span>}
       {reviewLabel && onReview && (
-        <TableActionButton label={reviewLabel} onClick={onReview}>
+        <TableActionButton label={reviewLabel} onClick={onReview} portalElement={tooltipHost}>
           <FileSearch className="size-4" aria-hidden="true" />
         </TableActionButton>
       )}
       {expanded ? (
-        <TableActionButton label={closeLabel} onClick={onClose ?? (() => undefined)}>
+        <TableActionButton label={closeLabel} onClick={onClose ?? (() => undefined)} portalElement={tooltipHost}>
           <X className="size-4" aria-hidden="true" />
         </TableActionButton>
       ) : (
-        <TableActionButton label={expandLabel} onClick={onExpand ?? (() => undefined)}>
+        <TableActionButton label={expandLabel} onClick={onExpand ?? (() => undefined)} portalElement={tooltipHost}>
           <Maximize2 className="size-4" aria-hidden="true" />
         </TableActionButton>
       )}
@@ -554,6 +573,8 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
     .filter(Boolean)
     .join(' ');
   const reviewKind = getReviewKind(markdownTitle);
+  const displayChildren = useMemo(() => reviewKind === 'system_order'
+    ? orderSystemTable(children) : children, [children, reviewKind]);
   const reviewCandidate = useMemo(
     () =>
       reviewKind && messageId && reviewConversationId && isCreatedByUser !== true
@@ -685,9 +706,10 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
       return [];
     }
     const managedMatrix = downloadAuthority.gate?.getMatrix();
-    return managedMatrix && managedMatrix.length > 0
-      ? managedMatrix
-      : getReviewTableMatrix(currentTable);
+    if (managedMatrix && managedMatrix.length > 0) {
+      return currentTable.kind === 'system_order' ? orderSystemMatrix(managedMatrix) : managedMatrix;
+    }
+    return getReviewTableMatrix(currentTable);
   }, []);
 
   useEffect(() => {
@@ -707,7 +729,7 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
     );
 
     return undefined;
-  }, [children, isExpanded]);
+  }, [displayChildren, isExpanded]);
 
   useEffect(() => {
     if (!isExpanded || !modalTableRef.current) {
@@ -717,7 +739,7 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
     applyStickyColumnClasses(modalTableRef.current, stickyColumnIndex);
 
     return undefined;
-  }, [children, isExpanded, stickyColumnIndex]);
+  }, [displayChildren, isExpanded, stickyColumnIndex]);
 
   useEffect(() => {
     if (!isExpanded) {
@@ -765,7 +787,7 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
         onExpand={openModal}
       />
       <div className="markdown-table-wrapper w-full max-w-full">
-        <table ref={tableRef}>{children}</table>
+        <table ref={tableRef}>{displayChildren}</table>
       </div>
       {isExpanded &&
         createPortal(
@@ -783,8 +805,6 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
                 downloadFilename={downloadFilename}
                 expanded={true}
                 downloadMenu={downloadMenu}
-                reviewLabel={reviewCandidate ? reviewLabel : undefined}
-                onReview={reviewCandidate ? openReview : undefined}
                 onBeforeDownload={reviewIdentity ? prepareReviewDownload : undefined}
                 getDownloadMatrix={reviewIdentity ? getReviewDownloadMatrix : undefined}
                 headerOptions={headerOptions}
@@ -794,7 +814,7 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
                 stickyColumnIndex={stickyColumnIndex}
               />
               <div className="markdown-table-modal-scroll">
-                <table ref={modalTableRef}>{children}</table>
+                <table ref={modalTableRef}>{displayChildren}</table>
               </div>
             </div>
           </div>,

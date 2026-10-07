@@ -7,6 +7,8 @@ import type {
   SteelCatalogSelectionEvidence,
   SteelReviewSourceMapping,
   SteelReviewTarget,
+  SteelReviewMetadata,
+  SteelReviewOcrContext,
 } from 'librechat-data-provider';
 import type { SteelCalculationCheckpoint } from 'librechat-data-provider';
 import type { Document } from 'mongoose';
@@ -98,6 +100,10 @@ export interface SteelReviewReadRecord extends SteelReviewScope {
   lastSave?: SteelReviewReceipt;
   /** Immutable receipt history used to resolve a captured same-owner revision. */
   receipts?: SteelReviewReceipt[];
+  /** Versioned system-order/OCR identity when the publication initialized it. */
+  reviewMetadata?: SteelReviewMetadata;
+  /** Sanitized OCR context projected for read/prepare/recovery clients. */
+  ocrContext?: SteelReviewOcrContext;
 }
 
 export interface ISteelReviewOutput extends Document, SteelReviewScope {
@@ -120,6 +126,8 @@ export interface ISteelReviewOutput extends Document, SteelReviewScope {
   effectiveMarkdown?: string;
   displayMarkdown?: string;
   receipts: SteelReviewReceipt[];
+  /** Immutable OCR/system relationship captured by the publication that owns this output. */
+  reviewMetadata?: SteelReviewMetadata;
   createdAt?: Date;
   updatedAt?: Date;
 }

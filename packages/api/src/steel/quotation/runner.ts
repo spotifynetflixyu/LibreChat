@@ -1,6 +1,10 @@
 import mongoose from 'mongoose';
 import { createHash, randomUUID } from 'node:crypto';
 import {
+  bindSteelReviewRowsToOcrContext,
+  createSteelReviewOcrContext,
+} from 'librechat-data-provider';
+import {
   steelCalculationCandidateEvidenceSchema,
   steelCalculationCheckpointSchema,
   type SteelCalculationCandidateEvidence,
@@ -20,6 +24,7 @@ import type {
   SteelQuotationOcrSelection,
   SteelQuotationPublicationSaveResult,
 } from '@librechat/data-schemas';
+import type { SteelReviewMetadata } from 'librechat-data-provider';
 import type { QuotationBackendFailure, QuotationChildResultInput, QuotationLookupEvidence, QuotationPythonEvidence } from './protocol';
 import type { SteelToolJsonObject, SteelToolResult } from '../tools/results';
 import type { QuotationModelInput, QuotationRepairProgress } from './model';
@@ -58,6 +63,7 @@ import { buildSteelQuotationStatusEvent } from '../native/events';
 import { normalizeSteelChunkMarkdown } from '../markdown/chunk';
 import { canonicalizeSystemOrderMarkdown } from './revision';
 import { createSteelQuotationStateService } from './state';
+import { createSteelReviewBaselineRows } from '../review';
 import { parseMarkdownTables } from '../markdown/table';
 import { parseAssistantMarkdown } from '../ocr/result';
 import { registerQuotationExecution } from './control';
@@ -86,6 +92,61 @@ export class SteelQuotationPublicationError extends Error {
     this.name = 'SteelQuotationPublicationError';
     this.code = code;
   }
+}
+
+function buildQuotationReviewMetadata(input: {
+  snapshot: SteelQuotationSnapshotPayload;
+  systemOrderMarkdown: string;
+  runId: string;
+  systemOutputId: string;
+  messageId?: string;
+  calculationCheckpoint?: SteelCalculationCheckpoint;
+}): SteelReviewMetadata | undefined {
+  const selected = input.snapshot.ocrSelection?.selected;
+  const ocrSections = parseAssistantMarkdown(input.snapshot.orderMarkdown).sections;
+  const ocrSection = ocrSections.find((section) => section.title.split(/[｜|:：]/u)[0]?.trim() === 'ocr_result');
+  const ocrTable = parseMarkdownTables(ocrSection?.body ?? input.snapshot.orderMarkdown)[0];
+  const systemSection = parseAssistantMarkdown(input.systemOrderMarkdown).sections.find((section) =>
+    section.title.split(/[｜|:：]/u)[0]?.trim() === 'system_order');
+  const systemTable = parseMarkdownTables(systemSection?.body ?? input.systemOrderMarkdown)[0];
+  if (!systemSection || !systemTable) return undefined;
+  const baselineSystemRows = createSteelReviewBaselineRows(
+    systemTable,
+    'system_order',
+    input.systemOutputId,
+    input.snapshot.sourceSnapshot?.mappings ?? [],
+    input.calculationCheckpoint,
+  );
+  const ocrContext = selected && ocrSection && ocrTable
+    ? createSteelReviewOcrContext({
+        title: ocrSection.title,
+        outputId: selected.outputId,
+        revision: selected.revision,
+        headers: ocrTable.headers,
+        rows: createSteelReviewBaselineRows(
+          ocrTable,
+          'ocr_result',
+          selected.outputId,
+          input.snapshot.sourceSnapshot?.mappings ?? [],
+        ),
+      })
+    : null;
+  const systemRows = ocrContext
+    ? bindSteelReviewRowsToOcrContext(systemTable.headers, baselineSystemRows, ocrContext)
+    : baselineSystemRows.map((row) => ({ ...row, source: null, ocrLink: null }));
+  return {
+    version: 1,
+    initialized: true,
+    lineage: {
+      runId: input.runId,
+      outputId: input.systemOutputId,
+      revision: input.runId,
+      ...(input.messageId ? { messageId: input.messageId } : {}),
+      ...(selected ? { ocrOutputId: selected.outputId, ocrRevision: selected.revision, ocrHash: selected.sha256 } : {}),
+    },
+    ocrContext,
+    rows: systemRows,
+  };
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -215,6 +276,7 @@ async function materializeCompletedSystemOrder(
   if (!canonical || !quote || !runTargetMessageId) {
     throw new Error('Quotation publication has no canonical system order');
   }
+  const systemOutputId = `system_order:${input.run.runId}`;
   const calculationRef = state.activeRun?.checkpointRefs.find((ref) => ref.operationId === 'calculation:basis');
   let calculationCheckpoint: SteelCalculationCheckpoint | undefined;
   if (calculationRef) {
@@ -229,12 +291,39 @@ async function materializeCompletedSystemOrder(
     }
     calculationCheckpoint = parsed.data;
   }
+  const reviewMetadata = buildQuotationReviewMetadata({
+    snapshot,
+    systemOrderMarkdown: canonical.markdown,
+    runId: input.run.runId,
+    systemOutputId,
+    messageId: runTargetMessageId,
+    calculationCheckpoint,
+  });
   const classify = async (currentSystemOrder: SteelQuotationCurrentSystemOrder): Promise<SteelQuotationCurrentSystemOrder> => {
     if (!snapshot.ocrSelection) return currentSystemOrder;
     const needsRequote = await input.service.markOcrStale(input.scope, input.run.runId, snapshot.ocrSelection);
     return { ...currentSystemOrder, needsRequote };
   };
-  if (existing?.runId === input.run.runId) return { state, currentSystemOrder: await classify(existing) };
+  if (existing?.runId === input.run.runId) {
+    if (!existing.reviewMetadata && reviewMetadata) {
+      const initialized = await input.service.saveCurrentSystemOrder({
+        scope: input.scope,
+        snapshot: { ...existing, reviewMetadata },
+        expectedRunId: input.run.runId,
+        expectedCurrentOrderSha256: snapshot.orderHash,
+        ...(state.currentCustomer ? {
+          expectedCustomer: {
+            customerIdentity: snapshot.customerIdentity,
+            customerMarkdown: snapshot.customerMarkdown,
+          },
+        } : {}),
+        expectedCurrentSystemOrderSha256: existing.sha256,
+        expectedCurrentSystemOrderPresent: true,
+      });
+      if (initialized) return { state, currentSystemOrder: await classify(initialized) };
+    }
+    return { state, currentSystemOrder: await classify(existing) };
+  }
   const saved = await input.service.saveCurrentSystemOrder({
     scope: input.scope,
     snapshot: {
@@ -246,6 +335,7 @@ async function materializeCompletedSystemOrder(
       ...(calculationCheckpoint ? { calculationCheckpoint } : {}),
       ...(snapshot.sourceSnapshot ? { sourceSnapshot: snapshot.sourceSnapshot } : {}),
       ...(snapshot.ocrSelection ? { ocrSelection: snapshot.ocrSelection } : {}),
+      ...(reviewMetadata ? { reviewMetadata } : {}),
       updatedAt: new Date(),
     },
     expectedRunId: input.run.runId,
@@ -304,6 +394,7 @@ export async function publishCompletedQuotation(
         ? { calculationCheckpoint: currentSystemOrder.calculationCheckpoint }
         : {}),
       ...(currentSystemOrder.sourceSnapshot ? { sourceSnapshot: currentSystemOrder.sourceSnapshot } : {}),
+      ...(currentSystemOrder.reviewMetadata ? { reviewMetadata: currentSystemOrder.reviewMetadata } : {}),
       customer: {
         preparationId: customer.preparationId,
         customerIdentity: customer.customerIdentity,

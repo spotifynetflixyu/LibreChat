@@ -139,6 +139,12 @@ export const steelReviewSourceMappingSchema = z.object({
   mediaType: z.string().min(1).optional(),
 });
 
+export const steelReviewOcrLinkSchema = z.object({
+  outputId: z.string().min(1),
+  revision: z.string().min(1),
+  rowId: z.string().min(1),
+}).strict();
+
 export const steelReviewCellSchema = z.object({
   baseline: z.string().nullable(),
   effective: z.string().nullable(),
@@ -313,7 +319,34 @@ export const steelReviewRowSchema = z.object({
   insertion: steelReviewRowInsertionSchema.optional(),
   system: steelReviewSystemStateSchema.optional(),
   calculation: steelCalculationRowMetadataSchema.optional(),
+  ocrLink: steelReviewOcrLinkSchema.nullable().optional(),
 });
+
+export const steelReviewOcrContextSchema = z.object({
+  title: steelReviewTitleSchema,
+  outputId: z.string().min(1),
+  revision: z.string().min(1),
+  headers: z.array(z.string()),
+  rows: z.array(steelReviewRowSchema),
+}).strict();
+
+export const steelReviewLineageSchema = z.object({
+  runId: z.string().min(1),
+  outputId: z.string().min(1),
+  revision: z.string().min(1),
+  messageId: z.string().min(1).optional(),
+  ocrOutputId: z.string().min(1).optional(),
+  ocrRevision: z.string().min(1).optional(),
+  ocrHash: z.string().length(64).optional(),
+}).strict();
+
+export const steelReviewMetadataSchema = z.object({
+  version: z.literal(1),
+  initialized: z.literal(true),
+  lineage: steelReviewLineageSchema,
+  ocrContext: steelReviewOcrContextSchema.nullable(),
+  rows: z.array(steelReviewRowSchema),
+}).strict();
 
 export const steelReviewTargetSchema = z.object({
   partIndex: z.number().int().nonnegative().optional(),
@@ -517,6 +550,7 @@ export const steelReviewTableSchema = z.object({
   headers: z.array(z.string()),
   rows: z.array(steelReviewRowSchema),
   sourceMappings: z.array(steelReviewSourceMappingSchema).optional(),
+  ocrContext: steelReviewOcrContextSchema.optional(),
 });
 
 const steelReviewConflictSourceValueSchema = z.object({
@@ -698,11 +732,15 @@ export const steelReviewSourceBinaryQuerySchema = z.object({
 export type SteelReviewSource = z.infer<typeof steelReviewSourceSchema>;
 export type SteelReviewSourceIntent = z.infer<typeof steelReviewSourceIntentSchema>;
 export type SteelReviewSourceMapping = z.infer<typeof steelReviewSourceMappingSchema>;
+export type SteelReviewOcrLink = z.infer<typeof steelReviewOcrLinkSchema>;
 export type SteelReviewCell = z.infer<typeof steelReviewCellSchema>;
 export type SteelReviewRowOrigin = z.infer<typeof steelReviewRowOriginSchema>;
 export type SteelReviewRowInsertion = z.infer<typeof steelReviewRowInsertionSchema>;
 export type SteelReviewSystemState = z.infer<typeof steelReviewSystemStateSchema>;
 export type SteelReviewRow = z.infer<typeof steelReviewRowSchema>;
+export type SteelReviewOcrContext = z.infer<typeof steelReviewOcrContextSchema>;
+export type SteelReviewLineage = z.infer<typeof steelReviewLineageSchema>;
+export type SteelReviewMetadata = z.infer<typeof steelReviewMetadataSchema>;
 export type SteelReviewLedgerRow = Omit<SteelReviewRow, 'origin' | 'deleted'> & {
   origin: SteelReviewRowOrigin;
   deleted: boolean;
@@ -731,6 +769,7 @@ function sameOperationBusinessState(
     source: operationSourceValue(left.source),
     system: left.system ?? null,
     calculation: left.calculation ?? null,
+    ocrLink: left.ocrLink ?? null,
   }) === JSON.stringify({
     values: Object.fromEntries(headers
       .filter((header) => !isSteelReviewSourceAssociationHeader(header))
@@ -738,6 +777,7 @@ function sameOperationBusinessState(
     source: operationSourceValue(right.source),
     system: right.system ?? null,
     calculation: right.calculation ?? null,
+    ocrLink: right.ocrLink ?? null,
   });
 }
 
@@ -828,6 +868,7 @@ function setProcessingMeasurement(
 }
 
 function cloneLedgerRow(row: SteelReviewLedgerRow): SteelReviewLedgerRow {
+  const ocrLink = row.ocrLink ? { ...row.ocrLink } : row.ocrLink;
   return {
     ...row,
     values: Object.fromEntries(Object.entries(row.values).map(([header, cell]) => [header, { ...cell }])),
@@ -835,6 +876,7 @@ function cloneLedgerRow(row: SteelReviewLedgerRow): SteelReviewLedgerRow {
     ...(row.insertion ? { insertion: { ...row.insertion } } : {}),
     ...(row.system ? { system: { ...row.system } } : {}),
     ...(row.calculation ? { calculation: cloneReviewCalculation(row.calculation) } : {}),
+    ...(ocrLink !== undefined ? { ocrLink } : {}),
   };
 }
 
@@ -1277,6 +1319,8 @@ export function applySteelReviewOperations({
       }
       Object.assign(row, next);
       Object.assign(expectedRow, nextExpected);
+      row.ocrLink = null;
+      expectedRow.ocrLink = null;
       continue;
     }
     if (operation.type === 'replace_material') {
@@ -1301,6 +1345,8 @@ export function applySteelReviewOperations({
       }
       Object.assign(row, next);
       Object.assign(expectedRow, nextExpected);
+      row.ocrLink = null;
+      expectedRow.ocrLink = null;
       continue;
     }
     if (operation.type === 'update') {
@@ -1358,6 +1404,10 @@ export function applySteelReviewOperations({
         if (currentValue !== requestedValue) {
           row.values[change.header] = { ...row.values[change.header], effective: requestedValue };
           expectedRow.values[change.header] = { ...expectedRow.values[change.header], effective: requestedValue };
+          if (change.header === '備註' || change.header === '零件編號') {
+            row.ocrLink = null;
+            expectedRow.ocrLink = null;
+          }
           hasPriorValueChange = true;
         }
         conflicts.push(...applyRowCalculation(row, expectedRow, headers, [change.header]));
@@ -1378,6 +1428,8 @@ export function applySteelReviewOperations({
           expectedRow.source = requestedSource
             ? { fileId: requestedSource.fileId, pageNumber: requestedSource.pageNumber }
             : null;
+          row.ocrLink = null;
+          expectedRow.ocrLink = null;
         }
       }
       if (operation.binding) {
@@ -1655,6 +1707,95 @@ export function normalizeSteelReviewRows(rows: readonly SteelReviewRow[]): Steel
         : { ...cell };
     }
     return { ...row, values };
+  });
+}
+
+function cloneSteelReviewSource(source: SteelReviewSource | null): SteelReviewSource | null {
+  return source ? { ...source } : null;
+}
+
+function cloneSteelReviewOcrContextRow(row: SteelReviewRow): SteelReviewRow {
+  return {
+    rowId: row.rowId,
+    values: Object.fromEntries(Object.entries(row.values).map(([header, cell]) => [header, { ...cell }])),
+    source: cloneSteelReviewSource(row.source),
+  };
+}
+
+/** Build the bounded OCR evidence retained by a quotation's immutable review metadata. */
+export function createSteelReviewOcrContext(input: {
+  title: string;
+  outputId: string;
+  revision: string;
+  headers: readonly string[];
+  rows: readonly SteelReviewRow[];
+}): SteelReviewOcrContext {
+  return steelReviewOcrContextSchema.parse({
+    title: input.title,
+    outputId: input.outputId,
+    revision: input.revision,
+    headers: [...input.headers],
+    rows: input.rows.map(cloneSteelReviewOcrContextRow),
+  });
+}
+
+/**
+ * Link generated system-order rows to exactly one OCR row with the same part
+ * number. Ambiguous and missing OCR identifiers remain explicitly unlinked.
+ */
+export function bindSteelReviewRowsToOcrContext(
+  headers: readonly string[],
+  rows: readonly SteelReviewRow[],
+  context: SteelReviewOcrContext,
+): SteelReviewRow[] {
+  if (context.headers.length === 0 || context.outputId.length === 0 || context.revision.length === 0) {
+    return rows.map((row) => ({ ...row, ocrLink: null }));
+  }
+  const systemRows = bindSteelReviewSystemRows(headers, rows);
+  const partHeader = context.headers.find((header) => header === '零件編號') ??
+    context.headers.find((header) => header.trim().toLowerCase() === 'part number');
+  const remarkHeader = headers.find((header) => header === '備註');
+  const rowsByPartNumber = new Map<string, SteelReviewRow[]>();
+  if (partHeader) {
+    for (const row of context.rows) {
+      if (row.deleted) continue;
+      const partNumber = row.values[partHeader]?.effective?.trim() ?? '';
+      if (!partNumber) continue;
+      const matches = rowsByPartNumber.get(partNumber) ?? [];
+      matches.push(row);
+      rowsByPartNumber.set(partNumber, matches);
+    }
+  }
+  const materialLinks = new Map<string, SteelReviewOcrLink | null>();
+  const materialSources = new Map<string, SteelReviewSource | null>();
+  for (const row of systemRows) {
+    if (row.deleted || row.system?.kind !== 'material' || !remarkHeader) continue;
+    const partNumber = row.values[remarkHeader]?.effective?.trim() ?? '';
+    const matches = partNumber ? rowsByPartNumber.get(partNumber) ?? [] : [];
+    const sourceRow = matches.length === 1 ? matches[0] : undefined;
+    const source = sourceRow?.source ?? null;
+    const link = sourceRow && source
+      ? { outputId: context.outputId, revision: context.revision, rowId: sourceRow.rowId }
+      : null;
+    materialLinks.set(row.rowId, link);
+    materialSources.set(row.rowId, source);
+  }
+  return systemRows.map((row) => {
+    if (row.deleted) return { ...row, ocrLink: null };
+    if (row.system?.kind === 'material') {
+      return {
+        ...row,
+        source: materialSources.get(row.rowId) ?? null,
+        ocrLink: materialLinks.get(row.rowId) ?? null,
+      };
+    }
+    if (row.system?.kind === 'processing') {
+      const parent = row.system.parentRowId ? systemRows.find((candidate) => candidate.rowId === row.system?.parentRowId) : undefined;
+      const link = parent ? materialLinks.get(parent.rowId) ?? null : null;
+      const source = parent ? materialSources.get(parent.rowId) ?? null : null;
+      return { ...row, source, ocrLink: link };
+    }
+    return { ...row, ocrLink: null };
   });
 }
 

@@ -28,7 +28,7 @@ const page = (options: SteelCatalogPage['options'], hasMore = false): SteelCatal
   options, customer, complete: !hasMore, hasMore, nextCursor: hasMore ? 'next' : null,
 });
 
-function setup(header: '型號' | '品名規格' = '型號') {
+function setup(header: '型號' | '品名規格' = '型號', onIntentChange?: () => void) {
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false, cacheTime: 0 } },
     logger: { log: console.log, warn: console.warn, error: () => undefined },
@@ -36,7 +36,7 @@ function setup(header: '型號' | '品名規格' = '型號') {
   const onSelect = jest.fn();
   const result = render(<QueryClientProvider client={queryClient}>
     <SteelReviewSelector table={table} row={table.rows[0]} header={header}
-      value="OLD" canEdit onSelect={onSelect} />
+      value="OLD" canEdit onIntentChange={onIntentChange} onSelect={onSelect} />
   </QueryClientProvider>);
   fireEvent.click(screen.getByRole('combobox', { name: `${header} material` }));
   return { ...result, queryClient, onSelect };
@@ -55,6 +55,14 @@ it('applies a complete single missing-tier-price option once, only after typing'
   await act(async () => { await queryClient.invalidateQueries(); });
   expect(onSelect).toHaveBeenCalledTimes(1);
   expect(onSelect.mock.calls[0][1].unitPrice).toBeNull();
+});
+
+it('notifies the catalog host when the search intent changes', async () => {
+  const onIntentChange = jest.fn();
+  jest.spyOn(dataService, 'getSteelReviewCatalog').mockImplementation(async () => page([]));
+  setup('型號', onIntentChange);
+  fireEvent.change(await screen.findByPlaceholderText('Search catalog'), { target: { value: 'ABC' } });
+  await waitFor(() => expect(onIntentChange).toHaveBeenCalledTimes(1));
 });
 
 it('shows code and full specification labels and ignores an older query response', async () => {

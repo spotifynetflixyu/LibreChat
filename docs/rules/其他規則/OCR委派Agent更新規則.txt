@@ -6,14 +6,14 @@
 【輸入邊界】
 
 1. `previous_ocr_result_markdown` 是 `ocr_result`, 本輪更新前的完整 OCR 結果；存在時作為比對基底，修正只輸出本輪新增或修改列，未修改列不輸出。
-2. `suggested_ocr_result_columns` 是從既有 `ocr_result` 取得的建議欄位與順序；優先沿用，但 `加工`、`備註` 的固定分欄要求優先於建議欄位或既有混合欄名。`ocr_result_chunk` 表格明確包含必要新欄位時可新增，不得刪除新資料。
+2. `suggested_ocr_result_columns` 是從既有 `ocr_result` 取得的建議欄位與順序；沿用其欄位與彈性欄位的相對順序，但 `final_ocr_markdown` 的固定欄位順序及 `加工`、`備註` 的分欄要求優先於建議欄位或既有混合欄名。`ocr_result_chunk` 表格明確包含必要新欄位時可新增至中間彈性欄位區，不得刪除新資料。
 3. `source_file_mapping` 是完整來源對照。輸出時每組 `source_code` 與包含完整副檔名的 `source_filename` 都必須與輸入相同；順序保持相同，不得遺漏、新增、重新編號、交換、改寫或省略副檔名。
 4. `ocr_result_chunk` 是本輪已整理的 Markdown 字串陣列；每個字串包含 `## ocr_result_chunk` 資料表區段。`previous_ocr_result_markdown` 是既有結果；只使用這些資料與 `source_file_mapping`、`selected_files`。`selected_files` 的檔案欄位為 `fileKey`、`fileId`、`filename`、`mediaType`，PDF 頁碼可由 `pageRanges` 各項的 `pageStart`、`pageEnd` 提供；只使用實際存在的值，不假設另有 `page_ranges` 或 `chunk_count`。`來源` 與`檔名`仍以 `source_file_mapping` 的 `source_code`、`source_filename` 為準。不得要求或使用 file URL，不得嘗試重看原始 image/PDF，也不得自行執行 OCR 或 Vision。
 5. `ocr_result_chunk` 陣列內的資料表是本輪新增或修正資料的依據；保留其中的孔群分解、件數依據、候選值與未解衝突，不得把候選當成已確認值，也不得推測或擴張使用者意圖。表格同列已提供高信心預填數量、完整構件明細與合計依據時，沿用該數量並保留預填與複核狀態，不清空或改稱已確認。
 
 【更新規則】
 
-1. 以 `ocr_result_chunk` 表格明確確認的新資料整理目前完整訂單。每次輸出唯一且完整的 `## ocr_result`，依 `final_ocr_markdown` 將加工與備註拆成固定獨立欄位，其餘沿用既有欄名與順序；保留全部既有列、每列全部資料與未修改值，不以空白代替未修改值，不以省略表示刪除。
+1. 以 `ocr_result_chunk` 表格明確確認的新資料整理目前完整訂單。每次輸出唯一且完整的 `## ocr_result`，依 `final_ocr_markdown` 的固定欄位順序排列，將加工與備註拆成獨立欄位並放在中間欄位區，其餘彈性欄位沿用既有欄名與相對順序；保留全部既有列、每列全部資料與未修改值，不以空白代替未修改值，不以省略表示刪除。
 2. 本輪辨識出的新列依來源與原始順序輸出。相同`來源`與`零件編號`若有多筆獨立列，更新時須輸出該組全部列與全部既有欄位，保留頁碼、尺寸等識別資訊，不得合併獨立列或只輸出部分列。
 3. `來源`或`零件編號`缺值時保留 `ocr_result_chunk` 表格可確認的內容並納入人工複核，不得從其他欄位猜測補值。
 4. 變動列輸出前，依 `final_ocr_markdown` 檢查本輪新增或修改列的`厚度`、`長度`、`寬度`、`數量`，每格只填單一數字或留空；變動列的厚度、長度、寬度換算為 mm 後四捨五入至整數，小數部分小於0.5捨去、0.5以上進位，原值與取整依據保留於同列品名規格或備註；未修改列不重新輸出。只依同列既有明確值整理，H型鋼厚度取腹板厚，原始文字、翼板厚、算式及複核說明保留於品名規格或備註，不重新辨識或猜測。

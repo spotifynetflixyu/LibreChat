@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { parseSteelReviewMarkdownTables, normalizeSteelReviewLedgerRows } from 'librechat-data-provider';
+import { bindSteelReviewRowsToOcrContext, createSteelReviewOcrContext, parseSteelReviewMarkdownTables, normalizeSteelReviewLedgerRows } from 'librechat-data-provider';
+import type { SteelReviewMetadata } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import type { IMessage, IConversation, ISteelQuotationState, ISteelQuotationArtifact, ISteelReviewOutput, ISteelConversationOcrState, SteelQuotationScope, SteelMarkdownAdmissionInput, SteelMarkdownAdmission, SteelMarkdownExpected, SteelMarkdownPublicationInput, SteelMarkdownPublicationResult, SteelMarkdownReference, SteelMarkdownKind, SteelMarkdownVersion } from '~/types';
 import type { SteelReviewAuthorizedFile } from './steelSourceAuthorization';
@@ -147,15 +148,33 @@ export function createSteelPublicationMethods(mongoose: Mongoose, saveMessage: S
             'finalizedCandidate.markdown': input.message.text, 'finalizationJournal.candidateValidatedToken': input.ocr.candidateToken }).session(session);
           if (!delegate) return;
         }
-        const sourceIds = [...new Set(input.targets.flatMap((target) => (target.sourceMappings ?? []).map((mapping) => mapping.fileId)))];
+        const ocrTarget = input.targets.find((target) => target.kind === 'ocr_result');
+        const systemTarget = input.targets.find((target) => target.kind === 'system_order');
+        const sourceIds = [...new Set(input.targets.flatMap((target) => [
+          ...(target.sourceMappings ?? []).map((mapping) => mapping.fileId),
+          ...(target.rows ?? []).flatMap((row) => row.source?.fileId ? [row.source.fileId] : []),
+        ]))];
         const authorized = sourceIds.length ? await authorizeFiles({ ...input.scope, messageId: input.message.messageId, kind: 'ocr_result' }, sourceIds, session, { conversation, message: input.message }) : new Map<string, SteelReviewAuthorizedFile>();
         for (const target of input.targets) {
-          for (const mapping of target.sourceMappings ?? []) {
+          const trustedMappings = target.kind === 'system_order'
+            ? input.systemOrder?.sourceSnapshot?.mappings ?? target.sourceMappings ?? []
+            : target.sourceMappings ?? [];
+          const trustedFileIds = new Set([
+            ...trustedMappings.map((mapping) => mapping.fileId),
+            ...(target.kind === 'system_order' ? (ocrTarget?.sourceMappings ?? []).map((mapping) => mapping.fileId) : []),
+          ]);
+          const authorizedRowFileIds = target.kind === 'system_order'
+            ? new Set((target.rows ?? []).flatMap((row) => row.source && authorized.has(row.source.fileId) ? [row.source.fileId] : []))
+            : new Set<string>();
+          for (const mapping of trustedMappings) {
             const file = authorized.get(mapping.fileId);
-            const canonical = ocr?.sourceMappings.find((entry) => entry.fileId === mapping.fileId);
+            const canonical = target.kind === 'system_order'
+              ? mapping
+              : ocr?.sourceMappings.find((entry) => entry.fileId === mapping.fileId);
             if (!file || !canonical || canonical.sourceCode !== mapping.sourceCode || canonical.sourceFilename !== mapping.sourceFilename || file.filename !== mapping.sourceFilename) return;
           }
-          if (target.rows?.some((row) => row.source && !(target.sourceMappings ?? []).some((mapping) => mapping.fileId === row.source?.fileId))) return;
+          if (target.rows?.some((row) => row.source &&
+            !authorizedRowFileIds.has(row.source.fileId) && !trustedFileIds.has(row.source.fileId))) return;
         }
         const now = new Date();
         const references: SteelMarkdownReference[] = input.targets.map((target) => ({
@@ -182,6 +201,57 @@ export function createSteelPublicationMethods(mongoose: Mongoose, saveMessage: S
         const saved = await saveMessage(input, { ...input.message, metadata }, session);
         if (!saved) throw new Error('Steel message publication failed');
         const current = { ...state.markdownPublication?.current };
+        const suppliedSystemMetadata = systemTarget && input.systemOrder?.reviewMetadata &&
+          input.systemOrder.reviewMetadata.initialized &&
+          input.systemOrder.reviewMetadata.lineage.outputId === systemTarget.outputId &&
+          input.systemOrder.reviewMetadata.lineage.revision === systemTarget.revision
+          ? input.systemOrder.reviewMetadata
+          : undefined;
+        const systemOcrContext = suppliedSystemMetadata?.ocrContext ?? (ocrTarget?.headers && ocrTarget.rows
+          ? createSteelReviewOcrContext({
+              title: ocrTarget.title,
+              outputId: ocrTarget.outputId,
+              revision: ocrTarget.revision,
+              headers: ocrTarget.headers,
+              rows: ocrTarget.rows,
+            })
+          : null);
+        const systemRows = systemTarget?.rows
+          ? suppliedSystemMetadata?.rows ?? (systemOcrContext
+            ? bindSteelReviewRowsToOcrContext(systemTarget.headers ?? [], systemTarget.rows, systemOcrContext)
+            : systemTarget.rows.map((row) => ({ ...row, source: null, ocrLink: null })))
+          : undefined;
+        const systemReviewMetadata: SteelReviewMetadata | undefined = systemTarget && systemRows
+          ? {
+              ...(input.systemOrder?.reviewMetadata ?? {
+                version: 1,
+                initialized: true,
+                lineage: {
+                  runId: input.systemOrder?.runId ?? systemTarget.outputId,
+                  outputId: systemTarget.outputId,
+                  revision: systemTarget.revision,
+                },
+              }),
+              initialized: true,
+              lineage: {
+                ...(input.systemOrder?.reviewMetadata?.lineage ?? {
+                  runId: input.systemOrder?.runId ?? systemTarget.outputId,
+                  outputId: systemTarget.outputId,
+                  revision: systemTarget.revision,
+                }),
+                outputId: systemTarget.outputId,
+                revision: systemTarget.revision,
+                messageId: input.message.messageId,
+                ...(ocrTarget ? {
+                  ocrOutputId: ocrTarget.outputId,
+                  ocrRevision: ocrTarget.revision,
+                  ocrHash: sha(ocrTarget.baselineMarkdown),
+                } : {}),
+              },
+              ocrContext: systemOcrContext,
+              rows: systemRows,
+            }
+          : undefined;
         for (const target of input.targets) {
           const reference = references.find((candidate) => candidate.kind === target.kind)!;
           current[target.kind] = { ai: reference, effective: reference };
@@ -197,13 +267,12 @@ export function createSteelPublicationMethods(mongoose: Mongoose, saveMessage: S
               tableId: steelReviewTitleStorageId({ userId: input.scope.userId, tenantId: input.scope.tenantId, conversationId: input.scope.conversationId,
                 messageId: input.message.messageId, kind: target.kind, outputId: target.outputId, title: target.title }),
               outputId: target.outputId, revision: target.revision, state: 'current', latestOutputId: target.outputId,
-              headers: target.headers, rows: normalizeSteelReviewLedgerRows(target.rows ?? []), sourceMappings: target.sourceMappings,
+              headers: target.headers, rows: normalizeSteelReviewLedgerRows(target.kind === 'system_order' ? systemRows ?? [] : target.rows ?? []), sourceMappings: target.sourceMappings,
+              ...(target.kind === 'system_order' && systemReviewMetadata ? { reviewMetadata: systemReviewMetadata } : {}),
               aiUpdatedAt: now, aiRawMarkdown: input.rawMarkdown, aiBaselineMarkdown: target.baselineMarkdown,
               effectiveMarkdown: target.baselineMarkdown, displayMarkdown: target.baselineMarkdown, receipts: [] }], { session });
           }
         }
-        const ocrTarget = input.targets.find((target) => target.kind === 'ocr_result');
-        const systemTarget = input.targets.find((target) => target.kind === 'system_order');
         if (systemTarget && (!input.systemOrder || input.systemOrder.markdown !== systemTarget.baselineMarkdown || input.systemOrder.sha256 !== sha(systemTarget.baselineMarkdown))) throw new Error('Steel system-order publication proof is invalid');
         if (ocrTarget) {
           await Ocr.updateOne({ conversationId: input.scope.conversationId }, { $set: {
@@ -231,7 +300,7 @@ export function createSteelPublicationMethods(mongoose: Mongoose, saveMessage: S
         const updates = { 'markdownPublication.current': current,
           ...(ocrTarget ? { currentOrder: { markdown: ocrTarget.baselineMarkdown, sha256: sha(ocrTarget.baselineMarkdown), revision: input.admission.generationId, messageId: input.message.messageId } } : {}),
           ...(input.customer ? { currentCustomer: input.customer } : {}),
-          ...(systemTarget && input.systemOrder ? { currentSystemOrder: { ...input.systemOrder, reviewOutputId: systemTarget.outputId, messageId: input.message.messageId, updatedAt: now } } : {}),
+          ...(systemTarget && input.systemOrder ? { currentSystemOrder: { ...input.systemOrder, ...(systemReviewMetadata ? { reviewMetadata: systemReviewMetadata } : {}), reviewOutputId: systemTarget.outputId, messageId: input.message.messageId, updatedAt: now } } : {}),
           ...(ocrTarget && state.currentSystemOrder && !systemTarget ? { 'currentSystemOrder.needsRequote': true } : {}),
         };
         const changed = await State.updateOne({ ...scopeFilter(input.scope), 'markdownPublication.admission.sequence': input.admission.sequence,

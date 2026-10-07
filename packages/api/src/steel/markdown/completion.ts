@@ -188,6 +188,7 @@ async function currentQuotationPublicationProof(
     currentOrderSha256: currentOrder.sha256,
     currentSystemOrderSha256: currentSystemOrder.sha256,
     ...(currentSystemOrder.sourceSnapshot ? { sourceSnapshot: currentSystemOrder.sourceSnapshot } : {}),
+    ...(currentSystemOrder.reviewMetadata ? { reviewMetadata: currentSystemOrder.reviewMetadata } : {}),
     customer: {
       preparationId: customer.preparationId,
       customerIdentity: customer.customerIdentity,

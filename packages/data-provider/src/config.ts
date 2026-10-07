@@ -2820,7 +2820,7 @@ export const ocrSchema = z.object({
 });
 
 export const steelReviewSchema = z.object({
-  catalogPageSize: z.number().int().positive().max(100).default(25),
+  catalogPageSize: z.number().int().positive().max(100).default(50),
 });
 
 export const fileAnalysisSchema = z.object({

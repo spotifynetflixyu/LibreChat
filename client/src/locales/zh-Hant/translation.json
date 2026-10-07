@@ -2095,5 +2095,10 @@
   "com_ui_fit": "適合畫面",
   "com_ui_steel_review_updated": "已更新",
   "com_ui_steel_review_latest_version": "最新版本",
-  "com_ui_steel_review_previous_version": "歷史版本"
+  "com_ui_steel_review_previous_version": "歷史版本",
+  "com_ui_copy_markdown_table": "複製表格 Markdown",
+  "com_ui_download_table_csv": "下載表格 CSV",
+  "com_ui_expand_table": "展開表格",
+  "com_ui_close_table": "關閉表格",
+  "com_ui_steel_review_open": "開啟校對"
 }

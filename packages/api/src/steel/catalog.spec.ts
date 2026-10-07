@@ -72,6 +72,24 @@ const processingCatalogRow = {
 };
 
 describe('Steel catalog authority', () => {
+  it('returns at most 50 candidates by default and retains the next-page cursor', async () => {
+    const query = jest.fn().mockResolvedValue({ rows: Array.from({ length: 51 }, (_, index) => ({
+      ...catalogRow, id: String(index + 1), erp_item_code: `SC-${String(index + 1).padStart(3, '0')}`,
+    })) });
+    const service = createSteelReviewCatalogService({
+      reader: { readSteelReview: jest.fn().mockResolvedValue(review) },
+      client: { getClient: () => ({ query }) },
+    });
+    const result = await service.search({ scope, query: {
+      messageId: review.messageId, title: review.title, outputId: review.outputId,
+      revision: review.revision, rowId: row.rowId, field: 'model', keyword: 'SC',
+    } });
+    expect(result.options).toHaveLength(50);
+    expect(result.hasMore).toBe(true);
+    expect(result.nextCursor).not.toBeNull();
+    expect(query.mock.calls[0][1]).toContain(51);
+  });
+
   it('binds search and resolution to the current review and customer evidence', async () => {
     const query = jest.fn().mockResolvedValue({ rows: [catalogRow] });
     const client: SteelRepositoryClient = { query };

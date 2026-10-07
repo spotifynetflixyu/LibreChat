@@ -20,6 +20,8 @@ export interface SteelReviewSelectorProps {
   header: '型號' | '品名規格';
   value: string;
   canEdit: boolean;
+  onIntentChange?: () => void;
+  selectedCandidate?: SteelCatalogCandidate;
   onSelect: (
     row: SteelReviewRow,
     candidate: SteelCatalogCandidate,
@@ -28,7 +30,7 @@ export interface SteelReviewSelectorProps {
 }
 
 export default function SteelReviewSelector({
-  table, row, parent, header, value, canEdit, onSelect,
+  table, row, parent, header, value, canEdit, onIntentChange, selectedCandidate, onSelect,
 }: SteelReviewSelectorProps) {
   const localize = useLocalize();
   const [open, setOpen] = useState(false);
@@ -43,6 +45,7 @@ export default function SteelReviewSelector({
   const appliedIntent = useRef(0);
   const scope = JSON.stringify([table.outputId, table.revision, row.rowId, header, row.system?.kind]);
   const currentScope = useRef(scope);
+  const previousMaterialScope = useRef(materialScope);
   const query = useMemo(() => ({
     messageId: table.messageId,
     title: table.title,
@@ -68,7 +71,13 @@ export default function SteelReviewSelector({
       (currentMaterial && isSteelProcessingCatalogCandidateApplicable(candidate, currentMaterial))) : [],
   [stable, catalog.isError, pages, processing, currentMaterial]);
   const customer = pages?.[0]?.customer;
-  const selectedId = options.find((candidate) => candidate.erpItemCode === row.values['型號']?.effective)?.id ?? '';
+  const selectedId = selectedCandidate?.id ?? options.find((candidate) => candidate.erpItemCode === row.values['型號']?.effective)?.id ?? '';
+
+  useEffect(() => {
+    if (previousMaterialScope.current === materialScope) return;
+    previousMaterialScope.current = materialScope;
+    onIntentChange?.();
+  }, [materialScope, onIntentChange]);
 
   useEffect(() => {
     if (currentScope.current === scope && canEdit) return;
@@ -141,6 +150,7 @@ export default function SteelReviewSelector({
     onSearchChange={(next) => {
       if (!canEdit || next === keyword) return;
       intent.current += 1;
+      onIntentChange?.();
       setQueryMaterial(currentMaterial);
       setKeyword(next);
     }}

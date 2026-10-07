@@ -1,3 +1,4 @@
+import type { SteelReviewMetadata } from 'librechat-data-provider';
 import {
   createSteelQuotationPublicationMessageBuilder,
   createSteelQuotationPublicationPublisher,
@@ -5,6 +6,37 @@ import {
 } from './publication';
 
 describe('Steel quotation publication message projection', () => {
+  it('retains the saved row association revision when resuming publication', async () => {
+    const reviewMetadata: SteelReviewMetadata = {
+      version: 1,
+      initialized: true,
+      lineage: { runId: 'run', outputId: 'system_order:run', revision: 'human-revision' },
+      ocrContext: {
+        title: 'ocr_result', outputId: 'ocr', revision: 'ocr-v3', headers: ['零件編號'], rows: [],
+      },
+      rows: [],
+    };
+    const savePublication = jest.fn().mockResolvedValue({ ok: true });
+    const publish = createSteelQuotationPublicationPublisher({
+      buildMessage: ({ markdown }) => ({ messageId: 'message', text: markdown, user: 'user', conversationId: 'conversation' }),
+      savePublication,
+    });
+    await publish({
+      scope: { userId: 'user', conversationId: 'conversation' },
+      runId: 'run', runTargetMessageId: 'message', targetMessageId: 'message',
+      finalSha256: 'a'.repeat(64), currentOrderSha256: 'b'.repeat(64),
+      currentSystemOrderSha256: 'c'.repeat(64),
+      customer: { preparationId: 'preparation', customerIdentity: 'customer', customerMarkdown: 'customer' },
+      message: { messageId: 'message', conversationId: 'conversation', user: 'user', text: '' },
+      markdown: '## system_order\n\n| A |\n| --- |\n| 1 |',
+      reviewMetadata,
+    });
+    expect(savePublication).toHaveBeenCalledWith(expect.objectContaining({
+      reviewMetadata,
+      reviewBaseline: expect.objectContaining({ outputId: 'system_order:run', revision: 'human-revision' }),
+    }));
+  });
+
   it('replaces only the reserved quotation slot and preserves the full Chat payload', () => {
     const message = {
       messageId: 'response',

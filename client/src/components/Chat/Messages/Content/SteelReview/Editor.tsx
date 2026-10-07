@@ -17,9 +17,10 @@ import type { SteelReviewDraftState } from './session';
 import { steelReviewCellEditStateFamily, steelReviewRowEditStateFamily } from './state';
 import { getSteelReviewDraftCell, getSteelReviewDraftMeasurement } from './session';
 import { CollapsibleCellContent } from '../table/Cell';
+import { orderSystemHeaders } from '../table/order';
 import SteelReviewMeasurement from './Measurement';
-import SteelReviewSelector from './Selector';
 import { getSteelReviewMode } from './mode';
+import SteelReviewCatalog from './Catalog';
 
 export interface SteelReviewEditorLabels {
   table: string;
@@ -297,14 +298,21 @@ function ReviewCell({
     : null;
   let editorContent: ReactNode = null;
   let desktopEditorContent: ReactNode = null;
-  if (!row.deleted && mode.usesCatalog(row, header) && onCandidateChange) {
+  const usesCatalog = !row.deleted && mode.usesCatalog(row, header) && Boolean(onCandidateChange);
+  if (usesCatalog && onCandidateChange) {
     if (!isDesktop && rowEditing) {
-      editorContent = <SteelReviewSelector table={table} row={row} parent={parent} header={header} value={currentValue}
-        canEdit={catalogEditable} onSelect={onCandidateChange} />;
+      editorContent = <SteelReviewCatalog table={table} row={row} parent={parent} header={header} value={currentValue}
+        canEdit={catalogEditable} onSelect={onCandidateChange}
+        trigger={<Button type="button" variant="outline" className="w-full justify-start" aria-haspopup="dialog" aria-label={`${header} ${row.rowId}`}>{currentValue}</Button>} />;
     }
-    desktopEditorContent = <SteelReviewSelector table={table} row={row} parent={parent} header={header} value={currentValue}
+    desktopEditorContent = <SteelReviewCatalog table={table} row={row} parent={parent} header={header} value={currentValue}
       canEdit={catalogEditable}
-      onSelect={(nextRow, candidate, customer) => finishEdit(undefined, () => onCandidateChange(nextRow, candidate, customer), true)} />;
+      onSelect={onCandidateChange}
+      trigger={<Button type="button" size="icon-sm" variant="ghost"
+        className="size-6 shrink-0 p-0 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
+        aria-label={`${labels.edit ?? labels.action} ${header} ${row.rowId}`}>
+        <Pencil className="size-3.5" aria-hidden="true" />
+      </Button>} />;
   } else if (!row.deleted && editable && mode.usesCategoryMenu(header)) {
     const categoryOptions = [...new Set([...steelPriceCategories, cell.baseline ?? '', currentValue])]
       .filter(Boolean)
@@ -395,6 +403,16 @@ function ReviewCell({
   }
 
   if (isDesktop && desktopEditable) {
+    if (usesCatalog && onCandidateChange) {
+      return (
+        <td className="group min-h-16 max-w-screen-sm [overflow-wrap:anywhere] border-b border-border-light px-3 py-2 align-top">
+          <div className="flex min-h-6 min-w-12 items-start gap-1">
+            <CollapsibleCellContent className="min-w-8 flex-1">{currentValue}{previousValue}</CollapsibleCellContent>
+            {desktopEditorContent}
+          </div>
+        </td>
+      );
+    }
     return (
       <td className="group min-h-16 max-w-screen-sm [overflow-wrap:anywhere] border-b border-border-light px-3 py-2 align-top">
         <Popover.Root open={editState.open} onOpenChange={(open) => {
@@ -483,7 +501,8 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
   systemMaterials = rows,
 }: SteelReviewEditorProps) {
   const materialById = useMemo(() => new Map(systemMaterials.map((material) => [material.rowId, material])), [systemMaterials]);
-  const columnWidths = useMemo(() => table.headers.map((header) => {
+  const displayHeaders = useMemo(() => table.kind === 'system_order' ? orderSystemHeaders(table.headers) : table.headers, [table.headers, table.kind]);
+  const columnWidths = useMemo(() => displayHeaders.map((header) => {
     const values = [header];
     rows.forEach((row) => {
       const cell = row.values[header];
@@ -495,7 +514,7 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
     const contentWidth = Math.max(...values.map((value) =>
       Array.from(value).reduce((width, character) => width + (character.charCodeAt(0) <= 255 ? 8 : 16), 0)), 1);
     return Math.min(640, Math.max(96, contentWidth + 24));
-  }), [draft, rows, table.headers]);
+  }), [displayHeaders, draft, rows]);
   const totalColumnWidth = columnWidths.reduce((total, width) => total + width, 0);
   const viewportRef = useRef<HTMLDivElement>(null);
   const seenManualRows = useRef(new Set(rows.filter((row) => row.origin === 'manual').map((row) => row.rowId)));
@@ -520,12 +539,12 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
       <table className="w-full border-collapse text-sm" aria-label={labels.table}>
         <colgroup>
           {showActions && <col key="actions" />}
-          {columnWidths.map((width, index) => <col key={`${table.headers[index]}-${index}`} style={{ width: `${width / totalColumnWidth * 100}%` }} />)}
+          {columnWidths.map((width, index) => <col key={`${displayHeaders[index]}-${index}`} style={{ width: `${width / totalColumnWidth * 100}%` }} />)}
         </colgroup>
         <thead className="sticky top-0 z-10 bg-surface-secondary">
           <tr className="h-10">
             {showActions && <th scope="col" className="border-b border-border-light whitespace-nowrap px-3 py-2 text-left font-semibold">{labels.action}</th>}
-            {table.headers.map((header) => (
+            {displayHeaders.map((header) => (
               <th key={header} scope="col" className="whitespace-nowrap border-b border-border-light px-3 py-2 text-left font-semibold">{header}</th>
             ))}
           </tr>
@@ -579,7 +598,7 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
                     </div>
                   </td>
                 )}
-                {table.headers.map((header) => (
+                {displayHeaders.map((header) => (
                   <ReviewCell key={`${rowKey}-${header}`} table={table} row={row} header={header} draft={draft} labels={labels}
                     onCellChange={onCellChange} onCandidateChange={onCandidateChange}
                     parent={parent} canEdit={canEdit} isDesktop={isDesktop} />

@@ -50,6 +50,36 @@ const processingCatalogRow = {
 };
 
 describe('Steel catalog repository', () => {
+  it.each(['model', 'description'] as const)('browses %s without an unused keyword parameter', async (field) => {
+    const query = jest.fn().mockResolvedValue({ rows: [] });
+    await searchSteelReviewCatalog({ query }, { field, keyword: '', limit: 50, tier: 'B' });
+    const [sql, values] = query.mock.calls[0] as [string, readonly unknown[]];
+    expect(values).toEqual(['B', 51]);
+    expect(sql).toContain('LIMIT $2');
+    expect(sql).not.toContain('$3');
+  });
+
+  it.each(['鐵', '鐵板', '%', '_', '\\', '😀', 'AA'])('adds an exact short-token prefilter for %s without changing literal matching', async (keyword) => {
+    const query = jest.fn().mockResolvedValue({ rows: [] });
+    await searchSteelReviewCatalog({ query }, {
+      field: 'description', keyword, limit: 50, tier: 'B',
+      cursor: { erpItemCode: 'DNB', id: '2', field: 'description', keyword, scope: 'review-1' },
+    });
+    const [sql, values] = query.mock.calls[0] as [string, readonly unknown[]];
+    expect(sql).toContain('LIKE');
+    expect(sql).toContain('p.product_name_short_tokens @> ARRAY[$3]::text[]');
+    expect(values[2]).toBe(keyword.toLocaleLowerCase());
+    expect(values.slice(3)).toEqual(['DNB', '2', 51]);
+    expect(sql).toContain('lower($4)');
+    expect(sql).toContain('> $5');
+  });
+
+  it.each(['', '鐵板切', 'steel'])('keeps empty and longer descriptions on their existing search path: %s', async (keyword) => {
+    const query = jest.fn().mockResolvedValue({ rows: [] });
+    await searchSteelReviewCatalog({ query }, { field: 'description', keyword, limit: 50, tier: 'B' });
+    expect(query.mock.calls[0]?.[0]).not.toContain('product_name_short_tokens');
+  });
+
   it('uses the dedicated steel.prices query with escaped model prefix matching and preserves raw prices', async () => {
     const query = jest.fn().mockResolvedValue({ rows: [rawCatalogRow, { ...rawCatalogRow, id: '9007199254740994' }] });
     const client: SteelRepositoryClient = { query };
