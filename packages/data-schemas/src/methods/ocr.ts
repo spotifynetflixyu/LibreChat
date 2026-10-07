@@ -1,5 +1,5 @@
 import type { ClientSession } from 'mongoose';
-import type { IConversation, ISteelConversationOcrState, SteelQuotationScope } from '~/types';
+import type { IConversation, SteelConversationOcrRecord, SteelQuotationScope } from '~/types';
 import { createSteelConversationOcrStateModel } from '~/models/steel';
 import { createConversationModel } from '~/models/convo';
 
@@ -13,17 +13,17 @@ interface ScopedOcrDependencies {
 }
 
 export interface SteelScopedOcrMethods {
-  /** Null means no uniquely authorized legacy record; database failures propagate. */
   /**
    * Returns legacy OCR state only when the conversation ID has one active,
-   * uniquely authorized owner identity. Null means the legacy record is absent
+   * uniquely authorized owner identity. Identity and OCR share one snapshot.
+   * Null means the legacy record is absent
    * or cannot be authorized because the conversation identity is missing,
    * ambiguous, expired, or belongs to another user or tenant. Database errors
    * propagate to the caller.
    */
   readScopedConversationOcrState(
     scope: SteelQuotationScope,
-  ): Promise<ISteelConversationOcrState | null>;
+  ): Promise<SteelConversationOcrRecord | null>;
 }
 
 function sameTenant(left: Pick<IConversation, 'tenantId'>, scope: SteelQuotationScope): boolean {
@@ -67,12 +67,12 @@ export async function hasUniqueSteelOcrScope(
 export async function readScopedConversationOcrState(
   scope: SteelQuotationScope,
   dependencies: ScopedOcrDependencies,
-  session?: ClientSession,
-): Promise<ISteelConversationOcrState | null> {
+  session: ClientSession,
+): Promise<SteelConversationOcrRecord | null> {
   if (!await findScopedConversation(dependencies.Conversation, scope, session)) return null;
   return dependencies.State.findOne({ conversationId: scope.conversationId })
     .session(session ?? null)
-    .lean<ISteelConversationOcrState>();
+    .lean<SteelConversationOcrRecord>();
 }
 
 function activeConversation(conversation: Pick<IConversation, 'expiredAt'>): boolean {
@@ -86,6 +86,18 @@ export function createSteelScopedOcrMethods(mongoose: Mongoose): SteelScopedOcrM
     State: createSteelConversationOcrStateModel(mongoose),
   };
   return {
-    readScopedConversationOcrState: (scope) => readScopedConversationOcrState(scope, dependencies),
+    async readScopedConversationOcrState(scope) {
+      if (!scope.userId || !scope.conversationId) return null;
+      const session = await mongoose.startSession();
+      let state: SteelConversationOcrRecord | null = null;
+      try {
+        await session.withTransaction(async () => {
+          state = await readScopedConversationOcrState(scope, dependencies, session);
+        }, { readConcern: { level: 'snapshot' } });
+        return state;
+      } finally {
+        await session.endSession();
+      }
+    },
   };
 }

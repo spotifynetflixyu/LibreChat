@@ -5,7 +5,7 @@ import type { IMessage, IConversation, ISteelQuotationState, ISteelQuotationArti
 import type { SteelReviewAuthorizedFile } from './steelSourceAuthorization';
 import { createSteelDelegateOcrRunModel, createSteelQuotationStateModel, createSteelQuotationArtifactModel, createSteelConversationOcrStateModel, createSteelReviewOutputModel } from '~/models/steel';
 import { createSteelReviewSourceAuthorization } from './steelSourceAuthorization';
-import { hasUniqueSteelOcrScope, readScopedConversationOcrState } from './ocr';
+import { createSteelScopedOcrMethods, hasUniqueSteelOcrScope } from './ocr';
 import { createSteelQuotationPublicationProof } from './published';
 import { steelReviewTitleStorageId } from '~/utils/identity';
 import { activeExpirationFilter } from '~/utils/retention';
@@ -71,8 +71,7 @@ export function createSteelPublicationMethods(mongoose: Mongoose, saveMessage: S
   const authorizeFiles = createSteelReviewSourceAuthorization(mongoose);
   const hasScopedOcrIdentity = (scope: SteelQuotationScope, session?: ClientSession) =>
     hasUniqueSteelOcrScope(Conversation, scope, session);
-  const readScopedOcr = (scope: SteelQuotationScope, session?: ClientSession) =>
-    readScopedConversationOcrState(scope, { Conversation, State: Ocr }, session);
+  const { readScopedConversationOcrState: readScopedOcr } = createSteelScopedOcrMethods(mongoose);
 
   async function admitSteelMarkdown(input: SteelMarkdownAdmissionInput): Promise<SteelMarkdownAdmission | null> {
     if (!input.scope.userId || !input.scope.conversationId || !input.responseId || !input.generationId) return null;

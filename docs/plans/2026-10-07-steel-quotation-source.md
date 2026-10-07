@@ -97,3 +97,13 @@ No schema migration, data repair, backfill or tenant/owner reassignment is intro
 
 
 V3.4 owning verification before push: API input/runner/state/preparation/lifecycle/full-completion/OCR-service suites pass 186 tests; shared DB input/full-publication/scoped-OCR suites pass 25. API and data-schemas noEmit/private builds, scoped semantic lint/import/diff checks and applicable imports/JSON/cycles/unused-i18n checks pass. Initial integration exposed a missing runtime factory export; the package value export was corrected and the complete API checks rerun successfully. Necessary source browser/Lighthouse checks and new exact-head reviews/CI are recorded in GitHub evidence after push. No Prettier; #15 stays paused.
+
+
+## Atomic legacy OCR owner reads (V3.5)
+
+At `4321306aaa46d05c4cc1a17797117bca04c4d189`, SPEC approved and necessary source UI 6/6 and Lighthouse passed (LCP 3762ms, CLS 0.0169, TBT 49ms). STANDARDS found a valid P1: the new reader could check owner identity and subsequently read a concurrently replaced global OCR record from different database snapshots. This head is superseded and has no overall approval.
+
+Advisor approved a read-only snapshot transaction around both identity and legacy OCR reads. The version reader uses this same transactional service; existing publication transactions keep their own identity guard and immutable scoped replay. A deterministic real-replica-set test inserts a foreign identity and replaces global OCR after the actual identity query resolves, then verifies that the caller receives its original authorized snapshot and that a subsequent read refuses the ambiguous identity. New scoped API returns use a plain record interface; the existing Mongoose document interface inherits those same fields without duplicating or changing the legacy contract. No migration, repair, owner reassignment or rule synchronization is introduced. #15 remains paused.
+
+
+V3.5 owning verification before push: all seven API suites pass 186 tests after the atomic reader change; shared DB suites pass 26, including the real snapshot interleaving. API/data-schemas noEmit/private builds and scoped semantic lint/import/diff plus applicable static gates pass. Final source UI, Lighthouse, independent exact-head reviews and remote CI are recorded in GitHub evidence after push. No Prettier; #15 remains pending/OPEN and paused.

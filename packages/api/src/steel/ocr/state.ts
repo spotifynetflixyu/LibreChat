@@ -20,6 +20,7 @@ import type {
   SteelDelegateOcrToolParameters,
   SteelQuotationScope,
   SteelScopedOcrMethods,
+  SteelConversationOcrRecord,
 } from '@librechat/data-schemas';
 
 type Mongoose = typeof import('mongoose');
@@ -166,7 +167,7 @@ export interface SteelDelegateOcrStateService {
   allocateDelegateSourceMapping(input: AllocateDelegateSourceMappingInput): Promise<DelegateSourceMapping>;
   upsertCurrentOcrResult(input: UpsertCurrentOcrResultInput): Promise<ISteelConversationOcrState | null>;
   readConversationOcrState(conversationId: string): Promise<ISteelConversationOcrState | null>;
-  readScopedConversationOcrState(scope: SteelQuotationScope): Promise<ISteelConversationOcrState | null>;
+  readScopedConversationOcrState(scope: SteelQuotationScope): Promise<SteelConversationOcrRecord | null>;
   readCurrentOcrResult(conversationId: string): Promise<CurrentOcrResult | undefined>;
   readScopedCurrentOcrResult(scope: SteelQuotationScope): Promise<CurrentOcrResult | undefined>;
   readActiveDelegateClaim(conversationId: string): Promise<ISteelConversationOcrState['activeDelegateClaim'] | undefined>;
@@ -175,7 +176,7 @@ export interface SteelDelegateOcrStateService {
   findActiveDelegateOcrRun(conversationId: string): Promise<ISteelDelegateOcrRun | null>;
 }
 
-function currentOcrResult(state: ISteelConversationOcrState | null): CurrentOcrResult | undefined {
+function currentOcrResult(state: SteelConversationOcrRecord | null): CurrentOcrResult | undefined {
   if (!state || state.currentOcrResultMarkdown === undefined) {
     return undefined;
   }

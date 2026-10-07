@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import type { SteelQuotationScope } from '~/types';
 import { createSteelConversationOcrStateModel } from '~/models/steel';
 import { createConversationModel } from '~/models/convo';
@@ -9,10 +9,10 @@ const scope: SteelQuotationScope = { userId: 'owner', conversationId: 'conversat
 const Conversation = createConversationModel(mongoose);
 const State = createSteelConversationOcrStateModel(mongoose);
 const reader = createSteelScopedOcrMethods(mongoose);
-let server: MongoMemoryServer;
+let server: MongoMemoryReplSet;
 
 beforeAll(async () => {
-  server = await MongoMemoryServer.create();
+  server = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } });
   await mongoose.connect(server.getUri());
   await Promise.all([Conversation.init(), State.init()]);
 }, 60000);
@@ -63,4 +63,22 @@ it('propagates a database failure instead of returning absence', async () => {
   const read = jest.spyOn(State, 'findOne').mockImplementationOnce(() => { throw outage; });
   await expect(reader.readScopedConversationOcrState(scope)).rejects.toBe(outage);
   read.mockRestore();
+});
+
+
+it('reads identity and legacy OCR from one snapshot despite a concurrent foreign writer', async () => {
+  await seed();
+  const identities = Conversation.find({ conversationId: scope.conversationId });
+  const execute = identities.exec.bind(identities);
+  jest.spyOn(identities, 'exec').mockImplementationOnce(async () => {
+    const owners = await execute();
+    await Conversation.create({ conversationId: scope.conversationId, user: 'foreign-owner', endpoint: 'agents' });
+    await State.updateOne({ conversationId: scope.conversationId }, { $set: { currentOcrResultMarkdown: 'foreign OCR' } });
+    return owners;
+  });
+  const find = jest.spyOn(Conversation, 'find').mockReturnValueOnce(identities);
+  expect(await reader.readScopedConversationOcrState(scope)).toMatchObject({ currentOcrResultMarkdown: 'private OCR' });
+  find.mockRestore();
+  expect((await State.findOne({ conversationId: scope.conversationId }).lean())?.currentOcrResultMarkdown).toBe('foreign OCR');
+  expect(await reader.readScopedConversationOcrState(scope)).toBeNull();
 });
