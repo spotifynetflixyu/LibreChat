@@ -163,7 +163,7 @@ export async function prepareQuotationTurn(input: {
   const selected = await service.prepareOcrOrder(input.scope, state.currentOrder?.sha256 ?? null);
   state = selected.state;
   const [ocr, hasSavedSystemOrder] = await Promise.all([
-    selected.input ? Promise.resolve(null) : createSteelOcrStateService(mongoose).readConversationOcrState(input.scope.conversationId),
+    selected.input ? Promise.resolve(null) : createSteelOcrStateService(mongoose).readScopedConversationOcrState(input.scope),
     service.hasSystemOrder(input.scope),
   ]);
   const markdown = ocr?.currentOcrResultMarkdown;

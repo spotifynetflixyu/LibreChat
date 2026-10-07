@@ -85,3 +85,15 @@ The compatible `queued` wire status now uses the new English `com_ui_steel_quote
 Maintainer requested a pause at #15: finish #14 correction, necessary verification and issue/PR evidence, then stop before whole-feature #15 acceptance or worktree cleanup. #15 remains pending/OPEN; its earlier integrated evidence is retained without claiming completion.
 
 Final V3.3 owning verification before push: API input/runner/state/preparation/lifecycle 162 passed using the new private DS build; shared DB input/full publication 11 passed; activity and actual zh-Hant/zh-Hans locale path 59 passed. All three owning noEmit/private builds and scoped semantic ESLint/import/diff checks passed; affected imports/JSON/cycles/unused English i18n gates passed against the actual PR base. No Prettier. Necessary #14 browser/performance checks and independent reviews/remote CI are recorded on PR16 and #14 against the committed replacement head; #15 remains paused.
+
+
+## Conversation owner binding at the legacy OCR boundary (V3.4)
+
+At `aaea8142a9f85935f3788659dc303c9e52b313b4`, all seven remote checks and necessary #14 browser/Lighthouse checks passed; STANDARDS and DATA-INTEGRITY approved. SPEC nevertheless found a valid P1: global OCR state uses conversation ID alone, while the Conversation index only enforces the combination of ID, user and tenant. This head is superseded and has no overall approval.
+
+The intended contract is one conversation ID bound to one owner (`user` / `userId`); `tenantId` is its optional tenant boundary, not the owner identity. Advisor approved a guard requiring exactly one Conversation identity across all owners and tenants, matching the caller and still active, before global legacy OCR access. Admission and publication recheck this guard, with publication inside its existing transaction; legacy quotation preparation, source mapping admission and every normal Markdown completion/receipt read use the same scoped reader. Own scoped immutable artifacts and publication replay retain their existing contracts. Ambiguous or unauthorized legacy records are unavailable; database failures still throw.
+
+No schema migration, data repair, backfill or tenant/owner reassignment is introduced. Real Mongo tests cover normal legacy input and owner/tenant collisions, including a collision introduced after admission and no global mirror or message overwrite. Final owning verification and exact-head review/CI evidence are recorded in PR16 and #14. #15 remains paused.
+
+
+V3.4 owning verification before push: API input/runner/state/preparation/lifecycle/full-completion/OCR-service suites pass 186 tests; shared DB input/full-publication/scoped-OCR suites pass 25. API and data-schemas noEmit/private builds, scoped semantic lint/import/diff checks and applicable imports/JSON/cycles/unused-i18n checks pass. Initial integration exposed a missing runtime factory export; the package value export was corrected and the complete API checks rerun successfully. Necessary source browser/Lighthouse checks and new exact-head reviews/CI are recorded in GitHub evidence after push. No Prettier; #15 stays paused.

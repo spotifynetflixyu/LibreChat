@@ -34,7 +34,7 @@ export async function publishFullMarkdown(input: SteelMarkdownCompletionInput, d
     throw new SteelResponseCompletionError('invalid_completion_receipt');
   }
   const [ocr, state] = await Promise.all([
-    dependencies.ocr.readConversationOcrState(scope.conversationId), dependencies.quotation.readState(scope),
+    dependencies.ocr.readScopedConversationOcrState(scope), dependencies.quotation.readState(scope),
   ]);
   const sections = parseAssistantMarkdown(input.markdown).sections;
   const kinds = ['ocr_result', 'system_order', 'customer_data'] as const;

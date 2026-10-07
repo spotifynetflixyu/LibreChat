@@ -25,6 +25,8 @@ export type {
   SteelReviewWriteMethods,
 } from './steelReview';
 export { createSteelReviewSourceMethods } from './steelSources';
+export { createSteelScopedOcrMethods } from './ocr';
+export type { SteelScopedOcrMethods } from './ocr';
 import type { SteelQuotationInputMethods } from './steelQuotationInput';
 import { createSteelQuotationInputMethods } from './steelQuotationInput';
 export { createSteelQuotationInputMethods, STEEL_QUOTATION_INPUT_TTL_MS } from './steelQuotationInput';

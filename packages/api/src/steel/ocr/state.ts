@@ -3,6 +3,7 @@ import { randomUUID } from 'crypto';
 import {
   createSteelConversationOcrStateModel,
   createSteelDelegateOcrRunModel,
+  createSteelScopedOcrMethods,
 } from '@librechat/data-schemas';
 
 import type {
@@ -17,6 +18,8 @@ import type {
   SteelDelegateOcrSupersedeProvenance,
   SteelDelegateOcrToolFile,
   SteelDelegateOcrToolParameters,
+  SteelQuotationScope,
+  SteelScopedOcrMethods,
 } from '@librechat/data-schemas';
 
 type Mongoose = typeof import('mongoose');
@@ -163,11 +166,37 @@ export interface SteelDelegateOcrStateService {
   allocateDelegateSourceMapping(input: AllocateDelegateSourceMappingInput): Promise<DelegateSourceMapping>;
   upsertCurrentOcrResult(input: UpsertCurrentOcrResultInput): Promise<ISteelConversationOcrState | null>;
   readConversationOcrState(conversationId: string): Promise<ISteelConversationOcrState | null>;
+  readScopedConversationOcrState(scope: SteelQuotationScope): Promise<ISteelConversationOcrState | null>;
   readCurrentOcrResult(conversationId: string): Promise<CurrentOcrResult | undefined>;
+  readScopedCurrentOcrResult(scope: SteelQuotationScope): Promise<CurrentOcrResult | undefined>;
   readActiveDelegateClaim(conversationId: string): Promise<ISteelConversationOcrState['activeDelegateClaim'] | undefined>;
   readSourceMappings(conversationId: string): Promise<DelegateSourceMapping[]>;
   findDelegateOcrRunByClaimToken(claimToken: string): Promise<ISteelDelegateOcrRun | null>;
   findActiveDelegateOcrRun(conversationId: string): Promise<ISteelDelegateOcrRun | null>;
+}
+
+function currentOcrResult(state: ISteelConversationOcrState | null): CurrentOcrResult | undefined {
+  if (!state || state.currentOcrResultMarkdown === undefined) {
+    return undefined;
+  }
+  return {
+    markdown: state.currentOcrResultMarkdown,
+    ...(state.currentOcrResultMessageId
+      ? { messageId: state.currentOcrResultMessageId }
+      : {}),
+    ...(state.currentOcrResultIndex !== undefined
+      ? { delegateOcrIndex: state.currentOcrResultIndex }
+      : {}),
+    ...(state.currentOcrResultGenerationId
+      ? { generationId: state.currentOcrResultGenerationId }
+      : {}),
+    ...(state.currentOcrResultAttemptNumber !== undefined
+      ? { attemptNumber: state.currentOcrResultAttemptNumber }
+      : {}),
+    ...(state.currentOcrResultProvenance
+      ? { provenance: state.currentOcrResultProvenance }
+      : {}),
+  };
 }
 
 function isDuplicateKeyError(error: unknown): boolean {
@@ -218,7 +247,10 @@ async function ensureConversationState(
   }
 }
 
-export function createSteelDelegateOcrStateService(mongoose: Mongoose): SteelDelegateOcrStateService {
+export function createSteelDelegateOcrStateService(
+  mongoose: Mongoose,
+  scoped: SteelScopedOcrMethods = createSteelScopedOcrMethods(mongoose),
+): SteelDelegateOcrStateService {
   const Run = createSteelDelegateOcrRunModel(mongoose);
   const State = createSteelConversationOcrStateModel(mongoose);
 
@@ -715,27 +747,11 @@ export function createSteelDelegateOcrStateService(mongoose: Mongoose): SteelDel
         currentOcrResultProvenance: 1,
       })
       .lean<ISteelConversationOcrState>();
-    if (!state || state.currentOcrResultMarkdown === undefined) {
-      return undefined;
-    }
-    return {
-      markdown: state.currentOcrResultMarkdown,
-      ...(state.currentOcrResultMessageId
-        ? { messageId: state.currentOcrResultMessageId }
-        : {}),
-      ...(state.currentOcrResultIndex !== undefined
-        ? { delegateOcrIndex: state.currentOcrResultIndex }
-        : {}),
-      ...(state.currentOcrResultGenerationId
-        ? { generationId: state.currentOcrResultGenerationId }
-        : {}),
-      ...(state.currentOcrResultAttemptNumber !== undefined
-        ? { attemptNumber: state.currentOcrResultAttemptNumber }
-        : {}),
-      ...(state.currentOcrResultProvenance
-        ? { provenance: state.currentOcrResultProvenance }
-        : {}),
-    };
+    return currentOcrResult(state);
+  }
+
+  async function readScopedCurrentOcrResult(scope: SteelQuotationScope): Promise<CurrentOcrResult | undefined> {
+    return currentOcrResult(await scoped.readScopedConversationOcrState(scope));
   }
 
   function readActiveDelegateClaim(
@@ -793,7 +809,9 @@ export function createSteelDelegateOcrStateService(mongoose: Mongoose): SteelDel
     allocateDelegateSourceMapping,
     upsertCurrentOcrResult,
     readConversationOcrState,
+    readScopedConversationOcrState: scoped.readScopedConversationOcrState,
     readCurrentOcrResult,
+    readScopedCurrentOcrResult,
     readActiveDelegateClaim,
     readSourceMappings,
     findDelegateOcrRunByClaimToken,

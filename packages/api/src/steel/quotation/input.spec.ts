@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { createMethods, createModels, createSteelReviewWriteMethods, createSteelQuotationInputMethods,
   createSteelQuotationStateModel, createSteelQuotationArtifactModel, createSteelReviewOutputModel,
+  createSteelConversationOcrStateModel,
 } from '@librechat/data-schemas';
 import type {
   SteelQuotationActiveRun,
@@ -147,6 +148,40 @@ beforeEach(async () => {
 afterAll(async () => {
   await mongoose.disconnect();
   await server.stop();
+});
+
+it('uses legacy OCR only for its uniquely bound conversation owner', async () => {
+  await createSteelConversationOcrStateModel(mongoose).updateOne(
+    { conversationId: scope.conversationId },
+    { $set: { currentOcrResultMarkdown: orderMarkdown('2'), currentOcrResultGenerationId: 'legacy-ai' } },
+  );
+  const prepared = await prepareQuotationTurn({
+    scope, messageId: 'legacy-user', responseId: 'legacy-response', text: '使用 OCR 報價',
+    publicationStore: db,
+  });
+  expect(prepared.state.currentOrder?.markdown).toBe(orderMarkdown('2'));
+  expect(prepared.publicationAdmission).toBeDefined();
+});
+
+it.each([
+  { user: '507f1f77bcf86cd799439012' },
+  { user: scope.userId, tenantId: 'foreign-tenant' },
+])('does not import global legacy OCR from an ambiguous conversation identity %j', async (foreign) => {
+  const foreignMarkdown = orderMarkdown('999');
+  await createSteelConversationOcrStateModel(mongoose).updateOne(
+    { conversationId: scope.conversationId },
+    { $set: { currentOcrResultMarkdown: foreignMarkdown, currentOcrResultGenerationId: 'foreign-ai' } },
+  );
+  await mongoose.models.Conversation.create({ conversationId: scope.conversationId, endpoint: 'agents', ...foreign });
+  const prepared = await prepareQuotationTurn({
+    scope, messageId: 'legacy-user', responseId: 'legacy-response', text: '使用 OCR 報價',
+    publicationStore: db,
+  });
+  expect(prepared.state.currentOrder).toBeUndefined();
+  expect(prepared.instruction).not.toContain(foreignMarkdown);
+  expect(prepared.publicationAdmission).toBeUndefined();
+  expect((await createSteelOcrStateService(mongoose).readConversationOcrState(scope.conversationId))?.currentOcrResultMarkdown)
+    .toBe(foreignMarkdown);
 });
 
 async function publishAi(markdown = orderMarkdown('2')) {

@@ -71,6 +71,7 @@ export {
   createSteelReviewWriteMethods,
   SteelReviewWriteError,
   createSteelReviewSourceMethods,
+  createSteelScopedOcrMethods,
   createSteelQuotationInputMethods,
   STEEL_QUOTATION_INPUT_TTL_MS,
   MAX_MCP_AUTHORITY_TARGETS,

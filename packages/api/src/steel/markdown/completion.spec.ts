@@ -5,6 +5,7 @@ import type { SteelMarkdownCompletionInput } from './completion';
 import { prepareQuotationTurn, renderQuotationCustomerMarkdown } from '../quotation/preparation';
 import { createSteelQuotationStateService } from '../quotation/state';
 import { createSteelMarkdownCompletionServices } from './completion';
+import { createSteelOcrResponseAuditService } from '../ocr/audit';
 import { createSteelFullMarkdownPublisher } from './full';
 import { createSteelOcrStateService } from '../ocr/state';
 import { createSteelReviewService } from '../review';
@@ -37,6 +38,27 @@ async function turn(markdown: string, responseId = 'assistant-2', generationId =
     publishMarkdown: createSteelFullMarkdownPublisher({ buildMessage: ({ markdown: clean }) => ({ ...scope, messageId: responseId, user: scope.userId, text: clean, isCreatedByUser: false }), savePublication: db.publishSteelMarkdown }) };
   return { input, persist, run: () => createSteelMarkdownCompletionServices(services()).finalize(input) };
 }
+
+it('rejects a new owner collision without reading its OCR into publication audit or mirrors', async () => {
+  const fixture = await turn(order('2'));
+  const dependencies = services();
+  await dependencies.ocr.upsertCurrentOcrResult({
+    conversationId: scope.conversationId, generationId: 'foreign-ai', attemptNumber: 1, markdown: order('999'),
+  });
+  await mongoose.models.Conversation.create({
+    conversationId: scope.conversationId, user: '507f1f77bcf86cd799439012', endpoint: 'agents',
+  });
+  const audit = createSteelOcrResponseAuditService(mongoose);
+  const auditSave = jest.spyOn(audit, 'save');
+  await expect(createSteelMarkdownCompletionServices({ ...dependencies, audit }).finalize(fixture.input))
+    .rejects.toMatchObject({ code: 'superseded_response' });
+  expect(auditSave).toHaveBeenCalledWith(expect.objectContaining({ baseResponse: '', baseRevision: undefined }));
+  expect(fixture.persist).not.toHaveBeenCalled();
+  expect(await db.getMessage({ user: scope.userId, messageId: 'assistant-2' })).toBeNull();
+  expect((await dependencies.quotation.readState(scope))?.currentOrder).toBeUndefined();
+  expect((await dependencies.ocr.readCurrentOcrResult(scope.conversationId))?.markdown).toBe(order('999'));
+  expect(await dependencies.ocr.readScopedCurrentOcrResult(scope)).toBeUndefined();
+});
 
 it('publishes the full clean response and fresh review baseline atomically', async () => {
   const fixture = await turn(order('2'));

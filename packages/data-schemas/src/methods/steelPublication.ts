@@ -5,6 +5,7 @@ import type { IMessage, IConversation, ISteelQuotationState, ISteelQuotationArti
 import type { SteelReviewAuthorizedFile } from './steelSourceAuthorization';
 import { createSteelDelegateOcrRunModel, createSteelQuotationStateModel, createSteelQuotationArtifactModel, createSteelConversationOcrStateModel, createSteelReviewOutputModel } from '~/models/steel';
 import { createSteelReviewSourceAuthorization } from './steelSourceAuthorization';
+import { hasUniqueSteelOcrScope, readScopedConversationOcrState } from './ocr';
 import { createSteelQuotationPublicationProof } from './published';
 import { steelReviewTitleStorageId } from '~/utils/identity';
 import { activeExpirationFilter } from '~/utils/retention';
@@ -68,6 +69,10 @@ export function createSteelPublicationMethods(mongoose: Mongoose, saveMessage: S
   const Conversation = createConversationModel(mongoose);
   const Message = createMessageModel(mongoose);
   const authorizeFiles = createSteelReviewSourceAuthorization(mongoose);
+  const hasScopedOcrIdentity = (scope: SteelQuotationScope, session?: ClientSession) =>
+    hasUniqueSteelOcrScope(Conversation, scope, session);
+  const readScopedOcr = (scope: SteelQuotationScope, session?: ClientSession) =>
+    readScopedConversationOcrState(scope, { Conversation, State: Ocr }, session);
 
   async function admitSteelMarkdown(input: SteelMarkdownAdmissionInput): Promise<SteelMarkdownAdmission | null> {
     if (!input.scope.userId || !input.scope.conversationId || !input.responseId || !input.generationId) return null;
@@ -80,7 +85,9 @@ export function createSteelPublicationMethods(mongoose: Mongoose, saveMessage: S
         const state = await State.findOne(scopeFilter(input.scope)).session(session).lean<ISteelQuotationState>();
         const previous = state?.markdownPublication?.admission;
         if (previous?.responseId === input.responseId && previous.generationId === input.generationId) { admitted = previous; return; }
-        const ocr = await Ocr.findOne({ conversationId: input.scope.conversationId }).session(session).lean<ISteelConversationOcrState>();
+        if (!await hasScopedOcrIdentity(input.scope, session)) return;
+        const ocr = await Ocr.findOne({ conversationId: input.scope.conversationId })
+          .session(session).lean<ISteelConversationOcrState>();
         const sequence = (state?.markdownPublication?.nextSequence ?? 0) + 1;
         admitted = { sequence, responseId: input.responseId, generationId: input.generationId,
           lineageId: state?.markdownPublication?.current?.ocr_result?.ai.lineageId ?? input.generationId, expected: expected(state, ocr) };
@@ -121,11 +128,13 @@ export function createSteelPublicationMethods(mongoose: Mongoose, saveMessage: S
           return;
         }
         if (prior.length > 0) return;
+        if (!await hasScopedOcrIdentity(input.scope, session)) return;
         const publicationProof = createSteelQuotationPublicationProof(Artifact, session);
         const activeRun = state.activeRun;
         if (activeRun && activeRun.status !== 'cancelled' &&
           (activeRun.status !== 'completed' || !await publicationProof.isPublished(input.scope, activeRun))) return;
-        const ocr = await Ocr.findOne({ conversationId: input.scope.conversationId }).session(session).lean<ISteelConversationOcrState>();
+        const ocr = await Ocr.findOne({ conversationId: input.scope.conversationId })
+          .session(session).lean<ISteelConversationOcrState>();
         if (!equal(expected(state, ocr), input.admission.expected)) return;
         if (input.ocr?.claimToken) {
           if (input.ocr.delegateOcrIndex === undefined || !input.ocr.executionLeaseToken || !input.ocr.candidateToken ||
@@ -246,7 +255,7 @@ export function createSteelPublicationMethods(mongoose: Mongoose, saveMessage: S
       State.findOne(scopeFilter(scope)).lean<ISteelQuotationState>(),
       Artifact.find({ ...scopeFilter(scope), 'markdownPublication.reference': { $exists: true } }).select({ 'markdownPublication.reference': 1 }).lean<ISteelQuotationArtifact[]>(),
       Output.find(scopeFilter(scope)).select({ kind: 1, messageId: 1, outputId: 1, title: 1, revision: 1, 'receipts.changedRows': 1, state: 1 }).lean<ISteelReviewOutput[]>(),
-      Ocr.findOne({ conversationId: scope.conversationId }).select({ currentOcrResultMessageId: 1, currentOcrResultGenerationId: 1 }).lean<ISteelConversationOcrState>(),
+      readScopedOcr(scope),
       Message.find(messageFilter(scope)).select({ messageId: 1, 'metadata.steelMarkdownOwners': 1, 'metadata.steelReview': 1 }).lean<IMessage[]>(),
     ]);
     const messagesById = new Map(messages.map((message) => [message.messageId, message]));

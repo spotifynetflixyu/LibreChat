@@ -119,7 +119,7 @@ export function shouldDeferSteelMarkdownPersistence(req: SteelResponseRequest, m
 }
 
 async function verifyPublication(publication: SteelMarkdownPublication, scope: SteelQuotationScope, dependencies: SteelMarkdownCompletionDependencies): Promise<void> {
-  const [ocr, state] = await Promise.all([dependencies.ocr.readCurrentOcrResult(scope.conversationId), dependencies.quotation.readState(scope)]);
+  const [ocr, state] = await Promise.all([dependencies.ocr.readScopedCurrentOcrResult(scope), dependencies.quotation.readState(scope)]);
   if (publication.scopeKey !== scopeKey(scope) || !publications.has(publication) ||
     (publication.ocrSelection
       ? !sameQuotationOcrSelection(publication.ocrSelection, state?.activeRun?.ocrSelection)
@@ -358,7 +358,7 @@ export async function finalizeSteelMarkdownTurn(
         return { markdown: input.markdown, acceptedRun };
       }
       const markdown = await publishFullMarkdown(input, dependencies);
-      const [ocr, latest] = await Promise.all([dependencies.ocr.readCurrentOcrResult(scope.conversationId), dependencies.quotation.readState(scope)]);
+      const [ocr, latest] = await Promise.all([dependencies.ocr.readScopedCurrentOcrResult(scope), dependencies.quotation.readState(scope)]);
       const publication: SteelMarkdownPublication = Object.freeze({ scopeKey: scopeKey(scope), responseId: input.responseId,
         generationId, markdown, ocrGeneration: ocr?.generationId, ocrHash: ocr?.markdown ? hash(ocr.markdown) : undefined,
         orderHash: latest?.currentOrder?.sha256, customerPreparationId: latest?.currentCustomer?.preparationId,
@@ -375,7 +375,7 @@ export async function finalizeSteelMarkdownTurn(
     let receipt = requestReceipts.get(key);
     if (!receipt) {
       const [ocrState, quotationState] = await Promise.all([
-        dependencies.ocr.readConversationOcrState(scope.conversationId),
+        dependencies.ocr.readScopedConversationOcrState(scope),
         dependencies.quotation.readState(scope),
       ]);
       const replayTicket = quotationState?.tickets.find((entry) => entry.responseId === input.responseId && entry.acceptedRunId);
@@ -427,7 +427,7 @@ export async function finalizeSteelMarkdownTurn(
           await persist(input, markdown, input.stage !== 'workflow');
         }
         const [publishedOcr, publishedState] = await Promise.all([
-          dependencies.ocr.readCurrentOcrResult(scope.conversationId), dependencies.quotation.readState(scope),
+          dependencies.ocr.readScopedCurrentOcrResult(scope), dependencies.quotation.readState(scope),
         ]);
         const publication = Object.freeze({ scopeKey: scopeKey(scope), responseId: input.responseId,
           generationId, markdown,
@@ -501,7 +501,7 @@ export async function finalizeSteelMarkdownTurn(
         latest?.currentCustomer?.preparationId !== expectedCustomer) {
         throw new SteelResponseCompletionError('superseded_response');
       }
-      const admittedOcrState = await dependencies.ocr.readConversationOcrState(scope.conversationId);
+      const admittedOcrState = await dependencies.ocr.readScopedConversationOcrState(scope);
       receipt.acceptedRun = await acceptQuotationSignal({
         scope, response: input.markdown, responseId: input.responseId,
         messageId: context?.quotation?.messageId, service: dependencies.quotation,
@@ -519,7 +519,7 @@ export async function finalizeSteelMarkdownTurn(
       requireSaved(receipt.acceptedRun, 'signal_not_accepted');
       latest = await dependencies.quotation.readState(scope);
     }
-    const currentOcr = await dependencies.ocr.readCurrentOcrResult(scope.conversationId);
+    const currentOcr = await dependencies.ocr.readScopedCurrentOcrResult(scope);
     receipt.latest = latest ?? undefined;
     const markdown = input.stage === 'workflow' || receipt.acceptedRun
       ? receipt.canonicalMarkdown : appendSteelNextStep({ markdown: receipt.canonicalMarkdown,
@@ -529,7 +529,7 @@ export async function finalizeSteelMarkdownTurn(
       input, dependencies, markdown, latest, receipt.acceptedRun, true, receipt.systemOrderSnapshot,
     );
     const [publishedOcr, publishedState] = await Promise.all([
-      dependencies.ocr.readCurrentOcrResult(scope.conversationId), dependencies.quotation.readState(scope),
+      dependencies.ocr.readScopedCurrentOcrResult(scope), dependencies.quotation.readState(scope),
     ]);
     if ((!latest?.activeRun?.ocrSelection && (publishedOcr?.generationId !== currentOcr?.generationId ||
       publishedOcr?.markdown !== currentOcr?.markdown)) ||

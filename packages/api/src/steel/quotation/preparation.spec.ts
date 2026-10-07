@@ -22,7 +22,7 @@ jest.mock('./state', () => ({ createSteelQuotationStateService: () => ({
   hasSystemOrder: mockHasSystemOrder, readCurrentSystemOrder: mockReadCurrentSystemOrder,
   readCheckpoint: mockReadCheckpoint, saveCurrentSystemOrder: mockSaveCurrentSystemOrder,
 }) }));
-jest.mock('../ocr/state', () => ({ createSteelOcrStateService: () => ({ readConversationOcrState: mockReadOcr }) }));
+jest.mock('../ocr/state', () => ({ createSteelOcrStateService: () => ({ readScopedConversationOcrState: mockReadOcr }) }));
 const scope = { userId: 'owner', conversationId: 'conversation' };
 const order = '## ocr_result\n\n| 來源 | 零件編號 | 數量 | 類別 |\n| --- | --- | --- | --- |\n| 文字訂單 | 1 | 2 | 鐵板 |';
 const success = (customers: unknown[]): SteelToolResult => ({ ok: true, toolName: 'search_customers',
@@ -336,7 +336,7 @@ it('ignores legacy pending input and prepares a fresh terminal turn', async () =
   expect(result.messageText).toBe('重新報價');
   expect(result.messageFiles).toEqual([{ fileId: 'file-2' }]);
   expect(mockPrepareOcrOrder).toHaveBeenCalledWith(scope, 'order-hash');
-  expect(mockReadOcr).toHaveBeenCalledWith(scope.conversationId);
+  expect(mockReadOcr).toHaveBeenCalledWith(scope);
 });
 
 it('does not resume a cancelled quotation when there are no pending messages', async () => {

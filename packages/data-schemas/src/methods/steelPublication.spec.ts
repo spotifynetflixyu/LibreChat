@@ -265,3 +265,37 @@ it('rolls back the message and all mirrors on an operational publication failure
   expect(state?.markdownPublication?.current).toBeUndefined();
   expect((await methods.publishSteelMarkdown(publication(admission))).ok).toBe(true);
 });
+
+
+it.each([
+  { user: 'foreign-owner' },
+  { user: scope.userId, tenantId: 'foreign-tenant' },
+])('refuses new Markdown admission for an ambiguous owner binding %j', async (foreign) => {
+  await mongoose.models.Conversation.create({ conversationId: scope.conversationId, endpoint: 'agents', ...foreign });
+  const methods = createSteelPublicationMethods(mongoose, jest.fn());
+  expect(await methods.admitSteelMarkdown({ scope, responseId: 'assistant-collision', generationId: 'collision' })).toBeNull();
+  expect(await createSteelQuotationStateModel(mongoose).countDocuments({})).toBe(0);
+});
+
+it.each([
+  ['foreign owner, absent OCR', { user: 'foreign-owner' }, false],
+  ['foreign tenant, absent OCR', { user: scope.userId, tenantId: 'foreign-tenant' }, false],
+  ['foreign owner, existing OCR', { user: 'foreign-owner' }, true],
+  ['foreign tenant, existing OCR', { user: scope.userId, tenantId: 'foreign-tenant' }, true],
+] as const)('rejects a post-admission identity collision without mirror writes: %s', async (_name, foreign, existing) => {
+  const Ocr = createSteelConversationOcrStateModel(mongoose);
+  if (existing) await Ocr.create({ conversationId: scope.conversationId, sourceMappings: [], currentOcrResultMarkdown: markdown('1'), currentOcrResultGenerationId: 'before' });
+  const save = jest.fn();
+  const methods = createSteelPublicationMethods(mongoose, save);
+  const admission = await methods.admitSteelMarkdown({ scope, responseId: 'assistant-collision', generationId: 'collision' });
+  if (!admission) throw new Error('Missing unique-owner admission');
+  await mongoose.models.Conversation.create({ conversationId: scope.conversationId, endpoint: 'agents', ...foreign });
+  expect(await methods.publishSteelMarkdown(publication(admission))).toEqual({ ok: false, code: 'superseded' });
+  expect(save).not.toHaveBeenCalled();
+  expect(await createSteelQuotationArtifactModel(mongoose).countDocuments({})).toBe(0);
+  expect(await createSteelReviewOutputModel(mongoose).countDocuments({})).toBe(0);
+  expect(await mongoose.models.Message.countDocuments({})).toBe(0);
+  const current = await Ocr.findOne({ conversationId: scope.conversationId }).lean();
+  expect(current?.currentOcrResultMarkdown).toBe(existing ? markdown('1') : undefined);
+  expect((await createSteelQuotationStateModel(mongoose).findOne({}).lean())?.markdownPublication?.current).toBeUndefined();
+});
