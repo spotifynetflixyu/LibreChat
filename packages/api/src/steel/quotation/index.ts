@@ -6,7 +6,6 @@ export * from './routes';
 export * from './runner';
 export * from './history';
 
-export * from './pending';
 export * from './next';
 export * from './completion';
 export * from './transport';

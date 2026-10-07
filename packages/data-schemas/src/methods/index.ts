@@ -27,7 +27,7 @@ export type {
 export { createSteelReviewSourceMethods } from './steelSources';
 import type { SteelQuotationInputMethods } from './steelQuotationInput';
 import { createSteelQuotationInputMethods } from './steelQuotationInput';
-export { createSteelQuotationInputMethods } from './steelQuotationInput';
+export { createSteelQuotationInputMethods, STEEL_QUOTATION_INPUT_TTL_MS } from './steelQuotationInput';
 export type {
   SteelQuotationInputAdmission,
   SteelQuotationInputChunk,

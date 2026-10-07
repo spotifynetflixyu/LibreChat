@@ -323,6 +323,7 @@ export interface ISteelQuotationState extends Document, SteelQuotationScope {
 }
 
 export interface ISteelQuotationArtifact extends Document, SteelQuotationScope {
+  expiresAt?: Date;
   markdownPublication?: SteelMarkdownSnapshot;
   runId: string;
   operationId: string;

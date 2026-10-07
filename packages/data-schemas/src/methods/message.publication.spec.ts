@@ -30,7 +30,7 @@ afterAll(async () => {
 });
 
 describe('guarded Steel quotation publication', () => {
-  it('saves the message, immutable receipt and published checkpoint in one transaction', async () => {
+  it.each([false, true])('saves the message, receipt and cleanup atomically (retry cleanup failure: %s)', async (failCleanup) => {
     const userId = randomUUID();
     const conversationId = randomUUID();
     const messageId = randomUUID();
@@ -100,7 +100,21 @@ describe('guarded Steel quotation publication', () => {
     const Artifact = createSteelQuotationArtifactModel(mongoose);
     await Artifact.create({ userId, conversationId, runId, operationId: 'final', kind: 'final', sha256: finalSha256, payload: finalMarkdown });
 
+    await Artifact.create({ userId, conversationId, runId, operationId: 'snapshot', kind: 'snapshot',
+      sha256: currentOrderSha256, payload: '## ocr_result\n\nsource' });
+    if (failCleanup) {
+      const cleanup = jest.spyOn(Artifact.collection, 'deleteOne').mockRejectedValueOnce(new Error('cleanup unavailable'));
+      try {
+        await expect(createMethods(mongoose).saveSteelQuotationMessage(proof)).rejects.toThrow('cleanup unavailable');
+        expect((await Models.Message.findOne({ messageId }).lean())?.text).toBe('partial');
+        expect(await Artifact.exists({ userId, conversationId, runId, operationId: 'published' })).toBeNull();
+        expect(await Artifact.exists({ userId, conversationId, runId, operationId: 'snapshot' })).not.toBeNull();
+      } finally {
+        cleanup.mockRestore();
+      }
+    }
     const result = await createMethods(mongoose).saveSteelQuotationMessage(proof);
+    expect(await Artifact.exists({ userId, conversationId, runId, operationId: 'snapshot' })).toBeNull();
 
     expect(result.ok).toBe(true);
     expect((await Models.Message.findOne({ messageId }).lean())).toEqual(expect.objectContaining({

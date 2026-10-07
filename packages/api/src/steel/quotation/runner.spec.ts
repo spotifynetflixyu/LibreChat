@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 import { createHash } from 'node:crypto';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { AIMessageChunk } from '@librechat/agents/langchain/messages';
 import { createSteelQuotationStateModel, createSteelQuotationArtifactModel } from '@librechat/data-schemas';
 import type {
@@ -215,11 +215,11 @@ function systemRowFromSourceRow(row: readonly string[]): readonly string[] {
   ];
 }
 
-let mongoServer: MongoMemoryServer;
+let mongoServer: MongoMemoryReplSet;
 let service: ReturnType<typeof createSteelQuotationStateService>;
 
 beforeAll(async () => {
-  mongoServer = await MongoMemoryServer.create({ instance: { ip: '127.0.0.1' } });
+  mongoServer = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } });
   await mongoose.connect(mongoServer.getUri());
   service = createSteelQuotationStateService(mongoose);
 });
@@ -445,7 +445,7 @@ describe('quotation runner integration', () => {
     const prepared = await prepareQuotationTurn({
       scope, messageId: 'resume-message', responseId: 'resume-response', text: '接續報價',
     });
-    expect(prepared.resume).toBe(false);
+    expect(prepared.resume).toBe(true);
     expect((await service.readState(scope))?.pendingMessages).toHaveLength(0);
     const resumed = createModel();
     const events: QuotationProgress[] = [];
@@ -1324,7 +1324,7 @@ describe('quotation runner integration', () => {
       interruption: { reason: 'paused' } });
     const prepared = await prepareQuotationTurn({ scope, messageId: 'continue-user',
       responseId: 'continue-response', text: '請繼續處理這份報價' });
-    expect(prepared.resume).toBe(false);
+    expect(prepared.resume).toBe(true);
     const request = { scope, responseId: 'continue-response', messageId: 'continue-user',
       expectedOrderHash: prepared.state.currentOrder?.sha256,
       expectedCustomerPreparationId: prepared.state.currentCustomer?.preparationId, finishReason: 'stop' };
@@ -1342,31 +1342,21 @@ describe('quotation runner integration', () => {
     expect(concurrent.filter(Boolean)).toHaveLength(1);
   });
 
-  it.each([false, true])('durably queues changed inputs before continuing a frozen run (mixed signal=%s)', async (mixedSignal) => {
+  it.each([false, true])('rejects changed inputs while a quotation run is unfinished (mixed signal=%s)', async (mixedSignal) => {
     await prepareCustomer();
     const first = (await acceptPreparedSignal('response-1'))!;
     const state = await service.readState(scope);
     const files = [{ fileId: 'original-file', filename: 'revision.pdf', mediaType: 'application/pdf' }];
     const response = `${orderMarkdown(2)}${mixedSignal ? `\n\n${quotationSignal}` : ''}`;
-    if (mixedSignal) {
-      const accepted = await acceptQuotationResponse({ scope, response,
-        responseId: 'correction-response', messageId: 'correction-user', messageText: '改用附件的訂單', messageFiles: files,
-        expectedOrderHash: state?.currentOrder?.sha256,
-        expectedCustomerPreparationId: state?.currentCustomer?.preparationId, finishReason: 'stop' });
-      expect(accepted?.runId).toBe(first.runId);
-      expect((await service.readState(scope))?.pendingMessages).toHaveLength(1);
-      return;
-    }
-    const accepted = await acceptQuotationResponse({ scope, response,
+    await expect(acceptQuotationResponse({ scope, response,
       responseId: 'correction-response', messageId: 'correction-user', messageText: '改用附件的訂單', messageFiles: files,
       expectedOrderHash: state?.currentOrder?.sha256,
-      expectedCustomerPreparationId: state?.currentCustomer?.preparationId, finishReason: 'stop' });
-    expect(accepted?.runId).toBe(first.runId);
+      expectedCustomerPreparationId: state?.currentCustomer?.preparationId, finishReason: 'stop' }))
+      .rejects.toMatchObject({ code: 'quotation_busy' });
     const after = await service.readState(scope);
     expect(after?.currentOrder?.sha256).toBe(state?.currentOrder?.sha256);
     expect(after?.nextSignalIndex).toBe(first.index);
-    expect(after?.pendingMessages).toEqual([expect.objectContaining({ sourceMessageId: 'correction-user',
-      sourceMessageText: '改用附件的訂單', sourceMessageFiles: files, targetMessageId: 'correction-response' })]);
+    expect(after?.pendingMessages).toHaveLength(0);
   });
 
   it('persists explicit default-B Markdown before OCR and retains it for later quotation', async () => {

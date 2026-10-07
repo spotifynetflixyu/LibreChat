@@ -415,6 +415,7 @@ const steelQuotationArtifactSchema: Schema<ISteelQuotationArtifact> =
       },
       sha256: { type: String, required: true },
       payload: { type: String, required: true },
+      expiresAt: { type: Date },
       markdownPublication: { type: new Schema({
         reference: { type: steelMarkdownReferenceSchema, required: true },
         rawMarkdown: { type: String, required: true },
@@ -430,6 +431,9 @@ steelQuotationArtifactSchema.index(
   { unique: true },
 );
 steelQuotationArtifactSchema.index({ userId: 1, conversationId: 1, runId: 1, operationId: 1 });
+
+// Only temporary admitted input documents carry this date.
+steelQuotationArtifactSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 export { steelQuotationArtifactSchema };
 export default steelQuotationStateSchema;

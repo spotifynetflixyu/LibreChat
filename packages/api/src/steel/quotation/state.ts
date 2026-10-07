@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'crypto';
 
 import {
   createSteelQuotationInputMethods,
+  STEEL_QUOTATION_INPUT_TTL_MS,
   createSteelQuotationArtifactModel,
   createSteelQuotationStateModel,
 } from '@librechat/data-schemas';
@@ -13,7 +14,6 @@ import type {
   SteelQuotationArtifactKind,
   SteelQuotationArtifactRef,
   SteelQuotationCheckpointRef,
-  SteelQuotationChunkState,
   SteelQuotationCustomerLookupEvidence,
   SteelQuotationCustomerPreparation,
   SteelQuotationCurrentSystemOrder,
@@ -534,10 +534,6 @@ function isUnfinished(status: SteelQuotationRunStatus | undefined): boolean {
   return status !== undefined && unfinishedStatuses.includes(status);
 }
 
-function isTerminal(status: SteelQuotationRunStatus | undefined): boolean {
-  return status !== undefined && terminalStatuses.includes(status);
-}
-
 function stateFilter(scope: SteelQuotationScope) {
   return {
     userId: scope.userId,
@@ -628,13 +624,6 @@ function artifactRef(
   };
 }
 
-function parseArchivedRun(payload: string): SteelQuotationActiveRun | undefined {
-  const parsed = JSON.parse(payload) as { run?: SteelQuotationActiveRun };
-  if (!parsed.run || !parsed.run.runId || !isTerminal(parsed.run.status)) {
-    return undefined;
-  }
-  return parsed.run;
-}
 
 function getActiveRun(state: ISteelQuotationState | null, runId: string): SteelQuotationActiveRun | undefined {
   return state?.activeRun?.runId === runId ? state.activeRun : undefined;
@@ -696,7 +685,7 @@ export function createSteelQuotationStateService(
         throw error;
       }
     }
-    const state = await State.findOne(stateFilter(scope)).lean<ISteelQuotationState>();
+    const state = await readState(scope);
     if (!state) {
       throw new Error('quotation authority state could not be created');
     }
@@ -707,8 +696,15 @@ export function createSteelQuotationStateService(
   async function readState(scope: SteelQuotationScope): Promise<ISteelQuotationState | null> {
     validateScope(scope);
     const state = await State.findOne(stateFilter(scope)).lean<ISteelQuotationState>();
-    if (state) {
-      assertAuthorityBounds(state);
+    if (!state) return null;
+    assertAuthorityBounds(state);
+    const run = state.activeRun;
+    if (run && run.status !== 'cancelled' &&
+      !run.checkpointRefs.some((ref) => ref.operationId === 'published') &&
+      new Date(run.acceptedAt).getTime() + STEEL_QUOTATION_INPUT_TTL_MS <= Date.now()) {
+      const retired = await inputs.retireSteelQuotationInput({ scope, runId: run.runId, reason: 'expired' });
+      if (!retired.ok) throw new SteelQuotationInputError(retired.code);
+      return retired.state;
     }
     return state;
   }
@@ -1446,13 +1442,14 @@ export function createSteelQuotationStateService(
     if (byteLength(input.payload) > MAX_QUOTATION_ARTIFACT_BYTES) {
       throw new Error(`artifact payload exceeds ${MAX_QUOTATION_ARTIFACT_BYTES} bytes`);
     }
+    if (input.kind === 'snapshot') throw new SteelQuotationInputError('invalid_snapshot');
     const sha256 = hashText(input.payload);
     if (input.sha256 && input.sha256 !== sha256) {
       throw new Error('artifact SHA does not match payload');
     }
     const now = nowOrDefault(input.now);
     const ref = artifactRef(input.scope, input.runId, input.operationId, input.kind, sha256);
-    const requiresLease = input.kind !== 'snapshot' && input.kind !== 'archive';
+    const requiresLease = input.kind !== 'archive';
     if (requiresLease) {
       if (!input.leaseToken) {
         throw new Error('runtime quotation artifact writes require a lease token');
@@ -1528,6 +1525,10 @@ export function createSteelQuotationStateService(
       kind: input.ref.kind,
       sha256: input.ref.sha256,
     }).lean<ISteelQuotationArtifact>();
+    if (found?.kind === 'snapshot') {
+      if (found.expiresAt && found.expiresAt.getTime() <= Date.now()) return undefined;
+      if (hashText(found.payload) !== found.sha256) throw new SteelQuotationInputError('invalid_snapshot');
+    }
     return found?.payload;
   }
 
@@ -1586,18 +1587,25 @@ export function createSteelQuotationStateService(
     ) {
       throw new Error('quotation signal does not match its ticket');
     }
-    if (ticket.acceptedRunId) {
-      const active = getActiveRun(current, ticket.acceptedRunId);
-      if (active) {
-        return active;
-      }
-      const archived = await findArtifact(input.scope, ticket.acceptedRunId, 'archive');
-      const archivedRun = archived ? parseArchivedRun(archived.payload) : undefined;
-      if (archivedRun) {
-        return archivedRun;
-      }
-      throw new Error('accepted quotation run is unavailable');
-    }
+    const admit = async (): Promise<SteelQuotationActiveRun> => {
+      const admitted = await inputs.admitSteelQuotationOcrInput({
+        scope: input.scope,
+        index: input.index,
+        token: input.token,
+        orderHash: input.orderHash,
+        customerMarkdown: input.customerMarkdown,
+        customerIdentity: input.customerIdentity,
+        prompts: input.prompts,
+        chunks: input.chunks,
+        selection: input.ocrSelection ?? current.currentOrder?.ocrSelection,
+        ...(input.sourceSnapshot ? { sourceSnapshot: input.sourceSnapshot } : {}),
+        ...(input.targetMessageId ? { targetMessageId: input.targetMessageId } : {}),
+        now,
+      });
+      if (!admitted.ok) throw new SteelQuotationInputError(admitted.code);
+      return admitted.run;
+    };
+    if (ticket.acceptedRunId) return admit();
     if (!current.currentOrder || current.currentOrder.sha256 !== input.orderHash) {
       throw new Error('quotation signal order is stale');
     }
@@ -1616,132 +1624,7 @@ export function createSteelQuotationStateService(
     if (isUnfinished(current.activeRun?.status)) {
       throw new Error('another quotation run is unfinished');
     }
-    const selection = input.ocrSelection ?? current.currentOrder.ocrSelection;
-    if (selection) {
-      const admitted = await inputs.admitSteelQuotationOcrInput({
-        scope: input.scope,
-        index: input.index,
-        token: input.token,
-        orderHash: input.orderHash,
-        customerMarkdown: input.customerMarkdown,
-        customerIdentity: input.customerIdentity,
-        prompts: input.prompts,
-        chunks: input.chunks,
-        selection,
-        ...(input.targetMessageId ? { targetMessageId: input.targetMessageId } : {}),
-        now,
-      });
-      if (!admitted.ok) throw new SteelQuotationInputError(admitted.code);
-      return admitted.run;
-    }
-    const runId = ticket.token;
-    const snapshotPayload: SteelQuotationSnapshotPayload = {
-      prompts: input.prompts,
-      orderMarkdown: current.currentOrder.markdown,
-      orderHash: current.currentOrder.sha256,
-      customerMarkdown: input.customerMarkdown,
-      customerIdentity: input.customerIdentity,
-      ...(input.sourceSnapshot ? { sourceSnapshot: input.sourceSnapshot } : {}),
-    };
-    const snapshotText = JSON.stringify(snapshotPayload);
-    const snapshotRef = artifactRef(
-      input.scope,
-      runId,
-      'snapshot',
-      'snapshot',
-      hashText(snapshotText),
-    );
-    const chunks: SteelQuotationChunkState[] = input.chunks.map((chunk) => ({
-      index: chunk.index,
-      sourceRowCount: chunk.sourceRowCount,
-      status: 'pending',
-    }));
-    const nextRun: SteelQuotationActiveRun = {
-      runId,
-      index: input.index,
-      status: 'queued',
-      triggerMessageId: ticket.triggeringMessageId,
-      ...(input.targetMessageId ? { targetMessageId: input.targetMessageId } : {}),
-      snapshotRef,
-      chunks,
-      checkpointRefs: [],
-      acceptedAt: now,
-      updatedAt: now,
-    };
-    assertAuthorityBounds({
-      ...current,
-      activeRun: nextRun,
-    });
-    await writeArtifact({
-      scope: input.scope,
-      runId,
-      operationId: 'snapshot',
-      kind: 'snapshot',
-      payload: snapshotText,
-      now,
-    });
-    const previous = current.activeRun;
-    if (previous && isTerminal(previous.status)) {
-      await writeArtifact({
-        scope: input.scope,
-        runId: previous.runId,
-        operationId: 'archive',
-        kind: 'archive',
-        payload: JSON.stringify({ run: previous }),
-        now,
-      });
-    }
-    const updated = await State.findOneAndUpdate(
-      {
-        ...stateFilter(input.scope),
-        'currentOrder.sha256': input.orderHash,
-        'tickets': {
-          $elemMatch: {
-            index: input.index,
-            token: input.token,
-            orderHash: input.orderHash,
-            customerMarkdown: input.customerMarkdown,
-            customerIdentity: input.customerIdentity,
-            acceptedRunId: { $exists: false },
-          },
-        },
-        ...(ticket.preparationId !== undefined && ticket.responseId !== undefined
-          ? {
-              'currentCustomer.preparationId': ticket.preparationId,
-            }
-          : {}),
-        $or: [
-          { activeRun: { $exists: false } },
-          { 'activeRun.status': { $in: terminalStatuses } },
-        ],
-      },
-      {
-        $set: {
-          activeRun: nextRun,
-          'tickets.$.acceptedRunId': runId,
-          updatedAt: now,
-        },
-      },
-      { new: true },
-    ).lean<ISteelQuotationState>();
-    if (updated?.activeRun?.runId === runId) {
-      assertAuthorityBounds(updated);
-      return updated.activeRun;
-    }
-    const raced = await readState(input.scope);
-    const racedTicket = raced?.tickets.find((candidate) => candidate.index === input.index);
-    if (racedTicket?.acceptedRunId) {
-      const racedActive = getActiveRun(raced, racedTicket.acceptedRunId);
-      if (racedActive) {
-        return racedActive;
-      }
-      const archived = await findArtifact(input.scope, racedTicket.acceptedRunId, 'archive');
-      const archivedRun = archived ? parseArchivedRun(archived.payload) : undefined;
-      if (archivedRun) {
-        return archivedRun;
-      }
-    }
-    throw new Error('quotation signal changed concurrently; retry the operation');
+    return admit();
   }
 
   async function requireLiveRun(
@@ -1777,6 +1660,7 @@ export function createSteelQuotationStateService(
         ...stateFilter(input.scope),
         'activeRun.runId': input.runId,
         'activeRun.status': { $in: leaseStatuses },
+        'activeRun.acceptedAt': { $gt: new Date(now.getTime() - STEEL_QUOTATION_INPUT_TTL_MS) },
         $or: [
           { 'activeRun.leaseToken': { $exists: false } },
           { 'activeRun.leaseToken': null },
@@ -1816,6 +1700,7 @@ export function createSteelQuotationStateService(
         'activeRun.leaseToken': input.leaseToken,
         'activeRun.status': { $in: leaseStatuses },
         'activeRun.leaseExpiresAt': { $gt: now },
+        'activeRun.acceptedAt': { $gt: new Date(now.getTime() - STEEL_QUOTATION_INPUT_TTL_MS) },
       },
       {
         $set: {
@@ -1843,6 +1728,7 @@ export function createSteelQuotationStateService(
         'activeRun.leaseToken': input.leaseToken,
         'activeRun.status': { $in: leaseStatuses },
         'activeRun.leaseExpiresAt': { $gt: now },
+        'activeRun.acceptedAt': { $gt: new Date(now.getTime() - STEEL_QUOTATION_INPUT_TTL_MS) },
       },
       {
         $unset: { 'activeRun.leaseToken': 1, 'activeRun.leaseExpiresAt': 1 },
@@ -1865,6 +1751,7 @@ export function createSteelQuotationStateService(
         'activeRun.leaseToken': input.leaseToken,
         'activeRun.status': { $in: leaseStatuses },
         'activeRun.leaseExpiresAt': { $gt: now },
+        'activeRun.acceptedAt': { $gt: new Date(now.getTime() - STEEL_QUOTATION_INPUT_TTL_MS) },
       },
       { $set: { 'activeRun.status': input.status, 'activeRun.updatedAt': now, updatedAt: now } },
       { new: true },
@@ -1890,6 +1777,7 @@ export function createSteelQuotationStateService(
         'activeRun.leaseToken': input.leaseToken,
         'activeRun.status': { $in: leaseStatuses },
         'activeRun.leaseExpiresAt': { $gt: now },
+        'activeRun.acceptedAt': { $gt: new Date(now.getTime() - STEEL_QUOTATION_INPUT_TTL_MS) },
         ...(input.interruption?.chunkIndex !== undefined && {
           'activeRun.chunks.index': input.interruption.chunkIndex,
         }),
@@ -1913,24 +1801,11 @@ export function createSteelQuotationStateService(
     input: Omit<SteelQuotationRunInput, 'leaseToken'> & { leaseToken?: string },
   ): Promise<SteelQuotationActiveRun | undefined> {
     validateScope(input.scope);
-    const now = nowOrDefault(input.now);
-    const updated = await State.findOneAndUpdate(
-      {
-        ...stateFilter(input.scope),
-        'activeRun.runId': input.runId,
-        'activeRun.status': { $in: unfinishedStatuses },
-      },
-      {
-        $set: { 'activeRun.status': 'cancelled', 'activeRun.updatedAt': now, updatedAt: now },
-        $unset: { 'activeRun.leaseToken': 1, 'activeRun.leaseExpiresAt': 1 },
-      },
-      { new: true },
-    ).lean<ISteelQuotationState>();
-    if (updated) {
-      return getActiveRun(updated, input.runId);
-    }
-    const current = await readState(input.scope);
-    return getActiveRun(current, input.runId);
+    const retired = await inputs.retireSteelQuotationInput({
+      scope: input.scope, runId: input.runId, reason: 'cancelled', now: input.now,
+    });
+    if (!retired.ok) throw new SteelQuotationInputError(retired.code);
+    return getActiveRun(retired.state, input.runId);
   }
 
   async function completeRun(
@@ -1956,6 +1831,7 @@ export function createSteelQuotationStateService(
         'activeRun.leaseToken': input.leaseToken,
         'activeRun.status': { $in: leaseStatuses },
         'activeRun.leaseExpiresAt': { $gt: now },
+        'activeRun.acceptedAt': { $gt: new Date(now.getTime() - STEEL_QUOTATION_INPUT_TTL_MS) },
       },
       {
         $set: {
@@ -2031,7 +1907,9 @@ export function createSteelQuotationStateService(
       { new: true },
     ).lean<ISteelQuotationState>();
     if (updated) {
-      return getActiveRun(updated, input.runId);
+      const retired = await inputs.retireSteelQuotationInput({ ...input, reason: 'published' });
+      if (!retired.ok) throw new SteelQuotationInputError(retired.code);
+      return getActiveRun(retired.state, input.runId);
     }
     const raced = await readState(input.scope);
     const racedRun = getActiveRun(raced, input.runId);
@@ -2039,7 +1917,9 @@ export function createSteelQuotationStateService(
       (candidate) => candidate.operationId === 'published',
     );
     if (racedPublication?.sha256 === publicationRef.sha256) {
-      return racedRun;
+      const retired = await inputs.retireSteelQuotationInput({ ...input, reason: 'published' });
+      if (!retired.ok) throw new SteelQuotationInputError(retired.code);
+      return getActiveRun(retired.state, input.runId);
     }
     return undefined;
   }
@@ -2174,6 +2054,7 @@ export function createSteelQuotationStateService(
           'activeRun.leaseToken': input.leaseToken,
           'activeRun.status': { $in: leaseStatuses },
           'activeRun.leaseExpiresAt': { $gt: attemptNow },
+          'activeRun.acceptedAt': { $gt: new Date(attemptNow.getTime() - STEEL_QUOTATION_INPUT_TTL_MS) },
           'activeRun.checkpointRefs': run.checkpointRefs,
           'activeRun.chunks': run.chunks,
         },

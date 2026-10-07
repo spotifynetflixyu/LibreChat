@@ -1,8 +1,11 @@
 import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
-import { createMethods, createModels, createSteelReviewWriteMethods } from '@librechat/data-schemas';
+import { createMethods, createModels, createSteelReviewWriteMethods, createSteelQuotationInputMethods,
+  createSteelQuotationStateModel, createSteelQuotationArtifactModel, createSteelReviewOutputModel,
+} from '@librechat/data-schemas';
 import type {
   SteelQuotationActiveRun,
+  SteelMarkdownReference,
   SteelQuotationOcrInput,
   SteelQuotationScope,
   SteelQuotationSnapshotPayload,
@@ -424,10 +427,10 @@ it('restores a fresh service and resumes child/main from the admitted snapshot',
   expect(replay.status).toBe('completed');
   expect(replay.markdown).toBe(result.markdown);
   expect((await db.getMessage({ user: scope.userId, messageId: run.targetMessageId! }))?.text).toBe(finalMessage?.text);
-  expect((await service.readArtifact({ scope, ref: run.snapshotRef }))!).toBe(JSON.stringify(snapshot));
+  expect(await service.readArtifact({ scope, ref: run.snapshotRef })).toBeUndefined();
 });
 
-it('marks a completed quotation stale after a source-only human Save while retaining its frozen snapshot', async () => {
+it('marks a completed quotation stale after a source-only human Save while retaining its source authority', async () => {
   const { service, run, snapshot } = await admitPublishedHumanRun();
   const childInputs: string[] = [];
   const mainInputs: string[] = [];
@@ -447,5 +450,113 @@ it('marks a completed quotation stale after a source-only human Save while retai
   expect(after?.currentSystemOrder?.needsRequote).toBe(true);
   expect(after?.currentSystemOrder?.ocrSelection).toEqual(after?.activeRun?.ocrSelection);
   expect(after?.currentSystemOrder?.sourceSnapshot).toEqual(snapshot.sourceSnapshot);
-  expect(JSON.parse((await service.readArtifact({ scope, ref: run.snapshotRef }))!)).toEqual(snapshot);
+  expect(await service.readArtifact({ scope, ref: run.snapshotRef })).toBeUndefined();
+});
+
+
+
+it('retains the same input after publication failure and cleans it only after successful retry', async () => {
+  const { service, run, snapshot } = await admitPublishedHumanRun();
+  const model = createRunnerModel([], []);
+  const runnerInput = {
+    scope, modelOptions: {} as OpenAIOAuthModelOptions, signal: new AbortController().signal,
+    invokeModel: model, executeLookup: jest.fn(async () => lookupResult()),
+  };
+  await expect(runQuotationPreflight({ ...runnerInput,
+    publishFinal: async () => ({ ok: false as const, code: 'superseded' as const }),
+  })).rejects.toThrow();
+  expect((await service.readState(scope))?.activeRun?.status).toBe('completed');
+  expect(await service.readArtifact({ scope, ref: run.snapshotRef })).toBe(JSON.stringify(snapshot));
+  expect(await service.getArtifact({ scope, runId: run.runId, operationId: 'published' })).toBeNull();
+  await saveHuman('4');
+  const completedCalls = model.mock.calls.length;
+  await expect(runQuotationPreflight({ ...runnerInput, publishFinal: createRealQuotationPublisher() }))
+    .resolves.toMatchObject({ status: 'completed' });
+  expect(model).toHaveBeenCalledTimes(completedCalls);
+  expect(await service.readArtifact({ scope, ref: run.snapshotRef })).toBeUndefined();
+  expect((await service.readState(scope))?.currentSystemOrder?.ocrSelection).toEqual(run.ocrSelection);
+});
+
+it.each(['ai', 'human'] as const)('atomically rejects a first %s candidate appearing after no-reference preparation', async (source) => {
+  const State = createSteelQuotationStateModel(mongoose);
+  let humanReference: SteelMarkdownReference | undefined;
+  if (source === 'human') {
+    await publishAi();
+    await saveHuman('7');
+    humanReference = (await State.findOne(scope).lean())?.markdownPublication?.lastHumanOcr;
+    if (!humanReference) throw new Error('Missing successfully saved human candidate');
+    await State.updateOne(scope, { $unset: {
+      'markdownPublication.current.ocr_result': 1, 'markdownPublication.lastHumanOcr': 1,
+    } });
+  }
+  const methods = createSteelQuotationInputMethods(mongoose);
+  const service = createSteelQuotationStateService(mongoose, {
+    ...methods,
+    async admitSteelQuotationOcrInput(input) {
+      // Introduce the real publication between public prechecks and atomic admission.
+      if (source === 'ai') await publishAi();
+      else await State.updateOne(scope, { $set: { 'markdownPublication.lastHumanOcr': humanReference } });
+      return methods.admitSteelQuotationOcrInput(input);
+    },
+  });
+  await service.setOrder({ scope, fullMarkdown: orderMarkdown('2'), revision: 'legacy' });
+  const customerMarkdown = renderQuotationCustomerMarkdown({ tier: 'B' });
+  const ticket = await service.issueTicket({ scope, customerMarkdown, customerIdentity: 'explicit-default:B',
+    triggeringMessageId: 'legacy-quote', selectionProvenance: { method: 'default_tier' } });
+  if (!ticket) throw new Error('Missing no-reference quotation ticket');
+  expect((await service.readState(scope))?.currentOrder?.ocrSelection).toBeUndefined();
+  await expect(service.acceptSignal({ scope, index: ticket.index, token: ticket.token,
+    orderHash: ticket.orderHash, customerMarkdown, customerIdentity: ticket.customerIdentity,
+    prompts: { child: 'child', main: 'main' }, chunks: [{ index: 1, sourceRowCount: 1 }] }))
+    .rejects.toMatchObject({ code: 'concurrent_change' });
+  expect((await service.readState(scope))?.activeRun).toBeUndefined();
+  expect(await createSteelQuotationArtifactModel(mongoose).countDocuments({ ...scope, kind: 'snapshot' })).toBe(0);
+});
+
+it('rejects a present human candidate whose exact saved receipt or version proof no longer verifies', async () => {
+  await publishAi();
+  await saveHuman('7');
+  const service = createSteelQuotationStateService(mongoose);
+  const State = createSteelQuotationStateModel(mongoose);
+  const Output = createSteelReviewOutputModel(mongoose);
+  const state = await State.findOne(scope).lean();
+  const human = state?.markdownPublication?.lastHumanOcr;
+  const output = await Output.findOne(scope).lean();
+  if (!human || !output) throw new Error('Missing successful human evidence');
+  for (const update of [
+    { 'receipts.0.digest': 'different-digest' },
+    { 'receipts.0.revision': 'different-revision' },
+    { 'receipts.0.snapshot.savedAt': new Date(human.savedAt.getTime() + 1) },
+    { 'receipts.0.snapshot.title': 'different-title' },
+  ]) {
+    await Output.updateOne(scope, { $set: update });
+    await expect(service.prepareOcrOrder(scope, state?.currentOrder?.sha256 ?? null))
+      .rejects.toMatchObject({ code: 'invalid_snapshot' });
+    await Output.updateOne(scope, { $set: { receipts: output.receipts } });
+  }
+  await State.updateOne(scope, { $set: { 'markdownPublication.lastHumanOcr.version': (human.version ?? 2) + 1 } });
+  await expect(service.readOcrInput(scope)).rejects.toMatchObject({ code: 'invalid_snapshot' });
+  await State.updateOne(scope, { $set: { 'markdownPublication.lastHumanOcr': human } });
+  await Output.deleteOne(scope);
+  await expect(service.readOcrInput(scope)).rejects.toMatchObject({ code: 'invalid_snapshot' });
+  expect((await service.readState(scope))?.activeRun).toBeUndefined();
+  expect(await createSteelQuotationArtifactModel(mongoose).countDocuments({ ...scope, kind: 'snapshot' })).toBe(0);
+});
+
+it('requires the exact historical AI OCR artifact before selecting a human-only candidate', async () => {
+  await publishAi();
+  await saveHuman('7');
+  const State = createSteelQuotationStateModel(mongoose);
+  const Artifact = createSteelQuotationArtifactModel(mongoose);
+  const aiArtifact = await Artifact.findOne({ ...scope, operationId: 'ai:ocr_result' }).lean();
+  if (!aiArtifact?.markdownPublication) throw new Error('Missing original AI OCR artifact');
+  await State.updateOne(scope, { $unset: { 'markdownPublication.current.ocr_result': 1 } });
+  const service = createSteelQuotationStateService(mongoose);
+  expect((await service.readOcrInput(scope))?.selection.selected.source).toBe('human');
+  await Artifact.deleteOne({ _id: aiArtifact._id });
+  const { _id: _ignored, ...wrongKindArtifact } = aiArtifact;
+  await Artifact.create({ ...wrongKindArtifact, operationId: 'ai:customer_data', markdownPublication: {
+    ...aiArtifact.markdownPublication, reference: { ...aiArtifact.markdownPublication.reference, kind: 'customer_data' },
+  } });
+  await expect(service.readOcrInput(scope)).rejects.toMatchObject({ code: 'invalid_snapshot' });
 });

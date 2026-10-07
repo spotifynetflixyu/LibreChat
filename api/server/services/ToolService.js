@@ -62,12 +62,9 @@ const {
   createSteelQuotationPublicationPublisher,
   createSteelFullMarkdownPublisher,
   createSteelQuotationPublicationTransport,
-  processQuotationPendingMessages,
   quotationMessageText,
   buildSteelQuotationStatusEventEnvelope,
   createSteelMarkdownCompletionServices,
-  registerSteelMarkdownPublication,
-  clearSteelMarkdownPublication,
   createSteelOcrStateService,
   createSteelQuotationStateService,
   hasQuotationOrder,
@@ -6537,7 +6534,7 @@ async function loadActionToolsForExecution({
 
 /** Shared post-response/pre-turn quotation adapter for chat and Responses transports. */
 async function executeSteelQuotationWorkflow({
-  req, res, streamId, signal, agent, run, onText, onFinalText, onUsage, onSteerApplied, userMCPAuthMap, requestScopedConnections, contentParts,
+  req, res, streamId, signal, agent, run, onText, onFinalText, onUsage, contentParts,
   buildPublicationMessage,
 }) {
   const context = req?.steelNativeContext;
@@ -6604,58 +6601,6 @@ async function executeSteelQuotationWorkflow({
   }
   const modelOptions = context.delegateOcrContext?.modelOptions;
   if (!modelOptions) throw new Error('Quotation requires resolved model options');
-  const persist = async ({ messageId, parentMessageId, markdown, completed }, emit = true) => {
-    const saved = await db.saveMessage({
-      userId: req.user?.id,
-      isTemporary: req.body?.isTemporary,
-      interfaceConfig: req.config?.interfaceConfig,
-    }, {
-      messageId,
-      conversationId: scope.conversationId,
-      parentMessageId,
-      isCreatedByUser: false,
-      unfinished: completed === false,
-      text: markdown,
-      content: [{ type: 'text', text: markdown }],
-      sender: agent?.name ?? 'Agent',
-      endpoint: 'agents',
-      model: agent?.id,
-      finish_reason: 'stop',
-      metadata: { steel: { activityEvents: context.steelHistory?.activityEvents, preflightToolCalls: context.steelHistory?.preflightToolCalls } },
-    }, { context: 'Quotation preflight durable publication' });
-    if (!saved) throw new Error('Quotation message publication failed');
-    if (emit) await (onFinalText ?? onText)(`\n\n${markdown}`);
-    return saved;
-  };
-  const collectSteers = async (terminal = false) => {
-    if (!streamId || !onSteerApplied) return;
-    const lifecycle = GenerationJobManager.steering;
-    const pending = terminal
-      ? await lifecycle.closeAndDrain(streamId, req._resumableJobCreatedAt)
-      : await lifecycle.drain(streamId, req._resumableJobCreatedAt);
-    for (let index = 0; index < pending.length; index += 1) {
-      const message = pending[index];
-      try {
-        if (String(message.userId) !== scope.userId) throw new Error('Queued message owner mismatch');
-        await service.enqueuePendingMessage({
-          scope,
-          sourceMessageId: message.steerId,
-          sourceMessageText: message.text,
-          sourceMessageFiles: message.files?.map((file) => ({
-            fileId: file.file_id ?? file.fileId ?? file.id,
-            filename: file.filename ?? file.name,
-            mediaType: file.type ?? file.mediaType ?? file.mimeType,
-          })),
-          targetMessageId: `${message.steerId}-quotation-response`,
-        });
-        await onSteerApplied(message);
-        await GenerationJobManager.noteSteersRemoved(streamId, [message.steerId], req._resumableJobCreatedAt);
-      } catch (error) {
-        await lifecycle.restoreClaimed(streamId, pending.slice(index), req._resumableJobCreatedAt);
-        throw error;
-      }
-    }
-  };
   const quotationToolIndexes = new Map();
   const publishFinal = createSteelQuotationPublicationPublisher({
     scope,
@@ -6699,13 +6644,13 @@ async function executeSteelQuotationWorkflow({
       await emitSteelNativeEvents({ req, res, streamId, events, historyChanged });
     },
     onProgress: async ({ run: active, completedChunks, totalChunks, chunkIndex, attempt, stage, repairAttempt, maxRepairAttempts, message }) => {
-      await collectSteers();
       await emitSteelNativeEvents({ req, res, streamId, events: [buildSteelQuotationStatusEventEnvelope({
         conversationId: scope.conversationId,
         requestId: context.requestId,
         messageId: context.requestId,
         index: active.index,
         runId: active.runId,
+        ocrSelection: active.ocrSelection,
         stage: stage ?? active.status,
         status: active.status,
         completedChunks, totalChunks, chunkIndex, attempt, repairAttempt, maxRepairAttempts, message,
@@ -6735,71 +6680,6 @@ async function executeSteelQuotationWorkflow({
     return;
   }
   if (result.status === 'cancelled') await onText('\n\n報價已取消。');
-  await collectSteers(true);
-  let latestPendingMarkdown;
-  let pendingSignalAccepted = false;
-  await processQuotationPendingMessages({
-    scope, modelOptions, signal, onUsage,
-    publicationStore: db,
-    publishMarkdown: createSteelFullMarkdownPublisher({
-      saveContext: { isTemporary: req.body?.isTemporary, interfaceConfig: req.config?.interfaceConfig },
-      buildMessage: ({ markdown }) => ({ messageId: context.requestId, conversationId: scope.conversationId, user: scope.userId,
-        parentMessageId: quotation.messageId ?? null, isCreatedByUser: false, text: markdown, sender: agent?.name ?? 'Agent', endpoint: 'agents', model: agent?.id }),
-      savePublication: db.publishSteelMarkdown }),
-    publishQuotation: publishFinal,
-    persist: async (output) => persist(output, false),
-    publish: async (output) => {
-      if (output.acceptedRun) {
-        latestPendingMarkdown = undefined;
-        return;
-      }
-      if (output.publication) {
-        registerSteelMarkdownPublication(req, output.publication, context.requestId);
-      }
-      latestPendingMarkdown = output.markdown;
-    },
-    onSignalAccepted: async () => {
-      pendingSignalAccepted = true;
-      latestPendingMarkdown = undefined;
-      clearSteelMarkdownPublication(req);
-    },
-    preparePendingInput: async ({ sourceMessageId, sourceMessageText, sourceMessageFiles, signal: pendingSignal, assertActive }) => {
-      await assertActive();
-      const previousContext = req.steelNativeContext;
-      req.steelNativeContext = {
-        ...previousContext,
-        currentTurnFiles: sourceMessageFiles,
-        requestId: `${sourceMessageId}-quotation-ocr`,
-        assistantTurnIndex: previousContext.assistantTurnIndex ?? 0,
-      };
-      try {
-        const prepared = await runSteelPaddleOcrPreflight({ req, res, streamId, signal: pendingSignal, agent, userMCPAuthMap, requestScopedConnections });
-        await assertActive();
-        const results = prepared.currentOcrMarkdownResults ?? [];
-        if (prepared.failedKeys?.length || results.length === 0 || results.some((entry) => entry.ocrPreprocessing?.partial === true || typeof entry.content !== 'string' || !entry.content.trim())) {
-          throw new Error('Queued attachments could not finish OCR; their message remains pending');
-        }
-        return {
-          currentUserTurn: sourceMessageText,
-          input: [sourceMessageText ?? '', ...results.map((entry) => entry.content)].join('\n\n'),
-        };
-      } finally {
-        req.steelNativeContext = previousContext;
-      }
-    },
-  });
-  if (pendingSignalAccepted) {
-    const followup = await runPreflight();
-    if (followup.status === 'busy') {
-      await onText('\n\n報價正在處理中，將接續同一個報價進程。');
-    } else if (followup.status === 'cancelled') {
-      await onText('\n\n報價已取消。');
-    }
-  }
-  if (latestPendingMarkdown) {
-    if (onFinalText) await onFinalText(`\n\n${latestPendingMarkdown}`);
-    else await onText(`\n\n${latestPendingMarkdown}`);
-  }
 }
 
 module.exports = {

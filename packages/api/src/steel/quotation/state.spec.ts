@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 
 import {
   createSteelQuotationArtifactModel,
@@ -18,7 +18,7 @@ import {
   MAX_QUOTATION_AUTHORITY_BYTES,
 } from './state';
 
-let mongoServer: MongoMemoryServer;
+let mongoServer: MongoMemoryReplSet;
 let service: ReturnType<typeof createService>;
 
 const scope: SteelQuotationScope = {
@@ -77,7 +77,7 @@ async function prepareCustomer(
 }
 
 beforeAll(async () => {
-  mongoServer = await MongoMemoryServer.create();
+  mongoServer = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } });
   await mongoose.connect(mongoServer.getUri());
   service = createService(mongoose);
 });
@@ -720,7 +720,8 @@ describe('Steel quotation state service', () => {
       conversationId: scope.conversationId,
       runId: prepared.run.runId,
     });
-    expect(artifacts).toBe(2);
+    expect(artifacts).toBe(1);
+    expect(await Artifact.exists({ ...scope, runId: prepared.run.runId, operationId: 'snapshot' })).toBeNull();
     expect(MAX_QUOTATION_ARTIFACT_BYTES).toBeGreaterThan(1_000_000);
   });
 

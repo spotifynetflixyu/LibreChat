@@ -27,6 +27,7 @@ import {
 import { createChatExpirationDate, createTempChatExpirationDate } from '~/utils/tempChatRetention';
 import { activeExpirationFilter, createFallbackRetentionDate } from '~/utils/retention';
 import { compactMessageToolResults, compactToolCallOutput } from '~/utils/tool';
+import { STEEL_QUOTATION_INPUT_TTL_MS } from './steelQuotationInput';
 import { createSteelPublicationMethods } from './steelPublication';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
 import { steelReviewTitleStorageId } from '~/utils/identity';
@@ -1295,6 +1296,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
           (message.messageId === input.targetMessageId &&
             message.conversationId === scope.conversationId);
         const superseded = !conversation || !quotation || !targetMessageBound || !finalArtifact ||
+          (!publicationArtifact && run && new Date(run.acceptedAt).getTime() + STEEL_QUOTATION_INPUT_TTL_MS <= now.getTime()) ||
           !run || run.runId !== input.runId || run.status !== 'completed' ||
           run.targetMessageId !== input.runTargetMessageId || finalCheckpoint?.sha256 !== input.finalSha256 ||
           quotation.currentOrder?.sha256 !== input.currentOrderSha256 ||
@@ -1431,6 +1433,8 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
           if (!guardedCurrent) {
             throw supersededError;
           }
+          await QuotationArtifact.deleteOne({ ...stateFilter, runId: input.runId,
+            operationId: 'snapshot', kind: 'snapshot', sha256: run.snapshotRef.sha256 }, { session });
           result = { ok: true, message: savedMessage };
           return;
         }
@@ -1473,6 +1477,8 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
         if (!updated) {
           throw supersededError;
         }
+        await QuotationArtifact.deleteOne({ ...stateFilter, runId: input.runId,
+          operationId: 'snapshot', kind: 'snapshot', sha256: run.snapshotRef.sha256 }, { session });
         result = { ok: true, message: savedMessage };
       });
       return result ?? { ok: false, code: 'superseded' };

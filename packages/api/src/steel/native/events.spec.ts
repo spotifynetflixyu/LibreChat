@@ -686,6 +686,15 @@ describe('Steel native event mapping', () => {
       message: 'Processing quotation chunk 2',
       chunkIndex: 2,
       attempt: 'attempt-1',
+      ocrSource: {
+        source: 'human',
+        version: 3,
+        savedAt: '2026-10-07T04:00:00.000Z',
+        messageId: 'assistant-source',
+        outputId: 'ocr_result:generation-3',
+        title: 'quotation.pdf',
+        revision: 'generation-3',
+      },
     });
 
     expect(event).toEqual({
@@ -703,6 +712,15 @@ describe('Steel native event mapping', () => {
       message: 'Processing quotation chunk 2',
       chunkIndex: 2,
       attempt: 'attempt-1',
+      ocrSource: {
+        source: 'human',
+        version: 3,
+        savedAt: '2026-10-07T04:00:00.000Z',
+        messageId: 'assistant-source',
+        outputId: 'ocr_result:generation-3',
+        title: 'quotation.pdf',
+        revision: 'generation-3',
+      },
     });
 
     const history = createSteelNativeHistory();
@@ -712,6 +730,21 @@ describe('Steel native event mapping', () => {
       event: steelNativeStreamEventName,
       data: event,
     });
+  });
+
+  it('derives safe source metadata inside the TypeScript envelope without retaining raw selection', () => {
+    const selected = { kind: 'ocr_result' as const, source: 'human' as const,
+      snapshotId: 'saved-source', generationId: 'generation-3', lineageId: 'lineage-3', outputId: 'ocr_result:generation-3',
+      messageId: 'assistant-source', title: 'ocr_result', revision: 'generation-3', sha256: 'source-hash',
+      savedAt: new Date('2026-10-07T04:00:00Z') };
+    const envelope = buildSteelQuotationStatusEventEnvelope({ conversationId: 'conversation_1',
+      index: 2, runId: 'quotation-run-2', stage: 'chunk', status: 'running', completedChunks: 1, totalChunks: 3,
+      ocrSelection: { selected, candidates: { human: selected }, version: 3 } });
+    expect(envelope.data).toMatchObject({ ocrSource: { source: 'human', version: 3,
+      savedAt: '2026-10-07T04:00:00.000Z', humanSavedAt: '2026-10-07T04:00:00.000Z' } });
+    expect(envelope.data).not.toHaveProperty('ocrSelection');
+    expect(parseSteelNativeHistory({ activityEvents: [envelope.data], preflightToolCalls: [] }))
+      .toMatchObject({ activityEvents: [envelope.data] });
   });
 
   it('validates persisted quotation status progress bounds', () => {
@@ -736,6 +769,23 @@ describe('Steel native event mapping', () => {
     expect(
       parseSteelNativeHistory({
         activityEvents: [{ ...validEvent, source: 'quote_runtime' }],
+        preflightToolCalls: [],
+      }),
+    ).toBeUndefined();
+    expect(
+      parseSteelNativeHistory({
+        activityEvents: [{
+          ...validEvent,
+          ocrSource: {
+            source: 'human',
+            version: 0,
+            savedAt: '2026-10-07T04:00:00.000Z',
+            messageId: 'assistant-source',
+            outputId: 'ocr_result:generation-3',
+            title: 'quotation.pdf',
+            revision: 'generation-3',
+          },
+        }],
         preflightToolCalls: [],
       }),
     ).toBeUndefined();

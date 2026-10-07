@@ -149,7 +149,6 @@ const mockBuildSteelPaddleOcrPreflightEventEnvelopes = jest.fn(() => [
 ]);
 const mockAcceptQuotation = jest.fn();
 const mockRunQuotation = jest.fn();
-const mockProcessQuotationPending = jest.fn();
 const mockMarkdownFinalize = jest.fn();
 const mockCreateQuotationPublicationProjector = jest.fn((publish) => {
   let projectedRunId;
@@ -162,23 +161,16 @@ const mockCreateQuotationPublicationProjector = jest.fn((publish) => {
     projectedMarkdownHash = markdownHash;
   };
 });
-const mockRegisterSteelMarkdownPublication = jest.fn();
-const mockClearSteelMarkdownPublication = jest.fn();
-const mockQuoteState = { enqueuePendingMessage: jest.fn() };
 const mockSaveQuotationMessage = jest.fn().mockResolvedValue({ messageId: 'saved' });
 jest.mock('@librechat/api', () => ({
   ...jest.requireActual('@librechat/api'),
   acceptQuotationResponse: (...args) => mockAcceptQuotation(...args),
   runQuotationPreflight: (...args) => mockRunQuotation(...args),
   createQuotationPublicationProjector: (...args) => mockCreateQuotationPublicationProjector(...args),
-  processQuotationPendingMessages: (...args) => mockProcessQuotationPending(...args),
   createSteelMarkdownCompletionServices: () => ({
     finalize: (...args) => mockMarkdownFinalize(...args),
   }),
-  registerSteelMarkdownPublication: (...args) => mockRegisterSteelMarkdownPublication(...args),
-  clearSteelMarkdownPublication: (...args) => mockClearSteelMarkdownPublication(...args),
   createSteelOcrStateService: () => ({}),
-  createSteelQuotationStateService: () => mockQuoteState,
   AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE: 'AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE',
   isFatalAgentInitializationError: (error, { signal } = {}) =>
     (signal?.aborted === true && (error === signal.reason || error?.name === 'AbortError')) ||
@@ -8523,6 +8515,7 @@ describe('ToolService - Action Capability Gating', () => {
 
 
 describe('quotation transport bridge', () => {
+  const completeSystemOrder = '## system_order\n\n| 品名 | 數量 |\n| --- | --- |\n| 測試 | 1 |';
   const makeInput = (resume = false) => {
     const input = {
     req: { user: { id: 'owner' }, steelNativeContext: {
@@ -8573,10 +8566,7 @@ describe('quotation transport bridge', () => {
       return { markdown: input.markdown, acceptedRun };
     });
     mockRunQuotation.mockReset().mockResolvedValue({ status: 'completed' });
-    mockProcessQuotationPending.mockReset().mockResolvedValue(undefined);
     mockSaveQuotationMessage.mockReset().mockResolvedValue({ messageId: 'saved' });
-    mockRegisterSteelMarkdownPublication.mockReset();
-    mockClearSteelMarkdownPublication.mockReset();
   });
   it('accepts only the completed AI output before starting quotation', async () => {
     const input = makeInput();
@@ -8586,7 +8576,6 @@ describe('quotation transport bridge', () => {
       messageText: '請繼續報價', messageFiles: [{ fileId: 'original-file', filename: 'order.pdf' }],
     }));
     expect(mockRunQuotation).toHaveBeenCalledTimes(1);
-    expect(mockProcessQuotationPending).toHaveBeenCalledTimes(1);
     expect(mockAcceptQuotation.mock.invocationCallOrder[0]).toBeLessThan(mockRunQuotation.mock.invocationCallOrder[0]);
   });
   it('does not start a quotation for an ordinary response or incomplete tool exchange', async () => {
@@ -8599,121 +8588,24 @@ describe('quotation transport bridge', () => {
     await executeSteelQuotationWorkflow(input);
     expect(mockAcceptQuotation).not.toHaveBeenCalled();
   });
-  it('resumes without accepting a new signal and drains pending after cancellation', async () => {
+  it('resumes the existing quotation run once without queue processing', async () => {
     mockRunQuotation.mockResolvedValue({ status: 'cancelled' });
     const input = makeInput(true);
     await executeSteelQuotationWorkflow(input);
     expect(mockAcceptQuotation).not.toHaveBeenCalled();
-    expect(mockProcessQuotationPending).toHaveBeenCalledTimes(1);
+    expect(mockRunQuotation).toHaveBeenCalledTimes(1);
     expect(input.onText).toHaveBeenCalledWith(expect.stringContaining('報價已取消'));
-  });
-  it('reruns the quotation preflight after a queued result accepts a signal', async () => {
-    const input = makeInput(true);
-    input.onFinalText = jest.fn();
-    mockProcessQuotationPending.mockImplementationOnce(async ({ onSignalAccepted, publish }) => {
-      await onSignalAccepted();
-      await publish({
-        messageId: 'signal-response', parentMessageId: 'confirm-user', markdown: '## quote_signal\nstart',
-        acceptedRun: { runId: 'run-2' }, publication: { receipt: 'signal' },
-      });
-    });
-
-    await executeSteelQuotationWorkflow(input);
-
-    expect(mockRunQuotation).toHaveBeenCalledTimes(2);
-    expect(input.onFinalText).not.toHaveBeenCalled();
-    expect(mockRegisterSteelMarkdownPublication).not.toHaveBeenCalled();
-    expect(mockClearSteelMarkdownPublication).toHaveBeenCalledWith(input.req);
-  });
-  it('does not process pending messages while another owner holds the run lease', async () => {
-    mockRunQuotation.mockResolvedValue({ status: 'busy' });
-    await executeSteelQuotationWorkflow(makeInput(true));
-    expect(mockProcessQuotationPending).not.toHaveBeenCalled();
-  });
-  it('keeps queued OCR corrections out of the ordinary finalizer while another owner finishes the frozen run', async () => {
-    mockAcceptQuotation.mockResolvedValue({ runId: 'run-1', status: 'running' });
-    mockRunQuotation.mockResolvedValue({ status: 'busy' });
-    const input = makeInput();
-    input.run.getRunMessages = () => [{ getType: () => 'ai', content: '## ocr_result\n\nrevised order',
-      response_metadata: { finish_reason: 'stop' } }];
-    await executeSteelQuotationWorkflow(input);
-    expect(mockMarkdownFinalize).toHaveBeenCalledWith(expect.objectContaining({
-      stage: 'workflow', markdown: expect.stringContaining('## ocr_result'),
-    }));
-    expect(mockProcessQuotationPending).not.toHaveBeenCalled();
-  });
-  it('persists every queued correction but emits only the latest OCR revision for the parent finalizer', async () => {
-    mockProcessQuotationPending.mockImplementation(async ({ persist, publish }) => {
-      const first = {
-        messageId: 'q1', parentMessageId: 'u1', markdown: '## ocr_result\nrevision one',
-        completed: false, publication: { receipt: 'first' },
-      };
-      const second = {
-        messageId: 'q2', parentMessageId: 'u2', markdown: '## ocr_result\nrevision two',
-        completed: true, publication: { receipt: 'second' },
-      };
-      await persist(first);
-      await publish(first);
-      await persist(second);
-      await publish(second);
-    });
-    const input = makeInput(true);
-    input.onFinalText = jest.fn();
-    await executeSteelQuotationWorkflow(input);
-    expect(mockSaveQuotationMessage).toHaveBeenCalledTimes(2);
-    expect(mockSaveQuotationMessage.mock.calls[0][1]).toEqual(expect.objectContaining({ unfinished: true }));
-    expect(mockSaveQuotationMessage.mock.calls[1][1]).toEqual(expect.objectContaining({ unfinished: false }));
-    expect(input.onText).not.toHaveBeenCalled();
-    expect(input.onFinalText).toHaveBeenCalledTimes(1);
-    expect(input.onFinalText).toHaveBeenCalledWith('\n\n## ocr_result\nrevision two');
-    expect(mockSaveQuotationMessage.mock.invocationCallOrder[1]).toBeLessThan(
-      input.onFinalText.mock.invocationCallOrder[0],
-    );
-    expect(mockRegisterSteelMarkdownPublication).toHaveBeenNthCalledWith(
-      1, input.req, { receipt: 'first' }, 'response-1',
-    );
-    expect(mockRegisterSteelMarkdownPublication).toHaveBeenNthCalledWith(
-      2, input.req, { receipt: 'second' }, 'response-1',
-    );
-  });
-  it('keeps the pending revision separated from a primary response without a trailing newline', async () => {
-    const input = makeInput(true);
-    input.contentParts = [
-      { type: 'text', text: '## system_order\ncomplete' },
-      { type: 'text', text: '\n\n## ocr_result\nold revision' },
-    ];
-    input.onFinalText = jest.fn(async (text) => {
-      input.contentParts[1] = { ...input.contentParts[1], text };
-    });
-    mockProcessQuotationPending.mockImplementationOnce(async ({ persist, publish }) => {
-      const pending = {
-        messageId: 'pending-response', parentMessageId: 'pending-input', markdown: '## ocr_result\nupdated',
-        publication: { receipt: 'pending' },
-      };
-      await persist(pending);
-      await publish(pending);
-    });
-
-    await executeSteelQuotationWorkflow(input);
-
-    expect(input.onFinalText).toHaveBeenCalledWith('\n\n## ocr_result\nupdated');
-    expect(input.contentParts.map((part) => part.text).join('')).toBe(
-      '## system_order\ncomplete\n\n## ocr_result\nupdated',
-    );
-    expect(mockRegisterSteelMarkdownPublication).toHaveBeenCalledWith(
-      input.req, { receipt: 'pending' }, 'response-1',
-    );
   });
   it('durably publishes to the original response id before presenting the result', async () => {
     const input = makeInput(true);
     mockRunQuotation.mockImplementation(async ({ publishFinal, projectFinal }) => {
-      await publishFinal({ run: { targetMessageId: 'original-response', triggerMessageId: 'original-input' }, markdown: '## system_order\ncomplete' });
-      await projectFinal({ run: { targetMessageId: 'original-response', triggerMessageId: 'original-input' }, markdown: '## system_order\ncomplete' });
+      await publishFinal({ run: { targetMessageId: 'original-response', triggerMessageId: 'original-input' }, markdown: completeSystemOrder });
+      await projectFinal({ run: { targetMessageId: 'original-response', triggerMessageId: 'original-input' }, markdown: completeSystemOrder });
       return { status: 'completed' };
     });
     await executeSteelQuotationWorkflow(input);
     expect(mockSaveQuotationMessage).toHaveBeenCalledWith(expect.objectContaining({ userId: 'owner' }), expect.objectContaining({
-      messageId: 'original-response', parentMessageId: 'original-input', conversationId: 'conversation-1', text: '## system_order\ncomplete',
+      messageId: 'original-response', parentMessageId: 'original-input', conversationId: 'conversation-1', text: completeSystemOrder,
     }), expect.anything());
     expect(mockSaveQuotationMessage.mock.invocationCallOrder[0]).toBeLessThan(input.onText.mock.invocationCallOrder[0]);
   });
@@ -8734,7 +8626,7 @@ describe('quotation transport bridge', () => {
       await publishFinal({
         run: { targetMessageId: 'target-b', triggerMessageId: 'original-input' },
         targetMessageId: 'target-b',
-        markdown: '## system_order\ncomplete',
+        markdown: completeSystemOrder,
       });
       return { status: 'completed' };
     });
@@ -8744,15 +8636,15 @@ describe('quotation transport bridge', () => {
     expect(mockSaveQuotationMessage).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       messageId: 'target-b',
       sourceMessageId: 'source-a',
-      text: 'source prefix\n\n## system_order\ncomplete',
-      content: [{ type: 'text', text: 'source prefix\n\n## system_order\ncomplete' }, { type: 'tool_call', id: 'lookup' }],
+      text: `source prefix\n\n${completeSystemOrder}`,
+      content: [{ type: 'text', text: `source prefix\n\n${completeSystemOrder}` }, { type: 'tool_call', id: 'lookup' }],
       metadata: { source: 'A', keep: true },
     }), expect.anything());
   });
 
   it('projects an already-published full quotation through the current request once', async () => {
     const input = makeInput(true);
-    const markdown = '## system_order\ncomplete\n\n## customer_quote\nfinal';
+    const markdown = `${completeSystemOrder}\n\n## customer_quote\nfinal`;
     const run = { runId: 'published-run', targetMessageId: 'original-response', triggerMessageId: 'original-input' };
     mockRunQuotation.mockImplementationOnce(async ({ publishFinal, projectFinal }) => {
       expect(projectFinal).not.toBe(publishFinal);
@@ -8780,7 +8672,7 @@ describe('quotation transport bridge', () => {
     mockRunQuotation.mockImplementation(async ({ onHistory, publishFinal }) => {
       await onHistory(restored);
       await onHistory(restored);
-      await publishFinal({ run: { targetMessageId: 'original-response', triggerMessageId: 'original-input' }, markdown: '## system_order\ncomplete' });
+      await publishFinal({ run: { targetMessageId: 'original-response', triggerMessageId: 'original-input' }, markdown: completeSystemOrder });
       return { status: 'completed' };
     });
     await executeSteelQuotationWorkflow(input);
@@ -8795,7 +8687,7 @@ describe('quotation transport bridge', () => {
       expect(input.onText).toHaveBeenCalledWith('## system_order\n');
       expect(mockSaveQuotationMessage).not.toHaveBeenCalled();
       await onTextDelta('row\n');
-      const publication = { run: { targetMessageId: 'original-response' }, markdown: '## system_order\nrow\n\n## customer_quote\nfinal' };
+      const publication = { run: { targetMessageId: 'original-response' }, markdown: `${completeSystemOrder}\n\n## customer_quote\nfinal` };
       await publishFinal(publication);
       await projectFinal(publication);
       return { status: 'completed' };
@@ -8803,7 +8695,7 @@ describe('quotation transport bridge', () => {
     await executeSteelQuotationWorkflow(input);
     expect(input.onText.mock.calls).toEqual([['## system_order\n'], ['row\n']]);
     expect(input.onFinalText).toHaveBeenCalledTimes(1);
-    expect(input.onFinalText).toHaveBeenCalledWith('\n\n## system_order\nrow\n\n## customer_quote\nfinal');
+    expect(input.onFinalText).toHaveBeenCalledWith(`\n\n${completeSystemOrder}\n\n## customer_quote\nfinal`);
     expect(mockSaveQuotationMessage.mock.invocationCallOrder[0]).toBeLessThan(input.onFinalText.mock.invocationCallOrder[0]);
   });
   it('emits restored and live quotation tools after signal text and reserves the final text slot', async () => {
@@ -8823,7 +8715,7 @@ describe('quotation transport bridge', () => {
       const tool = { run, id: 'live-lookup', chunkIndex: 2, attempt: 'attempt-1', arguments: args };
       await onTool(tool);
       await onTool({ ...tool, result });
-      await publishFinal({ run, markdown: '## system_order\ncomplete' });
+      await publishFinal({ run, markdown: completeSystemOrder });
       return { status: 'completed' };
     });
     input.onText.mockImplementation(async (text) => {
@@ -8840,7 +8732,7 @@ describe('quotation transport bridge', () => {
     }) }));
     expect(input.contentParts.map((part) => part.type)).toEqual(['text', 'tool_call', 'tool_call']);
   });
-  it('publishes quotation and pending replies through the real authenticated message persistence contract', async () => {
+  it('publishes quotation through the real authenticated message persistence contract', async () => {
     const { MongoMemoryServer } = require('mongodb-memory-server');
     const { Mongoose, Types } = require('mongoose');
     const { createModels, createMethods } = jest.requireActual('@librechat/data-schemas');
@@ -8860,22 +8752,17 @@ describe('quotation transport bridge', () => {
         userId, conversationId: '6bf991da-be8c-5300-bd85-ff6ee2d17bb5',
       };
       mockRunQuotation.mockImplementation(async ({ publishFinal }) => {
-        await publishFinal({ run: { targetMessageId: 'original-response', triggerMessageId: 'original-input' }, markdown: '## system_order\ncomplete' });
+        await publishFinal({ run: { targetMessageId: 'original-response', triggerMessageId: 'original-input' }, markdown: completeSystemOrder });
         return { status: 'completed' };
-      });
-      mockProcessQuotationPending.mockImplementation(async ({ persist, publish }) => {
-        const pending = { messageId: 'pending-response', parentMessageId: 'pending-input', markdown: '## ocr_result\nupdated' };
-        await persist(pending);
-        await publish(pending);
       });
       await executeSteelQuotationWorkflow(input);
       const saved = await models.Message.find({ user: userId }).lean();
-      expect(saved).toHaveLength(2);
-      expect(saved.map((message) => message.messageId).sort()).toEqual(['original-response', 'pending-response']);
+      expect(saved).toHaveLength(1);
+      expect(saved.map((message) => message.messageId)).toEqual(['original-response']);
       expect(saved.every((message) => message.isTemporary && message.expiredAt)).toBe(true);
       input.req.user = undefined;
-      await expect(executeSteelQuotationWorkflow(input)).rejects.toThrow('User not authenticated');
-      expect(await models.Message.countDocuments()).toBe(2);
+      await expect(executeSteelQuotationWorkflow(input)).resolves.toBeUndefined();
+      expect(await models.Message.countDocuments()).toBe(1);
     } finally {
       await connection.disconnect();
       await server.stop();

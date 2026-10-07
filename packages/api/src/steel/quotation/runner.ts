@@ -48,6 +48,7 @@ import {
   isUnfinishedQuotation,
 } from './preparation';
 import { getQuotationProgress, QUOTATION_V2_SPLIT_SIZES, QUOTATION_V2_MAX_DEPTH } from './progress';
+import { SteelQuotationInputError, quotationOcrSource, sameQuotationOcrSelection } from './input';
 import { executeSteelTool, createSteelToolRunState } from '../tools/execute';
 import { buildDefaultSteelGlobalAgentContext } from '../native/context';
 import { stripCustomerQuoteSections } from '../markdown/outputFilter';
@@ -61,7 +62,6 @@ import { parseMarkdownTables } from '../markdown/table';
 import { parseAssistantMarkdown } from '../ocr/result';
 import { registerQuotationExecution } from './control';
 import { createSteelPostgresPool } from '../postgres';
-import { sameQuotationOcrSelection } from './input';
 import { readQuotationHistory } from './history';
 import { invokeQuotationModel } from './model';
 
@@ -179,6 +179,21 @@ async function materializeCompletedSystemOrder(
   if (!state || state.activeRun?.runId !== input.run.runId || state.activeRun.status !== 'completed') {
     throw new Error('Quotation publication run is not the trusted completed run');
   }
+  const existing = state.currentSystemOrder;
+  const published = state.activeRun.checkpointRefs.find((ref) => ref.operationId === 'published' && ref.kind === 'final');
+  if (published) {
+    const final = state.activeRun.checkpointRefs.find((ref) => ref.operationId === 'final' && ref.kind === 'final');
+    const finalHash = createHash('sha256').update(input.markdown, 'utf8').digest('hex');
+    const receiptPayload = await input.service.readArtifact({ scope: input.scope,
+      ref: { ...input.scope, runId: input.run.runId, ...published } });
+    if (!existing || existing.runId !== input.run.runId || !final || final.sha256 !== finalHash ||
+      !receiptPayload || createHash('sha256').update(receiptPayload, 'utf8').digest('hex') !== published.sha256 ||
+      receiptPayload !== JSON.stringify({ finalSha256: finalHash }) ||
+      !sameQuotationOcrSelection(existing.ocrSelection, state.activeRun.ocrSelection)) {
+      throw new SteelQuotationInputError('invalid_snapshot');
+    }
+    return { state, currentSystemOrder: existing };
+  }
   const payload = await input.service.readArtifact({ scope: input.scope, ref: input.run.snapshotRef });
   if (!payload) throw new Error('Quotation input snapshot is missing');
   const snapshot = JSON.parse(payload) as SteelQuotationSnapshotPayload;
@@ -219,7 +234,6 @@ async function materializeCompletedSystemOrder(
     const needsRequote = await input.service.markOcrStale(input.scope, input.run.runId, snapshot.ocrSelection);
     return { ...currentSystemOrder, needsRequote };
   };
-  const existing = await input.service.readCurrentSystemOrder(input.scope);
   if (existing?.runId === input.run.runId) return { state, currentSystemOrder: await classify(existing) };
   const saved = await input.service.saveCurrentSystemOrder({
     scope: input.scope,
@@ -492,20 +506,7 @@ export async function acceptQuotationResponse(input: {
   }
   if (isUnfinishedQuotation(state?.activeRun?.status) &&
     (hasOrder || (customer && !matchesCustomer(state?.currentCustomer?.customerMarkdown ?? '')))) {
-    if (!input.messageId || (input.messageText === undefined && !input.messageFiles?.length) ||
-      input.expectedOrderHash !== state?.currentOrder?.sha256 ||
-      input.expectedCustomerPreparationId !== state?.currentCustomer?.preparationId) {
-      throw new Error('Queued quotation correction is based on missing or stale preparation data');
-    }
-    await service.enqueuePendingMessage({
-      scope: input.scope,
-      sourceMessageId: input.messageId,
-      sourceMessageText: input.messageText,
-      sourceMessageFiles: input.messageFiles,
-      targetMessageId: input.responseId,
-      preserveExistingTarget: true,
-    });
-    return state?.activeRun;
+    throw new SteelQuotationPublicationError('quotation_busy');
   }
   const committedCustomer = await commitQuotationCustomerResponse({ ...input, service });
   return acceptQuotationSignal({
@@ -993,6 +994,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
               ...repair,
               conversationId: scope.conversationId,
               runId, index: active.index, status: active.status,
+              ...(active.ocrSelection ? { ocrSource: quotationOcrSource(active.ocrSelection) } : {}),
               ...getQuotationProgress(active),
               chunkIndex: chunk.chunkIndex, attempt,
             });

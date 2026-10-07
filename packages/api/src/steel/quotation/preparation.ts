@@ -153,33 +153,11 @@ export async function prepareQuotationTurn(input: {
     ...(input.files ? { messageFiles: input.files } : {}),
   };
   if (isUnfinishedQuotation(state.activeRun?.status)) {
-    return {
-      scope: input.scope,
-      messageId: input.messageId,
-      state,
-      resume: false,
-      publicationAdmission: await admit(),
-      instruction: quotationPreparationInstruction(
-        state.currentOrder?.markdown,
-        state.currentCustomer?.customerMarkdown,
-        false,
-      ),
-      ...originalMessage,
-    };
+    return { scope: input.scope, messageId: input.messageId, state, instruction: '', resume: true, ...originalMessage };
   }
   const unpublished = state.activeRun?.status === 'completed' &&
     !await service.getArtifact({ scope: input.scope, runId: state.activeRun.runId, operationId: 'published' });
-  if (unpublished || state.pendingMessages.some((entry) => entry.status !== 'completed')) {
-    if (input.messageId !== state.activeRun?.triggerMessageId) {
-      await service.enqueuePendingMessage({
-        scope: input.scope,
-        sourceMessageId: input.messageId,
-        sourceMessageText: input.text,
-        sourceMessageFiles: input.files,
-        targetMessageId: input.responseId,
-        preserveExistingTarget: true,
-      });
-    }
+  if (unpublished) {
     return { scope: input.scope, messageId: input.messageId, state, instruction: '', resume: true, ...originalMessage };
   }
   const selected = await service.prepareOcrOrder(input.scope, state.currentOrder?.sha256 ?? null);

@@ -1134,6 +1134,57 @@ describe('SteelActivity', () => {
     expect(screen.getAllByText('Quotation completed (2/2 chunks)')).toHaveLength(2);
   });
 
+  it('uses the persisted source for the event run when the current query belongs to another run', () => {
+    mockUseGetSteelQuotationStatusQuery.mockReturnValue({
+      data: {
+        conversationId: 'conversation-1',
+        index: 4,
+        runId: 'quotation-run-later',
+        status: 'running',
+        completedChunks: 1,
+        totalChunks: 2,
+        canCancel: true,
+        ocrSource: {
+          source: 'ai',
+          version: 8,
+          savedAt: '2026-10-07T04:00:00.000Z',
+          messageId: 'assistant-later',
+          outputId: 'ocr_result:generation-8',
+          title: 'quotation.pdf',
+          revision: 'generation-8',
+        },
+      },
+    } as ReturnType<typeof useGetSteelQuotationStatusQuery>);
+
+    render(
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(steelNativeActivityByMessageId('assistant-source-history'), [
+            {
+              ...quotationStatusEvent,
+              messageId: 'assistant-source-history',
+              runId: 'quotation-run-earlier',
+              ocrSource: {
+                source: 'human' as const,
+                version: 3,
+                savedAt: '2026-10-07T03:00:00.000Z',
+                messageId: 'assistant-source-history',
+                outputId: 'ocr_result:generation-3',
+                title: 'quotation.pdf',
+                revision: 'generation-3',
+              },
+            },
+          ]);
+        }}
+      >
+        <SteelActivity messageId="assistant-source-history" isCreatedByUser={false} />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByText('Quotation source: Saved human OCR v3')).toBeInTheDocument();
+    expect(screen.queryByText('Quotation source: AI OCR v8')).not.toBeInTheDocument();
+  });
+
   it('hides OCR source metadata from a mismatched quotation query or absent source', () => {
     mockUseGetSteelQuotationStatusQuery.mockReturnValue({
       data: {

@@ -281,16 +281,17 @@ const SteelQuotationProgress = memo(function SteelQuotationProgress({
   const statusIndex = status?.index;
   const statusRunId = status?.runId;
   const statusName = status?.status;
-  const ocrSource =
-    queryData?.ocrSource &&
-    event &&
-    event.conversationId === conversationId &&
-    queryData.conversationId === conversationId &&
-    event.index === queryData.index &&
-    event.runId !== undefined &&
-    event.runId === queryData.runId
-      ? queryData.ocrSource
-      : undefined;
+  const sameRunQuery = Boolean(
+    queryData &&
+      event &&
+      event.conversationId === conversationId &&
+      queryData.conversationId === conversationId &&
+      event.index === queryData.index &&
+      event.runId !== undefined &&
+      event.runId === queryData.runId,
+  );
+  let ocrSource = event?.conversationId === conversationId ? event.ocrSource : undefined;
+  if (sameRunQuery) ocrSource = queryData?.ocrSource ?? ocrSource;
 
   useEffect(() => {
     setRetryError(undefined);

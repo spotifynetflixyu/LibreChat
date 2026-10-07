@@ -56,7 +56,8 @@ export interface SteelQuotationInputAdmission {
   prompts: SteelQuotationSnapshotPayload['prompts'];
   chunks: readonly SteelQuotationInputChunk[];
   targetMessageId?: string;
-  selection: SteelQuotationOcrSelection;
+  selection?: SteelQuotationOcrSelection;
+  sourceSnapshot?: SteelQuotationSourceSnapshot;
   now?: Date;
 }
 
@@ -71,7 +72,20 @@ export interface SteelQuotationInputStaleResult {
   needsRequote: boolean;
 }
 
+/** The user-facing snapshot lifetime is fixed at one day from admission. */
+export const STEEL_QUOTATION_INPUT_TTL_MS: number = 24 * 60 * 60 * 1000;
+
+export interface SteelQuotationInputRetirement {
+  scope: SteelQuotationScope;
+  runId: string;
+  reason: 'cancelled' | 'expired' | 'published';
+  now?: Date;
+}
+
 export interface SteelQuotationInputMethods {
+  retireSteelQuotationInput(input: SteelQuotationInputRetirement): Promise<{
+    ok: true; state: ISteelQuotationState | null;
+  } | InputFailure>;
   readSteelQuotationOcrInput(
     scope: SteelQuotationScope,
   ): Promise<SteelQuotationInputReadResult | InputFailure>;
@@ -260,9 +274,14 @@ function parseHistoricalAiSnapshot(
   artifacts: readonly ISteelQuotationArtifact[],
   human: SteelMarkdownReference,
 ): Candidate | undefined {
-  const artifact = artifacts.find((candidate) =>
-    candidate.runId === `markdown:${human.generationId}` && candidate.kind === 'main' &&
-    candidate.markdownPublication?.reference.source === 'ai');
+  const artifact = artifacts.find((candidate) => {
+    const reference = candidate.markdownPublication?.reference;
+    return candidate.kind === 'main' && candidate.operationId === 'ai:ocr_result' &&
+      reference?.kind === 'ocr_result' && reference.source === 'ai' &&
+      reference.generationId === human.generationId && reference.outputId === human.outputId &&
+      reference.messageId === human.messageId && reference.title === human.title &&
+      reference.lineageId === human.lineageId;
+  });
   const historicalReference = artifact?.markdownPublication?.reference;
   if (!historicalReference || historicalReference.generationId !== human.generationId ||
     historicalReference.lineageId !== human.lineageId) return undefined;
@@ -321,11 +340,15 @@ function parseReviewSnapshot(
     output.effectiveMarkdown === undefined || hashText(output.effectiveMarkdown) !== reference.sha256) return undefined;
   const receiptIndex = output.receipts.findIndex((candidate) =>
     candidate.operationId === reference.operationId && candidate.snapshot?.operationId === candidate.operationId &&
-    candidate.snapshot?.outputId === reference.outputId && candidate.snapshot.revision === reference.revision &&
-    candidate.savedAt instanceof Date && candidate.savedAt.getTime() === reference.savedAt.getTime());
+    candidate.digest === candidate.snapshot.digest && candidate.revision === reference.revision &&
+    candidate.snapshot.outputId === reference.outputId && candidate.snapshot.revision === reference.revision &&
+    candidate.snapshot.title === reference.title && candidate.snapshot.savedAt instanceof Date &&
+    candidate.savedAt instanceof Date && candidate.savedAt.getTime() === reference.savedAt.getTime() &&
+    candidate.snapshot.savedAt.getTime() === candidate.savedAt.getTime());
   const receipt = receiptIndex >= 0 ? output.receipts[receiptIndex] : undefined;
   const snapshot = receipt?.snapshot;
-  if (!receipt || !snapshot || snapshot.conversationId !== output.conversationId ||
+  if (!receipt || !snapshot || (reference.version !== undefined && reference.version !== receiptIndex + 2) ||
+    snapshot.conversationId !== output.conversationId ||
     snapshot.messageId !== reference.messageId || snapshot.effectiveMarkdown !== output.effectiveMarkdown ||
     hashText(snapshot.effectiveMarkdown) !== reference.sha256 ||
     hashText(snapshot.messageText) !== snapshot.messageSha256 ||
@@ -503,6 +526,7 @@ async function resolveInput(
         },
       }
     : undefined;
+  if ((ai && !aiVerified) || (human && !humanVerified)) return { state, invalid: true };
   const selected = humanVerified &&
     (!aiVerified || humanVerified.reference.savedAt.getTime() > aiVerified.reference.savedAt.getTime())
     ? humanVerified
@@ -611,8 +635,8 @@ export function createSteelQuotationInputMethods(mongoose: Mongoose): SteelQuota
     input: SteelQuotationInputAdmission,
   ): Promise<{ ok: true; run: SteelQuotationActiveRun } | InputFailure> {
     if (!isScope(input.scope) || !Number.isSafeInteger(input.index) || input.index < 1 ||
-      !input.token || !input.orderHash || !input.selection ||
-      !Number.isSafeInteger(input.selection.version) || input.selection.version < 1) {
+      !input.token || !input.orderHash ||
+      (input.selection && (!Number.isSafeInteger(input.selection.version) || input.selection.version < 1))) {
       return { ok: false, code: 'invalid_snapshot' };
     }
     const session = await mongoose.startSession();
@@ -640,12 +664,19 @@ export function createSteelQuotationInputMethods(mongoose: Mongoose): SteelQuota
           result = archived ? { ok: true, run: archived } : { ok: false, code: 'invalid_snapshot' };
           return;
         }
-        const resolved = await resolveInput(State, Artifact, Output, Message, File, Conversation, input.scope, session, current);
+        const resolved = input.selection
+          ? await resolveInput(State, Artifact, Output, Message, File, Conversation, input.scope, session, current)
+          : undefined;
         const selected = resolved?.input;
-        if (!selected || resolved?.invalid || !sameValue(selected.selection, input.selection) ||
-          !sameValue(current.markdownPublication?.current?.ocr_result?.ai, input.selection.candidates.ai) ||
-          !sameValue(current.markdownPublication?.lastHumanOcr, input.selection.candidates.human) ||
-          !sameOrder(current.currentOrder, nextOrder(selected)) || current.currentOrder?.sha256 !== input.orderHash ||
+        const order = selected ? nextOrder(selected) : current.currentOrder;
+        const candidatesMatch = input.selection
+          ? Boolean(selected) && !resolved?.invalid && sameValue(selected?.selection, input.selection) &&
+            sameValue(current.markdownPublication?.current?.ocr_result?.ai, input.selection.candidates.ai) &&
+            sameValue(current.markdownPublication?.lastHumanOcr, input.selection.candidates.human) &&
+            Boolean(order && sameOrder(current.currentOrder, order))
+          : current.markdownPublication?.current?.ocr_result?.ai === undefined &&
+            current.markdownPublication?.lastHumanOcr === undefined && current.currentOrder?.ocrSelection === undefined;
+        if (!candidatesMatch || !order || order.sha256 !== input.orderHash ||
           ticket.orderHash !== input.orderHash || ticket.customerMarkdown !== input.customerMarkdown ||
           ticket.customerIdentity !== input.customerIdentity) {
           result = { ok: false, code: 'concurrent_change' };
@@ -673,12 +704,13 @@ export function createSteelQuotationInputMethods(mongoose: Mongoose): SteelQuota
         const runId = input.token;
         const snapshotPayload: SteelQuotationSnapshotPayload = {
           prompts: input.prompts,
-          orderMarkdown: selected.markdown,
-          orderHash: selected.selection.selected.sha256,
+          orderMarkdown: order.markdown,
+          orderHash: order.sha256,
           customerMarkdown: input.customerMarkdown,
           customerIdentity: input.customerIdentity,
-          sourceSnapshot: selected.sourceSnapshot,
-          ocrSelection: selected.selection,
+          ...((selected?.sourceSnapshot ?? input.sourceSnapshot)
+            ? { sourceSnapshot: selected?.sourceSnapshot ?? input.sourceSnapshot } : {}),
+          ...(selected ? { ocrSelection: selected.selection } : {}),
         };
         const payload = JSON.stringify(snapshotPayload);
         const snapshotHash = hashText(payload);
@@ -687,7 +719,7 @@ export function createSteelQuotationInputMethods(mongoose: Mongoose): SteelQuota
         if (input.chunks.length > MAX_INPUT_CHUNKS || current.tickets.length > MAX_INPUT_TICKETS ||
           current.pendingMessages.length > MAX_INPUT_PENDING_MESSAGES ||
           current.pendingMessages.some((message) => (message.sourceMessageFiles?.length ?? 0) > MAX_INPUT_PENDING_FILES) ||
-          Buffer.byteLength(selected.markdown, 'utf8') > MAX_INPUT_ORDER_BYTES ||
+          Buffer.byteLength(order.markdown, 'utf8') > MAX_INPUT_ORDER_BYTES ||
           Buffer.byteLength(input.customerMarkdown, 'utf8') > MAX_INPUT_CUSTOMER_BYTES ||
           Buffer.byteLength(input.customerIdentity, 'utf8') > MAX_INPUT_CUSTOMER_BYTES ||
           Buffer.byteLength(input.prompts.child, 'utf8') > MAX_INPUT_PROMPT_BYTES ||
@@ -709,7 +741,7 @@ export function createSteelQuotationInputMethods(mongoose: Mongoose): SteelQuota
           status: 'queued',
           triggerMessageId: ticket.triggeringMessageId,
           ...(input.targetMessageId ? { targetMessageId: input.targetMessageId } : {}),
-          ocrSelection: selected.selection,
+          ...(selected ? { ocrSelection: selected.selection } : {}),
           snapshotRef,
           chunks,
           checkpointRefs: [],
@@ -722,7 +754,7 @@ export function createSteelQuotationInputMethods(mongoose: Mongoose): SteelQuota
           userId: current.userId,
           conversationId: current.conversationId,
           tenantId: current.tenantId,
-          currentOrder: nextOrder(selected),
+          currentOrder: order,
           currentSystemOrder: current.currentSystemOrder,
           currentCustomer: current.currentCustomer,
           customerLookupEvidence: current.customerLookupEvidence,
@@ -745,6 +777,7 @@ export function createSteelQuotationInputMethods(mongoose: Mongoose): SteelQuota
           kind: 'snapshot',
           sha256: snapshotHash,
           payload,
+          expiresAt: new Date(now.getTime() + STEEL_QUOTATION_INPUT_TTL_MS),
           createdAt: now,
           updatedAt: now,
         }], { session });
@@ -777,6 +810,74 @@ export function createSteelQuotationInputMethods(mongoose: Mongoose): SteelQuota
         );
         if (updated.matchedCount !== 1) throw concurrent;
         result = { ok: true, run: nextRun };
+      });
+      return result;
+    } catch (error) {
+      if (error === concurrent) return { ok: false, code: 'concurrent_change' };
+      throw error;
+    } finally {
+      await session.endSession();
+    }
+  }
+
+  async function retireSteelQuotationInput(
+    input: SteelQuotationInputRetirement,
+  ): Promise<{ ok: true; state: ISteelQuotationState | null } | InputFailure> {
+    if (!isScope(input.scope) || !input.runId) return { ok: false, code: 'invalid_snapshot' };
+    const now = input.now ?? new Date();
+    const session = await mongoose.startSession();
+    const concurrent = new Error('Steel quotation input retirement changed concurrently');
+    let result: { ok: true; state: ISteelQuotationState | null } | InputFailure = {
+      ok: false, code: 'concurrent_change',
+    };
+    try {
+      await session.withTransaction(async () => {
+        const current = await State.findOne(scopeFilter(input.scope)).session(session).lean<ISteelQuotationState>();
+        const run = current?.activeRun;
+        if (!current || !run || run.runId !== input.runId) {
+          result = { ok: true, state: current };
+          return;
+        }
+        const published = run.checkpointRefs.find((ref) => ref.operationId === 'published' && ref.kind === 'final');
+        const final = run.checkpointRefs.find((ref) => ref.operationId === 'final' && ref.kind === 'final');
+        if (input.reason === 'expired' && new Date(run.acceptedAt).getTime() + STEEL_QUOTATION_INPUT_TTL_MS > now.getTime()) {
+          result = { ok: true, state: current };
+          return;
+        }
+        if (input.reason === 'published' || (input.reason === 'expired' && published)) {
+          const receipt = published && await Artifact.findOne({ ...scopeFilter(input.scope), runId: run.runId,
+            operationId: 'published', kind: 'final', sha256: published.sha256 }).session(session).lean<ISteelQuotationArtifact>();
+          const finalArtifact = final && await Artifact.findOne({ ...scopeFilter(input.scope), runId: run.runId,
+            operationId: 'final', kind: 'final', sha256: final.sha256 }).session(session).lean<ISteelQuotationArtifact>();
+          if (run.status !== 'completed' || !receipt || !finalArtifact ||
+            receipt.sha256 !== hashText(receipt.payload) || finalArtifact.sha256 !== hashText(finalArtifact.payload) ||
+            receipt.payload !== JSON.stringify({ finalSha256: finalArtifact.sha256 })) {
+            result = { ok: false, code: 'invalid_snapshot' };
+            return;
+          }
+        } else if (input.reason === 'cancelled' && run.status === 'completed') {
+          result = { ok: true, state: current };
+          return;
+        }
+        const ref = run.snapshotRef;
+        if (ref.kind !== 'snapshot' || ref.operationId !== 'snapshot' || ref.runId !== run.runId ||
+          ref.userId !== input.scope.userId || ref.conversationId !== input.scope.conversationId ||
+          ref.tenantId !== input.scope.tenantId) {
+          result = { ok: false, code: 'invalid_snapshot' };
+          return;
+        }
+        const terminal = input.reason === 'published' || Boolean(published);
+        const updated = await State.findOneAndUpdate({ ...scopeFilter(input.scope), _id: current._id,
+          'activeRun.runId': run.runId, 'activeRun.status': run.status, 'activeRun.acceptedAt': run.acceptedAt }, {
+          $set: { updatedAt: now, ...(!terminal ? {
+            'activeRun.status': 'cancelled', 'activeRun.updatedAt': now,
+          } : {}) },
+          ...(!terminal ? { $unset: { 'activeRun.leaseToken': 1, 'activeRun.leaseExpiresAt': 1 } } : {}),
+        }, { new: true, session }).lean<ISteelQuotationState>();
+        if (!updated) throw concurrent;
+        await Artifact.deleteOne({ ...scopeFilter(input.scope), runId: run.runId, operationId: 'snapshot',
+          kind: 'snapshot', sha256: ref.sha256 }, { session });
+        result = { ok: true, state: updated };
       });
       return result;
     } catch (error) {
@@ -848,6 +949,7 @@ export function createSteelQuotationInputMethods(mongoose: Mongoose): SteelQuota
   }
 
   return {
+    retireSteelQuotationInput,
     readSteelQuotationOcrInput,
     prepareSteelQuotationOcrInput,
     admitSteelQuotationOcrInput,
