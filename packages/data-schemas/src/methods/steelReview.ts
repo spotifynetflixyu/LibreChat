@@ -47,6 +47,7 @@ import {
   createSteelReviewOutputModel,
 } from '~/models';
 import { createSteelReviewSourceAuthorization } from './steelSourceAuthorization';
+import { createSteelQuotationInputMethods } from './steelQuotationInput';
 import { steelReviewTitleStorageId } from '~/utils/identity';
 import { activeExpirationFilter } from '~/utils/retention';
 import { createConversationModel } from '~/models/convo';
@@ -866,6 +867,128 @@ function readQuotationCustomerSnapshot(
   }
 }
 
+type QuotationRun = NonNullable<ISteelQuotationState['activeRun']>;
+type QuotationTicket = ISteelQuotationState['tickets'][number];
+
+type QuotationCustomerEvidence =
+  | { status: 'absent' }
+  | { status: 'invalid' }
+  | { status: 'valid'; snapshot: SteelReviewCustomerSnapshot };
+
+function isSha256(value: unknown): value is string {
+  return typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value);
+}
+
+function hasQuotationSnapshotRef(
+  scope: SteelReviewScope,
+  run: QuotationRun,
+): boolean {
+  const ref = run.snapshotRef;
+  const tenantMatches = scope.tenantId === undefined
+    ? ref.tenantId === undefined
+    : ref.tenantId === scope.tenantId;
+  return ref.kind === 'snapshot' && ref.operationId === 'snapshot' && ref.runId === run.runId &&
+    ref.userId === scope.userId && ref.conversationId === scope.conversationId && tenantMatches &&
+    isSha256(ref.sha256);
+}
+
+function quotationTicketForRun(
+  quotation: ISteelQuotationState,
+  run: QuotationRun,
+): QuotationTicket | undefined {
+  const matches = quotation.tickets.filter((ticket) =>
+    ticket.acceptedRunId === run.runId && ticket.token === run.runId && ticket.index === run.index);
+  if (matches.length !== 1) {
+    return undefined;
+  }
+  const ticket = matches[0];
+  if (run.ocrSelection && (!run.ocrSelection.selected || run.ocrSelection.selected.sha256 !== ticket.orderHash)) {
+    return undefined;
+  }
+  return ticket;
+}
+
+function customerSnapshotFromTicket(
+  run: QuotationRun,
+  ticket: QuotationTicket,
+): SteelReviewCustomerSnapshot {
+  return {
+    snapshotId: run.snapshotRef.sha256,
+    customerIdentity: ticket.customerIdentity,
+    customerMarkdown: ticket.customerMarkdown,
+  };
+}
+
+function parseArchivedQuotationRun(
+  artifact: { runId: string; sha256: string; payload: string },
+  scope: SteelReviewScope,
+  messageId: string,
+): QuotationRun | undefined {
+  if (!isSha256(artifact.sha256) || createHash('sha256').update(artifact.payload).digest('hex') !== artifact.sha256) {
+    return undefined;
+  }
+  try {
+    const parsed: unknown = JSON.parse(artifact.payload);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed) || !('run' in parsed) ||
+      !parsed.run || typeof parsed.run !== 'object' || Array.isArray(parsed.run)) {
+      return undefined;
+    }
+    const run = parsed.run as QuotationRun;
+    return run.runId === artifact.runId && run.status === 'completed' && run.targetMessageId === messageId &&
+      hasQuotationSnapshotRef(scope, run)
+      ? run
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function readQuotationCustomerEvidence(input: SteelReviewReadInput, quotation: ISteelQuotationState,
+  QuotationArtifact: ReturnType<typeof createSteelQuotationArtifactModel>,
+  isRunPublished: (scope: SteelReviewScope, run: QuotationRun) => Promise<boolean>): Promise<QuotationCustomerEvidence> {
+  const customerRunId = input.customerRunId;
+  const current = quotation.currentSystemOrder;
+  if (!customerRunId || !current || current.runId !== customerRunId || current.messageId !== input.messageId) {
+    return { status: 'invalid' };
+  }
+
+  const scope: SteelReviewScope = {
+    userId: input.userId,
+    conversationId: input.conversationId,
+    ...(input.tenantId !== undefined ? { tenantId: input.tenantId } : {}),
+  };
+  const active = quotation.activeRun?.runId === customerRunId ? quotation.activeRun : undefined;
+  if (active) {
+    const ticket = quotationTicketForRun(quotation, active);
+    if (active.targetMessageId !== input.messageId || !hasQuotationSnapshotRef(scope, active) ||
+      !ticket || !await isRunPublished(scope, active)) {
+      return { status: 'invalid' };
+    }
+    return { status: 'valid', snapshot: customerSnapshotFromTicket(active, ticket) };
+  }
+
+  const archives = await QuotationArtifact.find({
+    ...scopeFilter(input),
+    runId: customerRunId,
+    operationId: 'archive',
+    kind: 'archive',
+  }).select({ runId: 1, sha256: 1, payload: 1 }).lean<{ runId: string; sha256: string; payload: string }[]>();
+  if (archives.length === 0) {
+    return quotation.tickets.some((ticket) => ticket.acceptedRunId === customerRunId)
+      ? { status: 'invalid' }
+      : { status: 'absent' };
+  }
+  if (archives.length !== 1) {
+    return { status: 'invalid' };
+  }
+  const archived = parseArchivedQuotationRun(archives[0], scope, input.messageId);
+  const ticket = archived ? quotationTicketForRun(quotation, archived) : undefined;
+  if (!archived || !ticket || !await isRunPublished(scope, archived)) {
+    return { status: 'invalid' };
+  }
+  return { status: 'valid', snapshot: customerSnapshotFromTicket(archived, ticket) };
+}
+
 export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewReadMethods {
   const Message = createMessageModel(mongoose);
   const Conversation = createConversationModel(mongoose);
@@ -874,6 +997,7 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
   const QuotationState = createSteelQuotationStateModel(mongoose);
   const QuotationArtifact = createSteelQuotationArtifactModel(mongoose);
   const ReviewOutput = createSteelReviewOutputModel(mongoose);
+  const quotationInput = createSteelQuotationInputMethods(mongoose);
   const authorizeFiles = createSteelReviewSourceAuthorization(mongoose);
 
   const readAuthorizedFiles = async (
@@ -1071,12 +1195,21 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
         sidecarCandidatesPromise,
         QuotationState.findOne(scopeFilter(input)).lean<ISteelQuotationState>(),
       ]);
-      const customerSnapshotArtifact = input.customerRunId && quotation?.currentSystemOrder?.runId === input.customerRunId
+      const durableCustomerEvidence = quotation
+        ? await readQuotationCustomerEvidence(input, quotation, QuotationArtifact,
+          (scope, run) => quotationInput.isSteelQuotationRunPublished(scope, run))
+        : { status: 'invalid' as const };
+      const customerSnapshotArtifact = durableCustomerEvidence.status === 'absent'
         ? await QuotationArtifact.findOne({
-            ...scopeFilter(input), runId: quotation.currentSystemOrder.runId, kind: 'snapshot', operationId: 'snapshot',
+            ...scopeFilter(input), runId: input.customerRunId, kind: 'snapshot', operationId: 'snapshot',
           }).select({ sha256: 1, payload: 1 }).lean<{ sha256: string; payload: string } | null>()
         : undefined;
-      const customerSnapshot = readQuotationCustomerSnapshot(customerSnapshotArtifact);
+      let customerSnapshot: SteelReviewCustomerSnapshot | undefined;
+      if (durableCustomerEvidence.status === 'valid') {
+        customerSnapshot = durableCustomerEvidence.snapshot;
+      } else if (durableCustomerEvidence.status === 'absent') {
+        customerSnapshot = readQuotationCustomerSnapshot(customerSnapshotArtifact);
+      }
       const authority = quotation?.currentSystemOrder?.runId
         ? {
             outputId: quotation.currentSystemOrder.reviewOutputId ?? `system_order:${quotation.currentSystemOrder.runId}`,

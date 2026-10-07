@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 import { encodeSteelReviewTitleOwner } from 'librechat-data-provider';
 import type { SteelReviewRow } from 'librechat-data-provider';
+import type { SteelQuotationActiveRun, SteelQuotationScope } from '~/types';
 import {
   createSteelConversationOcrStateModel,
   createSteelDelegateOcrRunModel,
@@ -108,6 +109,80 @@ async function seedTitleSidecarFixture(input: {
     effectiveMarkdown: input.effectiveMarkdown,
   });
   return createSteelReviewReadMethods(mongoose);
+}
+
+function quotationRunFixture(
+  scope: SteelQuotationScope,
+  runId: string,
+  targetMessageId: string,
+  snapshotSha256: string,
+): SteelQuotationActiveRun {
+  const now = new Date();
+  return {
+    runId,
+    index: 1,
+    status: 'completed' as const,
+    triggerMessageId: `${runId}-trigger`,
+    targetMessageId,
+    snapshotRef: {
+      artifactId: `${runId}:snapshot:${snapshotSha256}`,
+      ...scope,
+      runId,
+      operationId: 'snapshot',
+      kind: 'snapshot' as const,
+      sha256: snapshotSha256,
+    },
+    chunks: [],
+    checkpointRefs: [],
+    acceptedAt: now,
+    updatedAt: now,
+  };
+}
+
+function publishedQuotationArtifacts(scope: SteelQuotationScope, runId: string, markdown: string): Array<{
+  userId: string;
+  conversationId: string;
+  tenantId?: string;
+  runId: string;
+  operationId: 'final' | 'published';
+  kind: 'final';
+  sha256: string;
+  payload: string;
+}> {
+  const finalSha256 = createHash('sha256').update(markdown).digest('hex');
+  const publicationPayload = JSON.stringify({ finalSha256 });
+  return [
+    {
+      ...scope,
+      runId,
+      operationId: 'final',
+      kind: 'final' as const,
+      sha256: finalSha256,
+      payload: markdown,
+    },
+    {
+      ...scope,
+      runId,
+      operationId: 'published',
+      kind: 'final' as const,
+      sha256: createHash('sha256').update(publicationPayload).digest('hex'),
+      payload: publicationPayload,
+    },
+  ];
+}
+
+function acceptedQuotationTicket(runId: string, orderHash: string, customerMarkdown: string, customerIdentity: string) {
+  return {
+    index: 1,
+    token: runId,
+    orderHash,
+    customerMarkdown,
+    customerIdentity,
+    triggeringMessageId: `${runId}-trigger`,
+    selectionProvenance: { method: 'default_tier' as const },
+    issuedAt: new Date(),
+    acceptedRunId: runId,
+  };
 }
 
 afterAll(async () => {
@@ -1506,6 +1581,245 @@ describe('Steel review read methods', () => {
         customerMarkdown: expect.stringContaining('| 預設 | B |'),
       },
     }));
+  });
+
+  it('uses the immutable accepted ticket after the published run snapshot is retired', async () => {
+    const models = createModels(mongoose);
+    const QuotationState = createSteelQuotationStateModel(mongoose);
+    const QuotationArtifact = createSteelQuotationArtifactModel(mongoose);
+    const read = createSteelReviewReadMethods(mongoose);
+    const scope = {
+      userId: 'durable-customer-user',
+      tenantId: 'durable-customer-tenant',
+      conversationId: 'durable-customer-conversation',
+    };
+    const messageId = 'durable-customer-message';
+    const runId = 'durable-customer-run';
+    const markdown = '## system_order\n\n| 類別 | 零件編號 |\n| --- | --- |\n| 材料 | P-1 |';
+    const snapshotSha256 = 'a'.repeat(64);
+    const run = quotationRunFixture(scope, runId, messageId, snapshotSha256);
+    const customerMarkdown = '## customer_data\n\n| 客戶 | 計價基準 |\n| --- | --- |\n| 舊客戶 | B |';
+    const ticket = acceptedQuotationTicket(runId, 'order-hash', customerMarkdown, 'old-customer:B');
+    await models.Conversation.create({ ...scope, user: scope.userId, title: 'Review', endpoint: 'openAI' });
+    await models.Message.create({
+      ...scope,
+      user: scope.userId,
+      messageId,
+      isCreatedByUser: false,
+      text: markdown,
+      content: [{ type: 'text', text: markdown }],
+    });
+    await QuotationState.create({
+      ...scope,
+      currentSystemOrder: {
+        runId,
+        sha256: createHash('sha256').update(markdown).digest('hex'),
+        markdown,
+        messageId,
+        updatedAt: new Date(),
+      },
+      currentCustomer: {
+        preparationId: 'new-preparation',
+        customerMarkdown: '## customer_data\n\n| 客戶 | 計價基準 |\n| --- | --- |\n| 新客戶 | F |',
+        customerIdentity: 'new-customer:F',
+        triggeringMessageId: 'new-trigger',
+        responseId: 'new-response',
+        selectionProvenance: { method: 'default_tier' },
+      },
+      tickets: [ticket],
+      activeRun: run,
+      pendingMessages: [],
+    });
+    const finalArtifacts = publishedQuotationArtifacts(scope, runId, markdown);
+    run.checkpointRefs = finalArtifacts.map((artifact) => ({
+      operationId: artifact.operationId,
+      kind: artifact.kind,
+      artifactId: `${runId}:${artifact.operationId}:${artifact.sha256}`,
+      sha256: artifact.sha256,
+      updatedAt: new Date(),
+    }));
+    await QuotationState.updateOne({ ...scope }, { $set: { activeRun: run } });
+    await QuotationArtifact.create(finalArtifacts);
+
+    const result = await read.readSteelReview({
+      ...scope,
+      messageId,
+      title: 'system_order',
+      kind: 'system_order',
+      customerRunId: runId,
+    });
+    expect(result?.customerSnapshot).toEqual({
+      snapshotId: snapshotSha256,
+      customerIdentity: 'old-customer:B',
+      customerMarkdown,
+    });
+  });
+
+  it('retains archived run customer evidence after the active customer changes', async () => {
+    const models = createModels(mongoose);
+    const QuotationState = createSteelQuotationStateModel(mongoose);
+    const QuotationArtifact = createSteelQuotationArtifactModel(mongoose);
+    const read = createSteelReviewReadMethods(mongoose);
+    const scope = {
+      userId: 'archived-customer-user',
+      tenantId: 'archived-customer-tenant',
+      conversationId: 'archived-customer-conversation',
+    };
+    const messageId = 'archived-customer-message';
+    const runId = 'archived-customer-run';
+    const markdown = '## system_order\n\n| 類別 | 零件編號 |\n| --- | --- |\n| 材料 | P-1 |';
+    const run = quotationRunFixture(scope, runId, messageId, 'b'.repeat(64));
+    const oldCustomerMarkdown = '## customer_data\n\n| 客戶 | 計價基準 |\n| --- | --- |\n| 舊客戶 | C |';
+    await models.Conversation.create({ ...scope, user: scope.userId, title: 'Review', endpoint: 'openAI' });
+    await models.Message.create({
+      ...scope,
+      user: scope.userId,
+      messageId,
+      isCreatedByUser: false,
+      text: markdown,
+      content: [{ type: 'text', text: markdown }],
+    });
+    const currentRun = quotationRunFixture(scope, 'new-unpublished-run', 'new-message', 'c'.repeat(64));
+    currentRun.status = 'queued';
+    await QuotationState.create({
+      ...scope,
+      currentSystemOrder: {
+        runId,
+        sha256: createHash('sha256').update(markdown).digest('hex'),
+        markdown,
+        messageId,
+        updatedAt: new Date(),
+      },
+      currentCustomer: {
+        preparationId: 'new-preparation',
+        customerMarkdown: '## customer_data\n\n| 客戶 | 計價基準 |\n| --- | --- |\n| 新客戶 | F |',
+        customerIdentity: 'new-customer:F',
+        triggeringMessageId: 'new-trigger',
+        responseId: 'new-response',
+        selectionProvenance: { method: 'default_tier' },
+      },
+      tickets: [acceptedQuotationTicket(runId, 'order-hash', oldCustomerMarkdown, 'old-customer:C')],
+      activeRun: currentRun,
+      pendingMessages: [],
+    });
+    const finalArtifacts = publishedQuotationArtifacts(scope, runId, markdown);
+    run.checkpointRefs = finalArtifacts.map((artifact) => ({
+      operationId: artifact.operationId,
+      kind: artifact.kind,
+      artifactId: `${runId}:${artifact.operationId}:${artifact.sha256}`,
+      sha256: artifact.sha256,
+      updatedAt: new Date(),
+    }));
+    const refreshedArchivePayload = JSON.stringify({ run });
+    await QuotationArtifact.create([
+      ...finalArtifacts,
+      {
+        ...scope,
+        runId,
+        operationId: 'archive',
+        kind: 'archive',
+        sha256: createHash('sha256').update(refreshedArchivePayload).digest('hex'),
+        payload: refreshedArchivePayload,
+      },
+    ]);
+
+    const result = await read.readSteelReview({
+      ...scope,
+      messageId,
+      title: 'system_order',
+      kind: 'system_order',
+      customerRunId: runId,
+    });
+    expect(result?.customerSnapshot).toEqual({
+      snapshotId: 'b'.repeat(64),
+      customerIdentity: 'old-customer:C',
+      customerMarkdown: oldCustomerMarkdown,
+    });
+  });
+
+  it('fails closed when durable quotation provenance is invalid instead of using a legacy snapshot', async () => {
+    const models = createModels(mongoose);
+    const QuotationState = createSteelQuotationStateModel(mongoose);
+    const QuotationArtifact = createSteelQuotationArtifactModel(mongoose);
+    const read = createSteelReviewReadMethods(mongoose);
+    const scope = {
+      userId: 'invalid-customer-user',
+      tenantId: 'invalid-customer-tenant',
+      conversationId: 'invalid-customer-conversation',
+    };
+    const messageId = 'invalid-customer-message';
+    const runId = 'invalid-customer-run';
+    const markdown = '## system_order\n\n| 類別 | 零件編號 |\n| --- | --- |\n| 材料 | P-1 |';
+    const customerPayload = JSON.stringify({
+      customerIdentity: 'legacy-customer:B',
+      customerMarkdown: '## customer_data\n\n| 客戶 | 計價基準 |\n| --- | --- |\n| 舊客戶 | B |',
+    });
+    const customerSha256 = createHash('sha256').update(customerPayload).digest('hex');
+    await models.Conversation.create({ ...scope, user: scope.userId, title: 'Review', endpoint: 'openAI' });
+    await models.Message.create({
+      ...scope,
+      user: scope.userId,
+      messageId,
+      isCreatedByUser: false,
+      text: markdown,
+      content: [{ type: 'text', text: markdown }],
+    });
+    const invalidRun = quotationRunFixture(scope, runId, messageId, 'not-a-digest');
+    await QuotationState.create({
+      ...scope,
+      currentSystemOrder: {
+        runId,
+        sha256: createHash('sha256').update(markdown).digest('hex'),
+        markdown,
+        messageId,
+        updatedAt: new Date(),
+      },
+      tickets: [{ ...acceptedQuotationTicket(runId, 'order-hash', 'ticket-customer', 'ticket-customer:B'), token: 'mismatched-token' }],
+      activeRun: invalidRun,
+      pendingMessages: [],
+    });
+    await QuotationArtifact.create({
+      ...scope,
+      runId,
+      operationId: 'snapshot',
+      kind: 'snapshot',
+      sha256: customerSha256,
+      payload: customerPayload,
+    });
+    await expect(read.readSteelReview({
+      ...scope,
+      messageId,
+      title: 'system_order',
+      kind: 'system_order',
+      customerRunId: runId,
+    })).resolves.toEqual(expect.not.objectContaining({ customerSnapshot: expect.anything() }));
+
+    await QuotationState.updateOne({ ...scope }, { $unset: { activeRun: 1 } });
+    await expect(read.readSteelReview({
+      ...scope,
+      messageId,
+      title: 'system_order',
+      kind: 'system_order',
+      customerRunId: runId,
+    })).resolves.toEqual(expect.not.objectContaining({ customerSnapshot: expect.anything() }));
+
+    const archiveRun = quotationRunFixture(scope, runId, messageId, 'd'.repeat(64));
+    const archivePayload = JSON.stringify({ run: archiveRun });
+    await QuotationArtifact.create({
+      ...scope,
+      runId,
+      operationId: 'archive',
+      kind: 'archive',
+      sha256: 'f'.repeat(64),
+      payload: archivePayload,
+    });
+    await expect(read.readSteelReview({
+      ...scope,
+      messageId,
+      title: 'system_order',
+      kind: 'system_order',
+      customerRunId: runId,
+    })).resolves.toEqual(expect.not.objectContaining({ customerSnapshot: expect.anything() }));
   });
 
   it('rejects a message whose conversation is missing or expired', async () => {

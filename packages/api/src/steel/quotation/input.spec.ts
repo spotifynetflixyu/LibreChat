@@ -428,6 +428,10 @@ it('restores a fresh service and resumes child/main from the admitted snapshot',
   expect(replay.markdown).toBe(result.markdown);
   expect((await db.getMessage({ user: scope.userId, messageId: run.targetMessageId! }))?.text).toBe(finalMessage?.text);
   expect(await service.readArtifact({ scope, ref: run.snapshotRef })).toBeUndefined();
+  const catalogAuthority = await db.readSteelReview({ ...scope, messageId: run.targetMessageId!,
+    kind: 'system_order', title: 'system_order', customerRunId: run.runId });
+  expect(catalogAuthority?.customerSnapshot).toEqual({ snapshotId: run.snapshotRef.sha256,
+    customerIdentity: snapshot.customerIdentity, customerMarkdown: snapshot.customerMarkdown });
 });
 
 it('marks a completed quotation stale after a source-only human Save while retaining its source authority', async () => {
@@ -468,6 +472,17 @@ it('retains the same input after publication failure and cleans it only after su
   expect((await service.readState(scope))?.activeRun?.status).toBe('completed');
   expect(await service.readArtifact({ scope, ref: run.snapshotRef })).toBe(JSON.stringify(snapshot));
   expect(await service.getArtifact({ scope, runId: run.runId, operationId: 'published' })).toBeNull();
+  const completedState = await service.readState(scope);
+  const late = await acceptQuotationSignal({
+    scope, response: '## quote_signal\n\nstart', responseId: 'delayed-second-signal',
+    expectedOrderHash: completedState?.currentOrder?.sha256,
+    expectedCustomerPreparationId: completedState?.currentCustomer?.preparationId,
+    finishReason: 'stop', service,
+  });
+  expect(late?.runId).toBe(run.runId);
+  expect((await service.readState(scope))?.tickets).toEqual(completedState?.tickets);
+  expect(await createSteelQuotationArtifactModel(mongoose).countDocuments({ ...scope, kind: 'snapshot' })).toBe(1);
+  expect(await createSteelQuotationArtifactModel(mongoose).countDocuments({ ...scope, kind: 'archive' })).toBe(0);
   await saveHuman('4');
   const completedCalls = model.mock.calls.length;
   await expect(runQuotationPreflight({ ...runnerInput, publishFinal: createRealQuotationPublisher() }))

@@ -291,6 +291,7 @@ export interface SteelQuotationDeleteResult {
 export interface SteelQuotationStateService {
   ensureState(scope: SteelQuotationScope): Promise<ISteelQuotationState>;
   readState(scope: SteelQuotationScope): Promise<ISteelQuotationState | null>;
+  isPublishedRun(scope: SteelQuotationScope, run: SteelQuotationActiveRun): Promise<boolean>;
   readCurrentSystemOrder(scope: SteelQuotationScope): Promise<SteelQuotationCurrentSystemOrder | undefined>;
   hasSystemOrder(scope: SteelQuotationScope): Promise<boolean>;
   setOrder(input: SteelQuotationOrderInput): Promise<ISteelQuotationState>;
@@ -995,8 +996,9 @@ export function createSteelQuotationStateService(
       if (!current) {
         continue;
       }
-      if (isUnfinished(current.activeRun?.status)) {
-        throw new Error('cannot save customer preparation while a run is unfinished');
+      if (isUnfinished(current.activeRun?.status) || (current.activeRun?.status === 'completed' &&
+        !await inputs.isSteelQuotationRunPublished(input.scope, current.activeRun))) {
+        throw new Error('cannot save customer preparation while a run is unfinished or unpublished');
       }
       assertAuthorityBounds({
         ...current,
@@ -1017,10 +1019,11 @@ export function createSteelQuotationStateService(
             ? { 'currentOrder.sha256': input.orderHash }
             : { 'currentOrder': { $exists: false } }),
           ...preparationFilter,
-          $or: [
-            { activeRun: { $exists: false } },
-            { 'activeRun.status': { $in: terminalStatuses } },
-          ],
+          ...(current.activeRun ? {
+            'activeRun.runId': current.activeRun.runId,
+            'activeRun.status': current.activeRun.status,
+            'activeRun.checkpointRefs': current.activeRun.checkpointRefs,
+          } : { activeRun: { $exists: false } }),
         },
         {
           $set: { currentCustomer: preparation, updatedAt: now },
@@ -1206,8 +1209,9 @@ export function createSteelQuotationStateService(
       if (!current?.currentOrder) {
         throw new Error('cannot issue quotation ticket without a current order');
       }
-      if (isUnfinished(current.activeRun?.status)) {
-        throw new Error('cannot issue quotation ticket while a run is unfinished');
+      if (isUnfinished(current.activeRun?.status) || (current.activeRun?.status === 'completed' &&
+        !await inputs.isSteelQuotationRunPublished(input.scope, current.activeRun))) {
+        throw new Error('cannot issue quotation ticket while a run is unfinished or unpublished');
       }
       if (current.tickets.length >= MAX_QUOTATION_TICKETS) {
         throw new Error(`quotation authority exceeds ${MAX_QUOTATION_TICKETS} tickets`);
@@ -1249,10 +1253,11 @@ export function createSteelQuotationStateService(
                 'tickets.responseId': { $ne: input.responseId },
               }
             : {}),
-          $or: [
-            { activeRun: { $exists: false } },
-            { 'activeRun.status': { $in: terminalStatuses } },
-          ],
+          ...(current.activeRun ? {
+            'activeRun.runId': current.activeRun.runId,
+            'activeRun.status': current.activeRun.status,
+            'activeRun.checkpointRefs': current.activeRun.checkpointRefs,
+          } : { activeRun: { $exists: false } }),
         },
         {
           $inc: { nextSignalIndex: 1 },
@@ -2589,6 +2594,7 @@ export function createSteelQuotationStateService(
   return {
     ensureState,
     readState,
+    isPublishedRun: inputs.isSteelQuotationRunPublished,
     readCurrentSystemOrder,
     hasSystemOrder,
     setOrder,

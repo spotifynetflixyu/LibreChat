@@ -9,7 +9,7 @@ const mockClearEvidence = jest.fn();
 const mockSetOrder = jest.fn();
 const mockPrepareOcrOrder = jest.fn();
 const mockReadOcr = jest.fn();
-const mockArtifact = jest.fn();
+const mockIsPublished = jest.fn();
 const mockHasSystemOrder = jest.fn();
 const mockReadCurrentSystemOrder = jest.fn();
 const mockReadCheckpoint = jest.fn();
@@ -17,7 +17,7 @@ const mockSaveCurrentSystemOrder = jest.fn();
 jest.mock('./state', () => ({ createSteelQuotationStateService: () => ({
   ensureState: mockRead, readState: mockRead, saveCustomer: mockSave, clearCustomer: mockClear,
   saveCustomerLookupEvidence: mockSaveEvidence, clearCustomerLookupEvidence: mockClearEvidence,
-  setOrder: mockSetOrder, getArtifact: mockArtifact,
+  setOrder: mockSetOrder, isPublishedRun: mockIsPublished,
   prepareOcrOrder: mockPrepareOcrOrder,
   hasSystemOrder: mockHasSystemOrder, readCurrentSystemOrder: mockReadCurrentSystemOrder,
   readCheckpoint: mockReadCheckpoint, saveCurrentSystemOrder: mockSaveCurrentSystemOrder,
@@ -35,7 +35,7 @@ beforeEach(() => {
   mockClearEvidence.mockResolvedValue({ currentOrder: { markdown: order, sha256: 'order-hash' }, tickets: [], pendingMessages: [] });
   mockPrepareOcrOrder.mockImplementation(async () => ({ state: await mockRead() }));
   mockReadOcr.mockResolvedValue(null);
-  mockArtifact.mockResolvedValue(null);
+  mockIsPublished.mockResolvedValue(false);
   mockHasSystemOrder.mockResolvedValue(false);
   mockReadCurrentSystemOrder.mockResolvedValue(undefined);
   mockReadCheckpoint.mockResolvedValue(undefined);
@@ -89,7 +89,7 @@ it('injects fresh saved customer and system-order presence into each ordinary tu
     currentCustomer: { customerIdentity: 'accepted-customer', customerMarkdown },
     tickets: [{ acceptedRunId: 'accepted-run', orderHash: 'order-hash', customerIdentity: 'accepted-customer', customerMarkdown }],
     activeRun: { runId: 'accepted-run', status: 'completed' }, pendingMessages: [] });
-  mockArtifact.mockResolvedValue({ operationId: 'published' });
+  mockIsPublished.mockResolvedValue(true);
   mockHasSystemOrder.mockResolvedValue(true);
   const first = await prepareQuotationTurn({ scope, messageId: 'u1', responseId: 'a1', text: '你好' });
   expect(first.instruction).toContain(JSON.stringify({ hasOcrResult: true, hasCustomerData: true, hasSystemOrder: true, shouldAskToQuote: false }));
@@ -116,7 +116,7 @@ it('keeps system-order corrections full-only and does not inject revision mappin
     pendingMessages: [],
     activeRun: { runId: 'completed-run', status: 'completed', targetMessageId: 'completed-response' },
   });
-  mockArtifact.mockResolvedValue({ operationId: 'published' });
+  mockIsPublished.mockResolvedValue(true);
   mockHasSystemOrder.mockResolvedValue(true);
 
   const prepared = await prepareQuotationTurn({ scope, messageId: 'u3', responseId: 'a3', text: '修改數量' });
@@ -150,7 +150,7 @@ it('clears completed quote readiness after OCR changes the current order', async
     activeRun: { runId: 'completed-run', status: 'completed', targetMessageId: 'completed-response' },
     pendingMessages: [],
   });
-  mockArtifact.mockResolvedValue({ operationId: 'published' });
+  mockIsPublished.mockResolvedValue(true);
   mockHasSystemOrder.mockResolvedValue(true);
   mockReadOcr.mockResolvedValue({
     currentOcrResultMarkdown: updatedOrder,
@@ -190,7 +190,7 @@ it('clears completed quote readiness when the saved customer no longer matches t
     activeRun: { runId: 'completed-run', status: 'completed', targetMessageId: 'completed-response' },
     pendingMessages: [],
   });
-  mockArtifact.mockResolvedValue({ operationId: 'published' });
+  mockIsPublished.mockResolvedValue(true);
   mockHasSystemOrder.mockResolvedValue(true);
   mockReadCheckpoint.mockResolvedValue(completedSystemOrder);
 
@@ -234,7 +234,7 @@ it.each(['old-response', 'rerun-response'])(
     currentCustomer: { customerIdentity: 'saved-customer', customerMarkdown: 'saved customer' }, pendingMessages: [],
     activeRun: { runId: 'finished', status: 'completed', triggerMessageId: 'quote-user', targetMessageId: 'old-response' },
       tickets: [{ acceptedRunId: 'finished', orderHash: 'order-hash', customerIdentity: 'saved-customer', customerMarkdown: 'saved customer' }] });
-    mockArtifact.mockResolvedValue({ operationId: 'published' });
+    mockIsPublished.mockResolvedValue(true);
     mockHasSystemOrder.mockResolvedValue(true);
     const prepared = await prepareQuotationTurn({
       scope, messageId: 'quote-user', responseId, text: '依目前 OCR 彙整表開始報價',

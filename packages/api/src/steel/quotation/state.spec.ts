@@ -752,11 +752,14 @@ describe('Steel quotation state service', () => {
     const finalRef = await service.writeArtifact({ scope, runId: first.run.runId,
       operationId: 'final', kind: 'final', payload: 'complete system order', leaseToken: lease.leaseToken });
     expect(await service.hasSystemOrder(scope)).toBe(false);
+    await service.checkpoint({ scope, runId: first.run.runId, leaseToken: lease.leaseToken,
+      operationId: 'final', kind: 'final', artifactRef: finalRef });
     await service.completeRun({ scope, runId: first.run.runId, leaseToken: lease.leaseToken, finalRef });
     expect(await service.hasSystemOrder(scope)).toBe(true);
     expect(await service.hasSystemOrder({ userId: 'other-owner', conversationId: scope.conversationId })).toBe(false);
     expect(await service.hasSystemOrder({ userId: scope.userId, conversationId: 'other-conversation' })).toBe(false);
 
+    await service.markPublished({ scope, runId: first.run.runId, finalSha256: finalRef.sha256 });
     const latest = await prepareRun(scope, '# latest order');
     expect(await service.hasSystemOrder(scope)).toBe(false);
     const latestLease = await service.acquireLease({ scope, runId: latest.run.runId });
@@ -870,6 +873,7 @@ describe('Steel quotation state service', () => {
       leaseToken: lease.leaseToken,
       finalRef,
     });
+    await service.markPublished({ scope, runId: prepared.run.runId, finalSha256: finalRef.sha256 });
     const customerA = {
       customerIdentity: prepared.ticket.customerIdentity,
       customerMarkdown: prepared.ticket.customerMarkdown,

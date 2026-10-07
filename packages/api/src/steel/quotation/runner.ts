@@ -504,7 +504,8 @@ export async function acceptQuotationResponse(input: {
     if (!signal) return undefined;
     return acceptQuotationSignal({ ...input, service });
   }
-  if (isUnfinishedQuotation(state?.activeRun?.status) &&
+  if ((isUnfinishedQuotation(state?.activeRun?.status) || (state?.activeRun?.status === 'completed' &&
+    !await service.isPublishedRun(input.scope, state.activeRun))) &&
     (hasOrder || (customer && !matchesCustomer(state?.currentCustomer?.customerMarkdown ?? '')))) {
     throw new SteelQuotationPublicationError('quotation_busy');
   }
@@ -559,7 +560,8 @@ export async function acceptQuotationSignal(input: {
     input.expectedCustomerPreparationId !== preparedCustomer.preparationId) {
     throw new Error('Quotation signal is based on stale preparation data');
   }
-  if (isUnfinishedQuotation(state.activeRun?.status)) return state.activeRun;
+  if (isUnfinishedQuotation(state.activeRun?.status) || (state.activeRun?.status === 'completed' &&
+    !await service.isPublishedRun(input.scope, state.activeRun))) return state.activeRun;
   if (input.ocrSelection && !sameQuotationOcrSelection(input.ocrSelection, state.currentOrder.ocrSelection)) {
     throw new Error('Quotation signal OCR selection is stale');
   }

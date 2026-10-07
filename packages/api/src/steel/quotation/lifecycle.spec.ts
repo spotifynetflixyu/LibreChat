@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import {
   createSteelQuotationArtifactModel,
+  createSteelQuotationInputMethods,
   createSteelQuotationStateModel,
   STEEL_QUOTATION_INPUT_TTL_MS,
 } from '@librechat/data-schemas';
@@ -104,6 +105,80 @@ afterAll(async () => {
 });
 
 describe('Steel quotation temporary input lifecycle', () => {
+  it('fences delayed tickets and admission until the original completed run has a valid publication receipt', async () => {
+    const firstTicket = await prepareTicket();
+    const delayedTicket = await prepareTicket();
+    const admission = (ticket: SteelQuotationTicket) => ({
+      scope, index: ticket.index, token: ticket.token, orderHash: ticket.orderHash,
+      customerMarkdown: ticket.customerMarkdown, customerIdentity: ticket.customerIdentity,
+      prompts, chunks: [{ index: 1, sourceRowCount: 1 }],
+    });
+    const first = await service.acceptSignal(admission(firstTicket));
+    const lease = await service.acquireLease({ scope, runId: first.runId, leaseToken: 'publication-race' });
+    if (!lease) throw new Error('Missing lease');
+    const finalRef = await service.writeArtifact({ scope, runId: first.runId, operationId: 'final',
+      kind: 'final', payload: 'completed unpublished result', leaseToken: lease.leaseToken });
+    await service.checkpoint({ scope, runId: first.runId, operationId: 'final', kind: 'final',
+      artifactRef: finalRef, leaseToken: lease.leaseToken });
+    await service.completeRun({ scope, runId: first.runId, finalRef, leaseToken: lease.leaseToken });
+    const completed = (await service.readState(scope))?.activeRun;
+    if (!completed) throw new Error('Missing completed run');
+    const before = await service.readState(scope);
+    const issue = () => service.issueTicket({ scope, customerMarkdown: firstTicket.customerMarkdown,
+      customerIdentity: firstTicket.customerIdentity, triggeringMessageId: 'late-response',
+      selectionProvenance: firstTicket.selectionProvenance });
+    await expect(issue()).rejects.toThrow('unfinished or unpublished');
+    await expect(service.saveCustomer({ scope, customerMarkdown: 'changed customer',
+      customerIdentity: 'changed', triggeringMessageId: 'late-customer', responseId: 'late-customer-response',
+      orderHash: firstTicket.orderHash, selectionProvenance: firstTicket.selectionProvenance }))
+      .rejects.toThrow('unfinished or unpublished');
+    await expect(service.acceptSignal(admission(delayedTicket))).rejects.toMatchObject({ code: 'concurrent_change' });
+    expect((await service.readState(scope))?.tickets).toEqual(before?.tickets);
+    expect((await service.readState(scope))?.activeRun).toEqual(completed);
+    expect(await Artifact.countDocuments({ ...scope, kind: 'snapshot' })).toBe(1);
+    expect(await Artifact.countDocuments({ ...scope, kind: 'archive' })).toBe(0);
+
+    // A checkpoint alone is insufficient: the durable receipt and final hash must verify.
+    await State.updateOne(scope, { $push: { 'activeRun.checkpointRefs': {
+      operationId: 'published', kind: 'final', artifactId: 'missing', sha256: 'missing', updatedAt: new Date(),
+    } } });
+    await expect(issue()).rejects.toThrow('unfinished or unpublished');
+    await expect(service.acceptSignal(admission(delayedTicket))).rejects.toMatchObject({ code: 'concurrent_change' });
+    await State.updateOne(scope, { $set: { 'activeRun.checkpointRefs': completed.checkpointRefs } });
+    await service.markPublished({ scope, runId: first.runId, finalSha256: finalRef.sha256 });
+    const methods = createSteelQuotationInputMethods(mongoose);
+    let raced = false;
+    const delayedIssuer = createSteelQuotationStateService(mongoose, {
+      ...methods,
+      async isSteelQuotationRunPublished(inputScope, run) {
+        const published = await methods.isSteelQuotationRunPublished(inputScope, run);
+        if (published && !raced) {
+          raced = true;
+          const next = await service.acceptSignal(admission(delayedTicket));
+          const nextLease = await service.acquireLease({ scope, runId: next.runId, leaseToken: 'late-ticket-race' });
+          if (!nextLease) throw new Error('Missing next lease');
+          const nextFinal = await service.writeArtifact({ scope, runId: next.runId, operationId: 'final',
+            kind: 'final', payload: 'next unpublished result', leaseToken: nextLease.leaseToken });
+          await service.checkpoint({ scope, runId: next.runId, operationId: 'final', kind: 'final',
+            artifactRef: nextFinal, leaseToken: nextLease.leaseToken });
+          await service.completeRun({ scope, runId: next.runId, finalRef: nextFinal, leaseToken: nextLease.leaseToken });
+        }
+        return published;
+      },
+    });
+    // Complete another admitted run between the issuer's publication check and ticket CAS.
+    await expect(delayedIssuer.issueTicket({ scope, customerMarkdown: firstTicket.customerMarkdown,
+      customerIdentity: firstTicket.customerIdentity, triggeringMessageId: 'delayed-ticket-cas',
+      selectionProvenance: firstTicket.selectionProvenance })).rejects.toThrow('unfinished or unpublished');
+    const afterRace = await service.readState(scope);
+    expect(afterRace?.activeRun?.runId).toBe(delayedTicket.token);
+    expect(afterRace?.activeRun?.status).toBe('completed');
+    expect(afterRace?.tickets).toHaveLength(2);
+    expect(afterRace?.nextSignalIndex).toBe(2);
+    expect(await Artifact.countDocuments({ ...scope, kind: 'snapshot' })).toBe(1);
+    expect(await Artifact.countDocuments({ ...scope, runId: first.runId, kind: 'archive' })).toBe(1);
+  });
+
   it('admits one immutable input, records its TTL, and blocks generic snapshot recreation', async () => {
     const ticket = await prepareTicket();
     const admission = {

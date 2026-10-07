@@ -156,7 +156,7 @@ export async function prepareQuotationTurn(input: {
     return { scope: input.scope, messageId: input.messageId, state, instruction: '', resume: true, ...originalMessage };
   }
   const unpublished = state.activeRun?.status === 'completed' &&
-    !await service.getArtifact({ scope: input.scope, runId: state.activeRun.runId, operationId: 'published' });
+    !await service.isPublishedRun(input.scope, state.activeRun);
   if (unpublished) {
     return { scope: input.scope, messageId: input.messageId, state, instruction: '', resume: true, ...originalMessage };
   }
@@ -275,7 +275,8 @@ export async function bindQuotationCustomerResult(input: {
   const service = createSteelQuotationStateService(mongoose);
   const state = await service.readState(input.scope);
   if (!state?.currentOrder || !hasQuotationOrder(state.currentOrder.markdown) ||
-    isUnfinishedQuotation(state.activeRun?.status)) {
+    (isUnfinishedQuotation(state.activeRun?.status) || (state.activeRun?.status === 'completed' &&
+      !await service.isPublishedRun(input.scope, state.activeRun)))) {
     throw new Error('Customer lookup requires a saved order and no unfinished quotation');
   }
   if (state.currentOrder.sha256 !== input.expectedOrderHash ||

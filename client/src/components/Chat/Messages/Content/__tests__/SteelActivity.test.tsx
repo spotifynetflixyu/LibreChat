@@ -101,7 +101,7 @@ jest.mock('~/hooks/useLocalize', () => ({
       return `Quotation child chunk ${options?.chunkIndex ?? 0} in progress (${options?.completedChunks ?? 0}/${options?.totalChunks ?? 0} chunks)`;
     }
     if (key === 'com_ui_steel_quote_status_queued') {
-      return 'Quotation queued';
+      return 'Preparing quotation';
     }
     if (key === 'com_ui_steel_quote_status_started') {
       return `Quotation started (${options?.completedChunks ?? 0}/${options?.totalChunks ?? 0} chunks)`;
@@ -746,7 +746,7 @@ describe('SteelActivity', () => {
       </RecoilRoot>,
     );
 
-    expect(screen.getAllByText('Quotation queued')).toHaveLength(1);
+    expect(screen.getAllByText('Preparing quotation')).toHaveLength(1);
     expect(screen.queryByRole('button', { name: '1 events' })).not.toBeInTheDocument();
   });
 
