@@ -473,6 +473,13 @@ it('retains the same input after publication failure and cleans it only after su
   expect(await service.readArtifact({ scope, ref: run.snapshotRef })).toBe(JSON.stringify(snapshot));
   expect(await service.getArtifact({ scope, runId: run.runId, operationId: 'published' })).toBeNull();
   const completedState = await service.readState(scope);
+  if (!completedState?.currentCustomer || !completedState.currentOrder) throw new Error('Missing completed input authority');
+  await expect(service.setOrder({ scope, fullMarkdown: orderMarkdown('99'),
+    expectedOrderHash: completedState.currentOrder.sha256 })).rejects.toThrow('unfinished or unpublished');
+  await service.clearCustomer({ scope, responseId: completedState.currentCustomer.responseId,
+    preparationId: completedState.currentCustomer.preparationId, orderHash: completedState.currentOrder.sha256 });
+  expect((await service.readState(scope))?.currentCustomer).toEqual(completedState.currentCustomer);
+  expect((await service.readState(scope))?.currentOrder).toEqual(completedState.currentOrder);
   const late = await acceptQuotationSignal({
     scope, response: '## quote_signal\n\nstart', responseId: 'delayed-second-signal',
     expectedOrderHash: completedState?.currentOrder?.sha256,
@@ -491,6 +498,102 @@ it('retains the same input after publication failure and cleans it only after su
   expect(await service.readArtifact({ scope, ref: run.snapshotRef })).toBeUndefined();
   expect((await service.readState(scope))?.currentSystemOrder?.ocrSelection).toEqual(run.ocrSelection);
 });
+
+it.each(['order', 'customer', 'clear-customer', 'lookup', 'clear-lookup', 'ticket'] as const)(
+  'fences delayed %s mutation after a new run completes and retries its real publication',
+  async (mutation) => {
+    const { service, run: first } = await admitPublishedHumanRun();
+    const model = createRunnerModel([], []);
+    const runnerInput = {
+      scope, modelOptions: {} as OpenAIOAuthModelOptions, signal: new AbortController().signal,
+      invokeModel: model, executeLookup: jest.fn(async () => lookupResult()),
+    };
+    await runQuotationPreflight({ ...runnerInput, publishFinal: createRealQuotationPublisher() });
+    const published = await service.readState(scope);
+    if (!published?.currentOrder || !published.currentCustomer) throw new Error('Missing published authority');
+    const order = published.currentOrder;
+    const customer = published.currentCustomer;
+    const evidence = { responseId: 'pending-lookup', lookupMessageId: 'lookup-message',
+      orderHash: order.sha256, customerPreparationId: customer.preparationId,
+      customers: [{ id: 7, erpCustomerCode: 'C7', displayName: 'Customer 7', customerTier: 'B' as const }] };
+    await service.saveCustomerLookupEvidence({ scope, evidence,
+      expectedOrderHash: order.sha256, expectedCustomerPreparationId: customer.preparationId });
+    const ticketInput = { scope, customerMarkdown: customer.customerMarkdown,
+      customerIdentity: customer.customerIdentity, triggeringMessageId: 'second-quote',
+      selectionProvenance: customer.selectionProvenance };
+    const secondTicket = await service.issueTicket(ticketInput);
+    const methods = createSteelQuotationInputMethods(mongoose);
+    let interleaved = false;
+    const delayed = createSteelQuotationStateService(mongoose, {
+      ...methods,
+      async isSteelQuotationRunPublished(inputScope, run) {
+        const confirmed = await methods.isSteelQuotationRunPublished(inputScope, run);
+        if (confirmed && !interleaved) {
+          interleaved = true;
+          expect(run.runId).toBe(first.runId);
+          await service.acceptSignal({ scope, index: secondTicket.index, token: secondTicket.token,
+            orderHash: order.sha256, customerMarkdown: customer.customerMarkdown,
+            customerIdentity: customer.customerIdentity, prompts: { child: 'child', main: 'main' },
+            chunks: [{ index: 1, sourceRowCount: 1 }], targetMessageId: 'second-quote-result' });
+          await expect(runQuotationPreflight({ ...runnerInput,
+            publishFinal: async () => ({ ok: false as const, code: 'superseded' as const }),
+          })).rejects.toThrow();
+        }
+        return confirmed;
+      },
+    });
+    const mutate = async () => {
+      switch (mutation) {
+        case 'order':
+          await delayed.setOrder({ scope, fullMarkdown: orderMarkdown('99'), expectedOrderHash: order.sha256 });
+          break;
+        case 'customer':
+          await delayed.saveCustomer({ scope, customerMarkdown: renderQuotationCustomerMarkdown({ tier: 'F' }),
+            customerIdentity: 'explicit-default:F', triggeringMessageId: 'late-customer', responseId: 'late-customer-response',
+            orderHash: order.sha256, expectedPreparationId: customer.preparationId,
+            selectionProvenance: { method: 'default_tier', selectionMessageId: 'late-customer' } });
+          break;
+        case 'clear-customer':
+          await delayed.clearCustomer({ scope, responseId: customer.responseId,
+            preparationId: customer.preparationId, orderHash: order.sha256 });
+          break;
+        case 'lookup':
+          await delayed.saveCustomerLookupEvidence({ scope, evidence: { ...evidence, responseId: 'late-lookup' },
+            expectedOrderHash: order.sha256, expectedCustomerPreparationId: customer.preparationId });
+          break;
+        case 'clear-lookup':
+          await delayed.clearCustomerLookupEvidence({ scope, responseId: evidence.responseId, orderHash: order.sha256 });
+          break;
+        case 'ticket':
+          await delayed.issueTicket({ ...ticketInput, triggeringMessageId: 'late-ticket' });
+          break;
+      }
+    };
+    if (mutation === 'clear-customer' || mutation === 'clear-lookup') {
+      await mutate();
+    } else {
+      await expect(mutate()).rejects.toThrow('unfinished or unpublished');
+    }
+    expect(interleaved).toBe(true);
+    const locked = await service.readState(scope);
+    expect(locked?.activeRun?.runId).toBe(secondTicket.token);
+    expect(locked?.activeRun?.status).toBe('completed');
+    expect(locked?.currentOrder).toEqual(order);
+    expect(locked?.currentCustomer).toEqual(customer);
+    expect(locked?.customerLookupEvidence).toEqual(evidence);
+    expect(locked?.tickets).toHaveLength(2);
+    expect(locked?.nextSignalIndex).toBe(2);
+    expect(await createSteelQuotationArtifactModel(mongoose).countDocuments({ ...scope, kind: 'snapshot' })).toBe(1);
+    const completedCalls = model.mock.calls.length;
+    await expect(runQuotationPreflight({ ...runnerInput, publishFinal: createRealQuotationPublisher() }))
+      .resolves.toMatchObject({ status: 'completed' });
+    expect(model).toHaveBeenCalledTimes(completedCalls);
+    expect((await db.getMessage({ user: scope.userId, messageId: 'second-quote-result' }))?.text).toContain('## system_order');
+    const after = await service.readState(scope);
+    expect(after?.activeRun && await methods.isSteelQuotationRunPublished(scope, after.activeRun)).toBe(true);
+    expect(await createSteelQuotationArtifactModel(mongoose).countDocuments({ ...scope, kind: 'snapshot' })).toBe(0);
+  },
+);
 
 it.each(['ai', 'human'] as const)('atomically rejects a first %s candidate appearing after no-reference preparation', async (source) => {
   const State = createSteelQuotationStateModel(mongoose);

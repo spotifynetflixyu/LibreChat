@@ -5,6 +5,7 @@ import type { IMessage, IConversation, ISteelQuotationState, ISteelQuotationArti
 import type { SteelReviewAuthorizedFile } from './steelSourceAuthorization';
 import { createSteelDelegateOcrRunModel, createSteelQuotationStateModel, createSteelQuotationArtifactModel, createSteelConversationOcrStateModel, createSteelReviewOutputModel } from '~/models/steel';
 import { createSteelReviewSourceAuthorization } from './steelSourceAuthorization';
+import { createSteelQuotationPublicationProof } from './published';
 import { steelReviewTitleStorageId } from '~/utils/identity';
 import { activeExpirationFilter } from '~/utils/retention';
 import { createConversationModel } from '~/models/convo';
@@ -120,8 +121,12 @@ export function createSteelPublicationMethods(mongoose: Mongoose, saveMessage: S
           return;
         }
         if (prior.length > 0) return;
+        const publicationProof = createSteelQuotationPublicationProof(Artifact, session);
+        const activeRun = state.activeRun;
+        if (activeRun && activeRun.status !== 'cancelled' &&
+          (activeRun.status !== 'completed' || !await publicationProof.isPublished(input.scope, activeRun))) return;
         const ocr = await Ocr.findOne({ conversationId: input.scope.conversationId }).session(session).lean<ISteelConversationOcrState>();
-        if (!equal(expected(state, ocr), input.admission.expected) || (state.activeRun && !['completed', 'cancelled'].includes(state.activeRun.status))) return;
+        if (!equal(expected(state, ocr), input.admission.expected)) return;
         if (input.ocr?.claimToken) {
           if (input.ocr.delegateOcrIndex === undefined || !input.ocr.executionLeaseToken || !input.ocr.candidateToken ||
             ocr?.activeDelegateClaim?.claimToken !== input.ocr.claimToken ||
@@ -222,7 +227,10 @@ export function createSteelPublicationMethods(mongoose: Mongoose, saveMessage: S
           ...(ocrTarget && state.currentSystemOrder && !systemTarget ? { 'currentSystemOrder.needsRequote': true } : {}),
         };
         const changed = await State.updateOne({ ...scopeFilter(input.scope), 'markdownPublication.admission.sequence': input.admission.sequence,
-          'markdownPublication.admission.generationId': input.admission.generationId }, { $set: updates }, { session });
+          'markdownPublication.admission.generationId': input.admission.generationId,
+          ...(state.activeRun ? { 'activeRun.runId': state.activeRun.runId, 'activeRun.status': state.activeRun.status,
+            'activeRun.checkpointRefs': state.activeRun.checkpointRefs } : { activeRun: { $exists: false } }),
+        }, { $set: updates }, { session });
         if (changed.matchedCount !== 1) throw superseded;
         result = { ok: true, message: saved, references };
       });

@@ -21,6 +21,7 @@ import {
   createSteelQuotationStateModel,
   createSteelReviewOutputModel,
 } from '~/models/steel';
+import { createSteelQuotationPublicationProof } from './published';
 import { activeExpirationFilter } from '~/utils/retention';
 import { createConversationModel } from '~/models/convo';
 import { createMessageModel } from '~/models/message';
@@ -557,33 +558,23 @@ export function createSteelQuotationInputMethods(mongoose: Mongoose): SteelQuota
   const File = createFileModel(mongoose);
   const Conversation = createConversationModel(mongoose);
 
-  async function isSteelQuotationRunPublished(
+  const isRunPublished = async (
     scope: SteelQuotationScope,
     run: SteelQuotationActiveRun,
     session?: ClientSession,
+  ): Promise<boolean> => createSteelQuotationPublicationProof(Artifact, session).isPublished(scope, run);
+
+  async function isSteelQuotationRunPublished(
+    scope: SteelQuotationScope,
+    run: SteelQuotationActiveRun,
   ): Promise<boolean> {
-    if (!isScope(scope) || run.status !== 'completed') return false;
-    const published = run.checkpointRefs.find((ref) => ref.operationId === 'published' && ref.kind === 'final');
-    const final = run.checkpointRefs.find((ref) => ref.operationId === 'final' && ref.kind === 'final');
-    if (!published || !final) return false;
-    const receiptQuery = Artifact.findOne({ ...scopeFilter(scope), runId: run.runId,
-        operationId: 'published', kind: 'final', sha256: published.sha256 })
-        .session(session ?? null).lean<ISteelQuotationArtifact>();
-    const finalQuery = Artifact.findOne({ ...scopeFilter(scope), runId: run.runId,
-        operationId: 'final', kind: 'final', sha256: final.sha256 })
-        .session(session ?? null).lean<ISteelQuotationArtifact>();
-    const [receipt, finalArtifact] = session
-      ? [await receiptQuery, await finalQuery]
-      : await Promise.all([receiptQuery, finalQuery]);
-    return Boolean(receipt && finalArtifact && receipt.sha256 === hashText(receipt.payload) &&
-      finalArtifact.sha256 === hashText(finalArtifact.payload) &&
-      receipt.payload === JSON.stringify({ finalSha256: finalArtifact.sha256 }));
+    return isRunPublished(scope, run);
   }
 
   async function blocksFreshRun(scope: SteelQuotationScope, run?: SteelQuotationActiveRun,
     session?: ClientSession): Promise<boolean> {
     return Boolean(run && (unfinishedRun(run.status) ||
-      (run.status === 'completed' && !await isSteelQuotationRunPublished(scope, run, session))));
+      (run.status === 'completed' && !await isRunPublished(scope, run, session))));
   }
 
   async function readSteelQuotationOcrInput(
@@ -876,7 +867,7 @@ export function createSteelQuotationInputMethods(mongoose: Mongoose): SteelQuota
           return;
         }
         if (input.reason === 'published' || (input.reason === 'expired' && published)) {
-          if (!await isSteelQuotationRunPublished(input.scope, run, session)) {
+          if (!await isRunPublished(input.scope, run, session)) {
             result = { ok: false, code: 'invalid_snapshot' };
             return;
           }

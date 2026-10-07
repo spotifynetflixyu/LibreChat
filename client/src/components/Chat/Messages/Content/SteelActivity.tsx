@@ -158,7 +158,7 @@ function getQuotationStatusText(
     });
   }
   if (status === 'queued') {
-    return localize('com_ui_steel_quote_status_queued');
+    return localize('com_ui_steel_quote_status_preparing');
   }
   if (status === 'running') {
     const repairText = getQuotationRepairStatusText(

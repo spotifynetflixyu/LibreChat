@@ -824,6 +824,9 @@ describe('Steel quotation state service', () => {
       expectedCurrentSystemOrderPresent: false,
     })).resolves.toEqual(originalSnapshot);
 
+    await expect(service.setOrder({ scope, fullMarkdown: '# changed order' })).rejects.toThrow('unfinished or unpublished');
+    expect((await service.readState(scope))?.currentOrder?.sha256).toBe(prepared.ticket.orderHash);
+    await service.markPublished({ scope, runId: prepared.run.runId, finalSha256: finalRef.sha256 });
     await service.setOrder({ scope, fullMarkdown: '# changed order' });
     expect(await service.hasSystemOrder(scope)).toBe(false);
     await expect(service.saveCurrentSystemOrder({

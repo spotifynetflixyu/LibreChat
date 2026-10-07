@@ -1237,8 +1237,12 @@ describe('quotation runner integration', () => {
     const after = await service.readState(scope);
     expect(retried?.runId).toBe(first?.runId);
     expect(after?.pendingMessages).toHaveLength(0);
-    expect(after?.currentCustomer).toBeUndefined();
+    expect(after?.currentCustomer).toEqual(prepared);
     expect(after?.nextSignalIndex).toBe(1);
+    const result = await runQuotationPreflight(runnerInput(createModel(), createLookupExecutor()));
+    expect(result.status).toBe('completed');
+    expect((await service.readState(scope))?.currentCustomer).toEqual(prepared);
+    expect(await service.getArtifact({ scope, runId: first!.runId, operationId: 'published' })).not.toBeNull();
   });
 
   it('rejects a receipt-backed retired OCR update without allocating a run', async () => {

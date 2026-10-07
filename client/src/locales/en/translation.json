@@ -3125,7 +3125,7 @@
   "com_ui_steel_quote_retry_status_failed": "Could not verify quotation status for retry.",
   "com_ui_steel_quote_retry_unavailable": "Quotation retry could not start.",
   "com_ui_steel_quote_status_idle": "Quotation idle",
-  "com_ui_steel_quote_status_queued": "Preparing quotation",
+  "com_ui_steel_quote_status_preparing": "Preparing quotation",
   "com_ui_steel_quote_status_running": "Quotation in progress ({{completedChunks}}/{{totalChunks}} chunks)",
   "com_ui_steel_quote_status_chunk_running": "Quotation child chunk {{chunkIndex}} in progress ({{completedChunks}}/{{totalChunks}} chunks)",
   "com_ui_steel_quote_status_started": "Quotation started ({{completedChunks}}/{{totalChunks}} chunks)",

@@ -543,6 +543,14 @@ function stateFilter(scope: SteelQuotationScope) {
   };
 }
 
+function sameActiveRunFilter(run?: SteelQuotationActiveRun): Record<string, unknown> {
+  return run ? {
+    'activeRun.runId': run.runId,
+    'activeRun.status': run.status,
+    'activeRun.checkpointRefs': run.checkpointRefs,
+  } : { activeRun: { $exists: false } };
+}
+
 function authorityByteLength(state: SteelQuotationStateLike): number {
   return byteLength(
     JSON.stringify({
@@ -663,6 +671,11 @@ export function createSteelQuotationStateService(
 ): SteelQuotationStateService {
   const State = createSteelQuotationStateModel(mongoose);
   const Artifact = createSteelQuotationArtifactModel(mongoose);
+
+  async function blocksInputMutation(scope: SteelQuotationScope, run?: SteelQuotationActiveRun): Promise<boolean> {
+    return isUnfinished(run?.status) || Boolean(run?.status === 'completed' &&
+      !await inputs.isSteelQuotationRunPublished(scope, run));
+  }
 
   async function ensureState(scope: SteelQuotationScope): Promise<ISteelQuotationState> {
     validateScope(scope);
@@ -819,8 +832,8 @@ export function createSteelQuotationStateService(
         (current.currentOrder?.sha256 ?? null) !== input.expectedOrderHash) {
         throw new Error('quotation order changed since it was read');
       }
-      if (isUnfinished(current.activeRun?.status)) {
-        throw new Error('cannot set quotation order while a run is unfinished');
+      if (await blocksInputMutation(input.scope, current.activeRun)) {
+        throw new Error('cannot set quotation order while a run is unfinished or unpublished');
       }
       const orderChanged = current.currentOrder?.sha256 !== sha256;
       const retainedTickets = current.tickets.filter((ticket) => ticket.acceptedRunId);
@@ -830,10 +843,7 @@ export function createSteelQuotationStateService(
         ...(current.currentOrder?.sha256
           ? { 'currentOrder.sha256': current.currentOrder.sha256 }
           : { 'currentOrder.sha256': { $exists: false } }),
-        $or: [
-          { activeRun: { $exists: false } },
-          { 'activeRun.status': { $in: terminalStatuses } },
-        ],
+        ...sameActiveRunFilter(current.activeRun),
       };
       const update = orderChanged
         ? {
@@ -996,8 +1006,7 @@ export function createSteelQuotationStateService(
       if (!current) {
         continue;
       }
-      if (isUnfinished(current.activeRun?.status) || (current.activeRun?.status === 'completed' &&
-        !await inputs.isSteelQuotationRunPublished(input.scope, current.activeRun))) {
+      if (await blocksInputMutation(input.scope, current.activeRun)) {
         throw new Error('cannot save customer preparation while a run is unfinished or unpublished');
       }
       assertAuthorityBounds({
@@ -1019,11 +1028,7 @@ export function createSteelQuotationStateService(
             ? { 'currentOrder.sha256': input.orderHash }
             : { 'currentOrder': { $exists: false } }),
           ...preparationFilter,
-          ...(current.activeRun ? {
-            'activeRun.runId': current.activeRun.runId,
-            'activeRun.status': current.activeRun.status,
-            'activeRun.checkpointRefs': current.activeRun.checkpointRefs,
-          } : { activeRun: { $exists: false } }),
+          ...sameActiveRunFilter(current.activeRun),
         },
         {
           $set: { currentCustomer: preparation, updatedAt: now },
@@ -1060,12 +1065,12 @@ export function createSteelQuotationStateService(
         current.currentCustomer?.preparationId !== input.expectedCustomerPreparationId) {
         throw new Error('customer lookup evidence is based on stale preparation data');
       }
-      if (isUnfinished(current.activeRun?.status)) {
-        throw new Error('cannot save customer lookup evidence while a run is unfinished');
-      }
       const existing = current.customerLookupEvidence;
       if (existing && JSON.stringify(existing) === JSON.stringify(input.evidence)) {
         return existing;
+      }
+      if (await blocksInputMutation(input.scope, current.activeRun)) {
+        throw new Error('cannot save customer lookup evidence while a run is unfinished or unpublished');
       }
       assertAuthorityBounds({ ...current, customerLookupEvidence: input.evidence });
       const updated = await State.findOneAndUpdate(
@@ -1075,6 +1080,7 @@ export function createSteelQuotationStateService(
           ...(input.expectedCustomerPreparationId === undefined
             ? { currentCustomer: { $exists: false } }
             : { 'currentCustomer.preparationId': input.expectedCustomerPreparationId }),
+          ...sameActiveRunFilter(current.activeRun),
         },
         { $set: { customerLookupEvidence: input.evidence, updatedAt: now } },
         { new: true },
@@ -1099,9 +1105,11 @@ export function createSteelQuotationStateService(
       (input.orderHash !== undefined && current.customerLookupEvidence.orderHash !== input.orderHash)) {
       return current;
     }
+    if (await blocksInputMutation(input.scope, current.activeRun)) return current;
     const updated = await State.findOneAndUpdate(
       {
         ...stateFilter(input.scope),
+        ...sameActiveRunFilter(current.activeRun),
         ...(input.responseId !== undefined
           ? { 'customerLookupEvidence.responseId': input.responseId }
           : {}),
@@ -1135,6 +1143,7 @@ export function createSteelQuotationStateService(
     )) {
       return current;
     }
+    if (await blocksInputMutation(input.scope, current.activeRun)) return current;
     const customerFilter = input.preparationId !== undefined
       ? { 'currentCustomer.preparationId': input.preparationId }
       : { 'currentCustomer.responseId': input.responseId };
@@ -1142,6 +1151,7 @@ export function createSteelQuotationStateService(
       {
         ...stateFilter(input.scope),
         ...customerFilter,
+        ...sameActiveRunFilter(current.activeRun),
         ...(input.orderHash !== undefined ? { 'currentOrder.sha256': input.orderHash } : {}),
       },
       {
@@ -1209,8 +1219,7 @@ export function createSteelQuotationStateService(
       if (!current?.currentOrder) {
         throw new Error('cannot issue quotation ticket without a current order');
       }
-      if (isUnfinished(current.activeRun?.status) || (current.activeRun?.status === 'completed' &&
-        !await inputs.isSteelQuotationRunPublished(input.scope, current.activeRun))) {
+      if (await blocksInputMutation(input.scope, current.activeRun)) {
         throw new Error('cannot issue quotation ticket while a run is unfinished or unpublished');
       }
       if (current.tickets.length >= MAX_QUOTATION_TICKETS) {
@@ -1253,11 +1262,7 @@ export function createSteelQuotationStateService(
                 'tickets.responseId': { $ne: input.responseId },
               }
             : {}),
-          ...(current.activeRun ? {
-            'activeRun.runId': current.activeRun.runId,
-            'activeRun.status': current.activeRun.status,
-            'activeRun.checkpointRefs': current.activeRun.checkpointRefs,
-          } : { activeRun: { $exists: false } }),
+          ...sameActiveRunFilter(current.activeRun),
         },
         {
           $inc: { nextSignalIndex: 1 },

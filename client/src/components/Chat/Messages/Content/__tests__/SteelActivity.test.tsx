@@ -100,7 +100,7 @@ jest.mock('~/hooks/useLocalize', () => ({
     if (key === 'com_ui_steel_quote_status_chunk_running') {
       return `Quotation child chunk ${options?.chunkIndex ?? 0} in progress (${options?.completedChunks ?? 0}/${options?.totalChunks ?? 0} chunks)`;
     }
-    if (key === 'com_ui_steel_quote_status_queued') {
+    if (key === 'com_ui_steel_quote_status_preparing') {
       return 'Preparing quotation';
     }
     if (key === 'com_ui_steel_quote_status_started') {
