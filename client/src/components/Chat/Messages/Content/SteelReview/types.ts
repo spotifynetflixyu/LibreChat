@@ -4,6 +4,7 @@ export interface SteelReviewProjection {
   previewCalculations: boolean;
   hasManualTotal: (rowId: string) => boolean;
   hasSelectedCandidate: (rowId: string) => boolean;
+  preservesCandidateTotal: (rowId: string, parentRowId: string | null | undefined) => boolean;
 }
 
 export interface SteelReviewMode {

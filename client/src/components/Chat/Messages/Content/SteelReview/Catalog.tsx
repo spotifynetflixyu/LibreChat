@@ -190,16 +190,11 @@ export default function SteelReviewCatalog({
             {localize('com_ui_steel_review_catalog_changed')}
           </div>}
         </div>
-        <OGDialogFooter className="flex-row items-center justify-between gap-2 sm:justify-between sm:space-x-0">
+        <OGDialogFooter className="flex-row items-center justify-end gap-2 sm:space-x-0">
           <OGDialogClose asChild>
-            <Button type="button" variant="outline" onClick={discard}>{localize('com_ui_close')}</Button>
+            <Button type="button" variant="outline" onClick={discard}>{localize('com_ui_cancel')}</Button>
           </OGDialogClose>
-          <div className="flex items-center gap-2">
-            <OGDialogClose asChild>
-              <Button type="button" variant="outline" onClick={discard}>{localize('com_ui_cancel')}</Button>
-            </OGDialogClose>
-            <Button type="button" disabled={staged == null} onClick={confirm}>{localize('com_ui_confirm')}</Button>
-          </div>
+          <Button type="button" disabled={staged == null} onClick={confirm}>{localize('com_ui_confirm')}</Button>
         </OGDialogFooter>
       </OGDialogContent>
     </OGDialog>

@@ -1344,7 +1344,7 @@ describe('Steel Review catalog candidate intent', () => {
     expect(operations[2]).toEqual({ type: 'update', rowId: added.rowId, changes: [{ header: '厚度', value: '3' }] });
   });
 
-  it('lets candidate dimensions supersede earlier size edits while preserving quantity', () => {
+  it('lets candidate thickness supersede earlier thickness edits while preserving quantity', () => {
     const beforeSelection = setSteelReviewDraftCell(createSteelReviewDraftState('owner'), material, '厚度', '10');
     const beforeRow = applySteelReviewDrafts(table.rows, beforeSelection).find((row) => row.rowId === material.rowId)!;
     const selected = setSteelReviewDraftCandidate(beforeSelection, table, beforeRow, candidate, customer);
@@ -1365,13 +1365,79 @@ describe('Steel Review catalog candidate intent', () => {
       calculation: { ...candidate.calculation, category: '加工/孔' } };
     const selected = setSteelReviewDraftCandidate(createSteelReviewDraftState('owner'), currentTable, child, nextCandidate, customer, parent);
     const projected = applySteelReviewDrafts(currentTable.rows, selected);
-    expect(projected[1].values['總數']?.effective).toBe('7.5');
+    expect(projected[1].values['總數']?.effective).toBe('99');
     expect(projected[1].calculation?.measurement).toEqual(child.calculation.measurement);
     expect(compileSteelReviewOperations(currentTable, selected, projected)).toEqual([
       { type: 'replace_processing', rowId: child.rowId, selection: { id: candidate.id, revision: candidate.revision, evidence: customer } },
     ]);
     const cleared = setSteelReviewDraftCell(selected, projected[0], '數量', '');
     expect(applySteelReviewDrafts(currentTable.rows, cleared)[1].values['總數']?.effective).toBe('');
+  });
+
+  it('does not replay earlier dimension calculations with the newly selected material', () => {
+    const parent: SteelReviewRow = { ...material, values: { ...material.values,
+      型號: { baseline: 'SC-OLD', effective: 'SC-OLD' }, 類別: { baseline: '鐵板', effective: '鐵板' },
+      單位: { baseline: 'kg', effective: 'kg' },
+      厚度: { baseline: '2', effective: '2' }, 寬度: { baseline: '100', effective: '100' },
+      長度: { baseline: '200', effective: '200' }, 單重: { baseline: '0.314', effective: '0.314' },
+      總數: { baseline: '0.942', effective: '0.942' },
+    }, calculation: { candidate: { ...candidate.calculation, erpItemCode: 'SC-OLD' } } };
+    const currentTable = { ...table, headers: [...headers, '單重', '總數'], rows: [parent] };
+    let draft = setSteelReviewDraftCell(createSteelReviewDraftState('owner'), parent, '寬度', '500');
+    const staged = applySteelReviewDrafts(currentTable.rows, draft)[0];
+    expect(staged.values['單重'].effective).toBe('1.57');
+    draft = setSteelReviewDraftCandidate(draft, currentTable, staged,
+      { ...candidate, thicknessMinMm: '15', thicknessMaxMm: '15' }, customer);
+    const projected = applySteelReviewDrafts(currentTable.rows, draft);
+    expect(projected[0].values['厚度'].effective).toBe('15');
+    for (const header of ['寬度', '長度', '單重', '總數']) expect(projected[0].values[header]).toEqual(staged.values[header]);
+    const operations = compileSteelReviewOperations(currentTable, draft, projected);
+    expect(operations.map(({ type }) => type)).toEqual(['update', 'replace_material']);
+    const applied = applySteelReviewOperations({ headers: currentTable.headers,
+      currentRows: normalizeSteelReviewLedgerRows(currentTable.rows), expectedRows: normalizeSteelReviewLedgerRows(currentTable.rows),
+      operations, materialCandidates: new Map([[parent.rowId, { ...candidate, thicknessMinMm: '15', thicknessMaxMm: '15' }]]) });
+    expect(applied.ok).toBe(true);
+    if (!applied.ok) throw new Error('Earlier material dimension intent did not apply');
+    expect(applied.currentRows[0].values['單重']).toEqual(projected[0].values['單重']);
+    expect(applied.currentRows[0].values['總數']).toEqual(projected[0].values['總數']);
+  });
+
+  it('keeps earlier protected cell drafts when a processing candidate is selected', () => {
+    const parent = { ...material, values: { ...material.values, 類別: { baseline: '鐵板', effective: '鐵板' } } };
+    const child = { ...processing, values: { ...processing.values, 總數: { baseline: '99', effective: '99' } } };
+    const currentTable = { ...table, headers: [...headers, '總數'], rows: [parent, child] };
+    let draft = setSteelReviewDraftCell(createSteelReviewDraftState('owner'), child, '總數', '123');
+    draft = setSteelReviewDraftCell(draft, child, '寬度', '777');
+    const staged = applySteelReviewDrafts(currentTable.rows, draft)[1];
+    const nextCandidate = { ...candidate, category: '加工/孔', subcategory: '鐵板',
+      calculation: { ...candidate.calculation, category: '加工/孔' } };
+    draft = setSteelReviewDraftCandidate(draft, currentTable, staged, nextCandidate, customer, parent);
+    const projected = applySteelReviewDrafts(currentTable.rows, draft);
+    expect(projected[1].values['總數']?.effective).toBe('123');
+    expect(projected[1].values['寬度']?.effective).toBe('777');
+    expect(compileSteelReviewOperations(currentTable, draft, projected)).toEqual([
+      { type: 'update', rowId: child.rowId, changes: [{ header: '總數', value: '123' }, { header: '寬度', value: '777' }] },
+      { type: 'replace_processing', rowId: child.rowId, selection: { id: candidate.id, revision: candidate.revision, evidence: customer } },
+    ]);
+  });
+
+  it('preserves material and child totals when only a material candidate changes', () => {
+    const parent = { ...material, values: { ...material.values,
+      類別: { baseline: '鐵板', effective: '鐵板' },
+      單重: { baseline: '45', effective: '45' }, 總數: { baseline: '135', effective: '135' },
+      寬度: { baseline: '500', effective: '500' }, 長度: { baseline: '300', effective: '300' },
+    } };
+    const child = { ...processing, values: { ...processing.values, 總數: { baseline: '99', effective: '99' } },
+      calculation: { measurement: { mode: 'perPiece' as const, amount: '2.5', unit: '次' } } };
+    const currentTable = { ...table, headers: [...headers, '單重', '總數'], rows: [parent, child] };
+    const selected = setSteelReviewDraftCandidate(createSteelReviewDraftState('owner'), currentTable, parent,
+      { ...candidate, thicknessMinMm: '15', thicknessMaxMm: '15' }, customer);
+    const projected = applySteelReviewDrafts(currentTable.rows, selected);
+    for (const header of ['寬度', '長度', '單重', '總數']) expect(projected[0].values[header]).toEqual(parent.values[header]);
+    expect(projected[1].values['總數']).toEqual(child.values['總數']);
+    expect(compileSteelReviewOperations(currentTable, selected, projected)).toEqual([
+      { type: 'replace_material', rowId: parent.rowId, selection: { id: candidate.id, revision: candidate.revision, evidence: customer } },
+    ]);
   });
 
   it('applies the current parent category draft before validating its new processing candidate', () => {

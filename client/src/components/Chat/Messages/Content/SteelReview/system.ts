@@ -15,7 +15,7 @@ function projectSystemRows(rows: SteelReviewRow[], context: SteelReviewProjectio
   const byId = new Map(orderedRows.map((row) => [row.rowId, row]));
   return orderedRows.map((row) => {
     if (row.system?.kind !== 'processing' || row.deleted || row.values['總數'] === undefined ||
-      context.hasManualTotal(row.rowId)) return row;
+      context.hasManualTotal(row.rowId) || context.preservesCandidateTotal(row.rowId, row.system.parentRowId)) return row;
     const parent = row.system.parentRowId ? byId.get(row.system.parentRowId) : undefined;
     const measurement = row.calculation?.measurement;
     if (measurement?.mode !== 'batch' && (!parent || parent.deleted || parent.system?.kind !== 'material')) return row;

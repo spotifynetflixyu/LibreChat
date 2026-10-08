@@ -494,7 +494,9 @@ function projectDraftBusinessValues(
   let provenance = projectedRow.calculation?.fields;
   for (const { header, value } of orderedDraftCells(row, draft)) {
     values[header] = { ...values[header], effective: value };
-    if (!previewCalculations || !projectedRow.system) continue;
+    const selectionVersion = draft.candidateSelectionVersions[row.rowId] ?? 0;
+    const cellVersion = draft.cellVersions[getSteelReviewDraftCellKey(row.rowId, header)] ?? 0;
+    if (!previewCalculations || !projectedRow.system || selectionVersion > cellVersion) continue;
     const calculationHeaders = projectedRow.system.kind === 'material' ? headers : [header];
     const calculated = calculateSteelSystemOrderRow({
       headers: calculationHeaders,
@@ -609,11 +611,23 @@ export function applySteelReviewDrafts(
     ...Object.values(draft.rowStates).filter((row) => !rows.some((candidate) => candidate.rowId === row.rowId) && !row.deleted),
   ];
   const projectedRows = baseRows.map((row) => projectRow(row));
+  const confirmedById = new Map(rows.map((row) => [row.rowId, row]));
   const mode = getSteelReviewMode(projectedRows.some((row) => row.system) ? 'system_order' : 'ocr_result');
   return mode.projectRows(projectedRows, {
     previewCalculations,
     hasManualTotal: (rowId) => Object.prototype.hasOwnProperty.call(draft.cells, getSteelReviewDraftCellKey(rowId, '總數')),
     hasSelectedCandidate: (rowId) => Boolean(draft.candidateSelections[rowId]),
+    preservesCandidateTotal: (rowId, parentRowId) => {
+      if (!draft.candidateSelections[rowId] && (!parentRowId || !draft.candidateSelections[parentRowId])) return false;
+      if (Object.prototype.hasOwnProperty.call(draft.measurementDrafts, rowId) ||
+        confirmedById.get(rowId)?.system?.parentRowId !== parentRowId) return false;
+      return !parentRowId || !['數量', '長度'].some((header) => {
+        const key = getSteelReviewDraftCellKey(parentRowId, header);
+        return Object.prototype.hasOwnProperty.call(draft.cells, key) ||
+          (draft.cellVersions[key] ?? 0) > 0 && draft.touched[key] !==
+            (confirmedById.get(parentRowId)?.values[header]?.effective ?? '');
+      });
+    },
   });
 }
 
@@ -743,7 +757,7 @@ function rowValuesChanged(
 }
 
 const materialCandidateHeaders = new Set<string>(steelMaterialCandidateHeaders);
-const processingCandidateHeaders = new Set<string>([...steelMaterialCandidateHeaders, '總數']);
+const processingCandidateHeaders = materialCandidateHeaders;
 
 function candidateHeaders(row: SteelReviewRow): ReadonlySet<string> {
   return row.system?.kind === 'processing' ? processingCandidateHeaders : materialCandidateHeaders;

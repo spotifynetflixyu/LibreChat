@@ -1305,9 +1305,6 @@ export function applySteelReviewOperations({
       const candidateConflicts: string[] = steelProcessingCandidateHeaders.filter((header) => headers.includes(header) &&
         (row.values[header]?.effective ?? null) !== (expectedRow.values[header]?.effective ?? null) &&
         (row.values[header]?.effective ?? null) !== (next.values[header]?.effective ?? null));
-      if (row.calculation?.fields?.['總數']?.kind === 'manual' &&
-        row.values['總數']?.effective !== expectedRow.values['總數']?.effective &&
-        row.values['總數']?.effective !== next.values['總數']?.effective) candidateConflicts.push('總數');
       if (candidateConflicts.length > 0) {
         conflicts.push(...candidateConflicts.map((header) => ({
           kind: 'field' as const, rowId: row.rowId, header,
@@ -1619,17 +1616,11 @@ export function applySteelReviewOperations({
           if (!headers.includes(header) || laterChanges.has(header) || !candidateResult.values[header]) continue;
           values[header] = { ...candidateResult.values[header] };
         }
-        if (!laterChanges.has('總數') && candidateResult.values['總數']) {
-          values['總數'] = { ...candidateResult.values['總數'] };
-        }
         const fields = { ...(target.calculation?.fields ?? {}) };
         for (const header of steelProcessingCandidateHeaders) {
           if (!laterChanges.has(header) && candidateResult.calculation?.fields?.[header]) {
             fields[header] = candidateResult.calculation.fields[header];
           }
-        }
-        if (!laterChanges.has('總數') && candidateResult.calculation?.fields?.['總數']) {
-          fields['總數'] = candidateResult.calculation.fields['總數'];
         }
         const candidateStillSelected = values['型號']?.effective === candidate.erpItemCode &&
           values['類別']?.effective === candidate.category;

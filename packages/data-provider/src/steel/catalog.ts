@@ -1,6 +1,5 @@
 import { z } from 'zod';
 import type { SteelReviewRow } from './review';
-import { calculateSteelProcessingMeasurement, calculateSteelSystemOrderRow } from './calculation';
 import { steelCalculationCandidateEvidenceSchema } from './calculation';
 
 export const steelCatalogSearchFieldSchema = z.enum(['model', 'description']);
@@ -117,7 +116,7 @@ function exactDimension(minimum: string | null, maximum: string | null): string 
 
 export const steelMaterialCandidateHeaders = [
   '型號', '品名規格', '類別', '材質編號', '單位', '計價基準', '公式編號',
-  '厚度', '寬度', '長度', '肚', '外徑', '腹板', '翼板', '唇邊', '單重', '單價',
+  '厚度', '單價',
 ] as const;
 
 function candidateFields(
@@ -136,14 +135,6 @@ function candidateFields(
     計價基準: String(tier.charCodeAt(0) - 64),
     公式編號: candidate.formulaCode ?? '',
     厚度: exactDimension(candidate.thicknessMinMm, candidate.thicknessMaxMm),
-    寬度: candidate.widthMm ?? candidate.sheetWidthMm ?? '',
-    長度: candidate.lengthMm ?? candidate.sheetLengthMm ?? '',
-    肚: candidate.heightMm ?? '',
-    外徑: candidate.outerDiameterMm ?? '',
-    腹板: candidate.webMm ?? '',
-    翼板: candidate.flangeMm ?? '',
-    唇邊: candidate.lipMm ?? '',
-    單重: candidate.unitWeightValue ?? '',
     單價: candidate.unitPrice ?? '',
   };
   const changedHeaders = Object.keys(candidateValues).filter((header) => headers.includes(header));
@@ -164,29 +155,17 @@ export function applyMaterialCandidate(
   tier: SteelCatalogPriceTier,
 ): SteelReviewRow {
   const { values, changedHeaders } = candidateFields(row, candidate, headers, tier);
-  const calculated = calculateSteelSystemOrderRow({
-    headers,
-    values: headers.map((header) => values[header]?.effective ?? ''),
-    candidate: candidate.calculation,
-    changedHeaders,
-    provenance: row.calculation?.fields,
-    systemKind: row.system?.kind,
-  });
-  headers.forEach((header, index) => {
-    if ((values[header]?.effective ?? '') !== (calculated.values[index] ?? '')) {
-      values[header] = {
-        ...(values[header] ?? { baseline: null, effective: null }),
-        effective: calculated.values[index] ?? '',
-      };
-    }
-  });
+  const fields = { ...(row.calculation?.fields ?? {}) };
+  for (const header of changedHeaders) {
+    fields[header] = { kind: 'candidate', candidateCode: candidate.erpItemCode, ruleVersion: candidate.calculation.ruleVersion };
+  }
   return {
     ...row,
     values,
     calculation: {
       ...(row.calculation ?? {}),
       candidate: candidate.calculation,
-      ...(calculated.provenance ? { fields: calculated.provenance } : {}),
+      fields,
     },
   };
 }
@@ -199,33 +178,7 @@ export function applyProcessingCandidate(
   candidate: SteelCatalogCandidate,
   headers: readonly string[],
   tier: SteelCatalogPriceTier,
-  parent: SteelReviewRow,
+  _parent: SteelReviewRow,
 ): SteelReviewRow {
-  const { values, changedHeaders } = candidateFields(row, candidate, headers, tier);
-  const fields = { ...(row.calculation?.fields ?? {}) };
-  const measurement = row.calculation?.measurement;
-  const total = measurement ? calculateSteelProcessingMeasurement({
-    headers,
-    values: headers.map((header) => values[header]?.effective ?? ''),
-    measurement,
-    parentHeaders: headers,
-    parentValues: headers.map((header) => parent.values[header]?.effective ?? ''),
-  }) : undefined;
-  for (const header of changedHeaders) {
-    fields[header] = { kind: 'candidate', candidateCode: candidate.erpItemCode, ruleVersion: candidate.calculation.ruleVersion };
-  }
-  if (headers.includes('總數')) {
-    values['總數'] = { ...(values['總數'] ?? { baseline: null, effective: null }), effective: total ?? '' };
-    fields['總數'] = total === undefined ? {
-      kind: 'candidate', candidateCode: candidate.erpItemCode, ruleVersion: candidate.calculation.ruleVersion,
-    } : {
-      kind: 'derived', candidateCode: candidate.erpItemCode, ruleVersion: candidate.calculation.ruleVersion,
-      dependencies: { parentRowId: parent.rowId, measurement: JSON.stringify(measurement),
-        quantity: parent.values['數量']?.effective ?? '' },
-    };
-  }
-  return {
-    ...row, values,
-    calculation: { ...(row.calculation ?? {}), candidate: candidate.calculation, fields },
-  };
+  return applyMaterialCandidate(row, candidate, headers, tier);
 }

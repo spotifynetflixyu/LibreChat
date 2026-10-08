@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import type { SteelCatalogCandidate, SteelReviewOperationPrepared } from 'librechat-data-provider';
+import type { SteelCatalogCandidate, SteelReviewOperationPrepared, SteelReviewRow } from 'librechat-data-provider';
+import type { SteelReviewCommitInput } from '@librechat/data-schemas';
 import { createSteelReviewService } from './review';
 
 const managedMarkdown = [
@@ -128,6 +129,99 @@ const makeSystemOrderRecord = (overrides: Record<string, unknown> = {}) => ({
   messageText: systemOrderMarkdown,
   ...overrides,
 });
+
+const catalogHeaders = [
+  '型號', '品名規格', '材質編號', '單價', '厚度', '單位', '類別', '計價基準', '公式編號',
+  '寬度', '長度', '肚', '單重', '數量', '總數', '備註',
+];
+
+const catalogMarkdown = (rows: readonly SteelReviewRow[]) => [
+  `## ${systemOrderTitle}`,
+  '',
+  `| ${catalogHeaders.join(' | ')} |`,
+  `| ${catalogHeaders.map(() => '---').join(' | ')} |`,
+  ...rows.map((row) => `| ${catalogHeaders.map((header) => row.values[header]?.effective ?? '').join(' | ')} |`),
+].join('\n');
+
+const makeCatalogRow = (
+  rowId: string,
+  kind: 'material' | 'processing',
+  values: Record<string, string>,
+): SteelReviewRow => {
+  const category = kind === 'material' ? '鐵板' : '加工/焊接';
+  return {
+    rowId,
+    origin: 'ai',
+    deleted: false,
+    values: Object.fromEntries(Object.entries(values).map(([header, value]) => [header, {
+      baseline: value,
+      effective: value,
+    }])),
+    source: null,
+    system: kind === 'material'
+      ? { kind, parentRowId: null, cascadeDeletedBy: null }
+      : { kind, parentRowId: 'material-1', cascadeDeletedBy: null },
+    calculation: {
+      candidate: {
+        erpItemCode: `OLD-${kind}`,
+        category,
+        ruleVersion: 'old-rule',
+        exactPhysical: { density: '7.85', widthMm: '100', lengthMm: '1000', unitWeightValue: '2.5' },
+      },
+      measurement: { mode: 'perPiece', amount: '2', unit: '次', ruleVersion: 'v1' },
+      fields: Object.fromEntries([
+        ['寬度', { kind: 'manual' as const }],
+        ['長度', { kind: 'manual' as const }],
+        ['肚', { kind: 'manual' as const }],
+        ['單重', { kind: 'manual' as const }],
+        ['數量', { kind: 'manual' as const }],
+        ['總數', { kind: 'manual' as const }],
+        ['備註', { kind: 'manual' as const }],
+      ]),
+    },
+  };
+};
+
+const makeCatalogCandidate = (kind: 'material' | 'processing'): SteelCatalogCandidate => {
+  const category = kind === 'material' ? '鐵板' : '加工/焊接';
+  const erpItemCode = `NEW-${kind}`;
+  return {
+    id: `${kind}-catalog-new`,
+    revision: 'c'.repeat(64),
+    erpItemCode,
+    productName: `New ${kind}`,
+    specKey: `${erpItemCode} new specification`,
+    category,
+    subcategory: kind === 'processing' ? '通用' : null,
+    formulaCode: 'new-formula',
+    material: 'NEW-MATERIAL',
+    unit: '片',
+    costBasis: 'piece',
+    valueState: 'confirmed',
+    unitWeightValue: '99.9',
+    unitWeightBasis: 'kg_per_piece_or_stock_length',
+    density: '7.85',
+    thicknessMinMm: '13',
+    thicknessMaxMm: '13',
+    widthMm: '999',
+    heightMm: '777',
+    lengthMm: '8888',
+    outerDiameterMm: '666',
+    webMm: '555',
+    flangeMm: '444',
+    lipMm: '333',
+    sheetWidthMm: '222',
+    sheetLengthMm: '111',
+    unitPrice: '42',
+    calculation: {
+      erpItemCode,
+      category,
+      ruleVersion: 'new-rule',
+      exactPhysical: { density: '7.85', widthMm: '999', lengthMm: '8888', unitWeightValue: '99.9' },
+    },
+    label: `${erpItemCode} New ${kind}`,
+  };
+};
 
 describe('Steel review read service', () => {
   it('initializes fresh processing bindings from an exact material remark', async () => {
@@ -1368,6 +1462,170 @@ describe('Steel review read service', () => {
     expect(resolve).toHaveBeenCalledWith(expect.objectContaining({ kind: 'processing', rowId: processingRow.rowId }));
     expect(prepared.rows.find((row) => row.rowId === processingRow.rowId)?.values['型號']?.effective).toBe('PR-1');
     expect(prepared.rows.find((row) => row.rowId === processingRow.rowId)?.values['單價']?.effective).toBe('7');
+  });
+
+  it.each([
+    ['material', 'replace_material', 'D', '4'],
+    ['processing', 'replace_processing', 'E', '5'],
+  ] as const)('persists the nine catalog fields and protects stored %s values through commit recheck', async (
+    kind,
+    operationType,
+    tier,
+    expectedTier,
+  ) => {
+    const materialValues = {
+      型號: 'OLD-M', 品名規格: 'Stored material', 材質編號: 'OLD-MATERIAL', 單價: '17', 厚度: '12',
+      單位: 'kg', 類別: '鐵板', 計價基準: '9', 公式編號: 'old-formula', 寬度: '100', 長度: '1000',
+      肚: '25', 單重: '2.5', 數量: '4', 總數: '10', 備註: 'keep part',
+    };
+    const processingValues = {
+      型號: 'OLD-P', 品名規格: 'Stored processing', 材質編號: 'OLD-MATERIAL', 單價: '19', 厚度: '12',
+      單位: 'kg', 類別: '加工/焊接', 計價基準: '9', 公式編號: 'old-formula', 寬度: '100', 長度: '1000',
+      肚: '25', 單重: '2.5', 數量: '4', 總數: '10', 備註: 'keep part',
+    };
+    const materialRow = makeCatalogRow('material-1', 'material', materialValues);
+    const selectedRow = kind === 'material'
+      ? materialRow
+      : makeCatalogRow('processing-1', 'processing', processingValues);
+    const originalRows = kind === 'material' ? [selectedRow] : [materialRow, selectedRow];
+    const currentRows = originalRows.map((row) => row.rowId === selectedRow.rowId
+      ? {
+          ...row,
+          values: {
+            ...row.values,
+            寬度: { ...row.values.寬度!, effective: '777' },
+            總數: { ...row.values.總數!, effective: '12345' },
+          },
+          calculation: {
+            ...row.calculation!,
+            fields: {
+              ...row.calculation!.fields,
+              寬度: { kind: 'manual' as const, dependencies: { source: 'transaction-current' } },
+              總數: { kind: 'manual' as const, dependencies: { source: 'transaction-current' } },
+            },
+          },
+        }
+      : row);
+    const record = makeSystemOrderRecord({
+      revision: 'catalog-revision',
+      headers: catalogHeaders,
+      rows: originalRows,
+      markdown: catalogMarkdown(originalRows),
+      messageText: catalogMarkdown(originalRows),
+    });
+    const currentRecord = makeSystemOrderRecord({
+      revision: 'catalog-revision',
+      headers: catalogHeaders,
+      rows: currentRows,
+      markdown: catalogMarkdown(currentRows),
+      messageText: catalogMarkdown(currentRows),
+    });
+    const candidate = makeCatalogCandidate(kind);
+    const resolve = jest.fn().mockResolvedValue({
+      candidate,
+      customer: { snapshotId: 'snapshot', revision: 'customer-revision', tier },
+      evidence: {
+        rowId: selectedRow.rowId,
+        candidateId: candidate.id,
+        candidateRevision: candidate.revision,
+        customerSnapshotId: 'snapshot',
+        customerRevision: 'customer-revision',
+        customerTier: tier,
+        unitPrice: candidate.unitPrice,
+      },
+    });
+    const commitSteelReview = jest.fn().mockImplementation(async (input: SteelReviewCommitInput) => {
+      if (!input.prepareOperation) throw new Error('Missing transaction recheck');
+      const transactionInput = await input.prepareOperation(currentRecord);
+      return {
+        ...transactionInput,
+        changedRows: transactionInput.caption.changedRows,
+        changedRowIds: transactionInput.caption.changedRowIds,
+        savedAt: new Date('2026-10-08T00:00:00.000Z'),
+      };
+    });
+    const reader = {
+      readSteelReview: jest.fn().mockResolvedValueOnce(record).mockResolvedValueOnce(record),
+    };
+    const service = createSteelReviewService({
+      reader,
+      writer: { commitSteelReview },
+      catalogService: { search: jest.fn(), resolve },
+    });
+    const operation = {
+      userId: scope.userId,
+      conversationId: scope.conversationId,
+      messageId: scope.messageId,
+      title: systemOrderTitle,
+      kind: 'system_order' as const,
+      outputId: 'system_order:run-1',
+      revision: 'catalog-revision',
+      operations: [{
+        type: operationType,
+        rowId: selectedRow.rowId,
+        selection: {
+          id: candidate.id,
+          revision: candidate.revision,
+          evidence: { snapshotId: 'snapshot', revision: 'customer-revision', tier },
+        },
+      }],
+    };
+    const prepared = await service.prepare(operation) as SteelReviewOperationPrepared;
+    const preparedRow = prepared.rows.find((row) => row.rowId === selectedRow.rowId)!;
+    expect(preparedRow.values).toEqual(expect.objectContaining({
+      型號: expect.objectContaining({ effective: candidate.erpItemCode }),
+      品名規格: expect.objectContaining({ effective: candidate.productName }),
+      材質編號: expect.objectContaining({ effective: candidate.material }),
+      單價: expect.objectContaining({ effective: candidate.unitPrice }),
+      厚度: expect.objectContaining({ effective: '13' }),
+      單位: expect.objectContaining({ effective: candidate.unit }),
+      類別: expect.objectContaining({ effective: candidate.category }),
+      計價基準: expect.objectContaining({ effective: expectedTier }),
+      公式編號: expect.objectContaining({ effective: candidate.formulaCode }),
+    }));
+    expect(preparedRow.values).toEqual(expect.objectContaining({
+      寬度: expect.objectContaining({ effective: '100' }),
+      長度: expect.objectContaining({ effective: '1000' }),
+      肚: expect.objectContaining({ effective: '25' }),
+      單重: expect.objectContaining({ effective: '2.5' }),
+      數量: expect.objectContaining({ effective: '4' }),
+      總數: expect.objectContaining({ effective: '10' }),
+      備註: expect.objectContaining({ effective: 'keep part' }),
+    }));
+    expect(preparedRow.calculation?.fields?.寬度).toEqual({ kind: 'manual' });
+    expect(preparedRow.calculation?.fields?.總數).toEqual({ kind: 'manual' });
+    expect(preparedRow.calculation?.measurement).toEqual(selectedRow.calculation?.measurement);
+    expect(preparedRow.calculation?.candidate).toEqual(candidate.calculation);
+
+    const saved = await service.commit({
+      ...operation,
+      operationId: prepared.operationId,
+      digest: prepared.digest,
+    });
+    const persistedRow = saved.rows.find((row) => row.rowId === selectedRow.rowId)!;
+    expect(persistedRow.values).toEqual(expect.objectContaining({
+      型號: expect.objectContaining({ effective: candidate.erpItemCode }),
+      計價基準: expect.objectContaining({ effective: expectedTier }),
+      寬度: expect.objectContaining({ effective: '777' }),
+      長度: expect.objectContaining({ effective: '1000' }),
+      肚: expect.objectContaining({ effective: '25' }),
+      單重: expect.objectContaining({ effective: '2.5' }),
+      數量: expect.objectContaining({ effective: '4' }),
+      總數: expect.objectContaining({ effective: '12345' }),
+    }));
+    expect(persistedRow.calculation?.fields?.寬度).toEqual({
+      kind: 'manual', dependencies: { source: 'transaction-current' },
+    });
+    expect(persistedRow.calculation?.fields?.總數).toEqual({
+      kind: 'manual', dependencies: { source: 'transaction-current' },
+    });
+    expect(persistedRow.calculation?.measurement).toEqual(selectedRow.calculation?.measurement);
+    expect(commitSteelReview).toHaveBeenCalledTimes(1);
+    expect(resolve).toHaveBeenCalledWith(expect.objectContaining({
+      kind,
+      revision: 'catalog-revision',
+      rowId: selectedRow.rowId,
+    }));
   });
 
   it('prepares a same-value stale classification as a no-op and rejects a different relation with recovery', async () => {
