@@ -14,6 +14,7 @@ import type { SteelCatalogCandidate, SteelCatalogCustomerEvidence, SteelReviewRo
 import type { ReactElement } from 'react';
 import { CollapsibleCellContent } from '../table/Cell';
 import { orderSystemHeaders } from '../table/order';
+import { displaySteelReviewValue } from './values';
 import SteelReviewSelector from './Selector';
 import { useLocalize } from '~/hooks';
 
@@ -120,6 +121,7 @@ export default function SteelReviewCatalog({
     }
     return applyMaterialCandidate(row, staged.candidate, table.headers, staged.customer.tier);
   }, [parent, processing, row, scope, staged, table.headers]);
+  const previewRow = stagedRow ?? row;
   const previewHeaders = useMemo(() => {
     const headers = processing ? processingCandidateHeaders : materialCandidateHeaders;
     const displayHeaders = table.kind === 'system_order' ? orderSystemHeaders(table.headers) : table.headers;
@@ -128,7 +130,6 @@ export default function SteelReviewCatalog({
   }, [processing, row.values, table.headers, table.kind]);
 
   const intentChanged = useCallback(() => {
-    setStaged(null);
     setValidationError(false);
   }, []);
 
@@ -156,11 +157,11 @@ export default function SteelReviewCatalog({
   return (
     <OGDialog open={open} onOpenChange={handleOpenChange}>
       <OGDialogTrigger asChild>{trigger ?? defaultTrigger}</OGDialogTrigger>
-      <OGDialogContent showCloseButton={false} className="!flex !flex-col !max-h-[90vh] w-11/12 max-w-3xl !overflow-hidden">
-        <OGDialogHeader>
+      <OGDialogContent showCloseButton={false} className="!flex !flex-col h-[70dvh] !max-h-[90dvh] w-11/12 max-w-3xl !overflow-visible">
+        <OGDialogHeader className="shrink-0">
           <OGDialogTitle>{header}</OGDialogTitle>
         </OGDialogHeader>
-        <div className="min-h-0 min-w-0 flex-1 overflow-y-auto">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col">
           <SteelReviewSelector
             table={table}
             row={row}
@@ -172,25 +173,25 @@ export default function SteelReviewCatalog({
             selectedCandidate={staged?.candidate}
             onSelect={stage}
           />
-          {stagedRow && previewHeaders.length > 0 && (
-            <div className="mt-4 max-h-[40vh] overflow-y-auto rounded-md border border-border-light">
+          {previewHeaders.length > 0 && (
+            <div className="mt-4 min-h-0 flex-1 overflow-y-auto rounded-md border border-border-light">
               <table className="w-full border-collapse text-sm" aria-label={localize('com_ui_steel_review_table_label')}>
                 <tbody>
                   {previewHeaders.map((previewHeader) => (
                     <tr key={previewHeader}>
                       <th scope="row" className="whitespace-nowrap border-b border-border-light bg-surface-secondary px-3 py-2 text-left font-semibold align-top">{previewHeader}</th>
-                      <td className="border-b border-border-light px-3 py-2 align-top"><CollapsibleCellContent>{stagedRow.values[previewHeader]?.effective ?? ''}</CollapsibleCellContent></td>
+                      <td className="border-b border-border-light px-3 py-2 align-top"><CollapsibleCellContent>{displaySteelReviewValue(table.kind, previewHeader, previewRow.values[previewHeader]?.effective)}</CollapsibleCellContent></td>
                     </tr>
                   ))}
                 </tbody>
               </table>
             </div>
           )}
-          {validationError && <div className="mt-3 text-sm text-status-error-text" role="alert">
+          {validationError && <div className="mt-3 shrink-0 text-sm text-status-error-text" role="alert">
             {localize('com_ui_steel_review_catalog_changed')}
           </div>}
         </div>
-        <OGDialogFooter className="flex-row items-center justify-end gap-2 sm:space-x-0">
+        <OGDialogFooter className="shrink-0 flex-row items-center justify-end gap-2 sm:space-x-0">
           <OGDialogClose asChild>
             <Button type="button" variant="outline" onClick={discard}>{localize('com_ui_cancel')}</Button>
           </OGDialogClose>

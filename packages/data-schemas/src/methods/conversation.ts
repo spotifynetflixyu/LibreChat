@@ -21,12 +21,22 @@ import type {
   IChatProjectDocument,
   IActiveSubagentThreadLease,
   IConversation,
+  IMessage,
   ISharedLink,
   ISubagentThreadReservation,
   OAuthCompactionStore,
 } from '~/types';
 import type { SchemaWithMeiliMethods } from '~/models/plugins/mongoMeili';
 import type { MessageMethods } from './message';
+import {
+  createSteelConversationOcrStateModel,
+  createSteelDelegateOcrRunModel,
+  createSteelOcrResponseAuditModel,
+  createSteelQuotationArtifactModel,
+  createSteelQuotationStateModel,
+  createSteelReviewOutputModel,
+  createSteelWorkingOrderMemoryModel,
+} from '~/models/steel';
 import {
   MAX_AGENT_EVENT_ACTOR_DISCOVERED_TOOLS,
   MAX_AGENT_EVENT_ACTOR_ENCODING_LENGTH,
@@ -39,14 +49,11 @@ import {
   buildRetentionVisibilityFilter,
   createFallbackRetentionDate,
 } from '~/utils/retention';
+import { fenceSteelConversationWrites, readSteelConversationDeletionScope } from '~/models/steel/lifecycle';
 import {
   refreshChatProjectStatsForUser,
   updateChatProjectLastConversationForUser,
 } from './chatProject';
-import {
-  createSteelQuotationArtifactModel,
-  createSteelQuotationStateModel,
-} from '~/models/steel';
 import { createChatExpirationDate, createTempChatExpirationDate } from '~/utils/tempChatRetention';
 import { isAgentFadingTier, isAgentFadingTierEntries } from '~/utils/fading';
 import { isCompactionSemanticIndexProjection } from '~/types/compaction';
@@ -181,18 +188,102 @@ const PROJECT_STATS_REFRESH_CONCURRENCY = 10;
 const PROJECT_STATS_REFRESH_MAX_PASSES = 2;
 const PROJECT_DISCOVERY_MAX_ATTEMPTS = 3;
 
-async function deleteSteelQuotationState(
+type ConversationDeletionScope = Pick<IConversation, 'conversationId' | 'tenantId'>;
+
+function conversationScopeFilter(
+  scopes: readonly ConversationDeletionScope[],
+): FilterQuery<IConversation> {
+  return {
+    $or: scopes.map(({ conversationId, tenantId }) => ({
+      conversationId,
+      ...(tenantId === undefined
+        ? { $or: [{ tenantId: { $exists: false } }, { tenantId: null }] }
+        : { tenantId }),
+    })),
+  };
+}
+
+function childConversationFilter(
+  user: string,
+  scopes: readonly ConversationDeletionScope[],
+): FilterQuery<IConversation> {
+  const groups = new Map<string | undefined, string[]>();
+  for (const { conversationId, tenantId } of scopes) {
+    const conversationIds = groups.get(tenantId) ?? [];
+    conversationIds.push(conversationId);
+    groups.set(tenantId, conversationIds);
+  }
+  if (groups.size === 1) {
+    const [[tenantId, conversationIds]] = [...groups];
+    return {
+      user,
+      'subagentThread.parentConversationId': { $in: conversationIds },
+      ...(tenantId === undefined
+        ? { $or: [{ tenantId: { $exists: false } }, { tenantId: null }] }
+        : { tenantId }),
+    };
+  }
+  return {
+    user,
+    $or: [...groups].map(([tenantId, conversationIds]) => ({
+      'subagentThread.parentConversationId': { $in: conversationIds },
+      ...(tenantId === undefined
+        ? { $or: [{ tenantId: { $exists: false } }, { tenantId: null }] }
+        : { tenantId }),
+    })),
+  };
+}
+
+async function deleteSteelConversationState(
   mongoose: typeof import('mongoose'),
   userId: string,
-  conversationIds: readonly string[],
+  scopes: readonly ConversationDeletionScope[],
+  legacyConversationIds: readonly string[],
 ): Promise<void> {
-  if (conversationIds.length === 0) {
+  if (scopes.length === 0 && legacyConversationIds.length === 0) {
     return;
   }
-  const State = createSteelQuotationStateModel(mongoose);
-  const Artifact = createSteelQuotationArtifactModel(mongoose);
-  const filter = { userId, conversationId: { $in: conversationIds } };
-  await Promise.all([State.deleteMany(filter), Artifact.deleteMany(filter)]);
+  const deleteAttempt = async (): Promise<void> => {
+    const ConversationOcrState = createSteelConversationOcrStateModel(mongoose);
+    const DelegateOcrRun = createSteelDelegateOcrRunModel(mongoose);
+    const WorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
+    const OcrResponseAudit = createSteelOcrResponseAuditModel(mongoose);
+    const State = createSteelQuotationStateModel(mongoose);
+    const Artifact = createSteelQuotationArtifactModel(mongoose);
+    const ReviewOutput = createSteelReviewOutputModel(mongoose);
+    const ownerScopeClauses = scopes.map(({ conversationId, tenantId }) => ({
+      conversationId,
+      ...(tenantId === undefined
+        ? { $or: [{ tenantId: { $exists: false } }, { tenantId: null }] }
+        : { tenantId }),
+    }));
+    const ownerFilter = { userId, $or: ownerScopeClauses };
+    const legacyFilter = { conversationId: { $in: legacyConversationIds } };
+
+    await Promise.all([
+      State.deleteMany(ownerFilter),
+      Artifact.deleteMany(ownerFilter),
+      ReviewOutput.deleteMany(ownerFilter),
+      OcrResponseAudit.deleteMany(ownerFilter),
+      ConversationOcrState.deleteMany(legacyFilter),
+      DelegateOcrRun.deleteMany(legacyFilter),
+      WorkingOrderMemory.deleteMany(legacyFilter),
+    ]);
+  };
+
+  let lastError: unknown;
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      await deleteAttempt();
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < 3) {
+        await new Promise((resolve) => setTimeout(resolve, 25 * attempt));
+      }
+    }
+  }
+  throw lastError;
 }
 
 const subagentThreadReadRecord = (conversation: IConversation): SubagentThreadReadRecord => ({
@@ -569,10 +660,12 @@ export interface ConversationMethodDeps
   eraseAgentTriggerDeliveryConversationResults?: (
     user: string,
     conversationIds: string[],
+    tenantId?: string | null,
   ) => Promise<void>;
   prepareAgentTriggerConversationResultErasure?: (
     user: string,
     conversationIds: string[],
+    tenantId?: string | null,
   ) => Promise<void>;
 }
 
@@ -581,6 +674,22 @@ export function createConversationMethods(
   deps?: ConversationMethodDeps,
 ): ConversationMethods {
   let legacyReceiptExpiryCursor: Types.ObjectId | undefined;
+
+  async function eraseScopedTriggerResults(
+    operation: ConversationMethodDeps['eraseAgentTriggerDeliveryConversationResults'],
+    user: string,
+    scopes: readonly ConversationDeletionScope[],
+  ): Promise<void> {
+    if (!operation) return;
+    const byTenant = new Map<string | null, string[]>();
+    for (const { conversationId, tenantId } of scopes) {
+      const tenant = tenantId ?? null;
+      const ids = byTenant.get(tenant) ?? [];
+      ids.push(conversationId);
+      byTenant.set(tenant, ids);
+    }
+    await Promise.all([...byTenant].map(([tenantId, ids]) => operation(user, ids, tenantId)));
+  }
 
   function getMessageMethods() {
     if (!deps) {
@@ -3261,7 +3370,7 @@ export function createConversationMethods(
    * Deletes conversations and their associated messages for a given user and filter.
    */
   async function deleteConvos(
-    user: string,
+    userId: string,
     filter: FilterQuery<IConversation>,
     options?: {
       beforeDelete?: (conversationIds: string[]) => Promise<void>;
@@ -3270,6 +3379,7 @@ export function createConversationMethods(
       allowEmpty?: boolean;
     },
   ) {
+    const user = String(userId);
     try {
       const Conversation = mongoose.models.Conversation as Model<IConversation>;
       const { deleteMessages, getMessages } = getMessageMethods();
@@ -3296,6 +3406,7 @@ export function createConversationMethods(
         .select('conversationId tenantId chatProjectId tags')
         .lean<DeletionConversation[]>();
       const recoveryConversationIds: string[] = [];
+      const recoverySteelScopes: ConversationDeletionScope[] = [];
       if (!conversations.length && typeof filter.conversationId === 'string') {
         /** A prior attempt may have deleted the root before a descendant read failed.
          * Resume from immutable root lineage and retain the root id for message,
@@ -3306,25 +3417,51 @@ export function createConversationMethods(
             Conversation.find({
               user,
               'subagentThread.rootConversationId': filter.conversationId,
+              ...(typeof filter.tenantId === 'string' ? { tenantId: filter.tenantId }
+                : { $or: [{ tenantId: { $exists: false } }, { tenantId: null }] }),
             })
               .select('conversationId tenantId chatProjectId tags')
               .lean<DeletionConversation[]>(),
           ),
-          getMessages({ user, conversationId: filter.conversationId }, '_id', { limit: 1 }),
+          getMessages({ user, conversationId: filter.conversationId,
+            ...(typeof filter.tenantId === 'string' ? { tenantId: filter.tenantId }
+              : { $or: [{ tenantId: { $exists: false } }, { tenantId: null }] }),
+          }, '_id', { limit: 1 }),
         ]);
-        if (descendants.length === 0 && rootMessages.length === 0 && options?.allowEmpty !== true) {
+        const priorDeletion = await readSteelConversationDeletionScope(mongoose, { userId: user,
+          conversationId: filter.conversationId,
+          ...(typeof filter.tenantId === 'string' ? { tenantId: filter.tenantId } : {}),
+        });
+        if (descendants.length === 0 && rootMessages.length === 0 && options?.allowEmpty !== true && !priorDeletion.deleted) {
           throw new Error('Conversation not found or already deleted.');
         }
         conversations = descendants;
         recoveryConversationIds.push(filter.conversationId);
+        recoverySteelScopes.push({
+          conversationId: filter.conversationId,
+          ...(typeof filter.tenantId === 'string' ? { tenantId: filter.tenantId } : {}),
+        });
+        const legacyProof = await fenceSteelConversationWrites(mongoose,
+          { userId: user, ...recoverySteelScopes[0] });
+        await deleteSteelConversationState(mongoose, user, recoverySteelScopes,
+          legacyProof ? [filter.conversationId] : []);
       } else if (!conversations.length) {
         if (options?.allowEmpty === true) {
-          return {
-            acknowledged: true,
-            deletedCount: 0,
-            messages: { acknowledged: true, deletedCount: 0 },
-            conversationIds: [],
-          };
+          const values: unknown = typeof filter.conversationId === 'object' && filter.conversationId !== null
+            ? filter.conversationId.$in : undefined;
+          const requestedIds: string[] = Array.isArray(values)
+            ? values.filter((id: unknown): id is string => typeof id === 'string') : [];
+          const scopes = requestedIds.map((conversationId) => ({ conversationId,
+            ...(typeof filter.tenantId === 'string' ? { tenantId: filter.tenantId } : {}),
+          }));
+          const legacyProofs = await Promise.all(scopes.map((scope) =>
+            fenceSteelConversationWrites(mongoose, { userId: user, ...scope })));
+          await deleteSteelConversationState(mongoose, user, scopes,
+            scopes.filter((_scope, index) => legacyProofs[index]).map((scope) => scope.conversationId));
+          const messages = requestedIds.length > 0
+            ? await deleteMessages({ user, ...conversationScopeFilter(scopes) })
+            : { acknowledged: true, deletedCount: 0 };
+          return { acknowledged: true, deletedCount: 0, messages, conversationIds: requestedIds };
         }
         throw new Error('Conversation not found or already deleted.');
       }
@@ -3377,11 +3514,18 @@ export function createConversationMethods(
         }
       };
       while (pending.length > 0) {
-        const wave = pending.filter((conversation) => !seen.has(conversation.conversationId));
+        const wave = pending.filter((conversation) => {
+          const key = `${conversation.conversationId}\u0000${conversation.tenantId ?? ''}`;
+          return !seen.has(key);
+        });
         if (wave.length === 0) {
           break;
         }
-        const waveIds = wave.map((conversation) => conversation.conversationId);
+        const waveIds = [...new Set(wave.map((conversation) => conversation.conversationId))];
+        const waveScopes = wave.map(({ conversationId, tenantId }) => ({
+          conversationId,
+          ...(tenantId === undefined ? {} : { tenantId }),
+        }));
         await deps?.deleteAgentQueuedTurns?.(
           user,
           wave.map((conversation) => ({
@@ -3390,14 +3534,28 @@ export function createConversationMethods(
           })),
         );
         await options?.beforeDelete?.(waveIds);
-        await deps?.prepareAgentTriggerConversationResultErasure?.(user, waveIds);
-        const result = await Conversation.deleteMany({ user, conversationId: { $in: waveIds } });
+        await eraseScopedTriggerResults(deps?.prepareAgentTriggerConversationResultErasure, user, waveScopes);
+        const legacyProofs = await Promise.all(waveScopes.map((scope) =>
+          fenceSteelConversationWrites(mongoose, { userId: user, ...scope })));
+        const waveLegacyConversationIds = waveScopes.filter((_scope, index) => legacyProofs[index])
+          .map(({ conversationId }) => conversationId);
+        await deleteSteelConversationState(
+          mongoose,
+          user,
+          waveScopes,
+          waveLegacyConversationIds,
+        );
+        const result = await Conversation.deleteMany({
+          user,
+          ...conversationScopeFilter(waveScopes),
+        });
+        await deleteSteelConversationState(mongoose, user, waveScopes, waveLegacyConversationIds);
         if (result.deletedCount > 0) {
           /** Result erasure is irreversible. Keep receipts intact when a
            * pre-delete hook or the conversation delete itself fails, so a
            * retained conversation cannot lose a receipt-only completion. */
           try {
-            await deps?.eraseAgentTriggerDeliveryConversationResults?.(user, waveIds);
+            await eraseScopedTriggerResults(deps?.eraseAgentTriggerDeliveryConversationResults, user, waveScopes);
           } catch (error) {
             logger.error('[deleteConvos] Receipt erasure deferred to durable cleanup', error);
           }
@@ -3406,14 +3564,11 @@ export function createConversationMethods(
         deletedCount += result.deletedCount;
         await reconcileDeletedWave(wave, result.deletedCount);
         for (const conversation of wave) {
-          seen.add(conversation.conversationId);
+          seen.add(`${conversation.conversationId}\u0000${conversation.tenantId ?? ''}`);
           deletedConversations.push(conversation);
         }
         pending = await retryCascadeOperation(() =>
-          Conversation.find({
-            user,
-            'subagentThread.parentConversationId': { $in: waveIds },
-          })
+          Conversation.find(childConversationFilter(user, waveScopes))
             .select('conversationId tenantId chatProjectId tags')
             .lean<DeletionConversation[]>(),
         );
@@ -3450,13 +3605,13 @@ export function createConversationMethods(
       if (recoveryConversationIds.length > 0) {
         await deps?.deleteAgentQueuedTurns?.(
           user,
-          recoveryConversationIds.map((conversationId) => ({
+          recoverySteelScopes.map(({ conversationId, tenantId }) => ({
             conversationId,
-            allTenants: true,
+            ...(tenantId != null && { tenantId }),
           })),
         );
         try {
-          await deps?.eraseAgentTriggerDeliveryConversationResults?.(user, recoveryConversationIds);
+          await eraseScopedTriggerResults(deps?.eraseAgentTriggerDeliveryConversationResults, user, recoverySteelScopes);
         } catch (error) {
           logger.error('[deleteConvos] Receipt erasure deferred to durable cleanup', error);
         }
@@ -3464,26 +3619,33 @@ export function createConversationMethods(
 
       const deleteConvoResult: DeleteResult = { acknowledged, deletedCount };
 
-      /**
-       * Post-delete cleanup is best-effort: the conversations are already gone, so a
-       * thrown error here would hide the deletion from the caller — dropping the
-       * `conversationIds` that downstream cleanup (e.g. agent-checkpoint pruning)
-       * needs, with no way to recover them on retry (the query finds nothing).
-       */
+      // The durable scoped deletion gate allows payload cleanup to resume after the parent is gone.
       let deleteMessagesResult: DeleteResult = { acknowledged: false, deletedCount: 0 };
       try {
-        deleteMessagesResult = await deleteMessages({
-          conversationId: { $in: conversationIds },
-          user,
-        });
+        const messageScopes = [
+          ...recoverySteelScopes,
+          ...deletedConversations.map(({ conversationId, tenantId }) => ({
+            conversationId,
+            ...(tenantId === undefined ? {} : { tenantId }),
+          })),
+        ];
+        const messageFilter: FilterQuery<IMessage> = messageScopes.every(
+          ({ tenantId }) => tenantId === undefined,
+        )
+          ? { conversationId: { $in: conversationIds }, user, tenantId: null }
+          : {
+              user,
+              $or: messageScopes.map(({ conversationId, tenantId }) => ({
+                conversationId,
+                ...(tenantId === undefined
+                  ? { $or: [{ tenantId: { $exists: false } }, { tenantId: null }] }
+                  : { tenantId }),
+              })),
+            };
+        deleteMessagesResult = await deleteMessages(messageFilter);
       } catch (error) {
         logger.error('[deleteConvos] Conversations deleted but message cleanup failed', error);
-      }
-
-      try {
-        await deleteSteelQuotationState(mongoose, user, conversationIds);
-      } catch (error) {
-        logger.error('[deleteConvos] Conversations deleted but quotation cleanup failed', error);
+        throw error;
       }
 
       // conversationIds lets callers run sibling cleanup that lives in higher layers

@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 import { createHash } from 'node:crypto';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { AIMessageChunk } from '@librechat/agents/langchain/messages';
-import { createSteelQuotationStateModel, createSteelQuotationArtifactModel } from '@librechat/data-schemas';
+import { createSteelCustomerMethods, createModels, createSteelQuotationStateModel, createSteelQuotationArtifactModel } from '@librechat/data-schemas';
 import type {
   SteelQuotationScope,
   SteelQuotationActiveRun,
@@ -1412,6 +1412,42 @@ describe('quotation runner integration', () => {
       responseId: 'forged', messageId: 'forged-user', expectedOrderHash: prepared?.currentOrder?.sha256,
       expectedCustomerPreparationId: prepared?.currentCustomer?.preparationId, finishReason: 'stop' })).rejects.toThrow('trusted customer lookup');
     expect((await service.readState(scope))?.nextSignalIndex).toBe(0);
+  });
+
+  it('quotes with the latest customer tier confirmed in the Markdown editor', async () => {
+    const markdown = await prepareCustomer();
+    const models = createModels(mongoose);
+    await models.Conversation.create({ conversationId: scope.conversationId, user: scope.userId, endpoint: 'agents' });
+    const messageId = 'customer-response-1';
+    const reference = { kind: 'customer_data' as const, source: 'ai' as const, snapshotId: 'customer-snapshot',
+      generationId: 'customer-generation', outputId: 'customer-output', messageId, title: 'customer_data',
+      revision: 'customer-revision', sha256: createHash('sha256').update(markdown).digest('hex'),
+      lineageId: 'customer-lineage', version: 1, savedAt: new Date() };
+    await models.Message.create({ messageId, conversationId: scope.conversationId, user: scope.userId,
+      text: markdown, content: [{ type: 'text', text: markdown }], isCreatedByUser: false,
+      metadata: { steelMarkdownOwners: { customer_data: reference } } });
+    await createSteelQuotationArtifactModel(mongoose).create({ ...scope, runId: 'markdown:customer-generation',
+      operationId: 'ai:customer_data', kind: 'main', sha256: reference.sha256, payload: markdown,
+      markdownPublication: { reference, rawMarkdown: markdown, baselineMarkdown: markdown } });
+    await createSteelQuotationStateModel(mongoose).updateOne(scope, { $set: {
+      'markdownPublication.current.customer_data': { ai: reference, effective: reference },
+    } });
+    const before = await service.readState(scope);
+    const edit = await createSteelCustomerMethods(mongoose).commitSteelCustomer({ ...scope, messageId,
+      title: reference.title, outputId: reference.outputId, revision: reference.revision, tier: 'F', expectedTier: 'C' });
+    expect(edit).toMatchObject({ ok: true, value: { tier: 'F' } });
+    await expect(acceptQuotationResponse({ scope, response: quotationSignal, responseId: 'stale-confirmation',
+      messageId: 'confirm-user', expectedOrderHash: before?.currentOrder?.sha256,
+      expectedCustomerPreparationId: before?.currentCustomer?.preparationId, finishReason: 'stop' }))
+      .rejects.toThrow('stale preparation');
+    const prepared = await service.readState(scope);
+    await acceptPreparedSignal('fresh-confirmation');
+    const model = createModel();
+    await runQuotationPreflight(runnerInput(model, createLookupExecutor()));
+    const inputs = model.mock.calls.map(([input]) => JSON.parse(input.input) as { customer: string });
+    expect(inputs.length).toBeGreaterThan(0);
+    expect(inputs.every((input) => input.customer === prepared?.currentCustomer?.customerMarkdown)).toBe(true);
+    expect(inputs.every((input) => input.customer.includes('| F |'))).toBe(true);
   });
 
   it('saves customer Markdown without an index and admits concurrent delivery only once', async () => {

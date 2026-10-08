@@ -151,9 +151,10 @@ afterAll(async () => {
 });
 
 it('uses legacy OCR only for its uniquely bound conversation owner', async () => {
+  await mongoose.models.Message.create({ ...scope, user: scope.userId, messageId: 'legacy-ocr', text: orderMarkdown('2'), isCreatedByUser: false, unfinished: false });
   await createSteelConversationOcrStateModel(mongoose).updateOne(
     { conversationId: scope.conversationId },
-    { $set: { currentOcrResultMarkdown: orderMarkdown('2'), currentOcrResultGenerationId: 'legacy-ai' } },
+    { $set: { currentOcrResultMarkdown: orderMarkdown('2'), currentOcrResultGenerationId: 'legacy-ai', currentOcrResultMessageId: 'legacy-ocr' } },
   );
   const prepared = await prepareQuotationTurn({
     scope, messageId: 'legacy-user', responseId: 'legacy-response', text: '使用 OCR 報價',
@@ -161,6 +162,15 @@ it('uses legacy OCR only for its uniquely bound conversation owner', async () =>
   });
   expect(prepared.state.currentOrder?.markdown).toBe(orderMarkdown('2'));
   expect(prepared.publicationAdmission).toBeDefined();
+});
+
+it('does not expose a complete legacy OCR record after its owned assistant message is gone', async () => {
+  await createSteelConversationOcrStateModel(mongoose).updateOne(
+    { conversationId: scope.conversationId },
+    { $set: { currentOcrResultMarkdown: orderMarkdown('999'), currentOcrResultGenerationId: 'old-ai', currentOcrResultMessageId: 'missing-old-message' } },
+  );
+  await expect(prepareQuotationTurn({ scope, messageId: 'user', responseId: 'response', text: '報價', publicationStore: db }))
+    .rejects.toMatchObject({ code: 'invalid_snapshot' });
 });
 
 it.each([
@@ -383,7 +393,7 @@ it('selects the newer human Save, freezes its clean Markdown and mappings at adm
   expect(new Date(input.selection.candidates.human!.savedAt).getTime())
     .toBeGreaterThan(new Date(input.selection.candidates.ai!.savedAt).getTime());
   expect(input.selection.selected.source).toBe('human');
-  expect(input.markdown).toContain('| F1 | P1 |');
+  expect(input.markdown).toContain('| 鐵板 | P1 | 6 | 200 | 100 | 3 | F1 |');
   expect(snapshot.orderMarkdown).toBe(input.markdown);
   expect(snapshot.ocrSelection).toEqual(JSON.parse(JSON.stringify(run.ocrSelection)));
   expect(snapshot.sourceSnapshot).toEqual(input.sourceSnapshot);
@@ -403,7 +413,7 @@ it('selects the newer human Save, freezes its clean Markdown and mappings at adm
   await saveHuman('4');
   const after = await service.readState(scope);
   const current = await service.readOcrInput(scope);
-  expect(current?.markdown).toContain('| F1 | P1 | 鐵板 | 4 |');
+  expect(current?.markdown).toContain('| 鐵板 | P1 | 6 | 200 | 100 | 4 | F1 |');
   expect(after?.activeRun?.runId).toBe(run.runId);
   const frozenPayload = JSON.parse((await service.readArtifact({ scope, ref: run.snapshotRef }))!) as SteelQuotationSnapshotPayload;
   expect(frozenPayload.orderMarkdown).toBe(snapshot.orderMarkdown);
@@ -432,11 +442,11 @@ it('restores a fresh service and resumes child/main from the admitted snapshot',
   });
   expect(result.status).toBe('completed');
   expect(childInputs).toHaveLength(1);
-  expect(childInputs[0]).toContain('| F1 | P1 | 鐵板 | 3 |');
-  expect(childInputs[0]).not.toContain('| F1 | P1 | 鐵板 | 4 |');
+  expect(childInputs[0]).toContain('| 鐵板 | P1 | 6 | 200 | 100 | 3 | F1 |');
+  expect(childInputs[0]).not.toContain('| 鐵板 | P1 | 6 | 200 | 100 | 4 | F1 |');
   expect(mainInputs).toHaveLength(1);
-  expect(mainInputs[0]).toContain('| F1 | P1 | 鐵板 | 3 |');
-  expect(mainInputs[0]).not.toContain('| F1 | P1 | 鐵板 | 4 |');
+  expect(mainInputs[0]).toContain('| 鐵板 | P1 | 6 | 200 | 100 | 3 | F1 |');
+  expect(mainInputs[0]).not.toContain('| 鐵板 | P1 | 6 | 200 | 100 | 4 | F1 |');
   const completed = await service.readState(scope);
   expect(completed?.activeRun?.status).toBe('completed');
   expect(completed?.currentSystemOrder?.needsRequote).toBe(true);
@@ -712,4 +722,56 @@ it('requires the exact historical AI OCR artifact before selecting a human-only 
     ...aiArtifact.markdownPublication, reference: { ...aiArtifact.markdownPublication.reference, kind: 'customer_data' },
   } });
   await expect(service.readOcrInput(scope)).rejects.toMatchObject({ code: 'invalid_snapshot' });
+});
+
+it('generates and regenerates bound quotation versions from a pre-v9 OCR conversation without opening review', async () => {
+  const legacyMarkdown = orderMarkdown('2');
+  await db.saveMessage({ userId: scope.userId }, { messageId: 'legacy-ocr', conversationId: scope.conversationId,
+    user: scope.userId, text: legacyMarkdown, isCreatedByUser: false, unfinished: false }, { context: 'legacy OCR fixture' });
+  await createSteelConversationOcrStateModel(mongoose).updateOne({ conversationId: scope.conversationId }, { $set: {
+    currentOcrResultMarkdown: legacyMarkdown, currentOcrResultGenerationId: 'pre-v9', currentOcrResultMessageId: 'legacy-ocr',
+  } });
+  const versions: string[] = [];
+  for (const index of [1, 2]) {
+    const service = createSteelQuotationStateService(mongoose);
+    const prepared = await prepareQuotationTurn({ scope, messageId: `legacy-turn-${index}`,
+      responseId: `legacy-response-${index}`, text: '使用 OCR 報價', publicationStore: db, service });
+    expect(prepared.state.currentOrder?.ocrSelection?.selected.outputId).toBe('ocr_result:pre-v9');
+    const customerResponse = `${renderQuotationCustomerMarkdown({ tier: 'B' })}\n\n## quote_signal\n\nstart`;
+    await commitQuotationCustomerResponse({ scope, response: customerResponse, responseId: `customer-${index}`,
+      messageId: `customer-message-${index}`, messageText: '使用預設 B tier，報價',
+      expectedOrderHash: prepared.state.currentOrder!.sha256,
+      expectedCustomerPreparationId: prepared.state.currentCustomer?.preparationId, service });
+    const ready = await service.readState(scope);
+    const run = await acceptQuotationSignal({ scope, response: '## quote_signal\n\nstart',
+      responseId: `quote-${index}`, messageId: `quote-message-${index}`, expectedOrderHash: ready?.currentOrder?.sha256,
+      expectedCustomerPreparationId: ready?.currentCustomer?.preparationId, finishReason: 'stop', service });
+    if (!run) throw new Error('Legacy quotation was not admitted');
+    const model = createRunnerModel([], []);
+    const result = await runQuotationPreflight({ scope, modelOptions: {} as OpenAIOAuthModelOptions,
+      signal: new AbortController().signal, invokeModel: async (input) => {
+        const response = await model(input);
+        if (input.role === 'child') {
+          const table = parseMarkdownTables(response.markdown)[0];
+          response.markdown = markdownTable(table.headers, table.rows.map((row) =>
+            row.map((value, column) => table.headers[column] === '備註' ? 'P1' : value)));
+        }
+        return response;
+      }, executeLookup: jest.fn(async () => lookupResult()), publishFinal: createRealQuotationPublisher() });
+    expect(result.status).toBe('completed');
+    const state = await service.readState(scope);
+    expect(state?.currentSystemOrder?.reviewMetadata?.ocrContext?.outputId).toBe('ocr_result:pre-v9');
+    expect(state?.currentSystemOrder?.reviewMetadata?.rows[0]).toMatchObject({
+      source: { fileId: 'order-file', filename: 'order.pdf' }, ocrLink: { outputId: 'ocr_result:pre-v9' },
+    });
+    versions.push(run.targetMessageId!);
+  }
+  const review = createSteelReviewService({ reader: db, writer: createSteelReviewWriteMethods(mongoose) });
+  const history = await review.read({ ...scope, messageId: versions[0], kind: 'system_order', title: 'system_order' });
+  const latest = await review.read({ ...scope, messageId: versions[1], kind: 'system_order', title: 'system_order' });
+  expect(history.table.isLatest).toBe(false);
+  expect(latest.table.isLatest).toBe(true);
+  expect(history.table.ocrContext).toEqual(latest.table.ocrContext);
+  expect(history.table.rows[0].source?.fileId).toBe('order-file');
+  expect(history.table.rows[0].ocrLink?.outputId).toBe('ocr_result:pre-v9');
 });

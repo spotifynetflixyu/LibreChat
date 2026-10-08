@@ -356,6 +356,29 @@ describe('ControlCombobox portal placement', () => {
 });
 
 describe('ControlCombobox asynchronous options', () => {
+  it('notifies the host when the current option is explicitly selected again', () => {
+    const onReselect = jest.fn();
+    const setValue = jest.fn();
+    const { offsetWidthSpy } = renderCombobox(300, false, { onReselect, setValue });
+    openPopover();
+    fireEvent.click(screen.getByRole('option', { name: 'Option A' }));
+    expect(onReselect).toHaveBeenCalledTimes(1);
+    expect(onReselect).toHaveBeenCalledWith('a');
+    expect(setValue).not.toHaveBeenCalled();
+    offsetWidthSpy.mockRestore();
+  });
+
+  it('mounts the virtual list when asynchronous options become available', () => {
+    const { rerender, offsetWidthSpy } = renderCombobox(300, false, { items: [] });
+    openPopover();
+    const scroller = document.querySelector('.animate-popover .overflow-auto');
+    expect(scroller?.querySelector('[role="listbox"]')).toBeEmptyDOMElement();
+    rerender(<ControlCombobox selectedValue="a" items={items} setValue={() => undefined}
+      ariaLabel="Test combobox" isCollapsed={false} />);
+    expect(screen.getByRole('option', { name: 'Option A' })).toBeInTheDocument();
+    offsetWidthSpy.mockRestore();
+  });
+
   it('keeps remote options and order when their labels do not match the search draft', () => {
     const onSearchChange = jest.fn();
     const { offsetWidthSpy } = renderCombobox(300, false, {

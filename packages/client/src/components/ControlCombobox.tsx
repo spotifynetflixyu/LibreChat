@@ -1,14 +1,14 @@
-import { useMemo, useState, useRef, memo, useEffect, MemoExoticComponent } from 'react';
+import { useMemo, useState, useRef, memo, useEffect } from 'react';
 import * as Ariakit from '@ariakit/react';
 import { matchSorter } from 'match-sorter';
 import { Search, ChevronDown } from 'lucide-react';
 import { SelectRenderer } from '@ariakit/react-components/select/select-renderer';
-import type { ReactNode } from 'react';
+import type { MemoExoticComponent, ReactNode, Ref } from 'react';
+import type { JSX } from 'react/jsx-runtime';
 import type { OptionWithIcon } from '~/common';
 import { usePopoverZIndex } from './OriginalDialog';
 import { fieldControl } from './Field';
 import './AnimatePopover.css';
-import { JSX } from 'react/jsx-runtime';
 import { cn } from '~/utils';
 
 interface ControlComboboxProps {
@@ -64,6 +64,10 @@ interface ControlComboboxProps {
   resetSearchOnHide?: boolean;
   /** Apply keyboard navigation only while the options menu is open. */
   onNavigate?: (value: string) => void;
+  /** Notifies hosts when the current option is selected again. */
+  onReselect?: (value: string) => void;
+  /** Footer actions can retain input focus while updating the option list. */
+  searchInputRef?: Ref<HTMLInputElement>;
 }
 
 const ROW_HEIGHT = 36;
@@ -104,6 +108,8 @@ function ControlCombobox({
   listFooter,
   resetSearchOnHide = true,
   onNavigate,
+  onReselect,
+  searchInputRef,
 }: ControlComboboxProps): JSX.Element {
   const [localSearchValue, setLocalSearchValue] = useState('');
   const searchValue = controlledSearchValue ?? localSearchValue;
@@ -277,6 +283,7 @@ function ControlCombobox({
           <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-primary" />
             <Ariakit.Combobox
+              ref={searchInputRef}
               store={combobox}
               autoSelect
               onKeyDown={(event) => {
@@ -309,29 +316,35 @@ function ControlCombobox({
           )}
         >
           <Ariakit.ComboboxList store={combobox}>
-            <SelectRenderer store={select} items={matches} itemSize={ROW_HEIGHT} overscan={5}>
-              {({ value, icon, label, ...item }) => (
-                <Ariakit.ComboboxItem
-                  key={item.id}
-                  {...item}
-                  disabled={disabled}
-                  className={cn(
-                    'flex w-full cursor-pointer items-center px-3 text-sm',
-                    'text-text-primary hover:bg-surface-tertiary',
-                    'data-[active-item]:bg-surface-tertiary',
-                  )}
-                  render={<Ariakit.SelectItem value={value} />}
-                >
-                  {icon != null && iconSide === 'left' && (
-                    <div className={optionIconClassName}>{icon}</div>
-                  )}
-                  <span className="flex-grow truncate text-left">{label}</span>
-                  {icon != null && iconSide === 'right' && (
-                    <div className={optionIconClassName}>{icon}</div>
-                  )}
-                </Ariakit.ComboboxItem>
-              )}
-            </SelectRenderer>
+            {/* The renderer chooses its scroller on mount; an empty list is not scrollable yet. */}
+            {matches.length > 0 && (
+              <SelectRenderer store={select} items={matches} itemSize={ROW_HEIGHT} overscan={5}>
+                {({ value, icon, label, ...item }) => (
+                  <Ariakit.ComboboxItem
+                    key={item.id}
+                    {...item}
+                    disabled={disabled}
+                    onClick={() => {
+                      if (!disabled && value === selectedValue && value !== undefined) onReselect?.(value);
+                    }}
+                    className={cn(
+                      'flex w-full cursor-pointer items-center px-3 text-sm',
+                      'text-text-primary hover:bg-surface-tertiary',
+                      'data-[active-item]:bg-surface-tertiary',
+                    )}
+                    render={<Ariakit.SelectItem value={value} />}
+                  >
+                    {icon != null && iconSide === 'left' && (
+                      <div className={optionIconClassName}>{icon}</div>
+                    )}
+                    <span className="flex-grow truncate text-left">{label}</span>
+                    {icon != null && iconSide === 'right' && (
+                      <div className={optionIconClassName}>{icon}</div>
+                    )}
+                  </Ariakit.ComboboxItem>
+                )}
+              </SelectRenderer>
+            )}
           </Ariakit.ComboboxList>
         </div>
         {listFooter}

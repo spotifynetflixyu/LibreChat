@@ -47,6 +47,15 @@ describe('Steel review source row filtering', () => {
       .toEqual([]);
   });
 
+  it('shows only rows that remain unlinked when unlinked mode is active', () => {
+    const bound = { ...rows[4], source: rows[0].source };
+    const draft = [...rows.slice(0, 4), bound, rows[5]];
+    const remainingUnlinked = new Set(['unsupported-source']);
+
+    expect(getSteelReviewPreviewRows(draft, 'drawing-a', 1, undefined, 0, remainingUnlinked).unlocated)
+      .toEqual([rows[5]]);
+  });
+
   it('keeps pending processing visible for parent selection without assigning a source', () => {
     const pending = { ...rows[4], system: { kind: 'processing' as const, parentRowId: null, cascadeDeletedBy: null } };
     expect(getSteelReviewPreviewRows([pending], 'drawing-a', 1, undefined, 0, undefined,

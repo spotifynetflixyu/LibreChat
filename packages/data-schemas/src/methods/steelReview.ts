@@ -56,6 +56,7 @@ import { steelReviewTitleStorageId } from '~/utils/identity';
 import { activeExpirationFilter } from '~/utils/retention';
 import { createConversationModel } from '~/models/convo';
 import { createMessageModel } from '~/models/message';
+import { runAsSystem } from '~/config/tenantContext';
 
 type Mongoose = typeof import('mongoose');
 
@@ -1259,9 +1260,9 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
         })
           .select({ conversationId: 1 })
           .lean(),
-        Conversation.find({ conversationId: input.conversationId })
+        runAsSystem(async () => Conversation.find({ conversationId: input.conversationId })
           .select({ user: 1, tenantId: 1 })
-          .lean<Array<{ user?: string; tenantId?: string | null }>>(),
+          .lean<Array<{ user?: string; tenantId?: string | null }>>()),
       ]);
       if (messageRecords.length !== 1 || !conversation) {
         return null;
@@ -1885,10 +1886,10 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
           .limit(2)
           .select({ messageId: 1 })
           .lean(),
-        Conversation.find({ conversationId: input.conversationId })
+        runAsSystem(async () => Conversation.find({ conversationId: input.conversationId })
           .limit(2)
           .select({ user: 1, tenantId: 1 })
-          .lean<Array<{ user?: string; tenantId?: string | null }>>(),
+          .lean<Array<{ user?: string; tenantId?: string | null }>>()),
       ]);
       if (conversations.length !== 1 || messages.length !== 1 || conversationIdentities.length !== 1) {
         return unavailableMessageMutation();

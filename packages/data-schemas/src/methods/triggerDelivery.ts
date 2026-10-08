@@ -516,10 +516,12 @@ export interface AgentTriggerDeliveryMethods {
   eraseAgentTriggerDeliveryConversationResults: (
     user: string | Types.ObjectId,
     conversationIds: string[],
+    tenantId?: string | null,
   ) => Promise<void>;
   prepareAgentTriggerConversationResultErasure: (
     user: string | Types.ObjectId,
     conversationIds: string[],
+    tenantId?: string | null,
   ) => Promise<void>;
 }
 
@@ -4261,6 +4263,7 @@ export function createAgentTriggerDeliveryMethods(
   async function eraseAgentTriggerDeliveryConversationResults(
     user: string | Types.ObjectId,
     conversationIds: string[],
+    tenantId?: string | null,
   ): Promise<void> {
     if (conversationIds.length === 0 || !mongoose.isObjectIdOrHexString(user)) {
       return;
@@ -4269,6 +4272,7 @@ export function createAgentTriggerDeliveryMethods(
     await Delivery().updateMany(
       {
         user,
+        ...(tenantId === undefined ? {} : { tenantId }),
         'envelope.target.conversationId': { $in: conversationIds },
       },
       {
@@ -4282,11 +4286,13 @@ export function createAgentTriggerDeliveryMethods(
   async function prepareAgentTriggerConversationResultErasure(
     user: string | Types.ObjectId,
     conversationIds: string[],
+    tenantId?: string | null,
   ): Promise<void> {
     if (conversationIds.length === 0 || !mongoose.isObjectIdOrHexString(user)) return;
     await Delivery().updateMany(
       {
         user,
+        ...(tenantId === undefined ? {} : { tenantId }),
         requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
         'envelope.target.conversationId': { $in: conversationIds },
         backgroundToolResultErasedAt: { $exists: false },

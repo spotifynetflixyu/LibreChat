@@ -8,6 +8,10 @@ import type {
   SteelReviewKind,
   SteelReviewResponse,
   SteelMarkdownVersions,
+  SteelCustomerQuery,
+  SteelCustomerCommit,
+  SteelCustomerResponse,
+  SteelCustomerSaveResponse,
   SteelReviewReceiptStatus,
   SteelReviewPrepare,
   SteelReviewPrepared,
@@ -197,6 +201,14 @@ export function getSteelMarkdownVersions(conversationId: string): Promise<SteelM
   return request.get(endpoints.steelMarkdownVersions(conversationId));
 }
 
+export function getSteelCustomer(input: SteelCustomerQuery): Promise<SteelCustomerResponse> {
+  return request.get(endpoints.steelCustomer(input));
+}
+
+export function commitSteelCustomer(input: SteelCustomerCommit): Promise<SteelCustomerSaveResponse> {
+  return request.post(endpoints.steelCustomer(input), input);
+}
+
 export function getSteelReview(
   conversationId: string,
   kind: SteelReviewKind,
@@ -209,8 +221,11 @@ export function getSteelReview(
 export function getSteelReviewCatalog(
   conversationId: string,
   input: SteelCatalogQuery,
+  signal?: AbortSignal,
 ): Promise<SteelCatalogPage> {
-  return request.get(endpoints.steelReviewCatalog(conversationId, input));
+  return signal
+    ? request.get(endpoints.steelReviewCatalog(conversationId, input), { signal })
+    : request.get(endpoints.steelReviewCatalog(conversationId, input));
 }
 
 export function prepareSteelReview(input: SteelReviewPrepare): Promise<SteelReviewPrepared> {

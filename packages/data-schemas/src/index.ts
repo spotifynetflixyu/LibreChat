@@ -67,6 +67,7 @@ export {
   MCPAuthorityProofError,
   createMCPAuthorizationFenceRetryStorage,
   createOAuthCompactionMethods,
+  createSteelCustomerMethods,
   createSteelReviewReadMethods,
   createSteelReviewWriteMethods,
   SteelReviewWriteError,

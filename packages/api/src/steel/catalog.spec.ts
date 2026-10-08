@@ -139,6 +139,87 @@ describe('Steel catalog authority', () => {
     });
   });
 
+  it('authorizes supplied customer evidence before a price preview', async () => {
+    const query = jest.fn().mockResolvedValue({ rows: [catalogRow] });
+    const readSteelReview = jest.fn().mockResolvedValue(review);
+    const service = createSteelReviewCatalogService({
+      reader: { readSteelReview },
+      client: { getClient: () => ({ query }) },
+    });
+
+    const result = await service.search({
+      scope,
+      query: {
+        messageId: review.messageId,
+        title: review.title,
+        outputId: review.outputId,
+        revision: review.revision,
+        rowId: row.rowId,
+        field: 'model',
+        keyword: 'SC',
+        customerSnapshotId: customer.snapshotId,
+        customerRevision: customer.revision,
+        customerTier: customer.tier,
+      },
+    });
+
+    expect(readSteelReview).toHaveBeenCalledWith(expect.objectContaining(scope));
+    expect(result.customer).toEqual(customer);
+    expect(query.mock.calls[0]?.[1]?.[0]).toBe(customer.tier);
+  });
+
+  it.each(['customerSnapshotId', 'customerRevision', 'customerTier'] as const)(
+    'rejects forged search %s before querying prices',
+    async (field) => {
+      const query = jest.fn();
+      const service = createSteelReviewCatalogService({
+        reader: { readSteelReview: jest.fn().mockResolvedValue(review) },
+        client: { getClient: () => ({ query }) },
+      });
+      await expect(service.search({
+        scope,
+        query: {
+          messageId: review.messageId,
+          title: review.title,
+          outputId: review.outputId,
+          revision: review.revision,
+          rowId: row.rowId,
+          field: 'model',
+          keyword: 'SC',
+          customerSnapshotId: customer.snapshotId,
+          customerRevision: customer.revision,
+          customerTier: customer.tier,
+          [field]: field === 'customerTier' ? 'A' : 'forged',
+        },
+      })).rejects.toMatchObject({ code: 'CATALOG_CHANGED', statusCode: 409 });
+      expect(query).not.toHaveBeenCalled();
+    },
+  );
+
+  it('rejects unowned reviews even when search supplies customer evidence', async () => {
+    const query = jest.fn();
+    const service = createSteelReviewCatalogService({
+      reader: { readSteelReview: jest.fn().mockResolvedValue(null) },
+      client: { getClient: () => ({ query }) },
+    });
+    await expect(service.search({
+      scope,
+      query: {
+        messageId: review.messageId,
+        title: review.title,
+        outputId: review.outputId,
+        revision: review.revision,
+        rowId: row.rowId,
+        field: 'model',
+        keyword: 'SC',
+        customerSnapshotId: customer.snapshotId,
+        customerRevision: customer.revision,
+        customerTier: customer.tier,
+      },
+    })).rejects.toMatchObject({ code: 'REVIEW_NOT_FOUND', statusCode: 404 });
+    expect(query).not.toHaveBeenCalled();
+  });
+
   it.each(['snapshotId', 'revision', 'tier'] as const)('rejects forged customer %s evidence', async (field) => {
     const service = createSteelReviewCatalogService({
       reader: { readSteelReview: jest.fn().mockResolvedValue(review) },
@@ -250,6 +331,41 @@ describe('Steel catalog authority', () => {
     })).rejects.toMatchObject<Partial<SteelReviewCatalogError>>({
       code: 'INVALID_REVIEW_QUERY', statusCode: 400,
     });
+    expect(query).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects a cursor reused with different supplied customer evidence', async () => {
+    const query = jest.fn().mockResolvedValue({
+      rows: [catalogRow, { ...catalogRow, id: 'catalog-2', erp_item_code: 'SC-2' }],
+    });
+    const readSteelReview = jest.fn().mockResolvedValue(review);
+    const service = createSteelReviewCatalogService({
+      reader: { readSteelReview },
+      client: { getClient: () => ({ query }) },
+      pageSize: 1,
+    });
+    const baseQuery = {
+      messageId: review.messageId,
+      title: review.title,
+      outputId: review.outputId,
+      revision: review.revision,
+      rowId: row.rowId,
+      field: 'model' as const,
+      keyword: 'SC',
+      customerSnapshotId: customer.snapshotId,
+      customerRevision: customer.revision,
+      customerTier: customer.tier,
+    };
+    const page = await service.search({ scope, query: baseQuery });
+    expect(page.nextCursor).toBeTruthy();
+
+    await expect(service.search({
+      scope,
+      query: { ...baseQuery, customerTier: 'C', cursor: page.nextCursor! },
+    })).rejects.toMatchObject<Partial<SteelReviewCatalogError>>({
+      code: 'INVALID_REVIEW_QUERY', statusCode: 400,
+    });
+    expect(readSteelReview).toHaveBeenCalledTimes(1);
     expect(query).toHaveBeenCalledTimes(1);
   });
 });

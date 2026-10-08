@@ -1232,6 +1232,97 @@ describe('agent trigger delivery methods', () => {
     ).resolves.toBe(false);
   });
 
+  it('scopes conversation result erasure to the requested tenant', async () => {
+    const source = { id: 'background-tool-completion', type: 'internal' };
+    const user = new mongoose.Types.ObjectId();
+    const createResult = async (deliveryKey: string, tenantId?: string) => {
+      const queued = await methods.enqueueAgentTriggerDelivery(
+        enqueueInput({
+          deliveryKey,
+          user,
+          tenantId,
+          envelope: {
+            event: { source },
+            target: { conversationId: 'conversation-shared-across-tenants' },
+          },
+          requiredWorkerCapability: AGENT_TRIGGER_WORKER_CAPABILITY_BACKGROUND_COMPLETION_RECEIPT_V2,
+        }),
+      );
+      await methods.persistAgentBackgroundToolResult({
+        deliveryKey: queued.delivery.deliveryKey,
+        sourceId: source.id,
+        result: { status: 'completed', output: deliveryKey, settledAt: START },
+      });
+      return queued.delivery;
+    };
+    const tenantA = await createResult('tenant-a-result', 'tenant-a');
+    const tenantB = await createResult('tenant-b-result', 'tenant-b');
+    const preTenancy = await createResult('pre-tenancy-result');
+    const hasPendingErasure = async (deliveryId: string) =>
+      (await Delivery.findById(deliveryId).select('+backgroundToolResultDeletionPendingAt').lean())
+        ?.backgroundToolResultDeletionPendingAt != null;
+
+    await methods.prepareAgentTriggerConversationResultErasure(
+      user,
+      ['conversation-shared-across-tenants'],
+      'tenant-a',
+    );
+    await expect(hasPendingErasure(tenantA.id)).resolves.toBe(true);
+    await expect(hasPendingErasure(tenantB.id)).resolves.toBe(false);
+    await expect(hasPendingErasure(preTenancy.id)).resolves.toBe(false);
+
+    await methods.eraseAgentTriggerDeliveryConversationResults(
+      user,
+      ['conversation-shared-across-tenants'],
+      'tenant-a',
+    );
+    await expect(
+      methods.getAgentBackgroundToolResult({
+        deliveryKey: tenantA.deliveryKey,
+        sourceId: source.id,
+      }),
+    ).resolves.toBeNull();
+    await expect(
+      methods.getAgentBackgroundToolResult({
+        deliveryKey: tenantB.deliveryKey,
+        sourceId: source.id,
+      }),
+    ).resolves.not.toBeNull();
+    await expect(
+      methods.getAgentBackgroundToolResult({
+        deliveryKey: preTenancy.deliveryKey,
+        sourceId: source.id,
+      }),
+    ).resolves.not.toBeNull();
+
+    await methods.prepareAgentTriggerConversationResultErasure(
+      user,
+      ['conversation-shared-across-tenants'],
+      null,
+    );
+    await expect(hasPendingErasure(tenantA.id)).resolves.toBe(false);
+    await expect(hasPendingErasure(tenantB.id)).resolves.toBe(false);
+    await expect(hasPendingErasure(preTenancy.id)).resolves.toBe(true);
+
+    await methods.eraseAgentTriggerDeliveryConversationResults(
+      user,
+      ['conversation-shared-across-tenants'],
+      null,
+    );
+    await expect(
+      methods.getAgentBackgroundToolResult({
+        deliveryKey: tenantB.deliveryKey,
+        sourceId: source.id,
+      }),
+    ).resolves.not.toBeNull();
+    await expect(
+      methods.getAgentBackgroundToolResult({
+        deliveryKey: preTenancy.deliveryKey,
+        sourceId: source.id,
+      }),
+    ).resolves.toBeNull();
+  });
+
   it('does not make legacy string-owned conversation cleanup depend on an ObjectId cast', async () => {
     await expect(
       methods.prepareAgentTriggerConversationResultErasure('legacy-user', ['conversation']),

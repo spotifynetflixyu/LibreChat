@@ -14,6 +14,10 @@ import type {
   OpenAIOAuthTokenStatus,
   OpenAIOAuthUsageRemaining,
   SteelCatalogQuery,
+  SteelCustomerCommit,
+  SteelCustomerQuery,
+  SteelCustomerResponse,
+  SteelCustomerSaveResponse,
   SteelReviewKind,
   SteelReviewCommit,
   SteelReviewPrepare,
@@ -25,6 +29,7 @@ import type {
   SteelReviewSourcesResponse,
   SteelReviewSourcePageCount,
   SteelQuotationStatus,
+  TMessage,
 } from 'librechat-data-provider';
 import type {
   QueryObserverResult,
@@ -92,6 +97,31 @@ export const useGetSteelMarkdownVersionsQuery = (
   () => dataService.getSteelMarkdownVersions(conversationId),
   { enabled, staleTime: Infinity, refetchOnWindowFocus: false },
 );
+
+export const useGetSteelCustomerQuery = (
+  input?: SteelCustomerQuery | null,
+  config?: UseQueryOptions<SteelCustomerResponse>,
+): QueryObserverResult<SteelCustomerResponse> => {
+  const queriesEnabled = useRecoilValue<boolean>(store.queriesEnabled);
+  const enabled = Boolean(input) && (config?.enabled ?? true) && queriesEnabled;
+  return useQuery<SteelCustomerResponse>(
+    DynamicQueryKeys.steelCustomer(
+      input?.conversationId ?? '',
+      input?.messageId ?? '',
+      input?.title ?? '',
+      input?.outputId ?? '',
+    ),
+    () => dataService.getSteelCustomer(input!),
+    {
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: true,
+      refetchOnMount: true,
+      staleTime: 0,
+      ...config,
+      enabled,
+    },
+  );
+};
 
 export const useGetSteelReviewQuery = (
   input?: {
@@ -266,6 +296,63 @@ export const useCommitSteelReviewMutation = (): UseMutationResult<
             input.title,
           ),
         );
+      },
+    },
+  );
+};
+
+export const useCommitSteelCustomerMutation = (): UseMutationResult<
+  SteelCustomerSaveResponse,
+  unknown,
+  SteelCustomerCommit,
+  unknown
+> => {
+  const queryClient = useQueryClient();
+  return useMutation(
+    [MutationKeys.commitSteelCustomer],
+    (input: SteelCustomerCommit) => dataService.commitSteelCustomer(input),
+    {
+      onSuccess: (data, input) => {
+        const messageQueryKey = [QueryKeys.messages, input.conversationId] as const;
+        const messages = queryClient.getQueryData<TMessage[]>(messageQueryKey);
+        if (messages) {
+          queryClient.setQueryData<TMessage[]>(
+            messageQueryKey,
+            messages.map((message) => {
+              if (message.messageId !== data.message.messageId) {
+                return message;
+              }
+              return {
+                ...message,
+                text: data.message.text,
+                ...(data.message.content !== undefined ? { content: data.message.content } : {}),
+              };
+            }),
+          );
+        }
+
+        const customerQueryKey = DynamicQueryKeys.steelCustomer(
+          input.conversationId,
+          input.messageId,
+          input.title,
+          input.outputId,
+        );
+        queryClient.setQueryData(customerQueryKey, data);
+        const versionsKey = DynamicQueryKeys.steelMarkdownVersions(input.conversationId);
+        queryClient.setQueryData<SteelMarkdownVersions>(versionsKey, (current) => current ? {
+          ...current,
+          versions: current.versions.map((version) =>
+            version.kind === 'customer_data' && version.messageId === input.messageId &&
+            version.outputId === input.outputId && version.title === input.title
+              ? { ...version, revision: data.revision }
+              : version),
+        } : current);
+        void queryClient.invalidateQueries(versionsKey);
+        void queryClient.invalidateQueries(customerQueryKey);
+        void queryClient.invalidateQueries(
+          DynamicQueryKeys.steelQuotationStatus(input.conversationId),
+        );
+        void queryClient.invalidateQueries([QueryKeys.steelReview, input.conversationId]);
       },
     },
   );
@@ -447,12 +534,15 @@ export const useGetSteelReviewCatalogQuery = (
   const key = DynamicQueryKeys.steelReviewCatalog(conversationId, input);
   return useInfiniteQuery(
     key,
-    ({ pageParam }) => {
+    ({ pageParam, signal }) => {
       onQuery?.();
-      return dataService.getSteelReviewCatalog(conversationId, {
+      const query = {
         ...input,
         ...(typeof pageParam === 'string' ? { cursor: pageParam } : {}),
-      });
+      };
+      return signal
+        ? dataService.getSteelReviewCatalog(conversationId, query, signal)
+        : dataService.getSteelReviewCatalog(conversationId, query);
     },
     {
       enabled: enabled && queryClient.getQueryData(key) === undefined,

@@ -1,7 +1,12 @@
-import { useDeferredValue, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useAtom } from 'jotai';
+import { useQueryClient } from '@tanstack/react-query';
 import { Button, ControlCombobox } from '@librechat/client';
-import { isSteelProcessingCatalogCandidateApplicable, steelProcessingMaterialForRow } from 'librechat-data-provider';
+import {
+  DynamicQueryKeys,
+  isSteelProcessingCatalogCandidateApplicable,
+  steelProcessingMaterialForRow,
+} from 'librechat-data-provider';
 import type {
   SteelCatalogCandidate,
   SteelProcessingMaterial,
@@ -11,7 +16,7 @@ import type {
 } from 'librechat-data-provider';
 import { useGetSteelReviewCatalogQuery } from '~/data-provider';
 import { steelReviewCatalogScopeAtom } from './state';
-import { useLocalize } from '~/hooks';
+import { useDebounce, useLocalize } from '~/hooks';
 
 export interface SteelReviewSelectorProps {
   table: SteelReviewTable;
@@ -33,18 +38,22 @@ export default function SteelReviewSelector({
   table, row, parent, header, value, canEdit, onIntentChange, selectedCandidate, onSelect,
 }: SteelReviewSelectorProps) {
   const localize = useLocalize();
+  const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
   const [activeScope, setActiveScope] = useAtom(steelReviewCatalogScopeAtom);
+  const [search, setSearch] = useState('');
   const [keyword, setKeyword] = useState('');
+  const searchInputRef = useRef<HTMLInputElement>(null);
   const processing = row.system?.kind === 'processing';
   const currentMaterial = useMemo(() => processing && parent ? steelProcessingMaterialForRow(parent) : undefined, [processing, parent]);
   const materialScope = JSON.stringify(currentMaterial ?? null);
   const [queryMaterial, setQueryMaterial] = useState<SteelProcessingMaterial | undefined>(currentMaterial);
-  const deferredKeyword = useDeferredValue(keyword);
+  const debouncedKeyword = useDebounce(keyword, 250);
   const intent = useRef(0);
   const appliedIntent = useRef(0);
   const scope = JSON.stringify([table.outputId, table.revision, row.rowId, header, row.system?.kind]);
   const currentScope = useRef(scope);
+  const previousActiveScope = useRef(activeScope);
   const previousMaterialScope = useRef(materialScope);
   const query = useMemo(() => ({
     messageId: table.messageId,
@@ -52,18 +61,38 @@ export default function SteelReviewSelector({
     outputId: table.outputId,
     revision: table.revision,
     rowId: row.rowId,
+    ...(table.catalogCustomer ? {
+      customerSnapshotId: table.catalogCustomer.snapshotId,
+      customerRevision: table.catalogCustomer.revision,
+      customerTier: table.catalogCustomer.tier,
+    } : {}),
     ...(processing ? { kind: 'processing' as const, parentRowId: queryMaterial?.rowId ?? '',
       materialCategory: queryMaterial?.category ?? '',
       ...(queryMaterial?.thicknessMm ? { materialThicknessMm: queryMaterial.thicknessMm } : {}) } : {}),
     field: header === '型號' ? 'model' as const : 'description' as const,
-    keyword: deferredKeyword,
-  }), [table.messageId, table.title, table.outputId, table.revision, row.rowId, header, deferredKeyword, processing, queryMaterial]);
+    keyword: debouncedKeyword,
+  }), [table.messageId, table.title, table.outputId, table.revision, table.catalogCustomer, row.rowId, header, debouncedKeyword, processing, queryMaterial]);
+  const cancelCatalog = useCallback(() => {
+    void queryClient.cancelQueries(
+      DynamicQueryKeys.steelReviewCatalog(table.conversationId, query),
+      { exact: true },
+    );
+  }, [queryClient, table.conversationId, query]);
   const catalog = useGetSteelReviewCatalogQuery(
-    table.conversationId, query, canEdit && open &&
-      keyword === deferredKeyword && currentScope.current === scope,
+    table.conversationId,
+    query,
+    canEdit &&
+      open &&
+      keyword.trim() !== '' &&
+      search === keyword &&
+      keyword === debouncedKeyword &&
+      currentScope.current === scope,
     () => setActiveScope(scope),
   );
-  const stable = activeScope === scope && keyword === deferredKeyword && currentScope.current === scope;
+  const stable =
+    (activeScope === scope || keyword.trim() === '') &&
+    keyword === debouncedKeyword &&
+    currentScope.current === scope;
   const { data: catalogData, remove: removeCatalog } = catalog;
   const pages = catalogData?.pages;
   const options = useMemo(() => stable && !catalog.isError
@@ -81,23 +110,31 @@ export default function SteelReviewSelector({
 
   useEffect(() => {
     if (currentScope.current === scope && canEdit) return;
+    cancelCatalog();
     currentScope.current = scope;
     appliedIntent.current = intent.current;
+    setSearch('');
     setKeyword('');
     setOpen(false);
-  }, [canEdit, scope]);
+  }, [canEdit, scope, cancelCatalog]);
 
   useEffect(() => {
-    if (activeScope === scope || !catalogData) return;
+    const activeScopeChanged = previousActiveScope.current !== activeScope;
+    previousActiveScope.current = activeScope;
+    if (!activeScopeChanged || activeScope === scope || intent.current === 0) return;
+    cancelCatalog();
     appliedIntent.current = intent.current;
+    setSearch('');
     setKeyword('');
     setOpen(false);
-    removeCatalog();
-  }, [activeScope, scope, open, keyword, catalogData, removeCatalog]);
+    if (catalogData) removeCatalog();
+  }, [activeScope, scope, open, keyword, catalogData, removeCatalog, cancelCatalog]);
+
+  useEffect(() => () => cancelCatalog(), [cancelCatalog]);
 
   useEffect(() => {
     const first = pages?.[0];
-    if (!open || !canEdit || !stable || !keyword.trim() || intent.current === 0 ||
+    if (!open || !canEdit || !stable || search !== keyword || keyword !== debouncedKeyword || !keyword.trim() || intent.current === 0 ||
       intent.current === appliedIntent.current || catalog.isFetching || catalog.isError ||
       !first?.complete || first.hasMore || first.nextCursor !== null ||
       pages?.length !== 1 || options.length !== 1 || first.options.length !== 1 ||
@@ -105,7 +142,7 @@ export default function SteelReviewSelector({
     appliedIntent.current = intent.current;
     onSelect(row, options[0], first.customer);
     setOpen(false);
-  }, [open, canEdit, stable, keyword, pages, catalog.isFetching, catalog.isError, row, onSelect, options, processing, materialScope, queryMaterial]);
+  }, [open, canEdit, stable, search, keyword, debouncedKeyword, pages, catalog.isFetching, catalog.isError, row, onSelect, options, processing, materialScope, queryMaterial]);
 
   const select = (id: string, close = true) => {
     if (!canEdit || !stable || catalog.isFetching || !customer) return;
@@ -122,7 +159,11 @@ export default function SteelReviewSelector({
   } else if (catalog.isError) {
     status = <div role="alert">
       <span>{localize('com_ui_steel_review_catalog_error')}</span>
-      <Button type="button" variant="outline" disabled={!canEdit} onClick={() => catalog.refetch()}>
+      <Button type="button" variant="outline" disabled={!canEdit || catalog.isFetching}
+        onClick={() => {
+          searchInputRef.current?.focus();
+          void catalog.refetch();
+        }}>
         {localize('com_ui_retry')}
       </Button>
     </div>;
@@ -135,6 +176,8 @@ export default function SteelReviewSelector({
     displayValue={value}
     items={options.map((candidate) => ({ value: candidate.id, label: candidate.label }))}
     setValue={(id) => select(id)}
+    onReselect={(id) => select(id)}
+    searchInputRef={searchInputRef}
     onNavigate={(id) => select(id, false)}
     resetSearchOnHide={false}
     ariaLabel={`${header} ${row.rowId}`}
@@ -143,12 +186,16 @@ export default function SteelReviewSelector({
     isCollapsed={false}
     variant="field"
     portal={false}
+    popoverMaxHeight={360}
     showCarat={false}
     disabled={!canEdit}
     filterItems={false}
-    searchValue={keyword}
+    searchValue={search}
     onSearchChange={(next) => {
-      if (!canEdit || next === keyword) return;
+      if (!canEdit || next === search) return;
+      cancelCatalog();
+      setSearch(next);
+      if (!next.trim() || next === keyword || next === value) return;
       intent.current += 1;
       onIntentChange?.();
       setQueryMaterial(currentMaterial);
@@ -156,6 +203,7 @@ export default function SteelReviewSelector({
     }}
     open={open}
     onOpenChange={(next) => {
+      if (!next) cancelCatalog();
       if (next && processing && !catalogData && intent.current === 0) setQueryMaterial(currentMaterial);
       setOpen(next && canEdit);
     }}
@@ -163,7 +211,10 @@ export default function SteelReviewSelector({
       {status}
       {catalog.hasNextPage && <Button
         type="button" variant="outline" disabled={!canEdit || catalog.isFetching}
-        onClick={() => catalog.fetchNextPage()}
+        onClick={() => {
+          searchInputRef.current?.focus();
+          void catalog.fetchNextPage();
+        }}
       >{localize('com_ui_load_more')}</Button>}
     </div>}
   />;

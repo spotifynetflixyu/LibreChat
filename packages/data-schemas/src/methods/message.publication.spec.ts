@@ -8,6 +8,7 @@ import {
   createSteelQuotationStateModel,
   createSteelReviewOutputModel,
 } from '..';
+import type { SteelReviewMetadata } from 'librechat-data-provider';
 import type { SteelQuotationPublicationProof } from '~/types';
 
 let mongoServer: MongoMemoryReplSet;
@@ -42,12 +43,24 @@ describe('guarded Steel quotation publication', () => {
     const finalSha256 = sha256(finalMarkdown);
     const preparationId = randomUUID();
     const customerMarkdown = '## customer_data\n\n| 價格等級 |\n| --- |\n| B |';
+    const reviewMetadata: SteelReviewMetadata = {
+      version: 1, initialized: true,
+      lineage: { runId, outputId: `system_order:${runId}`, revision: runId, messageId,
+        ocrOutputId: 'ocr_result:original', ocrRevision: 'original', ocrHash: sha256('original') },
+      ocrContext: { title: 'ocr_result', outputId: 'ocr_result:original', revision: 'original',
+        headers: ['零件編號'], rows: [{ rowId: 'ocr-original-row', source: null,
+          values: { 零件編號: { baseline: 'P1', effective: 'P1' } } }] },
+      rows: [{ rowId: 'system-original-row', source: null,
+        values: { 品名: { baseline: 'A', effective: 'A' }, 總數: { baseline: '2', effective: '2' }, 單價: { baseline: '10', effective: '10' } } }],
+    };
     const proof: SteelQuotationPublicationProof = {
       scope: { userId, conversationId },
       runId,
       runTargetMessageId: messageId,
       targetMessageId: messageId,
       finalSha256,
+      reviewBaseline: { kind: 'system_order', title: 'system_order', outputId: `system_order:${runId}`,
+        revision: runId, baselineMarkdown: order, headers: ['品名', '總數', '單價'], rows: reviewMetadata.rows, sourceMappings: [] },
       currentOrderSha256,
       currentSystemOrderSha256,
       saveContext: { isTemporary: true, expiredAt: new Date('2026-10-05T00:00:00.000Z') },
@@ -81,7 +94,7 @@ describe('guarded Steel quotation publication', () => {
         responseId: randomUUID(),
         selectionProvenance: { method: 'default_tier' },
       },
-      currentSystemOrder: { runId, sha256: currentSystemOrderSha256, markdown: order, messageId, updatedAt: new Date() },
+      currentSystemOrder: { runId, sha256: currentSystemOrderSha256, markdown: order, messageId, reviewMetadata, updatedAt: new Date() },
       tickets: [],
       pendingMessages: [],
       activeRun: {
@@ -117,6 +130,12 @@ describe('guarded Steel quotation publication', () => {
     expect(await Artifact.exists({ userId, conversationId, runId, operationId: 'snapshot' })).toBeNull();
 
     expect(result.ok).toBe(true);
+    const Output = createSteelReviewOutputModel(mongoose);
+    expect((await Output.findOne({ userId, conversationId, outputId: `system_order:${runId}` }).lean())?.reviewMetadata)
+      .toEqual(reviewMetadata);
+    await State.updateOne({ userId, conversationId }, { $set: { 'currentSystemOrder.reviewMetadata.ocrContext.rows.0.values.零件編號.effective': 'changed-later' } });
+    expect((await Output.findOne({ userId, conversationId, outputId: `system_order:${runId}` }).lean())?.reviewMetadata?.ocrContext?.rows[0].values.零件編號.effective)
+      .toBe('P1');
     expect((await Models.Message.findOne({ messageId }).lean())).toEqual(expect.objectContaining({
       text: order,
       user: userId,

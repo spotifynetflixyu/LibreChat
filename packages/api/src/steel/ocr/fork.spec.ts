@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import {
   createModels,
   createSteelConversationOcrStateModel,
@@ -11,7 +11,7 @@ import { createSteelOcrStateService } from './state';
 import { createSteelOcrForkService } from './fork';
 import { finalizeOcrResponse } from './result';
 
-let server: MongoMemoryServer;
+let server: MongoMemoryReplSet;
 const userId = new mongoose.Types.ObjectId().toString();
 const otherUserId = new mongoose.Types.ObjectId().toString();
 const models = createModels(mongoose);
@@ -39,7 +39,7 @@ const memory = (requestId = 'a1', payload: Record<string, unknown> = {}) => ({
 });
 
 beforeAll(async () => {
-  server = await MongoMemoryServer.create();
+  server = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } });
   await mongoose.connect(server.getUri());
   await Promise.all(Object.values(models).map((model) => model.init()));
 });
@@ -48,7 +48,7 @@ afterAll(async () => {
   await server?.stop();
 });
 beforeEach(async () => {
-  await Promise.all([models.Conversation.deleteMany({}), models.File.deleteMany({}), State.deleteMany({}), Memory.deleteMany({}), Runs.deleteMany({}), models.SteelQuotationState.deleteMany({})]);
+  await Promise.all([models.Conversation.deleteMany({}), models.File.deleteMany({}), State.deleteMany({}), Memory.deleteMany({}), Runs.deleteMany({}), models.SteelQuotationState.deleteMany({}), models.Message.deleteMany({}), models.SteelQuotationArtifact.deleteMany({}), models.SteelReviewOutput.deleteMany({})]);
   await models.Conversation.create({ conversationId: 'source', user: userId, endpoint: 'agents' });
   await models.File.create({ user: userId, file_id: 'file-1', bytes: 10, filename: 'AH.pdf', filepath: '/AH.pdf', type: 'application/pdf' });
   await State.create({
@@ -80,6 +80,14 @@ it('reconstructs the selected order, copies independent evidence, and supplies i
   expect(String(evidence[0]._id)).not.toBe(String(sourceMemory._id));
   expect(evidence[0].requestId).toBe('fork-a1');
   expect(evidence[0].payload).toEqual(sourceMemory.payload);
+  await models.Conversation.create({ conversationId: 'fork', user: userId, endpoint: 'agents' });
+  await models.Message.create(messages.map((message) => ({
+    ...message,
+    conversationId: 'fork',
+    user: userId,
+    messageId: `fork-${message.messageId}`,
+    parentMessageId: message.parentMessageId ? `fork-${message.parentMessageId}` : null,
+  })));
   const turn = await prepareQuotationTurn({
     scope: { conversationId: 'fork', userId }, messageId: 'next-user', responseId: 'next-response', text: '數量改為2',
   });
@@ -93,7 +101,9 @@ it('reconstructs the selected order, copies independent evidence, and supplies i
     messageId: 'next-response', generationId: 'next-generation', attemptNumber: 1,
     expectedGenerationId: saved?.currentOcrResultGenerationId,
   });
-  expect((await State.findOne({ conversationId: 'fork' }))?.currentOcrResultMarkdown).toBe(full(2));
+  expect((await State.findOne({ conversationId: 'fork' }))?.currentOcrResultMarkdown).toBe(
+    '## ocr_result\n\n| 類別 | 零件編號 | 數量 | 備註 | 來源 |\n| --- | --- | --- | --- | --- |\n| H型鋼 | A-6M06 | 2 | 每件14孔；總28孔 | F1 |',
+  );
   expect((await State.findOne({ conversationId: 'source' }))?.currentOcrResultMarkdown).toBe(full(99));
   await Memory.updateOne({ _id: evidence[0]._id }, { $set: { 'payload.content': 'fork changed' } });
   expect((await Memory.findById(sourceMemory._id))?.payload).toEqual(sourceMemory.payload);

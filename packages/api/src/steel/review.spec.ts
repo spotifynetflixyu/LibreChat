@@ -551,6 +551,41 @@ describe('Steel review read service', () => {
     expect(result.table).not.toHaveProperty('tableId');
   });
 
+  it('projects valid catalog customer evidence on review tables and omits invalid evidence', async () => {
+    const input = {
+      userId: scope.userId,
+      conversationId: scope.conversationId,
+      kind: 'system_order' as const,
+      messageId: scope.messageId,
+      title: systemOrderTitle,
+    };
+    const customerSnapshot = {
+      snapshotId: 'customer-snapshot-1',
+      customerIdentity: 'explicit-default:B',
+      customerMarkdown: '## customer_data\n\n| 客戶 | 計價基準 |\n| --- | --- |\n| 預設 | B |',
+    };
+    const reader = { readSteelReview: jest.fn() };
+    const service = createSteelReviewService({ reader });
+
+    reader.readSteelReview.mockResolvedValueOnce(makeSystemOrderRecord({ customerSnapshot }));
+    const result = await service.read(input);
+    expect(result.table.catalogCustomer).toEqual({
+      snapshotId: customerSnapshot.snapshotId,
+      revision: expect.stringMatching(/^[a-f0-9]{64}$/u),
+      tier: 'B',
+    });
+
+    reader.readSteelReview.mockResolvedValueOnce(makeSystemOrderRecord({
+      customerSnapshot: {
+        ...customerSnapshot,
+        customerIdentity: 'invalid-tier',
+        customerMarkdown: '## customer_data\n\n| 客戶 | 計價基準 |\n| --- | --- |\n| 預設 | G |',
+      },
+    }));
+    const invalid = await service.read(input);
+    expect(invalid.table).not.toHaveProperty('catalogCustomer');
+  });
+
   it('uses the exact title and rejects an unowned same-heading table', async () => {
     const reader = {
       readSteelReview: jest.fn().mockResolvedValue(makeRecord({
@@ -1646,6 +1681,11 @@ describe('Steel review read service', () => {
       aiBaselineMarkdown: initialMarkdown,
       markdown: currentMarkdown,
       messageText: currentMarkdown,
+      customerSnapshot: {
+        snapshotId: 'customer-snapshot-recovery',
+        customerIdentity: 'explicit-default:B',
+        customerMarkdown: '## customer_data\n\n| 客戶 | 計價基準 |\n| --- | --- |\n| 預設 | B |',
+      },
       headers: ['類別', '品名規格', '總數', '單價'],
       rows: [{
         rowId,
@@ -1685,6 +1725,12 @@ describe('Steel review read service', () => {
     })).rejects.toMatchObject({
       code: 'REVIEW_CONFLICT',
       recovery: {
+        table: {
+          catalogCustomer: expect.objectContaining({
+            snapshotId: 'customer-snapshot-recovery',
+            tier: 'B',
+          }),
+        },
         conflicts: [{ kind: 'binding', rowId, expected: null, current: null, requested: 'material-2' }],
       },
     });

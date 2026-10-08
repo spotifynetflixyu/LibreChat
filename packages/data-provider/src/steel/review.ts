@@ -2,7 +2,7 @@ import { z } from 'zod';
 import type { SteelProcessingMeasurement } from './calculation';
 import type { SteelCatalogSelectionEvidence } from './catalog';
 import type { SteelCatalogCandidate } from './catalog';
-import { steelMaterialCandidateHeaders, steelProcessingCandidateHeaders, applyMaterialCandidate, applyProcessingCandidate, steelCatalogSelectionEvidenceSchema, steelCatalogSelectionSchema } from './catalog';
+import { steelMaterialCandidateHeaders, steelProcessingCandidateHeaders, applyMaterialCandidate, applyProcessingCandidate, steelCatalogCustomerEvidenceSchema, steelCatalogSelectionEvidenceSchema, steelCatalogSelectionSchema } from './catalog';
 import { calculateSteelProcessingMeasurement, calculateSteelSystemOrderRow, steelProcessingMeasurementSchema } from './calculation';
 import { isSteelProcessingCatalogCandidateApplicable, steelProcessingMaterialForRow } from './processing';
 import { steelCalculationRowMetadataSchema } from './calculation';
@@ -551,6 +551,7 @@ export const steelReviewTableSchema = z.object({
   rows: z.array(steelReviewRowSchema),
   sourceMappings: z.array(steelReviewSourceMappingSchema).optional(),
   ocrContext: steelReviewOcrContextSchema.optional(),
+  catalogCustomer: steelCatalogCustomerEvidenceSchema.optional(),
 });
 
 const steelReviewConflictSourceValueSchema = z.object({

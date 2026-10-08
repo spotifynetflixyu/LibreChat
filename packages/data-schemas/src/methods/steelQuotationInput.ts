@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto';
+import { createSteelReviewOcrContext, parseSteelReviewMarkdownTables } from 'librechat-data-provider';
+import type { SteelReviewOcrContext } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import type {
+  IMessage,
   ISteelQuotationArtifact,
   ISteelQuotationState,
   ISteelReviewOutput,
@@ -17,15 +20,17 @@ import type {
   SteelQuotationSourceSnapshot,
 } from '~/types';
 import {
+  createSteelConversationOcrStateModel,
   createSteelQuotationArtifactModel,
   createSteelQuotationStateModel,
   createSteelReviewOutputModel,
 } from '~/models/steel';
+import { createSteelReviewSourceAuthorization } from './steelSourceAuthorization';
 import { createSteelQuotationPublicationProof } from './published';
 import { activeExpirationFilter } from '~/utils/retention';
+import { readScopedConversationOcrEvidence } from './ocr';
 import { createConversationModel } from '~/models/convo';
 import { createMessageModel } from '~/models/message';
-import { createFileModel } from '~/models/file';
 
 type Mongoose = typeof import('mongoose');
 
@@ -107,6 +112,7 @@ interface Candidate {
   reference: SteelMarkdownReference;
   markdown: string;
   sourceSnapshot: SteelQuotationSourceSnapshot;
+  ocrContext?: SteelReviewOcrContext;
 }
 
 interface ResolvedInput {
@@ -209,35 +215,31 @@ function sourceSnapshot(
   };
 }
 
+type AuthorizeFiles = ReturnType<typeof createSteelReviewSourceAuthorization>;
+
 async function authorizeSourceMappings(
-  File: ReturnType<typeof createFileModel>,
-  Message: ReturnType<typeof createMessageModel>,
+  authorizeFiles: AuthorizeFiles,
   scope: SteelQuotationScope,
+  messageId: string,
   mappings: readonly SteelQuotationSourceMapping[],
-  session: ClientSession | null,
+  session?: ClientSession,
 ): Promise<SteelQuotationSourceMapping[]> {
   if (mappings.length === 0) return [];
-  const messageIds = await Message.find({
-    ...messageFilter(scope),
-    $and: [tenantFilter(scope), activeExpirationFilter()],
-  })
-    .session(session).select({ messageId: 1 }).lean<Array<{ messageId: string }>>();
-  const files = await File.find({
-    user: scope.userId,
-    file_id: { $in: mappings.map((mapping) => mapping.fileId) },
-    $and: [
-      tenantFilter(scope),
-      activeExpirationFilter(),
-      {
-        $or: [
-          { conversationId: scope.conversationId },
-          { conversationId: null, messageId: { $in: messageIds.map((message) => message.messageId) } },
-        ],
-      },
-    ],
-  }).session(session).select({ file_id: 1, filename: 1 }).lean<Array<{ file_id: string; filename: string }>>();
-  const byFileId = new Map(files.map((file) => [file.file_id, file]));
-  return mappings.filter((mapping) => byFileId.get(mapping.fileId)?.filename === mapping.sourceFilename);
+  const files = await authorizeFiles({ ...scope, messageId, kind: 'ocr_result' }, mappings.map((mapping) => mapping.fileId), session);
+  return mappings.filter((mapping) => files.get(mapping.fileId)?.filename === mapping.sourceFilename);
+}
+
+function authorizedContext(candidate: Candidate): SteelReviewOcrContext | undefined {
+  if (!candidate.ocrContext) return undefined;
+  const mappings = candidate.sourceSnapshot.mappings;
+  return createSteelReviewOcrContext({
+    ...candidate.ocrContext,
+    rows: candidate.ocrContext.rows.map((row) => ({
+      ...row,
+      source: row.source && mappings.some((mapping) => mapping.fileId === row.source?.fileId &&
+        mapping.sourceFilename === row.source.filename) ? row.source : null,
+    })),
+  });
 }
 
 function parsePublicationSnapshot(
@@ -366,6 +368,12 @@ function parseReviewSnapshot(
     reference: normalizedReference,
     markdown: snapshot.effectiveMarkdown,
     sourceSnapshot: sourceSnapshot(normalizedReference, mappings),
+    ocrContext: createSteelReviewOcrContext({
+      title: reference.title, outputId: reference.outputId, revision: reference.revision,
+      headers: snapshot.headers, rows: snapshot.rows.filter((row) => !row.deleted).map((row) => ({
+        ...row, source: row.source ? { ...row.source, pageNumber: row.source.pageNumber ?? null } : null,
+      })),
+    }),
   };
 }
 
@@ -441,7 +449,7 @@ async function resolveInput(
   Artifact: ReturnType<typeof createSteelQuotationArtifactModel>,
   Output: ReturnType<typeof createSteelReviewOutputModel>,
   Message: ReturnType<typeof createMessageModel>,
-  File: ReturnType<typeof createFileModel>,
+  authorizeFiles: AuthorizeFiles,
   Conversation: ReturnType<typeof createConversationModel>,
   scope: SteelQuotationScope,
   session?: ClientSession,
@@ -473,14 +481,13 @@ async function resolveInput(
     })
       .session(querySession).lean<ISteelQuotationArtifact[]>()
     : [];
-  const outputs = human
+  const outputs = ai || human
     ? await Output.find({
       userId: scope.userId,
       conversationId: scope.conversationId,
       kind: 'ocr_result',
-      outputId: human.outputId,
-      messageId: human.messageId,
-      title: human.title,
+      outputId: { $in: [ai?.outputId, human?.outputId].filter(Boolean) },
+      messageId: { $in: [ai?.messageId, human?.messageId].filter(Boolean) },
       $and: [tenantFilter(scope), activeExpirationFilter()],
     })
       .session(querySession).lean<ISteelReviewOutput[]>()
@@ -497,13 +504,26 @@ async function resolveInput(
       artifact.runId === `markdown:${ai.generationId}` && artifact.operationId === (ai.operationId ?? 'ai:ocr_result')), ai)
     : undefined;
   const aiMessage = messages.find((message: { messageId: string; text?: string }) => message.messageId === ai?.messageId);
-  const trustedAi = aiCandidate && aiMessage ? aiCandidate : undefined;
+  const aiOutput = ai && outputs.find((output) => output.outputId === ai.outputId &&
+    output.messageId === ai.messageId && output.title === ai.title && output.revision === ai.revision &&
+    output.effectiveMarkdown === aiCandidate?.markdown);
+  const trustedAi = aiCandidate && aiMessage ? {
+    ...aiCandidate,
+    ...(aiOutput ? { ocrContext: createSteelReviewOcrContext({
+      title: ai.title, outputId: ai.outputId, revision: ai.revision, headers: aiOutput.headers,
+      rows: aiOutput.rows.filter((row) => !row.deleted).map((row) => ({
+        ...row, source: row.source ? { ...row.source, pageNumber: row.source.pageNumber ?? null } : null,
+      })),
+    }) } : {}),
+  } : undefined;
   const historicalAi = human && !ai ? parseHistoricalAiSnapshot(artifacts, human) : undefined;
   const humanLineage = trustedAi?.reference.lineageId ?? historicalAi?.reference.lineageId;
   const humanMessage = messages.find((message) => message.messageId === human?.messageId);
-  const humanCandidate = human && humanMessage && humanLineage === human.lineageId && outputs.length === 1
+  const humanOutputs = human ? outputs.filter((output) => output.outputId === human.outputId &&
+    output.messageId === human.messageId && output.title === human.title) : [];
+  const humanCandidate = human && humanMessage && humanLineage === human.lineageId && humanOutputs.length === 1
     ? parseReviewSnapshot(
-      outputs[0],
+      humanOutputs[0],
       human,
       ai && human.generationId === ai.generationId
         ? humanMessage.text
@@ -515,7 +535,7 @@ async function resolveInput(
         ...trustedAi,
         sourceSnapshot: {
           ...trustedAi.sourceSnapshot,
-          mappings: await authorizeSourceMappings(File, Message, scope, trustedAi.sourceSnapshot.mappings, querySession),
+          mappings: await authorizeSourceMappings(authorizeFiles, scope, trustedAi.reference.messageId, trustedAi.sourceSnapshot.mappings, session),
         },
       }
     : undefined;
@@ -524,7 +544,7 @@ async function resolveInput(
         ...humanCandidate,
         sourceSnapshot: {
           ...humanCandidate.sourceSnapshot,
-          mappings: await authorizeSourceMappings(File, Message, scope, humanCandidate.sourceSnapshot.mappings, querySession),
+          mappings: await authorizeSourceMappings(authorizeFiles, scope, humanCandidate.reference.messageId, humanCandidate.sourceSnapshot.mappings, session),
         },
       }
     : undefined;
@@ -546,6 +566,7 @@ async function resolveInput(
       selection,
       markdown: selected.markdown,
       sourceSnapshot: selected.sourceSnapshot,
+      ...(selected.ocrContext ? { ocrContext: authorizedContext(selected) } : {}),
     },
   };
 }
@@ -555,7 +576,8 @@ export function createSteelQuotationInputMethods(mongoose: Mongoose): SteelQuota
   const Artifact = createSteelQuotationArtifactModel(mongoose);
   const Output = createSteelReviewOutputModel(mongoose);
   const Message = createMessageModel(mongoose);
-  const File = createFileModel(mongoose);
+  const authorizeFiles = createSteelReviewSourceAuthorization(mongoose);
+  const OcrState = createSteelConversationOcrStateModel(mongoose);
   const Conversation = createConversationModel(mongoose);
 
   const isRunPublished = async (
@@ -581,9 +603,91 @@ export function createSteelQuotationInputMethods(mongoose: Mongoose): SteelQuota
     scope: SteelQuotationScope,
   ): Promise<SteelQuotationInputReadResult | InputFailure> {
     if (!isScope(scope)) return { ok: false, code: 'invalid_snapshot' };
-    const resolved = await resolveInput(State, Artifact, Output, Message, File, Conversation, scope);
+    const resolved = await resolveInput(State, Artifact, Output, Message, authorizeFiles, Conversation, scope);
     if (resolved?.invalid) return { ok: false, code: 'invalid_snapshot' };
     return resolved?.input ? { ok: true, input: resolved.input } : { ok: true };
+  }
+
+  async function enrollLegacyOcr(
+    scope: SteelQuotationScope,
+    state: ISteelQuotationState,
+    session: ClientSession,
+  ): Promise<ISteelQuotationState | false> {
+    const evidence = await readScopedConversationOcrEvidence(scope, { Conversation, State: OcrState, Message }, session);
+    if (!evidence.ok) return false;
+    const legacy = evidence.state;
+    if (!legacy) return state;
+    const generationId = legacy.currentOcrResultGenerationId;
+    const messageId = legacy.currentOcrResultMessageId;
+    const markdown = legacy.currentOcrResultMarkdown;
+    if (!generationId && !messageId && !markdown) return state;
+    if (!generationId || !messageId || !markdown) return state;
+    const messages = await Message.find({ ...messageFilter(scope), messageId,
+      $and: [tenantFilter(scope), activeExpirationFilter()] }).session(session).lean<IMessage[]>();
+    if (messages.length !== 1 || messages[0].isCreatedByUser || messages[0].unfinished) return false;
+    const message = messages[0];
+    const outputId = `ocr_result:${generationId}`;
+    const outputs = await Output.find({ ...scopeFilter(scope), kind: 'ocr_result', outputId, messageId,
+      $and: [tenantFilter(scope), activeExpirationFilter()] }).session(session).lean<ISteelReviewOutput[]>();
+    if (outputs.length > 1) return false;
+    const output = outputs[0];
+    const baseline = output?.aiBaselineMarkdown ?? output?.aiRawMarkdown ?? markdown;
+    const tables = parseSteelReviewMarkdownTables(baseline).filter((table) =>
+      table.title?.split(/[｜|:：]/u)[0]?.trim() === 'ocr_result');
+    const rendered = parseSteelReviewMarkdownTables(message.text ?? '');
+    const renderedTables = rendered.filter((table) =>
+      table.title?.split(/[｜|:：]/u)[0]?.trim() === 'ocr_result');
+    const renderedUpdates = rendered.filter((table) =>
+      table.title?.split(/[｜|:：]/u)[0]?.trim() === 'ocr_result_updates');
+    // Forks retain the original delta message while storing its reconstructed full OCR.
+    const trustedDelta = renderedTables.length === 0 && renderedUpdates.length === 1 &&
+      legacy.currentOcrResultProvenance?.generationId === generationId &&
+      legacy.currentOcrResultProvenance.messageId === messageId;
+    if (tables.length !== 1 || !tables[0].title || (output && output.title !== tables[0].title) ||
+      (!trustedDelta && (renderedTables.length !== 1 || tables[0].title !== renderedTables[0].title))) return false;
+    const savedAt = output?.aiUpdatedAt ?? legacy.currentOcrResultProvenance?.updatedAt ?? legacy.updatedAt;
+    if (!savedAt) return false;
+    const ai: SteelMarkdownReference = {
+      kind: 'ocr_result', source: 'ai', snapshotId: `markdown:${generationId}:ai:ocr_result`,
+      generationId, outputId, messageId, title: tables[0].title, revision: generationId,
+      sha256: hashText(baseline), lineageId: `legacy:${generationId}`, version: 1, savedAt,
+    };
+    const bound = message.metadata?.steelMarkdownOwners;
+    if (bound && typeof bound === 'object' && 'ocr_result' in bound &&
+      !sameReference(bound.ocr_result as SteelMarkdownReference, ai)) return false;
+    let effective = ai;
+    if (output?.humanSavedAt) {
+      const receiptIndex = output.receipts.findIndex((receipt) => receipt.revision === output.revision &&
+        receipt.savedAt.getTime() === output.humanSavedAt?.getTime());
+      const receipt = output.receipts[receiptIndex];
+      if (!receipt || !output.effectiveMarkdown) return false;
+      const human: SteelMarkdownReference = {
+        ...ai, source: 'human', snapshotId: `${outputId}:${receipt.operationId}`,
+        operationId: receipt.operationId, revision: receipt.revision, sha256: hashText(output.effectiveMarkdown),
+        version: receiptIndex + 2, savedAt: receipt.savedAt,
+      };
+      if (!parseReviewSnapshot(output, human, message.text)) return false;
+      effective = human;
+    }
+    const mappings = output?.sourceMappings ?? legacy.sourceMappings;
+    if (!validMappings(mappings)) return false;
+    const payload = JSON.stringify({ rawMarkdown: baseline, baselineMarkdown: baseline });
+    const artifact = await Artifact.findOne({ ...scopeFilter(scope), runId: `markdown:${generationId}`,
+      operationId: 'ai:ocr_result' }).session(session).lean<ISteelQuotationArtifact>();
+    if (artifact && !parsePublicationSnapshot(artifact, ai)) return false;
+    if (!artifact) await Artifact.create([{ ...scope, runId: `markdown:${generationId}`,
+      operationId: 'ai:ocr_result', kind: 'main', payload, sha256: hashText(payload),
+      markdownPublication: { reference: ai, rawMarkdown: baseline, baselineMarkdown: baseline, sourceMappings: mappings },
+    }], { session });
+    const updated = await State.findOneAndUpdate(scopeFilter(scope), { $set: {
+      'markdownPublication.current.ocr_result': { ai, effective },
+      ...(effective.source === 'human' ? { 'markdownPublication.lastHumanOcr': effective } : {}),
+    } }, { new: true, session }).lean<ISteelQuotationState>();
+    if (!updated) throw new Error('Legacy OCR owner changed during quotation preparation');
+    await Message.updateOne({ ...messageFilter(scope), messageId }, { $set: {
+      'metadata.steelMarkdownOwners.ocr_result': ai,
+    } }, { session });
+    return updated;
   }
 
   async function prepareSteelQuotationOcrInput(input: {
@@ -596,17 +700,11 @@ export function createSteelQuotationInputMethods(mongoose: Mongoose): SteelQuota
     if (input.expectedOrderHash === null ? currentOrderHash !== undefined : currentOrderHash !== input.expectedOrderHash) {
       return { ok: false, code: 'concurrent_change' };
     }
-    const hasPublishedReference = legacy?.markdownPublication?.current?.ocr_result?.ai !== undefined ||
-      legacy?.markdownPublication?.lastHumanOcr !== undefined;
-    if (!hasPublishedReference && legacy) {
-      if (await blocksFreshRun(input.scope, legacy.activeRun)) return { ok: false, code: 'concurrent_change' };
-      return { ok: true, state: legacy };
-    }
     const session = await mongoose.startSession();
     let result: SteelQuotationInputPrepareResult | InputFailure = { ok: false, code: 'concurrent_change' };
     try {
       await session.withTransaction(async () => {
-        const current = await State.findOne(scopeFilter(input.scope)).session(session).lean<ISteelQuotationState>();
+        let current = await State.findOne(scopeFilter(input.scope)).session(session).lean<ISteelQuotationState>();
         if (input.expectedOrderHash === null
           ? current?.currentOrder?.sha256 !== undefined
           : current?.currentOrder?.sha256 !== input.expectedOrderHash) {
@@ -617,7 +715,16 @@ export function createSteelQuotationInputMethods(mongoose: Mongoose): SteelQuota
           result = { ok: false, code: 'concurrent_change' };
           return;
         }
-        const resolved = await resolveInput(State, Artifact, Output, Message, File, Conversation, input.scope, session, current);
+        if (current && !current.markdownPublication?.current?.ocr_result?.ai &&
+          !current.markdownPublication?.lastHumanOcr) {
+          const enrolled = await enrollLegacyOcr(input.scope, current, session);
+          if (enrolled === false) {
+            result = { ok: false, code: 'invalid_snapshot' };
+            return;
+          }
+          current = enrolled;
+        }
+        const resolved = await resolveInput(State, Artifact, Output, Message, authorizeFiles, Conversation, input.scope, session, current);
         if (!resolved || resolved.invalid) {
           result = { ok: false, code: 'invalid_snapshot' };
           return;
@@ -686,7 +793,7 @@ export function createSteelQuotationInputMethods(mongoose: Mongoose): SteelQuota
           return;
         }
         const resolved = input.selection
-          ? await resolveInput(State, Artifact, Output, Message, File, Conversation, input.scope, session, current)
+          ? await resolveInput(State, Artifact, Output, Message, authorizeFiles, Conversation, input.scope, session, current)
           : undefined;
         const selected = resolved?.input;
         const order = selected ? nextOrder(selected) : current.currentOrder;
@@ -732,6 +839,7 @@ export function createSteelQuotationInputMethods(mongoose: Mongoose): SteelQuota
           ...((selected?.sourceSnapshot ?? input.sourceSnapshot)
             ? { sourceSnapshot: selected?.sourceSnapshot ?? input.sourceSnapshot } : {}),
           ...(selected ? { ocrSelection: selected.selection } : {}),
+          ...(selected?.ocrContext ? { ocrContext: selected.ocrContext } : {}),
         };
         const payload = JSON.stringify(snapshotPayload);
         const snapshotHash = hashText(payload);
@@ -922,7 +1030,7 @@ export function createSteelQuotationInputMethods(mongoose: Mongoose): SteelQuota
           result = { ok: false, code: 'concurrent_change' };
           return;
         }
-        const resolved = await resolveInput(State, Artifact, Output, Message, File, Conversation, input.scope, session, current);
+        const resolved = await resolveInput(State, Artifact, Output, Message, authorizeFiles, Conversation, input.scope, session, current);
         if (!resolved?.input || resolved.invalid) {
           result = { ok: false, code: 'invalid_snapshot' };
           return;

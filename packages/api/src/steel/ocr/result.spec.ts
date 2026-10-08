@@ -1,3 +1,4 @@
+import type { OcrTable, SourceMappingEntry } from './result';
 import {
   buildOcrUpdateSummary,
   finalizeOcrResponse,
@@ -5,9 +6,8 @@ import {
   parseAssistantMarkdown,
   parseOcrResultTable,
   reconcileOcrResults,
+  reconstructLegacyOcrResponse,
   validateSourceMapping,
-  type OcrTable,
-  type SourceMappingEntry,
 } from './result';
 
 function table(headers: readonly string[], rows: readonly (readonly string[])[]): string {
@@ -218,10 +218,10 @@ describe('finalizeOcrResponse', () => {
     if (result.ok) {
       expect(result.summary).toBe('');
       expect(result.finalResponse).not.toContain('ocr_update_summary');
-      expect(result.finalResponse).toContain('| F1 | P1 | 10 |');
-      expect(result.finalResponse).not.toContain('| F1 | old | 9 |');
-      expect(result.ocrResultMarkdown).toContain('| F1 | P1 | 10 |');
-      expect(result.reconciliation.rows).toEqual([['F1', 'P1', '10']]);
+      expect(result.finalResponse).toContain('| P1 | 10 | F1 |');
+      expect(result.finalResponse).not.toContain('old');
+      expect(result.ocrResultMarkdown).toContain('| P1 | 10 | F1 |');
+      expect(result.reconciliation.rows).toEqual([['P1', '10', 'F1']]);
     }
   });
 
@@ -255,9 +255,77 @@ describe('finalizeOcrResponse', () => {
     });
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.finalResponse).toBe(response);
-      expect(result.ocrResultMarkdown).toBe(response);
+      const expected = `## ocr_result\n\n${table(['數量', '描述'], [['2', 'plate']])}`;
+      expect(result.finalResponse).toBe(expected);
+      expect(result.ocrResultMarkdown).toBe(expected);
     }
+  });
+  it('orders matching columns and cleans numeric values before forming the AI baseline', () => {
+    const title = 'ocr_result｜鋼材明細';
+    const headers =
+      'OCR來源 加工 數量 寬度 頁碼 品名規格 **厚度** 來源 零件編號 長度 類別 備註 其他'.split(' ');
+    const response = `## ${title}\n\n${table(headers, [
+      'OCR A / 鑽孔 / 1,234支 / 0.25 inch / 3 / 鋼板 / 6.35mm / F1 / P1 / 1.25m / 板 / 保留 / A\\|B'.split(
+        ' / ',
+      ),
+      'OCR B / 切割 / 2或3 / 600~650 / 4 / 鋼板 /  / F1 / P2 / 1,200mm / 板 /  / keep'.split(' / '),
+    ])}\n\n## manual_review\n\n${table(['數量', '問題'], [['2或3', '待確認']])}`;
+    const result = finalizeOcrResponse({
+      assistantResponse: response,
+      canonicalMapping: [],
+      agentKind: 'other',
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const parsed = parseOcrResultTable(result.ocrResultMarkdown);
+    expect(parsed).toEqual({
+      ok: true,
+      table: {
+        headers:
+          '類別 零件編號 品名規格 **厚度** 長度 寬度 數量 加工 備註 其他 來源 頁碼 OCR來源'.split(
+            ' ',
+          ),
+        rows: [
+          '板 / P1 / 鋼板 / 6 / 1250 / 6 / 1234 / 鑽孔 / 保留；原寬度 0.25 inch；原厚度 6.35mm；原長度 1.25m / A|B / F1 / 3 / OCR A'.split(
+            ' / ',
+          ),
+          '板 / P2 / 鋼板 /  / 1200 /  /  / 切割 / 原數量 2或3；原寬度 600~650 / keep / F1 / 4 / OCR B'.split(
+            ' / ',
+          ),
+        ],
+      },
+    });
+    expect(result.finalResponse).toContain(`## ${title}`);
+    expect(result.finalResponse).toContain('| 2或3 | 待確認 |');
+    expect(
+      finalizeOcrResponse({ assistantResponse: result.finalResponse, canonicalMapping: [] }),
+    ).toEqual(result);
+  });
+
+  it('preserves uncertain values in a note without inventing missing preferred columns', () => {
+    const result = finalizeOcrResponse({
+      assistantResponse: `## ocr_result\n\n${table(['描述', '數量'], [['鋼板', '4+1']])}`,
+      canonicalMapping: [],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(parseOcrResultTable(result.ocrResultMarkdown)).toEqual({
+      ok: true,
+      table: {
+        headers: ['數量', '描述', '備註'],
+        rows: [['', '鋼板', '原數量 4+1']],
+      },
+    });
+  });
+
+  it('keeps legacy reconstruction in its original column order and numeric format', () => {
+    const response = `## ocr_result\n\n${table(['來源', '零件編號', '數量', '厚度'], [['F1', 'P1', '2支', '6.35mm']])}`;
+    const result = reconstructLegacyOcrResponse({
+      assistantResponse: response,
+      canonicalMapping: [],
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.ocrResultMarkdown).toBe(response);
   });
   it.each([
     'ocr_result_updates',

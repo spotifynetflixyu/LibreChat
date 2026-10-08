@@ -88,20 +88,86 @@ function renderCatalog(
 
 afterEach(() => jest.restoreAllMocks());
 
+it.each(['型號', '品名規格'] as const)('allows confirming the current %s option selected again', async (header) => {
+  const selected = candidate('1', 'ABC');
+  const other = candidate('2', 'ABC-B');
+  const row = { ...table.rows[0], values: { ...table.rows[0].values, 型號: { baseline: 'ABC', effective: 'ABC' } } };
+  jest.spyOn(dataService, 'getSteelReviewCatalog').mockResolvedValue(page([selected, other]));
+  const { onSelect } = renderCatalog(row, table, jest.fn(), header);
+  fireEvent.click(screen.getByRole('combobox', { name: `${header} material` }));
+  fireEvent.change(await screen.findByPlaceholderText('Search catalog'), { target: { value: 'AB' } });
+  const option = await screen.findByRole('option', { name: selected.label });
+  expect(option).toHaveAttribute('aria-selected', 'true');
+  fireEvent.click(option);
+  expect(screen.getByRole('button', { name: 'Confirm' })).toBeEnabled();
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+  expect(onSelect).toHaveBeenCalledTimes(1);
+  expect(onSelect).toHaveBeenCalledWith(row, selected, customer);
+});
+
+it.each(['型號', '品名規格'] as const)('caches %s options until the catalog dialog closes', async (header) => {
+  const options = [candidate('1', 'ABC-A'), candidate('2', 'ABC-B')];
+  const api = jest.spyOn(dataService, 'getSteelReviewCatalog').mockResolvedValue(page(options));
+  const { queryClient, onSelect } = renderCatalog(table.rows[0], table, jest.fn(), header);
+  const selector = screen.getByRole('combobox', { name: `${header} material` });
+  fireEvent.click(selector);
+  fireEvent.change(await screen.findByPlaceholderText('Search catalog'), { target: { value: 'ABC' } });
+  await screen.findByRole('option', { name: options[0].label });
+  expect(api).toHaveBeenCalledTimes(1);
+  expect(api).toHaveBeenLastCalledWith('conversation', expect.objectContaining({
+    keyword: 'ABC',
+  }), expect.any(AbortSignal));
+  fireEvent.click(selector);
+  await waitFor(() => expect(screen.getByPlaceholderText('Search catalog')).not.toBeVisible());
+  fireEvent.click(selector);
+  await screen.findByRole('option', { name: options[0].label });
+  fireEvent.change(screen.getByPlaceholderText('Search catalog'), {
+    target: { value: table.rows[0].values[header]?.effective },
+  });
+  expect(screen.getByPlaceholderText('Search catalog')).toHaveValue(table.rows[0].values[header]?.effective);
+  expect(screen.getByRole('option', { name: options[1].label })).toBeVisible();
+  fireEvent.click(selector);
+  await waitFor(() => expect(screen.getByPlaceholderText('Search catalog')).not.toBeVisible());
+  fireEvent.click(selector);
+  expect(await screen.findByPlaceholderText('Search catalog')).toHaveValue(table.rows[0].values[header]?.effective);
+  await screen.findByRole('option', { name: options[1].label });
+  expect(api).toHaveBeenCalledTimes(1);
+  expect(queryClient.getQueryCache().getAll().filter((query) => query.state.data)).toHaveLength(1);
+  fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
+  await waitFor(() => expect(queryClient.getQueryCache().getAll()).toHaveLength(0));
+  fireEvent.click(screen.getByRole('button', { name: catalogTriggerLabel }));
+  fireEvent.click(screen.getByRole('combobox', { name: `${header} material` }));
+  expect(await screen.findByPlaceholderText('Search catalog')).toHaveValue('');
+  expect(api).toHaveBeenCalledTimes(1);
+  fireEvent.change(screen.getByPlaceholderText('Search catalog'), { target: { value: 'ABC' } });
+  await screen.findByRole('option', { name: options[0].label });
+  expect(api).toHaveBeenCalledTimes(2);
+  expect(onSelect).not.toHaveBeenCalled();
+});
+
 it.each([
   { header: '型號' as const, field: 'model' as const, keyword: 'ABC', triggerLabel: catalogTriggerLabel },
   { header: '品名規格' as const, field: 'description' as const, keyword: 'plate', triggerLabel: 'Open description catalog' },
 ])('previews the nine catalog columns for $header and $field and applies once on confirm', async ({ header, field, keyword, triggerLabel }) => {
-  const selected = candidate('1', 'ABC', '鐵板', null, { productName: 'Steel plate description' });
+  const selected = {
+    ...candidate('1', 'ABC', '鐵板', null, { productName: 'Steel plate description', unitPrice: '12.340000' }),
+    thicknessMinMm: '15.000000',
+    thicknessMaxMm: '15.000000',
+  };
   const api = jest.spyOn(dataService, 'getSteelReviewCatalog').mockImplementation(async (_conversationId, input) =>
     page(input.keyword ? [selected] : []));
   const { onSelect } = renderCatalog(table.rows[0], table, jest.fn(), header, triggerLabel);
   expect(screen.getByRole('dialog', { name: header })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Confirm' })).toBeDisabled();
+  const preview = screen.getByRole('table', { name: 'Steel review table' });
+  for (const previewHeader of catalogPreviewHeaders) {
+    const previewCell = within(preview).getByRole('rowheader', { name: previewHeader }).parentElement;
+    expect(previewCell).toHaveTextContent(table.rows[0].values[previewHeader].effective ?? '');
+  }
+  expect(api).not.toHaveBeenCalled();
   fireEvent.change(await screen.findByPlaceholderText('Search catalog'), { target: { value: keyword } });
-  const preview = await screen.findByRole('table', { name: 'Steel review table' });
-  await waitFor(() => expect(api).toHaveBeenLastCalledWith('conversation', expect.objectContaining({ field, keyword })));
-  expect(screen.getByRole('button', { name: 'Confirm' })).toBeEnabled();
+  await waitFor(() => expect(api).toHaveBeenLastCalledWith('conversation', expect.objectContaining({ field, keyword }), expect.any(AbortSignal)));
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm' })).toBeEnabled());
 
   expect(within(preview).getAllByRole('rowheader').map((cell) => cell.textContent)).toEqual(catalogPreviewHeaders);
   expect(within(preview).getByRole('rowheader', { name: '型號' })).toBeInTheDocument();
@@ -115,6 +181,9 @@ it.each([
   }
   expect(preview).toHaveTextContent('ABC');
   expect(preview).toHaveTextContent('Steel plate description');
+  expect(within(preview).getByRole('rowheader', { name: '厚度' }).parentElement).toHaveTextContent('15');
+  expect(within(preview).getByRole('rowheader', { name: '單價' }).parentElement).toHaveTextContent('12.34');
+  expect(preview).not.toHaveTextContent('.000000');
   expect(onSelect).not.toHaveBeenCalled();
   expect(table.rows[0].values['型號']?.effective).toBe('OLD');
 
@@ -130,11 +199,13 @@ it('discards staged selections on Cancel', async () => {
   const { onSelect } = renderCatalog();
   const search = await screen.findByPlaceholderText('Search catalog');
   fireEvent.change(search, { target: { value: 'ABC' } });
-  await screen.findByRole('table', { name: 'Steel review table' });
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm' })).toBeEnabled());
   expect(screen.queryByRole('button', { name: 'Close' })).toBeNull();
   fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
   fireEvent.click(screen.getByRole('button', { name: 'Open catalog' }));
-  expect(screen.queryByRole('table', { name: 'Steel review table' })).toBeNull();
+  expect(screen.getByRole('table', { name: 'Steel review table' })).toHaveTextContent('OLD');
+  expect(screen.getByRole('table', { name: 'Steel review table' })).not.toHaveTextContent('ABC');
+  expect(screen.getByRole('button', { name: 'Confirm' })).toBeDisabled();
   expect(onSelect).not.toHaveBeenCalled();
   fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
   expect(screen.queryByRole('dialog')).toBeNull();
@@ -153,12 +224,62 @@ it('keeps the staged preview available when a later page fails', async () => {
   await screen.findByRole('option', { name: first.label });
   fireEvent.click(screen.getByRole('option', { name: first.label }));
   await screen.findByRole('table', { name: 'Steel review table' });
-  fireEvent.click(screen.getByRole('button', { name: 'Load more' }));
+  fireEvent.click(screen.getByRole('combobox', { name: '型號 material' }));
+  fireEvent.click(await screen.findByRole('button', { name: 'Load more' }));
   await screen.findByRole('alert');
   expect(screen.getByRole('table', { name: 'Steel review table' })).toBeInTheDocument();
-  expect(api).toHaveBeenLastCalledWith('conversation', expect.objectContaining({ cursor: 'next' }));
+  expect(api).toHaveBeenLastCalledWith('conversation', expect.objectContaining({ cursor: 'next' }), expect.any(AbortSignal));
   fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
   await waitFor(() => expect(onSelect).toHaveBeenCalledTimes(1));
+});
+
+it.each(['型號', '品名規格'] as const)('retains the selected option and preview after reopening %s without choosing again', async (header) => {
+  const selected = candidate('1', 'ABC-A');
+  const other = candidate('2', 'ABC-B');
+  jest.spyOn(dataService, 'getSteelReviewCatalog').mockImplementation(async () => page([selected, other]));
+  const { onSelect } = renderCatalog(table.rows[0], table, jest.fn(), header);
+  const selector = screen.getByRole('combobox', { name: `${header} material` });
+  fireEvent.click(selector);
+  fireEvent.change(await screen.findByPlaceholderText('Search catalog'), { target: { value: 'ABC' } });
+  fireEvent.click(await screen.findByRole('option', { name: selected.label }));
+  await waitFor(() => expect(screen.getByPlaceholderText('Search catalog')).not.toBeVisible());
+  const preview = screen.getByRole('table', { name: 'Steel review table' });
+  expect(preview).toHaveTextContent('ABC-A');
+  fireEvent.click(selector);
+  expect(await screen.findByRole('option', { name: selected.label })).toHaveAttribute('aria-selected', 'true');
+  expect(preview).toHaveTextContent('ABC-A');
+  expect(screen.getByRole('button', { name: 'Confirm' })).toBeEnabled();
+  fireEvent.click(selector);
+  await waitFor(() => expect(screen.getByPlaceholderText('Search catalog')).not.toBeVisible());
+  expect(preview).toHaveTextContent('ABC-A');
+  expect(onSelect).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+  expect(onSelect).toHaveBeenCalledWith(table.rows[0], selected, customer);
+});
+
+it('keeps the selected values visible during a new search, empty results and failure', async () => {
+  const selected = candidate('1', 'ABC');
+  jest.spyOn(dataService, 'getSteelReviewCatalog').mockImplementation(async (_conversationId, input) => {
+    if (input.keyword === 'bad') throw new Error('private provider diagnostic');
+    return page(input.keyword === 'ABC' ? [selected] : []);
+  });
+  const { onSelect } = renderCatalog();
+  const preview = screen.getByRole('table', { name: 'Steel review table' });
+  const search = await screen.findByPlaceholderText('Search catalog');
+  fireEvent.change(search, { target: { value: 'ABC' } });
+  await waitFor(() => expect(preview).toHaveTextContent('ABC'));
+  fireEvent.change(search, { target: { value: 'missing' } });
+  expect(preview).toHaveTextContent('ABC');
+  expect(screen.getByRole('button', { name: 'Confirm' })).toBeEnabled();
+  await screen.findByText('No matching catalog items');
+  expect(preview).toHaveTextContent('ABC');
+  fireEvent.change(search, { target: { value: 'bad' } });
+  await screen.findByRole('alert');
+  expect(preview).toHaveTextContent('ABC');
+  expect(screen.queryByText('private provider diagnostic')).toBeNull();
+  expect(onSelect).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+  expect(onSelect).toHaveBeenCalledWith(table.rows[0], selected, customer);
 });
 
 it('closes and discards the dialog when its edit scope changes', async () => {
@@ -168,7 +289,7 @@ it('closes and discards the dialog when its edit scope changes', async () => {
   const onSelect = jest.fn();
   const { rerender } = renderCatalog(table.rows[0], table, onSelect);
   fireEvent.change(await screen.findByPlaceholderText('Search catalog'), { target: { value: 'ABC' } });
-  await screen.findByRole('table', { name: 'Steel review table' });
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm' })).toBeEnabled());
   rerender(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false, cacheTime: 0 } } })}>
     <SteelReviewCatalog table={{ ...table, revision: 'review-2' }} row={table.rows[0]} header="型號" value="OLD" canEdit
       trigger={<button type="button">{catalogTriggerLabel}</button>} onSelect={onSelect} />
@@ -184,9 +305,7 @@ it('keeps the dialog open when the staged row becomes invalid before confirm', a
   const onSelect = jest.fn();
   const { rerender, queryClient } = renderCatalog(table.rows[0], table, onSelect);
   fireEvent.change(await screen.findByPlaceholderText('Search catalog'), { target: { value: 'ABC' } });
-  await screen.findByRole('option', { name: selected.label });
-  fireEvent.click(screen.getByRole('option', { name: selected.label }));
-  await screen.findByRole('table', { name: 'Steel review table' });
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm' })).toBeEnabled());
   rerender(<QueryClientProvider client={queryClient}>
     <SteelReviewCatalog table={table} row={{ ...table.rows[0], deleted: true }} header="型號" value="OLD" canEdit
       trigger={<button type="button">{catalogTriggerLabel}</button>} onSelect={onSelect} />
@@ -213,8 +332,10 @@ it('previews a processing candidate against the processing row columns', async (
       trigger={<button type="button">{processingTriggerLabel}</button>} onSelect={jest.fn()} />
   </QueryClientProvider>);
   fireEvent.click(screen.getByRole('button', { name: 'Open processing catalog' }));
+  expect(screen.getByRole('table', { name: 'Steel review table' })).toHaveTextContent('Old plate');
+  expect(screen.queryByRole('rowheader', { name: '總數' })).toBeNull();
   fireEvent.change(await screen.findByPlaceholderText('Search catalog'), { target: { value: 'CUT' } });
-  await screen.findByRole('table', { name: 'Steel review table' });
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Confirm' })).toBeEnabled());
   expect(screen.queryByRole('rowheader', { name: '總數' })).toBeNull();
   expect(screen.getByRole('table', { name: 'Steel review table' })).toHaveTextContent('加工/孔');
 });

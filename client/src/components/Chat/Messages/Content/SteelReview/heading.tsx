@@ -1,5 +1,7 @@
 import React, { createContext, useContext, useEffect, useMemo, useRef } from 'react';
 import { Tag } from '@librechat/client';
+import { QueryKeys } from 'librechat-data-provider';
+import { useQueryClient } from '@tanstack/react-query';
 import type { SteelMarkdownVersion, TMessage } from 'librechat-data-provider';
 import { useGetSteelMarkdownVersionsQuery } from '~/data-provider';
 import { useMessageContext } from '~/Providers';
@@ -72,12 +74,17 @@ export function SteelVersionsProvider({
   );
   const enabled = Boolean(conversationId) && hasManagedHeading;
   const { data, refetch } = useGetSteelMarkdownVersionsQuery(conversationId ?? '', enabled);
+  const queryClient = useQueryClient();
   const submitting = useRef(isSubmitting);
   useEffect(() => {
     const completed = submitting.current && !isSubmitting;
     submitting.current = isSubmitting;
-    if (completed && enabled) void refetch();
-  }, [enabled, isSubmitting, refetch]);
+    if (completed && enabled) {
+      void refetch();
+      void queryClient.invalidateQueries([QueryKeys.steelCustomer, conversationId]);
+      void queryClient.invalidateQueries([QueryKeys.steelReview, conversationId]);
+    }
+  }, [conversationId, enabled, isSubmitting, queryClient, refetch]);
 
   const owners = useMemo(() => {
     const next = new Map<string, SteelMarkdownOwner>();
@@ -86,11 +93,20 @@ export function SteelVersionsProvider({
         const owner = getSteelMarkdownOwner(message, kind);
         if (owner != null) {
           next.set(steelVersionOwnerKey(message.messageId, kind), owner);
+          continue;
+        }
+        // Terminal events can precede the message metadata refresh. Versions
+        // are already bound to the persisted owner by the backend.
+        const candidates = data?.versions.filter(
+          (version) => version.messageId === message.messageId && version.kind === kind,
+        );
+        if (candidates?.length === 1) {
+          next.set(steelVersionOwnerKey(message.messageId, kind), candidates[0]);
         }
       }
     }
     return next;
-  }, [messages]);
+  }, [data?.versions, messages]);
 
   const versions = useMemo(() => new Map((data?.versions ?? []).map((version) => [
     JSON.stringify([version.messageId, version.kind, version.title, version.outputId]), version,
@@ -113,6 +129,23 @@ function headingText(node: React.ReactNode): string {
     : '';
 }
 
+export function useSteelMarkdownVersion(
+  title: string,
+  requestedKind?: SteelMarkdownVersion['kind'],
+): SteelMarkdownVersion | undefined {
+  const { messageId } = useMessageContext();
+  const versions = useContext(SteelVersionsContext);
+  const owners = useContext(SteelVersionOwnersContext);
+  const kind = steelMarkdownKinds.find(
+    (candidate) =>
+      (!requestedKind || candidate === requestedKind) &&
+      owners.get(steelVersionOwnerKey(messageId, candidate))?.title === title,
+  );
+  const owner = kind ? owners.get(steelVersionOwnerKey(messageId, kind)) : undefined;
+  const version = owner ? versions.get(JSON.stringify([messageId, kind, title, owner.outputId])) : undefined;
+  return version;
+}
+
 export function SteelHeading({
   children,
   node: _node,
@@ -120,13 +153,8 @@ export function SteelHeading({
   ...props
 }: React.HTMLAttributes<HTMLHeadingElement> & { node?: object }) {
   const localize = useLocalize();
-  const { messageId } = useMessageContext();
-  const versions = useContext(SteelVersionsContext);
-  const owners = useContext(SteelVersionOwnersContext);
   const title = headingText(children);
-  const kind = steelMarkdownKinds.find((candidate) => owners.get(steelVersionOwnerKey(messageId, candidate))?.title === title);
-  const owner = kind ? owners.get(steelVersionOwnerKey(messageId, kind)) : undefined;
-  const version = owner ? versions.get(JSON.stringify([messageId, kind, title, owner.outputId])) : undefined;
+  const version = useSteelMarkdownVersion(title);
   const hasSaveCount = version?.kind !== 'customer_data' && version != null && version.saves > 0;
   const label =
     version == null
@@ -145,12 +173,14 @@ export function SteelHeading({
     >
       {label ? <span className="min-w-0 break-words">{children}</span> : children}
       {label && (
-        <Tag
-          className="shrink-0"
-          labelClassName="whitespace-nowrap"
-          label={label}
-          variant={version?.latest ? 'success' : 'neutral'}
-        />
+        <span className="flex shrink-0 items-center gap-2">
+          <Tag
+            className="shrink-0"
+            labelClassName="whitespace-nowrap"
+            label={label}
+            variant={version?.latest ? 'success' : 'neutral'}
+          />
+        </span>
       )}
     </h2>
   );

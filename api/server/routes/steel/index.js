@@ -1,6 +1,7 @@
 const express = require('express');
 const {
   createSteelRouteHandlers,
+  createSteelCustomerRouteHandlers,
   createSteelReviewService,
   createSteelReviewCatalogService,
   createSteelReviewCatalogClient,
@@ -34,6 +35,7 @@ const handlers = createSteelRouteHandlers({
   reviewService: createSteelReviewService({ reader: db, writer: db, sourceAuthority: sourceService, catalogService }),
   sourceService,
 });
+const customer = createSteelCustomerRouteHandlers(db);
 const quotation = createQuotationRouteHandlers({
   ownsConversation: async (userId, conversationId) => Boolean(await db.getConvo(userId, conversationId)),
 });
@@ -41,6 +43,8 @@ const quotation = createQuotationRouteHandlers({
 router.get('/ai/models', requireJwtAuth, handlers.listModels);
 router.get('/ai/oauth-usage', requireJwtAuth, handlers.readOpenAIOAuthUsage);
 router.post('/rule-proposals', requireJwtAuth, handlers.createRuleProposal);
+router.get('/conversations/:conversationId/customer', requireJwtAuth, customer.read);
+router.post('/conversations/:conversationId/customer', requireJwtAuth, customer.commit);
 router.get('/conversations/:conversationId/versions', requireJwtAuth, handlers.readVersions);
 router.get('/conversations/:conversationId/review/:kind', requireJwtAuth, handlers.readReview);
 router.get('/conversations/:conversationId/review/system_order/catalog', requireJwtAuth, handlers.readReviewCatalog);

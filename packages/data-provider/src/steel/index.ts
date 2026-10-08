@@ -10,3 +10,5 @@ export * from './rules';
 export * from './usage';
 
 export * from './versions';
+
+export * from './customer';

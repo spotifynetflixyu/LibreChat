@@ -2,9 +2,14 @@ import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import type { SteelQuotationScope } from '~/types';
 import { createSteelConversationOcrStateModel } from '~/models/steel';
+import { createConversationMethods } from './conversation';
 import { createConversationModel } from '~/models/convo';
+import { tenantStorage } from '~/config/tenantContext';
+import { createMessageModel } from '~/models/message';
 import { createSteelScopedOcrMethods } from './ocr';
 
+const markdown = '## ocr_result\n\n| 零件編號 | 數量 |\n| --- | --- |\n| P1 | 2 |';
+const Message = createMessageModel(mongoose);
 const scope: SteelQuotationScope = { userId: 'owner', conversationId: 'conversation' };
 const Conversation = createConversationModel(mongoose);
 const State = createSteelConversationOcrStateModel(mongoose);
@@ -17,19 +22,20 @@ beforeAll(async () => {
   await Promise.all([Conversation.init(), State.init()]);
 }, 60000);
 beforeEach(async () => {
-  await Promise.all([Conversation.deleteMany({}), State.deleteMany({})]);
+  await Promise.all([Conversation.deleteMany({}), State.deleteMany({}), Message.deleteMany({})]);
 });
 afterAll(async () => { await mongoose.disconnect(); await server.stop(); });
 
 async function seed(tenantId?: string) {
   await Conversation.create({ conversationId: scope.conversationId, user: scope.userId, tenantId, endpoint: 'agents' });
-  return State.create({ conversationId: scope.conversationId, sourceMappings: [], currentOcrResultMarkdown: 'private OCR' });
+  await Message.create({ conversationId: scope.conversationId, user: scope.userId, tenantId, messageId: 'ocr-message', text: markdown, isCreatedByUser: false, unfinished: false });
+  return State.create({ conversationId: scope.conversationId, sourceMappings: [], currentOcrResultMarkdown: markdown, currentOcrResultMessageId: 'ocr-message' });
 }
 
 it.each([undefined, 'tenant-1'])('reads OCR for its single active owner and exact tenant %s', async (tenantId) => {
   await seed(tenantId);
   expect(await reader.readScopedConversationOcrState({ ...scope, tenantId }))
-    .toMatchObject({ currentOcrResultMarkdown: 'private OCR' });
+    .toMatchObject({ currentOcrResultMarkdown: markdown });
 });
 
 it('returns documented absence for a missing conversation or OCR record', async () => {
@@ -77,8 +83,36 @@ it('reads identity and legacy OCR from one snapshot despite a concurrent foreign
     return owners;
   });
   const find = jest.spyOn(Conversation, 'find').mockReturnValueOnce(identities);
-  expect(await reader.readScopedConversationOcrState(scope)).toMatchObject({ currentOcrResultMarkdown: 'private OCR' });
+  expect(await reader.readScopedConversationOcrState(scope)).toMatchObject({ currentOcrResultMarkdown: markdown });
   find.mockRestore();
   expect((await State.findOne({ conversationId: scope.conversationId }).lean())?.currentOcrResultMarkdown).toBe('foreign OCR');
   expect(await reader.readScopedConversationOcrState(scope)).toBeNull();
+});
+
+it('checks global legacy ownership despite an active tenant context', async () => {
+  await seed('tenant-1');
+  await Conversation.create({ conversationId: scope.conversationId, user: 'other', tenantId: 'tenant-2', endpoint: 'agents' });
+  const result = await tenantStorage.run({ tenantId: 'tenant-1' }, () =>
+    reader.readScopedConversationOcrState({ ...scope, tenantId: 'tenant-1' }));
+  expect(result).toBeNull();
+});
+
+it.each(['missing', 'foreign', 'user', 'unfinished'])('does not expose OCR without its owned completed assistant: %s', async (variant) => {
+  await seed();
+  if (variant === 'missing') await Message.deleteMany({});
+  else if (variant === 'foreign') await Message.updateOne({ messageId: 'ocr-message' }, { $set: { user: 'other' } });
+  else if (variant === 'user') await Message.updateOne({ messageId: 'ocr-message' }, { $set: { isCreatedByUser: true } });
+  else await Message.updateOne({ messageId: 'ocr-message' }, { $set: { unfinished: true } });
+  expect(await reader.readScopedConversationOcrState(scope)).toBeNull();
+});
+
+it('does not hand a deleted owner OCR to the remaining identity, then cleans the orphan namespace', async () => {
+  await seed('tenant-b');
+  await Conversation.create({ conversationId: scope.conversationId, user: scope.userId, tenantId: 'tenant-a', endpoint: 'agents' });
+  await Conversation.deleteOne({ conversationId: scope.conversationId, tenantId: 'tenant-b' });
+  await Message.deleteMany({ conversationId: scope.conversationId, tenantId: 'tenant-b' });
+  expect(await reader.readScopedConversationOcrState({ ...scope, tenantId: 'tenant-a' })).toBeNull();
+  const deletion = createConversationMethods(mongoose, { getMessages: async () => [], deleteMessages: async (filter) => Message.deleteMany(filter) });
+  await deletion.deleteConvos(scope.userId, { conversationId: scope.conversationId, tenantId: 'tenant-a' });
+  expect(await State.findOne({ conversationId: scope.conversationId })).toBeNull();
 });

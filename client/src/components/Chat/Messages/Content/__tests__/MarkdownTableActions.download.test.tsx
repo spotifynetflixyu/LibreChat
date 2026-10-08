@@ -15,7 +15,7 @@ jest.mock('~/hooks', () => ({
   useLocalize: () => (key: string) => key,
 }));
 
-function renderReviewedOrder(): QueryClient {
+function renderReviewedOrder(isSubmitting = false): QueryClient {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const title = 'system_order';
   const headers = ['類別', '厚度', '零件編號'];
@@ -70,6 +70,7 @@ function renderReviewedOrder(): QueryClient {
               conversationId: 'conv1',
               isExpanded: true,
               isCreatedByUser: false,
+              isSubmitting,
               messageTimestamp: '2026-06-27T14:32:05',
             }}
           >
@@ -103,6 +104,28 @@ function renderReviewedOrder(): QueryClient {
 }
 
 describe('reviewed system_order grouped download', () => {
+  it('shows the generating tooltip on hover and keyboard focus while review is disabled', async () => {
+    const user = userEvent.setup();
+    const client = renderReviewedOrder(true);
+    try {
+      const open = await screen.findByRole('button', { name: 'com_ui_steel_review_open' });
+      expect(open).toBeDisabled();
+      const anchor = screen.getByLabelText('com_ui_steel_review_open', { selector: 'span' });
+      await user.hover(anchor);
+      expect(await screen.findByRole('tooltip')).toHaveTextContent('com_ui_generating');
+      await user.unhover(anchor);
+      await user.tab();
+      await user.tab();
+      await user.tab();
+      expect(anchor).toHaveFocus();
+      expect(await screen.findByRole('tooltip')).toHaveTextContent('com_ui_generating');
+      await user.keyboard('{Enter} ');
+      expect(screen.queryByRole('dialog')).toBeNull();
+    } finally {
+      client.clear();
+    }
+  });
+
   it.each([false, true])(
     'downloads by thickness before any CSV download (expanded: %s)',
     async (expanded) => {
@@ -140,7 +163,7 @@ describe('reviewed system_order grouped download', () => {
         const zip = await JSZip.loadAsync(bytes);
         expect(Object.keys(zip.files)).toEqual(['01_鐵板_9.csv']);
         expect(await zip.file('01_鐵板_9.csv')?.async('string')).toBe(
-          '\uFEFF類別,厚度,零件編號\r\n鐵板,9,A',
+          '\uFEFF厚度,類別,零件編號\r\n9,鐵板,A',
         );
       } finally {
         anchorClick.mockRestore();

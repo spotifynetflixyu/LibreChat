@@ -7,18 +7,16 @@ import { Button, Input, Select, SelectContent, SelectItem, SelectTrigger, Select
 import type {
   SteelCatalogCandidate,
   SteelCatalogCustomerEvidence,
-  SteelProcessingMeasurement,
   SteelReviewRow,
   SteelReviewTable,
 } from 'librechat-data-provider';
 import type { ChangeEvent, KeyboardEvent, ReactNode } from 'react';
-import type { SteelMeasurementLabels } from './Measurement';
 import type { SteelReviewDraftState } from './session';
 import { steelReviewCellEditStateFamily, steelReviewRowEditStateFamily } from './state';
-import { getSteelReviewDraftCell, getSteelReviewDraftMeasurement } from './session';
 import { CollapsibleCellContent } from '../table/Cell';
+import { getSteelReviewDraftCell } from './session';
 import { orderSystemHeaders } from '../table/order';
-import SteelReviewMeasurement from './Measurement';
+import { displaySteelReviewValue } from './values';
 import { getSteelReviewMode } from './mode';
 import SteelReviewCatalog from './Catalog';
 
@@ -36,7 +34,6 @@ export interface SteelReviewEditorLabels {
   classify?: string;
   material?: string;
   processing?: string;
-  measurement?: SteelMeasurementLabels;
 }
 
 export interface SteelReviewEditorProps {
@@ -45,10 +42,10 @@ export interface SteelReviewEditorProps {
   draft: SteelReviewDraftState;
   labels: SteelReviewEditorLabels;
   onCellChange: (row: SteelReviewRow, header: string, value: string) => void;
-  onMeasurementChange?: (row: SteelReviewRow, measurement: SteelProcessingMeasurement | null) => void;
   onCandidateChange?: (row: SteelReviewRow, candidate: SteelCatalogCandidate, customer: SteelCatalogCustomerEvidence) => void;
   canEdit?: boolean;
   isDesktop?: boolean;
+  fillHeight?: boolean;
   onSourceEdit?: (row: SteelReviewRow) => void;
   onDeleteRow?: (row: SteelReviewRow) => void;
   onRestoreRow?: (row: SteelReviewRow) => void;
@@ -72,10 +69,6 @@ function categoryPriority(category: string): number {
   if (category.startsWith('加工/')) return 1;
   if (secondaryCategories.has(category)) return 2;
   return categoryMenuOrder.has(category) ? 0 : 2;
-}
-
-function displayCellValue(value: string | null | undefined): string {
-  return value ?? '';
 }
 
 const EMPTY_CATEGORY_VALUE = '__steel_review_empty_category__';
@@ -144,57 +137,6 @@ function ReviewRowEditButton({
   );
 }
 
-function ReviewMeasurementEditor({
-  row,
-  measurement,
-  labels,
-  canEdit,
-  isDesktop,
-  onChange,
-  editLabel,
-}: {
-  row: SteelReviewRow;
-  measurement?: SteelProcessingMeasurement | null;
-  labels: SteelMeasurementLabels;
-  canEdit: boolean;
-  isDesktop: boolean;
-  onChange: (measurement: SteelProcessingMeasurement | null) => void;
-  editLabel: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const contentRef = useRef<HTMLDivElement>(null);
-  const nestedPopoverStyle = useNestedPopoverStyle();
-  if (!isDesktop || !canEdit) {
-    return <SteelReviewMeasurement rowId={row.rowId} rowUnit={row.values['單位']?.effective ?? ''} measurement={measurement}
-      labels={labels} canEdit={canEdit} onChange={onChange} />;
-  }
-  return (
-    <Popover.Root open={open} onOpenChange={setOpen}>
-      <Popover.Trigger asChild>
-        <Button type="button" size="icon-sm" variant={open ? 'default' : 'outline'} aria-label={`${editLabel} ${labels.title} ${row.rowId}`}>
-          <Pencil className="size-4" fill={open ? 'currentColor' : 'none'} aria-hidden="true" />
-        </Button>
-      </Popover.Trigger>
-      <Popover.Portal>
-        <Popover.Content
-          ref={contentRef}
-          side="top"
-          align="start"
-          sideOffset={4}
-          className="w-80 rounded-md border border-border-light bg-surface-secondary p-3 text-text-primary shadow-md outline-none"
-          style={nestedPopoverStyle}
-          onEscapeKeyDown={(event) => event.stopPropagation()}
-          onFocusOutside={(event) => { protectNestedSelector(event, contentRef.current); }}
-          onInteractOutside={(event) => { protectNestedSelector(event, contentRef.current); }}
-        >
-          <SteelReviewMeasurement rowId={row.rowId} rowUnit={row.values['單位']?.effective ?? ''} measurement={measurement}
-            labels={labels} canEdit={canEdit} onChange={onChange} />
-        </Popover.Content>
-      </Popover.Portal>
-    </Popover.Root>
-  );
-}
-
 function ReviewCell({
   table,
   row,
@@ -220,6 +162,8 @@ function ReviewCell({
 }) {
   const [remarkEditing, setRemarkEditing] = useState(false);
   const [remarkValue, setRemarkValue] = useState('');
+  const [inlineEditing, setInlineEditing] = useState(false);
+  const [inlineValue, setInlineValue] = useState('');
   const rowEditKey = JSON.stringify([draft.ownerKey, row.rowId]);
   const rowEditing = useAtomValue(steelReviewRowEditStateFamily(rowEditKey));
   const cellEditKey = JSON.stringify([draft.ownerKey, row.rowId, header]);
@@ -231,10 +175,15 @@ function ReviewCell({
   const nestedPopoverStyle = useNestedPopoverStyle();
   const contentRef = useRef<HTMLDivElement>(null);
   const mode = getSteelReviewMode(table.kind);
+  const singleLine = table.kind === 'system_order' && (header === '品名規格' || header === '型號');
+  const cellClassName = `min-h-16 ${singleLine ? 'whitespace-nowrap' : 'max-w-screen-sm [overflow-wrap:anywhere]'} border-b border-border-light px-3 py-2 align-top`;
   const deferRemark = mode.defersHeader(header);
   const cell = row.values[header];
   const draftValue = row.rowId ? getSteelReviewDraftCell(draft, row.rowId, header) : undefined;
-  const currentValue = draftValue ?? displayCellValue(cell?.effective);
+  const displayValue = (value: string | null | undefined) => displaySteelReviewValue(table.kind, header, value);
+  const currentValue = displayValue(draftValue ?? cell?.effective);
+  const baselineValue = displayValue(cell?.baseline);
+  const activeInputValue = inlineEditing ? inlineValue : currentValue;
   const baseEditable = Boolean(row.rowId) && canEdit && !row.deleted && isSteelReviewCellEditable(table, header);
   const editable = baseEditable && (isDesktop || rowEditing);
   const catalogEditable = editable && (row.system?.kind !== 'processing' || Boolean(parent && !parent.deleted && parent.system?.kind === 'material'));
@@ -275,26 +224,26 @@ function ReviewCell({
   const finishEdit = useCallback((value?: string, onFinish?: (nextValue: string) => void, force = false) => {
     const current = editStateRef.current;
     if (!current.open || current.consumed || current.ownerKey !== draft.ownerKey || !editableRef.current) return;
-    const nextValue = value ?? current.value;
+    const nextValue = displaySteelReviewValue(table.kind, header, value ?? current.value);
     const changed = nextValue !== currentValueRef.current;
     clearEdit();
     if (force || changed) {
       onFinish?.(nextValue);
       if (!onFinish && commitOnDismiss) onCellChange(row, header, nextValue);
     }
-  }, [clearEdit, commitOnDismiss, draft.ownerKey, header, onCellChange, row]);
+  }, [clearEdit, commitOnDismiss, draft.ownerKey, header, onCellChange, row, table.kind]);
 
   useEffect(() => {
     if (!editState.open) return;
     if (!desktopEditable || editState.ownerKey !== draft.ownerKey) clearEdit();
   }, [clearEdit, desktopEditable, draft.ownerKey, editState.open, editState.ownerKey]);
 
-  if (!cell) return <td className="min-h-16 max-w-screen-sm [overflow-wrap:anywhere] border-b border-border-light px-3 py-2 align-top" />;
-  const changed = displayCellValue(cell.baseline) !== currentValue;
+  if (!cell) return <td className={cellClassName} />;
+  const changed = baselineValue !== currentValue;
   const hasOriginalValue = cell.baseline !== null && cell.baseline !== undefined;
-  const inputChanged = hasOriginalValue && editState.value !== displayCellValue(cell.baseline);
+  const inputChanged = hasOriginalValue && displayValue(editState.value) !== baselineValue;
   const previousValue = !row.deleted && changed && cell.baseline !== null && cell.baseline !== undefined
-    ? <del className="mt-1 block text-text-secondary">{cell.baseline}</del>
+    ? <del className="mt-1 block text-text-secondary">{baselineValue}</del>
     : null;
   let editorContent: ReactNode = null;
   let desktopEditorContent: ReactNode = null;
@@ -347,9 +296,13 @@ function ReviewCell({
         aria-label={`${header} ${row.rowId}`}
         data-steel-review-deferred={deferRemark || undefined}
         className="min-w-24"
-        value={deferRemark && remarkEditing ? remarkValue : currentValue}
+        value={deferRemark && remarkEditing ? remarkValue : activeInputValue}
         onFocus={() => {
-          if (!deferRemark) return;
+          if (!deferRemark) {
+            setInlineValue(currentValue);
+            setInlineEditing(true);
+            return;
+          }
           setRemarkValue(currentValue);
           setRemarkEditing(true);
         }}
@@ -357,10 +310,18 @@ function ReviewCell({
           if (deferRemark) {
             setRemarkValue(event.target.value);
             setRemarkEditing(true);
-          } else onCellChange(row, header, event.target.value);
+          } else {
+            setInlineValue(event.target.value);
+            onCellChange(row, header, event.target.value);
+          }
         }}
         onBlur={(event) => {
-          if (!deferRemark) return;
+          if (!deferRemark) {
+            setInlineEditing(false);
+            const normalized = displayValue(event.target.value);
+            if (normalized !== event.target.value) onCellChange(row, header, normalized);
+            return;
+          }
           setRemarkEditing(false);
           onCellChange(row, header, event.target.value);
         }}
@@ -405,22 +366,22 @@ function ReviewCell({
   if (isDesktop && desktopEditable) {
     if (usesCatalog && onCandidateChange) {
       return (
-        <td className="group min-h-16 max-w-screen-sm [overflow-wrap:anywhere] border-b border-border-light px-3 py-2 align-top">
+        <td className={`group ${cellClassName}`}>
           <div className="flex min-h-6 min-w-12 items-start gap-1">
-            <CollapsibleCellContent className="min-w-8 flex-1">{currentValue}{previousValue}</CollapsibleCellContent>
+            <CollapsibleCellContent canCollapse={!singleLine} className={`min-w-8 flex-1${singleLine ? ' whitespace-nowrap' : ''}`}>{currentValue}{previousValue}</CollapsibleCellContent>
             {desktopEditorContent}
           </div>
         </td>
       );
     }
     return (
-      <td className="group min-h-16 max-w-screen-sm [overflow-wrap:anywhere] border-b border-border-light px-3 py-2 align-top">
+      <td className={`group ${cellClassName}`}>
         <Popover.Root open={editState.open} onOpenChange={(open) => {
           if (open) openEdit();
           else finishEdit();
         }}>
           <div className="flex min-h-6 min-w-12 items-start gap-1">
-            <CollapsibleCellContent className="min-w-8 flex-1">{currentValue}{previousValue}</CollapsibleCellContent>
+            <CollapsibleCellContent canCollapse={!singleLine} className={`min-w-8 flex-1${singleLine ? ' whitespace-nowrap' : ''}`}>{currentValue}{previousValue}</CollapsibleCellContent>
             <Popover.Trigger asChild>
               <Button
                 type="button"
@@ -457,12 +418,12 @@ function ReviewCell({
               {commitOnDismiss ? (
                 <div className="mt-2 flex items-center gap-2">
                   <div className="min-w-0 flex-1 text-sm text-text-secondary [overflow-wrap:anywhere]">
-                    {inputChanged && <del>{cell.baseline}</del>}
+                    {inputChanged && <del>{baselineValue}</del>}
                   </div>
                   <Button type="button" size="sm" variant="ghost" disabled={!inputChanged}
                     aria-label={`${labels.reset ?? labels.action} ${header} ${row.rowId}`}
                     onPointerDown={(event) => event.preventDefault()}
-                    onClick={() => setEditValue(displayCellValue(cell.baseline))}>
+                    onClick={() => setEditValue(baselineValue)}>
                     {labels.reset}
                   </Button>
                 </div>
@@ -474,13 +435,13 @@ function ReviewCell({
     );
   }
 
-  if (!row.deleted && editorContent) {
-    return <td className="min-h-16 max-w-screen-sm [overflow-wrap:anywhere] border-b border-border-light px-3 py-2 align-top">{editorContent}{previousValue}</td>;
+  if (!isDesktop && !row.deleted && editorContent) {
+    return <td className={cellClassName}>{editorContent}{previousValue}</td>;
   }
   if (!row.deleted) {
-    return <td className="min-h-16 max-w-screen-sm [overflow-wrap:anywhere] border-b border-border-light px-3 py-2 align-top"><CollapsibleCellContent><span aria-label={`${header}: ${labels.readonly}`}>{currentValue}</span>{previousValue}</CollapsibleCellContent></td>;
+    return <td className={cellClassName}><CollapsibleCellContent canCollapse={!singleLine} className={singleLine ? 'whitespace-nowrap' : undefined}><span aria-label={`${header}: ${labels.readonly}`}>{currentValue}</span>{previousValue}</CollapsibleCellContent></td>;
   }
-  return <td className="min-h-16 max-w-screen-sm [overflow-wrap:anywhere] border-b border-border-light px-3 py-2 align-top"><CollapsibleCellContent><del className="text-text-secondary">{displayCellValue(cell.baseline)}</del></CollapsibleCellContent></td>;
+  return <td className={cellClassName}><CollapsibleCellContent canCollapse={!singleLine} className={singleLine ? 'whitespace-nowrap' : undefined}><del className="text-text-secondary">{baselineValue}</del></CollapsibleCellContent></td>;
 }
 
 const SteelReviewEditor = memo(function SteelReviewEditor({
@@ -491,12 +452,12 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
   onCellChange,
   canEdit = true,
   isDesktop = false,
+  fillHeight = false,
   onSourceEdit,
   onDeleteRow,
   onRestoreRow,
   onClassify,
   onDeleteGroup,
-  onMeasurementChange,
   onCandidateChange,
   systemMaterials = rows,
 }: SteelReviewEditorProps) {
@@ -507,18 +468,20 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
     rows.forEach((row) => {
       const cell = row.values[header];
       if (cell) {
-        values.push(displayCellValue(cell.baseline), displayCellValue(cell.effective));
-        if (row.rowId) values.push(getSteelReviewDraftCell(draft, row.rowId, header) ?? '');
+        values.push(displaySteelReviewValue(table.kind, header, cell.baseline), displaySteelReviewValue(table.kind, header, cell.effective));
+        if (row.rowId) values.push(displaySteelReviewValue(table.kind, header, getSteelReviewDraftCell(draft, row.rowId, header)));
       }
     });
     const contentWidth = Math.max(...values.map((value) =>
       Array.from(value).reduce((width, character) => width + (character.charCodeAt(0) <= 255 ? 8 : 16), 0)), 1);
+    if (table.kind === 'system_order' && header === '品名規格') return Math.max(320, contentWidth + 88);
+    if (table.kind === 'system_order' && header === '型號') return Math.max(96, contentWidth + 24);
     return Math.min(640, Math.max(96, contentWidth + 24));
-  }), [displayHeaders, draft, rows]);
+  }), [displayHeaders, draft, rows, table.kind]);
   const totalColumnWidth = columnWidths.reduce((total, width) => total + width, 0);
   const viewportRef = useRef<HTMLDivElement>(null);
   const seenManualRows = useRef(new Set(rows.filter((row) => row.origin === 'manual').map((row) => row.rowId)));
-  const showActions = Boolean(onSourceEdit || onDeleteRow || onRestoreRow || onDeleteGroup || onMeasurementChange || onClassify);
+  const showActions = Boolean(onSourceEdit || onDeleteRow || onRestoreRow || onDeleteGroup || onClassify);
 
   useEffect(() => {
     const manualRows = rows.filter((row) => row.origin === 'manual' && !row.deleted && row.rowId);
@@ -535,11 +498,15 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
   }, [rows, showActions]);
 
   return (
-    <div ref={viewportRef} className="h-28 min-h-28 max-h-28 min-w-0 shrink-0 overflow-auto rounded-md border border-border-light">
-      <table className="w-full border-collapse text-sm" aria-label={labels.table}>
+    <div
+      ref={viewportRef}
+      className={`${fillHeight ? 'min-h-28 flex-1' : 'h-28 min-h-28 max-h-28 shrink-0'} min-w-0 overflow-auto rounded-md border border-border-light`}
+    >
+      <table className="w-full border-collapse text-sm" aria-label={labels.table}
+        style={table.kind === 'system_order' ? { minWidth: totalColumnWidth + (showActions ? 96 : 0) } : undefined}>
         <colgroup>
           {showActions && <col key="actions" />}
-          {columnWidths.map((width, index) => <col key={`${displayHeaders[index]}-${index}`} style={{ width: `${width / totalColumnWidth * 100}%` }} />)}
+          {columnWidths.map((width, index) => <col key={`${displayHeaders[index]}-${index}`} style={{ width: table.kind === 'system_order' ? width : `${width / totalColumnWidth * 100}%` }} />)}
         </colgroup>
         <thead className="sticky top-0 z-10 bg-surface-secondary">
           <tr className="h-10">
@@ -561,21 +528,16 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
                   <td className="min-h-16 whitespace-nowrap border-b border-border-light px-3 py-2 align-top">
                     <div className="flex min-w-max flex-nowrap items-start gap-1">
                       <ReviewRowEditButton table={table} row={row} draft={draft} canEdit={canEdit} isDesktop={isDesktop} label={labels.edit ?? labels.action} />
+                      {row.system?.kind === 'material' && !row.deleted && (onDeleteGroup || onDeleteRow) && (
+                        <ReviewActionButton danger label={labels.deleteRow ?? labels.action} rowId={row.rowId} onClick={() => {
+                          if (onDeleteGroup) onDeleteGroup(row);
+                          else onDeleteRow?.(row);
+                        }}><Trash2 className="size-4" aria-hidden="true" /></ReviewActionButton>
+                      )}
                       {bindable && (
                         <ReviewActionButton linked={bound} label={(bound ? labels.bound : labels.bind) ?? labels.action} rowId={row.rowId} onClick={() => onSourceEdit?.(row)}>
                           <Link2 className="size-4" aria-hidden="true" />
                         </ReviewActionButton>
-                      )}
-                      {row.system?.kind === 'processing' && !row.deleted && onMeasurementChange && labels.measurement && (
-                        <ReviewMeasurementEditor
-                          row={row}
-                          measurement={getSteelReviewDraftMeasurement(draft, row.rowId) === undefined ? row.calculation?.measurement ?? null : getSteelReviewDraftMeasurement(draft, row.rowId)}
-                          labels={labels.measurement}
-                          canEdit={canEdit}
-                          isDesktop={isDesktop}
-                          editLabel={labels.edit ?? labels.action}
-                          onChange={(measurement) => onMeasurementChange(row, measurement)}
-                        />
                       )}
                       {row.system?.kind === 'unassigned' && !row.deleted && onClassify && (
                         <Select value="" onValueChange={(value) => onClassify(row, value as 'material' | 'processing')}>
@@ -586,13 +548,10 @@ const SteelReviewEditor = memo(function SteelReviewEditor({
                           </SelectContent>
                         </Select>
                       )}
-                      {row.system?.kind === 'material' && !row.deleted && onDeleteGroup && (
-                        <ReviewActionButton danger label={labels.deleteRow ?? labels.action} rowId={row.rowId} onClick={() => onDeleteGroup(row)}><Trash2 className="size-4" aria-hidden="true" /></ReviewActionButton>
-                      )}
                       {row.deleted && onRestoreRow && canRestoreSteelReviewRow(row, systemMaterials) && (
                         <Button type="button" size="sm" variant="outline" className="shrink-0" aria-label={`${labels.restoreRow} ${row.rowId}`} onClick={() => onRestoreRow(row)}>{labels.restoreRow}</Button>
                       )}
-                      {!row.deleted && onDeleteRow && (!row.system || row.system.kind !== 'material' || !onDeleteGroup) && (
+                      {!row.deleted && onDeleteRow && row.system?.kind !== 'material' && (
                         <ReviewActionButton danger label={labels.deleteRow ?? labels.action} rowId={row.rowId} onClick={() => onDeleteRow(row)}><Trash2 className="size-4" aria-hidden="true" /></ReviewActionButton>
                       )}
                     </div>

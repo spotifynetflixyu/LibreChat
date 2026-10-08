@@ -331,14 +331,19 @@ export function createSteelPublicationMethods(mongoose: Mongoose, saveMessage: S
     const versions = new Map<string, SteelMarkdownVersion>();
     for (const artifact of artifacts) {
       const ref = artifact.markdownPublication?.reference;
-      if (!ref) continue;
+      if (!ref || ref.source !== 'ai') continue;
       const bound = messagesById.get(ref.messageId)?.metadata?.steelMarkdownOwners;
       if (!bound || typeof bound !== 'object' || Array.isArray(bound) || !(ref.kind in bound)) continue;
       const owner: unknown = Reflect.get(bound, ref.kind);
       if (!owner || typeof owner !== 'object' || Array.isArray(owner) || !('outputId' in owner) || owner.outputId !== ref.outputId) continue;
       const output = outputsByOwner.get(JSON.stringify([ref.kind, ref.messageId, ref.outputId, ref.title]));
+      const current = state?.markdownPublication?.current?.[ref.kind];
+      const matchesCurrent = current?.ai.outputId === ref.outputId && current.ai.messageId === ref.messageId && current.ai.title === ref.title;
+      const customerRevision = ref.kind === 'customer_data' && matchesCurrent && current.effective.kind === ref.kind &&
+        current.effective.outputId === ref.outputId && current.effective.messageId === ref.messageId && current.effective.title === ref.title
+          ? current.effective.revision : undefined;
       versions.set(JSON.stringify([ref.messageId, ref.title]), { kind: ref.kind, messageId: ref.messageId, title: ref.title, outputId: ref.outputId,
-        revision: output?.revision ?? ref.revision, latest: state?.markdownPublication?.current?.[ref.kind]?.ai.outputId === ref.outputId && state.markdownPublication.current[ref.kind]?.ai.messageId === ref.messageId,
+        revision: customerRevision ?? output?.revision ?? ref.revision, latest: matchesCurrent,
         saves: output?.receipts.filter((receipt) => receipt.changedRows > 0).length ?? 0 });
     }
     for (const output of outputs) {

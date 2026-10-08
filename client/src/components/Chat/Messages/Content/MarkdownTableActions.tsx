@@ -3,23 +3,27 @@ import filenamify from 'filenamify';
 import { atom, useAtom } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import { createPortal } from 'react-dom';
+import { steelCustomerTierSchema } from 'librechat-data-provider';
 import { Check, Copy, Download, FileSearch, Maximize2, X } from 'lucide-react';
 import {
   ControlCombobox,
+  EditIcon,
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
   TooltipAnchor,
 } from '@librechat/client';
-import type { SteelReviewKind, SteelReviewTable } from 'librechat-data-provider';
+import type { SteelReviewKind, SteelReviewTable, SteelMarkdownVersion } from 'librechat-data-provider';
 import type { SteelReviewDownloadAuthority, SteelReviewSaveGate } from './SteelReviewDialog';
 import type { TableMatrix } from './table/export';
 import { canGroupByThickness, createCsvBlob, createThicknessZip } from './table/export';
 import { orderSystemMatrix, orderSystemTable } from './table/order';
+import { useSteelMarkdownVersion } from './SteelReview/heading';
 import { steelReviewSelectionAtom } from './SteelReview/state';
 import { useGetSteelReviewQuery } from '~/data-provider';
 import SteelReviewDialog from './SteelReviewDialog';
+import SteelCustomer from './SteelReview/Customer';
 import { useMessageContext } from '~/Providers';
 import { triggerDownload } from '~/utils';
 import { useLocalize } from '~/hooks';
@@ -45,7 +49,10 @@ type TableToolbarProps = {
   onClose?: () => void;
   onCopied: () => void;
   onExpand?: () => void;
+  customerVersion?: SteelMarkdownVersion;
+  customerOnly?: boolean;
   reviewLabel?: string;
+  reviewDisabled?: boolean;
   onReview?: () => void;
   onBeforeDownload?: () => Promise<boolean>;
   getDownloadMatrix?: () => TableMatrix;
@@ -308,28 +315,43 @@ async function writeClipboardText(text: string): Promise<void> {
 function TableActionButton({
   children,
   label,
+  description = label,
+  disabled = false,
   onClick,
   portalElement,
 }: {
   children: React.ReactNode;
   label: string;
+  description?: string;
+  disabled?: boolean;
   onClick: () => void;
   portalElement?: HTMLElement | null;
 }) {
+  const button = (
+    <button
+      type="button"
+      className="markdown-table-action disabled:pointer-events-none disabled:opacity-50"
+      aria-label={label}
+      disabled={disabled}
+      onClick={onClick}
+    >
+      {children}
+    </button>
+  );
   return (
     <TooltipAnchor
       side="top"
-      description={label}
+      description={description}
       portalElement={portalElement}
+      className={disabled ? 'cursor-not-allowed' : undefined}
       render={
-        <button
-          type="button"
-          className="markdown-table-action"
-          aria-label={label}
-          onClick={onClick}
-        >
-          {children}
-        </button>
+        disabled ? (
+          <span tabIndex={0} aria-label={label}>
+            {button}
+          </span>
+        ) : (
+          button
+        )
       }
     />
   );
@@ -347,7 +369,10 @@ function TableToolbar({
   onExpand,
   onStickyColumnChange,
   stickyColumnIndex,
+  customerVersion,
+  customerOnly = false,
   reviewLabel,
+  reviewDisabled = false,
   onReview,
   onBeforeDownload,
   getDownloadMatrix,
@@ -462,75 +487,103 @@ function TableToolbar({
           />
         </div>
       )}
-      <TableActionButton label={copyLabel} onClick={handleCopy} portalElement={tooltipHost}>
-        {copied ? (
-          <Check className="size-4" aria-hidden="true" />
-        ) : (
-          <Copy className="size-4" aria-hidden="true" />
-        )}
-      </TableActionButton>
-      {downloadMenu ? (
-        <DropdownMenu
-          onOpenChange={(open) => {
-            if (open) {
-              setCanGroup(canGroupByThickness(getTableMatrix(tableRef.current)));
-            }
+      {customerVersion && (
+        <SteelCustomer
+          version={customerVersion}
+          getInitialTier={() => {
+            const matrix = getTableMatrix(tableRef.current);
+            if (matrix.length !== 2 || matrix[0].length !== matrix[1].length) return undefined;
+            const columns = matrix[0].flatMap((header, index) => header.trim() === '價格等級' ? [index] : []);
+            if (columns.length !== 1) return undefined;
+            const parsed = steelCustomerTierSchema.safeParse(matrix[1][columns[0]].trim());
+            return parsed.success ? parsed.data : undefined;
           }}
-        >
-          <TooltipAnchor
-            side="top"
-            description={downloadLabel}
-            portalElement={tooltipHost}
-            render={
-              <DropdownMenuTrigger asChild>
-                <button
-                  type="button"
-                  className="markdown-table-action"
-                  aria-label={downloadLabel}
-                  disabled={isDownloading}
-                  aria-busy={isDownloading}
-                >
-                  <Download className="size-4" aria-hidden="true" />
-                </button>
-              </DropdownMenuTrigger>
-            }
-          />
-          <DropdownMenuContent
-            align="end"
-            style={expanded ? { zIndex: 1001 } : undefined}
-            onEscapeKeyDown={(event) => event.stopPropagation()}
-          >
-            <DropdownMenuItem className="cursor-pointer" onSelect={handleDownload}>
-              {localize('com_ui_download_table_all_csv')}
-            </DropdownMenuItem>
-            <DropdownMenuItem
-              className="cursor-pointer data-[disabled]:cursor-default"
-              disabled={!canGroup || isDownloading}
-              onSelect={() => void handleGroupedDownload()}
+          renderTrigger={(props) => (
+            <TableActionButton {...props} portalElement={tooltipHost}>
+              <EditIcon className="size-4" aria-hidden="true" />
+            </TableActionButton>
+          )}
+        />
+      )}
+      {!customerOnly && (
+        <>
+          <TableActionButton label={copyLabel} onClick={handleCopy} portalElement={tooltipHost}>
+            {copied ? (
+              <Check className="size-4" aria-hidden="true" />
+            ) : (
+              <Copy className="size-4" aria-hidden="true" />
+            )}
+          </TableActionButton>
+          {downloadMenu ? (
+            <DropdownMenu
+              onOpenChange={(open) => {
+                if (open) {
+                  setCanGroup(canGroupByThickness(getTableMatrix(tableRef.current)));
+                }
+              }}
             >
-              {localize('com_ui_download_table_by_thickness_zip')}
-            </DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
-      ) : (
-        <TableActionButton label={downloadLabel} onClick={handleDownload} portalElement={tooltipHost}>
-          <Download className="size-4" aria-hidden="true" />
-        </TableActionButton>
-      )}
-      {downloadFailed && <span role="alert">{localize('com_ui_download_table_error')}</span>}
-      {reviewLabel && onReview && (
-        <TableActionButton label={reviewLabel} onClick={onReview} portalElement={tooltipHost}>
-          <FileSearch className="size-4" aria-hidden="true" />
-        </TableActionButton>
-      )}
-      {expanded ? (
-        <TableActionButton label={closeLabel} onClick={onClose ?? (() => undefined)} portalElement={tooltipHost}>
-          <X className="size-4" aria-hidden="true" />
-        </TableActionButton>
-      ) : (
-        <TableActionButton label={expandLabel} onClick={onExpand ?? (() => undefined)} portalElement={tooltipHost}>
-          <Maximize2 className="size-4" aria-hidden="true" />
-        </TableActionButton>
+              <TooltipAnchor
+                side="top"
+                description={downloadLabel}
+                portalElement={tooltipHost}
+                render={
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      type="button"
+                      className="markdown-table-action"
+                      aria-label={downloadLabel}
+                      disabled={isDownloading}
+                      aria-busy={isDownloading}
+                    >
+                      <Download className="size-4" aria-hidden="true" />
+                    </button>
+                  </DropdownMenuTrigger>
+                }
+              />
+              <DropdownMenuContent
+                align="end"
+                style={expanded ? { zIndex: 1001 } : undefined}
+                onEscapeKeyDown={(event) => event.stopPropagation()}
+              >
+                <DropdownMenuItem className="cursor-pointer" onSelect={handleDownload}>
+                  {localize('com_ui_download_table_all_csv')}
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  className="cursor-pointer data-[disabled]:cursor-default"
+                  disabled={!canGroup || isDownloading}
+                  onSelect={() => void handleGroupedDownload()}
+                >
+                  {localize('com_ui_download_table_by_thickness_zip')}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          ) : (
+            <TableActionButton label={downloadLabel} onClick={handleDownload} portalElement={tooltipHost}>
+              <Download className="size-4" aria-hidden="true" />
+            </TableActionButton>
+          )}
+          {downloadFailed && <span role="alert">{localize('com_ui_download_table_error')}</span>}
+          {reviewLabel && onReview && (
+            <TableActionButton
+              label={reviewLabel}
+              description={reviewDisabled ? localize('com_ui_generating') : reviewLabel}
+              disabled={reviewDisabled}
+              onClick={onReview}
+              portalElement={tooltipHost}
+            >
+              <FileSearch className="size-4" aria-hidden="true" />
+            </TableActionButton>
+          )}
+          {expanded ? (
+            <TableActionButton label={closeLabel} onClick={onClose ?? (() => undefined)} portalElement={tooltipHost}>
+              <X className="size-4" aria-hidden="true" />
+            </TableActionButton>
+          ) : (
+            <TableActionButton label={expandLabel} onClick={onExpand ?? (() => undefined)} portalElement={tooltipHost}>
+              <Maximize2 className="size-4" aria-hidden="true" />
+            </TableActionButton>
+          )}
+        </>
       )}
     </div>
   );
@@ -572,6 +625,7 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
   const modalClassName = ['markdown-table-modal', themeAttributes.className]
     .filter(Boolean)
     .join(' ');
+  const customerVersion = useSteelMarkdownVersion(markdownTitle ?? '', 'customer_data');
   const reviewKind = getReviewKind(markdownTitle);
   const displayChildren = useMemo(() => reviewKind === 'system_order'
     ? orderSystemTable(children) : children, [children, reviewKind]);
@@ -669,10 +723,10 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
     setIsExpanded(true);
   }, []);
   const openReview = useCallback(() => {
-    if (reviewCandidate) {
+    if (reviewCandidate && isSubmitting !== true) {
       setSelection({ ...reviewCandidate, captureId: crypto.randomUUID() });
     }
-  }, [reviewCandidate, setSelection]);
+  }, [isSubmitting, reviewCandidate, setSelection]);
   const prepareReviewDownload = useCallback(async () => {
     const currentTable = reviewTableRef.current;
     if (!currentTable || !reviewIdentity) {
@@ -778,8 +832,11 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
         copied={copied}
         downloadFilename={downloadFilename}
         expanded={false}
+        customerVersion={customerVersion}
+        customerOnly={/^customer_data(?:[\t ｜]|$)/.test(markdownTitle ?? '')}
         downloadMenu={downloadMenu}
         reviewLabel={reviewCandidate ? reviewLabel : undefined}
+        reviewDisabled={isSubmitting === true}
         onReview={reviewCandidate ? openReview : undefined}
         onBeforeDownload={reviewIdentity ? prepareReviewDownload : undefined}
         getDownloadMatrix={reviewIdentity ? getReviewDownloadMatrix : undefined}

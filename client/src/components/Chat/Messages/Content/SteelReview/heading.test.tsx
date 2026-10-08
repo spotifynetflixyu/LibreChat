@@ -1,5 +1,7 @@
 import React from 'react';
+import { QueryKeys } from 'librechat-data-provider';
 import { cleanup, render, screen } from '@testing-library/react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { SteelMarkdownVersion, TMessage } from 'librechat-data-provider';
 import { useGetSteelMarkdownVersionsQuery } from '~/data-provider';
 import { SteelHeading, SteelVersionsProvider } from './heading';
@@ -20,6 +22,11 @@ jest.mock('@librechat/client', () => ({
       {label}
     </span>
   ),
+}));
+
+jest.mock('./Customer', () => ({
+  __esModule: true,
+  default: () => <button type="button" data-testid="steel-customer-edit" />,
 }));
 
 const mockUseGetSteelMarkdownVersionsQuery = useGetSteelMarkdownVersionsQuery as jest.Mock;
@@ -66,20 +73,22 @@ function renderHeading({
   const currentMessage = message(metadata);
   currentMessage.text = `## ${title}\n\n| 品名 |\n| --- |\n| 鋼板 |`;
   render(
-    <SteelVersionsProvider
-      conversationId="conversation-1"
-      messages={[currentMessage]}
-      isSubmitting={false}
-    >
-      <MessageContext.Provider
-        value={{
-          messageId: currentMessage.messageId,
-          isExpanded: false,
-        }}
+    <QueryClientProvider client={new QueryClient()}>
+      <SteelVersionsProvider
+        conversationId="conversation-1"
+        messages={[currentMessage]}
+        isSubmitting={false}
       >
-        <SteelHeading>{title}</SteelHeading>
-      </MessageContext.Provider>
-    </SteelVersionsProvider>,
+        <MessageContext.Provider
+          value={{
+            messageId: currentMessage.messageId,
+            isExpanded: false,
+          }}
+        >
+          <SteelHeading>{title}</SteelHeading>
+        </MessageContext.Provider>
+      </SteelVersionsProvider>
+    </QueryClientProvider>,
   );
 }
 
@@ -103,6 +112,47 @@ describe('SteelHeading', () => {
 
     expect(screen.getByTestId('steel-version-tag')).toHaveTextContent('Latest version v3');
     expect(screen.getByTestId('steel-version-tag')).toHaveAttribute('data-variant', 'success');
+  });
+
+  it('labels a regenerated response before its message metadata has refreshed', () => {
+    renderHeading({ metadata: {}, versions: [version({ latest: true })] });
+    expect(screen.getByTestId('steel-version-tag')).toHaveTextContent('Latest version');
+  });
+
+  it('keeps an older regenerated sibling labeled as previous', () => {
+    renderHeading({ metadata: {}, versions: [version({ latest: false })] });
+    expect(screen.getByTestId('steel-version-tag')).toHaveTextContent('Previous version');
+  });
+
+  it('does not replace a loaded owner with a different cached generation', () => {
+    renderHeading({
+      metadata: { steelMarkdownOwners: { ocr_result: owner('ocr:new', 'ocr_result') } },
+      versions: [version({ outputId: 'ocr:old', latest: false })],
+    });
+    expect(screen.queryByTestId('steel-version-tag')).toBeNull();
+  });
+
+  it('refreshes versions and all review tables after regeneration completes', () => {
+    const queryClient = new QueryClient();
+    const invalidate = jest.spyOn(queryClient, 'invalidateQueries');
+    const refetch = jest.fn();
+    mockUseGetSteelMarkdownVersionsQuery.mockReturnValue({ data: { versions: [] }, refetch });
+    const currentMessage = message({});
+    const view = (isSubmitting: boolean) => (
+      <QueryClientProvider client={queryClient}>
+        <SteelVersionsProvider
+          conversationId="conversation-1"
+          messages={[currentMessage]}
+          isSubmitting={isSubmitting}
+        >
+          <div />
+        </SteelVersionsProvider>
+      </QueryClientProvider>
+    );
+    const rendered = render(view(true));
+    rendered.rerender(view(false));
+    expect(refetch).toHaveBeenCalledTimes(1);
+    expect(invalidate).toHaveBeenCalledWith([QueryKeys.steelReview, 'conversation-1']);
   });
 
   it('binds the badge to the loaded message owner before using the cached version count', () => {

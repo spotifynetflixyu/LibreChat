@@ -18,3 +18,5 @@ export * from './vision/service';
 export * from './markdown/completion';
 export * from './markdown/full';
 export * from './markdown/history';
+
+export * from './customer';

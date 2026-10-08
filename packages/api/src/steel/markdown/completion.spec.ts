@@ -11,7 +11,8 @@ import { createSteelOcrStateService } from '../ocr/state';
 import { createSteelReviewService } from '../review';
 
 const scope = { userId: '507f1f77bcf86cd799439011', conversationId: '6bf991da-be8c-5300-bd85-ff6ee2d17bb5' };
-const order = (quantity: string) => `## ocr_result\n\n| 來源 | 零件編號 | 類別 | 數量 |\n| --- | --- | --- | --- |\n| 文字訂單 | P1 | 鋼板 | ${quantity} |`;
+const order = (quantity: string) =>
+  `## ocr_result\n\n| 類別 | 零件編號 | 數量 | 來源 |\n| --- | --- | --- | --- |\n| 鋼板 | P1 | ${quantity} | 文字訂單 |`;
 let server: MongoMemoryReplSet;
 let db: ReturnType<typeof createMethods>;
 const services = () => ({ ocr: createSteelOcrStateService(mongoose), quotation: createSteelQuotationStateService(mongoose) });
@@ -68,6 +69,41 @@ it('publishes the full clean response and fresh review baseline atomically', asy
   expect((await services().ocr.readCurrentOcrResult(scope.conversationId))?.markdown).toBe(order('2'));
   expect((await services().quotation.readState(scope))?.currentOrder?.markdown).toBe(order('2'));
   expect(await db.readSteelMarkdownVersions(scope)).toEqual([expect.objectContaining({ latest: true, saves: 0, outputId: 'ocr_result:ai-2' })]);
+});
+
+it('overwrites the chat message with the normalized AI baseline while leaving earlier messages intact', async () => {
+  const raw =
+    '## ocr_result｜測試\n\n| 來源 | 數量 | 長度 | 厚度 | 加工 |\n| --- | --- | --- | --- | --- |\n| 文字訂單 | 2支 | 1.25m | 6.35mm | 切割 |';
+  await db.saveMessage(
+    { userId: scope.userId },
+    { ...scope, user: scope.userId, messageId: 'historical', text: raw, isCreatedByUser: false },
+  );
+  const fixture = await turn(raw);
+  const apply = jest.fn(fixture.input.applyMarkdown);
+  fixture.input.applyMarkdown = apply;
+  const result = await fixture.run();
+  expect(apply).toHaveBeenCalledWith(result.markdown);
+  expect(result.markdown).toContain('| 厚度 | 長度 | 數量 | 加工 | 備註 | 來源 |');
+  expect(result.markdown).toContain(
+    '| 6 | 1250 | 2 | 切割 | 原長度 1.25m；原厚度 6.35mm | 文字訂單 |',
+  );
+  expect((await db.getMessage({ user: scope.userId, messageId: 'assistant-2' }))?.text).toBe(
+    result.markdown,
+  );
+  expect((await db.getMessage({ user: scope.userId, messageId: 'historical' }))?.text).toBe(raw);
+  const review = createSteelReviewService({
+    reader: db,
+    writer: createSteelReviewWriteMethods(mongoose),
+  });
+  const { table } = await review.read({
+    ...scope,
+    messageId: 'assistant-2',
+    kind: 'ocr_result',
+    title: 'ocr_result｜測試',
+  });
+  expect(table.rows[0].values['厚度']).toEqual({ baseline: '6', effective: '6' });
+  expect(table.rows[0].values['長度']).toEqual({ baseline: '1250', effective: '1250' });
+  expect(table.rows[0].values['數量']).toEqual({ baseline: '2', effective: '2' });
 });
 
 it('persists a full OCR response when its legacy source is reused in another same-owner conversation', async () => {
@@ -145,6 +181,48 @@ it('creates a fresh baseline for the same text and physical message in a differe
   await (await turn(order('2'))).run();
   await (await turn(order('2'), 'assistant-2', 'ai-4')).run();
   expect(await db.readSteelMarkdownVersions(scope)).toEqual([expect.objectContaining({ outputId: 'ocr_result:ai-4', latest: true, saves: 0 })]);
+});
+
+it('makes a regenerated OCR sibling latest and its predecessor read-only', async () => {
+  await (await turn(order('2'))).run();
+  const regenerated = await turn(order('4'), 'assistant-regenerated', 'ai-regenerated');
+  regenerated.input.req.steelNativeContext!.quotation!.messageId = 'user-ai-2';
+  await regenerated.run();
+  const review = createSteelReviewService({
+    reader: db,
+    writer: createSteelReviewWriteMethods(mongoose),
+  });
+  const old = await review.read({
+    ...scope,
+    messageId: 'assistant-2',
+    kind: 'ocr_result',
+    title: 'ocr_result',
+  });
+  const current = await review.read({
+    ...scope,
+    messageId: 'assistant-regenerated',
+    kind: 'ocr_result',
+    title: 'ocr_result',
+  });
+  expect(old.table).toMatchObject({ isLatest: false, readOnly: true, previousVersion: true });
+  expect(current.table).toMatchObject({ isLatest: true, readOnly: false });
+  await expect(
+    review.prepare({
+      ...scope,
+      messageId: old.table.messageId,
+      kind: old.table.kind,
+      title: old.table.title,
+      outputId: old.table.outputId,
+      revision: old.table.revision,
+      operations: [
+        {
+          type: 'update',
+          rowId: old.table.rows[0].rowId,
+          changes: [{ header: '數量', value: '9' }],
+        },
+      ],
+    }),
+  ).rejects.toMatchObject({ code: 'REVIEW_NOT_FOUND' });
 });
 
 it('publishes confirmed direct tier data with a version badge and no editor', async () => {

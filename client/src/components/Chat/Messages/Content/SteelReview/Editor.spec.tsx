@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import userEvent from '@testing-library/user-event';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, within } from '@testing-library/react';
 import type { SteelReviewRow, SteelReviewTable } from 'librechat-data-provider';
 import { createSteelReviewDraftState, setSteelReviewDraftCell } from './session';
 import SteelReviewEditor, { isSteelReviewCellEditable } from './Editor';
@@ -71,6 +71,58 @@ function systemRow(rowId: string, kind: 'material' | 'processing' | 'unassigned'
 }
 
 describe('Steel review local editor gates', () => {
+  it.each(['system_order', 'ocr_result'] as const)(
+    'normalizes numeric display and desktop commit after editing ends for %s',
+    (kind) => {
+      const row = { ...table.rows[0], values: {
+        厚度: { baseline: '15.000000', effective: '15.0' },
+      } };
+      const currentTable = { ...table, kind, headers: ['厚度'], rows: [row] };
+      const onCellChange = jest.fn();
+      render(<SteelReviewEditor table={currentTable} rows={[row]}
+        draft={createSteelReviewDraftState(`numeric-desktop-${kind}`)}
+        labels={labels} onCellChange={onCellChange} isDesktop />);
+      expect(screen.getByText('15')).toBeInTheDocument();
+      expect(screen.queryByText('15.000000')).toBeNull();
+      fireEvent.click(screen.getByRole('button', { name: 'Edit 厚度 row-1' }));
+      const input = screen.getByRole('textbox', { name: '厚度 row-1' });
+      expect(input).toHaveValue('15');
+      fireEvent.change(input, { target: { value: '0.0' } });
+      expect(input).toHaveValue('0.0');
+      fireEvent.change(input, { target: { value: '0.010000' } });
+      expect(input).toHaveValue('0.010000');
+      expect(onCellChange).not.toHaveBeenCalled();
+      fireEvent.keyDown(input, { key: 'Enter', ctrlKey: true });
+      expect(onCellChange).toHaveBeenCalledWith(row, '厚度', '0.01');
+      expect(screen.queryByRole('textbox', { name: '厚度 row-1' })).toBeNull();
+    },
+  );
+
+  it.each(['system_order', 'ocr_result'] as const)(
+    'keeps inline numeric input unchanged until blur for %s',
+    (kind) => {
+      const row = { ...table.rows[0], values: {
+        厚度: { baseline: '15.000000', effective: '15.000000' },
+      } };
+      const onCellChange = jest.fn();
+      render(<SteelReviewEditor table={{ ...table, kind, headers: ['厚度'], rows: [row] }} rows={[row]}
+        draft={createSteelReviewDraftState(`numeric-inline-${kind}`)}
+        labels={labels} onCellChange={onCellChange} onSourceEdit={jest.fn()} />);
+      fireEvent.click(screen.getByRole('button', { name: 'Edit row-1' }));
+      const input = screen.getByRole('textbox', { name: '厚度 row-1' });
+      fireEvent.focus(input);
+      expect(input).toHaveValue('15');
+      fireEvent.change(input, { target: { value: '0.0' } });
+      expect(input).toHaveValue('0.0');
+      expect(onCellChange).toHaveBeenLastCalledWith(row, '厚度', '0.0');
+      fireEvent.change(input, { target: { value: '0.010000' } });
+      expect(input).toHaveValue('0.010000');
+      expect(onCellChange).toHaveBeenLastCalledWith(row, '厚度', '0.010000');
+      fireEvent.blur(input);
+      expect(onCellChange).toHaveBeenLastCalledWith(row, '厚度', '0.01');
+    },
+  );
+
   it.each([true, false])('keeps current and original numeric values together on desktop=%s', (isDesktop) => {
     const row = { ...table.rows[0], values: { ...table.rows[0].values,
       總數: { baseline: '5280', effective: '1234.50' },
@@ -180,7 +232,7 @@ describe('Steel review local editor gates', () => {
     expect(screen.queryByRole('combobox', { name: 'Link processing processing-1' })).toBeNull();
   });
 
-  it('uses one generic Delete action for a material cascade and hides restore for cascade tombstones', () => {
+  it.each([true, false])('places material Delete before Link and hides cascade restore on desktop=%s', (isDesktop) => {
     const material = systemRow('material-1', 'material');
     const cascadeChild = {
       ...systemRow('processing-1', 'processing', { parentRowId: material.rowId, cascadeDeletedBy: material.rowId }),
@@ -193,7 +245,9 @@ describe('Steel review local editor gates', () => {
       systemMaterials={[material, cascadeChild]}
       draft={createSteelReviewDraftState('owner')}
       labels={labels}
+      isDesktop={isDesktop}
       onCellChange={jest.fn()}
+      onSourceEdit={jest.fn()}
       onDeleteGroup={onDeleteGroup}
       onRestoreRow={jest.fn()}
     />);
@@ -202,6 +256,10 @@ describe('Steel review local editor gates', () => {
     expect(deleteButton.textContent).toBe('');
     expect(deleteButton).toHaveClass('hover:text-text-destructive', 'hover:bg-status-error-subtle');
     expect(deleteButton.querySelector('svg')).toHaveAttribute('aria-hidden', 'true');
+    const actionButtons = within(deleteButton.closest('td')!).getAllByRole('button');
+    expect(actionButtons.slice(-2).map((button) => button.getAttribute('aria-label'))).toEqual([
+      'Delete material-1', 'Link material-1',
+    ]);
     fireEvent.click(deleteButton);
     expect(onDeleteGroup).toHaveBeenCalledWith(material);
     expect(screen.queryByRole('button', { name: 'Restore processing-1' })).toBeNull();
@@ -486,31 +544,33 @@ describe('system order remarks completion', () => {
 });
 
 
-describe('desktop nested measurement selector', () => {
-  it('keeps the measurement editor open while choosing a portaled mode', async () => {
-    const user = userEvent.setup();
-    const onMeasurementChange = jest.fn();
+describe('processing row actions', () => {
+  it.each([true, false])('uses material-style text cells and editing on desktop=%s', (isDesktop) => {
     const row = systemRow('measurement-row', 'processing');
-    const measurementLabels = {
-      title: 'Calculation data', mode: 'Measurement basis', none: 'No measurement',
-      perPiece: 'Per piece', batch: 'Whole batch', cutting: 'Confirmed cutting plan',
-      amount: 'Amount', unit: 'Unit', planId: 'Plan', planVersion: 'Version',
-      confirmed: 'Confirmed', stockGroup: 'Stock', addGroup: 'Add', removeGroup: 'Remove',
-      groups: {
-        stockLengthMm: 'Stock length', pieceLengthMm: 'Piece length', pieceCount: 'Piece count',
-        stockCount: 'Stock count', lossMm: 'Loss', remainderMm: 'Remainder', headTrimMm: 'Head',
-        tailTrimMm: 'Tail', pieceHeadTrimMm: 'Piece head', pieceTailTrimMm: 'Piece tail',
-      },
-    };
+    const onCellChange = jest.fn();
     render(<SteelReviewEditor table={{ ...table, kind: 'system_order', rows: [row] }}
-      rows={[row]} draft={createSteelReviewDraftState('desktop-measurement-pointer-owner')}
-      labels={{ ...labels, measurement: measurementLabels }} isDesktop
-      onCellChange={jest.fn()} onMeasurementChange={onMeasurementChange} />);
-    await user.click(screen.getByRole('button', { name: 'Edit Calculation data measurement-row' }));
-    await user.click(screen.getByRole('combobox', { name: 'Measurement basis measurement-row' }));
-    await user.click(screen.getByRole('option', { name: 'Whole batch' }));
-    expect(onMeasurementChange).toHaveBeenCalledTimes(1);
-    expect(onMeasurementChange).toHaveBeenCalledWith(row, expect.objectContaining({ mode: 'batch' }));
-    expect(screen.getByRole('combobox', { name: 'Measurement basis measurement-row' })).toBeInTheDocument();
+      rows={[row]} draft={createSteelReviewDraftState(`processing-editor-${isDesktop}`)}
+      labels={labels} isDesktop={isDesktop} onCellChange={onCellChange} onDeleteRow={jest.fn()} />);
+    expect(screen.queryAllByRole('textbox')).toHaveLength(0);
+    expect(screen.getByText('鋼板')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Edit Calculation data measurement-row' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('combobox', { name: 'Measurement basis measurement-row' })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: isDesktop ? 'Edit 單價 measurement-row' : 'Edit measurement-row' }));
+    const input = screen.getByRole('textbox', { name: '單價 measurement-row' });
+    fireEvent.change(input, { target: { value: '12' } });
+    if (isDesktop) fireEvent.keyDown(input, { key: 'Enter', ctrlKey: true });
+    expect(onCellChange).toHaveBeenCalledWith(row, '單價', '12');
+  });
+
+  it('keeps processing catalog cells as text with the same desktop edit buttons as materials', () => {
+    const material = systemRow('material', 'material');
+    const row = systemRow('processing', 'processing', { parentRowId: material.rowId });
+    render(<SteelReviewEditor table={{ ...table, kind: 'system_order', rows: [material, row] }}
+      rows={[row]} systemMaterials={[material]} draft={createSteelReviewDraftState('processing-catalog-editor')}
+      labels={labels} isDesktop onCellChange={jest.fn()} onCandidateChange={jest.fn()} />);
+    expect(screen.queryAllByRole('textbox')).toHaveLength(0);
+    expect(screen.getByText('鋼板')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Edit 品名規格 processing' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '品名規格 processing' })).toBeNull();
   });
 });

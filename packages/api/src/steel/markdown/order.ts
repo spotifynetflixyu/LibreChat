@@ -158,7 +158,7 @@ export function readSystemOrderDimension(value: string): number | undefined {
   return Number.isFinite(result) ? result : undefined;
 }
 
-function cleanDimension(value: string): string {
+export function cleanSystemOrderDimension(value: string): string {
   const decimal = cleanDecimal(value);
   if (!decimal) return '';
   const { numerator, denominator } = dimensionFactor(value);
@@ -169,7 +169,7 @@ function cleanDimension(value: string): string {
 }
 
 function cleanCell(header: string, value: string): string | undefined {
-  if (DIMENSION_HEADERS.has(header)) return cleanDimension(value);
+  if (DIMENSION_HEADERS.has(header)) return cleanSystemOrderDimension(value);
   if (NUMERIC_HEADERS.has(header)) return cleanDecimal(value);
   if (header !== '計價基準') return undefined;
   const text = value.trim();

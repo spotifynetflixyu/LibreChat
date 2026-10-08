@@ -1,7 +1,7 @@
-import { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useContext, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { useAtom, useStore } from 'jotai';
-import { X, Plus, AlertTriangle } from 'lucide-react';
 import { useQueryClient } from '@tanstack/react-query';
+import { X, Plus, ChevronsUpDown, ChevronsDownUp, AlertTriangle } from 'lucide-react';
 import {
   DynamicQueryKeys,
   QueryKeys,
@@ -22,7 +22,6 @@ import {
   SelectItem,
   SelectTrigger,
   SelectValue,
-  Tag,
   TooltipAnchor,
   useMediaQuery,
 } from '@librechat/client';
@@ -86,6 +85,7 @@ import {
   steelReviewIdentityKey,
   steelReviewSelectionAtom,
   steelReviewSourcePreviewKey,
+  markSteelReviewRowBound,
   sameSteelReviewIdentity,
 } from './SteelReview/state';
 import {
@@ -102,6 +102,8 @@ import SteelReviewSourcePreview from './SteelReview/SourcePreview';
 import { SteelVersionsContext } from './SteelReview/heading';
 import translationEn from '~/locales/en/translation.json';
 import SteelReviewEditor from './SteelReview/Editor';
+import SteelReviewSplit from './SteelReview/Split';
+import SteelReviewBadge from './SteelReview/Badge';
 import ReviewStatus from './SteelReview/Status';
 import { useLocalize } from '~/hooks';
 
@@ -399,34 +401,6 @@ export default function SteelReviewDialog({
   const sourceEditorLabels = useMemo(() => ({
     emptyCategory: localize('com_ui_no_category'),
     action: localize('com_ui_steel_review_action'),
-    measurement: {
-      title: localize('com_ui_steel_review_measurement_title'),
-      mode: localize('com_ui_steel_review_measurement_mode'),
-      none: localize('com_ui_steel_review_measurement_none'),
-      perPiece: localize('com_ui_steel_review_measurement_per_piece'),
-      batch: localize('com_ui_steel_review_measurement_batch'),
-      cutting: localize('com_ui_steel_review_measurement_cutting'),
-      amount: localize('com_ui_steel_review_measurement_amount'),
-      unit: localize('com_ui_steel_review_measurement_unit'),
-      planId: localize('com_ui_steel_review_plan_id'),
-      planVersion: localize('com_ui_steel_review_plan_version'),
-      confirmed: localize('com_ui_steel_review_confirm_cutting_plan'),
-      stockGroup: localize('com_ui_steel_review_cutting_stock_group'),
-      addGroup: localize('com_ui_steel_review_add_stock_group'),
-      removeGroup: localize('com_ui_steel_review_remove_stock_group'),
-      groups: {
-        stockLengthMm: localize('com_ui_steel_review_stock_length_mm'),
-        pieceLengthMm: localize('com_ui_steel_review_piece_length_mm'),
-        pieceCount: localize('com_ui_steel_review_piece_count'),
-        stockCount: localize('com_ui_steel_review_stock_count'),
-        lossMm: localize('com_ui_steel_review_loss_mm'),
-        remainderMm: localize('com_ui_steel_review_remainder_mm'),
-        headTrimMm: localize('com_ui_steel_review_head_trim_mm'),
-        tailTrimMm: localize('com_ui_steel_review_tail_trim_mm'),
-        pieceHeadTrimMm: localize('com_ui_steel_review_piece_head_trim_mm'),
-        pieceTailTrimMm: localize('com_ui_steel_review_piece_tail_trim_mm'),
-      },
-    },
     deleteRow: localize('com_ui_steel_review_delete_row'),
     restoreRow: localize('com_ui_steel_review_restore_row'),
   }), [localize]);
@@ -440,7 +414,16 @@ export default function SteelReviewDialog({
     selection.title === identity.title;
   const query = useGetSteelReviewQuery(isOpen ? identity : null, { retry: false });
   const isNotFound = getErrorStatus(query.error) === 404;
-  const table = query.data?.table;
+  const liveTable = query.data?.table;
+  const liveVersion = liveTable && versions.get(
+    JSON.stringify([liveTable.messageId, liveTable.kind, liveTable.title, liveTable.outputId]),
+  );
+  const table = useMemo(
+    () => liveTable && liveVersion?.latest === false
+      ? { ...liveTable, isLatest: false, readOnly: true, previousVersion: true }
+      : liveTable,
+    [liveTable, liveVersion?.latest],
+  );
   const captureId = selection?.captureId;
   const dialogStateKey = `${steelReviewIdentityKey(identity)}:${captureId ?? 'pending'}`;
   const [dialogState, setDialogState] = useAtom(steelReviewDialogStateFamily(dialogStateKey));
@@ -1148,11 +1131,10 @@ export default function SteelReviewDialog({
       pageNumber: selectedPage,
     });
     setDialogState((state) => ({
-      ...state,
+      ...markSteelReviewRowBound(state, sourceCorrectionRow.rowId),
       selectedFileId: sourceCorrectionFile.fileId,
       pageNumber: selectedPage,
       initializedSourceId: sourceCorrectionFile.fileId,
-      unlinkedMode: false,
     }));
     closeSourceCorrection();
   }, [closeSourceCorrection, dialogState.sourceCorrectionPageNumber, onSourceChange, setDialogState, sourceCorrectionCanConfirm, sourceCorrectionFile, sourceCorrectionRow]);
@@ -1903,6 +1885,9 @@ export default function SteelReviewDialog({
     ? confirmedSave.changedRows
     : undefined;
   const isSystemOrder = table?.kind === 'system_order';
+  const ocrReferenceContentId = useId();
+  const ocrReferenceCollapsed = dialogState.ocrReferenceCollapsed === true;
+  const ocrReferenceToggleLabel = localize(ocrReferenceCollapsed ? 'com_ui_expand' : 'com_ui_collapse');
   const preparedQuoteRowCount = preparedForCapture?.caption.customerQuoteChangedRows;
   const confirmedQuoteRowCount = confirmedSave && isCurrentOwner(table, confirmedSave)
     ? confirmedSave.customerQuoteChangedRows
@@ -2070,9 +2055,9 @@ export default function SteelReviewDialog({
           }
         }}
         onPointerDownOutside={(event) => {
+          event.preventDefault();
           const input = document.activeElement;
           if ((input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement) && input.dataset.steelReviewDeferred) {
-            event.preventDefault();
             input.blur();
           }
         }}
@@ -2205,126 +2190,148 @@ export default function SteelReviewDialog({
                 </div>
               )}
               {!isDesktop && sourceControls}
-              {!sourcesReady && (
-                <div
-                  className="flex h-full min-h-0 w-full flex-1 flex-col items-center justify-center gap-3 rounded-md bg-surface-secondary p-6 text-sm text-text-secondary"
-                  role={sourcesQuery.isError ? 'alert' : 'status'}
-                  aria-live="polite"
-                >
-                  <p>{localize(sourcesQuery.isError ? 'com_ui_steel_review_sources_error' : 'com_ui_steel_review_sources_loading')}</p>
-                  {sourcesQuery.isError && (
-                    <Button type="button" variant="outline" onClick={() => void sourcesQuery.refetch()}>
-                      {localize('com_ui_retry')}
-                    </Button>
-                  )}
-                </div>
-              )}
-              {selectedSource && (
-                <div className="relative flex min-h-0 flex-1">
-                  <SteelReviewSourcePreview
-                    stateKey={`${steelReviewSourcePreviewKey(identity, selectedSource.fileId)}:${captureId ?? 'pending'}`}
-                    source={selectedSource}
-                    pageNumber={pageNumber}
-                    blob={sourceQuery.data}
-                    loading={sourceQuery.isLoading}
-                    error={sourceQuery.isError}
-                    onRetry={() => void sourceQuery.refetch()}
-                    onPageCount={onPageCount}
-                    labels={{
-                      zoomIn: localize('com_ui_steel_review_zoom_in'),
-                      zoomOut: localize('com_ui_steel_review_zoom_out'),
-                      fit: localize('com_ui_fit'),
-                      loading: localize('com_ui_steel_review_preview_loading'),
-                      retry: localize('com_ui_retry'),
-                      unavailable: localize('com_ui_steel_review_preview_unavailable'),
-                      canvas: localize('com_ui_steel_review_preview_canvas'),
-                    }}
-                  />
-                  {isDesktop && (
-                    <Button type="button" size="icon" variant="secondary" aria-label={localize('com_ui_close')} className="absolute right-3 top-3" disabled={saveBusy} onClick={requestClose}>
-                      <X className="size-4" aria-hidden="true" />
-                    </Button>
-                  )}
-                </div>
-              )}
-              {sourcesReady && ocrReferenceTable && ocrReferenceDraft && ocrReference.rows.length > 0 && (
-                <section className="shrink-0 space-y-2" aria-label={ocrReferenceTable.title}>
-                  <h2 className="text-base font-semibold">{ocrReferenceTable.title}</h2>
-                  <SteelReviewEditor
-                    isDesktop={isDesktop}
-                    table={ocrReferenceTable}
-                    rows={ocrReference.rows}
-                    draft={ocrReferenceDraft}
-                    labels={{
-                      table: localize('com_ui_steel_review_table_label'),
-                      readonly: localize('com_ui_steel_review_cell_readonly'),
-                      ...sourceEditorLabels,
-                    }}
-                    onCellChange={() => undefined}
-                    canEdit={false}
-                  />
-                </section>
-              )}
-              <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
-                <div className="flex shrink-0 items-center gap-2 md:flex-1">
-                  <h2 className="whitespace-nowrap text-base font-semibold">{table.title}</h2>
-                  {(() => {
-                    const version = versions.get(JSON.stringify([table.messageId, table.kind, table.title, table.outputId]));
-                    if (!version) return null;
-                    const label = `${localize(version.latest ? 'com_ui_steel_review_latest_version' : 'com_ui_steel_review_previous_version')}${version.saves > 0 ? ` v${version.saves + 1}` : ''}`;
-                    return <Tag className="shrink-0" labelClassName="whitespace-nowrap" label={label} variant={version.latest ? 'success' : 'neutral'} />;
-                  })()}
-                </div>
-                <div className="ml-auto flex items-center gap-3">
-                  <label className="inline-flex items-center gap-2 text-sm">
-                    <Checkbox
-                      aria-label={localize('com_ui_steel_review_unlinked')}
-                      checked={unlinkedMode}
-                      onCheckedChange={(checked) => setDialogState((state) => ({ ...state, unlinkedMode: checked === true }))}
-                      disabled={saveBusy || !sourcesReady}
-                    />
-                    <span>{localize('com_ui_steel_review_unlinked')}</span>
-                  </label>
-                  {canEditStructure && (
-                    <TooltipAnchor
-                      description={localize('com_ui_steel_review_add_row')}
-                      render={(
-                        <Button type="button" size="icon" variant="outline" aria-label={localize('com_ui_steel_review_add_row')} onClick={onAddRow} disabled={saveBusy || !sourcesReady}>
-                          <Plus className="size-4" aria-hidden="true" />
+              <SteelReviewSplit
+                label={localize('com_ui_steel_review_resize_panels')}
+                hasReference={Boolean(
+                  sourcesReady && ocrReferenceTable && ocrReferenceDraft && ocrReference.rows.length > 0 && !ocrReferenceCollapsed,
+                )}
+                preview={
+                  <>
+                    {!sourcesReady && (
+                      <div
+                        className="flex h-full min-h-0 w-full flex-1 flex-col items-center justify-center gap-3 rounded-md bg-surface-secondary p-6 text-sm text-text-secondary"
+                        role={sourcesQuery.isError ? 'alert' : 'status'}
+                        aria-live="polite"
+                      >
+                        <p>{localize(sourcesQuery.isError ? 'com_ui_steel_review_sources_error' : 'com_ui_steel_review_sources_loading')}</p>
+                        {sourcesQuery.isError && (
+                          <Button type="button" variant="outline" onClick={() => void sourcesQuery.refetch()}>
+                            {localize('com_ui_retry')}
+                          </Button>
+                        )}
+                      </div>
+                    )}
+                    {selectedSource && (
+                      <div className="relative flex min-h-0 flex-1">
+                        <SteelReviewSourcePreview
+                          stateKey={`${steelReviewSourcePreviewKey(identity, selectedSource.fileId)}:${captureId ?? 'pending'}`}
+                          source={selectedSource}
+                          pageNumber={pageNumber}
+                          blob={sourceQuery.data}
+                          loading={sourceQuery.isLoading}
+                          error={sourceQuery.isError}
+                          onRetry={() => void sourceQuery.refetch()}
+                          onPageCount={onPageCount}
+                          labels={{
+                            zoomIn: localize('com_ui_steel_review_zoom_in'),
+                            zoomOut: localize('com_ui_steel_review_zoom_out'),
+                            fit: localize('com_ui_fit'),
+                            loading: localize('com_ui_steel_review_preview_loading'),
+                            retry: localize('com_ui_retry'),
+                            unavailable: localize('com_ui_steel_review_preview_unavailable'),
+                            canvas: localize('com_ui_steel_review_preview_canvas'),
+                          }}
+                        />
+                        {isDesktop && (
+                          <Button type="button" size="icon" variant="secondary" aria-label={localize('com_ui_close')} className="absolute right-3 top-3" disabled={saveBusy} onClick={requestClose}>
+                            <X className="size-4" aria-hidden="true" />
+                          </Button>
+                        )}
+                      </div>
+                    )}
+                  </>
+                }
+              >
+                {sourcesReady && ocrReferenceTable && ocrReferenceDraft && ocrReference.rows.length > 0 && (
+                  <section className="shrink-0 space-y-2" aria-label={ocrReferenceTable.title}>
+                    <h2 className="flex items-center gap-2 text-base font-semibold">
+                      <span className="min-w-0 break-words">{ocrReferenceTable.title}</span>
+                      <SteelReviewBadge table={ocrReferenceTable} showReadOnly />
+                      <TooltipAnchor description={ocrReferenceToggleLabel} side="top" render={
+                        <Button type="button" size="icon-sm" variant="ghost" className="ml-auto shrink-0"
+                          aria-label={ocrReferenceToggleLabel} aria-expanded={!ocrReferenceCollapsed}
+                          aria-controls={ocrReferenceContentId}
+                          onClick={() => setDialogState((state) => ({ ...state, ocrReferenceCollapsed: !state.ocrReferenceCollapsed }))}>
+                          {ocrReferenceCollapsed ? <ChevronsUpDown className="size-4" aria-hidden="true" /> : <ChevronsDownUp className="size-4" aria-hidden="true" />}
                         </Button>
-                      )}
-                    />
-                  )}
+                      } />
+                    </h2>
+                    <div id={ocrReferenceContentId} hidden={ocrReferenceCollapsed}>
+                      <SteelReviewEditor
+                        isDesktop={isDesktop}
+                        table={ocrReferenceTable}
+                        rows={ocrReference.rows}
+                        draft={ocrReferenceDraft}
+                        labels={{
+                          table: localize('com_ui_steel_review_table_label'),
+                          readonly: localize('com_ui_steel_review_cell_readonly'),
+                          ...sourceEditorLabels,
+                        }}
+                        onCellChange={() => undefined}
+                        canEdit={false}
+                      />
+                    </div>
+                  </section>
+                )}
+                <div className="flex shrink-0 flex-wrap items-center justify-between gap-3">
+                  <div className="flex shrink-0 items-center gap-2 md:flex-1">
+                    <h2 className="whitespace-nowrap text-base font-semibold">{table.title}</h2>
+                    {(() => {
+                      const version = versions.get(JSON.stringify([table.messageId, table.kind, table.title, table.outputId]));
+                      return <SteelReviewBadge table={table} version={version} />;
+                    })()}
+                  </div>
+                  <div className="ml-auto flex items-center gap-3">
+                    <label className="inline-flex items-center gap-2 text-sm">
+                      <Checkbox
+                        aria-label={localize('com_ui_steel_review_unlinked')}
+                        checked={unlinkedMode}
+                        onCheckedChange={(checked) => setDialogState((state) => ({ ...state, unlinkedMode: checked === true }))}
+                        disabled={saveBusy || !sourcesReady}
+                      />
+                      <span>{localize('com_ui_steel_review_unlinked')}</span>
+                    </label>
+                    {canEditStructure && (
+                      <TooltipAnchor
+                        description={localize('com_ui_steel_review_add_row')}
+                        render={(
+                          <Button type="button" size="icon" variant="outline" aria-label={localize('com_ui_steel_review_add_row')} onClick={onAddRow} disabled={saveBusy || !sourcesReady}>
+                            <Plus className="size-4" aria-hidden="true" />
+                          </Button>
+                        )}
+                      />
+                    )}
+                  </div>
                 </div>
-              </div>
-              <SteelReviewEditor
-                isDesktop={isDesktop}
-                table={table}
-                rows={editorRows}
-                draft={draftState}
-                labels={{
-                  table: localize('com_ui_steel_review_table_label'),
-                  readonly: localize('com_ui_steel_review_cell_readonly'),
-                  edit: localize('com_ui_edit'),
-                  reset: localize('com_ui_reset'),
-                  ...sourceEditorLabels,
-                  bind: localize('com_ui_steel_review_bind'),
-                  bound: localize('com_ui_steel_review_bound'),
-                  classify: localize('com_ui_steel_review_classify'),
-                  material: localize('com_ui_steel_review_material'),
-                  processing: localize('com_ui_steel_review_processing'),
-                }}
-                onCellChange={onCellChange}
-                onMeasurementChange={onMeasurementChange}
-                onCandidateChange={onCandidateChange}
-                canEdit={canEdit}
-                onSourceEdit={canEditSources ? onSourceEdit : undefined}
-                onDeleteRow={canEditStructure ? onDeleteRow : undefined}
-                onRestoreRow={canEditStructure ? onRestoreRow : undefined}
-                onDeleteGroup={table.kind === 'system_order' && canEditStructure ? onDeleteGroup : undefined}
-                onClassify={table.kind === 'system_order' && canEditStructure ? onClassify : undefined}
-                systemMaterials={draftRows}
-              />
+                <SteelReviewEditor
+                  isDesktop={isDesktop}
+                  fillHeight
+                  table={table}
+                  rows={editorRows}
+                  draft={draftState}
+                  labels={{
+                    table: localize('com_ui_steel_review_table_label'),
+                    readonly: localize('com_ui_steel_review_cell_readonly'),
+                    edit: localize('com_ui_edit'),
+                    reset: localize('com_ui_reset'),
+                    ...sourceEditorLabels,
+                    bind: localize('com_ui_steel_review_bind'),
+                    bound: localize('com_ui_steel_review_bound'),
+                    classify: localize('com_ui_steel_review_classify'),
+                    material: localize('com_ui_steel_review_material'),
+                    processing: localize('com_ui_steel_review_processing'),
+                  }}
+                  onCellChange={onCellChange}
+                  onCandidateChange={onCandidateChange}
+                  canEdit={canEdit}
+                  onSourceEdit={canEditSources ? onSourceEdit : undefined}
+                  onDeleteRow={canEditStructure ? onDeleteRow : undefined}
+                  onRestoreRow={canEditStructure ? onRestoreRow : undefined}
+                  onDeleteGroup={table.kind === 'system_order' && canEditStructure ? onDeleteGroup : undefined}
+                  onClassify={table.kind === 'system_order' && canEditStructure ? onClassify : undefined}
+                  systemMaterials={draftRows}
+                />
+              </SteelReviewSplit>
             </div>
           )}
         </div>

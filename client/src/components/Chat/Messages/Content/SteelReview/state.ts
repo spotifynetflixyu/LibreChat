@@ -32,6 +32,7 @@ export interface SteelReviewDialogState {
   pageNumber: number;
   pageCount: number;
   unlinkedMode: boolean;
+  ocrReferenceCollapsed?: boolean;
   unlinkedRowIds: string[];
   unlinkedMembershipOwner?: string;
   initializedSourceId?: string;
@@ -82,6 +83,16 @@ export function sameSteelReviewIdentity(
     left.messageId === right.messageId &&
     left.kind === right.kind &&
     left.title === right.title);
+}
+
+export function markSteelReviewRowBound(
+  state: SteelReviewDialogState,
+  rowId: string,
+): SteelReviewDialogState {
+  return {
+    ...state,
+    unlinkedRowIds: state.unlinkedRowIds.filter((candidate) => candidate !== rowId),
+  };
 }
 
 type OwnedStateFamily<T> = ((key: string) => PrimitiveAtom<T>) & {

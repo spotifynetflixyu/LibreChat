@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { SteelReviewRow } from './review';
-import { steelCalculationCandidateEvidenceSchema } from './calculation';
+import { normalizeSteelDecimal, steelCalculationCandidateEvidenceSchema } from './calculation';
 
 export const steelCatalogSearchFieldSchema = z.enum(['model', 'description']);
 export type SteelCatalogSearchField = z.infer<typeof steelCatalogSearchFieldSchema>;
@@ -65,6 +65,9 @@ export const steelCatalogQuerySchema = z.object({
   outputId: z.string().trim().min(1).max(300),
   revision: z.string().trim().min(1).max(300),
   rowId: z.string().trim().min(1).max(300),
+  customerSnapshotId: z.string().trim().min(1).max(300).optional(),
+  customerRevision: z.string().trim().min(1).max(300).optional(),
+  customerTier: steelCatalogPriceTierSchema.optional(),
   kind: z.enum(['material', 'processing']).optional(),
   parentRowId: z.string().trim().min(1).max(300).optional(),
   materialCategory: z.string().max(300).optional(),
@@ -74,6 +77,10 @@ export const steelCatalogQuerySchema = z.object({
   cursor: z.string().min(1).optional(),
   limit: z.coerce.number().int().positive().max(100).optional(),
 }).strict().superRefine((query, context) => {
+  const customerFields = [query.customerSnapshotId, query.customerRevision, query.customerTier];
+  if (customerFields.some((value) => value !== undefined) && customerFields.some((value) => value === undefined)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, message: 'Catalog customer evidence must include snapshot, revision and tier' });
+  }
   if (query.kind === 'processing' && (!query.parentRowId || query.materialCategory === undefined)) {
     context.addIssue({ code: z.ZodIssueCode.custom, message: 'Processing queries require a material scope' });
   }
@@ -111,7 +118,9 @@ export function steelCatalogOptionLabel(candidate: Pick<SteelCatalogCandidate, '
 }
 
 function exactDimension(minimum: string | null, maximum: string | null): string {
-  return minimum !== null && minimum === maximum ? minimum : '';
+  const min = normalizeSteelDecimal(minimum) ?? minimum;
+  const max = normalizeSteelDecimal(maximum) ?? maximum;
+  return min !== null && min === max ? min : '';
 }
 
 export const steelMaterialCandidateHeaders = [
@@ -135,7 +144,7 @@ function candidateFields(
     計價基準: String(tier.charCodeAt(0) - 64),
     公式編號: candidate.formulaCode ?? '',
     厚度: exactDimension(candidate.thicknessMinMm, candidate.thicknessMaxMm),
-    單價: candidate.unitPrice ?? '',
+    單價: normalizeSteelDecimal(candidate.unitPrice) ?? candidate.unitPrice ?? '',
   };
   const changedHeaders = Object.keys(candidateValues).filter((header) => headers.includes(header));
   for (const header of changedHeaders) {

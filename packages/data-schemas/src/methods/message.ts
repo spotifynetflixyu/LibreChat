@@ -30,6 +30,7 @@ import { compactMessageToolResults, compactToolCallOutput } from '~/utils/tool';
 import { STEEL_QUOTATION_INPUT_TTL_MS } from './steelQuotationInput';
 import { createSteelPublicationMethods } from './steelPublication';
 import { tenantSafeBulkWrite } from '~/utils/tenantBulkWrite';
+import { createSteelCustomerMethods } from './steelCustomer';
 import { steelReviewTitleStorageId } from '~/utils/identity';
 import { createSteelHistoryMethods } from './steelHistory';
 import { createConversationModel } from '~/models/convo';
@@ -712,7 +713,7 @@ function toSettledAt(value: unknown): Date | undefined {
   return undefined;
 }
 
-export interface MessageMethods extends ReturnType<typeof createSteelPublicationMethods>, ReturnType<typeof createSteelHistoryMethods> {
+export interface MessageMethods extends ReturnType<typeof createSteelCustomerMethods>, ReturnType<typeof createSteelPublicationMethods>, ReturnType<typeof createSteelHistoryMethods> {
   saveMessage(
     ctx: {
       userId: string;
@@ -1322,6 +1323,12 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
             baseline.baselineMarkdown !== currentSystemOrder.markdown || !baseline.rows || !baseline.headers) {
             throw new Error('Quotation review baseline is invalid');
           }
+          const reviewMetadata = currentSystemOrder.reviewMetadata;
+          if (reviewMetadata && (reviewMetadata.lineage.outputId !== baseline.outputId ||
+            reviewMetadata.lineage.revision !== baseline.revision || reviewMetadata.lineage.runId !== input.runId ||
+            (reviewMetadata.lineage.messageId && reviewMetadata.lineage.messageId !== input.targetMessageId))) {
+            throw new Error('Quotation review metadata owner is invalid');
+          }
           aiOwner = { kind: 'system_order', source: 'ai', snapshotId: `markdown:quotation:${input.runId}:ai:system_order`,
             generationId: `quotation:${input.runId}`, outputId: baseline.outputId, messageId: input.targetMessageId,
             title: baseline.title, revision: baseline.revision, sha256: input.currentSystemOrderSha256,
@@ -1338,7 +1345,8 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
             outputId: baseline.outputId, revision: baseline.revision, state: 'current', latestOutputId: baseline.outputId,
             headers: baseline.headers, rows: normalizeSteelReviewLedgerRows(baseline.rows), sourceMappings: baseline.sourceMappings,
             aiUpdatedAt: now, aiRawMarkdown: message.text, aiBaselineMarkdown: baseline.baselineMarkdown,
-            effectiveMarkdown: baseline.baselineMarkdown, displayMarkdown: baseline.baselineMarkdown, receipts: [] }], { session });
+            effectiveMarkdown: baseline.baselineMarkdown, displayMarkdown: baseline.baselineMarkdown, receipts: [],
+            ...(currentSystemOrder.reviewMetadata ? { reviewMetadata: currentSystemOrder.reviewMetadata } : {}) }], { session });
           await QuotationState.updateOne(stateFilter, { $set: { 'markdownPublication.current.system_order': { ai: aiOwner, effective: aiOwner },
             'currentSystemOrder.reviewOutputId': baseline.outputId } }, { session });
         }
@@ -4133,6 +4141,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
 
   return {
     ...createSteelHistoryMethods(mongoose),
+    ...createSteelCustomerMethods(mongoose),
     ...createSteelPublicationMethods(mongoose, async (input, message, session) => saveMessageInternal(
       { userId: input.scope.userId, ...input.saveContext },
       message as Omit<Partial<IMessage>, 'contextMeta'>,

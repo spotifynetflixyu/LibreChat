@@ -1,6 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
 import mongoose, { type FilterQuery } from 'mongoose';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { EModelEndpoint, RetentionMode } from 'librechat-data-provider';
 import type {
   Document,
@@ -14,10 +14,21 @@ import type {
   IAgentEventActorSuspensionEvidence,
   IChatProject,
   IConversation,
+  ISteelConversationOcrState,
+  ISteelDelegateOcrRun,
+  ISteelOcrResponseAudit,
   AppConfig,
   ISteelQuotationArtifact,
   ISteelQuotationState,
+  ISteelReviewOutput,
 } from '../types';
+import {
+  createSteelConversationOcrStateModel,
+  createSteelDelegateOcrRunModel,
+  createSteelOcrResponseAuditModel,
+  createSteelReviewOutputModel,
+  createSteelWorkingOrderMemoryModel,
+} from '../models/steel';
 import { ConversationMethods, createConversationMethods } from './conversation';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createModels } from '../models';
@@ -30,7 +41,7 @@ jest.mock('~/config/winston', () => ({
 }));
 
 const MEILI_SEARCH_LIMIT = 1000;
-let mongoServer: InstanceType<typeof MongoMemoryServer>;
+let mongoServer: InstanceType<typeof MongoMemoryReplSet>;
 let Conversation: mongoose.Model<IConversation>;
 let ChatProject: mongoose.Model<IChatProject>;
 let ConversationTag: mongoose.Model<{
@@ -41,6 +52,10 @@ let ConversationTag: mongoose.Model<{
 }>;
 let SteelQuotationState: mongoose.Model<ISteelQuotationState>;
 let SteelQuotationArtifact: mongoose.Model<ISteelQuotationArtifact>;
+let SteelConversationOcrState: mongoose.Model<ISteelConversationOcrState>;
+let SteelDelegateOcrRun: mongoose.Model<ISteelDelegateOcrRun>;
+let SteelOcrResponseAudit: mongoose.Model<ISteelOcrResponseAudit>;
+let SteelReviewOutput: mongoose.Model<ISteelReviewOutput>;
 let modelsToCleanup: string[] = [];
 
 // Mock message methods (same as original test mocking ./Message)
@@ -51,7 +66,7 @@ const searchMessages = jest.fn().mockResolvedValue({ hits: [] });
 let methods: ConversationMethods;
 
 beforeAll(async () => {
-  mongoServer = await MongoMemoryServer.create();
+  mongoServer = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } });
   const mongoUri = mongoServer.getUri();
 
   const models = createModels(mongoose);
@@ -67,6 +82,10 @@ beforeAll(async () => {
   }>;
   SteelQuotationState = models.SteelQuotationState;
   SteelQuotationArtifact = models.SteelQuotationArtifact;
+  SteelConversationOcrState = createSteelConversationOcrStateModel(mongoose);
+  SteelDelegateOcrRun = createSteelDelegateOcrRunModel(mongoose);
+  SteelOcrResponseAudit = createSteelOcrResponseAuditModel(mongoose);
+  SteelReviewOutput = createSteelReviewOutputModel(mongoose);
 
   methods = createConversationMethods(mongoose, { getMessages, deleteMessages, searchMessages });
 
@@ -2642,7 +2661,7 @@ describe('Conversation Operations', () => {
       ]);
       expect(eraseAgentTriggerDeliveryConversationResults).toHaveBeenCalledWith('user123', [
         conversationId,
-      ]);
+      ], 'tenant-1');
       expect(transitions).toEqual([
         'queue-retired',
         'generation-drained',
@@ -2728,6 +2747,7 @@ describe('Conversation Operations', () => {
       expect(deleteMessages).toHaveBeenCalledWith({
         user: 'user123',
         conversationId: { $in: ids },
+        tenantId: null,
       });
 
       await expect(
@@ -2789,6 +2809,7 @@ describe('Conversation Operations', () => {
       expect(deleteMessages).toHaveBeenCalledWith({
         conversationId: { $in: [mockConversationData.conversationId] },
         user: 'user123',
+        tenantId: null,
       });
 
       // Verify conversation was deleted
@@ -2798,6 +2819,286 @@ describe('Conversation Operations', () => {
       expect(deletedConvo).toBeNull();
       expect(await SteelQuotationState.findOne({ userId: 'user123', conversationId: mockConversationData.conversationId })).toBeNull();
       expect(await SteelQuotationArtifact.findOne({ userId: 'user123', conversationId: mockConversationData.conversationId })).toBeNull();
+    });
+
+    it('deletes every owned Steel output version and OCR sidecar while preserving another tenant', async () => {
+      const conversationId = uuidv4();
+      const otherConversationId = uuidv4();
+      const foreignConversationId = uuidv4();
+      await Conversation.create([
+        {
+          conversationId,
+          user: 'user123',
+          tenantId: 'tenant-a',
+          endpoint: EModelEndpoint.openAI,
+        },
+        {
+          conversationId: otherConversationId,
+          user: 'user123',
+          tenantId: 'tenant-b',
+          endpoint: EModelEndpoint.openAI,
+        },
+      ]);
+      await SteelReviewOutput.create([
+        {
+          userId: 'user123',
+          tenantId: 'tenant-a',
+          conversationId,
+          kind: 'ocr_result',
+          messageId: 'message-a',
+          tableId: 'table-a',
+          outputId: 'output-a-current',
+          revision: 'revision-a-current',
+          state: 'current',
+          headers: [],
+          rows: [],
+          receipts: [],
+        },
+        {
+          userId: 'user123',
+          tenantId: 'tenant-a',
+          conversationId,
+          kind: 'ocr_result',
+          messageId: 'message-a',
+          tableId: 'table-a',
+          outputId: 'output-a-history',
+          revision: 'revision-a-history',
+          state: 'historical',
+          headers: [],
+          rows: [],
+          receipts: [],
+        },
+        {
+          userId: 'user123',
+          tenantId: 'tenant-b',
+          conversationId: otherConversationId,
+          kind: 'ocr_result',
+          messageId: 'message-b',
+          tableId: 'table-b',
+          outputId: 'output-b',
+          revision: 'revision-b',
+          state: 'current',
+          headers: [],
+          rows: [],
+          receipts: [],
+        },
+        {
+          userId: 'other-user',
+          tenantId: 'tenant-c',
+          conversationId: foreignConversationId,
+          kind: 'ocr_result',
+          messageId: 'message-foreign',
+          tableId: 'table-foreign',
+          outputId: 'output-foreign',
+          revision: 'revision-foreign',
+          state: 'current',
+          headers: [],
+          rows: [],
+          receipts: [],
+        },
+      ]);
+      await SteelQuotationState.create([
+        {
+          userId: 'user123',
+          tenantId: 'tenant-a',
+          conversationId,
+          nextSignalIndex: 0,
+          tickets: [],
+          pendingMessages: [],
+        },
+      ]);
+      await SteelQuotationArtifact.create([
+        {
+          userId: 'user123',
+          tenantId: 'tenant-a',
+          conversationId,
+          runId: 'run-a',
+          operationId: 'operation-a',
+          kind: 'snapshot',
+          sha256: 'sha-a',
+          payload: 'snapshot-a',
+        },
+        {
+          userId: 'user123',
+          tenantId: 'tenant-b',
+          conversationId: otherConversationId,
+          runId: 'run-b',
+          operationId: 'operation-b',
+          kind: 'snapshot',
+          sha256: 'sha-b',
+          payload: 'snapshot-b',
+        },
+      ]);
+      await SteelOcrResponseAudit.create([
+        {
+          userId: 'user123',
+          tenantId: 'tenant-a',
+          conversationId,
+          messageId: 'message-a',
+          generationId: 'generation-a',
+          sourceStage: 'normal_request',
+          baseHash: 'base-a',
+          rawResponse: 'response-a',
+          rawResponseHash: 'raw-a',
+          idempotencyKey: 'audit-a',
+        },
+        {
+          userId: 'user123',
+          tenantId: 'tenant-b',
+          conversationId: otherConversationId,
+          messageId: 'message-b',
+          generationId: 'generation-b',
+          sourceStage: 'normal_request',
+          baseHash: 'base-b',
+          rawResponse: 'response-b',
+          rawResponseHash: 'raw-b',
+          idempotencyKey: 'audit-b',
+        },
+      ]);
+
+      await deleteConvos('user123', { conversationId, tenantId: 'tenant-a' });
+
+      expect(deleteMessages).toHaveBeenCalledWith({
+        user: 'user123',
+        $or: [{ conversationId, tenantId: 'tenant-a' }],
+      });
+      expect(await Conversation.findOne({ conversationId, tenantId: 'tenant-a' })).toBeNull();
+      expect(await Conversation.findOne({ conversationId: otherConversationId, tenantId: 'tenant-b' })).not.toBeNull();
+      expect(await SteelReviewOutput.countDocuments({ conversationId, tenantId: 'tenant-a' })).toBe(0);
+      expect(await SteelReviewOutput.countDocuments({ conversationId: otherConversationId, tenantId: 'tenant-b' })).toBe(1);
+      expect(await SteelReviewOutput.countDocuments({ userId: 'other-user', conversationId: foreignConversationId })).toBe(1);
+      expect(await SteelQuotationState.countDocuments({ conversationId, tenantId: 'tenant-a' })).toBe(0);
+      expect(await SteelQuotationArtifact.countDocuments({ conversationId, tenantId: 'tenant-a' })).toBe(0);
+      expect(await SteelOcrResponseAudit.countDocuments({ conversationId, tenantId: 'tenant-a' })).toBe(0);
+      expect(await SteelReviewOutput.countDocuments({ conversationId: otherConversationId, tenantId: 'tenant-b' })).toBe(1);
+      expect(await SteelQuotationArtifact.countDocuments({ conversationId: otherConversationId, tenantId: 'tenant-b' })).toBe(1);
+      expect(await SteelOcrResponseAudit.countDocuments({ conversationId: otherConversationId, tenantId: 'tenant-b' })).toBe(1);
+    });
+
+    it('removes legacy OCR state and preserves other conversations', async () => {
+      const uniqueConversationId = uuidv4();
+      const sharedConversationId = uuidv4();
+      await Conversation.create([
+        {
+          conversationId: uniqueConversationId,
+          user: 'user123',
+          tenantId: 'tenant-a',
+          endpoint: EModelEndpoint.openAI,
+        },
+        {
+          conversationId: uuidv4(),
+          user: 'user123',
+          tenantId: 'tenant-a',
+          endpoint: EModelEndpoint.openAI,
+        },
+        {
+          conversationId: sharedConversationId,
+          user: 'user123',
+          tenantId: 'tenant-b',
+          endpoint: EModelEndpoint.openAI,
+        },
+      ]);
+      const createDelegateRun = (conversationId: string, claimToken: string) => ({
+        conversationId,
+        delegateOcrIndex: 0,
+        claimToken,
+        triggeringMessageId: `${claimToken}-message`,
+        toolParameters: {},
+        files: [],
+        status: 'completed' as const,
+        currentStage: 'completed' as const,
+        agentAttemptNumber: 1,
+        saveAttemptNumber: 1,
+        finalizationJournal: {
+          candidateValidated: false,
+          resultPersisted: false,
+          messagePersisted: false,
+          claimCleared: false,
+        },
+      });
+      await SteelConversationOcrState.create([
+        { conversationId: uniqueConversationId, sourceMappings: [] },
+        { conversationId: sharedConversationId, sourceMappings: [] },
+      ]);
+      await SteelDelegateOcrRun.create([
+        createDelegateRun(uniqueConversationId, 'unique-run'),
+        createDelegateRun(sharedConversationId, 'shared-run'),
+      ]);
+
+      const Memory = createSteelWorkingOrderMemoryModel(mongoose);
+      await Memory.create([uniqueConversationId, sharedConversationId].map((conversationId) => ({
+        conversationId, turnIndex: 1, checkpointTurnIndex: 1, memoryKind: 'ocr_extract', sourceKind: 'ocr_result',
+        payload: { markdown: 'private OCR snapshot' },
+      })));
+      await deleteConvos('user123', {
+        conversationId: uniqueConversationId,
+        tenantId: 'tenant-a',
+      });
+
+      expect(await Memory.findOne({ conversationId: uniqueConversationId })).toBeNull();
+      expect(await Memory.findOne({ conversationId: sharedConversationId })).not.toBeNull();
+      expect(await SteelConversationOcrState.findOne({ conversationId: uniqueConversationId })).toBeNull();
+      expect(await SteelDelegateOcrRun.findOne({ conversationId: uniqueConversationId })).toBeNull();
+      expect(await SteelConversationOcrState.findOne({ conversationId: sharedConversationId })).not.toBeNull();
+      expect(await SteelDelegateOcrRun.findOne({ conversationId: sharedConversationId })).not.toBeNull();
+      expect(await Conversation.findOne({ conversationId: sharedConversationId, tenantId: 'tenant-b' })).not.toBeNull();
+    });
+
+    it('fences delayed snapshot writes and retains deletion scope after the parent and messages are gone', async () => {
+      const conversationId = uuidv4();
+      const scope = { userId: 'user123', conversationId, tenantId: 'tenant-a' };
+      await Conversation.create({ conversationId, user: scope.userId, tenantId: scope.tenantId, endpoint: EModelEndpoint.agents });
+      await SteelQuotationState.create({ ...scope, nextSignalIndex: 0, tickets: [], pendingMessages: [] });
+      await deleteConvos(scope.userId, { conversationId, tenantId: scope.tenantId });
+      await expect(SteelQuotationArtifact.create({ ...scope, runId: 'late', operationId: 'snapshot',
+        kind: 'snapshot', sha256: 'a'.repeat(64), payload: 'OCR snapshot' }))
+        .rejects.toMatchObject({ code: 'STEEL_CONVERSATION_DELETED' });
+      await expect(SteelQuotationState.findOneAndUpdate(scope, { $setOnInsert: scope }, { upsert: true }))
+        .rejects.toMatchObject({ code: 'STEEL_CONVERSATION_DELETED' });
+      expect(await SteelQuotationArtifact.countDocuments(scope)).toBe(0);
+      const recovered = await deleteConvos(scope.userId, { conversationId: { $in: [conversationId] }, tenantId: scope.tenantId }, { allowEmpty: true });
+      expect(recovered.conversationIds).toEqual([conversationId]);
+      expect(deleteMessages).toHaveBeenLastCalledWith({ user: scope.userId,
+        $or: [{ conversationId, tenantId: scope.tenantId }] });
+      expect(await SteelQuotationState.countDocuments(scope)).toBe(0);
+    });
+
+    it('keeps the conversation for cleanup retry when Steel deletion fails', async () => {
+      const conversationId = uuidv4();
+      await Conversation.create({
+        conversationId,
+        user: 'user123',
+        tenantId: 'tenant-a',
+        endpoint: EModelEndpoint.openAI,
+      });
+      await SteelReviewOutput.create({
+        userId: 'user123',
+        tenantId: 'tenant-a',
+        conversationId,
+        kind: 'ocr_result',
+        messageId: 'message-retry',
+        tableId: 'table-retry',
+        outputId: 'output-retry',
+        revision: 'revision-retry',
+        state: 'current',
+        headers: [],
+        rows: [],
+        receipts: [],
+      });
+      const deleteMany = jest
+        .spyOn(SteelReviewOutput, 'deleteMany')
+        .mockRejectedValue(new Error('Steel cleanup unavailable'));
+
+      await expect(
+        deleteConvos('user123', { conversationId, tenantId: 'tenant-a' }),
+      ).rejects.toThrow('Steel cleanup unavailable');
+      expect(deleteMany).toHaveBeenCalledTimes(3);
+      expect(await Conversation.findOne({ conversationId, tenantId: 'tenant-a' })).not.toBeNull();
+
+      deleteMany.mockRestore();
+      await deleteConvos('user123', { conversationId, tenantId: 'tenant-a' });
+      expect(await Conversation.findOne({ conversationId, tenantId: 'tenant-a' })).toBeNull();
+      expect(await SteelReviewOutput.findOne({ conversationId, tenantId: 'tenant-a' })).toBeNull();
     });
 
     it('cascades parent deletion through owner-scoped child-thread lineage', async () => {
@@ -2854,6 +3155,7 @@ describe('Conversation Operations', () => {
       expect(deleteMessages).toHaveBeenCalledWith({
         conversationId: { $in: [parentId, childId, grandchildId] },
         user: 'user123',
+        tenantId: null,
       });
       expect(await Conversation.find({ user: 'user123' })).toHaveLength(0);
       expect(await Conversation.findOne({ conversationId: otherUsersChildId })).not.toBeNull();
@@ -2892,12 +3194,14 @@ describe('Conversation Operations', () => {
           },
         },
       ]);
+      const childReadAttempt = jest.fn();
       const realFind = Conversation.find.bind(Conversation);
       const findSpy = jest.spyOn(Conversation, 'find').mockImplementation(((filter) => {
         if (
           filter != null &&
           Object.prototype.hasOwnProperty.call(filter, 'subagentThread.parentConversationId')
         ) {
+          childReadAttempt();
           return {
             select: () => ({ lean: () => Promise.reject(new Error('stepdown')) }),
           };
@@ -2908,7 +3212,7 @@ describe('Conversation Operations', () => {
       await expect(deleteConvos('user123', { conversationId: parentId })).rejects.toThrow(
         'stepdown',
       );
-      expect(findSpy).toHaveBeenCalledTimes(4);
+      expect(childReadAttempt).toHaveBeenCalledTimes(3);
       expect(await Conversation.findOne({ conversationId: parentId })).toBeNull();
       expect(await Conversation.findOne({ conversationId: childId })).not.toBeNull();
       expect(deleteMessages).not.toHaveBeenCalled();
@@ -2928,6 +3232,7 @@ describe('Conversation Operations', () => {
       expect(deleteMessages).toHaveBeenCalledWith({
         conversationId: { $in: [parentId, childId] },
         user: 'user123',
+        tenantId: null,
       });
       expect((await ConversationTag.findOne({ user: 'user123', tag: 'work' }).lean())?.count).toBe(
         0,
@@ -2984,10 +3289,21 @@ describe('Conversation Operations', () => {
       expect(result.conversationIds).toEqual(['already-absent']);
       expect(eraseAgentTriggerDeliveryConversationResults).toHaveBeenCalledWith('user123', [
         'already-absent',
-      ]);
+      ], null);
+    });
+
+    it('normalizes legacy JavaScript ObjectId owners before fencing deletion', async () => {
+      const ownerId = new mongoose.Types.ObjectId();
+      const conversationId = uuidv4();
+      await Conversation.create({ conversationId, user: ownerId.toString(), endpoint: EModelEndpoint.agents });
+      await expect(deleteConvos(ownerId as unknown as string, { conversationId })).resolves.toMatchObject({
+        deletedCount: 1,
+        conversationIds: [conversationId],
+      });
     });
 
     it('supports an idempotent empty recovery sweep without hiding storage failures', async () => {
+      deleteMessages.mockResolvedValueOnce({ acknowledged: true, deletedCount: 0 });
       await expect(
         deleteConvos(
           'user123',
@@ -2998,7 +3314,7 @@ describe('Conversation Operations', () => {
         acknowledged: true,
         deletedCount: 0,
         messages: { acknowledged: true, deletedCount: 0 },
-        conversationIds: [],
+        conversationIds: ['already-absent'],
       });
 
       const find = jest.spyOn(Conversation, 'find').mockImplementationOnce(() => {
@@ -3135,7 +3451,7 @@ describe('Conversation Operations', () => {
       expect(tag?.count).toBe(2);
     });
 
-    it('still decrements tag counts AND returns the deleted ids when message deletion fails', async () => {
+    it('reports message cleanup failure and recovers by the durable deleted identity', async () => {
       await ConversationTag.create({ user: 'user123', tag: 'work', count: 2, position: 1 });
       const convoId = uuidv4();
       await Conversation.create({
@@ -3147,11 +3463,9 @@ describe('Conversation Operations', () => {
 
       deleteMessages.mockRejectedValueOnce(new Error('message cleanup failed'));
 
-      // Post-delete cleanup is best-effort: the conversations are already gone, so the
-      // caller must still receive the deleted ids (downstream cleanup — e.g. agent
-      // checkpoint pruning — depends on them, and a retry would find nothing).
+      await expect(deleteConvos('user123', { conversationId: convoId })).rejects.toThrow('message cleanup failed');
       const result = await deleteConvos('user123', { conversationId: convoId });
-      expect(result.deletedCount).toBe(1);
+      expect(result.deletedCount).toBe(0);
       expect(result.conversationIds).toEqual([convoId]);
       expect(result.messages.deletedCount).toBe(0);
 

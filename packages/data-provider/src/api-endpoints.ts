@@ -1,6 +1,6 @@
+import type { SteelCatalogQuery, SteelCustomerQuery } from './steel';
 import type { StartupConfigContext } from './config';
 import type { AssistantsEndpoint } from './schemas';
-import type { SteelCatalogQuery } from './steel';
 import { ResourceType } from './accessPermissions';
 import * as q from './types/queries';
 
@@ -337,6 +337,10 @@ export const steelQuotationCancel = (conversationId: string, index: number) =>
   `${steelQuotationStatus(conversationId)}/${encodeURIComponent(String(index))}/cancel`;
 export const steelMarkdownVersions = (conversationId: string) =>
   `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/versions`;
+export const steelCustomer = (input: SteelCustomerQuery) => {
+  const query = new URLSearchParams({ messageId: input.messageId, title: input.title, outputId: input.outputId });
+  return `${steelBase()}/conversations/${encodeURIComponent(input.conversationId)}/customer?${query}`;
+};
 export const steelReview = (
   conversationId: string,
   kind: string,

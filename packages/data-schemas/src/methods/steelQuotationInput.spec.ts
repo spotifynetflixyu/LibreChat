@@ -1,8 +1,9 @@
 import mongoose from 'mongoose';
 import { createHash } from 'node:crypto';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
-import type { SteelMarkdownAdmission, SteelMarkdownPublicationInput } from '~/types';
+import type { IMessage, SteelMarkdownAdmission, SteelMarkdownPublicationInput } from '~/types';
 import {
+  createSteelConversationOcrStateModel,
   createSteelQuotationArtifactModel,
   createSteelQuotationStateModel,
   createSteelReviewOutputModel,
@@ -386,4 +387,120 @@ it('does not select a historical human snapshot without its authorized live owne
   expect(await methods.readSteelQuotationOcrInput({ ...scope, userId: 'other-user' })).toEqual({ ok: true });
   await mongoose.models.Message.deleteOne({ conversationId: scope.conversationId, messageId: ai.messageId });
   expect(await methods.readSteelQuotationOcrInput(scope)).toEqual({ ok: false, code: 'invalid_snapshot' });
+});
+
+async function seedLegacyOcr(): Promise<string> {
+  const legacyMarkdown = '## ocr_result\n\n| 來源 | 零件編號 | 數量 | 頁碼 |\n| --- | --- | --- | --- |\n| F1 | P1 | 2 | 1 |';
+  await mongoose.models.Message.create({ ...scope, user: scope.userId, messageId: 'legacy-ocr',
+    text: legacyMarkdown, isCreatedByUser: false, unfinished: false,
+    files: [{ file_id: 'legacy-file' }],
+  });
+  await mongoose.models.File.create({ user: scope.userId, file_id: 'legacy-file', filename: 'drawing.pdf',
+    filepath: '/test/drawing.pdf', type: 'application/pdf', bytes: 1, object: 'file', source: 'local',
+    context: 'message_attachment',
+  });
+  await createSteelConversationOcrStateModel(mongoose).create({ conversationId: scope.conversationId,
+    currentOcrResultGenerationId: 'legacy-generation', currentOcrResultMessageId: 'legacy-ocr',
+    currentOcrResultMarkdown: legacyMarkdown,
+    sourceMappings: [{ fileId: 'legacy-file', sourceCode: 'F1', sourceFilename: 'drawing.pdf' }],
+  });
+  await createSteelQuotationStateModel(mongoose).create({ ...scope, tickets: [], pendingMessages: [], nextSignalIndex: 0 });
+  return legacyMarkdown;
+}
+
+it('enrolls an old conversation without opening review, and freezes independent generate/regenerate inputs', async () => {
+  const original = await seedLegacyOcr();
+  const methods = createSteelQuotationInputMethods(mongoose);
+  const State = createSteelQuotationStateModel(mongoose);
+  const Artifact = createSteelQuotationArtifactModel(mongoose);
+  const prepared = await methods.prepareSteelQuotationOcrInput({ scope, expectedOrderHash: null });
+  if (!prepared.ok || !prepared.input) throw new Error('Legacy OCR was not enrolled');
+  expect(prepared.input.markdown).toBe(original);
+  expect(prepared.input.selection.selected).toMatchObject({ outputId: 'ocr_result:legacy-generation', messageId: 'legacy-ocr' });
+  expect(prepared.input.sourceSnapshot.mappings).toEqual([{ fileId: 'legacy-file', sourceCode: 'F1', sourceFilename: 'drawing.pdf' }]);
+  expect((await mongoose.models.Message.findOne({ messageId: 'legacy-ocr' }).lean<IMessage>())?.metadata?.steelMarkdownOwners)
+    .toMatchObject({ ocr_result: { outputId: 'ocr_result:legacy-generation' } });
+  expect(prepared.input.selection.selected.outputId)
+    .toBe('ocr_result:legacy-generation');
+  for (const index of [1, 2]) {
+    const ticket = { index, token: `quote-${index}`, orderHash: sha(original), customerMarkdown: 'customer',
+      customerIdentity: 'B', triggeringMessageId: `turn-${index}`, issuedAt: new Date() };
+    await State.updateOne(scope, { $set: { tickets: [ticket] }, $unset: { activeRun: 1 } });
+    const admitted = await methods.admitSteelQuotationOcrInput({ scope, ...ticket,
+      selection: prepared.input.selection, targetMessageId: `quote-message-${index}`,
+      prompts: { child: 'child', main: 'main' }, chunks: [{ index: 1, sourceRowCount: 1 }],
+    });
+    expect(admitted.ok).toBe(true);
+  }
+  const snapshots = await Artifact.find({ ...scope, kind: 'snapshot' }).sort({ runId: 1 }).lean();
+  expect(snapshots).toHaveLength(2);
+  expect(snapshots.map((snapshot) => snapshot.runId)).toEqual(['quote-1', 'quote-2']);
+  for (const snapshot of snapshots) expect(JSON.parse(snapshot.payload)).toMatchObject({
+    orderMarkdown: original, ocrSelection: { selected: { outputId: 'ocr_result:legacy-generation' } },
+    sourceSnapshot: { mappings: prepared.input.sourceSnapshot.mappings },
+  });
+  await createSteelConversationOcrStateModel(mongoose).updateOne({ conversationId: scope.conversationId }, {
+    $set: { currentOcrResultMarkdown: original.replace('P1', 'P2') },
+  });
+  expect(await Artifact.find({ ...scope, kind: 'snapshot' }).sort({ runId: 1 }).lean()).toEqual(snapshots);
+});
+
+it.each(['missing-message', 'ambiguous-owner', 'foreign-source'])('does not trust invalid legacy OCR: %s', async (reason) => {
+  await seedLegacyOcr();
+  if (reason === 'missing-message') await mongoose.models.Message.deleteMany({ messageId: 'legacy-ocr' });
+  if (reason === 'ambiguous-owner') await mongoose.models.Conversation.create({ conversationId: scope.conversationId,
+    user: '507f1f77bcf86cd799439012', endpoint: 'agents' });
+  if (reason === 'foreign-source') await mongoose.models.File.updateOne({ file_id: 'legacy-file' }, {
+    $set: { user: '507f1f77bcf86cd799439012' },
+  });
+  const prepared = await createSteelQuotationInputMethods(mongoose).prepareSteelQuotationOcrInput({ scope, expectedOrderHash: null });
+  if (reason === 'missing-message') expect(prepared).toEqual({ ok: false, code: 'invalid_snapshot' });
+  if (reason === 'ambiguous-owner') expect(prepared).toEqual({ ok: true, state: expect.any(Object) });
+  if (reason === 'foreign-source') {
+    if (!prepared.ok || !prepared.input) throw new Error('Missing OCR input');
+    expect(prepared.input.sourceSnapshot.mappings).toEqual([]);
+  }
+});
+
+it.each(['valid', 'missing', 'wrong-generation', 'wrong-message', 'arbitrary-text'] as const)(
+  'accepts a reconstructed legacy delta only with matching provenance: %s', async (variant) => {
+    const original = await seedLegacyOcr();
+    await mongoose.models.Message.updateOne({ messageId: 'legacy-ocr' }, { $set: {
+      text: variant === 'arbitrary-text' ? 'OCR complete' : original.replace('## ocr_result', '## ocr_result_updates'),
+    } });
+    if (variant !== 'missing') await createSteelConversationOcrStateModel(mongoose).updateOne(
+      { conversationId: scope.conversationId }, { $set: { currentOcrResultProvenance: {
+        generationId: variant === 'wrong-generation' ? 'other' : 'legacy-generation',
+        messageId: variant === 'wrong-message' ? 'other' : 'legacy-ocr', attemptNumber: 1, updatedAt: new Date(),
+      } } },
+    );
+    const prepared = await createSteelQuotationInputMethods(mongoose).prepareSteelQuotationOcrInput({ scope, expectedOrderHash: null });
+    if (variant === 'valid') {
+      expect(prepared).toMatchObject({ ok: true, input: { markdown: original } });
+    } else expect(prepared).toEqual({ ok: false, code: 'invalid_snapshot' });
+  },
+);
+
+it('enrolls pre-versioning human corrections and retains their exact OCR row identity', async () => {
+  await publishBaseAi();
+  const State = createSteelQuotationStateModel(mongoose);
+  const initial = await State.findOne(scope).lean();
+  const ai = initial?.markdownPublication?.current?.ocr_result?.ai;
+  if (!ai) throw new Error('Missing AI reference');
+  await saveHumanReference(new Date(ai.savedAt.getTime() + 1));
+  await createSteelConversationOcrStateModel(mongoose).updateOne({ conversationId: scope.conversationId }, { $set: {
+    currentOcrResultGenerationId: ai.generationId, currentOcrResultMessageId: ai.messageId,
+    currentOcrResultMarkdown: markdown, sourceMappings: [],
+  } }, { upsert: true });
+  await State.updateOne(scope, { $unset: { 'markdownPublication.current.ocr_result': 1, 'markdownPublication.lastHumanOcr': 1 } });
+  await createSteelQuotationArtifactModel(mongoose).deleteMany({ ...scope, runId: `markdown:${ai.generationId}` });
+  await mongoose.models.Message.updateOne({ messageId: ai.messageId }, { $unset: { 'metadata.steelMarkdownOwners.ocr_result': 1 } });
+  const prepared = await createSteelQuotationInputMethods(mongoose).prepareSteelQuotationOcrInput({
+    scope, expectedOrderHash: initial?.currentOrder?.sha256 ?? null,
+  });
+  if (!prepared.ok || !prepared.input) throw new Error('Missing legacy human input');
+  expect(prepared.input.selection.selected.source).toBe('human');
+  expect(prepared.input.selection.version).toBe(2);
+  expect(prepared.input.ocrContext?.rows[0].rowId).toBe('human-row');
+  expect(prepared.input.markdown).toContain('<!-- human');
 });

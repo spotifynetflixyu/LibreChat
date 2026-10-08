@@ -1,4 +1,4 @@
-import type { SteelCalculationCheckpoint, SteelReviewMetadata, TCustomConfig } from 'librechat-data-provider';
+import type { SteelCalculationCheckpoint, SteelReviewMetadata, SteelReviewOcrContext, TCustomConfig } from 'librechat-data-provider';
 import type { Document } from 'mongoose';
 import type { SteelMarkdownReference, SteelMarkdownState, SteelMarkdownSnapshot, SteelMarkdownPublicationTarget } from './versions';
 
@@ -134,6 +134,7 @@ export interface SteelQuotationOcrSelection {
 }
 
 export interface SteelQuotationOcrInput {
+  ocrContext?: SteelReviewOcrContext;
   selection: SteelQuotationOcrSelection;
   markdown: string;
   sourceSnapshot: SteelQuotationSourceSnapshot;
@@ -240,6 +241,7 @@ export interface SteelQuotationSnapshotPayload {
   customerIdentity: string;
   sourceSnapshot?: SteelQuotationSourceSnapshot;
   ocrSelection?: SteelQuotationOcrSelection;
+  ocrContext?: SteelReviewOcrContext;
 }
 
 export interface SteelQuotationArtifactRef {

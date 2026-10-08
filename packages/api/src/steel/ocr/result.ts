@@ -1,10 +1,11 @@
 import { createHash } from 'node:crypto';
 import type { MarkdownFence, MarkdownSection, ParsedAssistantMarkdown } from '../markdown/parser';
+import type { OcrTable } from './normalize';
 import { escapeMarkdownTableCell, parsePipeTableRow, isMarkdownTableSeparatorCell } from '../markdown/row-codec';
 import { parseAssistantMarkdown, getFenceStart, closesFence } from '../markdown/parser';
 import { admitFullOnlyMarkdown } from '../markdown/admission';
 import { parseMarkdownTables } from '../markdown/table';
-
+import { normalizeOcrTable } from './normalize';
 
 export { parseAssistantMarkdown, parseMarkdownSections } from '../markdown/parser';
 export type { MarkdownSection, MarkdownSegment, ParsedAssistantMarkdown } from '../markdown/parser';
@@ -23,10 +24,7 @@ export interface SourceMappingEntry {
   readonly sourceFilename: string;
 }
 
-export interface OcrTable {
-  readonly headers: readonly string[];
-  readonly rows: readonly (readonly string[])[];
-}
+export type { OcrTable } from './normalize';
 
 export interface ParsedTableSuccess {
   readonly ok: true;
@@ -693,7 +691,14 @@ function finalizeOcrResponseInternal(
       return { ok: false, reason: 'ambiguous_ocr_update' };
     }
   }
-  const reconciliation = reconcileOcrResults(isUpdate ? previous : undefined, resultParsed.table, deletedKeys);
+  const currentTable = legacyReconstruction
+    ? resultParsed.table
+    : normalizeOcrTable(resultParsed.table);
+  const reconciliation = reconcileOcrResults(
+    isUpdate ? previous : undefined,
+    currentTable,
+    deletedKeys,
+  );
   const summaryResult = buildOcrUpdateSummary(previous, resultParsed.table, reconciliation);
   const review = getSection(document, REVIEW_TITLE);
   const used = new Set<MarkdownSection>([...document.sections.filter((section) =>

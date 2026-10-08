@@ -117,7 +117,7 @@ function buildQuotationReviewMetadata(input: {
     input.snapshot.sourceSnapshot?.mappings ?? [],
     input.calculationCheckpoint,
   );
-  const ocrContext = selected && ocrSection && ocrTable
+  const ocrContext = input.snapshot.ocrContext ?? (selected && ocrSection && ocrTable
     ? createSteelReviewOcrContext({
         title: ocrSection.title,
         outputId: selected.outputId,
@@ -130,7 +130,7 @@ function buildQuotationReviewMetadata(input: {
           input.snapshot.sourceSnapshot?.mappings ?? [],
         ),
       })
-    : null;
+    : null);
   const systemRows = ocrContext
     ? bindSteelReviewRowsToOcrContext(systemTable.headers, baselineSystemRows, ocrContext)
     : baselineSystemRows.map((row) => ({ ...row, source: null, ocrLink: null }));

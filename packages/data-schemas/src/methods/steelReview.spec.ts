@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 import { createHash } from 'node:crypto';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { encodeSteelReviewTitleOwner } from 'librechat-data-provider';
 import type { SteelReviewRow } from 'librechat-data-provider';
 import type { SteelQuotationActiveRun, SteelQuotationScope } from '~/types';
@@ -14,11 +14,12 @@ import {
 import { createSteelReviewReadMethods } from './steelReview';
 import { createModels } from '~/models';
 
-let mongoServer: MongoMemoryServer;
+let mongoServer: MongoMemoryReplSet;
 
 beforeAll(async () => {
-  mongoServer = await MongoMemoryServer.create({
-    instance: { args: ['--setParameter', 'ttlMonitorEnabled=false'] },
+  mongoServer = await MongoMemoryReplSet.create({
+    replSet: { count: 1, storageEngine: 'wiredTiger' },
+    instanceOpts: [{ args: ['--setParameter', 'ttlMonitorEnabled=false'] }],
   });
   await mongoose.connect(mongoServer.getUri());
 });

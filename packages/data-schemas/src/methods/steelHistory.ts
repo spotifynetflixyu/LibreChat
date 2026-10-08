@@ -90,9 +90,10 @@ function parseAiReference(
   value: unknown,
   kind: SteelMarkdownKind,
   messageId: string,
+  source: SteelMarkdownReference['source'] = 'ai',
 ): SteelMarkdownReference | undefined {
   const candidate = record(value);
-  if (!candidate || candidate.kind !== kind || candidate.source !== 'ai' ||
+  if (!candidate || candidate.kind !== kind || candidate.source !== source ||
     candidate.messageId !== messageId) {
     return undefined;
   }
@@ -116,7 +117,7 @@ function parseAiReference(
   }
   return {
     kind,
-    source: 'ai',
+    source,
     snapshotId,
     generationId,
     outputId,
@@ -288,6 +289,21 @@ export function createSteelHistoryMethods(mongoose: Mongoose): SteelMarkdownHist
       const artifact = artifactFor(artifactsByOwner.get(ownerKey(reference)) ?? [], reference);
       if (!artifact) {
         continue;
+      }
+      if (reference.kind === 'customer_data') {
+        const message = input.messages.find((candidate) => candidate.messageId === messageId);
+        const effectiveOwners = record(message?.metadata?.steelMarkdownEffective);
+        const effective = parseAiReference(effectiveOwners?.customer_data, 'customer_data', messageId, 'human');
+        const snapshots = (artifactsByOwner.get(ownerKey(reference)) ?? []).filter((candidate) =>
+          effective && candidate.markdownPublication && sameReference(candidate.markdownPublication.reference, effective) &&
+          effective.outputId === reference.outputId && effective.title === reference.title &&
+          effective.generationId === reference.generationId && effective.lineageId === reference.lineageId &&
+          digest(candidate.markdownPublication.baselineMarkdown) === effective.sha256);
+        if (effective && snapshots.length === 1 && snapshots[0].markdownPublication) {
+          records.push({ messageId, kind: reference.kind, reference: effective,
+            effectiveMarkdown: snapshots[0].markdownPublication.baselineMarkdown });
+          continue;
+        }
       }
       const outputMatches = outputsByOwner.get(ownerKey(reference)) ?? [];
       const output = outputMatches.length === 1 ? outputMatches[0] : undefined;

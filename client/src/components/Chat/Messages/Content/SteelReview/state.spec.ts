@@ -1,5 +1,6 @@
 import { createStore } from 'jotai';
 import {
+  markSteelReviewRowBound,
   steelReviewDialogStateFamily,
   steelReviewPreviewStateFamily,
 } from './state';
@@ -66,5 +67,18 @@ describe('Steel review scoped state ownership', () => {
     remount();
     jest.runOnlyPendingTimers();
     expect(steelReviewDialogStateFamily(key)).not.toBe(stateAtom);
+  });
+
+  it('keeps unlinked mode active while removing a row after binding confirmation', () => {
+    const next = markSteelReviewRowBound({
+      isOpen: true,
+      pageNumber: 1,
+      pageCount: 1,
+      unlinkedMode: true,
+      unlinkedRowIds: ['bound-row', 'remaining-row'],
+    }, 'bound-row');
+
+    expect(next.unlinkedMode).toBe(true);
+    expect(next.unlinkedRowIds).toEqual(['remaining-row']);
   });
 });

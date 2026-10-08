@@ -9,6 +9,7 @@ import type { SteelReviewIdentity, SteelReviewSelection } from './SteelReview/st
 import { steelReviewDraftStateFamily, steelReviewSelectionAtom } from './SteelReview/state';
 import { getSteelReviewDraftKey, getSteelReviewDraftOwnerKey } from './SteelReview/session';
 import SteelReviewDialog, { type SteelReviewSaveGate } from './SteelReviewDialog';
+import { SteelVersionsContext } from './SteelReview/heading';
 import MarkdownTableActions from './MarkdownTableActions';
 
 let mockIsDesktop = false;
@@ -20,7 +21,7 @@ jest.mock('pdfjs-dist/build/pdf.mjs', () => ({
 }));
 
 jest.mock('@librechat/client', () => {
-  const { Spinner } = jest.requireActual('@librechat/client');
+  const { Spinner, ResizableHandle, ResizablePanel, ResizablePanelGroup } = jest.requireActual('@librechat/client');
   const React = jest.requireActual<typeof import('react')>('react');
   const Pass = ({ children, asChild: _asChild, ...props }: {
     children?: React.ReactNode;
@@ -59,10 +60,16 @@ jest.mock('@librechat/client', () => {
     (open ? React.createElement('div', { role: 'dialog' }, children) : null);
   return {
     Spinner,
+    ResizableHandle,
+    ResizablePanel,
+    ResizablePanelGroup,
     Button,
     useMediaQuery: () => mockIsDesktop,
     useNestedPopoverStyle: () => ({ zIndex: 150, pointerEvents: 'auto' }),
-    TooltipAnchor: ({ render }: { render: React.ReactNode }) => render,
+    TooltipAnchor: ({ render, description }: {
+      render: React.ReactElement;
+      description: string;
+    }) => React.cloneElement(render, { title: description }),
     Checkbox,
     Input,
     Tag,
@@ -231,6 +238,11 @@ function getEditableTextbox(name: string): HTMLElement {
   return screen.getByRole('textbox', { name });
 }
 
+function querySteelReviewCell(text: string): HTMLTableCellElement | null {
+  return [...document.querySelectorAll<HTMLTableCellElement>('table tbody td')]
+    .find((cell) => cell.textContent?.trim() === text) ?? null;
+}
+
 async function findEditableTextbox(name: string): Promise<HTMLElement> {
   const rowId = name.slice(name.lastIndexOf(' ') + 1);
   await screen.findByRole('button', { name: `com_ui_edit ${rowId}` });
@@ -293,6 +305,38 @@ function createReopenLifecycleFixture() {
   };
   return { table, prepared, savedSnapshot };
 }
+
+it('locks an open previous OCR dialog when a regenerated sibling becomes latest', async () => {
+  const { table } = createReopenLifecycleFixture();
+  mockUseGetSteelReviewQuery.mockReturnValue({ data: { table }, refetch: jest.fn() });
+  const queryClient = new QueryClient();
+  const store = createStore();
+  store.set(steelReviewSelectionAtom, reviewSelection);
+  const version = (latest: boolean) =>
+    new Map([
+      [
+        JSON.stringify([table.messageId, table.kind, table.title, table.outputId]),
+        { ...reviewIdentity, outputId: table.outputId, revision: table.revision, latest, saves: 0 },
+      ],
+    ]);
+  const view = (latest: boolean) => (
+    <QueryClientProvider client={queryClient}>
+      <Provider store={store}>
+        <SteelVersionsContext.Provider value={version(latest)}>
+          <SteelReviewDialog identity={reviewIdentity} />
+        </SteelVersionsContext.Provider>
+      </Provider>
+    </QueryClientProvider>
+  );
+  const rendered = render(view(true));
+  expect(await screen.findByRole('button', { name: 'com_ui_edit row-1' })).toBeEnabled();
+  rendered.rerender(view(false));
+  await waitFor(() =>
+    expect(screen.queryByRole('button', { name: 'com_ui_edit row-1' })).toBeNull(),
+  );
+  expect(screen.getByText('com_ui_steel_review_previous_version')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /com_ui_steel_review_save/ })).toBeDisabled();
+});
 
 function seedReopenedDraft(
   store: ReturnType<typeof createStore>,
@@ -1284,7 +1328,7 @@ describe('MarkdownTableActions Steel review entry', () => {
 
     await waitFor(() => {
       expect(refetch).toHaveBeenCalledTimes(1);
-      expect(getEditableTextbox('數量 row-1')).toHaveValue(' 2 ');
+      expect(getEditableTextbox('數量 row-1')).toHaveValue('2');
       expect(screen.getByRole('button', { name: /^com_ui_steel_review_save \([1-9]\d*\)$/ })).toBeInTheDocument();
       expect(screen.getByRole('alert')).toHaveTextContent('com_ui_steel_review_save_uncertain');
     });
@@ -2587,12 +2631,76 @@ describe('MarkdownTableActions Steel review entry', () => {
       </QueryClientProvider>,
     );
     expect(await screen.findByRole('img', { name: 'com_ui_steel_review_preview_canvas' })).toBeInTheDocument();
-    expect(screen.getByText('P-1')).toBeInTheDocument();
-    expect(screen.queryByText('P-2')).not.toBeInTheDocument();
-    expect(screen.queryByText('P-3')).not.toBeInTheDocument();
+    await waitFor(() => expect(querySteelReviewCell('P-1')).not.toBeNull());
+    expect(querySteelReviewCell('P-2')).toBeNull();
+    expect(querySteelReviewCell('P-3')).toBeNull();
   });
 
-  it.each(['ocr_result', 'system_order'] as const)('uses the initial source page in every %s render', (kind) => {
+  it('keeps show-unlinked scoped to unlinked rows through binding and a dialog refresh', async () => {
+    const table = {
+      ...reviewIdentity,
+      outputId: 'ocr_result:unlinked-filter',
+      revision: 'unlinked-filter',
+      latestOutputId: 'ocr_result:unlinked-filter',
+      isLatest: true,
+      readOnly: false,
+      headers: ['Part'],
+      rows: [{
+        rowId: 'bound-row',
+        values: { Part: { baseline: 'BOUND', effective: 'BOUND' } },
+        source: { fileId: 'drawing-a', pageNumber: 1, filename: 'drawing-a.png', mediaType: 'image/png' },
+      }, {
+        rowId: 'unlinked-row',
+        values: { Part: { baseline: 'UNLINKED', effective: 'UNLINKED' } },
+        source: null,
+      }],
+    };
+    mockUseGetSteelReviewQuery.mockReturnValue({ data: { table }, error: null, isError: false, isLoading: false });
+    mockUseGetSteelReviewSourcesQuery.mockReturnValue({
+      data: { sources: [{ fileId: 'drawing-a', filename: 'drawing-a.png', mediaType: 'image/png' }] },
+      error: null,
+      isError: false,
+      isLoading: false,
+    });
+    mockUseGetSteelReviewSourceQuery.mockReturnValue({ data: undefined, isError: false, isLoading: false });
+
+    const rendered = renderDialog(new QueryClient(), {
+      ...reviewSelection,
+      captureId: 'capture-unlinked-filter',
+    });
+    const checkbox = await screen.findByRole('checkbox', { name: 'com_ui_steel_review_unlinked' });
+    expect(screen.getByText('BOUND')).toBeInTheDocument();
+    fireEvent.click(checkbox);
+
+    await waitFor(() => {
+      expect(checkbox).toBeChecked();
+      expect(screen.getByText('UNLINKED')).toBeInTheDocument();
+      expect(screen.queryByText('BOUND')).not.toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_bind unlinked-row' }));
+    const linkDialog = screen.getAllByRole('dialog').at(-1);
+    expect(linkDialog).toBeDefined();
+    expect(within(linkDialog!).getByRole('button', { name: 'com_ui_confirm' })).toBeEnabled();
+    fireEvent.click(within(linkDialog!).getByRole('button', { name: 'com_ui_confirm' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('checkbox', { name: 'com_ui_steel_review_unlinked' })).toBeChecked();
+      expect(screen.queryByText('UNLINKED')).not.toBeInTheDocument();
+    });
+
+    rendered.rerender(
+      <QueryClientProvider client={rendered.queryClient}>
+        <Provider store={rendered.store}>
+          <SteelReviewDialog identity={reviewIdentity} />
+        </Provider>
+      </QueryClientProvider>,
+    );
+    expect(screen.getByRole('checkbox', { name: 'com_ui_steel_review_unlinked' })).toBeChecked();
+    expect(screen.queryByText('UNLINKED')).not.toBeInTheDocument();
+  });
+
+  it.each(['ocr_result', 'system_order'] as const)('uses the initial source page in every %s render', async (kind) => {
     const identity = { ...reviewIdentity, kind, title: kind };
     const table = {
       ...identity,
@@ -2615,23 +2723,28 @@ describe('MarkdownTableActions Steel review entry', () => {
     store.set(steelReviewSelectionAtom, { ...identity, captureId: `capture-${kind}-initial-page` });
     const queryClient = new QueryClient();
     const commits: { page: string; firstPageVisible: boolean; thirdPageVisible: boolean }[] = [];
+    const captureCommit = () => {
+      const commit = {
+        page: (screen.queryAllByRole('combobox')[1] as HTMLSelectElement | undefined)?.value ?? '',
+        firstPageVisible: querySteelReviewCell('Part-1') !== null,
+        thirdPageVisible: querySteelReviewCell('Part-3') !== null,
+      };
+      commits.push(commit);
+    };
     const renderTree = () => (
       <QueryClientProvider client={queryClient}>
         <Provider store={store}>
-          <Profiler id="review-source-page" onRender={() => {
-            commits.push({
-              page: (screen.getAllByRole('combobox')[1] as HTMLSelectElement).value,
-              firstPageVisible: screen.queryByText('Part-1') !== null,
-              thirdPageVisible: screen.queryByText('Part-3') !== null,
-            });
-          }}>
+          <Profiler id="review-source-page" onRender={captureCommit}>
             <SteelReviewDialog identity={identity} />
           </Profiler>
         </Provider>
       </QueryClientProvider>
     );
     const rendered = render(renderTree());
-    expect(commits.every((commit) => !commit.firstPageVisible && !commit.thirdPageVisible)).toBe(true);
+    await waitFor(() => {
+      expect(commits.length).toBeGreaterThan(0);
+      expect(commits.every((commit) => !commit.firstPageVisible && !commit.thirdPageVisible)).toBe(true);
+    });
     commits.length = 0;
     mockUseGetSteelReviewSourcesQuery.mockReturnValue({
       data: { sources: [{ fileId: 'drawing-a', filename: 'drawing-a.pdf', mediaType: 'application/pdf' }] },
@@ -2639,11 +2752,13 @@ describe('MarkdownTableActions Steel review entry', () => {
       isLoading: false,
     });
     rendered.rerender(renderTree());
-    expect(commits.length).toBeGreaterThan(0);
-    expect(commits.every((commit) => commit.page === '3' && !commit.firstPageVisible && commit.thirdPageVisible)).toBe(true);
+    await waitFor(() => {
+      expect(commits.length).toBeGreaterThan(0);
+      expect(commits.every((commit) => commit.page === '3' && !commit.firstPageVisible && commit.thirdPageVisible)).toBe(true);
+    });
     fireEvent.change(screen.getAllByRole('combobox')[1], { target: { value: '1' } });
-    expect(screen.getByText('Part-1')).toBeInTheDocument();
-    expect(screen.queryByText('Part-3')).not.toBeInTheDocument();
+    expect(querySteelReviewCell('Part-1')).not.toBeNull();
+    expect(querySteelReviewCell('Part-3')).toBeNull();
   });
 
   it('renders source loading, failure, and selectors for system-order reviews', async () => {
@@ -2749,6 +2864,9 @@ describe('MarkdownTableActions Steel review entry', () => {
     });
     mockUseGetSteelReviewSourceQuery.mockReturnValue({ data: undefined, isLoading: true, isError: false });
     renderDialog();
+    const resizeHandle = screen.getByRole('separator', { name: 'com_ui_steel_review_resize_panels' });
+    expect(resizeHandle).toHaveAttribute('aria-orientation', 'horizontal');
+    expect(resizeHandle).toHaveClass('cursor-row-resize');
     const sourceSelector = screen.getByRole('option', { name: 'PL.pdf' }).parentElement;
     const closeButtons = screen.getAllByRole('button', { name: 'com_ui_close' });
     const footer = closeButtons.at(-1)?.parentElement;
@@ -2879,9 +2997,24 @@ describe('MarkdownTableActions Steel review entry', () => {
     const initialReadonlyCells = screen.getAllByLabelText('零件編號: com_ui_steel_review_cell_readonly');
     expect(initialReadonlyCells[0]).toHaveTextContent('OCR-D3');
     expect(screen.queryByRole('button', { name: 'com_ui_edit ocr-row-1' })).not.toBeInTheDocument();
-    const referenceTitle = screen.getByRole('heading', { name: 'ocr_result｜PL.pdf' });
+    const referenceTitle = screen.getByRole('heading', { name: /^ocr_result｜PL\.pdf/ });
+    expect(referenceTitle).toHaveTextContent('com_ui_steel_review_readonly_badge');
     const systemTitle = screen.getByRole('heading', { name: 'system_order｜報價單' });
     expect(referenceTitle.compareDocumentPosition(systemTitle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const collapse = screen.getByRole('button', { name: 'com_ui_collapse' });
+    expect(collapse).toHaveAttribute('title', 'com_ui_collapse');
+    expect(collapse).toHaveAttribute('aria-expanded', 'true');
+    const referenceContent = document.getElementById(collapse.getAttribute('aria-controls')!);
+    expect(referenceContent).toBeVisible();
+    fireEvent.click(collapse);
+    expect(referenceContent).not.toBeVisible();
+    expect(referenceTitle).toBeVisible();
+    expect(systemTitle).toBeVisible();
+    const expand = screen.getByRole('button', { name: 'com_ui_expand' });
+    expect(expand).toHaveAttribute('title', 'com_ui_expand');
+    expect(expand).toHaveAttribute('aria-expanded', 'false');
+    fireEvent.click(expand);
+    expect(referenceContent).toBeVisible();
 
     fireEvent.click(screen.getByRole('button', { name: 'com_ui_steel_review_bound system-row-1' }));
     const linkDialog = screen.getAllByRole('dialog').at(-1);
@@ -2970,41 +3103,63 @@ describe('MarkdownTableActions Steel review entry', () => {
     },
   );
 
-  it('refreshes recognition once when trusted message submission completes', async () => {
-    const refetch = jest.fn();
-    mockMessageContext = { ...mockMessageContext, isSubmitting: true };
-    mockUseGetSteelReviewQuery.mockReturnValue({
-      data: undefined,
-      error: { response: { status: 404 } },
-      isError: true,
-      isLoading: false,
-      refetch,
-    });
-    const rendered = renderTable();
+  it.each(['ocr_result', 'system_order'])(
+    'disables %s review while generating and enables it when submission completes',
+    async (title) => {
+      const refetch = jest.fn();
+      mockMessageContext = { ...mockMessageContext, isSubmitting: true };
+      mockUseGetSteelReviewQuery.mockReturnValue({
+        data: undefined,
+        error: { response: { status: 404 } },
+        isError: true,
+        isLoading: false,
+        refetch,
+      });
+      const rendered = renderTable(title);
+      const open = await screen.findByRole('button', { name: 'com_ui_steel_review_open' });
+      expect(open).toBeDisabled();
+      expect(open.parentElement).toHaveAttribute('title', 'com_ui_generating');
+      expect(open.parentElement).toHaveAttribute('tabindex', '0');
+      fireEvent.click(open);
+      expect(rendered.store.get(steelReviewSelectionAtom)).toBeNull();
+      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(screen.getByRole('button', { name: 'com_ui_expand_table' })).toBeEnabled();
+      expect(screen.getByRole('button', { name: 'com_ui_copy_markdown_table' })).toBeEnabled();
 
-    mockMessageContext = { ...mockMessageContext, isSubmitting: false };
-    rendered.rerender(
-      <QueryClientProvider client={rendered.queryClient}>
-        <Provider store={rendered.store}>
-          <RecoilRoot>
-            <div className="message-render">
-              <div className="message-content">
-                <h2>{testHeading}</h2>
-                <MarkdownTableActions markdownIndex={1}>
-                  <thead><tr><th>{sourceHeader}</th><th>{partHeader}</th></tr></thead>
-                  <tbody><tr><td>A</td><td>{firstPart}</td></tr></tbody>
-                </MarkdownTableActions>
+      mockMessageContext = { ...mockMessageContext, isSubmitting: false };
+      rendered.rerender(
+        <QueryClientProvider client={rendered.queryClient}>
+          <Provider store={rendered.store}>
+            <RecoilRoot>
+              <div className="message-render">
+                <div className="message-content">
+                  <h2>{title}</h2>
+                  <MarkdownTableActions markdownIndex={1}>
+                    <thead>
+                      <tr><th>{sourceHeader}</th><th>{partHeader}</th></tr>
+                    </thead>
+                    <tbody>
+                      <tr><td>A</td><td>{firstPart}</td></tr>
+                    </tbody>
+                  </MarkdownTableActions>
+                </div>
               </div>
-            </div>
-          </RecoilRoot>
-        </Provider>
-      </QueryClientProvider>,
-    );
+            </RecoilRoot>
+          </Provider>
+        </QueryClientProvider>,
+      );
 
-    await waitFor(() => expect(refetch).toHaveBeenCalledTimes(1));
-    rendered.unmount();
-    mockMessageContext = { ...mockMessageContext, isSubmitting: false };
-  });
+      await waitFor(() => expect(refetch).toHaveBeenCalledTimes(1));
+      const completedOpen = screen.getByRole('button', { name: 'com_ui_steel_review_open' });
+      expect(completedOpen).toBeEnabled();
+      expect(completedOpen).toHaveAttribute('title', 'com_ui_steel_review_open');
+      fireEvent.click(completedOpen);
+      expect(rendered.store.get(steelReviewSelectionAtom)).toMatchObject({ title });
+      expect(screen.getByRole('dialog')).toHaveTextContent('com_ui_steel_review_empty');
+      rendered.unmount();
+      mockMessageContext = { ...mockMessageContext, isSubmitting: false };
+    },
+  );
 
   it('refreshes once when rendered children settle after an initial absence', async () => {
     const refetch = jest.fn();

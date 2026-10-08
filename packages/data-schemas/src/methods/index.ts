@@ -646,3 +646,6 @@ export type {
 };
 
 export { recordAgentEventActorReceiptMetric, setAgentEventActorReceiptMetricObserver };
+
+export { createSteelCustomerMethods } from './steelCustomer';
+export type { SteelCustomerMethods } from './steelCustomer';

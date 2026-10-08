@@ -1,6 +1,6 @@
 import type { SteelCatalogCandidate } from './catalog';
 import type { SteelReviewLedgerRow } from './review';
-import { applyMaterialCandidate, applyProcessingCandidate, steelCatalogOptionLabel } from './catalog';
+import { applyMaterialCandidate, applyProcessingCandidate, steelCatalogOptionLabel, steelCatalogQuerySchema } from './catalog';
 import { applySteelReviewOperations } from './review';
 
 const candidate: SteelCatalogCandidate = {
@@ -64,7 +64,63 @@ const row = (rowId: string, kind: 'material' | 'processing'): SteelReviewLedgerR
   },
 });
 
+describe('Steel catalog preview customer evidence', () => {
+  const query = {
+    messageId: 'message', title: 'system_order', outputId: 'system_order:run',
+    revision: 'review-1', rowId: 'material', field: 'model', keyword: 'dnb',
+  };
+  const evidence = { customerSnapshotId: 'snapshot', customerRevision: 'customer-1', customerTier: 'B' };
+
+  it('accepts a legacy query and complete frontend evidence', () => {
+    expect(steelCatalogQuerySchema.safeParse(query).success).toBe(true);
+    expect(steelCatalogQuerySchema.parse({ ...query, ...evidence })).toMatchObject(evidence);
+  });
+
+  it.each(['customerSnapshotId', 'customerRevision', 'customerTier'] as const)('rejects incomplete evidence missing %s', (field) => {
+    const partial: Partial<typeof evidence> = { ...evidence };
+    delete partial[field];
+    expect(steelCatalogQuerySchema.safeParse({ ...query, ...partial }).success).toBe(false);
+  });
+
+  it.each(['G', 'b', '2', ''])('rejects invalid customer tier %j', (customerTier) => {
+    expect(steelCatalogQuerySchema.safeParse({ ...query, ...evidence, customerTier }).success).toBe(false);
+  });
+});
+
 describe('Steel catalog candidate application', () => {
+  it.each(['material', 'processing'] as const)(
+    'normalizes selected decimal fields without losing precision for %s rows',
+    (kind) => {
+      const original = row('row-1', kind);
+      const selected = {
+        ...candidate,
+        erpItemCode: '0015.0000',
+        thicknessMinMm: '15.000000',
+        thicknessMaxMm: '15.0',
+        unitPrice: '9007199254740993.123400',
+      };
+      const applied = kind === 'material'
+        ? applyMaterialCandidate(original, selected, Object.keys(original.values), 'B')
+        : applyProcessingCandidate(original, selected, Object.keys(original.values), 'B', row('parent', 'material'));
+      expect(applied.values['厚度'].effective).toBe('15');
+      expect(applied.values['單價'].effective).toBe('9007199254740993.1234');
+      expect(applied.values['型號'].effective).toBe('0015.0000');
+      expect(original.values['厚度'].effective).toBe('4');
+      expect(selected.unitPrice).toBe('9007199254740993.123400');
+    },
+  );
+
+  it.each([
+    ['0.000000', '0'],
+    ['12.340000', '12.34'],
+    ['1000.000000', '1000'],
+    [null, ''],
+  ])('normalizes a selected price %s to %s', (unitPrice, expected) => {
+    const original = row('material-1', 'material');
+    const applied = applyMaterialCandidate(original, { ...candidate, unitPrice }, Object.keys(original.values), 'B');
+    expect(applied.values['單價'].effective).toBe(expected);
+  });
+
   it('labels with ERP and product name while saving only the product name', () => {
     expect(steelCatalogOptionLabel(candidate)).toBe('SC-UNIQUE Selector steel plate');
     const material = row('material-1', 'material');

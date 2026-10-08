@@ -147,6 +147,7 @@ export * from './steel/catalog';
 export * from './steel/postgres';
 export * from './steel/repositories';
 export * from './steel/routes';
+export * from './steel/customer';
 export * from './steel/review';
 export * from './steel/sources';
 export * from './steel/runtime/types';

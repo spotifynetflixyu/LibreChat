@@ -86,6 +86,9 @@ function scopeKey(input: SteelReviewCatalogScope, query: SteelCatalogQuery): str
       query.parentRowId ?? null,
       query.materialCategory ?? null,
       query.materialThicknessMm ?? null,
+      query.customerSnapshotId ?? null,
+      query.customerRevision ?? null,
+      query.customerTier ?? null,
     ]))
     .digest('hex');
 }
@@ -114,27 +117,46 @@ function requireCurrentMaterial(
   return record;
 }
 
+export function steelCatalogCustomerEvidenceForSnapshot(
+  snapshot: SteelReviewReadRecord['customerSnapshot'] | undefined,
+): SteelCatalogCustomerEvidence | undefined {
+  if (!snapshot || typeof snapshot.snapshotId !== 'string' || snapshot.snapshotId.trim() === '' ||
+    typeof snapshot.customerIdentity !== 'string' || typeof snapshot.customerMarkdown !== 'string') {
+    return undefined;
+  }
+  const tier = steelCatalogCustomerTier(snapshot.customerIdentity, snapshot.customerMarkdown);
+  if (!tier) {
+    return undefined;
+  }
+  return {
+    snapshotId: snapshot.snapshotId,
+    revision: steelCatalogCustomerRevision(snapshot.customerIdentity, snapshot.customerMarkdown),
+    tier,
+  };
+}
+
 function customerEvidenceForRecord(
   record: SteelReviewReadRecord,
 ): SteelCatalogCustomerEvidence {
-  if (record.customerSnapshot) {
-    const tier = steelCatalogCustomerTier(
-      record.customerSnapshot.customerIdentity,
-      record.customerSnapshot.customerMarkdown,
-    );
-    if (!tier) {
-      throw new SteelReviewCatalogError('CATALOG_CHANGED', 409, 'Quotation customer tier is unavailable');
-    }
-    return {
-      snapshotId: record.customerSnapshot.snapshotId,
-      revision: steelCatalogCustomerRevision(
-        record.customerSnapshot.customerIdentity,
-        record.customerSnapshot.customerMarkdown,
-      ),
-      tier,
-    };
+  const evidence = steelCatalogCustomerEvidenceForSnapshot(record.customerSnapshot);
+  if (!evidence) {
+    throw new SteelReviewCatalogError('CATALOG_CHANGED', 409, 'Quotation customer evidence is unavailable');
   }
-  throw new SteelReviewCatalogError('CATALOG_CHANGED', 409, 'Quotation customer evidence is unavailable');
+  return evidence;
+}
+
+function suppliedCustomerEvidence(
+  query: SteelCatalogQuery,
+): SteelCatalogCustomerEvidence | undefined {
+  if (query.customerSnapshotId === undefined || query.customerRevision === undefined ||
+    query.customerTier === undefined) {
+    return undefined;
+  }
+  return {
+    snapshotId: query.customerSnapshotId,
+    revision: query.customerRevision,
+    tier: query.customerTier,
+  };
 }
 
 function makeCursor(
@@ -214,9 +236,15 @@ export function createSteelReviewCatalogService({
   return {
     async search(input): Promise<SteelCatalogPage> {
       const query = parseQuery(input.query);
-      const record = await authorize(input.scope, query, true, query.kind !== 'processing');
-      const customerEvidence = customerEvidenceForRecord(record);
       const cursor = parseCursor({ ...input, query });
+      const customerEvidence = customerEvidenceForRecord(
+        await authorize(input.scope, query, true, query.kind !== 'processing'),
+      );
+      const suppliedEvidence = suppliedCustomerEvidence(query);
+      if (suppliedEvidence && (suppliedEvidence.snapshotId !== customerEvidence.snapshotId ||
+        suppliedEvidence.revision !== customerEvidence.revision || suppliedEvidence.tier !== customerEvidence.tier)) {
+        throw new SteelReviewCatalogError('CATALOG_CHANGED', 409, 'Catalog customer evidence changed');
+      }
       let result: Awaited<ReturnType<typeof searchSteelReviewCatalog>>;
       try {
         const catalogClient = await client.getClient();

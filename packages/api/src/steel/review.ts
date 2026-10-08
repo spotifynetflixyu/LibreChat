@@ -51,11 +51,11 @@ import type {
 import type { SteelMarkdownTable } from './markdown/table';
 import type { SteelReviewCatalogService } from './catalog';
 import type { ServerRequest } from '~/types/http';
+import { SteelReviewCatalogError, steelCatalogCustomerEvidenceForSnapshot } from './catalog';
 import { buildCustomerQuoteFromMarkdown } from './markdown/quote';
 import { escapeMarkdownTableCell } from './markdown/row-codec';
 import { reconcileSteelReviewOcrLinks } from './review/ocr';
 import { parseMarkdownTables } from './markdown/table';
-import { SteelReviewCatalogError } from './catalog';
 
 export interface SteelReviewReader {
   readSteelReview(input: SteelReviewReadInput): Promise<SteelReviewReadRecord | null>;
@@ -406,6 +406,7 @@ function projectRecord(
     return null;
   }
   const rows = createRecordBaselineRows(record, table);
+  const catalogCustomer = steelCatalogCustomerEvidenceForSnapshot(record.customerSnapshot);
   const latestOutputId = record.latestOutputId ?? record.outputId;
   const isLatest = record.state === 'current' && latestOutputId === record.outputId;
   return {
@@ -439,6 +440,7 @@ function projectRecord(
     rows,
     ...(record.sourceMappings ? { sourceMappings: record.sourceMappings } : {}),
     ...(record.kind === 'system_order' && record.ocrContext ? { ocrContext: record.ocrContext } : {}),
+    ...(catalogCustomer ? { catalogCustomer } : {}),
   };
 }
 
@@ -488,6 +490,7 @@ function projectSidecar(
   if (!record.headers || !record.rows) {
     return null;
   }
+  const catalogCustomer = steelCatalogCustomerEvidenceForSnapshot(record.customerSnapshot);
   const latestOutputId = record.latestOutputId ?? record.outputId;
   const isLatest = record.state === 'current' &&
     record.latestOutputId !== undefined && latestOutputId === record.outputId;
@@ -522,6 +525,7 @@ function projectSidecar(
     rows: record.rows,
     ...(record.sourceMappings ? { sourceMappings: record.sourceMappings } : {}),
     ...(record.kind === 'system_order' && record.ocrContext ? { ocrContext: record.ocrContext } : {}),
+    ...(catalogCustomer ? { catalogCustomer } : {}),
   };
 }
 
@@ -1034,6 +1038,7 @@ export function createSteelReviewService({
     conflicts: readonly SteelReviewConflict[],
   ): SteelReviewRecovery {
     const latestOutputId = record.latestOutputId ?? record.outputId;
+    const catalogCustomer = steelCatalogCustomerEvidenceForSnapshot(record.customerSnapshot);
     return {
       table: {
         conversationId: record.conversationId,
@@ -1053,6 +1058,7 @@ export function createSteelReviewService({
         ...(record.aiBaselineMarkdown ? { aiBaselineMarkdown: record.aiBaselineMarkdown } : {}),
         ...(record.sourceMappings ? { sourceMappings: record.sourceMappings } : {}),
         ...(record.kind === 'system_order' && record.ocrContext ? { ocrContext: record.ocrContext } : {}),
+        ...(catalogCustomer ? { catalogCustomer } : {}),
       },
       conflicts: [...conflicts],
     };
