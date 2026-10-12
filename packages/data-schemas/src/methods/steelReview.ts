@@ -50,6 +50,7 @@ import {
   createSteelQuotationStateModel,
   createSteelReviewOutputModel,
 } from '~/models';
+import { hasConsistentMessageText, quotationTextContentIndex, renderMessageTextContent } from '~/utils/content';
 import { createSteelReviewSourceAuthorization } from './steelSourceAuthorization';
 import { createSteelQuotationInputMethods } from './steelQuotationInput';
 import { createSteelQuotationPublicationProof } from './published';
@@ -496,16 +497,8 @@ function messageFilter(
   };
 }
 
-function appendRenderedText(current: string, next: string): string {
-  if (current.length > 0 && next.length > 0 &&
-    current[current.length - 1] !== ' ' && next[0] !== ' ') {
-    return `${current} ${next}`;
-  }
-  return `${current}${next}`;
-}
-
 function renderedMessageText(
-  message: Pick<IMessage, 'text' | 'content'>,
+  message: Pick<IMessage, 'text' | 'content' | 'metadata'>,
   requestedPartIndex?: number,
 ): { selected: string; messageText: string; parts: SteelReviewTextPart[]; selectedPartIndex?: number } | undefined {
   if (typeof message.text !== 'string') {
@@ -537,8 +530,7 @@ function renderedMessageText(
   if (requestedPartIndex !== undefined && !selectedPart) {
     return undefined;
   }
-  const rendered = parts.reduce((result, part) => appendRenderedText(result, part.text), '');
-  if (rendered !== message.text) {
+  if (!hasConsistentMessageText(message)) {
     return undefined;
   }
   return {
@@ -1683,7 +1675,7 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
 
 type SteelTextPart = { contentIndex?: number; type?: string; text?: string; [key: string]: unknown };
 
-function readTextMirror(message: Pick<IMessage, 'text' | 'content'>): {
+function readTextMirror(message: Pick<IMessage, 'text' | 'content' | 'metadata'>): {
   text: string;
   parts: SteelTextPart[];
 } | null {
@@ -1699,21 +1691,10 @@ function readTextMirror(message: Pick<IMessage, 'text' | 'content'>): {
     }
     return [{ ...(part as SteelTextPart), contentIndex }];
   });
-  const rendered = parts
-    .filter((part) => part.type === 'text' && typeof part.text === 'string')
-    .map((part) => part.text as string)
-    .reduce(appendRenderedText, '');
-  if (rendered !== message.text) {
+  if (!hasConsistentMessageText(message)) {
     return null;
   }
   return { text: message.text, parts };
-}
-
-function renderTextParts(parts: readonly SteelTextPart[]): string {
-  return parts
-    .filter((part) => part.type === 'text' && typeof part.text === 'string')
-    .map((part) => part.text as string)
-    .reduce(appendRenderedText, '');
 }
 
 function withTextPart(
@@ -2313,7 +2294,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             : safeNextParts.map(({ contentIndex: _contentIndex, ...part }) => part);
           const nextText = input.partIndex === undefined
             ? selectedNext
-            : renderTextParts(safeNextParts);
+            : renderMessageTextContent(safeNextParts, quotationTextContentIndex(message.metadata));
 
           const authorizedFiles = currentAuthorizedFiles;
           if (output && input.sourceMappings === undefined && output.rows.some((row) =>

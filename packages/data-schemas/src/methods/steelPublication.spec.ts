@@ -358,6 +358,76 @@ const prepareEarlyOrderPublication = async () => {
   return { methods, State, Artifact, Output, runId, responseId, orderHash, sourceOrderHash, proof };
 };
 
+it('publishes a quotation whose signal response differs from the customer preparation response', async () => {
+  const { methods, State, responseId, proof } = await prepareEarlyOrderPublication();
+  await State.updateOne(scope, { $set: { 'tickets.0.responseId': responseId } });
+  const state = await State.findOne(scope).lean();
+  expect(state?.currentCustomer?.responseId).not.toBe(responseId);
+  expect((await methods.saveSteelQuotationMessage(proof)).ok).toBe(true);
+});
+
+it.each(['canonical', 'legacy', 'empty-prefix'])('appends quotation summary blocks to a %s multipart message', async (format) => {
+  const { methods, responseId, runId, proof } = await prepareEarlyOrderPublication();
+  const order = proof.message.text;
+  const prefix = 'first second\n\n';
+  const message = {
+    ...proof.message,
+    text: format === 'empty-prefix' ? `\n\n${order}`
+      : `${prefix}${format === 'canonical' ? '\n\n' : ' '}${order}`,
+    content: format === 'empty-prefix' ? [{ type: 'text', text: order }] : [
+      { type: 'text', text: 'first' },
+      { type: 'tool_call', id: 'lookup' },
+      { type: 'text', text: 'second\n\n' },
+      { type: 'text', text: order },
+    ],
+  };
+  expect((await methods.saveSteelQuotationMessage({ ...proof, message })).ok).toBe(true);
+  const result = await methods.appendSteelQuotationSummary({
+    scope,
+    runId,
+    targetMessageId: responseId,
+    sourceMessageId: proof.orderPublication!.admission.responseId,
+    admission: proof.orderPublication!.admission,
+    summaryMarkdown: 'Completed review.',
+    footerMarkdown: '## quote_summary\n\nCompleted quotation.',
+  });
+  expect(result.ok).toBe(true);
+  if (!result.ok) throw new Error('Summary publication failed');
+  if (format !== 'empty-prefix') expect(result.message.text).toContain('first second');
+  expect(result.message.text).toContain('\n\n## quote_summary\n\n');
+  expect(result.message.content?.[format === 'empty-prefix' ? 0 : 3]).toEqual({ type: 'text', text: order });
+});
+
+it('rejects summary publication when stored text disagrees with both multipart projections', async () => {
+  const { methods, responseId, runId, proof } = await prepareEarlyOrderPublication();
+  expect((await methods.saveSteelQuotationMessage(proof)).ok).toBe(true);
+  await mongoose.models.Message.updateOne({ user: scope.userId, messageId: responseId }, {
+    $set: { text: 'Unrelated persisted text.' },
+  });
+  expect(await methods.appendSteelQuotationSummary({
+    scope,
+    runId,
+    targetMessageId: responseId,
+    sourceMessageId: proof.orderPublication!.admission.responseId,
+    admission: proof.orderPublication!.admission,
+    summaryMarkdown: 'Completed review.',
+    footerMarkdown: '## quote_summary\n\nCompleted quotation.',
+  })).toEqual({ ok: false, code: 'superseded' });
+});
+
+it.each([
+  ['currentCustomer.preparationId', 'replaced-preparation'],
+  ['currentCustomer.customerIdentity', 'replaced-customer'],
+  ['tickets.0.preparationId', 'replaced-ticket-preparation'],
+])('rejects stale customer authority at %s without publishing a message', async (field, value) => {
+  const { methods, State, Artifact, Output, runId, proof } = await prepareEarlyOrderPublication();
+  await State.updateOne(scope, { $set: { 'tickets.0.responseId': proof.targetMessageId, [field]: value } });
+  expect(await methods.saveSteelQuotationMessage(proof)).toEqual({ ok: false, code: 'superseded' });
+  expect(await mongoose.models.Message.countDocuments({})).toBe(0);
+  expect(await Output.countDocuments({ ...scope, outputId: `system_order:${runId}` })).toBe(0);
+  expect(await Artifact.countDocuments({ ...scope, runId, operationId: 'order-published' })).toBe(0);
+});
+
 it('publishes a normalized order early, keeps the input snapshot, and replays the receipt idempotently', async () => {
   const { methods, State, Artifact, Output, runId, responseId, orderHash, proof } = await prepareEarlyOrderPublication();
   const first = await methods.saveSteelQuotationMessage(proof);

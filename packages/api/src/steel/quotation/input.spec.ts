@@ -20,12 +20,12 @@ import {
   prepareQuotationTurn,
   renderQuotationCustomerMarkdown,
 } from './preparation';
+import { createSteelQuotationPublicationAdmission, createSteelQuotationTextWiring } from './wiring';
 import { createSteelMarkdownCompletionServices } from '../markdown/completion';
 import { createSteelQuotationPublicationPublisher } from './publication';
 import { acceptQuotationSignal, runQuotationPreflight } from './runner';
 import { createSteelFullMarkdownPublisher } from '../markdown/full';
 import { createSteelQuotationStateService } from './state';
-import { createSteelQuotationTextWiring } from './wiring';
 import { createSteelOcrStateService } from '../ocr/state';
 import { parseMarkdownTables } from '../markdown/table';
 import { createSteelReviewService } from '../review';
@@ -287,6 +287,27 @@ function createRealQuotationPublisher() {
   });
 }
 
+function createChatQuotationPublisher(responseId: string) {
+  const wiring = createSteelQuotationTextWiring({
+    responseId,
+    conversationId: scope.conversationId,
+    contentParts: [{ type: 'text', text: '## quote_signal\n\nstart' }],
+    buildMessageFields: (targetMessageId) => ({
+      messageId: targetMessageId,
+      sourceMessageId: responseId,
+      conversationId: scope.conversationId,
+      user: scope.userId,
+      isCreatedByUser: false,
+      unfinished: false,
+    }),
+  });
+  return createSteelQuotationPublicationPublisher({
+    scope,
+    buildMessage: wiring.buildPublicationMessage,
+    savePublication: db.saveSteelQuotationMessage,
+  });
+}
+
 async function refreshHumanPublicationAdmission() {
   const state = await createSteelQuotationStateService(mongoose).readState(scope);
   const run = state?.activeRun;
@@ -336,7 +357,7 @@ async function saveHumanSourceCorrection() {
   });
 }
 
-async function admitPublishedHumanRun(): Promise<{
+async function admitPublishedHumanRun(customerResponseId = 'quote-response'): Promise<{
   service: ReturnType<typeof createSteelQuotationStateService>;
   run: SteelQuotationActiveRun;
   input: SteelQuotationOcrInput;
@@ -360,7 +381,7 @@ async function admitPublishedHumanRun(): Promise<{
   await commitQuotationCustomerResponse({
     scope,
     response: customerResponse,
-    responseId: 'quote-response',
+    responseId: customerResponseId,
     messageId: 'customer-message',
     messageText: '使用預設 B tier，報價',
     expectedOrderHash: prepared.state.currentOrder.sha256,
@@ -398,42 +419,106 @@ function createRunnerModel(childInputs: string[], mainInputs: string[]) {
 }
 
 it('publishes the Chat quotation after a quote_signal text part through the guarded database writer', async () => {
-  const { run } = await admitPublishedHumanRun();
-  const wiring = createSteelQuotationTextWiring({
-    responseId: run.targetMessageId!,
-    conversationId: scope.conversationId,
-    contentParts: [{ type: 'text', text: '## quote_signal\n\nstart' }],
-    buildMessageFields: (targetMessageId) => ({
-      messageId: targetMessageId,
-      sourceMessageId: run.targetMessageId!,
-      conversationId: scope.conversationId,
-      user: scope.userId,
-      isCreatedByUser: false,
-      unfinished: false,
-    }),
-  });
+  const { service, run } = await admitPublishedHumanRun('customer-response');
+  const admitted = await service.readState(scope);
+  expect(admitted?.currentCustomer?.responseId).toBe('customer-response');
+  expect(
+    admitted?.tickets.find((ticket) => ticket.acceptedRunId === run.runId)?.responseId,
+  ).toBe('quote-response');
+  const childInputs: string[] = [];
   const result = await runQuotationPreflight({
     scope,
     modelOptions: {} as OpenAIOAuthModelOptions,
     signal: new AbortController().signal,
-    invokeModel: createRunnerModel([], []),
+    invokeModel: createRunnerModel(childInputs, []),
     executeLookup: jest.fn(async () => lookupResult()),
-    publishFinal: createSteelQuotationPublicationPublisher({
-      scope,
-      buildMessage: wiring.buildPublicationMessage,
-      savePublication: db.saveSteelQuotationMessage,
-    }),
+    publishFinal: createChatQuotationPublisher(run.targetMessageId!),
     refreshPublicationAdmission: refreshHumanPublicationAdmission,
     appendSummary: (summary) => db.appendSteelQuotationSummary(summary),
   });
 
   expect(result.status).toBe('completed');
+  const childInput = JSON.parse(childInputs[0]!) as { customer: string };
+  expect(childInput.customer).toBe(admitted?.currentCustomer?.customerMarkdown);
+  const customerTable = parseMarkdownTables(childInput.customer)[0]!;
+  expect(customerTable.rows[0]?.[customerTable.headers.indexOf('價格等級')]).toBe('B');
   const message = await db.getMessage({ user: scope.userId, messageId: run.targetMessageId! });
   expect(message?.text).toContain('start\n\n## system_order');
   expect(message?.metadata?.steelQuotation).toEqual(expect.objectContaining({ runId: run.runId }));
   expect(
     (await createSteelQuotationStateService(mongoose).readState(scope))?.activeRun?.status,
   ).toBe('completed');
+  const review = createSteelReviewService({ reader: db, writer: createSteelReviewWriteMethods(mongoose) });
+  const { table } = await review.read({
+    ...scope, messageId: run.targetMessageId!, kind: 'system_order', title: 'system_order',
+  });
+  const update = await review.prepare({
+    ...scope, messageId: run.targetMessageId!, kind: 'system_order', title: table.title,
+    outputId: table.outputId, revision: table.revision,
+    operations: [{ type: 'update', rowId: table.rows[0]!.rowId, changes: [{ header: '單價', value: '13' }] }],
+  });
+  if (!('operationRequest' in update)) throw new Error('Missing review operation');
+  await review.commit({
+    ...scope, ...update.operationRequest, operationId: update.operationId, digest: update.digest,
+  });
+  const edited = await review.read({
+    ...scope, messageId: run.targetMessageId!, kind: 'system_order', title: 'system_order',
+  });
+  expect(edited.table.rows[0]?.values['單價']?.effective).toBe('13');
+  expect((await db.getMessage({ user: scope.userId, messageId: run.targetMessageId! }))?.text)
+    .toContain('\n\n## quote_summary');
+});
+
+it.each([
+  ['regenerate', 'quote-message'],
+  ['resend', 'resent-quote-message'],
+])('completes %s after an interrupted multi-turn quotation without rerunning completed children', async (mode, messageId) => {
+  const { service, run } = await admitPublishedHumanRun('customer-response');
+  const model = createRunnerModel([], []);
+  const runnerInput = {
+    scope,
+    modelOptions: {} as OpenAIOAuthModelOptions,
+    signal: new AbortController().signal,
+    invokeModel: model,
+    executeLookup: jest.fn(async () => lookupResult()),
+    refreshPublicationAdmission: refreshHumanPublicationAdmission,
+    appendSummary: (summary: Parameters<typeof db.appendSteelQuotationSummary>[0]) =>
+      db.appendSteelQuotationSummary(summary),
+  };
+  await expect(runQuotationPreflight({
+    ...runnerInput,
+    publishFinal: async () => ({ ok: false as const, code: 'superseded' as const }),
+  })).rejects.toMatchObject({ code: 'superseded' });
+  expect((await service.readState(scope))?.activeRun?.status).toBe('interrupted');
+  const callsBeforeRetry = model.mock.calls.length;
+  const responseId = `${mode}-response`;
+  const prepared = await prepareQuotationTurn({
+    scope,
+    messageId,
+    responseId,
+    generationId: `${mode}-generation`,
+    publicationStore: db,
+    text: '報價',
+  });
+  expect(prepared.resume).toBe(true);
+  const result = await runQuotationPreflight({
+    ...runnerInput,
+    summarySourceMessageId: responseId,
+    publishFinal: createChatQuotationPublisher(responseId),
+    refreshPublicationAdmission: createSteelQuotationPublicationAdmission({
+      req: { user: { id: scope.userId }, steelNativeContext: { quotation: prepared } },
+      scope,
+      responseId,
+      generationId: `${mode}-generation`,
+      admit: db.admitSteelMarkdown,
+    }),
+  });
+  expect(result.status).toBe('completed');
+  expect(model.mock.calls.slice(callsBeforeRetry).map(([input]) => input.role)).toEqual(['main']);
+  const message = await db.getMessage({ user: scope.userId, messageId: run.targetMessageId! });
+  expect(message?.text).toContain('## system_order');
+  expect(message?.text).toContain('## quote_summary');
+  expect((await service.readState(scope))?.activeRun?.status).toBe('completed');
 });
 
 it('selects the newer human Save, freezes its clean Markdown and mappings at admission, and keeps later Save outside the run', async () => {

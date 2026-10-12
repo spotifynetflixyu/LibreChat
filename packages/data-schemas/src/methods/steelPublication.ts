@@ -5,6 +5,7 @@ import type { ClientSession } from 'mongoose';
 import type { IMessage, IConversation, ISteelQuotationState, ISteelQuotationArtifact, ISteelReviewOutput, ISteelConversationOcrState, SteelQuotationScope, SteelMarkdownAdmissionInput, SteelMarkdownAdmission, SteelMarkdownExpected, SteelMarkdownPublicationInput, SteelMarkdownPublicationResult, SteelMarkdownReference, SteelMarkdownKind, SteelMarkdownVersion, SteelQuotationSnapshotPayload, SteelQuotationOrderPublicationReceipt, SteelMarkdownQuotationOrderInput, SteelQuotationSummaryAppendInput, SteelQuotationSummaryAppendResult, SteelQuotationSummaryReceipt, SteelQuotationCheckpointRef } from '~/types';
 import type { SteelReviewAuthorizedFile } from './steelSourceAuthorization';
 import { createSteelDelegateOcrRunModel, createSteelQuotationStateModel, createSteelQuotationArtifactModel, createSteelConversationOcrStateModel, createSteelReviewOutputModel } from '~/models/steel';
+import { hasConsistentMessageText, renderMessageTextContent } from '~/utils/content';
 import { createSteelReviewSourceAuthorization } from './steelSourceAuthorization';
 import { createSteelScopedOcrMethods, hasUniqueSteelOcrScope } from './ocr';
 import { STEEL_QUOTATION_INPUT_TTL_MS } from './steelQuotationInput';
@@ -89,16 +90,6 @@ function replaceTextPart(content: unknown[], index: number, text: string): unkno
   });
 }
 
-function renderTextContent(content: readonly unknown[]): string {
-  return content
-    .flatMap((part) => {
-      if (!part || typeof part !== 'object' || Array.isArray(part) || Reflect.get(part, 'type') !== 'text') return [];
-      const text = Reflect.get(part, 'text');
-      return typeof text === 'string' ? [text] : [];
-    })
-    .reduce((current, next) => current.length > 0 && next.length > 0 && current[current.length - 1] !== ' ' && next[0] !== ' '
-      ? `${current} ${next}` : `${current}${next}`, '');
-}
 function expected(state: ISteelQuotationState | null, ocr: ISteelConversationOcrState | null): SteelMarkdownExpected {
   return {
     ...(ocr?.currentOcrResultGenerationId ? { ocrGeneration: ocr.currentOcrResultGenerationId } : {}),
@@ -340,16 +331,12 @@ export function createSteelPublicationMethods(mongoose: Mongoose, saveMessage: S
       run.leaseToken === quotationOrder.leaseToken && run.leaseExpiresAt && new Date(run.leaseExpiresAt).getTime() > now.getTime() &&
       new Date(run.acceptedAt).getTime() + STEEL_QUOTATION_INPUT_TTL_MS > now.getTime());
     const customerMatches = Boolean(state.currentCustomer &&
-      state.currentCustomer.preparationId === quotationOrder.customer.preparationId &&
-      state.currentCustomer.customerIdentity === quotationOrder.customer.customerIdentity &&
-      state.currentCustomer.customerMarkdown === quotationOrder.customer.customerMarkdown &&
-      customer.preparationId === quotationOrder.customer.preparationId &&
-      customer.customerIdentity === quotationOrder.customer.customerIdentity &&
-      customer.customerMarkdown === quotationOrder.customer.customerMarkdown && ticket &&
+      state.currentCustomer.preparationId === customer.preparationId &&
+      state.currentCustomer.customerIdentity === customer.customerIdentity &&
+      state.currentCustomer.customerMarkdown === customer.customerMarkdown && ticket &&
       ticket.orderHash === state.currentOrder?.sha256 && ticket.customerMarkdown === customer.customerMarkdown &&
       ticket.customerIdentity === customer.customerIdentity &&
       (ticket.preparationId === undefined || ticket.preparationId === customer.preparationId) &&
-      (ticket.responseId === undefined || ticket.responseId === state.currentCustomer?.responseId) &&
       ticket.triggeringMessageId === run?.triggerMessageId);
     const currentOrderMatches = Boolean(state.currentOrder &&
       state.currentOrder.sha256 === input.admission.expected.orderHash &&
@@ -872,7 +859,7 @@ export function createSteelPublicationMethods(mongoose: Mongoose, saveMessage: S
           Reflect.get(messageOwner, 'outputId') !== outputId || Reflect.get(messageOwner, 'messageId') !== input.targetMessageId) return;
 
         const content = [...(message.content ?? [])];
-        if (typeof message.text !== 'string' || renderTextContent(content) !== message.text) return;
+        if (typeof message.text !== 'string') return;
         const quotationMetadata = message.metadata?.steelQuotation;
         const publication = quotationMetadata && typeof quotationMetadata === 'object' && !Array.isArray(quotationMetadata)
           ? quotationMetadata as Record<string, unknown>
@@ -897,6 +884,7 @@ export function createSteelPublicationMethods(mongoose: Mongoose, saveMessage: S
           ? Reflect.get(tablePart, 'text') : undefined;
         if (!tablePart || typeof tablePart !== 'object' || Array.isArray(tablePart) || Reflect.get(tablePart, 'type') !== 'text' ||
           typeof tableText !== 'string' || !hasSection(tableText, ['system_order'])) return;
+        if (!hasConsistentMessageText(message)) return;
         if (tableContentIndex >= content.length || summaryContentIndex >= content.length || footerContentIndex >= content.length) return;
         let nextContent = content;
         const isTextSlot = (parts: unknown[], index: number): boolean => {
@@ -944,7 +932,7 @@ export function createSteelPublicationMethods(mongoose: Mongoose, saveMessage: S
             return true;
           }
         })) return;
-        const nextText = renderTextContent(nextContent);
+        const nextText = renderMessageTextContent(nextContent, tableContentIndex);
         const hostMetadata = input.messageFields?.metadata && typeof input.messageFields.metadata === 'object' &&
           !Array.isArray(input.messageFields.metadata)
           ? Object.fromEntries(Object.entries(input.messageFields.metadata).filter(([key]) =>

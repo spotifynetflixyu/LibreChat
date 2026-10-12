@@ -672,6 +672,7 @@ function findCanonicalTarget(
 }
 
 function fullMessageText(record: SteelReviewReadRecord): string | undefined {
+  if (record.messageText !== undefined) return record.messageText;
   if (record.messageTextParts && record.messageTextParts.length > 0) {
     return record.messageTextParts
       .map((part) => part.text)
