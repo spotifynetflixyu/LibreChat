@@ -1,3 +1,4 @@
+import { parseSteelReviewMarkdownTables } from 'librechat-data-provider';
 import type { SteelReviewMetadata } from 'librechat-data-provider';
 import {
   createSteelQuotationPublicationMessageBuilder,
@@ -6,6 +7,25 @@ import {
 } from './publication';
 
 describe('Steel quotation publication message projection', () => {
+  it('preserves the system_order heading after a quote_signal text part', () => {
+    const markdown = '## system_order\n\n| A |\n| --- |\n| 1 |';
+    const projected = projectSteelQuotationMessage({
+      message: {
+        messageId: 'response',
+        conversationId: 'conversation',
+        user: 'user',
+        text: '## quote_signal\n\nstart',
+        content: [{ type: 'text', text: '## quote_signal\n\nstart' }],
+      },
+      markdown,
+    });
+
+    expect(parseSteelReviewMarkdownTables(projected.text)).toEqual(
+      expect.arrayContaining([expect.objectContaining({ title: 'system_order' })]),
+    );
+    expect(projected.content?.[1]).toEqual({ type: 'text', text: markdown });
+  });
+
   it('retains the saved row association revision when resuming publication', async () => {
     const reviewMetadata: SteelReviewMetadata = {
       version: 1,
@@ -126,7 +146,7 @@ describe('Steel quotation publication message projection', () => {
       quotationContentIndex: 3,
     });
 
-    expect(projected.text).toBe('primary answer ## system_order\n\n| A |\n| --- |\n| 1 |');
+    expect(projected.text).toBe('primary answer\n\n## system_order\n\n| A |\n| --- |\n| 1 |');
     expect(projected.content).toEqual([
       message.content[0],
       message.content[1],
@@ -147,7 +167,7 @@ describe('Steel quotation publication message projection', () => {
       markdown: 'final quotation',
     });
 
-    expect(projected.text).toBe('primary final quotation');
+    expect(projected.text).toBe('primary\n\nfinal quotation');
     expect(projected.content).toEqual([
       { type: 'text', text: 'primary' },
       { type: 'tool_call', id: 'lookup' },

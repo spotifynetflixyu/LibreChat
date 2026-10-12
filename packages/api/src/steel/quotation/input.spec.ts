@@ -25,6 +25,7 @@ import { createSteelQuotationPublicationPublisher } from './publication';
 import { acceptQuotationSignal, runQuotationPreflight } from './runner';
 import { createSteelFullMarkdownPublisher } from '../markdown/full';
 import { createSteelQuotationStateService } from './state';
+import { createSteelQuotationTextWiring } from './wiring';
 import { createSteelOcrStateService } from '../ocr/state';
 import { parseMarkdownTables } from '../markdown/table';
 import { createSteelReviewService } from '../review';
@@ -395,6 +396,45 @@ function createRunnerModel(childInputs: string[], mainInputs: string[]) {
     return { markdown: childMarkdown(rows.map(systemRow)), lookups: [], pythonEvidence: [] };
   });
 }
+
+it('publishes the Chat quotation after a quote_signal text part through the guarded database writer', async () => {
+  const { run } = await admitPublishedHumanRun();
+  const wiring = createSteelQuotationTextWiring({
+    responseId: run.targetMessageId!,
+    conversationId: scope.conversationId,
+    contentParts: [{ type: 'text', text: '## quote_signal\n\nstart' }],
+    buildMessageFields: (targetMessageId) => ({
+      messageId: targetMessageId,
+      sourceMessageId: run.targetMessageId!,
+      conversationId: scope.conversationId,
+      user: scope.userId,
+      isCreatedByUser: false,
+      unfinished: false,
+    }),
+  });
+  const result = await runQuotationPreflight({
+    scope,
+    modelOptions: {} as OpenAIOAuthModelOptions,
+    signal: new AbortController().signal,
+    invokeModel: createRunnerModel([], []),
+    executeLookup: jest.fn(async () => lookupResult()),
+    publishFinal: createSteelQuotationPublicationPublisher({
+      scope,
+      buildMessage: wiring.buildPublicationMessage,
+      savePublication: db.saveSteelQuotationMessage,
+    }),
+    refreshPublicationAdmission: refreshHumanPublicationAdmission,
+    appendSummary: (summary) => db.appendSteelQuotationSummary(summary),
+  });
+
+  expect(result.status).toBe('completed');
+  const message = await db.getMessage({ user: scope.userId, messageId: run.targetMessageId! });
+  expect(message?.text).toContain('start\n\n## system_order');
+  expect(message?.metadata?.steelQuotation).toEqual(expect.objectContaining({ runId: run.runId }));
+  expect(
+    (await createSteelQuotationStateService(mongoose).readState(scope))?.activeRun?.status,
+  ).toBe('completed');
+});
 
 it('selects the newer human Save, freezes its clean Markdown and mappings at admission, and keeps later Save outside the run', async () => {
   const { service, run, input, snapshot } = await admitPublishedHumanRun();

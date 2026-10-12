@@ -357,8 +357,10 @@ export function projectSteelQuotationMessage(input: {
   if (!content) {
     return { ...input.message, text: `${input.message.text}\n\n${input.markdown}` };
   }
+  let quotationIndex = content.length;
   if (input.quotationContentIndex !== undefined && input.quotationContentIndex >= 0 &&
     input.quotationContentIndex < content.length) {
+    quotationIndex = input.quotationContentIndex;
     content[input.quotationContentIndex] = {
       ...content[input.quotationContentIndex],
       text: input.markdown,
@@ -366,7 +368,14 @@ export function projectSteelQuotationMessage(input: {
   } else {
     content.push({ type: 'text', text: input.markdown });
   }
-  return { ...input.message, text: renderText(content), content };
+  const text = [
+    renderText(content.slice(0, quotationIndex)),
+    input.markdown,
+    renderText(content.slice(quotationIndex + 1)),
+  ]
+    .filter(Boolean)
+    .join('\n\n');
+  return { ...input.message, text, content };
 }
 
 /**
