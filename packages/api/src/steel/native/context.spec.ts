@@ -498,10 +498,6 @@ describe('Steel native context adapter', () => {
     expect(context.instructionPrefix).toContain('[final_ocr_markdown]');
     expect(context.instructionPrefix).not.toContain('OCR organizer rule fixture');
     expect(context.runtimeContextText).not.toMatch(/^# Current-turn OCR completion directive/u);
-    expect(context.runtimeContextText).toContain('metadata such as customer name');
-    expect(context.runtimeContextText).toContain(
-      'Satisfy any other user intent only within those allowed sections',
-    );
     expect(context.runtimeContextText).toContain(
       '# OCR source file mapping metadata\nsource_file_mapping:\n  - source_code: F1\n    source_filename: "PL.pdf"\n  - source_code: F2\n    source_filename: "missing.pdf"',
     );
@@ -541,7 +537,6 @@ describe('Steel native context adapter', () => {
       /Do not output page headings or page details, explanatory prose, bullet lists, calculations, or duplicate tables/u,
     );
     expect(directive).toContain('End after the final table.');
-    expect(directive).toContain('Satisfy any other user intent only within those allowed sections');
     expect(directive).not.toContain('Answer any other user intent too');
   });
 

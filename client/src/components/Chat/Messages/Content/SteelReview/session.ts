@@ -225,7 +225,7 @@ export function setSteelReviewDraftSystem(
 
 export function setSteelReviewDraftCandidate(
   draft: SteelReviewDraftState,
-  table: Pick<SteelReviewTable, 'headers'>,
+  table: Pick<SteelReviewTable, 'headers' | 'rows'>,
   row: SteelReviewRow,
   candidate: SteelCatalogCandidate,
   pricing: SteelCatalogPricing,
@@ -252,10 +252,26 @@ export function setSteelReviewDraftCandidate(
     ...(evidence ? { evidence } : {}),
   };
   const tier = steelCatalogSelectionTier(selection);
+  let candidateInput = row;
+  if (row.system.kind === 'processing') {
+    const saved = table.rows.find((candidateRow) => candidateRow.rowId === row.rowId) ?? draft.rowStates[row.rowId];
+    if (saved) {
+      const values = { ...row.values };
+      for (const header of ['數量', '總數']) {
+        if (saved.values[header]) values[header] = { ...saved.values[header] };
+      }
+      for (const change of orderedDraftCells(saved, draft)) {
+        if (change.header === '數量' || change.header === '總數') {
+          values[change.header] = { ...values[change.header], effective: change.value };
+        }
+      }
+      candidateInput = { ...row, values };
+    }
+  }
   const nextRow =
     row.system.kind === 'material'
       ? applyMaterialCandidate(row, candidate, table.headers, tier)
-      : applyProcessingCandidate(row, candidate, table.headers, tier, parent!);
+      : applyProcessingCandidate(candidateInput, candidate, table.headers, tier, parent!);
   const cells = { ...draft.cells };
   const touched = { ...draft.touched };
   const cellVersions = { ...draft.cellVersions };
@@ -498,7 +514,16 @@ function hasEarlierDraftDependency(
 ): boolean {
   if (!row.system) return false;
   const version = draft.cellVersions[getSteelReviewDraftCellKey(row.rowId, header)] ?? 0;
-  return (calculationOutputDependencies[header] ?? []).some((dependency) => {
+  const dependencies = row.system.kind === 'processing' && header === '數量'
+    ? ['總數']
+    : calculationOutputDependencies[header] ?? [];
+  if (row.system.kind === 'processing' && header === '總數' && row.system.parentRowId) {
+    const parentKey = getSteelReviewDraftCellKey(row.system.parentRowId, '數量');
+    const parentVersion = draft.cellVersions[parentKey] ?? 0;
+    if (parentVersion > 0 && parentVersion < version &&
+      Object.prototype.hasOwnProperty.call(draft.cells, parentKey)) return true;
+  }
+  return dependencies.some((dependency) => {
     const key = getSteelReviewDraftCellKey(row.rowId, dependency);
     const dependencyVersion = draft.cellVersions[key] ?? 0;
     return (
@@ -524,7 +549,8 @@ function orderedDraftCells(
           Object.prototype.hasOwnProperty.call(draft.touched, key));
       return (
         hasIntent &&
-        (value !== (row.values[header]?.effective ?? '') ||
+        ((row.system?.kind === 'processing' && (header === '數量' || header === '總數')) ||
+          value !== (row.values[header]?.effective ?? '') ||
           hasEarlierDraftDependency(row, header, draft))
       );
     })
@@ -717,6 +743,14 @@ export function applySteelReviewDrafts(
   );
   return mode.projectRows(projectedRows, {
     previewCalculations,
+    getSavedRow: (rowId) => confirmedById.get(rowId),
+    processingChanges: (rowId) => {
+      const row = confirmedById.get(rowId) ?? draft.rowStates[rowId];
+      return row ? orderedDraftCells(row, draft).filter(({ header }) => header === '數量' || header === '總數') : [];
+    },
+    hasClearedMeasurement: (rowId) =>
+      Object.prototype.hasOwnProperty.call(draft.measurementDrafts, rowId) &&
+      draft.measurementDrafts[rowId] === null,
     hasManualTotal: (rowId) =>
       Object.prototype.hasOwnProperty.call(draft.cells, getSteelReviewDraftCellKey(rowId, '總數')),
     hasSelectedCandidate: (rowId) => Boolean(draft.candidateSelections[rowId]),
@@ -883,6 +917,8 @@ function rowValuesChanged(
     .filter(
       (header) =>
         (previous.values[header]?.effective ?? null) !== (next.values[header]?.effective ?? null) ||
+        (previous.system?.kind === 'processing' && (header === '數量' || header === '總數') &&
+          (draft.cellVersions[getSteelReviewDraftCellKey(previous.rowId, header)] ?? 0) > 0) ||
         hasEarlierDraftDependency(previous, header, draft),
     )
     .sort(
@@ -1298,6 +1334,17 @@ export function compileSteelReviewOperations(
       for (const activationIndex of parentEntries.get(parentId) ?? []) {
         for (const { index } of rowEntries) {
           if (activationIndex !== index) dependencies[index]!.add(activationIndex);
+        }
+      }
+      const hasProcessingAmountEdit = rowEntries.some(({ entry }) =>
+        (entry.operation.type === 'update' || entry.operation.type === 'add') && entry.operation.changes?.some(({ header }) =>
+          header === '數量' || header === '總數'));
+      if (!hasProcessingAmountEdit || next.deleted) continue;
+      for (const parentIndex of entriesByRow.get(parentId) ?? []) {
+        const operation = operationEntries[parentIndex]!.operation;
+        if (operation.type !== 'update' || !operation.changes?.some(({ header }) => header === '數量')) continue;
+        for (const { index } of rowEntries) {
+          if (parentIndex !== index) dependencies[index]!.add(parentIndex);
         }
       }
     }

@@ -370,6 +370,58 @@ describe('Steel review read service', () => {
     );
   });
 
+  it.each([
+    ['數量', '13', '13', '143', '3601'],
+    ['總數', '154', '14', '154', '3678'],
+  ])('persists bidirectional processing %s edits with the calculated internal quote', async (header, value, quantity, total, quoteTotal) => {
+    const emptyValues: Record<string, string> = Object.fromEntries(catalogHeaders.map((name) => [name, '']));
+    const material = makeCatalogRow('material-1', 'material', {
+      ...emptyValues,
+      品名規格: '鐵板 CP5', 類別: '鐵板', 數量: '11', 總數: '69.328688', 單位: 'Kg', 單價: '37.5', 備註: 'CP5',
+    });
+    const processing = makeCatalogRow('processing-1', 'processing', {
+      ...emptyValues,
+      品名規格: '鑽孔 CP5', 類別: '加工/孔', 數量: '12', 總數: '132', 單位: '孔', 單價: '7', 備註: 'CP5',
+    });
+    delete material.calculation;
+    delete processing.calculation;
+    const rows = [material, processing];
+    const markdown = catalogMarkdown(rows);
+    const record = makeSystemOrderRecord({ headers: catalogHeaders, rows, markdown, messageText: markdown });
+    const commitSteelReview = jest.fn(async (input: SteelReviewCommitInput) => ({
+      ...input,
+      digest: input.operationDigest ?? input.digest,
+      changedRows: input.caption.changedRows,
+      changedRowIds: input.caption.changedRowIds,
+      savedAt: new Date('2026-10-12T05:00:00.000Z'),
+    }));
+    const service = createSteelReviewService({
+      reader: { readSteelReview: jest.fn().mockResolvedValue(record) },
+      writer: { commitSteelReview },
+    });
+    const operation = {
+      userId: scope.userId,
+      conversationId: scope.conversationId,
+      messageId: scope.messageId,
+      title: systemOrderTitle,
+      kind: 'system_order' as const,
+      outputId: record.outputId,
+      revision: record.revision,
+      operations: [{ type: 'update' as const, rowId: processing.rowId, changes: [{ header, value }] }],
+    };
+    const prepared = await service.prepare(operation);
+    const preparedRow = prepared.rows.find((row) => row.rowId === processing.rowId)!;
+    expect(preparedRow.values['數量'].effective).toBe(quantity);
+    expect(preparedRow.values['總數'].effective).toBe(total);
+    expect(prepared.caption.customerQuoteTotal).toBe(quoteTotal);
+    const saved = await service.commit({ ...operation, operationId: prepared.operationId, digest: prepared.digest });
+    const savedRow = saved.rows.find((row) => row.rowId === processing.rowId)!;
+    expect(savedRow.values['數量'].effective).toBe(quantity);
+    expect(savedRow.values['總數'].effective).toBe(total);
+    expect(commitSteelReview).toHaveBeenCalledTimes(1);
+    expect(commitSteelReview.mock.calls[0]?.[0].caption.customerQuoteTotal).toBe(quoteTotal);
+  });
+
   it('counts customer quote changes by stable ledger row IDs when deletion shifts later rows', async () => {
     const markdown = [
       `## ${systemOrderTitle}`,

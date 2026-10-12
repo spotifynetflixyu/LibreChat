@@ -5,7 +5,7 @@ export interface OcrTable {
   readonly rows: readonly (readonly string[])[];
 }
 
-const FIRST_HEADERS = ['類別', '零件編號', '品名規格', '厚度', '寬度', '長度', '數量'];
+const FIRST_HEADERS = ['類別', '零件編號', '品名規格', '數量', '厚度', '寬度', '長度'];
 const LAST_HEADERS = ['來源', '頁碼', 'OCR來源'];
 const DIMENSIONS = new Set(['厚度', '長度', '寬度']);
 
@@ -24,7 +24,7 @@ export function normalizeOcrTable(table: OcrTable): OcrTable {
       const name = names[index];
       if (!DIMENSIONS.has(name) && name !== '數量') return value;
       const cleaned = DIMENSIONS.has(name)
-        ? cleanSystemOrderDimension(value)
+        ? cleanSystemOrderDimension(value, name === '長度' || name === '寬度' ? 'ceil' : 'half-up')
         : cleanSystemOrderNumber(value);
       if (value && (cleaned === '' || Number(cleaned) !== Number(cleanSystemOrderNumber(value)))) {
         originals.push(`原${name} ${value}`);

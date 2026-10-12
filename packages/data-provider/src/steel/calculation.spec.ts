@@ -1,5 +1,6 @@
 import {
   calculateSteelProcessingMeasurement,
+  calculateSteelProcessingRow,
   calculateSteelSystemOrderRow,
   convertSteelDimensionToMillimetres,
   divideSteelDecimalsExactly,
@@ -74,6 +75,105 @@ describe('Steel exact calculation seam', () => {
       parentHeaders: ['數量'],
       parentValues: ['8'],
     })).toBe('1');
+  });
+
+  it('synchronizes processing quantity and total from an explicit quantity edit', () => {
+    const result = calculateSteelProcessingRow({
+      headers: ['單位', '數量', '總數'],
+      values: ['刀', '13', '132'],
+      parentHeaders: ['數量'],
+      parentValues: ['11'],
+      changedHeader: '數量',
+    });
+
+    expect(result.values).toEqual(['刀', '13', '143']);
+    expect(result.calculatedHeaders).toEqual(['總數']);
+    expect(result.measurement).toEqual({ mode: 'perPiece', amount: '13', unit: '刀', ruleVersion: 'v1' });
+  });
+
+  it('synchronizes processing quantity from an exact total edit', () => {
+    const result = calculateSteelProcessingRow({
+      headers: ['單位', '數量', '總數'],
+      values: ['刀', '13', '154'],
+      parentHeaders: ['數量'],
+      parentValues: ['11'],
+      changedHeader: '總數',
+    });
+
+    expect(result.values).toEqual(['刀', '14', '154']);
+    expect(result.calculatedHeaders).toEqual(['數量']);
+    expect(result.measurement).toEqual({ mode: 'perPiece', amount: '14', unit: '刀', ruleVersion: 'v1' });
+  });
+
+  it('supports fractional processing amounts in both directions', () => {
+    const forward = calculateSteelProcessingRow({
+      headers: ['單位', '數量', '總數'],
+      values: ['M', '0.5', '0'],
+      parentHeaders: ['數量'],
+      parentValues: ['11'],
+      changedHeader: '數量',
+    });
+    const inverse = calculateSteelProcessingRow({
+      headers: ['單位', '數量', '總數'],
+      values: ['M', '0', '5.5'],
+      parentHeaders: ['數量'],
+      parentValues: ['11'],
+      changedHeader: '總數',
+    });
+
+    expect(forward.values).toEqual(['M', '0.5', '5.5']);
+    expect(inverse.values).toEqual(['M', '0.5', '5.5']);
+  });
+
+  it('skips unsafe processing inverses and clears a stale basis on blank input', () => {
+    const zeroInverse = calculateSteelProcessingRow({
+      headers: ['單位', '數量', '總數'],
+      values: ['刀', '7', '0'],
+      parentHeaders: ['數量'],
+      parentValues: ['0'],
+      changedHeader: '總數',
+    });
+    const blankQuantity = calculateSteelProcessingRow({
+      headers: ['單位', '數量', '總數'],
+      values: ['刀', '', '132'],
+      parentHeaders: ['數量'],
+      parentValues: ['11'],
+      changedHeader: '數量',
+    });
+
+    expect(zeroInverse.values).toEqual(['刀', '7', '0']);
+    expect(zeroInverse.measurement).toBeNull();
+    expect(blankQuantity.values).toEqual(['刀', '', '132']);
+    expect(blankQuantity.measurement).toBeNull();
+  });
+
+  it('uses a confirmed legacy per-piece basis only for nondirect parent recalculation', () => {
+    const result = calculateSteelProcessingRow({
+      headers: ['單位', '數量', '總數'],
+      values: ['M', '0.5', '5.5'],
+      parentHeaders: ['數量'],
+      parentValues: ['12'],
+      referenceValues: ['M', '0.5', '5.5'],
+      referenceParentValues: ['11'],
+    });
+
+    expect(result.values).toEqual(['M', '0.5', '6']);
+    expect(result.calculatedHeaders).toEqual(['總數']);
+    expect(result.measurement).toBeUndefined();
+  });
+
+  it('does not infer a stale per-piece basis from an unconfirmed legacy row', () => {
+    const result = calculateSteelProcessingRow({
+      headers: ['單位', '數量', '總數'],
+      values: ['刀', '132', '132'],
+      parentHeaders: ['數量'],
+      parentValues: ['12'],
+      referenceValues: ['刀', '132', '132'],
+      referenceParentValues: ['11'],
+    });
+
+    expect(result.values).toEqual(['刀', '132', '132']);
+    expect(result.calculatedHeaders).toEqual([]);
   });
 
   it('keeps batch measurements independent from the linked parent quantity', () => {

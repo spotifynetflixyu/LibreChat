@@ -13,7 +13,7 @@ import {
   steelCatalogSelectionSchema,
 } from './catalog';
 import {
-  calculateSteelProcessingMeasurement,
+  calculateSteelProcessingRow,
   calculateSteelSystemOrderRow,
   steelProcessingMeasurementSchema,
 } from './calculation';
@@ -1192,90 +1192,137 @@ function applyProcessingRowCalculation(
   expectedParent: SteelReviewLedgerRow | undefined,
   headers: readonly string[],
   allowManualOverride = true,
+  changedHeader?: '數量' | '總數',
+  referenceRow?: SteelReviewLedgerRow,
+  referenceParent?: SteelReviewLedgerRow,
+  suppressReferenceInference = false,
 ): SteelReviewConflict[] {
   if (row.system?.kind !== 'processing' || row.deleted) {
     return [];
   }
-  const measurement = row.calculation?.measurement;
-  if (!measurement) return [];
+  const existingMeasurement = row.calculation?.measurement;
+  const hasActiveParent = Boolean(
+    parent &&
+      expectedParent &&
+      !parent.deleted &&
+      !expectedParent.deleted &&
+      parent.system?.kind === 'material' &&
+      expectedParent.system?.kind === 'material',
+  );
   if (
-    measurement.mode !== 'batch' &&
-    (!parent ||
-      !expectedParent ||
-      parent.deleted ||
-      parent.system?.kind !== 'material' ||
-      expectedParent.deleted ||
-      expectedParent.system?.kind !== 'material')
+    changedHeader === undefined &&
+    existingMeasurement?.mode !== 'batch' &&
+    !hasActiveParent
   ) {
     return [];
   }
-  const totalHeader = headers.includes('總數') ? '總數' : undefined;
-  if (!totalHeader) return [];
-  const currentTotal = row.values[totalHeader]?.effective ?? null;
-  const expectedTotal = expectedRow.values[totalHeader]?.effective ?? null;
-  const currentField = row.calculation?.fields?.[totalHeader];
-  const conflicts: SteelReviewConflict[] = [];
-  if (currentTotal !== expectedTotal && currentField?.kind === 'manual') {
-    conflicts.push({
-      kind: 'field',
-      rowId: row.rowId,
-      header: totalHeader,
-      expected: expectedTotal,
-      current: currentTotal,
-      requested: currentTotal,
-    });
-    return conflicts;
-  }
-  const result = calculateSteelProcessingMeasurement({
+  const measurement = suppressReferenceInference ? null : row.calculation?.measurement;
+  const parentHeaders = hasActiveParent ? headers : [];
+  const parentValues = hasActiveParent && parent
+    ? headers.map((header) => parent.values[header]?.effective ?? '')
+    : [];
+  const referenceValues = referenceRow
+    ? headers.map((header) => referenceRow.values[header]?.effective ?? '')
+    : undefined;
+  const referenceParentValues = referenceParent
+    ? headers.map((header) => referenceParent.values[header]?.effective ?? '')
+    : undefined;
+  const result = calculateSteelProcessingRow({
     headers,
     values: headers.map((header) => row.values[header]?.effective ?? ''),
-    measurement,
-    parentHeaders: headers,
-    parentValues: parent ? headers.map((header) => parent.values[header]?.effective ?? '') : [],
+    parentHeaders,
+    parentValues,
+    ...(measurement !== undefined ? { measurement } : {}),
+    ...(changedHeader !== undefined ? { changedHeader } : {}),
+    ...(referenceValues ? { referenceValues } : {}),
+    ...(referenceParentValues ? { referenceParentValues } : {}),
   });
-  if (result === undefined || (!allowManualOverride && currentField?.kind === 'manual'))
-    return conflicts;
+  const calculatedHeaders = new Set(result.calculatedHeaders);
+  const conflicts: SteelReviewConflict[] = [];
+  if (calculatedHeaders.size === 0 && result.measurement === undefined) return conflicts;
+  const parentQuantity = hasActiveParent
+    ? normalizeSteelReviewEffectiveValue(parent?.values['數量']?.effective ?? null)
+    : undefined;
+  const dependencies = {
+    ...(parent ? { parentRowId: parent.rowId } : {}),
+    ...(parentQuantity ? { materialQuantity: parentQuantity } : {}),
+    ...(changedHeader ? { changedHeader } : {}),
+    ...(measurement && changedHeader === undefined
+      ? { measurement: JSON.stringify(measurement) }
+      : {}),
+    ...(!measurement && changedHeader === undefined ? { basis: 'reference' } : {}),
+  };
   const provenance: SteelReviewFieldProvenance = {
     kind: 'derived',
     ruleVersion: 'v1',
-    dependencies: {
-      ...(parent ? { parentRowId: parent.rowId } : {}),
-      measurement: JSON.stringify(measurement),
-    },
+    dependencies,
   };
-  if (
-    currentTotal !== result &&
-    currentTotal !== expectedTotal &&
-    currentField?.kind !== 'derived'
-  ) {
-    conflicts.push({
-      kind: 'field',
-      rowId: row.rowId,
-      header: totalHeader,
-      expected: expectedTotal,
-      current: currentTotal,
-      requested: result,
-    });
-    return conflicts;
+  const fields = { ...(row.calculation?.fields ?? {}) };
+  const expectedFields = { ...(expectedRow.calculation?.fields ?? {}) };
+  if (changedHeader && result.measurement === null) {
+    const counterpart = changedHeader === '數量' ? '總數' : '數量';
+    if (fields[counterpart]?.kind === 'derived') delete fields[counterpart];
+    if (expectedFields[counterpart]?.kind === 'derived') delete expectedFields[counterpart];
   }
-  row.values[totalHeader] = {
-    ...(row.values[totalHeader] ?? { baseline: null, effective: null }),
-    effective: result,
-  };
-  expectedRow.values[totalHeader] = {
-    ...(expectedRow.values[totalHeader] ?? { baseline: null, effective: null }),
-    effective: result,
-  };
-  const fields = { ...(row.calculation?.fields ?? {}), [totalHeader]: provenance };
+  calculatedHeaders.forEach((header) => {
+    const index = headers.indexOf(header);
+    if (index < 0) return;
+    const next = result.values[index] ?? '';
+    const current = row.values[header]?.effective ?? null;
+    const expected = expectedRow.values[header]?.effective ?? null;
+    const currentField = row.calculation?.fields?.[header];
+    const expectedField = expectedRow.calculation?.fields?.[header];
+    const provenanceChanged = JSON.stringify(currentField ?? null) !== JSON.stringify(expectedField ?? null);
+    const hasConcurrentChange = current !== expected || provenanceChanged;
+    const trustedDerivedMerge = currentField?.kind === 'derived';
+    if (!allowManualOverride && changedHeader === undefined && currentField?.kind === 'manual') return;
+    if (hasConcurrentChange && currentField?.kind === 'manual') {
+      conflicts.push({
+        kind: 'field',
+        rowId: row.rowId,
+        header,
+        expected,
+        current,
+        requested: next,
+      });
+      return;
+    }
+    if (current !== next) {
+      if (hasConcurrentChange && !trustedDerivedMerge) {
+        conflicts.push({
+          kind: 'field',
+          rowId: row.rowId,
+          header,
+          expected,
+          current,
+          requested: next,
+        });
+        return;
+      }
+      row.values[header] = {
+        ...(row.values[header] ?? { baseline: null, effective: null }),
+        effective: next,
+      };
+    }
+    fields[header] = provenance;
+    expectedRow.values[header] = {
+      ...(expectedRow.values[header] ?? { baseline: null, effective: null }),
+      effective: next,
+    };
+    expectedFields[header] = provenance;
+  });
+  if (result.measurement !== undefined) {
+    setProcessingMeasurement(row, result.measurement);
+    setProcessingMeasurement(expectedRow, result.measurement);
+  }
   row.calculation = {
     ...(row.calculation?.candidate ? { candidate: row.calculation.candidate } : {}),
-    measurement,
+    ...(row.calculation?.measurement ? { measurement: row.calculation.measurement } : {}),
     fields,
   };
-  const expectedFields = { ...(expectedRow.calculation?.fields ?? {}), [totalHeader]: provenance };
   expectedRow.calculation = {
     ...(expectedRow.calculation?.candidate ? { candidate: expectedRow.calculation.candidate } : {}),
-    measurement,
+    ...(expectedRow.calculation?.measurement ? { measurement: expectedRow.calculation.measurement } : {}),
     fields: expectedFields,
   };
   return conflicts;
@@ -1287,7 +1334,9 @@ type SteelReviewFieldProvenance = NonNullable<
 
 function clearProcessingDerivedProvenance(row: SteelReviewLedgerRow): void {
   const fields = { ...(row.calculation?.fields ?? {}) };
-  if (fields['總數']?.kind === 'derived') delete fields['總數'];
+  for (const header of ['數量', '總數']) {
+    if (fields[header]?.kind === 'derived') delete fields[header];
+  }
   row.calculation = {
     ...(row.calculation?.candidate ? { candidate: row.calculation.candidate } : {}),
     ...(row.calculation?.measurement ? { measurement: row.calculation.measurement } : {}),
@@ -1300,6 +1349,8 @@ function recalculateChildrenForParent(
   currentRows: readonly SteelReviewLedgerRow[],
   expectedById: ReadonlyMap<string, SteelReviewLedgerRow>,
   currentById: ReadonlyMap<string, SteelReviewLedgerRow>,
+  referenceById: ReadonlyMap<string, SteelReviewLedgerRow>,
+  suppressedProcessingInference: ReadonlySet<string>,
   headers: readonly string[],
 ): SteelReviewConflict[] {
   if (parent.system?.kind !== 'material' || parent.deleted) return [];
@@ -1315,6 +1366,8 @@ function recalculateChildrenForParent(
     const currentParent = currentById.get(parent.rowId);
     const expectedParent = expectedById.get(parent.rowId);
     if (!expectedChild || !currentParent || !expectedParent) continue;
+    const referenceChild = referenceById.get(child.rowId);
+    const referenceParent = referenceById.get(parent.rowId);
     conflicts.push(
       ...applyProcessingRowCalculation(
         child,
@@ -1322,6 +1375,11 @@ function recalculateChildrenForParent(
         currentParent,
         expectedParent,
         headers,
+        true,
+        undefined,
+        referenceChild,
+        referenceParent,
+        suppressedProcessingInference.has(child.rowId),
       ),
     );
   }
@@ -1419,12 +1477,15 @@ export function applySteelReviewOperations({
 }): SteelReviewOperationApplyResult {
   const current = currentRows.map(cloneLedgerRow);
   const expected = expectedRows.map(cloneLedgerRow);
+  const referenceRows = expectedRows.map(cloneLedgerRow);
   const currentById = new Map(current.map((row) => [row.rowId, row]));
   const expectedById = new Map(expected.map((row) => [row.rowId, row]));
+  const referenceById = new Map(referenceRows.map((row) => [row.rowId, row]));
   const knownIds = new Set(currentById.keys());
   const seen = new Map<string, SteelReviewOperation['type']>();
   const conflicts: SteelReviewConflict[] = [];
   const deferredProcessingCandidates = new Set<string>();
+  const suppressedProcessingInference = new Set<string>();
   const initialCurrentParents = new Map(current.map((row) => [row.rowId, relationParentId(row)]));
   const initialExpectedParents = new Map(expected.map((row) => [row.rowId, relationParentId(row)]));
   const remarksBindingMode =
@@ -1559,6 +1620,30 @@ export function applySteelReviewOperations({
           effective: requestedValue,
         };
         conflicts.push(...applyRowCalculation(row, expectedRow, headers, [change.header]));
+        if (
+          row.system?.kind === 'processing' &&
+          (change.header === '數量' || change.header === '總數')
+        ) {
+          const parentId = row.system.parentRowId;
+          const parent = parentId ? currentById.get(parentId) : undefined;
+          const expectedParent = parentId ? expectedById.get(parentId) : undefined;
+          conflicts.push(
+            ...applyProcessingRowCalculation(
+              row,
+              expectedRow,
+              parent,
+              expectedParent,
+              headers,
+              true,
+              change.header,
+            ),
+          );
+          if (row.calculation?.measurement?.mode === 'perPiece') {
+            suppressedProcessingInference.delete(row.rowId);
+          } else {
+            suppressedProcessingInference.add(row.rowId);
+          }
+        }
       }
       if (operation.system?.kind === 'processing' && operation.measurement !== undefined) {
         const parent = operation.system.parentRowId
@@ -1574,7 +1659,7 @@ export function applySteelReviewOperations({
             parent,
             expectedParent,
             headers,
-            !operation.changes.some((change) => change.header === '總數'),
+            true,
           ),
         );
       }
@@ -1790,7 +1875,12 @@ export function applySteelReviewOperations({
           });
           continue;
         }
-        if (currentValue === requestedValue && !hasPriorValueChange) {
+        const processingNumericHeader =
+          row.system?.kind === 'processing' &&
+          (change.header === '數量' || change.header === '總數')
+            ? change.header
+            : undefined;
+        if (currentValue === requestedValue && !hasPriorValueChange && !processingNumericHeader) {
           continue;
         }
         if (currentValue !== requestedValue) {
@@ -1806,6 +1896,27 @@ export function applySteelReviewOperations({
           hasPriorValueChange = true;
         }
         conflicts.push(...applyRowCalculation(row, expectedRow, headers, [change.header]));
+        if (processingNumericHeader) {
+          const parentId = row.system?.kind === 'processing' ? row.system.parentRowId : null;
+          const parent = parentId ? currentById.get(parentId) : undefined;
+          const expectedParent = parentId ? expectedById.get(parentId) : undefined;
+          conflicts.push(
+            ...applyProcessingRowCalculation(
+              row,
+              expectedRow,
+              parent,
+              expectedParent,
+              headers,
+              true,
+              processingNumericHeader,
+            ),
+          );
+          if (row.calculation?.measurement?.mode === 'perPiece') {
+            suppressedProcessingInference.delete(row.rowId);
+          } else {
+            suppressedProcessingInference.add(row.rowId);
+          }
+        }
       }
       if (operation.source) {
         const expectedSource = operationSourceValue(expectedRow.source);
@@ -1863,7 +1974,12 @@ export function applySteelReviewOperations({
             parent,
             expectedParent,
             headers,
-            !(operation.changes ?? []).some((change) => change.header === '總數'),
+            true,
+            undefined,
+            referenceById.get(row.rowId),
+            expectedParent ? referenceById.get(expectedParent.rowId) : undefined,
+            (operation.measurement === null && row.calculation?.measurement === undefined) ||
+              suppressedProcessingInference.has(row.rowId),
           ),
         );
       }
@@ -1873,7 +1989,15 @@ export function applySteelReviewOperations({
         changedHeaders.some((header) => header === '數量' || header === '長度')
       ) {
         conflicts.push(
-          ...recalculateChildrenForParent(row, current, expectedById, currentById, headers),
+          ...recalculateChildrenForParent(
+            row,
+            current,
+            expectedById,
+            currentById,
+            referenceById,
+            suppressedProcessingInference,
+            headers,
+          ),
         );
       }
       continue;
@@ -1892,6 +2016,25 @@ export function applySteelReviewOperations({
         conflicts,
         remarksBindingMode,
       );
+      if (row.system?.kind === 'processing') {
+        const parentId = row.system.parentRowId;
+        const parent = parentId ? currentById.get(parentId) : undefined;
+        const expectedParent = parentId ? expectedById.get(parentId) : undefined;
+        conflicts.push(
+          ...applyProcessingRowCalculation(
+            row,
+            expectedRow,
+            parent,
+            expectedParent,
+            headers,
+            true,
+            undefined,
+            referenceById.get(row.rowId),
+            expectedParent ? referenceById.get(expectedParent.rowId) : undefined,
+            suppressedProcessingInference.has(row.rowId),
+          ),
+        );
+      }
       continue;
     }
     if (operation.type === 'delete') {
@@ -2026,6 +2169,10 @@ export function applySteelReviewOperations({
           expectedParent,
           headers,
           !hasManualTotal,
+          undefined,
+          referenceById.get(row.rowId),
+          expectedParent ? referenceById.get(expectedParent.rowId) : undefined,
+          suppressedProcessingInference.has(row.rowId),
         ),
       );
     }

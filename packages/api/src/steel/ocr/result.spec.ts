@@ -377,14 +377,14 @@ describe('finalizeOcrResponse', () => {
       ok: true,
       table: {
         headers:
-          '類別 零件編號 品名規格 **厚度** 寬度 長度 數量 加工 備註 其他 來源 頁碼 OCR來源'.split(
+          '類別 零件編號 品名規格 數量 **厚度** 寬度 長度 加工 備註 其他 來源 頁碼 OCR來源'.split(
             ' ',
           ),
         rows: [
-          '板 / P1 / 鋼板 / 6 / 6 / 1250 / 1234 / 鑽孔 / 保留；原寬度 0.25 inch；原厚度 6.35mm；原長度 1.25m / A|B / F1 / 3 / OCR A'.split(
+          '板 / P1 / 鋼板 / 1234 / 6 / 7 / 1250 / 鑽孔 / 保留；原寬度 0.25 inch；原厚度 6.35mm；原長度 1.25m / A|B / F1 / 3 / OCR A'.split(
             ' / ',
           ),
-          '板 / P2 / 鋼板 /  /  / 1200 /  / 切割 / 原數量 2或3；原寬度 600~650 / keep / F1 / 4 / OCR B'.split(
+          '板 / P2 / 鋼板 /  /  /  / 1200 / 切割 / 原數量 2或3；原寬度 600~650 / keep / F1 / 4 / OCR B'.split(
             ' / ',
           ),
         ],
@@ -392,6 +392,27 @@ describe('finalizeOcrResponse', () => {
     });
     expect(result.finalResponse).toContain(`## ${title}`);
     expect(result.finalResponse).toContain('| 2或3 | 待確認 |');
+    expect(
+      finalizeOcrResponse({ assistantResponse: result.finalResponse, canonicalMapping: [] }),
+    ).toEqual(result);
+  });
+
+  it('ceilings OCR length and width after unit conversion and keeps the original values', () => {
+    const result = finalizeOcrResponse({
+      assistantResponse: `## ocr_result\n\n${table(
+        ['厚度', '寬度', '長度', '數量'],
+        [['2.3mm', '200.1mm', '0.4831m', '2']],
+      )}`,
+      canonicalMapping: [],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const expected = {
+      headers: ['數量', '厚度', '寬度', '長度', '備註'],
+      rows: [['2', '2', '201', '484', '原厚度 2.3mm；原寬度 200.1mm；原長度 0.4831m']],
+    };
+    expect(parseOcrResultTable(result.ocrResultMarkdown)).toEqual({ ok: true, table: expected });
+    expect(result.reconciliation).toMatchObject(expected);
     expect(
       finalizeOcrResponse({ assistantResponse: result.finalResponse, canonicalMapping: [] }),
     ).toEqual(result);
@@ -413,13 +434,37 @@ describe('finalizeOcrResponse', () => {
       expect(result.ok).toBe(true);
       if (!result.ok) return;
       const expected = {
-        headers: ['類別', '零件編號', '品名規格', '厚度', '寬度', '長度', '數量'],
-        rows: [['鐵板', 'P1', 'PL9×200×300', '9', '200', '300', '2']],
+        headers: ['類別', '零件編號', '品名規格', '數量', '厚度', '寬度', '長度'],
+        rows: [['鐵板', 'P1', 'PL9×200×300', '2', '9', '200', '300']],
       };
       expect(parseOcrResultTable(result.ocrResultMarkdown)).toEqual({ ok: true, table: expected });
       expect(result.reconciliation).toMatchObject(expected);
     },
   );
+
+  it('uses the new column order for a full correction supplied with an older result', () => {
+    const headers = ['類別', '零件編號', '品名規格', '厚度', '寬度', '長度', '數量'];
+    const previous = `## ocr_result\n\n${table(headers, [
+      ['鐵板', 'P1', 'PL9×200×300', '9', '200', '300', '1'],
+    ])}`;
+    const response = `## ocr_result\n\n${table(headers, [
+      ['鐵板', 'P1', 'PL9×200×300', '9', '200', '300', '2'],
+    ])}`;
+    const result = finalizeOcrResponse({
+      assistantResponse: response,
+      previousOcrMarkdown: previous,
+      canonicalMapping: [],
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(parseOcrResultTable(result.ocrResultMarkdown)).toEqual({
+      ok: true,
+      table: {
+        headers: ['類別', '零件編號', '品名規格', '數量', '厚度', '寬度', '長度'],
+        rows: [['鐵板', 'P1', 'PL9×200×300', '2', '9', '200', '300']],
+      },
+    });
+  });
 
   it('preserves uncertain values in a note without inventing missing preferred columns', () => {
     const result = finalizeOcrResponse({

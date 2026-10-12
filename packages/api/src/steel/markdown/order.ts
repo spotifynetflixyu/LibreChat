@@ -181,18 +181,26 @@ export function readSystemOrderDimension(value: string): number | undefined {
   return Number.isFinite(result) ? result : undefined;
 }
 
-export function cleanSystemOrderDimension(value: string): string {
+export function cleanSystemOrderDimension(
+  value: string,
+  rounding: 'half-up' | 'ceil' = 'half-up',
+): string {
   const decimal = cleanDecimal(value);
   if (!decimal) return '';
   const { numerator, denominator } = dimensionFactor(value);
   const [integer = '0', fraction = ''] = decimal.split('.');
   const scale = BigInt('1' + '0'.repeat(fraction.length)) * denominator;
   const digits = BigInt(integer + fraction) * numerator;
+  if (rounding === 'ceil') return ((digits + scale - BigInt(1)) / scale).toString();
   return ((digits * BigInt(2) + scale) / (scale * BigInt(2))).toString();
 }
 
 function cleanCell(header: string, value: string): string | undefined {
-  if (DIMENSION_HEADERS.has(header)) return cleanSystemOrderDimension(value);
+  if (DIMENSION_HEADERS.has(header))
+    return cleanSystemOrderDimension(
+      value,
+      header === '長度' || header === '寬度' ? 'ceil' : 'half-up',
+    );
   if (NUMERIC_HEADERS.has(header)) return cleanDecimal(value);
   if (header !== '計價基準') return undefined;
   const text = value.trim();

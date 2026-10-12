@@ -1,4 +1,8 @@
-import { createSystemOrderNormalizer, normalizeSystemOrderMarkdown } from './order';
+import {
+  cleanSystemOrderDimension,
+  createSystemOrderNormalizer,
+  normalizeSystemOrderMarkdown,
+} from './order';
 
 const legacyHeaders = [
   '型號',
@@ -122,11 +126,34 @@ describe('system_order Markdown normalizer', () => {
     );
   });
 
-  it('rounds all dimension columns half up after converting to mm without changing precise weights', () => {
+  it('ceilings length and width in mm while rounding thickness and web half up', () => {
     const input =
       '## system_order\n| 厚度 | 寬度 | 長度 | 肚 | 單重 | 總數 |\n| --- | --- | --- | --- | --- | --- |\n| 6.35mm | 6.35mm | 762.5 mm | 0.2mm | 0.942 kg | 1.884 kg |\n| 1.5mm | 2.3mm | 1.25 m | 0.25 inch | 1.25 | 2.5 |';
-    expect(normalizeSystemOrderMarkdown(input)).toContain('| 6 | 6 | 763 | 0 | 0.942 | 1.884 |');
-    expect(normalizeSystemOrderMarkdown(input)).toContain('| 2 | 2 | 1250 | 6 | 1.25 | 2.5 |');
+    expect(normalizeSystemOrderMarkdown(input)).toContain('| 6 | 7 | 763 | 0 | 0.942 | 1.884 |');
+    expect(normalizeSystemOrderMarkdown(input)).toContain('| 2 | 3 | 1250 | 6 | 1.25 | 2.5 |');
+  });
+
+  it('ceilings converted dimensions exactly at every streaming boundary and preserves originals', () => {
+    const input =
+      '## system_order\n| 長度 | 寬度 | 備註 |\n| --- | --- | --- |\n| 483.1mm | 0.25 inch | 保留 |\n| 0.483m | 20.00cm | |\n| 0 | 1/2 | |';
+    const expected =
+      '## system_order\n| 長度 | 寬度 | 備註 |\n| --- | --- | --- |\n| 484 | 7 | 保留；原長度 483.1 mm；原寬度 6.35 mm |\n| 483 | 200 | |\n| 0 |  | |';
+    expect(normalizeSystemOrderMarkdown(input)).toBe(expected);
+    expect(normalizeSystemOrderMarkdown(expected)).toBe(expected);
+    for (let split = 0; split <= input.length; split += 1) {
+      const normalizer = createSystemOrderNormalizer();
+      expect(
+        normalizer.append(input.slice(0, split)) +
+          normalizer.append(input.slice(split)) +
+          normalizer.finish(),
+      ).toBe(expected);
+    }
+  });
+
+  it('retains nonzero decimal digits beyond floating point precision when ceiling to mm', () => {
+    expect(cleanSystemOrderDimension('0.483000000000000001m', 'ceil')).toBe('484');
+    expect(cleanSystemOrderDimension('200.000000000000000001mm', 'ceil')).toBe('201');
+    expect(cleanSystemOrderDimension('200.000000000000000000mm', 'ceil')).toBe('200');
   });
 
   it.each(['system_order_chunk', 'system_order_updates'])('cleans %s rows locally', (title) => {

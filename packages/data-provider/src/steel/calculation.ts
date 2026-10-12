@@ -110,6 +110,23 @@ export interface SteelCalculationRowResult {
   calculatedHeaders: string[];
 }
 
+export interface SteelProcessingRowInput {
+  headers: readonly string[];
+  values: readonly string[];
+  parentHeaders: readonly string[];
+  parentValues: readonly string[];
+  measurement?: SteelProcessingMeasurement | null;
+  changedHeader?: '數量' | '總數';
+  referenceValues?: readonly string[];
+  referenceParentValues?: readonly string[];
+}
+
+export interface SteelProcessingRowResult {
+  values: string[];
+  calculatedHeaders: string[];
+  measurement?: SteelProcessingMeasurement | null;
+}
+
 interface DecimalParts {
   digits: bigint;
   scale: number;
@@ -379,6 +396,105 @@ export function calculateSteelProcessingMeasurement({
   if (measurement.mode === 'batch') return amount;
   const quantity = quantityValue(parentHeaders, parentValues);
   return quantity === undefined ? undefined : multiplySteelDecimals([amount, quantity]);
+}
+
+export function calculateSteelProcessingRow(input: SteelProcessingRowInput): SteelProcessingRowResult {
+  const values = [...input.values];
+  const calculatedHeaders: string[] = [];
+  const changedHeader = input.changedHeader;
+  if (changedHeader === '數量') {
+    const quantity = normalizeSteelDecimal(valueAt(input.headers, values, '數量'));
+    if (quantity === undefined) {
+      if (valueAt(input.headers, values, '數量').trim() === '') setValue(input.headers, values, '數量', '');
+      return { values, calculatedHeaders, measurement: null };
+    }
+    setValue(input.headers, values, '數量', quantity);
+    const measurement: SteelProcessingMeasurement = {
+      mode: 'perPiece',
+      amount: quantity,
+      unit: valueAt(input.headers, values, '單位'),
+      ruleVersion: steelProcessingMeasurementRuleVersion,
+    };
+    const parentQuantity = quantityValue(input.parentHeaders, input.parentValues);
+    const total = parentQuantity === undefined
+      ? undefined
+      : multiplySteelDecimals([quantity, parentQuantity]);
+    if (total !== undefined && input.headers.includes('總數')) {
+      setValue(input.headers, values, '總數', total);
+      calculatedHeaders.push('總數');
+    }
+    return { values, calculatedHeaders, measurement };
+  }
+
+  if (changedHeader === '總數') {
+    const total = normalizeSteelDecimal(valueAt(input.headers, values, '總數'));
+    if (total === undefined) {
+      if (valueAt(input.headers, values, '總數').trim() === '') setValue(input.headers, values, '總數', '');
+      return { values, calculatedHeaders, measurement: null };
+    }
+    setValue(input.headers, values, '總數', total);
+    const parentQuantity = quantityValue(input.parentHeaders, input.parentValues);
+    const quantity = parentQuantity === undefined
+      ? undefined
+      : divideSteelDecimalsExactly(total, parentQuantity);
+    if (quantity === undefined || !input.headers.includes('數量')) {
+      return { values, calculatedHeaders, measurement: null };
+    }
+    setValue(input.headers, values, '數量', quantity);
+    calculatedHeaders.push('數量');
+    return {
+      values,
+      calculatedHeaders,
+      measurement: {
+        mode: 'perPiece',
+        amount: quantity,
+        unit: valueAt(input.headers, values, '單位'),
+        ruleVersion: steelProcessingMeasurementRuleVersion,
+      },
+    };
+  }
+
+  if (input.measurement === null) return { values, calculatedHeaders, measurement: null };
+  if (input.measurement) {
+    const total = calculateSteelProcessingMeasurement({
+      headers: input.headers,
+      values,
+      measurement: input.measurement,
+      parentHeaders: input.parentHeaders,
+      parentValues: input.parentValues,
+    });
+    if (total !== undefined && input.headers.includes('總數')) {
+      setValue(input.headers, values, '總數', total);
+      calculatedHeaders.push('總數');
+    }
+    return { values, calculatedHeaders };
+  }
+
+  if (!input.referenceValues || !input.referenceParentValues) {
+    return { values, calculatedHeaders };
+  }
+  const referenceQuantity = normalizeSteelDecimal(valueAt(input.headers, input.referenceValues, '數量'));
+  const referenceTotal = normalizeSteelDecimal(valueAt(input.headers, input.referenceValues, '總數'));
+  const referenceParentQuantity = quantityValue(input.parentHeaders, input.referenceParentValues);
+  if (
+    referenceQuantity === undefined ||
+    referenceTotal === undefined ||
+    referenceParentQuantity === undefined ||
+    !isPositiveDecimal(referenceParentQuantity) ||
+    multiplySteelDecimals([referenceQuantity, referenceParentQuantity]) !== referenceTotal
+  ) {
+    return { values, calculatedHeaders };
+  }
+  const quantity = quantityValue(input.headers, values);
+  const parentQuantity = quantityValue(input.parentHeaders, input.parentValues);
+  const total = quantity && parentQuantity
+    ? multiplySteelDecimals([quantity, parentQuantity])
+    : undefined;
+  if (total !== undefined && input.headers.includes('總數')) {
+    setValue(input.headers, values, '總數', total);
+    calculatedHeaders.push('總數');
+  }
+  return { values, calculatedHeaders };
 }
 
 function provenanceFor(

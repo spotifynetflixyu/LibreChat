@@ -1,7 +1,7 @@
 import {
   bindSteelReviewSystemRows,
   orderSteelReviewSystemRows,
-  calculateSteelProcessingMeasurement,
+  calculateSteelProcessingRow,
   isSteelReviewSourceAssociationHeader,
 } from 'librechat-data-provider';
 import type { SteelReviewRow } from 'librechat-data-provider';
@@ -14,21 +14,82 @@ function projectSystemRows(rows: SteelReviewRow[], context: SteelReviewProjectio
   if (!context.previewCalculations) return orderedRows;
   const byId = new Map(orderedRows.map((row) => [row.rowId, row]));
   return orderedRows.map((row) => {
-    if (row.system?.kind !== 'processing' || row.deleted || row.values['總數'] === undefined ||
-      context.hasManualTotal(row.rowId) || context.preservesCandidateTotal(row.rowId, row.system.parentRowId)) return row;
-    const parent = row.system.parentRowId ? byId.get(row.system.parentRowId) : undefined;
-    const measurement = row.calculation?.measurement;
-    if (measurement?.mode !== 'batch' && (!parent || parent.deleted || parent.system?.kind !== 'material')) return row;
+    if (row.system?.kind !== 'processing' || row.deleted || row.values['總數'] === undefined) return row;
+    const changes = context.processingChanges?.(row.rowId) ?? [];
+    if (changes.length === 0 && (context.hasManualTotal(row.rowId) ||
+      context.hasClearedMeasurement?.(row.rowId) ||
+      context.preservesCandidateTotal(row.rowId, row.system.parentRowId))) return row;
+    const linkedParent = row.system.parentRowId ? byId.get(row.system.parentRowId) : undefined;
+    const parent = linkedParent?.system?.kind === 'material' && !linkedParent.deleted ? linkedParent : undefined;
+    let measurement = row.calculation?.measurement;
+    if (changes.length === 0 && measurement?.mode !== 'batch' && !parent) return row;
     const rowHeaders = Object.keys(row.values);
-    const total = measurement ? calculateSteelProcessingMeasurement({
-      headers: rowHeaders,
-      values: rowHeaders.map((header) => row.values[header]?.effective ?? ''),
-      measurement,
-      parentHeaders: parent ? Object.keys(parent.values) : [],
-      parentValues: parent ? Object.keys(parent.values).map((header) => parent.values[header]?.effective ?? '') : [],
-    }) : undefined;
-    if (total === undefined && !context.hasSelectedCandidate(row.rowId)) return row;
-    return { ...row, values: { ...row.values, 總數: { ...row.values['總數'], effective: total ?? '' } } };
+    const parentHeaders = parent ? Object.keys(parent.values) : [];
+    const saved = context.getSavedRow?.(row.rowId) ?? row;
+    const savedParent = parent ? context.getSavedRow?.(parent.rowId) ?? parent : undefined;
+    let values = rowHeaders.map((header) => row.values[header]?.effective ?? '');
+    if (changes.length > 0) {
+      for (const header of ['數量', '總數']) {
+        const index = rowHeaders.indexOf(header);
+        if (index >= 0) values[index] = saved.values[header]?.effective ?? '';
+      }
+    }
+    const intents = changes.length > 0 ? changes : [undefined];
+    let calculated = false;
+    if (changes.length > 0 && savedParent &&
+      parent?.values['數量']?.effective !== savedParent.values['數量']?.effective) {
+      const prior = calculateSteelProcessingRow({
+        headers: rowHeaders,
+        values,
+        measurement,
+        parentHeaders,
+        parentValues: parentHeaders.map((header) => parent?.values[header]?.effective ?? ''),
+        referenceValues: rowHeaders.map((header) => saved.values[header]?.effective ?? ''),
+        referenceParentValues: parentHeaders.map((header) => savedParent.values[header]?.effective ?? ''),
+      });
+      values = prior.values;
+      if (prior.measurement !== undefined) measurement = prior.measurement ?? undefined;
+      calculated = prior.calculatedHeaders.length > 0;
+    }
+    let measurementChanged = false;
+    for (const change of intents) {
+      if (change && change.header !== '數量' && change.header !== '總數') continue;
+      const changedHeader = change?.header === '數量' || change?.header === '總數' ? change.header : undefined;
+      if (change) {
+        const index = rowHeaders.indexOf(change.header);
+        if (index >= 0) values[index] = change.value ?? '';
+      }
+      const result = calculateSteelProcessingRow({
+        headers: rowHeaders,
+        values,
+        measurement,
+        changedHeader,
+        parentHeaders,
+        parentValues: parentHeaders.map((header) => parent?.values[header]?.effective ?? ''),
+        referenceValues: rowHeaders.map((header) => saved.values[header]?.effective ?? ''),
+        referenceParentValues: parentHeaders.map((header) => savedParent?.values[header]?.effective ?? ''),
+      });
+      values = result.values;
+      if (result.measurement !== undefined) {
+        measurement = result.measurement ?? undefined;
+        if (change) measurementChanged = true;
+      }
+      calculated ||= result.calculatedHeaders.length > 0;
+    }
+    if (!calculated && changes.length === 0 && context.hasSelectedCandidate(row.rowId)) {
+      const index = rowHeaders.indexOf('總數');
+      if (index >= 0) values[index] = '';
+    }
+    const calculation = { ...row.calculation };
+    if (measurementChanged) {
+      if (measurement) calculation.measurement = measurement;
+      else delete calculation.measurement;
+    }
+    return { ...row,
+      ...(measurementChanged ? { calculation: Object.keys(calculation).length > 0 ? calculation : undefined } : {}),
+      values: Object.fromEntries(rowHeaders.map((header, index) => [
+      header, { ...row.values[header], effective: values[index] },
+    ])) };
   });
 }
 

@@ -61,6 +61,8 @@ function parseArgs(argv) {
   let help = false;
   let target = 'dev';
   let targetSeen = false;
+  const slugs = [];
+  let sourceRoot;
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -74,6 +76,21 @@ function parseArgs(argv) {
     }
     if (arg === '--help' || arg === '-h') {
       help = true;
+      continue;
+    }
+    if (arg === '--slug' || arg === '--source-root') {
+      const value = argv[index + 1];
+      if (!value || value.startsWith('--')) {
+        throw new Error(`${arg} requires a value.`);
+      }
+      if (arg === '--slug') {
+        if (slugs.includes(value)) throw new Error(`Duplicate rule slug: ${value}`);
+        slugs.push(value);
+      } else {
+        if (sourceRoot !== undefined) throw new Error('--source-root may only be specified once.');
+        sourceRoot = path.resolve(value);
+      }
+      index += 1;
       continue;
     }
     if (arg === '--target') {
@@ -101,17 +118,22 @@ function parseArgs(argv) {
     dryRun: dryRun || !apply,
     help,
     target,
+    slugs,
+    ...(sourceRoot ? { sourceRoot } : {}),
   };
 }
 
 function printUsage() {
   process.stdout.write(`Usage:
-  node packages/api/scripts/sync-steel-rules.cjs --dry-run [--target dev|prod]
-  node packages/api/scripts/sync-steel-rules.cjs --apply [--target dev|prod]
+  node packages/api/scripts/sync-steel-rules.cjs --dry-run [--target dev|prod] [--slug NAME ...] [--source-root PATH]
+  node packages/api/scripts/sync-steel-rules.cjs --apply [--target dev|prod] [--slug NAME ...] [--source-root PATH]
 
 Default mode is --dry-run and the default target is dev. --apply loads
 STEEL_POSTGRES_URL from .env for dev or .env.prod for prod, syncs agent, output,
 other, and category rules under docs/rules into steel.rules, then reads rows back.
+--slug limits publication to named rules and preserves unrelated managed rules.
+--source-root reads rule sources from a reviewed snapshot; target environment
+files still come from this repository.
 `);
 }
 
@@ -788,13 +810,13 @@ function summarizeRules(rules, mode, target) {
   };
 }
 
-async function syncRules(pool, rules) {
+async function syncRules(pool, rules, options = {}) {
   const client = await pool.connect();
 
   try {
     await client.query('BEGIN');
     await client.query("SELECT pg_advisory_xact_lock(hashtext('steel.rules:sync'))");
-    await deleteRemovedRules(client, rules);
+    if (!options.scoped) await deleteRemovedRules(client, rules);
     for (const rule of rules) {
       await upsertRule(client, rule);
     }
@@ -819,7 +841,13 @@ async function main() {
   }
 
   const repoRoot = findRepoRoot(path.resolve(__dirname, '..', '..', '..'));
-  const rules = buildRules(repoRoot);
+  const manifest = buildRules(args.sourceRoot ?? repoRoot);
+  for (const slug of args.slugs) {
+    if (!manifest.some((rule) => rule.slug === slug)) throw new Error(`Unknown rule slug: ${slug}`);
+  }
+  const rules = args.slugs.length > 0
+    ? manifest.filter((rule) => args.slugs.includes(rule.slug))
+    : manifest;
   const summary = summarizeRules(rules, args.apply ? 'apply' : 'dry-run', args.target);
 
   if (args.dryRun && !args.apply) {
@@ -831,7 +859,7 @@ async function main() {
   const pool = createSteelPostgresPool(targetEnv);
 
   try {
-    const row = await syncRules(pool, rules);
+    const row = await syncRules(pool, rules, { scoped: args.slugs.length > 0 });
     process.stdout.write(`${JSON.stringify({ ...summary, row }, null, 2)}\n`);
   } finally {
     await pool.end();

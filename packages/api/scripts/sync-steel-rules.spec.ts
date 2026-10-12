@@ -64,8 +64,14 @@ const ruleSync = jest.requireActual<{
     dryRun: boolean;
     help: boolean;
     target: 'dev' | 'prod';
+    slugs: string[];
+    sourceRoot?: string;
   };
-  syncRules: (pool: { connect: () => Promise<SyncClient> }, rules: object[]) => Promise<object[]>;
+  syncRules: (
+    pool: { connect: () => Promise<SyncClient> },
+    rules: object[],
+    options?: { scoped: boolean },
+  ) => Promise<object[]>;
 }>('./sync-steel-rules.cjs');
 
 function runDryRun(target: 'dev' | 'prod' = 'dev'): DryRunSummary {
@@ -144,6 +150,32 @@ describe('Steel rule sources', () => {
     expect(client.query.mock.calls.map(([sql]) => sql.trim())).toContain('COMMIT');
   });
 
+  it('publishes only selected rules without deleting unrelated managed rules', async () => {
+    const client: SyncClient = {
+      query: jest.fn(async () => ({ rows: [] })),
+      release: jest.fn(),
+    };
+    const rules = ruleSync.buildRules(repoRoot).filter((rule) => rule.slug === 'steel_quote_rules_hole');
+    await ruleSync.syncRules({ connect: async () => client }, rules, { scoped: true });
+
+    expect(client.query.mock.calls.some(([sql]) => sql.includes('DELETE FROM steel.rules'))).toBe(false);
+    const upserts = client.query.mock.calls.filter(([sql]) => sql.includes('INSERT INTO steel.rules'));
+    expect(upserts).toHaveLength(1);
+    expect(upserts[0]?.[1]).toEqual(expect.arrayContaining(['steel_quote_rules_hole']));
+    expect(client.query.mock.calls.map(([sql]) => sql.trim())).toContain('COMMIT');
+  });
+
+  it('limits the CLI manifest to requested slugs and accepts an explicit source snapshot', () => {
+    const summary = JSON.parse(execFileSync(process.execPath, [
+      syncScript, '--dry-run', '--target', 'prod', '--source-root', repoRoot,
+      '--slug', 'steel_quote_rules_hole', '--slug', 'steel_quote_rules_processing',
+    ], { cwd: repoRoot, encoding: 'utf8' })) as DryRunSummary;
+    expect(summary.target).toBe('prod');
+    expect(summary.rules.map((rule) => rule.slug).sort()).toEqual([
+      'steel_quote_rules_hole', 'steel_quote_rules_processing',
+    ]);
+  });
+
   it('rejects conflicting or unknown CLI flags', () => {
     for (const args of [
       ['--dry-run', '--apply'],
@@ -151,6 +183,12 @@ describe('Steel rule sources', () => {
       ['--target'],
       ['--target', 'staging'],
       ['--target', 'dev', '--target', 'prod'],
+      ['--slug'],
+      ['--slug', '--apply'],
+      ['--slug', 'missing-rule'],
+      ['--slug', 'steel_quote_rules_hole', '--slug', 'steel_quote_rules_hole'],
+      ['--source-root'],
+      ['--source-root', repoRoot, '--source-root', repoRoot],
     ]) {
       expect(() =>
         execFileSync(process.execPath, [syncScript, ...args], {

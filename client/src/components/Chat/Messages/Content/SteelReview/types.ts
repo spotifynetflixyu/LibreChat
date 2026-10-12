@@ -1,10 +1,13 @@
-import type { SteelReviewRow } from 'librechat-data-provider';
+import type { SteelReviewOperation, SteelReviewRow } from 'librechat-data-provider';
 
 export interface SteelReviewProjection {
   previewCalculations: boolean;
   hasManualTotal: (rowId: string) => boolean;
   hasSelectedCandidate: (rowId: string) => boolean;
   preservesCandidateTotal: (rowId: string, parentRowId: string | null | undefined) => boolean;
+  getSavedRow?: (rowId: string) => SteelReviewRow | undefined;
+  processingChanges?: (rowId: string) => NonNullable<Extract<SteelReviewOperation, { type: 'update' }>['changes']>;
+  hasClearedMeasurement?: (rowId: string) => boolean;
 }
 
 export interface SteelReviewMode {
