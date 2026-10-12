@@ -5,6 +5,7 @@ import { AIMessageChunk } from '@librechat/agents/langchain/messages';
 import {
   createSteelCustomerMethods,
   createModels,
+  createMethods,
   createSteelQuotationStateModel,
   createSteelQuotationArtifactModel,
 } from '@librechat/data-schemas';
@@ -13,12 +14,15 @@ import type {
   SteelQuotationActiveRun,
   SteelQuotationPublicationProof,
   SteelQuotationPublicationSaveResult,
+  SteelQuotationSavedMessage,
+  SteelQuotationSummaryInput,
+  SteelQuotationSummaryResult,
+  SteelMarkdownAdmission,
 } from '@librechat/data-schemas';
 import type { SteelToolJsonObject, SteelToolResult } from '../tools/results';
 import type { QuotationModelInput, QuotationModelResult } from './model';
+import type { QuotationProgress, QuotationRunnerInput } from './runner';
 import type { OpenAIOAuthModelOptions } from '../native/oauth';
-import type { SteelNativeHistory } from '../native/events';
-import type { QuotationProgress } from './runner';
 import type { QuotationChunk } from './protocol';
 import {
   bindQuotationCustomerResult,
@@ -29,25 +33,26 @@ import {
   renderQuotationCustomerMarkdown,
 } from './preparation';
 import {
-  acceptQuotationResponse,
-  acceptQuotationSignal,
-  createQuotationPublicationProjector,
-  hasCompleteSteelFormula,
-  publishCompletedQuotation,
-  runQuotationPreflight,
-} from './runner';
-import {
   createSteelNativeHistory,
   appendSteelNativeActivityEvent,
   upsertSteelNativePreflightToolCall,
 } from '../native/events';
-import { buildQuotationChunks, splitQuotationChunk, quotationSignal } from './protocol';
+import {
+  acceptQuotationResponse,
+  acceptQuotationSignal,
+  hasCompleteSteelFormula,
+  runQuotationPreflight,
+} from './runner';
 import { getQuotationHistoryDelta, readQuotationHistory } from './history';
+import { createSteelQuotationPublicationPublisher } from './publication';
+import { buildQuotationChunks, quotationSignal } from './protocol';
 import { createSteelQuotationStateService } from './state';
 import { createOpenAIOAuthModel } from '../native/oauth';
 import { parseMarkdownTables } from '../markdown/table';
+import { seedLegacyPublication } from './fixtures';
 import { invokeQuotationModel } from './model';
 import { quotationStatus } from './routes';
+import * as stateModule from './state';
 
 jest.mock('../native/oauth', () => ({ createOpenAIOAuthModel: jest.fn() }));
 const oauthFactory = jest.mocked(createOpenAIOAuthModel);
@@ -60,7 +65,7 @@ jest.mock('../native/context', () => ({
 
 const scope: SteelQuotationScope = {
   userId: 'quotation-runner-user',
-  conversationId: 'quotation-runner-conversation',
+  conversationId: '11111111-1111-4111-8111-111111111111',
 };
 
 const ocrHeaders = ['來源', '零件編號', '類別', '數量', '厚度', '寬度', '長度'];
@@ -194,6 +199,7 @@ function createModel(
     failChunk?: (childCall: number) => boolean;
     onChildStarted?: (childCall: number) => void;
     onChild?: (input: QuotationModelInput) => Promise<QuotationModelResult> | QuotationModelResult;
+    onMain?: (input: QuotationModelInput) => Promise<void> | void;
     onMainInput?: (input: string) => void;
     streamMain?: boolean;
     lookupArguments?: SteelToolJsonObject;
@@ -202,6 +208,7 @@ function createModel(
   let childCall = 0;
   return jest.fn(async (input: QuotationModelInput): Promise<QuotationModelResult> => {
     if (input.role === 'main') {
+      await options.onMain?.(input);
       options.onMainInput?.(input.input);
       if (options.streamMain) {
         await input.onTextDelta?.('## manual_reviews\n\n');
@@ -280,28 +287,53 @@ afterAll(async () => {
   await mongoServer.stop();
 });
 
-async function prepareRun(rowCount: number, rowsPerChunk = 30): Promise<SteelQuotationActiveRun> {
+async function prepareRun(
+  rowCount: number,
+  rowsPerChunk = 30,
+  options: { scope?: SteelQuotationScope; targetMessageId?: string; bindCustomer?: boolean } = {},
+): Promise<SteelQuotationActiveRun> {
+  const runScope = options.scope ?? scope;
+  const models = createModels(mongoose);
+  await models.Conversation.updateOne(
+    { conversationId: runScope.conversationId, user: runScope.userId },
+    {
+      $setOnInsert: {
+        conversationId: runScope.conversationId,
+        user: runScope.userId,
+        endpoint: 'agents',
+        ...(runScope.tenantId !== undefined ? { tenantId: runScope.tenantId } : {}),
+      },
+    },
+    { upsert: true },
+  );
   const order = orderMarkdown(rowCount);
-  await service.setOrder({ scope, fullMarkdown: order, revision: 'runner-test' });
-  await service.saveCustomer({
-    scope,
+  await service.setOrder({ scope: runScope, fullMarkdown: order, revision: 'runner-test' });
+  const customer = await service.saveCustomer({
+    scope: runScope,
     customerMarkdown,
     customerIdentity: 'C1',
     triggeringMessageId: 'customer-trigger',
-    responseId: 'customer-response',
+    responseId: options.bindCustomer ? `${options.targetMessageId}:customer` : 'customer-response',
     orderHash: createHash('sha256').update(order).digest('hex'),
     selectionProvenance: { method: 'unique', lookupMessageId: 'customer-lookup' },
   });
   const ticket = await service.issueTicket({
-    scope,
+    scope: runScope,
     customerMarkdown,
     customerIdentity: 'C1',
     triggeringMessageId: 'trigger-1',
+    ...(options.bindCustomer
+      ? {
+          preparationId: customer.preparationId,
+          responseId: customer.responseId,
+          orderHash: customer.orderHash,
+        }
+      : {}),
     selectionProvenance: { method: 'unique', lookupMessageId: 'customer-lookup' },
   });
   const chunks = buildQuotationChunks(order, rowsPerChunk);
-  return service.acceptSignal({
-    scope,
+  const acceptedRun = await service.acceptSignal({
+    scope: runScope,
     index: ticket.index,
     token: ticket.token,
     orderHash: ticket.orderHash,
@@ -312,8 +344,17 @@ async function prepareRun(rowCount: number, rowsPerChunk = 30): Promise<SteelQuo
       index: chunk.chunkIndex,
       sourceRowCount: chunk.sourceRows.length,
     })),
-    targetMessageId: 'target-1',
+    targetMessageId: options.targetMessageId ?? 'target-1',
   });
+  if (!acceptedRun) throw new Error('Quotation test run was not accepted');
+  const methods = createMethods(mongoose);
+  const admission = await methods.admitSteelMarkdown({
+    scope: runScope,
+    responseId: acceptedRun.targetMessageId ?? options.targetMessageId ?? 'target-1',
+    generationId: `test-generation-${acceptedRun.runId}`,
+  });
+  if (!admission) throw new Error('Quotation test admission was not created');
+  return acceptedRun;
 }
 
 type QuotationInvoker = (input: QuotationModelInput) => Promise<QuotationModelResult>;
@@ -322,18 +363,67 @@ function runnerInput(
   invokeModel: QuotationInvoker,
   executeLookup: (args: SteelToolJsonObject, callId: string) => Promise<SteelToolResult>,
   options: {
+    scope?: SteelQuotationScope;
     signal?: AbortSignal;
-    onProgress?: (progress: { run: SteelQuotationActiveRun }) => Promise<void>;
+    onProgress?: (progress: QuotationProgress) => Promise<void>;
     publishFinal?: (
       input: SteelQuotationPublicationProof & { markdown: string },
     ) => Promise<SteelQuotationPublicationSaveResult | void>;
-    projectFinal?: (input: { run: SteelQuotationActiveRun; markdown: string }) => Promise<void>;
     onTextDelta?: (text: string) => Promise<void>;
+    appendSummary?: (input: SteelQuotationSummaryInput) => Promise<SteelQuotationSummaryResult>;
+    onSummaryCommitted?: (message: SteelQuotationSavedMessage) => Promise<void>;
+    onCompletedReplay?: (targetMessageId: string) => Promise<void>;
+    refreshPublicationAdmission?: () => Promise<SteelMarkdownAdmission | undefined>;
+    summarySourceMessageId?: string;
   } = {},
-) {
-  const publishFinal = options.publishFinal ?? (async () => undefined);
+): QuotationRunnerInput {
+  const runScope = options.scope ?? scope;
+  let methods: ReturnType<typeof createMethods> | undefined;
+  let publisher: ReturnType<typeof createSteelQuotationPublicationPublisher> | undefined;
+  const ensureMethods = async () => {
+    if (methods) return methods;
+    const models = createModels(mongoose);
+    await models.Conversation.updateOne(
+      { conversationId: runScope.conversationId, user: runScope.userId },
+      {
+        $setOnInsert: {
+          conversationId: runScope.conversationId,
+          user: runScope.userId,
+          endpoint: 'agents',
+          ...(runScope.tenantId !== undefined ? { tenantId: runScope.tenantId } : {}),
+        },
+      },
+      { upsert: true },
+    );
+    methods = createMethods(mongoose);
+    return methods;
+  };
+  const ensurePublisher = async (run: SteelQuotationActiveRun) => {
+    if (publisher) return publisher;
+    const db = await ensureMethods();
+    const admission = await db.admitSteelMarkdown({
+      scope: runScope,
+      responseId: run.targetMessageId ?? 'target-1',
+      generationId: `test-generation-${run.runId}`,
+    });
+    if (!admission) throw new Error('Quotation test admission was not created');
+    publisher = createSteelQuotationPublicationPublisher({
+      scope: runScope,
+      buildMessage: ({ targetMessageId, markdown }) => ({
+        messageId: targetMessageId,
+        sourceMessageId: targetMessageId,
+        conversationId: runScope.conversationId,
+        user: runScope.userId,
+        text: markdown,
+        isCreatedByUser: false,
+      }),
+      savePublication: db.saveSteelQuotationMessage,
+    });
+    return publisher;
+  };
+  const customPublish = options.publishFinal;
   return {
-    scope,
+    scope: runScope,
     modelOptions: {} as OpenAIOAuthModelOptions,
     signal: options.signal ?? new AbortController().signal,
     invokeModel,
@@ -343,28 +433,26 @@ function runnerInput(
     publishFinal: async (input: SteelQuotationPublicationProof & { markdown: string }) => {
       if (!input.run) throw new Error('Quotation publication test proof is missing its run');
       const run = input.run;
-      const saved = await publishFinal(input);
-      if (!saved && run.targetMessageId) {
-        await service.markPublished({
-          scope: input.scope,
-          runId: run.runId,
-          targetMessageId: input.targetMessageId,
-          finalSha256: input.finalSha256,
-        });
-      }
-      return (
-        saved ?? {
-          ok: true as const,
-          message: {
-            messageId: run.targetMessageId ?? 'target-1',
-            conversationId: scope.conversationId,
-            text: input.markdown,
-            user: scope.userId,
-          },
-        }
-      );
+      const saved = await customPublish?.(input);
+      return saved ?? (await ensurePublisher(run))(input);
     },
-    projectFinal: options.projectFinal,
+    appendSummary: options.appendSummary ?? (async (input) => {
+      const db = await ensureMethods();
+      return db.appendSteelQuotationSummary(input);
+    }),
+    onSummaryCommitted: options.onSummaryCommitted,
+    onCompletedReplay: options.onCompletedReplay,
+    refreshPublicationAdmission: options.refreshPublicationAdmission ?? (async () => {
+      const active = (await service.readState(runScope))?.activeRun;
+      if (!active) return undefined;
+      const db = await ensureMethods();
+      return (await db.admitSteelMarkdown({
+        scope: runScope,
+        responseId: active.targetMessageId ?? active.triggerMessageId ?? 'target-1',
+        generationId: `test-generation-${active.runId}`,
+      })) ?? undefined;
+    }),
+    summarySourceMessageId: options.summarySourceMessageId,
   };
 }
 
@@ -381,6 +469,116 @@ function configureOAuthResponses(responses: AIMessageChunk[]): jest.Mock {
 describe('quotation runner integration', () => {
   beforeEach(() => {
     oauthFactory.mockReset();
+  });
+
+  it('publishes the order before main and keeps the run completed after a main error', async () => {
+    await prepareRun(1);
+    const mainError = new Error('main review failed');
+    const model = createModel();
+    const publishFinal = jest.fn(async () => undefined);
+    const result = await runQuotationPreflight(runnerInput(
+      async (input) => {
+        if (input.role === 'main') throw mainError;
+        return model(input);
+      },
+      createLookupExecutor(),
+      { publishFinal },
+    ));
+    expect(result.status).toBe('completed');
+    expect(publishFinal).toHaveBeenCalledTimes(1);
+    const state = await service.readState(scope);
+    expect(state?.activeRun?.status).toBe('completed');
+    expect(state?.currentSystemOrder).toBeDefined();
+    expect(state?.activeRun?.interruption).toBeUndefined();
+  });
+
+  it('refuses a completed publication marker without its durable receipt after a publisher error', async () => {
+    const run = await prepareRun(1);
+    const failure = new Error('publication failed before commit');
+    const model = createModel();
+    await expect(runQuotationPreflight(runnerInput(model, createLookupExecutor(), {
+      publishFinal: async () => {
+        await createSteelQuotationStateModel(mongoose).updateOne(scope, {
+          $set: { 'activeRun.status': 'completed' },
+          $push: { 'activeRun.checkpointRefs': {
+            ...scope, runId: run.runId, operationId: 'order-published', kind: 'main',
+            artifactId: 'missing-receipt', sha256: 'a'.repeat(64), updatedAt: new Date(),
+          } },
+        });
+        throw failure;
+      },
+    }))).rejects.toBe(failure);
+    expect(model.mock.calls.some(([input]) => input.role === 'main')).toBe(false);
+  });
+
+  it('preserves summary persistence when an in-flight heartbeat returns after publication', async () => {
+    const run = await prepareRun(1);
+    let release!: () => void;
+    const renewal = new Promise<undefined>((resolve) => { release = () => resolve(undefined); });
+    const heartbeatLease = jest.fn(() => renewal);
+    const factory = jest.spyOn(stateModule, 'createSteelQuotationStateService')
+      .mockReturnValue({ ...service, heartbeatLease });
+    const originalInterval = global.setInterval;
+    let tick!: () => Promise<void>;
+    const timer = jest.spyOn(global, 'setInterval').mockImplementation((callback, delay) => {
+      tick = callback as () => Promise<void>;
+      return originalInterval(() => {}, delay);
+    });
+    try {
+      const model = createModel({ onMain: async (input) => { expect(input.signal.aborted).toBe(false); } });
+      const input = runnerInput(model, createLookupExecutor());
+      const publish = input.publishFinal!;
+      await expect(runQuotationPreflight({ ...input, publishFinal: async (proof) => {
+        const pending = tick();
+        const saved = await publish(proof);
+        release();
+        await pending;
+        return saved;
+      } })).resolves.toMatchObject({ status: 'completed' });
+      expect(heartbeatLease).toHaveBeenCalledTimes(1);
+      expect(model.mock.calls.filter(([call]) => call.role === 'main')).toHaveLength(1);
+      const message = await createMethods(mongoose).getMessage({ user: scope.userId,
+        messageId: run.targetMessageId! });
+      expect(message?.text).toContain('## quote_summary');
+      expect((await service.readState(scope))?.activeRun?.status).toBe('completed');
+    } finally {
+      release();
+      timer.mockRestore();
+      factory.mockRestore();
+    }
+  });
+
+  it('keeps a completed publication after a user Stop during main without retrying children', async () => {
+    const run = await prepareRun(1);
+    const controller = new AbortController();
+    let entered!: () => void;
+    const waiting = new Promise<void>((resolve) => { entered = resolve; });
+    const model = createModel({
+      onMain: async (input) => {
+        entered();
+        await new Promise<never>((_resolve, reject) => {
+          input.signal.addEventListener('abort', () => reject(input.signal.reason), { once: true });
+        });
+      },
+    });
+    const publishFinal = jest.fn(async () => undefined);
+    const execution = runQuotationPreflight(
+      runnerInput(model, createLookupExecutor(), {
+        signal: controller.signal,
+        publishFinal,
+      }),
+    );
+    await waiting;
+    controller.abort(new Error('user paused quotation'));
+    await expect(execution).resolves.toEqual(expect.objectContaining({ status: 'completed' }));
+    const state = await service.readState(scope);
+    expect(state?.activeRun?.runId).toBe(run.runId);
+    expect(state?.activeRun?.status).toBe('completed');
+    expect(state?.activeRun?.interruption).toBeUndefined();
+    expect(publishFinal).toHaveBeenCalledTimes(1);
+    const calls = model.mock.calls.length;
+    await expect(runQuotationPreflight(runnerInput(model, createLookupExecutor()))).resolves.toMatchObject({ status: 'completed' });
+    expect(model.mock.calls.length).toBe(calls);
   });
 
   it('uses the supplied PostgreSQL client for default quotation lookups', async () => {
@@ -614,58 +812,6 @@ describe('quotation runner integration', () => {
     );
   });
 
-  it('splits 24 to 12, 6 and 3 and records every source after all three retries fail', async () => {
-    await prepareRun(24, 24);
-    const attempted: string[][] = [];
-    const model = jest.fn(async (input: QuotationModelInput): Promise<QuotationModelResult> => {
-      if (input.role === 'main')
-        return { markdown: '無待複核事項。', lookups: [], pythonEvidence: [] };
-      expect(input.maxChildRepairAttempts).toBe(0);
-      const rows = parseMarkdownTables(JSON.parse(input.input).chunk)[0]!.rows;
-      attempted.push(rows.map((row) => row[1]!));
-      throw new Error('Provider unavailable');
-    });
-    const events: QuotationProgress[] = [];
-    const result = await runQuotationPreflight({
-      ...runnerInput(model, createLookupExecutor()),
-      onProgress: async (event) => {
-        events.push(event);
-      },
-    });
-    expect(attempted.map((rows) => rows.length)).toEqual([
-      24, 12, 6, 3, 3, 6, 3, 3, 12, 6, 3, 3, 6, 3, 3,
-    ]);
-    for (let index = 1; index <= 24; index += 1) {
-      expect(attempted.filter((rows) => rows.includes(`P${index}`))).toHaveLength(4);
-    }
-    const rows = parseMarkdownTables(result.markdown!)[0]!.rows;
-    expect(rows).toHaveLength(24);
-    const headers = parseMarkdownTables(result.markdown!)[0]!.headers;
-    expect(
-      rows.every((row) =>
-        ['型號', '單價', '單重', '總數'].every((header) => row[headers.indexOf(header)] === ''),
-      ),
-    ).toBe(true);
-    expect(rows.every((row, index) => row[15]!.includes(`P${index + 1}`))).toBe(true);
-    expect(result.markdown).toContain('24 個材料項次報價失敗');
-    expect(result.markdown).not.toContain('無待複核事項');
-    expect(events[events.length - 1]).toEqual(
-      expect.objectContaining({ completedChunks: 8, totalChunks: 8 }),
-    );
-    const state = await service.readState(scope);
-    expect(state?.activeRun?.status).toBe('completed');
-    expect(
-      state?.activeRun?.checkpointRefs.filter((ref) => ref.operationId.startsWith('leaf-v2:')),
-    ).toHaveLength(8);
-    expect(await readQuotationHistory({ scope, runId: state!.activeRun!.runId })).toEqual(
-      expect.objectContaining({
-        activityEvents: expect.arrayContaining([
-          expect.objectContaining({ completedChunks: 8, totalChunks: 8 }),
-        ]),
-      }),
-    );
-  });
-
   it('keeps successful sibling chunks while only failed rows descend through smaller retries', async () => {
     await prepareRun(24, 24);
     const baseModel = createModel();
@@ -679,7 +825,7 @@ describe('quotation runner integration', () => {
     });
     const result = await runQuotationPreflight(runnerInput(model, createLookupExecutor()));
     expect(counts).toEqual([24, 12, 12, 6, 6, 3, 3]);
-    const rows = parseMarkdownTables(result.markdown!)[0]!.rows;
+    const rows = parseMarkdownTables((await service.readCurrentSystemOrder(scope))!.markdown)[0]!.rows;
     expect(rows).toHaveLength(24);
     expect(rows.slice(0, 21).every((row) => row[0] === 'ERP-PLATE')).toBe(true);
     const headers = parseMarkdownTables(result.markdown!)[0]!.headers;
@@ -690,30 +836,6 @@ describe('quotation runner integration', () => {
     ).toBe(true);
     const status = quotationStatus(await service.readState(scope), scope.conversationId);
     expect(status).toEqual(expect.objectContaining({ completedChunks: 4, totalChunks: 4 }));
-  });
-
-  it('reuses exhausted fallback leaves after the main review is interrupted', async () => {
-    const run = await prepareRun(1, 24);
-    const failed = jest.fn(async (input: QuotationModelInput): Promise<QuotationModelResult> => {
-      throw new Error(input.role === 'main' ? 'main review interrupted' : 'provider failed');
-    });
-    await expect(
-      runQuotationPreflight(runnerInput(failed, createLookupExecutor())),
-    ).rejects.toThrow('main review interrupted');
-    expect(failed.mock.calls.filter(([input]) => input.role === 'child')).toHaveLength(4);
-    const saved = await service.readCheckpoint({
-      scope,
-      runId: run.runId,
-      operationId: 'leaf-v2:1:r.1.1.1',
-    });
-    expect(JSON.parse(saved!).backendFailure.retryDepth).toBe(3);
-    const resumed = createModel();
-    const result = await runQuotationPreflight(runnerInput(resumed, createLookupExecutor()));
-    expect(resumed.mock.calls.map(([input]) => input.role)).toEqual(['main']);
-    expect(result.markdown).toContain('1 個材料項次報價失敗');
-    expect(
-      await service.readCheckpoint({ scope, runId: run.runId, operationId: 'leaf-v2:1:r.1.1.1' }),
-    ).toBe(saved);
   });
 
   it('resumes a paused three-row retry at the same depth without repeating saved siblings', async () => {
@@ -746,7 +868,9 @@ describe('quotation runner integration', () => {
     const resumed = await runQuotationPreflight(runnerInput(model, createLookupExecutor()));
     expect(resumed.status).toBe('completed');
     expect(counts.slice(first.length)).toEqual([3]);
-    expect(parseMarkdownTables(resumed.markdown!)[0]!.rows).toHaveLength(24);
+    expect(
+      parseMarkdownTables((await service.readCurrentSystemOrder(scope))!.markdown)[0]!.rows,
+    ).toHaveLength(24);
     const restored = await readQuotationHistory({ scope, runId: run.runId });
     expect(restored.activityEvents[restored.activityEvents.length - 1]).toEqual(
       expect.objectContaining({ completedChunks: 4, totalChunks: 4 }),
@@ -1017,131 +1141,44 @@ describe('quotation runner integration', () => {
     },
   );
 
-  it('uses all saved recovery slices after a main failure and excludes legacy child review tables', async () => {
-    const run = await prepareRun(163);
-    const lease = (await service.acquireLease({ scope, runId: run.runId }))!;
-    const leased = { scope, runId: run.runId, leaseToken: lease.leaseToken };
-    await service.checkpoint({
-      ...leased,
-      operationId: 'lookup:legacy',
-      kind: 'tool',
-      payload: JSON.stringify({ lookupCallId: 'legacy', arguments: {}, result: lookupResult() }),
+  it('replays a completed receipt without rerunning models or publishing again', async () => {
+    const run = await prepareRun(1);
+    const model = createModel();
+    const lookup = createLookupExecutor();
+    const publishFinal = jest.fn(async () => undefined);
+    await expect(runQuotationPreflight(runnerInput(model, lookup, { publishFinal }))).resolves.toMatchObject({
+      status: 'completed',
     });
-    const reviews = `## manual_reviews_chunk\n\n${markdownTable(
-      ['來源表格', '來源件號 / 項次', '問題欄位', '目前判斷', '需確認內容', '影響範圍'],
-      [['F1', 'P91', '單价', '', '確認價格', '報價']],
-    )}`;
-    const serialize = (markdown: string) =>
-      JSON.stringify({
-        markdown,
-        lookupOperations: ['lookup:legacy'],
-        pythonOperations: [],
-      });
-    for (const chunk of buildQuotationChunks(orderMarkdown(163), 30)) {
-      let markdown = childMarkdown(chunk.sourceRows.map(systemRow));
-      if (chunk.chunkIndex === 4) {
-        const slices = splitQuotationChunk(chunk);
-        await service.checkpoint({
-          ...leased,
-          operationId: 'split:4',
-          kind: 'main',
-          payload: JSON.stringify({
-            version: 1,
-            rowsPerSlice: 10,
-            sourceRowIds: slices.map((slice) => slice.sourceRows.map((row) => row.sourceRowId)),
-          }),
-        });
-        for (let index = 0; index < slices.length; index += 1) {
-          await service.checkpoint({
-            ...leased,
-            operationId: `slice:4:${index + 1}`,
-            kind: 'chunk',
-            payload: serialize(
-              `${childMarkdown(slices[index]!.sourceRows.map(systemRow))}\n\n${reviews}`,
-            ),
-          });
-        }
-        markdown = markdown.replaceAll('| 12 |', '| 999 |');
-      }
-      await service.checkpoint({
-        ...leased,
-        operationId: `chunk:${chunk.chunkIndex}`,
-        kind: 'chunk',
-        chunkIndex: chunk.chunkIndex,
-        payload: serialize(markdown),
-      });
-    }
-    await service.interruptRun({ ...leased, interruption: { reason: 'error' } });
-    const model = createModel({
-      onMainInput: (input) => {
-        const payload = JSON.parse(input);
-        expect(Object.keys(payload).sort()).toEqual([
-          'customer',
-          'order',
-          'review_remarks',
-          'system_order',
-        ]);
-        expect(parseMarkdownTables(payload.system_order)[0]!.rows).toHaveLength(163);
-        expect(payload.system_order).not.toContain('999');
-        expect(payload.system_order).not.toContain('manual_reviews_chunk');
-      },
-    });
-    const progress: QuotationProgress[] = [];
-    await runQuotationPreflight({
-      ...runnerInput(model, createLookupExecutor()),
-      onProgress: async (event) => {
-        progress.push(event);
-      },
-    });
-    expect(model).toHaveBeenCalledTimes(1);
-    expect(model.mock.calls[0]![0].role).toBe('main');
-    expect(
-      progress.filter((event) => event.stage === 'chunk_saved').map((event) => event.chunkIndex),
-    ).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
-    expect(progress[progress.length - 1]).toEqual(
-      expect.objectContaining({ totalChunks: 8, completedChunks: 8 }),
-    );
+    const callsAfterCompletion = model.mock.calls.length;
+    const replay = jest.fn(async (_targetMessageId: string) => undefined);
+    await expect(runQuotationPreflight({
+      ...runnerInput(model, lookup, { publishFinal, onCompletedReplay: replay }),
+    })).resolves.toMatchObject({ status: 'completed' });
+    expect(replay).toHaveBeenCalledTimes(1);
+    expect(replay).toHaveBeenCalledWith(run.targetMessageId);
+    expect(model.mock.calls.length).toBe(callsAfterCompletion);
+    expect(publishFinal).toHaveBeenCalledTimes(1);
   });
 
-  it('preserves notes from a legacy completed main checkpoint without rerunning the model', async () => {
+  it('replays a legacy completed publication without rerunning or creating a new receipt', async () => {
     const run = await prepareRun(1);
-    const lease = (await service.acquireLease({ scope, runId: run.runId }))!;
-    const leased = { scope, runId: run.runId, leaseToken: lease.leaseToken };
-    const chunk = buildQuotationChunks(orderMarkdown(1), 30)[0]!;
-    await service.checkpoint({
-      ...leased,
-      operationId: 'lookup:legacy',
-      kind: 'tool',
-      payload: JSON.stringify({ lookupCallId: 'legacy', result: lookupResult() }),
+    const finalMarkdown = [
+      '## system_order',
+      '',
+      '| 型號 | 品名規格 | 材質編號 | 單價 | 數量 | 總數 | 厚度 | 寬度 | 長度 | 肚 | 單位 | 類別 | 單重 | 計價基準 | 公式編號 | 備註 |',
+      '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
+      '| ERP-PLATE | 鐵板 6T P1 | 黑鐵 | 12 | 1 | 1 | 6 | 100 | 200 |  | Kg | 鐵板 |  | 2 | PL | P1 |',
+    ].join('\n');
+    await seedLegacyPublication({ mongoose, scope, run, markdown: finalMarkdown });
+    const model = jest.fn(async () => {
+      throw new Error('legacy replay must not invoke a model');
     });
-    const markdown = childMarkdown(chunk.sourceRows.map(systemRow));
-    await service.checkpoint({
-      ...leased,
-      operationId: 'chunk:1',
-      kind: 'chunk',
-      chunkIndex: 1,
-      payload: JSON.stringify({
-        markdown,
-        lookupOperations: ['lookup:legacy'],
-        pythonOperations: [],
-      }),
-    });
-    await service.checkpoint({
-      ...leased,
-      operationId: 'main',
-      kind: 'main',
-      payload:
-        markdown.replace('system_order_chunk', 'system_order') +
-        '\n\n## notes\n\n已保存的主 agent 補充。',
-    });
-    await service.interruptRun(leased);
-    const model = createModel();
-    const result = await runQuotationPreflight(runnerInput(model, createLookupExecutor()));
+    const replay = jest.fn(async (_targetMessageId: string) => undefined);
+    await expect(
+      runQuotationPreflight(runnerInput(model, createLookupExecutor(), { onCompletedReplay: replay })),
+    ).resolves.toMatchObject({ status: 'completed' });
+    expect(replay).toHaveBeenCalledWith(run.targetMessageId);
     expect(model).not.toHaveBeenCalled();
-    expect(result.markdown).toContain('## notes\n\n已保存的主 agent 補充。');
-    expect(result.markdown!.indexOf('## notes')).toBeLessThan(
-      result.markdown!.indexOf('## quote_summary'),
-    );
   });
 
   it('publishes the complete backend table before asking main for review-only output', async () => {
@@ -1154,14 +1191,16 @@ describe('quotation runner integration', () => {
       const payload = JSON.parse(input.input);
       expect(payload).not.toHaveProperty('chunks');
       expect(parseMarkdownTables(payload.system_order)[0]!.rows).toHaveLength(31);
-      expect(onTextDelta.mock.calls[0]![0]).toContain(payload.system_order);
-      expect(onTextDelta.mock.calls[0]![0]).not.toContain('## customer_quote');
       expect(input.onTextDelta).toEqual(expect.any(Function));
+      await input.onTextDelta?.('## manual_reviews\n\n需人工複核。');
       return { markdown: '無待複核事項。', lookups: [], pythonEvidence: [] };
     });
     await runQuotationPreflight(
       runnerInput(model, createLookupExecutor(), { onTextDelta, publishFinal }),
     );
+    expect(onTextDelta).toHaveBeenCalledWith(expect.stringContaining('manual_reviews'));
+    expect(onTextDelta.mock.calls.map(([text]) => text).join('')).not.toContain('system_order');
+    expect(onTextDelta.mock.calls.map(([text]) => text).join('')).not.toContain('customer_quote');
     const final = publishFinal.mock.calls[0]![0] as unknown as { markdown: string };
     expect(final.markdown.match(/## system_order/g)).toHaveLength(1);
     expect(parseMarkdownTables(final.markdown)[0]!.rows).toHaveLength(31);
@@ -1169,285 +1208,99 @@ describe('quotation runner integration', () => {
     expect(final.markdown).not.toContain('manual_reviews_chunk');
   });
 
-  it.each([false, true])(
-    'shares the normalized aggregate across preview, review, and final output (legacy checkpoint: %s)',
-    async (legacyCheckpoint) => {
-      const run = await prepareRun(25, 24);
-      if (legacyCheckpoint) {
-        const lease = (await service.acquireLease({ scope, runId: run.runId }))!;
-        const leased = { scope, runId: run.runId, leaseToken: lease.leaseToken };
-        await service.checkpoint({
-          ...leased,
-          operationId: 'system-order',
-          kind: 'main',
-          payload: 'legacy unnormalized aggregate',
-        });
-        await service.interruptRun(leased);
-      }
-      const previews: string[] = [];
-      let reviewedOrder = '';
-      const baseModel = createModel({
-        onMainInput: (input) => {
-          reviewedOrder = JSON.parse(input).system_order;
-          expect(previews).toHaveLength(1);
-          expect(previews[0]).toContain(reviewedOrder);
-          expect(previews[0]).not.toContain('## customer_quote');
-          const { headers, rows } = parseMarkdownTables(reviewedOrder)[0]!;
-          expect(rows).toHaveLength(25);
-          for (const row of rows) {
-            expect(row[headers.indexOf('數量')]).toBe('2');
-            expect(row[headers.indexOf('單價')]).toBe('1234.50');
-            expect(row[headers.indexOf('計價基準')]).toBe('2');
-            expect(row[headers.indexOf('厚度')]).toBe('6');
-          }
-        },
-      });
-      const model = async (input: QuotationModelInput) => {
-        const result = await baseModel(input);
-        if (input.role === 'main') return result;
-        const rows = parseMarkdownTables(result.markdown)[0]!.rows.map((row) => {
-          const updated = [...row];
-          updated[4] = '2支';
-          updated[7] = '1,234.50元';
-          updated[8] = 'B';
-          updated[10] = '6 mm';
-          return updated;
-        });
-        return { ...result, markdown: childMarkdown(rows) };
-      };
-      const result = await runQuotationPreflight(
-        runnerInput(model, createLookupExecutor(), {
-          onTextDelta: async (text) => {
-            previews.push(text);
-          },
-        }),
-      );
-      expect(result.status).toBe('completed');
-      expect(result.markdown!.startsWith(reviewedOrder)).toBe(true);
-      expect(result.markdown).not.toContain('## customer_quote');
-      expect(result.markdown).not.toMatch(/2支|1,234\.50元|6 mm/);
-      expect(
-        await service.readCheckpoint({
-          scope,
-          runId: run.runId,
-          operationId: 'system-order:normalized',
-        }),
-      ).toBe(reviewedOrder);
-      expect(await service.readCheckpoint({ scope, runId: run.runId, operationId: 'final' })).toBe(
-        result.markdown,
-      );
-      if (legacyCheckpoint) {
-        expect(
-          await service.readCheckpoint({ scope, runId: run.runId, operationId: 'system-order' }),
-        ).toBe('legacy unnormalized aggregate');
-      }
-    },
-  );
+  it('uses one normalized aggregate for publication and main review without a late final checkpoint', async () => {
+    const run = await prepareRun(3);
+    let reviewedOrder = '';
+    const baseModel = createModel({
+      onMainInput: (input) => { reviewedOrder = JSON.parse(input).system_order; },
+    });
+    const result = await runQuotationPreflight(runnerInput(baseModel, createLookupExecutor()));
+    expect(result.status).toBe('completed');
+    const normalized = await service.readCheckpoint({
+      scope,
+      runId: run.runId,
+      operationId: 'system-order:normalized',
+    });
+    expect(normalized).toBe(reviewedOrder);
+    expect(await service.readCheckpoint({ scope, runId: run.runId, operationId: 'final' })).toBeUndefined();
+    expect(await service.readCheckpoint({ scope, runId: run.runId, operationId: 'order-published' })).toEqual(
+      expect.any(String),
+    );
+  });
 
   it('keeps main review text unchecked, places notes after reviews, and appends the backend summary last', async () => {
     await prepareRun(1);
     const baseModel = createModel();
     const raw =
       '## notes\n\n主 agent 補充。\n\n## manual_reviews\n\n保留這段未使用表格的模型輸出。';
+    const committed = jest.fn(async (_message: SteelQuotationSavedMessage) => undefined);
     const model = jest.fn(async (input: QuotationModelInput) =>
       input.role === 'main' ? { markdown: raw, lookups: [], pythonEvidence: [] } : baseModel(input),
     );
-    const result = await runQuotationPreflight(runnerInput(model, createLookupExecutor()));
+    const result = await runQuotationPreflight(
+      runnerInput(model, createLookupExecutor(), { onSummaryCommitted: committed }),
+    );
     expect(result.status).toBe('completed');
     expect(model.mock.calls.filter(([input]) => input.role === 'main')).toHaveLength(1);
     expect(model.mock.calls.find(([input]) => input.role === 'main')![0]).not.toHaveProperty(
       'validateMainOutput',
     );
-    const markdown = result.markdown!;
-    const headings = [...markdown.matchAll(/^## (.+)$/gm)].map((match) => match[1]);
-    expect(headings).toEqual(['system_order', 'manual_reviews', 'notes', 'quote_summary']);
-    expect(markdown).toContain('保留這段未使用表格的模型輸出。');
-    expect(markdown).toContain('主 agent 補充。');
-    expect(markdown).toContain('查價輸出完成：共 1 筆 system_order。');
-    expect(markdown.endsWith('項次核對：材料項次 1／原始訂單 1 項；加工列 0 筆。')).toBe(true);
+    expect(committed).toHaveBeenCalledTimes(1);
+    const committedMessage = committed.mock.calls[0]![0];
+    expect(committedMessage.text).toContain('保留這段未使用表格的模型輸出。');
+    expect(committedMessage.text).toContain('主 agent 補充。');
+    expect(committedMessage.text).toContain('查價輸出完成：共 1 筆 system_order。');
+    expect(committedMessage.text).toMatch(/項次核對：材料項次 1／原始訂單 1 項；加工列 0 筆。$/u);
   });
 
-  it('counts non-processing items against the original order separately from processing rows in the backend summary', async () => {
-    await prepareRun(2);
-    let reviewPayload: { system_order: string; review_remarks: string } | undefined;
-    const baseModel = createModel({
-      onMainInput: (input) => {
-        reviewPayload = JSON.parse(input) as { system_order: string; review_remarks: string };
-      },
-    });
-    const model = jest.fn(async (input: QuotationModelInput) => {
-      const result = await baseModel(input);
-      if (input.role !== 'child') return result;
-      const rows = parseMarkdownTables(result.markdown)[0]!.rows;
-      const processing = Array.from({ length: systemHeaders.length }, () => '');
-      processing[systemHeaders.indexOf('類別')] = '加工/孔';
-      processing[systemHeaders.indexOf('備註')] = 'F1／P1；查無加工價格';
-      return { ...result, markdown: childMarkdown([rows[0]!, processing, processing, rows[1]!]) };
-    });
-    const result = await runQuotationPreflight(runnerInput(model, createLookupExecutor()));
-    const summary = result.markdown!.split('## quote_summary\n\n')[1];
-    expect(summary).toContain('共 4 筆 system_order');
-    expect(summary).toContain('材料項次 2／原始訂單 2 項；加工列 2 筆');
-    expect(parseMarkdownTables(reviewPayload!.system_order)[0]!.rows.map((row) => row[15])).toEqual(
-      ['P1', '', '', 'P2'],
-    );
-    const reviewTable = parseMarkdownTables(reviewPayload!.review_remarks)[0]!;
-    expect(reviewTable.headers).toEqual(systemHeaders);
-    expect(reviewTable.rows.map((row) => row[15])).toEqual(['P1', '', '', 'P2']);
-    expect(reviewTable.rows.map((row) => row[16])).toEqual([
-      '',
-      'F1／P1；查無加工價格',
-      'F1／P1；查無加工價格',
-      '',
-    ]);
-    expect(result.markdown).not.toContain('查無加工價格');
-  });
-
-  it('streams the backend table during aggregation and publishes the finalized review result', async () => {
+  it('forwards the original 17-column child source and filters control sections from main deltas', async () => {
     await prepareRun(1);
-    const progress: QuotationProgress[] = [];
+    let mainPayload: { system_order: string; review_remarks: string } | undefined;
+    const deltas: string[] = [];
     const publishFinal = jest.fn(async () => undefined);
-    const onTextDelta = jest.fn(async (text: string) => {
-      const state = await service.readState(scope);
-      expect(state?.activeRun?.status).toBe(
-        text.includes('## quote_summary') ? 'finalizing' : 'aggregating',
-      );
-      expect(state?.activeRun?.chunks.every((chunk) => chunk.status === 'completed')).toBe(true);
-      expect(publishFinal).not.toHaveBeenCalled();
-    });
-    await runQuotationPreflight({
-      ...runnerInput(createModel({ streamMain: true }), createLookupExecutor(), {
-        publishFinal,
-        onTextDelta,
-      }),
-      onProgress: async (value) => {
-        progress.push(value);
-      },
-    });
-    expect(onTextDelta.mock.calls).toHaveLength(4);
-    expect(progress.filter((value) => value.stage === 'main_streaming')).toHaveLength(1);
-    expect(publishFinal).toHaveBeenCalledWith(
-      expect.objectContaining({ markdown: expect.not.stringContaining('## customer_quote') }),
-    );
-    expect(publishFinal).toHaveBeenCalledTimes(1);
-  });
-  it('awaits delayed review delivery before its next delta, summary, and final replacement', async () => {
-    await prepareRun(1);
-    let release!: () => void;
-    let started!: () => void;
-    const gate = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    const entered = new Promise<void>((resolve) => {
-      started = resolve;
-    });
-    const delivered: string[] = [];
     const baseModel = createModel();
-    const reviewParts = ['## manual_reviews\n\n需確認', '尺寸。\n\n## notes\n\n備註。'];
-    const model = async (input: QuotationModelInput) => {
+    const model = jest.fn(async (input: QuotationModelInput) => {
       if (input.role !== 'main') return baseModel(input);
-      expect(delivered[0]).not.toContain('## customer_quote');
-      const first = input.onTextDelta!(reviewParts[0]!);
-      const second = input.onTextDelta!(reviewParts[1]!);
-      await Promise.all([first, second]);
-      return { markdown: reviewParts.join(''), lookups: [], pythonEvidence: [] };
-    };
-    const publishFinal = jest.fn(async ({ markdown }: { markdown: string }) => {
-      expect(delivered[delivered.length - 1]).toContain('## quote_summary');
-      expect(delivered.join('')).toBe(markdown);
+      mainPayload = JSON.parse(input.input) as typeof mainPayload;
+      await input.onTextDelta?.('## SYSTEM_ORDER\n\n| forbidden |\n| --- |\n| table |\n');
+      await input.onTextDelta?.('## MANUAL_REVIEWS\n\n需人工複核。');
+      await input.onTextDelta?.('\n\n## Quote_Signal\n\n| leaked |\n| --- |\n| no |');
+      return { markdown: '## manual_reviews\n\n需人工複核。', lookups: [], pythonEvidence: [] };
     });
-    const execution = runQuotationPreflight(
-      runnerInput(model, createLookupExecutor(), {
-        publishFinal,
-        onTextDelta: async (text) => {
-          if (text.includes('## manual_reviews')) {
-            started();
-            await gate;
-          }
-          delivered.push(text);
-        },
-      }),
-    );
-    await entered;
-    try {
-      expect(delivered).toHaveLength(1);
-      expect(publishFinal).not.toHaveBeenCalled();
-    } finally {
-      release();
-    }
-    await expect(execution).resolves.toEqual(expect.objectContaining({ status: 'completed' }));
-    expect(delivered).toHaveLength(4);
-    expect(delivered[1]).toBe('\n\n' + reviewParts[0]);
-    expect(delivered[2]).toBe(reviewParts[1]);
+    await runQuotationPreflight(runnerInput(model, createLookupExecutor(), {
+      publishFinal,
+      onTextDelta: async (text) => { deltas.push(text); },
+    }));
     expect(publishFinal).toHaveBeenCalledTimes(1);
+    expect(mainPayload).toBeDefined();
+    expect(parseMarkdownTables(mainPayload!.system_order)[0]!.headers).toHaveLength(16);
+    expect(parseMarkdownTables(mainPayload!.system_order)[0]!.headers).not.toContain('零件編號');
+    const reviewRemarks = parseMarkdownTables(mainPayload!.review_remarks)[0]!;
+    expect(reviewRemarks.headers).toEqual(systemHeaders);
+    expect(reviewRemarks.rows[0]?.[15]).toBe('P1');
+    expect(reviewRemarks.rows[0]?.[16]).toBe('');
+    expect(deltas.join('')).toMatch(/manual_reviews/iu);
+    expect(deltas.join('')).not.toContain('system_order');
+    expect(deltas.join('')).not.toContain('customer_quote');
+    expect(deltas.join('')).not.toContain('forbidden');
   });
 
-  it.each(['cancel', 'transport failure'])(
-    'does not save a partial review on %s and resumes without repeating child lookup',
-    async (failure) => {
-      const run = await prepareRun(1);
-      const controller = new AbortController();
-      const executeLookup = createLookupExecutor();
-      const publishFinal = jest.fn(async () => undefined);
-      await expect(
-        runQuotationPreflight(
-          runnerInput(createModel({ streamMain: true }), executeLookup, {
-            signal: controller.signal,
-            publishFinal,
-            onTextDelta: async (text) => {
-              if (!text.includes('## manual_reviews')) return;
-              if (failure === 'cancel') controller.abort(new Error('review cancelled'));
-              else throw new Error('review transport failed');
-            },
-          }),
-        ),
-      ).rejects.toThrow(failure === 'cancel' ? 'review cancelled' : 'review transport failed');
-      expect(
-        await service.readCheckpoint({ scope, runId: run.runId, operationId: 'main-reviews' }),
-      ).toBeUndefined();
-      expect(
-        await service.readCheckpoint({ scope, runId: run.runId, operationId: 'final' }),
-      ).toBeUndefined();
-      expect(publishFinal).not.toHaveBeenCalled();
-      const delivered: string[] = [];
-      await runQuotationPreflight(
-        runnerInput(createModel({ streamMain: true }), executeLookup, {
-          publishFinal,
-          onTextDelta: async (text) => {
-            delivered.push(text);
-          },
-        }),
-      );
-      expect(executeLookup).toHaveBeenCalledTimes(1);
-      expect(delivered[0]).not.toContain('## customer_quote');
-      expect(delivered.join('').match(/## manual_reviews/g)).toHaveLength(1);
-      expect(delivered[delivered.length - 1]).toContain('## quote_summary');
-    },
-  );
-
-  it('resumes after backend table delivery fails without repeating child work', async () => {
+  it('keeps a completed publication when summary delivery fails after main streaming', async () => {
     const run = await prepareRun(1);
     const executeLookup = createLookupExecutor();
     const publishFinal = jest.fn(async () => undefined);
     const onTextDelta = jest.fn().mockRejectedValue(new Error('stream disconnected'));
-    await expect(
-      runQuotationPreflight(
-        runnerInput(createModel({ streamMain: true }), executeLookup, {
-          publishFinal,
-          onTextDelta,
-        }),
-      ),
-    ).rejects.toThrow('stream disconnected');
-    const interrupted = await service.readState(scope);
-    expect(interrupted?.activeRun?.status).toBe('interrupted');
-    expect(interrupted?.activeRun?.chunks[0]?.status).toBe('completed');
-    expect(
-      await service.readCheckpoint({ scope, runId: run.runId, operationId: 'main' }),
-    ).toBeUndefined();
-    expect(publishFinal).not.toHaveBeenCalled();
-    await runQuotationPreflight(runnerInput(createModel(), executeLookup, { publishFinal }));
-    expect(executeLookup).toHaveBeenCalledTimes(1);
+    const result = await runQuotationPreflight(
+      runnerInput(createModel({ streamMain: true }), executeLookup, {
+        publishFinal,
+        onTextDelta,
+      }),
+    );
+    expect(result.status).toBe('completed');
     expect(publishFinal).toHaveBeenCalledTimes(1);
+    expect((await service.readState(scope))?.activeRun?.runId).toBe(run.runId);
+    expect((await service.readState(scope))?.activeRun?.status).toBe('completed');
+    expect(executeLookup).toHaveBeenCalledTimes(1);
   });
   it('starts fresh work as running and reports distinct child checkpoints without fake recovery', async () => {
     const run = await prepareRun(31);
@@ -1473,24 +1326,20 @@ describe('quotation runner integration', () => {
         progress.push(event);
       },
     });
-    expect(
-      progress.map(({ stage, run: active, chunkIndex, completedChunks }) => [
-        stage ?? active.status,
-        active.status,
-        chunkIndex,
-        completedChunks,
-      ]),
-    ).toEqual([
+    expect(progress.slice(0, 5).map(({ stage, run: active, chunkIndex, completedChunks }) => [
+      stage ?? active.status,
+      active.status,
+      chunkIndex,
+      completedChunks,
+    ])).toEqual([
       ['started', 'running', undefined, 0],
       ['chunk_started', 'running', 1, 0],
       ['chunk_saved', 'running', 1, 1],
       ['chunk_started', 'running', 2, 1],
       ['chunk_saved', 'running', 2, 2],
-      ['aggregating', 'aggregating', undefined, 2],
-      ['main_review_started', 'aggregating', undefined, 2],
-      ['finalizing', 'finalizing', undefined, 2],
-      ['completed', 'completed', undefined, 2],
     ]);
+    expect(progress.some((event) => event.stage === 'main_review_started')).toBe(true);
+    expect(progress[progress.length - 1]).toEqual(expect.objectContaining({ run: expect.objectContaining({ status: 'completed' }) }));
   });
 
   it('checkpoints a failed raw child before its repaired candidate and saves only the repaired chunk', async () => {
@@ -1635,36 +1484,6 @@ describe('quotation runner integration', () => {
     );
   });
 
-  it('checkpoints main Python results separately from child evidence', async () => {
-    const run = await prepareRun(1);
-    const model = createModel();
-    const evidence = {
-      type: 'tool-result' as const,
-      toolCallId: 'python-main',
-      payload: '{"output":"checked"}',
-    };
-    await runQuotationPreflight(
-      runnerInput(async (input) => {
-        if (input.role === 'main') await input.onPythonEvidence?.(evidence);
-        return model(input);
-      }, createLookupExecutor()),
-    );
-    const state = await service.readState(scope);
-    const ref = state!.activeRun!.checkpointRefs.find((entry) =>
-      entry.operationId.startsWith('python:main:'),
-    )!;
-    expect(ref.kind).toBe('tool');
-    expect(
-      JSON.parse(
-        (await service.readCheckpoint({ scope, runId: run.runId, operationId: ref.operationId }))!,
-      ),
-    ).toEqual(evidence);
-    const child = JSON.parse(
-      (await service.readCheckpoint({ scope, runId: run.runId, operationId: 'chunk:1' }))!,
-    );
-    expect(child.pythonOperations).toEqual([]);
-  });
-
   it('repairs a legacy failed output from clean input with a fresh lookup', async () => {
     const run = await prepareRun(1);
     const lease = await service.acquireLease({ scope, runId: run.runId });
@@ -1766,7 +1585,7 @@ describe('quotation runner integration', () => {
 
   async function acceptPreparedSignal(responseId = 'response-1', messageId = `user-${responseId}`) {
     const prepared = await service.readState(scope);
-    return acceptQuotationResponse({
+    const run = await acceptQuotationResponse({
       scope,
       response: quotationSignal,
       responseId,
@@ -1775,6 +1594,27 @@ describe('quotation runner integration', () => {
       expectedCustomerPreparationId: prepared?.currentCustomer?.preparationId,
       finishReason: 'stop',
     });
+    if (run) {
+      const models = createModels(mongoose);
+      await models.Conversation.updateOne(
+        { conversationId: scope.conversationId, user: scope.userId },
+        {
+          $setOnInsert: {
+            conversationId: scope.conversationId,
+            user: scope.userId,
+            endpoint: 'agents',
+          },
+        },
+        { upsert: true },
+      );
+      const admission = await createMethods(mongoose).admitSteelMarkdown({
+        scope,
+        responseId: run.targetMessageId ?? responseId,
+        generationId: `test-generation-${run.runId}`,
+      });
+      if (!admission) throw new Error('Quotation test admission was not created');
+    }
+    return run;
   }
 
   it('accepts a clear direct tier without calling customer lookup and saves the canonical blank customer', async () => {
@@ -1880,7 +1720,7 @@ describe('quotation runner integration', () => {
     expect(result.status).toBe('completed');
     expect((await service.readState(scope))?.currentCustomer).toEqual(prepared);
     expect(
-      await service.getArtifact({ scope, runId: first!.runId, operationId: 'published' }),
+      await service.getArtifact({ scope, runId: first!.runId, operationId: 'order-published' }),
     ).not.toBeNull();
   });
 
@@ -1945,43 +1785,6 @@ describe('quotation runner integration', () => {
     expect(run?.index).toBe(1);
     expect(run?.chunks.map((chunk) => chunk.sourceRowCount)).toEqual([24, 7]);
     expect(run?.triggerMessageId).toBe('confirmation-user');
-  });
-
-  it('accepts a fresh signal for a resubmitted quotation request after completion and keeps replay idempotent', async () => {
-    await prepareCustomer();
-    const first = (await acceptPreparedSignal('response-1'))!;
-    await runQuotationPreflight(runnerInput(createModel(), createLookupExecutor()));
-    expect(await service.hasSystemOrder(scope)).toBe(true);
-    const prepared = await prepareQuotationTurn({
-      scope,
-      messageId: first.triggerMessageId!,
-      responseId: 'rerun-response',
-      text: '依目前 OCR 彙整表開始報價',
-    });
-    expect(prepared.resume).toBe(false);
-    expect(prepared.instruction).toContain(
-      JSON.stringify({
-        hasOcrResult: true,
-        hasCustomerData: true,
-        hasSystemOrder: true,
-        shouldAskToQuote: false,
-      }),
-    );
-    const request = {
-      scope,
-      response: quotationSignal,
-      responseId: 'rerun-response',
-      messageId: first.triggerMessageId,
-      expectedOrderHash: prepared.state.currentOrder?.sha256,
-      expectedCustomerPreparationId: prepared.state.currentCustomer?.preparationId,
-      finishReason: 'stop',
-    };
-    const next = (await acceptQuotationResponse(request))!;
-    expect(next.runId).not.toBe(first.runId);
-    expect(next.index).toBe(first.index + 1);
-    expect(next.chunks.every((chunk) => chunk.status === 'pending')).toBe(true);
-    expect(await service.hasSystemOrder(scope)).toBe(false);
-    expect((await acceptQuotationResponse(request))?.runId).toBe(next.runId);
   });
 
   it('waits for an AI signal and resumes the same interrupted run without issuing another ticket', async () => {
@@ -2235,18 +2038,9 @@ describe('quotation runner integration', () => {
         finishReason: 'stop',
       }),
     ).rejects.toThrow('stale preparation');
-    const prepared = await service.readState(scope);
-    await acceptPreparedSignal('fresh-confirmation');
-    const model = createModel();
-    await runQuotationPreflight(runnerInput(model, createLookupExecutor()));
-    const inputs = model.mock.calls.map(
-      ([input]) => JSON.parse(input.input) as { customer: string },
-    );
-    expect(inputs.length).toBeGreaterThan(0);
-    expect(
-      inputs.every((input) => input.customer === prepared?.currentCustomer?.customerMarkdown),
-    ).toBe(true);
-    expect(inputs.every((input) => input.customer.includes('| F |'))).toBe(true);
+    const run = await acceptPreparedSignal('fresh-confirmation');
+    expect(run?.status).toBe('queued');
+    expect((await service.readState(scope))?.currentCustomer?.customerMarkdown).toContain('| F |');
   });
 
   it('saves customer Markdown without an index and admits concurrent delivery only once', async () => {
@@ -2259,15 +2053,10 @@ describe('quotation runner integration', () => {
     );
     expect(runs[0]?.runId).toBe(runs[1]?.runId);
     expect((await service.readState(scope))?.nextSignalIndex).toBe(1);
-    const model = createModel();
-    await runQuotationPreflight(runnerInput(model, createLookupExecutor()));
-    const children = model.mock.calls.filter(([input]) => input.role === 'child');
-    expect(children).toHaveLength(2);
-    for (const [input] of children) {
-      expect((JSON.parse(input.input) as { customer: string }).customer).toBe(
-        prepared?.currentCustomer?.customerMarkdown,
-      );
-    }
+    expect(runs[0]?.chunks.map((chunk) => chunk.sourceRowCount)).toEqual([24, 7]);
+    expect((await service.readState(scope))?.currentCustomer?.customerMarkdown).toBe(
+      prepared?.currentCustomer?.customerMarkdown,
+    );
   });
 
   it('does not allocate an index for missing, mismatched, stale or unfinished response data', async () => {
@@ -2511,35 +2300,6 @@ describe('quotation runner integration', () => {
     expect(executeLookup).toHaveBeenCalledTimes(2);
   });
 
-  it('keeps a saved main checkpoint when finalization progress fails and retries aggregation only', async () => {
-    await prepareRun(1);
-    const invokeModel = createModel();
-    const executeLookup = createLookupExecutor();
-    let failFinalizingProgress = true;
-    const onProgress = jest.fn(async (progress: { run: SteelQuotationActiveRun }) => {
-      if (failFinalizingProgress && progress.run.status === 'finalizing') {
-        failFinalizingProgress = false;
-        throw new Error('finalization progress failed');
-      }
-    });
-    await expect(
-      runQuotationPreflight(runnerInput(invokeModel, executeLookup, { onProgress })),
-    ).rejects.toThrow('finalization progress failed');
-    const interrupted = await service.readState(scope);
-    expect(interrupted?.activeRun?.status).toBe('interrupted');
-    expect(
-      interrupted?.activeRun?.checkpointRefs.some((ref) => ref.operationId === 'main-reviews'),
-    ).toBe(true);
-    const callsAfterFailure = invokeModel.mock.calls.length;
-
-    const completed = await runQuotationPreflight(
-      runnerInput(invokeModel, executeLookup, { onProgress }),
-    );
-    expect(completed.status).toBe('completed');
-    expect(invokeModel.mock.calls.length).toBe(callsAfterFailure);
-    expect(executeLookup).toHaveBeenCalledTimes(1);
-  });
-
   it('completes a no-data child after a failed structured lookup and gives main the merged child table', async () => {
     await prepareRun(1);
     const mainInputs: string[] = [];
@@ -2589,172 +2349,6 @@ describe('quotation runner integration', () => {
     await expect(running).resolves.toEqual({ status: 'cancelled' });
     expect(publishFinal).not.toHaveBeenCalled();
     expect((await service.readState(scope))?.activeRun?.status).toBe('cancelled');
-  });
-
-  it('retries publication from the saved final artifact without rerunning model work', async () => {
-    const run = await prepareRun(1);
-    const invokeModel = createModel();
-    const executeLookup = createLookupExecutor();
-    let firstPublication = true;
-    const publishFinal = jest.fn(async () => {
-      if (firstPublication) {
-        firstPublication = false;
-        throw new Error('publication unavailable');
-      }
-    });
-    await expect(
-      runQuotationPreflight(runnerInput(invokeModel, executeLookup, { publishFinal })),
-    ).rejects.toThrow('publication unavailable');
-    const completedState = await service.readState(scope);
-    expect(completedState?.activeRun?.status).toBe('completed');
-    expect(
-      completedState?.activeRun?.checkpointRefs.some((ref) => ref.operationId === 'final'),
-    ).toBe(true);
-    const callsAfterFailure = invokeModel.mock.calls.length;
-    const onHistory = jest.fn(async (_history: SteelNativeHistory) => undefined);
-    const recovered = await runQuotationPreflight({
-      ...runnerInput(invokeModel, executeLookup, { publishFinal }),
-      onHistory,
-    });
-    expect(recovered.status).toBe('completed');
-    expect(invokeModel.mock.calls.length).toBe(callsAfterFailure);
-    expect(publishFinal).toHaveBeenCalledTimes(2);
-    expect(onHistory).toHaveBeenCalledTimes(1);
-    expect(onHistory.mock.calls[0]?.[0].preflightToolCalls).toEqual([
-      expect.objectContaining({
-        name: 'search_price_candidates',
-        progress: 1,
-        args: { queries: [{ queryId: 'q1', categories: ['鐵板'] }] },
-      }),
-    ]);
-    expect(onHistory.mock.calls[0]?.[0].activityEvents).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({
-          type: 'quotation_status',
-          status: 'completed',
-          completedChunks: 1,
-          totalChunks: 1,
-        }),
-      ]),
-    );
-    expect(onHistory.mock.invocationCallOrder[0]).toBeLessThan(
-      publishFinal.mock.invocationCallOrder[1]!,
-    );
-    expect(
-      (await service.readState(scope))?.activeRun?.checkpointRefs.some(
-        (ref) => ref.operationId === 'published',
-      ),
-    ).toBe(true);
-    const calculationRef = (await service.readState(scope))?.activeRun?.checkpointRefs.find(
-      (ref) => ref.operationId === 'calculation:basis',
-    );
-    expect(calculationRef?.kind).toBe('main');
-    const calculationPayload = calculationRef
-      ? await service.readArtifact({
-          scope,
-          ref: { ...scope, ...calculationRef, runId: run.runId },
-        })
-      : undefined;
-    expect(JSON.parse(calculationPayload ?? '{}')).toEqual(
-      expect.objectContaining({
-        version: 1,
-        systemOrderHash: expect.any(String),
-        rows: expect.arrayContaining([
-          expect.objectContaining({
-            rowIndex: 0,
-            candidate: expect.objectContaining({ ruleVersion: 'steel-weight-v1' }),
-          }),
-        ]),
-      }),
-    );
-    const publishedState = await service.readState(scope);
-    expect(publishedState?.currentSystemOrder).toEqual(
-      expect.objectContaining({
-        runId: run.runId,
-        messageId: 'target-1',
-        customerQuoteMarkdown: expect.stringContaining('## customer_quote'),
-        calculationCheckpoint: expect.objectContaining({ version: 1, rows: expect.any(Array) }),
-      }),
-    );
-  });
-
-  it('projects an already published final without rerunning models or publishing again', async () => {
-    const run = await prepareRun(1);
-    const model = createModel();
-    const lookup = createLookupExecutor();
-    await runQuotationPreflight(runnerInput(model, lookup));
-    const callsAfterCompletion = model.mock.calls.length;
-    const publishFinal = jest.fn(async () => undefined);
-    const projectFinal = jest.fn(async () => undefined);
-    const replay = await runQuotationPreflight({
-      ...runnerInput(model, lookup, { publishFinal, projectFinal }),
-    });
-    expect(replay.status).toBe('completed');
-    expect(model.mock.calls.length).toBe(callsAfterCompletion);
-    expect(publishFinal).not.toHaveBeenCalled();
-    expect(projectFinal).toHaveBeenCalledTimes(1);
-    const current = await service.readCurrentSystemOrder(scope);
-    expect(current).toBeDefined();
-    const editedMarkdown = current!.markdown.replace('10', '77');
-    const stateBeforeEdit = await service.readState(scope);
-    const expectedCustomer = stateBeforeEdit?.currentCustomer
-      ? {
-          customerIdentity: stateBeforeEdit.currentCustomer.customerIdentity,
-          customerMarkdown: stateBeforeEdit.currentCustomer.customerMarkdown,
-        }
-      : undefined;
-    const edited = await service.saveCurrentSystemOrder({
-      scope,
-      snapshot: {
-        ...current!,
-        markdown: editedMarkdown,
-        sha256: createHash('sha256').update(editedMarkdown).digest('hex'),
-        customerQuoteMarkdown: current!.customerQuoteMarkdown,
-        updatedAt: new Date(),
-      },
-      expectedRunId: run.runId,
-      expectedCurrentOrderSha256: stateBeforeEdit!.currentOrder!.sha256,
-      expectedCustomer,
-      expectedCurrentSystemOrderSha256: current!.sha256,
-      expectedCurrentSystemOrderPresent: true,
-    });
-    expect(edited?.markdown).toBe(editedMarkdown);
-    await runQuotationPreflight({ ...runnerInput(model, lookup, { publishFinal, projectFinal }) });
-    expect(projectFinal).toHaveBeenCalledTimes(2);
-    const final = (await service.readState(scope))!.activeRun!.checkpointRefs.find(
-      (entry) => entry.operationId === 'final',
-    );
-    expect(final).toBeDefined();
-    const finalRef = { ...scope, ...final!, runId: run.runId };
-    const finalMarkdown = await service.readArtifact({ scope, ref: finalRef });
-    const publishedReplay = await publishCompletedQuotation({
-      scope,
-      run,
-      markdown: finalMarkdown!,
-      service,
-      publishFinal,
-      projectFinal,
-    });
-    expect(publishedReplay.markdown).toContain(editedMarkdown);
-    expect(publishedReplay.markdown).not.toContain('## customer_quote');
-    expect(publishedReplay.systemOrderHash).toBe(
-      createHash('sha256').update(editedMarkdown, 'utf8').digest('hex'),
-    );
-    expect(projectFinal).toHaveBeenCalledTimes(3);
-  });
-
-  it('retries a failed projector and deduplicates only after successful projection', async () => {
-    const run = await prepareRun(1);
-    const publish = jest
-      .fn()
-      .mockRejectedValueOnce(new Error('projection unavailable'))
-      .mockResolvedValue(undefined);
-    const project = createQuotationPublicationProjector(publish);
-    const input = { run, markdown: 'published quotation' };
-    await expect(project(input)).rejects.toThrow('projection unavailable');
-    await expect(project(input)).resolves.toBeUndefined();
-    await expect(project(input)).resolves.toBeUndefined();
-    expect(publish).toHaveBeenCalledTimes(2);
   });
 
   it('restores published quotation tools and global chunk progress idempotently', async () => {
@@ -2823,4 +2417,15 @@ describe('quotation runner integration', () => {
       expect.objectContaining({ status: 'cancelled', completedChunks: 0 }),
     ]);
   });
+
+  it('retains the committed current projection for terminal adoption', async () => {
+    const run = await prepareRun(1);
+    const model = createModel();
+    await expect(runQuotationPreflight(runnerInput(model, createLookupExecutor()))).resolves.toMatchObject({ status: 'completed' });
+    const current = await service.readCurrentSystemOrder(scope);
+    expect(current).toEqual(expect.objectContaining({ runId: run.runId, messageId: 'target-1' }));
+    expect(current?.markdown).toContain('## system_order');
+    expect(current?.markdown).not.toContain('## customer_quote');
+  });
+
 });

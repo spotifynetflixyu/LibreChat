@@ -184,6 +184,7 @@ const steelReviewOwnerUpdatedSchema = new Schema<SteelReviewOwnerUpdatedRecord>(
     title: { type: String, required: true },
     outputId: { type: String, required: true },
     revision: { type: String, required: true },
+    effectiveVersion: { type: Number, min: 1 },
     updatedAt: { type: Date, required: true },
   },
   { _id: false },

@@ -3,8 +3,6 @@ import type {
   SteelMarkdownPublicationResult,
   SteelQuotationActiveRun,
   SteelQuotationOcrSelection,
-  SteelQuotationPublicationProof,
-  SteelQuotationPublicationSaveResult,
 } from '@librechat/data-schemas';
 import type { SteelQuotationStateService } from '../quotation/state';
 import type { SteelResponseRequest } from '../quotation/completion';
@@ -30,10 +28,8 @@ export interface SteelMarkdownCompletionInput {
   applyMarkdown(markdown: string): void;
   persistMarkdown(options?: { completed: boolean }): Promise<object | null | undefined>;
   publishMarkdown?: SteelFullPublisher;
-  publishQuotation?(
-    input: SteelQuotationPublicationProof & { markdown: string },
-  ): Promise<SteelQuotationPublicationSaveResult>;
   publishedResponse?: SteelPublishedResponsePort;
+  onPublishedResponse?(record: SteelPublishedResponseIdentity): Promise<void>;
   assertActive?(): Promise<void>;
   onPrepared?(markdown: string): Promise<void>;
 }
@@ -50,6 +46,11 @@ export interface SteelPublishedResponseIdentity {
   conversationId: string;
   user: string;
   tenantId?: string;
+  text?: string;
+  content?: unknown[];
+  unfinished?: boolean;
+  finish_reason?: string;
+  metadata?: Record<string, unknown> | null;
 }
 
 export interface SteelPublishedResponsePort<

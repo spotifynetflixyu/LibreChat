@@ -60,8 +60,10 @@ const {
   bindQuotationCustomerResult,
   runQuotationPreflight,
   createSteelQuotationPublicationPublisher,
+  createSteelQuotationMessageNotifier,
+  createSteelQuotationSummaryAppender,
+  createSteelQuotationPublicationAdmission,
   createSteelFullMarkdownPublisher,
-  createSteelQuotationPublicationTransport,
   quotationMessageText,
   buildSteelQuotationStatusEventEnvelope,
   createSteelMarkdownCompletionServices,
@@ -6542,10 +6544,10 @@ async function executeSteelQuotationWorkflow({
   agent,
   run,
   onText,
-  onFinalText,
   onUsage,
   contentParts,
   buildPublicationMessage,
+  onCommittedMessage,
 }) {
   const context = req?.steelNativeContext;
   const quotation = context?.quotation;
@@ -6637,6 +6639,12 @@ async function executeSteelQuotationWorkflow({
   const modelOptions = context.delegateOcrContext?.modelOptions;
   if (!modelOptions) throw new Error('Quotation requires resolved model options');
   const quotationToolIndexes = new Map();
+  const notifyQuotationMessage = createSteelQuotationMessageNotifier({
+    scope,
+    responseId: context.requestId,
+    onCommittedMessage,
+    emit: (event) => emitSteelNativeEvents({ req, res, streamId, events: [event] }),
+  });
   const publishFinal = createSteelQuotationPublicationPublisher({
     scope,
     saveContext: publicationSaveContext,
@@ -6650,8 +6658,8 @@ async function executeSteelQuotationWorkflow({
         context,
       }),
     savePublication: (proof) => db.saveSteelQuotationMessage(proof),
+    onPublicationCommitted: (message) => notifyQuotationMessage(message, 'order'),
   });
-  const publicationTransport = createSteelQuotationPublicationTransport({ onText, onFinalText });
   const runPreflight = () =>
     runQuotationPreflight({
       scope,
@@ -6659,7 +6667,7 @@ async function executeSteelQuotationWorkflow({
       signal,
       onUsage,
       client: steelPostgres.client,
-      onTextDelta: publicationTransport.onTextDelta,
+      onTextDelta: onText,
       onHistory: async (restored) => {
         const history = ensureSteelNativeHistory(context);
         const delta = getQuotationHistoryDelta(history, restored);
@@ -6802,7 +6810,23 @@ async function executeSteelQuotationWorkflow({
         });
       },
       publishFinal,
-      projectFinal: publicationTransport.projectFinal,
+      appendSummary: createSteelQuotationSummaryAppender({
+        append: db.appendSteelQuotationSummary,
+        buildMessage: buildPublicationMessage,
+      }),
+      summarySourceMessageId: context.requestId,
+      refreshPublicationAdmission: createSteelQuotationPublicationAdmission({
+        req,
+        scope,
+        responseId: context.requestId,
+        generationId: String(req._resumableJobCreatedAt ?? context.requestId),
+        admit: db.admitSteelMarkdown,
+      }),
+      onSummaryCommitted: (message) => notifyQuotationMessage(message, 'summary'),
+      onCompletedReplay: (targetMessageId) => notifyQuotationMessage(
+        () => db.getMessage({ user: scope.userId, messageId: targetMessageId }),
+        'order',
+      ),
     });
   const result = await runPreflight();
   if (result.status === 'busy') {

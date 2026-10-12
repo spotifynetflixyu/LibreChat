@@ -273,9 +273,9 @@ async function saveHuman(quantity: string) {
 function createRealQuotationPublisher() {
   return createSteelQuotationPublicationPublisher({
     scope,
-    buildMessage: ({ targetMessageId, markdown }) => ({
+    buildMessage: ({ targetMessageId, markdown, proof }) => ({
       messageId: targetMessageId,
-      sourceMessageId: targetMessageId,
+      sourceMessageId: proof.orderPublication?.admission.responseId ?? targetMessageId,
       conversationId: scope.conversationId,
       user: scope.userId,
       text: markdown,
@@ -284,6 +284,16 @@ function createRealQuotationPublisher() {
     }),
     savePublication: db.saveSteelQuotationMessage,
   });
+}
+
+async function refreshHumanPublicationAdmission() {
+  const state = await createSteelQuotationStateService(mongoose).readState(scope);
+  const run = state?.activeRun;
+  if (!run?.targetMessageId) throw new Error('Missing quotation response');
+  const admission = await db.admitSteelMarkdown({ scope, responseId: run.targetMessageId,
+    generationId: `publication:${run.runId}` });
+  if (!admission) throw new Error('Quotation publication admission was not refreshed');
+  return admission;
 }
 
 function createReviewServiceWithSourceAuthority() {
@@ -332,7 +342,7 @@ async function admitPublishedHumanRun(): Promise<{
   snapshot: SteelQuotationSnapshotPayload;
 }> {
   await publishAi();
-  await saveHuman('3');
+  await saveHuman('6');
   const service = createSteelQuotationStateService(mongoose);
   const prepared = await prepareQuotationTurn({
     scope,
@@ -349,7 +359,7 @@ async function admitPublishedHumanRun(): Promise<{
   await commitQuotationCustomerResponse({
     scope,
     response: customerResponse,
-    responseId: 'customer-response',
+    responseId: 'quote-response',
     messageId: 'customer-message',
     messageText: '使用預設 B tier，報價',
     expectedOrderHash: prepared.state.currentOrder.sha256,
@@ -393,7 +403,7 @@ it('selects the newer human Save, freezes its clean Markdown and mappings at adm
   expect(new Date(input.selection.candidates.human!.savedAt).getTime())
     .toBeGreaterThan(new Date(input.selection.candidates.ai!.savedAt).getTime());
   expect(input.selection.selected.source).toBe('human');
-  expect(input.markdown).toContain('| 鐵板 | P1 | 6 | 200 | 100 | 3 | F1 |');
+  expect(input.markdown).toContain('| 鐵板 | P1 | 6 | 6 | 100 | 200 | F1 |');
   expect(snapshot.orderMarkdown).toBe(input.markdown);
   expect(snapshot.ocrSelection).toEqual(JSON.parse(JSON.stringify(run.ocrSelection)));
   expect(snapshot.sourceSnapshot).toEqual(input.sourceSnapshot);
@@ -413,7 +423,7 @@ it('selects the newer human Save, freezes its clean Markdown and mappings at adm
   await saveHuman('4');
   const after = await service.readState(scope);
   const current = await service.readOcrInput(scope);
-  expect(current?.markdown).toContain('| 鐵板 | P1 | 6 | 200 | 100 | 4 | F1 |');
+  expect(current?.markdown).toContain('| 鐵板 | P1 | 4 | 6 | 100 | 200 | F1 |');
   expect(after?.activeRun?.runId).toBe(run.runId);
   const frozenPayload = JSON.parse((await service.readArtifact({ scope, ref: run.snapshotRef }))!) as SteelQuotationSnapshotPayload;
   expect(frozenPayload.orderMarkdown).toBe(snapshot.orderMarkdown);
@@ -423,7 +433,6 @@ it('selects the newer human Save, freezes its clean Markdown and mappings at adm
 
 it('restores a fresh service and resumes child/main from the admitted snapshot', async () => {
   const { service, run, snapshot } = await admitPublishedHumanRun();
-  await saveHuman('4');
   const restoredService = createSteelQuotationStateService(mongoose);
   expect((await restoredService.readState(scope))?.activeRun?.runId).toBe(run.runId);
   expect(await restoredService.readArtifact({ scope, ref: run.snapshotRef })).toBe(JSON.stringify(snapshot));
@@ -439,17 +448,19 @@ it('restores a fresh service and resumes child/main from the admitted snapshot',
     invokeModel: model,
     executeLookup: jest.fn(async () => lookupResult()),
     publishFinal,
+    refreshPublicationAdmission: refreshHumanPublicationAdmission,
+    appendSummary: (summary) => db.appendSteelQuotationSummary(summary),
   });
   expect(result.status).toBe('completed');
   expect(childInputs).toHaveLength(1);
-  expect(childInputs[0]).toContain('| 鐵板 | P1 | 6 | 200 | 100 | 3 | F1 |');
-  expect(childInputs[0]).not.toContain('| 鐵板 | P1 | 6 | 200 | 100 | 4 | F1 |');
+  expect(childInputs[0]).toContain('| 鐵板 | P1 | 6 | 6 | 100 | 200 | F1 |');
+  expect(childInputs[0]).not.toContain('| 鐵板 | P1 | 4 | 6 | 100 | 200 | F1 |');
   expect(mainInputs).toHaveLength(1);
-  expect(mainInputs[0]).toContain('| 鐵板 | P1 | 6 | 200 | 100 | 3 | F1 |');
-  expect(mainInputs[0]).not.toContain('| 鐵板 | P1 | 6 | 200 | 100 | 4 | F1 |');
+  expect(mainInputs[0]).toContain('| 鐵板 | P1 | 6 | 6 | 100 | 200 | F1 |');
+  expect(mainInputs[0]).not.toContain('| 鐵板 | P1 | 4 | 6 | 100 | 200 | F1 |');
   const completed = await service.readState(scope);
   expect(completed?.activeRun?.status).toBe('completed');
-  expect(completed?.currentSystemOrder?.needsRequote).toBe(true);
+  expect(completed?.currentSystemOrder?.needsRequote).toBeFalsy();
   expect(completed?.currentSystemOrder?.ocrSelection).toEqual(completed?.activeRun?.ocrSelection);
   expect(completed?.currentSystemOrder?.sourceSnapshot).toEqual(snapshot.sourceSnapshot);
   const finalMessage = await db.getMessage({ user: scope.userId, messageId: run.targetMessageId! });
@@ -468,11 +479,14 @@ it('restores a fresh service and resumes child/main from the admitted snapshot',
     invokeModel: replayModel,
     executeLookup: jest.fn(async () => lookupResult()),
     publishFinal: publishFinal,
+    refreshPublicationAdmission: refreshHumanPublicationAdmission,
+    appendSummary: (summary) => db.appendSteelQuotationSummary(summary),
   });
   expect(replay.status).toBe('completed');
-  expect(replay.markdown).toBe(result.markdown);
+  expect(replay.markdown).toBe(completed?.currentSystemOrder?.markdown);
+  expect(replayModel).not.toHaveBeenCalled();
   expect((await db.getMessage({ user: scope.userId, messageId: run.targetMessageId! }))?.text).toBe(finalMessage?.text);
-  expect(await service.readArtifact({ scope, ref: run.snapshotRef })).toBeUndefined();
+  expect(await service.readArtifact({ scope, ref: run.snapshotRef })).toBe(JSON.stringify(snapshot));
   const catalogAuthority = await db.readSteelReview({ ...scope, messageId: run.targetMessageId!,
     kind: 'system_order', title: 'system_order', customerRunId: run.runId });
   expect(catalogAuthority?.customerSnapshot).toEqual({ snapshotId: run.snapshotRef.sha256,
@@ -490,6 +504,8 @@ it('marks a completed quotation stale after a source-only human Save while retai
     invokeModel: createRunnerModel(childInputs, mainInputs),
     executeLookup: jest.fn(async () => lookupResult()),
     publishFinal: createRealQuotationPublisher(),
+    refreshPublicationAdmission: refreshHumanPublicationAdmission,
+    appendSummary: (summary) => db.appendSteelQuotationSummary(summary),
   });
   expect(result.status).toBe('completed');
   expect((await service.readState(scope))?.currentSystemOrder?.needsRequote).toBeFalsy();
@@ -499,12 +515,12 @@ it('marks a completed quotation stale after a source-only human Save while retai
   expect(after?.currentSystemOrder?.needsRequote).toBe(true);
   expect(after?.currentSystemOrder?.ocrSelection).toEqual(after?.activeRun?.ocrSelection);
   expect(after?.currentSystemOrder?.sourceSnapshot).toEqual(snapshot.sourceSnapshot);
-  expect(await service.readArtifact({ scope, ref: run.snapshotRef })).toBeUndefined();
+  expect(await service.readArtifact({ scope, ref: run.snapshotRef })).toBe(JSON.stringify(snapshot));
 });
 
 
 
-it('retains the same input after publication failure and cleans it only after successful retry', async () => {
+it('keeps pre-publication failure interrupted with its frozen input intact', async () => {
   const { service, run, snapshot } = await admitPublishedHumanRun();
   const model = createRunnerModel([], []);
   const runnerInput = {
@@ -514,38 +530,15 @@ it('retains the same input after publication failure and cleans it only after su
   await expect(runQuotationPreflight({ ...runnerInput,
     publishFinal: async () => ({ ok: false as const, code: 'superseded' as const }),
   })).rejects.toThrow();
-  expect((await service.readState(scope))?.activeRun?.status).toBe('completed');
+  expect((await service.readState(scope))?.activeRun?.status).toBe('interrupted');
   expect(await service.readArtifact({ scope, ref: run.snapshotRef })).toBe(JSON.stringify(snapshot));
   expect(await service.getArtifact({ scope, runId: run.runId, operationId: 'published' })).toBeNull();
-  const completedState = await service.readState(scope);
-  if (!completedState?.currentCustomer || !completedState.currentOrder) throw new Error('Missing completed input authority');
-  await expect(service.setOrder({ scope, fullMarkdown: orderMarkdown('99'),
-    expectedOrderHash: completedState.currentOrder.sha256 })).rejects.toThrow('unfinished or unpublished');
-  await service.clearCustomer({ scope, responseId: completedState.currentCustomer.responseId,
-    preparationId: completedState.currentCustomer.preparationId, orderHash: completedState.currentOrder.sha256 });
-  expect((await service.readState(scope))?.currentCustomer).toEqual(completedState.currentCustomer);
-  expect((await service.readState(scope))?.currentOrder).toEqual(completedState.currentOrder);
-  const late = await acceptQuotationSignal({
-    scope, response: '## quote_signal\n\nstart', responseId: 'delayed-second-signal',
-    expectedOrderHash: completedState?.currentOrder?.sha256,
-    expectedCustomerPreparationId: completedState?.currentCustomer?.preparationId,
-    finishReason: 'stop', service,
-  });
-  expect(late?.runId).toBe(run.runId);
-  expect((await service.readState(scope))?.tickets).toEqual(completedState?.tickets);
-  expect(await createSteelQuotationArtifactModel(mongoose).countDocuments({ ...scope, kind: 'snapshot' })).toBe(1);
-  expect(await createSteelQuotationArtifactModel(mongoose).countDocuments({ ...scope, kind: 'archive' })).toBe(0);
-  await saveHuman('4');
-  const completedCalls = model.mock.calls.length;
-  await expect(runQuotationPreflight({ ...runnerInput, publishFinal: createRealQuotationPublisher() }))
-    .resolves.toMatchObject({ status: 'completed' });
-  expect(model).toHaveBeenCalledTimes(completedCalls);
-  expect(await service.readArtifact({ scope, ref: run.snapshotRef })).toBeUndefined();
-  expect((await service.readState(scope))?.currentSystemOrder?.ocrSelection).toEqual(run.ocrSelection);
+  expect((await service.readState(scope))?.currentCustomer).toBeDefined();
+  expect((await service.readState(scope))?.currentOrder?.markdown).toBe(snapshot.orderMarkdown);
 });
 
 it.each(['order', 'customer', 'clear-customer', 'lookup', 'clear-lookup', 'ticket'] as const)(
-  'fences delayed %s mutation after a new run completes and retries its real publication',
+  'fences delayed %s mutation after a pre-publication interruption and retries its real publication',
   async (mutation) => {
     const { service, run: first } = await admitPublishedHumanRun();
     const model = createRunnerModel([], []);
@@ -553,7 +546,9 @@ it.each(['order', 'customer', 'clear-customer', 'lookup', 'clear-lookup', 'ticke
       scope, modelOptions: {} as OpenAIOAuthModelOptions, signal: new AbortController().signal,
       invokeModel: model, executeLookup: jest.fn(async () => lookupResult()),
     };
-    await runQuotationPreflight({ ...runnerInput, publishFinal: createRealQuotationPublisher() });
+    await runQuotationPreflight({ ...runnerInput, publishFinal: createRealQuotationPublisher(),
+      refreshPublicationAdmission: refreshHumanPublicationAdmission,
+      appendSummary: (summary) => db.appendSteelQuotationSummary(summary) });
     const published = await service.readState(scope);
     if (!published?.currentOrder || !published.currentCustomer) throw new Error('Missing published authority');
     const order = published.currentOrder;
@@ -622,21 +617,23 @@ it.each(['order', 'customer', 'clear-customer', 'lookup', 'clear-lookup', 'ticke
     expect(interleaved).toBe(true);
     const locked = await service.readState(scope);
     expect(locked?.activeRun?.runId).toBe(secondTicket.token);
-    expect(locked?.activeRun?.status).toBe('completed');
+    expect(locked?.activeRun?.status).toBe('interrupted');
     expect(locked?.currentOrder).toEqual(order);
     expect(locked?.currentCustomer).toEqual(customer);
     expect(locked?.customerLookupEvidence).toEqual(evidence);
     expect(locked?.tickets).toHaveLength(2);
     expect(locked?.nextSignalIndex).toBe(2);
-    expect(await createSteelQuotationArtifactModel(mongoose).countDocuments({ ...scope, kind: 'snapshot' })).toBe(1);
+    expect(await createSteelQuotationArtifactModel(mongoose).countDocuments({ ...scope, kind: 'snapshot' })).toBe(2);
     const completedCalls = model.mock.calls.length;
-    await expect(runQuotationPreflight({ ...runnerInput, publishFinal: createRealQuotationPublisher() }))
+    await expect(runQuotationPreflight({ ...runnerInput, publishFinal: createRealQuotationPublisher(),
+      refreshPublicationAdmission: refreshHumanPublicationAdmission,
+      appendSummary: (summary) => db.appendSteelQuotationSummary(summary) }))
       .resolves.toMatchObject({ status: 'completed' });
-    expect(model).toHaveBeenCalledTimes(completedCalls);
+    expect(model.mock.calls.length).toBeGreaterThan(completedCalls);
     expect((await db.getMessage({ user: scope.userId, messageId: 'second-quote-result' }))?.text).toContain('## system_order');
     const after = await service.readState(scope);
     expect(after?.activeRun && await methods.isSteelQuotationRunPublished(scope, after.activeRun)).toBe(true);
-    expect(await createSteelQuotationArtifactModel(mongoose).countDocuments({ ...scope, kind: 'snapshot' })).toBe(0);
+    expect(await createSteelQuotationArtifactModel(mongoose).countDocuments({ ...scope, kind: 'snapshot' })).toBe(2);
   },
 );
 
@@ -738,7 +735,7 @@ it('generates and regenerates bound quotation versions from a pre-v9 OCR convers
       responseId: `legacy-response-${index}`, text: '使用 OCR 報價', publicationStore: db, service });
     expect(prepared.state.currentOrder?.ocrSelection?.selected.outputId).toBe('ocr_result:pre-v9');
     const customerResponse = `${renderQuotationCustomerMarkdown({ tier: 'B' })}\n\n## quote_signal\n\nstart`;
-    await commitQuotationCustomerResponse({ scope, response: customerResponse, responseId: `customer-${index}`,
+    await commitQuotationCustomerResponse({ scope, response: customerResponse, responseId: `quote-${index}`,
       messageId: `customer-message-${index}`, messageText: '使用預設 B tier，報價',
       expectedOrderHash: prepared.state.currentOrder!.sha256,
       expectedCustomerPreparationId: prepared.state.currentCustomer?.preparationId, service });
@@ -757,7 +754,9 @@ it('generates and regenerates bound quotation versions from a pre-v9 OCR convers
             row.map((value, column) => table.headers[column] === '備註' ? 'P1' : value)));
         }
         return response;
-      }, executeLookup: jest.fn(async () => lookupResult()), publishFinal: createRealQuotationPublisher() });
+      }, executeLookup: jest.fn(async () => lookupResult()), publishFinal: createRealQuotationPublisher(),
+      refreshPublicationAdmission: async () => (await db.admitSteelMarkdown({ scope, responseId: `legacy-response-${index}`, generationId: `legacy-response-${index}-publication` })) ?? undefined,
+      appendSummary: (summary) => db.appendSteelQuotationSummary(summary) });
     expect(result.status).toBe('completed');
     const state = await service.readState(scope);
     expect(state?.currentSystemOrder?.reviewMetadata?.ocrContext?.outputId).toBe('ocr_result:pre-v9');

@@ -23,6 +23,7 @@ import {
   ApprovalEvents,
   ViolationTypes,
   removeNullishValues,
+  steelQuotationMessageUpdateEvent,
 } from 'librechat-data-provider';
 import type {
   Agents,
@@ -1509,6 +1510,7 @@ export default function useResumableSSE(
     syncStepMessage,
     prunePtcTraces,
     attachmentHandler,
+    messageUpdateHandler,
     steelEventHandler,
     resetContentHandler,
     flushPendingDeltas,
@@ -2440,6 +2442,11 @@ export default function useResumableSSE(
 
           if (data.event === steelNativeStreamEventName) {
             steelEventHandler(data, currentSubmission as EventSubmission);
+            return;
+          }
+
+          if (data.event === steelQuotationMessageUpdateEvent) {
+            messageUpdateHandler(data.data, currentSubmission as EventSubmission);
             return;
           }
 
@@ -4153,6 +4160,7 @@ export default function useResumableSSE(
       attachmentHandler,
       titleHandler,
       steelEventHandler,
+      messageUpdateHandler,
       stepHandler,
       contentHandler,
       resetContentHandler,

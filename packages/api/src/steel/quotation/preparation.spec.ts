@@ -13,14 +13,13 @@ const mockIsPublished = jest.fn();
 const mockHasSystemOrder = jest.fn();
 const mockReadCurrentSystemOrder = jest.fn();
 const mockReadCheckpoint = jest.fn();
-const mockSaveCurrentSystemOrder = jest.fn();
 jest.mock('./state', () => ({ createSteelQuotationStateService: () => ({
   ensureState: mockRead, readState: mockRead, saveCustomer: mockSave, clearCustomer: mockClear,
   saveCustomerLookupEvidence: mockSaveEvidence, clearCustomerLookupEvidence: mockClearEvidence,
   setOrder: mockSetOrder, isPublishedRun: mockIsPublished,
   prepareOcrOrder: mockPrepareOcrOrder,
   hasSystemOrder: mockHasSystemOrder, readCurrentSystemOrder: mockReadCurrentSystemOrder,
-  readCheckpoint: mockReadCheckpoint, saveCurrentSystemOrder: mockSaveCurrentSystemOrder,
+  readCheckpoint: mockReadCheckpoint,
 }) }));
 jest.mock('../ocr/state', () => ({ createSteelOcrStateService: () => ({ readScopedConversationOcrState: mockReadOcr }) }));
 const scope = { userId: 'owner', conversationId: 'conversation' };
@@ -39,7 +38,6 @@ beforeEach(() => {
   mockHasSystemOrder.mockResolvedValue(false);
   mockReadCurrentSystemOrder.mockResolvedValue(undefined);
   mockReadCheckpoint.mockResolvedValue(undefined);
-  mockSaveCurrentSystemOrder.mockResolvedValue(undefined);
 });
 
 it.each([

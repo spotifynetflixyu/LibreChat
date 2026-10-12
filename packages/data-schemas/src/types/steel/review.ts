@@ -54,6 +54,7 @@ export interface SteelReviewTextPart {
 }
 
 export interface SteelReviewOwnerUpdatedRecord extends Omit<SteelReviewOwnerUpdated, 'updatedAt'> {
+  effectiveVersion?: number;
   updatedAt: Date;
 }
 

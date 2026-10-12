@@ -38,7 +38,8 @@ const {
   createSteelOcrStateService,
   createSteelQuotationStateService,
   createSteelMarkdownCompletionServices,
-  createSteelQuotationPublicationPublisher,
+  createSteelQuotationMessageNotifier,
+  projectSteelQuotationTerminalMessage,
   createSteelFullMarkdownPublisher,
   shouldDeferSteelMarkdownPersistence,
   createSteelOcrResponseAuditService,
@@ -73,7 +74,6 @@ const { logViolation } = require('~/cache');
 const { recordScheduleOutcome, isScheduleLive } = require('~/server/services/Schedules');
 const {
   saveMessage,
-  saveSteelQuotationMessage,
   publishSteelMarkdown,
   getMessage,
   saveConvo,
@@ -2354,11 +2354,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         return false;
       }
       const markdown = extractSteelAgentResponseMarkdown(responseMessage);
-      const deferSteelPersistence =
-        !terminalWasAborted &&
-        !preemptIncomplete &&
-        !stepLimitReached &&
-        shouldDeferSteelMarkdownPersistence(req, markdown);
+      const deferSteelPersistence = shouldDeferSteelMarkdownPersistence(req, markdown);
       terminalPersistenceDecision = !deferSteelPersistence;
       return terminalPersistenceDecision;
     };
@@ -3250,16 +3246,6 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           }
           return saved;
         };
-        const publishQuotation = createSteelQuotationPublicationPublisher({
-          saveContext: reqCtx,
-          buildMessage: ({ markdown }) => ({
-            ...response,
-            messageId: response.messageId,
-            sourceMessageId: response.messageId,
-            text: markdown,
-          }),
-          savePublication: (proof) => saveSteelQuotationMessage(proof),
-        });
         const markdownCompletion = createSteelMarkdownCompletionServices({
           runtimeRulesClient: steelPostgres.client,
           ocr: createSteelOcrStateService(mongoose),
@@ -3284,7 +3270,6 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           },
           applyMarkdown: (markdown) => replaceResponseMarkdown(response, markdown),
           persistMarkdown: persistResponseMessage,
-          publishQuotation,
           publishMarkdown: createSteelFullMarkdownPublisher({
             saveContext: reqCtx,
             buildMessage: ({ markdown }) => ({ ...response, text: markdown }),
@@ -3298,6 +3283,15 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
               savedResponseMessage = saved;
             },
           },
+          onPublishedResponse: createSteelQuotationMessageNotifier({
+            scope: req.steelNativeContext?.quotation?.scope,
+            responseId: response.messageId,
+            emit: (event) => GenerationJobManager.emitChunk(
+              streamId,
+              event,
+              { expectedCreatedAt: jobCreatedAt },
+            ),
+          }),
         });
         if (!responseMessagePersisted) {
           await persistResponseMessage();
@@ -3377,13 +3371,16 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
             conversation,
             title: conversation.title,
             requestMessage: sanitizeMessageForTransmit(userMessage),
-            responseMessage: {
-              ...response,
-              ...(responseIsUnfinished && { unfinished: true }),
-              ...(stepLimitReached && {
-                finish_reason: Constants.TOOL_CALL_LIMIT_FINISH_REASON,
-              }),
-            },
+            responseMessage: projectSteelQuotationTerminalMessage({
+              response: {
+                ...response,
+                ...(responseIsUnfinished && { unfinished: true }),
+                ...(stepLimitReached && {
+                  finish_reason: Constants.TOOL_CALL_LIMIT_FINISH_REASON,
+                }),
+              },
+              saved: savedResponseMessage,
+            }),
             ...(pendingSteers.length > 0 && { pendingSteers }),
           };
 

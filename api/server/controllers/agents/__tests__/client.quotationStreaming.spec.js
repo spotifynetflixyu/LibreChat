@@ -3,45 +3,51 @@ const { GenerationJobManager } = require('@librechat/api');
 const AgentClient = require('../client');
 const { getDefaultHandlers } = require('../callbacks');
 
-const mockProjectSteelQuotationMessage = jest.fn((...args) =>
-  jest.requireActual('@librechat/api').projectSteelQuotationMessage(...args));
+const publication = {
+  version: 1,
+  runId: 'quote-run',
+  outputId: 'system_order:quote-run',
+  sourceMessageId: 'quote-response',
+  receiptSha256: 'a'.repeat(64),
+  admissionSequence: 1,
+  tableContentIndex: 1,
+  summaryContentIndex: 2,
+  footerContentIndex: 3,
+};
 
-jest.mock('@librechat/api', () => ({
-  ...jest.requireActual('@librechat/api'),
-  projectSteelQuotationMessage: (...args) => mockProjectSteelQuotationMessage(...args),
-}));
-
-describe('quotation text streaming', () => {
+describe('quotation summary streaming', () => {
   afterEach(() => jest.restoreAllMocks());
 
-  it.each([null, 'quotation-stream'])('routes incremental text through the real handlers (streamId=%s)', async (streamId) => {
+  it.each([null, 'quotation-stream'])('streams main prose in its own slot (streamId=%s)', async (streamId) => {
     const { contentParts, aggregateContent, stepMap } = createContentAggregator();
+    contentParts.push({ type: 'text', text: 'primary' });
     const res = { write: jest.fn(), flush: jest.fn() };
     const emitChunk = jest.spyOn(GenerationJobManager, 'emitChunk').mockResolvedValue(undefined);
     const client = {
       contentParts,
+      stepMap,
       responseMessageId: 'quote-response',
       conversationId: 'conversation',
       options: {
+        req: { user: { id: 'user' } },
         agent: { id: 'agent' },
         eventHandlers: getDefaultHandlers({
           res, streamId, contentParts, aggregateContent, stepMap, collectedUsage: [],
         }),
       },
+      buildResponseMetadata: () => ({}),
     };
     const wiring = AgentClient.prototype.buildQuotationTextWiring.call(client, {
       configurable: { hide_sequential_outputs: true },
     });
-    const deltas = [
-      '## system_order\norder table\n\n## customer_quote\ncustomer table',
-      '\n\n## manual_reviews\n\n',
-      '| partial review',
-      ' row |\n\n## notes\nreview note',
-      '\n\n## quote_summary\ncomplete',
-    ];
+    wiring.onCommittedMessage({
+      messageId: 'quote-response', conversationId: 'conversation', user: 'user',
+      text: '## system_order\nbackend table', metadata: { steelQuotation: publication },
+    });
+    const deltas = ['## manual_reviews\n\n', '| partial review', ' row |\n\n## notes\nreview note'];
     for (let index = 0; index < deltas.length; index += 1) {
       await wiring.onText(deltas[index]);
-      expect(contentParts[0].text).toBe(deltas.slice(0, index + 1).join(''));
+      expect(contentParts[2].text).toBe(deltas.slice(0, index + 1).join(''));
     }
     const events = streamId
       ? emitChunk.mock.calls.map(([, event]) => event)
@@ -53,121 +59,35 @@ describe('quotation text streaming', () => {
       'on_run_step', ...deltas.map(() => 'on_message_delta'),
     ]);
     expect(events[0].data).toMatchObject({
-      id: 'quotation:quote-response', runId: 'quote-response', index: 0,
+      id: 'quotation:quote-response', runId: 'quote-response', index: 2,
       stepDetails: { type: 'message_creation' },
     });
-    expect(events[1].data.id).toBe(events[0].data.id);
-    expect(events[2].data.id).toBe(events[0].data.id);
-    await wiring.onFinalText(deltas.join(''));
-    expect(contentParts[0].text).toBe(deltas.join(''));
-    expect(contentParts[0].text.match(/## system_order/g)).toHaveLength(1);
+    expect(contentParts[1].text).toBe('');
+    expect(JSON.stringify(events)).not.toContain('system_order');
+    expect(contentParts[3].text).toBe('');
   });
 
-  it('supplies the external workflow with a host snapshot callback that preserves non-quotation content', async () => {
+  it('builds the initial publication from the same response and preserves unrelated content', () => {
     const { contentParts } = createContentAggregator();
-    const metadata = { traceId: 'trace-1', usage: { outputTokens: 8 } };
-    const client = {
-      contentParts,
-      responseMessageId: 'source-response',
-      conversationId: 'conversation',
-      parentMessageId: 'parent-message',
-      options: {
-        req: { user: { id: 'user-1' } },
-        agent: { id: 'agent-1', name: 'Steel Agent' },
-      },
-      buildResponseMetadata: jest.fn(() => metadata),
-    };
     const primary = { type: 'text', text: 'primary answer' };
     const tool = { type: 'tool_call', tool_call: { id: 'lookup', name: 'lookup' } };
-    const steer = { type: 'steer', steer: 'keep this steer' };
-    const reasoning = { type: 'think', think: 'keep this reasoning' };
-    contentParts.push(primary, tool, steer, reasoning);
-
-    const wiring = AgentClient.prototype.buildQuotationTextWiring.call(client, {
-      configurable: { thread_id: 'conversation' },
-    });
-    const externalWorkflow = jest.fn(async ({ onText, buildPublicationMessage }) => {
-      await onText('old quotation');
-      return buildPublicationMessage({
-        targetMessageId: 'canonical-response',
-        markdown: 'final quotation',
-      });
-    });
-
-    const published = await externalWorkflow(wiring);
-
-    expect(externalWorkflow).toHaveBeenCalledWith(wiring);
-    expect(mockProjectSteelQuotationMessage).toHaveBeenCalledWith({
-      message: {
-        messageId: 'canonical-response',
-        sourceMessageId: 'source-response',
-        conversationId: 'conversation',
-        user: 'user-1',
-        text: 'final quotation',
-        parentMessageId: 'parent-message',
-        isCreatedByUser: false,
-        unfinished: false,
-        sender: 'Steel Agent',
-        endpoint: 'agents',
-        model: 'agent-1',
-        finish_reason: 'stop',
-        metadata,
-        content: [primary, tool, steer, reasoning, { type: 'text', text: 'old quotation' }],
-      },
-      markdown: 'final quotation',
-      quotationContentIndex: 4,
-    });
-    expect(published.content).toEqual([
-      primary,
-      tool,
-      steer,
-      reasoning,
-      { type: 'text', text: 'final quotation' },
-    ]);
-    expect(published.text).toBe('primary answer final quotation');
-    expect(published.messageId).toBe('canonical-response');
-  });
-
-  function setup(withHandlers = true) {
-    const { contentParts, aggregateContent } = createContentAggregator();
-    const signal = { type: 'text', text: '## quote_signal\n\nstart' };
-    const tool = { type: 'tool_call', tool_call: { id: 'lookup', name: 'search_price_candidates' } };
-    contentParts.push(signal, tool);
-    const handle = jest.fn(async (event, data) => aggregateContent({ event, data }));
+    contentParts.push(primary, tool);
     const client = {
       contentParts,
-      responseMessageId: 'quote-response',
-      conversationId: 'conversation',
-      options: {
-        agent: { id: 'agent' },
-        eventHandlers: withHandlers ? {
-          on_run_step: { handle }, on_message_delta: { handle },
-        } : undefined,
-      },
+      responseMessageId: 'source-response', conversationId: 'conversation', parentMessageId: 'parent',
+      options: { req: { user: { id: 'user' } }, agent: { id: 'agent', name: 'Steel Agent' } },
+      buildResponseMetadata: () => ({ traceId: 'trace' }),
     };
-    return { contentParts, handle, signal, tool,
-      ...AgentClient.prototype.buildQuotationTextWiring.call(client, { configurable: {} }) };
-  }
-
-  it.each([true, false])('replaces the preview once and preserves tools and later text (handlers=%s)', async (withHandlers) => {
-    const wiring = setup(withHandlers);
-    await wiring.onText('## system_order\n');
-    await wiring.onText('preview\n');
-    expect(wiring.contentParts[2].text).toBe('## system_order\npreview\n');
-    const final = '## system_order\nnormalized\n\n## customer_quote\ncustomer\n\n## quote_summary\ncomplete';
-    await wiring.onFinalText(final);
-    expect(wiring.contentParts).toHaveLength(3);
-    expect(wiring.contentParts[2].text).toBe(final);
-    expect(wiring.contentParts.slice(0, 2)).toEqual([wiring.signal, wiring.tool]);
-    await wiring.onText('\n\nPending reply');
-    expect(wiring.contentParts[2].text).toBe(`${final}\n\nPending reply`);
-    expect(wiring.contentParts[2].text.match(/## system_order/g)).toHaveLength(1);
-  });
-
-  it('publishes a restored completed main result when no new stream is needed', async () => {
-    const wiring = setup();
-    await wiring.onFinalText('## system_order\nrestored');
-    expect(wiring.contentParts[2].text).toBe('## system_order\nrestored');
-    expect(wiring.handle.mock.calls.map(([event]) => event)).toEqual(['on_run_step', 'on_message_delta']);
+    const wiring = AgentClient.prototype.buildQuotationTextWiring.call(client, { configurable: {} });
+    const snapshot = wiring.buildPublicationMessage({
+      targetMessageId: 'canonical-response', markdown: '## system_order\nbackend table',
+    });
+    expect(snapshot).toMatchObject({
+      messageId: 'canonical-response', sourceMessageId: 'source-response',
+      conversationId: 'conversation', user: 'user', parentMessageId: 'parent',
+      metadata: { traceId: 'trace' },
+      content: [primary, tool, { type: 'text', text: '## system_order\nbackend table' }],
+    });
+    expect(contentParts).toEqual([primary, tool]);
   });
 });

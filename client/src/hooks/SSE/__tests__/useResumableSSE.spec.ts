@@ -222,6 +222,7 @@ const mockFinalHandler = jest.fn();
 const mockCreatedHandler = jest.fn();
 const mockStepHandler = jest.fn();
 const mockTitleHandler = jest.fn();
+const mockMessageUpdateHandler = jest.fn();
 const mockSetIsSubmitting = jest.fn();
 const mockClearStepMaps = jest.fn();
 
@@ -244,6 +245,7 @@ jest.mock('~/hooks/SSE/useEventHandlers', () => {
       clearStepMaps: mockClearStepMaps,
       flushPendingDeltas: jest.fn(),
       messageHandler: jest.fn(),
+      messageUpdateHandler: mockMessageUpdateHandler,
       setIsSubmitting: mockSetIsSubmitting,
       setShowStopButton: jest.fn(),
     })),
@@ -367,6 +369,7 @@ describe('useResumableSSE', () => {
     mockCreatedHandler.mockClear();
     mockStepHandler.mockClear();
     mockTitleHandler.mockClear();
+    mockMessageUpdateHandler.mockClear();
     mockClearStepMaps.mockClear();
     mockSetIsSubmitting.mockClear();
     mockSetQueryData.mockClear();
@@ -1375,6 +1378,49 @@ describe('useResumableSSE', () => {
     });
 
     expect(mockTitleHandler).toHaveBeenCalledWith(titleEvent);
+    expect(mockStepHandler).not.toHaveBeenCalled();
+    unmount();
+  });
+
+  it('routes committed quotation message updates independently from step events', async () => {
+    const submission = buildSubmission();
+    const chatHelpers = buildChatHelpers();
+    const quotationUpdate = {
+      message: {
+        messageId: 'resp-1',
+        conversationId: CONV_ID,
+        isCreatedByUser: false,
+        text: 'committed order',
+      },
+      publication: {
+        version: 1,
+        runId: 'run-1',
+        outputId: 'system_order:run-1',
+        sourceMessageId: 'resp-1',
+        receiptSha256: 'a'.repeat(64),
+        admissionSequence: 1,
+        tableContentIndex: 0,
+        summaryContentIndex: 1,
+        footerContentIndex: 2,
+      },
+      update: 'order',
+    };
+
+    const { unmount } = renderHook(() => useResumableSSE(submission, chatHelpers));
+    await flushMicrotasks();
+
+    await act(async () => {
+      getLastSSE()._emit('message', {
+        data: JSON.stringify({ event: 'steel_message_update', data: quotationUpdate }),
+      });
+    });
+
+    expect(mockMessageUpdateHandler).toHaveBeenCalledWith(
+      quotationUpdate,
+      expect.objectContaining({
+        conversation: expect.objectContaining({ conversationId: CONV_ID }),
+      }),
+    );
     expect(mockStepHandler).not.toHaveBeenCalled();
     unmount();
   });

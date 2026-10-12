@@ -7,13 +7,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import { createModels, createMethods } from '@librechat/data-schemas';
 import { steelReviewRecoverySchema } from 'librechat-data-provider';
 import {
+  buildQuotationChunks,
   createSteelOcrStateService,
   createSteelQuotationStateService,
   createSteelMarkdownCompletionServices,
   createSteelQuotationPublicationPublisher,
-  publishCompletedQuotation,
-  registerSteelMarkdownPublication,
-  prepareQuotationTurn,
+  quotationChildSystemOrderColumns,
   runQuotationPreflight,
   renderQuotationCustomerMarkdown,
 } from '@librechat/api';
@@ -25,19 +24,19 @@ import type { Locator, Page } from '@playwright/test';
 import { deleteConversations, deleteMessagesByConversation, seedConversations, seedMessages, withMongo } from './db';
 import { getE2EUser } from '../../setup/user';
 import { getAccessToken } from './helpers';
-const title = 'system_order｜覆核報價';
+const title = 'system_order';
 const order = [
   `## ${title}`,
   '',
-  '| 型號 | 品名規格 | 材質編號 | 單位 | 數量 | 單重 | 總數 | 單價 | 計價基準 | 公式編號 | 厚度 | 寬度 | 長度 | 肚 | 類別 | 備註 |',
+  '| 型號 | 品名規格 | 材質編號 | 單價 | 數量 | 總數 | 厚度 | 寬度 | 長度 | 肚 | 單位 | 類別 | 單重 | 計價基準 | 公式編號 | 備註 |',
   '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |',
-  '| T1 | REVIEW-MATERIAL-A | M1 | kg | 2 | 1 | 2 | 10 | 1 |  |  |  |  |  | 材料 | MATERIAL-A |',
-  '| T2 | REVIEW-MATERIAL-B | M1 | pc | 1 |  | 1 |  | 1 |  |  |  |  |  | 材料 | MATERIAL-B |',
+  '| T1 | REVIEW-MATERIAL-A | M1 | 10 | 2 | 2 |  |  |  |  | kg | 材料 | 1 | 1 |  | MATERIAL-A |',
+  '| T2 | REVIEW-MATERIAL-B | M1 |  | 1 | 1 |  |  |  |  | pc | 材料 |  | 1 |  | MATERIAL-B |',
 ].join('\n');
 const groupedOrder = `${order}
-| P1 | REVIEW-PROCESS-A | M1 | pc | 1 |  | 3 | 5 | 1 |  |  |  |  |  | 加工/孔 | MATERIAL-A |
-| P2 | REVIEW-PROCESS-B | M1 | pc | 1 |  | 4 | 2 | 1 |  |  |  |  |  | 加工/孔 | MATERIAL-B |`;
-const ocr = '## ocr_result\n\n| 來源 | 零件編號 | 數量 |\n| --- | --- | --- |\n|  | SOURCE-A | 2 |';
+| P1 | REVIEW-PROCESS-A | M1 | 5 | 1 | 3 |  |  |  |  | pc | 加工/孔 |  | 1 |  | MATERIAL-A |
+| P2 | REVIEW-PROCESS-B | M1 | 2 | 1 | 4 |  |  |  |  | pc | 加工/孔 |  | 1 |  | MATERIAL-B |`;
+const ocr = '## ocr_result\n\n| 來源 | 零件編號 | 類別 | 數量 |\n| --- | --- | --- | --- |\n|  | MATERIAL-A | 材料 | 2 |\n|  | MATERIAL-B | 材料 | 1 |';
 const oldQuote = '## customer_quote｜歷史保留\n\n| 項目 | 小計 |\n| --- | --- |\n| OLD-KEEP | 456 |';
 
 interface OrderFixture {
@@ -49,7 +48,6 @@ interface OrderFixture {
 }
 
 async function seedOrder(withHistoricalQuote = true, withOcrReview = false,
-  beforePublication?: (fixture: OrderFixture) => Promise<void>,
   options?: { orderMarkdown?: string; withSources?: boolean }) {
   const conversationId = randomUUID();
   const messageId = randomUUID();
@@ -63,7 +61,7 @@ async function seedOrder(withHistoricalQuote = true, withOcrReview = false,
     { fileId: `group-beta-${conversationId}`, filename: 'beta.pdf' },
   ] : [];
   const ocrMarkdown = sourceFiles.length > 0
-    ? '## ocr_result\n\n| 來源 | 零件編號 | 類別 | 數量 | 頁碼 |\n| --- | --- | --- | --- | --- |\n| F1 | SOURCE-A | 材料 | 2 | 1 |\n| F2 | SOURCE-B | 材料 | 1 | 2 |'
+    ? '## ocr_result\n\n| 來源 | 零件編號 | 類別 | 數量 | 頁碼 |\n| --- | --- | --- | --- | --- |\n| F1 | MATERIAL-A | 材料 | 2 | 1 |\n| F2 | MATERIAL-B | 材料 | 1 | 2 |'
     : ocr;
   const messageText = `SYSTEM-PREFIX\n\n${orderMarkdown}${withHistoricalQuote ? `\n\n${oldQuote}` : ''}\n\nSYSTEM-SUFFIX`;
   await seedConversations(email, [{ conversationId, title: 'System order real Save proof', updatedAt: new Date() }]);
@@ -82,9 +80,13 @@ async function seedOrder(withHistoricalQuote = true, withOcrReview = false,
   const runtime = JSON.parse(await readFile(runtimePath, 'utf8')) as { MONGO_URI: string };
   const db = new mongoose.Mongoose();
   await db.connect(runtime.MONGO_URI);
+  console.log('[steel-system-review] fixture db connected', db.connection.readyState, db.connection.host, db.connection.port);
   try {
     const scope = { userId, conversationId };
+    console.log('[steel-system-review] before quotation service');
     const service = createSteelQuotationStateService(db);
+    console.log('[steel-system-review] after quotation service');
+    console.log('[steel-system-review] state model connection', db.models.SteelQuotationState?.db.readyState, db.models.SteelQuotationState?.db.host, db.models.SteelQuotationState?.db.port);
     const ocrService = createSteelOcrStateService(db);
     for (const sourceFile of sourceFiles) {
       await withMongo(async (database) => database.collection('files').insertOne({
@@ -104,6 +106,7 @@ async function seedOrder(withHistoricalQuote = true, withOcrReview = false,
     }
     const current = await service.setOrder({ scope, fullMarkdown: ocrMarkdown,
       ...(withOcrReview ? { revision: ocrGenerationId, messageId: ocrMessageId } : {}) });
+    console.log('[steel-system-review] after setOrder');
     const savedCustomer = await service.saveCustomer({ scope, customerMarkdown, customerIdentity: 'explicit-default:B',
       triggeringMessageId: 'quote-user', responseId: withOcrReview ? messageId : randomUUID(),
       selectionProvenance: { method: 'default_tier', selectionMessageId: 'quote-user' },
@@ -118,31 +121,20 @@ async function seedOrder(withHistoricalQuote = true, withOcrReview = false,
       } } : {}) });
     const run = await service.acceptSignal({ scope, index: ticket.index, token: ticket.token,
       orderHash: ticket.orderHash, customerMarkdown, customerIdentity: ticket.customerIdentity,
-      prompts: { child: 'bounded child', main: 'bounded main' }, chunks: [{ index: 1, sourceRowCount: sourceFiles.length || 1 }],
+      prompts: { child: 'bounded child', main: 'bounded main' },
+      chunks: buildQuotationChunks(ocrMarkdown).map((chunk) => ({
+        index: chunk.chunkIndex, sourceRowCount: chunk.sourceRows.length,
+      })),
       ...(sourceFiles.length > 0 ? { sourceSnapshot: {
         orderHash: current.currentOrder!.sha256, generationId: ocrGenerationId,
         resultMessageId: ocrMessageId, resultHash: current.currentOrder!.sha256,
         mappings: await ocrService.readSourceMappings(conversationId),
       } } : {}), targetMessageId: messageId });
-    const lease = await service.acquireLease({ scope, runId: run.runId, leaseToken: randomUUID() });
-    if (!lease) throw new Error('Missing fixture lease');
-    await service.checkpoint({ scope, runId: run.runId, leaseToken: lease.leaseToken, operationId: 'final', kind: 'final', payload: orderMarkdown });
-    const ref = (await service.readState(scope))?.activeRun?.checkpointRefs.find((entry) => entry.operationId === 'final');
-    if (!ref) throw new Error('Missing normal final checkpoint');
-    const completed = await service.completeRun({ scope, runId: run.runId, leaseToken: lease.leaseToken,
-      finalRef: { ...scope, runId: run.runId, ...ref, kind: 'final' } });
-    if (!completed) throw new Error('Missing completed quotation run');
     const fixture = { conversationId, messageId, otherMessageId, ocrMessageId, runId: run.runId };
     createModels(db);
     const methods = createMethods(db);
-    if (beforePublication) {
-      const saved = await methods.saveMessage({ userId }, {
-        messageId, conversationId, parentMessageId: ocrMessageId, unfinished: true,
-        text: messageText, content: [{ type: 'text', text: messageText }],
-        isCreatedByUser: false, sender: 'Assistant',
-      }, { context: 'steel-review-e2e-stream-snapshot' });
-      if (!saved) throw new Error('Missing normal streamed quotation message');
-    }
+    const admission = await methods.admitSteelMarkdown({ scope, responseId: messageId, generationId: messageId });
+    if (!admission) throw new Error('Missing normal quotation publication admission');
     const publish = createSteelQuotationPublicationPublisher({
       scope,
       buildMessage: ({ targetMessageId, markdown }) => {
@@ -156,11 +148,40 @@ async function seedOrder(withHistoricalQuote = true, withOcrReview = false,
       },
       savePublication: methods.saveSteelQuotationMessage,
     });
-    await publishCompletedQuotation({ scope, run: completed, markdown: orderMarkdown, service,
-      publishFinal: async (publication) => {
-        await beforePublication?.(fixture);
-        return publish(publication);
-      } });
+    const candidate = {
+      id: 1, erpItemCode: 'M1', productName: 'REVIEW-MATERIAL', category: '材料', material: 'M1',
+      unit: 'kg', quoteEligible: true, density: 7.85, exactPhysical: { density: '7.85' },
+      tierPrices: { A: 11, B: 10, C: 9, D: 8, E: 7, F: 6 },
+    };
+    const result = await runQuotationPreflight({
+      scope, modelOptions: { model: 'e2e-steel-system-review' }, signal: new AbortController().signal,
+      refreshPublicationAdmission: async () => admission,
+      executeLookup: async () => ({ ok: true, toolName: 'search_price_candidates',
+        data: { queryResults: [{ queryId: 'review-material', status: 'ok', candidates: [candidate] }] },
+        durationMs: 1, redactionVersion: 1 }),
+      invokeModel: async (input) => {
+        if (input.role === 'main') return { markdown: 'E2E quotation review summary.', lookups: [], pythonEvidence: [] };
+        if (!input.lookup) throw new Error('Missing real runner lookup seam');
+        await input.lookup('review-material', { queries: [{ queryId: 'review-material', categories: ['材料'] }] });
+        const materialARow = orderMarkdown.split('\n').find((line) => line.includes('| REVIEW-MATERIAL-A |'));
+        const materialAValues = materialARow?.split('|').slice(1, -1).map((value) => value.trim());
+        const unassignedMaterial = materialAValues?.[11] ? materialAValues[11] : '';
+        const rows = [
+          ['T1', 'REVIEW-MATERIAL-A', 'M1', 'kg', '2', '1', '2', '10', '1', '', '', '', '', '', unassignedMaterial, 'MATERIAL-A', ''],
+          ['T2', 'REVIEW-MATERIAL-B', 'M1', 'pc', '1', '', '1', '', '1', '', '', '', '', '', '材料', 'MATERIAL-B', ''],
+        ];
+        if (orderMarkdown.includes('REVIEW-PROCESS-A')) {
+          rows.push(
+            ['P1', 'REVIEW-PROCESS-A', 'M1', 'pc', '1', '', '3', '5', '1', '', '', '', '', '', '加工/孔', 'MATERIAL-A', ''],
+            ['P2', 'REVIEW-PROCESS-B', 'M1', 'pc', '1', '', '4', '2', '1', '', '', '', '', '', '加工/孔', 'MATERIAL-B', ''],
+          );
+        }
+        return { markdown: `## system_order_chunk\n\n| ${quotationChildSystemOrderColumns.join(' | ')} |\n| ${quotationChildSystemOrderColumns.map(() => '---').join(' | ')} |\n${rows.map((row) => `| ${row.join(' | ')} |`).join('\n')}`, lookups: [], pythonEvidence: [] };
+      },
+      publishFinal: publish,
+      appendSummary: methods.appendSteelQuotationSummary,
+    });
+    if (result.status !== 'completed') throw new Error(`Expected completed quotation, got ${result.status}`);
     return fixture;
   } finally {
     await db.disconnect();
@@ -186,21 +207,11 @@ async function replayCompleted(fixture: { conversationId: string; messageId: str
     const methods = createMethods(db);
     let projected = '## quote_signal\n\nstart';
     let writes = 0;
-    let responseMessagePersisted = false;
     let persistedMessage: object | undefined;
     let loadedMessage: object | undefined;
     const persistMarkdown = async () => {
       writes += 1;
-      const text = `SYSTEM-PREFIX\n\n${projected}\n\nSYSTEM-SUFFIX`;
-      const saved = await methods.saveMessage({ userId }, { messageId: fixture.messageId,
-        conversationId: fixture.conversationId, parentMessageId: fixture.ocrMessageId,
-        text, content: [{ type: 'text', text }], isCreatedByUser: false, sender: 'Assistant',
-      }, { context: 'steel-review-e2e-replay' });
-      if (saved) {
-        responseMessagePersisted = true;
-        persistedMessage = saved;
-      }
-      return saved;
+      return undefined;
     };
     const result = await createSteelMarkdownCompletionServices({
       quotation, ocr: createSteelOcrStateService(db),
@@ -210,22 +221,6 @@ async function replayCompleted(fixture: { conversationId: string; messageId: str
       responseId: fixture.messageId, generationId: randomUUID(), markdown: projected, completed: true,
       applyMarkdown: (markdown) => { projected = markdown; },
       persistMarkdown,
-      publishQuotation: async (publication) => {
-        writes += 1;
-        const text = `SYSTEM-PREFIX\n\n${publication.markdown}\n\nSYSTEM-SUFFIX`;
-        const publish = createSteelQuotationPublicationPublisher({
-          savePublication: methods.saveSteelQuotationMessage,
-          buildMessage: () => ({ user: userId, messageId: fixture.messageId, conversationId: fixture.conversationId,
-            parentMessageId: fixture.ocrMessageId, text, content: [{ type: 'text', text }],
-            isCreatedByUser: false, sender: 'Assistant' }),
-        });
-        const saved = await publish(publication);
-        if (saved.ok) {
-          responseMessagePersisted = true;
-          persistedMessage = saved.message;
-        }
-        return saved;
-      },
       publishedResponse: {
         load: async ({ userId: owner, responseId }) => {
           const record = await methods.getMessage({ user: owner, messageId: responseId });
@@ -233,12 +228,10 @@ async function replayCompleted(fixture: { conversationId: string; messageId: str
           return record;
         },
         accept: (record) => {
-          responseMessagePersisted = true;
           persistedMessage = record;
         },
       },
     });
-    if (!responseMessagePersisted) await persistMarkdown();
     if (!persistedMessage) throw new Error('Missing durable replay response');
     return { result, writes, projected, acceptedSameRecord: persistedMessage === loadedMessage,
       persistedMessage: JSON.parse(JSON.stringify(persistedMessage)) };
@@ -262,181 +255,28 @@ async function replayPublishedRun(fixture: OrderFixture) {
     let modelCalls = 0;
     let lookupCalls = 0;
     let publishCalls = 0;
+    let replayTarget: string | undefined;
     const result = await runQuotationPreflight({
       scope: { userId, conversationId: fixture.conversationId },
       modelOptions: { model: 'unused-replay-model' }, signal: new AbortController().signal,
       invokeModel: async () => { modelCalls += 1; throw new Error('Replay must not invoke a model'); },
       executeLookup: async () => { lookupCalls += 1; throw new Error('Replay must not run lookup'); },
       publishFinal: async () => { publishCalls += 1; throw new Error('Replay must not publish again'); },
-      projectFinal: async ({ markdown }) => { emissions.push(markdown); },
+      onCompletedReplay: async (targetMessageId) => { replayTarget = targetMessageId; },
     });
+    if (replayTarget) emissions.push(replayTarget);
     return { result, emissions, modelCalls, lookupCalls, publishCalls };
   } finally {
     await mongoose.disconnect();
   }
 }
-
-
-async function reviseCompleted(fixture: OrderFixture,
-  beforeTerminal?: (messageId: string) => Promise<void>,
-  afterRevisionCommit?: (messageId: string) => Promise<void>) {
-  const email = getE2EUser().email;
-  const userId = await withMongo(async (database) => {
-    const owner = await database.collection('users').findOne({ email });
-    if (!owner) throw new Error('Missing revision owner');
-    return String(owner._id);
-  });
-  const runtimePath = process.env.E2E_RUNTIME_ENV_PATH ?? `${process.cwd()}/e2e/specs/.test-results/runtime-env.json`;
-  const runtime = JSON.parse(await readFile(runtimePath, 'utf8')) as { MONGO_URI: string };
-  await mongoose.connect(runtime.MONGO_URI);
-  try {
-    const scope = { userId, conversationId: fixture.conversationId };
-    const quotation = createSteelQuotationStateService(mongoose);
-    const state = await quotation.readState(scope);
-    const snapshot = state?.currentSystemOrder;
-    if (!snapshot) throw new Error('Missing completed source order');
-    const lines = snapshot.markdown.split('\n');
-    const row = lines[4].split('|').slice(1, -1).map((value) => value.trim());
-    row[6] = '3';
-    const markdown = [
-      '## system_order_updates', '',
-      `| base_hash | row_index | ${lines[2].slice(1, -1).trim()} |`,
-      `| --- | --- | ${lines[3].slice(1, -1).trim()} |`,
-      `| ${snapshot.sha256} | 1 | ${row.join(' | ')} |`,
-    ].join('\n');
-    const messageId = randomUUID();
-    const saveCurrentSystemOrder = quotation.saveCurrentSystemOrder;
-    quotation.saveCurrentSystemOrder = async (input) => {
-      const saved = await saveCurrentSystemOrder(input);
-      if (saved?.messageId === messageId) await afterRevisionCommit?.(messageId);
-      return saved;
-    };
-    const prepared = await prepareQuotationTurn({ scope, messageId: 'revision-user', responseId: messageId,
-      text: '將第一列總數修正為3' });
-    createModels(mongoose);
-    const methods = createMethods(mongoose);
-    let current = markdown;
-    let terminalPaused = false;
-    const pause = async () => {
-      if (terminalPaused) return;
-      terminalPaused = true;
-      await beforeTerminal?.(messageId);
-    };
-    const message = () => ({
-      user: userId, messageId, conversationId: fixture.conversationId, parentMessageId: fixture.messageId,
-      text: `REVISION-PREFIX\n\n ${current} \n\nREVISION-SUFFIX`,
-      content: [
-        { type: 'text' as const, text: 'REVISION-PREFIX\n\n' },
-        { type: 'tool_call' as const, tool_call: { id: 'revision-lookup', name: 'search_price_candidates',
-          args: '{"queries":[]}', output: '{"ok":true}' } },
-        { type: 'text' as const, text: current },
-        { type: 'text' as const, text: '\n\nREVISION-SUFFIX' },
-      ],
-      metadata: { reviewBrowser: { retained: true } }, isCreatedByUser: false, sender: 'Assistant',
-    });
-    const finalizer = createSteelMarkdownCompletionServices({ quotation, ocr: createSteelOcrStateService(mongoose) });
-    const input: Parameters<typeof finalizer.finalize>[0] = {
-      req: { user: { id: userId }, steelNativeContext: { requestId: messageId, quotation: prepared } },
-      responseId: messageId, generationId: messageId, markdown, completed: true,
-      applyMarkdown: (value) => { current = value; },
-      persistMarkdown: async (options) => {
-        if (options?.completed !== false) await pause();
-        return methods.saveMessage({ userId }, { ...message(), unfinished: options?.completed === false },
-          { context: 'steel-review-e2e-normal-revision' });
-      },
-      publishQuotation: async (publication) => {
-        await pause();
-        return methods.saveSteelQuotationMessage({ ...publication, message: { ...message(), unfinished: false } });
-      },
-    };
-    try {
-      await finalizer.finalize(input);
-    } catch (error) {
-      if (error instanceof Error && 'code' in error && error.code === 'superseded_response') {
-        await expect(finalizer.finalize(input)).rejects.toMatchObject({ code: 'superseded_response' });
-      }
-      throw error;
-    }
-    return { ...fixture, messageId };
-  } finally {
-    await mongoose.disconnect();
-  }
-}
-
-
-async function adoptCompleted(fixture: OrderFixture, beforeSaveBarrier: () => Promise<void>,
-  mode: 'adopted' | 'prepared' = 'adopted') {
-  const runtimePath = process.env.E2E_RUNTIME_ENV_PATH ?? `${process.cwd()}/e2e/specs/.test-results/runtime-env.json`;
-  const runtime = JSON.parse(await readFile(runtimePath, 'utf8')) as { MONGO_URI: string };
-  await mongoose.connect(runtime.MONGO_URI);
-  try {
-    createModels(mongoose);
-    const methods = createMethods(mongoose);
-    const owner = await mongoose.connection.collection('users').findOne({ email: getE2EUser().email });
-    if (!owner) throw new Error('Missing adoption owner');
-    const userId = String(owner._id);
-    const scope = { userId, conversationId: fixture.conversationId };
-    const quotation = createSteelQuotationStateService(mongoose);
-    const state = await quotation.readState(scope);
-    if (!state?.currentSystemOrder) throw new Error('Missing adoption system order');
-    const stored = await methods.getMessage({ user: userId, messageId: fixture.messageId });
-    if (!stored) throw new Error('Missing actual adoption response');
-    const prepared = await prepareQuotationTurn({ scope, messageId: 'adoption-user', responseId: fixture.messageId,
-      text: '核對報價' });
-    const req = { user: { id: userId }, steelNativeContext: { requestId: fixture.messageId, quotation: prepared } };
-    const finalizer = createSteelMarkdownCompletionServices({ quotation, ocr: createSteelOcrStateService(mongoose) });
-    let projected = state.currentSystemOrder.markdown;
-    const snapshot = () => {
-      const text = `SYSTEM-PREFIX\n\n${projected}\n\nSYSTEM-SUFFIX`;
-      return { ...stored, text, content: [{ type: 'text' as const, text }], unfinished: false };
-    };
-    const input: Parameters<typeof finalizer.finalize>[0] = {
-      req, responseId: fixture.messageId, generationId: fixture.messageId,
-      markdown: projected, completed: true,
-      applyMarkdown: (markdown) => { projected = markdown; },
-      persistMarkdown: () => methods.saveMessage({ userId }, snapshot(), { context: 'steel-review-adoption' }),
-      publishQuotation: (proof) => methods.saveSteelQuotationMessage({ ...proof, message: snapshot() }),
-    };
-    if (mode === 'prepared') {
-      let paused = false;
-      input.onPrepared = async () => {
-        if (paused) return;
-        paused = true;
-        await beforeSaveBarrier();
-      };
-      await expect(finalizer.finalize(input)).rejects.toMatchObject({ code: 'superseded_response' });
-      await expect(finalizer.finalize(input)).rejects.toMatchObject({ code: 'superseded_response' });
-      return;
-    }
-    const completed = await finalizer.finalize(input);
-    if (!completed.publication) throw new Error('Missing normal branded publication');
-    registerSteelMarkdownPublication(req, completed.publication, fixture.messageId, fixture.messageId);
-    const readState = quotation.readState;
-    let verifiedRead = false;
-    quotation.readState = async (scopeToRead) => {
-      const current = await readState(scopeToRead);
-      if (!verifiedRead) {
-        verifiedRead = true;
-        await beforeSaveBarrier();
-      }
-      return current;
-    };
-    await expect(finalizer.finalize({ ...input, markdown: completed.markdown }))
-      .rejects.toMatchObject({ code: 'superseded_response' });
-    await expect(finalizer.finalize({ ...input, markdown: completed.markdown }))
-      .rejects.toMatchObject({ code: 'superseded_response' });
-  } finally {
-    await mongoose.disconnect();
-  }
-}
-
 function reviewUrl(conversationId: string) {
   return `/api/steel/conversations/${conversationId}/review/system_order`;
 }
 
 async function readTable(page: Page, headers: { Authorization: string }, conversationId: string, messageId: string, fullTitle = title) {
   const response = await page.request.get(`${reviewUrl(conversationId)}?${new URLSearchParams({ messageId, title: fullTitle })}`, { headers });
-  expect(response.status()).toBe(200);
+  expect(response.status(), await response.text()).toBe(200);
   return (await response.json() as { table: SteelReviewTable }).table;
 }
 
@@ -484,7 +324,7 @@ function materialRow(dialog: Locator) {
 }
 
 async function seedGroup() {
-  return seedOrder(true, true, undefined, { orderMarkdown: groupedOrder, withSources: true });
+  return seedOrder(true, true, { orderMarkdown: groupedOrder, withSources: true });
 }
 
 function rowNamed(table: SteelReviewTable, name: string) {
@@ -509,7 +349,7 @@ async function fillNotes(dialog: Locator, rowId: string, value: string): Promise
 }
 
 async function newMaterialIdentity(dialog: Locator, initial: SteelReviewTable | ReadonlySet<string>) {
-  const existingIds = initial instanceof Set ? initial : new Set(initial.rows.map((row) => row.rowId));
+  const existingIds = 'rows' in initial ? new Set(initial.rows.map((row) => row.rowId)) : new Set(initial);
   const rowIds = await dialog.locator('tbody tr[data-row-id]').evaluateAll((rows) => rows
     .map((entry) => entry.getAttribute('data-row-id'))
     .filter((rowId): rowId is string => Boolean(rowId)));
@@ -644,7 +484,7 @@ test.describe('System order atomic manual review', () => {
     for (const entry of [rowNamed(saved, 'REVIEW-MATERIAL-A'), ...processing]) {
       expect(entry.source).toMatchObject({ fileId: `group-alpha-${fixture.conversationId}`, pageNumber: 1, filename: 'alpha.pdf' });
     }
-    expect(await readback(fixture)).not.toEqual(before);
+    expect(await readback(fixture.conversationId)).not.toEqual(before);
     await page.keyboard.press('Escape');
     await page.reload();
     expect((await readTable(page, headers, fixture.conversationId, fixture.messageId)).rows).toEqual(saved.rows);
@@ -716,8 +556,8 @@ test.describe('System order atomic manual review', () => {
 
   for (const mode of ['edit', 'delete', 'restore-edit-delete'] as const) {
     test(`classification composes with source and price edits before ${mode}`, async ({ page }) => {
-      const fixture = await seedOrder(true, true, undefined, {
-        orderMarkdown: groupedOrder.replace('| 材料 | MATERIAL-A |', '|  | MATERIAL-A |'), withSources: true,
+      const fixture = await seedOrder(true, true, {
+        orderMarkdown: groupedOrder.replace('| kg | 材料 | 1 | 1 |  | MATERIAL-A |', '| kg |  | 1 | 1 |  | MATERIAL-A |'), withSources: true,
       });
       conversations.push(fixture.conversationId);
       let initial = await readTable(page, headers, fixture.conversationId, fixture.messageId);
@@ -772,13 +612,13 @@ test.describe('System order atomic manual review', () => {
 
   for (const classify of [false, true]) {
     test(`an ordered material Add supports an existing ${classify ? 'unassigned classification' : 'notes grouping'} after a later material price edit`, async ({ page }) => {
-      const fixture = await seedOrder(true, true, undefined, {
-        orderMarkdown: classify ? groupedOrder.replace('| 加工/孔 | MATERIAL-A |', '|  | MATERIAL-A |') : groupedOrder,
+      const fixture = await seedOrder(true, true, {
+        orderMarkdown: classify ? groupedOrder.replace('| kg | 材料 | 1 | 1 |  | MATERIAL-A |', '| kg |  | 1 | 1 |  | MATERIAL-A |') : groupedOrder,
         withSources: true,
       });
       conversations.push(fixture.conversationId);
       const initial = await readTable(page, headers, fixture.conversationId, fixture.messageId);
-      const child = rowNamed(initial, 'REVIEW-PROCESS-A');
+      const child = rowNamed(initial, classify ? 'REVIEW-MATERIAL-A' : 'REVIEW-PROCESS-A');
       expect(child.system?.kind).toBe(classify ? 'unassigned' : 'processing');
       const before = await readback(fixture.conversationId);
       const dialog = await openEditor(page, fixture.conversationId);
@@ -790,7 +630,7 @@ test.describe('System order atomic manual review', () => {
       await fillNotes(dialog, materialId, materialNote);
       if (classify) {
         await dialog.getByRole('combobox', { name: `Classify ${child.rowId}`, exact: true }).click();
-        await page.getByRole('option', { name: 'Processing', exact: true }).click();
+        await page.getByRole('option', { name: 'Material', exact: true }).click();
       }
       await fillNotes(dialog, child.rowId, materialNote);
       await dialog.getByRole('textbox', { name: `單價 ${materialId}`, exact: true }).fill('7');
@@ -811,9 +651,15 @@ test.describe('System order atomic manual review', () => {
       const saved = await readTable(page, headers, fixture.conversationId, fixture.messageId);
       const material = saved.rows.find((row) => row.rowId === materialId);
       expect(material).toMatchObject({ system: { kind: 'material' }, values: { 單價: { effective: '7' } } });
-      expect(rowNamed(saved, 'REVIEW-PROCESS-A')).toMatchObject({
-        rowId: child.rowId, system: { kind: 'processing', parentRowId: materialId }, source: material?.source,
-      });
+      if (classify) {
+        expect(rowNamed(saved, 'REVIEW-MATERIAL-A')).toMatchObject({
+          rowId: child.rowId, system: { kind: 'material', parentRowId: null },
+        });
+      } else {
+        expect(rowNamed(saved, 'REVIEW-PROCESS-A')).toMatchObject({
+          rowId: child.rowId, system: { kind: 'processing', parentRowId: materialId }, source: material?.source,
+        });
+      }
       await expect(dialog.getByRole('button', { name: 'Save', exact: true })).toBeDisabled();
       const after = await readback(fixture.conversationId);
       expect(after.ocr).toEqual(before.ocr);
@@ -1023,8 +869,8 @@ test.describe('System order atomic manual review', () => {
   });
 
   test('an imported unassigned row is classified explicitly in a reversible draft and cannot be classified again after Save', async ({ page }) => {
-    const fixture = await seedOrder(true, true, undefined, {
-      orderMarkdown: groupedOrder.replace('| 材料 | MATERIAL-A |', '|  | MATERIAL-A |'), withSources: true,
+    const fixture = await seedOrder(true, true, {
+      orderMarkdown: groupedOrder.replace('| kg | 材料 | 1 | 1 |  | MATERIAL-A |', '| kg |  | 1 | 1 |  | MATERIAL-A |'), withSources: true,
     });
     conversations.push(fixture.conversationId);
     const table = await readTable(page, headers, fixture.conversationId, fixture.messageId);
@@ -1402,8 +1248,7 @@ test.describe('System order atomic manual review', () => {
     const replay = await replayPublishedRun(fixture);
     expect(replay.result.status).toBe('completed');
     expect(replay.result.markdown).toContain('| 2 | 12 |');
-    expect(replay.emissions).toEqual([replay.result.markdown]);
-    expect(replay.emissions[0]).not.toContain('customer_quote');
+    expect(replay.emissions).toEqual([fixture.messageId]);
     expect([replay.modelCalls, replay.lookupCalls, replay.publishCalls]).toEqual([0, 0, 0]);
     expect(await readback(fixture.conversationId)).toEqual(saved);
     await page.goto(`/c/${fixture.conversationId}`);
@@ -1412,269 +1257,6 @@ test.describe('System order atomic manual review', () => {
     await expect(page.getByText('SYSTEM-SUFFIX', { exact: true })).toBeVisible();
     expect(await readback(fixture.conversationId)).toEqual(saved);
   });
-
-  test('a manual Save before first publication rejects the stale writer and preserves the saved message', async ({ page }) => {
-    let signalReady!: (fixture: OrderFixture) => void;
-    let releasePublication!: () => void;
-    const ready = new Promise<OrderFixture>((resolve) => { signalReady = resolve; });
-    const paused = new Promise<void>((resolve) => { releasePublication = resolve; });
-    const publication = seedOrder(false, true, async (fixture) => {
-      signalReady(fixture);
-      await paused;
-    });
-    const outcome = publication.then(() => ({ ok: true }), (error) => ({ ok: false, error }));
-    const fixture = await ready;
-    conversations.push(fixture.conversationId);
-    let saved;
-    try {
-      const table = await readTable(page, headers, fixture.conversationId, fixture.messageId);
-      const prepared = await prepare(page, headers, requestFor(table, [{ header: '單價', value: '12' }]));
-      expect((await commit(page, headers, prepared)).status()).toBe(200);
-      saved = await readback(fixture.conversationId);
-    } finally {
-      releasePublication();
-    }
-    const result = await outcome;
-    const after = await readback(fixture.conversationId);
-    expect(after.messages.find((message) => message.messageId === fixture.messageId))
-      .toEqual(saved!.messages.find((message) => message.messageId === fixture.messageId));
-    expect(result).toEqual({ ok: false, error: expect.objectContaining({ code: 'superseded_response' }) });
-    expect(after).toEqual(saved);
-    await page.goto(`/c/${fixture.conversationId}`);
-    await expect(page.getByText('SYSTEM-SUFFIX', { exact: true })).toBeVisible();
-    await page.getByTestId('message-body').filter({ hasText: 'SYSTEM-SUFFIX' })
-      .getByRole('button', { name: 'Open Steel review', exact: true }).click();
-    const dialog = page.getByRole('dialog', { name: 'Steel source review' });
-    await expect(materialRow(dialog).getByRole('textbox', { name: /^單價 /u })).toHaveValue('12');
-    await page.keyboard.press('Escape');
-    await page.reload();
-    await expect(page.getByText('SYSTEM-SUFFIX', { exact: true })).toBeVisible();
-    expect(await readback(fixture.conversationId)).toEqual(saved);
-  });
-
-
-  test('a delayed unpublished completion preserves the different canonical revision owner', async ({ page }) => {
-    let releaseFirst!: () => void;
-    let firstReady!: (fixture: OrderFixture) => void;
-    const pausedFirst = new Promise<void>((resolve) => { releaseFirst = resolve; });
-    const readyFirst = new Promise<OrderFixture>((resolve) => { firstReady = resolve; });
-    const first = seedOrder(false, true, async (fixture) => { firstReady(fixture); await pausedFirst; });
-    const firstOutcome = first.then(() => ({ ok: true }), (error) => ({ ok: false, error }));
-    const fixture = await Promise.race([readyFirst, firstOutcome.then((result) => {
-      if (!result.ok) throw result.error;
-      throw new Error('Initial publication completed before reaching its barrier');
-    })]);
-    conversations.push(fixture.conversationId);
-    let releaseRevision!: () => void;
-    let revisionReady!: (messageId: string) => void;
-    const pausedRevision = new Promise<void>((resolve) => { releaseRevision = resolve; });
-    const readyRevision = new Promise<string>((resolve) => { revisionReady = resolve; });
-    const revision = reviseCompleted(fixture, async (messageId) => { revisionReady(messageId); await pausedRevision; });
-    const revisionOutcome = revision.then((result) => ({ ok: true, fixture: result }), (error) => ({ ok: false, error }));
-    let messageId: string;
-    try {
-      messageId = await Promise.race([readyRevision, revisionOutcome.then((result) => {
-        if (!result.ok) throw result.error;
-        throw new Error('Revision completed before reaching its terminal barrier');
-      })]);
-      const before = await readback(fixture.conversationId);
-      expect(before.artifacts.some((artifact) => artifact.operationId === 'published')).toBe(false);
-      const originalMessage = before.messages.find((message) => message.messageId === fixture.messageId);
-      const target = before.messages.find((message) => message.messageId === messageId);
-      expect(target?.text).toContain('REVISION-SUFFIX');
-      expect(target?.content).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'tool_call' })]));
-      const replay = await replayCompleted(fixture);
-      expect(replay.writes).toBe(1);
-      const after = await readback(fixture.conversationId);
-      const preserved = after.messages.find((message) => message.messageId === messageId);
-      expect(preserved?.text).toBe(target?.text);
-      expect(preserved?.content).toEqual(target?.content);
-      expect(preserved?.metadata).toEqual(target?.metadata);
-      expect(after.messages.find((message) => message.messageId === fixture.messageId)).toEqual(originalMessage);
-      expect(after.quotation?.currentSystemOrder).toEqual(before.quotation?.currentSystemOrder);
-      expect(after.artifacts.some((artifact) => artifact.operationId === 'published')).toBe(true);
-    } finally {
-      releaseRevision();
-      releaseFirst();
-      await Promise.all([revisionOutcome, firstOutcome]);
-    }
-    expect(await revisionOutcome).toMatchObject({ ok: true });
-    expect(await firstOutcome).toMatchObject({ ok: false, error: expect.objectContaining({ code: 'superseded_response' }) });
-    const saved = await readback(fixture.conversationId);
-    await page.goto(`/c/${fixture.conversationId}`);
-    await expect(page.getByText('REVISION-SUFFIX', { exact: true })).toBeVisible();
-    await page.getByTestId('message-body').filter({ hasText: 'REVISION-SUFFIX' })
-      .getByRole('button', { name: 'Open Steel review', exact: true }).click();
-    await expect(materialRow(page.getByRole('dialog', { name: 'Steel source review' }))
-      .getByRole('textbox', { name: /^總數 /u })).toHaveValue('3');
-    await page.keyboard.press('Escape');
-    await page.reload();
-    await expect(page.getByText('REVISION-SUFFIX', { exact: true })).toBeVisible();
-    expect(await readback(fixture.conversationId)).toEqual(saved);
-  });
-
-  test('a normal later revision keeps its current message, tool content and saved value through runner replay', async ({ page }) => {
-    const original = await seedOrder(false, true);
-    conversations.push(original.conversationId);
-    const before = await readback(original.conversationId);
-    const fixture = await reviseCompleted(original);
-    const revised = await readback(fixture.conversationId);
-    expect(revised.quotation?.activeRun?.targetMessageId).toBe(original.messageId);
-    expect(revised.quotation?.currentSystemOrder?.messageId).toBe(fixture.messageId);
-    expect(revised.messages.find((message) => message.messageId === original.messageId))
-      .toEqual(before.messages.find((message) => message.messageId === original.messageId));
-    const revisedTitle = revised.quotation!.currentSystemOrder!.markdown.split('\n')[0].replace(/^##\s+/u, '');
-    const table = await readTable(page, headers, fixture.conversationId, fixture.messageId, revisedTitle);
-    expect(table.rows[0].values['總數'].effective).toBe('3');
-    const prepared = await prepare(page, headers, requestFor(table, [{ header: '單價', value: '12' }]));
-    expect((await commit(page, headers, prepared)).status()).toBe(200);
-    const saved = await readback(fixture.conversationId);
-    const message = saved.messages.find((entry) => entry.messageId === fixture.messageId);
-    expect(message?.metadata).toMatchObject({ reviewBrowser: { retained: true } });
-    expect(message?.content).toEqual(expect.arrayContaining([expect.objectContaining({ type: 'tool_call',
-      tool_call: expect.objectContaining({ id: 'revision-lookup' }) })]));
-    expect(saved.quotation?.currentSystemOrder?.customerQuoteMarkdown).toContain('| REVIEW-MATERIAL-A | 3 | 36 |');
-    const replay = await replayPublishedRun(fixture);
-    expect(replay.result.status).toBe('completed');
-    expect(replay.emissions).toEqual([replay.result.markdown]);
-    expect(replay.result.markdown).toContain('| 3 | 12 |');
-    expect([replay.modelCalls, replay.lookupCalls, replay.publishCalls]).toEqual([0, 0, 0]);
-    expect(await readback(fixture.conversationId)).toEqual(saved);
-    await page.goto(`/c/${fixture.conversationId}`);
-    await expect(page.getByText('REVISION-SUFFIX', { exact: true })).toBeVisible();
-    await page.getByTestId('message-body').filter({ hasText: 'REVISION-SUFFIX' })
-      .getByRole('button', { name: 'Open Steel review', exact: true }).click();
-    await expect(materialRow(page.getByRole('dialog', { name: 'Steel source review' }))
-      .getByRole('textbox', { name: /^單價 /u })).toHaveValue('12');
-    await page.keyboard.press('Escape');
-    await page.reload();
-    await expect(page.getByText('REVISION-SUFFIX', { exact: true })).toBeVisible();
-    expect(await readback(fixture.conversationId)).toEqual(saved);
-  });
-
-  test('a human Save after a normal revision commit defeats the stale terminal writer', async ({ page }) => {
-    const original = await seedOrder(false, true);
-    conversations.push(original.conversationId);
-    let readyRevision!: (messageId: string) => void;
-    let releaseTerminal!: () => void;
-    const ready = new Promise<string>((resolve) => { readyRevision = resolve; });
-    const paused = new Promise<void>((resolve) => { releaseTerminal = resolve; });
-    const revision = reviseCompleted(original, async (messageId) => {
-      readyRevision(messageId);
-      await paused;
-    });
-    const outcome = revision.then(() => ({ ok: true }), (error) => ({ ok: false, error }));
-    const messageId = await Promise.race([ready, outcome.then((result) => {
-      if (!result.ok) throw result.error;
-      throw new Error('Revision completed before reaching the Save barrier');
-    })]);
-    let saved;
-    try {
-      const revised = await readback(original.conversationId);
-      const revisedTitle = revised.quotation!.currentSystemOrder!.markdown.split('\n')[0].replace(/^##\s+/u, '');
-      const table = await readTable(page, headers, original.conversationId, messageId, revisedTitle);
-      const prepared = await prepare(page, headers, requestFor(table, [{ header: '單價', value: '12' }]));
-      expect((await commit(page, headers, prepared)).status()).toBe(200);
-      saved = await readback(original.conversationId);
-    } finally {
-      releaseTerminal();
-    }
-    const result = await outcome;
-    const after = await readback(original.conversationId);
-    expect(after.messages.find((message) => message.messageId === messageId))
-      .toEqual(saved!.messages.find((message) => message.messageId === messageId));
-    expect(result).toEqual({ ok: false, error: expect.objectContaining({ code: 'superseded_response' }) });
-    expect(after).toEqual(saved);
-    await page.goto(`/c/${original.conversationId}`);
-    await expect(page.getByText('REVISION-SUFFIX', { exact: true })).toBeVisible();
-    await page.getByTestId('message-body').filter({ hasText: 'REVISION-SUFFIX' })
-      .getByRole('button', { name: 'Open Steel review', exact: true }).click();
-    await expect(materialRow(page.getByRole('dialog', { name: 'Steel source review' }))
-      .getByRole('textbox', { name: /^單價 /u })).toHaveValue('12');
-    await page.keyboard.press('Escape');
-    await page.reload();
-    await expect(page.getByText('REVISION-SUFFIX', { exact: true })).toBeVisible();
-    expect(await readback(original.conversationId)).toEqual(saved);
-  });
-
-  test('a human Save before the revision result returns is not blessed by a newer canonical read', async ({ page }) => {
-    const original = await seedOrder(false, true);
-    conversations.push(original.conversationId);
-    let readyRevision!: (messageId: string) => void;
-    let releaseTerminal!: () => void;
-    const ready = new Promise<string>((resolve) => { readyRevision = resolve; });
-    const paused = new Promise<void>((resolve) => { releaseTerminal = resolve; });
-    const revision = reviseCompleted(original, undefined, async (messageId) => {
-      readyRevision(messageId);
-      await paused;
-    });
-    const outcome = revision.then(() => ({ ok: true }), (error) => ({ ok: false, error }));
-    const messageId = await Promise.race([ready, outcome.then((result) => {
-      if (!result.ok) throw result.error;
-      throw new Error('Revision completed before reaching the Save barrier');
-    })]);
-    let saved;
-    try {
-      const revised = await readback(original.conversationId);
-      const revisedTitle = revised.quotation!.currentSystemOrder!.markdown.split('\n')[0].replace(/^##\s+/u, '');
-      const table = await readTable(page, headers, original.conversationId, messageId, revisedTitle);
-      const prepared = await prepare(page, headers, requestFor(table, [{ header: '單價', value: '12' }]));
-      expect((await commit(page, headers, prepared)).status()).toBe(200);
-      saved = await readback(original.conversationId);
-    } finally {
-      releaseTerminal();
-    }
-    const result = await outcome;
-    const after = await readback(original.conversationId);
-    expect(after.messages.find((message) => message.messageId === messageId))
-      .toEqual(saved!.messages.find((message) => message.messageId === messageId));
-    expect(result).toEqual({ ok: false, error: expect.objectContaining({ code: 'superseded_response' }) });
-    expect(after).toEqual(saved);
-    await page.goto(`/c/${original.conversationId}`);
-    await expect(page.getByText('REVISION-SUFFIX', { exact: true })).toBeVisible();
-    await page.getByTestId('message-body').filter({ hasText: 'REVISION-SUFFIX' })
-      .getByRole('button', { name: 'Open Steel review', exact: true }).click();
-    await expect(materialRow(page.getByRole('dialog', { name: 'Steel source review' }))
-      .getByRole('textbox', { name: /^單價 /u })).toHaveValue('12');
-    await page.keyboard.press('Escape');
-    await page.reload();
-    await expect(page.getByText('REVISION-SUFFIX', { exact: true })).toBeVisible();
-    expect(await readback(original.conversationId)).toEqual(saved);
-  });
-
-  for (const mode of ['adopted', 'prepared'] as const) {
-  test(`a ${mode} publication cannot bless a human Save made before the next canonical read`, async ({ page }) => {
-    const fixture = await seedOrder(false, true);
-    conversations.push(fixture.conversationId);
-    let readyAdoption!: () => void;
-    let releaseAdoption!: () => void;
-    const ready = new Promise<void>((resolve) => { readyAdoption = resolve; });
-    const paused = new Promise<void>((resolve) => { releaseAdoption = resolve; });
-    const adoption = adoptCompleted(fixture, async () => { readyAdoption(); await paused; }, mode);
-    const outcome = adoption.then(() => ({ ok: true }), (error) => ({ ok: false, error }));
-    await Promise.race([ready, outcome.then((result) => {
-      if (!result.ok) throw result.error;
-      throw new Error('Adoption completed before reaching the Save barrier');
-    })]);
-    let saved;
-    try {
-      const table = await readTable(page, headers, fixture.conversationId, fixture.messageId);
-      const prepared = await prepare(page, headers, requestFor(table, [{ header: '單價', value: '12' }]));
-      expect((await commit(page, headers, prepared)).status()).toBe(200);
-      saved = await readback(fixture.conversationId);
-    } finally {
-      releaseAdoption();
-    }
-    expect(await outcome).toEqual({ ok: true });
-    expect(await readback(fixture.conversationId)).toEqual(saved);
-    const dialog = await openEditor(page, fixture.conversationId);
-    await expect(materialRow(dialog).getByRole('textbox', { name: /^單價 /u })).toHaveValue('12');
-    await page.keyboard.press('Escape');
-    await page.reload();
-    expect(await readback(fixture.conversationId)).toEqual(saved);
-  });
-
-  }
 
   test('system-order callers reject owner metadata and unknown columns while allowing business model edits', async ({ page }) => {
     const fixture = await seedOrder();

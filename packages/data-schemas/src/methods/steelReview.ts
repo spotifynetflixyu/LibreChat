@@ -52,6 +52,7 @@ import {
 } from '~/models';
 import { createSteelReviewSourceAuthorization } from './steelSourceAuthorization';
 import { createSteelQuotationInputMethods } from './steelQuotationInput';
+import { createSteelQuotationPublicationProof } from './published';
 import { steelReviewTitleStorageId } from '~/utils/identity';
 import { activeExpirationFilter } from '~/utils/retention';
 import { createConversationModel } from '~/models/convo';
@@ -567,7 +568,8 @@ function readOwnerUpdated(
     (candidate.kind !== 'ocr_result' && candidate.kind !== 'system_order') ||
     typeof candidate.conversationId !== 'string' || typeof candidate.messageId !== 'string' ||
     typeof candidate.title !== 'string' || typeof candidate.outputId !== 'string' ||
-    typeof candidate.revision !== 'string' || !(candidate.updatedAt instanceof Date)) {
+    typeof candidate.revision !== 'string' || !(candidate.updatedAt instanceof Date) ||
+    (candidate.effectiveVersion !== undefined && (!Number.isSafeInteger(candidate.effectiveVersion) || candidate.effectiveVersion < 1))) {
     return undefined;
   }
   return candidate as SteelReviewOwnerUpdatedRecord;
@@ -893,6 +895,15 @@ function isPublishedFinalArtifact(
   } catch {
     return false;
   }
+}
+
+function publicationBaselineMarkdown(
+  artifact: { payload: string; sha256: string; markdownPublication?: { baselineMarkdown?: string } } | undefined,
+): string | undefined {
+  if (!artifact || createHash('sha256').update(artifact.payload).digest('hex') !== artifact.sha256) return undefined;
+  return typeof artifact.markdownPublication?.baselineMarkdown === 'string'
+    ? artifact.markdownPublication.baselineMarkdown
+    : undefined;
 }
 
 function archivedRunOwnsMessage(
@@ -1508,6 +1519,11 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
         ))
       ) {
         const { runId, markdown } = quotation.currentSystemOrder;
+        const activeRun = quotation.activeRun?.runId === runId ? quotation.activeRun : undefined;
+        if (activeRun && (activeRun.status !== 'completed' ||
+          !await quotationInput.isSteelQuotationRunPublished(input, activeRun))) {
+          return null;
+        }
         const outputId = quotation.currentSystemOrder.reviewOutputId ?? `system_order:${runId}`;
         const reviewMetadata = recoveredMetadata ?? quotation.currentSystemOrder.reviewMetadata;
         const metadataFileIds = reviewMetadata
@@ -1575,7 +1591,7 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
         };
       }
 
-      const [finalArtifacts, publicationArtifacts, archiveArtifacts] = await Promise.all([
+      const [finalArtifacts, publicationArtifacts, orderPublicationArtifacts, orderBaselineArtifacts, archiveArtifacts] = await Promise.all([
         QuotationArtifact.find({
           ...scopeFilter(input),
           kind: 'final',
@@ -1591,24 +1607,49 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
           .lean(),
         QuotationArtifact.find({
           ...scopeFilter(input),
+          kind: 'main',
+          operationId: 'order-published',
+        })
+          .lean(),
+        QuotationArtifact.find({
+          ...scopeFilter(input),
+          kind: 'main',
+          operationId: 'ai:system_order',
+        })
+          .lean(),
+        QuotationArtifact.find({
+          ...scopeFilter(input),
           kind: 'archive',
           operationId: 'archive',
         })
           .lean(),
       ]);
-      const historical = finalArtifacts.filter((artifact) => {
+      const historical: Array<{ artifact: { payload: string; sha256: string }; runId: string }> = finalArtifacts.flatMap((artifact) => {
         if (createHash('sha256').update(artifact.payload).digest('hex') !== artifact.sha256) {
-          return false;
+          return [];
         }
         const publication = publicationArtifacts.find((candidate) => candidate.runId === artifact.runId);
         const archive = archiveArtifacts.find((candidate) => candidate.runId === artifact.runId);
-        return isPublishedFinalArtifact(artifact, publication) &&
-          archive !== undefined && archivedRunOwnsMessage(archive, input.messageId);
+        return isPublishedFinalArtifact(artifact, publication) && archive !== undefined && archivedRunOwnsMessage(archive, input.messageId)
+          ? [{ artifact, runId: artifact.runId }]
+          : [];
       });
+      const publicationProof = createSteelQuotationPublicationProof(QuotationArtifact);
+      for (const receiptArtifact of orderPublicationArtifacts) {
+        const archive = archiveArtifacts.find((candidate) => candidate.runId === receiptArtifact.runId);
+        if (!archive || !archivedRunOwnsMessage(archive, input.messageId)) continue;
+        const archivedRun = parseArchivedQuotationRun(archive, input, input.messageId);
+        if (!archivedRun || !await publicationProof.isPublished(input, archivedRun)) continue;
+        const baselineArtifact = orderBaselineArtifacts.find((candidate) => candidate.runId === `markdown:quotation:${receiptArtifact.runId}`);
+        const markdown = publicationBaselineMarkdown(baselineArtifact);
+        if (markdown) historical.push({ artifact: { payload: markdown, sha256: createHash('sha256').update(markdown).digest('hex') }, runId: receiptArtifact.runId });
+      }
       if (historical.length !== 1) {
         return null;
       }
-      const [artifact] = historical;
+      const [historicalRecord] = historical;
+      if (!historicalRecord) return null;
+      const { artifact } = historicalRecord;
       return {
         userId: input.userId,
         ...(input.tenantId ? { tenantId: input.tenantId } : {}),
@@ -1621,11 +1662,11 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
           conversationId: input.conversationId,
           messageId: input.messageId,
           kind: input.kind,
-          outputId: `system_order:${artifact.runId}`,
+          outputId: `system_order:${historicalRecord.runId}`,
           title: input.title,
         }),
         ...(input.title ? { title: input.title } : {}),
-        outputId: `system_order:${artifact.runId}`,
+        outputId: `system_order:${historicalRecord.runId}`,
         revision: artifact.sha256,
         state: 'historical',
         markdown: artifact.payload,
@@ -2595,6 +2636,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
             title: input.title,
             outputId: input.outputId,
             revision: nextRevision,
+            effectiveVersion: (output?.receipts?.length ?? 0) + 2,
             updatedAt: savedAt,
           };
           const previousReviewMetadata = input.kind === 'system_order'

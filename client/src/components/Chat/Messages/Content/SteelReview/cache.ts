@@ -4,6 +4,7 @@ import type {
   SteelReviewSavedSnapshot,
 } from 'librechat-data-provider';
 import type * as t from 'librechat-data-provider';
+import { applySteelQuotationReviewOwner } from '~/utils/steelQuotation';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -23,20 +24,21 @@ export function applySteelReviewSnapshotToMessages(
       return message;
     }
 
-    const content = snapshot.messageTextParts && Array.isArray(message.content)
-      ? message.content.map((part, partIndex) => {
-          const savedPart = snapshot.messageTextParts?.find((candidate) => candidate.partIndex === partIndex);
-          if (!savedPart || part.type !== 'text' || typeof part.text !== 'string') {
-            return part;
-          }
-          return { ...part, text: savedPart.text };
-        })
-      : message.content;
+    const content =
+      snapshot.messageTextParts && Array.isArray(message.content)
+        ? message.content.map((part, partIndex) => {
+            const savedPart = snapshot.messageTextParts?.find(
+              (candidate) => candidate.partIndex === partIndex,
+            );
+            if (!savedPart || part.type !== 'text' || typeof part.text !== 'string') {
+              return part;
+            }
+            return { ...part, text: savedPart.text };
+          })
+        : message.content;
 
     const currentMetadata = isRecord(message.metadata) ? message.metadata : {};
-    const currentOwners = isRecord(currentMetadata.steelReview)
-      ? currentMetadata.steelReview
-      : {};
+    const currentOwners = isRecord(currentMetadata.steelReview) ? currentMetadata.steelReview : {};
     const metadata = snapshot.ownerUpdated
       ? {
           ...currentMetadata,
@@ -47,12 +49,13 @@ export function applySteelReviewSnapshotToMessages(
         }
       : message.metadata;
 
-    return {
+    const updated = {
       ...message,
       text: snapshot.messageText,
       ...(content ? { content } : {}),
       ...(metadata ? { metadata } : {}),
     };
+    return kind === 'system_order' ? applySteelQuotationReviewOwner(updated, snapshot) : updated;
   });
 }
 
@@ -60,8 +63,11 @@ export function applySteelReviewSnapshotToResponse(
   response: SteelReviewResponse | undefined,
   snapshot: SteelReviewSavedSnapshot,
 ): SteelReviewResponse | undefined {
-  if (!response?.table || response.table.messageId !== snapshot.messageId ||
-    response.table.outputId !== snapshot.outputId) {
+  if (
+    !response?.table ||
+    response.table.messageId !== snapshot.messageId ||
+    response.table.outputId !== snapshot.outputId
+  ) {
     return response;
   }
 

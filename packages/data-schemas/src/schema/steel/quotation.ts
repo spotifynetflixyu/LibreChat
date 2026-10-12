@@ -269,6 +269,10 @@ const steelQuotationChunkSchema = new Schema<SteelQuotationChunkState>(
 
 const steelQuotationCheckpointRefSchema = new Schema<SteelQuotationCheckpointRef>(
   {
+    userId: { type: String },
+    conversationId: { type: String },
+    tenantId: { type: String },
+    runId: { type: String },
     operationId: { type: String, required: true },
     kind: {
       type: String,

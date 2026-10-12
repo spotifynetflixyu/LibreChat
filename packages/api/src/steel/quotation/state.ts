@@ -1,12 +1,10 @@
 import { createHash, randomUUID } from 'crypto';
-
 import {
   createSteelQuotationInputMethods,
   STEEL_QUOTATION_INPUT_TTL_MS,
   createSteelQuotationArtifactModel,
   createSteelQuotationStateModel,
 } from '@librechat/data-schemas';
-
 import type {
   ISteelQuotationArtifact,
   ISteelQuotationState,
@@ -29,7 +27,7 @@ import type {
   SteelQuotationTicketCompletionReceipt,
   SteelQuotationTicket,
 } from '@librechat/data-schemas';
-
+import { isCurrentSystemOrderRun } from './revision';
 import { SteelQuotationInputError } from './input';
 
 type Mongoose = typeof import('mongoose');
@@ -106,19 +104,6 @@ export interface SteelQuotationClearCustomerLookupEvidenceInput {
   scope: SteelQuotationScope;
   responseId?: string;
   orderHash?: string;
-}
-
-export interface SteelQuotationSaveCurrentSystemOrderInput {
-  scope: SteelQuotationScope;
-  snapshot: SteelQuotationCurrentSystemOrder;
-  expectedRunId: string;
-  expectedCurrentOrderSha256: string;
-  expectedCustomer?: {
-    customerIdentity: string;
-    customerMarkdown: string;
-  };
-  expectedCurrentSystemOrderSha256?: string;
-  expectedCurrentSystemOrderPresent: boolean;
 }
 
 export interface SteelQuotationClearCustomerInput {
@@ -205,19 +190,6 @@ export interface SteelQuotationInterruptInput extends SteelQuotationRunInput {
   interruption?: SteelQuotationActiveRun['interruption'];
 }
 
-export interface SteelQuotationCompleteRunInput extends SteelQuotationRunInput {
-  finalRef: SteelQuotationArtifactRef;
-  targetMessageId?: string;
-}
-
-export interface SteelQuotationMarkPublishedInput {
-  scope: SteelQuotationScope;
-  runId: string;
-  finalSha256: string;
-  targetMessageId?: string;
-  now?: Date;
-}
-
 export interface SteelQuotationPendingMessageInput {
   scope: SteelQuotationScope;
   sourceMessageId: string;
@@ -293,15 +265,12 @@ export interface SteelQuotationStateService {
   readState(scope: SteelQuotationScope): Promise<ISteelQuotationState | null>;
   isPublishedRun(scope: SteelQuotationScope, run: SteelQuotationActiveRun): Promise<boolean>;
   readCurrentSystemOrder(scope: SteelQuotationScope): Promise<SteelQuotationCurrentSystemOrder | undefined>;
-  hasSystemOrder(scope: SteelQuotationScope): Promise<boolean>;
+  hasSystemOrder(scope: SteelQuotationScope, preloadedState?: ISteelQuotationState | null): Promise<boolean>;
   setOrder(input: SteelQuotationOrderInput): Promise<ISteelQuotationState>;
   readOcrInput(scope: SteelQuotationScope): Promise<SteelQuotationOcrInput | undefined>;
   markOcrStale(scope: SteelQuotationScope, runId: string, selection: SteelQuotationOcrSelection): Promise<boolean>;
   prepareOcrOrder(scope: SteelQuotationScope, expectedOrderHash: string | null):
     Promise<{ state: ISteelQuotationState; input?: SteelQuotationOcrInput }>;
-  saveCurrentSystemOrder(
-    input: SteelQuotationSaveCurrentSystemOrderInput,
-  ): Promise<SteelQuotationCurrentSystemOrder | undefined>;
   saveCustomer(input: SteelQuotationSaveCustomerInput): Promise<SteelQuotationCustomerPreparation>;
   saveCustomerLookupEvidence(
     input: SteelQuotationSaveCustomerLookupEvidenceInput,
@@ -335,10 +304,6 @@ export interface SteelQuotationStateService {
   cancelRun(input: Omit<SteelQuotationRunInput, 'leaseToken'> & { leaseToken?: string }): Promise<
     SteelQuotationActiveRun | undefined
   >;
-  completeRun(input: SteelQuotationCompleteRunInput): Promise<SteelQuotationActiveRun | undefined>;
-  markPublished(
-    input: SteelQuotationMarkPublishedInput,
-  ): Promise<SteelQuotationActiveRun | undefined>;
   enqueuePendingMessage(
     input: SteelQuotationPendingMessageInput,
   ): Promise<SteelQuotationPendingMessage>;
@@ -714,8 +679,8 @@ export function createSteelQuotationStateService(
     assertAuthorityBounds(state);
     const run = state.activeRun;
     if (run && run.status !== 'cancelled' &&
-      !run.checkpointRefs.some((ref) => ref.operationId === 'published') &&
-      new Date(run.acceptedAt).getTime() + STEEL_QUOTATION_INPUT_TTL_MS <= Date.now()) {
+      new Date(run.acceptedAt).getTime() + STEEL_QUOTATION_INPUT_TTL_MS <= Date.now() &&
+      !await inputs.isSteelQuotationRunPublished(scope, run)) {
       const retired = await inputs.retireSteelQuotationInput({ scope, runId: run.runId, reason: 'expired' });
       if (!retired.ok) throw new SteelQuotationInputError(retired.code);
       return retired.state;
@@ -748,63 +713,24 @@ export function createSteelQuotationStateService(
     return state?.currentSystemOrder;
   }
 
-  async function hasSystemOrder(scope: SteelQuotationScope): Promise<boolean> {
+  async function hasSystemOrder(
+    scope: SteelQuotationScope,
+    preloadedState?: ISteelQuotationState | null,
+  ): Promise<boolean> {
     validateScope(scope);
-    const matches = await State.aggregate<{ exists: boolean }>([
-      { $match: {
-        ...stateFilter(scope),
-        'activeRun.status': 'completed',
-        $expr: {
-          $gt: [
-            {
-              $size: {
-                $filter: {
-                  input: '$tickets',
-                  as: 'ticket',
-                  cond: {
-                    $and: [
-                      { $eq: ['$$ticket.acceptedRunId', '$activeRun.runId'] },
-                      { $eq: ['$$ticket.orderHash', '$currentOrder.sha256'] },
-                      {
-                        $or: [
-                          { $eq: [{ $ifNull: ['$currentCustomer', null] }, null] },
-                          {
-                            $and: [
-                              { $eq: ['$$ticket.customerIdentity', '$currentCustomer.customerIdentity'] },
-                              { $eq: ['$$ticket.customerMarkdown', '$currentCustomer.customerMarkdown'] },
-                            ],
-                          },
-                        ],
-                      },
-                    ],
-                  },
-                },
-              },
-            },
-            0,
-          ],
-        },
-      } },
-      { $limit: 1 },
-      { $lookup: {
-        from: Artifact.collection.name,
-        let: { runId: '$activeRun.runId' },
-        pipeline: [
-          { $match: {
-            ...stateFilter(scope),
-            kind: 'final',
-            operationId: 'final',
-            $expr: { $eq: ['$runId', '$$runId'] },
-          } },
-          { $limit: 1 },
-          { $project: { _id: 1 } },
-        ],
-        as: 'currentFinal',
-      } },
-      { $match: { 'currentFinal.0': { $exists: true } } },
-      { $project: { _id: 0, exists: { $literal: true } } },
-    ]);
-    return matches.length > 0;
+    const state = preloadedState === undefined ? await readState(scope) : preloadedState;
+    if (!state || state.userId !== scope.userId || state.conversationId !== scope.conversationId ||
+      (state.tenantId ?? undefined) !== scope.tenantId) {
+      return false;
+    }
+
+    const run = state.activeRun;
+    const currentSystemOrder = state.currentSystemOrder;
+    if (!run || !currentSystemOrder || currentSystemOrder.runId !== run.runId ||
+      currentSystemOrder.messageId !== run.targetMessageId || !isCurrentSystemOrderRun(state)) {
+      return false;
+    }
+    return inputs.isSteelQuotationRunPublished(scope, run);
   }
 
   async function setOrder(input: SteelQuotationOrderInput): Promise<ISteelQuotationState> {
@@ -864,90 +790,6 @@ export function createSteelQuotationStateService(
       }
     }
     throw new Error('quotation order changed concurrently; retry the operation');
-  }
-
-  async function saveCurrentSystemOrder(
-    input: SteelQuotationSaveCurrentSystemOrderInput,
-  ): Promise<SteelQuotationCurrentSystemOrder | undefined> {
-    validateScope(input.scope);
-    validateText(input.expectedRunId, 'expectedRunId', 200);
-    validateText(input.expectedCurrentOrderSha256, 'expectedCurrentOrderSha256', 128);
-    if (input.expectedCustomer) {
-      validateText(input.expectedCustomer.customerIdentity, 'expectedCustomer.customerIdentity', MAX_QUOTATION_CUSTOMER_BYTES);
-      validateText(input.expectedCustomer.customerMarkdown, 'expectedCustomer.customerMarkdown', MAX_QUOTATION_CUSTOMER_BYTES);
-    }
-    validateText(input.snapshot.runId, 'snapshot.runId', 200);
-    validateText(input.snapshot.sha256, 'snapshot.sha256', 128);
-    validateText(input.snapshot.markdown, 'snapshot.markdown', MAX_QUOTATION_ORDER_BYTES);
-    if (input.snapshot.runId !== input.expectedRunId) {
-      throw new Error('current system order snapshot run does not match CAS run');
-    }
-    if (input.expectedCurrentSystemOrderPresent && !input.expectedCurrentSystemOrderSha256) {
-      throw new Error('current system order CAS hash is required');
-    }
-    if (!input.expectedCurrentSystemOrderPresent && input.expectedCurrentSystemOrderSha256 !== undefined) {
-      throw new Error('current system order CAS hash must be absent');
-    }
-
-    const current = await readState(input.scope);
-    const customerMatches = input.expectedCustomer
-      ? current?.currentCustomer?.customerIdentity === input.expectedCustomer.customerIdentity &&
-        current?.currentCustomer?.customerMarkdown === input.expectedCustomer.customerMarkdown
-      : current?.currentCustomer === undefined;
-    if (
-      !current ||
-      current.currentOrder?.sha256 !== input.expectedCurrentOrderSha256 ||
-      !customerMatches ||
-      !current.tickets.some((ticket) =>
-        ticket.acceptedRunId === input.expectedRunId &&
-        ticket.orderHash === input.expectedCurrentOrderSha256 &&
-        (!input.expectedCustomer || (
-          ticket.customerIdentity === input.expectedCustomer.customerIdentity &&
-          ticket.customerMarkdown === input.expectedCustomer.customerMarkdown
-        )),
-      )
-    ) {
-      return undefined;
-    }
-    assertAuthorityBounds({ ...current, currentSystemOrder: input.snapshot });
-
-    const filter = {
-      ...stateFilter(input.scope),
-      'activeRun.runId': input.expectedRunId,
-      'activeRun.status': 'completed',
-      'currentOrder.sha256': input.expectedCurrentOrderSha256,
-      tickets: {
-        $elemMatch: {
-          acceptedRunId: input.expectedRunId,
-          orderHash: input.expectedCurrentOrderSha256,
-          ...(input.expectedCustomer
-            ? {
-                customerIdentity: input.expectedCustomer.customerIdentity,
-                customerMarkdown: input.expectedCustomer.customerMarkdown,
-              }
-            : {}),
-        },
-      },
-      ...(input.expectedCustomer
-        ? {
-            'currentCustomer.customerIdentity': input.expectedCustomer.customerIdentity,
-            'currentCustomer.customerMarkdown': input.expectedCustomer.customerMarkdown,
-          }
-        : { currentCustomer: { $exists: false } }),
-      ...(input.expectedCurrentSystemOrderPresent
-        ? { 'currentSystemOrder.sha256': input.expectedCurrentSystemOrderSha256 }
-        : { currentSystemOrder: { $exists: false } }),
-    };
-    const updated = await State.findOneAndUpdate(
-      filter,
-      { $set: { currentSystemOrder: input.snapshot, updatedAt: input.snapshot.updatedAt } },
-      { new: true },
-    ).lean<ISteelQuotationState>();
-    if (!updated?.currentSystemOrder) {
-      return undefined;
-    }
-    assertAuthorityBounds(updated);
-    return updated.currentSystemOrder;
   }
 
   async function saveCustomer(
@@ -1818,164 +1660,6 @@ export function createSteelQuotationStateService(
     return getActiveRun(retired.state, input.runId);
   }
 
-  async function completeRun(
-    input: SteelQuotationCompleteRunInput,
-  ): Promise<SteelQuotationActiveRun | undefined> {
-    validateScope(input.scope);
-    if (
-      !cloneScopeRef(input.scope, input.finalRef) ||
-      input.finalRef.runId !== input.runId ||
-      input.finalRef.kind !== 'final'
-    ) {
-      throw new Error('final artifact reference is outside the quotation run scope');
-    }
-    const finalArtifact = await readArtifact({ scope: input.scope, ref: input.finalRef });
-    if (finalArtifact === undefined) {
-      throw new Error('final artifact does not exist');
-    }
-    const now = nowOrDefault(input.now);
-    const updated = await State.findOneAndUpdate(
-      {
-        ...stateFilter(input.scope),
-        'activeRun.runId': input.runId,
-        'activeRun.leaseToken': input.leaseToken,
-        'activeRun.status': { $in: leaseStatuses },
-        'activeRun.leaseExpiresAt': { $gt: now },
-        'activeRun.acceptedAt': { $gt: new Date(now.getTime() - STEEL_QUOTATION_INPUT_TTL_MS) },
-      },
-      {
-        $set: {
-          'activeRun.status': 'completed',
-          ...(input.targetMessageId ? { 'activeRun.targetMessageId': input.targetMessageId } : {}),
-          'activeRun.updatedAt': now,
-          updatedAt: now,
-        },
-        $unset: { 'activeRun.leaseToken': 1, 'activeRun.leaseExpiresAt': 1 },
-      },
-      { new: true },
-    ).lean<ISteelQuotationState>();
-    return getActiveRun(updated, input.runId);
-  }
-
-  async function markPublished(
-    input: SteelQuotationMarkPublishedInput,
-  ): Promise<SteelQuotationActiveRun | undefined> {
-    validateScope(input.scope);
-    validateText(input.runId, 'runId', 200);
-    validateText(input.finalSha256, 'finalSha256', 128);
-    if (input.targetMessageId !== undefined) {
-      validateText(input.targetMessageId, 'targetMessageId', 300);
-    }
-    const now = nowOrDefault(input.now);
-    const current = await readState(input.scope);
-    const run = getActiveRun(current, input.runId);
-    const finalCheckpoint = run?.checkpointRefs.find(
-      (candidate) => candidate.operationId === 'final' && candidate.kind === 'final',
-    );
-    if (!run || run.status !== 'completed' || finalCheckpoint?.sha256 !== input.finalSha256) {
-      return undefined;
-    }
-    if (run.targetMessageId && input.targetMessageId && run.targetMessageId !== input.targetMessageId) {
-      throw new Error('published quotation target message is immutable');
-    }
-    const publicationPayload = JSON.stringify({ finalSha256: input.finalSha256 });
-    const publicationRef = artifactRef(
-      input.scope,
-      input.runId,
-      'published',
-      'final',
-      hashText(publicationPayload),
-    );
-    await writePublicationArtifact(input.scope, input.runId, publicationPayload, publicationRef, now);
-    const updated = await State.findOneAndUpdate(
-      {
-        ...stateFilter(input.scope),
-        $and: [
-          { 'activeRun.runId': input.runId, 'activeRun.status': 'completed' },
-          { 'activeRun.checkpointRefs': { $elemMatch: { operationId: 'final', kind: 'final', sha256: input.finalSha256 } } },
-          { 'activeRun.checkpointRefs': { $not: { $elemMatch: { operationId: 'published' } } } },
-        ],
-      },
-      {
-        $set: {
-          ...(input.targetMessageId && !run.targetMessageId
-            ? { 'activeRun.targetMessageId': input.targetMessageId }
-            : {}),
-          'activeRun.updatedAt': now,
-          updatedAt: now,
-        },
-        $push: {
-          'activeRun.checkpointRefs': {
-            operationId: publicationRef.operationId,
-            kind: publicationRef.kind,
-            artifactId: publicationRef.artifactId,
-            sha256: publicationRef.sha256,
-            updatedAt: now,
-          },
-        },
-      },
-      { new: true },
-    ).lean<ISteelQuotationState>();
-    if (updated) {
-      const retired = await inputs.retireSteelQuotationInput({ ...input, reason: 'published' });
-      if (!retired.ok) throw new SteelQuotationInputError(retired.code);
-      return getActiveRun(retired.state, input.runId);
-    }
-    const raced = await readState(input.scope);
-    const racedRun = getActiveRun(raced, input.runId);
-    const racedPublication = racedRun?.checkpointRefs.find(
-      (candidate) => candidate.operationId === 'published',
-    );
-    if (racedPublication?.sha256 === publicationRef.sha256) {
-      const retired = await inputs.retireSteelQuotationInput({ ...input, reason: 'published' });
-      if (!retired.ok) throw new SteelQuotationInputError(retired.code);
-      return getActiveRun(retired.state, input.runId);
-    }
-    return undefined;
-  }
-
-  async function writePublicationArtifact(
-    scope: SteelQuotationScope,
-    runId: string,
-    payload: string,
-    ref: SteelQuotationArtifactRef,
-    now: Date,
-  ): Promise<void> {
-    const sameHash = await findArtifact(scope, runId, 'published', ref.sha256);
-    if (sameHash) {
-      if (sameHash.payload !== payload || sameHash.kind !== 'final') {
-        throw new Error('quotation publication receipt is immutable');
-      }
-      return;
-    }
-    const otherHash = await findArtifact(scope, runId, 'published');
-    if (otherHash && (otherHash.sha256 !== ref.sha256 || otherHash.kind !== 'final')) {
-      throw new Error('quotation publication receipt is immutable');
-    }
-    try {
-      await Artifact.create({
-        userId: scope.userId,
-        conversationId: scope.conversationId,
-        ...(scope.tenantId !== undefined ? { tenantId: scope.tenantId } : {}),
-        runId,
-        operationId: 'published',
-        kind: 'final',
-        sha256: ref.sha256,
-        payload,
-        createdAt: now,
-        updatedAt: now,
-      });
-    } catch (error) {
-      if (!(error instanceof Error) || !isDuplicateKey(error)) {
-        throw error;
-      }
-      const raced = await findArtifact(scope, runId, 'published', ref.sha256);
-      if (!raced || raced.payload !== payload || raced.kind !== 'final') {
-        throw new Error('quotation publication receipt changed concurrently');
-      }
-    }
-  }
-
   async function checkpoint(
     input: SteelQuotationCheckpointInput,
   ): Promise<ISteelQuotationState | undefined> {
@@ -2017,6 +1701,10 @@ export function createSteelQuotationStateService(
       validatePositiveIndex(input.chunkIndex, 'chunk index');
     }
     const checkpointRef: SteelQuotationCheckpointRef = {
+      userId: input.scope.userId,
+      conversationId: input.scope.conversationId,
+      ...(input.scope.tenantId && { tenantId: input.scope.tenantId }),
+      runId: input.runId,
       operationId: ref.operationId,
       kind: ref.kind,
       artifactId: ref.artifactId,
@@ -2606,7 +2294,6 @@ export function createSteelQuotationStateService(
     readOcrInput,
     prepareOcrOrder,
     markOcrStale,
-    saveCurrentSystemOrder,
     saveCustomer,
     saveCustomerLookupEvidence,
     clearCustomerLookupEvidence,
@@ -2624,8 +2311,6 @@ export function createSteelQuotationStateService(
     transitionRun,
     interruptRun,
     cancelRun,
-    completeRun,
-    markPublished,
     enqueuePendingMessage,
     claimPendingMessage,
     renewPendingClaim,

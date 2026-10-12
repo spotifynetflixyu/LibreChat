@@ -12,6 +12,7 @@ import type {
   SteelQuotationScope,
   SteelQuotationTicket,
 } from '@librechat/data-schemas';
+import { seedCompletedRun, seedLegacyPublication } from './fixtures';
 import { createSteelQuotationStateService } from './state';
 
 const prompts = {
@@ -114,13 +115,7 @@ describe('Steel quotation temporary input lifecycle', () => {
       prompts, chunks: [{ index: 1, sourceRowCount: 1 }],
     });
     const first = await service.acceptSignal(admission(firstTicket));
-    const lease = await service.acquireLease({ scope, runId: first.runId, leaseToken: 'publication-race' });
-    if (!lease) throw new Error('Missing lease');
-    const finalRef = await service.writeArtifact({ scope, runId: first.runId, operationId: 'final',
-      kind: 'final', payload: 'completed unpublished result', leaseToken: lease.leaseToken });
-    await service.checkpoint({ scope, runId: first.runId, operationId: 'final', kind: 'final',
-      artifactRef: finalRef, leaseToken: lease.leaseToken });
-    await service.completeRun({ scope, runId: first.runId, finalRef, leaseToken: lease.leaseToken });
+    await seedCompletedRun({ mongoose, scope, run: first });
     const completed = (await service.readState(scope))?.activeRun;
     if (!completed) throw new Error('Missing completed run');
     const before = await service.readState(scope);
@@ -145,7 +140,7 @@ describe('Steel quotation temporary input lifecycle', () => {
     await expect(issue()).rejects.toThrow('unfinished or unpublished');
     await expect(service.acceptSignal(admission(delayedTicket))).rejects.toMatchObject({ code: 'concurrent_change' });
     await State.updateOne(scope, { $set: { 'activeRun.checkpointRefs': completed.checkpointRefs } });
-    await service.markPublished({ scope, runId: first.runId, finalSha256: finalRef.sha256 });
+    await seedLegacyPublication({ mongoose, scope, run: first, markdown: 'completed published result' });
     const methods = createSteelQuotationInputMethods(mongoose);
     let raced = false;
     const delayedIssuer = createSteelQuotationStateService(mongoose, {
@@ -155,13 +150,7 @@ describe('Steel quotation temporary input lifecycle', () => {
         if (published && !raced) {
           raced = true;
           const next = await service.acceptSignal(admission(delayedTicket));
-          const nextLease = await service.acquireLease({ scope, runId: next.runId, leaseToken: 'late-ticket-race' });
-          if (!nextLease) throw new Error('Missing next lease');
-          const nextFinal = await service.writeArtifact({ scope, runId: next.runId, operationId: 'final',
-            kind: 'final', payload: 'next unpublished result', leaseToken: nextLease.leaseToken });
-          await service.checkpoint({ scope, runId: next.runId, operationId: 'final', kind: 'final',
-            artifactRef: nextFinal, leaseToken: nextLease.leaseToken });
-          await service.completeRun({ scope, runId: next.runId, finalRef: nextFinal, leaseToken: nextLease.leaseToken });
+          await seedCompletedRun({ mongoose, scope, run: next });
         }
         return published;
       },
@@ -308,16 +297,6 @@ describe('Steel quotation temporary input lifecycle', () => {
       now: acceptedAt,
     });
     expect(lease).toBeDefined();
-    const finalPayload = 'late final';
-    const finalRef = await service.writeArtifact({
-      scope,
-      runId: first.run.runId,
-      operationId: 'final',
-      kind: 'final',
-      payload: finalPayload,
-      leaseToken: lease!.leaseToken,
-      now: acceptedAt,
-    });
     await State.updateOne(
       { ...scope, 'activeRun.runId': first.run.runId },
       { $set: { 'activeRun.acceptedAt': new Date(acceptedAt.getTime() - STEEL_QUOTATION_INPUT_TTL_MS - 1_000) } },
@@ -339,13 +318,6 @@ describe('Steel quotation temporary input lifecycle', () => {
       kind: 'chunk',
       payload: 'late checkpoint',
       chunkIndex: 1,
-      now: expiredAt,
-    })).resolves.toBeUndefined();
-    await expect(service.completeRun({
-      scope,
-      runId: first.run.runId,
-      leaseToken: lease!.leaseToken,
-      finalRef,
       now: expiredAt,
     })).resolves.toBeUndefined();
     expect((await service.readState(scope))?.activeRun?.status).toBe('cancelled');

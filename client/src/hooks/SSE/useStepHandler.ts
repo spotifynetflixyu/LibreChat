@@ -44,6 +44,7 @@ import {
   ptcTraceKey,
 } from '~/store';
 import { isAskUserQuestionPart, isAnsweredAskUserQuestionPart } from '~/utils/approval';
+import { mergeSteelQuotationMainSnapshot } from '~/utils/steelQuotation';
 import { MESSAGE_UPDATE_INTERVAL } from '~/common';
 import { isOAuthToolCallName } from './oauth';
 
@@ -851,14 +852,24 @@ export default function useStepHandler({
           responseMessageId,
           options?.ensureUserMessage === true,
         );
-        const hasResponseMessage = currentMessages.some(
-          (msg) => msg.messageId === responseMessageId,
-        );
+        const responseIdentityIds = [responseMessageId, submission.initialResponse?.messageId]
+          .filter((id): id is string => typeof id === 'string' && id.length > 0)
+          .map((id) => id.replace(/_+$/, ''));
+        const isResponseMessage = (message: TMessage) =>
+          message.isCreatedByUser === false &&
+          responseIdentityIds.some(
+            (id) => message.messageId === id || message.messageId.replace(/_+$/, '') === id,
+          );
+        const hasResponseMessage = currentMessages.some(isResponseMessage);
+        const currentResponse =
+          (getMessages() ?? []).find(isResponseMessage) ?? currentMessages.find(isResponseMessage);
+        const mergedResponse = mergeSteelQuotationMainSnapshot(currentResponse, updatedResponse);
+        if (mergedResponse !== updatedResponse) {
+          messageMap.current.set(responseMessageId, mergedResponse);
+        }
         return hasResponseMessage
-          ? currentMessages.map((msg) =>
-              msg.messageId === responseMessageId ? updatedResponse : msg,
-            )
-          : [...currentMessages, updatedResponse];
+          ? currentMessages.map((msg) => (isResponseMessage(msg) ? mergedResponse : msg))
+          : [...currentMessages, mergedResponse];
       };
       /**
        * Per-token deltas fold into `messageMap` immediately (authoritative), but

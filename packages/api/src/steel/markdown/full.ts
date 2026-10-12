@@ -7,7 +7,6 @@ import { finalizeOcrResponse, parseAssistantMarkdown } from '../ocr/result';
 import { appendSteelNextStep, steelSectionTitle } from '../quotation/next';
 import { SteelResponseCompletionError } from '../quotation/completion';
 import { createSteelReviewBaselineRows } from '../review';
-import { buildCustomerQuoteFromMarkdown } from './quote';
 import { admitFullOnlyMarkdown } from './admission';
 
 export type { SteelFullPublication, SteelFullPublisher } from './types';
@@ -33,11 +32,14 @@ export async function publishFullMarkdown(input: SteelMarkdownCompletionInput, d
     admission.generationId !== (input.generationId ?? context?.requestId ?? input.responseId)) {
     throw new SteelResponseCompletionError('invalid_completion_receipt');
   }
+  const sections = parseAssistantMarkdown(input.markdown).sections;
+  if (sections.some((section) => steelSectionTitle(section.title) === 'system_order')) {
+    throw new SteelResponseCompletionError('invalid_system_order');
+  }
   const [ocr, state] = await Promise.all([
     dependencies.ocr.readScopedConversationOcrState(scope), dependencies.quotation.readState(scope),
   ]);
-  const sections = parseAssistantMarkdown(input.markdown).sections;
-  const kinds = ['ocr_result', 'system_order', 'customer_data'] as const;
+  const kinds = ['ocr_result', 'customer_data'] as const;
   for (const kind of kinds) {
     const section = sections.find((entry) => steelSectionTitle(entry.title) === kind);
     if (!section) continue;
@@ -68,7 +70,6 @@ export async function publishFullMarkdown(input: SteelMarkdownCompletionInput, d
   }
   const targets: SteelMarkdownPublicationTarget[] = [];
   let customer: SteelMarkdownPublicationInput['customer'];
-  let systemOrder: SteelMarkdownPublicationInput['systemOrder'];
   for (const kind of kinds) {
     const section = parseAssistantMarkdown(markdown).sections.find((entry) => steelSectionTitle(entry.title) === kind);
     if (!section) continue;
@@ -91,18 +92,7 @@ export async function publishFullMarkdown(input: SteelMarkdownCompletionInput, d
       const sourceMappings = (ocr?.sourceMappings ?? []).map(({ fileId, sourceCode, sourceFilename }) => ({ fileId, sourceCode, sourceFilename }));
       target.headers = tables[0].headers;
       target.sourceMappings = sourceMappings;
-      if (kind === 'system_order') {
-        const current = state?.currentSystemOrder;
-        if (!current || state?.activeRun?.status !== 'completed' || state.activeRun.runId !== current.runId ||
-          state.currentOrder?.sha256 !== admission.expected.orderHash || state.currentCustomer?.preparationId !== admission.expected.customerPreparationId ||
-          !await dependencies.quotation.hasSystemOrder(scope)) throw new SteelResponseCompletionError('invalid_system_order');
-        const quote = buildCustomerQuoteFromMarkdown(baselineMarkdown);
-        if (!quote) throw new SteelResponseCompletionError('invalid_system_order');
-        systemOrder = { ...current, markdown: baselineMarkdown, sha256: createHash('sha256').update(baselineMarkdown).digest('hex'),
-          customerQuoteMarkdown: quote.markdown, messageId: input.responseId, responseId: input.responseId, needsRequote: false, updatedAt: new Date() };
-        target.sourceMappings = current.sourceSnapshot?.mappings ?? [];
-      }
-      target.rows = createSteelReviewBaselineRows(tables[0], kind, outputId, target.sourceMappings, kind === 'system_order' ? systemOrder?.calculationCheckpoint : undefined);
+      target.rows = createSteelReviewBaselineRows(tables[0], kind, outputId, target.sourceMappings);
     }
     targets.push(target);
   }
@@ -130,7 +120,7 @@ export async function publishFullMarkdown(input: SteelMarkdownCompletionInput, d
   await input.assertActive?.();
   input.applyMarkdown(markdown);
   const saved = await input.publishMarkdown({ scope, admission, rawMarkdown: input.markdown, targets, markdown, parentMessageId: context?.quotation?.messageId,
-    ...(customer ? { customer } : {}), ...(systemOrder ? { systemOrder } : {}),
+    ...(customer ? { customer } : {}),
     ...(targets.some((target) => target.kind === 'ocr_result') ? { ocr: { attemptNumber: run?.agentAttemptNumber ?? delegate?.agentAttemptNumber ?? 1,
       delegateOcrIndex, claimToken, executionLeaseToken, candidateToken } } : {}) });
   if (!saved.ok) throw new SteelResponseCompletionError(saved.code === 'superseded' ? 'superseded_response' : saved.code);

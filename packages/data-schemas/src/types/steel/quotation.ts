@@ -1,6 +1,6 @@
 import type { SteelCalculationCheckpoint, SteelReviewMetadata, SteelReviewOcrContext, TCustomConfig } from 'librechat-data-provider';
 import type { Document } from 'mongoose';
-import type { SteelMarkdownReference, SteelMarkdownState, SteelMarkdownSnapshot, SteelMarkdownPublicationTarget } from './versions';
+import type { SteelMarkdownAdmission, SteelMarkdownReference, SteelMarkdownState, SteelMarkdownSnapshot, SteelMarkdownPublicationTarget } from './versions';
 
 export type SteelQuotationRunStatus =
   | 'queued'
@@ -54,13 +54,15 @@ export interface SteelQuotationPublicationMessage {
   tenantId?: string;
 }
 
-/** The full saved record is retained at runtime while this result exposes only
- * the identity fields consumed by completion persistence bookkeeping. */
+/** Plain fields returned from the committed message, including content and metadata
+ * needed by completion persistence and event notification. */
 export interface SteelQuotationSavedMessage {
   messageId: string;
   conversationId: string;
   user: string;
   text?: string;
+  content?: unknown[];
+  metadata?: Record<string, unknown>;
   tenantId?: string;
 }
 
@@ -80,12 +82,15 @@ export interface SteelQuotationPublicationProof {
   runTargetMessageId: string;
   /** Current canonical response owner captured from currentSystemOrder. */
   targetMessageId: string;
+  /** Final-response hash for the terminal path; during order-only publication this
+   * carries the normalized system-order hash and is not treated as final proof. */
   finalSha256: string;
   currentOrderSha256: string;
   currentSystemOrderSha256: string;
   calculationCheckpoint?: SteelCalculationCheckpoint;
   sourceSnapshot?: SteelQuotationSourceSnapshot;
   reviewMetadata?: SteelReviewMetadata;
+  orderPublication?: SteelQuotationOrderPublicationProof;
   saveContext?: SteelQuotationPublicationSaveContext;
   run?: SteelQuotationActiveRun;
   customer: {
@@ -95,6 +100,66 @@ export interface SteelQuotationPublicationProof {
   };
   message: SteelQuotationPublicationMessage;
 }
+
+/** Immutable admission and lease proof for publishing a normalized order before
+ * the quotation run reaches its terminal final response. */
+export interface SteelQuotationOrderPublicationProof {
+  leaseToken: string;
+  inputSnapshotSha256: string;
+  normalizedSha256: string;
+  admission: SteelMarkdownAdmission;
+  systemOrder: SteelQuotationCurrentSystemOrder;
+  /** Ephemeral caller fence; never persisted in the receipt. */
+  signal?: AbortSignal;
+}
+
+/** Durable idempotency receipt for the order-only publication transaction. */
+export interface SteelQuotationOrderPublicationReceipt {
+  version: 1;
+  runId: string;
+  targetMessageId: string;
+  outputId: string;
+  inputSnapshotSha256: string;
+  normalizedSha256: string;
+  systemOrderSha256: string;
+}
+
+export interface SteelQuotationSummaryInput {
+  scope: SteelQuotationScope;
+  runId: string;
+  targetMessageId: string;
+  sourceMessageId: string;
+  admission: SteelMarkdownAdmission;
+  summaryMarkdown: string;
+  footerMarkdown: string;
+  /** Fresh host fields from the completed response; Steel-owned metadata is ignored. */
+  messageFields?: Pick<SteelQuotationPublicationMessage, 'metadata' | 'tokenCount' | 'processingDurationMs'>;
+}
+
+export interface SteelQuotationSummaryReceipt {
+  version: 1;
+  runId: string;
+  targetMessageId: string;
+  sourceMessageId: string;
+  outputId: string;
+  admissionSequence: number;
+  publicationReceiptSha256: string;
+  summarySha256: string;
+  footerSha256: string;
+  tableContentIndex: number;
+  summaryContentIndex: number;
+  footerContentIndex: number;
+}
+
+export type SteelQuotationSummaryResult =
+  | {
+      ok: true;
+      message: SteelQuotationSavedMessage;
+      receiptSha256: string;
+      summaryContentIndex: number;
+      footerContentIndex: number;
+    }
+  | { ok: false; code: 'superseded' };
 
 export type SteelQuotationPublicationSaveResult =
   | { ok: true; message: SteelQuotationSavedMessage }
@@ -263,6 +328,10 @@ export interface SteelQuotationChunkState {
 }
 
 export interface SteelQuotationCheckpointRef {
+  userId?: string;
+  conversationId?: string;
+  tenantId?: string;
+  runId?: string;
   operationId: string;
   kind: SteelQuotationArtifactKind;
   artifactId: string;

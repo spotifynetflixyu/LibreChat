@@ -970,16 +970,21 @@ export function createSteelQuotationInputMethods(mongoose: Mongoose): SteelQuota
           return;
         }
         const published = run.checkpointRefs.find((ref) => ref.operationId === 'published' && ref.kind === 'final');
+        const orderPublished = run.checkpointRefs.find((ref) => ref.operationId === 'order-published' && ref.kind === 'main');
         if (input.reason === 'expired' && new Date(run.acceptedAt).getTime() + STEEL_QUOTATION_INPUT_TTL_MS > now.getTime()) {
           result = { ok: true, state: current };
           return;
         }
-        if (input.reason === 'published' || (input.reason === 'expired' && published)) {
+        if (input.reason === 'published' || (input.reason === 'expired' && (published || orderPublished))) {
           if (!await isRunPublished(input.scope, run, session)) {
             result = { ok: false, code: 'invalid_snapshot' };
             return;
           }
         } else if (input.reason === 'cancelled' && run.status === 'completed') {
+          if (!await isRunPublished(input.scope, run, session)) {
+            result = { ok: false, code: 'invalid_snapshot' };
+            return;
+          }
           result = { ok: true, state: current };
           return;
         }
@@ -990,7 +995,7 @@ export function createSteelQuotationInputMethods(mongoose: Mongoose): SteelQuota
           result = { ok: false, code: 'invalid_snapshot' };
           return;
         }
-        const terminal = input.reason === 'published' || Boolean(published);
+        const terminal = input.reason === 'published' || Boolean(published || orderPublished);
         const updated = await State.findOneAndUpdate({ ...scopeFilter(input.scope), _id: current._id,
           'activeRun.runId': run.runId, 'activeRun.status': run.status, 'activeRun.acceptedAt': run.acceptedAt }, {
           $set: { updatedAt: now, ...(!terminal ? {

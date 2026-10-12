@@ -1,4 +1,34 @@
 import { z } from 'zod';
+import type { TMessage } from '../schemas';
+
+export const steelQuotationMessageUpdateEvent = 'steel_message_update';
+
+export const steelQuotationMessagePublicationSchema = z.object({
+  version: z.literal(1),
+  runId: z.string().min(1),
+  outputId: z.string().min(1),
+  sourceMessageId: z.string().min(1),
+  receiptSha256: z.string().regex(/^[a-f0-9]{64}$/),
+  summaryReceiptSha256: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+  admissionSequence: z.number().int().positive(),
+  tableContentIndex: z.number().int().nonnegative(),
+  summaryContentIndex: z.number().int().nonnegative(),
+  footerContentIndex: z.number().int().nonnegative(),
+}).refine(({ tableContentIndex, summaryContentIndex, footerContentIndex }) =>
+  tableContentIndex !== summaryContentIndex && tableContentIndex !== footerContentIndex &&
+  summaryContentIndex !== footerContentIndex, {
+  message: 'Quotation message partitions must use distinct slots',
+});
+
+export type SteelQuotationMessagePublication = z.infer<
+  typeof steelQuotationMessagePublicationSchema
+>;
+
+export interface SteelQuotationMessageUpdate {
+  message: TMessage;
+  publication: SteelQuotationMessagePublication;
+  update: 'order' | 'summary';
+}
 
 export const steelQuotationStatuses = [
   'idle',

@@ -1,16 +1,235 @@
+import { z } from 'zod';
+import { createHash } from 'node:crypto';
 import { parseSteelReviewMarkdownTables } from 'librechat-data-provider';
 import type {
+  ISteelQuotationState,
+  SteelQuotationActiveRun,
+  SteelQuotationCurrentSystemOrder,
+  SteelQuotationOrderPublicationReceipt,
   SteelQuotationPublicationMessage,
   SteelQuotationPublicationProof,
   SteelQuotationPublicationSaveContext,
   SteelQuotationPublicationSaveResult,
+  SteelQuotationSavedMessage,
   SteelQuotationScope,
 } from '@librechat/data-schemas';
 import type { ResponseAggregator } from '../../agents/responses/service';
 import type { ResponseTracker } from '../../agents/responses/handlers';
 import type { OutputItem } from '../../agents/responses/types';
+import type { SteelQuotationStateService } from './state';
+import { normalizeSystemOrderMarkdown, systemOrderColumns } from '../markdown/order';
+import { canonicalizeSystemOrderMarkdown } from './revision';
 import { createSteelReviewBaselineRows } from '../review';
+import { parseMarkdownTables } from '../markdown/table';
 import { parseAssistantMarkdown } from '../ocr/result';
+import { sameQuotationOcrSelection } from './input';
+
+const hash = (text: string): string => createHash('sha256').update(text).digest('hex');
+const sha256 = z.string().regex(/^[a-f0-9]{64}$/u);
+const orderPublicationReceiptSchema = z
+  .object({
+    version: z.literal(1),
+    runId: z.string().min(1),
+    targetMessageId: z.string().min(1),
+    outputId: z.string().min(1),
+    inputSnapshotSha256: sha256,
+    normalizedSha256: sha256,
+    systemOrderSha256: sha256,
+  })
+  .strict();
+const legacyPublicationReceiptSchema = z
+  .object({ finalSha256: sha256 })
+  .strict();
+const markdownReferenceSchema = z.object({
+  kind: z.enum(['ocr_result', 'system_order', 'customer_data']),
+  source: z.enum(['ai', 'human']),
+  snapshotId: z.string(),
+  generationId: z.string(),
+  outputId: z.string(),
+  messageId: z.string(),
+  title: z.string(),
+  revision: z.string(),
+  sha256,
+  lineageId: z.string(),
+  version: z.number().int().positive().optional(),
+  savedAt: z.coerce.date(),
+  operationId: z.string().optional(),
+});
+const ocrSelectionSchema = z.object({
+  candidates: z.object({
+    ai: markdownReferenceSchema.optional(),
+    human: markdownReferenceSchema.optional(),
+  }),
+  selected: markdownReferenceSchema,
+  version: z.number().int().positive(),
+});
+export type PublishedQuotationOrderRead =
+  | { status: 'absent' }
+  | { status: 'invalid' }
+  | {
+      status: 'published';
+      value: {
+        state: ISteelQuotationState;
+        run: SteelQuotationActiveRun;
+        systemOrder: SteelQuotationCurrentSystemOrder;
+        receipt: SteelQuotationOrderPublicationReceipt | { legacy: true; finalSha256: string };
+      };
+    };
+
+export async function readPublishedQuotationOrder(input: {
+  scope: SteelQuotationScope;
+  service: Pick<SteelQuotationStateService, 'readState' | 'getArtifact' | 'isPublishedRun'>;
+}): Promise<PublishedQuotationOrderRead> {
+  const state = await input.service.readState(input.scope);
+  const run = state?.activeRun;
+  const systemOrder = state?.currentSystemOrder;
+  const publicationRef = run?.checkpointRefs.find(
+    (ref) => ref.operationId === 'order-published' && ref.kind === 'main',
+  );
+  const hasPublicationMarker = run?.checkpointRefs.some((ref) => ref.operationId === 'order-published') ?? false;
+  const normalizedRef = run?.checkpointRefs.find(
+    (ref) => ref.operationId === 'system-order:normalized' && ref.kind === 'main',
+  );
+  if (!state || !run) return { status: 'absent' };
+  if (!hasPublicationMarker) {
+    const legacyPublicationRef = run.checkpointRefs.find(
+      (ref) => ref.operationId === 'published' && ref.kind === 'final',
+    );
+    const legacyFinalRef = run.checkpointRefs.find(
+      (ref) => ref.operationId === 'final' && ref.kind === 'final',
+    );
+    if (!legacyPublicationRef && !legacyFinalRef) return { status: 'absent' };
+    if (
+      !systemOrder ||
+      !legacyPublicationRef ||
+      !legacyFinalRef ||
+      run.status !== 'completed' ||
+      !run.targetMessageId ||
+      systemOrder.runId !== run.runId ||
+      systemOrder.messageId !== run.targetMessageId
+    ) {
+      return { status: 'invalid' };
+    }
+    if (!(await input.service.isPublishedRun(input.scope, run))) return { status: 'invalid' };
+    const [legacyPublication, legacyFinal] = await Promise.all([
+      input.service.getArtifact({ scope: input.scope, runId: run.runId, operationId: 'published' }),
+      input.service.getArtifact({ scope: input.scope, runId: run.runId, operationId: 'final' }),
+    ]);
+    if (
+      !legacyPublication ||
+      legacyPublication.kind !== 'final' ||
+      legacyPublication.sha256 !== legacyPublicationRef.sha256 ||
+      hash(legacyPublication.payload) !== legacyPublication.sha256 ||
+      !legacyFinal ||
+      legacyFinal.kind !== 'final' ||
+      legacyFinal.sha256 !== legacyFinalRef.sha256 ||
+      hash(legacyFinal.payload) !== legacyFinal.sha256
+    ) {
+      return { status: 'invalid' };
+    }
+    try {
+      const receipt = legacyPublicationReceiptSchema.safeParse(JSON.parse(legacyPublication.payload));
+      if (!receipt.success || receipt.data.finalSha256 !== legacyFinal.sha256) return { status: 'invalid' };
+      const canonical = canonicalizeSystemOrderMarkdown(
+        normalizeSystemOrderMarkdown(systemOrder.markdown),
+      );
+      const table = parseMarkdownTables(canonical?.markdown ?? '')[0];
+      if (
+        !canonical ||
+        canonical.markdown !== systemOrder.markdown ||
+        !table ||
+        table.rows.length === 0 ||
+        JSON.stringify(table.headers) !== JSON.stringify(systemOrderColumns) ||
+        hash(systemOrder.markdown) !== systemOrder.sha256
+      ) {
+        return { status: 'invalid' };
+      }
+      return {
+        status: 'published',
+        value: {
+          state,
+          run,
+          systemOrder,
+          receipt: { legacy: true, finalSha256: receipt.data.finalSha256 },
+        },
+      };
+    } catch {
+      return { status: 'invalid' };
+    }
+  }
+  if (!systemOrder || !publicationRef) return { status: 'invalid' };
+
+  // New publications are the completion proof themselves. They may be read
+  // after the run lease is cleared, so this path must never depend on the
+  // expiring input snapshot or on rerunning the model.
+  if (!normalizedRef || run.status !== 'completed' || run.targetMessageId == null) {
+    return { status: 'invalid' };
+  }
+  if (!(await input.service.isPublishedRun(input.scope, run))) return { status: 'invalid' };
+  const [publication, normalized] = await Promise.all([
+    input.service.getArtifact({ scope: input.scope, runId: run.runId, operationId: 'order-published' }),
+    input.service.getArtifact({ scope: input.scope, runId: run.runId, operationId: 'system-order:normalized' }),
+  ]);
+  if (
+    !publication ||
+    publication.kind !== 'main' ||
+    publication.sha256 !== publicationRef.sha256 ||
+    hash(publication.payload) !== publication.sha256 ||
+    !normalized ||
+    normalized.kind !== 'main' ||
+    normalized.sha256 !== normalizedRef.sha256 ||
+    hash(normalized.payload) !== normalized.sha256
+  ) {
+    return { status: 'invalid' };
+  }
+  let receipt: SteelQuotationOrderPublicationReceipt;
+  try {
+    const parsedReceipt = orderPublicationReceiptSchema.safeParse(JSON.parse(publication.payload));
+    if (!parsedReceipt.success) return { status: 'invalid' };
+    receipt = parsedReceipt.data;
+  } catch {
+    return { status: 'invalid' };
+  }
+  const owner = state.markdownPublication?.current?.system_order;
+  const canonical = canonicalizeSystemOrderMarkdown(normalizeSystemOrderMarkdown(normalized.payload));
+  const table = parseMarkdownTables(canonical?.markdown ?? '')[0];
+  const effectiveCanonical = canonicalizeSystemOrderMarkdown(
+    normalizeSystemOrderMarkdown(systemOrder.markdown),
+  );
+  const effectiveTable = parseMarkdownTables(effectiveCanonical?.markdown ?? '')[0];
+  const runSelection = ocrSelectionSchema.optional().safeParse(run.ocrSelection);
+  if (
+    receipt.runId !== run.runId ||
+    receipt.targetMessageId !== run.targetMessageId ||
+    receipt.targetMessageId !== systemOrder.messageId ||
+    receipt.outputId !== `system_order:${run.runId}` ||
+    receipt.inputSnapshotSha256 !== run.snapshotRef.sha256 ||
+    receipt.normalizedSha256 !== normalized.sha256 ||
+    receipt.systemOrderSha256 !== normalized.sha256 ||
+    hash(systemOrder.markdown) !== systemOrder.sha256 ||
+    !canonical ||
+    canonical.markdown !== normalized.payload ||
+    !table ||
+    table.rows.length === 0 ||
+    JSON.stringify(table.headers) !== JSON.stringify(systemOrderColumns) ||
+    !effectiveCanonical ||
+    effectiveCanonical.markdown !== systemOrder.markdown ||
+    !effectiveTable ||
+    effectiveTable.rows.length === 0 ||
+    JSON.stringify(effectiveTable.headers) !== JSON.stringify(systemOrderColumns) ||
+    !runSelection.success ||
+    !sameQuotationOcrSelection(run.ocrSelection, systemOrder.ocrSelection) ||
+    owner?.ai?.outputId !== receipt.outputId ||
+    owner?.ai?.messageId !== receipt.targetMessageId ||
+    owner?.ai?.sha256 !== receipt.systemOrderSha256 ||
+    owner?.effective?.outputId !== receipt.outputId ||
+    owner?.effective?.messageId !== receipt.targetMessageId ||
+    owner?.effective?.sha256 !== systemOrder.sha256
+  ) {
+    return { status: 'invalid' };
+  }
+  return { status: 'published', value: { state, run, systemOrder, receipt } };
+}
 
 export interface SteelQuotationPublicationContentPart {
   type: string;
@@ -45,6 +264,7 @@ export interface SteelQuotationPublicationPublisherInput {
   savePublication: (
     input: SteelQuotationPublicationProof,
   ) => Promise<SteelQuotationPublicationSaveResult>;
+  onPublicationCommitted?: (message: SteelQuotationSavedMessage) => Promise<void>;
   saveContext?: SteelQuotationPublicationSaveContext;
 }
 
@@ -114,10 +334,15 @@ export function createSteelQuotationPublicationMessageBuilder(input: {
   const capturedPrimaryText = primaryText(input);
   return async ({ targetMessageId, markdown }) => {
     const fields = await input.buildMessageFields(targetMessageId);
+    const content = [
+      ...(capturedPrimaryText ? [{ type: 'text', text: capturedPrimaryText }] : []),
+      { type: 'text', text: markdown },
+    ];
     return {
       ...fields,
       messageId: targetMessageId,
       text: `${capturedPrimaryText}\n\n${markdown}`,
+      content,
     };
   };
 }
@@ -185,7 +410,7 @@ export function createSteelQuotationPublicationPublisher(
     const revision = proof.reviewMetadata?.lineage.outputId === outputId
       ? proof.reviewMetadata.lineage.revision
       : proof.runId;
-    return input.savePublication({
+    const result = await input.savePublication({
       ...proof,
       reviewBaseline: { kind: 'system_order', title: section.title, outputId, revision,
         baselineMarkdown, headers: table.headers, sourceMappings: proof.sourceSnapshot?.mappings ?? [],
@@ -205,7 +430,17 @@ export function createSteelQuotationPublicationPublisher(
         sourceMessageId,
         conversationId: scope.conversationId,
         user: scope.userId,
+        tenantId: scope.tenantId,
       },
     });
+    if (result.ok && input.onPublicationCommitted) {
+      try {
+        await input.onPublicationCommitted(result.message);
+      } catch {
+        // The database transaction is already committed; delivery observers
+        // cannot turn a durable publication into an interrupted quotation.
+      }
+    }
+    return result;
   };
 }

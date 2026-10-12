@@ -1,22 +1,38 @@
 import mongoose from 'mongoose';
+import { createHash } from 'node:crypto';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import {
   createMethods,
   createModels,
+  createSteelQuotationArtifactModel,
+  createSteelQuotationStateModel,
   createSteelReviewWriteMethods,
 } from '@librechat/data-schemas';
-import type { SteelMarkdownCompletionInput } from './completion';
+import type {
+  ISteelQuotationArtifact,
+  SteelMarkdownReference,
+  SteelQuotationActiveRun,
+  SteelQuotationArtifactRef,
+  SteelQuotationCheckpointRef,
+  SteelQuotationCurrentSystemOrder,
+  SteelQuotationOcrSelection,
+  SteelQuotationScope,
+} from '@librechat/data-schemas';
+import type { SteelQuotationMessagePublication } from 'librechat-data-provider';
+import type { SteelMarkdownCompletionInput, SteelPublishedResponsePort } from './completion';
 import type { SteelSqlParameter } from '../repositories/types';
+import { createSteelMarkdownCompletionServices, shouldDeferSteelMarkdownPersistence } from './completion';
 import { prepareQuotationTurn, renderQuotationCustomerMarkdown } from '../quotation/preparation';
+import { normalizeSystemOrderMarkdown, systemOrderColumns } from './order';
+import { canonicalizeSystemOrderMarkdown } from '../quotation/revision';
 import { createSteelQuotationStateService } from '../quotation/state';
-import { createSteelMarkdownCompletionServices } from './completion';
 import { createSteelOcrResponseAuditService } from '../ocr/audit';
 import { createSteelFullMarkdownPublisher } from './full';
 import { createSteelOcrStateService } from '../ocr/state';
 import { createSteelReviewService } from '../review';
 import * as runner from '../quotation/runner';
 
-const scope = {
+const scope: SteelQuotationScope = {
   userId: '507f1f77bcf86cd799439011',
   conversationId: '6bf991da-be8c-5300-bd85-ff6ee2d17bb5',
 };
@@ -24,6 +40,8 @@ const order = (quantity: string) =>
   `## ocr_result\n\n| 類別 | 零件編號 | 數量 | 來源 |\n| --- | --- | --- | --- |\n| 鋼板 | P1 | ${quantity} | 文字訂單 |`;
 let server: MongoMemoryReplSet;
 let db: ReturnType<typeof createMethods>;
+let State: ReturnType<typeof createSteelQuotationStateModel>;
+let Artifact: ReturnType<typeof createSteelQuotationArtifactModel>;
 const services = () => ({
   ocr: createSteelOcrStateService(mongoose),
   quotation: createSteelQuotationStateService(mongoose),
@@ -33,6 +51,8 @@ beforeAll(async () => {
   await mongoose.connect(server.getUri());
   const models = createModels(mongoose);
   await Promise.all(Object.values(models).map((model) => model.init()));
+  State = createSteelQuotationStateModel(mongoose);
+  Artifact = createSteelQuotationArtifactModel(mongoose);
   db = createMethods(mongoose);
 }, 60000);
 beforeEach(async () => {
@@ -44,6 +64,9 @@ beforeEach(async () => {
 afterAll(async () => {
   await mongoose.disconnect();
   await server.stop();
+});
+afterEach(() => {
+  jest.restoreAllMocks();
 });
 
 async function turn(
@@ -106,6 +129,274 @@ async function turn(
   };
 }
 
+function sha256(value: string): string {
+  return createHash('sha256').update(value, 'utf8').digest('hex');
+}
+
+function canonicalSystemOrder(value: string): string {
+  const cells = [
+    'M-1',
+    value,
+    'MAT-1',
+    '10',
+    '2',
+    '20',
+    '6',
+    '100',
+    '200',
+    '0',
+    'kg',
+    '鋼板',
+    '1',
+    'kg',
+    'F1',
+    '',
+  ];
+  const raw = [
+    '## system_order',
+    '',
+    `| ${systemOrderColumns.join(' | ')} |`,
+    `| ${systemOrderColumns.map(() => '---').join(' | ')} |`,
+    `| ${cells.join(' | ')} |`,
+  ].join('\n');
+  const normalized = normalizeSystemOrderMarkdown(raw);
+  const canonical = canonicalizeSystemOrderMarkdown(normalized);
+  if (!canonical) throw new Error('Failed to build canonical system order fixture');
+  return canonical.markdown;
+}
+
+interface DurableOrderFixture {
+  fixture: Awaited<ReturnType<typeof turn>>;
+  run: SteelQuotationActiveRun;
+  systemOrder: SteelQuotationCurrentSystemOrder;
+  targetMessageId: string;
+  owner: SteelMarkdownReference;
+  publication: SteelQuotationMessagePublication;
+  publishedResponse: SteelPublishedResponsePort;
+}
+
+async function seedPublishedOrder(
+  rawMarkdown: string,
+  options: {
+    owner?: boolean;
+    runOcrSelection?: SteelQuotationOcrSelection;
+    systemOrderMarkdown?: string;
+    normalizedMarkdown?: string;
+    targetMessageId?: string;
+    runId?: string;
+  } = {},
+): Promise<DurableOrderFixture> {
+  const quotation = services().quotation;
+  const prepared = await quotation.setOrder({
+    scope,
+    fullMarkdown: order('2'),
+    revision: 'ocr-source',
+    messageId: 'ocr-source-message',
+  });
+  if (!prepared.currentOrder) throw new Error('Missing quotation order fixture');
+  const customer = await quotation.saveCustomer({
+    scope,
+    customerMarkdown: renderQuotationCustomerMarkdown({ tier: 'B' }),
+    customerIdentity: 'fixture-customer',
+    triggeringMessageId: 'user-ai-2',
+    responseId: 'ai-2',
+    orderHash: prepared.currentOrder.sha256,
+    selectionProvenance: { method: 'unique' },
+  });
+  const fixture = await turn(rawMarkdown);
+  const admission = fixture.input.req.steelNativeContext?.quotation?.publicationAdmission;
+  if (!admission) throw new Error('Missing quotation publication admission');
+
+  const runId = options.runId ?? 'quotation-run-error';
+  const targetMessageId = options.targetMessageId ?? 'canonical-target';
+  const canonical = canonicalSystemOrder('canonical');
+  const normalizedMarkdown = options.normalizedMarkdown ?? canonical;
+  const systemOrderMarkdown = options.systemOrderMarkdown ?? normalizedMarkdown;
+  const normalizedSha256 = sha256(normalizedMarkdown);
+  const systemOrderSha256 = sha256(systemOrderMarkdown);
+  const now = new Date();
+  const snapshotPayload = JSON.stringify({
+    orderHash: prepared.currentOrder.sha256,
+    customerIdentity: customer.customerIdentity,
+    customerMarkdown: customer.customerMarkdown,
+    ...(options.runOcrSelection ? { ocrSelection: options.runOcrSelection } : {}),
+  });
+  const snapshotSha256 = sha256(snapshotPayload);
+  const receipt = {
+    version: 1 as const,
+    runId,
+    targetMessageId,
+    outputId: `system_order:${runId}`,
+    inputSnapshotSha256: snapshotSha256,
+    normalizedSha256,
+    systemOrderSha256: normalizedSha256,
+  };
+  const publicationPayload = JSON.stringify(receipt);
+  const snapshotRef: SteelQuotationArtifactRef = {
+    artifactId: `${runId}:snapshot:${snapshotSha256}`,
+    userId: scope.userId,
+    conversationId: scope.conversationId,
+    runId,
+    operationId: 'snapshot',
+    kind: 'snapshot',
+    sha256: snapshotSha256,
+  };
+  const normalizedRef: SteelQuotationArtifactRef = {
+    artifactId: `${runId}:system-order:normalized:${normalizedSha256}`,
+    userId: scope.userId,
+    conversationId: scope.conversationId,
+    runId,
+    operationId: 'system-order:normalized',
+    kind: 'main',
+    sha256: normalizedSha256,
+  };
+  const publicationRef: SteelQuotationArtifactRef = {
+    artifactId: `${runId}:order-published:${sha256(publicationPayload)}`,
+    userId: scope.userId,
+    conversationId: scope.conversationId,
+    runId,
+    operationId: 'order-published',
+    kind: 'main',
+    sha256: sha256(publicationPayload),
+  };
+  const checkpointRefs: SteelQuotationCheckpointRef[] = [
+    { ...normalizedRef, updatedAt: now },
+    { ...publicationRef, updatedAt: now },
+  ];
+  const run: SteelQuotationActiveRun = {
+    runId,
+    index: 1,
+    status: 'completed',
+    triggerMessageId: 'user-ai-2',
+    targetMessageId,
+    snapshotRef,
+    chunks: [{ index: 0, sourceRowCount: 1, status: 'completed' }],
+    checkpointRefs,
+    ...(options.runOcrSelection ? { ocrSelection: options.runOcrSelection } : {}),
+    acceptedAt: now,
+    updatedAt: now,
+  };
+  const systemOrder: SteelQuotationCurrentSystemOrder = {
+    runId,
+    sha256: systemOrderSha256,
+    markdown: systemOrderMarkdown,
+    messageId: targetMessageId,
+    responseId: fixture.input.responseId,
+    updatedAt: now,
+  };
+  const owner: SteelMarkdownReference = {
+    kind: 'system_order',
+    source: 'ai',
+    snapshotId: `markdown:quotation:${runId}:ai:system_order`,
+    generationId: `quotation:${runId}`,
+    outputId: receipt.outputId,
+    messageId: targetMessageId,
+    title: 'system_order',
+    revision: runId,
+    sha256: normalizedSha256,
+    lineageId: admission.lineageId,
+    version: 1,
+    savedAt: now,
+  };
+  const effectiveOwner: SteelMarkdownReference = { ...owner, source: 'human', sha256: systemOrderSha256 };
+  const baselinePublication = { reference: owner, rawMarkdown: normalizedMarkdown, baselineMarkdown: normalizedMarkdown };
+  const baselinePayload = JSON.stringify(baselinePublication);
+  await Artifact.create([
+    {
+      ...scope,
+      runId: `markdown:quotation:${runId}`,
+      operationId: 'ai:system_order',
+      kind: 'main',
+      sha256: sha256(baselinePayload),
+      payload: baselinePayload,
+      markdownPublication: baselinePublication,
+    } satisfies Partial<ISteelQuotationArtifact>,
+    {
+      ...scope,
+      runId,
+      operationId: snapshotRef.operationId,
+      kind: snapshotRef.kind,
+      sha256: snapshotSha256,
+      payload: snapshotPayload,
+      createdAt: now,
+      updatedAt: now,
+    } satisfies Partial<ISteelQuotationArtifact>,
+    {
+      ...scope,
+      runId,
+      operationId: normalizedRef.operationId,
+      kind: normalizedRef.kind,
+      sha256: normalizedSha256,
+      payload: normalizedMarkdown,
+      createdAt: now,
+      updatedAt: now,
+    } satisfies Partial<ISteelQuotationArtifact>,
+    {
+      ...scope,
+      runId,
+      operationId: publicationRef.operationId,
+      kind: publicationRef.kind,
+      sha256: publicationRef.sha256,
+      payload: publicationPayload,
+      createdAt: now,
+      updatedAt: now,
+    } satisfies Partial<ISteelQuotationArtifact>,
+  ]);
+  const updated = await State.findOneAndUpdate(
+    { userId: scope.userId, conversationId: scope.conversationId },
+    {
+      $set: {
+        activeRun: run,
+        currentSystemOrder: systemOrder,
+        'markdownPublication.current.system_order': { ai: owner, effective: effectiveOwner },
+      },
+    },
+    { new: true },
+  ).lean();
+  if (!updated) throw new Error('Missing published quotation state fixture');
+  const publication: SteelQuotationMessagePublication = {
+    version: 1,
+    runId,
+    outputId: receipt.outputId,
+    sourceMessageId: fixture.input.responseId,
+    admissionSequence: admission.sequence,
+    receiptSha256: publicationRef.sha256,
+    tableContentIndex: 1,
+    summaryContentIndex: 2,
+    footerContentIndex: 3,
+  };
+  await db.saveMessage(
+    { userId: scope.userId },
+    {
+      ...scope,
+      messageId: targetMessageId,
+      user: scope.userId,
+      text: `host prefix\n\n${canonical}`,
+      content: [
+        { type: 'text', text: 'host prefix' },
+        { type: 'text', text: canonical },
+        { type: 'text', text: '' },
+        { type: 'text', text: '' },
+      ],
+      isCreatedByUser: false,
+      metadata: {
+        steelQuotation: publication,
+        ...(options.owner === false ? {} : { steelMarkdownOwners: { system_order: owner } }),
+      },
+    },
+    { context: 'terminal quotation recovery test' },
+  );
+  const publishedResponse: SteelPublishedResponsePort = {
+    load: async ({ responseId, conversationId, userId, tenantId }) => {
+      const record = await db.getMessage({ user: userId, messageId: responseId });
+      return record && record.conversationId === conversationId && record.tenantId === tenantId ? record : null;
+    },
+    accept: jest.fn(),
+  };
+  fixture.input.publishedResponse = publishedResponse;
+  return { fixture, run, systemOrder, targetMessageId, owner, publication, publishedResponse };
+}
+
 it('rejects a new owner collision without reading its OCR into publication audit or mirrors', async () => {
   const fixture = await turn(order('2'));
   const dependencies = services();
@@ -151,6 +442,202 @@ it('publishes the full clean response and fresh review baseline atomically', asy
   expect(await db.readSteelMarkdownVersions(scope)).toEqual([
     expect.objectContaining({ latest: true, saves: 0, outputId: 'ocr_result:ai-2' }),
   ]);
+});
+
+it('projects a durable completed order into the terminal response without republishing raw error text', async () => {
+  const fixture = await seedPublishedOrder(canonicalSystemOrder('partial'));
+  const load = jest.spyOn(fixture.publishedResponse, 'load');
+  const apply = jest.fn(fixture.fixture.input.applyMarkdown);
+  fixture.fixture.input.applyMarkdown = apply;
+  const notify = jest.fn(async () => undefined);
+  fixture.fixture.input.onPublishedResponse = notify;
+  const result = await fixture.fixture.run();
+  const saved = await db.getMessage({ user: scope.userId, messageId: fixture.targetMessageId });
+
+  expect(result).toMatchObject({
+    markdown: saved?.text,
+    acceptedRun: { runId: fixture.run.runId, status: 'completed' },
+  });
+  expect(saved?.text).toContain(canonicalSystemOrder('canonical'));
+  expect(load).toHaveBeenCalledWith({
+    responseId: fixture.targetMessageId,
+    conversationId: scope.conversationId,
+    userId: scope.userId,
+  });
+  expect(fixture.publishedResponse.accept).toHaveBeenCalledWith(saved);
+  expect(notify).toHaveBeenCalledWith(saved);
+  expect(apply).not.toHaveBeenCalled();
+  expect(fixture.fixture.persist).not.toHaveBeenCalled();
+  expect(await db.getMessage({ user: scope.userId, messageId: fixture.fixture.input.responseId })).toBeNull();
+});
+
+it('adopts a completed order after input expiry and summary Stop without republishing its table', async () => {
+  const fixture = await seedPublishedOrder('Summary stopped');
+  await Artifact.deleteMany({ ...scope, runId: fixture.run.runId, operationId: 'snapshot' });
+  const stopped = jest.fn(async () => { throw new Error('Summary stopped'); });
+  fixture.fixture.input.assertActive = stopped;
+  fixture.fixture.input.completed = false;
+  await db.saveMessage({ userId: scope.userId }, {
+    ...scope,
+    messageId: fixture.targetMessageId,
+    user: scope.userId,
+    text: `host prefix\n\n${fixture.systemOrder.markdown}\n\n## notes\n\nSummary\n\n## quote_summary\n\nBackend footer`,
+    content: [
+      { type: 'text', text: 'host prefix' },
+      { type: 'text', text: fixture.systemOrder.markdown },
+      { type: 'text', text: '## notes\n\nSummary' },
+      { type: 'text', text: '## quote_summary\n\nBackend footer' },
+    ],
+    isCreatedByUser: false,
+    metadata: { steelMarkdownOwners: { system_order: fixture.owner }, steelQuotation: fixture.publication },
+  });
+  const result = await fixture.fixture.run();
+  expect(result.acceptedRun?.status).toBe('completed');
+  expect(result.markdown).toContain('Backend footer');
+  expect(stopped).not.toHaveBeenCalled();
+  expect(fixture.fixture.persist).not.toHaveBeenCalled();
+});
+
+it('persists a later ordinary reply without adopting the previous completed quotation', async () => {
+  const published = await seedPublishedOrder('Original summary');
+  const before = await db.getMessage({ user: scope.userId, messageId: published.targetMessageId });
+  const later = await turn('A later ordinary answer', 'assistant-3', 'ai-3', '請說明');
+  const result = await later.run();
+  expect(result.acceptedRun).toBeUndefined();
+  expect(later.persist).toHaveBeenCalled();
+  expect((await db.getMessage({ user: scope.userId, messageId: 'assistant-3' }))?.text)
+    .toContain('A later ordinary answer');
+  expect((await db.getMessage({ user: scope.userId, messageId: published.targetMessageId }))?.text)
+    .toBe(before?.text);
+});
+
+it('rejects an ordinary AI response that tries to publish a replacement system order', async () => {
+  const published = await seedPublishedOrder('Original summary');
+  const before = await services().quotation.readCurrentSystemOrder(scope);
+  const later = await turn(canonicalSystemOrder('AI replacement'), 'assistant-3', 'ai-3', '請說明');
+  await expect(later.run()).rejects.toMatchObject({ code: 'invalid_system_order' });
+  expect(later.persist).not.toHaveBeenCalled();
+  expect(await db.getMessage({ user: scope.userId, messageId: 'assistant-3' })).toBeNull();
+  expect(await services().quotation.readCurrentSystemOrder(scope)).toMatchObject({ sha256: before?.sha256 });
+  expect((await db.getMessage({ user: scope.userId, messageId: published.targetMessageId }))?.text)
+    .toContain(canonicalSystemOrder('canonical'));
+});
+
+it('rejects a loaded owned response whose system order differs from the durable canonical table', async () => {
+  const fixture = await seedPublishedOrder(canonicalSystemOrder('partial'));
+  await db.saveMessage(
+    { userId: scope.userId },
+    {
+      ...scope,
+      messageId: fixture.targetMessageId,
+      user: scope.userId,
+      text: `host prefix\n\n${canonicalSystemOrder('forged')}`,
+      isCreatedByUser: false,
+      metadata: { steelMarkdownOwners: { system_order: fixture.owner }, steelQuotation: fixture.publication },
+    },
+    { context: 'terminal quotation recovery mismatch test' },
+  );
+
+  await expect(fixture.fixture.run()).rejects.toMatchObject({ code: 'superseded_response' });
+  expect(fixture.publishedResponse.accept).not.toHaveBeenCalled();
+  expect(fixture.fixture.persist).not.toHaveBeenCalled();
+  expect(await db.getMessage({ user: scope.userId, messageId: fixture.fixture.input.responseId })).toBeNull();
+});
+
+it('rejects a canonical response without the durable system order owner metadata', async () => {
+  const fixture = await seedPublishedOrder(canonicalSystemOrder('partial'), { owner: false });
+  await expect(fixture.fixture.run()).rejects.toMatchObject({ code: 'superseded_response' });
+  expect(fixture.publishedResponse.accept).not.toHaveBeenCalled();
+  expect(fixture.fixture.persist).not.toHaveBeenCalled();
+  expect(await db.getMessage({ user: scope.userId, messageId: fixture.fixture.input.responseId })).toBeNull();
+});
+
+it('fails closed when the frozen OCR selection does not match the completed run', async () => {
+  const ocrReference: SteelMarkdownReference = {
+    kind: 'ocr_result',
+    source: 'ai',
+    snapshotId: 'markdown:ocr-source:ai:ocr_result',
+    generationId: 'ocr-source',
+    outputId: 'ocr_result:ocr-source',
+    messageId: 'ocr-source-message',
+    title: 'ocr_result',
+    revision: 'ocr-source',
+    sha256: 'd'.repeat(64),
+    lineageId: 'ocr-lineage',
+    version: 1,
+    savedAt: new Date(),
+  };
+  const selection: SteelQuotationOcrSelection = {
+    candidates: { ai: ocrReference },
+    selected: ocrReference,
+    version: 1,
+  };
+  const fixture = await seedPublishedOrder(canonicalSystemOrder('partial'), {
+    runOcrSelection: selection,
+  });
+  const before = await db.getMessage({ user: scope.userId, messageId: fixture.targetMessageId });
+  const load = jest.spyOn(fixture.publishedResponse, 'load');
+
+  await expect(fixture.fixture.run()).rejects.toMatchObject({ code: 'superseded_response' });
+  expect(load).not.toHaveBeenCalled();
+  expect(fixture.publishedResponse.accept).not.toHaveBeenCalled();
+  expect(fixture.fixture.persist).not.toHaveBeenCalled();
+  expect(await db.getMessage({ user: scope.userId, messageId: fixture.targetMessageId })).toMatchObject({
+    text: before?.text,
+  });
+  expect(await db.getMessage({ user: scope.userId, messageId: fixture.fixture.input.responseId })).toBeNull();
+});
+
+it('rejects raw prose when a self-consistent normalized artifact is not a canonical system order', async () => {
+  const nonCanonical = '## system_order\n\n| 品名 | 數量 |\n| --- | ---: |\n| canonical | 2 |';
+  const fixture = await seedPublishedOrder('The quotation run failed before completion.', {
+    systemOrderMarkdown: nonCanonical,
+    normalizedMarkdown: nonCanonical,
+  });
+  const before = await db.getMessage({ user: scope.userId, messageId: fixture.targetMessageId });
+  const load = jest.spyOn(fixture.publishedResponse, 'load');
+
+  await expect(fixture.fixture.run()).rejects.toMatchObject({ code: 'superseded_response' });
+  expect(load).not.toHaveBeenCalled();
+  expect(fixture.publishedResponse.accept).not.toHaveBeenCalled();
+  expect(fixture.fixture.persist).not.toHaveBeenCalled();
+  expect(await db.getMessage({ user: scope.userId, messageId: fixture.targetMessageId })).toMatchObject({
+    text: before?.text,
+  });
+  expect(await db.getMessage({ user: scope.userId, messageId: fixture.fixture.input.responseId })).toBeNull();
+});
+
+it('maps an authoritative publication read outage to response_save_failed', async () => {
+  const fixture = await seedPublishedOrder(canonicalSystemOrder('partial'));
+  const dependencies = services();
+  jest.spyOn(dependencies.quotation, 'readState').mockRejectedValue(new Error('database unavailable'));
+  const load = jest.spyOn(fixture.publishedResponse, 'load');
+
+  await expect(
+    createSteelMarkdownCompletionServices(dependencies).finalize(fixture.fixture.input),
+  ).rejects.toMatchObject({ code: 'response_save_failed' });
+  expect(load).not.toHaveBeenCalled();
+  expect(fixture.publishedResponse.accept).not.toHaveBeenCalled();
+  expect(fixture.fixture.persist).not.toHaveBeenCalled();
+  expect(await db.getMessage({ user: scope.userId, messageId: fixture.fixture.input.responseId })).toBeNull();
+});
+
+it('rejects a malformed effective system order even when the normalized AI baseline is canonical', async () => {
+  const malformedEffective = '## system_order\n\n| 品名 | 數量 |\n| --- | ---: |\n| effective | 3 |';
+  const fixture = await seedPublishedOrder(canonicalSystemOrder('partial'), {
+    systemOrderMarkdown: malformedEffective,
+  });
+  const before = await db.getMessage({ user: scope.userId, messageId: fixture.targetMessageId });
+  const load = jest.spyOn(fixture.publishedResponse, 'load');
+
+  await expect(fixture.fixture.run()).rejects.toMatchObject({ code: 'superseded_response' });
+  expect(load).not.toHaveBeenCalled();
+  expect(fixture.publishedResponse.accept).not.toHaveBeenCalled();
+  expect(fixture.fixture.persist).not.toHaveBeenCalled();
+  expect(await db.getMessage({ user: scope.userId, messageId: fixture.targetMessageId })).toMatchObject({
+    text: before?.text,
+  });
+  expect(await db.getMessage({ user: scope.userId, messageId: fixture.fixture.input.responseId })).toBeNull();
 });
 
 it('loads quotation prompt rules through the supplied PostgreSQL client', async () => {
@@ -221,9 +708,9 @@ it('overwrites the chat message with the normalized AI baseline while leaving ea
   fixture.input.applyMarkdown = apply;
   const result = await fixture.run();
   expect(apply).toHaveBeenCalledWith(result.markdown);
-  expect(result.markdown).toContain('| 厚度 | 長度 | 數量 | 加工 | 備註 | 來源 |');
+  expect(result.markdown).toContain('| 數量 | 厚度 | 長度 | 加工 | 備註 | 來源 |');
   expect(result.markdown).toContain(
-    '| 6 | 1250 | 2 | 切割 | 原長度 1.25m；原厚度 6.35mm | 文字訂單 |',
+    '| 2 | 6 | 1250 | 切割 | 原長度 1.25m；原厚度 6.35mm | 文字訂單 |',
   );
   expect((await db.getMessage({ user: scope.userId, messageId: 'assistant-2' }))?.text).toBe(
     result.markdown,
@@ -541,4 +1028,10 @@ it('commits delegate completion and claim cleanup with its full clean publicatio
     result.markdown,
   );
   expect(await fixture.run()).toMatchObject({ markdown: result.markdown });
+});
+
+ it('defers scoped plain prose to the terminal finalizer and preserves unscoped persistence', () => {
+  expect(shouldDeferSteelMarkdownPersistence({ steelNativeContext: { quotation: { scope } } },
+    'main summary')).toBe(true);
+  expect(shouldDeferSteelMarkdownPersistence({}, 'main summary')).toBe(false);
 });

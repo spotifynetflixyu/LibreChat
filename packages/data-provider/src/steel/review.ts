@@ -109,6 +109,7 @@ export const steelReviewOwnerUpdatedSchema = z.object({
   outputId: z.string().min(1),
   revision: z.string().min(1),
   updatedAt: z.string().datetime(),
+  effectiveVersion: z.number().int().positive().optional(),
 });
 export type SteelReviewOwnerUpdated = z.infer<typeof steelReviewOwnerUpdatedSchema>;
 

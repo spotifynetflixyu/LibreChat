@@ -12,6 +12,7 @@ import type {
   TMessageContentParts,
 } from 'librechat-data-provider';
 import type { EventHandlerParams } from '~/hooks/SSE/useEventHandlers';
+import type { TResData } from '~/common';
 import useEventHandlers from '~/hooks/SSE/useEventHandlers';
 
 jest.mock('~/Providers', () => ({
@@ -277,5 +278,195 @@ describe('quotation final response reconciliation', () => {
     expect(submitting).toBe(false);
     expect(showStopButton).toBe(false);
     expect(conversationState?.conversationId).toBe(conversationId);
+  });
+
+  it.each(['created', 'error'])('drains a committed quotation queued before the %s response row', (terminal) => {
+    const userMessage = createUserMessage();
+    const initialResponse = createResponseMessage();
+    let messages: TMessage[] = [];
+    const setMessages = jest.fn((nextMessages: TMessage[]) => {
+      messages = nextMessages;
+    });
+    const getMessages = jest.fn(() => messages);
+    const conversationState = { conversationId, endpoint: 'openAI' } as TConversation;
+    const submission: EventSubmission = {
+      userMessage,
+      initialResponse,
+      messages: [],
+      conversation: conversationState,
+      endpointOption: { endpoint: conversationState.endpoint },
+      isRegenerate: false,
+      isTemporary: false,
+    };
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(
+        RecoilRoot,
+        null,
+        createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          createElement(MemoryRouter, { initialEntries: [`/c/${conversationId}`] }, children),
+        ),
+      );
+
+    const { result } = renderHook(
+      () =>
+        useEventHandlers({
+          setMessages,
+          getMessages,
+          setCompleted: jest.fn(),
+          setIsSubmitting: jest.fn(),
+          setConversation: jest.fn(),
+          setShowStopButton: jest.fn(),
+        }),
+      { wrapper },
+    );
+
+    const committedMessage = createResponseMessage({
+      content: [{ type: ContentTypes.TEXT, text: 'committed order' }],
+      metadata: {
+        steelQuotation: {
+          version: 1,
+          runId: 'run-1',
+          outputId: 'system_order:run-1',
+          sourceMessageId: responseId,
+          receiptSha256: 'a'.repeat(64),
+          admissionSequence: 1,
+          tableContentIndex: 0,
+          summaryContentIndex: 1,
+          footerContentIndex: 2,
+        },
+      },
+    });
+    const update = {
+      message: committedMessage,
+      publication: {
+        version: 1 as const,
+        runId: 'run-1',
+        outputId: 'system_order:run-1',
+        sourceMessageId: responseId,
+        receiptSha256: 'a'.repeat(64),
+        admissionSequence: 1,
+        tableContentIndex: 0,
+        summaryContentIndex: 1,
+        footerContentIndex: 2,
+      },
+      update: 'order' as const,
+    };
+
+    act(() => result.current.messageUpdateHandler(update, submission));
+    expect(messages).toEqual([]);
+
+    act(() => {
+      if (terminal === 'error') {
+        result.current.errorHandler({
+          data: createResponseMessage({ text: 'Summary failed' }) as unknown as TResData,
+          submission,
+        });
+        return;
+      }
+      result.current.createdHandler(
+        { created: true, responseMessageId: responseId } as unknown as TResData,
+        submission,
+      );
+    });
+
+    expect(messages.filter((message) => message.messageId === responseId)).toHaveLength(1);
+    expect(messages.find((message) => message.messageId === responseId)?.text).toBe(
+      'committed order',
+    );
+  });
+
+  it('replaces the raw placeholder with the canonical committed response once', () => {
+    const rawResponseId = 'response-raw_';
+    const canonicalResponseId = 'response-canonical';
+    const userMessage = createUserMessage();
+    const initialResponse = createResponseMessage({ messageId: rawResponseId });
+    let messages: TMessage[] = [];
+    const setMessages = jest.fn((nextMessages: TMessage[]) => {
+      messages = nextMessages;
+    });
+    const getMessages = jest.fn(() => messages);
+    const conversationState = { conversationId, endpoint: 'openAI' } as TConversation;
+    const submission: EventSubmission = {
+      userMessage,
+      initialResponse,
+      messages: [],
+      conversation: conversationState,
+      endpointOption: { endpoint: conversationState.endpoint },
+      isRegenerate: false,
+      isTemporary: false,
+    };
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(
+        RecoilRoot,
+        null,
+        createElement(
+          QueryClientProvider,
+          { client: new QueryClient({ defaultOptions: { queries: { retry: false } } }) },
+          createElement(MemoryRouter, { initialEntries: [`/c/${conversationId}`] }, children),
+        ),
+      );
+    const { result } = renderHook(
+      () =>
+        useEventHandlers({
+          setMessages,
+          getMessages,
+          setCompleted: jest.fn(),
+          setIsSubmitting: jest.fn(),
+          setConversation: jest.fn(),
+          setShowStopButton: jest.fn(),
+        }),
+      { wrapper },
+    );
+    const update = {
+      message: createResponseMessage({
+        messageId: canonicalResponseId,
+        content: [{ type: ContentTypes.TEXT, text: 'canonical order' }],
+      }),
+      publication: {
+        version: 1 as const,
+        runId: 'run-canonical',
+        outputId: 'system_order:run-canonical',
+        sourceMessageId: rawResponseId,
+        receiptSha256: 'b'.repeat(64),
+        admissionSequence: 2,
+        tableContentIndex: 0,
+        summaryContentIndex: 1,
+        footerContentIndex: 2,
+      },
+      update: 'order' as const,
+    };
+    const staleUpdate = {
+      ...update,
+      message: createResponseMessage({
+        messageId: canonicalResponseId,
+        content: [{ type: ContentTypes.TEXT, text: 'stale order' }],
+      }),
+      publication: {
+        ...update.publication,
+        receiptSha256: 'c'.repeat(64),
+        admissionSequence: 1,
+      },
+    };
+
+    act(() => result.current.messageUpdateHandler(update, submission));
+    act(() => result.current.messageUpdateHandler(staleUpdate, submission));
+    act(() =>
+      result.current.createdHandler(
+        { created: true, responseMessageId: rawResponseId } as unknown as TResData,
+        submission,
+      ),
+    );
+
+    expect(messages.filter((message) => !message.isCreatedByUser)).toHaveLength(1);
+    expect(messages.map((message) => message.messageId)).toEqual([
+      userMessage.messageId,
+      canonicalResponseId,
+    ]);
+    expect(messages.find((message) => message.messageId === canonicalResponseId)?.text).toBe(
+      'canonical order',
+    );
   });
 });

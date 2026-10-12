@@ -37,6 +37,73 @@ describe('Steel quotation publication message projection', () => {
     }));
   });
 
+  it('notifies only after the guarded publication returns the saved message', async () => {
+    const message = {
+      messageId: 'message',
+      conversationId: 'conversation',
+      user: 'user',
+      text: 'saved quotation',
+    };
+    const savePublication = jest.fn().mockResolvedValue({ ok: true, message });
+    const onPublicationCommitted = jest.fn().mockResolvedValue(undefined);
+    const publish = createSteelQuotationPublicationPublisher({
+      buildMessage: ({ markdown }) => ({
+        messageId: 'message',
+        text: markdown,
+        user: 'user',
+        conversationId: 'conversation',
+      }),
+      savePublication,
+      onPublicationCommitted,
+    });
+
+    await publish({
+      scope: { userId: 'user', conversationId: 'conversation' },
+      runId: 'run', runTargetMessageId: 'message', targetMessageId: 'message',
+      finalSha256: 'a'.repeat(64), currentOrderSha256: 'b'.repeat(64),
+      currentSystemOrderSha256: 'c'.repeat(64),
+      customer: { preparationId: 'preparation', customerIdentity: 'customer', customerMarkdown: 'customer' },
+      message: { messageId: 'message', conversationId: 'conversation', user: 'user', text: '' },
+      markdown: '## system_order\n\n| A |\n| --- |\n| 1 |',
+    });
+
+    expect(onPublicationCommitted).toHaveBeenCalledWith(message);
+    expect(onPublicationCommitted.mock.invocationCallOrder[0]).toBeGreaterThan(
+      savePublication.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it('keeps the committed save result when after-commit delivery fails', async () => {
+    const message = {
+      messageId: 'message',
+      conversationId: 'conversation',
+      user: 'user',
+      text: 'saved quotation',
+    };
+    const savePublication = jest.fn().mockResolvedValue({ ok: true, message });
+    const onPublicationCommitted = jest.fn().mockRejectedValue(new Error('delivery failed'));
+    const publish = createSteelQuotationPublicationPublisher({
+      buildMessage: ({ markdown }) => ({
+        messageId: 'message',
+        text: markdown,
+        user: 'user',
+        conversationId: 'conversation',
+      }),
+      savePublication,
+      onPublicationCommitted,
+    });
+
+    await expect(publish({
+      scope: { userId: 'user', conversationId: 'conversation' },
+      runId: 'run', runTargetMessageId: 'message', targetMessageId: 'message',
+      finalSha256: 'a'.repeat(64), currentOrderSha256: 'b'.repeat(64),
+      currentSystemOrderSha256: 'c'.repeat(64),
+      customer: { preparationId: 'preparation', customerIdentity: 'customer', customerMarkdown: 'customer' },
+      message: { messageId: 'message', conversationId: 'conversation', user: 'user', text: '' },
+      markdown: '## system_order\n\n| A |\n| --- |\n| 1 |',
+    })).resolves.toEqual({ ok: true, message });
+  });
+
   it('replaces only the reserved quotation slot and preserves the full Chat payload', () => {
     const message = {
       messageId: 'response',
@@ -158,8 +225,11 @@ describe('Steel quotation publication message projection', () => {
       processingDurationMs: 25,
       metadata: { unrelated: true },
       text: 'first second third\n\nfinal quotation',
+      content: [
+        { type: 'text', text: 'first second third' },
+        { type: 'text', text: 'final quotation' },
+      ],
     });
-    expect(projected).not.toHaveProperty('content');
     expect(tracker.items).toEqual([firstMessage, functionCall, quotationMessage]);
   });
 
@@ -184,7 +254,10 @@ describe('Steel quotation publication message projection', () => {
     });
 
     expect(projected.text).toBe('primary answer\n\nfinal quotation');
-    expect(projected).not.toHaveProperty('content');
+    expect(projected.content).toEqual([
+      { type: 'text', text: 'primary answer' },
+      { type: 'text', text: 'final quotation' },
+    ]);
     expect(aggregator).toEqual(expect.objectContaining({
       reasoningChunks: ['reasoning'],
       textChunks: ['primary answer'],

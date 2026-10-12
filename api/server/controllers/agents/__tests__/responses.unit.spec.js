@@ -31,12 +31,8 @@ const mockExecuteSteelQuotationWorkflow = jest.fn().mockResolvedValue(undefined)
 const mockCreateSteelQuotationPublicationMessageBuilder = jest.fn((...args) =>
   jest.requireActual('@librechat/api').createSteelQuotationPublicationMessageBuilder(...args),
 );
-const mockCreateSteelQuotationPublicationPublisher = jest.fn((...args) =>
-  jest.requireActual('@librechat/api').createSteelQuotationPublicationPublisher(...args),
-);
 const mockFinalizeOcrResponse = jest.fn();
 const mockSaveOcrAudit = jest.fn().mockResolvedValue({});
-const mockSaveSteelQuotationMessage = jest.fn();
 const mockMarkdownFinalize = jest.fn();
 class MockOcrAuditPersistenceError extends Error {}
 const mockGetBalanceConfig = jest.fn().mockReturnValue({ enabled: true });
@@ -317,8 +313,6 @@ jest.mock('@librechat/api', () => ({
     jest.requireActual('@librechat/api').getRemoteAgentPermissions(...args),
   createSteelQuotationPublicationMessageBuilder: (...args) =>
     mockCreateSteelQuotationPublicationMessageBuilder(...args),
-  createSteelQuotationPublicationPublisher: (...args) =>
-    mockCreateSteelQuotationPublicationPublisher(...args),
   finalizeOcrResponse: (...args) => mockFinalizeOcrResponse(...args),
   parseAssistantMarkdown: (markdown) => ({
     sections: [...markdown.matchAll(/^## (ocr_result(?:_updates)?)$/gmu)].map((match) => ({
@@ -724,7 +718,6 @@ jest.mock('~/models', () => ({
   getMessage: jest.fn().mockResolvedValue(null),
   readSteelMarkdownHistory: jest.fn().mockResolvedValue([]),
   saveMessage: jest.fn().mockResolvedValue({}),
-  saveSteelQuotationMessage: (...args) => mockSaveSteelQuotationMessage(...args),
   publishSteelMarkdown: jest.fn().mockResolvedValue({ ok: true, message: {} }),
   updateFilesUsage: jest.fn(),
   getUserKeyValues: jest.fn(),
@@ -760,17 +753,8 @@ describe('createResponse controller', () => {
       .mockImplementation((...args) =>
         jest.requireActual('@librechat/api').createSteelQuotationPublicationMessageBuilder(...args),
       );
-    mockCreateSteelQuotationPublicationPublisher
-      .mockReset()
-      .mockImplementation((...args) =>
-        jest.requireActual('@librechat/api').createSteelQuotationPublicationPublisher(...args),
-      );
     mockFinalizeOcrResponse.mockReset();
     mockSaveOcrAudit.mockReset().mockResolvedValue({});
-    mockSaveSteelQuotationMessage.mockReset().mockImplementation(async ({ message }) => ({
-      ok: true,
-      message,
-    }));
     mockMarkdownFinalize.mockReset().mockImplementation(async (input) => {
       let finalMarkdown = input.markdown;
       let ocrResultMarkdown;
@@ -3067,94 +3051,26 @@ describe('createResponse controller', () => {
       },
     );
 
-    it('publishes terminal Responses output with source identity before applying canonical target identity', async () => {
+    it('adopts a committed Responses quotation without rewriting its table', async () => {
       const api = require('@librechat/api');
-      const rawText = 'primary answer\n\nold quotation';
-      const projectedText = '## system_order\n\n| A |\n| --- |\n| 1 |';
-      const publicationProof = {
-        scope: { userId: 'user-123', conversationId: 'mock-uuid-456' },
-        runId: 'run-a',
-        runTargetMessageId: 'resp_mock-123',
-        targetMessageId: 'canonical-response',
-        markdown: projectedText,
-        finalSha256: 'a'.repeat(64),
-        currentOrderSha256: 'b'.repeat(64),
-        currentSystemOrderSha256: 'c'.repeat(64),
-        customer: {
-          preparationId: 'customer-a',
-          customerIdentity: 'customer-a',
-          customerMarkdown: 'customer data',
-        },
-        message: {
-          messageId: 'canonical-response',
-          conversationId: 'mock-uuid-456',
-          text: projectedText,
-          user: 'user-123',
-        },
-      };
-      api.buildAggregatedResponse.mockReturnValueOnce({
-        id: 'resp_123',
-        status: 'completed',
-        output: [
-          {
-            id: 'msg_1',
-            type: 'message',
-            role: 'assistant',
-            status: 'completed',
-            content: [{ type: 'output_text', text: rawText }],
-          },
-        ],
-        usage: { input_tokens: 100, output_tokens: 50, total_tokens: 150 },
-      });
+      const db = require('~/models');
+      const rawText = 'main summary';
+      const saved = { messageId: 'canonical-response', user: 'user-123',
+        conversationId: 'mock-uuid-456', text: '## system_order\ncommitted table',
+        content: [{ type: 'text', text: '## system_order\ncommitted table' },
+          { type: 'text', text: rawText }, { type: 'text', text: '' }] };
+      api.buildAggregatedResponse.mockReturnValueOnce({ id: 'resp_123', status: 'completed',
+        output: [{ id: 'msg_1', type: 'message', role: 'assistant', status: 'completed',
+          content: [{ type: 'output_text', text: rawText }] }],
+        usage: { input_tokens: 100, output_tokens: 50, total_tokens: 150 } });
       mockMarkdownFinalize.mockImplementationOnce(async (input) => {
-        input.applyMarkdown(publicationProof.markdown);
-        await input.persistMarkdown({ completed: true });
-        const saved = await input.publishQuotation(publicationProof);
-        expect(saved.ok).toBe(true);
-        return { markdown: publicationProof.markdown };
+        expect(input).not.toHaveProperty('publishQuotation');
+        await input.publishedResponse.accept(saved);
+        return { markdown: input.markdown };
       });
-
       await createResponse(req, res);
-
-      expect(mockCreateSteelQuotationPublicationPublisher).toHaveBeenCalledWith(
-        expect.objectContaining({
-          buildMessage: expect.any(Function),
-          savePublication: expect.any(Function),
-          saveContext: expect.any(Object),
-        }),
-      );
-      expect(mockSaveSteelQuotationMessage).toHaveBeenCalledTimes(1);
-      const [savedProof] = mockSaveSteelQuotationMessage.mock.calls[0];
-      expect(savedProof).toEqual(
-        expect.objectContaining({
-          targetMessageId: 'canonical-response',
-          scope: publicationProof.scope,
-        }),
-      );
-      expect(savedProof.message).toEqual(
-        expect.objectContaining({
-          messageId: 'canonical-response',
-          sourceMessageId: 'resp_mock-123',
-          conversationId: 'mock-uuid-456',
-          user: 'user-123',
-          parentMessageId: null,
-          isCreatedByUser: false,
-          unfinished: false,
-          sender: 'Agent',
-          endpoint: 'agents',
-          model: 'agent-123',
-          finish_reason: 'stop',
-          tokenCount: 50,
-          processingDurationMs: expect.any(Number),
-          langfuseSampled: true,
-          langfuseDestinationIds: ['destination-1'],
-          metadata: {
-            steel: { native: { ingress: 'open_responses', renderProfile: 'open_responses' } },
-          },
-          text: projectedText,
-        }),
-      );
-      expect(savedProof.message).not.toHaveProperty('content');
+      expect(mockMarkdownFinalize).toHaveBeenCalledTimes(1);
+      expect(db.saveMessage.mock.calls.filter(([, message]) => !message.isCreatedByUser)).toHaveLength(0);
     });
 
     it('propagates provisional and completed persistence state to the response save', async () => {

@@ -1,11 +1,10 @@
 import { createHash } from 'node:crypto';
+import { steelQuotationMessagePublicationSchema } from 'librechat-data-provider';
 import type {
   ISteelConversationOcrState,
   ISteelQuotationState,
   SteelQuotationActiveRun,
   SteelQuotationCurrentSystemOrder,
-  SteelQuotationPublicationProof,
-  SteelQuotationPublicationSaveResult,
   SteelQuotationScope,
   SteelQuotationSourceSnapshot,
   SteelQuotationOcrSelection,
@@ -19,19 +18,19 @@ import type {
 } from './types';
 import type { SteelResponseRequest } from '../quotation/completion';
 import {
-  acceptQuotationSignal,
-  acceptQuotationResponse,
-  publishCompletedQuotation,
-  SteelQuotationPublicationError,
-} from '../quotation/runner';
-import {
   appendSteelNextStep,
   hasSteelDataMarkdown,
   hasSteelCustomerTier,
   steelSectionTitle,
 } from '../quotation/next';
+import {
+  acceptQuotationSignal,
+  acceptQuotationResponse,
+  SteelQuotationPublicationError,
+} from '../quotation/runner';
 import { isUnfinishedQuotation, hasQuotationOrder } from '../quotation/preparation';
 import { SteelResponseCompletionError } from '../quotation/completion';
+import { readPublishedQuotationOrder } from '../quotation/publication';
 import { resolveRequestTenantId } from '../../middleware/tenant';
 import { sameQuotationOcrSelection } from '../quotation/input';
 import { parseQuotationSignal } from '../quotation/protocol';
@@ -58,13 +57,10 @@ interface CompletionReceipt {
   inputMarkdown: string;
   stage: 'workflow' | 'ui' | 'pending';
   canonicalMarkdown: string;
-  expectedSystemOrderHash?: string;
-  expectedSystemOrderRunId?: string;
   expectedOcrGeneration?: string;
   expectedOcrSelection?: SteelQuotationOcrSelection;
   expectedOrderHash?: string;
   expectedCustomerPreparationId?: string;
-  systemOrderSnapshot?: SteelQuotationCurrentSystemOrder;
   acceptedRun?: SteelQuotationActiveRun;
   latest?: ISteelQuotationState;
 }
@@ -72,38 +68,6 @@ interface CompletionReceipt {
 /** Receipts belong to the server request, never to model output or a caller's boolean. */
 const receipts = new WeakMap<SteelResponseRequest, Map<string, CompletionReceipt>>();
 const publications = new WeakSet<SteelMarkdownPublication>();
-const adoptedPublications = new WeakMap<
-  SteelResponseRequest,
-  { publication: SteelMarkdownPublication; responseId: string; generationId: string }
->();
-
-export function clearSteelMarkdownPublication(req: SteelResponseRequest): void {
-  adoptedPublications.delete(req);
-}
-
-export function registerSteelMarkdownPublication(
-  req: SteelResponseRequest,
-  publication: SteelMarkdownPublication,
-  responseId: string,
-): void {
-  const scope = req.steelNativeContext?.quotation?.scope;
-  if (
-    !scope ||
-    !publications.has(publication) ||
-    publication.scopeKey !== scopeKey(scope) ||
-    responseId !== req.steelNativeContext?.requestId
-  ) {
-    throw new SteelResponseCompletionError('invalid_completion_receipt');
-  }
-  adoptedPublications.set(req, {
-    publication,
-    responseId,
-    generationId: String(
-      req._resumableJobCreatedAt ?? req.steelNativeContext?.requestId ?? responseId,
-    ),
-  });
-}
-
 function hash(value: string): string {
   return createHash('sha256').update(value).digest('hex');
 }
@@ -154,21 +118,12 @@ function sectionTitles(markdown: string): Set<string> {
   );
 }
 
-/** The finalizer owns canonical Steel data and completed message persistence. */
+/** The finalizer owns all terminal Steel message persistence, including unfinished responses. */
 export function shouldDeferSteelMarkdownPersistence(
   req: SteelResponseRequest,
-  markdown: string,
+  _markdown?: string,
 ): boolean {
-  const context = req.steelNativeContext;
-  return Boolean(
-    context?.quotation?.scope &&
-      (hasSteelDataMarkdown(markdown) ||
-        parseQuotationSignal(markdown) ||
-        context.ocrTurnActive ||
-        context.delegateOcrContext?.didExecute ||
-        context.quotation.resume ||
-        adoptedPublications.has(req)),
-  );
+  return Boolean(req.steelNativeContext?.quotation?.scope);
 }
 
 async function verifyPublication(
@@ -211,122 +166,16 @@ async function persist(
   requireSaved(await input.persistMarkdown({ completed }), 'response_save_failed');
 }
 
-async function persistQuotation(
-  input: SteelMarkdownCompletionInput,
-  publication: SteelQuotationPublicationProof & { markdown: string },
-): Promise<SteelQuotationPublicationSaveResult> {
-  if (input.publishQuotation) {
-    // Update the caller-owned physical response before its guarded save captures
-    // the full message, preserving content parts alongside the clean text.
-    input.applyMarkdown(publication.markdown);
-    const saved = await input.publishQuotation(publication);
-    if (!saved.ok) throw new SteelResponseCompletionError('superseded_response');
-    input.publishedResponse?.accept(saved.message);
-    return saved;
-  }
-  throw new SteelResponseCompletionError('response_save_failed');
-}
-
-async function currentQuotationPublicationProof(
-  input: SteelMarkdownCompletionInput,
-  dependencies: SteelMarkdownCompletionDependencies,
-  markdown: string,
-  state: ISteelQuotationState | null | undefined,
-  run: SteelQuotationActiveRun | undefined,
-  capturedSystemOrder?: SteelQuotationCurrentSystemOrder,
-): Promise<(SteelQuotationPublicationProof & { markdown: string }) | undefined> {
-  const currentOrder = state?.currentOrder;
-  const currentSystemOrder = capturedSystemOrder ?? state?.currentSystemOrder;
-  const customer = state?.currentCustomer;
-  const targetMessageId = currentSystemOrder?.messageId ?? run?.targetMessageId;
-  if (
-    !run ||
-    run.status !== 'completed' ||
-    !run.targetMessageId ||
-    !targetMessageId ||
-    !currentOrder ||
-    !currentSystemOrder ||
-    !customer ||
-    !input.publishQuotation
-  )
-    return undefined;
-  const final = await dependencies.quotation.readCheckpoint({
-    scope: input.req.steelNativeContext!.quotation!.scope,
-    runId: run.runId,
-    operationId: 'final',
-  });
-  if (!final) return undefined;
-  return {
-    scope: input.req.steelNativeContext!.quotation!.scope,
-    runId: run.runId,
-    runTargetMessageId: run.targetMessageId,
-    targetMessageId,
-    markdown,
-    finalSha256: hash(final),
-    currentOrderSha256: currentOrder.sha256,
-    currentSystemOrderSha256: currentSystemOrder.sha256,
-    ...(currentSystemOrder.sourceSnapshot
-      ? { sourceSnapshot: currentSystemOrder.sourceSnapshot }
-      : {}),
-    ...(currentSystemOrder.reviewMetadata
-      ? { reviewMetadata: currentSystemOrder.reviewMetadata }
-      : {}),
-    customer: {
-      preparationId: customer.preparationId,
-      customerIdentity: customer.customerIdentity,
-      customerMarkdown: customer.customerMarkdown,
-    },
-    message: {
-      messageId: targetMessageId,
-      conversationId: input.req.steelNativeContext!.quotation!.scope.conversationId,
-      text: markdown,
-      user: input.req.steelNativeContext!.quotation!.scope.userId,
-    },
-  };
-}
-
-async function persistQuotationResponse(
-  input: SteelMarkdownCompletionInput,
-  dependencies: SteelMarkdownCompletionDependencies,
-  markdown: string,
-  state: ISteelQuotationState | null | undefined,
-  run: SteelQuotationActiveRun | undefined,
-  completed: boolean,
-  capturedSystemOrder?: SteelQuotationCurrentSystemOrder,
-): Promise<void> {
-  const effectiveRun =
-    run ?? (state?.activeRun?.status === 'completed' ? state.activeRun : undefined);
-  const targetMessageId =
-    capturedSystemOrder?.messageId ??
-    state?.currentSystemOrder?.messageId ??
-    effectiveRun?.targetMessageId;
-  if (!effectiveRun || targetMessageId !== input.responseId) {
-    await persist(input, markdown, completed);
-    return;
-  }
-  const proof = await currentQuotationPublicationProof(
-    input,
-    dependencies,
-    markdown,
-    state,
-    effectiveRun,
-    capturedSystemOrder,
-  );
-  if (!proof) throw new SteelResponseCompletionError('response_save_failed');
-  await input.assertActive?.();
-  input.applyMarkdown(markdown);
-  await persistQuotation(input, proof);
-}
-
 async function acceptPublishedResponse(
   input: SteelMarkdownCompletionInput,
   scope: SteelQuotationScope,
-): Promise<void> {
+  responseId = input.responseId,
+): Promise<SteelPublishedResponseIdentity | undefined> {
   if (!input.publishedResponse) return;
   let record: SteelPublishedResponseIdentity | null | undefined;
   try {
     record = await input.publishedResponse.load({
-      responseId: input.responseId,
+      responseId,
       conversationId: scope.conversationId,
       userId: scope.userId,
       ...(scope.tenantId ? { tenantId: scope.tenantId } : {}),
@@ -336,7 +185,7 @@ async function acceptPublishedResponse(
   }
   if (
     !record ||
-    record.messageId !== input.responseId ||
+    record.messageId !== responseId ||
     record.conversationId !== scope.conversationId ||
     record.user !== scope.userId ||
     record.tenantId !== scope.tenantId
@@ -344,6 +193,149 @@ async function acceptPublishedResponse(
     throw new SteelResponseCompletionError('response_save_failed');
   }
   input.publishedResponse.accept(record);
+  return record;
+}
+
+function objectRecord(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : undefined;
+}
+
+function ownerMatchesCanonicalOrder(
+  record: SteelPublishedResponseIdentity,
+  outputId: string,
+  targetMessageId: string,
+  systemOrderSha256: string,
+): boolean {
+  const metadata = objectRecord(record.metadata);
+  if (!metadata || !Object.prototype.hasOwnProperty.call(metadata, 'steelMarkdownOwners')) return false;
+  const owners = objectRecord(metadata.steelMarkdownOwners);
+  if (!owners || !Object.prototype.hasOwnProperty.call(owners, 'system_order')) return false;
+  const owner = objectRecord(owners.system_order);
+  if (!owner) return false;
+  return Boolean(
+    owner.kind === 'system_order' &&
+      owner.source === 'ai' &&
+      owner.outputId === outputId &&
+      owner.messageId === targetMessageId &&
+      owner.sha256 === systemOrderSha256,
+  );
+}
+
+function canonicalSystemOrderMatches(
+  text: string | undefined,
+  systemOrder: SteelQuotationCurrentSystemOrder,
+): boolean {
+  if (typeof text !== 'string') return false;
+  const saved = parseAssistantMarkdown(systemOrder.markdown).sections.filter(
+    (section) => steelSectionTitle(section.title) === 'system_order',
+  );
+  const loadedDocument = parseAssistantMarkdown(text);
+  const loaded = loadedDocument.sections.filter(
+    (section) => steelSectionTitle(section.title) === 'system_order',
+  );
+  if (saved.length !== 1 || loaded.length !== 1) return false;
+  const savedSection = saved[0];
+  const loadedSection = loaded[0];
+  return Boolean(
+    savedSection &&
+      loadedSection &&
+      savedSection.title === loadedSection.title &&
+      JSON.stringify(parseMarkdownTables(savedSection.body)) ===
+        JSON.stringify(parseMarkdownTables(loadedSection.body)) &&
+      savedSection.raw.trim() === loadedSection.raw.trim(),
+  );
+}
+
+async function adoptPublishedQuotationOrder(
+  input: SteelMarkdownCompletionInput,
+  dependencies: SteelMarkdownCompletionDependencies,
+  scope: SteelQuotationScope,
+  generationId: string,
+): Promise<SteelMarkdownCompletionResult | undefined> {
+  if (input.stage === 'workflow' || !input.publishedResponse) return undefined;
+  const quotation = input.req.steelNativeContext?.quotation;
+  const admission = quotation?.publicationAdmission;
+  if (
+    !admission ||
+    admission.responseId !== input.responseId ||
+    admission.generationId !== generationId
+  ) {
+    return undefined;
+  }
+
+  let readResult: Awaited<ReturnType<typeof readPublishedQuotationOrder>>;
+  try {
+    readResult = await readPublishedQuotationOrder({ scope, service: dependencies.quotation });
+  } catch {
+    throw new SteelResponseCompletionError('response_save_failed');
+  }
+  if (readResult.status === 'absent') return undefined;
+  if (readResult.status === 'invalid') {
+    throw new SteelResponseCompletionError('superseded_response');
+  }
+  const recovered = readResult.value;
+  if ('legacy' in recovered.receipt) return undefined;
+  if (recovered.systemOrder.responseId && recovered.systemOrder.responseId !== input.responseId) {
+    return undefined;
+  }
+
+  const currentAdmission = recovered.state.markdownPublication?.admission;
+  if (
+    !currentAdmission ||
+    currentAdmission.responseId !== admission.responseId ||
+    currentAdmission.generationId !== admission.generationId ||
+    currentAdmission.sequence !== admission.sequence ||
+    currentAdmission.lineageId !== admission.lineageId ||
+    JSON.stringify(currentAdmission.expected) !== JSON.stringify(admission.expected) ||
+    (quotation.resume && quotation.state?.activeRun?.runId !== recovered.receipt.runId)
+  ) {
+    throw new SteelResponseCompletionError('superseded_response');
+  }
+
+  let record: SteelPublishedResponseIdentity | null | undefined;
+  try {
+    record = await input.publishedResponse.load({
+      responseId: recovered.receipt.targetMessageId,
+      conversationId: scope.conversationId,
+      userId: scope.userId,
+      ...(scope.tenantId ? { tenantId: scope.tenantId } : {}),
+    });
+  } catch {
+    throw new SteelResponseCompletionError('response_save_failed');
+  }
+  const savedText = record?.text;
+  const publication = steelQuotationMessagePublicationSchema.safeParse(record?.metadata?.steelQuotation);
+  const receiptRef = recovered.run.checkpointRefs.find((ref) => ref.operationId === 'order-published');
+  if (!publication.success || publication.data.sourceMessageId !== input.responseId ||
+    publication.data.admissionSequence !== admission.sequence ||
+    publication.data.runId !== recovered.receipt.runId ||
+    publication.data.outputId !== recovered.receipt.outputId ||
+    publication.data.receiptSha256 !== receiptRef?.sha256) {
+    throw new SteelResponseCompletionError('superseded_response');
+  }
+  if (
+    !record ||
+    !savedText ||
+    record.messageId !== recovered.receipt.targetMessageId ||
+    record.conversationId !== scope.conversationId ||
+    record.user !== scope.userId ||
+    record.tenantId !== scope.tenantId ||
+    !canonicalSystemOrderMatches(savedText, recovered.systemOrder) ||
+    !ownerMatchesCanonicalOrder(
+      record,
+      recovered.receipt.outputId,
+      recovered.receipt.targetMessageId,
+      recovered.receipt.systemOrderSha256,
+    )
+  ) {
+    throw new SteelResponseCompletionError('superseded_response');
+  }
+
+  input.publishedResponse.accept(record);
+  await input.onPublishedResponse?.(record);
+  return { markdown: savedText, acceptedRun: recovered.run };
 }
 
 export function createSteelMarkdownCompletionServices(
@@ -361,12 +353,19 @@ export async function finalizeSteelMarkdownTurn(
 ): Promise<SteelMarkdownCompletionResult> {
   const context = input.req.steelNativeContext;
   const scope = context?.quotation?.scope;
-  if (!scope || !input.completed) {
+  if (!scope) {
     await persist(input, input.markdown);
     return { markdown: input.markdown };
   }
   if (scope.userId !== input.req.user?.id || scope.tenantId !== resolveRequestTenantId(input.req)) {
     throw new SteelResponseCompletionError('invalid_response_scope');
+  }
+  const generationId = input.generationId ?? context?.requestId ?? input.responseId;
+  const recovered = await adoptPublishedQuotationOrder(input, dependencies, scope, generationId);
+  if (recovered) return recovered;
+  if (!input.completed) {
+    await persist(input, input.markdown);
+    return { markdown: input.markdown };
   }
   if (
     parseAssistantMarkdown(input.markdown).sections.some((section) =>
@@ -383,37 +382,8 @@ export async function finalizeSteelMarkdownTurn(
   ) {
     throw new SteelResponseCompletionError('invalid_quote_signal');
   }
-  // The flow appends a new quotation to primary text already committed by this request.
-  const workflowReceipt = [...(receipts.get(input.req)?.values() ?? [])].find(
-    (entry) =>
-      entry.stage === 'workflow' &&
-      entry.acceptedRun &&
-      entry.responseId === input.responseId &&
-      entry.scopeKey === scopeKey(scope) &&
-      input.markdown.includes(entry.inputMarkdown),
-  );
-  if (input.stage === 'ui' && workflowReceipt && input.markdown !== workflowReceipt.inputMarkdown) {
-    const boundary =
-      input.markdown.indexOf(workflowReceipt.inputMarkdown) + workflowReceipt.inputMarkdown.length;
-    const suffix = input.markdown.slice(boundary);
-    if (sectionTitles(suffix).has('system_order')) {
-      const prefix = input.markdown.slice(0, boundary);
-      const result = await finalizeSteelMarkdownTurn(
-        {
-          ...input,
-          markdown: suffix,
-          applyMarkdown: (markdown) => input.applyMarkdown(prefix + markdown),
-        },
-        dependencies,
-      );
-      const markdown = prefix + result.markdown;
-      if (!result.publication) return { ...result, markdown };
-      const publication = Object.freeze({ ...result.publication, markdown });
-      publications.add(publication);
-      return { ...result, markdown, publication };
-    }
-  }
   const titles = sectionTitles(input.markdown);
+  if (titles.has('system_order')) throw new SteelResponseCompletionError('invalid_system_order');
   if (input.stage === 'workflow' && !parseQuotationSignal(input.markdown)) {
     const state = await dependencies.quotation.readState(scope);
     if (!isUnfinishedQuotation(state?.activeRun?.status)) return { markdown: input.markdown };
@@ -426,7 +396,6 @@ export async function finalizeSteelMarkdownTurn(
     return { markdown: input.markdown };
   }
   if (
-    !adoptedPublications.has(input.req) &&
     (context?.ocrTurnActive || context?.delegateOcrContext?.didExecute) &&
     !titles.has('ocr_result') &&
     !titles.has('system_order') &&
@@ -435,7 +404,6 @@ export async function finalizeSteelMarkdownTurn(
     throw new SteelResponseCompletionError('missing_ocr_result');
   }
   if (
-    !adoptedPublications.has(input.req) &&
     !hasSteelDataMarkdown(input.markdown) &&
     !titles.has('quote_signal')
   ) {
@@ -444,54 +412,6 @@ export async function finalizeSteelMarkdownTurn(
   }
   try {
     await input.assertActive?.();
-    const generationId = input.generationId ?? context?.requestId ?? input.responseId;
-    const adoption = adoptedPublications.get(input.req);
-    if (input.stage !== 'workflow' && adoption) {
-      if (
-        adoption.responseId !== input.responseId ||
-        adoption.generationId !== generationId ||
-        !input.markdown.endsWith(adoption.publication.markdown)
-      )
-        throw new SteelResponseCompletionError('invalid_completion_receipt');
-      await verifyPublication(adoption.publication, scope, dependencies);
-      // Keep already-streamed primary text; only the branded trailing snapshot owns data.
-      const publication = Object.freeze({
-        ...adoption.publication,
-        responseId: input.responseId,
-        generationId,
-        markdown: input.markdown,
-      });
-      publications.add(publication);
-      const adoptedState = await dependencies.quotation.readState(scope);
-      const adoptedRun = adoptedState?.activeRun;
-      if (
-        adoption.publication.runId &&
-        (!adoptedRun || adoptedRun.runId !== adoption.publication.runId)
-      ) {
-        throw new SteelResponseCompletionError('superseded_response');
-      }
-      if (adoptedRun) {
-        const capturedSystemOrder =
-          adoptedState?.currentSystemOrder && adoption.publication.systemOrderHash
-            ? { ...adoptedState.currentSystemOrder, sha256: adoption.publication.systemOrderHash }
-            : undefined;
-        await persistQuotationResponse(
-          input,
-          dependencies,
-          input.markdown,
-          adoptedState,
-          adoptedRun,
-          true,
-          capturedSystemOrder,
-        );
-      } else {
-        // A durable pending publication without a live run has no guarded proof
-        // for a new write; project it to the current response and retain its receipt.
-        input.applyMarkdown(input.markdown);
-      }
-      await verifyPublication(publication, scope, dependencies);
-      return { markdown: input.markdown, publication };
-    }
     if (
       ['ocr_result', 'customer_data', 'system_order'].some((title) => titles.has(title)) &&
       !parseQuotationSignal(input.markdown) &&
@@ -603,30 +523,15 @@ export async function finalizeSteelMarkdownTurn(
         let markdown = savedCompletion.markdown;
         let projectedSystemOrderHash: string | undefined;
         if (quotationState.activeRun?.status === 'completed') {
-          const finalMarkdown = requireSaved(
-            await dependencies.quotation.readCheckpoint({
-              scope,
-              runId: quotationState.activeRun.runId,
-              operationId: 'final',
-            }),
-            'missing_quotation_result',
-          );
-          const published = await publishCompletedQuotation({
-            scope,
-            run: quotationState.activeRun,
-            markdown: finalMarkdown,
-            service: dependencies.quotation,
-            publishFinal: (publication) => persistQuotation(input, publication),
-            projectFinal: async ({ markdown: publicMarkdown }) => {
-              input.applyMarkdown(publicMarkdown);
-            },
-          });
-          markdown = published.markdown;
-          projectedSystemOrderHash = published.systemOrderHash;
-          if (published.alreadyPublished) {
-            await acceptPublishedResponse(input, scope);
-            input.applyMarkdown(markdown);
+          if (!await dependencies.quotation.isPublishedRun(scope, quotationState.activeRun)) {
+            throw new SteelResponseCompletionError('missing_quotation_result');
           }
+          const savedOrder = requireSaved(quotationState.currentSystemOrder, 'missing_quotation_result');
+          const targetMessageId = requireSaved(savedOrder.messageId, 'missing_quotation_result');
+          const record = await acceptPublishedResponse(input, scope, targetMessageId);
+          markdown = record?.text ?? savedOrder.markdown;
+          projectedSystemOrderHash = savedOrder.sha256;
+          input.applyMarkdown(markdown);
         } else {
           await persist(input, markdown, input.stage !== 'workflow');
         }
@@ -668,26 +573,6 @@ export async function finalizeSteelMarkdownTurn(
           ? context.quotation.state.currentCustomer?.preparationId
           : quotationState?.currentCustomer?.preparationId,
       };
-      if (titles.has('system_order')) {
-        const savedOrder = await dependencies.quotation.readCurrentSystemOrder(scope);
-        const sections = parseAssistantMarkdown(receipt.canonicalMarkdown).sections.filter(
-          (entry) => steelSectionTitle(entry.title) === 'system_order',
-        );
-        const section = sections[0];
-        if (
-          sections.length !== 1 ||
-          !savedOrder ||
-          !section ||
-          !(await dependencies.quotation.hasSystemOrder(scope)) ||
-          JSON.stringify(parseMarkdownTables(section.body)) !==
-            JSON.stringify(parseMarkdownTables(savedOrder.markdown))
-        ) {
-          throw new SteelResponseCompletionError('invalid_system_order');
-        }
-        receipt.systemOrderSnapshot = savedOrder;
-        receipt.expectedSystemOrderHash = savedOrder.sha256;
-        receipt.expectedSystemOrderRunId = savedOrder.runId;
-      }
       if (titles.has('quote_signal')) {
         if (!parseQuotationSignal(input.markdown))
           throw new SteelResponseCompletionError('invalid_quote_signal');
@@ -697,18 +582,6 @@ export async function finalizeSteelMarkdownTurn(
           !hasSteelCustomerTier(customer)
         )
           throw new SteelResponseCompletionError('quotation_data_required');
-        if (
-          input.stage !== 'workflow' &&
-          titles.has('system_order') &&
-          (context?.quotation?.resume ||
-            [...requestReceipts.values()].some(
-              (entry) =>
-                entry.scopeKey === scopeKey(scope) &&
-                entry.acceptedRun?.runId === quotationState?.activeRun?.runId,
-            ))
-        ) {
-          receipt.acceptedRun = quotationState?.activeRun;
-        }
       }
       await input.onPrepared?.(receipt.canonicalMarkdown);
       requestReceipts.set(key, receipt);
@@ -722,18 +595,6 @@ export async function finalizeSteelMarkdownTurn(
       throw new SteelResponseCompletionError('invalid_completion_receipt');
     }
     let latest = await dependencies.quotation.readState(scope);
-    if (
-      receipt.expectedSystemOrderHash &&
-      (!(await dependencies.quotation.hasSystemOrder(scope)) ||
-        (latest?.currentSystemOrder &&
-          latest.currentSystemOrder.runId === receipt.expectedSystemOrderRunId &&
-          latest.currentSystemOrder.sha256 !== receipt.expectedSystemOrderHash) ||
-        latest?.activeRun?.runId !== receipt.expectedSystemOrderRunId ||
-        latest?.currentOrder?.sha256 !== receipt.expectedOrderHash ||
-        latest?.currentCustomer?.preparationId !== receipt.expectedCustomerPreparationId)
-    ) {
-      throw new SteelResponseCompletionError('superseded_response');
-    }
     if (titles.has('quote_signal') && !receipt.acceptedRun) {
       if (!parseQuotationSignal(input.markdown))
         throw new SteelResponseCompletionError('invalid_quote_signal');
@@ -792,16 +653,7 @@ export async function finalizeSteelMarkdownTurn(
               input.req.headers?.['accept-language']?.split(',')[0] ||
               'en',
           });
-    if (input.stage !== 'workflow')
-      await persistQuotationResponse(
-        input,
-        dependencies,
-        markdown,
-        latest,
-        receipt.acceptedRun,
-        true,
-        receipt.systemOrderSnapshot,
-      );
+    if (input.stage !== 'workflow') await persist(input, markdown);
     const [publishedOcr, publishedState] = await Promise.all([
       dependencies.ocr.readScopedCurrentOcrResult(scope),
       dependencies.quotation.readState(scope),

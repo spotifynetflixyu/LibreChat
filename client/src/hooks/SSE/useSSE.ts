@@ -10,6 +10,7 @@ import {
   createPayload,
   ApprovalEvents,
   removeNullishValues,
+  steelQuotationMessageUpdateEvent,
 } from 'librechat-data-provider';
 import type {
   Agents,
@@ -24,11 +25,11 @@ import { clearComposerDrafts, applyPendingAction, findPendingActionMessageIndex 
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { useGetStartupConfig, useGetUserBalance } from '~/data-provider';
 import { startedAsNewConversation } from './useEventHandlers';
+import { steelNativeStreamEventName } from '~/store/steel';
 import { useAuthContext } from '~/hooks/AuthContext';
 import useEventHandlers from './useEventHandlers';
 import useUsageHandler from './useUsageHandler';
 import store from '~/store';
-import { steelNativeStreamEventName } from '~/store/steel';
 
 type ChatHelpers = Pick<
   EventHandlerParams,
@@ -63,6 +64,7 @@ export default function useSSE(
     createdHandler,
     titleHandler,
     attachmentHandler,
+    messageUpdateHandler,
     abortConversation,
     steelEventHandler,
     syncStepMessage,
@@ -157,6 +159,8 @@ export default function useSSE(
         titleHandler(data);
       } else if (data.event === steelNativeStreamEventName) {
         steelEventHandler(data, { ...submission, userMessage } as EventSubmission);
+      } else if (data.event === steelQuotationMessageUpdateEvent) {
+        messageUpdateHandler(data.data, { ...submission, userMessage } as EventSubmission);
       } else if (data.event === UsageEvents.ON_CONTEXT_USAGE) {
         contextHandler(data.data, { ...submission, userMessage });
       } else if (data.event === UsageEvents.ON_TOKEN_USAGE) {

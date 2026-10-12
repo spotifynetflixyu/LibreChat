@@ -99,7 +99,6 @@ const {
   createSteelOcrStateService,
   createSteelQuotationStateService,
   createSteelMarkdownCompletionServices,
-  createSteelQuotationPublicationPublisher,
   createSteelFullMarkdownPublisher,
   createSteelQuotationPublicationMessageBuilder,
   finalizeSteelResponsesTurn,
@@ -713,20 +712,6 @@ async function saveResponseOutput(
     persistedMessage = saved;
     return saved;
   };
-  const publishQuotation = createSteelQuotationPublicationPublisher({
-    saveContext: {
-      isTemporary: req.body?.isTemporary,
-      expiredAt: req._agentEventBindingRetention?.expiredAt ?? req.resolvedConversation?.expiredAt,
-      interfaceConfig: req.config?.interfaceConfig,
-    },
-    buildMessage: ({ markdown }) => ({
-      ...responseMessage,
-      messageId: responseMessage.messageId,
-      sourceMessageId: responseMessage.messageId,
-      text: markdown,
-    }),
-    savePublication: (proof) => db.saveSteelQuotationMessage(proof),
-  });
   const markdownCompletion = createSteelMarkdownCompletionServices({
     runtimeRulesClient: steelPostgres.client,
     ocr: createSteelOcrStateService(mongoose),
@@ -746,7 +731,6 @@ async function saveResponseOutput(
       responseMessage.text = markdown;
     },
     persistMarkdown,
-    publishQuotation,
     publishMarkdown: createSteelFullMarkdownPublisher({
       saveContext: {
         isTemporary: req.body?.isTemporary,

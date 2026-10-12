@@ -164,7 +164,7 @@ export async function prepareQuotationTurn(input: {
   state = selected.state;
   const [ocr, hasSavedSystemOrder] = await Promise.all([
     selected.input ? Promise.resolve(null) : createSteelOcrStateService(mongoose).readScopedConversationOcrState(input.scope),
-    service.hasSystemOrder(input.scope),
+    service.hasSystemOrder(input.scope, state),
   ]);
   const markdown = ocr?.currentOcrResultMarkdown;
   if (markdown) {
@@ -206,7 +206,7 @@ export function quotationPreparationInstruction(
     '# Current quotation preparation workflow',
     'For a new order or any correction to a saved order, output exactly one complete ## ocr_result table containing every current row. A correction replaces the complete saved order; never emit ocr_result_updates, ocr_deletions, or any other delta/control section. Do not delegate OCR unless the original attachment must be read again. Text orders use the same complete table; use stable 來源=文字訂單 and stable 零件編號 for new text rows.',
     'The ocr_result table must contain 來源, 零件編號, 類別, and the available specification/quantity fields. Preserve existing columns and all user-provided material, size, unit, quantity, and notes; leave unknown facts blank. Keep dimensions in explicitly labeled mm columns where applicable.',
-    'If the input reports no saved customer_data, resolve the customer or tier first. The regular preparation response never outputs system_order or customer_quote. A system-order correction must be a fresh complete system_order output using the existing pricing rules and the confirmed customer context; do not emit system_order_revision or system_order_updates. When changing quantity, dimensions, or unit weight, update the affected 總數 using confirmed pricing rules, or leave it blank if the required inputs are missing; never retain a stale total or claim a fresh price lookup.',
+    'If the input reports no saved customer_data, resolve the customer or tier first. The regular preparation response never outputs system_order or customer_quote.',
     'Treat order confirmation, customer/tier selection, presentation of customer_data, and consent to start quoting as prerequisites, not a fixed interview sequence. Reuse unchanged information and explicit confirmations; ask only for missing or changed facts. Customer details may arrive before the order, but do not call search_customers before a saved ocr_result exists.',
     'If multiple customer matches are returned, ask the user to choose and do not output customer_data or quote_signal. After the user chooses, search the exact selected customer again to resolve the selection.',
     'Ask for a customer name or an explicit A-F tier choice only if neither is known. Customer names and identities require search_customers; never invent or infer a customer identity. After a unique match or successful no-match search, present the tool-provided customerDataMarkdown exactly. A successful no-match explicitly uses default B; a tool error is not no-match.',

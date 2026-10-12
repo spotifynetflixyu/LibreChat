@@ -196,7 +196,7 @@ const {
   isAgentRunCancellation,
   markCompactionOutcome,
   resolvePersistableCodeEnvironmentDecision,
-  projectSteelQuotationMessage,
+  createSteelQuotationTextWiring,
 } = require('@librechat/api');
 const {
   Run,
@@ -1691,87 +1691,30 @@ class AgentClient extends BaseClient {
   }
 
   buildQuotationTextWiring(config) {
-    let quotationStepSeeded = false;
-    let quotationTextIndex;
-    const quotationStepId = `quotation:${this.responseMessageId}`;
-    const appendQuotationText = async (text) => {
-      const metadata = {
-        ...config.configurable,
-        run_id: this.responseMessageId,
-        thread_id: this.conversationId,
-        last_agent_id: this.options.agent?.id,
-        langgraph_node: this.options.agent?.id,
-      };
-      if (!quotationStepSeeded) {
-        quotationStepSeeded = true;
-        quotationTextIndex = this.contentParts.length;
-        await this.options.eventHandlers?.on_run_step?.handle(
-          'on_run_step',
-          {
-            id: quotationStepId,
-            runId: this.responseMessageId,
-            index: quotationTextIndex,
-            stepDetails: {
-              type: StepTypes.MESSAGE_CREATION,
-              message_creation: { message_id: this.responseMessageId },
-            },
-          },
-          metadata,
-        );
-      }
-      const handler = this.options.eventHandlers?.on_message_delta;
-      if (handler?.handle)
-        await handler.handle(
-          'on_message_delta',
-          {
-            id: quotationStepId,
-            delta: { content: [{ type: ContentTypes.TEXT, text }] },
-          },
-          metadata,
-        );
-      else {
-        const existing = this.contentParts[quotationTextIndex];
-        this.contentParts[quotationTextIndex] = {
-          type: ContentTypes.TEXT,
-          text: (existing?.type === ContentTypes.TEXT ? existing.text : '') + text,
-        };
-      }
-    };
-    return {
-      onText: appendQuotationText,
-      onFinalText: async (text) => {
-        if (quotationTextIndex === undefined) {
-          await appendQuotationText(text);
-          return;
-        }
-        this.contentParts[quotationTextIndex] = {
-          ...this.contentParts[quotationTextIndex],
-          type: ContentTypes.TEXT,
-          text,
-        };
-      },
-      buildPublicationMessage: ({ targetMessageId, markdown }) =>
-        projectSteelQuotationMessage({
-          message: {
-            messageId: targetMessageId,
-            sourceMessageId: this.responseMessageId,
-            conversationId: this.conversationId,
-            user: this.options.req?.user?.id,
-            text: markdown,
-            parentMessageId: this.parentMessageId,
-            isCreatedByUser: false,
-            unfinished: false,
-            sender: this.options.agent?.name ?? 'Agent',
-            endpoint: 'agents',
-            model: this.options.agent?.id,
-            finish_reason: 'stop',
-            metadata: this.buildResponseMetadata(),
-            content: Array.isArray(this.contentParts) ? this.contentParts : [],
-          },
-          markdown,
-          quotationContentIndex: quotationTextIndex,
-        }),
-    };
+    return createSteelQuotationTextWiring({
+      responseId: this.responseMessageId,
+      conversationId: this.conversationId,
+      agentId: this.options.agent?.id,
+      contentParts: this.contentParts,
+      configurable: config.configurable,
+      stepHandler: this.options.eventHandlers?.on_run_step,
+      deltaHandler: this.options.eventHandlers?.on_message_delta,
+      stepMap: this.stepMap,
+      buildMessageFields: (targetMessageId) => ({
+        messageId: targetMessageId,
+        sourceMessageId: this.responseMessageId,
+        conversationId: this.conversationId,
+        user: this.options.req?.user?.id,
+        parentMessageId: this.parentMessageId,
+        isCreatedByUser: false,
+        unfinished: false,
+        sender: this.options.agent?.name ?? 'Agent',
+        endpoint: 'agents',
+        model: this.options.agent?.id,
+        finish_reason: 'stop',
+        metadata: this.buildResponseMetadata(),
+      }),
+    });
   }
 
   /**
