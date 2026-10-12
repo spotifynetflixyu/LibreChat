@@ -2882,6 +2882,7 @@ export default function SteelReviewDialog({ identity, saveGateRef }: SteelReview
               )}
               <SteelReviewSplit
                 label={localize('com_ui_steel_review_resize_panels')}
+                kind={table.kind}
                 hasReference={Boolean(
                   sourcesReady &&
                     ocrReferenceTable &&
@@ -3059,6 +3060,8 @@ export default function SteelReviewDialog({ identity, saveGateRef }: SteelReview
                     readonly: localize('com_ui_steel_review_cell_readonly'),
                     edit: localize('com_ui_edit'),
                     reset: localize('com_ui_reset'),
+                    cancel: localize('com_ui_cancel'),
+                    confirm: localize('com_ui_confirm'),
                     ...sourceEditorLabels,
                     bind: localize('com_ui_steel_review_bind'),
                     bound: localize('com_ui_steel_review_bound'),

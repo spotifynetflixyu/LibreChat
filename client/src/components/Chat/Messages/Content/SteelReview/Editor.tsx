@@ -38,6 +38,8 @@ export interface SteelReviewEditorLabels {
   action: string;
   edit?: string;
   reset?: string;
+  cancel?: string;
+  confirm?: string;
   deleteRow?: string;
   restoreRow?: string;
   bind?: string;
@@ -237,7 +239,6 @@ function ReviewCell({
   const editStateRef = useRef(editState);
   const currentValueRef = useRef('');
   const editableRef = useRef(false);
-  const composingRef = useRef(false);
   const nestedPopoverStyle = useNestedPopoverStyle();
   const contentRef = useRef<HTMLDivElement>(null);
   const mode = getSteelReviewMode(table.kind);
@@ -262,7 +263,7 @@ function ReviewCell({
     isDesktop &&
     baseEditable &&
     (!mode.usesCatalog(row, header) || Boolean(onCandidateChange && catalogEditable));
-  const commitOnDismiss = !mode.usesCatalog(row, header) && !mode.usesCategoryMenu(header);
+  const usesTextInput = !mode.usesCatalog(row, header) && !mode.usesCategoryMenu(header);
 
   editStateRef.current = editState;
   currentValueRef.current = currentValue;
@@ -321,10 +322,10 @@ function ReviewCell({
       clearEdit();
       if (force || changed) {
         onFinish?.(nextValue);
-        if (!onFinish && commitOnDismiss) onCellChange(row, header, nextValue);
+        if (!onFinish && usesTextInput) onCellChange(row, header, nextValue);
       }
     },
-    [clearEdit, commitOnDismiss, draft.ownerKey, header, onCellChange, row, table.kind],
+    [clearEdit, usesTextInput, draft.ownerKey, header, onCellChange, row, table.kind],
   );
 
   useEffect(() => {
@@ -493,35 +494,12 @@ function ReviewCell({
         rows={3}
         value={editState.value}
         onChange={(event: ChangeEvent<HTMLTextAreaElement>) => setEditValue(event.target.value)}
-        onCompositionStart={() => {
-          composingRef.current = true;
-        }}
-        onCompositionEnd={() => {
-          composingRef.current = false;
-        }}
-        onBlur={(event) => {
-          if (
-            event.relatedTarget instanceof Node &&
-            contentRef.current?.contains(event.relatedTarget)
-          )
-            return;
-          finishEdit(undefined, (committedValue) => onCellChange(row, header, committedValue));
-        }}
         onKeyDown={(event: KeyboardEvent<HTMLTextAreaElement>) => {
           if (event.key === 'Escape') {
             event.preventDefault();
             event.stopPropagation();
             cancelEdit();
             return;
-          }
-          if (
-            event.key === 'Enter' &&
-            (event.ctrlKey || event.metaKey) &&
-            !event.nativeEvent.isComposing &&
-            !composingRef.current
-          ) {
-            event.preventDefault();
-            finishEdit(undefined, (committedValue) => onCellChange(row, header, committedValue));
           }
         }}
       />
@@ -594,26 +572,31 @@ function ReviewCell({
                 if (!protectNestedSelector(event, contentRef.current)) finishEdit();
               }}
             >
-              {desktopEditorContent}
-              {commitOnDismiss ? (
-                <div className="mt-2 flex items-center gap-2">
-                  <div className="min-w-0 flex-1 text-sm text-text-secondary [overflow-wrap:anywhere]">
-                    {inputChanged && <del>{baselineValue}</del>}
-                  </div>
+              {usesTextInput && (
+                <div className="mb-2 flex justify-end">
                   <Button
                     type="button"
                     size="sm"
-                    variant="ghost"
+                    variant="outline"
+                    className="h-6 px-2 text-xs"
                     disabled={!inputChanged}
                     aria-label={`${labels.reset ?? labels.action} ${header} ${row.rowId}`}
-                    onPointerDown={(event) => event.preventDefault()}
                     onClick={() => setEditValue(baselineValue)}
                   >
                     {labels.reset}
                   </Button>
                 </div>
-              ) : (
-                changed && previousValue
+              )}
+              {desktopEditorContent}
+              {usesTextInput && (
+                <div className="mt-2 flex items-center justify-end gap-2">
+                  <Button type="button" size="sm" variant="outline" onClick={cancelEdit}>
+                    {labels.cancel}
+                  </Button>
+                  <Button type="button" size="sm" onClick={() => finishEdit()}>
+                    {labels.confirm}
+                  </Button>
+                </div>
               )}
             </Popover.Content>
           </Popover.Portal>

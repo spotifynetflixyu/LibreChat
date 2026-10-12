@@ -1273,7 +1273,7 @@ describe('MarkdownTableActions Steel review entry', () => {
           fireEvent.click(screen.getByRole('button', { name: 'com_ui_edit 品名 row-1' }));
         const input = getEditableTextbox('品名 row-1');
         fireEvent.change(input, { target: { value: '鍍鋅鋼板' } });
-        if (isDesktop) fireEvent.blur(input);
+        if (isDesktop) fireEvent.click(screen.getByRole('button', { name: 'com_ui_confirm' }));
         fireEvent.click(
           screen.getByRole('button', { name: /^com_ui_steel_review_save(?: \(\d+\))?$/ }),
         );

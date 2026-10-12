@@ -47,6 +47,8 @@ const labels = {
   action: 'Action',
   edit: 'Edit',
   reset: 'Reset',
+  cancel: 'Cancel',
+  confirm: 'Confirm',
   bind: 'Link',
   bound: 'Linked',
   classify: 'Classify',
@@ -72,7 +74,7 @@ function systemRow(rowId: string, kind: 'material' | 'processing' | 'unassigned'
 
 describe('Steel review local editor gates', () => {
   it.each(['system_order', 'ocr_result'] as const)(
-    'normalizes numeric display and desktop commit after editing ends for %s',
+    'normalizes numeric display and desktop commit after confirmation for %s',
     (kind) => {
       const row = { ...table.rows[0], values: {
         厚度: { baseline: '15.000000', effective: '15.0' },
@@ -92,7 +94,7 @@ describe('Steel review local editor gates', () => {
       fireEvent.change(input, { target: { value: '0.010000' } });
       expect(input).toHaveValue('0.010000');
       expect(onCellChange).not.toHaveBeenCalled();
-      fireEvent.keyDown(input, { key: 'Enter', ctrlKey: true });
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
       expect(onCellChange).toHaveBeenCalledWith(row, '厚度', '0.01');
       expect(screen.queryByRole('textbox', { name: '厚度 row-1' })).toBeNull();
     },
@@ -376,7 +378,7 @@ describe('Steel review category menu', () => {
 });
 
 describe('desktop steel review cells', () => {
-  it('keeps text at rest, supports multiline text, and commits once on Ctrl+Enter', () => {
+  it('keeps text at rest, supports multiline text, and commits once on confirmation', () => {
     const onCellChange = jest.fn();
     render(<SteelReviewEditor
       table={table}
@@ -393,13 +395,16 @@ describe('desktop steel review cells', () => {
     expect(input.tagName).toBe('TEXTAREA');
     expect(input.closest('[role="dialog"]')?.querySelector('del')).toBeNull();
     fireEvent.change(input, { target: { value: '鍍鋅鋼板' } });
-    expect(input.closest('[role="dialog"]')?.querySelector('del')).toHaveTextContent('鋼板');
+    expect(input.closest('[role="dialog"]')?.querySelector('del')).toBeNull();
     fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', charCode: 13 });
     expect(onCellChange).not.toHaveBeenCalled();
     expect(input).toBeInTheDocument();
     fireEvent.change(input, { target: { value: '鍍鋅鋼板\n第二行' } });
     fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', ctrlKey: true });
+    fireEvent.keyDown(input, { key: 'Enter', code: 'Enter', metaKey: true });
     fireEvent.blur(input);
+    expect(onCellChange).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
 
     expect(onCellChange).toHaveBeenCalledTimes(1);
     expect(onCellChange).toHaveBeenCalledWith(table.rows[0], '品名規格', '鍍鋅鋼板\n第二行');
@@ -428,7 +433,7 @@ describe('desktop steel review cells', () => {
     await user.clear(input);
     await user.type(input, '11');
     expect(reset).toBeEnabled();
-    expect(popover?.querySelector('del')).toHaveTextContent('10');
+    expect(popover?.querySelector('del')).toBeNull();
     fireEvent.pointerDown(reset);
     fireEvent.click(reset);
     expect(input).toHaveValue('10');
@@ -438,7 +443,7 @@ describe('desktop steel review cells', () => {
 
     await user.clear(input);
     await user.type(input, '12');
-    await user.tab();
+    await user.tab({ shift: true });
     expect(reset).toHaveFocus();
     expect(onCellChange).not.toHaveBeenCalled();
     await user.keyboard('{Enter}');
@@ -449,7 +454,8 @@ describe('desktop steel review cells', () => {
     expect(onCellChange).not.toHaveBeenCalled();
   });
 
-  it('commits on focus leave before the popover closes and ignores a second completion', () => {
+  it('commits once on outside click without a second completion', async () => {
+    const user = userEvent.setup();
     const onCellChange = jest.fn();
     render(<SteelReviewEditor
       table={table}
@@ -463,11 +469,13 @@ describe('desktop steel review cells', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Edit 單價 row-1' }));
     const input = screen.getByRole('textbox', { name: '單價 row-1' });
     fireEvent.change(input, { target: { value: '11' } });
-    fireEvent.blur(input);
-    fireEvent.mouseDown(document.body);
+    await user.click(document.body);
 
     expect(onCellChange).toHaveBeenCalledTimes(1);
     expect(onCellChange).toHaveBeenCalledWith(table.rows[0], '單價', '11');
+    expect(screen.queryByRole('textbox', { name: '單價 row-1' })).toBeNull();
+    await user.click(document.body);
+    expect(onCellChange).toHaveBeenCalledTimes(1);
   });
 
   it('cancels on Escape and leaves source fields without a field edit control', () => {
@@ -489,6 +497,85 @@ describe('desktop steel review cells', () => {
 
     expect(onCellChange).not.toHaveBeenCalled();
     expect(screen.queryByRole('textbox', { name: '總數 row-1' })).toBeNull();
+  });
+
+  it('cancels without changing the committed value and discards the input on reopening', async () => {
+    const user = userEvent.setup();
+    const onCellChange = jest.fn();
+    render(
+      <SteelReviewEditor
+        table={table}
+        rows={table.rows}
+        draft={createSteelReviewDraftState('desktop-cancel-owner')}
+        labels={labels}
+        isDesktop
+        onCellChange={onCellChange}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Edit 單價 row-1' }));
+    await user.clear(screen.getByRole('textbox', { name: '單價 row-1' }));
+    await user.type(screen.getByRole('textbox', { name: '單價 row-1' }), '12');
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+    expect(onCellChange).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Edit 單價 row-1' }));
+    expect(screen.getByRole('textbox', { name: '單價 row-1' })).toHaveValue('10');
+    await user.click(screen.getByRole('button', { name: 'Confirm' }));
+    expect(onCellChange).not.toHaveBeenCalled();
+    expect(screen.queryByRole('textbox', { name: '單價 row-1' })).toBeNull();
+  });
+
+  it('only restores an already changed value after confirming Reset', async () => {
+    const user = userEvent.setup();
+    const onCellChange = jest.fn();
+    const draft = setSteelReviewDraftCell(
+      createSteelReviewDraftState('desktop-confirm-reset'),
+      table.rows[0],
+      '單價',
+      '11',
+    );
+    render(
+      <SteelReviewEditor
+        table={table}
+        rows={table.rows}
+        draft={draft}
+        labels={labels}
+        isDesktop
+        onCellChange={onCellChange}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Edit 單價 row-1' }));
+    await user.click(screen.getByRole('button', { name: 'Reset 單價 row-1' }));
+    expect(screen.getByRole('textbox', { name: '單價 row-1' })).toHaveValue('10');
+    expect(onCellChange).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Confirm' }));
+    expect(onCellChange).toHaveBeenCalledTimes(1);
+    expect(onCellChange).toHaveBeenCalledWith(table.rows[0], '單價', '10');
+  });
+
+  it('keeps keyboard focus changes pending until the Confirm button is activated', async () => {
+    const user = userEvent.setup();
+    const onCellChange = jest.fn();
+    render(
+      <SteelReviewEditor
+        table={table}
+        rows={table.rows}
+        draft={createSteelReviewDraftState('desktop-focus-confirm')}
+        labels={labels}
+        isDesktop
+        onCellChange={onCellChange}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Edit 單價 row-1' }));
+    await user.type(screen.getByRole('textbox', { name: '單價 row-1' }), '2');
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'Cancel' })).toHaveFocus();
+    await user.tab();
+    expect(screen.getByRole('button', { name: 'Confirm' })).toHaveFocus();
+    expect(onCellChange).not.toHaveBeenCalled();
+    await user.keyboard('{Enter}');
+    expect(screen.queryByRole('textbox', { name: '單價 row-1' })).toBeNull();
+    expect(onCellChange).toHaveBeenCalledTimes(1);
+    expect(onCellChange).toHaveBeenCalledWith(table.rows[0], '單價', '102');
   });
 
   it('retains the original value below a changed desktop value and clears a stale edit', () => {
@@ -558,7 +645,7 @@ describe('processing row actions', () => {
     fireEvent.click(screen.getByRole('button', { name: isDesktop ? 'Edit 單價 measurement-row' : 'Edit measurement-row' }));
     const input = screen.getByRole('textbox', { name: '單價 measurement-row' });
     fireEvent.change(input, { target: { value: '12' } });
-    if (isDesktop) fireEvent.keyDown(input, { key: 'Enter', ctrlKey: true });
+    if (isDesktop) fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
     expect(onCellChange).toHaveBeenCalledWith(row, '單價', '12');
   });
 
