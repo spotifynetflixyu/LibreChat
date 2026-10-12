@@ -2,13 +2,13 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { TMessage } from 'librechat-data-provider';
-import { steelNativeActivityByMessageId } from '~/store/steel';
 import {
   useCancelSteelQuotationMutation,
   useGetSteelQuotationStatusQuery,
 } from '~/data-provider/Steel';
-import { ChatContext } from '~/Providers';
+import { steelNativeActivityByMessageId } from '~/store/steel';
 import SteelActivity from '../SteelActivity';
+import { ChatContext } from '~/Providers';
 
 type LocalizeOptions = {
   count?: number;
@@ -20,6 +20,7 @@ type LocalizeOptions = {
   error?: string;
   completedChunks?: number;
   totalChunks?: number;
+  version?: number;
   repairAttempt?: number | string;
   maxRepairAttempts?: number | string;
 };
@@ -99,8 +100,8 @@ jest.mock('~/hooks/useLocalize', () => ({
     if (key === 'com_ui_steel_quote_status_chunk_running') {
       return `Quotation child chunk ${options?.chunkIndex ?? 0} in progress (${options?.completedChunks ?? 0}/${options?.totalChunks ?? 0} chunks)`;
     }
-    if (key === 'com_ui_steel_quote_status_queued') {
-      return 'Quotation queued';
+    if (key === 'com_ui_steel_quote_status_preparing') {
+      return 'Preparing quotation';
     }
     if (key === 'com_ui_steel_quote_status_started') {
       return `Quotation started (${options?.completedChunks ?? 0}/${options?.totalChunks ?? 0} chunks)`;
@@ -140,6 +141,12 @@ jest.mock('~/hooks/useLocalize', () => ({
     }
     if (key === 'com_ui_steel_quote_status_interrupted') {
       return 'Quotation interrupted';
+    }
+    if (key === 'com_ui_steel_quote_source_ai') {
+      return `Quotation source: AI OCR v${options?.version ?? 0}`;
+    }
+    if (key === 'com_ui_steel_quote_source_human') {
+      return `Quotation source: Saved human OCR v${options?.version ?? 0}`;
     }
     if (key === 'com_ui_steel_activity_source_count') {
       return `${options?.source ?? ''}: ${options?.count ?? 0}`;
@@ -739,7 +746,7 @@ describe('SteelActivity', () => {
       </RecoilRoot>,
     );
 
-    expect(screen.getAllByText('Quotation queued')).toHaveLength(1);
+    expect(screen.getAllByText('Preparing quotation')).toHaveLength(1);
     expect(screen.queryByRole('button', { name: '1 events' })).not.toBeInTheDocument();
   });
 
@@ -1028,6 +1035,218 @@ describe('SteelActivity', () => {
     expect(screen.getAllByText('Quotation completed (2/2 chunks)')).toHaveLength(2);
     expect(screen.queryByRole('button', { name: 'Cancel quotation' })).not.toBeInTheDocument();
     expect(container.querySelector('.my-3 .animate-spin')).not.toBeInTheDocument();
+  });
+
+  it.each([
+    { source: 'ai' as const, version: 2, label: 'Quotation source: AI OCR v2' },
+    { source: 'human' as const, version: 3, label: 'Quotation source: Saved human OCR v3' },
+  ])(
+    'shows the frozen $source OCR source for the displayed quotation run',
+    ({ source, version, label }) => {
+      mockUseGetSteelQuotationStatusQuery.mockReturnValue({
+        data: {
+          conversationId: 'conversation-1',
+          index: 4,
+          runId: 'quotation-run-source',
+          status: 'aggregating',
+          completedChunks: 2,
+          totalChunks: 2,
+          canCancel: true,
+          ocrSource: {
+            source,
+            version,
+            savedAt: '2026-10-07T04:00:00.000Z',
+            messageId: 'assistant-source',
+            outputId: 'ocr_result:generation-2',
+            title: 'quotation.pdf',
+            revision: 'generation-2',
+          },
+        },
+      } as ReturnType<typeof useGetSteelQuotationStatusQuery>);
+
+      render(
+        <RecoilRoot
+          initializeState={({ set }) => {
+            set(steelNativeActivityByMessageId('assistant-source'), [
+              {
+                ...quotationStatusEvent,
+                messageId: 'assistant-source',
+                runId: 'quotation-run-source',
+                status: 'aggregating' as const,
+                stage: 'main_streaming',
+                completedChunks: 2,
+                totalChunks: 2,
+              },
+            ]);
+          }}
+        >
+          <SteelActivity messageId="assistant-source" isCreatedByUser={false} />
+        </RecoilRoot>,
+      );
+
+      expect(screen.getByText(label)).toBeInTheDocument();
+    },
+  );
+
+  it('retains the same-run OCR source when a terminal event overrides the query status', () => {
+    mockUseGetSteelQuotationStatusQuery.mockReturnValue({
+      data: {
+        conversationId: 'conversation-1',
+        index: 4,
+        runId: 'quotation-run-source-terminal',
+        status: 'aggregating',
+        completedChunks: 2,
+        totalChunks: 2,
+        canCancel: true,
+        ocrSource: {
+          source: 'human',
+          version: 4,
+          savedAt: '2026-10-07T04:00:00.000Z',
+          messageId: 'assistant-source-terminal',
+          outputId: 'ocr_result:generation-4',
+          title: 'quotation.pdf',
+          revision: 'generation-4',
+        },
+      },
+    } as ReturnType<typeof useGetSteelQuotationStatusQuery>);
+
+    render(
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(steelNativeActivityByMessageId('assistant-source-terminal'), [
+            {
+              ...quotationStatusEvent,
+              messageId: 'assistant-source-terminal',
+              runId: 'quotation-run-source-terminal',
+              stage: 'completed',
+              status: 'completed' as const,
+              completedChunks: 2,
+              totalChunks: 2,
+            },
+          ]);
+        }}
+      >
+        <SteelActivity messageId="assistant-source-terminal" isCreatedByUser={false} />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByText('Quotation source: Saved human OCR v4')).toBeInTheDocument();
+    expect(screen.getAllByText('Quotation completed (2/2 chunks)')).toHaveLength(2);
+  });
+
+  it('uses the persisted source for the event run when the current query belongs to another run', () => {
+    mockUseGetSteelQuotationStatusQuery.mockReturnValue({
+      data: {
+        conversationId: 'conversation-1',
+        index: 4,
+        runId: 'quotation-run-later',
+        status: 'running',
+        completedChunks: 1,
+        totalChunks: 2,
+        canCancel: true,
+        ocrSource: {
+          source: 'ai',
+          version: 8,
+          savedAt: '2026-10-07T04:00:00.000Z',
+          messageId: 'assistant-later',
+          outputId: 'ocr_result:generation-8',
+          title: 'quotation.pdf',
+          revision: 'generation-8',
+        },
+      },
+    } as ReturnType<typeof useGetSteelQuotationStatusQuery>);
+
+    render(
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(steelNativeActivityByMessageId('assistant-source-history'), [
+            {
+              ...quotationStatusEvent,
+              messageId: 'assistant-source-history',
+              runId: 'quotation-run-earlier',
+              ocrSource: {
+                source: 'human' as const,
+                version: 3,
+                savedAt: '2026-10-07T03:00:00.000Z',
+                messageId: 'assistant-source-history',
+                outputId: 'ocr_result:generation-3',
+                title: 'quotation.pdf',
+                revision: 'generation-3',
+              },
+            },
+          ]);
+        }}
+      >
+        <SteelActivity messageId="assistant-source-history" isCreatedByUser={false} />
+      </RecoilRoot>,
+    );
+
+    expect(screen.getByText('Quotation source: Saved human OCR v3')).toBeInTheDocument();
+    expect(screen.queryByText('Quotation source: AI OCR v8')).not.toBeInTheDocument();
+  });
+
+  it('hides OCR source metadata from a mismatched quotation query or absent source', () => {
+    mockUseGetSteelQuotationStatusQuery.mockReturnValue({
+      data: {
+        conversationId: 'conversation-1',
+        index: 4,
+        runId: 'quotation-run-later',
+        status: 'running',
+        completedChunks: 1,
+        totalChunks: 2,
+        canCancel: true,
+        ocrSource: {
+          source: 'ai',
+          version: 8,
+          savedAt: '2026-10-07T04:00:00.000Z',
+          messageId: 'assistant-later',
+          outputId: 'ocr_result:generation-8',
+          title: 'quotation.pdf',
+          revision: 'generation-8',
+        },
+      },
+    } as ReturnType<typeof useGetSteelQuotationStatusQuery>);
+
+    const { rerender } = render(
+      <RecoilRoot
+        initializeState={({ set }) => {
+          set(steelNativeActivityByMessageId('assistant-source-mismatch'), [
+            {
+              ...quotationStatusEvent,
+              messageId: 'assistant-source-mismatch',
+              runId: 'quotation-run-earlier',
+            },
+          ]);
+        }}
+      >
+        <SteelActivity messageId="assistant-source-mismatch" isCreatedByUser={false} />
+      </RecoilRoot>,
+    );
+
+    expect(screen.queryByText('Quotation source: AI OCR v8')).not.toBeInTheDocument();
+
+    mockUseGetSteelQuotationStatusQuery.mockReturnValue({
+      data: {
+        conversationId: 'conversation-1',
+        index: 4,
+        runId: 'quotation-run-no-source',
+        status: 'completed',
+        completedChunks: 2,
+        totalChunks: 2,
+        canCancel: false,
+      },
+    } as ReturnType<typeof useGetSteelQuotationStatusQuery>);
+    rerender(
+      <RecoilRoot>
+        <SteelActivity
+          messageId="assistant-source-mismatch"
+          isCreatedByUser={false}
+          persistedActivityEvents={[quotationStatusEvent]}
+        />
+      </RecoilRoot>,
+    );
+
+    expect(screen.queryByText(/Quotation source:/)).not.toBeInTheDocument();
   });
 
   it('shows the loading dot through live quotation aggregation and hides it after termination', () => {

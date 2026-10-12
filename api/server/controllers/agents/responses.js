@@ -1,3 +1,4 @@
+const steelPostgres = require('~/server/services/Steel/postgres');
 const { nanoid } = require('nanoid');
 const mongoose = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
@@ -32,6 +33,7 @@ const {
   createSteelNativeHistory,
   prepareSteelNativeToolConfig,
   prepareQuotationTurn,
+  prepareSteelMarkdownHistory,
   hasQuotationOrder,
   createSafeUser,
   initializeAgent,
@@ -97,6 +99,9 @@ const {
   createSteelOcrStateService,
   createSteelQuotationStateService,
   createSteelMarkdownCompletionServices,
+  createSteelQuotationPublicationPublisher,
+  createSteelFullMarkdownPublisher,
+  createSteelQuotationPublicationMessageBuilder,
   finalizeSteelResponsesTurn,
   replaceSteelResponsesMarkdown,
   createSteelOcrResponseAuditService,
@@ -360,7 +365,11 @@ function collectSteelNativeResponseMessages(messages, conversationId) {
   return { activeHistory, currentUserTurn };
 }
 
-function buildSharedRunContextWithSteel(inlineMemoryContext, agentScopedContext, steelRuntimeContext) {
+function buildSharedRunContextWithSteel(
+  inlineMemoryContext,
+  agentScopedContext,
+  steelRuntimeContext,
+) {
   return [inlineMemoryContext, agentScopedContext, steelRuntimeContext]
     .map((part) => (typeof part === 'string' ? part.trim() : ''))
     .filter(Boolean)
@@ -654,37 +663,37 @@ async function saveResponseOutput(
 
   // Save the assistant message
   const responseMessage = {
-      messageId: responseId,
+    messageId: responseId,
+    conversationId,
+    parentMessageId: null,
+    isCreatedByUser: false,
+    ...langfuseTraceFields,
+    text: responseText,
+    unfinished: false,
+    sender: 'Agent',
+    endpoint: EModelEndpoint.agents,
+    model: agentId,
+    finish_reason: response.status === 'completed' ? 'stop' : response.status,
+    tokenCount: response.usage?.output_tokens,
+    ...(Number.isSafeInteger(processingDurationMs) && processingDurationMs >= 0
+      ? { processingDurationMs }
+      : {}),
+    metadata: buildSteelNativeResponseMessageMetadata({
       conversationId,
-      parentMessageId: null,
-      isCreatedByUser: false,
-      ...langfuseTraceFields,
-      text: responseText,
-      unfinished: false,
-      sender: 'Agent',
-      endpoint: EModelEndpoint.agents,
-      model: agentId,
-      finish_reason: response.status === 'completed' ? 'stop' : response.status,
-      tokenCount: response.usage?.output_tokens,
-      ...(Number.isSafeInteger(processingDurationMs) && processingDurationMs >= 0
-        ? { processingDurationMs }
-        : {}),
-      metadata: buildSteelNativeResponseMessageMetadata({
-        conversationId,
-        responseId,
-        turnIndex: req.steelNativeContext?.assistantTurnIndex,
-        checkpointTurnIndex: req.steelNativeContext?.memoryCheckpointTurnIndex,
-        requestedStore: req.steelNativeContext?.requestedStore,
-        store: req.steelNativeContext?.store === true,
-        providerStateMode:
-          req.steelNativeContext?.providerStateMode ?? 'openai_responses_reconstructed',
-        contextMetadata: req.steelNativeContext?.contextMetadata,
-        activityEvents:
-          req.steelNativeContext?.steelHistory?.activityEvents ??
-          req.steelNativeContext?.steelActivityEvents,
-        preflightToolCalls: req.steelNativeContext?.steelHistory?.preflightToolCalls,
-      }),
-    };
+      responseId,
+      turnIndex: req.steelNativeContext?.assistantTurnIndex,
+      checkpointTurnIndex: req.steelNativeContext?.memoryCheckpointTurnIndex,
+      requestedStore: req.steelNativeContext?.requestedStore,
+      store: req.steelNativeContext?.store === true,
+      providerStateMode:
+        req.steelNativeContext?.providerStateMode ?? 'openai_responses_reconstructed',
+      contextMetadata: req.steelNativeContext?.contextMetadata,
+      activityEvents:
+        req.steelNativeContext?.steelHistory?.activityEvents ??
+        req.steelNativeContext?.steelActivityEvents,
+      preflightToolCalls: req.steelNativeContext?.steelHistory?.preflightToolCalls,
+    }),
+  };
   const saveMessageOperation = async (options = {}) => {
     responseMessage.text = responseText;
     responseMessage.unfinished = options.completed === false;
@@ -704,7 +713,22 @@ async function saveResponseOutput(
     persistedMessage = saved;
     return saved;
   };
+  const publishQuotation = createSteelQuotationPublicationPublisher({
+    saveContext: {
+      isTemporary: req.body?.isTemporary,
+      expiredAt: req._agentEventBindingRetention?.expiredAt ?? req.resolvedConversation?.expiredAt,
+      interfaceConfig: req.config?.interfaceConfig,
+    },
+    buildMessage: ({ markdown }) => ({
+      ...responseMessage,
+      messageId: responseMessage.messageId,
+      sourceMessageId: responseMessage.messageId,
+      text: markdown,
+    }),
+    savePublication: (proof) => db.saveSteelQuotationMessage(proof),
+  });
   const markdownCompletion = createSteelMarkdownCompletionServices({
+    runtimeRulesClient: steelPostgres.client,
     ocr: createSteelOcrStateService(mongoose),
     quotation: createSteelQuotationStateService(mongoose),
     audit: createSteelOcrResponseAuditService(mongoose),
@@ -722,6 +746,24 @@ async function saveResponseOutput(
       responseMessage.text = markdown;
     },
     persistMarkdown,
+    publishQuotation,
+    publishMarkdown: createSteelFullMarkdownPublisher({
+      saveContext: {
+        isTemporary: req.body?.isTemporary,
+        expiredAt: req.resolvedConversation?.expiredAt,
+        interfaceConfig: req.config?.interfaceConfig,
+      },
+      buildMessage: ({ markdown }) => ({ ...responseMessage, text: markdown }),
+      savePublication: db.publishSteelMarkdown,
+    }),
+    publishedResponse: {
+      load: ({ userId: publishedUserId, responseId: publishedResponseId }) =>
+        db.getMessage({ user: publishedUserId, messageId: publishedResponseId }),
+      accept: (saved) => {
+        responseMessagePersisted = true;
+        persistedMessage = saved;
+      },
+    },
   });
   responseText = completion.markdown;
   responseMessage.text = responseText;
@@ -949,7 +991,10 @@ const executeResponse = async (envelope, { req, res }) => {
     }
     let continuation;
     try {
-      continuation = await resolveResponseConversation(request.previous_response_id, principal.userId);
+      continuation = await resolveResponseConversation(
+        request.previous_response_id,
+        principal.userId,
+      );
     } catch (error) {
       terminalRunError.log(error);
       return handleExecutionError({ error, res, appConfig });
@@ -1061,9 +1106,13 @@ const executeResponse = async (envelope, { req, res }) => {
         agentsEConfig?.backgroundTasks?.ordinaryToolCancellation === true;
       const backgroundCompletionResultMaxChars =
         agentsEConfig?.backgroundTasks?.completionResultMaxChars;
-      const previousMessages = request.previous_response_id
-        ? await loadPreviousMessages(conversationId, principal.userId)
-        : [];
+      const previousMessages = await prepareSteelMarkdownHistory({
+        scope: { userId: principal.userId, conversationId, tenantId: principal.tenantId },
+        reader: db,
+        messages: request.previous_response_id
+          ? await loadPreviousMessages(conversationId, principal.userId)
+          : [],
+      });
       if (request.previous_response_id) {
         assertModelBoundContent({
           onTraversalFailure: reportLocatorTraversalFailure,
@@ -1394,6 +1443,41 @@ const executeResponse = async (envelope, { req, res }) => {
       const actuallyStreaming = isStreaming && !streamingDisabled;
       const tracker = actuallyStreaming ? createResponseTracker() : null;
       const aggregator = actuallyStreaming ? null : createResponseAggregator();
+      const collectedUsage = [];
+      const buildQuotationMessageFields = async () => {
+        const usage = buildResponsesUsage(collectedUsage);
+        const langfuseTraceFields = await getLangfuseTraceMessageFields(appConfig, responseId);
+        return {
+          sourceMessageId: responseId,
+          conversationId,
+          user: principal.userId,
+          parentMessageId: null,
+          isCreatedByUser: false,
+          unfinished: false,
+          sender: 'Agent',
+          endpoint: EModelEndpoint.agents,
+          model: agentId,
+          finish_reason: 'stop',
+          tokenCount: usage.output_tokens,
+          processingDurationMs: Math.max(0, Date.now() - requestStartTime),
+          ...langfuseTraceFields,
+          metadata: buildSteelNativeResponseMessageMetadata({
+            conversationId,
+            responseId,
+            turnIndex: req.steelNativeContext?.assistantTurnIndex,
+            checkpointTurnIndex: req.steelNativeContext?.memoryCheckpointTurnIndex,
+            requestedStore: req.steelNativeContext?.requestedStore,
+            store: req.steelNativeContext?.store === true,
+            providerStateMode:
+              req.steelNativeContext?.providerStateMode ?? 'openai_responses_reconstructed',
+            contextMetadata: req.steelNativeContext?.contextMetadata,
+            activityEvents:
+              req.steelNativeContext?.steelHistory?.activityEvents ??
+              req.steelNativeContext?.steelActivityEvents,
+            preflightToolCalls: req.steelNativeContext?.steelHistory?.preflightToolCalls,
+          }),
+        };
+      };
       let streamingResponseReady = false;
 
       // Merge previous messages with new input
@@ -1447,6 +1531,8 @@ const executeResponse = async (envelope, { req, res }) => {
         scope: { userId: principal.userId, conversationId, tenantId: principal.tenantId },
         messageId: currentUserTurn?.messageId ?? responseId,
         responseId,
+        generationId: responseId,
+        publicationStore: db,
         text: currentUserTurn?.content ?? '',
         files: currentTurnFiles,
       });
@@ -1501,7 +1587,12 @@ const executeResponse = async (envelope, { req, res }) => {
             hasQuotationOrder: hasQuotationOrder(quotation.state?.currentOrder?.markdown),
             ocrTurnActive,
             delegateOcrPolicy: delegateOcrResume
-              ? { resolved: true, allowed: false, allowedFileKeys: [], reason: 'delegate_ocr_resume' }
+              ? {
+                  resolved: true,
+                  allowed: false,
+                  allowedFileKeys: [],
+                  reason: 'delegate_ocr_resume',
+                }
               : delegateOcrPolicy,
           }),
         );
@@ -1550,6 +1641,7 @@ const executeResponse = async (envelope, { req, res }) => {
         attachments.currentTurnFiles = currentTurnFiles;
       }
       const steelNativeContext = await buildDefaultSteelGlobalAgentContext({
+        runtimeRulesClient: steelPostgres.client,
         conversation: steelConversation,
         ...(Object.keys(attachments).length > 0 && { attachments }),
         renderProfile: 'open_responses',
@@ -1666,7 +1758,10 @@ const executeResponse = async (envelope, { req, res }) => {
           );
         }
       }
-      providerMessages = stripSteelOcrPartsFromProviderMessages(formattedMessages, currentTurnFiles);
+      providerMessages = stripSteelOcrPartsFromProviderMessages(
+        formattedMessages,
+        currentTurnFiles,
+      );
       req.steelNativeContext.delegateOcrContext = {
         ...(req.steelNativeContext.delegateOcrContext ?? {}),
         history: formattedMessages,
@@ -1708,8 +1803,6 @@ const executeResponse = async (envelope, { req, res }) => {
         } = createResponsesEventHandlers(handlerConfig);
 
         // Collect usage for balance tracking
-        const collectedUsage = [];
-
         // Artifact promises for processing tool outputs
         // Use Responses API-specific callback that emits librechat:attachment events
         const toolEndCallback = createResponsesToolEndCallback({
@@ -1856,8 +1949,13 @@ const executeResponse = async (envelope, { req, res }) => {
           version: 'v2',
         };
 
-        const executeQuotation = () =>
-          executeSteelQuotationWorkflow({
+        const executeQuotation = () => {
+          const buildPublicationMessage = createSteelQuotationPublicationMessageBuilder({
+            tracker,
+            aggregator,
+            buildMessageFields: buildQuotationMessageFields,
+          });
+          return executeSteelQuotationWorkflow({
             req,
             res,
             signal: execution.signal,
@@ -1872,7 +1970,9 @@ const executeResponse = async (envelope, { req, res }) => {
                 id: `quotation:${responseId}`,
                 delta: { content: [{ type: 'text', text }] },
               }),
+            buildPublicationMessage,
           });
+        };
         if (req.steelNativeContext?.quotation?.resume) {
           await executeQuotation();
         } else if (delegateOcrResume) {
@@ -1937,12 +2037,26 @@ const executeResponse = async (envelope, { req, res }) => {
           buildResponse(context, tracker, 'completed'),
         );
         await finalizeSteelResponsesTurn({
-          req, response: finalResponse, responseId, store: shouldStoreResponse,
-          saveConversation: () => saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision),
+          req,
+          response: finalResponse,
+          responseId,
+          store: shouldStoreResponse,
+          saveConversation: () =>
+            saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision),
           saveInput: () => saveInputMessages(req, conversationId, inputMessages, agentId),
-          saveOutput: () => saveResponseOutput(req, conversationId, responseId, finalResponse, agentId, Math.max(0, Date.now() - requestStartTime)),
-          onPersistenceFailure: () => logger.error('[Responses API] Could not save ordinary response'),
-          tracker, streamConfig: handlerConfig,
+          saveOutput: () =>
+            saveResponseOutput(
+              req,
+              conversationId,
+              responseId,
+              finalResponse,
+              agentId,
+              Math.max(0, Date.now() - requestStartTime),
+            ),
+          onPersistenceFailure: () =>
+            logger.error('[Responses API] Could not save ordinary response'),
+          tracker,
+          streamConfig: handlerConfig,
         });
         finalizeStream(usage);
         res.end();
@@ -1968,8 +2082,6 @@ const executeResponse = async (envelope, { req, res }) => {
         const aggregatorHandlers = createAggregatorEventHandlers(aggregator);
 
         // Collect usage for balance tracking
-        const collectedUsage = [];
-
         const toolEndCallback = createToolEndCallback({
           req,
           res,
@@ -2108,8 +2220,13 @@ const executeResponse = async (envelope, { req, res }) => {
           version: 'v2',
         };
 
-        const executeQuotation = () =>
-          executeSteelQuotationWorkflow({
+        const executeQuotation = () => {
+          const buildPublicationMessage = createSteelQuotationPublicationMessageBuilder({
+            tracker,
+            aggregator,
+            buildMessageFields: buildQuotationMessageFields,
+          });
+          return executeSteelQuotationWorkflow({
             req,
             res,
             signal: execution.signal,
@@ -2124,7 +2241,9 @@ const executeResponse = async (envelope, { req, res }) => {
                 id: `quotation:${responseId}`,
                 delta: { content: [{ type: 'text', text }] },
               }),
+            buildPublicationMessage,
           });
+        };
         if (req.steelNativeContext?.quotation?.resume) {
           await executeQuotation();
         } else if (delegateOcrResume) {
@@ -2194,18 +2313,29 @@ const executeResponse = async (envelope, { req, res }) => {
           artifactWritesCovered = true;
         }
 
-        const response = markSteelNativeResponseStored(buildAggregatedResponse(
-          context,
-          aggregator,
-          buildResponsesUsage(collectedUsage),
-        ));
+        const response = markSteelNativeResponseStored(
+          buildAggregatedResponse(context, aggregator, buildResponsesUsage(collectedUsage)),
+        );
 
         await finalizeSteelResponsesTurn({
-          req, response, responseId, store: shouldStoreResponse,
-          saveConversation: () => saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision),
+          req,
+          response,
+          responseId,
+          store: shouldStoreResponse,
+          saveConversation: () =>
+            saveConversation(req, conversationId, agentId, agent, codeEnvironmentDecision),
           saveInput: () => saveInputMessages(req, conversationId, inputMessages, agentId),
-          saveOutput: () => saveResponseOutput(req, conversationId, responseId, response, agentId, Math.max(0, Date.now() - requestStartTime)),
-          onPersistenceFailure: () => logger.error('[Responses API] Could not save ordinary response'),
+          saveOutput: () =>
+            saveResponseOutput(
+              req,
+              conversationId,
+              responseId,
+              response,
+              agentId,
+              Math.max(0, Date.now() - requestStartTime),
+            ),
+          onPersistenceFailure: () =>
+            logger.error('[Responses API] Could not save ordinary response'),
         });
 
         res.json(response);

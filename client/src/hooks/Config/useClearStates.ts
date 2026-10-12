@@ -37,7 +37,6 @@ export default function useClearStates() {
           jotaiStore.set(showSkillsPopoverFamily(key), false);
           reset(store.pendingManualSkillsByConvoId(key.toString()));
           reset(store.pendingQuotesByConvoId(key.toString()));
-          reset(store.pendingMarkdownTableCommentsByConvoId(key.toString()));
           /**
            * Pending composer queues are keyed by the conversation id the
            * composer wrote under, not this UI index — also clear by the resolved
@@ -48,7 +47,6 @@ export default function useClearStates() {
           if (convoId != null) {
             reset(store.pendingManualSkillsByConvoId(convoId));
             reset(store.pendingQuotesByConvoId(convoId));
-            reset(store.pendingMarkdownTableCommentsByConvoId(convoId));
           }
           reset(store.activePromptByIndex(key));
           reset(store.globalAudioURLFamily(key));

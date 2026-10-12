@@ -2,7 +2,7 @@ const { spawn } = require('child_process');
 const fs = require('fs');
 const http = require('http');
 const path = require('path');
-const { MongoMemoryServer } = require('mongodb-memory-server');
+const { MongoMemoryReplSet } = require('mongodb-memory-server');
 
 const DEFAULT_BASE_URL = 'http://localhost:3080';
 const DEFAULT_RUNTIME_ENV_PATH = path.resolve(__dirname, '../specs/.test-results/runtime-env.json');
@@ -140,8 +140,10 @@ async function shutdown(exitCode = 0) {
 
 async function startCluster() {
   const { baseURL, replicaPorts } = getTopology();
-  mongoServer = await MongoMemoryServer.create({
-    instance: {
+  mongoServer = await MongoMemoryReplSet.create({
+    replSet: {
+      count: 1,
+      storageEngine: 'wiredTiger',
       dbName: 'LibreChat-e2e',
       ip: '127.0.0.1',
     },

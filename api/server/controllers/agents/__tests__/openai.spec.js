@@ -240,6 +240,8 @@ jest.mock('@librechat/agents', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  createSteelPostgresService: jest.requireActual('@librechat/api').createSteelPostgresService,
+  createSteelPostgresPool: jest.fn(),
   delegateOcrStreamEventName: 'on_delegate_ocr_stream',
   getAgentErrorMetadata: (...args) =>
     jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),
@@ -332,12 +334,10 @@ jest.mock('@librechat/api', () => ({
   recordCollectedUsage: mockRecordCollectedUsage,
   buildDefaultSteelGlobalAgentContext: mockBuildDefaultSteelGlobalAgentContext,
   prepareLibreChatSteelChatContext: (...args) => mockPrepareLibreChatSteelChatContext(...args),
-  normalizeDelegateOcrChunk: (content) =>
-    typeof content === 'string'
-      ? content
-      : Array.isArray(content)
-        ? content.map((part) => part?.text ?? '').join('')
-        : '',
+  normalizeDelegateOcrChunk: (content) => {
+    if (typeof content === 'string') return content;
+    return Array.isArray(content) ? content.map((part) => part?.text ?? '').join('') : '';
+  },
   extractSteelNativeMarkdownText: (...args) => mockExtractSteelNativeMarkdownText(...args),
   applySteelNativeGlobalContextToAgentConfigs: mockApplySteelNativeGlobalContextToAgentConfigs,
   createSubagentUsageSink: jest.fn().mockReturnValue(jest.fn()),
@@ -2153,6 +2153,7 @@ describe('OpenAIChatCompletionController', () => {
 
       expect(buildDefaultSteelGlobalAgentContext).toHaveBeenCalledWith(
         expect.objectContaining({
+          runtimeRulesClient: require('~/server/services/Steel/postgres').client,
           renderProfile: 'agents_chat_completions',
           conversation: expect.objectContaining({
             conversationId: 'mock-nanoid-123',

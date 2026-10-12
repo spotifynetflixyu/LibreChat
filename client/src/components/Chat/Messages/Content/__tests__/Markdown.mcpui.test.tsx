@@ -1,29 +1,34 @@
 import React from 'react';
+import { RecoilRoot } from 'recoil';
 import userEvent from '@testing-library/user-event';
+import { QueryClient, QueryObserver } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import Markdown from '../Markdown';
-import MarkdownLite from '../MarkdownLite';
-import { RecoilRoot, useRecoilValue } from 'recoil';
 import type { TConversation } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
-import { readStoredMarkdownTableComments, writeStoredMarkdownTableComments } from '~/common';
-import type { MarkdownTableComment } from '~/common';
-import { UI_RESOURCE_MARKER } from '~/components/MCPUIResource/plugin';
 import {
   MessageContext,
   useOptionalMessagesConversation,
   useOptionalMessagesOperations,
 } from '~/Providers';
-import { useGetMessagesByConvoId } from '~/data-provider';
+import { useGetMessagesByConvoId, useGetSteelReviewQuery } from '~/data-provider';
+import { UI_RESOURCE_MARKER } from '~/components/MCPUIResource/plugin';
+import MarkdownLite from '../MarkdownLite';
 import { useLocalize } from '~/hooks';
+import Markdown from '../Markdown';
 import store from '~/store';
 
 // Mocks for hooks used by MCPUIResource when rendered inside Markdown.
 // Keep Provider components intact while mocking only the hooks we use.
 jest.mock('~/Providers', () => ({
   ...jest.requireActual('~/Providers'),
-  useOptionalMessagesConversation: jest.fn(),
-  useOptionalMessagesOperations: jest.fn(),
+  useOptionalMessagesConversation: jest.fn(() => ({
+    conversation: { conversationId: 'conv1' },
+    conversationId: 'conv1',
+  })),
+  useOptionalMessagesOperations: jest.fn(() => ({
+    ask: jest.fn(),
+    getMessages: () => [],
+  })),
 }));
 jest.mock('~/data-provider');
 jest.mock('~/hooks');
@@ -97,23 +102,13 @@ const mockUseLocalize = useLocalize as jest.MockedFunction<typeof useLocalize>;
 const mockUseConversationUIResources = useConversationUIResources as jest.MockedFunction<
   typeof useConversationUIResources
 >;
+const mockUseSteelReviewQuery = useGetSteelReviewQuery as jest.MockedFunction<
+  typeof useGetSteelReviewQuery
+>;
+const mockUseGetMessagesByConvoId = useGetMessagesByConvoId as jest.MockedFunction<
+  typeof useGetMessagesByConvoId
+>;
 let currentTestMessages: TMessage[] = [];
-
-function PendingCommentsProbe({
-  conversationId,
-  onChange,
-}: {
-  conversationId: string;
-  onChange: (comments: MarkdownTableComment[]) => void;
-}) {
-  const comments = useRecoilValue(store.pendingMarkdownTableCommentsByConvoId(conversationId));
-
-  React.useEffect(() => {
-    onChange(comments);
-  }, [comments, onChange]);
-
-  return null;
-}
 
 function renderMarkdownWithMessageContext({
   children,
@@ -149,7 +144,7 @@ function renderMarkdownWithMessageContext({
         }
       >
         <div className="message-render" id="msg-table">
-          <h2>Assistant</h2>
+          <h2>{conversationTitle}</h2>
           <div className="message-content">
             <Markdown content={content} isLatestMessage={false} />
           </div>
@@ -174,6 +169,16 @@ describe('Markdown with MCP UI markers (resource IDs)', () => {
       getMessages: () => currentTestMessages,
     } as any);
     mockUseLocalize.mockReturnValue(((key: string) => key) as any);
+    mockUseGetMessagesByConvoId.mockReturnValue({
+      data: undefined,
+    } as unknown as ReturnType<typeof useGetMessagesByConvoId>);
+    mockUseSteelReviewQuery.mockReturnValue({
+      data: undefined,
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: jest.fn(),
+    } as unknown as ReturnType<typeof useGetSteelReviewQuery>);
   });
 
   it('renders two UIResourceRenderer components for markers with resource IDs across separate attachments', () => {
@@ -239,6 +244,12 @@ describe('Markdown table rendering', () => {
     mockUseLocalize.mockReturnValue(((key: string) => key) as any);
 
     downloadedFilename = '';
+    const reviewObserver = new QueryObserver(new QueryClient(), {
+      queryKey: ['markdown-table-review'],
+      queryFn: async () => ({ table: null }),
+      enabled: false,
+    });
+    mockUseSteelReviewQuery.mockReturnValue({ ...reviewObserver.getCurrentResult(), refetch: jest.fn() });
     clickAnchor = jest
       .spyOn(HTMLAnchorElement.prototype, 'click')
       .mockImplementation(function captureFilename(this: HTMLAnchorElement) {
@@ -297,6 +308,60 @@ describe('Markdown table rendering', () => {
     expect(screen.getByLabelText('com_ui_copy_markdown_table')).toBeInTheDocument();
     expect(screen.getByLabelText('com_ui_download_table_csv')).toBeInTheDocument();
     expect(screen.getByLabelText('com_ui_expand_table')).toBeInTheDocument();
+  });
+
+  it('keeps numeric values together in chat and the expanded table without changing copied content', async () => {
+    const content = '| Length | Value | Detail |\n| --- | --- | --- |\n| 5280 | **-1,234.50** | Plate 15 mm, 40 holes |';
+    const { container } = renderMarkdownWithMessageContext({ content });
+    expect(screen.getByText('5280')).toHaveClass('whitespace-nowrap');
+    expect(screen.getByText('-1,234.50')).toHaveClass('whitespace-nowrap');
+    expect(container.querySelector('[data-markdown-cell-content] strong')).toHaveTextContent('-1,234.50');
+    await act(async () => { fireEvent.click(screen.getByLabelText('com_ui_copy_markdown_table')); });
+    expect(writeClipboardText).toHaveBeenCalledWith(content.replace('**-1,234.50**', '-1,234.50'));
+    fireEvent.click(screen.getByLabelText('com_ui_expand_table'));
+    expect(within(screen.getByRole('dialog')).getByText('5280')).toHaveClass('whitespace-nowrap');
+    expect(within(screen.getByRole('dialog')).getByText('-1,234.50')).toHaveClass('whitespace-nowrap');
+  });
+
+  it('toggles long cells independently in chat and the expanded modal while copying their full content', async () => {
+    const firstText = 'First long cell content. '.repeat(12).trim();
+    const secondText = 'Second long cell content. '.repeat(12).trim();
+    const heightSpy = jest.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute('data-markdown-cell-content') && (this.textContent?.length ?? 0) > 80 ? 96 : 24;
+    });
+    try {
+      renderMarkdownWithMessageContext({ content: `| First | Second | Short |\n| --- | --- | --- |\n| ${firstText} | ${secondText} | Brief |` });
+      const buttons = screen.getAllByRole('button', { name: 'com_ui_table_cell_show_all' });
+      expect(buttons).toHaveLength(2);
+      const firstContent = screen.getByText(firstText);
+      const secondContent = screen.getByText(secondText);
+      expect(firstContent).toHaveClass('line-clamp-3');
+      expect(secondContent).toHaveClass('line-clamp-3');
+      fireEvent.click(buttons[0]);
+      expect(firstContent).not.toHaveClass('line-clamp-3');
+      expect(secondContent).toHaveClass('line-clamp-3');
+      expect(screen.getByRole('button', { name: 'com_ui_table_cell_show_less' })).toHaveAttribute('aria-expanded', 'true');
+      fireEvent.click(screen.getByRole('button', { name: 'com_ui_table_cell_show_less' }));
+      expect(firstContent).toHaveClass('line-clamp-3');
+
+      await act(async () => { fireEvent.click(screen.getByLabelText('com_ui_copy_markdown_table')); });
+      const copiedText = writeClipboardText.mock.calls[0][0];
+      expect(copiedText).toContain(firstText);
+      expect(copiedText).toContain(secondText);
+      expect(copiedText).not.toContain('com_ui_table_cell_show_all');
+      fireEvent.click(screen.getByLabelText('com_ui_expand_table'));
+      const modal = screen.getByRole('dialog');
+      expect(within(modal).getByText(firstText)).toHaveClass('line-clamp-3');
+      const modalButtons = within(modal).getAllByRole('button', { name: 'com_ui_table_cell_show_all' });
+      expect(modalButtons).toHaveLength(2);
+      fireEvent.click(modalButtons[0]);
+      expect(within(modal).getByText(firstText)).not.toHaveClass('line-clamp-3');
+      expect(within(modal).getByText(secondText)).toHaveClass('line-clamp-3');
+      fireEvent.click(within(modal).getByRole('button', { name: 'com_ui_table_cell_show_less' }));
+      expect(within(modal).getByText(firstText)).toHaveClass('line-clamp-3');
+    } finally {
+      heightSpy.mockRestore();
+    }
   });
 
   it('uses the message context table base index for Markdown table labels', () => {
@@ -503,155 +568,6 @@ describe('Markdown table rendering', () => {
     expect(
       within(screen.getByRole('dialog')).queryByLabelText('com_ui_markdown_table_cell_comment'),
     ).not.toBeInTheDocument();
-  });
-
-  it('adds, persists, replaces, and removes pending modal cell comments', () => {
-    const commentLabel = 'com_ui_markdown_table_cell_comment';
-    const observedComments: MarkdownTableComment[][] = [];
-
-    renderMarkdownWithMessageContext({
-      content: tableMarkdown,
-      children: (
-        <PendingCommentsProbe
-          conversationId="conv1"
-          onChange={(comments) => observedComments.push(comments)}
-        />
-      ),
-    });
-
-    expect(screen.queryByLabelText(commentLabel)).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByLabelText('com_ui_expand_table'));
-
-    let modal = screen.getByRole('dialog');
-    let firstCommentButton = within(modal).getAllByLabelText(commentLabel)[0];
-    expect(firstCommentButton).not.toHaveClass('markdown-table-cell-comment-button-active');
-
-    fireEvent.click(firstCommentButton);
-    let commentEditor = screen.getByRole('textbox', { name: commentLabel });
-    expect(commentEditor.closest('td')).toBeNull();
-    expect(commentEditor.closest('.markdown-table-cell-comment-popover')).not.toBeNull();
-    fireEvent.change(commentEditor, {
-      target: { value: '改成 12' },
-    });
-    fireEvent.keyDown(commentEditor, {
-      key: 'Enter',
-    });
-
-    firstCommentButton = within(modal).getAllByLabelText(commentLabel)[0];
-    expect(firstCommentButton).toHaveClass('markdown-table-cell-comment-button-active');
-    expect(firstCommentButton).not.toHaveAttribute('title');
-    expect(within(modal).getByText('改成 12')).toHaveClass(
-      'markdown-table-comment-cell-comment-text',
-    );
-
-    let latestComments = observedComments.at(-1) ?? [];
-    expect(latestComments).toHaveLength(1);
-    expect(latestComments[0]).toMatchObject({
-      conversationId: 'conv1',
-      messageId: 'msg-table',
-      markdownIndex: 1,
-      markdownLabel: expect.stringContaining('Markdown 1'),
-      rowIndex: 1,
-      columnIndex: 0,
-      columnHeader: 'Alpha',
-      oldValue: 'one',
-      comment: '改成 12',
-    });
-    expect(latestComments[0].tableFingerprint).toContain('| Alpha | Bravo |');
-
-    fireEvent.click(within(modal).getByLabelText('com_ui_close_table'));
-    fireEvent.click(screen.getByLabelText('com_ui_expand_table'));
-
-    modal = screen.getByRole('dialog');
-    firstCommentButton = within(modal).getAllByLabelText(commentLabel)[0];
-    expect(firstCommentButton).toHaveClass('markdown-table-cell-comment-button-active');
-
-    fireEvent.click(firstCommentButton);
-    commentEditor = screen.getByRole('textbox', { name: commentLabel });
-    fireEvent.change(commentEditor, {
-      target: { value: '改成 13' },
-    });
-    fireEvent.keyDown(commentEditor, {
-      key: 'Enter',
-    });
-
-    latestComments = observedComments.at(-1) ?? [];
-    expect(latestComments).toHaveLength(1);
-    expect(latestComments[0].comment).toBe('改成 13');
-    expect(latestComments[0].oldValue).toBe('one');
-    expect(within(modal).queryByText('改成 12')).toBeNull();
-    expect(within(modal).getByText('改成 13')).toHaveClass(
-      'markdown-table-comment-cell-comment-text',
-    );
-    expect(within(modal).getAllByLabelText(commentLabel)[0]).toHaveClass(
-      'markdown-table-cell-comment-button-active',
-    );
-
-    fireEvent.click(within(modal).getAllByLabelText(commentLabel)[0]);
-    commentEditor = screen.getByRole('textbox', { name: commentLabel });
-    fireEvent.change(commentEditor, {
-      target: { value: '   ' },
-    });
-    fireEvent.keyDown(commentEditor, {
-      key: 'Enter',
-    });
-
-    latestComments = observedComments.at(-1) ?? [];
-    expect(latestComments).toHaveLength(0);
-    expect(within(modal).queryByText('改成 13')).toBeNull();
-    firstCommentButton = within(modal).getAllByLabelText(commentLabel)[0];
-    expect(firstCommentButton).not.toHaveClass('markdown-table-cell-comment-button-active');
-    expect(firstCommentButton).not.toHaveAttribute('title');
-  });
-
-  it('captures the preceding Markdown level-two title for a table comment', () => {
-    const observedComments: MarkdownTableComment[][] = [];
-
-    renderMarkdownWithMessageContext({
-      content: `## 報價明細\n\n${tableMarkdown}`,
-      children: (
-        <PendingCommentsProbe
-          conversationId="conv1"
-          onChange={(comments) => observedComments.push(comments)}
-        />
-      ),
-    });
-
-    fireEvent.click(screen.getByLabelText('com_ui_expand_table'));
-    fireEvent.click(within(screen.getByRole('dialog')).getAllByLabelText('com_ui_markdown_table_cell_comment')[0]);
-    fireEvent.change(screen.getByRole('textbox', { name: 'com_ui_markdown_table_cell_comment' }), {
-      target: { value: '改成 12' },
-    });
-    fireEvent.keyDown(screen.getByRole('textbox', { name: 'com_ui_markdown_table_cell_comment' }), {
-      key: 'Enter',
-    });
-
-    expect(observedComments.at(-1)?.[0].markdownTitle).toBe('報價明細');
-  });
-
-  it('fills the Markdown title on a pending comment saved before titles were captured', async () => {
-    const legacyComment: MarkdownTableComment = {
-      id: 'msg-table:1:1:0',
-      conversationId: 'conv1',
-      messageId: 'msg-table',
-      messageTimestampLabel: '2026-06-27 14:32',
-      markdownIndex: 1,
-      markdownLabel: '2026-06-27 14:32 / Markdown 1',
-      tableFingerprint: tableMarkdown,
-      rowIndex: 1,
-      columnIndex: 0,
-      columnHeader: 'Alpha',
-      oldValue: 'one',
-      comment: '改成 12',
-    };
-    writeStoredMarkdownTableComments('conv1', [legacyComment]);
-
-    renderMarkdownWithMessageContext({ content: `## 報價明細\n\n${tableMarkdown}` });
-
-    await waitFor(() =>
-      expect(readStoredMarkdownTableComments('conv1')[0].markdownTitle).toBe('報價明細'),
-    );
   });
 
   it('closes the expanded table modal with Escape', () => {

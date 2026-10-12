@@ -1,8 +1,12 @@
+import { steelQuotationOcrSourceSchema } from 'librechat-data-provider';
+import type { SteelQuotationOcrSelection } from '@librechat/data-schemas';
+import type { SteelQuotationOcrSource } from 'librechat-data-provider';
+import type { SteelToolJsonObject, SteelToolJsonValue } from '../tools/results';
 import type { SteelOcrMissingPageRangesByFileKey } from '../ocr/failures';
 import type { OcrPreprocessingPipelineProgress } from '../ocr/preprocess';
-import type { SteelToolJsonObject, SteelToolJsonValue } from '../tools/results';
-import { isPaddleOcrDiagnosticCode } from '../ocr/diagnostics';
 import type { CaptureSteelNativeToolResultResult } from './tool-result';
+import { isPaddleOcrDiagnosticCode } from '../ocr/diagnostics';
+import { quotationOcrSource } from '../quotation/input';
 
 export const steelNativeStreamEventName = 'steel_event' as const;
 
@@ -118,6 +122,7 @@ export interface SteelNativeQuotationStatusEvent extends SteelNativeEventBase {
   attempt?: string;
   repairAttempt?: number;
   maxRepairAttempts?: number;
+  ocrSource?: SteelQuotationOcrSource;
 }
 
 export interface SteelNativeQuoteAuditStartedEvent extends SteelNativeEventBase {
@@ -571,6 +576,7 @@ function isSteelNativeEventData(value: unknown): value is SteelNativeStreamEvent
         'attempt',
         'repairAttempt',
         'maxRepairAttempts',
+        'ocrSource',
       ])
     ) {
       return false;
@@ -602,7 +608,8 @@ function isSteelNativeEventData(value: unknown): value is SteelNativeStreamEvent
       (value.message === undefined || typeof value.message === 'string') &&
       (value.chunkIndex === undefined || (isSafeInteger(value.chunkIndex) && value.chunkIndex >= 0)) &&
       (value.attempt === undefined || (typeof value.attempt === 'string' && value.attempt.length > 0)) &&
-      validQuotationRepairCounts(value)
+      validQuotationRepairCounts(value) &&
+      (value.ocrSource === undefined || steelQuotationOcrSourceSchema.safeParse(value.ocrSource).success)
     );
   }
 
@@ -1190,6 +1197,13 @@ function canonicalizeSteelNativeEvent(value: unknown): SteelNativeStreamEvent | 
     if (value.attempt !== undefined) {
       event.attempt = value.attempt;
     }
+    if (value.ocrSource !== undefined) {
+      const parsedSource = steelQuotationOcrSourceSchema.safeParse(value.ocrSource);
+      if (!parsedSource.success) {
+        return undefined;
+      }
+      event.ocrSource = parsedSource.data;
+    }
   } else if (value.type === 'quote_audit') {
     if (value.stage === 'stage_2' && value.status === 'started') {
       if (value.source !== 'quote_runtime' || value.message !== 'Stage 2 started') {
@@ -1689,6 +1703,7 @@ export interface BuildSteelQuotationStatusEventInput {
   attempt?: string;
   repairAttempt?: number;
   maxRepairAttempts?: number;
+  ocrSource?: SteelQuotationOcrSource;
 }
 
 export function buildSteelQuotationStatusEvent({
@@ -1706,6 +1721,7 @@ export function buildSteelQuotationStatusEvent({
   attempt,
   repairAttempt,
   maxRepairAttempts,
+  ocrSource,
 }: BuildSteelQuotationStatusEventInput): SteelNativeQuotationStatusEvent {
   return {
     type: 'quotation_status',
@@ -1724,15 +1740,18 @@ export function buildSteelQuotationStatusEvent({
     ...(attempt !== undefined ? { attempt } : {}),
     ...(repairAttempt !== undefined ? { repairAttempt } : {}),
     ...(maxRepairAttempts !== undefined ? { maxRepairAttempts } : {}),
+    ...(ocrSource !== undefined ? { ocrSource } : {}),
   };
 }
 
 export function buildSteelQuotationStatusEventEnvelope(
-  input: BuildSteelQuotationStatusEventInput,
+  input: BuildSteelQuotationStatusEventInput & { ocrSelection?: SteelQuotationOcrSelection },
 ): SteelNativeEventEnvelope {
   return {
     event: steelNativeStreamEventName,
-    data: buildSteelQuotationStatusEvent(input),
+    data: buildSteelQuotationStatusEvent({ ...input,
+      ocrSource: input.ocrSelection ? quotationOcrSource(input.ocrSelection) : input.ocrSource,
+    }),
   };
 }
 

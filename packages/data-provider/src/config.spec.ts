@@ -14,6 +14,8 @@ import {
   CODE_ENVIRONMENT_ADMISSION_MAX_MS,
   endpointSchema,
   resolveEndpointType,
+  steelPostgresSchema,
+  steelReviewSchema,
   webSearchSchema,
 } from './config';
 import { EModelEndpoint, isDocumentSupportedProvider } from './schemas';
@@ -29,6 +31,29 @@ const endpointsConfig: TEndpointsConfig = {
   'Some Endpoint': { type: EModelEndpoint.custom, userProvide: false, order: 9999 },
   Gemini: { type: EModelEndpoint.custom, userProvide: false, order: 9999 },
 };
+
+describe('Steel PostgreSQL service configuration', () => {
+  it('defaults keep-alive off and accepts explicit boolean values', () => {
+    expect(configSchema.parse({ version: '1.0' }).steelPostgres?.keepAlive).toBe(false);
+    expect(configSchema.parse({ version: '1.0', steelPostgres: {} }).steelPostgres?.keepAlive).toBe(
+      false,
+    );
+    expect(
+      configSchema.parse({ version: '1.0', steelPostgres: { keepAlive: true } }).steelPostgres
+        ?.keepAlive,
+    ).toBe(true);
+    expect(
+      configSchema.parse({ version: '1.0', steelPostgres: { keepAlive: false } }).steelPostgres
+        ?.keepAlive,
+    ).toBe(false);
+    expect(
+      configSchema.safeParse({ version: '1.0', steelPostgres: { keepAlive: 'true' } }).success,
+    ).toBe(false);
+    expect(configSchema.parse({ version: '1.0' }).steelReview?.catalogPageSize).toBe(50);
+    expect(steelPostgresSchema.parse({}).keepAlive).toBe(false);
+    expect(steelReviewSchema.parse({}).catalogPageSize).toBe(50);
+  });
+});
 
 describe('authenticated 2FA management rate limits', () => {
   it('accepts an account budget and defaults an empty configuration to seven requests', () => {

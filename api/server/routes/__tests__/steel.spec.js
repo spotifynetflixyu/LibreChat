@@ -14,10 +14,21 @@ const mockReadOpenAIOAuthUsage = jest.fn((_req, res) =>
 const mockCreateRuleProposal = jest.fn((_req, res) =>
   res.status(201).json({ id: 'proposal_1', status: 'needs_review' }),
 );
+const mockReadReview = jest.fn((_req, res) => res.status(200).json({ table: null }));
+const mockUnusedReview = jest.fn((_req, res) => res.status(501).end());
 const mockCreateSteelRouteHandlers = jest.fn(() => ({
   createRuleProposal: mockCreateRuleProposal,
   listModels: mockListModels,
   readOpenAIOAuthUsage: mockReadOpenAIOAuthUsage,
+  readReview: mockReadReview,
+  readVersions: mockUnusedReview,
+  readReviewCatalog: mockUnusedReview,
+  readReviewReceipt: mockUnusedReview,
+  prepareReview: mockUnusedReview,
+  commitReview: mockUnusedReview,
+  listReviewSources: mockUnusedReview,
+  readReviewSource: mockUnusedReview,
+  readReviewSourcePageCount: mockUnusedReview,
 }));
 
 const mockCapabilitySmoke = jest.fn((_req, res) =>
@@ -94,16 +105,39 @@ const mockRequireJwtAuth = jest.fn((_req, _res, next) => next());
 
 const mockQuotationStatus = jest.fn((_req, res) => res.json({ status: 'running' }));
 const mockQuotationCancel = jest.fn((_req, res) => res.json({ status: 'cancelled' }));
-const mockCreateQuotationHandlers = jest.fn(() => ({ status: mockQuotationStatus, cancel: mockQuotationCancel }));
+const mockCreateQuotationHandlers = jest.fn(() => ({
+  status: mockQuotationStatus,
+  cancel: mockQuotationCancel,
+}));
+const mockPostgres = { getClient: jest.fn(), initialize: jest.fn(), close: jest.fn() };
+const mockCreateSteelPostgresService = jest.fn(() => mockPostgres);
+const mockCreateSteelReviewCatalogService = jest.fn(() => ({
+  resolve: jest.fn(),
+  search: jest.fn(),
+}));
 jest.mock('~/models', () => ({ getConvo: jest.fn().mockResolvedValue({ conversationId: 'c1' }) }));
 
 jest.mock('@librechat/api', () => ({
   createQuotationRouteHandlers: (...args) => mockCreateQuotationHandlers(...args),
+  createSteelPostgresService: (...args) => mockCreateSteelPostgresService(...args),
+  createSteelPostgresPool: jest.fn(),
+  createSteelCustomerRouteHandlers: jest.fn(() => ({
+    read: mockUnusedReview,
+    commit: mockUnusedReview,
+  })),
+  createSteelReviewCatalogService: (...args) => mockCreateSteelReviewCatalogService(...args),
+  createSteelReviewService: jest.fn(({ reader }) => ({
+    read: jest.fn((input) => reader.readSteelReview(input)),
+  })),
+  createSteelReviewSourceService: jest.fn(() => ({})),
+  createSteelReviewSourceStorageReader: jest.fn(() => jest.fn()),
+  resolveDownloadPath: jest.fn(),
   createSteelAdminHandlers: (...args) => mockCreateSteelAdminHandlers(...args),
   createSteelRouteHandlers: (...args) => mockCreateSteelRouteHandlers(...args),
 }));
 
 jest.mock('@librechat/data-schemas', () => ({
+  logger: { warn: jest.fn() },
   SystemCapabilities: {
     ACCESS_ADMIN: 'ACCESS_ADMIN',
   },
@@ -121,7 +155,12 @@ jest.mock('~/server/controllers/ModelController', () => ({
   getModelsConfig: jest.fn(),
 }));
 
+jest.mock('~/server/services/Files/strategies', () => ({
+  getStrategyFunctions: jest.fn(),
+}));
+
 const steelRouter = require('../steel');
+const catalogServiceClient = mockCreateSteelReviewCatalogService.mock.calls[0][0].client;
 const adminSteelRouter = require('../admin/steel');
 
 function createApp() {
@@ -137,6 +176,11 @@ function createApp() {
 }
 
 describe('Steel route shells', () => {
+  it('uses the host-owned shared PostgreSQL service for catalog search and resolution', () => {
+    expect(catalogServiceClient).toBe(require('~/server/services/Steel/postgres'));
+    expect(catalogServiceClient).toBe(mockPostgres);
+  });
+
   beforeEach(() => {
     jest.clearAllMocks();
   });
@@ -221,7 +265,6 @@ describe('Steel route shells', () => {
     expect(logoutRes.status).toBe(200);
   });
 });
-
 
 it('mounts authenticated quotation status and cancellation endpoints', async () => {
   const app = createApp();

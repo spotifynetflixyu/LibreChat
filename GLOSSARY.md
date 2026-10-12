@@ -22,14 +22,14 @@ _Avoid_: 錯誤列、無效列
 
 **原版表格（Original Table）**:
 某一版 AI 結果尚未混入人工覆核修改的表格內容；歷史原版仍保留，當前覆核比較以最新 AI 完整基準為準。
-_Avoid_: 上一次自動儲存的表格
+_Avoid_: 上一次人工保存的表格
 
 **累積差異（Cumulative Changes）**:
-人工覆核結果相較最新 AI 完整基準的修改、新增與刪除，不等同於最近一次操作的差異。
+同一版輸出中，人工覆核結果相較該版 AI 完整基準的修改、新增與刪除，不等同於最近一次操作的差異；新 AI 輸出不帶入舊版人工差異。
 _Avoid_: 最近一次修改
 
 **AI 最新完整基準（Latest AI Baseline）**:
-AI 完整輸出或更新列經後端 merge 後形成的最新完整表格，用來比較人工覆核修改，不包含另行保存的人工修改。
+AI 每次輸出並通過後端完整格式驗證的最新完整表格，用來比較人工覆核修改，不包含另行保存的人工修改。
 _Avoid_: 只含更新列的 Markdown、人工覆核結果
 
 **最後輸出結果（Latest Output Result）**:
@@ -41,7 +41,7 @@ _Avoid_: 最後更新的任意訊息、某個舊結果的最新人工修訂
 _Avoid_: AI 原始輸出、含刪除線的計算輸入
 
 **覆核比較內容（Review Comparison）**:
-介面以最新 AI 基準比對人工修正的內容，可保留尚待重新確認的人工值；比較本身不等於一次人工保存。
+只有對照彈窗以所屬輸出的 AI 原版完整 Markdown 比對該版最新有效 Markdown／草稿；新 AI 輸出從自己的完整基準重新開始，不與過去人工修改比較。比較本身不等於一次人工保存；聊天只顯示已保存的最新 clean Markdown，不顯示刪除線或刪除列。
 _Avoid_: 最新人工保存時間、已選定報價輸入
 
 **OCR 結果（ocr_result）**:
@@ -53,7 +53,7 @@ _Avoid_: system_order、報價結果
 _Avoid_: ocr_result、customer_quote
 
 **客戶報價表（customer_quote）**:
-依系統報價表形成、供客戶閱讀的報價資料表，呈現項目、計價總數、小計與總計。
+依系統報價表形成的後端內部報價計算資料，包含項目、計價總數、小計與總計；新後端回覆不再輸出其 Markdown 表格。
 _Avoid_: system_order、OCR 結果
 
 **單重（Unit Weight）**:
@@ -83,3 +83,6 @@ _Avoid_: 使用者輸入的 keyword、已確認訂單列
 **型號（ERP Item Code）**:
 系統報價表所選候選品項的 ERP 品項碼，與該候選的品名規格相對應。
 _Avoid_: 自由查詢文字、零件編號
+
+**歷史版本（Previous version）**:
+同 kind 已被可信 current reference 取代的完整結果 owner；標題 badge 僅用於 ocr_result、system_order、customer_data，保留唯讀。版本資格依 Markdown-bound messageId 及 output／table／generation 身分，人工修訂不更換訊息 owner。

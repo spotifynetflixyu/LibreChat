@@ -1,3 +1,4 @@
+const steelPostgres = require('~/server/services/Steel/postgres');
 const mongoose = require('mongoose');
 const { logger, tenantStorage, createChatExpirationDate } = require('@librechat/data-schemas');
 const { v5: uuidv5 } = require('uuid');
@@ -37,6 +38,8 @@ const {
   createSteelOcrStateService,
   createSteelQuotationStateService,
   createSteelMarkdownCompletionServices,
+  createSteelQuotationPublicationPublisher,
+  createSteelFullMarkdownPublisher,
   shouldDeferSteelMarkdownPersistence,
   createSteelOcrResponseAuditService,
   createMCPRuntimeRequestBody,
@@ -70,6 +73,9 @@ const { logViolation } = require('~/cache');
 const { recordScheduleOutcome, isScheduleLive } = require('~/server/services/Schedules');
 const {
   saveMessage,
+  saveSteelQuotationMessage,
+  publishSteelMarkdown,
+  getMessage,
   saveConvo,
   getMessages,
   getConvo,
@@ -2348,7 +2354,10 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         return false;
       }
       const markdown = extractSteelAgentResponseMarkdown(responseMessage);
-      const deferSteelPersistence = !terminalWasAborted && !preemptIncomplete && !stepLimitReached &&
+      const deferSteelPersistence =
+        !terminalWasAborted &&
+        !preemptIncomplete &&
+        !stepLimitReached &&
         shouldDeferSteelMarkdownPersistence(req, markdown);
       terminalPersistenceDecision = !deferSteelPersistence;
       return terminalPersistenceDecision;
@@ -3225,15 +3234,11 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           if (unfinished) {
             delete persistedResponse.processingDurationMs;
           }
-          return saveMessage(
-            reqCtx,
-            persistedResponse,
-            {
-              context: unfinished
-                ? 'api/server/controllers/agents/request.js - terminal response unfinished'
-                : 'api/server/controllers/agents/request.js - resumable response end',
-            },
-          );
+          return saveMessage(reqCtx, persistedResponse, {
+            context: unfinished
+              ? 'api/server/controllers/agents/request.js - terminal response unfinished'
+              : 'api/server/controllers/agents/request.js - resumable response end',
+          });
         };
         let savedResponseMessage;
         let responseMessagePersisted = false;
@@ -3245,7 +3250,18 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           }
           return saved;
         };
+        const publishQuotation = createSteelQuotationPublicationPublisher({
+          saveContext: reqCtx,
+          buildMessage: ({ markdown }) => ({
+            ...response,
+            messageId: response.messageId,
+            sourceMessageId: response.messageId,
+            text: markdown,
+          }),
+          savePublication: (proof) => saveSteelQuotationMessage(proof),
+        });
         const markdownCompletion = createSteelMarkdownCompletionServices({
+          runtimeRulesClient: steelPostgres.client,
           ocr: createSteelOcrStateService(mongoose),
           quotation: createSteelQuotationStateService(mongoose),
           audit: createSteelOcrResponseAuditService(mongoose),
@@ -3268,6 +3284,20 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           },
           applyMarkdown: (markdown) => replaceResponseMarkdown(response, markdown),
           persistMarkdown: persistResponseMessage,
+          publishQuotation,
+          publishMarkdown: createSteelFullMarkdownPublisher({
+            saveContext: reqCtx,
+            buildMessage: ({ markdown }) => ({ ...response, text: markdown }),
+            savePublication: publishSteelMarkdown,
+          }),
+          publishedResponse: {
+            load: ({ userId: publishedUserId, responseId: publishedResponseId }) =>
+              getMessage({ user: publishedUserId, messageId: publishedResponseId }),
+            accept: (saved) => {
+              responseMessagePersisted = true;
+              savedResponseMessage = saved;
+            },
+          },
         });
         if (!responseMessagePersisted) {
           await persistResponseMessage();

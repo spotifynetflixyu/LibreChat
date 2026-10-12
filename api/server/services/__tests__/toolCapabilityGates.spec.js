@@ -24,8 +24,8 @@ const CAPABILITY_PATTERN =
  */
 const CLASSIFIED = {
   // -- Gates: capability AND grant --------------------------------------------
-  /** 7 gates + 2 map entries + 2 warning-list entries. */
-  'api/server/services/ToolService.js': 11,
+  /** Capability checks in definitions, runtime loading, and execution. */
+  'api/server/services/ToolService.js': 9,
   /** `codeEnvAvailable` and `fileSearchAvailable`, both paired after the
    *  startup batch from the one grant read that batch joins. */
   'api/server/services/Endpoints/agents/initialize.js': 2,

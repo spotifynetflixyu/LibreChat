@@ -1,3 +1,4 @@
+const steelPostgres = require('~/server/services/Steel/postgres');
 require('events').EventEmitter.defaultMaxListeners = 100;
 const { logger, MAX_AGENT_EVENT_ACTOR_ENCODING_LENGTH } = require('@librechat/data-schemas');
 const { getBufferString, HumanMessage } = require('@librechat/agents/langchain/messages');
@@ -149,6 +150,7 @@ const {
   prepareLibreChatSteelChatContext,
   prepareSteelNativeToolConfig,
   prepareQuotationTurn,
+  prepareSteelMarkdownHistory,
   hasQuotationOrder,
   stripSteelOcrPartsFromProviderMessages,
   buildAgentScopedAttachmentMap,
@@ -194,6 +196,7 @@ const {
   isAgentRunCancellation,
   markCompactionOutcome,
   resolvePersistableCodeEnvironmentDecision,
+  projectSteelQuotationMessage,
 } = require('@librechat/api');
 const {
   Run,
@@ -1692,22 +1695,40 @@ class AgentClient extends BaseClient {
     let quotationTextIndex;
     const quotationStepId = `quotation:${this.responseMessageId}`;
     const appendQuotationText = async (text) => {
-      const metadata = { ...config.configurable, run_id: this.responseMessageId,
-        thread_id: this.conversationId, last_agent_id: this.options.agent?.id,
-        langgraph_node: this.options.agent?.id };
+      const metadata = {
+        ...config.configurable,
+        run_id: this.responseMessageId,
+        thread_id: this.conversationId,
+        last_agent_id: this.options.agent?.id,
+        langgraph_node: this.options.agent?.id,
+      };
       if (!quotationStepSeeded) {
         quotationStepSeeded = true;
         quotationTextIndex = this.contentParts.length;
-        await this.options.eventHandlers?.on_run_step?.handle('on_run_step', {
-          id: quotationStepId, runId: this.responseMessageId, index: quotationTextIndex,
-          stepDetails: { type: StepTypes.MESSAGE_CREATION,
-            message_creation: { message_id: this.responseMessageId } },
-        }, metadata);
+        await this.options.eventHandlers?.on_run_step?.handle(
+          'on_run_step',
+          {
+            id: quotationStepId,
+            runId: this.responseMessageId,
+            index: quotationTextIndex,
+            stepDetails: {
+              type: StepTypes.MESSAGE_CREATION,
+              message_creation: { message_id: this.responseMessageId },
+            },
+          },
+          metadata,
+        );
       }
       const handler = this.options.eventHandlers?.on_message_delta;
-      if (handler?.handle) await handler.handle('on_message_delta', {
-        id: quotationStepId, delta: { content: [{ type: ContentTypes.TEXT, text }] },
-      }, metadata);
+      if (handler?.handle)
+        await handler.handle(
+          'on_message_delta',
+          {
+            id: quotationStepId,
+            delta: { content: [{ type: ContentTypes.TEXT, text }] },
+          },
+          metadata,
+        );
       else {
         const existing = this.contentParts[quotationTextIndex];
         this.contentParts[quotationTextIndex] = {
@@ -1724,9 +1745,32 @@ class AgentClient extends BaseClient {
           return;
         }
         this.contentParts[quotationTextIndex] = {
-          ...this.contentParts[quotationTextIndex], type: ContentTypes.TEXT, text,
+          ...this.contentParts[quotationTextIndex],
+          type: ContentTypes.TEXT,
+          text,
         };
       },
+      buildPublicationMessage: ({ targetMessageId, markdown }) =>
+        projectSteelQuotationMessage({
+          message: {
+            messageId: targetMessageId,
+            sourceMessageId: this.responseMessageId,
+            conversationId: this.conversationId,
+            user: this.options.req?.user?.id,
+            text: markdown,
+            parentMessageId: this.parentMessageId,
+            isCreatedByUser: false,
+            unfinished: false,
+            sender: this.options.agent?.name ?? 'Agent',
+            endpoint: 'agents',
+            model: this.options.agent?.id,
+            finish_reason: 'stop',
+            metadata: this.buildResponseMetadata(),
+            content: Array.isArray(this.contentParts) ? this.contentParts : [],
+          },
+          markdown,
+          quotationContentIndex: quotationTextIndex,
+        }),
     };
   }
 
@@ -2441,12 +2485,20 @@ class AgentClient extends BaseClient {
       this.compactionSemanticIndexSnapshot = undefined;
     }
     /** Always pass mapMethod; getMessagesForConversation applies it only to messages with addedConvo flag */
-    const orderedMessages = this.constructor.getMessagesForConversation({
-      messages,
-      parentMessageId,
-      summary: this.shouldSummarize,
-      mapMethod: createMultiAgentMapper(this.options.agent, this.agentConfigs),
-      mapCondition: (message) => message.addedConvo === true,
+    const orderedMessages = await prepareSteelMarkdownHistory({
+      scope: {
+        userId: this.options.req.user?.id,
+        conversationId: this.conversationId,
+        tenantId: resolveRequestTenantId(this.options.req),
+      },
+      reader: db,
+      messages: this.constructor.getMessagesForConversation({
+        messages,
+        parentMessageId,
+        summary: this.shouldSummarize,
+        mapMethod: createMultiAgentMapper(this.options.agent, this.agentConfigs),
+        mapCondition: (message) => message.addedConvo === true,
+      }),
     });
     /**
      * Answers the user gave to earlier `ask_user_question` calls. Read from the
@@ -3073,6 +3125,8 @@ class AgentClient extends BaseClient {
         },
         messageId: latestOrdered?.messageId ?? this.responseMessageId,
         responseId: this.responseMessageId,
+        generationId: String(this.options.req._resumableJobCreatedAt ?? this.responseMessageId),
+        publicationStore: db,
         text: currentUserTurnText,
         files: currentTurnSteelFileReferences,
       });
@@ -3153,6 +3207,7 @@ class AgentClient extends BaseClient {
     }
     const ocrTurnActive = paddleOcrPreflight?.ocrTurnActive === true;
     const steelNativeContext = await buildDefaultSteelGlobalAgentContext({
+      runtimeRulesClient: steelPostgres.client,
       conversation: steelConversation,
       attachments: ocrTurnActive
         ? {
@@ -5420,14 +5475,22 @@ class AgentClient extends BaseClient {
         /** The inherited tier must be on the job before any Stop can read it. */
         await this.publishRunContextMeta?.();
         try {
-          const executeQuotation = () => executeSteelQuotationWorkflow({
-            req: this.options.req, res: this.options.res, streamId,
-            contentParts: this.contentParts,
-            signal: abortController.signal, agent: this.options.agent, run, userMCPAuthMap,
-            onSteerApplied: (item) => this.applySteerPart(streamId, item),
-            onUsage: async (usage) => { this.collectedUsage?.push(usage); },
-            ...this.buildQuotationTextWiring(config),
-          });
+          const executeQuotation = () =>
+            executeSteelQuotationWorkflow({
+              req: this.options.req,
+              res: this.options.res,
+              streamId,
+              contentParts: this.contentParts,
+              signal: abortController.signal,
+              agent: this.options.agent,
+              run,
+              userMCPAuthMap,
+              onSteerApplied: (item) => this.applySteerPart(streamId, item),
+              onUsage: async (usage) => {
+                this.collectedUsage?.push(usage);
+              },
+              ...this.buildQuotationTextWiring(config),
+            });
           const shouldResumeDelegateOcr =
             Boolean(delegateOcrResume) && typeof executeDelegateOcrResume === 'function';
           if (this.options.req?.steelNativeContext?.quotation?.resume) {

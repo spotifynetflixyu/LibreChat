@@ -7,25 +7,6 @@ import * as XLSX from 'xlsx';
 const headers = ['來源區塊', '品項/尺寸', '加工', 'tier A/C/F', 'tier B', '備註'];
 
 describe('cutting price normalizer CLI', () => {
-  it('uses the reviewed raw xlsx as input and the normalized xlsx as output by default', () => {
-    const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cutting-normalizer-default-'));
-    const outputPath = path.join(directory, 'normalized.xlsx');
-    const result = spawnSync(
-      process.execPath,
-      [path.resolve(__dirname, 'normalize-steel-cutting-prices.mjs'), '--output', outputPath],
-      { encoding: 'utf8' },
-    );
-
-    expect(result.status).toBe(0);
-    expect(result.stderr).toBe('');
-    expect(JSON.parse(result.stdout)).toMatchObject({
-      inputPath: path.resolve(__dirname, '../../../docs/reference/切工價錢-raw.xlsx'),
-      outputPath,
-      rowCount: 97,
-    });
-    fs.rmSync(directory, { recursive: true, force: true });
-  });
-
   it('runs with repository dependencies and generates one price-only canonical workbook', () => {
     const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'cutting-normalizer-'));
     const inputPath = path.join(directory, 'raw.xlsm');

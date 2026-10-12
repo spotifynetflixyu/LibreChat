@@ -28,8 +28,15 @@ const mockPrepareQuotationTurn = jest.fn().mockResolvedValue({
 });
 const mockHasQuotationOrder = jest.fn().mockReturnValue(false);
 const mockExecuteSteelQuotationWorkflow = jest.fn().mockResolvedValue(undefined);
+const mockCreateSteelQuotationPublicationMessageBuilder = jest.fn((...args) =>
+  jest.requireActual('@librechat/api').createSteelQuotationPublicationMessageBuilder(...args),
+);
+const mockCreateSteelQuotationPublicationPublisher = jest.fn((...args) =>
+  jest.requireActual('@librechat/api').createSteelQuotationPublicationPublisher(...args),
+);
 const mockFinalizeOcrResponse = jest.fn();
 const mockSaveOcrAudit = jest.fn().mockResolvedValue({});
+const mockSaveSteelQuotationMessage = jest.fn();
 const mockMarkdownFinalize = jest.fn();
 class MockOcrAuditPersistenceError extends Error {}
 const mockGetBalanceConfig = jest.fn().mockReturnValue({ enabled: true });
@@ -291,6 +298,8 @@ jest.mock('@librechat/agents', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  createSteelPostgresService: jest.requireActual('@librechat/api').createSteelPostgresService,
+  createSteelPostgresPool: jest.fn(),
   finalizeSteelResponsesTurn: jest.requireActual('@librechat/api').finalizeSteelResponsesTurn,
   replaceSteelResponsesMarkdown: jest.requireActual('@librechat/api').replaceSteelResponsesMarkdown,
   delegateOcrStreamEventName: 'on_delegate_ocr_stream',
@@ -299,9 +308,22 @@ jest.mock('@librechat/api', () => ({
   createSteelMarkdownCompletionServices: jest.fn(() => ({
     finalize: (...args) => mockMarkdownFinalize(...args),
   })),
+  prepareSteelMarkdownHistory: (...args) =>
+    jest.requireActual('@librechat/api').prepareSteelMarkdownHistory(...args),
+  createSteelFullMarkdownPublisher: (...args) =>
+    jest.requireActual('@librechat/api').createSteelFullMarkdownPublisher(...args),
+  reportLocatorTraversalFailure: jest.fn(),
+  getRemoteAgentPermissions: (...args) =>
+    jest.requireActual('@librechat/api').getRemoteAgentPermissions(...args),
+  createSteelQuotationPublicationMessageBuilder: (...args) =>
+    mockCreateSteelQuotationPublicationMessageBuilder(...args),
+  createSteelQuotationPublicationPublisher: (...args) =>
+    mockCreateSteelQuotationPublicationPublisher(...args),
   finalizeOcrResponse: (...args) => mockFinalizeOcrResponse(...args),
   parseAssistantMarkdown: (markdown) => ({
-    sections: [...markdown.matchAll(/^## (ocr_result(?:_updates)?)$/gmu)].map((match) => ({ title: match[1] })),
+    sections: [...markdown.matchAll(/^## (ocr_result(?:_updates)?)$/gmu)].map((match) => ({
+      title: match[1],
+    })),
   }),
   createSteelOcrResponseAuditService: () => ({ save: mockSaveOcrAudit }),
   SteelOcrResponseAuditPersistenceError: MockOcrAuditPersistenceError,
@@ -354,7 +376,9 @@ jest.mock('@librechat/api', () => ({
   applyContextToAgent: (...args) => mockApplyContextToAgent(...args),
   prepareSteelNativeToolConfig: jest.fn((config) => config),
   getLatestHumanMessageText: jest.fn((messages) => {
-    const latest = [...(messages ?? [])].reverse().find((message) => message?.getType?.() === 'human');
+    const latest = [...(messages ?? [])]
+      .reverse()
+      .find((message) => message?.getType?.() === 'human');
     const content = latest?.content;
     if (typeof content === 'string') {
       return content;
@@ -698,7 +722,10 @@ jest.mock('~/models', () => ({
   getUserKey: jest.fn(),
   getMessages: jest.fn().mockResolvedValue([]),
   getMessage: jest.fn().mockResolvedValue(null),
+  readSteelMarkdownHistory: jest.fn().mockResolvedValue([]),
   saveMessage: jest.fn().mockResolvedValue({}),
+  saveSteelQuotationMessage: (...args) => mockSaveSteelQuotationMessage(...args),
+  publishSteelMarkdown: jest.fn().mockResolvedValue({ ok: true, message: {} }),
   updateFilesUsage: jest.fn(),
   getUserKeyValues: jest.fn(),
   getUserCodeFiles: jest.fn(),
@@ -728,8 +755,22 @@ describe('createResponse controller', () => {
     jest.clearAllMocks();
     resetMockExecution();
     mockGlobalDiscoveredAgentConfigs = null;
+    mockCreateSteelQuotationPublicationMessageBuilder
+      .mockReset()
+      .mockImplementation((...args) =>
+        jest.requireActual('@librechat/api').createSteelQuotationPublicationMessageBuilder(...args),
+      );
+    mockCreateSteelQuotationPublicationPublisher
+      .mockReset()
+      .mockImplementation((...args) =>
+        jest.requireActual('@librechat/api').createSteelQuotationPublicationPublisher(...args),
+      );
     mockFinalizeOcrResponse.mockReset();
     mockSaveOcrAudit.mockReset().mockResolvedValue({});
+    mockSaveSteelQuotationMessage.mockReset().mockImplementation(async ({ message }) => ({
+      ok: true,
+      message,
+    }));
     mockMarkdownFinalize.mockReset().mockImplementation(async (input) => {
       let finalMarkdown = input.markdown;
       let ocrResultMarkdown;
@@ -1126,10 +1167,7 @@ describe('createResponse controller', () => {
     const appliedCallsByAgentId = new Map();
     for (const [call] of mockApplyContextToAgent.mock.calls) {
       const agentId = call.agentId;
-      appliedCallsByAgentId.set(agentId, [
-        ...(appliedCallsByAgentId.get(agentId) ?? []),
-        call,
-      ]);
+      appliedCallsByAgentId.set(agentId, [...(appliedCallsByAgentId.get(agentId) ?? []), call]);
     }
     expect(appliedCallsByAgentId.get(primaryConfig.id)).toHaveLength(1);
     expect(appliedCallsByAgentId.get(memberConfig.id)).toHaveLength(1);
@@ -1138,8 +1176,7 @@ describe('createResponse controller', () => {
         agent: memberConfig,
         agentId: memberConfig.id,
         globalInstructionPrefix: 'Steel global prefix',
-        sharedRunContext:
-          'Member inline memory\n\nMember scoped context\n\nSteel runtime tail',
+        sharedRunContext: 'Member inline memory\n\nMember scoped context\n\nSteel runtime tail',
       }),
     );
     expect(mockBuildInlineMemoryContext).toHaveBeenCalledWith(
@@ -2740,7 +2777,8 @@ describe('createResponse controller', () => {
       };
       api.buildAggregatedResponse.mockReturnValueOnce(aggregated);
       mockResponsesOcrStateService.readConversationOcrState.mockResolvedValue({
-        currentOcrResultMarkdown: '## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| F1 | OLD |',
+        currentOcrResultMarkdown:
+          '## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| F1 | OLD |',
         sourceMappings: [{ sourceCode: 'F1', sourceFilename: 'PL.pdf' }],
       });
       mockFinalizeOcrResponse.mockReturnValue({
@@ -2767,43 +2805,77 @@ describe('createResponse controller', () => {
       );
     });
 
-    it.each([false, true])('keeps general-agent OCR corrections and fails closed on audit failure=%s', async (auditFails) => {
-      const api = require('@librechat/api');
-      const { saveMessage } = require('~/models');
-      const raw = '說明\n\n## ocr_result_updates\n\n| 來源 | 零件編號 | 數量 |\n| --- | --- | --- |\n| F1 | A-6M74 | 1 |';
-      const canonical = '## ocr_result\n\n| 來源 | 零件編號 | 數量 |\n| --- | --- | --- |\n| F1 | A-6M74 | 1 |\n| F1 | P2 | 5 |';
-      const displayed = `${raw}\n\n${canonical}`;
-      api.buildAggregatedResponse.mockReturnValueOnce({
-        id: 'resp_123', status: 'completed',
-        output: [{ id: 'msg_1', type: 'message', role: 'assistant', status: 'completed',
-          content: [{ type: 'output_text', text: raw.slice(0, 20) }, { type: 'output_text', text: raw.slice(20) }],
-        }],
-        usage: { input_tokens: 100, output_tokens: 50, total_tokens: 150 },
-      });
-      mockResponsesOcrStateService.readConversationOcrState.mockResolvedValue({
-        currentOcrResultMarkdown: canonical.replace('| A-6M74 | 1 |', '| A-6M74 | 3 |'), sourceMappings: [],
-      });
-      mockFinalizeOcrResponse.mockReturnValue({ ok: true, finalResponse: displayed, ocrResultMarkdown: canonical });
-      if (auditFails) mockSaveOcrAudit.mockRejectedValueOnce(new MockOcrAuditPersistenceError('audit unavailable'));
-      await createResponse(req, res);
-      expect(mockSaveOcrAudit).toHaveBeenCalledWith(expect.objectContaining({ rawResponse: raw, userId: 'user-123' }));
-      if (auditFails) {
-        expect(mockFinalizeOcrResponse).not.toHaveBeenCalled();
-        expect(mockResponsesOcrStateService.upsertCurrentOcrResult).not.toHaveBeenCalled();
-        expect(saveMessage.mock.calls.some(([, message]) => message?.text === displayed)).toBe(false);
-        return;
-      }
-      expect(mockFinalizeOcrResponse).toHaveBeenCalledWith(expect.objectContaining({ assistantResponse: raw, agentKind: 'other' }));
-      expect(mockSaveOcrAudit.mock.invocationCallOrder[0]).toBeLessThan(mockFinalizeOcrResponse.mock.invocationCallOrder[0]);
-      expect(saveMessage.mock.calls.some(([, message]) => message?.text === displayed)).toBe(true);
-      expect(mockResponsesOcrStateService.upsertCurrentOcrResult).toHaveBeenCalledWith(expect.objectContaining({ markdown: canonical }));
-    });
+    it.each([false, true])(
+      'keeps general-agent OCR corrections and fails closed on audit failure=%s',
+      async (auditFails) => {
+        const api = require('@librechat/api');
+        const { saveMessage } = require('~/models');
+        const raw =
+          '說明\n\n## ocr_result_updates\n\n| 來源 | 零件編號 | 數量 |\n| --- | --- | --- |\n| F1 | A-6M74 | 1 |';
+        const canonical =
+          '## ocr_result\n\n| 來源 | 零件編號 | 數量 |\n| --- | --- | --- |\n| F1 | A-6M74 | 1 |\n| F1 | P2 | 5 |';
+        const displayed = `${raw}\n\n${canonical}`;
+        api.buildAggregatedResponse.mockReturnValueOnce({
+          id: 'resp_123',
+          status: 'completed',
+          output: [
+            {
+              id: 'msg_1',
+              type: 'message',
+              role: 'assistant',
+              status: 'completed',
+              content: [
+                { type: 'output_text', text: raw.slice(0, 20) },
+                { type: 'output_text', text: raw.slice(20) },
+              ],
+            },
+          ],
+          usage: { input_tokens: 100, output_tokens: 50, total_tokens: 150 },
+        });
+        mockResponsesOcrStateService.readConversationOcrState.mockResolvedValue({
+          currentOcrResultMarkdown: canonical.replace('| A-6M74 | 1 |', '| A-6M74 | 3 |'),
+          sourceMappings: [],
+        });
+        mockFinalizeOcrResponse.mockReturnValue({
+          ok: true,
+          finalResponse: displayed,
+          ocrResultMarkdown: canonical,
+        });
+        if (auditFails)
+          mockSaveOcrAudit.mockRejectedValueOnce(
+            new MockOcrAuditPersistenceError('audit unavailable'),
+          );
+        await createResponse(req, res);
+        expect(mockSaveOcrAudit).toHaveBeenCalledWith(
+          expect.objectContaining({ rawResponse: raw, userId: 'user-123' }),
+        );
+        if (auditFails) {
+          expect(mockFinalizeOcrResponse).not.toHaveBeenCalled();
+          expect(mockResponsesOcrStateService.upsertCurrentOcrResult).not.toHaveBeenCalled();
+          expect(saveMessage.mock.calls.some(([, message]) => message?.text === displayed)).toBe(
+            false,
+          );
+          return;
+        }
+        expect(mockFinalizeOcrResponse).toHaveBeenCalledWith(
+          expect.objectContaining({ assistantResponse: raw, agentKind: 'other' }),
+        );
+        expect(mockSaveOcrAudit.mock.invocationCallOrder[0]).toBeLessThan(
+          mockFinalizeOcrResponse.mock.invocationCallOrder[0],
+        );
+        expect(saveMessage.mock.calls.some(([, message]) => message?.text === displayed)).toBe(
+          true,
+        );
+        expect(mockResponsesOcrStateService.upsertCurrentOcrResult).toHaveBeenCalledWith(
+          expect.objectContaining({ markdown: canonical }),
+        );
+      },
+    );
 
     it('runs the shared finalizer once after quotation workflow output', async () => {
       const api = require('@librechat/api');
       const { saveMessage } = require('~/models');
-      const raw =
-        '## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| 文字訂單 | PENDING |';
+      const raw = '## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| 文字訂單 | PENDING |';
       api.buildAggregatedResponse.mockReturnValueOnce({
         id: 'resp_123',
         status: 'completed',
@@ -2846,19 +2918,262 @@ describe('createResponse controller', () => {
       );
     });
 
+    it.each([
+      { stream: false, resume: false, expectedPrefix: 'primary answer' },
+      { stream: true, resume: false, expectedPrefix: 'primary answer' },
+      { stream: false, resume: true, expectedPrefix: '' },
+    ])(
+      'supplies the quotation workflow with the captured Responses snapshot: stream=$stream resume=$resume',
+      async ({ stream, resume, expectedPrefix }) => {
+        const api = require('@librechat/api');
+        const actual = jest.requireActual('@librechat/api');
+        const tracker = actual.createResponseTracker();
+        const aggregator = actual.createResponseAggregator();
+        const primaryMessage = {
+          type: 'message',
+          role: 'assistant',
+          id: 'primary-message',
+          status: 'completed',
+          content: [{ type: 'output_text', text: 'primary answer', annotations: [] }],
+        };
+        if (!resume) tracker.items.push(primaryMessage);
+        tracker.items.push(
+          {
+            type: 'function_call',
+            id: 'call-1',
+            call_id: 'call-1',
+            name: 'lookup',
+            arguments: '{}',
+          },
+          {
+            type: 'reasoning',
+            id: 'reasoning-1',
+            summary: [{ type: 'summary_text', text: 'reasoning' }],
+          },
+        );
+        tracker.usage.outputTokens = 50;
+        aggregator.addReasoning('reasoning');
+        if (!resume) aggregator.addText('primary answer');
+        aggregator.toolCalls.set('call-1', { name: 'lookup', arguments: '{}' });
+        aggregator.toolOutputs.set('call-1', 'lookup result');
+        aggregator.usage.outputTokens = 50;
+        if (stream) {
+          req.body.stream = true;
+          api.createResponseTracker.mockReturnValueOnce(tracker);
+        } else {
+          req.body.stream = false;
+          api.createResponseAggregator.mockReturnValueOnce(aggregator);
+        }
+        api.validateResponseRequest.mockReturnValueOnce({
+          request: { model: 'agent-123', input: 'Hello', stream },
+        });
+        req.steelNativeContext = resume ? { quotation: { resume: true } } : undefined;
+        let callbackResult;
+        mockExecuteSteelQuotationWorkflow.mockImplementationOnce(
+          async ({ buildPublicationMessage }) => {
+            if (stream) {
+              const quotationMessage = {
+                type: 'message',
+                role: 'assistant',
+                id: 'quotation-message',
+                status: 'in_progress',
+                content: [{ type: 'output_text', text: 'old quotation', annotations: [] }],
+              };
+              tracker.items.push(quotationMessage);
+              tracker.currentMessage = quotationMessage;
+              tracker.currentContentIndex = 0;
+              tracker.accumulatedText = 'old quotation';
+            } else {
+              aggregator.addText('old quotation');
+            }
+            callbackResult = await buildPublicationMessage({
+              targetMessageId: 'canonical-response',
+              markdown: 'final quotation',
+            });
+          },
+        );
+
+        await createResponse(req, res);
+
+        expect(
+          JSON.stringify([...res.write.mock.calls, ...res.json.mock.calls, ...res.end.mock.calls]),
+        ).not.toContain('final quotation');
+        expect(mockExecuteSteelQuotationWorkflow).toHaveBeenCalledTimes(1);
+        expect(mockExecuteSteelQuotationWorkflow).toHaveBeenCalledWith(
+          expect.objectContaining({ buildPublicationMessage: expect.any(Function) }),
+        );
+        expect(mockCreateSteelQuotationPublicationMessageBuilder).toHaveBeenCalledTimes(1);
+        const [factoryInput] = mockCreateSteelQuotationPublicationMessageBuilder.mock.calls[0];
+        expect(factoryInput).toEqual(
+          expect.objectContaining({
+            tracker: stream ? tracker : null,
+            aggregator: stream ? null : aggregator,
+            buildMessageFields: expect.any(Function),
+          }),
+        );
+        expect(callbackResult).toEqual(
+          expect.objectContaining({
+            sourceMessageId: 'resp_mock-123',
+            conversationId: 'mock-uuid-456',
+            user: 'user-123',
+            parentMessageId: null,
+            isCreatedByUser: false,
+            unfinished: false,
+            sender: 'Agent',
+            endpoint: 'agents',
+            model: 'agent-123',
+            finish_reason: 'stop',
+            tokenCount: 50,
+            processingDurationMs: expect.any(Number),
+            langfuseSampled: true,
+            langfuseDestinationIds: ['destination-1'],
+            metadata: {
+              steel: { native: { ingress: 'open_responses', renderProfile: 'open_responses' } },
+            },
+            messageId: 'canonical-response',
+            text: `${expectedPrefix}\n\nfinal quotation`,
+          }),
+        );
+        if (stream) {
+          expect(tracker.items.map((item) => item.type)).toEqual([
+            ...(resume ? [] : ['message']),
+            'function_call',
+            'reasoning',
+            'message',
+          ]);
+          expect(tracker.items.at(-1)).toEqual(
+            expect.objectContaining({
+              id: 'quotation-message',
+              content: [{ type: 'output_text', text: 'old quotation', annotations: [] }],
+            }),
+          );
+          expect(tracker.currentMessage).toBe(tracker.items.at(-1));
+          expect(tracker.currentContentIndex).toBe(0);
+          expect(tracker.accumulatedText).toBe('old quotation');
+          expect(callbackResult.text).not.toContain('old quotation');
+        } else {
+          expect(aggregator.reasoningChunks).toEqual(['reasoning']);
+          expect(aggregator.textChunks).toEqual([
+            ...(resume ? [] : ['primary answer']),
+            'old quotation',
+          ]);
+          expect(aggregator.toolCalls).toEqual(
+            new Map([['call-1', { name: 'lookup', arguments: '{}' }]]),
+          );
+          expect(aggregator.toolOutputs).toEqual(new Map([['call-1', 'lookup result']]));
+          expect(aggregator.usage.outputTokens).toBe(50);
+          expect(callbackResult.text).not.toContain('old quotation');
+        }
+      },
+    );
+
+    it('publishes terminal Responses output with source identity before applying canonical target identity', async () => {
+      const api = require('@librechat/api');
+      const rawText = 'primary answer\n\nold quotation';
+      const projectedText = '## system_order\n\n| A |\n| --- |\n| 1 |';
+      const publicationProof = {
+        scope: { userId: 'user-123', conversationId: 'mock-uuid-456' },
+        runId: 'run-a',
+        runTargetMessageId: 'resp_mock-123',
+        targetMessageId: 'canonical-response',
+        markdown: projectedText,
+        finalSha256: 'a'.repeat(64),
+        currentOrderSha256: 'b'.repeat(64),
+        currentSystemOrderSha256: 'c'.repeat(64),
+        customer: {
+          preparationId: 'customer-a',
+          customerIdentity: 'customer-a',
+          customerMarkdown: 'customer data',
+        },
+        message: {
+          messageId: 'canonical-response',
+          conversationId: 'mock-uuid-456',
+          text: projectedText,
+          user: 'user-123',
+        },
+      };
+      api.buildAggregatedResponse.mockReturnValueOnce({
+        id: 'resp_123',
+        status: 'completed',
+        output: [
+          {
+            id: 'msg_1',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: rawText }],
+          },
+        ],
+        usage: { input_tokens: 100, output_tokens: 50, total_tokens: 150 },
+      });
+      mockMarkdownFinalize.mockImplementationOnce(async (input) => {
+        input.applyMarkdown(publicationProof.markdown);
+        await input.persistMarkdown({ completed: true });
+        const saved = await input.publishQuotation(publicationProof);
+        expect(saved.ok).toBe(true);
+        return { markdown: publicationProof.markdown };
+      });
+
+      await createResponse(req, res);
+
+      expect(mockCreateSteelQuotationPublicationPublisher).toHaveBeenCalledWith(
+        expect.objectContaining({
+          buildMessage: expect.any(Function),
+          savePublication: expect.any(Function),
+          saveContext: expect.any(Object),
+        }),
+      );
+      expect(mockSaveSteelQuotationMessage).toHaveBeenCalledTimes(1);
+      const [savedProof] = mockSaveSteelQuotationMessage.mock.calls[0];
+      expect(savedProof).toEqual(
+        expect.objectContaining({
+          targetMessageId: 'canonical-response',
+          scope: publicationProof.scope,
+        }),
+      );
+      expect(savedProof.message).toEqual(
+        expect.objectContaining({
+          messageId: 'canonical-response',
+          sourceMessageId: 'resp_mock-123',
+          conversationId: 'mock-uuid-456',
+          user: 'user-123',
+          parentMessageId: null,
+          isCreatedByUser: false,
+          unfinished: false,
+          sender: 'Agent',
+          endpoint: 'agents',
+          model: 'agent-123',
+          finish_reason: 'stop',
+          tokenCount: 50,
+          processingDurationMs: expect.any(Number),
+          langfuseSampled: true,
+          langfuseDestinationIds: ['destination-1'],
+          metadata: {
+            steel: { native: { ingress: 'open_responses', renderProfile: 'open_responses' } },
+          },
+          text: projectedText,
+        }),
+      );
+      expect(savedProof.message).not.toHaveProperty('content');
+    });
+
     it('propagates provisional and completed persistence state to the response save', async () => {
       const api = require('@librechat/api');
       const db = require('~/models');
       const responseSnapshots = [];
-      const raw =
-        '## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| 文字訂單 | PENDING |';
+      const raw = '## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| 文字訂單 | PENDING |';
       api.buildAggregatedResponse.mockReturnValueOnce({
         id: 'resp_123',
         status: 'completed',
-        output: [{
-          id: 'msg_1', type: 'message', role: 'assistant', status: 'completed',
-          content: [{ type: 'output_text', text: raw }],
-        }],
+        output: [
+          {
+            id: 'msg_1',
+            type: 'message',
+            role: 'assistant',
+            status: 'completed',
+            content: [{ type: 'output_text', text: raw }],
+          },
+        ],
         usage: { input_tokens: 100, output_tokens: 50, total_tokens: 150 },
       });
       mockMarkdownFinalize.mockImplementationOnce(async (input) => {
@@ -2874,8 +3189,9 @@ describe('createResponse controller', () => {
 
       await createResponse(req, res);
 
-      const responseWrites = responseSnapshots
-        .filter((message) => message?.messageId === 'resp_mock-123');
+      const responseWrites = responseSnapshots.filter(
+        (message) => message?.messageId === 'resp_mock-123',
+      );
       expect(responseWrites).toHaveLength(2);
       expect(responseWrites[0]).toEqual(expect.objectContaining({ unfinished: true }));
       expect(responseWrites[1]).toEqual(expect.objectContaining({ unfinished: false }));
@@ -2925,7 +3241,11 @@ describe('createResponse controller', () => {
       });
       expect(mockResponsesOcrStateService.clearCompletedDelegateClaim).not.toHaveBeenCalled();
       expect(api.sendResponsesErrorResponse).toHaveBeenCalledWith(
-        res, 500, 'Steel response could not be finalized.', 'server_error', 'response_save_failed',
+        res,
+        500,
+        'Steel response could not be finalized.',
+        'server_error',
+        'response_save_failed',
       );
       expect(res.json).not.toHaveBeenCalled();
     });
@@ -3025,6 +3345,7 @@ describe('createResponse controller', () => {
 
       expect(api.buildDefaultSteelGlobalAgentContext).toHaveBeenCalledWith(
         expect.objectContaining({
+          runtimeRulesClient: require('~/server/services/Steel/postgres').client,
           renderProfile: 'open_responses',
           conversation: expect.objectContaining({
             conversationId: 'convo-abc',
@@ -3300,8 +3621,12 @@ describe('createResponse controller', () => {
         triggeringMessageId: 'user-resume-1',
         userId: 'user-123',
       });
-      expect(require('~/server/services/ToolService').runSteelPaddleOcrPreflight).not.toHaveBeenCalled();
-      expect(require('~/server/services/ToolService').resolveDelegateOcrPolicyForRequest).not.toHaveBeenCalled();
+      expect(
+        require('~/server/services/ToolService').runSteelPaddleOcrPreflight,
+      ).not.toHaveBeenCalled();
+      expect(
+        require('~/server/services/ToolService').resolveDelegateOcrPolicyForRequest,
+      ).not.toHaveBeenCalled();
       expect(mockExecuteDelegateOcrResume).toHaveBeenCalledWith(
         expect.objectContaining({ req, res, resume, onDelta: expect.any(Function) }),
       );
@@ -3553,9 +3878,7 @@ describe('createResponse controller', () => {
         expect.any(Object),
       );
       expect(formattedHistory.at(-1)._getType()).toBe('human');
-      expect(JSON.stringify(formattedHistory.at(-1).content)).toContain(
-        '請重新確認原始 PDF',
-      );
+      expect(JSON.stringify(formattedHistory.at(-1).content)).toContain('請重新確認原始 PDF');
     });
 
     it('applies agent-scoped attachment context before createRun', async () => {
@@ -3659,10 +3982,21 @@ describe('createResponse controller', () => {
       api.buildResponse.mockReturnValueOnce({
         id: 'resp_123',
         status: 'completed',
-        output: [{
-          type: 'message', id: 'msg', role: 'assistant', status: 'completed',
-          content: [{ type: 'output_text', text: '## customer_data\n\n| 價格等級 |\n| --- |\n| B |', annotations: [] }],
-        }],
+        output: [
+          {
+            type: 'message',
+            id: 'msg',
+            role: 'assistant',
+            status: 'completed',
+            content: [
+              {
+                type: 'output_text',
+                text: '## customer_data\n\n| 價格等級 |\n| --- |\n| B |',
+                annotations: [],
+              },
+            ],
+          },
+        ],
       });
       require('~/models').saveConvo.mockRejectedValueOnce(new Error('secret database details'));
       res.headersSent = true;
@@ -3673,15 +4007,25 @@ describe('createResponse controller', () => {
         .map(([chunk]) => chunk)
         .filter((chunk) => chunk.startsWith('data: '))
         .map((chunk) => JSON.parse(chunk.slice(6)));
-      expect(events).toEqual(expect.arrayContaining([
-        expect.objectContaining({ type: 'response.failed', response: expect.objectContaining({
-          status: 'failed', error: {
-            type: 'server_error', message: 'Steel response could not be finalized.', code: 'response_save_failed',
-          },
-        }) }),
-      ]));
+      expect(events).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            type: 'response.failed',
+            response: expect.objectContaining({
+              status: 'failed',
+              error: {
+                type: 'server_error',
+                message: 'Steel response could not be finalized.',
+                code: 'response_save_failed',
+              },
+            }),
+          }),
+        ]),
+      );
       expect(JSON.stringify(events)).not.toContain('secret database details');
-      expect(api.createResponsesEventHandlers.mock.results.at(-1).value.finalizeStream).not.toHaveBeenCalled();
+      expect(
+        api.createResponsesEventHandlers.mock.results.at(-1).value.finalizeStream,
+      ).not.toHaveBeenCalled();
       expect(api.writeDone).toHaveBeenCalledWith(res);
       expect(res.end).toHaveBeenCalled();
     });
@@ -3692,7 +4036,9 @@ describe('createResponse controller', () => {
 
       await createResponse(req, res);
 
-      expect(api.createResponsesEventHandlers.mock.results.at(-1).value.finalizeStream).toHaveBeenCalled();
+      expect(
+        api.createResponsesEventHandlers.mock.results.at(-1).value.finalizeStream,
+      ).toHaveBeenCalled();
       expect(api.sendResponsesErrorResponse).not.toHaveBeenCalled();
       expect(res.end).toHaveBeenCalled();
     });

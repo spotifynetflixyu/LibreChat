@@ -55,6 +55,7 @@ jest.mock('@librechat/api', () => {
     withoutTraceRefs: jest.requireActual('../../../../packages/api/src/langfuse/trace.ts')
       .withoutTraceRefs,
     createContentFilter: jest.fn(() => (req, res, next) => next()),
+    createSteelReviewMessageMutationMiddleware: jest.fn(() => (req, res, next) => next()),
     inspectContent,
     extractChatContent,
     extractFeedbackContent: jest.fn(() => []),

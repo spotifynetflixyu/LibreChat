@@ -44,7 +44,6 @@ jest.mock('~/store', () => ({
   default: {
     autoSendPrompts: 'autoSendPrompts',
     activePromptByIndex: jest.fn(() => 'activePromptByIndex'),
-    pendingMarkdownTableCommentsByConvoId: jest.fn(() => 'pendingMarkdownTableComments'),
   },
 }));
 
@@ -68,9 +67,7 @@ describe('useSubmitMessage', () => {
     ask.mockReset();
     ask.mockReturnValue(undefined);
     files = new Map();
-    mockUseRecoilValue.mockImplementation((atom) =>
-      atom === 'pendingMarkdownTableComments' ? [] : false,
-    );
+    mockUseRecoilValue.mockReturnValue(false);
     mockUseSetRecoilState.mockReturnValue(mockSetActivePrompt);
     mockUseAuthContext.mockReturnValue({ user: { id: 'user-1' } });
     mockUseAddedChatContext.mockReturnValue({ conversation: null });
@@ -130,22 +127,20 @@ describe('useSubmitMessage', () => {
     expect(reset).not.toHaveBeenCalled();
   });
 
-  it('allows an empty submit when markdown table comments are pending', () => {
-    mockUseRecoilValue.mockImplementation((atom) =>
-      atom === 'pendingMarkdownTableComments' ? [{ id: 'comment-1' }] : false,
-    );
-
+  it('ignores retired comment metadata and still requires submitted text or files', () => {
     const { result } = renderHook(() => useSubmitMessage());
 
+    let submitted: false | void = undefined;
     act(() => {
-      result.current.submitMessage({ text: '   ' });
+      submitted = result.current.submitMessage({
+        text: '   ',
+        overrideMarkdownTableComments: [{ id: 'retired-comment' }],
+      } as never);
     });
 
-    expect(ask).toHaveBeenCalledWith(
-      { text: '' },
-      expect.objectContaining({ addedConvo: undefined }),
-    );
-    expect(reset).toHaveBeenCalledTimes(1);
+    expect(submitted).toBe(false);
+    expect(ask).not.toHaveBeenCalled();
+    expect(reset).not.toHaveBeenCalled();
   });
 
   it.each([false, true])('preserves a refused automatic prompt (accepted=%s)', (accepted) => {

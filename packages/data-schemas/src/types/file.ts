@@ -161,6 +161,8 @@ export interface IMongoFile extends Omit<Document, 'model'> {
     destinationChosen?: boolean;
     /** The type the delivery route was resolved against, when conversion changed it. */
     routingMimeType?: string;
+    /** Server-owned page count for the original PDF upload. */
+    pageCount?: number;
   };
   /** Upload-time inference, not a durable contract. See the schema field for why. */
   llmDeliveryPath?: string;

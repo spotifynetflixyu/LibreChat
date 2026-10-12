@@ -1,6 +1,110 @@
 import { createSystemOrderNormalizer, normalizeSystemOrderMarkdown } from './order';
 
+const legacyHeaders = [
+  '型號',
+  '品名規格',
+  '材質編號',
+  '單位',
+  '數量',
+  '單重',
+  '總數',
+  '單價',
+  '計價基準',
+  '公式編號',
+  '厚度',
+  '寬度',
+  '長度',
+  '肚',
+  '類別',
+  '備註',
+];
+const orderedHeaders = [
+  '型號',
+  '品名規格',
+  '材質編號',
+  '單價',
+  '數量',
+  '總數',
+  '厚度',
+  '寬度',
+  '長度',
+  '肚',
+  '單位',
+  '類別',
+  '單重',
+  '計價基準',
+  '公式編號',
+  '備註',
+];
+
 describe('system_order Markdown normalizer', () => {
+  it('reorders full tables, alignment markers, and escaped cells at every streaming boundary', () => {
+    const row = [
+      'ERP-1',
+      '鋼板 A\\|B',
+      '黑鐵',
+      'Kg',
+      '2支',
+      '0.942',
+      '1.884',
+      '20元',
+      'B',
+      'PL',
+      '6mm',
+      '100mm',
+      '200mm',
+      '',
+      '鐵板',
+      '保留\\|',
+    ];
+    const separators = legacyHeaders.map((_, index) => (index === 3 ? ':---:' : '---'));
+    const input = [
+      '## system_order',
+      `| ${legacyHeaders.map((header) => `**${header}**`).join(' | ')} |`,
+      `| ${separators.join(' | ')} |`,
+      `| ${row.join(' | ')} |`,
+    ].join('\r\n');
+    const expected = [
+      '## system_order',
+      `| ${orderedHeaders.map((header) => `**${header}**`).join(' | ')} |`,
+      '| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | :---: | --- | --- | --- | --- | --- |',
+      '| ERP-1 | 鋼板 A\\|B | 黑鐵 | 20 | 2 | 1.884 | 6 | 100 | 200 |  | Kg | 鐵板 | 0.942 | 2 | PL | 保留\\| |',
+    ].join('\r\n');
+    expect(normalizeSystemOrderMarkdown(input)).toBe(expected);
+    expect(normalizeSystemOrderMarkdown(expected)).toBe(expected);
+    for (let split = 0; split <= input.length; split += 1) {
+      const normalizer = createSystemOrderNormalizer();
+      expect(
+        normalizer.append(input.slice(0, split)) +
+          normalizer.append(input.slice(split)) +
+          normalizer.finish(),
+      ).toBe(expected);
+    }
+  });
+
+  it('leaves incomplete, ambiguous, fenced, and non-order headers in their original order', () => {
+    for (const headers of [
+      legacyHeaders.slice(1),
+      legacyHeaders.map((header) => (header === '單位' ? '未知' : header)),
+      legacyHeaders.map((header) => (header === '單位' ? '型號' : header)),
+    ]) {
+      const input = `## system_order\n| ${headers.join(' | ')} |\n| ${headers.map(() => '---').join(' | ')} |`;
+      expect(normalizeSystemOrderMarkdown(input)).toBe(input);
+    }
+    const header = `| ${legacyHeaders.join(' | ')} |`;
+    for (const input of [
+      `## system_order\n${header}`,
+      `## system_order\n${header}\nnot a separator`,
+      `## customer_quote\n${header}\n| ${legacyHeaders.map(() => '---').join(' | ')} |`,
+      `\x60\x60\x60markdown\n## system_order\n${header}\n| ${legacyHeaders.map(() => '---').join(' | ')} |\n\x60\x60\x60`,
+    ]) {
+      expect(normalizeSystemOrderMarkdown(input)).toBe(input);
+    }
+    const normalizer = createSystemOrderNormalizer();
+    expect(normalizer.append(`## system_order\n${header}\n`)).toBe('## system_order\n');
+    expect(normalizer.finish({ raw: true })).toBe(header + '\n');
+  });
+
   it('normalizes every numeric header and pricing basis', () => {
     const input = [
       '## system_order｜訂單',
@@ -19,7 +123,8 @@ describe('system_order Markdown normalizer', () => {
   });
 
   it('rounds all dimension columns half up after converting to mm without changing precise weights', () => {
-    const input = '## system_order\n| 厚度 | 寬度 | 長度 | 肚 | 單重 | 總數 |\n| --- | --- | --- | --- | --- | --- |\n| 6.35mm | 6.35mm | 762.5 mm | 0.2mm | 0.942 kg | 1.884 kg |\n| 1.5mm | 2.3mm | 1.25 m | 0.25 inch | 1.25 | 2.5 |';
+    const input =
+      '## system_order\n| 厚度 | 寬度 | 長度 | 肚 | 單重 | 總數 |\n| --- | --- | --- | --- | --- | --- |\n| 6.35mm | 6.35mm | 762.5 mm | 0.2mm | 0.942 kg | 1.884 kg |\n| 1.5mm | 2.3mm | 1.25 m | 0.25 inch | 1.25 | 2.5 |';
     expect(normalizeSystemOrderMarkdown(input)).toContain('| 6 | 6 | 763 | 0 | 0.942 | 1.884 |');
     expect(normalizeSystemOrderMarkdown(input)).toContain('| 2 | 2 | 1250 | 6 | 1.25 | 2.5 |');
   });

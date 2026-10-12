@@ -37,8 +37,8 @@ import type {
   TActivityLabelEvent,
   TReasoningLabelEvent,
 } from 'librechat-data-provider';
-import type { ActiveJobsResponse, StreamStatusResponse } from '~/data-provider';
 import type { DrainAfterAbort, QueuedMessage, QueuedMessageOrigin } from '~/store/families';
+import type { ActiveJobsResponse, StreamStatusResponse } from '~/data-provider';
 import type { GenerationProtocolVersion } from '~/data-provider';
 import type { EventHandlerParams } from './useEventHandlers';
 import type { TResData } from '~/common';
@@ -92,16 +92,16 @@ import useEventHandlers, {
   buildCreatedInitialResponse,
   keepLocalCodeApprovalMode,
 } from './useEventHandlers';
+import { preferDefinedString, toResumeTimestamp, withResumeTimestamp } from './resume';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
+import { steelNativeStreamEventName } from '~/store/steel';
 import { useAuthContext } from '~/hooks/AuthContext';
 import { useFileMapContext } from '~/Providers';
 import useUsageHandler from './useUsageHandler';
 import useLocalize from '~/hooks/useLocalize';
-import store from '~/store';
-import { steelNativeStreamEventName } from '~/store/steel';
 import { isOAuthToolCallName } from './oauth';
-import { preferDefinedString, toResumeTimestamp, withResumeTimestamp } from './resume';
+import store from '~/store';
 
 type ChatHelpers = Pick<
   EventHandlerParams,
@@ -2668,8 +2668,14 @@ export default function useResumableSSE(
                   parentMessageId: userMsgId,
                   content: data.resumeState.aggregatedContent,
                   isCreatedByUser: false,
-                  iconURL: data.resumeState.iconURL,
-                  model: data.resumeState.model,
+                  iconURL: preferDefinedString(
+                    resumeSubmission.initialResponse.iconURL,
+                    data.resumeState.iconURL,
+                  ),
+                  model: preferDefinedString(
+                    resumeSubmission.initialResponse.model,
+                    data.resumeState.model,
+                  ),
                   createdAt: resumeSubmission.initialResponse.createdAt,
                   clientTimestamp: resumeSubmission.initialResponse.clientTimestamp,
                 } as TMessage;

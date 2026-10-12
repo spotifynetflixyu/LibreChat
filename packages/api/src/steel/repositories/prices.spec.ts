@@ -1,9 +1,8 @@
+import type { SteelRepositoryClient } from './types';
 import {
   searchSteelPriceCandidateGroups,
   searchSteelProcessingPriceCandidates,
 } from './prices';
-
-import type { SteelRepositoryClient } from './types';
 
 function createPriceRow(overrides: Partial<Record<string, unknown>> = {}) {
   return {
@@ -45,6 +44,10 @@ function createPriceRow(overrides: Partial<Record<string, unknown>> = {}) {
     lip_mm: null,
     sheet_width_mm: null,
     sheet_length_mm: null,
+    density_exact: '7.850000',
+    width_mm_exact: null,
+    length_mm_exact: '6000.000000',
+    unit_weight_value_exact: '12.345000',
     spec_sort_key: '050.000-002.000',
     cost_basis: 'Kg',
     ...overrides,
@@ -121,6 +124,10 @@ describe('Steel price candidate repository', () => {
     expect(sql).toContain('p.thickness_min_mm = p.thickness_max_mm');
     expect(sql).toContain('p.thickness_min_mm = requested_thickness::numeric');
     expect(sql).toContain('p.length_mm = requested_stock_length::numeric');
+    expect(sql).toContain('p.density::text AS density_exact');
+    expect(sql).toContain('p.width_mm::text AS width_mm_exact');
+    expect(sql).toContain('p.length_mm::text AS length_mm_exact');
+    expect(sql).toContain('p.unit_weight_value::text AS unit_weight_value_exact');
     expect(sql.match(/p\.value_state <> 'no_price'/gu)).toHaveLength(2);
     expect(sql).not.toContain('p.source_thickness::numeric');
     expect(sql).toContain('p.spec_key ILIKE');
@@ -182,6 +189,11 @@ describe('Steel price candidate repository', () => {
         valueState: 'confirmed',
         thicknessMinMm: 1,
         thicknessMaxMm: 4.5,
+        exactPhysical: {
+          density: '7.850000',
+          lengthMm: '6000.000000',
+          unitWeightValue: '12.345000',
+        },
       }),
     );
     expect(result[1]?.categoryCandidates).toEqual([

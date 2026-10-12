@@ -1,5 +1,5 @@
-import type * as t from '~/types';
 import type { Model, Schema } from 'mongoose';
+import type * as t from '~/types';
 import {
   steelAICapabilitySchema,
   steelAIRunSchema,
@@ -20,7 +20,17 @@ import {
   steelOcrResponseAuditSchema,
   steelQuotationStateSchema,
   steelQuotationArtifactSchema,
+  steelReviewOutputSchema,
 } from '~/schema/steel';
+import { applyTenantIsolation } from '~/models/plugins/tenantIsolation';
+import { guardSteelConversationModel } from './lifecycle';
+
+export {
+  fenceSteelConversationWrites,
+  guardSteelConversationModel,
+  readSteelConversationDeletionScope,
+  SteelConversationDeletedError,
+} from './lifecycle';
 
 type Mongoose = typeof import('mongoose');
 
@@ -39,65 +49,75 @@ function createSteelModel<T>(
 export function createSteelWorkingOrderMemoryModel(
   mongoose: Mongoose,
 ): Model<t.ISteelWorkingOrderMemory> {
-  return createSteelModel(
+  return guardSteelConversationModel(mongoose, createSteelModel(
     mongoose,
     'SteelWorkingOrderMemory',
     steelWorkingOrderMemorySchema,
     'steel_working_order_memory',
-  );
+  ), true);
 }
 
 export function createSteelDelegateOcrRunModel(
   mongoose: Mongoose,
 ): Model<t.ISteelDelegateOcrRun> {
-  return createSteelModel(
+  return guardSteelConversationModel(mongoose, createSteelModel(
     mongoose,
     'SteelDelegateOcrRun',
     steelDelegateOcrRunSchema,
     'steel_delegate_ocr_runs',
-  );
+  ), true);
 }
 
 export function createSteelConversationOcrStateModel(
   mongoose: Mongoose,
 ): Model<t.ISteelConversationOcrState> {
-  return createSteelModel(
+  return guardSteelConversationModel(mongoose, createSteelModel(
     mongoose,
     'SteelConversationOcrState',
     steelConversationOcrStateSchema,
     'steel_conversation_ocr_state',
-  );
+  ), true);
 }
 
 export function createSteelOcrResponseAuditModel(
   mongoose: Mongoose,
 ): Model<t.ISteelOcrResponseAudit> {
-  return createSteelModel(
+  applyTenantIsolation(steelOcrResponseAuditSchema);
+  return guardSteelConversationModel(mongoose, createSteelModel(
     mongoose,
     'SteelOcrResponseAudit',
     steelOcrResponseAuditSchema,
     'steel_ocr_response_audits',
-  );
+  ), false);
 }
 
 export function createSteelQuotationStateModel(mongoose: Mongoose): Model<t.ISteelQuotationState> {
-  return createSteelModel(
+  return guardSteelConversationModel(mongoose, createSteelModel(
     mongoose,
     'SteelQuotationState',
     steelQuotationStateSchema,
     'steel_quotation_states',
-  );
+  ), false);
 }
 
 export function createSteelQuotationArtifactModel(
   mongoose: Mongoose,
 ): Model<t.ISteelQuotationArtifact> {
-  return createSteelModel(
+  return guardSteelConversationModel(mongoose, createSteelModel(
     mongoose,
     'SteelQuotationArtifact',
     steelQuotationArtifactSchema,
     'steel_quotation_artifacts',
-  );
+  ), false);
+}
+
+export function createSteelReviewOutputModel(mongoose: Mongoose): Model<t.ISteelReviewOutput> {
+  return guardSteelConversationModel(mongoose, createSteelModel(
+    mongoose,
+    'SteelReviewOutput',
+    steelReviewOutputSchema,
+    'steel_review_outputs',
+  ), false);
 }
 
 export function createSteelOcrPdfChunkArtifactModel(

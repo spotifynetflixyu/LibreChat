@@ -1,4 +1,5 @@
 export * from './customers';
+export * from './catalog';
 export * from './cutting';
 export * from './defaults';
 export * from './formulas';

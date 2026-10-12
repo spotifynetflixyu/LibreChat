@@ -349,9 +349,10 @@ test.describe('core chat loop', () => {
     await expect(pdfChip).toHaveCount(0);
 
     await uploadProviderFile(page, imageFixture);
-    await expect(
-      composer(page).getByRole('button', { name: 'View Preview image in full size' }),
-    ).toBeVisible();
+    const imagePreview = composer(page).getByRole('button', { name: 'View Preview image in full size' });
+    await expect(imagePreview).toBeVisible();
+    await composer(page).getByRole('button', { name: 'Remove file' }).click();
+    await expect(imagePreview).toHaveCount(0);
 
     await uploadProviderFile(page, textFixture);
     const textChip = composer(page).getByRole('button', { name: textFixture.name });

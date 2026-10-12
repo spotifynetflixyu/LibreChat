@@ -2,6 +2,23 @@ import { EModelEndpoint } from 'librechat-data-provider';
 import type { EndpointTokenConfig } from '~/types';
 import { getModelMaxTokens, getModelMaxOutputTokens, findMatchingPattern } from './tokens';
 
+describe('GPT-6.1 Sol OAuth context window', () => {
+  it('uses the 475K effective context only for Sol through OAuth', () => {
+    expect(getModelMaxTokens('gpt-6.1-sol', EModelEndpoint.openAIOAuth)).toBe(475000);
+    for (const model of ['gpt-6-sol', 'gpt-6-luna', 'gpt-6-astra', 'gpt-5.5']) {
+      expect(getModelMaxTokens(model, EModelEndpoint.openAIOAuth)).toBe(258000);
+    }
+    expect(getModelMaxTokens('gpt-6.1-sol', EModelEndpoint.openAI)).toBe(1050000);
+  });
+
+  it('honors an explicit OAuth model limit', () => {
+    const override: EndpointTokenConfig = {
+      'gpt-6.1-sol': { context: 196608, prompt: 1, completion: 1 },
+    };
+    expect(getModelMaxTokens('gpt-6.1-sol', EModelEndpoint.openAIOAuth, override)).toBe(196608);
+  });
+});
+
 describe('Bedrock OpenAI context windows', () => {
   const models = [
     'gpt-6-sol',

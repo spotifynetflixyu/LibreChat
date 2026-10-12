@@ -178,12 +178,12 @@ export function getS3Key(
   const safeBasePath = assertPathSegment('basePath', options.basePath, 'getS3Key');
   const safeUserId = assertPathSegment('userId', options.userId, 'getS3Key');
   const safeFileName = assertS3FileName('fileName', options.fileName, 'getS3Key');
-  const safeKeyPrefix =
-    options.keyPrefix === undefined
-      ? getConfiguredKeyPrefix()
-      : options.keyPrefix
-        ? assertPathSegment('keyPrefix', options.keyPrefix, 'getS3Key')
-        : null;
+  let safeKeyPrefix: string | null = null;
+  if (options.keyPrefix === undefined) {
+    safeKeyPrefix = getConfiguredKeyPrefix();
+  } else if (options.keyPrefix) {
+    safeKeyPrefix = assertPathSegment('keyPrefix', options.keyPrefix, 'getS3Key');
+  }
   const inlinePathPrefix = getInlinePathPrefix({
     ...options,
     basePath: safeBasePath,
@@ -827,16 +827,9 @@ export function extractKeyFromS3Url(fileUrlOrKey: string): string {
       return '';
     }
 
-    logger.debug(`[extractKeyFromS3Url] fileUrlOrKey: ${fileUrlOrKey}, Extracted key: ${pathname}`);
     return decodeKeyFromUrlPath(pathname);
-  } catch (error) {
-    if (fileUrlOrKey.startsWith('http://') || fileUrlOrKey.startsWith('https://')) {
-      logger.error(
-        `[extractKeyFromS3Url] Error parsing URL: ${fileUrlOrKey}, Error: ${(error as Error).message}`,
-      );
-    } else {
-      logger.debug(`[extractKeyFromS3Url] Non-URL input, using fallback: ${fileUrlOrKey}`);
-    }
+  } catch {
+    logger.error('[extractKeyFromS3Url] Error parsing URL; using fallback');
 
     const parts = fileUrlOrKey.split('/');
     if (parts.length >= 3 && !fileUrlOrKey.startsWith('http') && !fileUrlOrKey.startsWith('/')) {
@@ -844,9 +837,6 @@ export function extractKeyFromS3Url(fileUrlOrKey: string): string {
     }
 
     const key = fileUrlOrKey.startsWith('/') ? fileUrlOrKey.substring(1) : fileUrlOrKey;
-    logger.debug(
-      `[extractKeyFromS3Url] FALLBACK. fileUrlOrKey: ${fileUrlOrKey}, Extracted key: ${key}`,
-    );
     return key;
   }
 }

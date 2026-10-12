@@ -26,8 +26,7 @@ import type {
   EndpointSchemaKey,
 } from 'librechat-data-provider';
 import type { SetterOrUpdater } from 'recoil';
-import type { TAskFunction, ExtendedFile, MarkdownTableComment } from '~/common';
-import { appendMarkdownTableComments } from '~/common';
+import type { TAskFunction, ExtendedFile } from '~/common';
 import {
   logger,
   requestChatFocus,
@@ -287,20 +286,6 @@ export default function useChatFunctions({
     [],
   );
 
-  const drainPendingMarkdownTableComments = useRecoilCallback(
-    ({ snapshot, reset }) =>
-      (convoId: string): MarkdownTableComment[] => {
-        const loadable = snapshot.getLoadable(store.pendingMarkdownTableCommentsByConvoId(convoId));
-        const comments =
-          loadable.state === 'hasValue' ? (loadable.contents as MarkdownTableComment[]) : [];
-        if (comments.length > 0) {
-          reset(store.pendingMarkdownTableCommentsByConvoId(convoId));
-        }
-        return comments;
-      },
-    [],
-  );
-
   const ask: TAskFunction = (
     {
       text,
@@ -322,7 +307,6 @@ export default function useChatFunctions({
       targetResponseMessageId,
       overrideManualSkills,
       overrideQuotes,
-      overrideMarkdownTableComments,
       addedConvo,
       overrideClientRequestId,
       overrideRecoverySteerId,
@@ -467,19 +451,7 @@ export default function useChatFunctions({
         quotes = drainPendingQuotes(conversationId ?? Constants.NEW_CONVO);
       }
     }
-    let markdownTableComments = overrideMarkdownTableComments;
-    if (markdownTableComments == null && !isRegenerate && !isContinued && !isEdited) {
-      markdownTableComments = drainPendingMarkdownTableComments(
-        conversationId ?? Constants.NEW_CONVO,
-      );
-    }
-    text = appendMarkdownTableComments(text, markdownTableComments ?? []).trim();
-    if (
-      !compact &&
-      text.length === 0 &&
-      replayFileCount === 0 &&
-      (markdownTableComments?.length ?? 0) === 0
-    ) {
+    if (!compact && text.length === 0 && replayFileCount === 0) {
       return false;
     }
     const isEditOrContinue = isEdited || isContinued;

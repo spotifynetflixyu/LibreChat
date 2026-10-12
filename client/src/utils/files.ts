@@ -571,7 +571,12 @@ export const validateFiles = ({
       return false;
     }
 
-    if (!isPaddleOCRUpload && fileSizeLimit && originalFile.size >= fileSizeLimit) {
+    if (
+      !isPaddleOCRUpload &&
+      !skipSizeValidation &&
+      fileSizeLimit &&
+      originalFile.size >= fileSizeLimit
+    ) {
       setError(`File size limit exceeded: ${fileSizeLimit / megabyte} MB`);
       return false;
     }

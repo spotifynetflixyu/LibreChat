@@ -1,0 +1,124 @@
+{
+  "generatedFromCommit": "65c9b2140c980c80b9797abc5909bbe5df65e072",
+  "realMongo": true,
+  "prepared": {
+    "userId": "legacy-fixture-user",
+    "conversationId": "legacy-fixture-chat",
+    "kind": "ocr_result",
+    "messageId": "legacy-fixture-message",
+    "tableId": "ocr_result:1",
+    "outputId": "ocr_result:legacy-fixture-generation",
+    "revision": "legacy-fixture-generation",
+    "rows": [
+      {
+        "rowId": "31c389e1916d78f3aeb367b3074d9943ccc1d85c2e58bdf04ceea976fade3d57",
+        "values": {
+          "來源": {
+            "baseline": "A",
+            "effective": "A"
+          },
+          "零件編號": {
+            "baseline": "LEGACY-P1",
+            "effective": "LEGACY-P1"
+          },
+          "數量": {
+            "baseline": "2",
+            "effective": "7"
+          },
+          "頁碼": {
+            "baseline": "1",
+            "effective": "1"
+          }
+        },
+        "source": null
+      }
+    ],
+    "sourceMappings": [],
+    "headers": [
+      "來源",
+      "零件編號",
+      "數量",
+      "頁碼"
+    ],
+    "operationId": "24675366-6d90-46c7-9ae5-64365bfd41c8",
+    "messageSha256": "0f3a1e4577ead7ba2a756ce420d5c18e4ffa227977ae803018a30021c6819fdd",
+    "target": {
+      "start": 14,
+      "end": 89,
+      "sha256": "e4261ad7e949a37e0adc326b9bb35cc9058c944a96c1b708ea421a45b5d7a299"
+    },
+    "targetText": "| 來源 | 零件編號 | 數量 | 頁碼 |\n| --- | --- | --- | --- |\n| A | LEGACY-P1 | 2 | 1 |",
+    "replacementText": "| 來源 | 零件編號 | 數量 | 頁碼 |\n| --- | --- | --- | --- |\n| A | LEGACY-P1 | 7 | 1 |",
+    "cleanReplacementText": "| 來源 | 零件編號 | 數量 | 頁碼 |\n| --- | --- | --- | --- |\n| A | LEGACY-P1 | 7 | 1 |",
+    "effectiveMarkdown": "## ocr_result\n| 來源 | 零件編號 | 數量 | 頁碼 |\n| --- | --- | --- | --- |\n| A | LEGACY-P1 | 7 | 1 |",
+    "displayMarkdown": "## ocr_result\n| 來源 | 零件編號 | 數量 | 頁碼 |\n| --- | --- | --- | --- |\n| A | LEGACY-P1 | 7 | 1 |",
+    "aiBaselineMarkdown": "## ocr_result\n| 來源 | 零件編號 | 數量 | 頁碼 |\n| --- | --- | --- | --- |\n| A | LEGACY-P1 | 2 | 1 |",
+    "aiRawMarkdown": "## ocr_result\n| 來源 | 零件編號 | 數量 | 頁碼 |\n| --- | --- | --- | --- |\n| A | LEGACY-P1 | 2 | 1 |",
+    "caption": {
+      "kind": "ocr_result",
+      "changedRows": 1,
+      "changedRowIds": [
+        "31c389e1916d78f3aeb367b3074d9943ccc1d85c2e58bdf04ceea976fade3d57"
+      ]
+    },
+    "digest": "f1b2b9292c401e0ae1f7275df385e7c5a6f954b10a75e81769584ab7c60e7364"
+  },
+  "savedSnapshot": {
+    "operationId": "24675366-6d90-46c7-9ae5-64365bfd41c8",
+    "digest": "f1b2b9292c401e0ae1f7275df385e7c5a6f954b10a75e81769584ab7c60e7364",
+    "outputId": "ocr_result:legacy-fixture-generation",
+    "revision": "ce09756ee0815fc6eb88ec41b5f4f88ed12f5320a7077a82e5d70a219a1bd23c",
+    "headers": [
+      "來源",
+      "零件編號",
+      "數量",
+      "頁碼"
+    ],
+    "rows": [
+      {
+        "rowId": "31c389e1916d78f3aeb367b3074d9943ccc1d85c2e58bdf04ceea976fade3d57",
+        "values": {
+          "來源": {
+            "baseline": "A",
+            "effective": "A"
+          },
+          "零件編號": {
+            "baseline": "LEGACY-P1",
+            "effective": "LEGACY-P1"
+          },
+          "數量": {
+            "baseline": "2",
+            "effective": "7"
+          },
+          "頁碼": {
+            "baseline": "1",
+            "effective": "1"
+          }
+        },
+        "source": null
+      }
+    ],
+    "sourceMappings": [],
+    "changedRows": 1,
+    "changedRowIds": [
+      "31c389e1916d78f3aeb367b3074d9943ccc1d85c2e58bdf04ceea976fade3d57"
+    ],
+    "messageSha256": "acbb31c61b0c206fb9a06949e129f27630aacab76f3484cd874c27ad8a6b28ad",
+    "conversationId": "legacy-fixture-chat",
+    "messageId": "legacy-fixture-message",
+    "messageText": "## ocr_result\n| 來源 | 零件編號 | 數量 | 頁碼 |\n| --- | --- | --- | --- |\n| A | LEGACY-P1 | 7 | 1 |",
+    "effectiveMarkdown": "## ocr_result\n| 來源 | 零件編號 | 數量 | 頁碼 |\n| --- | --- | --- | --- |\n| A | LEGACY-P1 | 7 | 1 |",
+    "displayMarkdown": "## ocr_result\n| 來源 | 零件編號 | 數量 | 頁碼 |\n| --- | --- | --- | --- |\n| A | LEGACY-P1 | 7 | 1 |",
+    "savedAt": "2026-10-04T00:45:14.427Z",
+    "ownerUpdated": {
+      "version": 1,
+      "kind": "ocr_result",
+      "conversationId": "legacy-fixture-chat",
+      "messageId": "legacy-fixture-message",
+      "tableId": "ocr_result:1",
+      "outputId": "ocr_result:legacy-fixture-generation",
+      "revision": "ce09756ee0815fc6eb88ec41b5f4f88ed12f5320a7077a82e5d70a219a1bd23c",
+      "updatedAt": "2026-10-04T00:45:14.427Z"
+    }
+  }
+}

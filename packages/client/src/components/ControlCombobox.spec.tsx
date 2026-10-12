@@ -354,3 +354,46 @@ describe('ControlCombobox portal placement', () => {
     expect(screen.queryByRole('option', { name: 'Option A' })).not.toBeInTheDocument();
   });
 });
+
+describe('ControlCombobox asynchronous options', () => {
+  it('notifies the host when the current option is explicitly selected again', () => {
+    const onReselect = jest.fn();
+    const setValue = jest.fn();
+    const { offsetWidthSpy } = renderCombobox(300, false, { onReselect, setValue });
+    openPopover();
+    fireEvent.click(screen.getByRole('option', { name: 'Option A' }));
+    expect(onReselect).toHaveBeenCalledTimes(1);
+    expect(onReselect).toHaveBeenCalledWith('a');
+    expect(setValue).not.toHaveBeenCalled();
+    offsetWidthSpy.mockRestore();
+  });
+
+  it('mounts the virtual list when asynchronous options become available', () => {
+    const { rerender, offsetWidthSpy } = renderCombobox(300, false, { items: [] });
+    openPopover();
+    const scroller = document.querySelector('.animate-popover .overflow-auto');
+    expect(scroller?.querySelector('[role="listbox"]')).toBeEmptyDOMElement();
+    rerender(<ControlCombobox selectedValue="a" items={items} setValue={() => undefined}
+      ariaLabel="Test combobox" isCollapsed={false} />);
+    expect(screen.getByRole('option', { name: 'Option A' })).toBeInTheDocument();
+    offsetWidthSpy.mockRestore();
+  });
+
+  it('keeps remote options and order when their labels do not match the search draft', () => {
+    const onSearchChange = jest.fn();
+    const { offsetWidthSpy } = renderCombobox(300, false, {
+      items: [{ value: '2', label: 'ZZ 型號規格' }, { value: '1', label: 'AA 型號規格' }],
+      searchValue: 'query', onSearchChange, filterItems: false,
+      listFooter: <span role="status">Loading next page</span>,
+    });
+    openPopover();
+    const options = screen.getAllByRole('option');
+    expect(options.map((option) => option.textContent)).toEqual(['ZZ 型號規格', 'AA 型號規格']);
+    const search = document.querySelector('input');
+    if (!search) throw new Error('Missing catalog search input');
+    fireEvent.change(search, { target: { value: 'pasted keyword' } });
+    expect(onSearchChange).toHaveBeenCalledWith('pasted keyword');
+    expect(screen.getByRole('status')).toHaveTextContent('Loading next page');
+    offsetWidthSpy.mockRestore();
+  });
+});

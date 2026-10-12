@@ -1,10 +1,9 @@
-import { parseNullableNumber, parseNullableString, parseRequiredNumber } from './types';
-import { normalizeSteelSpecKey } from '../normalization/spec';
-import { processingPriceCategories } from '../pricing/processing-candidates';
-
-import type { SteelRepositoryClient } from './types';
-import type { PriceLookupMaterialKind, PriceCategory } from '../pricing/enums';
 import type { ProcessingPriceCategory } from '../pricing/processing-candidates';
+import type { PriceLookupMaterialKind, PriceCategory } from '../pricing/enums';
+import type { SteelRepositoryClient } from './types';
+import { parseNullableNumber, parseNullableString, parseRequiredNumber } from './types';
+import { processingPriceCategories } from '../pricing/processing-candidates';
+import { normalizeSteelSpecKey } from '../normalization/spec';
 
 export type SteelPriceValueState = 'confirmed' | 'ratio_only' | 'no_price';
 
@@ -51,6 +50,10 @@ interface SteelPriceItemRow {
   sheet_length_mm: string | number | null;
   spec_sort_key: string | null;
   cost_basis: string;
+  density_exact?: string | null;
+  width_mm_exact?: string | null;
+  length_mm_exact?: string | null;
+  unit_weight_value_exact?: string | null;
 }
 
 interface SteelPriceCategoryCandidateRow {
@@ -110,6 +113,12 @@ export interface SteelPriceItem {
   sheetLengthMm: number | null;
   specSortKey?: string;
   costBasis: string;
+  exactPhysical?: {
+    density?: string;
+    widthMm?: string;
+    lengthMm?: string;
+    unitWeightValue?: string;
+  };
 }
 
 export interface SteelPriceLookupQuery {
@@ -259,6 +268,12 @@ function toTierValues(input: {
 }
 
 function toPriceItem(row: SteelPriceItemRow): SteelPriceItem {
+  const exactPhysical = {
+    ...(row.density_exact ? { density: row.density_exact } : {}),
+    ...(row.width_mm_exact ? { widthMm: row.width_mm_exact } : {}),
+    ...(row.length_mm_exact ? { lengthMm: row.length_mm_exact } : {}),
+    ...(row.unit_weight_value_exact ? { unitWeightValue: row.unit_weight_value_exact } : {}),
+  };
   return {
     id: parseRequiredNumber(row.id),
     erpItemCode: row.erp_item_code,
@@ -306,6 +321,7 @@ function toPriceItem(row: SteelPriceItemRow): SteelPriceItem {
     sheetLengthMm: parseNullableNumber(row.sheet_length_mm),
     specSortKey: parseNullableString(row.spec_sort_key),
     costBasis: row.cost_basis,
+    ...(Object.keys(exactPhysical).length > 0 ? { exactPhysical } : {}),
   };
 }
 
@@ -410,13 +426,17 @@ SELECT
           p.price_ratio_e,
           p.price_ratio_f,
           p.unit_weight_value,
+          p.unit_weight_value::text AS unit_weight_value_exact,
           p.unit_weight_basis,
           p.density,
+          p.density::text AS density_exact,
           p.thickness_min_mm,
           p.thickness_max_mm,
           p.width_mm,
+          p.width_mm::text AS width_mm_exact,
           p.height_mm,
           p.length_mm,
+          p.length_mm::text AS length_mm_exact,
           p.outer_diameter_mm,
           p.nominal_inch,
           p.web_mm,
@@ -555,13 +575,17 @@ SELECT
   p.price_ratio_e,
   p.price_ratio_f,
   p.unit_weight_value,
+  p.unit_weight_value::text AS unit_weight_value_exact,
   p.unit_weight_basis,
   p.density,
+  p.density::text AS density_exact,
   p.thickness_min_mm,
   p.thickness_max_mm,
   p.width_mm,
+  p.width_mm::text AS width_mm_exact,
   p.height_mm,
   p.length_mm,
+  p.length_mm::text AS length_mm_exact,
   p.outer_diameter_mm,
   p.nominal_inch,
   p.web_mm,

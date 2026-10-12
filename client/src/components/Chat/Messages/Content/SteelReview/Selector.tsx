@@ -1,0 +1,328 @@
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Search } from 'lucide-react';
+import { useAtom, useAtomValue } from 'jotai';
+import { useQueryClient } from '@tanstack/react-query';
+import { Button, ControlCombobox } from '@librechat/client';
+import {
+  DynamicQueryKeys,
+  isSteelProcessingCatalogCandidateApplicable,
+  steelCatalogPriceCandidate,
+  steelProcessingMaterialForRow,
+} from 'librechat-data-provider';
+import type {
+  SteelCatalogCandidate,
+  SteelCatalogPricing,
+  SteelProcessingMaterial,
+  SteelReviewRow,
+  SteelReviewTable,
+} from 'librechat-data-provider';
+import { steelReviewCatalogScopeAtom, steelReviewCustomerPriceTierFamily } from './state';
+import { useGetSteelReviewCatalogQuery } from '~/data-provider';
+import { useDebounce, useLocalize } from '~/hooks';
+
+export interface SteelReviewSelectorProps {
+  table: SteelReviewTable;
+  row: SteelReviewRow;
+  parent?: SteelReviewRow;
+  header: '型號' | '品名規格';
+  value: string;
+  canEdit: boolean;
+  onIntentChange?: () => void;
+  selectedCandidate?: SteelCatalogCandidate;
+  onSelect: (
+    row: SteelReviewRow,
+    candidate: SteelCatalogCandidate,
+    pricing: SteelCatalogPricing,
+  ) => void;
+}
+
+export default function SteelReviewSelector({
+  table,
+  row,
+  parent,
+  header,
+  value,
+  canEdit,
+  onIntentChange,
+  selectedCandidate,
+  onSelect,
+}: SteelReviewSelectorProps) {
+  const localize = useLocalize();
+  const queryClient = useQueryClient();
+  const [open, setOpen] = useState(false);
+  const [activeScope, setActiveScope] = useAtom(steelReviewCatalogScopeAtom);
+  const selectedTier = useAtomValue(steelReviewCustomerPriceTierFamily(table.conversationId));
+  const pricingTier = selectedTier ?? 'B';
+  const [search, setSearch] = useState('');
+  const [keyword, setKeyword] = useState('');
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const processing = row.system?.kind === 'processing';
+  const currentMaterial = useMemo(
+    () => (processing && parent ? steelProcessingMaterialForRow(parent) : undefined),
+    [processing, parent],
+  );
+  const materialScope = JSON.stringify(currentMaterial ?? null);
+  const [queryMaterial, setQueryMaterial] = useState<SteelProcessingMaterial | undefined>(
+    currentMaterial,
+  );
+  const debouncedKeyword = useDebounce(keyword, 250);
+  const intent = useRef(0);
+  const appliedIntent = useRef(0);
+  const scope = JSON.stringify([
+    table.outputId,
+    table.revision,
+    row.rowId,
+    header,
+    row.system?.kind,
+  ]);
+  const currentScope = useRef(scope);
+  const previousActiveScope = useRef(activeScope);
+  const previousMaterialScope = useRef(materialScope);
+  const query = useMemo(
+    () => ({
+      messageId: table.messageId,
+      title: table.title,
+      outputId: table.outputId,
+      revision: table.revision,
+      rowId: row.rowId,
+      ...(processing
+        ? {
+            kind: 'processing' as const,
+            parentRowId: queryMaterial?.rowId ?? '',
+            materialCategory: queryMaterial?.category ?? '',
+            ...(queryMaterial?.thicknessMm
+              ? { materialThicknessMm: queryMaterial.thicknessMm }
+              : {}),
+          }
+        : {}),
+      field: header === '型號' ? ('model' as const) : ('description' as const),
+      keyword: debouncedKeyword,
+    }),
+    [
+      table.messageId,
+      table.title,
+      table.outputId,
+      table.revision,
+      row.rowId,
+      header,
+      debouncedKeyword,
+      processing,
+      queryMaterial,
+    ],
+  );
+  const cancelCatalog = useCallback(() => {
+    void queryClient.cancelQueries(
+      DynamicQueryKeys.steelReviewCatalog(table.conversationId, query),
+      { exact: true },
+    );
+  }, [queryClient, table.conversationId, query]);
+  const catalog = useGetSteelReviewCatalogQuery(
+    table.conversationId,
+    query,
+    canEdit &&
+      open &&
+      keyword.trim() !== '' &&
+      search === keyword &&
+      keyword === debouncedKeyword &&
+      currentScope.current === scope,
+    () => setActiveScope(scope),
+  );
+  const stable =
+    (activeScope === scope || keyword.trim() === '') &&
+    keyword === debouncedKeyword &&
+    currentScope.current === scope;
+  const { data: catalogData, remove: removeCatalog } = catalog;
+  const pages = catalogData?.pages;
+  const options = useMemo(
+    () =>
+      stable && !catalog.isError
+        ? (pages?.flatMap((page) => page.options) ?? [])
+            .filter(
+              (candidate) =>
+                !processing ||
+                (currentMaterial &&
+                  isSteelProcessingCatalogCandidateApplicable(candidate, currentMaterial)),
+            )
+            .map((candidate) => steelCatalogPriceCandidate(candidate, pricingTier))
+        : [],
+    [stable, catalog.isError, pages, processing, currentMaterial, pricingTier],
+  );
+  const pricing = useMemo(
+    (): SteelCatalogPricing => ({
+      tier: pricingTier,
+      ...(table.catalogCustomer ? { evidence: table.catalogCustomer } : {}),
+    }),
+    [pricingTier, table.catalogCustomer],
+  );
+  const selectedId =
+    selectedCandidate?.id ??
+    options.find((candidate) => candidate.erpItemCode === row.values['型號']?.effective)?.id ??
+    '';
+
+  useEffect(() => {
+    if (previousMaterialScope.current === materialScope) return;
+    previousMaterialScope.current = materialScope;
+    onIntentChange?.();
+  }, [materialScope, onIntentChange]);
+
+  useEffect(() => {
+    if (currentScope.current === scope && canEdit) return;
+    cancelCatalog();
+    currentScope.current = scope;
+    appliedIntent.current = intent.current;
+    setSearch('');
+    setKeyword('');
+    setOpen(false);
+  }, [canEdit, scope, cancelCatalog]);
+
+  useEffect(() => {
+    const activeScopeChanged = previousActiveScope.current !== activeScope;
+    previousActiveScope.current = activeScope;
+    if (!activeScopeChanged || activeScope === scope || intent.current === 0) return;
+    cancelCatalog();
+    appliedIntent.current = intent.current;
+    setSearch('');
+    setKeyword('');
+    setOpen(false);
+    if (catalogData) removeCatalog();
+  }, [activeScope, scope, open, keyword, catalogData, removeCatalog, cancelCatalog]);
+
+  useEffect(() => () => cancelCatalog(), [cancelCatalog]);
+
+  useEffect(() => {
+    const first = pages?.[0];
+    if (
+      !open ||
+      !canEdit ||
+      !stable ||
+      search !== keyword ||
+      keyword !== debouncedKeyword ||
+      !keyword.trim() ||
+      intent.current === 0 ||
+      intent.current === appliedIntent.current ||
+      catalog.isFetching ||
+      catalog.isError ||
+      !first?.complete ||
+      first.hasMore ||
+      first.nextCursor !== null ||
+      pages?.length !== 1 ||
+      options.length !== 1 ||
+      first.options.length !== 1 ||
+      (processing && materialScope !== JSON.stringify(queryMaterial ?? null))
+    )
+      return;
+    appliedIntent.current = intent.current;
+    onSelect(row, options[0], pricing);
+    setOpen(false);
+  }, [
+    open,
+    canEdit,
+    stable,
+    search,
+    keyword,
+    debouncedKeyword,
+    pages,
+    catalog.isFetching,
+    catalog.isError,
+    row,
+    onSelect,
+    options,
+    processing,
+    materialScope,
+    queryMaterial,
+    pricing,
+  ]);
+
+  const select = (id: string, close = true) => {
+    if (!canEdit || !stable || catalog.isFetching) return;
+    const candidate = options.find((option) => option.id === id);
+    if (!candidate) return;
+    appliedIntent.current = intent.current;
+    onSelect(row, candidate, pricing);
+    if (close) setOpen(false);
+  };
+
+  let status: JSX.Element | null = null;
+  if (catalog.isFetching || !stable) {
+    status = <span role="status">{localize('com_ui_loading')}</span>;
+  } else if (catalog.isError) {
+    status = (
+      <div role="alert">
+        <span>{localize('com_ui_steel_review_catalog_error')}</span>
+        <Button
+          type="button"
+          variant="outline"
+          disabled={!canEdit || catalog.isFetching}
+          onClick={() => {
+            searchInputRef.current?.focus();
+            void catalog.refetch();
+          }}
+        >
+          {localize('com_ui_retry')}
+        </Button>
+      </div>
+    );
+  } else if (catalog.isSuccess && options.length === 0) {
+    status = <span role="status">{localize('com_ui_steel_review_catalog_empty')}</span>;
+  }
+
+  return (
+    <ControlCombobox
+      selectedValue={selectedId}
+      displayValue={value}
+      SelectIcon={<Search className="size-4 text-text-secondary" aria-hidden="true" />}
+      items={options.map((candidate) => ({ value: candidate.id, label: candidate.label }))}
+      setValue={(id) => select(id)}
+      onReselect={(id) => select(id)}
+      searchInputRef={searchInputRef}
+      onNavigate={(id) => select(id, false)}
+      resetSearchOnHide={false}
+      ariaLabel={`${header} ${row.rowId}`}
+      searchPlaceholder={localize('com_ui_steel_review_catalog_search')}
+      selectPlaceholder={localize('com_ui_steel_review_catalog_search')}
+      isCollapsed={false}
+      variant="field"
+      portal={false}
+      popoverMaxHeight={360}
+      showCarat={false}
+      disabled={!canEdit}
+      filterItems={false}
+      searchValue={search}
+      onSearchChange={(next) => {
+        if (!canEdit || next === search) return;
+        cancelCatalog();
+        setSearch(next);
+        if (!next.trim() || next === keyword || next === value) return;
+        intent.current += 1;
+        onIntentChange?.();
+        setQueryMaterial(currentMaterial);
+        setKeyword(next);
+      }}
+      open={open}
+      onOpenChange={(next) => {
+        if (!next) cancelCatalog();
+        if (next && processing && !catalogData && intent.current === 0)
+          setQueryMaterial(currentMaterial);
+        setOpen(next && canEdit);
+      }}
+      listFooter={
+        <div className="flex flex-col gap-2 px-3 py-2 text-sm text-text-secondary">
+          {status}
+          {catalog.hasNextPage && (
+            <Button
+              type="button"
+              variant="outline"
+              disabled={!canEdit || catalog.isFetching}
+              onClick={() => {
+                searchInputRef.current?.focus();
+                void catalog.fetchNextPage();
+              }}
+            >
+              {localize('com_ui_load_more')}
+            </Button>
+          )}
+        </div>
+      }
+    />
+  );
+}

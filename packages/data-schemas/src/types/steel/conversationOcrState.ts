@@ -34,7 +34,7 @@ export interface SteelConversationOcrResultProvenance {
   updatedAt?: Date;
 }
 
-export interface ISteelConversationOcrState extends Document {
+export interface SteelConversationOcrRecord {
   conversationId: string;
   nextDelegateOcrIndex: number;
   activeDelegateClaim?: SteelActiveDelegateClaim;
@@ -46,6 +46,9 @@ export interface ISteelConversationOcrState extends Document {
   currentOcrResultGenerationId?: string;
   currentOcrResultAttemptNumber?: number;
   currentOcrResultProvenance?: SteelConversationOcrResultProvenance;
+  reviewLockToken?: string;
   createdAt?: Date;
   updatedAt?: Date;
 }
+
+export interface ISteelConversationOcrState extends Document, SteelConversationOcrRecord {}

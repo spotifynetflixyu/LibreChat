@@ -9,6 +9,7 @@ const {
   normalizeSortField,
   CONVERSATION_SORT_FIELDS,
   openCheckpointDeletion,
+  scopeConversationDeletion,
   waitForGenerationPersistence,
   createArchiveAllHandler,
   createSubagentActivityStreamHandler,
@@ -391,7 +392,7 @@ async function drainDeletedAgentGenerations(
   await confirmAgentGenerationsDrained(userId, conversationIds, leaseTaskIds, tenantId);
   await db.deleteConvos(
     userId,
-    { conversationId: { $in: conversationIds } },
+    scopeConversationDeletion({ conversationId: { $in: conversationIds } }, tenantId),
     {
       allowEmpty: true,
       beforeDelete: async (ids) => {
@@ -401,7 +402,7 @@ async function drainDeletedAgentGenerations(
       },
     },
   );
-  await db.deleteMessages({ user: userId, conversationId: { $in: conversationIds } });
+  await db.deleteMessages(scopeConversationDeletion({ user: userId, conversationId: { $in: conversationIds } }, tenantId));
 }
 
 /** Orders every owner-scoped agent execution against a delete-all persistence
@@ -430,7 +431,7 @@ async function withAgentOwnerDeletionFence(userId, tenantId, deletion, recoverPe
 
 async function deleteOwnerConversationPersistence(userId, filter, tenantId, checkpointer) {
   const deletion = await openCheckpointDeletion(userId, tenantId, undefined, checkpointer);
-  const result = await db.deleteConvos(userId, filter, {
+  const result = await db.deleteConvos(userId, scopeConversationDeletion(filter, tenantId), {
     allowEmpty: true,
     beforeDelete: async (conversationIds) => {
       await deletion.remember(conversationIds);
@@ -443,7 +444,7 @@ async function deleteOwnerConversationPersistence(userId, filter, tenantId, chec
     await drainDeletedAgentGenerations(userId, targets, [], tenantId, deletion);
   }
   await deletion.cleanup();
-  await db.deleteMessages({ user: userId });
+  await db.deleteMessages(scopeConversationDeletion({ user: userId }, tenantId));
   await deletion.acknowledge();
   return { ...result, conversationIds: targets };
 }
@@ -506,7 +507,7 @@ router.delete('/', configMiddleware, async (req, res) => {
         tenantId,
       );
       await subagentThreadTaskStore.cancelPlan(cancellationPlan);
-      dbResponse = await db.deleteConvos(req.user.id, filter, {
+      dbResponse = await db.deleteConvos(req.user.id, scopeConversationDeletion(filter, tenantId), {
         allowEmpty: true,
         beforeDelete: async (conversationIds) => {
           await checkpointDeletion.remember(conversationIds);

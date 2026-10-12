@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import type { OcrTable, SourceMappingEntry } from './result';
 import {
   buildOcrUpdateSummary,
   finalizeOcrResponse,
@@ -6,9 +6,8 @@ import {
   parseAssistantMarkdown,
   parseOcrResultTable,
   reconcileOcrResults,
+  reconstructLegacyOcrResponse,
   validateSourceMapping,
-  type OcrTable,
-  type SourceMappingEntry,
 } from './result';
 
 function table(headers: readonly string[], rows: readonly (readonly string[])[]): string {
@@ -45,7 +44,10 @@ describe('parseAssistantMarkdown', () => {
       'tail',
     ].join('\n');
     const parsed = parseAssistantMarkdown(markdown);
-    expect(parsed.sections.map(({ title }) => title)).toEqual(['ocr_result', 'source_file_mapping']);
+    expect(parsed.sections.map(({ title }) => title)).toEqual([
+      'ocr_result',
+      'source_file_mapping',
+    ]);
     expect(parsed.sections[0]?.body).toContain('## source_file_mapping');
     expect(parsed.preamble).toBe('intro\n\n');
     expect(parsed.segments).toHaveLength(3);
@@ -54,7 +56,9 @@ describe('parseAssistantMarkdown', () => {
 
 describe('table and mapping validation', () => {
   it('decodes escaped pipes and trims cells', () => {
-    const parsed = parseOcrResultTable(table([' 來源 ', '零件編號', '描述'], [[' F1 ', ' P1 ', 'a\\|b']]));
+    const parsed = parseOcrResultTable(
+      table([' 來源 ', '零件編號', '描述'], [[' F1 ', ' P1 ', 'a\\|b']]),
+    );
     expect(parsed).toEqual({
       ok: true,
       table: { headers: ['來源', '零件編號', '描述'], rows: [['F1', 'P1', 'a|b']] },
@@ -81,12 +85,30 @@ describe('table and mapping validation', () => {
 
   it('matches mapping pairs independent of row order and full filename', () => {
     const parsed = validateSourceMapping(
-      { headers: ['來源', '檔名'], rows: [['F2', 'second.pdf'], ['F1', 'first.pdf']] },
+      {
+        headers: ['來源', '檔名'],
+        rows: [
+          ['F2', 'second.pdf'],
+          ['F1', 'first.pdf'],
+        ],
+      },
       mapping,
     );
-    expect(parsed).toEqual({ ok: true, entries: [['F2', 'second.pdf'], ['F1', 'first.pdf']].map(([sourceCode, sourceFilename]) => ({ sourceCode, sourceFilename })) });
+    expect(parsed).toEqual({
+      ok: true,
+      entries: [
+        ['F2', 'second.pdf'],
+        ['F1', 'first.pdf'],
+      ].map(([sourceCode, sourceFilename]) => ({ sourceCode, sourceFilename })),
+    });
     const mismatch = validateSourceMapping(
-      { headers: ['來源', '檔名'], rows: [['F1', 'first'], ['F2', 'second.pdf']] },
+      {
+        headers: ['來源', '檔名'],
+        rows: [
+          ['F1', 'first'],
+          ['F2', 'second.pdf'],
+        ],
+      },
       mapping,
     );
     expect(mismatch.ok).toBe(false);
@@ -97,7 +119,14 @@ describe('table and mapping validation', () => {
 
   it('reports missing, extra, and duplicate pairs', () => {
     const result = validateSourceMapping(
-      { headers: ['來源', '檔名'], rows: [['F1', 'first.pdf'], ['F1', 'first.pdf'], ['F9', 'other.pdf']] },
+      {
+        headers: ['來源', '檔名'],
+        rows: [
+          ['F1', 'first.pdf'],
+          ['F1', 'first.pdf'],
+          ['F9', 'other.pdf'],
+        ],
+      },
       mapping,
     );
     expect(result.ok).toBe(false);
@@ -111,15 +140,21 @@ describe('table and mapping validation', () => {
 
 describe('reconcileOcrResults', () => {
   it('restores omitted old keyed rows in old order and keeps current rows', () => {
-    const previous = ocr(['來源', '零件編號', '數量'], [
-      ['F1', 'P1', '1'],
-      ['F1', 'P2', '2'],
-      ['F2', 'P3', '3'],
-    ]);
-    const current = ocr(['來源', '零件編號', '數量'], [
-      ['F1', 'P2', '20'],
-      ['F1', 'P4', '4'],
-    ]);
+    const previous = ocr(
+      ['來源', '零件編號', '數量'],
+      [
+        ['F1', 'P1', '1'],
+        ['F1', 'P2', '2'],
+        ['F2', 'P3', '3'],
+      ],
+    );
+    const current = ocr(
+      ['來源', '零件編號', '數量'],
+      [
+        ['F1', 'P2', '20'],
+        ['F1', 'P4', '4'],
+      ],
+    );
     const result = reconcileOcrResults(previous, current);
     expect(result.rows).toEqual([
       ['F1', 'P1', '1'],
@@ -127,51 +162,86 @@ describe('reconcileOcrResults', () => {
       ['F1', 'P4', '4'],
       ['F2', 'P3', '3'],
     ]);
-    expect(result.restoredRows).toEqual([['F1', 'P1', '1'], ['F2', 'P3', '3']]);
+    expect(result.restoredRows).toEqual([
+      ['F1', 'P1', '1'],
+      ['F2', 'P3', '3'],
+    ]);
     expect(result.newKeys).toEqual(['F1\u0000P4']);
   });
 
   it('preserves old columns and unkeyed rows while aligning new columns', () => {
-    const previous = ocr(['來源', '零件編號', '舊欄'], [['F1', 'P1', 'old'], ['', '', 'orphan']]);
+    const previous = ocr(
+      ['來源', '零件編號', '舊欄'],
+      [
+        ['F1', 'P1', 'old'],
+        ['', '', 'orphan'],
+      ],
+    );
     const current = ocr(['來源', '零件編號', '新欄'], [['F1', 'P1', 'new']]);
     const merged = reconcileOcrResults(previous, current);
     expect(merged.headers).toEqual(['來源', '零件編號', '舊欄', '新欄']);
-    expect(merged.rows).toEqual([['F1', 'P1', 'old', 'new'], ['', '', 'orphan', '']]);
+    expect(merged.rows).toEqual([
+      ['F1', 'P1', 'old', 'new'],
+      ['', '', 'orphan', ''],
+    ]);
     expect(reconcileOcrResults(ocr(['來源', '零件編號'], [['F1', 'P1']]), current).rows).toEqual([
       ['F1', 'P1', 'new'],
     ]);
-    const summary = buildOcrUpdateSummary(
-      ocr(['來源', '零件編號'], [['F1', 'P1']]),
-      current,
-    );
+    const summary = buildOcrUpdateSummary(ocr(['來源', '零件編號'], [['F1', 'P1']]), current);
     expect(summary.markdown).toContain('new (~~~~)');
   });
 
   it('maps reordered delta columns by name and preserves absent cells', () => {
-    const previous = ocr(['來源', '零件編號', '數量', '備註'], [
-      ['F1', 'P1', '1', 'keep'], ['F1', 'P2', '2', 'clear'], ['F2', 'P3', '3', 'untouched'],
-    ]);
-    const current = ocr(['數量', '零件編號', '來源'], [['20', 'P2', 'F1'], ['4', 'P4', 'F1']]);
+    const previous = ocr(
+      ['來源', '零件編號', '數量', '備註'],
+      [
+        ['F1', 'P1', '1', 'keep'],
+        ['F1', 'P2', '2', 'clear'],
+        ['F2', 'P3', '3', 'untouched'],
+      ],
+    );
+    const current = ocr(
+      ['數量', '零件編號', '來源'],
+      [
+        ['20', 'P2', 'F1'],
+        ['4', 'P4', 'F1'],
+      ],
+    );
     const result = reconcileOcrResults(previous, current);
     expect(result.headers).toEqual(previous.headers);
     expect(result.rows).toEqual([
-      ['F1', 'P1', '1', 'keep'], ['F1', 'P2', '20', 'clear'],
-      ['F1', 'P4', '4', ''], ['F2', 'P3', '3', 'untouched'],
+      ['F1', 'P1', '1', 'keep'],
+      ['F1', 'P2', '20', 'clear'],
+      ['F1', 'P4', '4', ''],
+      ['F2', 'P3', '3', 'untouched'],
     ]);
     expect(result.changedKeys).toEqual(['F1\u0000P2']);
-    expect(reconcileOcrResults(previous, ocr(['備註', '來源', '零件編號'], [['', 'F1', 'P2']])).rows[1])
-      .toEqual(['F1', 'P2', '2', '']);
+    expect(
+      reconcileOcrResults(previous, ocr(['備註', '來源', '零件編號'], [['', 'F1', 'P2']])).rows[1],
+    ).toEqual(['F1', 'P2', '2', '']);
   });
 
   it('does not duplicate unchanged unkeyed rows and keeps repeated independent rows', () => {
-    const previous = ocr(['來源', '零件編號', '數量'], [['F1', '', '1'], ['F1', '', '1']]);
+    const previous = ocr(
+      ['來源', '零件編號', '數量'],
+      [
+        ['F1', '', '1'],
+        ['F1', '', '1'],
+      ],
+    );
     expect(reconcileOcrResults(previous, previous).rows).toEqual(previous.rows);
     expect(reconcileOcrResults(previous, ocr(previous.headers, [])).rows).toEqual(previous.rows);
   });
 
   it('leaves duplicate-key current rows untouched and excludes them from diff', () => {
     const previous = ocr(['來源', '零件編號', '數量'], [['F1', 'P1', '1']]);
-    const current = ocr(['來源', '零件編號', '數量'], [['F1', 'P1', '2'], ['F1', 'P1', '3']]);
+    const current = ocr(
+      ['來源', '零件編號', '數量'],
+      [
+        ['F1', 'P1', '2'],
+        ['F1', 'P1', '3'],
+      ],
+    );
     const result = reconcileOcrResults(previous, current);
     expect(result.rows).toEqual(current.rows);
     expect(result.duplicateKeys).toEqual(['F1\u0000P1']);
@@ -179,11 +249,14 @@ describe('reconcileOcrResults', () => {
   });
 
   it('restores every previous duplicate row when the current result omits that key', () => {
-    const previous = ocr(['來源', '零件編號', '數量'], [
-      ['F1', 'P1', '1'],
-      ['F1', 'P1', '2'],
-      ['F1', 'P2', '3'],
-    ]);
+    const previous = ocr(
+      ['來源', '零件編號', '數量'],
+      [
+        ['F1', 'P1', '1'],
+        ['F1', 'P1', '2'],
+        ['F1', 'P2', '3'],
+      ],
+    );
     const current = ocr(['來源', '零件編號', '數量'], [['F1', 'P2', '4']]);
     expect(reconcileOcrResults(previous, current).rows).toEqual([
       ['F1', 'P1', '1'],
@@ -194,76 +267,62 @@ describe('reconcileOcrResults', () => {
 });
 
 describe('finalizeOcrResponse', () => {
-  it('normalizes section order, reconciles, and emits delegate change summary', () => {
-    const previous = [
-      '## ocr_result',
-      '',
-      table(['來源', '零件編號', '數量'], [['F1', 'P1', '8']]),
-    ].join('\n');
+  it('uses only the current complete AI output and never merges previous human content', () => {
     const response = [
-      'assistant note',
+      '## source_file_mapping',
+      '',
+      table(
+        ['來源', '檔名'],
+        [
+          ['F1', 'first.pdf'],
+          ['F2', 'second.pdf'],
+        ],
+      ),
       '',
       '## ocr_result',
       '',
-      table(['來源', '零件編號', '數量'], [['F1', 'P1', '10'], ['F1', '', 'manual']]),
+      table(['來源', '零件編號', '數量'], [['F1', 'P1', '10']]),
       '',
       '## manual_review',
       '',
       table(['來源', '問題欄位'], [['F1', '尺寸']]),
-      '',
-      '## source_file_mapping',
-      '',
-      table(['來源', '檔名'], [['F2', 'second.pdf'], ['F1', 'first.pdf']]),
     ].join('\n');
     const result = finalizeOcrResponse({
       assistantResponse: response,
-      previousOcrMarkdown: previous,
+      previousOcrMarkdown: `## ocr_result\n\n${table(
+        ['來源', '零件編號', '數量'],
+        [
+          ['F1', 'P1', '8'],
+          ['F1', 'old', '9'],
+        ],
+      )}`,
       canonicalMapping: mapping,
+      agentKind: 'other',
       delegateSummary: true,
-      agentKind: 'delegate_ocr',
-    });
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.finalResponse.indexOf('## source_file_mapping')).toBeLessThan(result.finalResponse.indexOf('## ocr_result'));
-      expect(result.finalResponse.indexOf('## ocr_result')).toBeLessThan(result.finalResponse.indexOf('## manual_review'));
-      expect(result.finalResponse).toContain('10 (~~8~~)');
-      expect(result.finalResponse).toContain('| F1 |  | manual |');
-      expect(result.summary).toContain('## ocr_update_summary');
-      expect(result.summary).toContain('10 (~~8~~)');
-    }
-  });
-
-  it('returns exact no-change text and no summary for regular OCR', () => {
-    const response = [
-      '## source_file_mapping',
-      '',
-      table(['來源', '檔名'], [['F2', 'second.pdf'], ['F1', 'first.pdf']]),
-      '',
-      '## ocr_result',
-      '',
-      table(['來源', '零件編號'], [['F1', 'P1']]),
-    ].join('\n');
-    const result = finalizeOcrResponse({
-      assistantResponse: response,
-      previousOcrMarkdown: response,
-      canonicalMapping: mapping,
-      agentKind: 'regular_ocr',
-      delegateSummary: false,
     });
     expect(result.ok).toBe(true);
     if (result.ok) {
       expect(result.summary).toBe('');
       expect(result.finalResponse).not.toContain('ocr_update_summary');
-      expect(result.finalResponse).not.toContain('無變動資料');
-      expect(result.finalResponse.indexOf('| F1 | first.pdf |')).toBeLessThan(
-        result.finalResponse.indexOf('| F2 | second.pdf |'),
-      );
+      expect(result.finalResponse).toContain('| P1 | 10 | F1 |');
+      expect(result.finalResponse).not.toContain('old');
+      expect(result.ocrResultMarkdown).toContain('| P1 | 10 | F1 |');
+      expect(result.reconciliation.rows).toEqual([['P1', '10', 'F1']]);
     }
   });
 
   it('separates missing and invalid OCR failures from mapping mismatch', () => {
-    const mappingSection = `## source_file_mapping\n\n${table(['來源', '檔名'], [['F1', 'first.pdf'], ['F2', 'second.pdf']])}`;
-    const missing = finalizeOcrResponse({ assistantResponse: mappingSection, canonicalMapping: mapping });
+    const mappingSection = `## source_file_mapping\n\n${table(
+      ['來源', '檔名'],
+      [
+        ['F1', 'first.pdf'],
+        ['F2', 'second.pdf'],
+      ],
+    )}`;
+    const missing = finalizeOcrResponse({
+      assistantResponse: mappingSection,
+      canonicalMapping: mapping,
+    });
     expect(missing).toEqual({ ok: false, reason: 'missing_ocr_result' });
     const invalid = finalizeOcrResponse({
       assistantResponse: `${mappingSection}\n\n## ocr_result\n\n| 來源 | 零件編號 |\n| --- | nope |`,
@@ -291,114 +350,145 @@ describe('finalizeOcrResponse', () => {
     });
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.finalResponse).toBe(response);
-      expect(result.ocrResultMarkdown).toBe(response);
+      const expected = `## ocr_result\n\n${table(['數量', '描述'], [['2', 'plate']])}`;
+      expect(result.finalResponse).toBe(expected);
+      expect(result.ocrResultMarkdown).toBe(expected);
     }
   });
-});
-
-
-describe('explicit order deletion', () => {
-  const previous = `## ocr_result\n\n${table(['來源', '零件編號', '數量'], [['文字訂單', '1', '2'], ['文字訂單', '2', '3']])}`;
-  const hash = createHash('sha256').update(previous).digest('hex');
-  const deletions = (ids: string[], fingerprint = hash) => `## ocr_deletions\n\n${table(['order_hash', '來源', '零件編號'], ids.map((id) => [fingerprint, '文字訂單', id]))}`;
-  const run = (rows: string[][], control: string, text = '刪除項目 1') => finalizeOcrResponse({
-    assistantResponse: `## ocr_result_updates\n\n${table(['來源', '零件編號', '數量'], rows)}\n\n${control}`,
-    previousOcrMarkdown: previous, canonicalMapping: [], agentKind: 'other', currentUserTurn: text,
-  });
-  it('does not restore explicitly deleted rows and strips deletion control from display', () => {
-    const result = run([['文字訂單', '2', '3']], deletions(['1']));
+  it('orders matching columns and cleans numeric values before forming the AI baseline', () => {
+    const title = 'ocr_result｜鋼材明細';
+    const headers =
+      'OCR來源 加工 數量 寬度 頁碼 品名規格 **厚度** 來源 零件編號 長度 類別 備註 其他'.split(' ');
+    const response = `## ${title}\n\n${table(headers, [
+      'OCR A / 鑽孔 / 1,234支 / 0.25 inch / 3 / 鋼板 / 6.35mm / F1 / P1 / 1.25m / 板 / 保留 / A\\|B'.split(
+        ' / ',
+      ),
+      'OCR B / 切割 / 2或3 / 600~650 / 4 / 鋼板 /  / F1 / P2 / 1,200mm / 板 /  / keep'.split(' / '),
+    ])}\n\n## manual_review\n\n${table(['數量', '問題'], [['2或3', '待確認']])}`;
+    const result = finalizeOcrResponse({
+      assistantResponse: response,
+      canonicalMapping: [],
+      agentKind: 'other',
+    });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.ocrResultMarkdown).not.toContain('| 文字訂單 | 1 |');
-    expect(result.finalResponse).not.toContain('ocr_deletions');
-  });
-  it('treats omitted delta rows as unchanged even in deletion-only responses', () => {
-    expect(run([], deletions(['1', '2']), '刪除全部').ok).toBe(true);
-    const partial = run([], deletions(['1']));
-    expect(partial.ok && partial.reconciliation.rows).toEqual([['文字訂單', '2', '3']]);
-    const unchanged = run([], '');
-    expect(unchanged.ok && unchanged.ocrResultMarkdown).toBe(previous);
-  });
-  it('rejects stale hashes, unrequested deletion and a deleted row retained in the table', () => {
-    expect(run([['文字訂單', '2', '3']], deletions(['1'], 'stale')).ok).toBe(false);
-    expect(run([['文字訂單', '2', '3']], deletions(['1']), '請報價').ok).toBe(false);
-    expect(run([['文字訂單', '1', '2'], ['文字訂單', '2', '3']], deletions(['1'])).ok).toBe(false);
-  });
-});
-
-describe('OCR delta identity validation', () => {
-  const previous = `## ocr_result\n\n${table(['來源', '零件編號', '數量', '頁碼'], [
-    ['F1', 'P1', '1', '1'], ['F1', 'P1', '2', '2'], ['F1', 'P2', '3', '3'],
-  ])}`;
-  const run = (headers: string[], rows: string[][]) => finalizeOcrResponse({
-    assistantResponse: `## ocr_result_updates\n\n${table(headers, rows)}`,
-    previousOcrMarkdown: previous, canonicalMapping: [], agentKind: 'other',
-  });
-
-  it('rejects partial duplicate groups and groups missing distinguishing columns', () => {
-    expect(run(['來源', '零件編號', '數量', '頁碼'], [['F1', 'P1', '20', '2']]))
-      .toEqual({ ok: false, reason: 'ambiguous_ocr_update' });
-    expect(run(['來源', '零件編號', '數量'], [['F1', 'P1', '1'], ['F1', 'P1', '20']]))
-      .toEqual({ ok: false, reason: 'ambiguous_ocr_update' });
+    const parsed = parseOcrResultTable(result.ocrResultMarkdown);
+    expect(parsed).toEqual({
+      ok: true,
+      table: {
+        headers:
+          '類別 零件編號 品名規格 **厚度** 寬度 長度 數量 加工 備註 其他 來源 頁碼 OCR來源'.split(
+            ' ',
+          ),
+        rows: [
+          '板 / P1 / 鋼板 / 6 / 6 / 1250 / 1234 / 鑽孔 / 保留；原寬度 0.25 inch；原厚度 6.35mm；原長度 1.25m / A|B / F1 / 3 / OCR A'.split(
+            ' / ',
+          ),
+          '板 / P2 / 鋼板 /  /  / 1200 /  / 切割 / 原數量 2或3；原寬度 600~650 / keep / F1 / 4 / OCR B'.split(
+            ' / ',
+          ),
+        ],
+      },
+    });
+    expect(result.finalResponse).toContain(`## ${title}`);
+    expect(result.finalResponse).toContain('| 2或3 | 待確認 |');
+    expect(
+      finalizeOcrResponse({ assistantResponse: result.finalResponse, canonicalMapping: [] }),
+    ).toEqual(result);
   });
 
-  it('updates a complete duplicate group at its old position and preserves other rows', () => {
-    const result = run(['頁碼', '數量', '零件編號', '來源'], [['1', '1', 'P1', 'F1'], ['2', '20', 'P1', 'F1']]);
-    expect(result.ok && result.reconciliation.rows).toEqual([
-      ['F1', 'P1', '1', '1'], ['F1', 'P1', '20', '2'], ['F1', 'P2', '3', '3'],
-    ]);
-  });
+  it.each([
+    ['長度', '寬度', '300', '200'],
+    ['寬度', '長度', '200', '300'],
+  ])(
+    'keeps dimensions matched to their headers when %s precedes %s',
+    (first, second, firstValue, secondValue) => {
+      const result = finalizeOcrResponse({
+        assistantResponse: `## ocr_result\n\n${table(
+          ['類別', '零件編號', '品名規格', '厚度', first, second, '數量'],
+          [['鐵板', 'P1', 'PL9×200×300', '9', firstValue, secondValue, '2']],
+        )}`,
+        canonicalMapping: [],
+      });
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const expected = {
+        headers: ['類別', '零件編號', '品名規格', '厚度', '寬度', '長度', '數量'],
+        rows: [['鐵板', 'P1', 'PL9×200×300', '9', '200', '300', '2']],
+      };
+      expect(parseOcrResultTable(result.ocrResultMarkdown)).toEqual({ ok: true, table: expected });
+      expect(result.reconciliation).toMatchObject(expected);
+    },
+  );
 
-  it('requires identity columns for updates and cannot create an empty initial order', () => {
-    expect(run(['數量'], [['1']])).toEqual({ ok: false, reason: 'invalid_ocr_result_table' });
-    expect(finalizeOcrResponse({
-      assistantResponse: `## ocr_result\n\n${table(['來源', '零件編號'], [])}`,
-      canonicalMapping: [], agentKind: 'other',
-    }).ok).toBe(false);
-  });
-});
-
-describe('visible OCR correction protocol', () => {
-  const previous = `## ocr_result\n\n${table(['來源', '零件編號', '數量'], [['F1', 'A-6M74', '5'], ['F1', 'P2', '3']])}`;
-  const updates = `說明\n\n## ocr_result_updates\n\n${table(['數量', '零件編號', '來源'], [['1', 'A-6M74', 'F1']])}\n\n## manual_review\n\n請確認數量。\n`;
-  const finalize = (assistantResponse: string, previousOcrMarkdown: string | undefined = previous) =>
-    finalizeOcrResponse({ assistantResponse, previousOcrMarkdown, canonicalMapping: [], agentKind: 'other' });
-
-  it('preserves the exact visible correction and appends the full order last', () => {
-    const result = finalize(updates);
+  it('preserves uncertain values in a note without inventing missing preferred columns', () => {
+    const result = finalizeOcrResponse({
+      assistantResponse: `## ocr_result\n\n${table(['描述', '數量'], [['鋼板', '4+1']])}`,
+      canonicalMapping: [],
+    });
     expect(result.ok).toBe(true);
     if (!result.ok) return;
-    expect(result.finalResponse).toBe(`${updates}\n\n${result.ocrResultMarkdown}`);
-    expect(result.reconciliation.rows).toEqual([['F1', 'A-6M74', '1'], ['F1', 'P2', '3']]);
-    expect(parseAssistantMarkdown(result.finalResponse).sections.map(({ title }) => title))
-      .toEqual(['ocr_result_updates', 'manual_review', 'ocr_result']);
-    expect(result.ocrResultMarkdown).not.toContain('updates');
+    expect(parseOcrResultTable(result.ocrResultMarkdown)).toEqual({
+      ok: true,
+      table: {
+        headers: ['數量', '描述', '備註'],
+        rows: [['', '鋼板', '原數量 4+1']],
+      },
+    });
   });
 
-  it('can append new rows after an explicitly emptied order', () => {
-    const emptyBase = `## ocr_result\n\n${table(['來源', '零件編號', '數量'], [])}`;
-    const result = finalize(updates, emptyBase);
-    expect(result.ok && result.reconciliation.rows).toEqual([['F1', 'A-6M74', '1']]);
+  it('keeps legacy reconstruction in its original column order and numeric format', () => {
+    const response = `## ocr_result\n\n${table(['來源', '零件編號', '數量', '厚度'], [['F1', 'P1', '2支', '6.35mm']])}`;
+    const result = reconstructLegacyOcrResponse({
+      assistantResponse: response,
+      canonicalMapping: [],
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) expect(result.ocrResultMarkdown).toBe(response);
+  });
+  it.each([
+    'ocr_result_updates',
+    'ocr_deletions',
+    'system_order_revision',
+    'system_order_updates',
+    'customer_data_updates',
+  ])('rejects retired %s sections before table or mapping work', (title) => {
+    const result = finalizeOcrResponse({
+      assistantResponse: `${responseWithFullResult()}\n\n## ${title}\n\nlegacy`,
+      canonicalMapping: mapping,
+    });
+    expect(result).toEqual({ ok: false, reason: 'retired_control_section' });
   });
 
-  it('requires a valid saved base and rejects ambiguous or already combined model output', () => {
-    expect(finalize(updates, '')).toEqual({ ok: false, reason: 'missing_ocr_base' });
-    expect(finalize(`${updates}\n${updates}`)).toEqual({ ok: false, reason: 'conflicting_ocr_sections' });
-    expect(finalize(`${updates}\n${previous}`)).toEqual({ ok: false, reason: 'conflicting_ocr_sections' });
-    expect(finalize('## ocr_result_updates\n\nnot a table').ok).toBe(false);
-    expect(finalize(`## ocr_result_updates\n\n${table(['來源', '零件編號'], [['F1', 'P1']])}\n\n${table(['來源', '零件編號'], [['F1', 'P2']])}`).ok).toBe(false);
-  });
-
-  it('ignores fenced update examples and accepts full legacy snapshots without keyed merging', () => {
+  it('rejects duplicate full targets and fenced controls remain ordinary content', () => {
     const full = `## ocr_result\n\n${table(['描述', '數量'], [['鋼板', '3']])}`;
-    const result = finalize(full, `## ocr_result\n\n${table(['描述', '數量'], [['鋼板', '2']])}`);
-    expect(result.ok && result.ocrResultMarkdown).toBe(full);
-    expect(hasOcrResultUpdates(updates)).toBe(true);
-    expect(hasOcrResultUpdates(`\x60\x60\x60markdown\n${updates}\n\x60\x60\x60`)).toBe(false);
-    expect(finalize(`\x60\x60\x60markdown\n${updates}\n\x60\x60\x60`).ok).toBe(false);
-    const complete = `## ocr_result\n\n${table(['來源', '零件編號', '數量'], [['F1', 'A-6M74', '1']])}`;
-    const snapshot = finalize(complete);
-    expect(snapshot.ok && snapshot.ocrResultMarkdown).toBe(complete);
+    expect(
+      finalizeOcrResponse({ assistantResponse: `${full}\n\n${full}`, canonicalMapping: [] }),
+    ).toEqual({ ok: false, reason: 'duplicate_ocr_result' });
+    const fenced = `before\n\n\x60\x60\x60markdown\n## ocr_result_updates\nold\n\x60\x60\x60\n\n${full}`;
+    expect(finalizeOcrResponse({ assistantResponse: fenced, canonicalMapping: [] }).ok).toBe(true);
+    expect(hasOcrResultUpdates('## ocr_result_updates\n\nlegacy')).toBe(true);
+    expect(
+      hasOcrResultUpdates(`\x60\x60\x60markdown\n## ocr_result_updates\nlegacy\n\x60\x60\x60`),
+    ).toBe(false);
   });
+});
+
+function responseWithFullResult(): string {
+  return `## ocr_result\n\n${table(['來源', '零件編號'], [['F1', 'P1']])}`;
+}
+
+it('preserves the exact full OCR title during finalization', () => {
+  const title = 'ocr_result｜鋼材明細';
+  const result = finalizeOcrResponse({
+    assistantResponse: `## ${title}\n\n${table(['描述', '數量'], [['plate', '2']])}`,
+    canonicalMapping: [],
+  });
+  expect(result.ok).toBe(true);
+  if (result.ok) {
+    expect(
+      parseAssistantMarkdown(result.finalResponse).sections.map((section) => section.title),
+    ).toEqual([title]);
+    expect(result.ocrResultMarkdown).toContain(`## ${title}\n`);
+  }
 });

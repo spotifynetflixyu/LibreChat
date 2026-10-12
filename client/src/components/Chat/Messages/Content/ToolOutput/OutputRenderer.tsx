@@ -29,12 +29,49 @@ function cleanError(text: string): string {
  *  agree with the label the server wrote for the same call. */
 const VALIDATION_FEEDBACK = /^Error:[\s\S]*\n Please fix your mistakes\.$/i;
 
-export function isError(text: string): boolean {
+function isPlainError(text: string): boolean {
   return (
     hasToolCallErrorPrefix(text) ||
     text.startsWith('Error processing tool') ||
     VALIDATION_FEEDBACK.test(text)
   );
+}
+
+function isFailedResultEnvelope(text: string): boolean {
+  const trimmed = text.trim();
+  if (!trimmed.startsWith('{')) {
+    return false;
+  }
+
+  try {
+    const parsed: unknown = JSON.parse(trimmed);
+    if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+      return false;
+    }
+
+    const result = parsed as {
+      status?: unknown;
+      error?: unknown;
+      errorMessage?: unknown;
+    };
+    if (result.status !== 'fail') {
+      return false;
+    }
+
+    return [result.error, result.errorMessage].some((candidate) => {
+      if (typeof candidate !== 'string') {
+        return false;
+      }
+      const errorText = candidate.trim();
+      return errorText.length > 0 && (isPlainError(errorText) || /^Error:\s*\S/i.test(errorText));
+    });
+  } catch {
+    return false;
+  }
+}
+
+export function isError(text: string): boolean {
+  return isPlainError(text) || isFailedResultEnvelope(text);
 }
 
 function isStructuredText(text: string): boolean {

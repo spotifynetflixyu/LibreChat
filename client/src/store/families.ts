@@ -18,9 +18,8 @@ import type {
   TMessage,
   TPreset,
 } from 'librechat-data-provider';
-import { readStoredMarkdownTableComments, writeStoredMarkdownTableComments } from '~/common';
-import type { TOptionSettings, ExtendedFile, MarkdownTableComment } from '~/common';
 import type { GenerationProtocolVersion } from '~/data-provider/SSE/protocol';
+import type { TOptionSettings, ExtendedFile } from '~/common';
 import {
   clearModelForNonEphemeralAgent,
   createChatSearchParams,
@@ -328,29 +327,6 @@ const pendingQuotesByConvoId = atomFamily<string[], string>({
   default: [],
 });
 
-const pendingMarkdownTableCommentsByConvoId = atomFamily<MarkdownTableComment[], string>({
-  key: 'pendingMarkdownTableCommentsByConvoId',
-  default: [],
-  effects: (conversationId) =>
-    [
-      ({ onSet, setSelf }) => {
-        const storedComments = readStoredMarkdownTableComments(conversationId);
-        if (storedComments.length > 0) {
-          setSelf(storedComments);
-        }
-
-        onSet((newValue) => {
-          if (newValue instanceof DefaultValue) {
-            writeStoredMarkdownTableComments(conversationId, []);
-            return;
-          }
-
-          writeStoredMarkdownTableComments(conversationId, newValue);
-        });
-      },
-    ] as const,
-});
-
 /**
  * Text handed to a conversation's composer by a surface the user is leaving —
  * today, a subagent thread continued into a chat of its own, where the panel
@@ -400,8 +376,6 @@ export type PendingSteer = {
   /** Manual skill picks, carried for restoration only (a skill pick
    *  configures a NEW turn's run, so it never rides the steer POST). */
   manualSkills?: string[];
-  /** Table comments carried with a queued-origin steer. */
-  markdownTableComments?: MarkdownTableComment[];
   /** Asked the run to seal generation at the next safe boundary rather than
    *  wait for a tool step. Labelling only — the server owns the behaviour and
    *  echoes what it actually armed. */
@@ -475,8 +449,6 @@ export type QueuedMessage = {
   /** Manual skill picks consumed from the composer at enqueue time; passed
    *  to `ask` as `overrideManualSkills` on drain. */
   manualSkills?: string[];
-  /** Table comments consumed with this queued submission. */
-  markdownTableComments?: MarkdownTableComment[];
   /** Front-inserted by "Interrupt & send": stays ahead of chronologically
    *  older items when leftover steers are merged back into the queue. */
   priority?: boolean;
@@ -847,7 +819,6 @@ export default {
   pendingComposerTextByConvoId,
   pendingManualSkillsByConvoId,
   pendingQuotesByConvoId,
-  pendingMarkdownTableCommentsByConvoId,
   pendingSteersByConvoId,
   queuedMessagesByConvoId,
   settledQueuedTurnReceiptsByConvoId,

@@ -1,18 +1,8 @@
 #!/usr/bin/env node
 /**
- * Local equivalent of the "Static checks" CI job
- * (.github/workflows/static-checks.yml), scoped to the files in a diff.
- *
- * The job has two layers and this mirrors both. Per-file checks (ESLint,
- * Prettier, import order) run against the changed JS/TS files under `api/`,
- * `client/` and `packages/`. Tree-wide gates (config migration tests, unused
- * i18n keys, unused npm packages) run only when the diff touches the paths
- * that gate them in CI. Circular-dependency detection and the TypeScript
- * project checks come from the Backend Unit Tests workflow rather than the
- * Static Checks job, but they gate on a commit's paths the same way.
- *
- * Like the CI job, every selected check runs even after one fails, and the
- * failures are summarized at the end.
+ * Optional local checks scoped to files in a diff. These checks do not run
+ * in CI; CI keeps web builds, type checks, browser flows and loading budgets.
+ * Every selected local check runs even after another fails.
  *
  * The per-file checks see the exact staged content of a commit, because the
  * pre-commit hook runs them through lint-staged. The tree-wide gates read the
@@ -49,34 +39,26 @@ import type { Dirent } from 'node:fs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
-/**
- * Path filters, mirroring the `dorny/paths-filter` block in
- * .github/workflows/static-checks.yml. A group is active when some changed
- * file matches one of its patterns and no exclusion (`!`) pattern.
- * Keep the two in sync — the workflow additionally defines a `runner` group
- * for its own smoke test of this script, which has no local counterpart.
- */
+/** A local check is active when a changed file matches its path filters. */
 const FILTERS = {
   eslint: [
     'api/**',
     'client/**',
     'packages/**',
     'eslint.config.mjs',
-    '.github/workflows/static-checks.yml',
     '!**.md',
   ],
-  eslint_config: ['eslint.config.mjs', '.github/workflows/static-checks.yml'],
-  config: ['api/**', 'config/**', 'packages/**', '.github/workflows/static-checks.yml', '!**.md'],
+  eslint_config: ['eslint.config.mjs'],
+  config: ['api/**', 'config/**', 'packages/**', '!**.md'],
   i18n: [
     'api/**',
     'client/src/**',
     'packages/client/**',
     'packages/data-provider/src/**',
     'packages/data-schemas/src/**',
-    '.github/workflows/static-checks.yml',
     '!**.md',
   ],
-  // Mirrors the Backend Unit Tests workflow, which owns both of these jobs.
+  // Optional local graph checks.
   circular_deps: [
     'api/**',
     'packages/**',
@@ -109,14 +91,13 @@ const FILTERS = {
     'packages/data-schemas/package.json',
     'package.json',
     'package-lock.json',
-    '.github/workflows/static-checks.yml',
     '!**.md',
   ],
 } as const;
 
 type FilterName = keyof typeof FILTERS;
 
-/** The same set the CI job lints, formats and import-sorts. */
+/** Source files eligible for local lint, formatting and import checks. */
 const SOURCE_FILE_PATTERN = /^(api|client|packages)\/.*\.(js|jsx|ts|tsx)$/;
 
 /** Files ESLint is pointed at when the flat config itself changes. */
@@ -353,7 +334,7 @@ function resolveBin(name: string, binName = name): Executable | null {
 /**
  * A checker that cannot run is a failure, not a skip: reporting "all affected
  * static checks passed" without having linted anything is worse than saying
- * nothing. Only depcheck, which CI installs globally and this treats as
+ * nothing. Only depcheck, which can be installed globally and this treats as
  * optional, is allowed to skip.
  */
 function missingBin(name: string): CheckOutcome {
@@ -406,12 +387,12 @@ interface Target {
   label: string;
   /** Every changed path, deletions included — this is what activates a group. */
   files: string[];
-  /** Only paths the per-file checks can open, matching the CI job's file list. */
+  /** Only paths the per-file checks can open, eligible for the local checks. */
   existing: string[];
 }
 
 /**
- * Two lists, because CI derives two. `dorny/paths-filter` matches added,
+ * Two lists: path filters match added,
  * modified AND deleted paths when it decides which checks are affected, while
  * the ESLint/Prettier/import-sort steps narrow to `--diff-filter=ACMRTUXB`
  * so they never hand a deleted path to a tool. Activating gates off the
@@ -610,7 +591,7 @@ function checkImportOrder(context: CheckContext): CheckOutcome {
  * The changed-file lint never loads a changed root config: a config-only diff
  * matches no lintable files, so even a malformed eslint.config.mjs would pass.
  * When the config changes, gate on it loading and applying to representative
- * sources. CI additionally runs a full-tree regression sweep, which is too
+ * sources. A full-tree regression sweep would be too
  * slow to be worth repeating locally.
  */
 function validateEslintConfig(): CheckOutcome {
@@ -637,8 +618,8 @@ async function validatePackageJson(): Promise<CheckOutcome> {
 // --------------------------------------------------------------- config migration tests
 
 /**
- * The config suite reaches these workspaces through their `dist` exports, so
- * CI builds them before running it. Building here too — rather than skipping
+ * The config suite uses workspace `dist` exports. Building dependencies here
+ * rather than skipping
  * when `dist` is absent — keeps a fresh checkout from reporting a pass for a
  * gate that never ran, and keeps a stale `dist` from being tested instead of
  * the working tree. Each is a sub-second tsdown build.
@@ -690,8 +671,8 @@ const TOKEN_PATTERN = /[A-Za-z0-9_]+/g;
 const CATEGORY_LOOKUP = /category\.(label|description).*startsWith.*['"]com_/;
 
 /**
- * CI greps every key across the source dirs one key at a time. This collects
- * the identifiers once and tests keys against them, which is the same
+ * Collects source tokens to check localization references without repeated scans.
+ * It tests keys against collected identifiers, which is the same
  * substring question asked in a single pass: any occurrence of a key is inside
  * a maximal `[A-Za-z0-9_]+` run, because keys are made only of those
  * characters.
@@ -902,7 +883,7 @@ async function readManifest(file: string): Promise<Manifest | null> {
   return JSON.parse(await readFile(path, 'utf8')) as Manifest;
 }
 
-/** Words appearing in a manifest's npm scripts, as CI extracts them. */
+/** Words appearing in a manifest's npm scripts. */
 function scriptWords(manifest: Manifest | null): Set<string> {
   const words = new Set<string>();
   for (const script of Object.values(manifest?.scripts ?? {})) {
@@ -933,7 +914,7 @@ async function workspaceDependencies(manifest: Manifest | null): Promise<Set<str
   return inherited;
 }
 
-/** Falls back to a global install, which is how CI provides depcheck. */
+/** Falls back to a global depcheck install. */
 function resolveDepcheck(): Executable {
   return (
     resolveBin('depcheck') ?? {
@@ -1178,7 +1159,7 @@ async function main(): Promise<void> {
     }
 
     const started = Date.now();
-    // The CI job gives every step continue-on-error; a check that throws
+    // A check that throws
     // (malformed translation JSON, say) must not cancel the ones after it.
     let outcome: CheckOutcome;
     try {

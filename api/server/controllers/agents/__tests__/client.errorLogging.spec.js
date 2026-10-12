@@ -26,7 +26,7 @@ describe('AgentClient completion error logging', () => {
 
     const client = Object.create(AgentClient.prototype);
     client.options = {
-      req: { config: {}, user: { id: 'user-1' } },
+      req: { config: {}, user: { id: 'user-1' }, body: {} },
       agent,
     };
     client.conversationId = 'conversation-1';
@@ -42,20 +42,12 @@ describe('AgentClient completion error logging', () => {
     await client.chatCompletion({ payload: [] });
 
     expect(logger.error).toHaveBeenCalledWith(
-      '[api/server/controllers/agents/client.js #sendCompletion] Unhandled error type',
-      expect.objectContaining({
-        name: 'Error',
-        message: 'terminated',
-        status: 502,
-        stack: expect.stringContaining('terminated'),
-        cause: expect.objectContaining({
-          name: 'Error',
-          message: 'provider stream stopped',
-          code: 'EPIPE',
-          stack: expect.stringContaining('provider stream stopped'),
-        }),
-      }),
+      '[api/server/controllers/agents/client.js #sendCompletion] Unhandled error',
+      { type: 'Error', status: 502 },
     );
+    expect(logger.error.mock.calls[0][1]).not.toHaveProperty('message');
+    expect(logger.error.mock.calls[0][1]).not.toHaveProperty('stack');
+    expect(logger.error.mock.calls[0][1]).not.toHaveProperty('cause');
     expect(logger.error.mock.calls[0][1]).not.toHaveProperty('request');
     expect(logger.error.mock.calls[0][1]).not.toHaveProperty('user');
     expect(client.contentParts).toEqual([
@@ -79,7 +71,7 @@ describe('AgentClient completion error logging', () => {
 
     const client = Object.create(AgentClient.prototype);
     client.options = {
-      req: { config: {}, user: { id: 'user-1' } },
+      req: { config: {}, user: { id: 'user-1' }, body: {} },
       agent,
     };
     client.conversationId = 'conversation-1';
@@ -95,10 +87,10 @@ describe('AgentClient completion error logging', () => {
     await client.chatCompletion({ payload: [] });
 
     const loggedError = logger.error.mock.calls[0][1];
-    expect(loggedError.message.length).toBeLessThanOrEqual(1_500);
-    expect(loggedError.stack.length).toBeLessThanOrEqual(3_000);
-    expect(loggedError.cause).toEqual({ message: '[Circular error cause]' });
-    expect(JSON.stringify(loggedError).length).toBeLessThanOrEqual(24_000);
+    expect(loggedError).toEqual({ type: 'Error' });
+    expect(loggedError).not.toHaveProperty('message');
+    expect(loggedError).not.toHaveProperty('stack');
+    expect(loggedError).not.toHaveProperty('cause');
     expect(loggedError).not.toHaveProperty('request');
     expect(loggedError).not.toHaveProperty('user');
   });

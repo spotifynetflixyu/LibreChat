@@ -23,7 +23,7 @@ type SteelOcrResponseAuditRecord = Pick<
 >;
 type SteelOcrResponseAuditModel = {
   create(record: SteelOcrResponseAuditRecord): Promise<ISteelOcrResponseAudit>;
-  findOne(filter: { idempotencyKey: string }): {
+  findOne(filter: { idempotencyKey: string; tenantId?: string | { $exists: false } }): {
     exec(): Promise<ISteelOcrResponseAudit | null>;
   };
 };
@@ -195,7 +195,14 @@ export function createSteelOcrResponseAuditService(
 
         let existing;
         try {
-          existing = await model.findOne({ idempotencyKey: record.idempotencyKey }).exec();
+          existing = await model
+            .findOne({
+              idempotencyKey: record.idempotencyKey,
+              ...(record.tenantId
+                ? { tenantId: record.tenantId }
+                : { tenantId: { $exists: false } }),
+            })
+            .exec();
         } catch (lookupError) {
           throw new SteelOcrResponseAuditPersistenceError(
             'OCR response audit could not be read after an idempotent insert race',

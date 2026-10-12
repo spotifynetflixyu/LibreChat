@@ -26,12 +26,12 @@ import type { ToolCall } from '@librechat/agents/langchain/messages/tool';
 import type { ZodTypeAny } from 'zod';
 import type { OAuthCompactionOptions } from '~/providers/openai/compaction/runtime';
 import type { OpenAIOAuthFetch, OpenAIOAuthTokenLoader } from './credentials';
+import { createSteelMarkdownOutputFilter, stripCustomerQuoteSections } from '../markdown/outputFilter';
 import { clearOpenAIOAuthCredentialInvalid, markOpenAIOAuthCredentialInvalid } from './auth-state';
 import {
   createSystemOrderNormalizer,
   normalizeSystemOrderMarkdown,
 } from '../markdown/order';
-import { buildCustomerQuoteFromMarkdown, createCustomerQuoteParser } from '../markdown/quote';
 import { buildSteelCodeInterpreterAuditEvent, steelNativeStreamEventName } from './events';
 import { finalizeOcrMarkdown, OCR_COMPLETION_DIRECTIVE_MARKER } from '../markdown/ocr';
 import { createOAuthCompactionFetch } from '~/providers/openai/compaction/gateway';
@@ -697,37 +697,6 @@ function isCompletedTextResult(
   return finishReason?.unified === 'stop' || finishReason?.raw === 'stop';
 }
 
-function renderCustomerQuoteInsertion(
-  beforeQuote: string,
-  quoteMarkdown: string,
-  afterQuote: string,
-): string {
-  let beforeSeparator = '\n\n';
-  if (/(?:\r?\n){2}$/.test(beforeQuote)) {
-    beforeSeparator = '';
-  } else if (/\r?\n$/.test(beforeQuote)) {
-    beforeSeparator = '\n';
-  }
-
-  if (afterQuote === '') {
-    return `${beforeSeparator}${quoteMarkdown}`;
-  }
-
-  const normalizedAfter = afterQuote.replace(/^(?:\r?\n)+/, '');
-  return `${beforeSeparator}${quoteMarkdown}\n\n${normalizedAfter}`;
-}
-
-function composeCustomerQuote(text: string): string | undefined {
-  const quote = buildCustomerQuoteFromMarkdown(text);
-  if (!quote) {
-    return undefined;
-  }
-
-  const beforeQuote = text.slice(0, quote.sourceEnd);
-  const afterQuote = text.slice(quote.sourceEnd);
-  return `${beforeQuote}${renderCustomerQuoteInsertion(beforeQuote, quote.markdown, afterQuote)}`;
-}
-
 function hasClientToolCall(content: LanguageModelV3GenerateResult['content']): boolean {
   return content.some((part) => part.type === 'tool-call' && part.providerExecuted !== true);
 }
@@ -1023,16 +992,15 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
       );
     }
 
+    const filteredText = stripCustomerQuoteSections(generatedText);
     const normalizedText =
       inspectCodeInterpreter &&
       !hasClientToolCall(result.content) &&
       isCompletedTextResult(result.finishReason)
-        ? normalizeSystemOrderMarkdown(generatedText)
-        : undefined;
-    const finalizedText = normalizedText
-      ? (composeCustomerQuote(normalizedText) ?? normalizedText)
-      : undefined;
-    if (!finalizedText || finalizedText === generatedText) {
+        ? normalizeSystemOrderMarkdown(filteredText)
+        : filteredText;
+    const finalizedText = normalizedText;
+    if (finalizedText === generatedText) {
       return toMessageChunk(result, this.options.model);
     }
 
@@ -1160,14 +1128,12 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
       return;
     }
 
-    const quoteParser = inspectCodeInterpreter ? createCustomerQuoteParser() : undefined;
+    const outputFilter = createSteelMarkdownOutputFilter();
     const orderNormalizer = inspectCodeInterpreter ? createSystemOrderNormalizer() : undefined;
-    let generatedText = '';
-    let emittedTextLength = 0;
     let response: LanguageModelV3GenerateResult['response'];
     let usage: LanguageModelV3Usage | undefined;
     let finishReason: LanguageModelV3GenerateResult['finishReason'] | undefined;
-    let bypassQuote = false;
+    let bypassNormalization = false;
     let completed = false;
     let streamError: Error | undefined;
 
@@ -1186,29 +1152,15 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
         }
 
         if (value.type === 'text-delta') {
-          if (!quoteParser || !orderNormalizer) {
-            yield toStreamTextChunk(value.delta, this.options.model);
+          if (bypassNormalization) {
+            const filteredDelta = outputFilter.append(value.delta);
+            if (filteredDelta) yield toStreamTextChunk(filteredDelta, this.options.model);
             continue;
           }
 
-          if (bypassQuote) {
-            generatedText += value.delta;
-            yield toStreamTextChunk(value.delta, this.options.model);
-            emittedTextLength = generatedText.length;
-            continue;
-          }
-
-          const normalizedDelta = orderNormalizer.append(value.delta);
-          generatedText += normalizedDelta;
-          quoteParser.append(normalizedDelta);
-          const safeEnd = quoteParser.getSafeTextEnd();
-          if (safeEnd > emittedTextLength) {
-            yield toStreamTextChunk(
-              generatedText.slice(emittedTextLength, safeEnd),
-              this.options.model,
-            );
-            emittedTextLength = safeEnd;
-          }
+          const normalizedDelta = orderNormalizer?.append(value.delta) ?? value.delta;
+          const filteredDelta = outputFilter.append(normalizedDelta);
+          if (filteredDelta) yield toStreamTextChunk(filteredDelta, this.options.model);
           continue;
         }
 
@@ -1218,16 +1170,13 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
           value.type === 'error'
         ) {
           const pendingText = orderNormalizer?.finish({ raw: true }) ?? '';
-          generatedText += pendingText;
-          if (generatedText.length > emittedTextLength) {
-            yield toStreamTextChunk(generatedText.slice(emittedTextLength), this.options.model);
-            emittedTextLength = generatedText.length;
-          }
+          const filteredText = outputFilter.append(pendingText) + outputFilter.finish();
+          if (filteredText) yield toStreamTextChunk(filteredText, this.options.model);
 
           if (value.type === 'error') {
             throw value.error instanceof Error ? value.error : new Error(String(value.error));
           }
-          bypassQuote = true;
+          bypassNormalization = true;
           if (value.type === 'tool-call' && value.providerExecuted !== true) {
             yield toStreamToolCallChunk(value, this.options.model);
           }
@@ -1251,41 +1200,19 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
     }
 
     if (streamError) {
-      generatedText += orderNormalizer?.finish({ raw: true }) ?? '';
-      if (generatedText.length > emittedTextLength) {
-        yield toStreamTextChunk(generatedText.slice(emittedTextLength), this.options.model);
-      }
+      const pendingText = orderNormalizer?.finish({ raw: true }) ?? '';
+      const filteredText = outputFilter.append(pendingText) + outputFilter.finish();
+      if (filteredText) yield toStreamTextChunk(filteredText, this.options.model);
       throw streamError;
     }
 
-    if (orderNormalizer && !bypassQuote) {
+    if (orderNormalizer && !bypassNormalization) {
       const pendingText = orderNormalizer.finish({ raw: !isCompletedTextResult(finishReason) });
-      generatedText += pendingText;
-      quoteParser?.append(pendingText);
+      const filteredPending = outputFilter.append(pendingText);
+      if (filteredPending) yield toStreamTextChunk(filteredPending, this.options.model);
     }
-
-    const quote =
-      quoteParser && !bypassQuote && isCompletedTextResult(finishReason)
-        ? quoteParser.finish()
-        : undefined;
-    if (quote && emittedTextLength <= quote.sourceEnd) {
-      if (quote.sourceEnd > emittedTextLength) {
-        yield toStreamTextChunk(
-          generatedText.slice(emittedTextLength, quote.sourceEnd),
-          this.options.model,
-        );
-      }
-
-      const beforeQuote = generatedText.slice(0, quote.sourceEnd);
-      const afterQuote = generatedText.slice(quote.sourceEnd);
-      yield toStreamTextChunk(
-        renderCustomerQuoteInsertion(beforeQuote, quote.markdown, afterQuote),
-        this.options.model,
-      );
-      emittedTextLength = generatedText.length;
-    } else if (generatedText.length > emittedTextLength) {
-      yield toStreamTextChunk(generatedText.slice(emittedTextLength), this.options.model);
-    }
+    const filteredTail = outputFilter.finish();
+    if (filteredTail) yield toStreamTextChunk(filteredTail, this.options.model);
     yield toStreamFinalChunk({ finishReason, model: this.options.model, response, usage });
   }
 

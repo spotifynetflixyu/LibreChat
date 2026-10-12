@@ -1,3 +1,5 @@
+import type { SteelCatalogQuery } from './steel';
+
 export enum QueryKeys {
   messages = 'messages',
   sharedMessages = 'sharedMessages',
@@ -96,6 +98,9 @@ export enum QueryKeys {
   /* Steel */
   steelModels = 'steelModels',
   steelQuotationStatus = 'steelQuotationStatus',
+  steelReview = 'steelReview',
+  steelMarkdownVersions = 'steelMarkdownVersions',
+  steelCustomer = 'steelCustomer',
   openAIOAuthUsage = 'openAIOAuthUsage',
   openAIOAuthTokenStatus = 'openAIOAuthTokenStatus',
   openAIOAuthCodexLoginStatus = 'openAIOAuthCodexLoginStatus',
@@ -116,6 +121,22 @@ export const DynamicQueryKeys = {
   agentFiles: (agentId: string) => ['agentFiles', agentId] as const,
   steelQuotationStatus: (conversationId: string) =>
     [QueryKeys.steelQuotationStatus, conversationId] as const,
+  steelCustomer: (conversationId: string, messageId: string, title: string, outputId: string) =>
+    [QueryKeys.steelCustomer, conversationId, messageId, title, outputId] as const,
+  steelMarkdownVersions: (conversationId: string) =>
+    [QueryKeys.steelMarkdownVersions, conversationId] as const,
+  steelReview: (conversationId: string, kind: string, messageId: string, title: string) =>
+    [QueryKeys.steelReview, conversationId, kind, messageId, title] as const,
+  steelReviewCatalog: (conversationId: string, input: SteelCatalogQuery) =>
+    [QueryKeys.steelReview, 'catalog', conversationId, input] as const,
+  steelReviewReceipt: (conversationId: string, kind: string, messageId: string, outputId: string, operationId: string, digest: string, title: string) =>
+    [QueryKeys.steelReview, 'receipt', conversationId, kind, messageId, outputId, operationId, digest, title] as const,
+  steelReviewSources: (conversationId: string, kind: string, messageId: string, title: string) =>
+    [QueryKeys.steelReview, 'sources', conversationId, kind, messageId, title] as const,
+  steelReviewSource: (conversationId: string, kind: string, messageId: string, fileId: string) =>
+    [QueryKeys.steelReview, 'source', conversationId, kind, messageId, fileId] as const,
+  steelReviewSourcePageCount: (conversationId: string, kind: string, messageId: string, fileId: string) =>
+    [QueryKeys.steelReview, 'source-page-count', conversationId, kind, messageId, fileId] as const,
   codeEnvironmentStatus: (id: string) => [QueryKeys.codeEnvironments, id, 'status'] as const,
 } as const;
 
@@ -136,6 +157,9 @@ export enum MutationKeys {
   startOpenAIOAuthCodexLogin = 'startOpenAIOAuthCodexLogin',
   cancelOpenAIOAuthCodexLogin = 'cancelOpenAIOAuthCodexLogin',
   cancelSteelQuotation = 'cancelSteelQuotation',
+  prepareSteelReview = 'prepareSteelReview',
+  commitSteelReview = 'commitSteelReview',
+  commitSteelCustomer = 'commitSteelCustomer',
   logoutOpenAIOAuthCodex = 'logoutOpenAIOAuthCodex',
   deleteAgentApiKey = 'deleteAgentApiKey',
   fileUpload = 'fileUpload',

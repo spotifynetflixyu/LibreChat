@@ -4,6 +4,7 @@ import {
   supportsContext1m,
   supportsOutput128k,
   gptPointReleaseFamily,
+  OPENAI_OAUTH_GPT_61_SOL_CONTEXT_TOKENS,
 } from 'librechat-data-provider';
 import type { EndpointTokenConfig, TokenConfig } from '~/types';
 
@@ -83,6 +84,7 @@ export const OPENAI_OAUTH_CONTEXT_TOKENS = 258000;
 
 const openAIOAuthModels = {
   system_default: OPENAI_OAUTH_CONTEXT_TOKENS,
+  'gpt-6.1-sol': OPENAI_OAUTH_GPT_61_SOL_CONTEXT_TOKENS,
   'gpt-5.5': OPENAI_OAUTH_CONTEXT_TOKENS,
   'gpt-5.5-pro': OPENAI_OAUTH_CONTEXT_TOKENS,
 };

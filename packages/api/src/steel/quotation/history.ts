@@ -1,10 +1,7 @@
 import mongoose from 'mongoose';
-
 import type { SteelQuotationScope } from '@librechat/data-schemas';
 import type { SteelNativeHistory, SteelNativePreflightToolCall } from '../native/events';
 import type { SteelToolJsonObject, SteelToolResult } from '../tools/results';
-
-import { createSteelQuotationStateService } from './state';
 import {
   createSteelNativeHistory,
   appendSteelNativeActivityEvent,
@@ -16,6 +13,8 @@ import {
   getQuotationWorkUnits,
   parseQuotationRepairOperation,
 } from './progress';
+import { createSteelQuotationStateService } from './state';
+import { quotationOcrSource } from './input';
 
 export interface SavedQuotationLookup {
   lookupCallId: string;
@@ -104,6 +103,7 @@ export async function readQuotationHistory(input: {
     runId: run.runId,
     index: run.index,
     totalChunks: progress.totalChunks,
+    ...(run.ocrSelection ? { ocrSource: quotationOcrSource(run.ocrSelection) } : {}),
   };
   let completedCount = 0;
   for (const unit of workUnits) {

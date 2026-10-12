@@ -1,5 +1,24 @@
 import { escapeMarkdownTableCell } from './row-codec';
 
+export const systemOrderColumns = [
+  '型號',
+  '品名規格',
+  '材質編號',
+  '單價',
+  '數量',
+  '總數',
+  '厚度',
+  '寬度',
+  '長度',
+  '肚',
+  '單位',
+  '類別',
+  '單重',
+  '計價基準',
+  '公式編號',
+  '備註',
+] as const;
+
 export interface SystemOrderNormalizer {
   append(delta: string): string;
   finish(options?: { raw?: boolean }): string;
@@ -96,8 +115,7 @@ function isSystemOrderTitle(title: string): boolean {
   const separator = title.indexOf('｜');
   if (separator < 0) return title === 'system_order';
   return (
-    title.slice(0, separator).trim() === 'system_order' &&
-    title.slice(separator + 1).trim() !== ''
+    title.slice(0, separator).trim() === 'system_order' && title.slice(separator + 1).trim() !== ''
   );
 }
 
@@ -143,10 +161,15 @@ export function cleanSystemOrderNumber(value: string): string {
 }
 
 function dimensionFactor(value: string): { numerator: bigint; denominator: bigint } {
-  const unit = value.toLowerCase().match(/(?:mm|m\/m|毫米|公厘|cm|公分|厘米|inch|in\b|英吋|英寸|吋|"|m\b|公尺|米)/u)?.[0];
-  if (unit && /^(?:cm|公分|厘米)$/u.test(unit)) return { numerator: BigInt(10), denominator: BigInt(1) };
-  if (unit && /^(?:m|公尺|米)$/u.test(unit)) return { numerator: BigInt(1_000), denominator: BigInt(1) };
-  if (unit && /^(?:inch|in|英吋|英寸|吋|")$/u.test(unit)) return { numerator: BigInt(254), denominator: BigInt(10) };
+  const unit = value
+    .toLowerCase()
+    .match(/(?:mm|m\/m|毫米|公厘|cm|公分|厘米|inch|in\b|英吋|英寸|吋|"|m\b|公尺|米)/u)?.[0];
+  if (unit && /^(?:cm|公分|厘米)$/u.test(unit))
+    return { numerator: BigInt(10), denominator: BigInt(1) };
+  if (unit && /^(?:m|公尺|米)$/u.test(unit))
+    return { numerator: BigInt(1_000), denominator: BigInt(1) };
+  if (unit && /^(?:inch|in|英吋|英寸|吋|")$/u.test(unit))
+    return { numerator: BigInt(254), denominator: BigInt(10) };
   return { numerator: BigInt(1), denominator: BigInt(1) };
 }
 
@@ -154,11 +177,11 @@ export function readSystemOrderDimension(value: string): number | undefined {
   const decimal = cleanDecimal(value);
   if (!decimal) return undefined;
   const factor = dimensionFactor(value);
-  const result = Number(decimal) * Number(factor.numerator) / Number(factor.denominator);
+  const result = (Number(decimal) * Number(factor.numerator)) / Number(factor.denominator);
   return Number.isFinite(result) ? result : undefined;
 }
 
-function cleanDimension(value: string): string {
+export function cleanSystemOrderDimension(value: string): string {
   const decimal = cleanDecimal(value);
   if (!decimal) return '';
   const { numerator, denominator } = dimensionFactor(value);
@@ -169,7 +192,7 @@ function cleanDimension(value: string): string {
 }
 
 function cleanCell(header: string, value: string): string | undefined {
-  if (DIMENSION_HEADERS.has(header)) return cleanDimension(value);
+  if (DIMENSION_HEADERS.has(header)) return cleanSystemOrderDimension(value);
   if (NUMERIC_HEADERS.has(header)) return cleanDecimal(value);
   if (header !== '計價基準') return undefined;
   const text = value.trim();
@@ -190,7 +213,9 @@ function replaceCell(line: string, cell: RawCell, value: string): string {
 }
 
 function normalizeRow(line: string, row: RawRow, headers: string[]): string {
-  const replacements = row.cells.map((_, index) => cleanCell(headers[index] ?? '', row.values[index] ?? ''));
+  const replacements = row.cells.map((_, index) =>
+    cleanCell(headers[index] ?? '', row.values[index] ?? ''),
+  );
   const noteIndex = headers.indexOf('備註');
   if (noteIndex >= 0) {
     const originals = headers.flatMap((header, index) => {
@@ -198,7 +223,8 @@ function normalizeRow(line: string, row: RawRow, headers: string[]): string {
       const original = readSystemOrderDimension(row.values[index] ?? '');
       const rounded = replacements[index];
       return original !== undefined && rounded && original !== Number(rounded)
-        ? [`原${header} ${original} mm`] : [];
+        ? [`原${header} ${original} mm`]
+        : [];
     });
     if (originals.length > 0) {
       replacements[noteIndex] = escapeMarkdownTableCell(
@@ -218,10 +244,24 @@ function normalizeRow(line: string, row: RawRow, headers: string[]): string {
 }
 
 function tableHeaders(header: RawRow, separator: RawRow): string[] | undefined {
-  return header.values.length === separator.values.length &&
-    separator.values.every(isSeparatorCell)
+  return header.values.length === separator.values.length && separator.values.every(isSeparatorCell)
     ? header.values
     : undefined;
+}
+
+function columnIndices(headers: readonly string[]): number[] | undefined {
+  if (headers.length !== systemOrderColumns.length) return undefined;
+  const indices = systemOrderColumns.map((header) => headers.indexOf(header));
+  return indices.every((index) => index >= 0) ? indices : undefined;
+}
+
+function reorderRow(line: string, row: RawRow, indices: readonly number[] | undefined): string {
+  if (!indices || row.cells.length !== indices.length) return line;
+  return (
+    line.slice(0, row.cells[0].start) +
+    indices.map((index) => line.slice(row.cells[index].start, row.cells[index].end)).join('|') +
+    line.slice(row.cells[row.cells.length - 1].end)
+  );
 }
 
 export function createSystemOrderNormalizer(): SystemOrderNormalizer {
@@ -232,6 +272,8 @@ export function createSystemOrderNormalizer(): SystemOrderNormalizer {
   let tableChecked = false;
   let candidateHeaders: string[] | undefined;
   let headers: string[] | undefined;
+  let indices: number[] | undefined;
+  let pendingHeader: { raw: string; ordered: string } | undefined;
 
   const processLine = (line: string): string => {
     if (fence) {
@@ -243,6 +285,7 @@ export function createSystemOrderNormalizer(): SystemOrderNormalizer {
       fence = opening;
       candidateHeaders = undefined;
       headers = undefined;
+      indices = undefined;
       return line;
     }
     const title = getH2Title(line);
@@ -251,19 +294,24 @@ export function createSystemOrderNormalizer(): SystemOrderNormalizer {
       tableChecked = false;
       candidateHeaders = undefined;
       headers = undefined;
+      indices = undefined;
       return line;
     }
     const row = parseRawRow(line);
     if (headers) {
       if (!row) {
         headers = undefined;
+        indices = undefined;
         return line;
       }
-      return normalizeRow(line, row, headers);
+      const normalized = normalizeRow(line, row, headers);
+      const normalizedRow = indices ? parseRawRow(normalized) : undefined;
+      return normalizedRow ? reorderRow(normalized, normalizedRow, indices) : normalized;
     }
     if (!sectionActive || tableChecked) return line;
     if (!row) {
       candidateHeaders = undefined;
+      indices = undefined;
       return line;
     }
     if (candidateHeaders) {
@@ -272,17 +320,31 @@ export function createSystemOrderNormalizer(): SystemOrderNormalizer {
         headers = parsedHeaders;
         tableChecked = true;
         candidateHeaders = undefined;
-        return line;
+        return reorderRow(line, row, indices);
       }
     }
-    candidateHeaders = row.values;
-    return line;
+    candidateHeaders = row.values.map((header) => header.replace(/^(\*\*|__)(.+)\1$/u, '$2'));
+    indices = columnIndices(candidateHeaders);
+    return reorderRow(line, row, indices);
+  };
+
+  const processTextLine = (content: string, ending: string): string => {
+    const previousHeader = pendingHeader;
+    pendingHeader = undefined;
+    const output = processLine(content);
+    const previousLine = headers ? previousHeader?.ordered : previousHeader?.raw;
+    const prefix = previousLine ?? '';
+    if (candidateHeaders && indices && !headers) {
+      pendingHeader = { raw: content + ending, ordered: output + ending };
+      return prefix;
+    }
+    return prefix + output + ending;
   };
 
   const processCompleteLine = (line: string): string => {
     const hasCarriageReturn = line.endsWith('\r');
     const content = hasCarriageReturn ? line.slice(0, -1) : line;
-    return `${processLine(content)}${hasCarriageReturn ? '\r\n' : '\n'}`;
+    return processTextLine(content, hasCarriageReturn ? '\r\n' : '\n');
   };
 
   return {
@@ -302,16 +364,24 @@ export function createSystemOrderNormalizer(): SystemOrderNormalizer {
       if (finished) return '';
       finished = true;
       if (options?.raw) {
-        const raw = pending;
+        const raw = (pendingHeader?.raw ?? '') + pending;
+        pendingHeader = undefined;
         pending = '';
         return raw;
       }
       const final = pending;
       pending = '';
-      if (final === '') return '';
+      if (final === '') {
+        const raw = pendingHeader?.raw ?? '';
+        pendingHeader = undefined;
+        return raw;
+      }
       const hasCarriageReturn = final.endsWith('\r');
       const content = hasCarriageReturn ? final.slice(0, -1) : final;
-      return `${processLine(content)}${hasCarriageReturn ? '\r' : ''}`;
+      const output = processTextLine(content, hasCarriageReturn ? '\r' : '');
+      const raw = pendingHeader?.raw ?? '';
+      pendingHeader = undefined;
+      return output + raw;
     },
   };
 }

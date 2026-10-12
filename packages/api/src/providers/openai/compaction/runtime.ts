@@ -105,6 +105,9 @@ export function validateOAuthCompactionConfig(config: OAuthCompactionConfig): vo
     config.triggerRatio > 1 ||
     !Number.isSafeInteger(config.maxContextTokens) ||
     config.maxContextTokens <= 0 ||
+    Object.values(config.maxContextTokensByModel ?? {}).some(
+      (limit) => !Number.isSafeInteger(limit) || limit <= 0,
+    ) ||
     !Number.isSafeInteger(config.outputReserveTokens) ||
     config.outputReserveTokens < 0 ||
     !Number.isSafeInteger(config.timeoutMs) ||
@@ -545,7 +548,9 @@ export function createOAuthCompactionRuntime(
       }
       return passthrough(requestInput, requestInit);
     }
-    const threshold = config.maxContextTokens * config.triggerRatio;
+    const maxContextTokens =
+      config.maxContextTokensByModel?.[parsed.model] ?? config.maxContextTokens;
+    const threshold = maxContextTokens * config.triggerRatio;
     const eventId = statusId();
     const leaseOwner = ownerId(scope);
     const storeScope: StoredOAuthCompactionScope = {
@@ -657,7 +662,7 @@ export function createOAuthCompactionRuntime(
         }
         const maxTokens = Math.max(
           0,
-          config.maxContextTokens - config.outputReserveTokens - requestEnvelopeTokens,
+          maxContextTokens - config.outputReserveTokens - requestEnvelopeTokens,
         );
         const costs = currentInput.map((item) => estimateTokens(item, countText).knownTokens);
         let prefix = eligiblePrefix(currentInput, costs, maxTokens);
@@ -788,7 +793,7 @@ export function createOAuthCompactionRuntime(
         const inputTokens = baselineMatches
           ? baseline.inputTokens + estimateInput(tail)
           : estimateInput(currentInput) + requestEnvelopeTokens;
-        const contextBudget = config.maxContextTokens - config.outputReserveTokens;
+        const contextBudget = maxContextTokens - config.outputReserveTokens;
         await options.onContextUsage({
           agentId: scope.agentId,
           model: parsed.model,
@@ -797,7 +802,7 @@ export function createOAuthCompactionRuntime(
           remainingContextTokens: Math.max(0, contextBudget - inputTokens),
           oauthCompaction: { inputTokens, isEstimate: !baselineMatches || tail.length > 0 },
           breakdown: {
-            maxContextTokens: config.maxContextTokens,
+            maxContextTokens,
             instructionTokens: 0,
             systemMessageTokens: 0,
             dynamicInstructionTokens: 0,

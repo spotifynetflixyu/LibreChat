@@ -1,30 +1,13 @@
 import type { SteelQuotationChunkState } from '@librechat/data-schemas';
 import type { SteelToolResult } from '../tools/results';
+import { normalizeSystemOrderMarkdown, systemOrderColumns } from '../markdown/order';
 import { escapeMarkdownTableCell, parsePipeTableRow } from '../markdown/row-codec';
 import { parseAssistantMarkdown, parseOcrResultTable } from '../ocr/result';
 import { buildCustomerQuoteFromMarkdown } from '../markdown/quote';
-import { normalizeSystemOrderMarkdown } from '../markdown/order';
 import { recalculateSystemOrderWeights } from './weight';
 import { parseMarkdownTables } from '../markdown/table';
 
-export const quotationSystemOrderColumns = [
-  '型號',
-  '品名規格',
-  '材質編號',
-  '單位',
-  '數量',
-  '單重',
-  '總數',
-  '單價',
-  '計價基準',
-  '公式編號',
-  '厚度',
-  '寬度',
-  '長度',
-  '肚',
-  '類別',
-  '備註',
-] as const;
+export const quotationSystemOrderColumns: typeof systemOrderColumns = systemOrderColumns;
 
 export const quotationChildSystemOrderColumns = [
   '型號',
@@ -156,13 +139,18 @@ export class QuotationProtocolError extends Error implements QuotationProtocolFa
   }
 }
 
-function protocolError(code: QuotationProtocolErrorCode, message: string, requiresFreshLookup = false): never {
+function protocolError(
+  code: QuotationProtocolErrorCode,
+  message: string,
+  requiresFreshLookup = false,
+): never {
   throw new QuotationProtocolError(code, message, requiresFreshLookup);
 }
 
 export function quotationOutputRequiresFreshLookup(response: string): boolean {
-  return response.includes('search_price_candidates') && (
-    /<\|[^|\r\n]{1,80}\|>/u.test(response) || /\bassistant\s+to\s*=/iu.test(response)
+  return (
+    response.includes('search_price_candidates') &&
+    (/<\|[^|\r\n]{1,80}\|>/u.test(response) || /\bassistant\s+to\s*=/iu.test(response))
   );
 }
 
@@ -210,7 +198,8 @@ function parseExactTable(
     headers.some((header, index) => table.headers[index] !== header) ||
     table.rows.length === 0 ||
     table.rows.some((row) => row.length !== headers.length)
-  ) return undefined;
+  )
+    return undefined;
   return {
     headers: [...table.headers],
     rows: table.rows.map((row) => [...row]),
@@ -228,26 +217,35 @@ function hasEscapedTrailingPipe(line: string): boolean {
 }
 
 function normalizeMissingTrailingPipes(body: string, expectedColumns: number): string {
-  return body.split(/\r?\n/u).map((line) => {
-    const trimmed = line.trim();
-    if (!trimmed.startsWith('|')) return line;
-    const missingTrailingPipe = !trimmed.endsWith('|') || hasEscapedTrailingPipe(trimmed);
-    if (!missingTrailingPipe || parsePipeTableRow(trimmed)?.length !== expectedColumns) return line;
-    return `${line.trimEnd()} |`;
-  }).join('\n');
+  return body
+    .split(/\r?\n/u)
+    .map((line) => {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('|')) return line;
+      const missingTrailingPipe = !trimmed.endsWith('|') || hasEscapedTrailingPipe(trimmed);
+      if (!missingTrailingPipe || parsePipeTableRow(trimmed)?.length !== expectedColumns)
+        return line;
+      return `${line.trimEnd()} |`;
+    })
+    .join('\n');
 }
 
 function incompleteTableRow(body: string): { line: number; columns: number } | undefined {
   const lines = sectionBodyWithoutFences(body).split(/\r?\n/u);
-  const index = lines.findIndex((line) => line.trim().startsWith('|') &&
-    (line.trim().length === 1 || !line.trim().endsWith('|')));
-  return index < 0 ? undefined : { line: index + 1, columns: parsePipeTableRow(lines[index]!)?.length ?? 0 };
+  const index = lines.findIndex(
+    (line) =>
+      line.trim().startsWith('|') && (line.trim().length === 1 || !line.trim().endsWith('|')),
+  );
+  return index < 0
+    ? undefined
+    : { line: index + 1, columns: parsePipeTableRow(lines[index]!)?.length ?? 0 };
 }
 
 export function parseQuotationSignal(response: string): QuotationSignal | undefined {
   const section = exactSection(parseAssistantMarkdown(response), 'quote_signal');
   return section?.title === 'quote_signal' && section.body.trim() === 'start'
-    ? { action: 'start' } : undefined;
+    ? { action: 'start' }
+    : undefined;
 }
 
 export function extractCustomerDataTable(response: string): QuotationChunkTable | undefined {
@@ -259,7 +257,8 @@ export function extractCustomerDataTable(response: string): QuotationChunkTable 
     tables.length !== 1 ||
     tables[0]?.rows.length === 0 ||
     tables[0]?.rows.some((row) => row.length !== tables[0]?.headers.length)
-  ) return undefined;
+  )
+    return undefined;
   return tables[0]
     ? { headers: [...tables[0].headers], rows: tables[0].rows.map((row) => [...row]) }
     : undefined;
@@ -282,13 +281,22 @@ function renderQuotationChunkTable(table: QuotationChunkTable): string {
 function readOcrResultTable(fullOcrResult: string): QuotationChunkTable {
   const document = parseAssistantMarkdown(fullOcrResult);
   const section = exactSection(document, 'ocr_result');
-  if (!section) protocolError('invalid_ocr_result', 'Quotation requires exactly one ocr_result section.');
+  if (!section)
+    protocolError('invalid_ocr_result', 'Quotation requires exactly one ocr_result section.');
   const visibleTables = parseMarkdownTables(sectionBodyWithoutFences(section.body));
-  if (visibleTables.length !== 1) protocolError('invalid_ocr_result', 'Quotation requires exactly one ocr_result table.');
+  if (visibleTables.length !== 1)
+    protocolError('invalid_ocr_result', 'Quotation requires exactly one ocr_result table.');
   const parsed = parseOcrResultTable(section.body);
-  if (!parsed.ok || parsed.table.rows.length === 0 ||
-    !parsed.table.headers.includes('來源') || !parsed.table.headers.includes('零件編號')) {
-    protocolError('invalid_ocr_result', 'Quotation requires a complete non-empty ocr_result table.');
+  if (
+    !parsed.ok ||
+    parsed.table.rows.length === 0 ||
+    !parsed.table.headers.includes('來源') ||
+    !parsed.table.headers.includes('零件編號')
+  ) {
+    protocolError(
+      'invalid_ocr_result',
+      'Quotation requires a complete non-empty ocr_result table.',
+    );
   }
   return { headers: [...parsed.table.headers], rows: parsed.table.rows.map((row) => [...row]) };
 }
@@ -304,7 +312,11 @@ interface QuotationCategoryRows {
 
 function quotationCategoryRows(table: QuotationChunkTable): readonly QuotationCategoryRows[] {
   const categoryIndex = table.headers.indexOf('類別');
-  if (categoryIndex < 0) protocolError('invalid_ocr_result', 'ocr_result must contain a 類別 column for quotation chunking.');
+  if (categoryIndex < 0)
+    protocolError(
+      'invalid_ocr_result',
+      'ocr_result must contain a 類別 column for quotation chunking.',
+    );
 
   const categories: Array<{ category: string; rows: QuotationSourceRow[] }> = [];
   const categoryPositions = new Map<string, number>();
@@ -343,7 +355,10 @@ function quotationChunkFromRows(
   };
 }
 
-export function buildQuotationChunks(fullOcrResult: string, rowsPerChunk = 24): readonly QuotationChunk[] {
+export function buildQuotationChunks(
+  fullOcrResult: string,
+  rowsPerChunk = 24,
+): readonly QuotationChunk[] {
   if (!isPositiveSafeInteger(rowsPerChunk)) {
     protocolError('invalid_ocr_result', 'rowsPerChunk must be a positive safe integer.');
   }
@@ -351,21 +366,26 @@ export function buildQuotationChunks(fullOcrResult: string, rowsPerChunk = 24): 
   const categories = quotationCategoryRows(table);
 
   const chunks: QuotationChunk[] = [];
-  const chunkCount = categories.reduce((count, entry) => count + Math.ceil(entry.rows.length / rowsPerChunk), 0);
+  const chunkCount = categories.reduce(
+    (count, entry) => count + Math.ceil(entry.rows.length / rowsPerChunk),
+    0,
+  );
   let chunkIndex = 0;
   categories.forEach((entry, categoryIndex) => {
     const categoryChunkCount = Math.ceil(entry.rows.length / rowsPerChunk);
     for (let offset = 0; offset < entry.rows.length; offset += rowsPerChunk) {
       const sourceRows = entry.rows.slice(offset, offset + rowsPerChunk);
       chunkIndex += 1;
-      chunks.push(quotationChunkFromRows(table.headers, sourceRows, {
-        chunkIndex,
-        chunkCount,
-        categoryIndex,
-        categoryChunkIndex: Math.floor(offset / rowsPerChunk) + 1,
-        categoryChunkCount,
-        category: entry.category,
-      }));
+      chunks.push(
+        quotationChunkFromRows(table.headers, sourceRows, {
+          chunkIndex,
+          chunkCount,
+          categoryIndex,
+          categoryChunkIndex: Math.floor(offset / rowsPerChunk) + 1,
+          categoryChunkCount,
+          category: entry.category,
+        }),
+      );
     }
   });
   return chunks;
@@ -382,26 +402,45 @@ export function restoreQuotationChunks(
   const ordered = [...savedChunks].sort((left, right) => left.index - right.index);
   ordered.forEach((saved, position) => {
     if (!isPositiveSafeInteger(saved.index) || saved.index !== position + 1) {
-      protocolError('incomplete_aggregate', 'Saved quotation chunk indexes must be contiguous starting at 1.');
+      protocolError(
+        'incomplete_aggregate',
+        'Saved quotation chunk indexes must be contiguous starting at 1.',
+      );
     }
     if (!isPositiveSafeInteger(saved.sourceRowCount)) {
-      protocolError('incomplete_aggregate', 'Saved quotation chunk sourceRowCount must be a positive safe integer.');
+      protocolError(
+        'incomplete_aggregate',
+        'Saved quotation chunk sourceRowCount must be a positive safe integer.',
+      );
     }
   });
 
   const table = readOcrResultTable(fullOcrResult);
   const categories = quotationCategoryRows(table);
-  const chunks: Array<{ categoryIndex: number; category: string; sourceRows: readonly QuotationSourceRow[]; chunkIndex: number; categoryChunkIndex: number }> = [];
+  const chunks: Array<{
+    categoryIndex: number;
+    category: string;
+    sourceRows: readonly QuotationSourceRow[];
+    chunkIndex: number;
+    categoryChunkIndex: number;
+  }> = [];
   let savedPosition = 0;
   categories.forEach((entry, categoryIndex) => {
     let offset = 0;
     let categoryChunkIndex = 0;
     while (offset < entry.rows.length) {
       const saved = ordered[savedPosition];
-      if (!saved) protocolError('incomplete_aggregate', 'Saved quotation chunks do not cover the complete OCR snapshot.');
+      if (!saved)
+        protocolError(
+          'incomplete_aggregate',
+          'Saved quotation chunks do not cover the complete OCR snapshot.',
+        );
       const remaining = entry.rows.length - offset;
       if (saved.sourceRowCount > remaining) {
-        protocolError('incomplete_aggregate', 'A saved quotation chunk crosses an OCR category boundary.');
+        protocolError(
+          'incomplete_aggregate',
+          'A saved quotation chunk crosses an OCR category boundary.',
+        );
       }
       categoryChunkIndex += 1;
       chunks.push({
@@ -416,22 +455,32 @@ export function restoreQuotationChunks(
     }
   });
   if (savedPosition !== ordered.length) {
-    protocolError('incomplete_aggregate', 'Saved quotation chunks contain rows outside the complete OCR snapshot.');
+    protocolError(
+      'incomplete_aggregate',
+      'Saved quotation chunks contain rows outside the complete OCR snapshot.',
+    );
   }
 
   const categoryCounts = new Map<number, number>();
-  chunks.forEach((chunk) => categoryCounts.set(chunk.categoryIndex, (categoryCounts.get(chunk.categoryIndex) ?? 0) + 1));
-  return chunks.map((chunk) => quotationChunkFromRows(table.headers, chunk.sourceRows, {
-    chunkIndex: chunk.chunkIndex,
-    chunkCount: ordered.length,
-    categoryIndex: chunk.categoryIndex,
-    categoryChunkIndex: chunk.categoryChunkIndex,
-    categoryChunkCount: categoryCounts.get(chunk.categoryIndex) ?? 0,
-    category: chunk.category,
-  }));
+  chunks.forEach((chunk) =>
+    categoryCounts.set(chunk.categoryIndex, (categoryCounts.get(chunk.categoryIndex) ?? 0) + 1),
+  );
+  return chunks.map((chunk) =>
+    quotationChunkFromRows(table.headers, chunk.sourceRows, {
+      chunkIndex: chunk.chunkIndex,
+      chunkCount: ordered.length,
+      categoryIndex: chunk.categoryIndex,
+      categoryChunkIndex: chunk.categoryChunkIndex,
+      categoryChunkCount: categoryCounts.get(chunk.categoryIndex) ?? 0,
+      category: chunk.category,
+    }),
+  );
 }
 
-export function splitQuotationChunk(chunk: QuotationChunk, rowsPerSlice = 10): readonly QuotationChunk[] {
+export function splitQuotationChunk(
+  chunk: QuotationChunk,
+  rowsPerSlice = 10,
+): readonly QuotationChunk[] {
   if (!isPositiveSafeInteger(rowsPerSlice)) {
     protocolError('invalid_child_result', 'rowsPerSlice must be a positive safe integer.');
   }
@@ -451,7 +500,7 @@ function sourceCell(
 ): string {
   for (const alias of aliases) {
     const index = chunk.table.headers.indexOf(alias);
-    const value = index >= 0 ? sourceRow.cells[index]?.trim() ?? '' : '';
+    const value = index >= 0 ? (sourceRow.cells[index]?.trim() ?? '') : '';
     if (value) return value;
   }
   return '';
@@ -460,20 +509,31 @@ function sourceCell(
 /** Build the only child table accepted when the backend has exhausted its retries. */
 export function buildQuotationFailureMarkdown(chunk: QuotationChunk, reason: string): string {
   const trimmedReason = reason.trim();
-  if (!trimmedReason) protocolError('invalid_child_result', 'Quotation backend failure requires a reason.');
+  if (!trimmedReason)
+    protocolError('invalid_child_result', 'Quotation backend failure requires a reason.');
   const rows = chunk.sourceRows.map((sourceRow) => {
     const category = sourceCell(chunk, sourceRow, ['類別']) || sourceRow.category;
     const processing = chunk.table.headers.flatMap((header, index) => {
-      if (!/(?:加工|處理|processing|process|孔數|切角|斜切|折邊|折彎|開槽|鑽孔|攻牙|焊接|打磨|倒角|開孔)/iu.test(header)) return [];
+      if (
+        !/(?:加工|處理|processing|process|孔數|切角|斜切|折邊|折彎|開槽|鑽孔|攻牙|焊接|打磨|倒角|開孔)/iu.test(
+          header,
+        )
+      )
+        return [];
       const value = sourceRow.cells[index]?.trim() ?? '';
       return value ? [`${header}=${value}`] : [];
     });
     if (category.startsWith('加工/')) processing.unshift(`類別=${category}`);
     const remarkParts = [
-      sourceCell(chunk, sourceRow, ['來源']) ? `來源=${sourceCell(chunk, sourceRow, ['來源'])}` : '',
+      sourceCell(chunk, sourceRow, ['來源'])
+        ? `來源=${sourceCell(chunk, sourceRow, ['來源'])}`
+        : '',
       sourceCell(chunk, sourceRow, ['頁碼', '頁', 'page', 'Page'])
-        ? `頁碼=${sourceCell(chunk, sourceRow, ['頁碼', '頁', 'page', 'Page'])}` : '',
-      sourceCell(chunk, sourceRow, ['零件編號']) ? `零件編號=${sourceCell(chunk, sourceRow, ['零件編號'])}` : '',
+        ? `頁碼=${sourceCell(chunk, sourceRow, ['頁碼', '頁', 'page', 'Page'])}`
+        : '',
+      sourceCell(chunk, sourceRow, ['零件編號'])
+        ? `零件編號=${sourceCell(chunk, sourceRow, ['零件編號'])}`
+        : '',
       processing.length ? `來源處理資訊：${processing.join('；')}` : '',
       `後端重試3次失敗：${trimmedReason}`,
     ].filter(Boolean);
@@ -505,9 +565,14 @@ export function mergeQuotationChildResults(
   children: readonly QuotationChildResultInput[],
 ): string {
   const sources = children.flatMap((child) => child.chunk.sourceRows);
-  if (sources.length !== parent.sourceRows.length || sources.some((source, index) =>
-    source.sourceRowId !== parent.sourceRows[index]!.sourceRowId ||
-    JSON.stringify(source.cells) !== JSON.stringify(parent.sourceRows[index]!.cells))) {
+  if (
+    sources.length !== parent.sourceRows.length ||
+    sources.some(
+      (source, index) =>
+        source.sourceRowId !== parent.sourceRows[index]!.sourceRowId ||
+        JSON.stringify(source.cells) !== JSON.stringify(parent.sourceRows[index]!.cells),
+    )
+  ) {
     throw new Error('Quotation recovery slices do not match the original source rows');
   }
   const validated = children.map(validateQuotationChildResult);
@@ -515,7 +580,11 @@ export function mergeQuotationChildResults(
   const reviews = validated.flatMap((child) => child.reviewTable?.rows ?? []);
   return [
     renderQuotationChunkTable({ headers: quotationChildSystemOrderColumns, rows }),
-    ...(reviews.length ? [`## manual_reviews_chunk\n\n${renderTable({ headers: quotationManualReviewColumns, rows: reviews })}`] : []),
+    ...(reviews.length
+      ? [
+          `## manual_reviews_chunk\n\n${renderTable({ headers: quotationManualReviewColumns, rows: reviews })}`,
+        ]
+      : []),
   ].join('\n\n');
 }
 
@@ -530,23 +599,32 @@ function childSystemOrderGroups(
 ): readonly QuotationSystemOrderGroup[] {
   const groups: Array<{ sourceRow: QuotationSourceRow; rows: Array<readonly string[]> }> = [];
   for (const row of table.rows) {
-    const category = row[quotationChildSystemOrderColumns.indexOf('類別')]?.trim() ?? '';
+    const category = row[table.headers.indexOf('類別')]?.trim() ?? '';
     if (category.startsWith('加工/')) {
       const previous = groups[groups.length - 1];
       if (!previous) {
-        protocolError('incomplete_aggregate', 'Quotation system_order cannot start with a processing row.');
+        protocolError(
+          'incomplete_aggregate',
+          'Quotation system_order cannot start with a processing row.',
+        );
       }
       previous.rows.push(row);
       continue;
     }
     const sourceRow = child.chunk.sourceRows[groups.length];
     if (!sourceRow) {
-      protocolError('incomplete_aggregate', 'Quotation child output contains more material rows than its source rows.');
+      protocolError(
+        'incomplete_aggregate',
+        'Quotation child output contains more material rows than its source rows.',
+      );
     }
     groups.push({ sourceRow, rows: [row] });
   }
   if (groups.length !== child.chunk.sourceRows.length) {
-    protocolError('incomplete_aggregate', `Quotation child output has ${groups.length} material rows for ${child.chunk.sourceRows.length} source rows.`);
+    protocolError(
+      'incomplete_aggregate',
+      `Quotation child output has ${groups.length} material rows for ${child.chunk.sourceRows.length} source rows.`,
+    );
   }
   return groups;
 }
@@ -555,22 +633,31 @@ function sourcePartCode(chunk: QuotationChunk, sourceRow: QuotationSourceRow): s
   return sourceCell(chunk, sourceRow, ['零件編號']);
 }
 
-function upgradeLegacyChildTable(child: QuotationChildResultInput, table: QuotationChunkTable): QuotationChunkTable {
+function upgradeLegacyChildTable(
+  child: QuotationChildResultInput,
+  table: QuotationChunkTable,
+): QuotationChunkTable {
   return {
     headers: quotationChildSystemOrderColumns,
-    rows: childSystemOrderGroups(child, table).flatMap((group) => group.rows.map((row) => [
-      ...row.slice(0, -1),
-      sourcePartCode(child.chunk, group.sourceRow),
-      row[row.length - 1] ?? '',
-    ])),
+    rows: childSystemOrderGroups(child, table).flatMap((group) =>
+      group.rows.map((row) =>
+        quotationChildSystemOrderColumns.map((header) =>
+          header === '零件編號'
+            ? sourcePartCode(child.chunk, group.sourceRow)
+            : (row[table.headers.indexOf(header)] ?? ''),
+        ),
+      ),
+    ),
   };
 }
 
 function sameQuotationSourceRow(actual: QuotationSourceRow, expected: QuotationSourceRow): boolean {
-  return actual.sourceRowId === expected.sourceRowId &&
+  return (
+    actual.sourceRowId === expected.sourceRowId &&
     actual.sourceRowIndex === expected.sourceRowIndex &&
     actual.category === expected.category &&
-    JSON.stringify(actual.cells) === JSON.stringify(expected.cells);
+    JSON.stringify(actual.cells) === JSON.stringify(expected.cells)
+  );
 }
 
 export interface BuildQuotationSystemOrderInput {
@@ -589,11 +676,16 @@ export function buildQuotationSystemOrderForReview(input: BuildQuotationSystemOr
 } {
   const expected = buildQuotationChunks(input.fullOcrResult).flatMap((chunk) => chunk.sourceRows);
   if (expected.length === 0 || input.childResults.length === 0) {
-    protocolError('incomplete_aggregate', 'Quotation system_order requires complete child coverage.');
+    protocolError(
+      'incomplete_aggregate',
+      'Quotation system_order requires complete child coverage.',
+    );
   }
 
   const expectedById = new Map(expected.map((sourceRow) => [sourceRow.sourceRowId, sourceRow]));
-  const expectedPositionById = new Map(expected.map((sourceRow, index) => [sourceRow.sourceRowId, index]));
+  const expectedPositionById = new Map(
+    expected.map((sourceRow, index) => [sourceRow.sourceRowId, index]),
+  );
   const seen = new Set<string>();
   const groups: QuotationSystemOrderGroup[] = [];
   for (const child of input.childResults) {
@@ -602,27 +694,49 @@ export function buildQuotationSystemOrderForReview(input: BuildQuotationSystemOr
       const sourceRow = sourceRows[index]!;
       const expectedRow = expectedById.get(sourceRow.sourceRowId);
       if (!expectedRow || !sameQuotationSourceRow(sourceRow, expectedRow)) {
-        protocolError('incomplete_aggregate', `Quotation child source row ${sourceRow.sourceRowId} does not match the confirmed OCR order.`);
+        protocolError(
+          'incomplete_aggregate',
+          `Quotation child source row ${sourceRow.sourceRowId} does not match the confirmed OCR order.`,
+        );
       }
       if (seen.has(sourceRow.sourceRowId)) {
-        protocolError('incomplete_aggregate', `Quotation source row ${sourceRow.sourceRowId} is duplicated.`);
+        protocolError(
+          'incomplete_aggregate',
+          `Quotation source row ${sourceRow.sourceRowId} is duplicated.`,
+        );
       }
       const expectedPosition = expectedPositionById.get(sourceRow.sourceRowId);
-      const previousPosition = index > 0 ? expectedPositionById.get(sourceRows[index - 1]!.sourceRowId) : undefined;
-      if (expectedPosition === undefined || (index > 0 && previousPosition === undefined) ||
-        (index > 0 && expectedPosition !== previousPosition! + 1)) {
-        protocolError('incomplete_aggregate', 'Quotation child source rows must remain in their confirmed contiguous chunk boundary.');
+      const previousPosition =
+        index > 0 ? expectedPositionById.get(sourceRows[index - 1]!.sourceRowId) : undefined;
+      if (
+        expectedPosition === undefined ||
+        (index > 0 && previousPosition === undefined) ||
+        (index > 0 && expectedPosition !== previousPosition! + 1)
+      ) {
+        protocolError(
+          'incomplete_aggregate',
+          'Quotation child source rows must remain in their confirmed contiguous chunk boundary.',
+        );
       }
       if (index > 0 && sourceRows[index - 1]!.sourceRowIndex >= sourceRow.sourceRowIndex) {
-        protocolError('incomplete_aggregate', 'Quotation child source rows must remain in canonical source order.');
+        protocolError(
+          'incomplete_aggregate',
+          'Quotation child source rows must remain in canonical source order.',
+        );
       }
       seen.add(sourceRow.sourceRowId);
     }
     const validated = validateChildTable(child);
     groups.push(...childSystemOrderGroups(child, validated.table));
   }
-  if (seen.size !== expected.length || expected.some((sourceRow) => !seen.has(sourceRow.sourceRowId))) {
-    protocolError('incomplete_aggregate', 'Quotation child results do not cover every confirmed OCR source row exactly once.');
+  if (
+    seen.size !== expected.length ||
+    expected.some((sourceRow) => !seen.has(sourceRow.sourceRowId))
+  ) {
+    protocolError(
+      'incomplete_aggregate',
+      'Quotation child results do not cover every confirmed OCR source row exactly once.',
+    );
   }
 
   groups.sort((left, right) => left.sourceRow.sourceRowIndex - right.sourceRow.sourceRowIndex);
@@ -631,13 +745,18 @@ export function buildQuotationSystemOrderForReview(input: BuildQuotationSystemOr
   const childRows = groups.flatMap((group) => group.rows);
   const rows = childRows.map((row) => {
     const partCode = row[partCodeColumn]?.trim() ?? '';
-    const output = row.filter((_, index) => index !== partCodeColumn);
+    const output = quotationSystemOrderColumns.map(
+      (header) => row[quotationChildSystemOrderColumns.indexOf(header)] ?? '',
+    );
     output[finalRemarkColumn] = partCode;
     return output;
   });
   return {
     systemOrderMarkdown: `## system_order\n\n${renderTable({ headers: quotationSystemOrderColumns, rows })}`,
-    reviewRemarks: renderQuotationChunkTable({ headers: quotationChildSystemOrderColumns, rows: childRows }),
+    reviewRemarks: renderQuotationChunkTable({
+      headers: quotationChildSystemOrderColumns,
+      rows: childRows,
+    }),
   };
 }
 
@@ -645,22 +764,39 @@ function isQuoteControlFence(language: string, content: string): boolean {
   if (/^(?:json|application\/json)$/iu.test(language.trim())) {
     try {
       const value: unknown = JSON.parse(content);
-      if (typeof value === 'object' && value !== null && !Array.isArray(value) &&
-        ['quote_lineage', 'quote_signal', 'quote_summary', 'summary', 'customer_quote'].some((key) =>
-          Object.prototype.hasOwnProperty.call(value, key))) return true;
+      if (
+        typeof value === 'object' &&
+        value !== null &&
+        !Array.isArray(value) &&
+        ['quote_lineage', 'quote_signal', 'quote_summary', 'summary', 'customer_quote'].some(
+          (key) => Object.prototype.hasOwnProperty.call(value, key),
+        )
+      )
+        return true;
     } catch {
       return /(?:quote_lineage|quote_signal|quote_summary|customer_quote|summary)/iu.test(content);
     }
   }
-  return /["'](?:quote_lineage|quote_signal|quote_summary|summary|customer_quote)["']\s*:/iu.test(content) ||
-    /(?:^|\r?\n)\s*##\s+(?:customer_quote|quote_signal|quote_lineage|quote_summary|summary)(?:｜|[ \t]|$)/imu.test(content);
+  return (
+    /["'](?:quote_lineage|quote_signal|quote_summary|summary|customer_quote)["']\s*:/iu.test(
+      content,
+    ) ||
+    /(?:^|\r?\n)\s*##\s+(?:customer_quote|quote_signal|quote_lineage|quote_summary|summary)(?:｜|[ \t]|$)/imu.test(
+      content,
+    )
+  );
 }
 
 function stripControlFencedBlocks(markdown: string): string {
   const lines = markdown.split(/\r?\n/u);
   const output: string[] = [];
   let opening:
-    | { readonly marker: '`' | '~'; readonly length: number; readonly language: string; readonly lines: string[] }
+    | {
+        readonly marker: '`' | '~';
+        readonly length: number;
+        readonly language: string;
+        readonly lines: string[];
+      }
     | undefined;
   for (const line of lines) {
     if (!opening) {
@@ -669,7 +805,12 @@ function stripControlFencedBlocks(markdown: string): string {
         output.push(line);
         continue;
       }
-      opening = { marker: match[1]![0] as '`' | '~', length: match[1]!.length, language: match[2]!.trim(), lines: [line] };
+      opening = {
+        marker: match[1]![0] as '`' | '~',
+        length: match[1]!.length,
+        language: match[2]!.trim(),
+        lines: [line],
+      };
       continue;
     }
     const closing = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/u)?.[1];
@@ -690,59 +831,102 @@ export function stripLegacyQuotationChildSidecars(markdown: string): string {
 }
 
 function evidenceIsPersistedSearch(evidence: readonly QuotationLookupEvidence[]): boolean {
-  return evidence.length > 0 && evidence.every((entry) =>
-    entry.persisted === true && entry.lookupCallId.trim() !== '' && entry.result.toolName === 'search_price_candidates');
+  return (
+    evidence.length > 0 &&
+    evidence.every(
+      (entry) =>
+        entry.persisted === true &&
+        entry.lookupCallId.trim() !== '' &&
+        entry.result.toolName === 'search_price_candidates',
+    )
+  );
 }
 
-function hasValidBackendFailureMarker(value: QuotationChildResultInput['backendFailure']): value is QuotationBackendFailure {
+function hasValidBackendFailureMarker(
+  value: QuotationChildResultInput['backendFailure'],
+): value is QuotationBackendFailure {
   return typeof value?.reason === 'string' && value.reason.trim() !== '' && value.retryDepth === 3;
 }
 
 function validateChildTable(input: QuotationChildResultInput): ValidatedQuotationChildResult {
   const response = input.response ?? input.markdown;
   if (!response) protocolError('invalid_child_result', 'Quotation child result is empty.');
-  const leakedControlLine = response.split(/\r?\n/u).findIndex((line) =>
-    /<\|[^|\r\n]{1,80}\|>/u.test(line) || /\bassistant\s+to\s*=/iu.test(line));
+  const leakedControlLine = response
+    .split(/\r?\n/u)
+    .findIndex((line) => /<\|[^|\r\n]{1,80}\|>/u.test(line) || /\bassistant\s+to\s*=/iu.test(line));
   if (leakedControlLine >= 0) {
-    protocolError('invalid_child_result', `Quotation child result contains model control text on line ${leakedControlLine + 1}. Use actual tool calls for lookups; return only complete Markdown tables, without role or channel markers.`, quotationOutputRequiresFreshLookup(response));
+    protocolError(
+      'invalid_child_result',
+      `Quotation child result contains model control text on line ${leakedControlLine + 1}. Use actual tool calls for lookups; return only complete Markdown tables, without role or channel markers.`,
+      quotationOutputRequiresFreshLookup(response),
+    );
   }
-  const sanitizedResponse = normalizeSystemOrderMarkdown(stripLegacyQuotationChildSidecars(response));
+  const sanitizedResponse = normalizeSystemOrderMarkdown(
+    stripLegacyQuotationChildSidecars(response),
+  );
   const document = parseAssistantMarkdown(sanitizedResponse);
   const section = exactSection(document, 'system_order_chunk');
   const reviewSection = exactSection(document, 'manual_reviews_chunk');
   if (input.allowManualReviews === false && reviewSection) {
-    protocolError('invalid_child_result', 'Quotation child review details must be kept in system_order 備註 for this execution.');
+    protocolError(
+      'invalid_child_result',
+      'Quotation child review details must be kept in system_order 備註 for this execution.',
+    );
   }
-  if (!section || section.title !== 'system_order_chunk' ||
+  if (
+    !section ||
+    section.title !== 'system_order_chunk' ||
     document.sections[0] !== section ||
     document.sections.length !== (reviewSection ? 2 : 1) ||
     (reviewSection && reviewSection.title !== 'manual_reviews_chunk') ||
-    /^ {0,3}(`{3,}|~{3,})/mu.test(sanitizedResponse)) {
-    protocolError('invalid_child_result', 'Child result must contain one 17-column system_order_chunk followed by an optional manual_reviews_chunk Markdown table.');
+    /^ {0,3}(`{3,}|~{3,})/mu.test(sanitizedResponse)
+  ) {
+    protocolError(
+      'invalid_child_result',
+      'Child result must contain one 17-column system_order_chunk followed by an optional manual_reviews_chunk Markdown table.',
+    );
   }
-  const normalizedSectionBody = normalizeMissingTrailingPipes(section.body, quotationChildSystemOrderColumns.length);
+  const normalizedSectionBody = normalizeMissingTrailingPipes(
+    section.body,
+    quotationChildSystemOrderColumns.length,
+  );
   const currentTable = parseExactTable(normalizedSectionBody, quotationChildSystemOrderColumns);
-  const legacyBody = input.allowManualReviews === false ? undefined
-    : normalizeMissingTrailingPipes(section.body, quotationSystemOrderColumns.length);
-  const legacyTable = !currentTable && legacyBody
-    ? parseExactTable(legacyBody, quotationSystemOrderColumns) : undefined;
+  const legacyBody =
+    input.allowManualReviews === false
+      ? undefined
+      : normalizeMissingTrailingPipes(section.body, quotationSystemOrderColumns.length);
+  const legacyTable =
+    !currentTable && legacyBody
+      ? parseExactTable(legacyBody, quotationSystemOrderColumns)
+      : undefined;
   const normalizedReviewBody = reviewSection
     ? normalizeMissingTrailingPipes(reviewSection.body, quotationManualReviewColumns.length)
     : undefined;
   for (const [title, body, width] of [
-    ['system_order_chunk', legacyTable ? legacyBody : normalizedSectionBody,
-      legacyTable ? quotationSystemOrderColumns.length : quotationChildSystemOrderColumns.length],
+    [
+      'system_order_chunk',
+      legacyTable ? legacyBody : normalizedSectionBody,
+      legacyTable ? quotationSystemOrderColumns.length : quotationChildSystemOrderColumns.length,
+    ],
     ['manual_reviews_chunk', normalizedReviewBody, quotationManualReviewColumns.length],
   ] as const) {
     const row = body ? incompleteTableRow(body) : undefined;
-    if (row) protocolError('invalid_child_result', `Quotation child result contains an incomplete Markdown row in ${title} at section line ${row.line}: expected ${width} columns, found ${row.columns}; return the complete replacement table before saving the chunk.`);
+    if (row)
+      protocolError(
+        'invalid_child_result',
+        `Quotation child result contains an incomplete Markdown row in ${title} at section line ${row.line}: expected ${width} columns, found ${row.columns}; return the complete replacement table before saving the chunk.`,
+      );
   }
   if (!currentTable && !legacyTable) {
     protocolError('invalid_child_result', 'Child result has an invalid system_order_chunk table.');
   }
-  const reviewTable = normalizedReviewBody && parseExactTable(normalizedReviewBody, quotationManualReviewColumns);
+  const reviewTable =
+    normalizedReviewBody && parseExactTable(normalizedReviewBody, quotationManualReviewColumns);
   if (reviewSection && !reviewTable) {
-    protocolError('invalid_child_result', 'Child result has an invalid manual_reviews_chunk table.');
+    protocolError(
+      'invalid_child_result',
+      'Child result has an invalid manual_reviews_chunk table.',
+    );
   }
   let table: QuotationChunkTable;
   try {
@@ -755,41 +939,71 @@ function validateChildTable(input: QuotationChildResultInput): ValidatedQuotatio
     throw error;
   }
   if (input.backendFailure !== undefined && !hasValidBackendFailureMarker(input.backendFailure)) {
-    protocolError('invalid_child_result', 'Quotation backend failure marker must use retryDepth 3 and a non-empty reason.');
+    protocolError(
+      'invalid_child_result',
+      'Quotation backend failure marker must use retryDepth 3 and a non-empty reason.',
+    );
   }
   if (input.backendFailure) {
-    if (reviewTable || renderQuotationChunkTable(table) !== buildQuotationFailureMarkdown(input.chunk, input.backendFailure.reason)) {
-      protocolError('invalid_child_result', 'Backend failure output must exactly match the deterministic OCR fallback table.');
+    if (
+      reviewTable ||
+      renderQuotationChunkTable(table) !==
+        buildQuotationFailureMarkdown(input.chunk, input.backendFailure.reason)
+    ) {
+      protocolError(
+        'invalid_child_result',
+        'Backend failure output must exactly match the deterministic OCR fallback table.',
+      );
     }
     if (input.lookupEvidence.length > 0 && !evidenceIsPersistedSearch(input.lookupEvidence)) {
-      protocolError('invalid_child_result', 'Quotation backend failure evidence must contain only persisted search_price_candidates attempts.');
+      protocolError(
+        'invalid_child_result',
+        'Quotation backend failure evidence must contain only persisted search_price_candidates attempts.',
+      );
     }
   } else if (!evidenceIsPersistedSearch(input.lookupEvidence)) {
-    protocolError('invalid_child_result', 'Child result requires a persisted search_price_candidates attempt.');
+    protocolError(
+      'invalid_child_result',
+      'Child result requires a persisted search_price_candidates attempt.',
+    );
   }
   return {
     chunk: input.chunk,
-    markdown: [renderQuotationChunkTable(table), reviewTable
-      ? `## manual_reviews_chunk\n\n${renderTable(reviewTable)}` : ''].filter(Boolean).join('\n\n'),
+    markdown: [
+      renderQuotationChunkTable(table),
+      reviewTable ? `## manual_reviews_chunk\n\n${renderTable(reviewTable)}` : '',
+    ]
+      .filter(Boolean)
+      .join('\n\n'),
     table,
     rows: table.rows,
     ...(reviewTable ? { reviewTable } : {}),
   };
 }
 
-export function validateQuotationChildResult(input: QuotationChildResultInput): ValidatedQuotationChildResult {
+export function validateQuotationChildResult(
+  input: QuotationChildResultInput,
+): ValidatedQuotationChildResult {
   return validateChildTable(input);
 }
 
-export const validateQuotationChunkResult: typeof validateQuotationChildResult = validateQuotationChildResult;
+export const validateQuotationChunkResult: typeof validateQuotationChildResult =
+  validateQuotationChildResult;
 
-function sectionRows(text: string, title: string): { heading: string; table: QuotationChunkTable } | undefined {
+function sectionRows(
+  text: string,
+  title: string,
+): { heading: string; table: QuotationChunkTable } | undefined {
   const document = parseAssistantMarkdown(text);
   const section = exactSection(document, title);
   if (!section) return undefined;
   const tables = parseMarkdownTables(sectionBodyWithoutFences(section.body));
-  if (tables.length !== 1 || tables[0]!.rows.length === 0 ||
-    tables[0]!.rows.some((row) => row.length !== tables[0]!.headers.length)) return undefined;
+  if (
+    tables.length !== 1 ||
+    tables[0]!.rows.length === 0 ||
+    tables[0]!.rows.some((row) => row.length !== tables[0]!.headers.length)
+  )
+    return undefined;
   return {
     heading: section.heading.trim(),
     table: { headers: [...tables[0]!.headers], rows: tables[0]!.rows.map((row) => [...row]) },
@@ -797,7 +1011,9 @@ function sectionRows(text: string, title: string): { heading: string; table: Quo
 }
 
 function sectionCount(text: string, title: string): number {
-  return parseAssistantMarkdown(text).sections.filter((section) => baseSectionTitle(section.title) === title).length;
+  return parseAssistantMarkdown(text).sections.filter(
+    (section) => baseSectionTitle(section.title) === title,
+  ).length;
 }
 
 function stripQuoteControls(text: string): string {
@@ -835,44 +1051,81 @@ export interface FinalizedQuotationResponse {
   readonly rows: readonly (readonly string[])[];
 }
 
-export function finalizeQuotationMainResponse(input: FinalizeQuotationMainInput): FinalizedQuotationResponse {
-  if (input.childResults.length === 0) protocolError('incomplete_aggregate', 'Quotation has no child results.');
+export function finalizeQuotationMainResponse(
+  input: FinalizeQuotationMainInput,
+): FinalizedQuotationResponse {
+  if (input.childResults.length === 0)
+    protocolError('incomplete_aggregate', 'Quotation has no child results.');
   input.childResults.forEach(validateChildTable);
 
   const rawMain = sectionRows(input.mainResponse, 'system_order');
-  const weighted = rawMain ? recalculateSystemOrderWeights({
-    headers: rawMain.table.headers, rows: rawMain.table.rows,
-    results: input.childResults.flatMap((child) => child.lookupEvidence.map((evidence) => evidence.result)),
-  }) : undefined;
+  const weighted = rawMain
+    ? recalculateSystemOrderWeights({
+        headers: rawMain.table.headers,
+        rows: rawMain.table.rows,
+        results: input.childResults.flatMap((child) =>
+          child.lookupEvidence.map((evidence) => evidence.result),
+        ),
+      })
+    : undefined;
   const mainResponse = normalizeSystemOrderMarkdown(input.mainResponse);
   const main = sectionRows(mainResponse, 'system_order');
-  if (!main || main.table.headers.length !== quotationSystemOrderColumns.length ||
-    main.table.headers.some((header, index) => header !== quotationSystemOrderColumns[index])) {
-    protocolError('invalid_main_result', 'Quotation main result must contain one exact 16-column system_order table.');
+  if (
+    !main ||
+    main.table.headers.length !== quotationSystemOrderColumns.length ||
+    main.table.headers.some((header, index) => header !== quotationSystemOrderColumns[index])
+  ) {
+    protocolError(
+      'invalid_main_result',
+      'Quotation main result must contain one exact 16-column system_order table.',
+    );
   }
-  const reviewCount = sectionCount(mainResponse, 'manual_reviews') + sectionCount(mainResponse, 'manual_review');
+  const reviewCount =
+    sectionCount(mainResponse, 'manual_reviews') + sectionCount(mainResponse, 'manual_review');
   if (reviewCount > 1) {
-    protocolError('invalid_main_result', 'Quotation main result may contain only one manual_reviews section.');
+    protocolError(
+      'invalid_main_result',
+      'Quotation main result may contain only one manual_reviews section.',
+    );
   }
-  const review = sectionRows(mainResponse, 'manual_reviews') ?? sectionRows(mainResponse, 'manual_review');
+  const review =
+    sectionRows(mainResponse, 'manual_reviews') ?? sectionRows(mainResponse, 'manual_review');
   if (reviewCount === 1 && !review) {
-    protocolError('invalid_main_result', 'manual_reviews must use the current six columns and contain rows.');
+    protocolError(
+      'invalid_main_result',
+      'manual_reviews must use the current six columns and contain rows.',
+    );
   }
-  if (review && (review.table.headers.length !== quotationManualReviewColumns.length ||
-    review.table.headers.some((header, index) => header !== quotationManualReviewColumns[index]))) {
+  if (
+    review &&
+    (review.table.headers.length !== quotationManualReviewColumns.length ||
+      review.table.headers.some((header, index) => header !== quotationManualReviewColumns[index]))
+  ) {
     protocolError('invalid_main_result', 'manual_reviews must use the current six columns.');
   }
 
   const sanitized = stripQuoteControls(mainResponse);
   const sanitizedMain = sectionRows(sanitized, 'system_order');
-  if (!sanitizedMain) protocolError('invalid_main_result', 'Quotation main system_order disappeared during finalization.');
+  if (!sanitizedMain)
+    protocolError(
+      'invalid_main_result',
+      'Quotation main system_order disappeared during finalization.',
+    );
   const rows = weighted
-    ? sectionRows(normalizeSystemOrderMarkdown(`## system_order\n\n${renderTable({
-      headers: main.table.headers, rows: weighted,
-    })}`), 'system_order')!.table.rows : main.table.rows;
+    ? sectionRows(
+        normalizeSystemOrderMarkdown(
+          `## system_order\n\n${renderTable({
+            headers: rawMain!.table.headers,
+            rows: weighted,
+          })}`,
+        ),
+        'system_order',
+      )!.table.rows
+    : main.table.rows;
   const systemOrderMarkdown = `## system_order\n\n${renderTable({ headers: quotationSystemOrderColumns, rows })}`;
   const customerQuote = buildCustomerQuoteFromMarkdown(systemOrderMarkdown);
-  if (!customerQuote) protocolError('invalid_main_result', 'Quotation system_order cannot produce a customer quote.');
+  if (!customerQuote)
+    protocolError('invalid_main_result', 'Quotation system_order cannot produce a customer quote.');
 
   const document = parseAssistantMarkdown(sanitized);
   const outputParts: string[] = [];
@@ -883,7 +1136,7 @@ export function finalizeQuotationMainResponse(input: FinalizeQuotationMainInput)
     const title = baseSectionTitle(section.title);
     if (title === 'system_order') {
       if (!inserted) {
-        outputParts.push(systemOrderMarkdown, customerQuote.markdown);
+        outputParts.push(systemOrderMarkdown);
         inserted = true;
       }
       return;
@@ -894,12 +1147,13 @@ export function finalizeQuotationMainResponse(input: FinalizeQuotationMainInput)
     }
     outputParts.push(section.raw.trim());
   });
-  if (!inserted) outputParts.unshift(systemOrderMarkdown, customerQuote.markdown);
+  if (!inserted) outputParts.unshift(systemOrderMarkdown);
   if (manualReviewSection) outputParts.push(manualReviewSection);
   const manualReviewCount = review?.table.rows.length ?? 0;
-  const summary = manualReviewCount > 0
-    ? `查價輸出完成：共 ${rows.length} 筆 system_order、${manualReviewCount} 項待複核事項。`
-    : `查價輸出完成：共 ${rows.length} 筆 system_order，無待複核事項。`;
+  const summary =
+    manualReviewCount > 0
+      ? `查價輸出完成：共 ${rows.length} 筆 system_order、${manualReviewCount} 項待複核事項。`
+      : `查價輸出完成：共 ${rows.length} 筆 system_order，無待複核事項。`;
   outputParts.push(`## quote_summary\n\n${summary}`);
   return {
     response: outputParts.filter(Boolean).join(document.newline + document.newline),
@@ -910,4 +1164,5 @@ export function finalizeQuotationMainResponse(input: FinalizeQuotationMainInput)
   };
 }
 
-export const finalizeQuotationResponse: typeof finalizeQuotationMainResponse = finalizeQuotationMainResponse;
+export const finalizeQuotationResponse: typeof finalizeQuotationMainResponse =
+  finalizeQuotationMainResponse;

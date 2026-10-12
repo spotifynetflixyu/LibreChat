@@ -447,10 +447,75 @@ it('compacts at 85 percent before generation and emits both lifecycle markers', 
     statuses,
     oauthCompactionConfigSchema.parse({ enabled: true }),
   );
-  await (await fetch(URL, requestInput('word '.repeat(215000)))).text();
+  await (await fetch(URL, requestInput('word '.repeat(400000)))).text();
   expect(calls).toHaveLength(2);
   expect(JSON.parse(String(calls[0].body)).input.at(-1)).toEqual({ type: 'compaction_trigger' });
   expect(statuses.map((status) => status.phase)).toEqual(['started', 'completed']);
+});
+
+it('does not compact GPT-6.1 Sol at the former shared context threshold', async () => {
+  const statuses: Array<{ phase: string; code?: string }> = [];
+  const input = requestInput('word '.repeat(215000));
+  const { fetch, calls } = createFetch(
+    new MemoryStore(),
+    [normalResponse()],
+    statuses,
+    oauthCompactionConfigSchema.parse({ enabled: true }),
+  );
+  await (await fetch(URL, input)).text();
+  expect(calls).toHaveLength(1);
+  expect(calls[0].body).toBe(input.body);
+  expect(statuses).toEqual([]);
+});
+
+it.each(['gpt-6-sol', 'gpt-6-luna', 'gpt-6-astra'])(
+  'keeps the former compaction threshold for %s',
+  async (model) => {
+    const input = requestInput('word '.repeat(215000));
+    input.body = JSON.stringify({ ...JSON.parse(String(input.body)), model });
+    const { fetch, calls } = createFetch(
+      new MemoryStore(),
+      [compactResponse('opaque-other-model'), normalResponse()],
+      [],
+      oauthCompactionConfigSchema.parse({ enabled: true }),
+    );
+    await (await fetch(URL, input)).text();
+    expect(calls).toHaveLength(2);
+    expect(JSON.parse(String(calls[0].body)).input.at(-1)).toEqual({ type: 'compaction_trigger' });
+  },
+);
+
+it.each([{ maxContextTokens: 258400 }, { maxContextTokensByModel: { 'gpt-6.1-sol': 258400 } }])(
+  'honors an explicitly configured former context limit for GPT-6.1 Sol: %j',
+  async (overrides) => {
+    const { fetch, calls } = createFetch(
+      new MemoryStore(),
+      [compactResponse('opaque-override'), normalResponse()],
+      [],
+      oauthCompactionConfigSchema.parse({ enabled: true, ...overrides }),
+    );
+    await (await fetch(URL, requestInput('word '.repeat(215000)))).text();
+    expect(calls).toHaveLength(2);
+  },
+);
+
+it('reports the selected Sol budget in context usage', async () => {
+  const onContextUsage = jest.fn();
+  const fetch = createOAuthCompactionFetch({
+    fetch: async () => normalResponse(),
+    store: new MemoryStore(),
+    config: oauthCompactionConfigSchema.parse({ enabled: true }),
+    scope: { ...scope, executionId: 'main' },
+    onContextUsage,
+  });
+  await (await fetch(URL, requestInput())).text();
+  expect(onContextUsage).toHaveBeenCalledWith(
+    expect.objectContaining({
+      model: 'gpt-6.1-sol',
+      contextBudget: 475000 - 8192,
+      breakdown: expect.objectContaining({ maxContextTokens: 475000 }),
+    }),
+  );
 });
 
 it('lets the provider confirm an oversized indivisible group before stopping', async () => {

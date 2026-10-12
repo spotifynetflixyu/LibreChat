@@ -1,5 +1,5 @@
 import mongoose from 'mongoose';
-import { MongoMemoryServer } from 'mongodb-memory-server';
+import { MongoMemoryReplSet } from 'mongodb-memory-server';
 
 import {
   createSteelQuotationArtifactModel,
@@ -18,7 +18,7 @@ import {
   MAX_QUOTATION_AUTHORITY_BYTES,
 } from './state';
 
-let mongoServer: MongoMemoryServer;
+let mongoServer: MongoMemoryReplSet;
 let service: ReturnType<typeof createService>;
 
 const scope: SteelQuotationScope = {
@@ -77,7 +77,7 @@ async function prepareCustomer(
 }
 
 beforeAll(async () => {
-  mongoServer = await MongoMemoryServer.create();
+  mongoServer = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } });
   await mongoose.connect(mongoServer.getUri());
   service = createService(mongoose);
 });
@@ -242,6 +242,46 @@ describe('Steel quotation state service', () => {
     expect(state?.activeRun?.leaseToken).toBe(
       leases[0]?.leaseToken ?? leases[1]?.leaseToken,
     );
+  });
+
+  it('freezes the accepted OCR source snapshot in the immutable run artifact', async () => {
+    const order = await service.setOrder({ scope, fullMarkdown: '# order' });
+    const ticket = await service.issueTicket({
+      scope,
+      customerMarkdown: '# customer',
+      customerIdentity: 'customer-a',
+      triggeringMessageId: 'message-1',
+      selectionProvenance: { method: 'selected', selectionMessageId: 'message-1' },
+    });
+    if (!ticket || !order.currentOrder) {
+      throw new Error('test setup did not create a quotation ticket');
+    }
+    const sourceSnapshot = {
+      orderHash: order.currentOrder.sha256,
+      generationId: 'ocr-generation-1',
+      resultMessageId: 'ocr-message-1',
+      resultHash: 'ocr-result-hash-1',
+      mappings: [{
+        fileId: 'file-1',
+        sourceCode: 'F1',
+        sourceFilename: 'drawing.pdf',
+        mediaType: 'application/pdf',
+      }],
+    };
+    const run = await service.acceptSignal({
+      scope,
+      index: ticket.index,
+      token: ticket.token,
+      orderHash: ticket.orderHash,
+      customerMarkdown: ticket.customerMarkdown,
+      customerIdentity: ticket.customerIdentity,
+      prompts,
+      chunks: [{ index: 1, sourceRowCount: 1 }],
+      sourceSnapshot,
+    });
+
+    const payload = await service.readArtifact({ scope, ref: run.snapshotRef });
+    expect(JSON.parse(payload ?? '{}').sourceSnapshot).toEqual(sourceSnapshot);
   });
 
   it('saves a customer without allocating an index and retains it when the order changes', async () => {
@@ -680,7 +720,8 @@ describe('Steel quotation state service', () => {
       conversationId: scope.conversationId,
       runId: prepared.run.runId,
     });
-    expect(artifacts).toBe(2);
+    expect(artifacts).toBe(1);
+    expect(await Artifact.exists({ ...scope, runId: prepared.run.runId, operationId: 'snapshot' })).toBeNull();
     expect(MAX_QUOTATION_ARTIFACT_BYTES).toBeGreaterThan(1_000_000);
   });
 
@@ -711,11 +752,14 @@ describe('Steel quotation state service', () => {
     const finalRef = await service.writeArtifact({ scope, runId: first.run.runId,
       operationId: 'final', kind: 'final', payload: 'complete system order', leaseToken: lease.leaseToken });
     expect(await service.hasSystemOrder(scope)).toBe(false);
+    await service.checkpoint({ scope, runId: first.run.runId, leaseToken: lease.leaseToken,
+      operationId: 'final', kind: 'final', artifactRef: finalRef });
     await service.completeRun({ scope, runId: first.run.runId, leaseToken: lease.leaseToken, finalRef });
     expect(await service.hasSystemOrder(scope)).toBe(true);
     expect(await service.hasSystemOrder({ userId: 'other-owner', conversationId: scope.conversationId })).toBe(false);
     expect(await service.hasSystemOrder({ userId: scope.userId, conversationId: 'other-conversation' })).toBe(false);
 
+    await service.markPublished({ scope, runId: first.run.runId, finalSha256: finalRef.sha256 });
     const latest = await prepareRun(scope, '# latest order');
     expect(await service.hasSystemOrder(scope)).toBe(false);
     const latestLease = await service.acquireLease({ scope, runId: latest.run.runId });
@@ -780,6 +824,9 @@ describe('Steel quotation state service', () => {
       expectedCurrentSystemOrderPresent: false,
     })).resolves.toEqual(originalSnapshot);
 
+    await expect(service.setOrder({ scope, fullMarkdown: '# changed order' })).rejects.toThrow('unfinished or unpublished');
+    expect((await service.readState(scope))?.currentOrder?.sha256).toBe(prepared.ticket.orderHash);
+    await service.markPublished({ scope, runId: prepared.run.runId, finalSha256: finalRef.sha256 });
     await service.setOrder({ scope, fullMarkdown: '# changed order' });
     expect(await service.hasSystemOrder(scope)).toBe(false);
     await expect(service.saveCurrentSystemOrder({
@@ -829,6 +876,7 @@ describe('Steel quotation state service', () => {
       leaseToken: lease.leaseToken,
       finalRef,
     });
+    await service.markPublished({ scope, runId: prepared.run.runId, finalSha256: finalRef.sha256 });
     const customerA = {
       customerIdentity: prepared.ticket.customerIdentity,
       customerMarkdown: prepared.ticket.customerMarkdown,

@@ -1,12 +1,12 @@
 import { RecoilRoot, useRecoilValue } from 'recoil';
 import { renderHook, act } from '@testing-library/react';
 import type { EventSubmission, TMessage } from 'librechat-data-provider';
-import { steelNativeActivityByMessageId, type SteelNativeActivityEvent } from '~/store/steel';
 import useSteelEventHandler, {
   appendSteelNativeActivityEvent,
   normalizePersistedSteelActivityEvent,
   normalizeSteelActivityEvent,
 } from '~/hooks/SSE/useSteelEventHandler';
+import { steelNativeActivityByMessageId, type SteelNativeActivityEvent } from '~/store/steel';
 
 const createSubmission = (initialResponseId = 'assistant-1'): EventSubmission =>
   ({
@@ -114,6 +114,66 @@ describe('useSteelEventHandler', () => {
         message: undefined,
       }),
     ).toEqual(expect.objectContaining({ type: 'quotation_status', status: 'running' }));
+  });
+
+  it('retains validated quotation OCR source metadata across live and persisted normalization', () => {
+    const source = {
+      source: 'human' as const,
+      version: 3,
+      savedAt: '2026-10-07T04:00:00.000Z',
+      messageId: 'assistant-source',
+      outputId: 'ocr_result:generation-3',
+      title: 'quotation.pdf',
+      revision: 'generation-3',
+    };
+    const event = normalizeSteelActivityEvent({
+      event: 'steel_event',
+      data: {
+        type: 'quotation_status',
+        source: 'quotation_preflight',
+        conversationId: 'conversation-1',
+        index: 3,
+        runId: 'quotation-run-3',
+        stage: 'completed',
+        status: 'completed',
+        completedChunks: 3,
+        totalChunks: 3,
+        ocrSource: source,
+      },
+    });
+
+    expect(event).toEqual(expect.objectContaining({ ocrSource: source }));
+    expect(normalizePersistedSteelActivityEvent(event)).toEqual(
+      expect.objectContaining({ ocrSource: source }),
+    );
+  });
+
+  it('rejects malformed quotation OCR source metadata', () => {
+    expect(
+      normalizeSteelActivityEvent({
+        event: 'steel_event',
+        data: {
+          type: 'quotation_status',
+          source: 'quotation_preflight',
+          conversationId: 'conversation-1',
+          index: 3,
+          runId: 'quotation-run-3',
+          stage: 'completed',
+          status: 'completed',
+          completedChunks: 3,
+          totalChunks: 3,
+          ocrSource: {
+            source: 'human',
+            version: 0,
+            savedAt: '2026-10-07T04:00:00.000Z',
+            messageId: 'assistant-source',
+            outputId: 'ocr_result:generation-3',
+            title: 'quotation.pdf',
+            revision: 'generation-3',
+          },
+        },
+      }),
+    ).toBeNull();
   });
 
   it('deduplicates restored and live chunk saves while preserving retry attempts', () => {

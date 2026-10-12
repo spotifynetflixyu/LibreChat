@@ -102,7 +102,7 @@ describe('Telemetry wiring', () => {
     const ingressIndex = source.indexOf(
       "app.use('/api/agents/chat', agentStartupIngressMiddleware);",
     );
-    const jsonParserIndex = source.indexOf("app.use(express.json({ limit: '3mb' }));");
+    const jsonParserIndex = source.indexOf('app.use(express.json(');
     const recorderIndex = source.indexOf(
       "app.use('/api/agents/chat', agentStartupTelemetryMiddleware);",
     );

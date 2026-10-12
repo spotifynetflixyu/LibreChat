@@ -76,6 +76,7 @@ const steelConversationOcrStateSchema: Schema<ISteelConversationOcrState> =
       currentOcrResultGenerationId: { type: String },
       currentOcrResultAttemptNumber: { type: Number },
       currentOcrResultProvenance: { type: steelConversationOcrResultProvenanceSchema },
+      reviewLockToken: { type: String },
     },
     { timestamps: true },
   );

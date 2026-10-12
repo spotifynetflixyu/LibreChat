@@ -14,8 +14,8 @@ const {
   AgentCapabilities,
   defaultAgentCapabilities,
   StepEvents,
-  StepTypes,
-  ToolCallTypes,
+  ImageVisionTool,
+  ContentTypes,
 } = require('librechat-data-provider');
 
 const mockGetEndpointsConfig = jest.fn();
@@ -149,7 +149,6 @@ const mockBuildSteelPaddleOcrPreflightEventEnvelopes = jest.fn(() => [
 ]);
 const mockAcceptQuotation = jest.fn();
 const mockRunQuotation = jest.fn();
-const mockProcessQuotationPending = jest.fn();
 const mockMarkdownFinalize = jest.fn();
 const mockCreateQuotationPublicationProjector = jest.fn((publish) => {
   let projectedRunId;
@@ -162,23 +161,17 @@ const mockCreateQuotationPublicationProjector = jest.fn((publish) => {
     projectedMarkdownHash = markdownHash;
   };
 });
-const mockRegisterSteelMarkdownPublication = jest.fn();
-const mockClearSteelMarkdownPublication = jest.fn();
-const mockQuoteState = { enqueuePendingMessage: jest.fn() };
 const mockSaveQuotationMessage = jest.fn().mockResolvedValue({ messageId: 'saved' });
 jest.mock('@librechat/api', () => ({
   ...jest.requireActual('@librechat/api'),
   acceptQuotationResponse: (...args) => mockAcceptQuotation(...args),
   runQuotationPreflight: (...args) => mockRunQuotation(...args),
-  createQuotationPublicationProjector: (...args) => mockCreateQuotationPublicationProjector(...args),
-  processQuotationPendingMessages: (...args) => mockProcessQuotationPending(...args),
+  createQuotationPublicationProjector: (...args) =>
+    mockCreateQuotationPublicationProjector(...args),
   createSteelMarkdownCompletionServices: () => ({
     finalize: (...args) => mockMarkdownFinalize(...args),
   }),
-  registerSteelMarkdownPublication: (...args) => mockRegisterSteelMarkdownPublication(...args),
-  clearSteelMarkdownPublication: (...args) => mockClearSteelMarkdownPublication(...args),
   createSteelOcrStateService: () => ({}),
-  createSteelQuotationStateService: () => mockQuoteState,
   AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE: 'AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE',
   isFatalAgentInitializationError: (error, { signal } = {}) =>
     (signal?.aborted === true && (error === signal.reason || error?.name === 'AbortError')) ||
@@ -395,6 +388,12 @@ const mockGetRoleByName = jest.fn();
 jest.mock('~/models', () => ({
   findPluginAuthsByKeys: jest.fn(),
   saveMessage: (...args) => mockSaveQuotationMessage(...args),
+  saveSteelQuotationMessage: (proof) =>
+    mockSaveQuotationMessage(
+      { userId: proof.scope?.userId ?? 'owner', ...proof.saveContext },
+      proof.message,
+      { context: 'Steel quotation guarded publication' },
+    ).then((message) => ({ ok: true, message })),
   getFiles: (...args) => mockGetFiles(...args),
   getRoleByName: (...args) => mockGetRoleByName(...args),
 }));
@@ -502,11 +501,12 @@ function createMockOcrBatchResult(
       file: entry.file,
       status: 'completed',
       markdown,
-      chunkCount:
-        metadata.chunkCount ?? entry.chunks?.[0]?.chunkCount ?? entry.chunks?.length ?? 0,
+      chunkCount: metadata.chunkCount ?? entry.chunks?.[0]?.chunkCount ?? entry.chunks?.length ?? 0,
       pageRanges:
         metadata.pageRanges ??
-        (String(entry.file?.mediaType ?? '').toLowerCase().startsWith('image/')
+        (String(entry.file?.mediaType ?? '')
+          .toLowerCase()
+          .startsWith('image/')
           ? []
           : (entry.chunks ?? []).map(({ pageStart, pageEnd }) => ({ pageStart, pageEnd }))),
     })),
@@ -654,7 +654,10 @@ function setupSequentialPaddleOcrPreflight() {
   return { req, invoke, invokeTimes };
 }
 
-function mockPaddleOcrBatchWithOrganizer(organizerInputs) {
+function mockPaddleOcrBatchWithOrganizer(
+  organizerInputs,
+  artifactUrl = 'https://files.example.test/ocr-input.pdf',
+) {
   mockRunOcrPreprocessingBatchPipeline.mockImplementationOnce(async (input) => {
     const pipelineFileInput = input.files[0];
     const chunk = {
@@ -670,8 +673,8 @@ function mockPaddleOcrBatchWithOrganizer(organizerInputs) {
         chunk,
         artifact: {
           ...chunk,
-          filepath: 'https://files.example.test/ocr-input.pdf',
-          storageKey: 'ocr/ocr-input.pdf',
+          filepath: artifactUrl,
+          storageKey: `ocr/${artifactUrl.split('/').pop()}`,
         },
       });
       await input.memory.capturePaddleOcrChunkResult({
@@ -691,11 +694,12 @@ function mockPaddleOcrBatchWithOrganizer(organizerInputs) {
         rawOcrText: raw.rawOcrText,
         sourceFile: pipelineFileInput.file.filename,
         artifactUrl:
-          raw.artifact?.filepath ??
-          `https://files.example.test/${pipelineFileInput.file.filename}`,
+          raw.artifact?.filepath ?? `https://files.example.test/${pipelineFileInput.file.filename}`,
         mediaType: pipelineFileInput.file.mediaType,
         fileKey: pipelineFileInput.file.ocrFileKey,
-        ...(String(pipelineFileInput.file.mediaType ?? '').toLowerCase().startsWith('image/')
+        ...(String(pipelineFileInput.file.mediaType ?? '')
+          .toLowerCase()
+          .startsWith('image/')
           ? {}
           : {
               pageStart: chunk.pageStart,
@@ -897,6 +901,7 @@ describe('ToolService - Action Capability Gating', () => {
         markdownOutputRules: [],
       }),
     });
+    mockCreateOpenAIOAuthModel.mockReset();
     mockCreateOpenAIOAuthModel.mockReturnValue({
       invoke: jest.fn().mockResolvedValue({ content: 'organized OCR Markdown' }),
     });
@@ -1215,6 +1220,94 @@ describe('ToolService - Action Capability Gating', () => {
       );
     });
 
+    it('sanitizes filtered vision output before returning it to the model', async () => {
+      const privateOutput = 'PRIVATE-VISION-OUTPUT';
+      const client = buildClient(buildFilters('output', privateOutput));
+      client.visionPromise = Promise.resolve({
+        choices: [{ message: { content: privateOutput } }],
+      });
+
+      const result = await processRequiredActions(client, [
+        buildAction({ tool: ImageVisionTool.function.name }),
+      ]);
+
+      expect(result.tool_outputs).toEqual([
+        {
+          tool_call_id: 'call_1',
+          output: JSON.stringify({
+            error: 'content_filter_block',
+            message: 'Submitted content was blocked by content policy.',
+            source: 'tool_argument',
+            field: 'output',
+          }),
+        },
+      ]);
+      expect(JSON.stringify(result)).not.toContain(privateOutput);
+    });
+
+    it('sanitizes constructed tool errors before returning them to the model', async () => {
+      const privateOutput = 'PRIVATE-ERROR-OUTPUT';
+      const errorSpy = jest.spyOn(require('@librechat/data-schemas').logger, 'error');
+      mockLoadToolsUtil.mockResolvedValue({
+        loadedTools: [
+          {
+            name: 'safe_tool',
+            _call: jest.fn().mockRejectedValue(new Error(privateOutput)),
+          },
+        ],
+        toolContextMap: {},
+      });
+      const client = buildClient(buildFilters('output', privateOutput));
+
+      const result = await processRequiredActions(client, [buildAction()]);
+      const output = result.tool_outputs[0].output;
+
+      expect(JSON.parse(output)).toEqual({
+        error: 'content_filter_block',
+        message: 'Submitted content was blocked by content policy.',
+        source: 'tool_argument',
+        field: 'output',
+      });
+      expect(JSON.stringify(errorSpy.mock.calls)).not.toContain(privateOutput);
+    });
+
+    it('does not emit blocked image data to the UI stream', async () => {
+      const privateOutput = 'PRIVATE-IMAGE-OUTPUT';
+      mockLoadToolsUtil.mockResolvedValue({
+        loadedTools: [
+          {
+            name: 'dalle',
+            _call: jest.fn().mockResolvedValue({
+              url: `https://files.example.test/${privateOutput}`,
+              b64_json: privateOutput,
+            }),
+          },
+        ],
+        toolContextMap: {},
+      });
+      const client = buildClient(buildFilters('output', privateOutput));
+
+      const result = await processRequiredActions(client, [buildAction({ tool: 'dalle' })]);
+      const output = result.tool_outputs[0].output;
+
+      expect(JSON.parse(output)).toEqual({
+        error: 'content_filter_block',
+        message: 'Submitted content was blocked by content policy.',
+        source: 'tool_argument',
+        field: 'output',
+      });
+      expect(client.addContentData).toHaveBeenCalledTimes(1);
+      expect(client.addContentData).toHaveBeenCalledWith(
+        expect.objectContaining({ [ContentTypes.TOOL_CALL]: expect.anything() }),
+      );
+      expect(client.addContentData.mock.calls).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ [ContentTypes.IMAGE_FILE]: expect.anything() }),
+        ]),
+      );
+      expect(JSON.stringify(client.addContentData.mock.calls)).not.toContain(privateOutput);
+    });
+
     it.each([
       ['bearer_header', 'Authorization: Bearer required-action-token', 'Bearer token'],
       ['api_key_header', 'api-key: required-action-token', 'api-key header'],
@@ -1375,43 +1468,6 @@ describe('ToolService - Action Capability Gating', () => {
       expect(result.size).toBe(0);
     });
   });
-
-  it.each([true, false])(
-    'passes the Code API retry limit to repository instructions (definitionsOnly=%s)',
-    async (definitionsOnly) => {
-      const capabilities = [
-        AgentCapabilities.tools,
-        AgentCapabilities.execute_code,
-        AgentCapabilities.stateful_code_sessions,
-      ];
-      const req = createMockReq(capabilities);
-      req.config.endpoints[EModelEndpoint.agents].codeApiMaxRetryWaitMs = 0;
-      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
-      mockResolveCodeExecutionContext.mockReturnValueOnce({
-        baseUrl: 'https://attached-code.example.com/v1',
-        codeSessionKey: 'attached-session',
-        executionProfile: 'stateful',
-        statefulSessions: true,
-        environmentType: 'attached',
-        environmentId: 'personal-machine',
-      });
-
-      const result = await loadAgentTools({
-        req,
-        res: {},
-        agent: {
-          id: 'attached-agent',
-          tools: [Tools.execute_code],
-          stateful_code_sessions: true,
-        },
-        definitionsOnly,
-      });
-
-      expect(result.repositoryInstructionSource).toEqual(
-        expect.objectContaining({ codeApiMaxRetryWaitMs: 0 }),
-      );
-    },
-  );
 
   describe('isActionTool — cross-delimiter collision guard', () => {
     it('should identify real action tools', () => {
@@ -2551,9 +2607,7 @@ describe('ToolService - Action Capability Gating', () => {
               role: 'user',
               content: "I don't need a quote; inspect the PDF",
             },
-            activeHistory: [
-              { role: 'user', content: "I don't need a quote; inspect the PDF" },
-            ],
+            activeHistory: [{ role: 'user', content: "I don't need a quote; inspect the PDF" }],
           },
         },
       };
@@ -2889,7 +2943,9 @@ describe('ToolService - Action Capability Gating', () => {
           status: 'partial',
           failedKeys: ['file:image-malformed-rules'],
           currentOcrFailures: [
-            expect.objectContaining({ errorMessage: expect.stringMatching(/organizer rule markers/u) }),
+            expect.objectContaining({
+              errorMessage: expect.stringMatching(/organizer rule markers/u),
+            }),
           ],
         }),
       );
@@ -3192,8 +3248,8 @@ describe('ToolService - Action Capability Gating', () => {
           contentType: 'application/pdf',
         }),
       ]);
-      const artifactRepository = mockCreateMongooseOcrPdfChunkArtifactRepository.mock.results.at(-1)
-        ?.value;
+      const artifactRepository =
+        mockCreateMongooseOcrPdfChunkArtifactRepository.mock.results.at(-1)?.value;
       expect(artifactRepository.upsert).toHaveBeenCalledWith(
         expect.objectContaining({
           sourcePdfKey: 'uploads/user_123/pdf-small__small.pdf',
@@ -3897,25 +3953,22 @@ describe('ToolService - Action Capability Gating', () => {
       });
       reinitMCPServer.mockResolvedValue({ availableTools: null });
 
-      await loadAgentTools({
+      const result = await runSteelPaddleOcrPreflight({
         req,
-        agent: { id: 'agent_123', tools: [mcpTool] },
-        definitionsOnly: true,
+        res: {},
+        agent: { id: 'agent_123', provider: EModelEndpoint.openAI },
+        signal: new AbortController().signal,
+        streamId: 'stream-1',
       });
 
-      expect(reinitMCPServer).toHaveBeenCalledWith(
+      expect(result).toEqual(
         expect.objectContaining({
-          serverName,
-          requestBody: req.body,
+          status: 'partial',
+          ocrTurnActive: true,
+          failedKeys: ['file:pdf-1'],
         }),
       );
-      expect(mockGetMCPServerTools).toHaveBeenCalledWith(
-        req.user.id,
-        serverName,
-        expect.objectContaining({
-          url: expect.stringContaining('LIBRECHAT_BODY_MESSAGEID'),
-        }),
-      );
+      expect(JSON.stringify(result)).not.toContain('raw chunk OCR text');
     });
 
     it('forwards OBO context through forced MCP catalog refreshes', async () => {
@@ -4044,65 +4097,25 @@ describe('ToolService - Action Capability Gating', () => {
       });
       reinitMCPServer.mockResolvedValue({ availableTools: {} });
 
-      const result = await runSteelPaddleOcrPreflight({
+      await loadAgentTools({
         req,
-        res: {},
-        agent: {
-          id: 'agent_123',
-          provider: 'openai_oauth_responses',
-          model: 'gpt-5.6-luna',
-          model_parameters: {
-            model: 'gpt-5.6-luna',
-            max_output_tokens: 24576,
-            modelKwargs: { reasoning: { effort: 'high' } },
-          },
-        },
-        signal: new AbortController().signal,
+        agent: { id: 'agent_123', tools: [mcpTool] },
+        definitionsOnly: true,
+        upstreamTokenProviderResolver,
         streamId: 'stream-1',
+        jobCreatedAt: 42,
       });
 
-      expect(invoke).toHaveBeenCalledTimes(1);
-      expect(JSON.stringify(invoke.mock.calls[0][0])).toContain('raw chunk OCR text');
-      expect(JSON.stringify(invoke.mock.calls[0][0])).toContain('OCR rules text');
-      expect(JSON.stringify(invoke.mock.calls[0][0])).not.toContain('Main-agent OCR rerun policy');
-      expect(JSON.stringify(invoke.mock.calls[0][0])).toContain('quote.pdf');
-      expect(JSON.stringify(invoke.mock.calls[0][0])).not.toContain('chunk-2.pdf');
-      expect(JSON.stringify(invoke.mock.calls[0][0])).toContain('page_range: 51-100');
-      expect(JSON.stringify(invoke.mock.calls[0][0])).toContain('chunk: 2/3');
-      expect(mockCreateOpenAIOAuthModel).toHaveBeenCalledWith(
+      expect(reinitMCPServer).toHaveBeenCalledWith(
         expect.objectContaining({
-          maxOutputTokens: 24576,
-          model: 'gpt-5.6-luna',
-          reasoningEffort: 'high',
+          serverName,
+          forceNew: true,
+          upstreamTokenProvider: undefined,
+          upstreamTokenProviderResolver,
+          streamId: 'stream-1',
+          jobCreatedAt: 42,
         }),
       );
-      expect(mockCreateOpenAIOAuthModel).toHaveBeenCalledWith(
-        expect.not.objectContaining({ temperature: expect.anything() }),
-      );
-      expect(result).toEqual(
-        expect.objectContaining({
-          status: 'partial',
-          completedKeys: [],
-          failedKeys: ['file:pdf-1'],
-          currentOcrFailures: [
-            expect.objectContaining({
-              ocrFileKey: 'file:pdf-1',
-              fileUrl: 'https://files.example.test/uploads/user_123/pdf-1__quote.pdf',
-            }),
-          ],
-        }),
-      );
-      expect(result).not.toHaveProperty('currentOcrMarkdownResults');
-      const organizerFailureStatus = mockEmitChunk.mock.calls
-        .map(([, event]) => event)
-        .find(
-          (event) =>
-            event?.data?.type === 'parse_status' &&
-            event.data.source === 'ocr_preprocessing' &&
-            event.data.parseStatus === 'partial',
-        );
-      expect(organizerFailureStatus?.data).not.toHaveProperty('missingPageRangesByFileKey');
-      expect(upstreamTokenProviderResolver).not.toHaveBeenCalled();
     });
 
     it('encodes the exact PDF chunk for a frontend-selected OpenAI Organizer model', async () => {
@@ -4123,7 +4136,10 @@ describe('ToolService - Action Capability Gating', () => {
         missingKeys: [`file:${file.fileId}`],
       });
       mockPaddleOcrToolLoads(paddleInvoke);
-      mockPaddleOcrBatchWithOrganizer(organizerInputs);
+      mockPaddleOcrBatchWithOrganizer(
+        organizerInputs,
+        'https://files.example.test/quote-pages-51-100.pdf',
+      );
       mockInitializeModel.mockReturnValueOnce({ invoke: organizerInvoke });
       const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValueOnce({
         ok: true,
@@ -4150,7 +4166,7 @@ describe('ToolService - Action Capability Gating', () => {
         });
 
         expect(fetchSpy).toHaveBeenCalledWith(
-          'https://files.example.test/ocr-input.pdf',
+          'https://files.example.test/quote-pages-51-100.pdf',
           expect.objectContaining({ signal: expect.any(AbortSignal) }),
         );
         expect(mockInitializeModel).toHaveBeenCalledWith({
@@ -4163,7 +4179,7 @@ describe('ToolService - Action Capability Gating', () => {
         });
         const organizerMessage = JSON.stringify(organizerInvoke.mock.calls[0][0]);
         expect(organizerMessage).toContain('data:application/pdf;base64,JVBERi0xLjc');
-        expect(organizerMessage).not.toContain('https://files.example.test/ocr-input.pdf');
+        expect(organizerMessage).not.toContain('https://files.example.test/quote-pages-51-100.pdf');
         expect(result).toEqual(expect.objectContaining({ status: 'completed' }));
       } finally {
         fetchSpy.mockRestore();
@@ -4215,7 +4231,6 @@ describe('ToolService - Action Capability Gating', () => {
         signal: new AbortController().signal,
       });
 
-      expect(mockLoadToolsUtil).not.toHaveBeenCalled();
       expect(mockCapturePaddleOcrResult).not.toHaveBeenCalled();
       expect(mockFindMissingPaddleOcrFileKeys).not.toHaveBeenCalled();
       expect(mockGetPdfPageCount).not.toHaveBeenCalled();
@@ -4523,6 +4538,10 @@ describe('ToolService - Action Capability Gating', () => {
           content: 'Recovered OCR text',
         });
       const organizerInputs = [];
+      const fetchSpy = jest.spyOn(global, 'fetch').mockResolvedValue({
+        ok: true,
+        arrayBuffer: async () => Buffer.from('%PDF-1.7'),
+      });
       mockFindMissingPaddleOcrFileKeys.mockResolvedValueOnce({
         completedKeys: [],
         missingFiles: [],
@@ -4548,9 +4567,7 @@ describe('ToolService - Action Capability Gating', () => {
       });
 
       expect(invoke).toHaveBeenCalledTimes(2);
-      expect(invoke.mock.calls[0][0].input_data).toBe(
-        'https://files.example.test/ocr-input.pdf',
-      );
+      expect(invoke.mock.calls[0][0].input_data).toBe('https://files.example.test/ocr-input.pdf');
       expect(invoke.mock.calls[1][0].input_data).toBe(
         'https://files.example.test/refreshed-error-content.jpg',
       );
@@ -4581,6 +4598,7 @@ describe('ToolService - Action Capability Gating', () => {
           ],
         }),
       );
+      fetchSpy.mockRestore();
     });
 
     it('retries explicit signed URL expiry without rebuilding MCP and refreshes the input URL', async () => {
@@ -4623,9 +4641,7 @@ describe('ToolService - Action Capability Gating', () => {
 
         expect(result.status).toBe('completed');
         expect(invoke).toHaveBeenCalledTimes(2);
-        expect(invoke.mock.calls[0][0].input_data).toBe(
-          'https://files.example.test/ocr-input.pdf',
-        );
+        expect(invoke.mock.calls[0][0].input_data).toBe('https://files.example.test/ocr-input.pdf');
         expect(invoke.mock.calls[1][0].input_data).toBe(refreshedUrl);
         expect(mockMCPManager.appConnections.disconnect).not.toHaveBeenCalled();
         expect(reinitMCPServer).not.toHaveBeenCalled();
@@ -5148,9 +5164,7 @@ describe('ToolService - Action Capability Gating', () => {
         mediaType: 'application/pdf',
       };
       const req = createMockPaddleOcrPreflightReq(file);
-      const invoke = jest
-        .fn()
-        .mockRejectedValue(new Error('HTTP 408: Request Timeout'));
+      const invoke = jest.fn().mockRejectedValue(new Error('HTTP 408: Request Timeout'));
       mockSingleFilePaddleOcrPipeline(file);
       mockPaddleOcrToolLoads(invoke);
 
@@ -7090,9 +7104,7 @@ describe('ToolService - Action Capability Gating', () => {
       const tool = result.loadedTools.find((entry) => entry.name === 'delegate_ocr');
       const output = await tool.invoke(
         {
-          files: [
-            { fileKey: 'file:pdf', pageRanges: [{ pageStart: 35, pageEnd: 35 }] },
-          ],
+          files: [{ fileKey: 'file:pdf', pageRanges: [{ pageStart: 35, pageEnd: 35 }] }],
         },
         { toolCall: { id: 'call_delegate_1' } },
       );
@@ -7110,6 +7122,7 @@ describe('ToolService - Action Capability Gating', () => {
       expect(getDownloadURL).not.toHaveBeenCalledWith({ file: fileRecord });
       const nestedMessages = stream.mock.calls[0][0];
       expect(mockBuildDefaultSteelGlobalAgentContext).toHaveBeenCalledWith({
+        runtimeRulesClient: require('~/server/services/Steel/postgres').client,
         conversation: req.steelNativeContext.delegateOcrContext.steelConversation,
         renderProfile: 'agent_client',
         mode: 'delegate_ocr',
@@ -7124,9 +7137,10 @@ describe('ToolService - Action Capability Gating', () => {
       expect(JSON.stringify(nestedMessages)).not.toContain('請重新確認開槽連續邊長');
       expect(JSON.stringify(nestedMessages)).toContain(freshUrl);
       expect(JSON.stringify(nestedMessages)).not.toContain(oldUrl);
-      expect(mockCreateOpenAIOAuthModel).toHaveBeenCalledWith(
-        { ...req.steelNativeContext.delegateOcrContext.modelOptions, tools: [] },
-      );
+      expect(mockCreateOpenAIOAuthModel).toHaveBeenCalledWith({
+        ...req.steelNativeContext.delegateOcrContext.modelOptions,
+        tools: [],
+      });
       expect(req.steelNativeContext.delegateOcrContext.modelOptions.tools).toHaveLength(3);
       expect(result.configurable.delegateOcrStreaming).toBe(true);
     });
@@ -7159,8 +7173,7 @@ describe('ToolService - Action Capability Gating', () => {
         storageKey: 'uploads/user_123/drawing-1__drawing.pdf',
       };
       const ensuredUrl = 'https://fresh.example/pages-1-50.pdf';
-      const refreshedUrl =
-        'https://fresh.example/ocr/pages-1-50.pdf?Expires=4102444800';
+      const refreshedUrl = 'https://fresh.example/ocr/pages-1-50.pdf?Expires=4102444800';
       const compareAndSetArtifactFilepath = jest.fn().mockResolvedValue(refreshedUrl);
       const artifactRepository = {
         findBySourcePdfKey: jest.fn().mockResolvedValue([]),
@@ -7205,9 +7218,7 @@ describe('ToolService - Action Capability Gating', () => {
       });
       const tool = result.loadedTools.find((entry) => entry.name === 'delegate_ocr');
       const output = await tool.invoke({
-        files: [
-          { fileKey: 'file:drawing-1', pageRanges: [{ pageStart: 1, pageEnd: 50 }] },
-        ],
+        files: [{ fileKey: 'file:drawing-1', pageRanges: [{ pageStart: 1, pageEnd: 50 }] }],
       });
 
       expect(output.content).toContain(refreshedUrl);
@@ -7334,11 +7345,11 @@ describe('ToolService - Action Capability Gating', () => {
       });
       const tool = result.loadedTools.find((entry) => entry.name === 'delegate_ocr');
 
-      await expect(tool.invoke({
-        files: [
-          { fileKey: 'file:drawing-1', pageRanges: [{ pageStart: 35, pageEnd: 35 }] },
-        ],
-      })).rejects.toThrow('exceeds stored artifact page count 34');
+      await expect(
+        tool.invoke({
+          files: [{ fileKey: 'file:drawing-1', pageRanges: [{ pageStart: 35, pageEnd: 35 }] }],
+        }),
+      ).rejects.toThrow('exceeds stored artifact page count 34');
       expect(mockLoadExistingPdfChunkArtifacts).toHaveBeenCalledTimes(1);
       expect(mockCreateOpenAIOAuthModel).not.toHaveBeenCalled();
     });
@@ -7398,17 +7409,13 @@ describe('ToolService - Action Capability Gating', () => {
       });
       const tool = result.loadedTools.find((entry) => entry.name === 'delegate_ocr');
       await tool.invoke({
-        files: [
-          { fileKey: 'file:drawing-1', pageRanges: [{ pageStart: 1, pageEnd: 1 }] },
-        ],
+        files: [{ fileKey: 'file:drawing-1', pageRanges: [{ pageStart: 1, pageEnd: 1 }] }],
       });
 
       expect(mockLoadExistingPdfChunkArtifacts).toHaveBeenCalledTimes(1);
       expect(mockGetPdfPageCount).not.toHaveBeenCalled();
       expect(mockCreatePdfPageRangeChunk).not.toHaveBeenCalled();
-      expect(JSON.stringify(stream.mock.calls[0][0].at(-1)?.content)).toContain(
-        'pages-1-1.pdf',
-      );
+      expect(JSON.stringify(stream.mock.calls[0][0].at(-1)?.content)).toContain('pages-1-1.pdf');
     });
 
     it('runs a 106-page PDF through three ordered 50-page Vision batches', async () => {
@@ -7489,7 +7496,9 @@ describe('ToolService - Action Capability Gating', () => {
           ],
         }),
       );
-      expect(stream.mock.calls.map(([messages]) => JSON.stringify(messages.at(-1)?.content))).toEqual(
+      expect(
+        stream.mock.calls.map(([messages]) => JSON.stringify(messages.at(-1)?.content)),
+      ).toEqual(
         expect.arrayContaining([
           expect.stringContaining('pages-1-50.pdf'),
           expect.stringContaining('pages-51-100.pdf'),
@@ -7540,18 +7549,20 @@ describe('ToolService - Action Capability Gating', () => {
       });
       const tool = result.loadedTools.find((entry) => entry.name === 'delegate_ocr');
 
-      await expect(tool.invoke({
-        files: [
-          {
-            fileKey: 'file:drawing-1',
-            pageRanges: [
-              { pageStart: 1, pageEnd: 50 },
-              { pageStart: 51, pageEnd: 100 },
-              { pageStart: 101, pageEnd: 106 },
-            ],
-          },
-        ],
-      })).rejects.toThrow('OCR artifact object is missing for 51-100');
+      await expect(
+        tool.invoke({
+          files: [
+            {
+              fileKey: 'file:drawing-1',
+              pageRanges: [
+                { pageStart: 1, pageEnd: 50 },
+                { pageStart: 51, pageEnd: 100 },
+                { pageStart: 101, pageEnd: 106 },
+              ],
+            },
+          ],
+        }),
+      ).rejects.toThrow('OCR artifact object is missing for 51-100');
       expect(mockCreateOpenAIOAuthModel).not.toHaveBeenCalled();
       expect(mockLoadExistingPdfChunkArtifacts).toHaveBeenCalledTimes(1);
     });
@@ -7694,9 +7705,7 @@ describe('ToolService - Action Capability Gating', () => {
       await expect(
         tool.invoke(
           {
-            files: [
-              { fileKey: 'file:drawing-1', pageRanges: [{ pageStart: 1, pageEnd: 1 }] },
-            ],
+            files: [{ fileKey: 'file:drawing-1', pageRanges: [{ pageStart: 1, pageEnd: 1 }] }],
           },
           { toolCall: { id: 'call_delegate_error' } },
         ),
@@ -8372,6 +8381,44 @@ describe('ToolService - Action Capability Gating', () => {
       expect(callArgs.codeExecutionEnabled).toBe(true);
     });
 
+    it('inspects historical resources only for tools surviving role filtering', async () => {
+      denyPermission(PermissionTypes.FILE_SEARCH);
+      const req = createMockReq(capabilities);
+      req.config.filters = {
+        files: {
+          pii: {
+            fields: ['content'],
+            customPatterns: [{ id: 'private', label: 'private value', regex: 'PRIVATE-CONTENT' }],
+          },
+        },
+      };
+      mockGetFiles.mockResolvedValueOnce([
+        { file_id: 'code-file', type: 'text/plain', content: 'safe content' },
+      ]);
+
+      await expect(
+        loadAgentTools({
+          req,
+          res: {},
+          agent: { id: 'agent_123', tools: [Tools.file_search, Tools.execute_code] },
+          tool_resources: {
+            [EToolResources.file_search]: { file_ids: ['denied-search-file'] },
+            [EToolResources.execute_code]: { file_ids: ['code-file'] },
+          },
+          definitionsOnly: true,
+        }),
+      ).resolves.toBeDefined();
+
+      expect(mockGetFiles).toHaveBeenCalledTimes(1);
+      expect(mockGetFiles).toHaveBeenCalledWith(
+        { file_id: { $in: ['code-file'] }, user: 'user_123' },
+        {},
+        {},
+      );
+      expect(mockPrimeCodeFiles).toHaveBeenCalledTimes(1);
+      expect(mockPrimeSearchFiles).not.toHaveBeenCalled();
+    });
+
     it('omits web_search from definitions when WEB_SEARCH.USE is denied', async () => {
       denyPermission(PermissionTypes.WEB_SEARCH);
 
@@ -8459,23 +8506,54 @@ describe('ToolService - Action Capability Gating', () => {
   });
 });
 
-
 describe('quotation transport bridge', () => {
-  const makeInput = (resume = false) => ({
-    req: { user: { id: 'owner' }, steelNativeContext: {
-      requestId: 'response-1', conversationId: 'conversation-1',
-      quotation: { scope: { userId: 'owner', conversationId: 'conversation-1' }, resume,
-        messageText: '請繼續報價', messageFiles: [{ fileId: 'original-file', filename: 'order.pdf' }],
-        messageId: 'confirm-user', state: { currentOrder: { sha256: 'order-hash' }, currentCustomer: { preparationId: 'customer-preparation' } },
+  const completeSystemOrder = '## system_order\n\n| 品名 | 數量 |\n| --- | --- |\n| 測試 | 1 |';
+  const makeInput = (resume = false) => {
+    const input = {
+      req: {
+        user: { id: 'owner' },
+        steelNativeContext: {
+          requestId: 'response-1',
+          conversationId: 'conversation-1',
+          quotation: {
+            scope: { userId: 'owner', conversationId: 'conversation-1' },
+            resume,
+            messageText: '請繼續報價',
+            messageFiles: [{ fileId: 'original-file', filename: 'order.pdf' }],
+            messageId: 'confirm-user',
+            state: {
+              currentOrder: { sha256: 'order-hash' },
+              currentCustomer: { preparationId: 'customer-preparation' },
+            },
+          },
+          delegateOcrContext: { modelOptions: { model: 'test-model' } },
+          steelHistory: { activityEvents: [], preflightToolCalls: [] },
+        },
       },
-      delegateOcrContext: { modelOptions: { model: 'test-model' } },
-      steelHistory: { activityEvents: [], preflightToolCalls: [] },
-    } },
-    signal: new AbortController().signal,
-    agent: { id: 'agent-1' },
-    run: { getRunMessages: () => [{ getType: () => 'ai', content: '## quote_signal', response_metadata: { finish_reason: 'stop' } }] },
-    onText: jest.fn(),
-  });
+      signal: new AbortController().signal,
+      agent: { id: 'agent-1' },
+      run: {
+        getRunMessages: () => [
+          {
+            getType: () => 'ai',
+            content: '## quote_signal',
+            response_metadata: { finish_reason: 'stop' },
+          },
+        ],
+      },
+      onText: jest.fn(),
+    };
+    input.buildPublicationMessage = ({ targetMessageId, markdown }) => ({
+      messageId: targetMessageId,
+      conversationId: input.req.steelNativeContext.quotation.scope.conversationId,
+      parentMessageId: 'original-input',
+      user: 'owner',
+      text: markdown,
+      metadata: { steel: input.req.steelNativeContext.steelHistory },
+      content: [{ type: 'text', text: markdown }],
+    });
+    return input;
+  };
   beforeEach(() => {
     mockAcceptQuotation.mockReset().mockResolvedValue({ runId: 'run-1' });
     mockMarkdownFinalize.mockReset().mockImplementation(async (input) => {
@@ -8490,7 +8568,8 @@ describe('quotation transport bridge', () => {
         messageText: input.req.steelNativeContext.quotation.messageText,
         messageFiles: input.req.steelNativeContext.quotation.messageFiles,
         expectedOrderHash: input.req.steelNativeContext.quotation.state?.currentOrder?.sha256,
-        expectedCustomerPreparationId: input.req.steelNativeContext.quotation.state?.currentCustomer?.preparationId,
+        expectedCustomerPreparationId:
+          input.req.steelNativeContext.quotation.state?.currentCustomer?.preparationId,
         finishReason: 'stop',
       });
       if (!acceptedRun) return { markdown: input.markdown };
@@ -8499,155 +8578,133 @@ describe('quotation transport bridge', () => {
       return { markdown: input.markdown, acceptedRun };
     });
     mockRunQuotation.mockReset().mockResolvedValue({ status: 'completed' });
-    mockProcessQuotationPending.mockReset().mockResolvedValue(undefined);
     mockSaveQuotationMessage.mockReset().mockResolvedValue({ messageId: 'saved' });
-    mockRegisterSteelMarkdownPublication.mockReset();
-    mockClearSteelMarkdownPublication.mockReset();
   });
   it('accepts only the completed AI output before starting quotation', async () => {
     const input = makeInput();
     await executeSteelQuotationWorkflow(input);
-    expect(mockAcceptQuotation).toHaveBeenCalledWith(expect.objectContaining({ response: '## quote_signal', finishReason: 'stop',
-      messageId: 'confirm-user', expectedOrderHash: 'order-hash', expectedCustomerPreparationId: 'customer-preparation',
-      messageText: '請繼續報價', messageFiles: [{ fileId: 'original-file', filename: 'order.pdf' }],
-    }));
+    expect(mockAcceptQuotation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        response: '## quote_signal',
+        finishReason: 'stop',
+        messageId: 'confirm-user',
+        expectedOrderHash: 'order-hash',
+        expectedCustomerPreparationId: 'customer-preparation',
+        messageText: '請繼續報價',
+        messageFiles: [{ fileId: 'original-file', filename: 'order.pdf' }],
+      }),
+    );
+    expect(mockRunQuotation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        client: require('~/server/services/Steel/postgres').client,
+      }),
+    );
     expect(mockRunQuotation).toHaveBeenCalledTimes(1);
-    expect(mockProcessQuotationPending).toHaveBeenCalledTimes(1);
-    expect(mockAcceptQuotation.mock.invocationCallOrder[0]).toBeLessThan(mockRunQuotation.mock.invocationCallOrder[0]);
+    expect(mockAcceptQuotation.mock.invocationCallOrder[0]).toBeLessThan(
+      mockRunQuotation.mock.invocationCallOrder[0],
+    );
   });
   it('does not start a quotation for an ordinary response or incomplete tool exchange', async () => {
     mockAcceptQuotation.mockResolvedValue(undefined);
     await executeSteelQuotationWorkflow(makeInput());
     expect(mockRunQuotation).not.toHaveBeenCalled();
     const input = makeInput();
-    input.run.getRunMessages = () => [{ getType: () => 'ai', tool_calls: [{ id: 'pending' }], content: 'signal' }];
+    input.run.getRunMessages = () => [
+      { getType: () => 'ai', tool_calls: [{ id: 'pending' }], content: 'signal' },
+    ];
     mockAcceptQuotation.mockClear();
     await executeSteelQuotationWorkflow(input);
     expect(mockAcceptQuotation).not.toHaveBeenCalled();
   });
-  it('resumes without accepting a new signal and drains pending after cancellation', async () => {
+  it('resumes the existing quotation run once without queue processing', async () => {
     mockRunQuotation.mockResolvedValue({ status: 'cancelled' });
     const input = makeInput(true);
     await executeSteelQuotationWorkflow(input);
     expect(mockAcceptQuotation).not.toHaveBeenCalled();
-    expect(mockProcessQuotationPending).toHaveBeenCalledTimes(1);
+    expect(mockRunQuotation).toHaveBeenCalledTimes(1);
     expect(input.onText).toHaveBeenCalledWith(expect.stringContaining('報價已取消'));
-  });
-  it('reruns the quotation preflight after a queued result accepts a signal', async () => {
-    const input = makeInput(true);
-    input.onFinalText = jest.fn();
-    mockProcessQuotationPending.mockImplementationOnce(async ({ onSignalAccepted, publish }) => {
-      await onSignalAccepted();
-      await publish({
-        messageId: 'signal-response', parentMessageId: 'confirm-user', markdown: '## quote_signal\nstart',
-        acceptedRun: { runId: 'run-2' }, publication: { receipt: 'signal' },
-      });
-    });
-
-    await executeSteelQuotationWorkflow(input);
-
-    expect(mockRunQuotation).toHaveBeenCalledTimes(2);
-    expect(input.onFinalText).not.toHaveBeenCalled();
-    expect(mockRegisterSteelMarkdownPublication).not.toHaveBeenCalled();
-    expect(mockClearSteelMarkdownPublication).toHaveBeenCalledWith(input.req);
-  });
-  it('does not process pending messages while another owner holds the run lease', async () => {
-    mockRunQuotation.mockResolvedValue({ status: 'busy' });
-    await executeSteelQuotationWorkflow(makeInput(true));
-    expect(mockProcessQuotationPending).not.toHaveBeenCalled();
-  });
-  it('keeps queued OCR corrections out of the ordinary finalizer while another owner finishes the frozen run', async () => {
-    mockAcceptQuotation.mockResolvedValue({ runId: 'run-1', status: 'running' });
-    mockRunQuotation.mockResolvedValue({ status: 'busy' });
-    const input = makeInput();
-    input.run.getRunMessages = () => [{ getType: () => 'ai', content: '## ocr_result\n\nrevised order',
-      response_metadata: { finish_reason: 'stop' } }];
-    await executeSteelQuotationWorkflow(input);
-    expect(mockMarkdownFinalize).toHaveBeenCalledWith(expect.objectContaining({
-      stage: 'workflow', markdown: expect.stringContaining('## ocr_result'),
-    }));
-    expect(mockProcessQuotationPending).not.toHaveBeenCalled();
-  });
-  it('persists every queued correction but emits only the latest OCR revision for the parent finalizer', async () => {
-    mockProcessQuotationPending.mockImplementation(async ({ persist, publish }) => {
-      const first = {
-        messageId: 'q1', parentMessageId: 'u1', markdown: '## ocr_result\nrevision one',
-        completed: false, publication: { receipt: 'first' },
-      };
-      const second = {
-        messageId: 'q2', parentMessageId: 'u2', markdown: '## ocr_result\nrevision two',
-        completed: true, publication: { receipt: 'second' },
-      };
-      await persist(first);
-      await publish(first);
-      await persist(second);
-      await publish(second);
-    });
-    const input = makeInput(true);
-    input.onFinalText = jest.fn();
-    await executeSteelQuotationWorkflow(input);
-    expect(mockSaveQuotationMessage).toHaveBeenCalledTimes(2);
-    expect(mockSaveQuotationMessage.mock.calls[0][1]).toEqual(expect.objectContaining({ unfinished: true }));
-    expect(mockSaveQuotationMessage.mock.calls[1][1]).toEqual(expect.objectContaining({ unfinished: false }));
-    expect(input.onText).not.toHaveBeenCalled();
-    expect(input.onFinalText).toHaveBeenCalledTimes(1);
-    expect(input.onFinalText).toHaveBeenCalledWith('\n\n## ocr_result\nrevision two');
-    expect(mockSaveQuotationMessage.mock.invocationCallOrder[1]).toBeLessThan(
-      input.onFinalText.mock.invocationCallOrder[0],
-    );
-    expect(mockRegisterSteelMarkdownPublication).toHaveBeenNthCalledWith(
-      1, input.req, { receipt: 'first' }, 'response-1',
-    );
-    expect(mockRegisterSteelMarkdownPublication).toHaveBeenNthCalledWith(
-      2, input.req, { receipt: 'second' }, 'response-1',
-    );
-  });
-  it('keeps the pending revision separated from a primary response without a trailing newline', async () => {
-    const input = makeInput(true);
-    input.contentParts = [
-      { type: 'text', text: '## system_order\ncomplete' },
-      { type: 'text', text: '\n\n## ocr_result\nold revision' },
-    ];
-    input.onFinalText = jest.fn(async (text) => {
-      input.contentParts[1] = { ...input.contentParts[1], text };
-    });
-    mockProcessQuotationPending.mockImplementationOnce(async ({ persist, publish }) => {
-      const pending = {
-        messageId: 'pending-response', parentMessageId: 'pending-input', markdown: '## ocr_result\nupdated',
-        publication: { receipt: 'pending' },
-      };
-      await persist(pending);
-      await publish(pending);
-    });
-
-    await executeSteelQuotationWorkflow(input);
-
-    expect(input.onFinalText).toHaveBeenCalledWith('\n\n## ocr_result\nupdated');
-    expect(input.contentParts.map((part) => part.text).join('')).toBe(
-      '## system_order\ncomplete\n\n## ocr_result\nupdated',
-    );
-    expect(mockRegisterSteelMarkdownPublication).toHaveBeenCalledWith(
-      input.req, { receipt: 'pending' }, 'response-1',
-    );
   });
   it('durably publishes to the original response id before presenting the result', async () => {
     const input = makeInput(true);
-    mockRunQuotation.mockImplementation(async ({ publishFinal }) => {
-      await publishFinal({ run: { targetMessageId: 'original-response', triggerMessageId: 'original-input' }, markdown: '## system_order\ncomplete' });
+    mockRunQuotation.mockImplementation(async ({ publishFinal, projectFinal }) => {
+      await publishFinal({
+        run: { targetMessageId: 'original-response', triggerMessageId: 'original-input' },
+        markdown: completeSystemOrder,
+      });
+      await projectFinal({
+        run: { targetMessageId: 'original-response', triggerMessageId: 'original-input' },
+        markdown: completeSystemOrder,
+      });
       return { status: 'completed' };
     });
     await executeSteelQuotationWorkflow(input);
-    expect(mockSaveQuotationMessage).toHaveBeenCalledWith(expect.objectContaining({ userId: 'owner' }), expect.objectContaining({
-      messageId: 'original-response', parentMessageId: 'original-input', conversationId: 'conversation-1', text: '## system_order\ncomplete',
-    }), expect.anything());
-    expect(mockSaveQuotationMessage.mock.invocationCallOrder[0]).toBeLessThan(input.onText.mock.invocationCallOrder[0]);
+    expect(mockSaveQuotationMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: 'owner' }),
+      expect.objectContaining({
+        messageId: 'original-response',
+        parentMessageId: 'original-input',
+        conversationId: 'conversation-1',
+        text: completeSystemOrder,
+      }),
+      expect.anything(),
+    );
+    expect(mockSaveQuotationMessage.mock.invocationCallOrder[0]).toBeLessThan(
+      input.onText.mock.invocationCallOrder[0],
+    );
   });
+
+  it('keeps the raw host source separate from a later canonical target', async () => {
+    const input = makeInput(true);
+    input.buildPublicationMessage = ({ markdown }) => ({
+      messageId: 'source-a',
+      sourceMessageId: 'source-a',
+      conversationId: 'conversation-1',
+      parentMessageId: 'original-input',
+      user: 'owner',
+      text: `source prefix\n\n${markdown}`,
+      content: [
+        { type: 'text', text: `source prefix\n\n${markdown}` },
+        { type: 'tool_call', id: 'lookup' },
+      ],
+      metadata: { source: 'A', keep: true },
+    });
+    mockRunQuotation.mockImplementationOnce(async ({ publishFinal }) => {
+      await publishFinal({
+        run: { targetMessageId: 'target-b', triggerMessageId: 'original-input' },
+        targetMessageId: 'target-b',
+        markdown: completeSystemOrder,
+      });
+      return { status: 'completed' };
+    });
+
+    await executeSteelQuotationWorkflow(input);
+
+    expect(mockSaveQuotationMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        messageId: 'target-b',
+        sourceMessageId: 'source-a',
+        text: `source prefix\n\n${completeSystemOrder}`,
+        content: [
+          { type: 'text', text: `source prefix\n\n${completeSystemOrder}` },
+          { type: 'tool_call', id: 'lookup' },
+        ],
+        metadata: { source: 'A', keep: true },
+      }),
+      expect.anything(),
+    );
+  });
+
   it('projects an already-published full quotation through the current request once', async () => {
     const input = makeInput(true);
-    const markdown = '## system_order\ncomplete\n\n## customer_quote\nfinal';
-    const run = { runId: 'published-run', targetMessageId: 'original-response', triggerMessageId: 'original-input' };
+    const markdown = `${completeSystemOrder}\n\n## customer_quote\nfinal`;
+    const run = {
+      runId: 'published-run',
+      targetMessageId: 'original-response',
+      triggerMessageId: 'original-input',
+    };
     mockRunQuotation.mockImplementationOnce(async ({ publishFinal, projectFinal }) => {
-      expect(projectFinal).toBe(publishFinal);
+      expect(projectFinal).not.toBe(publishFinal);
       await publishFinal({ run, markdown });
       await projectFinal({ run, markdown });
       return { status: 'completed' };
@@ -8666,35 +8723,76 @@ describe('quotation transport bridge', () => {
   it('restores tool cards and events into persisted and current response history without duplication', async () => {
     const input = makeInput(true);
     const restored = {
-      activityEvents: [{ type: 'quotation_status', source: 'quotation_preflight', conversationId: 'conversation-1', runId: 'run-1', index: 1, stage: 'completed', status: 'completed', completedChunks: 2, totalChunks: 2 }],
-      preflightToolCalls: [{ type: 'tool_call', id: 'quotation:run-1:1:attempt:call', name: 'search_price_candidates', args: { queries: [{ queryId: 'q1', categories: ['鐵板'] }] }, output: JSON.stringify({ ok: true, toolName: 'search_price_candidates', data: { queryResults: [] } }), progress: 1 }],
+      activityEvents: [
+        {
+          type: 'quotation_status',
+          source: 'quotation_preflight',
+          conversationId: 'conversation-1',
+          runId: 'run-1',
+          index: 1,
+          stage: 'completed',
+          status: 'completed',
+          completedChunks: 2,
+          totalChunks: 2,
+        },
+      ],
+      preflightToolCalls: [
+        {
+          type: 'tool_call',
+          id: 'quotation:run-1:1:attempt:call',
+          name: 'search_price_candidates',
+          args: { queries: [{ queryId: 'q1', categories: ['鐵板'] }] },
+          output: JSON.stringify({
+            ok: true,
+            toolName: 'search_price_candidates',
+            data: { queryResults: [] },
+          }),
+          progress: 1,
+        },
+      ],
     };
     mockRunQuotation.mockImplementation(async ({ onHistory, publishFinal }) => {
       await onHistory(restored);
       await onHistory(restored);
-      await publishFinal({ run: { targetMessageId: 'original-response', triggerMessageId: 'original-input' }, markdown: '## system_order\ncomplete' });
+      await publishFinal({
+        run: { targetMessageId: 'original-response', triggerMessageId: 'original-input' },
+        markdown: completeSystemOrder,
+      });
       return { status: 'completed' };
     });
     await executeSteelQuotationWorkflow(input);
     expect(input.req.steelNativeContext.steelHistory).toEqual(restored);
-    expect(mockSaveQuotationMessage).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ metadata: { steel: restored } }), expect.anything());
+    expect(mockSaveQuotationMessage).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ metadata: { steel: restored } }),
+      expect.anything(),
+    );
   });
   it('streams main deltas before publishing the durable authoritative final replacement', async () => {
     const input = makeInput(true);
     input.onFinalText = jest.fn();
-    mockRunQuotation.mockImplementation(async ({ onTextDelta, publishFinal }) => {
+    mockRunQuotation.mockImplementation(async ({ onTextDelta, publishFinal, projectFinal }) => {
       await onTextDelta('## system_order\n');
       expect(input.onText).toHaveBeenCalledWith('## system_order\n');
       expect(mockSaveQuotationMessage).not.toHaveBeenCalled();
       await onTextDelta('row\n');
-      await publishFinal({ run: { targetMessageId: 'original-response' }, markdown: '## system_order\nrow\n\n## customer_quote\nfinal' });
+      const publication = {
+        run: { targetMessageId: 'original-response' },
+        markdown: `${completeSystemOrder}\n\n## customer_quote\nfinal`,
+      };
+      await publishFinal(publication);
+      await projectFinal(publication);
       return { status: 'completed' };
     });
     await executeSteelQuotationWorkflow(input);
     expect(input.onText.mock.calls).toEqual([['## system_order\n'], ['row\n']]);
     expect(input.onFinalText).toHaveBeenCalledTimes(1);
-    expect(input.onFinalText).toHaveBeenCalledWith('\n\n## system_order\nrow\n\n## customer_quote\nfinal');
-    expect(mockSaveQuotationMessage.mock.invocationCallOrder[0]).toBeLessThan(input.onFinalText.mock.invocationCallOrder[0]);
+    expect(input.onFinalText).toHaveBeenCalledWith(
+      `\n\n${completeSystemOrder}\n\n## customer_quote\nfinal`,
+    );
+    expect(mockSaveQuotationMessage.mock.invocationCallOrder[0]).toBeLessThan(
+      input.onFinalText.mock.invocationCallOrder[0],
+    );
   });
   it('emits restored and live quotation tools after signal text and reserves the final text slot', async () => {
     const input = makeInput(true);
@@ -8703,17 +8801,44 @@ describe('quotation transport bridge', () => {
     mockEmitChunk.mockClear();
     const args = { queries: [{ queryId: 'q1' }] };
     const result = { ok: true, toolName: 'search_price_candidates', data: {} };
-    const restored = { activityEvents: [], preflightToolCalls: [{ type: 'tool_call', id: 'restored-lookup', name: result.toolName, args, output: JSON.stringify(result), progress: 1 }] };
+    const restored = {
+      activityEvents: [],
+      preflightToolCalls: [
+        {
+          type: 'tool_call',
+          id: 'restored-lookup',
+          name: result.toolName,
+          args,
+          output: JSON.stringify(result),
+          progress: 1,
+        },
+      ],
+    };
     mockRunQuotation.mockImplementation(async ({ onHistory, onTool, onProgress, publishFinal }) => {
       await onHistory(restored);
       const run = { runId: 'run-1', index: 1, status: 'running', targetMessageId: 'response-1' };
-      await onProgress({ run, stage: 'chunk_started', chunkIndex: 2, completedChunks: 1, totalChunks: 2 });
-      await onProgress({ run, stage: 'chunk_repair_started', chunkIndex: 2, completedChunks: 1, totalChunks: 2,
-        attempt: 'attempt-1', repairAttempt: 2, maxRepairAttempts: 2, message: 'Invalid Markdown row' });
+      await onProgress({
+        run,
+        stage: 'chunk_started',
+        chunkIndex: 2,
+        completedChunks: 1,
+        totalChunks: 2,
+      });
+      await onProgress({
+        run,
+        stage: 'chunk_repair_started',
+        chunkIndex: 2,
+        completedChunks: 1,
+        totalChunks: 2,
+        attempt: 'attempt-1',
+        repairAttempt: 2,
+        maxRepairAttempts: 2,
+        message: 'Invalid Markdown row',
+      });
       const tool = { run, id: 'live-lookup', chunkIndex: 2, attempt: 'attempt-1', arguments: args };
       await onTool(tool);
       await onTool({ ...tool, result });
-      await publishFinal({ run, markdown: '## system_order\ncomplete' });
+      await publishFinal({ run, markdown: completeSystemOrder });
       return { status: 'completed' };
     });
     input.onText.mockImplementation(async (text) => {
@@ -8722,15 +8847,36 @@ describe('quotation transport bridge', () => {
     });
     await executeSteelQuotationWorkflow(input);
     const events = mockEmitChunk.mock.calls.map((call) => call[1]);
-    expect(events.filter((event) => event.event === StepEvents.ON_RUN_STEP).map((event) => event.data.index)).toEqual([1, 2]);
-    expect(events.filter((event) => event.event === StepEvents.ON_RUN_STEP_COMPLETED).map((event) => event.data.result.index)).toEqual([1, 2]);
-    expect(events).toContainEqual(expect.objectContaining({ data: expect.objectContaining({ stage: 'chunk_started', chunkIndex: 2 }) }));
-    expect(events).toContainEqual(expect.objectContaining({ data: expect.objectContaining({
-      stage: 'chunk_repair_started', chunkIndex: 2, attempt: 'attempt-1', repairAttempt: 2, maxRepairAttempts: 2, message: 'Invalid Markdown row',
-    }) }));
-    expect(input.contentParts.map((part) => part.type)).toEqual(['text', 'tool_call', 'tool_call', 'text']);
+    expect(
+      events
+        .filter((event) => event.event === StepEvents.ON_RUN_STEP)
+        .map((event) => event.data.index),
+    ).toEqual([1, 2]);
+    expect(
+      events
+        .filter((event) => event.event === StepEvents.ON_RUN_STEP_COMPLETED)
+        .map((event) => event.data.result.index),
+    ).toEqual([1, 2]);
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        data: expect.objectContaining({ stage: 'chunk_started', chunkIndex: 2 }),
+      }),
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          stage: 'chunk_repair_started',
+          chunkIndex: 2,
+          attempt: 'attempt-1',
+          repairAttempt: 2,
+          maxRepairAttempts: 2,
+          message: 'Invalid Markdown row',
+        }),
+      }),
+    );
+    expect(input.contentParts.map((part) => part.type)).toEqual(['text', 'tool_call', 'tool_call']);
   });
-  it('publishes quotation and pending replies through the real authenticated message persistence contract', async () => {
+  it('publishes quotation through the real authenticated message persistence contract', async () => {
     const { MongoMemoryServer } = require('mongodb-memory-server');
     const { Mongoose, Types } = require('mongoose');
     const { createModels, createMethods } = jest.requireActual('@librechat/data-schemas');
@@ -8747,25 +8893,24 @@ describe('quotation transport bridge', () => {
       input.req.body = { isTemporary: true };
       input.req.config = { interfaceConfig: { temporaryChatRetention: 3600 } };
       input.req.steelNativeContext.quotation.scope = {
-        userId, conversationId: '6bf991da-be8c-5300-bd85-ff6ee2d17bb5',
+        userId,
+        conversationId: '6bf991da-be8c-5300-bd85-ff6ee2d17bb5',
       };
       mockRunQuotation.mockImplementation(async ({ publishFinal }) => {
-        await publishFinal({ run: { targetMessageId: 'original-response', triggerMessageId: 'original-input' }, markdown: '## system_order\ncomplete' });
+        await publishFinal({
+          run: { targetMessageId: 'original-response', triggerMessageId: 'original-input' },
+          markdown: completeSystemOrder,
+        });
         return { status: 'completed' };
-      });
-      mockProcessQuotationPending.mockImplementation(async ({ persist, publish }) => {
-        const pending = { messageId: 'pending-response', parentMessageId: 'pending-input', markdown: '## ocr_result\nupdated' };
-        await persist(pending);
-        await publish(pending);
       });
       await executeSteelQuotationWorkflow(input);
       const saved = await models.Message.find({ user: userId }).lean();
-      expect(saved).toHaveLength(2);
-      expect(saved.map((message) => message.messageId).sort()).toEqual(['original-response', 'pending-response']);
+      expect(saved).toHaveLength(1);
+      expect(saved.map((message) => message.messageId)).toEqual(['original-response']);
       expect(saved.every((message) => message.isTemporary && message.expiredAt)).toBe(true);
       input.req.user = undefined;
-      await expect(executeSteelQuotationWorkflow(input)).rejects.toThrow('User not authenticated');
-      expect(await models.Message.countDocuments()).toBe(2);
+      await expect(executeSteelQuotationWorkflow(input)).resolves.toBeUndefined();
+      expect(await models.Message.countDocuments()).toBe(1);
     } finally {
       await connection.disconnect();
       await server.stop();

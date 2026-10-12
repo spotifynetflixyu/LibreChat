@@ -1,3 +1,4 @@
+const steelPostgres = require('~/server/services/Steel/postgres');
 const { nanoid } = require('nanoid');
 const { logger } = require('@librechat/data-schemas');
 const { Callback, formatAgentMessages } = require('@librechat/agents');
@@ -804,6 +805,7 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
       });
       const currentUserTurnText = normalizeDelegateOcrChunk(currentUserTurn?.content);
       const steelNativeContext = await buildDefaultSteelGlobalAgentContext({
+        runtimeRulesClient: steelPostgres.client,
         conversation: steelConversation,
         renderProfile: 'agents_chat_completions',
       });

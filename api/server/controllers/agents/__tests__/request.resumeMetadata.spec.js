@@ -69,6 +69,8 @@ const mockFilterPersistableAbortContent = jest.fn((content) =>
 const mockGetConvo = jest.fn();
 const mockGetMessages = jest.fn();
 const mockSaveMessage = jest.fn();
+const mockSaveSteelQuotationMessage = jest.fn();
+const mockGetMessage = jest.fn();
 const mockMarkdownFinalize = jest.fn();
 const mockShouldDeferSteelMarkdownPersistence = jest.fn();
 const mockSaveConvo = jest.fn();
@@ -128,6 +130,8 @@ const mockCreateAgentEventActorTurn = jest.fn((input, dependencies) => {
   };
 });
 const mockCreateAgentEventActorDetachedActionLifecycle = jest.fn(() => undefined);
+const mockCreateSteelQuotationPublicationPublisher = jest.fn((...args) =>
+  jest.requireActual('@librechat/api').createSteelQuotationPublicationPublisher(...args));
 const mockFindAgentEventAppliedAction = jest.fn();
 const mockResolveAgentTurnExecutionPlan = jest.fn((input) => {
   let origin = 'user';
@@ -261,6 +265,10 @@ jest.mock('@librechat/api', () => ({
   createSteelMarkdownCompletionServices: jest.fn(() => ({
     finalize: (...args) => mockMarkdownFinalize(...args),
   })),
+  createSteelQuotationPublicationPublisher: (...args) =>
+    mockCreateSteelQuotationPublicationPublisher(...args),
+  createSteelFullMarkdownPublisher: (...args) =>
+    jest.requireActual('@librechat/api').createSteelFullMarkdownPublisher(...args),
   shouldDeferSteelMarkdownPersistence: (...args) => mockShouldDeferSteelMarkdownPersistence(...args),
   resolvePersistedTurnConversation: jest.requireActual('@librechat/api').resolvePersistedTurnConversation,
   getSteerRecoveryFailure: jest.requireActual(
@@ -392,9 +400,12 @@ jest.mock('~/cache', () => ({
 
 jest.mock('~/models', () => ({
   saveMessage: (...args) => mockSaveMessage(...args),
+  saveSteelQuotationMessage: (...args) => mockSaveSteelQuotationMessage(...args),
+  publishSteelMarkdown: jest.fn().mockResolvedValue({ ok: true, message: {} }),
   saveConvo: (...args) => mockSaveConvo(...args),
   appendConvoMessageReference: (...args) => mockAppendConvoMessageReference(...args),
   getMessages: (...args) => mockGetMessages(...args),
+  getMessage: (...args) => mockGetMessage(...args),
   getConvo: (...args) => mockGetConvo(...args),
   getAgentEventActorSnapshot: (...args) => mockGetAgentEventActorSnapshot(...args),
   commitAgentEventActorState: (...args) => mockCommitAgentEventActorState(...args),
@@ -465,6 +476,7 @@ describe('ResumableAgentController resume metadata', () => {
     const api = jest.requireActual('@librechat/api');
     const completionExports = [
       'createSteelMarkdownCompletionServices',
+      'createSteelQuotationPublicationPublisher',
       'registerSteelMarkdownPublication',
       'shouldDeferSteelMarkdownPersistence',
       'createQuotationPublicationProjector',
@@ -562,6 +574,13 @@ describe('ResumableAgentController resume metadata', () => {
     mockGenerationJobManager.steering.park.mockResolvedValue(undefined);
     mockGenerationJobManager.steering.consumeRecovered.mockResolvedValue(true);
     mockSaveMessage.mockResolvedValue({});
+    mockCreateSteelQuotationPublicationPublisher.mockReset().mockImplementation((...args) =>
+      jest.requireActual('@librechat/api').createSteelQuotationPublicationPublisher(...args));
+    mockSaveSteelQuotationMessage.mockReset().mockImplementation(async ({ message }) => ({
+      ok: true,
+      message,
+    }));
+    mockGetMessage.mockResolvedValue(null);
     mockSaveConvo.mockResolvedValue({});
     mockAppendConvoMessageReference.mockResolvedValue({});
     mockDeleteAgentCheckpoint.mockResolvedValue(undefined);
@@ -4632,6 +4651,141 @@ describe('ResumableAgentController resume metadata', () => {
     expect(responseWrites).toHaveLength(2);
     expect(responseWrites[0]).toEqual(expect.objectContaining({ unfinished: true }));
     expect(responseWrites[1]).toEqual(expect.objectContaining({ unfinished: false }));
+  });
+
+  it('publishes terminal Chat output with source identity before applying canonical target identity', async () => {
+    const sourceContent = [
+      { type: 'text', text: 'primary answer' },
+      { type: 'tool_call', tool_call: { id: 'lookup', name: 'lookup' } },
+      { type: 'think', think: 'reasoning retained' },
+      { type: 'steer', steer: 'keep this steer' },
+      { type: 'text', text: 'old quotation' },
+    ];
+    const projectedText = '## system_order\n\n| A |\n| --- |\n| 1 |';
+    const projectedContent = [
+      { type: 'text', text: projectedText },
+      sourceContent[1],
+      sourceContent[2],
+      sourceContent[3],
+      { type: 'text', text: '' },
+    ];
+    const sourceMetadata = { traceId: 'trace-a', usage: { outputTokens: 12 } };
+    const sourceText = 'primary answer\n\nold quotation';
+    const publicationProof = {
+      scope: { userId: 'user-123', conversationId: 'conversation-123' },
+      runId: 'run-a',
+      runTargetMessageId: 'source-response',
+      targetMessageId: 'target-response',
+      markdown: projectedText,
+      finalSha256: 'a'.repeat(64),
+      currentOrderSha256: 'b'.repeat(64),
+      currentSystemOrderSha256: 'c'.repeat(64),
+      customer: {
+        preparationId: 'customer-a',
+        customerIdentity: 'customer-a',
+        customerMarkdown: 'customer data',
+      },
+      message: {
+        messageId: 'target-response',
+        conversationId: 'conversation-123',
+        text: projectedText,
+        user: 'user-123',
+      },
+    };
+    mockSaveMessage.mockImplementation(async (_req, message) => ({ ...message }));
+    mockMarkdownFinalize.mockImplementationOnce(async (input) => {
+      input.applyMarkdown(publicationProof.markdown);
+      await input.persistMarkdown({ completed: true });
+      const saved = await input.publishQuotation(publicationProof);
+      expect(saved.ok).toBe(true);
+      return { markdown: publicationProof.markdown };
+    });
+    const userMessage = {
+      messageId: 'user-msg',
+      parentMessageId: 'parent-msg',
+      conversationId: 'conversation-123',
+      text: 'Publish the quotation.',
+    };
+    const client = {
+      options: {},
+      savedMessageIds: new Set(),
+      skipSaveUserMessage: false,
+      sendMessage: jest.fn(async (_text, options) => {
+        options.onStart(userMessage, 'source-response');
+        const response = {
+          messageId: 'source-response',
+          parentMessageId: 'parent-msg',
+          conversationId: 'conversation-123',
+          user: 'user-123',
+          isCreatedByUser: false,
+          unfinished: false,
+          sender: 'Agent',
+          endpoint: 'agents',
+          model: 'agent-1',
+          finish_reason: 'stop',
+          metadata: sourceMetadata,
+          text: sourceText,
+          content: sourceContent,
+          databasePromise: Promise.resolve({
+            conversation: { conversationId: 'conversation-123', title: 'Existing' },
+          }),
+        };
+        const ownsTerminalPersistence = await options.beforeResponsePersistence(response);
+        expect(ownsTerminalPersistence).toBe(true);
+        return response;
+      }),
+    };
+    const req = {
+      user: { id: 'user-123' },
+      body: {
+        text: userMessage.text,
+        messageId: userMessage.messageId,
+        parentMessageId: userMessage.parentMessageId,
+        conversationId: 'conversation-123',
+        endpointOption: { endpoint: 'agents', modelOptions: { model: 'gpt-4.1' } },
+      },
+      config: {},
+    };
+
+    await AgentController(
+      req,
+      createResumableResponse(),
+      jest.fn(),
+      jest.fn().mockResolvedValue({ client }),
+      null,
+    );
+    await nextTick();
+
+    expect(mockCreateSteelQuotationPublicationPublisher).toHaveBeenCalledWith(
+      expect.objectContaining({
+        buildMessage: expect.any(Function),
+        savePublication: expect.any(Function),
+        saveContext: expect.any(Object),
+      }),
+    );
+    expect(mockSaveSteelQuotationMessage).toHaveBeenCalledTimes(1);
+    const [savedProof] = mockSaveSteelQuotationMessage.mock.calls[0];
+    expect(savedProof).toEqual(expect.objectContaining({
+      targetMessageId: 'target-response',
+      scope: publicationProof.scope,
+    }));
+    expect(savedProof.message).toEqual(expect.objectContaining({
+      messageId: 'target-response',
+      sourceMessageId: 'source-response',
+      conversationId: 'conversation-123',
+      user: 'user-123',
+      parentMessageId: 'parent-msg',
+      isCreatedByUser: false,
+      unfinished: false,
+      sender: 'Agent',
+      endpoint: 'agents',
+      model: 'agent-1',
+      finish_reason: 'stop',
+      metadata: sourceMetadata,
+      text: projectedText,
+      content: projectedContent,
+    }));
+    expect(savedProof.message).not.toHaveProperty('output');
   });
 
   it.each([

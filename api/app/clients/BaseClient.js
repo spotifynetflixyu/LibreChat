@@ -77,27 +77,6 @@ const buildFileInstructions =
         return undefined;
       };
 
-const collectHistoricalFileRefs = (message) => {
-  const refs = [];
-  if (Array.isArray(message.files)) {
-    refs.push(...message.files);
-  }
-  if (Array.isArray(message.attachments)) {
-    refs.push(...message.attachments);
-  }
-  /** Steer parts carry their own attachment refs inside assistant content;
-   *  collecting them here folds the steer replay stamp's lookup into this
-   *  single per-turn query (see `stampSteerPartMedia`). */
-  if (Array.isArray(message.content)) {
-    for (const part of message.content) {
-      if (part?.type === ContentTypes.STEER && Array.isArray(part.files)) {
-        refs.push(...part.files);
-      }
-    }
-  }
-  return refs;
-};
-
 const omitUnreplayedHistoricalFiles = (messages) =>
   messages.map(({ files: _files, attachments: _attachments, ...message }) => ({
     ...message,
@@ -509,10 +488,6 @@ class BaseClient {
     const conversationId = requestConvoId ?? crypto.randomUUID();
     const parentMessageId = opts.parentMessageId ?? Constants.NO_PARENT;
     const userMessageId =
-      overrideUserMessageId ??
-      opts.userMessageId ??
-      opts.overrideParentMessageId ??
-      crypto.randomUUID();
       opts.preallocatedUserMessageId ??
       overrideUserMessageId ??
       opts.userMessageId ??

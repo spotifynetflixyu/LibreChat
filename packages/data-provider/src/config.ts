@@ -2819,6 +2819,14 @@ export const ocrSchema = z.object({
   strategy: z.nativeEnum(OCRStrategy).default(OCRStrategy.MISTRAL_OCR),
 });
 
+export const steelReviewSchema = z.object({
+  catalogPageSize: z.number().int().positive().max(100).default(50),
+});
+
+export const steelPostgresSchema = z.object({
+  keepAlive: z.boolean().default(false),
+});
+
 export const fileAnalysisSchema = z.object({
   instructions: z.string().optional(),
 });
@@ -2915,19 +2923,46 @@ export const summarizationConfigSchema = z.object({
 
 export type SummarizationConfig = z.infer<typeof summarizationConfigSchema>;
 
+export const OPENAI_OAUTH_GPT_61_SOL_CONTEXT_TOKENS = 500_000 * 0.95;
+
+const oauthContextTokensSchema = z.number().int().min(4096).max(2_000_000);
+
 export const oauthCompactionConfigSchema = z
   .object({
     enabled: z.boolean().default(false),
     triggerRatio: z.number().finite().min(0.1).max(0.9).default(0.85),
-    maxContextTokens: z.number().int().min(4096).max(2_000_000).default(258_400),
+    maxContextTokens: oauthContextTokensSchema.optional(),
+    maxContextTokensByModel: z.record(oauthContextTokensSchema).optional(),
     outputReserveTokens: z.number().int().min(1024).max(131_072).default(8192),
     timeoutMs: z.number().int().min(1000).max(1_200_000).default(300_000),
     maxResponseBytes: z.number().int().min(1024).max(8_388_608).default(8_388_608),
     retentionDays: z.number().int().min(1).max(365).default(30),
   })
-  .refine((config) => config.outputReserveTokens < config.maxContextTokens, {
+  .refine((config) => config.outputReserveTokens < (config.maxContextTokens ?? 258_400), {
     message: 'Output reserve must be smaller than the context limit',
     path: ['outputReserveTokens'],
+  })
+  .refine(
+    (config) =>
+      Object.values(config.maxContextTokensByModel ?? {}).every(
+        (limit) => config.outputReserveTokens < limit,
+      ),
+    {
+      message: 'Output reserve must be smaller than every model context limit',
+      path: ['maxContextTokensByModel'],
+    },
+  )
+  .transform((config) => {
+    const maxContextTokensByModel =
+      config.maxContextTokensByModel ??
+      (config.maxContextTokens === undefined
+        ? { 'gpt-6.1-sol': OPENAI_OAUTH_GPT_61_SOL_CONTEXT_TOKENS }
+        : undefined);
+    return {
+      ...config,
+      maxContextTokens: config.maxContextTokens ?? 258_400,
+      ...(maxContextTokensByModel === undefined ? {} : { maxContextTokensByModel }),
+    };
   });
 
 export type OAuthCompactionConfig = z.infer<typeof oauthCompactionConfigSchema>;
@@ -3148,6 +3183,8 @@ export const configSchema = z.object({
   permissions: z.object({ maxWriteAttempts: permissionWriteAttemptsSchema }).optional(),
   cache: z.boolean().default(true),
   ocr: ocrSchema.optional(),
+  steelReview: steelReviewSchema.default({}),
+  steelPostgres: steelPostgresSchema.default({}),
   fileAnalysis: fileAnalysisSchema.optional(),
   webSearch: webSearchSchema.optional(),
   langfuse: langfuseConfigSchema.optional(),
@@ -3439,6 +3476,10 @@ const sharedOpenAIModels = [
   'gpt-4o',
 ];
 
+const assistantsOpenAIModels = sharedOpenAIModels.filter(
+  (model) => !responsesPreferredOpenAIModels.includes(model),
+);
+
 const sharedAnthropicModels = [
   'claude-fable-5-1',
   'claude-fable-5',
@@ -3517,8 +3558,8 @@ export const bedrockModels = [
 
 export const defaultModels = {
   [EModelEndpoint.openAIOAuth]: sharedOpenAIModels,
-  [EModelEndpoint.azureAssistants]: sharedOpenAIModels,
-  [EModelEndpoint.assistants]: [...sharedOpenAIModels, 'chatgpt-4o-latest'],
+  [EModelEndpoint.azureAssistants]: assistantsOpenAIModels,
+  [EModelEndpoint.assistants]: [...assistantsOpenAIModels, 'chatgpt-4o-latest'],
   // TODO: Add agent models (agentsModels)
   [EModelEndpoint.agents]: [
     ...responsesOnlyOpenAIModels,

@@ -1529,7 +1529,7 @@ function activityProseReplyResponses(label, toolNames) {
       const batch = invocation++;
       if (batch < prose.length) {
         return {
-          response: prose[batch],
+          response: `${prose[batch]}\n\n`,
           beforeToolsDelayMs: 2000,
           toolCalls: [
             {

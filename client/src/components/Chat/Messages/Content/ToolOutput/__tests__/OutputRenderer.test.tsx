@@ -17,6 +17,9 @@ jest.mock('~/components/Messages/Content/CopyButton', () => ({
 }));
 
 describe('OutputRenderer', () => {
+  const validationError =
+    'Error: Tool "slow_echo_mcp_e2e-memory" input failed schema validation. Missing required fields: text. Use this tool\'s declared arguments. Please fix your mistakes.';
+
   it('vertically centers the copy control beside the output', () => {
     render(<OutputRenderer text={'First line\nSecond line'} />);
 
@@ -34,6 +37,20 @@ describe('OutputRenderer', () => {
 
   it('does not treat text between bracketed prefixes as a tool-call error', () => {
     expect(isError('Error: [agent] unexpected [search] tool call failed: unavailable')).toBe(false);
+  });
+
+  it('treats a persisted failed result envelope as a tool-call error', () => {
+    expect(isError(JSON.stringify({ status: 'fail', error: validationError }))).toBe(true);
+  });
+
+  it('uses errorMessage when a failed result envelope has no error field', () => {
+    expect(isError(JSON.stringify({ status: 'fail', errorMessage: validationError }))).toBe(true);
+  });
+
+  it('does not treat successful or unexplained result envelopes as errors', () => {
+    expect(isError(JSON.stringify({ status: 'success', error: validationError }))).toBe(false);
+    expect(isError(JSON.stringify({ status: 'fail', error: 'request rejected' }))).toBe(false);
+    expect(isError(JSON.stringify({ status: 'fail', error: 'Error:' }))).toBe(false);
   });
 
   /** The server's `completedToolExecutionStatus` counts this shape as a

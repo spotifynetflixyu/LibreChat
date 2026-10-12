@@ -1,6 +1,8 @@
 import { createHash, randomUUID } from 'crypto';
 
 import {
+  createSteelQuotationInputMethods,
+  STEEL_QUOTATION_INPUT_TTL_MS,
   createSteelQuotationArtifactModel,
   createSteelQuotationStateModel,
 } from '@librechat/data-schemas';
@@ -12,10 +14,11 @@ import type {
   SteelQuotationArtifactKind,
   SteelQuotationArtifactRef,
   SteelQuotationCheckpointRef,
-  SteelQuotationChunkState,
   SteelQuotationCustomerLookupEvidence,
   SteelQuotationCustomerPreparation,
   SteelQuotationCurrentSystemOrder,
+  SteelQuotationOcrInput,
+  SteelQuotationOcrSelection,
   SteelQuotationOrder,
   SteelQuotationPendingMessage,
   SteelQuotationPendingMessageFile,
@@ -27,10 +30,9 @@ import type {
   SteelQuotationTicket,
 } from '@librechat/data-schemas';
 
-type Mongoose = typeof import('mongoose');
-type StateModel = ReturnType<typeof createSteelQuotationStateModel>;
-type ArtifactModel = ReturnType<typeof createSteelQuotationArtifactModel>;
+import { SteelQuotationInputError } from './input';
 
+type Mongoose = typeof import('mongoose');
 export const MAX_QUOTATION_ORDER_BYTES = 250_000;
 export const MAX_QUOTATION_CUSTOMER_BYTES = 100_000;
 export const MAX_QUOTATION_PROMPT_BYTES = 250_000;
@@ -140,6 +142,8 @@ export interface SteelQuotationAcceptSignalInput {
   customerIdentity: string;
   prompts: SteelQuotationSnapshotPayload['prompts'];
   chunks: readonly SteelQuotationChunkInput[];
+  sourceSnapshot?: SteelQuotationSnapshotPayload['sourceSnapshot'];
+  ocrSelection?: SteelQuotationOcrSelection;
   targetMessageId?: string;
   now?: Date;
 }
@@ -287,9 +291,14 @@ export interface SteelQuotationDeleteResult {
 export interface SteelQuotationStateService {
   ensureState(scope: SteelQuotationScope): Promise<ISteelQuotationState>;
   readState(scope: SteelQuotationScope): Promise<ISteelQuotationState | null>;
+  isPublishedRun(scope: SteelQuotationScope, run: SteelQuotationActiveRun): Promise<boolean>;
   readCurrentSystemOrder(scope: SteelQuotationScope): Promise<SteelQuotationCurrentSystemOrder | undefined>;
   hasSystemOrder(scope: SteelQuotationScope): Promise<boolean>;
   setOrder(input: SteelQuotationOrderInput): Promise<ISteelQuotationState>;
+  readOcrInput(scope: SteelQuotationScope): Promise<SteelQuotationOcrInput | undefined>;
+  markOcrStale(scope: SteelQuotationScope, runId: string, selection: SteelQuotationOcrSelection): Promise<boolean>;
+  prepareOcrOrder(scope: SteelQuotationScope, expectedOrderHash: string | null):
+    Promise<{ state: ISteelQuotationState; input?: SteelQuotationOcrInput }>;
   saveCurrentSystemOrder(
     input: SteelQuotationSaveCurrentSystemOrderInput,
   ): Promise<SteelQuotationCurrentSystemOrder | undefined>;
@@ -496,22 +505,50 @@ function validatePendingFiles(files: readonly SteelQuotationPendingMessageFile[]
   }
 }
 
-function isUnfinished(status: SteelQuotationRunStatus | undefined): boolean {
-  return status !== undefined && unfinishedStatuses.includes(status);
+function validateSourceSnapshot(
+  snapshot: SteelQuotationSnapshotPayload['sourceSnapshot'],
+  orderHash: string,
+): void {
+  if (!snapshot) return;
+  if (snapshot.orderHash !== orderHash) {
+    throw new Error('quotation source snapshot order hash is stale');
+  }
+  if (snapshot.mappings.length > MAX_QUOTATION_PENDING_FILES) {
+    throw new Error(`quotation source snapshot exceeds ${MAX_QUOTATION_PENDING_FILES} mappings`);
+  }
+  const sourceCodes = new Set<string>();
+  const fileIds = new Set<string>();
+  for (const mapping of snapshot.mappings) {
+    validateText(mapping.fileId, 'quotation source fileId', 2_000);
+    validateText(mapping.sourceCode, 'quotation source code', 200);
+    validateText(mapping.sourceFilename, 'quotation source filename', 2_000);
+    if (mapping.mediaType !== undefined) validateText(mapping.mediaType, 'quotation source mediaType', 200);
+    if (sourceCodes.has(mapping.sourceCode) || fileIds.has(mapping.fileId)) {
+      throw new Error('quotation source snapshot mappings must be unique');
+    }
+    sourceCodes.add(mapping.sourceCode);
+    fileIds.add(mapping.fileId);
+  }
 }
 
-function isTerminal(status: SteelQuotationRunStatus | undefined): boolean {
-  return status !== undefined && terminalStatuses.includes(status);
+function isUnfinished(status: SteelQuotationRunStatus | undefined): boolean {
+  return status !== undefined && unfinishedStatuses.includes(status);
 }
 
 function stateFilter(scope: SteelQuotationScope) {
   return {
     userId: scope.userId,
     conversationId: scope.conversationId,
-    tenantId: scope.tenantId === undefined
-      ? null
-      : { $in: [scope.tenantId, null] },
+    tenantId: scope.tenantId ?? null,
   };
+}
+
+function sameActiveRunFilter(run?: SteelQuotationActiveRun): Record<string, unknown> {
+  return run ? {
+    'activeRun.runId': run.runId,
+    'activeRun.status': run.status,
+    'activeRun.checkpointRefs': run.checkpointRefs,
+  } : { activeRun: { $exists: false } };
 }
 
 function authorityByteLength(state: SteelQuotationStateLike): number {
@@ -574,9 +611,7 @@ function cloneScopeRef(scope: SteelQuotationScope, ref: SteelQuotationArtifactRe
   if (ref.userId !== scope.userId || ref.conversationId !== scope.conversationId) {
     return false;
   }
-  return scope.tenantId === undefined
-    ? ref.tenantId === undefined
-    : ref.tenantId === undefined || ref.tenantId === scope.tenantId;
+  return (ref.tenantId ?? null) === (scope.tenantId ?? null);
 }
 
 function artifactRef(
@@ -598,13 +633,6 @@ function artifactRef(
   };
 }
 
-function parseArchivedRun(payload: string): SteelQuotationActiveRun | undefined {
-  const parsed = JSON.parse(payload) as { run?: SteelQuotationActiveRun };
-  if (!parsed.run || !parsed.run.runId || !isTerminal(parsed.run.status)) {
-    return undefined;
-  }
-  return parsed.run;
-}
 
 function getActiveRun(state: ISteelQuotationState | null, runId: string): SteelQuotationActiveRun | undefined {
   return state?.activeRun?.runId === runId ? state.activeRun : undefined;
@@ -637,9 +665,17 @@ function matchesCustomerPreparation(
     sameSelectionProvenance(preparation.selectionProvenance, input.selectionProvenance);
 }
 
-export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuotationStateService {
+export function createSteelQuotationStateService(
+  mongoose: Mongoose,
+  inputs: ReturnType<typeof createSteelQuotationInputMethods> = createSteelQuotationInputMethods(mongoose),
+): SteelQuotationStateService {
   const State = createSteelQuotationStateModel(mongoose);
   const Artifact = createSteelQuotationArtifactModel(mongoose);
+
+  async function blocksInputMutation(scope: SteelQuotationScope, run?: SteelQuotationActiveRun): Promise<boolean> {
+    return isUnfinished(run?.status) || Boolean(run?.status === 'completed' &&
+      !await inputs.isSteelQuotationRunPublished(scope, run));
+  }
 
   async function ensureState(scope: SteelQuotationScope): Promise<ISteelQuotationState> {
     validateScope(scope);
@@ -663,7 +699,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
         throw error;
       }
     }
-    const state = await State.findOne(stateFilter(scope)).lean<ISteelQuotationState>();
+    const state = await readState(scope);
     if (!state) {
       throw new Error('quotation authority state could not be created');
     }
@@ -674,10 +710,35 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
   async function readState(scope: SteelQuotationScope): Promise<ISteelQuotationState | null> {
     validateScope(scope);
     const state = await State.findOne(stateFilter(scope)).lean<ISteelQuotationState>();
-    if (state) {
-      assertAuthorityBounds(state);
+    if (!state) return null;
+    assertAuthorityBounds(state);
+    const run = state.activeRun;
+    if (run && run.status !== 'cancelled' &&
+      !run.checkpointRefs.some((ref) => ref.operationId === 'published') &&
+      new Date(run.acceptedAt).getTime() + STEEL_QUOTATION_INPUT_TTL_MS <= Date.now()) {
+      const retired = await inputs.retireSteelQuotationInput({ scope, runId: run.runId, reason: 'expired' });
+      if (!retired.ok) throw new SteelQuotationInputError(retired.code);
+      return retired.state;
     }
     return state;
+  }
+
+  async function readOcrInput(scope: SteelQuotationScope): Promise<SteelQuotationOcrInput | undefined> {
+    const result = await inputs.readSteelQuotationOcrInput(scope);
+    if (!result.ok) throw new SteelQuotationInputError(result.code);
+    return result.input;
+  }
+
+  async function markOcrStale(scope: SteelQuotationScope, runId: string, selection: SteelQuotationOcrSelection): Promise<boolean> {
+    const result = await inputs.markSteelQuotationOcrStale({ scope, runId, selection });
+    if (!result.ok) throw new SteelQuotationInputError(result.code);
+    return result.needsRequote;
+  }
+
+  async function prepareOcrOrder(scope: SteelQuotationScope, expectedOrderHash: string | null) {
+    const result = await inputs.prepareSteelQuotationOcrInput({ scope, expectedOrderHash });
+    if (!result.ok) throw new SteelQuotationInputError(result.code);
+    return { state: result.state, ...(result.input ? { input: result.input } : {}) };
   }
 
   async function readCurrentSystemOrder(
@@ -771,8 +832,8 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
         (current.currentOrder?.sha256 ?? null) !== input.expectedOrderHash) {
         throw new Error('quotation order changed since it was read');
       }
-      if (isUnfinished(current.activeRun?.status)) {
-        throw new Error('cannot set quotation order while a run is unfinished');
+      if (await blocksInputMutation(input.scope, current.activeRun)) {
+        throw new Error('cannot set quotation order while a run is unfinished or unpublished');
       }
       const orderChanged = current.currentOrder?.sha256 !== sha256;
       const retainedTickets = current.tickets.filter((ticket) => ticket.acceptedRunId);
@@ -782,10 +843,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
         ...(current.currentOrder?.sha256
           ? { 'currentOrder.sha256': current.currentOrder.sha256 }
           : { 'currentOrder.sha256': { $exists: false } }),
-        $or: [
-          { activeRun: { $exists: false } },
-          { 'activeRun.status': { $in: terminalStatuses } },
-        ],
+        ...sameActiveRunFilter(current.activeRun),
       };
       const update = orderChanged
         ? {
@@ -948,8 +1006,8 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
       if (!current) {
         continue;
       }
-      if (isUnfinished(current.activeRun?.status)) {
-        throw new Error('cannot save customer preparation while a run is unfinished');
+      if (await blocksInputMutation(input.scope, current.activeRun)) {
+        throw new Error('cannot save customer preparation while a run is unfinished or unpublished');
       }
       assertAuthorityBounds({
         ...current,
@@ -970,10 +1028,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
             ? { 'currentOrder.sha256': input.orderHash }
             : { 'currentOrder': { $exists: false } }),
           ...preparationFilter,
-          $or: [
-            { activeRun: { $exists: false } },
-            { 'activeRun.status': { $in: terminalStatuses } },
-          ],
+          ...sameActiveRunFilter(current.activeRun),
         },
         {
           $set: { currentCustomer: preparation, updatedAt: now },
@@ -1010,12 +1065,12 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
         current.currentCustomer?.preparationId !== input.expectedCustomerPreparationId) {
         throw new Error('customer lookup evidence is based on stale preparation data');
       }
-      if (isUnfinished(current.activeRun?.status)) {
-        throw new Error('cannot save customer lookup evidence while a run is unfinished');
-      }
       const existing = current.customerLookupEvidence;
       if (existing && JSON.stringify(existing) === JSON.stringify(input.evidence)) {
         return existing;
+      }
+      if (await blocksInputMutation(input.scope, current.activeRun)) {
+        throw new Error('cannot save customer lookup evidence while a run is unfinished or unpublished');
       }
       assertAuthorityBounds({ ...current, customerLookupEvidence: input.evidence });
       const updated = await State.findOneAndUpdate(
@@ -1025,6 +1080,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
           ...(input.expectedCustomerPreparationId === undefined
             ? { currentCustomer: { $exists: false } }
             : { 'currentCustomer.preparationId': input.expectedCustomerPreparationId }),
+          ...sameActiveRunFilter(current.activeRun),
         },
         { $set: { customerLookupEvidence: input.evidence, updatedAt: now } },
         { new: true },
@@ -1049,9 +1105,11 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
       (input.orderHash !== undefined && current.customerLookupEvidence.orderHash !== input.orderHash)) {
       return current;
     }
+    if (await blocksInputMutation(input.scope, current.activeRun)) return current;
     const updated = await State.findOneAndUpdate(
       {
         ...stateFilter(input.scope),
+        ...sameActiveRunFilter(current.activeRun),
         ...(input.responseId !== undefined
           ? { 'customerLookupEvidence.responseId': input.responseId }
           : {}),
@@ -1085,6 +1143,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
     )) {
       return current;
     }
+    if (await blocksInputMutation(input.scope, current.activeRun)) return current;
     const customerFilter = input.preparationId !== undefined
       ? { 'currentCustomer.preparationId': input.preparationId }
       : { 'currentCustomer.responseId': input.responseId };
@@ -1092,6 +1151,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
       {
         ...stateFilter(input.scope),
         ...customerFilter,
+        ...sameActiveRunFilter(current.activeRun),
         ...(input.orderHash !== undefined ? { 'currentOrder.sha256': input.orderHash } : {}),
       },
       {
@@ -1159,8 +1219,8 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
       if (!current?.currentOrder) {
         throw new Error('cannot issue quotation ticket without a current order');
       }
-      if (isUnfinished(current.activeRun?.status)) {
-        throw new Error('cannot issue quotation ticket while a run is unfinished');
+      if (await blocksInputMutation(input.scope, current.activeRun)) {
+        throw new Error('cannot issue quotation ticket while a run is unfinished or unpublished');
       }
       if (current.tickets.length >= MAX_QUOTATION_TICKETS) {
         throw new Error(`quotation authority exceeds ${MAX_QUOTATION_TICKETS} tickets`);
@@ -1202,10 +1262,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
                 'tickets.responseId': { $ne: input.responseId },
               }
             : {}),
-          $or: [
-            { activeRun: { $exists: false } },
-            { 'activeRun.status': { $in: terminalStatuses } },
-          ],
+          ...sameActiveRunFilter(current.activeRun),
         },
         {
           $inc: { nextSignalIndex: 1 },
@@ -1395,13 +1452,14 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
     if (byteLength(input.payload) > MAX_QUOTATION_ARTIFACT_BYTES) {
       throw new Error(`artifact payload exceeds ${MAX_QUOTATION_ARTIFACT_BYTES} bytes`);
     }
+    if (input.kind === 'snapshot') throw new SteelQuotationInputError('invalid_snapshot');
     const sha256 = hashText(input.payload);
     if (input.sha256 && input.sha256 !== sha256) {
       throw new Error('artifact SHA does not match payload');
     }
     const now = nowOrDefault(input.now);
     const ref = artifactRef(input.scope, input.runId, input.operationId, input.kind, sha256);
-    const requiresLease = input.kind !== 'snapshot' && input.kind !== 'archive';
+    const requiresLease = input.kind !== 'archive';
     if (requiresLease) {
       if (!input.leaseToken) {
         throw new Error('runtime quotation artifact writes require a lease token');
@@ -1477,6 +1535,10 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
       kind: input.ref.kind,
       sha256: input.ref.sha256,
     }).lean<ISteelQuotationArtifact>();
+    if (found?.kind === 'snapshot') {
+      if (found.expiresAt && found.expiresAt.getTime() <= Date.now()) return undefined;
+      if (hashText(found.payload) !== found.sha256) throw new SteelQuotationInputError('invalid_snapshot');
+    }
     return found?.payload;
   }
 
@@ -1535,21 +1597,29 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
     ) {
       throw new Error('quotation signal does not match its ticket');
     }
-    if (ticket.acceptedRunId) {
-      const active = getActiveRun(current, ticket.acceptedRunId);
-      if (active) {
-        return active;
-      }
-      const archived = await findArtifact(input.scope, ticket.acceptedRunId, 'archive');
-      const archivedRun = archived ? parseArchivedRun(archived.payload) : undefined;
-      if (archivedRun) {
-        return archivedRun;
-      }
-      throw new Error('accepted quotation run is unavailable');
-    }
+    const admit = async (): Promise<SteelQuotationActiveRun> => {
+      const admitted = await inputs.admitSteelQuotationOcrInput({
+        scope: input.scope,
+        index: input.index,
+        token: input.token,
+        orderHash: input.orderHash,
+        customerMarkdown: input.customerMarkdown,
+        customerIdentity: input.customerIdentity,
+        prompts: input.prompts,
+        chunks: input.chunks,
+        selection: input.ocrSelection ?? current.currentOrder?.ocrSelection,
+        ...(input.sourceSnapshot ? { sourceSnapshot: input.sourceSnapshot } : {}),
+        ...(input.targetMessageId ? { targetMessageId: input.targetMessageId } : {}),
+        now,
+      });
+      if (!admitted.ok) throw new SteelQuotationInputError(admitted.code);
+      return admitted.run;
+    };
+    if (ticket.acceptedRunId) return admit();
     if (!current.currentOrder || current.currentOrder.sha256 !== input.orderHash) {
       throw new Error('quotation signal order is stale');
     }
+    validateSourceSnapshot(input.sourceSnapshot, current.currentOrder.sha256);
     if (ticket.preparationId !== undefined || ticket.responseId !== undefined) {
       if (ticket.preparationId === undefined || ticket.responseId === undefined ||
         !matchesCustomerPreparation(current.currentCustomer, {
@@ -1564,113 +1634,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
     if (isUnfinished(current.activeRun?.status)) {
       throw new Error('another quotation run is unfinished');
     }
-    const runId = ticket.token;
-    const snapshotPayload: SteelQuotationSnapshotPayload = {
-      prompts: input.prompts,
-      orderMarkdown: current.currentOrder.markdown,
-      orderHash: current.currentOrder.sha256,
-      customerMarkdown: input.customerMarkdown,
-      customerIdentity: input.customerIdentity,
-    };
-    const snapshotText = JSON.stringify(snapshotPayload);
-    const snapshotRef = artifactRef(
-      input.scope,
-      runId,
-      'snapshot',
-      'snapshot',
-      hashText(snapshotText),
-    );
-    const chunks: SteelQuotationChunkState[] = input.chunks.map((chunk) => ({
-      index: chunk.index,
-      sourceRowCount: chunk.sourceRowCount,
-      status: 'pending',
-    }));
-    const nextRun: SteelQuotationActiveRun = {
-      runId,
-      index: input.index,
-      status: 'queued',
-      triggerMessageId: ticket.triggeringMessageId,
-      ...(input.targetMessageId ? { targetMessageId: input.targetMessageId } : {}),
-      snapshotRef,
-      chunks,
-      checkpointRefs: [],
-      acceptedAt: now,
-      updatedAt: now,
-    };
-    assertAuthorityBounds({
-      ...current,
-      activeRun: nextRun,
-    });
-    await writeArtifact({
-      scope: input.scope,
-      runId,
-      operationId: 'snapshot',
-      kind: 'snapshot',
-      payload: snapshotText,
-      now,
-    });
-    const previous = current.activeRun;
-    if (previous && isTerminal(previous.status)) {
-      await writeArtifact({
-        scope: input.scope,
-        runId: previous.runId,
-        operationId: 'archive',
-        kind: 'archive',
-        payload: JSON.stringify({ run: previous }),
-        now,
-      });
-    }
-    const updated = await State.findOneAndUpdate(
-      {
-        ...stateFilter(input.scope),
-        'currentOrder.sha256': input.orderHash,
-        'tickets': {
-          $elemMatch: {
-            index: input.index,
-            token: input.token,
-            orderHash: input.orderHash,
-            customerMarkdown: input.customerMarkdown,
-            customerIdentity: input.customerIdentity,
-            acceptedRunId: { $exists: false },
-          },
-        },
-        ...(ticket.preparationId !== undefined && ticket.responseId !== undefined
-          ? {
-              'currentCustomer.preparationId': ticket.preparationId,
-            }
-          : {}),
-        $or: [
-          { activeRun: { $exists: false } },
-          { 'activeRun.status': { $in: terminalStatuses } },
-        ],
-      },
-      {
-        $set: {
-          activeRun: nextRun,
-          'tickets.$.acceptedRunId': runId,
-          updatedAt: now,
-        },
-      },
-      { new: true },
-    ).lean<ISteelQuotationState>();
-    if (updated?.activeRun?.runId === runId) {
-      assertAuthorityBounds(updated);
-      return updated.activeRun;
-    }
-    const raced = await readState(input.scope);
-    const racedTicket = raced?.tickets.find((candidate) => candidate.index === input.index);
-    if (racedTicket?.acceptedRunId) {
-      const racedActive = getActiveRun(raced, racedTicket.acceptedRunId);
-      if (racedActive) {
-        return racedActive;
-      }
-      const archived = await findArtifact(input.scope, racedTicket.acceptedRunId, 'archive');
-      const archivedRun = archived ? parseArchivedRun(archived.payload) : undefined;
-      if (archivedRun) {
-        return archivedRun;
-      }
-    }
-    throw new Error('quotation signal changed concurrently; retry the operation');
+    return admit();
   }
 
   async function requireLiveRun(
@@ -1706,6 +1670,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
         ...stateFilter(input.scope),
         'activeRun.runId': input.runId,
         'activeRun.status': { $in: leaseStatuses },
+        'activeRun.acceptedAt': { $gt: new Date(now.getTime() - STEEL_QUOTATION_INPUT_TTL_MS) },
         $or: [
           { 'activeRun.leaseToken': { $exists: false } },
           { 'activeRun.leaseToken': null },
@@ -1745,6 +1710,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
         'activeRun.leaseToken': input.leaseToken,
         'activeRun.status': { $in: leaseStatuses },
         'activeRun.leaseExpiresAt': { $gt: now },
+        'activeRun.acceptedAt': { $gt: new Date(now.getTime() - STEEL_QUOTATION_INPUT_TTL_MS) },
       },
       {
         $set: {
@@ -1772,6 +1738,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
         'activeRun.leaseToken': input.leaseToken,
         'activeRun.status': { $in: leaseStatuses },
         'activeRun.leaseExpiresAt': { $gt: now },
+        'activeRun.acceptedAt': { $gt: new Date(now.getTime() - STEEL_QUOTATION_INPUT_TTL_MS) },
       },
       {
         $unset: { 'activeRun.leaseToken': 1, 'activeRun.leaseExpiresAt': 1 },
@@ -1794,6 +1761,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
         'activeRun.leaseToken': input.leaseToken,
         'activeRun.status': { $in: leaseStatuses },
         'activeRun.leaseExpiresAt': { $gt: now },
+        'activeRun.acceptedAt': { $gt: new Date(now.getTime() - STEEL_QUOTATION_INPUT_TTL_MS) },
       },
       { $set: { 'activeRun.status': input.status, 'activeRun.updatedAt': now, updatedAt: now } },
       { new: true },
@@ -1819,6 +1787,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
         'activeRun.leaseToken': input.leaseToken,
         'activeRun.status': { $in: leaseStatuses },
         'activeRun.leaseExpiresAt': { $gt: now },
+        'activeRun.acceptedAt': { $gt: new Date(now.getTime() - STEEL_QUOTATION_INPUT_TTL_MS) },
         ...(input.interruption?.chunkIndex !== undefined && {
           'activeRun.chunks.index': input.interruption.chunkIndex,
         }),
@@ -1842,24 +1811,11 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
     input: Omit<SteelQuotationRunInput, 'leaseToken'> & { leaseToken?: string },
   ): Promise<SteelQuotationActiveRun | undefined> {
     validateScope(input.scope);
-    const now = nowOrDefault(input.now);
-    const updated = await State.findOneAndUpdate(
-      {
-        ...stateFilter(input.scope),
-        'activeRun.runId': input.runId,
-        'activeRun.status': { $in: unfinishedStatuses },
-      },
-      {
-        $set: { 'activeRun.status': 'cancelled', 'activeRun.updatedAt': now, updatedAt: now },
-        $unset: { 'activeRun.leaseToken': 1, 'activeRun.leaseExpiresAt': 1 },
-      },
-      { new: true },
-    ).lean<ISteelQuotationState>();
-    if (updated) {
-      return getActiveRun(updated, input.runId);
-    }
-    const current = await readState(input.scope);
-    return getActiveRun(current, input.runId);
+    const retired = await inputs.retireSteelQuotationInput({
+      scope: input.scope, runId: input.runId, reason: 'cancelled', now: input.now,
+    });
+    if (!retired.ok) throw new SteelQuotationInputError(retired.code);
+    return getActiveRun(retired.state, input.runId);
   }
 
   async function completeRun(
@@ -1885,6 +1841,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
         'activeRun.leaseToken': input.leaseToken,
         'activeRun.status': { $in: leaseStatuses },
         'activeRun.leaseExpiresAt': { $gt: now },
+        'activeRun.acceptedAt': { $gt: new Date(now.getTime() - STEEL_QUOTATION_INPUT_TTL_MS) },
       },
       {
         $set: {
@@ -1960,7 +1917,9 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
       { new: true },
     ).lean<ISteelQuotationState>();
     if (updated) {
-      return getActiveRun(updated, input.runId);
+      const retired = await inputs.retireSteelQuotationInput({ ...input, reason: 'published' });
+      if (!retired.ok) throw new SteelQuotationInputError(retired.code);
+      return getActiveRun(retired.state, input.runId);
     }
     const raced = await readState(input.scope);
     const racedRun = getActiveRun(raced, input.runId);
@@ -1968,7 +1927,9 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
       (candidate) => candidate.operationId === 'published',
     );
     if (racedPublication?.sha256 === publicationRef.sha256) {
-      return racedRun;
+      const retired = await inputs.retireSteelQuotationInput({ ...input, reason: 'published' });
+      if (!retired.ok) throw new SteelQuotationInputError(retired.code);
+      return getActiveRun(retired.state, input.runId);
     }
     return undefined;
   }
@@ -2103,6 +2064,7 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
           'activeRun.leaseToken': input.leaseToken,
           'activeRun.status': { $in: leaseStatuses },
           'activeRun.leaseExpiresAt': { $gt: attemptNow },
+          'activeRun.acceptedAt': { $gt: new Date(attemptNow.getTime() - STEEL_QUOTATION_INPUT_TTL_MS) },
           'activeRun.checkpointRefs': run.checkpointRefs,
           'activeRun.chunks': run.chunks,
         },
@@ -2637,9 +2599,13 @@ export function createSteelQuotationStateService(mongoose: Mongoose): SteelQuota
   return {
     ensureState,
     readState,
+    isPublishedRun: inputs.isSteelQuotationRunPublished,
     readCurrentSystemOrder,
     hasSystemOrder,
     setOrder,
+    readOcrInput,
+    prepareOcrOrder,
+    markOcrStale,
     saveCurrentSystemOrder,
     saveCustomer,
     saveCustomerLookupEvidence,

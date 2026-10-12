@@ -304,16 +304,22 @@ describe('initializeMCPs', () => {
 
       await initializeMCPs();
 
-      expect(mockCreateMCPManager).toHaveBeenCalledWith({
-        PaddleOCR: expect.objectContaining({
-          type: 'stdio',
-          startup: true,
-          command: 'paddleocr_mcp',
-          args: [],
-          initTimeout: 60000,
-        }),
-        'local-server': mcpServers['local-server'],
-      });
+      expect(mockCreateMCPManager).toHaveBeenCalledWith(
+        {
+          PaddleOCR: expect.objectContaining({
+            type: 'stdio',
+            startup: true,
+            command: 'paddleocr_mcp',
+            args: [],
+            initTimeout: 60000,
+          }),
+          'local-server': mcpServers['local-server'],
+        },
+        {
+          catalogRecoveryMaxStateEntries: undefined,
+          catalogRecoveryMaxDetachedDiscoveries: undefined,
+        },
+      );
       expect(mcpServers.PaddleOCR.startup).toBe(true);
     });
 

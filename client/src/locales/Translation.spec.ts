@@ -49,6 +49,12 @@ describe('i18next translation tests', () => {
     expect(i18n.t('com_ui_examples')).toBe(Spanish.com_ui_examples);
   });
 
+  it.each(['zh-Hant', 'zh-Hans'])('uses the admitted preparation label with the real %s locale', async (locale) => {
+    await changeLanguageSafely(locale);
+    expect(i18n.language).toBe(locale);
+    expect(i18n.t('com_ui_steel_quote_status_preparing')).toBe('Preparing quotation');
+  });
+
   it('should fallback to English for an invalid language code', async () => {
     // When an invalid language is provided, i18next should fallback to English
     await changeLanguageSafely('invalid-code');

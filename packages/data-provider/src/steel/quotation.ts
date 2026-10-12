@@ -11,6 +11,22 @@ export const steelQuotationStatuses = [
   'cancelled',
 ] as const;
 
+export const steelQuotationOcrSourceSchema = z
+  .object({
+    source: z.enum(['ai', 'human']),
+    version: z.number().int().positive(),
+    savedAt: z.string().datetime(),
+    messageId: z.string().min(1),
+    outputId: z.string().min(1),
+    title: z.string().min(1),
+    revision: z.string().min(1),
+    aiSavedAt: z.string().datetime().optional(),
+    humanSavedAt: z.string().datetime().optional(),
+  })
+  .strict();
+
+export type SteelQuotationOcrSource = z.infer<typeof steelQuotationOcrSourceSchema>;
+
 export const steelQuotationStatusSchema = z
   .object({
     conversationId: z.string().min(1),
@@ -20,6 +36,7 @@ export const steelQuotationStatusSchema = z
     completedChunks: z.number().int().nonnegative(),
     totalChunks: z.number().int().nonnegative(),
     canCancel: z.boolean(),
+    ocrSource: steelQuotationOcrSourceSchema.optional(),
   })
   .refine(({ completedChunks, totalChunks }) => completedChunks <= totalChunks, {
     message: 'completedChunks cannot exceed totalChunks',

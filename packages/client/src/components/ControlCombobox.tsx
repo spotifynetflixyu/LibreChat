@@ -1,13 +1,14 @@
-import { useMemo, useState, useRef, memo, useEffect, MemoExoticComponent } from 'react';
+import { useMemo, useState, useRef, memo, useEffect } from 'react';
 import * as Ariakit from '@ariakit/react';
 import { matchSorter } from 'match-sorter';
 import { Search, ChevronDown } from 'lucide-react';
 import { SelectRenderer } from '@ariakit/react-components/select/select-renderer';
+import type { MemoExoticComponent, ReactNode, Ref } from 'react';
+import type { JSX } from 'react/jsx-runtime';
 import type { OptionWithIcon } from '~/common';
 import { usePopoverZIndex } from './OriginalDialog';
 import { fieldControl } from './Field';
 import './AnimatePopover.css';
-import { JSX } from 'react/jsx-runtime';
 import { cn } from '~/utils';
 
 interface ControlComboboxProps {
@@ -53,7 +54,20 @@ interface ControlComboboxProps {
   /** Told when the popover opens and closes, for hosts that must behave
    *  differently while it is up — e.g. a focus-trapped panel whose own Escape
    *  handler must not fire while an open popover owns the key. */
+  open?: boolean;
   onOpenChange?: (open: boolean) => void;
+  searchValue?: string;
+  onSearchChange?: (value: string) => void;
+  /** Server-filtered options retain their supplied order. */
+  filterItems?: boolean;
+  listFooter?: ReactNode;
+  resetSearchOnHide?: boolean;
+  /** Apply keyboard navigation only while the options menu is open. */
+  onNavigate?: (value: string) => void;
+  /** Notifies hosts when the current option is selected again. */
+  onReselect?: (value: string) => void;
+  /** Footer actions can retain input focus while updating the option list. */
+  searchInputRef?: Ref<HTMLInputElement>;
 }
 
 const ROW_HEIGHT = 36;
@@ -86,9 +100,23 @@ function ControlCombobox({
   variant = 'default',
   gutter = 4,
   portal = true,
+  open,
   onOpenChange,
+  searchValue: controlledSearchValue,
+  onSearchChange,
+  filterItems = true,
+  listFooter,
+  resetSearchOnHide = true,
+  onNavigate,
+  onReselect,
+  searchInputRef,
 }: ControlComboboxProps): JSX.Element {
-  const [searchValue, setSearchValue] = useState('');
+  const [localSearchValue, setLocalSearchValue] = useState('');
+  const searchValue = controlledSearchValue ?? localSearchValue;
+  const setSearchValue = (value: string) => {
+    if (controlledSearchValue === undefined) setLocalSearchValue(value);
+    onSearchChange?.(value);
+  };
   const buttonRef = useRef<HTMLButtonElement>(null);
   const [buttonWidth, setButtonWidth] = useState<number | null>(null);
   const popoverZIndex = usePopoverZIndex();
@@ -102,7 +130,7 @@ function ControlCombobox({
 
   const combobox = Ariakit.useComboboxStore({
     defaultItems: items.map(getItem),
-    resetValueOnHide: true,
+    resetValueOnHide: resetSearchOnHide,
     value: searchValue,
     setValue: setSearchValue,
   });
@@ -112,15 +140,16 @@ function ControlCombobox({
     defaultItems: items.map(getItem),
     value: selectedValue,
     setValue,
+    open,
     setOpen: onOpenChange,
     placement,
   });
 
   const matches = useMemo(() => {
-    const filteredItems = matchSorter(items, searchValue, {
+    const filteredItems = filterItems ? matchSorter(items, searchValue, {
       keys: ['value', 'label'],
       baseSort: (a, b) => (a.index < b.index ? -1 : 1),
-    });
+    }) : items;
     const mapped = filteredItems.map(getItem);
     if (unsearchedLimit != null && searchValue.trim() === '') {
       const capped = mapped.slice(0, unsearchedLimit);
@@ -136,7 +165,7 @@ function ControlCombobox({
       return capped;
     }
     return mapped;
-  }, [searchValue, items, unsearchedLimit, selectedValue]);
+  }, [filterItems, searchValue, items, unsearchedLimit, selectedValue]);
 
   useEffect(() => {
     const button = buttonRef.current;
@@ -254,8 +283,26 @@ function ControlCombobox({
           <div className="relative">
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-text-primary" />
             <Ariakit.Combobox
+              ref={searchInputRef}
               store={combobox}
               autoSelect
+              onKeyDown={(event) => {
+                if (!onNavigate || disabled || !select.getState().open ||
+                  (event.key !== 'ArrowDown' && event.key !== 'ArrowUp') || matches.length === 0) return;
+                event.preventDefault();
+                const activeId = combobox.getState().activeId;
+                const activeIndex = matches.findIndex((item) => item.id === activeId);
+                const selectedIndex = matches.findIndex((item) => item.value === selectedValue);
+                const index = selectedIndex >= 0 ? selectedIndex : activeIndex;
+                let nextIndex = matches.length - 1;
+                if (event.key === 'ArrowDown') nextIndex = (index + 1) % matches.length;
+                else if (index >= 0) nextIndex = (index - 1 + matches.length) % matches.length;
+                const next = matches[nextIndex];
+                if (next?.value === undefined) return;
+                combobox.move(next.id);
+                onNavigate(next.value);
+              }}
+              disabled={disabled}
               placeholder={searchPlaceholder}
               className="w-full rounded-md bg-surface-secondary py-2 pl-9 pr-3 text-sm text-text-primary focus:outline-none"
             />
@@ -269,30 +316,38 @@ function ControlCombobox({
           )}
         >
           <Ariakit.ComboboxList store={combobox}>
-            <SelectRenderer store={select} items={matches} itemSize={ROW_HEIGHT} overscan={5}>
-              {({ value, icon, label, ...item }) => (
-                <Ariakit.ComboboxItem
-                  key={item.id}
-                  {...item}
-                  className={cn(
-                    'flex w-full cursor-pointer items-center px-3 text-sm',
-                    'text-text-primary hover:bg-surface-tertiary',
-                    'data-[active-item]:bg-surface-tertiary',
-                  )}
-                  render={<Ariakit.SelectItem value={value} />}
-                >
-                  {icon != null && iconSide === 'left' && (
-                    <div className={optionIconClassName}>{icon}</div>
-                  )}
-                  <span className="flex-grow truncate text-left">{label}</span>
-                  {icon != null && iconSide === 'right' && (
-                    <div className={optionIconClassName}>{icon}</div>
-                  )}
-                </Ariakit.ComboboxItem>
-              )}
-            </SelectRenderer>
+            {/* The renderer chooses its scroller on mount; an empty list is not scrollable yet. */}
+            {matches.length > 0 && (
+              <SelectRenderer store={select} items={matches} itemSize={ROW_HEIGHT} overscan={5}>
+                {({ value, icon, label, ...item }) => (
+                  <Ariakit.ComboboxItem
+                    key={item.id}
+                    {...item}
+                    disabled={disabled}
+                    onClick={() => {
+                      if (!disabled && value === selectedValue && value !== undefined) onReselect?.(value);
+                    }}
+                    className={cn(
+                      'flex w-full cursor-pointer items-center px-3 text-sm',
+                      'text-text-primary hover:bg-surface-tertiary',
+                      'data-[active-item]:bg-surface-tertiary',
+                    )}
+                    render={<Ariakit.SelectItem value={value} />}
+                  >
+                    {icon != null && iconSide === 'left' && (
+                      <div className={optionIconClassName}>{icon}</div>
+                    )}
+                    <span className="flex-grow truncate text-left">{label}</span>
+                    {icon != null && iconSide === 'right' && (
+                      <div className={optionIconClassName}>{icon}</div>
+                    )}
+                  </Ariakit.ComboboxItem>
+                )}
+              </SelectRenderer>
+            )}
           </Ariakit.ComboboxList>
         </div>
+        {listFooter}
       </Ariakit.SelectPopover>
     </div>
   );

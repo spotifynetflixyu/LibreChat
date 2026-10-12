@@ -60,7 +60,7 @@ describe('Codex app-server client', () => {
           clientInfo: {
             name: 'librechat',
             title: 'LibreChat',
-            version: '0.8.7',
+            version: expect.stringMatching(/^\d+\.\d+\.\d+/),
           },
         },
       },

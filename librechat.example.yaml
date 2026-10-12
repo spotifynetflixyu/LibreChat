@@ -7,6 +7,11 @@ version: 1.3.17
 # Cache settings: Set to true to enable caching
 cache: true
 
+# Preconnect to Steel PostgreSQL at startup and retain one PostgreSQL connection
+# shared by all Steel runtime queries. Disabled by default.
+# steelPostgres:
+#   keepAlive: true
+
 # Langfuse connections are managed through Settings > Langfuse when available.
 # That flow verifies the credentials and stores the secret key encrypted; do not
 # place a plaintext langfuse.secretKey in this file. Environment-managed central

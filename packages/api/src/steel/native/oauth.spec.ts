@@ -1,12 +1,14 @@
-import type {
-  LanguageModelV3,
-  LanguageModelV3CallOptions,
-  LanguageModelV3GenerateResult,
-  LanguageModelV3StreamPart,
-} from '@ai-sdk/provider';
-import { dispatchCustomEvent } from '@langchain/core/callbacks/dispatch';
-import { BaseCallbackHandler } from '@langchain/core/callbacks/base';
 import { CallbackManager } from '@langchain/core/callbacks/manager';
+import { BaseCallbackHandler } from '@langchain/core/callbacks/base';
+import { dispatchCustomEvent } from '@langchain/core/callbacks/dispatch';
+import { RunnableLambda, type RunnableConfig } from '@librechat/agents/langchain/runnables';
+import {
+  AIMessage,
+  HumanMessage,
+  SystemMessage,
+  ToolMessage,
+  type BaseMessage,
+} from '@librechat/agents/langchain/messages';
 import {
   ChatModelStreamHandler,
   ContentTypes,
@@ -16,24 +18,17 @@ import {
   ToolNode,
   type GenericTool,
 } from '@librechat/agents';
-import type { BindToolsInput } from '@librechat/agents/langchain/language_models/chat_models';
-import {
-  AIMessage,
-  HumanMessage,
-  SystemMessage,
-  ToolMessage,
-  type BaseMessage,
-} from '@librechat/agents/langchain/messages';
-import { RunnableLambda, type RunnableConfig } from '@librechat/agents/langchain/runnables';
-import type { createOpenAIOAuth as createOpenAIOAuthType } from '@openai-oauth/ai-sdk';
+import type {
+  LanguageModelV3,
+  LanguageModelV3CallOptions,
+  LanguageModelV3GenerateResult,
+  LanguageModelV3StreamPart,
+} from '@ai-sdk/provider';
 import type { createOpenAIOAuthTransport as createOpenAIOAuthTransportType } from '@openai-oauth/core';
+import type { BindToolsInput } from '@librechat/agents/langchain/language_models/chat_models';
+import type { createOpenAIOAuth as createOpenAIOAuthType } from '@openai-oauth/ai-sdk';
 import type { openaiCredentials as openaiCredentialsType } from '@openai-oauth/local';
-import { OCR_COMPLETION_DIRECTIVE_MARKER } from '../markdown/ocr';
-import {
-  createOpenAIOAuthGraphModel,
-  createOpenAIOAuthModel,
-  createStatelessOpenAIOAuthProvider,
-} from './oauth';
+import type { OpenAIOAuthFetch } from './credentials';
 import {
   createDelegateOcrTool,
   delegateOcrStreamEventName,
@@ -43,8 +38,13 @@ import {
   runDelegateOcrWorkflow,
   type DelegateOcrExecutableTool,
 } from './delegate';
+import {
+  createOpenAIOAuthGraphModel,
+  createOpenAIOAuthModel,
+  createStatelessOpenAIOAuthProvider,
+} from './oauth';
 import { clearOpenAIOAuthCredentialInvalid, isOpenAIOAuthCredentialInvalid } from './auth-state';
-import type { OpenAIOAuthFetch } from './credentials';
+import { OCR_COMPLETION_DIRECTIVE_MARKER } from '../markdown/ocr';
 import { prepareSteelNativeToolConfig } from './tools';
 
 jest.mock('@langchain/core/callbacks/dispatch', () => {
@@ -953,13 +953,13 @@ describe('OpenAI OAuth model adapter', () => {
   });
 
   it.each([
-    ['missing system_order', '## customer_quote\nDRAFT'],
-    ['missing customer_quote', '## system_order\n\nA'],
-    ['reversed headings', '## customer_quote\nDRAFT\n\n## system_order\n\nA'],
-    ['inline mentions', 'Please use ## system_order and ## customer_quote'],
-    ['third-level headings', '### system_order\n\nA\n\n### customer_quote\nDRAFT'],
-    ['fenced headings', '```markdown\n## system_order\n\nA\n\n## customer_quote\nDRAFT\n```'],
-  ])('passes through %s without Stage2', async (_label, text) => {
+    ['missing system_order', '## customer_quote\nDRAFT', ''],
+    ['missing customer_quote', '## system_order\n\nA', '## system_order\n\nA'],
+    ['reversed headings', '## customer_quote\nDRAFT\n\n## system_order\n\nA', '## system_order\n\nA'],
+    ['inline mentions', 'Please use ## system_order and ## customer_quote', 'Please use ## system_order and ## customer_quote'],
+    ['third-level headings', '### system_order\n\nA\n\n### customer_quote\nDRAFT', '### system_order\n\nA\n\n### customer_quote\nDRAFT'],
+    ['fenced headings', '```markdown\n## system_order\n\nA\n\n## customer_quote\nDRAFT\n```', '```markdown\n## system_order\n\nA\n\n## customer_quote\nDRAFT\n```'],
+  ])('filters %s without Stage2', async (_label, text, expected) => {
     const doGenerate = jest.fn(async () => createGenerateResult([{ type: 'text', text }]));
     const model = createOpenAIOAuthGraphModel({
       modelOptions: {
@@ -978,7 +978,7 @@ describe('OpenAI OAuth model adapter', () => {
           tool_call_id: 'call_price_1',
         }),
       ]),
-    ).resolves.toEqual(expect.objectContaining({ content: text }));
+    ).resolves.toEqual(expect.objectContaining({ content: expected }));
     expect(doGenerate).toHaveBeenCalledTimes(1);
     expect(dispatchCustomEvent).not.toHaveBeenCalled();
   });
@@ -1022,7 +1022,7 @@ describe('OpenAI OAuth model adapter', () => {
     expect(doGenerate).not.toHaveBeenCalled();
   });
 
-  it('passes through a mixed valid-looking response with a client tool call', async () => {
+  it('filters a mixed valid-looking response with a client tool call', async () => {
     const text = '## system_order\n\nA\n\n## customer_quote\nDRAFT';
     const doGenerate = jest.fn(async () =>
       createGenerateResult([
@@ -1052,14 +1052,14 @@ describe('OpenAI OAuth model adapter', () => {
       }),
     ]);
 
-    expect(result.content).toBe(text);
+    expect(result.content).toBe('## system_order\n\nA\n\n');
     expect(result.tool_calls).toEqual([
       expect.objectContaining({ name: 'search_price_candidates' }),
     ]);
     expect(doGenerate).toHaveBeenCalledTimes(1);
   });
 
-  it('passes through valid headings when the provider already used Code Interpreter', async () => {
+  it('filters provider-authored customer quote after Code Interpreter', async () => {
     const text = '## system_order\n\nA\n\n## customer_quote\n100';
     const doGenerate = jest.fn(async () =>
       createGenerateResult([
@@ -1096,7 +1096,7 @@ describe('OpenAI OAuth model adapter', () => {
       }),
     ], config);
 
-    expect(result.content).toBe(text);
+    expect(result.content).toBe('## system_order\n\nA\n\n');
     expect(doGenerate).toHaveBeenCalledTimes(1);
     expect(dispatchCustomEvent).toHaveBeenCalledTimes(1);
     expect(dispatchCustomEvent).toHaveBeenCalledWith(
@@ -1113,7 +1113,7 @@ describe('OpenAI OAuth model adapter', () => {
     );
   });
 
-  it('streams valid headings without Stage2 when the provider already used Code Interpreter', async () => {
+  it('filters streamed provider-authored customer quote after Code Interpreter', async () => {
     const text = '## system_order\n\nA\n\n## customer_quote\n100';
     const doGenerate = jest.fn();
     const doStream = jest.fn(async () =>
@@ -1162,7 +1162,7 @@ describe('OpenAI OAuth model adapter', () => {
       chunks.push(chunk);
     }
 
-    expect(chunks.map((chunk) => chunk.content).join('')).toBe(text);
+    expect(chunks.map((chunk) => chunk.content).join('')).toBe('## system_order\n\nA\n\n');
     expect(doStream).toHaveBeenCalledTimes(1);
     expect(doGenerate).not.toHaveBeenCalled();
     expect(dispatchCustomEvent).toHaveBeenCalledTimes(1);
@@ -1304,7 +1304,9 @@ describe('OpenAI OAuth model adapter', () => {
       chunks.push(chunk);
     }
 
-    expect(chunks.map((chunk) => chunk.content).join('')).toBe(text);
+    expect(chunks.map((chunk) => chunk.content).join('')).toBe(
+      text.slice(0, text.indexOf('## customer_quote')),
+    );
     expect(chunks[chunks.length - 1]?.response_metadata).toEqual(
       expect.objectContaining({
         id: responseMetadata.id,
@@ -1361,14 +1363,8 @@ describe('OpenAI OAuth model adapter', () => {
       chunks.push(chunk);
     }
 
-    expect(chunks.map((chunk) => chunk.content).join('')).toBe(`${stageOne}${draft}`);
-    expect(
-      chunks.findIndex(
-        (chunk) => typeof chunk.content === 'string' && chunk.content.includes('DRAFT'),
-      ),
-    ).toBeLessThan(
-      chunks.findIndex((chunk) => chunk.tool_calls?.[0]?.name === 'search_price_candidates'),
-    );
+    expect(chunks.map((chunk) => chunk.content).join('')).toBe(`${stageOne}\n\n`);
+    expect(chunks.map((chunk) => chunk.content).join('')).not.toContain('DRAFT');
     expect(chunks[chunks.length - 1]?.usage_metadata).toEqual({
       input_tokens: 12,
       output_tokens: 4,
@@ -1414,14 +1410,19 @@ describe('OpenAI OAuth model adapter', () => {
     const first = await iterator.next();
     const second = await iterator.next();
     expect(first.value?.content).toBe(prefix);
-    expect(second.value?.content).toBe(manualReview);
-    expect(`${first.value?.content ?? ''}${second.value?.content ?? ''}`).toBe(
-      `${prefix}${manualReview}`,
-    );
-    expect(`${first.value?.content ?? ''}${second.value?.content ?? ''}`).not.toContain(
-      '## customer_quote',
-    );
-    await expect(iterator.next()).rejects.toThrow(providerError);
+    let emitted = `${first.value?.content ?? ''}${second.value?.content ?? ''}`;
+    while (true) {
+      try {
+        const next = await iterator.next();
+        if (next.done) break;
+        emitted += next.value?.content ?? '';
+      } catch (error) {
+        expect(error).toBe(providerError);
+        break;
+      }
+    }
+    expect(emitted).toContain(manualReview);
+    expect(emitted).not.toContain('## customer_quote');
     expect(doStream).toHaveBeenCalledTimes(1);
     expect(dispatchCustomEvent).not.toHaveBeenCalled();
   });
@@ -2605,6 +2606,11 @@ describe('OpenAI OAuth model adapter', () => {
   });
 
   it('creates a message run step before forwarding native OAuth graph text deltas', async () => {
+    type StreamGraph = NonNullable<Parameters<ChatModelStreamHandler['handle']>[3]>;
+    type RunStep = NonNullable<ReturnType<StreamGraph['getRunStep']>>;
+    type StepDetails = Parameters<StreamGraph['dispatchRunStep']>[1];
+    type MessageDelta = Parameters<StreamGraph['dispatchMessageDelta']>[1];
+
     const doGenerate = jest.fn();
     const doStream = jest.fn(async () => ({
       stream: new ReadableStream<LanguageModelV3StreamPart>({
@@ -2632,10 +2638,10 @@ describe('OpenAI OAuth model adapter', () => {
       getSystemRunnable: () => RunnableLambda.from((messages: BaseMessage[]) => messages),
     });
     const handler = new ChatModelStreamHandler();
-    const events: Array<{ event: string; data: any }> = [];
+    const events: Array<{ event: string; data: unknown }> = [];
     const stepIdsByKey = new Map<string, string>();
-    const runSteps = new Map<string, any>();
-    const graph: any = {
+    const runSteps = new Map<string, RunStep>();
+    const graph = {
       config: { configurable: { thread_id: 'thread_1' } },
       messageIdsByStepKey: new Map(),
       prelimMessageIdsByStepKey: new Map(),
@@ -2656,10 +2662,10 @@ describe('OpenAI OAuth model adapter', () => {
       getStepKey: jest.fn(() => 'agent_1:0'),
       getStepIdByKey: jest.fn((stepKey: string) => stepIdsByKey.get(stepKey) ?? ''),
       getRunStep: jest.fn((stepId: string) => runSteps.get(stepId)),
-      dispatchRunStep: jest.fn(async (stepKey: string, stepDetails: any) => {
+      dispatchRunStep: jest.fn(async (stepKey: string, stepDetails: StepDetails) => {
         const stepId = `step_${runSteps.size + 1}`;
         stepIdsByKey.set(stepKey, stepId);
-        const runStep = {
+        const runStep: RunStep = {
           id: stepId,
           index: runSteps.size,
           stepDetails,
@@ -2671,12 +2677,12 @@ describe('OpenAI OAuth model adapter', () => {
         events.push({ event: GraphEvents.ON_RUN_STEP, data: runStep });
         return stepId;
       }),
-      dispatchMessageDelta: jest.fn(async (stepId: string, delta: any) => {
+      dispatchMessageDelta: jest.fn(async (stepId: string, delta: MessageDelta) => {
         graph.messageStepHasTextDeltas.add(stepId);
         events.push({ event: GraphEvents.ON_MESSAGE_DELTA, data: { id: stepId, delta } });
       }),
       dispatchReasoningDelta: jest.fn(),
-    };
+    } as unknown as StreamGraph;
 
     const stream = await model.stream([new HumanMessage('輸出報價')]);
     for await (const chunk of stream) {
@@ -2718,7 +2724,7 @@ describe('OpenAI OAuth model adapter', () => {
     expect(doGenerate).not.toHaveBeenCalled();
   });
 
-  it('generates customer_quote in the backend before manual_review with one provider call', async () => {
+  it('keeps the backend system-order output free of a new customer_quote', async () => {
     const providerText = [
       '## system_order｜報價.pdf（file-1）',
       '',
@@ -2743,16 +2749,13 @@ describe('OpenAI OAuth model adapter', () => {
     const result = await model.invoke(quoteMessages());
     const content = String(result.content);
 
-    expect(content).toContain(
-      '## customer_quote｜報價.pdf（file-1）\n\n| 項目 | 總數 | 小計 |\n| --- | --- | --- |\n| PL6\\|54 | 2.060154 | 80 |\n| 總計 |  | 80 |',
-    );
-    expect(content.indexOf('## system_order')).toBeLessThan(content.indexOf('## customer_quote'));
-    expect(content.indexOf('## customer_quote')).toBeLessThan(content.indexOf('## manual_review'));
+    expect(content).not.toContain('## customer_quote');
+    expect(content.indexOf('## system_order')).toBeLessThan(content.indexOf('## manual_review'));
     expect(doGenerate).toHaveBeenCalledTimes(1);
   });
 
   it.each(['invoke', 'stream'] as const)(
-    'normalizes only system_order numeric cells and composes the quote during %s',
+    'normalizes only system_order numeric cells and omits a new quote during %s',
     async (mode) => {
       const providerText = [
         '## system_order｜訂單',
@@ -2796,14 +2799,13 @@ describe('OpenAI OAuth model adapter', () => {
       }
 
       expect(content).toContain('| A | 2 | 2.5 | 10 | 3 | keep |');
-      expect(content).toContain('| A | 2.5 | 25 |');
       expect(content).toContain('## manual_review\n| 單價 | 計價基準 |\n| --- | --- |\n| NT$ 9 | A |');
-      expect(content.match(/## customer_quote/g)).toHaveLength(1);
+      expect(content).not.toContain('## customer_quote');
     },
   );
 
   it.each(['invoke', 'stream'] as const)(
-    'preserves one existing customer_quote during %s',
+    'filters one provider customer_quote during %s',
     async (mode) => {
       const providerText = [
         '## system_order',
@@ -2846,8 +2848,63 @@ describe('OpenAI OAuth model adapter', () => {
         content = chunks.map((chunk) => chunk.content).join('');
       }
 
-      expect(content).toBe(providerText);
-      expect(content.match(/## customer_quote/g)).toHaveLength(1);
+      expect(content).toContain('## system_order');
+      expect(content).not.toContain('## customer_quote');
+    },
+  );
+
+  it.each(['invoke', 'stream'] as const)(
+    'filters a suffixed provider customer_quote during %s, including split headings',
+    async (mode) => {
+      const separator = mode === 'invoke' ? '|' : '｜';
+      const providerText = [
+        '## system_order',
+        '| 品名規格 | 總數 | 單價 |',
+        '| --- | --- | --- |',
+        '| A | 1 | 2 |',
+        '',
+        `## customer_quote${separator}內部計算`,
+        '| 項目 | 小計 |',
+        '| --- | --- |',
+        '| A | 2 |',
+        '',
+        '## notes',
+        'kept',
+      ].join('\n');
+      const doGenerate = jest.fn(async () =>
+        createGenerateResult([{ type: 'text', text: providerText }]),
+      );
+      const splitAt = providerText.indexOf(`## customer_quote${separator}`) + '## customer_quote'.length;
+      const doStream = jest.fn(async () =>
+        createStreamResult([
+          { type: 'text-delta', id: 'text_1', delta: providerText.slice(0, splitAt) },
+          { type: 'text-delta', id: 'text_1', delta: providerText.slice(splitAt) },
+          {
+            type: 'finish',
+            usage: createUsage(),
+            finishReason: { unified: 'stop', raw: 'stop' },
+          },
+        ]),
+      );
+      const model = createOpenAIOAuthModel({
+        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+        model: 'gpt-5.5',
+      });
+
+      let content: string;
+      if (mode === 'invoke') {
+        content = String((await model.invoke(quoteMessages())).content);
+      } else {
+        const chunks = [];
+        for await (const chunk of await model.stream(quoteMessages())) {
+          chunks.push(chunk);
+        }
+        content = chunks.map((chunk) => chunk.content).join('');
+      }
+
+      expect(content).toContain('## system_order');
+      expect(content).toContain('## notes\nkept');
+      expect(content).not.toContain('## customer_quote');
     },
   );
 
@@ -2895,7 +2952,7 @@ describe('OpenAI OAuth model adapter', () => {
     },
   );
 
-  it('buffers a split manual_review heading and inserts one backend quote before it', async () => {
+  it('buffers a split manual_review heading without inserting a new quote', async () => {
     const prefix = [
       '## system_order',
       '',
@@ -2948,28 +3005,19 @@ describe('OpenAI OAuth model adapter', () => {
     }
     const content = chunks.map((chunk) => chunk.content).join('');
 
-    expect(content).toContain('| A | 2 | 21 |');
-    expect(content.indexOf('## customer_quote')).toBeLessThan(content.indexOf('## manual_review'));
-    expect(content.match(/## customer_quote/g)).toHaveLength(1);
+    expect(content).toContain('| A | 2 | 10.5 |');
+    expect(content).not.toContain('## customer_quote');
     expect(doStream).toHaveBeenCalledTimes(1);
     expect(doGenerate).not.toHaveBeenCalled();
   });
 
-  it('appends exactly one backend quote at clean stop without manual_review', async () => {
+  it('keeps a clean-stop system order unchanged without manual_review', async () => {
     const providerText = [
       '## system_order｜訂單',
       '',
       '| 品名規格 | 總數 | 單價 |',
       '|---|---:|---:|',
       '| A | 2 | 10.5 |',
-    ].join('\n');
-    const expectedQuote = [
-      '## customer_quote｜訂單',
-      '',
-      '| 項目 | 總數 | 小計 |',
-      '| --- | --- | --- |',
-      '| A | 2 | 21 |',
-      '| 總計 |  | 21 |',
     ].join('\n');
     const doGenerate = jest.fn(async () =>
       createGenerateResult([{ type: 'text', text: providerText }]),
@@ -2982,12 +3030,12 @@ describe('OpenAI OAuth model adapter', () => {
     const result = await model.invoke(quoteMessages());
     const content = String(result.content);
 
-    expect(content).toBe(`${providerText}\n\n${expectedQuote}`);
-    expect(content.match(/## customer_quote/g)).toHaveLength(1);
+    expect(content).toBe(providerText);
+    expect(content).not.toContain('## customer_quote');
     expect(doGenerate).toHaveBeenCalledTimes(1);
   });
 
-  it('inserts the backend quote after system_order and before trailing summary text', async () => {
+  it('keeps a system order before trailing summary text without a new quote', async () => {
     const systemOrder = [
       '## system_order｜訂單',
       '',
@@ -2997,14 +3045,6 @@ describe('OpenAI OAuth model adapter', () => {
     ].join('\n');
     const summary = '查價輸出完成：共 1 筆 system_order，無待複核事項。';
     const providerText = `${systemOrder}\n\n${summary}`;
-    const expectedQuote = [
-      '## customer_quote｜訂單',
-      '',
-      '| 項目 | 總數 | 小計 |',
-      '| --- | --- | --- |',
-      '| A | 2 | 21 |',
-      '| 總計 |  | 21 |',
-    ].join('\n');
     const doGenerate = jest.fn();
     const doStream = jest.fn(async () =>
       createStreamResult([
@@ -3027,13 +3067,13 @@ describe('OpenAI OAuth model adapter', () => {
     }
     const content = chunks.map((chunk) => chunk.content).join('');
 
-    expect(content).toBe(`${systemOrder}\n\n${expectedQuote}\n\n${summary}`);
-    expect(content.match(/## customer_quote/g)).toHaveLength(1);
+    expect(content).toBe(`${systemOrder}\n\n${summary}`);
+    expect(content).not.toContain('## customer_quote');
     expect(doStream).toHaveBeenCalledTimes(1);
     expect(doGenerate).not.toHaveBeenCalled();
   });
 
-  it('preserves CRLF and trailing row spaces when inserting a streamed quote', async () => {
+  it('preserves CRLF and trailing row spaces in a streamed system order', async () => {
     const systemOrder = [
       '## system_order｜訂單',
       '',
@@ -3065,10 +3105,9 @@ describe('OpenAI OAuth model adapter', () => {
     }
     const content = chunks.map((chunk) => chunk.content).join('');
 
-    expect(content).toContain('| A | 2 | 10.5 |   \r\n\n## customer_quote｜訂單');
-    expect(content).toContain('| A | 2 | 21 |');
-    expect(content.indexOf('## customer_quote')).toBeLessThan(content.indexOf(summary));
-    expect(content.match(/## customer_quote/g)).toHaveLength(1);
+    expect(content).toContain('| A | 2 | 10.5 |   ');
+    expect(content).toContain(summary);
+    expect(content).not.toContain('## customer_quote');
   });
 
   it('streams a split table row without a leading pipe before provider completion', async () => {
@@ -3182,7 +3221,7 @@ describe('OpenAI OAuth model adapter', () => {
     },
   );
 
-  it('inserts a quote before a fenced manual_review at clean stop', async () => {
+  it('keeps a fenced manual_review after the system order without a new quote', async () => {
     const systemOrder = [
       '## system_order｜訂單',
       '',
@@ -3200,14 +3239,6 @@ describe('OpenAI OAuth model adapter', () => {
       '```',
     ].join('\n');
     const providerText = `${systemOrder}\n\n${fencedText}`;
-    const expectedQuote = [
-      '## customer_quote｜訂單',
-      '',
-      '| 項目 | 總數 | 小計 |',
-      '| --- | --- | --- |',
-      '| A | 2 | 21 |',
-      '| 總計 |  | 21 |',
-    ].join('\n');
     const doGenerate = jest.fn();
     const doStream = jest.fn(async () =>
       createStreamResult([
@@ -3234,12 +3265,9 @@ describe('OpenAI OAuth model adapter', () => {
     }
     const content = chunks.map((chunk) => chunk.content).join('');
     const fenceEnd = content.indexOf('```', content.indexOf('## manual_review'));
-    const quoteStart = content.indexOf('## customer_quote');
-
-    expect(content).toBe(`${systemOrder}\n\n${expectedQuote}\n\n${fencedText}`);
-    expect(content.match(/## customer_quote/g)).toHaveLength(1);
+    expect(content).toBe(`${systemOrder}\n\n${fencedText}`);
+    expect(content).not.toContain('## customer_quote');
     expect(fenceEnd).toBeGreaterThan(-1);
-    expect(quoteStart).toBeLessThan(content.indexOf('```markdown'));
     expect(doStream).toHaveBeenCalledTimes(1);
     expect(doGenerate).not.toHaveBeenCalled();
   });

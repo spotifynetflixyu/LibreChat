@@ -17,6 +17,7 @@ const {
   CHILD_THREAD_READ_ONLY_ERROR,
   isSubagentThreadWriteBlocked,
   createContentFilter,
+  createSteelReviewMessageMutationMiddleware,
   extractFeedbackContent,
   extractStoredMessageContent,
   assertStoredMessageMutationAllowed,
@@ -40,6 +41,10 @@ const {
 } = require('~/server/middleware');
 const db = require('~/models');
 
+const steelReviewMessageMutationMiddleware = createSteelReviewMessageMutationMiddleware({
+  checkSteelReviewMessageMutation: db.checkSteelReviewMessageMutation,
+});
+
 const router = express.Router();
 const filterStoredMessageContent = createContentFilter({
   messageCount: 1,
@@ -55,7 +60,11 @@ const filterFeedbackContent = createContentFilter({
   getFilters: (req) => req.config?.filters,
   extract: (req) => extractFeedbackContent(req.body),
 });
-const messageMutationMiddleware = [validateMessageReq, configMiddleware];
+const messageMutationMiddleware = [
+  validateMessageReq,
+  configMiddleware,
+  steelReviewMessageMutationMiddleware,
+];
 const storedMessageMutationMiddleware = [
   validateMessageReq,
   configMiddleware,

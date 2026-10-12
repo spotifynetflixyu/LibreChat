@@ -519,6 +519,9 @@ if (cluster.isMaster) {
     /* Route modules build their rate limiters as they load, so they load only after the
      * startup checks have applied `rateLimits` from librechat.yaml. */
     const routes = require('./routes');
+    const steelPostgres = require('~/server/services/Steel/postgres');
+    registerShutdownTask('steel postgres', steelPostgres.close, { priority: -10 });
+    await steelPostgres.initialize(baseAppConfig.config?.steelPostgres);
 
     /** Load index.html for SPA serving */
     const indexPath = path.join(appConfig.paths.dist, 'index.html');
