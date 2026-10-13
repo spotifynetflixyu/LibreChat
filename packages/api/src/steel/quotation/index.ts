@@ -13,3 +13,4 @@ export * from './services';
 export * from './revision';
 export * from './publication';
 export * from './wiring';
+export * from './signal';

@@ -36,6 +36,8 @@ import { buildSteelCodeInterpreterAuditEvent, steelNativeStreamEventName } from 
 import { finalizeOcrMarkdown, OCR_COMPLETION_DIRECTIVE_MARKER } from '../markdown/ocr';
 import { createOAuthCompactionFetch } from '~/providers/openai/compaction/gateway';
 import { loadOpenAIOAuthTokens, toOpenAIOAuthLibraryFetch } from './credentials';
+import { createQuotationSignalDetector } from '../quotation/signal';
+import { quotationSignal } from '../quotation/protocol';
 
 const dynamicImportOpenAIOAuth = new Function('specifier', 'return import(specifier)') as (
   specifier: string,
@@ -77,6 +79,7 @@ export interface OpenAIOAuthModelOptions extends OpenAIOAuthProviderOptions {
   frequencyPenalty?: number;
   maxOutputTokens?: number;
   model: string;
+  quotationPreparation?: boolean;
   presencePenalty?: number;
   reasoningEffort?: string;
   topP?: number;
@@ -215,6 +218,26 @@ export async function createStatelessOpenAIOAuthProvider(
 
 function getRunnableAbortSignal(config?: Partial<RunnableConfig>): AbortSignal | undefined {
   return (config as (Partial<RunnableConfig> & { signal?: AbortSignal }) | undefined)?.signal;
+}
+
+function linkAbortSignal(parentSignal?: AbortSignal): {
+  signal: AbortSignal;
+  abort: () => void;
+  cleanup: () => void;
+} {
+  const controller = new AbortController();
+  const onAbort = () => controller.abort(parentSignal?.reason);
+  if (parentSignal?.aborted) {
+    onAbort();
+  } else {
+    parentSignal?.addEventListener('abort', onAbort);
+  }
+
+  return {
+    signal: controller.signal,
+    abort: () => controller.abort(),
+    cleanup: () => parentSignal?.removeEventListener('abort', onAbort),
+  };
 }
 
 function parseDataUrl(value: string): { data: string; mediaType: string } | undefined {
@@ -851,12 +874,14 @@ function toMessageChunk(result: LanguageModelV3GenerateResult, model: string): A
 }
 
 function createCallOptions({
+  abortSignal,
   config,
   messages,
   options,
   toolChoice,
   tools,
 }: {
+  abortSignal?: AbortSignal;
   config?: Partial<RunnableConfig>;
   messages: BaseMessage[];
   options: OpenAIOAuthModelOptions;
@@ -866,7 +891,7 @@ function createCallOptions({
   const languageModelTools = toLanguageModelTools(tools, options.enableCodeInterpreter !== false);
 
   return omitUndefined({
-    abortSignal: getRunnableAbortSignal(config),
+    abortSignal: abortSignal ?? getRunnableAbortSignal(config),
     frequencyPenalty: options.frequencyPenalty,
     maxOutputTokens: options.maxOutputTokens,
     presencePenalty: options.presencePenalty,
@@ -1027,22 +1052,38 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
       return;
     }
 
-    const result = await providerModel.doStream(
-      createCallOptions({
-        config,
-        messages,
-        options: this.options,
-        tools: this.options.tools,
-      }),
-    );
-
     const ocrMode = hasOcrCompletionDirective(messages);
+    const parentSignal = getRunnableAbortSignal(config);
+    const quotationPreparation = this.options.quotationPreparation === true && !ocrMode;
+    const linkedSignal = quotationPreparation ? linkAbortSignal(parentSignal) : undefined;
+    let result: Awaited<ReturnType<NonNullable<LanguageModelV3['doStream']>>>;
+    try {
+      result = await providerModel.doStream(
+        createCallOptions({
+          abortSignal: linkedSignal?.signal,
+          config,
+          messages,
+          options: this.options,
+          tools: this.options.tools,
+        }),
+      );
+    } catch (error) {
+      linkedSignal?.cleanup();
+      throw error;
+    }
+
     const inspectCodeInterpreter = shouldInspectCodeInterpreter(messages, this.options);
     const dispatchCodeInterpreterEvidence = createCodeInterpreterEvidenceDispatcher(
       this.options.onCodeInterpreterEvidence,
     );
     const dispatchCodeInterpreterAudit = createSteelCodeInterpreterAuditDispatcher(config);
-    const reader = result.stream.getReader();
+    let reader: ReadableStreamDefaultReader<LanguageModelV3StreamPart>;
+    try {
+      reader = result.stream.getReader();
+    } catch (error) {
+      linkedSignal?.cleanup();
+      throw error;
+    }
 
     if (ocrMode) {
       let generatedText = '';
@@ -1109,6 +1150,7 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
           await reader.cancel().catch(() => undefined);
         }
         reader.releaseLock();
+        linkedSignal?.cleanup();
       }
 
       if (streamError) {
@@ -1130,17 +1172,71 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
 
     const outputFilter = createSteelMarkdownOutputFilter();
     const orderNormalizer = inspectCodeInterpreter ? createSystemOrderNormalizer() : undefined;
+    const quotationDetector = quotationPreparation ? createQuotationSignalDetector() : undefined;
     let response: LanguageModelV3GenerateResult['response'];
     let usage: LanguageModelV3Usage | undefined;
     let finishReason: LanguageModelV3GenerateResult['finishReason'] | undefined;
     let bypassNormalization = false;
     let completed = false;
     let streamError: Error | undefined;
+    let quotationHandoff = false;
+    let readerCancelled = false;
+
+    const cancelReader = async () => {
+      if (readerCancelled) return;
+      readerCancelled = true;
+      await reader.cancel().catch(() => undefined);
+    };
+
+    const processText = (delta: string): string => {
+      if (bypassNormalization) {
+        return outputFilter.append(delta);
+      }
+      const normalizedDelta = orderNormalizer?.append(delta) ?? delta;
+      return outputFilter.append(normalizedDelta);
+    };
+
+    const flushQuotationCandidate = (): string => {
+      const raw = quotationDetector?.disarm() ?? '';
+      return raw ? processText(raw) : '';
+    };
+
+    const finishPendingRaw = (): string => {
+      const candidate = flushQuotationCandidate();
+      const pendingText = orderNormalizer?.finish({ raw: true }) ?? '';
+      return candidate + outputFilter.append(pendingText) + outputFilter.finish();
+    };
+
+    const acceptQuotationHandoff = async (): Promise<boolean> => {
+      if (!quotationDetector || quotationDetector.getState() !== 'matched') {
+        return false;
+      }
+      if (parentSignal?.aborted) {
+        return false;
+      }
+      quotationHandoff = true;
+      linkedSignal?.abort();
+      await cancelReader();
+      if (parentSignal?.aborted) {
+        quotationHandoff = false;
+        return false;
+      }
+      return true;
+    };
+
+    const throwIfParentAborted = () => {
+      if (!parentSignal?.aborted) return;
+      throw parentSignal.reason instanceof Error
+        ? parentSignal.reason
+        : new Error('Native OAuth quotation preparation was aborted');
+    };
 
     try {
       while (true) {
         const { done, value } = await reader.read();
         if (done) {
+          const pendingCandidate = flushQuotationCandidate();
+          if (pendingCandidate) yield toStreamTextChunk(pendingCandidate, this.options.model);
           completed = true;
           break;
         }
@@ -1152,16 +1248,53 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
         }
 
         if (value.type === 'text-delta') {
-          if (bypassNormalization) {
-            const filteredDelta = outputFilter.append(value.delta);
-            if (filteredDelta) yield toStreamTextChunk(filteredDelta, this.options.model);
+          if (quotationDetector?.getState() === 'pending') {
+            const detection = quotationDetector.append(value.delta);
+            if (detection.state === 'matched') {
+              if (await acceptQuotationHandoff()) break;
+              throwIfParentAborted();
+              const raw = quotationDetector.disarm();
+              const filtered = raw ? processText(raw) : '';
+              if (filtered) yield toStreamTextChunk(filtered, this.options.model);
+              continue;
+            }
+            if (detection.state === 'disarmed') {
+              if (detection.raw) {
+                const filtered = processText(detection.raw);
+                if (filtered) yield toStreamTextChunk(filtered, this.options.model);
+              }
+            }
             continue;
           }
 
-          const normalizedDelta = orderNormalizer?.append(value.delta) ?? value.delta;
-          const filteredDelta = outputFilter.append(normalizedDelta);
+          const filteredDelta = processText(value.delta);
           if (filteredDelta) yield toStreamTextChunk(filteredDelta, this.options.model);
           continue;
+        }
+
+        if (value.type === 'text-end' && quotationDetector?.getState() === 'pending') {
+          if (parentSignal?.aborted) {
+            const filtered = flushQuotationCandidate();
+            if (filtered) yield toStreamTextChunk(filtered, this.options.model);
+            throwIfParentAborted();
+          }
+          const detection = quotationDetector.textEnd();
+          if (detection.state === 'matched') {
+            if (await acceptQuotationHandoff()) break;
+            throwIfParentAborted();
+          } else if (detection.state === 'disarmed' && detection.raw) {
+            const filtered = processText(detection.raw);
+            if (filtered) yield toStreamTextChunk(filtered, this.options.model);
+          }
+          continue;
+        }
+
+        if (
+          quotationDetector?.getState() === 'pending' &&
+          (value.type === 'tool-call' || value.type === 'tool-input-start')
+        ) {
+          const filtered = flushQuotationCandidate();
+          if (filtered) yield toStreamTextChunk(filtered, this.options.model);
         }
 
         if (
@@ -1169,8 +1302,7 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
           (value.type === 'tool-input-start' && value.providerExecuted !== true) ||
           value.type === 'error'
         ) {
-          const pendingText = orderNormalizer?.finish({ raw: true }) ?? '';
-          const filteredText = outputFilter.append(pendingText) + outputFilter.finish();
+          const filteredText = finishPendingRaw();
           if (filteredText) yield toStreamTextChunk(filteredText, this.options.model);
 
           if (value.type === 'error') {
@@ -1186,6 +1318,8 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
         if (value.type === 'response-metadata') {
           response = value;
         } else if (value.type === 'finish') {
+          const pendingCandidate = flushQuotationCandidate();
+          if (pendingCandidate) yield toStreamTextChunk(pendingCandidate, this.options.model);
           usage = value.usage;
           finishReason = value.finishReason;
         }
@@ -1194,16 +1328,37 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
       streamError = error instanceof Error ? error : new Error(String(error));
     } finally {
       if (!completed) {
-        await reader.cancel().catch(() => undefined);
+        await cancelReader();
       }
       reader.releaseLock();
+      linkedSignal?.cleanup();
     }
 
     if (streamError) {
-      const pendingText = orderNormalizer?.finish({ raw: true }) ?? '';
-      const filteredText = outputFilter.append(pendingText) + outputFilter.finish();
+      const filteredText = finishPendingRaw();
       if (filteredText) yield toStreamTextChunk(filteredText, this.options.model);
       throw streamError;
+    }
+
+    if (quotationHandoff && parentSignal?.aborted) {
+      quotationHandoff = false;
+      const filteredText = finishPendingRaw();
+      if (filteredText) yield toStreamTextChunk(filteredText, this.options.model);
+      throw parentSignal.reason instanceof Error
+        ? parentSignal.reason
+        : new Error('Native OAuth quotation preparation was aborted');
+    }
+
+    if (quotationHandoff) {
+      yield toStreamTextChunk(quotationSignal, this.options.model);
+      yield new AIMessageChunk({
+        content: '',
+        response_metadata: {
+          ...createResponseMetadata({ model: this.options.model, response }),
+          finish_reason: 'quotation_handoff',
+        },
+      });
+      return;
     }
 
     if (orderNormalizer && !bypassNormalization) {

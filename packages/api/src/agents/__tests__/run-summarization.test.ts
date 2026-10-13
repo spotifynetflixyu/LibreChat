@@ -630,6 +630,34 @@ describe('custom endpoint stream usage defaults', () => {
     expect(sink.mock.calls[0]?.[0]).not.toHaveProperty('temperature');
   });
 
+  it.each([false, true])(
+    'scopes preparation handoff away from summarization (summarizeOnly=%s)',
+    async (summarizeOnly) => {
+      const graph = { agentContexts: new Map() };
+      (Run.create as jest.Mock).mockResolvedValueOnce({ Graph: graph });
+      const sink = jest.fn();
+      await createRun({
+        agents: [
+          makeAgent({ endpoint: 'openai_oauth_responses', provider: 'openai_oauth_responses' }),
+        ] as never,
+        signal: new AbortController().signal,
+        quotationPreparation: true,
+        summarizeOnly,
+        openAIOAuthModelOptionsSink: sink,
+      });
+      expect(graph).toEqual(
+        expect.objectContaining({
+          overrideModel: expect.objectContaining({
+            options: expect.objectContaining({
+              modelOptions: expect.objectContaining({ quotationPreparation: !summarizeOnly }),
+            }),
+          }),
+        }),
+      );
+      expect(sink.mock.calls[0][0]).not.toHaveProperty('quotationPreparation');
+    },
+  );
+
   it('lets the OCR markdown path force OpenAI OAuth reasoning effort to none', async () => {
     process.env.OPENAI_REASONING_EFFORT = 'high';
     const graph = {
@@ -5192,6 +5220,38 @@ describe('native OAuth compaction provider integration', () => {
     releaseOAuthCompaction: async () => undefined,
     deleteOAuthCompaction: async () => 0,
   };
+  it.each([false, true])(
+    'keeps preparation handoff out of compact-only and child options (summarizeOnly=%s)',
+    async (summarizeOnly) => {
+      const { oauthCompactionConfigSchema } = await import('librechat-data-provider');
+      const sink = jest.fn();
+      await createRun({
+        agents: [
+          makeAgent({ provider: 'openai_oauth_responses', endpoint: 'openai_oauth_responses' }),
+          makeAgent({
+            id: 'secondary',
+            provider: 'openai_oauth_responses',
+            endpoint: 'openai_oauth_responses',
+          }),
+        ] as never,
+        appConfig: {
+          ...makeAppConfig([]),
+          oauthCompaction: oauthCompactionConfigSchema.parse({ enabled: true }),
+        },
+        user: { id: 'user' } as IUser,
+        conversationId: 'conversation',
+        oauthCompactionStore: store,
+        quotationPreparation: true,
+        summarizeOnly,
+        openAIOAuthModelOptionsSink: sink,
+        signal: new AbortController().signal,
+      });
+      const inputs = (Run.create as jest.Mock).mock.calls[0][0].graphConfig.agents;
+      expect(inputs[0].clientOptions.oauth.quotationPreparation).toBe(!summarizeOnly);
+      expect(inputs[1].clientOptions.oauth.quotationPreparation).toBe(false);
+      expect(sink.mock.calls[0][0]).not.toHaveProperty('quotationPreparation');
+    },
+  );
   it('registers only actual OAuth agents and leaves canonical context intact', async () => {
     const { oauthCompactionConfigSchema } = await import('librechat-data-provider');
     const sink = jest.fn();

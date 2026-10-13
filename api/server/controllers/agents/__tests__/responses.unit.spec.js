@@ -322,6 +322,8 @@ jest.mock('@librechat/api', () => ({
   createSteelOcrResponseAuditService: () => ({ save: mockSaveOcrAudit }),
   SteelOcrResponseAuditPersistenceError: MockOcrAuditPersistenceError,
   prepareQuotationTurn: (...args) => mockPrepareQuotationTurn(...args),
+  isQuotationPreparationTurn: (...args) =>
+    jest.requireActual('@librechat/api').isQuotationPreparationTurn(...args),
   hasQuotationOrder: (...args) => mockHasQuotationOrder(...args),
   getAgentErrorMetadata: (...args) =>
     jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),
@@ -844,6 +846,25 @@ describe('createResponse controller', () => {
       once: jest.fn(),
       off: jest.fn(),
     };
+  });
+
+  it.each([
+    [false, false],
+    [true, false],
+    [false, true],
+    [true, true],
+  ])('scopes quotation preparation handoff: stream=%s OCR resume=%s', async (stream, ocrResume) => {
+    const api = require('@librechat/api');
+    api.validateResponseRequest.mockReturnValueOnce({
+      request: { model: 'agent-123', input: '報價', stream },
+    });
+    mockPrepareDelegateOcrResume.mockResolvedValueOnce(ocrResume ? { runId: 'ocr-resume' } : undefined);
+
+    await createResponse(req, res);
+
+    expect(api.createRun).toHaveBeenCalledWith(
+      expect.objectContaining({ quotationPreparation: !ocrResume }),
+    );
   });
 
   it.each([

@@ -778,6 +778,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     heartbeatEnabled = true;
     const running = await service.transitionRun({ ...leaseInput, status: 'running' });
     if (!running) throw new Error('Quotation could not start with its execution lease');
+    await progress(undefined, undefined, 'started');
     const payload = await service.readArtifact({ scope, ref: run.snapshotRef });
     if (!payload) throw new Error('Quotation input snapshot is missing');
     const snapshot = JSON.parse(payload) as SteelQuotationSnapshotPayload;
@@ -791,7 +792,6 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
         JSON.stringify({ version: 2, retrySizes: QUOTATION_V2_SPLIT_SIZES }),
       );
     }
-    await progress(undefined, undefined, 'started');
     for (const chunk of chunks) {
       interruptedChunkIndex = chunk.chunkIndex;
       const operationId = `chunk:${chunk.chunkIndex}`;

@@ -3,13 +3,6 @@ import { BaseCallbackHandler } from '@langchain/core/callbacks/base';
 import { dispatchCustomEvent } from '@langchain/core/callbacks/dispatch';
 import { RunnableLambda, type RunnableConfig } from '@librechat/agents/langchain/runnables';
 import {
-  AIMessage,
-  HumanMessage,
-  SystemMessage,
-  ToolMessage,
-  type BaseMessage,
-} from '@librechat/agents/langchain/messages';
-import {
   ChatModelStreamHandler,
   ContentTypes,
   GraphEvents,
@@ -18,6 +11,14 @@ import {
   ToolNode,
   type GenericTool,
 } from '@librechat/agents';
+import {
+  AIMessage,
+  AIMessageChunk,
+  HumanMessage,
+  SystemMessage,
+  ToolMessage,
+  type BaseMessage,
+} from '@librechat/agents/langchain/messages';
 import type {
   LanguageModelV3,
   LanguageModelV3CallOptions,
@@ -3476,4 +3477,237 @@ it('does not report a client-executed code interpreter result as provider eviden
 
   expect(evidence).not.toHaveBeenCalled();
   expect(chunks.some((chunk) => (chunk.tool_calls?.length ?? 0) > 0)).toBe(true);
+});
+
+it('hands off quotation preparation at text-end and cancels a stalled provider stream', async () => {
+  const cancel = jest.fn();
+  let providerAbortSignal: AbortSignal | undefined;
+  const doStream = jest.fn(async (options: LanguageModelV3CallOptions) => {
+    providerAbortSignal = options.abortSignal;
+    return {
+      stream: new ReadableStream<LanguageModelV3StreamPart>({
+        start(controller) {
+          controller.enqueue({ type: 'response-metadata', id: 'resp_handoff', modelId: 'gpt-5.6-luna' });
+          controller.enqueue({ type: 'text-delta', id: 'text_1', delta: '## quote_' });
+          controller.enqueue({ type: 'text-delta', id: 'text_1', delta: 'signal\n\nstart' });
+          controller.enqueue({ type: 'text-end', id: 'text_1' });
+        },
+        cancel,
+      }),
+      warnings: [],
+    };
+  });
+  const parent = new AbortController();
+  const model = createOpenAIOAuthModel({
+    ...createFakeOpenAIOAuthDependencies({ doGenerate: jest.fn(), doStream }).options,
+    model: 'gpt-5.5',
+    quotationPreparation: true,
+  });
+
+  const chunks = [];
+  for await (const chunk of await model.stream([new HumanMessage('準備報價')], { signal: parent.signal })) {
+    chunks.push(chunk);
+  }
+
+  expect(chunks.map((chunk) => chunk.content).join('')).toBe('## quote_signal\n\nstart');
+  const lastChunk = chunks[chunks.length - 1];
+  expect(lastChunk?.response_metadata).toEqual(expect.objectContaining({
+    id: 'resp_handoff',
+    finish_reason: 'quotation_handoff',
+    model: 'gpt-5.6-luna',
+  }));
+  let aggregate: AIMessageChunk | undefined;
+  for (const chunk of chunks) aggregate = aggregate?.concat(chunk) ?? chunk;
+  expect(aggregate?.content).toBe('## quote_signal\n\nstart');
+  expect(aggregate?.response_metadata).toEqual(expect.objectContaining({
+    id: 'resp_handoff',
+    finish_reason: 'quotation_handoff',
+  }));
+  expect(lastChunk?.usage_metadata).toBeUndefined();
+  expect(cancel).toHaveBeenCalledTimes(1);
+  expect(parent.signal.aborted).toBe(false);
+  expect(providerAbortSignal).toBeInstanceOf(AbortSignal);
+  expect(providerAbortSignal?.aborted).toBe(true);
+});
+
+it('hands off on a newline terminated signal and drops queued provider tail content', async () => {
+  const cancel = jest.fn();
+  const doStream = jest.fn(async () => ({
+    stream: new ReadableStream<LanguageModelV3StreamPart>({
+      start(controller) {
+        controller.enqueue({ type: 'text-delta', id: 'text_1', delta: '## quote_signal\n\nstart\n' });
+        controller.enqueue({ type: 'text-delta', id: 'text_1', delta: 'queued tail' });
+      },
+      cancel,
+    }),
+    warnings: [],
+  }));
+  const model = createOpenAIOAuthModel({
+    ...createFakeOpenAIOAuthDependencies({ doGenerate: jest.fn(), doStream }).options,
+    model: 'gpt-5.5',
+    quotationPreparation: true,
+  });
+
+  const chunks = [];
+  for await (const chunk of await model.stream([new HumanMessage('準備報價')])) {
+    chunks.push(chunk);
+  }
+
+  expect(chunks.map((chunk) => chunk.content).join('')).toBe('## quote_signal\n\nstart');
+  expect(cancel).toHaveBeenCalledTimes(1);
+});
+
+it('fails the handoff when the parent is cancelled during reader cleanup', async () => {
+  const parent = new AbortController();
+  const abortError = new Error('cancelled during cleanup');
+  const cancel = jest.fn(() => parent.abort(abortError));
+  const doStream = jest.fn(async () => ({
+    stream: new ReadableStream<LanguageModelV3StreamPart>({
+      start(controller) {
+        controller.enqueue({ type: 'text-delta', id: 'text_1', delta: '## quote_signal\n\nstart' });
+        controller.enqueue({ type: 'text-end', id: 'text_1' });
+      },
+      cancel,
+    }),
+    warnings: [],
+  }));
+  const model = createOpenAIOAuthModel({
+    ...createFakeOpenAIOAuthDependencies({ doGenerate: jest.fn(), doStream }).options,
+    model: 'gpt-5.5',
+    quotationPreparation: true,
+  });
+
+  await expect((async () => {
+    for await (const chunk of await model.stream([new HumanMessage('準備報價')], { signal: parent.signal })) {
+      void chunk;
+    }
+  })()).rejects.toBe(abortError);
+  expect(cancel).toHaveBeenCalledTimes(1);
+});
+
+it('keeps a successful handoff when reader cancellation rejects', async () => {
+  const cancel = jest.fn().mockRejectedValue(new Error('cleanup failed'));
+  const doStream = jest.fn(async () => ({
+    stream: new ReadableStream<LanguageModelV3StreamPart>({
+      start(controller) {
+        controller.enqueue({ type: 'text-delta', id: 'text_1', delta: '## quote_signal\n\nstart' });
+        controller.enqueue({ type: 'text-end', id: 'text_1' });
+      },
+      cancel,
+    }),
+    warnings: [],
+  }));
+  const model = createOpenAIOAuthModel({
+    ...createFakeOpenAIOAuthDependencies({ doGenerate: jest.fn(), doStream }).options,
+    model: 'gpt-5.5',
+    quotationPreparation: true,
+  });
+
+  const chunks = [];
+  for await (const chunk of await model.stream([new HumanMessage('準備報價')])) {
+    chunks.push(chunk);
+  }
+
+  expect(chunks.map((chunk) => chunk.content).join('')).toBe('## quote_signal\n\nstart');
+  expect(chunks[chunks.length - 1]?.response_metadata).toEqual(expect.objectContaining({
+    finish_reason: 'quotation_handoff',
+  }));
+  expect(cancel).toHaveBeenCalledTimes(1);
+});
+
+it('passes the parent signal through unchanged when quotation preparation is disabled', async () => {
+  const parent = new AbortController();
+  let providerAbortSignal: AbortSignal | undefined;
+  const doStream = jest.fn(async (options: LanguageModelV3CallOptions) => {
+    providerAbortSignal = options.abortSignal;
+    return createStreamResult([
+      { type: 'text-delta', id: 'text_1', delta: 'ordinary' },
+      { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage: createUsage() },
+    ]);
+  });
+  const model = createOpenAIOAuthModel({
+    ...createFakeOpenAIOAuthDependencies({ doGenerate: jest.fn(), doStream }).options,
+    model: 'gpt-5.5',
+  });
+
+  const chunks = [];
+  for await (const chunk of await model.stream([new HumanMessage('一般回覆')], { signal: parent.signal })) {
+    chunks.push(chunk);
+  }
+
+  expect(chunks.map((chunk) => chunk.content).join('')).toBe('ordinary');
+  expect(providerAbortSignal).toBe(parent.signal);
+  expect(parent.signal.aborted).toBe(false);
+});
+
+it('flushes a malformed quotation candidate exactly once and continues normally', async () => {
+  const doStream = jest.fn(async () => createStreamResult([
+    { type: 'text-delta', id: 'text_1', delta: '## quote_signal\n\nstart now\n' },
+    { type: 'text-delta', id: 'text_1', delta: 'tail' },
+    { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage: createUsage() },
+  ]));
+  const model = createOpenAIOAuthModel({
+    ...createFakeOpenAIOAuthDependencies({ doGenerate: jest.fn(), doStream }).options,
+    model: 'gpt-5.5',
+    quotationPreparation: true,
+  });
+
+  const chunks = [];
+  for await (const chunk of await model.stream([new HumanMessage('準備報價')])) {
+    chunks.push(chunk);
+  }
+
+  const content = chunks.map((chunk) => chunk.content).join('');
+  expect(content).toBe('## quote_signal\n\nstart now\ntail');
+  expect(content.match(/## quote_signal/gu)).toHaveLength(1);
+  expect(chunks[chunks.length - 1]?.response_metadata).toEqual(expect.objectContaining({ finish_reason: 'stop' }));
+});
+
+it('disarms on provider executed tools before a quotation signal', async () => {
+  const doStream = jest.fn(async () => createStreamResult([
+    { type: 'text-delta', id: 'text_1', delta: '## quote_signal\n\nstart' },
+    {
+      type: 'tool-call',
+      toolCallId: 'python-1',
+      toolName: 'code_interpreter',
+      input: '{}',
+      providerExecuted: true,
+    },
+    { type: 'text-delta', id: 'text_1', delta: ' after tool' },
+    { type: 'finish', finishReason: { unified: 'stop', raw: 'stop' }, usage: createUsage() },
+  ]));
+  const model = createOpenAIOAuthModel({
+    ...createFakeOpenAIOAuthDependencies({ doGenerate: jest.fn(), doStream }).options,
+    model: 'gpt-5.5',
+    quotationPreparation: true,
+  });
+
+  const chunks = [];
+  for await (const chunk of await model.stream([new HumanMessage('準備報價')])) {
+    chunks.push(chunk);
+  }
+
+  expect(chunks.map((chunk) => chunk.content).join('')).toBe('## quote_signal\n\nstart after tool');
+  expect(chunks[chunks.length - 1]?.response_metadata).toEqual(expect.objectContaining({ finish_reason: 'stop' }));
+});
+
+it('propagates a cancelled parent and never hands off', async () => {
+  const parent = new AbortController();
+  const abortError = new Error('cancelled by caller');
+  parent.abort(abortError);
+  const doStream = jest.fn(async () => createStreamResult([
+    { type: 'text-delta', id: 'text_1', delta: '## quote_signal\n\nstart' },
+    { type: 'text-end', id: 'text_1' },
+  ]));
+  const model = createOpenAIOAuthModel({
+    ...createFakeOpenAIOAuthDependencies({ doGenerate: jest.fn(), doStream }).options,
+    model: 'gpt-5.5',
+    quotationPreparation: true,
+  });
+
+  await expect((async () => {
+    for await (const chunk of await model.stream([new HumanMessage('準備報價')], { signal: parent.signal })) {
+      void chunk;
+    }
+  })()).rejects.toBe(abortError);
 });

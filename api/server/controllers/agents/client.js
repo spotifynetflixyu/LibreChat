@@ -197,6 +197,7 @@ const {
   markCompactionOutcome,
   resolvePersistableCodeEnvironmentDecision,
   createSteelQuotationTextWiring,
+  isQuotationPreparationTurn,
 } = require('@librechat/api');
 const {
   Run,
@@ -5342,6 +5343,10 @@ class AgentClient extends BaseClient {
           customHandlers: reasoningLabel?.handlers(activityHandlers) ?? activityHandlers,
           openAIOAuthReasoningEffortOverride: this.options.openAIOAuthReasoningEffortOverride,
           delegateOcrPolicy: this.options.req?.steelNativeContext?.delegateOcrPolicy,
+          quotationPreparation: isQuotationPreparationTurn(
+            this.options.req?.steelNativeContext,
+            delegateOcrResume,
+          ),
           openAIOAuthModelOptionsSink: (modelOptions) => {
             const delegateOcrContext = this.options.req?.steelNativeContext?.delegateOcrContext;
             if (delegateOcrContext) {

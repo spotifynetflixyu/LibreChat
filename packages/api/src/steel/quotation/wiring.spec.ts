@@ -1,7 +1,7 @@
 import { logger } from '@librechat/data-schemas';
 import type { SteelQuotationSavedMessage } from '@librechat/data-schemas';
 import type { SteelQuotationPublicationContentPart } from './publication';
-import { createSteelQuotationMessageNotifier, createSteelQuotationTextWiring, projectSteelQuotationTerminalMessage, createSteelQuotationFailurePersistence } from './wiring';
+import { createSteelQuotationMessageNotifier, createSteelQuotationTextWiring, projectSteelQuotationTerminalMessage, createSteelQuotationFailurePersistence, isQuotationPreparationTurn } from './wiring';
 
 const publication = {
   version: 1,
@@ -15,6 +15,15 @@ const publication = {
   footerContentIndex: 3,
 };
 const scope = { userId: 'user', conversationId: 'conversation' };
+it('enables signal handoff only for ordinary scoped quotation preparation', () => {
+  const context = { quotation: { scope, resume: false } };
+  expect(isQuotationPreparationTurn(context)).toBe(true);
+  expect(isQuotationPreparationTurn(undefined)).toBe(false);
+  expect(isQuotationPreparationTurn({})).toBe(false);
+  expect(isQuotationPreparationTurn({ quotation: { scope, resume: true } })).toBe(false);
+  expect(isQuotationPreparationTurn({ ...context, ocrTurnActive: true })).toBe(false);
+  expect(isQuotationPreparationTurn(context, { runId: 'ocr-resume' })).toBe(false);
+});
 const saved: SteelQuotationSavedMessage = {
   messageId: 'response',
   conversationId: scope.conversationId,

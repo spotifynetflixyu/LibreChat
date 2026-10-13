@@ -1898,11 +1898,13 @@ function getOpenAIOAuthModelOptions(
 
 function applyOpenAIOAuthGraphOverride({
   agentInput,
+  quotationPreparation,
   openAIOAuthReasoningEffortOverride,
   run,
   sourceAgent,
 }: {
   agentInput?: AgentInputs;
+  quotationPreparation?: boolean;
   openAIOAuthReasoningEffortOverride?: OpenAIReasoningEffort;
   run: unknown;
   sourceAgent?: Pick<RunAgent, 'endpoint' | 'provider'>;
@@ -1918,7 +1920,10 @@ function applyOpenAIOAuthGraphOverride({
 
   const agentId = agentInput.agentId;
   graph.overrideModel = createOpenAIOAuthGraphModel({
-    modelOptions: getOpenAIOAuthModelOptions(agentInput, openAIOAuthReasoningEffortOverride),
+    modelOptions: {
+      ...getOpenAIOAuthModelOptions(agentInput, openAIOAuthReasoningEffortOverride),
+      quotationPreparation,
+    },
     terminalToolNames: [delegateOcrToolName],
     getSystemRunnable: () => graph.agentContexts?.get(agentId)?.systemRunnable,
     getTools: () =>
@@ -2266,6 +2271,7 @@ export async function createRun({
   messages,
   delegateOcrQuoteOnlyTurn,
   delegateOcrPolicy,
+  quotationPreparation = false,
   discoveredToolNames,
   requestBody,
   codeApprovalMode: requestedCodeApprovalMode,
@@ -2336,6 +2342,8 @@ export async function createRun({
   delegateOcrQuoteOnlyTurn?: boolean;
   /** Request-resolved delegate OCR visibility and authorized attachment keys. */
   delegateOcrPolicy?: DelegateOcrPolicy;
+  /** The host may hand a completed preparation signal to the quotation workflow. */
+  quotationPreparation?: boolean;
   /**
    * Pre-discovered deferred-tool names to force-load directly, bypassing message
    * extraction. The HITL resume path rebuilds the graph with `messages: []` (state
@@ -2813,7 +2821,11 @@ export async function createRun({
           {
             model: modelOptions.model,
             streaming,
-            oauth: modelOptions,
+            oauth: {
+              ...modelOptions,
+              quotationPreparation:
+                quotationPreparation && !isSubagent && !summarizeOnly && agent === agents[0],
+            },
             oauthSubagent: isSubagent,
             oauthRunId: resolvedRunId,
           },
@@ -3289,6 +3301,7 @@ export async function createRun({
   if (appConfig?.oauthCompaction?.enabled !== true) {
     applyOpenAIOAuthGraphOverride({
       agentInput: agentInputs.length === 1 ? agentInputs[0] : undefined,
+      quotationPreparation: quotationPreparation && !summarizeOnly,
       openAIOAuthReasoningEffortOverride,
       run,
       sourceAgent: agents.length === 1 ? agents[0] : undefined,

@@ -65,6 +65,7 @@ const {
   createSteelQuotationPublicationAdmission,
   createSteelFullMarkdownPublisher,
   quotationMessageText,
+  isQuotationPreparationComplete,
   buildSteelQuotationStatusEventEnvelope,
   createSteelMarkdownCompletionServices,
   createSteelOcrStateService,
@@ -6587,7 +6588,7 @@ async function executeSteelQuotationWorkflow({
           sender: agent?.name ?? 'Agent',
           endpoint: 'agents',
           model: agent?.id,
-          finish_reason: 'stop',
+          finish_reason: last.response_metadata?.finish_reason,
           metadata: {
             steel: {
               activityEvents: context.steelHistory?.activityEvents,
@@ -6628,7 +6629,7 @@ async function executeSteelQuotationWorkflow({
         savePublication: db.publishSteelMarkdown,
       }),
       markdown: response,
-      completed: last.response_metadata?.finish_reason === 'stop',
+      completed: isQuotationPreparationComplete(last),
       stage: 'workflow',
       assertActive: async () => {
         if (signal.aborted || run?.interrupt) throw new Error('Quotation workflow was interrupted');

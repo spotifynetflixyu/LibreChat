@@ -26,6 +26,15 @@ interface QuotationTextWiring {
   buildPublicationMessage(input: { targetMessageId: string; markdown: string }): SteelQuotationPublicationMessageSnapshot;
 }
 
+export function isQuotationPreparationTurn(
+  context: SteelResponseRequest['steelNativeContext'],
+  delegateOcrResume?: object | null,
+): boolean {
+  return Boolean(
+    context?.quotation && !context.quotation.resume && !context.ocrTurnActive && !delegateOcrResume,
+  );
+}
+
 function extractQuotationErrors(content: unknown[] | undefined): SteelQuotationErrorPart[] {
   return (Array.isArray(content) ? content : []).flatMap((part) => {
     if (!part || typeof part !== 'object' || Array.isArray(part) || Reflect.get(part, 'type') !== ContentTypes.ERROR) return [];

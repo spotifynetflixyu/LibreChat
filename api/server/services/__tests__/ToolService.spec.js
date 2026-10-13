@@ -2658,7 +2658,6 @@ describe('ToolService - Action Capability Gating', () => {
         expect.arrayContaining([
           expect.objectContaining({
             type: 'parse_status',
-            message: 'Loaded saved PaddleOCR (chunk 1/1) (file:file-a)',
             parseStatus: 'partial',
           }),
         ]),
@@ -4423,7 +4422,6 @@ describe('ToolService - Action Capability Gating', () => {
             event: 'steel_event',
             data: expect.objectContaining({
               source: 'ocr_preprocessing',
-              message: 'ocr preprocessing failed (file:file-fallback)',
               errorMessage: 'provider timeout',
             }),
           }),
@@ -8544,7 +8542,7 @@ describe('quotation transport bridge', () => {
   beforeEach(() => {
     mockAcceptQuotation.mockReset().mockResolvedValue({ runId: 'run-1' });
     mockMarkdownFinalize.mockReset().mockImplementation(async (input) => {
-      if (input.stage !== 'workflow' || !input.markdown.includes('quote_signal')) {
+      if (!input.completed || input.stage !== 'workflow' || !input.markdown.includes('quote_signal')) {
         return { markdown: input.markdown };
       }
       const acceptedRun = await mockAcceptQuotation({
@@ -8590,6 +8588,36 @@ describe('quotation transport bridge', () => {
     expect(mockAcceptQuotation.mock.invocationCallOrder[0]).toBeLessThan(
       mockRunQuotation.mock.invocationCallOrder[0],
     );
+  });
+  it('hands a locally completed signal to quotation without aborting the user turn', async () => {
+    const input = makeInput();
+    input.run.getRunMessages = () => [{
+      getType: () => 'ai',
+      content: '## quote_signal\n\nstart',
+      response_metadata: { finish_reason: 'quotation_handoff' },
+    }];
+    await executeSteelQuotationWorkflow(input);
+    expect(mockMarkdownFinalize).toHaveBeenCalledWith(expect.objectContaining({
+      completed: true,
+      markdown: '## quote_signal\n\nstart',
+    }));
+    expect(mockRunQuotation).toHaveBeenCalledTimes(1);
+    expect(input.signal.aborted).toBe(false);
+  });
+  it('does not admit malformed or user-cancelled local handoffs', async () => {
+    const input = makeInput();
+    input.run.getRunMessages = () => [{
+      getType: () => 'ai',
+      content: '## quote_signal\n\nstart now',
+      response_metadata: { finish_reason: 'quotation_handoff' },
+    }];
+    await executeSteelQuotationWorkflow(input);
+    expect(mockRunQuotation).not.toHaveBeenCalled();
+    expect(mockMarkdownFinalize).toHaveBeenCalledWith(expect.objectContaining({ completed: false }));
+    const controller = new AbortController();
+    controller.abort();
+    await executeSteelQuotationWorkflow({ ...input, signal: controller.signal });
+    expect(mockRunQuotation).not.toHaveBeenCalled();
   });
   it('does not start a quotation for an ordinary response or incomplete tool exchange', async () => {
     mockAcceptQuotation.mockResolvedValue(undefined);

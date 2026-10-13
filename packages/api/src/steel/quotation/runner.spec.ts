@@ -774,6 +774,24 @@ describe('quotation runner integration', () => {
     expect((await service.readState(scope))?.activeRun?.status).toBe('completed');
   });
 
+  it('announces the running quotation before preparing recovery checkpoints or calling the model', async () => {
+    await prepareRun(3);
+    const model = createModel();
+    const started = jest.fn();
+    await runQuotationPreflight(runnerInput(model, createLookupExecutor(), {
+      onProgress: async (event) => {
+        if (event.stage !== 'started') return;
+        const active = (await service.readState(scope))!.activeRun!;
+        expect(active.status).toBe('running');
+        expect(active.leaseToken).toBeDefined();
+        expect(active.checkpointRefs.some((ref) => ref.operationId === 'recovery-policy')).toBe(false);
+        expect(model).not.toHaveBeenCalled();
+        started();
+      },
+    }));
+    expect(started).toHaveBeenCalledTimes(1);
+  });
+
   it.each(['paused', 'error'] as const)(
     'resumes a %s preflight with the correct persisted batch size and total',
     async (reason) => {

@@ -33,6 +33,7 @@ const {
   createSteelNativeHistory,
   prepareSteelNativeToolConfig,
   prepareQuotationTurn,
+  isQuotationPreparationTurn,
   prepareSteelMarkdownHistory,
   hasQuotationOrder,
   createSafeUser,
@@ -1898,6 +1899,7 @@ const executeResponse = async (envelope, { req, res }) => {
           signal: execution.signal,
           customHandlers: handlers,
           delegateOcrPolicy: req.steelNativeContext.delegateOcrPolicy,
+          quotationPreparation: isQuotationPreparationTurn(req.steelNativeContext, delegateOcrResume),
           openAIOAuthModelOptionsSink: (modelOptions) => {
             req.steelNativeContext.delegateOcrContext.modelOptions = modelOptions;
           },
@@ -2170,6 +2172,7 @@ const executeResponse = async (envelope, { req, res }) => {
           signal: execution.signal,
           customHandlers: handlers,
           delegateOcrPolicy: req.steelNativeContext.delegateOcrPolicy,
+          quotationPreparation: isQuotationPreparationTurn(req.steelNativeContext, delegateOcrResume),
           openAIOAuthModelOptionsSink: (modelOptions) => {
             req.steelNativeContext.delegateOcrContext.modelOptions = modelOptions;
           },
