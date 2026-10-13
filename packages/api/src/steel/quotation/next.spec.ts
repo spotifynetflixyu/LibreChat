@@ -14,7 +14,8 @@ it('uses the saved order and valid tier for the three states in each language', 
   expect(appendSteelNextStep({ ...base, order, language: 'zh-CN' })).toContain('或回覆「使用預設 B 級進行報價」');
   expect(appendSteelNextStep({ ...base, order })).toContain('Use default Tier B for the quote');
   expect(appendSteelNextStep({ ...base, order, customer, language: 'zh-TW' })).toContain('請確認資料後回覆「報價」');
-  expect(appendSteelNextStep({ ...base, order, customer, language: 'en-US' })).toContain('reply “Quote”');
+  expect(appendSteelNextStep({ ...base, order, customer, language: 'en-US' })).toContain('**Next step:**\n\nThe material');
+  expect(appendSteelNextStep({ ...base, order, customer, language: 'zh-TW' })).toContain('**下一步：**\n\n已收到');
 });
 
 it('requires a single valid tier rather than customer markdown presence', () => {

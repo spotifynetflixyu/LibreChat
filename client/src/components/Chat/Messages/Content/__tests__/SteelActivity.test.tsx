@@ -73,8 +73,8 @@ jest.mock('~/hooks/useLocalize', () => ({
     if (key === 'com_ui_retry') {
       return 'Retry';
     }
-    if (key === 'com_ui_steel_quote_cancel') {
-      return 'Cancel quotation';
+    if (key === 'com_ui_cancel') {
+      return 'Cancel';
     }
     if (key === 'com_ui_steel_quote_canceling') {
       return 'Canceling quotation…';
@@ -265,7 +265,7 @@ describe('SteelActivity', () => {
     );
 
     expect(screen.getAllByText('Quotation in progress (1/3 chunks)')).toHaveLength(2);
-    const cancel = screen.getByRole('button', { name: 'Cancel quotation' });
+    const cancel = screen.getByRole('button', { name: 'Cancel' });
     expect(cancel).toHaveClass('ms-auto', 'shrink-0');
     expect(container.querySelector('.my-3 .animate-spin')).toBeInTheDocument();
     fireEvent.click(cancel);
@@ -611,7 +611,7 @@ describe('SteelActivity', () => {
     );
 
     expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Cancel quotation' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
   });
 
   it('disables duplicate cancellation clicks while cancellation is pending', () => {
@@ -633,7 +633,7 @@ describe('SteelActivity', () => {
       </RecoilRoot>,
     );
 
-    expect(screen.getByRole('button', { name: 'Canceling quotation…' })).toBeDisabled();
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
   });
 
   it('keeps the cancel action available and reports a failed cancellation', () => {
@@ -655,7 +655,7 @@ describe('SteelActivity', () => {
       </RecoilRoot>,
     );
 
-    expect(screen.getByRole('button', { name: 'Cancel quotation' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled();
     expect(screen.getByText('Quotation cancellation failed: request failed')).toBeInTheDocument();
   });
 
@@ -685,7 +685,7 @@ describe('SteelActivity', () => {
     );
 
     expect(screen.getByText('Quotation completed (3/3 chunks)')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Cancel quotation' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
     expect(container.querySelector('.my-3 .animate-spin')).not.toBeInTheDocument();
     expect(container.querySelector('.my-3 .text-status-success')).toBeInTheDocument();
   });
@@ -723,7 +723,7 @@ describe('SteelActivity', () => {
     );
 
     expect(screen.getAllByText('Quotation completed (2/2 chunks)')).toHaveLength(2);
-    expect(screen.queryByRole('button', { name: 'Cancel quotation' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
   });
 
   it('shows a fresh queued quotation only in the progress summary', () => {
@@ -811,7 +811,7 @@ describe('SteelActivity', () => {
               messageId: 'assistant-quotation-main',
               runId: 'quotation-run-main',
               stage: 'main_review_started',
-              status: 'aggregating' as const,
+              status: 'completed' as const,
               completedChunks: 2,
               totalChunks: 2,
             },
@@ -819,8 +819,8 @@ describe('SteelActivity', () => {
               ...quotationStatusEvent,
               messageId: 'assistant-quotation-main',
               runId: 'quotation-run-main',
-              stage: 'aggregating',
-              status: 'aggregating' as const,
+              stage: 'main_consolidating',
+              status: 'completed' as const,
               completedChunks: 2,
               totalChunks: 2,
             },
@@ -829,7 +829,7 @@ describe('SteelActivity', () => {
               messageId: 'assistant-quotation-main',
               runId: 'quotation-run-main',
               stage: 'main_streaming',
-              status: 'aggregating' as const,
+              status: 'completed' as const,
               completedChunks: 2,
               totalChunks: 2,
             },
@@ -959,7 +959,7 @@ describe('SteelActivity', () => {
     );
     expect(screen.getAllByText(`Quotation chunk ${chunkIndex} started (${completed}/8 chunks)`))
       .toHaveLength(2);
-    expect(screen.getByRole('button', { name: 'Cancel quotation' })).toBeEnabled();
+    expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled();
   });
 
   it('keeps a terminal polled status over a stale main streaming event', () => {
@@ -1033,7 +1033,7 @@ describe('SteelActivity', () => {
     );
 
     expect(screen.getAllByText('Quotation completed (2/2 chunks)')).toHaveLength(2);
-    expect(screen.queryByRole('button', { name: 'Cancel quotation' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
     expect(container.querySelector('.my-3 .animate-spin')).not.toBeInTheDocument();
   });
 

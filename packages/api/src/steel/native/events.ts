@@ -1559,6 +1559,7 @@ export type SteelOcrPreprocessingProgress =
 export interface BuildSteelOcrPreprocessingEventEnvelopesInput
   extends Omit<SteelNativeEventBase, 'source'> {
   ocrFileKey: string;
+  filename?: string;
   progress: SteelOcrPreprocessingProgress;
 }
 
@@ -1897,17 +1898,19 @@ export function buildSteelPaddleOcrPreflightEventEnvelopes({
 
 export function buildSteelOcrPreprocessingEventEnvelopes({
   ocrFileKey,
+  filename,
   progress,
   ...input
 }: BuildSteelOcrPreprocessingEventEnvelopesInput): SteelNativeEventEnvelope[] {
   const eventBase = baseEvent({ ...input, source: 'ocr_preprocessing' });
+  const displayName = filename?.trim() || ocrFileKey;
 
   switch (progress.stage) {
     case 'pdf_chunks_ready': {
       const message =
         progress.source === 'fetched'
-          ? `Fetched pdf chunks (${progress.pageCount} pages / ${progress.chunkCount} chunks) (${ocrFileKey})`
-          : `Uploaded pdf to S3 (${progress.pageCount} pages / ${progress.chunkCount} chunks) (${ocrFileKey})`;
+          ? `Fetched pdf chunks (${progress.pageCount} pages / ${progress.chunkCount} chunks) (${displayName})`
+          : `Uploaded pdf to S3 (${progress.pageCount} pages / ${progress.chunkCount} chunks) (${displayName})`;
       return [
         {
           event: steelNativeStreamEventName,
@@ -1926,7 +1929,7 @@ export function buildSteelOcrPreprocessingEventEnvelopes({
           event: steelNativeStreamEventName,
           data: {
             type: 'parse_status',
-            message: `Running paddleocr_vl in PaddleOCR (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${ocrFileKey})`,
+            message: `Running paddleocr_vl in PaddleOCR (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${displayName})`,
             parseStatus: 'partial',
             ...eventBase,
           },
@@ -1938,7 +1941,7 @@ export function buildSteelOcrPreprocessingEventEnvelopes({
           event: steelNativeStreamEventName,
           data: {
             type: 'parse_status',
-            message: `Loaded saved PaddleOCR (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${ocrFileKey})`,
+            message: `Loaded saved PaddleOCR (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${displayName})`,
             parseStatus: 'partial',
             ...eventBase,
           },
@@ -1950,7 +1953,7 @@ export function buildSteelOcrPreprocessingEventEnvelopes({
           event: steelNativeStreamEventName,
           data: {
             type: 'parse_status',
-            message: `Ran paddleocr_vl in PaddleOCR (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${ocrFileKey})`,
+            message: `Ran paddleocr_vl in PaddleOCR (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${displayName})`,
             parseStatus: 'partial',
             ...eventBase,
           },
@@ -1959,7 +1962,7 @@ export function buildSteelOcrPreprocessingEventEnvelopes({
           event: steelNativeStreamEventName,
           data: {
             type: 'memory_saved',
-            message: `Saved PaddleOCR preflight (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${ocrFileKey})`,
+            message: `Saved PaddleOCR preflight (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${displayName})`,
             savedCounts: { paddleocr_preflight: 1 },
             ...eventBase,
           },
@@ -1971,7 +1974,7 @@ export function buildSteelOcrPreprocessingEventEnvelopes({
           event: steelNativeStreamEventName,
           data: {
             type: 'parse_status',
-            message: `Running OCR markdown process (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${ocrFileKey})`,
+            message: `Running OCR markdown process (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${displayName})`,
             parseStatus: 'partial',
             ...eventBase,
           },
@@ -1983,7 +1986,7 @@ export function buildSteelOcrPreprocessingEventEnvelopes({
           event: steelNativeStreamEventName,
           data: {
             type: 'parse_status',
-            message: `Loaded saved OCR markdown (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${ocrFileKey})`,
+            message: `Loaded saved OCR markdown (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${displayName})`,
             parseStatus: 'partial',
             ...eventBase,
           },
@@ -1995,7 +1998,7 @@ export function buildSteelOcrPreprocessingEventEnvelopes({
           event: steelNativeStreamEventName,
           data: {
             type: 'parse_status',
-            message: `Ran OCR markdown process (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${ocrFileKey})`,
+            message: `Ran OCR markdown process (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${displayName})`,
             parseStatus: 'partial',
             ...eventBase,
           },
@@ -2004,7 +2007,7 @@ export function buildSteelOcrPreprocessingEventEnvelopes({
           event: steelNativeStreamEventName,
           data: {
             type: 'memory_saved',
-            message: `Saved OCR markdown (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${ocrFileKey})`,
+            message: `Saved OCR markdown (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${displayName})`,
             savedCounts: { ocr_preprocessing_chunk_markdown: 1 },
             ...eventBase,
           },
@@ -2016,7 +2019,7 @@ export function buildSteelOcrPreprocessingEventEnvelopes({
           event: steelNativeStreamEventName,
           data: {
             type: 'parse_status',
-            message: `Read OCR markdowns (${ocrFileKey}: ${progress.chunkCount} chunks)`,
+            message: `Read OCR markdowns (${displayName}: ${progress.chunkCount} chunks)`,
             parseStatus: 'partial',
             ...eventBase,
           },
@@ -2028,7 +2031,7 @@ export function buildSteelOcrPreprocessingEventEnvelopes({
           event: steelNativeStreamEventName,
           data: {
             type: 'parse_status',
-            message: `Processing pdf with OCR markdowns (${ocrFileKey})`,
+            message: `Processing pdf with OCR markdowns (${displayName})`,
             parseStatus: 'partial',
             ...eventBase,
           },
@@ -2040,7 +2043,7 @@ export function buildSteelOcrPreprocessingEventEnvelopes({
           event: steelNativeStreamEventName,
           data: {
             type: 'parse_status',
-            message: `ocr preprocessing failed (${ocrFileKey})`,
+            message: `ocr preprocessing failed (${displayName})`,
             parseStatus: 'partial',
             errorMessage: progress.errorMessage,
             failedKeys: [ocrFileKey],

@@ -145,13 +145,19 @@ function getQuotationStatusText(
   repairAttempt?: number,
   maxRepairAttempts?: number,
 ): string {
-  if (status === 'aggregating' && stage === 'main_review_started') {
+  if (stage === 'main_consolidating') {
+    return localize('com_ui_steel_quote_status_main_consolidating', {
+      completedChunks,
+      totalChunks,
+    });
+  }
+  if (stage === 'main_review_started') {
     return localize('com_ui_steel_quote_status_main_review_started', {
       completedChunks,
       totalChunks,
     });
   }
-  if (status === 'aggregating' && stage === 'main_streaming') {
+  if (stage === 'main_streaming') {
     return localize('com_ui_steel_quote_status_main_responding', {
       completedChunks,
       totalChunks,
@@ -344,7 +350,7 @@ const SteelQuotationProgress = memo(function SteelQuotationProgress({
     status.status,
     completedChunks,
     totalChunks,
-    event?.stage,
+    event?.status === status.status ? event.stage : undefined,
     event?.chunkIndex,
     event?.repairAttempt,
     event?.maxRepairAttempts,
@@ -475,7 +481,7 @@ const SteelQuotationProgress = memo(function SteelQuotationProgress({
               disabled={!canRetry || isRetrying || isRetryDispatched || isSubmittingRef.current}
               onClick={retryQuotation}
             >
-              {isRetrying ? localize('com_ui_steel_quote_retrying') : localize('com_ui_retry')}
+              {localize('com_ui_retry')}
             </Button>
           ) : (
             <Button
@@ -486,9 +492,7 @@ const SteelQuotationProgress = memo(function SteelQuotationProgress({
               disabled={isCanceling}
               onClick={() => cancelMutation.mutate(index)}
             >
-              {isCanceling
-                ? localize('com_ui_steel_quote_canceling')
-                : localize('com_ui_steel_quote_cancel')}
+              {localize('com_ui_cancel')}
             </Button>
           ))}
         {actionError && (

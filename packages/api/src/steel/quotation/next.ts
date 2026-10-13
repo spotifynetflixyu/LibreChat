@@ -58,16 +58,16 @@ export function appendSteelNextStep(input: SteelNextStepInput): string {
   let footer: string;
   if (!hasQuotationOrder(input.order)) {
     footer = chinese
-      ? '**下一步：** 請先提供材料訂單。'
-      : '**Next step:** Please provide a material order first.';
+      ? '**下一步：**\n\n請先提供材料訂單。'
+      : '**Next step:**\n\nPlease provide a material order first.';
   } else if (!hasSteelCustomerTier(input.customer)) {
     footer = chinese
       ? '**下一步：**\n\n1. 請確認訂單中的材料資料。\n2. 請提供客戶名稱以確認客戶等級，或回覆「使用預設 B 級進行報價」。'
       : '**Next steps:**\n\n1. Confirm the material details in the order.\n2. Provide the customer name to determine the customer tier, or reply “Use default Tier B for the quote”.';
   } else {
     footer = chinese
-      ? '**下一步：** 已收到材料訂單與客戶等級，請確認資料後回覆「報價」。'
-      : '**Next step:** The material order and customer tier are available. Please confirm the details, then reply “Quote”.';
+      ? '**下一步：**\n\n已收到材料訂單與客戶等級，請確認資料後回覆「報價」。'
+      : '**Next step:**\n\nThe material order and customer tier are available. Please confirm the details, then reply “Quote”.';
   }
   return input.markdown.trimEnd().endsWith(footer) ? input.markdown : `${input.markdown}\n\n${footer}`;
 }

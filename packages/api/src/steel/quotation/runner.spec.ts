@@ -46,6 +46,7 @@ import {
 import { getQuotationHistoryDelta, readQuotationHistory } from './history';
 import { createSteelQuotationPublicationPublisher } from './publication';
 import { buildQuotationChunks, quotationSignal } from './protocol';
+import { createSteelQuotationMessageNotifier } from './wiring';
 import { createSteelQuotationStateService } from './state';
 import { createOpenAIOAuthModel } from '../native/oauth';
 import { parseMarkdownTables } from '../markdown/table';
@@ -373,6 +374,7 @@ function runnerInput(
     appendSummary?: (input: SteelQuotationSummaryInput) => Promise<SteelQuotationSummaryResult>;
     onSummaryCommitted?: (message: SteelQuotationSavedMessage) => Promise<void>;
     onCompletedReplay?: (targetMessageId: string) => Promise<void>;
+    onPublicationCommitted?: (message: SteelQuotationSavedMessage) => Promise<void>;
     refreshPublicationAdmission?: () => Promise<SteelMarkdownAdmission | undefined>;
     summarySourceMessageId?: string;
   } = {},
@@ -409,6 +411,7 @@ function runnerInput(
     if (!admission) throw new Error('Quotation test admission was not created');
     publisher = createSteelQuotationPublicationPublisher({
       scope: runScope,
+      onPublicationCommitted: options.onPublicationCommitted,
       buildMessage: ({ targetMessageId, markdown }) => ({
         messageId: targetMessageId,
         sourceMessageId: targetMessageId,
@@ -511,13 +514,31 @@ describe('quotation runner integration', () => {
     expect(model.mock.calls.some(([input]) => input.role === 'main')).toBe(false);
   });
 
-  it('preserves summary persistence when an in-flight heartbeat returns after publication', async () => {
+  it('drains an in-flight heartbeat and fences stale timer ticks before publication', async () => {
     const run = await prepareRun(1);
     let release!: () => void;
-    const renewal = new Promise<undefined>((resolve) => { release = () => resolve(undefined); });
-    const heartbeatLease = jest.fn(() => renewal);
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let renewalFinished = false;
+    let publicationReads = 0;
+    let heartbeatCalls = 0;
+    const heartbeatLease = jest.fn(async (input: Parameters<typeof service.heartbeatLease>[0]) => {
+      if (++heartbeatCalls === 1) {
+        await gate;
+        const renewed = await service.heartbeatLease(input);
+        renewalFinished = true;
+        return renewed;
+      }
+      return service.heartbeatLease(input);
+    });
     const factory = jest.spyOn(stateModule, 'createSteelQuotationStateService')
-      .mockReturnValue({ ...service, heartbeatLease });
+      .mockReturnValue({ ...service, heartbeatLease, readState: async (input) => {
+        const state = await service.readState(input);
+        if (state?.activeRun?.checkpointRefs.some((ref) => ref.operationId === 'calculation:basis') &&
+          ++publicationReads === 2) {
+          setImmediate(release);
+        }
+        return state;
+      } });
     const originalInterval = global.setInterval;
     let tick!: () => Promise<void>;
     const timer = jest.spyOn(global, 'setInterval').mockImplementation((callback, delay) => {
@@ -525,17 +546,26 @@ describe('quotation runner integration', () => {
       return originalInterval(() => {}, delay);
     });
     try {
-      const model = createModel({ onMain: async (input) => { expect(input.signal.aborted).toBe(false); } });
+      const model = createModel({ onChildStarted: () => {
+        void tick();
+        void tick();
+        expect(heartbeatLease).toHaveBeenCalledTimes(1);
+      },
+        onMain: async (input) => { expect(input.signal.aborted).toBe(false); } });
       const input = runnerInput(model, createLookupExecutor());
       const publish = input.publishFinal!;
-      await expect(runQuotationPreflight({ ...input, publishFinal: async (proof) => {
-        const pending = tick();
-        const saved = await publish(proof);
-        release();
-        await pending;
-        return saved;
+      await expect(runQuotationPreflight({ ...input, refreshPublicationAdmission: async () => {
+        await tick();
+        expect(heartbeatLease).not.toHaveBeenCalled();
+        return input.refreshPublicationAdmission!();
+      }, publishFinal: async (proof) => {
+        expect(renewalFinished).toBe(true);
+        const renewals = heartbeatLease.mock.calls.length;
+        await tick();
+        expect(heartbeatLease).toHaveBeenCalledTimes(renewals);
+        return publish(proof);
       } })).resolves.toMatchObject({ status: 'completed' });
-      expect(heartbeatLease).toHaveBeenCalledTimes(1);
+      expect(heartbeatLease).toHaveBeenCalledTimes(2);
       expect(model.mock.calls.filter(([call]) => call.role === 'main')).toHaveLength(1);
       const message = await createMethods(mongoose).getMessage({ user: scope.userId,
         messageId: run.targetMessageId! });
@@ -546,6 +576,67 @@ describe('quotation runner integration', () => {
       timer.mockRestore();
       factory.mockRestore();
     }
+  });
+
+  it.each(['lease loss', 'renewal error', 'user stop'] as const)(
+    'does not publish after %s at the final lease renewal', async (failure) => {
+      await prepareRun(1);
+      const controller = new AbortController();
+      const error = new Error(failure);
+      const heartbeatLease = jest.fn(async (input: Parameters<typeof service.heartbeatLease>[0]) => {
+        if (failure === 'renewal error') throw error;
+        if (failure === 'user stop') controller.abort(error);
+        if (failure === 'lease loss') {
+          await createSteelQuotationStateModel(mongoose).updateOne(scope, {
+            $set: { 'activeRun.leaseExpiresAt': new Date(0) },
+          });
+        }
+        return service.heartbeatLease(input);
+      });
+      const factory = jest.spyOn(stateModule, 'createSteelQuotationStateService')
+        .mockReturnValue({ ...service, heartbeatLease });
+      const originalInterval = global.setInterval;
+      const timer = jest.spyOn(global, 'setInterval').mockImplementation((_callback, delay) =>
+        originalInterval(() => {}, delay));
+      try {
+        const publishFinal = jest.fn();
+        const onProgress = jest.fn();
+        await expect(runQuotationPreflight(runnerInput(createModel(), createLookupExecutor(), {
+          signal: controller.signal, publishFinal, onProgress,
+        }))).rejects.toThrow();
+        expect(heartbeatLease).toHaveBeenCalledTimes(1);
+        expect(publishFinal).not.toHaveBeenCalled();
+        expect(onProgress.mock.calls.some(([progress]) => progress.stage === 'main_consolidating')).toBe(false);
+        expect((await service.readState(scope))?.currentSystemOrder).toBeUndefined();
+      } finally {
+        timer.mockRestore();
+        factory.mockRestore();
+      }
+    },
+  );
+
+  it('sends the committed titled system order before main consolidation and model execution', async () => {
+    const run = await prepareRun(1);
+    const sent: string[] = [];
+    const notify = createSteelQuotationMessageNotifier({
+      scope, responseId: run.targetMessageId!, emit: async ({ event }) => { sent.push(event); },
+    });
+    const model = createModel({ onMain: () => {
+      sent.push('main_model');
+      expect(sent).toEqual(['steel_message_update', 'main_consolidating', 'main_model']);
+    } });
+    await expect(runQuotationPreflight(runnerInput(model, createLookupExecutor(), {
+      onPublicationCommitted: (message) => notify(message),
+      onProgress: async (progress) => {
+        expect(progress.run.status).not.toBe('aggregating');
+        if (progress.stage !== 'main_consolidating') return;
+        const message = await createMethods(mongoose).getMessage({ user: scope.userId,
+          messageId: run.targetMessageId! });
+        expect(message?.text).toContain('## system_order\n\n');
+        expect(progress.run.status).toBe('completed');
+        sent.push(progress.stage);
+      },
+    }))).resolves.toMatchObject({ status: 'completed' });
   });
 
   it('keeps a completed publication after a user Stop during main without retrying children', async () => {

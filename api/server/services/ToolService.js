@@ -4557,6 +4557,7 @@ async function runSteelPaddleOcrPreflight({
           requestId,
           messageId: requestId,
           ocrFileKey: preprocessingFile.ocrFileKey,
+          filename: preprocessingFile.filename,
           progress: {
             stage: 'failed',
             errorMessage,
@@ -4635,6 +4636,7 @@ async function runSteelPaddleOcrPreflight({
               requestId,
               messageId: requestId,
               ocrFileKey: file.ocrFileKey,
+              filename: file.filename,
               progress,
             }),
           });
@@ -4672,6 +4674,7 @@ async function runSteelPaddleOcrPreflight({
               requestId,
               messageId: requestId,
               ocrFileKey: fileResult.file.ocrFileKey,
+              filename: fileResult.file.filename,
               progress: {
                 stage: 'failed',
                 errorMessage: fileResult.errorMessage,
@@ -4717,6 +4720,7 @@ async function runSteelPaddleOcrPreflight({
             requestId,
             messageId: requestId,
             ocrFileKey: file.ocrFileKey,
+            filename: file.filename,
             progress: {
               stage: 'failed',
               errorMessage,

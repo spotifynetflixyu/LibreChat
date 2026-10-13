@@ -1118,6 +1118,13 @@ describe('Steel native event mapping', () => {
   });
 
   it('maps OCR preprocessing chunk progress into native stream events', () => {
+    const named = buildSteelOcrPreprocessingEventEnvelopes({
+      conversationId: 'conversation_1', ocrFileKey: 'file:file-a', filename: 'PL.pdf',
+      progress: { stage: 'paddleocr_chunk_saved', chunkIndex: 1, chunkCount: 1 },
+    });
+    expect(named[0]?.data).toMatchObject({
+      message: 'Ran paddleocr_vl in PaddleOCR (chunk 1/1) (PL.pdf)',
+    });
     expect(
       buildSteelOcrPreprocessingEventEnvelopes({
         conversationId: 'conversation_1',

@@ -357,6 +357,7 @@ export interface QuotationProgress {
     | 'started'
     | 'chunk_started'
     | 'chunk_saved'
+    | 'main_consolidating'
     | 'main_review_started'
     | 'main_streaming'
     | QuotationRepairProgress['stage'];
@@ -681,7 +682,9 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
   if (input.signal.aborted) abort();
   else input.signal.addEventListener('abort', abort, { once: true });
   let orderPublished = false;
-  const heartbeat = setInterval(async () => {
+  let heartbeatEnabled = false;
+  let heartbeatPending: Promise<void> | undefined;
+  const renewLease = async () => {
     try {
       const renewed = await service.heartbeatLease(leaseInput);
       if (renewed || orderPublished) return;
@@ -696,6 +699,12 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     } catch (error) {
       if (!orderPublished) controller.abort(error);
     }
+  };
+  const heartbeat = setInterval(() => {
+    if (!heartbeatEnabled) return;
+    if (heartbeatPending) return heartbeatPending;
+    heartbeatPending = renewLease().finally(() => { heartbeatPending = undefined; });
+    return heartbeatPending;
   }, 3000);
   heartbeat.unref();
   const operational = async <T>(action: () => Promise<T>): Promise<T> => {
@@ -765,6 +774,8 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
   try {
     controller.signal.throwIfAborted();
     refreshedPublicationAdmission = await input.refreshPublicationAdmission?.();
+    controller.signal.throwIfAborted();
+    heartbeatEnabled = true;
     const running = await service.transitionRun({ ...leaseInput, status: 'running' });
     if (!running) throw new Error('Quotation could not start with its execution lease');
     const payload = await service.readArtifact({ scope, ref: run.snapshotRef });
@@ -850,8 +861,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
       });
     }
     interruptedChunkIndex = undefined;
-    await service.transitionRun({ ...leaseInput, status: 'aggregating' });
-    await progress();
+    await service.transitionRun({ ...leaseInput, status: 'finalizing' });
     const aggregate = buildQuotationSystemOrderForReview({
       fullOcrResult: snapshot.orderMarkdown,
       childResults: results,
@@ -901,6 +911,13 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
       ...(reviewMetadata ? { reviewMetadata } : {}),
       updatedAt: new Date(),
     };
+    // Publication reads and writes the same state document as lease renewal.
+    heartbeatEnabled = false;
+    clearInterval(heartbeat);
+    await heartbeatPending;
+    controller.signal.throwIfAborted();
+    await renewLease();
+    controller.signal.throwIfAborted();
     const orderPublication = await input.publishFinal({
       scope,
       runId,
@@ -946,6 +963,11 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     if (!committedRun || committedRun.runId !== runId || committedRun.status !== 'completed') {
       throw new Error('Quotation publication did not complete the quotation run');
     }
+    await input.onProgress?.({
+      run: committedRun,
+      ...getQuotationProgress(committedRun),
+      stage: 'main_consolidating',
+    });
 
     const assertSummaryActive = async (): Promise<ISteelQuotationState> => {
       controller.signal.throwIfAborted();
@@ -1442,6 +1464,9 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
       }
     }
   } catch (error) {
+    heartbeatEnabled = false;
+    clearInterval(heartbeat);
+    await heartbeatPending;
     let current: ISteelQuotationState | null | undefined;
     let stateReadError: unknown;
     try {
@@ -1510,6 +1535,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     }
     throw error;
   } finally {
+    heartbeatEnabled = false;
     clearInterval(heartbeat);
     input.signal.removeEventListener('abort', abort);
     registration.dispose();

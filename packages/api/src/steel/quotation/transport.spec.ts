@@ -111,5 +111,5 @@ it('keeps the footer on the final message across a completed tool boundary', asy
   expect(done).toMatchObject({ item_id: 'message', output_index: 2, text: expect.stringContaining(customer) });
   const completed = buildResponse(streamConfig.context, input.tracker, 'completed');
   expect(extractSteelNativeResponseOutputText(completed)).toBe(extractSteelNativeResponseOutputText(input.response));
-  expect(input.tracker.currentMessage?.content[0]).toMatchObject({ text: `${customer}\n\n**Next step:** The material order and customer tier are available. Please confirm the details, then reply “Quote”.` });
+  expect(input.tracker.currentMessage?.content[0]).toMatchObject({ text: `${customer}\n\n**Next step:**\n\nThe material order and customer tier are available. Please confirm the details, then reply “Quote”.` });
 });
