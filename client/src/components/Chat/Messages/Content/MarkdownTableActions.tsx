@@ -660,6 +660,7 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
       ...reviewCandidate,
     };
   }
+  const reviewDisabled = isSubmitting === true && reviewIdentity?.kind !== 'system_order';
   useEffect(() => {
     if (!reviewCandidate) {
       setRecognizedReview(null);
@@ -723,10 +724,10 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
     setIsExpanded(true);
   }, []);
   const openReview = useCallback(() => {
-    if (reviewCandidate && isSubmitting !== true) {
+    if (reviewCandidate && !reviewDisabled) {
       setSelection({ ...reviewCandidate, captureId: crypto.randomUUID() });
     }
-  }, [isSubmitting, reviewCandidate, setSelection]);
+  }, [reviewCandidate, reviewDisabled, setSelection]);
   const prepareReviewDownload = useCallback(async () => {
     const currentTable = reviewTableRef.current;
     if (!currentTable || !reviewIdentity) {
@@ -836,7 +837,7 @@ const MarkdownTableActions = memo(function MarkdownTableActions({
         customerOnly={/^customer_data(?:[\t ｜]|$)/.test(markdownTitle ?? '')}
         downloadMenu={downloadMenu}
         reviewLabel={reviewCandidate ? reviewLabel : undefined}
-        reviewDisabled={isSubmitting === true}
+        reviewDisabled={reviewDisabled}
         onReview={reviewCandidate ? openReview : undefined}
         onBeforeDownload={reviewIdentity ? prepareReviewDownload : undefined}
         getDownloadMatrix={reviewIdentity ? getReviewDownloadMatrix : undefined}

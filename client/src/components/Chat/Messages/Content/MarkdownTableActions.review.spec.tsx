@@ -3773,7 +3773,7 @@ describe('MarkdownTableActions Steel review entry', () => {
     },
   );
 
-  it.each(['ocr_result', 'system_order'])(
+  it.each(['ocr_result'])(
     'disables %s review while generating and enables it when submission completes',
     async (title) => {
       const refetch = jest.fn();
@@ -3836,6 +3836,43 @@ describe('MarkdownTableActions Steel review entry', () => {
       mockMessageContext = { ...mockMessageContext, isSubmitting: false };
     },
   );
+
+  it('allows a recognized system-order review while the main response is generating', async () => {
+    const title = 'system_order｜報價單';
+    mockMessageContext = { ...mockMessageContext, isSubmitting: true };
+    mockUseGetSteelReviewQuery.mockReturnValue({
+      data: {
+        table: {
+          conversationId: 'conversation-1',
+          messageId: 'message-1',
+          title,
+          kind: 'system_order',
+          outputId: 'system_order:run-1',
+          revision: 'revision-1',
+          latestOutputId: 'system_order:run-1',
+          isLatest: true,
+          readOnly: false,
+          headers: ['品名規格'],
+          rows: [],
+        },
+      },
+      error: null,
+      isError: false,
+      isLoading: false,
+    });
+
+    const rendered = renderTable(title);
+    const open = await screen.findByRole('button', { name: 'com_ui_steel_review_open' });
+    expect(open).toBeEnabled();
+    expect(open).toHaveAttribute('title', 'com_ui_steel_review_open');
+    fireEvent.click(open);
+    expect(rendered.store.get(steelReviewSelectionAtom)).toMatchObject({
+      kind: 'system_order',
+      title,
+    });
+    rendered.unmount();
+    mockMessageContext = { ...mockMessageContext, isSubmitting: false };
+  });
 
   it('refreshes once when rendered children settle after an initial absence', async () => {
     const refetch = jest.fn();

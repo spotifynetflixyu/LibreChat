@@ -474,20 +474,19 @@ describe('quotation runner integration', () => {
     oauthFactory.mockReset();
   });
 
-  it('publishes the order before main and keeps the run completed after a main error', async () => {
+  it('preserves the published table and surfaces a main error for the terminal message', async () => {
     await prepareRun(1);
     const mainError = new Error('main review failed');
     const model = createModel();
     const publishFinal = jest.fn(async () => undefined);
-    const result = await runQuotationPreflight(runnerInput(
+    await expect(runQuotationPreflight(runnerInput(
       async (input) => {
         if (input.role === 'main') throw mainError;
         return model(input);
       },
       createLookupExecutor(),
       { publishFinal },
-    ));
-    expect(result.status).toBe('completed');
+    ))).rejects.toBe(mainError);
     expect(publishFinal).toHaveBeenCalledTimes(1);
     const state = await service.readState(scope);
     expect(state?.activeRun?.status).toBe('completed');
@@ -1251,7 +1250,7 @@ describe('quotation runner integration', () => {
     expect(publishFinal).toHaveBeenCalledTimes(1);
   });
 
-  it('replays a legacy completed publication without rerunning or creating a new receipt', async () => {
+  it('rejects an old completed receipt without a compatibility recovery path', async () => {
     const run = await prepareRun(1);
     const finalMarkdown = [
       '## system_order',
@@ -1267,8 +1266,8 @@ describe('quotation runner integration', () => {
     const replay = jest.fn(async (_targetMessageId: string) => undefined);
     await expect(
       runQuotationPreflight(runnerInput(model, createLookupExecutor(), { onCompletedReplay: replay })),
-    ).resolves.toMatchObject({ status: 'completed' });
-    expect(replay).toHaveBeenCalledWith(run.targetMessageId);
+    ).rejects.toThrow('Completed quotation has no trusted publication receipt');
+    expect(replay).not.toHaveBeenCalled();
     expect(model).not.toHaveBeenCalled();
   });
 

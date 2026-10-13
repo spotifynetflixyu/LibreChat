@@ -57,6 +57,7 @@ export interface SteelPublishedResponsePort<
   TRecord extends SteelPublishedResponseIdentity = SteelPublishedResponseIdentity,
 > {
   load(locator: SteelPublishedResponseLocator): Promise<TRecord | null | undefined>;
+  appendErrors?(record: TRecord): Promise<TRecord | null | undefined>;
   accept(record: TRecord): void;
 }
 

@@ -7,6 +7,7 @@ import type {
   SteelQuotationPublicationSaveContext,
   SteelQuotationSummaryInput,
   SteelQuotationSummaryResult,
+  SteelQuotationPublicationSaveResult,
 } from './quotation';
 
 import type { SteelMarkdownAdmission, SteelMarkdownPublicationTarget, SteelMarkdownReference } from './versions';
@@ -32,6 +33,24 @@ export interface SteelMarkdownPublicationInput {
 
 export type SteelQuotationSummaryAppendInput = SteelQuotationSummaryInput;
 export type SteelQuotationSummaryAppendResult = SteelQuotationSummaryResult;
+
+export interface SteelQuotationErrorPart {
+  type: 'error';
+  error: string;
+}
+
+export interface SteelQuotationErrorsAppendInput {
+  scope: SteelQuotationScope;
+  runId: string;
+  targetMessageId: string;
+  sourceMessageId: string;
+  admission: SteelMarkdownAdmission;
+  errors: SteelQuotationErrorPart[];
+  summaryMarkdown?: string;
+  footerMarkdown?: string;
+}
+
+export type SteelQuotationErrorsAppendResult = SteelQuotationPublicationSaveResult;
 
 /** Extra guard inputs for the early quotation-order publication path. */
 export interface SteelMarkdownQuotationOrderInput {

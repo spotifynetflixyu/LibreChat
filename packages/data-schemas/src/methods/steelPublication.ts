@@ -1,13 +1,14 @@
 import { createHash } from 'node:crypto';
-import { bindSteelReviewRowsToOcrContext, createSteelReviewOcrContext, parseSteelReviewMarkdownTables, normalizeSteelReviewLedgerRows } from 'librechat-data-provider';
-import type { SteelReviewMetadata } from 'librechat-data-provider';
+import { bindSteelReviewRowsToOcrContext, createSteelReviewOcrContext, parseSteelReviewMarkdownTables, normalizeSteelReviewLedgerRows, steelQuotationMessagePublicationSchema } from 'librechat-data-provider';
+import type { SteelReviewMetadata, SteelQuotationMessagePublication } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
-import type { IMessage, IConversation, ISteelQuotationState, ISteelQuotationArtifact, ISteelReviewOutput, ISteelConversationOcrState, SteelQuotationScope, SteelMarkdownAdmissionInput, SteelMarkdownAdmission, SteelMarkdownExpected, SteelMarkdownPublicationInput, SteelMarkdownPublicationResult, SteelMarkdownReference, SteelMarkdownKind, SteelMarkdownVersion, SteelQuotationSnapshotPayload, SteelQuotationOrderPublicationReceipt, SteelMarkdownQuotationOrderInput, SteelQuotationSummaryAppendInput, SteelQuotationSummaryAppendResult, SteelQuotationSummaryReceipt, SteelQuotationCheckpointRef } from '~/types';
+import type { IMessage, IConversation, ISteelQuotationState, ISteelQuotationArtifact, ISteelReviewOutput, ISteelConversationOcrState, SteelQuotationScope, SteelMarkdownAdmissionInput, SteelMarkdownAdmission, SteelMarkdownExpected, SteelMarkdownPublicationInput, SteelMarkdownPublicationResult, SteelMarkdownReference, SteelMarkdownKind, SteelMarkdownVersion, SteelQuotationSnapshotPayload, SteelQuotationOrderPublicationReceipt, SteelMarkdownQuotationOrderInput, SteelQuotationSummaryAppendInput, SteelQuotationSummaryAppendResult, SteelQuotationSummaryReceipt, SteelQuotationCheckpointRef, SteelQuotationErrorsAppendInput, SteelQuotationErrorsAppendResult } from '~/types';
 import type { SteelReviewAuthorizedFile } from './steelSourceAuthorization';
 import { createSteelDelegateOcrRunModel, createSteelQuotationStateModel, createSteelQuotationArtifactModel, createSteelConversationOcrStateModel, createSteelReviewOutputModel } from '~/models/steel';
 import { hasConsistentMessageText, renderMessageTextContent } from '~/utils/content';
 import { createSteelReviewSourceAuthorization } from './steelSourceAuthorization';
 import { createSteelScopedOcrMethods, hasUniqueSteelOcrScope } from './ocr';
+import { protectSteelConversationWrite } from '~/models/steel/lifecycle';
 import { STEEL_QUOTATION_INPUT_TTL_MS } from './steelQuotationInput';
 import { createSteelQuotationPublicationProof } from './published';
 import { steelReviewTitleStorageId } from '~/utils/identity';
@@ -19,7 +20,6 @@ type Mongoose = typeof import('mongoose');
 type SaveMessage = (input: SteelMarkdownPublicationInput, message: SteelMarkdownPublicationInput['message'], session: ClientSession) => Promise<IMessage | null | undefined>;
 const kinds: SteelMarkdownKind[] = ['ocr_result', 'system_order', 'customer_data'];
 const sha = (text: string): string => createHash('sha256').update(text).digest('hex');
-const isSha256 = (value: unknown): value is string => typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value);
 const equal = (left: object | undefined, right: object | undefined): boolean => JSON.stringify(left ?? {}) === JSON.stringify(right ?? {});
 function canonicalJson(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(canonicalJson);
@@ -81,13 +81,6 @@ function orderContentSlots(content: unknown[] | undefined, text: string): {
   const footerContentIndex = next.length;
   next.push({ type: 'text', text: '' });
   return { content: next, tableContentIndex, summaryContentIndex, footerContentIndex };
-}
-
-function replaceTextPart(content: unknown[], index: number, text: string): unknown[] {
-  return content.map((part, partIndex) => {
-    if (partIndex !== index || !part || typeof part !== 'object' || Array.isArray(part)) return part;
-    return { ...part, text };
-  });
 }
 
 function expected(state: ISteelQuotationState | null, ocr: ISteelConversationOcrState | null): SteelMarkdownExpected {
@@ -230,6 +223,7 @@ export interface SteelPublicationMethods {
   admitSteelMarkdown(input: SteelMarkdownAdmissionInput): Promise<SteelMarkdownAdmission | null>;
   publishSteelMarkdown(input: SteelMarkdownPublicationInput): Promise<SteelMarkdownPublicationResult>;
   appendSteelQuotationSummary(input: SteelQuotationSummaryAppendInput): Promise<SteelQuotationSummaryAppendResult>;
+  appendSteelQuotationErrors(input: SteelQuotationErrorsAppendInput): Promise<SteelQuotationErrorsAppendResult>;
   readSteelMarkdownVersions(scope: SteelQuotationScope): Promise<SteelMarkdownVersion[] | null>;
 }
 
@@ -819,150 +813,145 @@ export function createSteelPublicationMethods(mongoose: Mongoose, saveMessage: S
     finally { await session.endSession(); }
   }
 
-  async function appendSteelQuotationSummary(
-    input: SteelQuotationSummaryAppendInput,
-  ): Promise<SteelQuotationSummaryAppendResult> {
+  type QuotationMessageIdentity = Pick<SteelQuotationErrorsAppendInput,
+    'scope' | 'runId' | 'targetMessageId' | 'sourceMessageId' | 'admission'>;
+  type QuotationStoredMessage = Pick<IMessage, 'text' | 'metadata'> & { content: NonNullable<IMessage['content']> };
+  type QuotationMessageChange = Partial<Pick<IMessage, 'metadata' | 'tokenCount' | 'processingDurationMs'>> & {
+    content: NonNullable<IMessage['content']>;
+  };
+
+  async function updateQuotationMessage(
+    input: QuotationMessageIdentity,
+    build: (message: QuotationStoredMessage, publication: SteelQuotationMessagePublication) => QuotationMessageChange | null | undefined,
+  ): Promise<SteelQuotationErrorsAppendResult> {
     if (!input.scope.userId || !input.scope.conversationId || !input.runId || !input.targetMessageId ||
-      !input.sourceMessageId || !input.admission.responseId || !validSummaryMarkdown(input.summaryMarkdown) ||
-      !input.footerMarkdown.trim() || !validSummaryMarkdown(input.footerMarkdown)) {
-      return { ok: false, code: 'superseded' };
-    }
-    const summarySha256 = sha(input.summaryMarkdown);
-    const footerSha256 = sha(input.footerMarkdown);
+      !input.sourceMessageId || !input.admission.responseId) return { ok: false, code: 'superseded' };
     const outputId = `system_order:${input.runId}`;
     const session = await mongoose.startSession();
-    let result: SteelQuotationSummaryAppendResult = { ok: false, code: 'superseded' };
+    let result: SteelQuotationErrorsAppendResult = { ok: false, code: 'superseded' };
     try {
       await session.withTransaction(async () => {
         result = { ok: false, code: 'superseded' };
+        await protectSteelConversationWrite(mongoose, input.scope, session);
         const state = await State.findOne(scopeFilter(input.scope)).session(session).lean<ISteelQuotationState>();
-        if (!state || !state.activeRun || state.activeRun.runId !== input.runId ||
-          state.activeRun.status !== 'completed' || state.activeRun.targetMessageId !== input.targetMessageId ||
-          !sameJson(state.markdownPublication?.admission ?? null, input.admission) ||
-          state.markdownPublication?.nextSequence !== input.admission.sequence) return;
-        const currentSystemOrder = state.currentSystemOrder;
-        if (!currentSystemOrder || currentSystemOrder.runId !== input.runId || currentSystemOrder.messageId !== input.targetMessageId ||
-          currentSystemOrder.responseId !== input.sourceMessageId || input.sourceMessageId !== input.admission.responseId) return;
+        if (state?.activeRun?.runId !== input.runId || state.activeRun.status !== 'completed' ||
+          state.activeRun.targetMessageId !== input.targetMessageId ||
+          state.currentSystemOrder?.messageId !== input.targetMessageId ||
+          state.currentSystemOrder.responseId !== input.sourceMessageId ||
+          state.markdownPublication?.nextSequence !== input.admission.sequence ||
+          !sameJson(state.markdownPublication.admission, input.admission)) return;
         const owner = state.markdownPublication.current?.system_order;
-        if (!owner || owner.ai.outputId !== outputId || owner.ai.messageId !== input.targetMessageId ||
+        if (owner?.ai.outputId !== outputId || owner.ai.messageId !== input.targetMessageId ||
           owner.effective.outputId !== outputId || owner.effective.messageId !== input.targetMessageId) return;
-        const proof = createSteelQuotationPublicationProof(Artifact, session);
-        if (!await proof.isPublished(input.scope, state.activeRun)) return;
-        const message = await Message.findOne(messageFilter(input.scope, input.targetMessageId)).session(session).lean<IMessage | null>();
-        if (!message || message.isCreatedByUser || message.unfinished || message.conversationId !== input.scope.conversationId ||
-          message.user !== input.scope.userId) return;
-        const owners = message.metadata?.steelMarkdownOwners;
-        const messageOwner = owners && typeof owners === 'object' && !Array.isArray(owners)
-          ? Reflect.get(owners, 'system_order')
-          : undefined;
-        if (!messageOwner || typeof messageOwner !== 'object' || Array.isArray(messageOwner) ||
-          Reflect.get(messageOwner, 'outputId') !== outputId || Reflect.get(messageOwner, 'messageId') !== input.targetMessageId) return;
-
-        const content = [...(message.content ?? [])];
-        if (typeof message.text !== 'string') return;
-        const quotationMetadata = message.metadata?.steelQuotation;
-        const publication = quotationMetadata && typeof quotationMetadata === 'object' && !Array.isArray(quotationMetadata)
-          ? quotationMetadata as Record<string, unknown>
-          : undefined;
-        const orderReceiptRef = state.activeRun.checkpointRefs.find((ref) => ref.operationId === 'order-published' && ref.kind === 'main');
-        const publicationReceiptSha256 = publication?.receiptSha256;
-        const tableContentIndex = typeof publication?.tableContentIndex === 'number' && Number.isSafeInteger(publication.tableContentIndex)
-          ? publication.tableContentIndex : -1;
-        const summaryContentIndex = typeof publication?.summaryContentIndex === 'number' && Number.isSafeInteger(publication.summaryContentIndex)
-          ? publication.summaryContentIndex : -1;
-        const footerContentIndex = typeof publication?.footerContentIndex === 'number' && Number.isSafeInteger(publication.footerContentIndex)
-          ? publication.footerContentIndex : -1;
-        if (!publication || publication.version !== 1 || publication.runId !== input.runId || publication.outputId !== outputId ||
-          publication.sourceMessageId !== input.sourceMessageId ||
-          publication.admissionSequence !== input.admission.sequence ||
-          !isSha256(publicationReceiptSha256) || !orderReceiptRef || publicationReceiptSha256 !== orderReceiptRef.sha256 ||
-          !Number.isSafeInteger(tableContentIndex) || !Number.isSafeInteger(summaryContentIndex) || !Number.isSafeInteger(footerContentIndex) ||
-          tableContentIndex < 0 || summaryContentIndex < 0 || footerContentIndex < 0 ||
-          new Set([tableContentIndex, summaryContentIndex, footerContentIndex]).size !== 3) return;
-        const tablePart = content[tableContentIndex];
-        const tableText = tablePart && typeof tablePart === 'object' && !Array.isArray(tablePart)
-          ? Reflect.get(tablePart, 'text') : undefined;
-        if (!tablePart || typeof tablePart !== 'object' || Array.isArray(tablePart) || Reflect.get(tablePart, 'type') !== 'text' ||
-          typeof tableText !== 'string' || !hasSection(tableText, ['system_order'])) return;
-        if (!hasConsistentMessageText(message)) return;
-        if (tableContentIndex >= content.length || summaryContentIndex >= content.length || footerContentIndex >= content.length) return;
-        let nextContent = content;
-        const isTextSlot = (parts: unknown[], index: number): boolean => {
-          const part = parts[index];
-          return Boolean(part && typeof part === 'object' && !Array.isArray(part) &&
-            Reflect.get(part, 'type') === 'text' && typeof Reflect.get(part, 'text') === 'string');
-        };
-        if (!isTextSlot(nextContent, summaryContentIndex) || !isTextSlot(nextContent, footerContentIndex)) return;
-        nextContent = replaceTextPart(nextContent, summaryContentIndex, input.summaryMarkdown);
-        nextContent = replaceTextPart(nextContent, footerContentIndex, input.footerMarkdown);
-        const receiptWithSlots: SteelQuotationSummaryReceipt = {
-          version: 1,
-          runId: input.runId,
-          targetMessageId: input.targetMessageId,
-          sourceMessageId: input.sourceMessageId,
-          outputId,
-          admissionSequence: input.admission.sequence,
-          publicationReceiptSha256,
-          summarySha256,
-          footerSha256,
-          tableContentIndex,
-          summaryContentIndex,
-          footerContentIndex,
-        };
-        const receiptPayload = JSON.stringify(receiptWithSlots);
-        const receiptSha256 = sha(receiptPayload);
-        const existingReceipt = await Artifact.findOne({ ...scopeFilter(input.scope), runId: input.runId,
-          operationId: 'summary-appended', kind: 'main', sha256: receiptSha256 }).session(session).lean<ISteelQuotationArtifact | null>();
-        if (existingReceipt) {
-          if (existingReceipt.payload !== receiptPayload || existingReceipt.sha256 !== sha(existingReceipt.payload)) return;
-          result = { ok: true, message, receiptSha256, summaryContentIndex, footerContentIndex };
+        const message = await Message.findOne(messageFilter(input.scope, input.targetMessageId))
+          .session(session).lean<IMessage | null>();
+        if (!message || message.isCreatedByUser || message.unfinished || !Array.isArray(message.content) ||
+          !hasConsistentMessageText(message)) return;
+        const parsed = steelQuotationMessagePublicationSchema.safeParse(message.metadata?.steelQuotation);
+        if (!parsed.success) return;
+        const publication = parsed.data;
+        if (publication.runId !== input.runId || publication.outputId !== outputId ||
+          publication.sourceMessageId !== input.sourceMessageId || input.sourceMessageId !== input.admission.responseId ||
+          publication.admissionSequence !== input.admission.sequence) return;
+        const messageOwner = message.metadata?.steelMarkdownOwners;
+        const owned = messageOwner && typeof messageOwner === 'object' && !Array.isArray(messageOwner)
+          ? Reflect.get(messageOwner, 'system_order') : undefined;
+        if (!owned || typeof owned !== 'object' || Reflect.get(owned, 'outputId') !== outputId ||
+          Reflect.get(owned, 'messageId') !== input.targetMessageId) return;
+        const content = message.content;
+        const slots = [publication.tableContentIndex, publication.summaryContentIndex, publication.footerContentIndex];
+        if (slots.some((index) => {
+          const part = content[index];
+          return !part || typeof part !== 'object' || Reflect.get(part, 'type') !== 'text' ||
+            typeof Reflect.get(part, 'text') !== 'string';
+        })) return;
+        const table = message.content[publication.tableContentIndex];
+        if (!table || typeof table !== 'object' || Reflect.get(table, 'text') !== state.currentSystemOrder.markdown) return;
+        const changes = build({ text: message.text, metadata: message.metadata, content }, publication);
+        if (changes === null) return;
+        if (changes === undefined) {
+          result = { ok: true, message };
           return;
         }
-        const priorReceipts = await Artifact.find({ ...scopeFilter(input.scope), runId: input.runId,
-          operationId: 'summary-appended', kind: 'main' }).session(session).lean<ISteelQuotationArtifact[]>();
-        if (priorReceipts.some((artifact) => {
-          if (artifact.sha256 !== sha(artifact.payload)) return true;
-          try {
-            const prior = JSON.parse(artifact.payload) as Partial<SteelQuotationSummaryReceipt>;
-            return prior.version === 1 && prior.targetMessageId === input.targetMessageId &&
-              prior.sourceMessageId === input.sourceMessageId && prior.admissionSequence === input.admission.sequence &&
-              (prior.summarySha256 !== summarySha256 || prior.footerSha256 !== footerSha256 ||
-                prior.publicationReceiptSha256 !== publicationReceiptSha256);
-          } catch {
-            return true;
-          }
-        })) return;
-        const nextText = renderMessageTextContent(nextContent, tableContentIndex);
-        const hostMetadata = input.messageFields?.metadata && typeof input.messageFields.metadata === 'object' &&
-          !Array.isArray(input.messageFields.metadata)
-          ? Object.fromEntries(Object.entries(input.messageFields.metadata).filter(([key]) =>
-            key !== 'steel' && key !== 'steelQuotation' && key !== 'steelReview' && key !== 'steelMarkdownOwners' &&
-            key !== 'ocr' && !key.startsWith('steel') && !key.startsWith('ocr')))
-          : {};
-        const nextMetadata: Record<string, unknown> = { ...(message.metadata ?? {}), steelQuotation: {
-          ...publication,
-          receiptSha256: publicationReceiptSha256,
-          summaryReceiptSha256: receiptSha256,
-          tableContentIndex,
-          summaryContentIndex,
-          footerContentIndex,
-        }, ...hostMetadata };
-        const messageUpdate: Record<string, unknown> = { text: nextText, content: nextContent, metadata: nextMetadata };
-        if (input.messageFields?.tokenCount !== undefined) messageUpdate.tokenCount = input.messageFields.tokenCount;
-        if (input.messageFields?.processingDurationMs !== undefined) messageUpdate.processingDurationMs = input.messageFields.processingDurationMs;
-        const updated = await Message.findOneAndUpdate({ ...messageFilter(input.scope, input.targetMessageId), text: message.text,
-          'metadata.steelMarkdownOwners.system_order.outputId': outputId,
-          'metadata.steelMarkdownOwners.system_order.messageId': input.targetMessageId },
-        { $set: messageUpdate }, { new: true, session }).lean<IMessage | null>();
-        if (!updated) return;
-        await Artifact.create([{ ...input.scope, runId: input.runId, operationId: 'summary-appended', kind: 'main',
-          sha256: receiptSha256, payload: receiptPayload }], { session });
-        result = { ok: true, message: updated, receiptSha256, summaryContentIndex, footerContentIndex };
+        const updated = await Message.findOneAndUpdate(
+          { ...messageFilter(input.scope, input.targetMessageId), text: message.text,
+            'metadata.steelQuotation.receiptSha256': publication.receiptSha256 },
+          { $set: { ...changes, text: renderMessageTextContent(changes.content, publication.tableContentIndex) } },
+          { new: true, session },
+        ).lean<IMessage | null>();
+        if (updated) result = { ok: true, message: updated };
       });
       return result;
     } finally {
       await session.endSession();
     }
+  }
+
+  async function appendSteelQuotationSummary(
+    input: SteelQuotationSummaryAppendInput,
+  ): Promise<SteelQuotationSummaryAppendResult> {
+    if (!validSummaryMarkdown(input.summaryMarkdown) || !input.footerMarkdown.trim() ||
+      !validSummaryMarkdown(input.footerMarkdown)) return { ok: false, code: 'superseded' };
+    let receiptSha256 = '';
+    const result = await updateQuotationMessage(input, (message, publication) => {
+      const receipt: SteelQuotationSummaryReceipt = {
+        version: 1, runId: input.runId, targetMessageId: input.targetMessageId, sourceMessageId: input.sourceMessageId,
+        outputId: publication.outputId, admissionSequence: input.admission.sequence,
+        publicationReceiptSha256: publication.receiptSha256,
+        summarySha256: sha(input.summaryMarkdown), footerSha256: sha(input.footerMarkdown),
+        tableContentIndex: publication.tableContentIndex, summaryContentIndex: publication.summaryContentIndex,
+        footerContentIndex: publication.footerContentIndex,
+      };
+      receiptSha256 = sha(JSON.stringify(receipt));
+      if (publication.summaryReceiptSha256) return publication.summaryReceiptSha256 === receiptSha256 ? undefined : null;
+      const content = [...message.content];
+      content[publication.summaryContentIndex] = { type: 'text', text: input.summaryMarkdown };
+      content[publication.footerContentIndex] = { type: 'text', text: input.footerMarkdown };
+      const hostMetadata = Object.fromEntries(Object.entries(input.messageFields?.metadata ?? {}).filter(([key]) =>
+        key !== 'steel' && key !== 'ocr' && !key.startsWith('steel') && !key.startsWith('ocr')));
+      return {
+        content,
+        metadata: { ...message.metadata, ...hostMetadata, steelQuotation: { ...publication, summaryReceiptSha256: receiptSha256 } },
+        ...(input.messageFields?.tokenCount !== undefined ? { tokenCount: input.messageFields.tokenCount } : {}),
+        ...(input.messageFields?.processingDurationMs !== undefined ? { processingDurationMs: input.messageFields.processingDurationMs } : {}),
+      };
+    });
+    if (!result.ok) return result;
+    const publication = steelQuotationMessagePublicationSchema.parse(result.message.metadata?.steelQuotation);
+    return { ...result, receiptSha256, summaryContentIndex: publication.summaryContentIndex, footerContentIndex: publication.footerContentIndex };
+  }
+
+  async function appendSteelQuotationErrors(
+    input: SteelQuotationErrorsAppendInput,
+  ): Promise<SteelQuotationErrorsAppendResult> {
+    return updateQuotationMessage(input, (message, publication) => {
+      const content = [...message.content];
+      const seen = new Set(content.flatMap((part) => {
+        if (!part || typeof part !== 'object' || Reflect.get(part, 'type') !== 'error') return [];
+        const error = Reflect.get(part, 'error');
+        return typeof error === 'string' ? [error] : [];
+      }));
+      let changed = false;
+      for (const part of input.errors) {
+        if (part.type !== 'error' || !part.error || seen.has(part.error)) continue;
+        content.push({ type: 'error', error: part.error });
+        seen.add(part.error);
+        changed = true;
+      }
+      if (!publication.summaryReceiptSha256) {
+        for (const [index, text] of [
+          [publication.summaryContentIndex, input.summaryMarkdown],
+          [publication.footerContentIndex, input.footerMarkdown],
+        ] as const) {
+          const current = content[index];
+          if (text && validSummaryMarkdown(text) && current && typeof current === 'object' && Reflect.get(current, 'text') === '') {
+            content[index] = { type: 'text', text };
+            changed = true;
+          }
+        }
+      }
+      return changed ? { content } : undefined;
+    });
   }
 
   async function readSteelMarkdownVersions(scope: SteelQuotationScope): Promise<SteelMarkdownVersion[] | null> {
@@ -1004,5 +993,5 @@ export function createSteelPublicationMethods(mongoose: Mongoose, saveMessage: S
     }
     return [...versions.values()];
   }
-  return { admitSteelMarkdown, publishSteelMarkdown, appendSteelQuotationSummary, readSteelMarkdownVersions };
+  return { admitSteelMarkdown, publishSteelMarkdown, appendSteelQuotationSummary, appendSteelQuotationErrors, readSteelMarkdownVersions };
 }

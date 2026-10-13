@@ -1,6 +1,6 @@
 import { logger } from '@librechat/data-schemas';
 import { ContentTypes, StepTypes, steelQuotationMessagePublicationSchema, steelQuotationMessageUpdateEvent } from 'librechat-data-provider';
-import type { SteelQuotationSavedMessage, SteelQuotationScope, SteelQuotationSummaryInput, SteelQuotationSummaryResult } from '@librechat/data-schemas';
+import type { SteelQuotationErrorPart, SteelQuotationErrorsAppendInput, SteelQuotationErrorsAppendResult, SteelQuotationSavedMessage, SteelQuotationScope, SteelQuotationSummaryInput, SteelQuotationSummaryResult } from '@librechat/data-schemas';
 import type { SteelMarkdownAdmission, SteelMarkdownAdmissionInput } from '@librechat/data-schemas';
 import type {
   SteelQuotationPublicationContentPart,
@@ -8,9 +8,11 @@ import type {
   SteelQuotationPublicationMessageSnapshot,
 } from './publication';
 import type { SteelPublishedResponseIdentity } from '../markdown/types';
+import type { FailedTurnMessageScope } from '../../utils/message';
 import type { SteelResponseRequest } from './completion';
 import { sanitizeMessageForTransmit } from '../../utils/message';
 import { projectSteelQuotationMessage } from './publication';
+import { GENERIC_PROVIDER_ERROR } from '../../agents/errors';
 import { SteelResponseCompletionError } from './completion';
 import { getSafeErrorText } from '../../utils/errors';
 
@@ -22,6 +24,20 @@ interface QuotationTextWiring {
   onText(text: string): Promise<void>;
   onCommittedMessage(message: SteelQuotationSavedMessage): void;
   buildPublicationMessage(input: { targetMessageId: string; markdown: string }): SteelQuotationPublicationMessageSnapshot;
+}
+
+function extractQuotationErrors(content: unknown[] | undefined): SteelQuotationErrorPart[] {
+  return (Array.isArray(content) ? content : []).flatMap((part) => {
+    if (!part || typeof part !== 'object' || Array.isArray(part) || Reflect.get(part, 'type') !== ContentTypes.ERROR) return [];
+    const error = Reflect.get(part, 'error');
+    return typeof error === 'string' && error.length > 0 ? [{ type: 'error' as const, error }] : [];
+  });
+}
+
+function quotationText(part: unknown): string | undefined {
+  if (!part || typeof part !== 'object' || Reflect.get(part, 'type') !== ContentTypes.TEXT) return undefined;
+  const text = Reflect.get(part, 'text');
+  return typeof text === 'string' ? text : undefined;
 }
 
 export function createSteelQuotationPublicationAdmission(input: {
@@ -68,33 +84,70 @@ export function createSteelQuotationSummaryAppender(input: {
   };
 }
 
-/** Terminal transport carries the canonical identity and main prose; backend partitions travel separately. */
-export function projectSteelQuotationTerminalMessage(input: {
+export function createSteelQuotationErrorAppender(input: {
   response: SteelPublishedResponseIdentity;
-  saved?: SteelPublishedResponseIdentity | null;
-}): SteelPublishedResponseIdentity {
-  const parsed = steelQuotationMessagePublicationSchema.safeParse(input.saved?.metadata?.steelQuotation);
-  if (!input.saved || !parsed.success || !Array.isArray(input.saved.content)) return input.response;
-  const publication = parsed.data;
-  const content = [...input.saved.content];
-  const summary = content[publication.summaryContentIndex];
-  const liveSummary = input.response.content?.[publication.summaryContentIndex];
-  if (summary && typeof summary === 'object' && 'text' in summary && summary.text === '' &&
-    liveSummary && typeof liveSummary === 'object' && 'text' in liveSummary && typeof liveSummary.text === 'string') {
-    content[publication.summaryContentIndex] = liveSummary;
-  }
-  content[publication.tableContentIndex] = { type: 'text', text: '' };
-  content[publication.footerContentIndex] = { type: 'text', text: '' };
-  const text = content.flatMap((part) => part && typeof part === 'object' &&
-    'type' in part && part.type === 'text' && 'text' in part && typeof part.text === 'string'
-    ? [part.text] : []).filter(Boolean).join(' ');
+  scope: SteelQuotationScope;
+  admission?: SteelMarkdownAdmission;
+  append(errors: SteelQuotationErrorsAppendInput): Promise<SteelQuotationErrorsAppendResult>;
+}) {
+  return async (record: SteelPublishedResponseIdentity): Promise<SteelPublishedResponseIdentity | null> => {
+    const errors = extractQuotationErrors(input.response.content);
+    if (errors.length === 0) return record;
+    const publication = steelQuotationMessagePublicationSchema.safeParse(record.metadata?.steelQuotation);
+    if (!input.admission || !publication.success || publication.data.sourceMessageId !== input.admission.responseId) return null;
+    const result = await input.append({
+      scope: input.scope,
+      runId: publication.data.runId,
+      targetMessageId: record.messageId,
+      sourceMessageId: publication.data.sourceMessageId,
+      admission: input.admission,
+      errors,
+      summaryMarkdown: quotationText(input.response.content?.[publication.data.summaryContentIndex]),
+      footerMarkdown: quotationText(input.response.content?.[publication.data.footerContentIndex]),
+    });
+    return result.ok ? { ...result.message, metadata: result.message.metadata ?? undefined } : null;
+  };
+}
+
+export { projectTerminalMessage as projectSteelQuotationTerminalMessage } from '../../utils/message';
+
+/** Quotation errors use the same chat UX, with the publication writer enforcing table ownership. */
+export function createSteelQuotationFailurePersistence(input: {
+  req: SteelResponseRequest;
+  responseId?: string;
+  errorText?: string;
+  getMessages(filter: Record<string, string>): Promise<SteelPublishedResponseIdentity[]>;
+  append(errors: SteelQuotationErrorsAppendInput): Promise<SteelQuotationErrorsAppendResult>;
+}): {
+  preservePublished?: () => Promise<boolean>;
+  appendError?: (scope: FailedTurnMessageScope & { error: string }) => Promise<null>;
+} {
+  const quotation = input.req.steelNativeContext?.quotation;
+  if (!quotation) return {};
   return {
-    ...input.response,
-    ...input.saved,
-    text,
-    content,
-    unfinished: input.response.unfinished,
-    finish_reason: input.response.finish_reason,
+    // An unpublished or invalid quotation must never bypass its guarded writer.
+    appendError: async () => null,
+    preservePublished: async () => {
+      if (!input.responseId || !quotation.publicationAdmission) return false;
+      const records = await input.getMessages({
+        user: quotation.scope.userId,
+        conversationId: quotation.scope.conversationId,
+        'metadata.steelQuotation.sourceMessageId': input.responseId,
+      });
+      const record = records[0];
+      if (!record) return false;
+      const append = createSteelQuotationErrorAppender({
+        response: {
+          ...record,
+          content: [{ type: ContentTypes.ERROR, error: input.errorText ?? GENERIC_PROVIDER_ERROR }],
+        },
+        scope: quotation.scope,
+        admission: quotation.publicationAdmission,
+        append: input.append,
+      });
+      if (!await append(record)) throw new SteelResponseCompletionError('invalid_completion_receipt');
+      return true;
+    },
   };
 }
 

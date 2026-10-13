@@ -3,7 +3,6 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import type { Document as MongoDocument } from 'mongodb';
 import type { ClientSession, Model } from 'mongoose';
 import { runAsSystem } from '~/config/tenantContext';
-import logger from '~/config/winston';
 
 type Mongoose = typeof import('mongoose');
 type PlainRecord = Record<string, unknown>;
@@ -27,7 +26,7 @@ interface SteelConversationLifecycleDocument extends MongoDocument {
   tenantId?: string | null;
   conversationId: string;
   deleted: boolean;
-  pendingWrites: number;
+  revision: number;
 }
 
 interface SteelCollection {
@@ -55,7 +54,7 @@ const steelConversationLifecycleSchema = new Schema<SteelConversationLifecycleDo
     tenantId: { type: String },
     conversationId: { type: String, required: true, immutable: true },
     deleted: { type: Boolean, required: true, default: false },
-    pendingWrites: { type: Number, required: true, default: 0 },
+    revision: { type: Number, required: true, default: 0 },
   },
   { timestamps: true },
 );
@@ -66,24 +65,6 @@ export class SteelConversationDeletedError extends Error {
   constructor() {
     super('Steel conversation writes are fenced because the conversation was deleted.');
     this.name = 'SteelConversationDeletedError';
-  }
-}
-
-export class SteelConversationWritePendingError extends Error {
-  readonly code = 'STEEL_CONVERSATION_IDENTITY_PENDING';
-
-  constructor() {
-    super('Steel conversation cleanup is waiting for an in-flight write to finish.');
-    this.name = 'SteelConversationWritePendingError';
-  }
-}
-
-class SteelConversationGateBootstrapRetryError extends mongo.MongoError {
-  readonly code = 'STEEL_CONVERSATION_GATE_BOOTSTRAP_RETRY';
-
-  constructor(cause: Error) {
-    super('Steel conversation gate bootstrap conflicted with another transaction.', { cause });
-    this.addErrorLabel(mongo.MongoErrorLabel.TransientTransactionError);
   }
 }
 
@@ -286,136 +267,59 @@ function isDuplicateKey(error: unknown): boolean {
   return isRecord(error) && error.code === 11000;
 }
 
-function isConfirmedWriteFailure(error: unknown): boolean {
-  if (error instanceof mongo.BSON.BSONError || error instanceof mongo.MongoInvalidArgumentError) return true;
-  if (error instanceof mongo.MongoNetworkError || error instanceof mongo.MongoWriteConcernError) return false;
-  if (error instanceof mongo.MongoServerError) {
-    return !error.hasErrorLabel(mongo.MongoErrorLabel.TransientTransactionError) &&
-      !error.hasErrorLabel(mongo.MongoErrorLabel.RetryableWriteError) &&
-      !error.hasErrorLabel(mongo.MongoErrorLabel.UnknownTransactionCommitResult);
-  }
-  if (error instanceof mongo.MongoError) return false;
-  if (!isRecord(error)) return false;
-  if (isDuplicateKey(error)) return true;
-  return Array.isArray(error.writeErrors);
-}
-
-function canReleaseAfterFailure(error: unknown, session?: ClientSession): boolean {
-  if (!session?.inTransaction()) return isConfirmedWriteFailure(error);
-  return error instanceof mongo.BSON.BSONError || error instanceof mongo.MongoInvalidArgumentError;
-}
-
-function hasUnacknowledgedWriteConcern(options: SteelGuardOptions): boolean {
-  if (options.w === 0) return true;
-  return isRecord(options.writeConcern) && options.writeConcern.w === 0;
-}
-
-function isAcknowledgedWriteResult(result: unknown): boolean {
-  return !isRecord(result) || result.acknowledged !== false;
-}
-
 function sessionOptions(session?: ClientSession): PlainRecord {
   return session ? { session } : {};
 }
 
-async function advanceGate(
+const transactionFences = new WeakMap<object, Map<string, SteelConversationLifecycleDocument>>();
+
+function assertOwner(marker: SteelConversationLifecycleDocument, scope: LifecycleScope): void {
+  if (isLifecycleScope(scope) && marker.userId && !sameOwner(marker, scope)) {
+    throw new SteelConversationOwnerError();
+  }
+}
+
+/** One atomic deletion fence per conversation and transaction attempt; no release is needed. */
+export async function protectSteelConversationWrite(
   mongoose: Mongoose,
-  scope: SteelConversationScope | { conversationId: string },
-  session?: ClientSession,
-): Promise<{ key: string }> {
-  const Gate = createLifecycleModel(mongoose);
-  const canonical = isLifecycleScope(scope);
+  scope: LifecycleScope,
+  session: ClientSession,
+): Promise<void> {
+  if (!session.inTransaction()) throw new Error('Steel writes require a transaction.');
   const key = scopeKey(scope);
-  let gate: SteelConversationLifecycleDocument | null = null;
-  let lastError: unknown;
-  for (let attempt = 0; attempt < 3; attempt += 1) {
-    const inTransaction = session?.inTransaction() === true;
-    try {
-      gate = await Gate.findOneAndUpdate(
-        { _id: key, deleted: { $ne: true },
-          ...(canonical ? { $or: [{ userId: scope.userId, tenantId: scope.tenantId ?? null }, { userId: { $exists: false } }] } : {}),
-        },
-        {
-          ...(canonical ? { $set: { userId: scope.userId, tenantId: scope.tenantId ?? null } } : {}),
-          $setOnInsert: {
-            _id: key,
-            conversationId: scope.conversationId,
-          },
-          $inc: { pendingWrites: 1 },
-        },
-        { upsert: true, new: true, ...sessionOptions(session) },
-      ).lean<SteelConversationLifecycleDocument>();
-      break;
-    } catch (error) {
-      lastError = error;
-      if (!isDuplicateKey(error)) throw error;
-      if (inTransaction) {
-        const existing = await Gate.findOne({ _id: key }).lean<Pick<SteelConversationLifecycleDocument, 'deleted' | 'userId' | 'tenantId'>>();
-        if (existing?.deleted === true) throw new SteelConversationDeletedError();
-        if (canonical && existing?.userId && !sameOwner(existing, scope)) throw new SteelConversationOwnerError();
-        throw new SteelConversationGateBootstrapRetryError(
-          error instanceof Error ? error : new Error('Concurrent gate bootstrap failed.'),
-        );
-      }
-      const existing = await Gate.findOne({ _id: key }, null, sessionOptions(session))
-        .lean<Pick<SteelConversationLifecycleDocument, 'deleted' | 'userId' | 'tenantId'>>();
-      if (existing?.deleted === true) throw new SteelConversationDeletedError();
-      if (canonical && existing?.userId && !sameOwner(existing, scope)) throw new SteelConversationOwnerError();
-      if (attempt === 2) throw error;
-    }
+  let fences = transactionFences.get(session.transaction);
+  if (!fences) {
+    fences = new Map();
+    transactionFences.set(session.transaction, fences);
   }
-  if (!gate) {
-    if (lastError) throw lastError;
-    throw new SteelConversationDeletedError();
+  const cached = fences.get(key);
+  if (cached) {
+    assertOwner(cached, scope);
+    if (!isLifecycleScope(scope) || cached.userId) return;
   }
-  return { key };
-}
-
-async function releaseGate(
-  mongoose: Mongoose,
-  key: string,
-  session?: ClientSession,
-): Promise<void> {
-  const Gate = createLifecycleModel(mongoose);
-  await Gate.updateOne(
-    { _id: key, pendingWrites: { $gt: 0 } },
-    { $inc: { pendingWrites: -1 } },
-    sessionOptions(session),
-  );
-}
-
-async function releaseGates(
-  mongoose: Mongoose,
-  reservations: Array<{ key: string }>,
-  session?: ClientSession,
-  preservePrimaryError = false,
-): Promise<void> {
-  for (const reservation of reservations) {
-    try {
-      await releaseGate(mongoose, reservation.key, session);
-    } catch (error) {
-      if (!preservePrimaryError) throw error;
-      logger.error('[steelLifecycle] Reservation cleanup failed after a rejected write.');
-    }
-  }
-}
-
-async function advanceGates(
-  mongoose: Mongoose,
-  scopes: Array<SteelConversationScope | { conversationId: string }>,
-  session?: ClientSession,
-): Promise<Array<{ key: string }>> {
-  const unique: Array<SteelConversationScope | { conversationId: string }> = [];
-  for (const scope of scopes) {
-    if (!unique.some((candidate) => sameScope(candidate, scope))) unique.push(scope);
-  }
-  const reservations: Array<{ key: string }> = [];
+  const Marker = createLifecycleModel(mongoose);
+  const current = await Marker.findById(key).session(session).lean<SteelConversationLifecycleDocument>();
+  if (current?.deleted) throw new SteelConversationDeletedError();
+  if (current) assertOwner(current, scope);
+  const canonical = isLifecycleScope(scope);
   try {
-    for (const scope of unique) reservations.push(await advanceGate(mongoose, scope, session));
-    return reservations;
+    const marker = await Marker.findOneAndUpdate(
+      { _id: key, deleted: { $ne: true },
+        ...(canonical ? { $or: [{ userId: scope.userId, tenantId: scope.tenantId ?? null }, { userId: { $exists: false } }] } : {}),
+      },
+      {
+        ...(canonical ? { $set: { userId: scope.userId, tenantId: scope.tenantId ?? null } } : {}),
+        $setOnInsert: { _id: key, conversationId: scope.conversationId },
+        $inc: { revision: 1 },
+      },
+      { upsert: true, new: true, session },
+    ).lean<SteelConversationLifecycleDocument>();
+    if (!marker) throw new SteelConversationDeletedError();
+    fences.set(key, marker);
   } catch (error) {
-    if ((!session?.inTransaction() && (error instanceof SteelConversationDeletedError || error instanceof SteelConversationOwnerError)) || canReleaseAfterFailure(error, session)) {
-      await releaseGates(mongoose, reservations, session, true);
+    // Only a concurrent first insert of this marker can hit its unique _id index.
+    if (error instanceof mongo.MongoServerError && isDuplicateKey(error)) {
+      error.addErrorLabel(mongo.MongoErrorLabel.TransientTransactionError);
     }
     throw error;
   }
@@ -434,7 +338,7 @@ async function readPreimages(
 }
 
 function requireScopes(
-  records: PlainRecord[],
+  records: readonly unknown[],
   legacy: boolean,
 ): Array<SteelConversationScope | { conversationId: string }> {
   const scopes = records.map((record) => scopeFromRecord(record, legacy));
@@ -552,43 +456,31 @@ async function guardedWrite(
 ): Promise<unknown> {
   const optionIndex = method === 'insertOne' || method === 'insertMany' || method === 'bulkWrite' ? 1 : 2;
   const options = getOptions(args, optionIndex);
-  if (hasUnacknowledgedWriteConcern(options)) {
+  if (options.w === 0 || (isRecord(options.writeConcern) && options.writeConcern.w === 0)) {
     throw new Error('Steel conversation writes require acknowledged MongoDB operations.');
   }
-  const session = options.session;
-  let scopes: Array<SteelConversationScope | { conversationId: string }> = [];
-  if (method === 'insertOne') {
-    const scope = scopeFromRecord(args[0], legacy);
-    if (!scope) throw new Error('Steel conversation insert identity is missing.');
-    scopes = [scope];
-  } else if (method === 'insertMany') {
-    const candidateScopes = (Array.isArray(args[0]) ? args[0] : []).map((value) => scopeFromRecord(value, legacy));
-    if (candidateScopes.some((scope) => scope === undefined)) {
-      throw new Error('Steel conversation insert identity is missing.');
+  const write = async (session: ClientSession): Promise<unknown> => {
+    let scopes: LifecycleScope[];
+    if (method === 'insertOne' || method === 'insertMany') {
+      let records: DriverArguments = [];
+      if (method === 'insertOne') records = [args[0]];
+      else if (Array.isArray(args[0])) records = args[0];
+      scopes = requireScopes(records, legacy);
+    } else if (method === 'bulkWrite') {
+      scopes = await resolveBulkScopes(collection, Array.isArray(args[0]) ? args[0] as MongoDocument[] : [], legacy, session);
+    } else {
+      scopes = await scopesForUpdate(collection, args[0] as PlainRecord, args[1], options, legacy, session,
+        method === 'updateMany', method === 'replaceOne' || method === 'findOneAndReplace');
     }
-    scopes = candidateScopes as Array<SteelConversationScope | { conversationId: string }>;
-  } else if (method === 'bulkWrite') {
-    scopes = await resolveBulkScopes(collection, Array.isArray(args[0]) ? args[0] as MongoDocument[] : [], legacy, session);
-  } else {
-    scopes = await scopesForUpdate(collection, args[0] as PlainRecord, args[1], options, legacy, session,
-      method === 'updateMany', method === 'replaceOne' || method === 'findOneAndReplace');
-  }
-  const reservations = await advanceGates(mongoose, scopes, session);
-  let releaseReservations = false;
-  let primaryFailure = false;
+    for (const scope of scopes) await protectSteelConversationWrite(mongoose, scope, session);
+    return BYPASS.run(new Set([collection]), () => original.apply(collection, withSession(args, optionIndex, session)));
+  };
+  if (options.session?.inTransaction()) return write(options.session);
+  const session = options.session ?? await mongoose.startSession();
   try {
-    const callArgs = withSession(args, optionIndex, session);
-    const result = await BYPASS.run(new Set([collection]), () => original.apply(collection, callArgs));
-    releaseReservations = isAcknowledgedWriteResult(result);
-    return result;
-  } catch (error) {
-    primaryFailure = true;
-    releaseReservations = canReleaseAfterFailure(error, session);
-    throw error;
+    return await session.withTransaction(() => write(session));
   } finally {
-    if (releaseReservations) {
-      await releaseGates(mongoose, reservations, session, primaryFailure);
-    }
+    if (!options.session) await session.endSession();
   }
 }
 
@@ -635,41 +527,31 @@ export async function fenceSteelConversationWrites(
   mongoose: Mongoose,
   scope: SteelConversationScope,
 ): Promise<boolean> {
-  const Gate = createLifecycleModel(mongoose);
+  const Marker = createLifecycleModel(mongoose);
   const Conversation = mongoose.models.Conversation;
-  const identities = await runAsSystem(async () => Conversation.find({ conversationId: scope.conversationId })
-    .select('user tenantId').lean<Array<{ user: string; tenantId?: string }>>());
-  if (identities.some((identity) => identity.user !== scope.userId || (identity.tenantId ?? undefined) !== scope.tenantId)) {
-    throw new SteelConversationOwnerError();
-  }
-  const prior = await Gate.findById(scope.conversationId).lean<SteelConversationLifecycleDocument>();
-  if (prior?.userId && !sameOwner(prior, scope)) throw new SteelConversationOwnerError();
-  if (identities.length === 0 && !(prior?.deleted && sameOwner(prior, scope))) return false;
-  if (prior?.deleted) return true;
+  const session = await mongoose.startSession();
   try {
-    await Gate.updateOne(
-      {
-        _id: scope.conversationId,
-        deleted: { $ne: true },
-        pendingWrites: { $in: [0, null] },
-        $or: [
-          { userId: scope.userId, tenantId: scope.tenantId ?? null },
-          { userId: { $exists: false } },
-        ],
-      },
-      {
-        $set: { deleted: true, userId: scope.userId, tenantId: scope.tenantId ?? null },
-        $setOnInsert: { _id: scope.conversationId, conversationId: scope.conversationId, pendingWrites: 0 },
-      },
-      { upsert: true },
-    );
-  } catch (error) {
-    if (!isDuplicateKey(error)) throw error;
-    const gate = await Gate.findById(scope.conversationId).lean<SteelConversationLifecycleDocument>();
-    if (gate?.userId && !sameOwner(gate, scope)) throw new SteelConversationOwnerError();
-    if (!gate?.deleted) throw new SteelConversationWritePendingError();
+    return await session.withTransaction(async () => {
+      const identities = await runAsSystem(async () => Conversation.find({ conversationId: scope.conversationId })
+        .session(session).select('user tenantId').lean<Array<{ user: string; tenantId?: string }>>());
+      if (identities.some((identity) => identity.user !== scope.userId || (identity.tenantId ?? undefined) !== scope.tenantId)) {
+        throw new SteelConversationOwnerError();
+      }
+      const prior = await Marker.findById(scope.conversationId).session(session).lean<SteelConversationLifecycleDocument>();
+      if (prior) assertOwner(prior, scope);
+      if (prior?.deleted) return true;
+      if (identities.length === 0) return false;
+      await protectSteelConversationWrite(mongoose, scope, session);
+      await Marker.updateOne(
+        { _id: scope.conversationId, userId: scope.userId, tenantId: scope.tenantId ?? null },
+        { $set: { deleted: true } },
+        { session },
+      );
+      return true;
+    });
+  } finally {
+    await session.endSession();
   }
-  return true;
 }
 
 export async function readSteelConversationDeletionScope(

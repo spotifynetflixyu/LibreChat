@@ -21,6 +21,7 @@ import type {
 import type { SteelQuotationMessagePublication } from 'librechat-data-provider';
 import type { SteelMarkdownCompletionInput, SteelPublishedResponsePort } from './completion';
 import type { SteelSqlParameter } from '../repositories/types';
+import { createSteelQuotationErrorAppender, projectSteelQuotationTerminalMessage } from '../quotation/wiring';
 import { createSteelMarkdownCompletionServices, shouldDeferSteelMarkdownPersistence } from './completion';
 import { prepareQuotationTurn, renderQuotationCustomerMarkdown } from '../quotation/preparation';
 import { normalizeSystemOrderMarkdown, systemOrderColumns } from './order';
@@ -471,6 +472,70 @@ it('projects a durable completed order into the terminal response without republ
   expect(await db.getMessage({ user: scope.userId, messageId: fixture.fixture.input.responseId })).toBeNull();
 });
 
+it('reloads the canonical table, completed prose, and terminal error from one durable message', async () => {
+  const published = await seedPublishedOrder('An error occurred while processing the request');
+  const admission = published.fixture.input.req.steelNativeContext?.quotation?.publicationAdmission;
+  if (!admission) throw new Error('Missing publication admission');
+  const summary = await db.appendSteelQuotationSummary({
+    scope,
+    runId: published.run.runId,
+    targetMessageId: published.targetMessageId,
+    sourceMessageId: admission.responseId,
+    admission,
+    summaryMarkdown: 'AI main response.',
+    footerMarkdown: '## quote_summary\n\nBackend summary.',
+  });
+  if (!summary.ok) throw new Error('Missing published summary');
+  const response = {
+    messageId: admission.responseId,
+    conversationId: scope.conversationId,
+    user: scope.userId,
+    content: [{ type: 'error', error: 'An error occurred while processing the request' }],
+  };
+  published.publishedResponse.appendErrors = createSteelQuotationErrorAppender({
+    response, scope, admission, append: db.appendSteelQuotationErrors,
+  });
+  await published.fixture.run();
+  const reloaded = await db.getMessage({ user: scope.userId, messageId: published.targetMessageId });
+  expect(reloaded?.text).toBe(summary.message.text);
+  expect(reloaded?.content).toEqual([...summary.message.content!, ...response.content]);
+  expect(reloaded?.metadata).toEqual(summary.message.metadata);
+  expect(projectSteelQuotationTerminalMessage({ response, saved: reloaded }).content)
+    .toEqual(reloaded?.content);
+  expect(published.publishedResponse.accept).toHaveBeenCalledWith(reloaded);
+  expect(published.fixture.persist).not.toHaveBeenCalled();
+  expect(await db.getMessage({ user: scope.userId, messageId: admission.responseId })).toBeNull();
+});
+
+it('persists unfinished main prose with an error in the canonical message before reloading', async () => {
+  const published = await seedPublishedOrder('An error occurred while processing the request');
+  const admission = published.fixture.input.req.steelNativeContext?.quotation?.publicationAdmission;
+  if (!admission) throw new Error('Missing publication admission');
+  const response = {
+    messageId: admission.responseId,
+    conversationId: scope.conversationId,
+    user: scope.userId,
+    content: [
+      { type: 'text', text: 'host prefix' },
+      { type: 'text', text: '' },
+      { type: 'text', text: 'Partial AI main response.' },
+      { type: 'text', text: '' },
+      { type: 'error', error: 'An error occurred while processing the request' },
+    ],
+  };
+  published.publishedResponse.appendErrors = createSteelQuotationErrorAppender({
+    response, scope, admission, append: db.appendSteelQuotationErrors,
+  });
+  await published.fixture.run();
+  const reloaded = await db.getMessage({ user: scope.userId, messageId: published.targetMessageId });
+  expect(reloaded?.content?.[1]).toEqual({ type: 'text', text: published.systemOrder.markdown });
+  expect(reloaded?.content?.[2]).toEqual({ type: 'text', text: 'Partial AI main response.' });
+  expect(reloaded?.content?.[4]).toEqual(response.content[4]);
+  expect(projectSteelQuotationTerminalMessage({ response, saved: reloaded }).content)
+    .toEqual(reloaded?.content);
+  expect(reloaded?.text).toContain('Partial AI main response.');
+});
+
 it('adopts a completed order after input expiry and summary Stop without republishing its table', async () => {
   const fixture = await seedPublishedOrder('Summary stopped');
   await Artifact.deleteMany({ ...scope, runId: fixture.run.runId, operationId: 'snapshot' });
@@ -598,7 +663,7 @@ it('rejects raw prose when a self-consistent normalized artifact is not a canoni
   const load = jest.spyOn(fixture.publishedResponse, 'load');
 
   await expect(fixture.fixture.run()).rejects.toMatchObject({ code: 'superseded_response' });
-  expect(load).not.toHaveBeenCalled();
+  expect(load).toHaveBeenCalledWith({ responseId: fixture.targetMessageId, conversationId: scope.conversationId, userId: scope.userId });
   expect(fixture.publishedResponse.accept).not.toHaveBeenCalled();
   expect(fixture.fixture.persist).not.toHaveBeenCalled();
   expect(await db.getMessage({ user: scope.userId, messageId: fixture.targetMessageId })).toMatchObject({
@@ -631,7 +696,7 @@ it('rejects a malformed effective system order even when the normalized AI basel
   const load = jest.spyOn(fixture.publishedResponse, 'load');
 
   await expect(fixture.fixture.run()).rejects.toMatchObject({ code: 'superseded_response' });
-  expect(load).not.toHaveBeenCalled();
+  expect(load).toHaveBeenCalledWith({ responseId: fixture.targetMessageId, conversationId: scope.conversationId, userId: scope.userId });
   expect(fixture.publishedResponse.accept).not.toHaveBeenCalled();
   expect(fixture.fixture.persist).not.toHaveBeenCalled();
   expect(await db.getMessage({ user: scope.userId, messageId: fixture.targetMessageId })).toMatchObject({

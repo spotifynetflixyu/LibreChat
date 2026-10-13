@@ -99,7 +99,13 @@ const publication = (admission: SteelMarkdownAdmission, quantity = '2'): SteelMa
 };
 
 beforeAll(async () => {
-  server = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } });
+  server = await MongoMemoryReplSet.create({
+    replSet: {
+      count: 1,
+      storageEngine: 'wiredTiger',
+      args: ['--setParameter', 'enableTestCommands=1'],
+    },
+  });
   await mongoose.connect(server.getUri());
   const models = createModels(mongoose);
   await Promise.all(Object.values(models).map((model) => model.init()));
@@ -491,7 +497,126 @@ it('appends summary and footer slots after completion without replacing the tabl
   expect(saved?.metadata?.steel).not.toEqual({ forged: true });
   expect(saved?.tokenCount).toBe(42);
   expect(saved?.processingDurationMs).toBe(123);
-  expect(await Artifact.countDocuments({ ...scope, runId, operationId: 'summary-appended' })).toBe(1);
+  expect(await Artifact.countDocuments({ ...scope, runId, operationId: 'summary-appended' })).toBe(0);
+});
+
+it('saves the complete latest reviewed message without a post-save gate cleanup', async () => {
+  const { methods, Artifact, State, runId, responseId, proof } =
+    await prepareEarlyOrderPublication();
+  const published = await methods.saveSteelQuotationMessage(proof);
+  if (!published.ok) throw new Error('Missing published order');
+  const latestOrder = proof.message.text.replace('| A | 2 | 99 |', '| A | 3 | 99 |');
+  const latestContent = [
+    { type: 'text', text: latestOrder },
+    { type: 'text', text: '' },
+    { type: 'text', text: '' },
+  ];
+  await mongoose.models.Message.updateOne(
+    { messageId: responseId, user: scope.userId },
+    {
+      $set: {
+        text: latestOrder,
+        content: latestContent,
+        'metadata.steelReview.system_order': {
+          outputId: `system_order:${runId}`,
+          effectiveVersion: 2,
+        },
+      },
+    },
+  );
+  await State.updateOne(scope, {
+    $set: {
+      'currentSystemOrder.markdown': latestOrder,
+      'currentSystemOrder.sha256': sha(latestOrder),
+    },
+  });
+  const admin = mongoose.connection.db!.admin();
+  await admin.command({
+    configureFailPoint: 'failCommand',
+    mode: { times: 1 },
+    data: { failCommands: ['update'], errorCode: 112 },
+  });
+  try {
+    const input = {
+      scope,
+      runId,
+      targetMessageId: responseId,
+      sourceMessageId: proof.orderPublication!.admission.responseId,
+      admission: proof.orderPublication!.admission,
+      summaryMarkdown: 'AI main response.',
+      footerMarkdown: '## quote_summary\n\nBackend summary.',
+    };
+    const saved = await methods.appendSteelQuotationSummary(input);
+    expect(saved.ok).toBe(true);
+    if (!saved.ok) throw new Error('Missing completed message');
+    expect(saved.message.text).toBe(
+      `${latestOrder}\n\nAI main response.\n\n## quote_summary\n\nBackend summary.`,
+    );
+    expect(saved.message.metadata?.steelReview).toMatchObject({
+      system_order: { effectiveVersion: 2 },
+    });
+    expect(await mongoose.models.Message.findOne({ messageId: responseId }).lean()).toMatchObject({
+      text: saved.message.text,
+      content: saved.message.content,
+      error: false,
+    });
+    expect(
+      await Artifact.countDocuments({ ...scope, runId, operationId: 'summary-appended' }),
+    ).toBe(0);
+    expect((await methods.appendSteelQuotationSummary(input)).ok).toBe(true);
+    expect(
+      await mongoose.models.SteelConversationLifecycle.findById(scope.conversationId).lean(),
+    ).toMatchObject({ deleted: false });
+  } finally {
+    await admin.command({ configureFailPoint: 'failCommand', mode: 'off' });
+  }
+});
+
+it('appends terminal errors durably after the latest reviewed quotation without republishing it', async () => {
+  const { methods, State, runId, responseId, proof } = await prepareEarlyOrderPublication();
+  expect((await methods.saveSteelQuotationMessage(proof)).ok).toBe(true);
+  const admission = proof.orderPublication!.admission;
+  const summary = await methods.appendSteelQuotationSummary({
+    scope, runId, targetMessageId: responseId, sourceMessageId: admission.responseId, admission,
+    summaryMarkdown: 'AI main response.', footerMarkdown: '## quote_summary\n\nBackend summary.',
+  });
+  if (!summary.ok) throw new Error('Missing completed summary');
+  const reviewed = proof.message.text.replace('| A | 2 | 99 |', '| A | 3 | 99 |');
+  const content = [...summary.message.content!];
+  content[0] = { type: 'text', text: reviewed };
+  const text = `${reviewed}\n\nAI main response.\n\n## quote_summary\n\nBackend summary.`;
+  await mongoose.models.Message.updateOne({ messageId: responseId, user: scope.userId }, {
+    $set: { text, content, 'metadata.steelReview.system_order': {
+      outputId: `system_order:${runId}`, effectiveVersion: 2,
+    } },
+  });
+  await State.updateOne(scope, { $set: {
+    'currentSystemOrder.markdown': reviewed, 'currentSystemOrder.sha256': sha(reviewed),
+  } });
+  const before = await methods.getMessage({ user: scope.userId, messageId: responseId });
+  const input = {
+    scope, runId, targetMessageId: responseId, sourceMessageId: admission.responseId, admission,
+    errors: [{ type: 'error' as const, error: 'An error occurred while processing the request' }],
+  };
+  const admin = mongoose.connection.db!.admin();
+  await admin.command({ configureFailPoint: 'failCommand', mode: { times: 1 },
+    data: { failCommands: ['update'], errorCode: 112, errorLabels: [] } });
+  try {
+    const saved = await methods.appendSteelQuotationErrors({ ...input, errors: [...input.errors, ...input.errors] });
+    expect(saved.ok).toBe(true);
+    expect((await methods.appendSteelQuotationErrors(input)).ok).toBe(true);
+    const reloaded = await methods.getMessage({ user: scope.userId, messageId: responseId });
+    expect(reloaded).toMatchObject({
+      text, content: [...content, ...input.errors], metadata: before?.metadata,
+    });
+    expect(reloaded?.content?.[reloaded.content.length - 1]).toEqual(input.errors[0]);
+    expect(await methods.appendSteelQuotationErrors({
+      ...input, admission: { ...admission, sequence: admission.sequence + 1 },
+    })).toEqual({ ok: false, code: 'superseded' });
+    expect(await methods.getMessage({ user: scope.userId, messageId: responseId })).toEqual(reloaded);
+  } finally {
+    await admin.command({ configureFailPoint: 'failCommand', mode: 'off' });
+  }
 });
 
 it.each(['quote_signal', 'quote_lineage', 'system_order_chunk', 'system_order_updates'])(
@@ -535,7 +660,7 @@ it('keeps the first committed summary receipt for a run', async () => {
   const saved = await createModels(mongoose).Message.findOne({ user: scope.userId, conversationId: scope.conversationId, messageId: responseId }).lean();
   expect(saved?.text).toContain('第一版校對。');
   expect(saved?.text).not.toContain('第二版校對。');
-  expect(await Artifact.countDocuments({ ...scope, runId, operationId: 'summary-appended' })).toBe(1);
+  expect(await Artifact.countDocuments({ ...scope, runId, operationId: 'summary-appended' })).toBe(0);
 });
 
 it.each([

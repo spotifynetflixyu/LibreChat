@@ -683,6 +683,15 @@ function toSettledAt(value: unknown): Date | undefined {
 }
 
 export interface MessageMethods extends ReturnType<typeof createSteelCustomerMethods>, ReturnType<typeof createSteelPublicationMethods>, ReturnType<typeof createSteelHistoryMethods> {
+  /** Appends a safe error, or returns an existing terminal error row. Never upserts. */
+  appendMessageError(input: {
+    user: string;
+    tenantId?: string;
+    conversationId: string;
+    parentMessageId: string;
+    messageId: string;
+    error: string;
+  }): Promise<IMessage | null>;
   saveMessage(
     ctx: {
       userId: string;
@@ -943,6 +952,71 @@ type SteplessToolCallFallback = {
 };
 
 export function createMessageMethods(mongoose: typeof import('mongoose')): MessageMethods {
+  async function appendMessageError(input: {
+    user: string;
+    tenantId?: string;
+    conversationId: string;
+    parentMessageId: string;
+    messageId: string;
+    error: string;
+  }): Promise<IMessage | null> {
+    if (!input.user || !input.conversationId || !input.parentMessageId || !input.messageId) {
+      throw new Error('Terminal message error requires a complete message identity.');
+    }
+    const Message = createMessageModel(mongoose);
+    const errorPart = { type: 'error', error: input.error };
+    return Message.findOneAndUpdate(
+      {
+        user: input.user,
+        conversationId: input.conversationId,
+        parentMessageId: input.parentMessageId,
+        messageId: input.messageId,
+        isCreatedByUser: false,
+        ...(input.tenantId == null ? { tenantId: { $exists: false } } : { tenantId: input.tenantId }),
+      },
+      [{
+        $set: {
+          content: {
+            $let: {
+              vars: {
+                parts: {
+                  $cond: [
+                    { $gt: [{ $size: { $ifNull: ['$content', []] } }, 0] },
+                    '$content',
+                    { $cond: [
+                      { $ne: [{ $ifNull: ['$text', ''] }, ''] },
+                      [{ type: 'text', text: '$text' }],
+                      [],
+                    ] },
+                  ],
+                },
+              },
+              in: {
+                $cond: [
+                  { $eq: ['$error', true] },
+                  { $ifNull: ['$content', '$$REMOVE'] },
+                  { $cond: [
+                    { $anyElementTrue: [{ $map: {
+                      input: '$$parts',
+                      as: 'part',
+                      in: { $and: [
+                        { $eq: ['$$part.type', 'error'] },
+                        { $eq: ['$$part.error', { $literal: input.error }] },
+                      ] },
+                    } }] },
+                    '$$parts',
+                    { $concatArrays: ['$$parts', { $literal: [errorPart] }] },
+                  ] },
+                ],
+              },
+            },
+          },
+          unfinished: { $cond: [{ $eq: ['$error', true] }, '$unfinished', false] },
+        },
+      }],
+      { new: true, upsert: false },
+    ).lean<IMessage>();
+  }
   /**
    * Saves a message in the database.
    */
@@ -3925,6 +3999,7 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
     ...createSteelHistoryMethods(mongoose),
     ...createSteelCustomerMethods(mongoose),
     ...steelPublicationMethods,
+    appendMessageError,
     saveMessage,
     saveSteelQuotationMessage,
     bulkSaveMessages,

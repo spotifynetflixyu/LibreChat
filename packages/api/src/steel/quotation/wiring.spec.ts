@@ -1,7 +1,7 @@
 import { logger } from '@librechat/data-schemas';
 import type { SteelQuotationSavedMessage } from '@librechat/data-schemas';
 import type { SteelQuotationPublicationContentPart } from './publication';
-import { createSteelQuotationMessageNotifier, createSteelQuotationTextWiring, projectSteelQuotationTerminalMessage } from './wiring';
+import { createSteelQuotationMessageNotifier, createSteelQuotationTextWiring, projectSteelQuotationTerminalMessage, createSteelQuotationFailurePersistence } from './wiring';
 
 const publication = {
   version: 1,
@@ -31,7 +31,28 @@ const saved: SteelQuotationSavedMessage = {
 
 afterEach(() => jest.restoreAllMocks());
 
-it('projects canonical terminal identity without putting the backend table or footer into the main snapshot', () => {
+describe('quotation failure persistence', () => {
+  const quotation = { scope, publicationAdmission: { sequence: 1, responseId: 'response', generationId: 'generation', lineageId: 'lineage', expected: {} } };
+  it('leaves ordinary chat persistence with its common appender', () => {
+    expect(createSteelQuotationFailurePersistence({ req: {}, getMessages: jest.fn(), append: jest.fn() })).toEqual({});
+  });
+  it('appends the safe failure through the validated quotation writer', async () => {
+    const getMessages = jest.fn().mockResolvedValue([saved]);
+    const append = jest.fn().mockResolvedValue({ ok: true, message: saved });
+    const persistence = createSteelQuotationFailurePersistence({ req: { steelNativeContext: { quotation } }, responseId: 'response', getMessages, append });
+    expect(await persistence.preservePublished?.()).toBe(true);
+    expect(getMessages).toHaveBeenCalledWith({ user: 'user', conversationId: 'conversation', 'metadata.steelQuotation.sourceMessageId': 'response' });
+    expect(append).toHaveBeenCalledWith(expect.objectContaining({ runId: 'quote-run', targetMessageId: 'response', errors: [{ type: 'error', error: 'An error occurred while processing the request' }] }));
+    expect(await persistence.appendError?.({ user: 'user', conversationId: 'conversation', parentMessageId: 'parent', messageId: 'response', error: 'safe' })).toBeNull();
+  });
+  it('does not bypass validation when quotation persistence rejects the identity', async () => {
+    const append = jest.fn().mockResolvedValue({ ok: false, reason: 'superseded' });
+    const persistence = createSteelQuotationFailurePersistence({ req: { steelNativeContext: { quotation } }, responseId: 'response', getMessages: jest.fn().mockResolvedValue([saved]), append });
+    await expect(persistence.preservePublished?.()).rejects.toThrow();
+  });
+});
+
+it('transmits the complete durable message without clearing its table or footer', () => {
   const response = {
     ...saved,
     messageId: 'raw-response',
@@ -45,10 +66,50 @@ it('projects canonical terminal identity without putting the backend table or fo
   };
   const result = projectSteelQuotationTerminalMessage({ response, saved });
   expect(result.messageId).toBe('response');
-  expect(result.text).toBe('primary partial main prose');
+  expect(result.text).toBe(saved.text);
+  expect(result.content).toEqual(saved.content);
   expect(result.unfinished).toBe(true);
-  expect(JSON.stringify(result.content)).not.toContain('system_order');
+  expect(JSON.stringify(result.content)).toContain('system_order');
   expect(saved.content?.[1]).toEqual({ type: 'text', text: '## system_order\n\ntable' });
+});
+
+it('projects an errored terminal with the complete saved quotation and deduplicated errors', () => {
+  const savedWithSummary: SteelQuotationSavedMessage = {
+    ...saved,
+    text: 'primary\n\n## system_order\n\ntable\n\nMain summary\n\nFooter',
+    content: [
+      { type: 'text', text: 'primary' },
+      { type: 'text', text: '## system_order\n\ntable' },
+      { type: 'text', text: 'Main summary' },
+      { type: 'text', text: 'Footer' },
+      { type: 'error', error: 'already persisted' },
+      { type: 'error', error: 'new failure' },
+    ],
+  };
+  const response = {
+    ...saved,
+    content: [
+      { type: 'text', text: 'primary' },
+      { type: 'text', text: '' },
+      { type: 'text', text: 'Main summary' },
+      { type: 'text', text: 'Footer' },
+      { type: 'error', error: 'already persisted' },
+      { type: 'error', error: 'new failure' },
+    ],
+  };
+  const result = projectSteelQuotationTerminalMessage({ response, saved: savedWithSummary });
+  expect(result.content).toEqual([
+    { type: 'text', text: 'primary' },
+    { type: 'text', text: '## system_order\n\ntable' },
+    { type: 'text', text: 'Main summary' },
+    { type: 'text', text: 'Footer' },
+    { type: 'error', error: 'already persisted' },
+    { type: 'error', error: 'new failure' },
+  ]);
+  expect(result.content?.filter((part) => part != null && typeof part === 'object' &&
+    'type' in part && part.type === 'error')).toHaveLength(2);
+  expect(result.text).toContain('## system_order\n\ntable');
+  expect(result.text).toContain('Footer');
 });
 
 it('reserves the committed summary slot without copying the backend table into the AI buffer', async () => {

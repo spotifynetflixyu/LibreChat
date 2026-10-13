@@ -9,7 +9,9 @@ import { useLocalize } from '~/hooks';
 import { cn } from '~/utils';
 
 export const SteelVersionsContext = createContext<ReadonlyMap<string, SteelMarkdownVersion>>(new Map());
-type SteelMarkdownOwner = Pick<SteelMarkdownVersion, 'outputId' | 'title'>;
+type SteelMarkdownOwner = Pick<SteelMarkdownVersion, 'outputId' | 'title'> & {
+  effectiveVersion?: number;
+};
 const SteelVersionOwnersContext = createContext<ReadonlyMap<string, SteelMarkdownOwner>>(new Map());
 
 const steelMarkdownKinds: readonly SteelMarkdownVersion['kind'][] = [
@@ -33,17 +35,54 @@ function isSteelMarkdownOwner(value: unknown): value is SteelMarkdownOwner {
   );
 }
 
+function normalizeSteelMarkdownOwner(value: unknown): SteelMarkdownOwner | undefined {
+  if (!isSteelMarkdownOwner(value)) {
+    return undefined;
+  }
+
+  const { effectiveVersion: rawEffectiveVersion, ...owner } = value;
+  const effectiveVersion =
+    typeof rawEffectiveVersion === 'number' &&
+    Number.isInteger(rawEffectiveVersion) &&
+    rawEffectiveVersion > 0
+      ? rawEffectiveVersion
+      : undefined;
+  return effectiveVersion == null ? owner : { ...owner, effectiveVersion };
+}
+
+function getSteelReviewOwner(
+  message: TMessage,
+  kind: SteelMarkdownVersion['kind'],
+): SteelMarkdownOwner | undefined {
+  const reviewOwners = message.metadata?.steelReview;
+  if (typeof reviewOwners !== 'object' || reviewOwners === null || Array.isArray(reviewOwners)) {
+    return undefined;
+  }
+
+  const owner = Reflect.get(reviewOwners, kind);
+  return normalizeSteelMarkdownOwner(owner);
+}
+
 function getSteelMarkdownOwner(
   message: TMessage,
   kind: SteelMarkdownVersion['kind'],
 ): SteelMarkdownOwner | undefined {
   const owners = message.metadata?.steelMarkdownOwners;
   if (typeof owners !== 'object' || owners === null || Array.isArray(owners)) {
-    return undefined;
+    return getSteelReviewOwner(message, kind);
   }
 
-  const owner = Reflect.get(owners, kind);
-  return isSteelMarkdownOwner(owner) ? owner : undefined;
+  const owner = normalizeSteelMarkdownOwner(Reflect.get(owners, kind));
+  if (!owner) {
+    return getSteelReviewOwner(message, kind);
+  }
+
+  const reviewOwner = getSteelReviewOwner(message, kind);
+  const effectiveVersion =
+    reviewOwner?.outputId === owner.outputId && reviewOwner.title === owner.title
+      ? reviewOwner.effectiveVersion
+      : undefined;
+  return effectiveVersion != null ? { ...owner, effectiveVersion } : owner;
 }
 
 function steelVersionOwnerKey(messageId: string, kind: SteelMarkdownVersion['kind']): string {
@@ -132,7 +171,7 @@ function headingText(node: React.ReactNode): string {
 export function useSteelMarkdownVersion(
   title: string,
   requestedKind?: SteelMarkdownVersion['kind'],
-): SteelMarkdownVersion | undefined {
+): (SteelMarkdownVersion & { effectiveVersion?: number }) | undefined {
   const { messageId } = useMessageContext();
   const versions = useContext(SteelVersionsContext);
   const owners = useContext(SteelVersionOwnersContext);
@@ -143,7 +182,10 @@ export function useSteelMarkdownVersion(
   );
   const owner = kind ? owners.get(steelVersionOwnerKey(messageId, kind)) : undefined;
   const version = owner ? versions.get(JSON.stringify([messageId, kind, title, owner.outputId])) : undefined;
-  return version;
+  if (!version || owner?.effectiveVersion == null) {
+    return version;
+  }
+  return { ...version, effectiveVersion: owner.effectiveVersion };
 }
 
 export function SteelHeading({
@@ -155,7 +197,8 @@ export function SteelHeading({
   const localize = useLocalize();
   const title = headingText(children);
   const version = useSteelMarkdownVersion(title);
-  const hasSaveCount = version?.kind !== 'customer_data' && version != null && version.saves > 0;
+  const saveCount = version == null ? undefined : Math.max(version.saves + 1, version.effectiveVersion ?? 1);
+  const hasSaveCount = version?.kind !== 'customer_data' && saveCount != null && saveCount > 1;
   const label =
     version == null
       ? undefined
@@ -163,7 +206,7 @@ export function SteelHeading({
           version.latest
             ? 'com_ui_steel_review_latest_version'
             : 'com_ui_steel_review_previous_version',
-        )}${hasSaveCount ? ` v${version.saves + 1}` : ''}`;
+        )}${hasSaveCount ? ` v${saveCount}` : ''}`;
 
   return (
     <h2

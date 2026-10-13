@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { hasConsistentMessageText } from '@librechat/data-schemas';
 import { steelQuotationMessagePublicationSchema } from 'librechat-data-provider';
 import type {
   ISteelConversationOcrState,
@@ -30,7 +31,6 @@ import {
 } from '../quotation/runner';
 import { isUnfinishedQuotation, hasQuotationOrder } from '../quotation/preparation';
 import { SteelResponseCompletionError } from '../quotation/completion';
-import { readPublishedQuotationOrder } from '../quotation/publication';
 import { resolveRequestTenantId } from '../../middleware/tenant';
 import { sameQuotationOcrSelection } from '../quotation/input';
 import { parseQuotationSignal } from '../quotation/protocol';
@@ -192,8 +192,29 @@ async function acceptPublishedResponse(
   ) {
     throw new SteelResponseCompletionError('response_save_failed');
   }
-  input.publishedResponse.accept(record);
-  return record;
+  const persisted = await appendPublishedResponseErrors(input, record);
+  input.publishedResponse.accept(persisted);
+  await input.onPublishedResponse?.(persisted);
+  return persisted;
+}
+
+async function appendPublishedResponseErrors(
+  input: SteelMarkdownCompletionInput,
+  record: SteelPublishedResponseIdentity,
+): Promise<SteelPublishedResponseIdentity> {
+  if (!input.publishedResponse?.appendErrors) return record;
+  let persisted: SteelPublishedResponseIdentity | null | undefined;
+  try {
+    persisted = await input.publishedResponse.appendErrors(record);
+  } catch {
+    throw new SteelResponseCompletionError('response_save_failed');
+  }
+  if (!persisted) throw new SteelResponseCompletionError('superseded_response');
+  if (persisted.messageId !== record.messageId || persisted.conversationId !== record.conversationId ||
+    persisted.user !== record.user || persisted.tenantId !== record.tenantId) {
+    throw new SteelResponseCompletionError('response_save_failed');
+  }
+  return persisted;
 }
 
 function objectRecord(value: unknown): Record<string, unknown> | undefined {
@@ -265,39 +286,34 @@ async function adoptPublishedQuotationOrder(
     return undefined;
   }
 
-  let readResult: Awaited<ReturnType<typeof readPublishedQuotationOrder>>;
+  let state: ISteelQuotationState | null | undefined;
   try {
-    readResult = await readPublishedQuotationOrder({ scope, service: dependencies.quotation });
+    state = await dependencies.quotation.readState(scope);
   } catch {
     throw new SteelResponseCompletionError('response_save_failed');
   }
-  if (readResult.status === 'absent') return undefined;
-  if (readResult.status === 'invalid') {
-    throw new SteelResponseCompletionError('superseded_response');
-  }
-  const recovered = readResult.value;
-  if ('legacy' in recovered.receipt) return undefined;
-  if (recovered.systemOrder.responseId && recovered.systemOrder.responseId !== input.responseId) {
-    return undefined;
-  }
-
-  const currentAdmission = recovered.state.markdownPublication?.admission;
-  if (
-    !currentAdmission ||
-    currentAdmission.responseId !== admission.responseId ||
-    currentAdmission.generationId !== admission.generationId ||
-    currentAdmission.sequence !== admission.sequence ||
+  const run = state?.activeRun;
+  const systemOrder = state?.currentSystemOrder;
+  if (!state || !run || run.status !== 'completed' || !systemOrder) return undefined;
+  if (systemOrder.responseId !== input.responseId) return undefined;
+  const owner = state.markdownPublication?.current?.system_order;
+  const currentAdmission = state.markdownPublication?.admission;
+  if (!owner || !systemOrder.messageId || !run.targetMessageId ||
+    !currentAdmission || currentAdmission.responseId !== admission.responseId ||
+    currentAdmission.generationId !== admission.generationId || currentAdmission.sequence !== admission.sequence ||
     currentAdmission.lineageId !== admission.lineageId ||
     JSON.stringify(currentAdmission.expected) !== JSON.stringify(admission.expected) ||
-    (quotation.resume && quotation.state?.activeRun?.runId !== recovered.receipt.runId)
-  ) {
+    systemOrder.runId !== run.runId || systemOrder.messageId !== run.targetMessageId ||
+    owner?.ai.messageId !== run.targetMessageId || owner.effective.messageId !== run.targetMessageId ||
+    owner.effective.sha256 !== systemOrder.sha256 ||
+    !sameQuotationOcrSelection(run.ocrSelection, systemOrder.ocrSelection) ||
+    (quotation.resume && quotation.state?.activeRun?.runId !== run.runId)) {
     throw new SteelResponseCompletionError('superseded_response');
   }
-
   let record: SteelPublishedResponseIdentity | null | undefined;
   try {
     record = await input.publishedResponse.load({
-      responseId: recovered.receipt.targetMessageId,
+      responseId: systemOrder.messageId,
       conversationId: scope.conversationId,
       userId: scope.userId,
       ...(scope.tenantId ? { tenantId: scope.tenantId } : {}),
@@ -307,35 +323,45 @@ async function adoptPublishedQuotationOrder(
   }
   const savedText = record?.text;
   const publication = steelQuotationMessagePublicationSchema.safeParse(record?.metadata?.steelQuotation);
-  const receiptRef = recovered.run.checkpointRefs.find((ref) => ref.operationId === 'order-published');
+  const tablePart = publication.success
+    ? objectRecord(record?.content?.[publication.data.tableContentIndex])
+    : undefined;
+  const tableText = tablePart?.type === 'text' && typeof tablePart.text === 'string'
+    ? tablePart.text
+    : undefined;
+  const receiptRef = run.checkpointRefs.find((ref) => ref.operationId === 'order-published');
   if (!publication.success || publication.data.sourceMessageId !== input.responseId ||
     publication.data.admissionSequence !== admission.sequence ||
-    publication.data.runId !== recovered.receipt.runId ||
-    publication.data.outputId !== recovered.receipt.outputId ||
+    publication.data.runId !== run.runId ||
+    publication.data.outputId !== owner.ai.outputId ||
     publication.data.receiptSha256 !== receiptRef?.sha256) {
     throw new SteelResponseCompletionError('superseded_response');
   }
   if (
     !record ||
     !savedText ||
-    record.messageId !== recovered.receipt.targetMessageId ||
+    record.messageId !== systemOrder.messageId ||
     record.conversationId !== scope.conversationId ||
     record.user !== scope.userId ||
     record.tenantId !== scope.tenantId ||
-    !canonicalSystemOrderMatches(savedText, recovered.systemOrder) ||
+    !hasConsistentMessageText({
+      text: record.text, content: record.content, metadata: record.metadata ?? undefined,
+    }) ||
+    !canonicalSystemOrderMatches(tableText, systemOrder) ||
     !ownerMatchesCanonicalOrder(
       record,
-      recovered.receipt.outputId,
-      recovered.receipt.targetMessageId,
-      recovered.receipt.systemOrderSha256,
+      owner.ai.outputId,
+      systemOrder.messageId,
+      owner.ai.sha256,
     )
   ) {
     throw new SteelResponseCompletionError('superseded_response');
   }
 
-  input.publishedResponse.accept(record);
-  await input.onPublishedResponse?.(record);
-  return { markdown: savedText, acceptedRun: recovered.run };
+  const persisted = await appendPublishedResponseErrors(input, record);
+  input.publishedResponse.accept(persisted);
+  await input.onPublishedResponse?.(persisted);
+  return { markdown: persisted.text ?? savedText, acceptedRun: run };
 }
 
 export function createSteelMarkdownCompletionServices(

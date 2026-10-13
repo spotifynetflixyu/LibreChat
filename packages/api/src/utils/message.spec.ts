@@ -6,10 +6,48 @@ import {
   getThreadData,
   isPreliminaryMessageId,
   isUnpersistedPreliminaryParent,
+  projectTerminalMessage,
+  preserveFailedTurnMessage,
 } from './message';
 
 /** Cast to string for type compatibility with ThreadMessage */
 const NO_PARENT = Constants.NO_PARENT as string;
+
+describe('terminal message persistence', () => {
+  it.each([undefined, false, true])('sends the complete durable snapshot with unfinished=%s', (unfinished) => {
+    const saved = { messageId: 'response', text: 'complete', content: [{ type: 'text', text: 'complete' }], metadata: { saved: true }, unfinished: false, finish_reason: 'stop' };
+    const response = { ...saved, text: 'stale', content: [], metadata: { saved: false }, unfinished };
+    expect(projectTerminalMessage({ response, saved })).toEqual({ ...saved, unfinished: unfinished ?? false });
+  });
+  it('keeps explicit terminal runtime reasons and falls back when nothing was saved', () => {
+    const response = { messageId: 'response', unfinished: true, finish_reason: 'tool_call_limit' };
+    expect(projectTerminalMessage({ response, saved: { messageId: 'response', unfinished: false, finish_reason: 'stop' } })).toEqual(response);
+    expect(projectTerminalMessage({ response })).toBe(response);
+  });
+  it('appends a failure to the existing live response without resaving partial content', async () => {
+    const scope = { user: 'user', conversationId: 'conversation', parentMessageId: 'parent' };
+    const getMessages = jest.fn().mockResolvedValueOnce([]).mockResolvedValueOnce([{ _id: 'persisted' }]);
+    const appendError = jest.fn().mockResolvedValue({});
+    expect(await preserveFailedTurnMessage({ scope, messageIds: ['preliminary', 'live'], errorText: 'safe', getMessages, appendError })).toBe(true);
+    expect(appendError).toHaveBeenCalledWith({ ...scope, messageId: 'live', error: 'safe' });
+  });
+  it('honors a domain-validated publication before ordinary persistence', async () => {
+    const getMessages = jest.fn();
+    const appendError = jest.fn();
+    expect(await preserveFailedTurnMessage({ scope: { user: 'user', conversationId: 'conversation', parentMessageId: 'parent' }, messageIds: ['live'], errorText: 'safe', getMessages, appendError, preservePublished: async () => true })).toBe(true);
+    expect(getMessages).not.toHaveBeenCalled();
+    expect(appendError).not.toHaveBeenCalled();
+  });
+  it('tries the live candidate after a guarded rejection and does not accept a rejected write', async () => {
+    const scope = { user: 'user', conversationId: 'conversation', parentMessageId: 'parent' };
+    const getMessages = jest.fn().mockResolvedValue([{ _id: 'existing' }]);
+    const appendError = jest.fn().mockResolvedValueOnce(null).mockResolvedValueOnce({});
+    expect(await preserveFailedTurnMessage({ scope, messageIds: ['preliminary', 'live'], errorText: 'safe', getMessages, appendError })).toBe(true);
+    expect(appendError).toHaveBeenLastCalledWith({ ...scope, messageId: 'live', error: 'safe' });
+    appendError.mockResolvedValue(null);
+    await expect(preserveFailedTurnMessage({ scope, messageIds: ['live'], errorText: 'safe', getMessages, appendError })).rejects.toThrow('could not be persisted');
+  });
+});
 
 describe('sanitizeFileForTransmit', () => {
   it('should remove text field from file', () => {

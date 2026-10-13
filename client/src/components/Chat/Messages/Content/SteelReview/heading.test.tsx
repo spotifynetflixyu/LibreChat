@@ -168,6 +168,61 @@ describe('SteelHeading', () => {
     expect(screen.getByTestId('steel-version-tag')).not.toHaveTextContent('v3');
   });
 
+  it('shows the confirmed owner version before the versions query count refreshes', () => {
+    renderHeading({
+      metadata: {
+        steelMarkdownOwners: { ocr_result: owner('ocr:new', 'ocr_result') },
+        steelReview: {
+          ocr_result: {
+            outputId: 'ocr:new',
+            title: 'ocr_result',
+            effectiveVersion: 4,
+          },
+        },
+      },
+      versions: [version({ outputId: 'ocr:new', saves: 0 })],
+    });
+
+    expect(screen.getByTestId('steel-version-tag')).toHaveTextContent('Latest version v4');
+  });
+
+  it('does not move the badge backward when the fetched save count is newer', () => {
+    renderHeading({
+      metadata: {
+        steelMarkdownOwners: { ocr_result: owner('ocr:new', 'ocr_result') },
+        steelReview: {
+          ocr_result: {
+            outputId: 'ocr:new',
+            title: 'ocr_result',
+            effectiveVersion: 2,
+          },
+        },
+      },
+      versions: [version({ outputId: 'ocr:new', saves: 3 })],
+    });
+
+    expect(screen.getByTestId('steel-version-tag')).toHaveTextContent('Latest version v4');
+  });
+
+  it('ignores a malformed confirmed owner version', () => {
+    renderHeading({
+      metadata: {
+        steelMarkdownOwners: { ocr_result: owner('ocr:new', 'ocr_result') },
+        steelReview: {
+          ocr_result: {
+            outputId: 'ocr:new',
+            title: 'ocr_result',
+            effectiveVersion: 'v4',
+          },
+        },
+      },
+      versions: [version({ outputId: 'ocr:new', saves: 0 })],
+    });
+
+    expect(screen.getByTestId('steel-version-tag')).toHaveTextContent('Latest version');
+    expect(screen.getByTestId('steel-version-tag')).not.toHaveTextContent('v4');
+  });
+
   it('shows history counts and preserves the exact source heading title', () => {
     renderHeading({
       metadata: { steelMarkdownOwners: { ocr_result: owner('ocr:history', 'ocr_result') } },

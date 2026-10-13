@@ -69,6 +69,7 @@ const mockFilterPersistableAbortContent = jest.fn((content) =>
 const mockGetConvo = jest.fn();
 const mockGetMessages = jest.fn();
 const mockSaveMessage = jest.fn();
+const mockAppendMessageError = jest.fn();
 const mockGetMessage = jest.fn();
 const mockMarkdownFinalize = jest.fn();
 const mockShouldDeferSteelMarkdownPersistence = jest.fn();
@@ -396,6 +397,7 @@ jest.mock('~/cache', () => ({
 
 jest.mock('~/models', () => ({
   saveMessage: (...args) => mockSaveMessage(...args),
+  appendMessageError: (...args) => mockAppendMessageError(...args),
   publishSteelMarkdown: jest.fn().mockResolvedValue({ ok: true, message: {} }),
   saveConvo: (...args) => mockSaveConvo(...args),
   appendConvoMessageReference: (...args) => mockAppendConvoMessageReference(...args),
@@ -495,6 +497,7 @@ describe('ResumableAgentController resume metadata', () => {
     mockDecrementPendingRequest.mockResolvedValue(undefined);
     mockGetConvo.mockResolvedValue({ createdAt: '2026-06-07T00:00:00.000Z' });
     mockGetMessages.mockResolvedValue([]);
+    mockAppendMessageError.mockReset().mockResolvedValue({});
     mockIsAgentTriggerPrincipalActive.mockResolvedValue(true);
     mockIsSubagentOwnerAdmissible.mockResolvedValue(true);
     mockAcquireEventChildGenerationLease.mockResolvedValue(jest.fn());
@@ -1341,7 +1344,7 @@ describe('ResumableAgentController resume metadata', () => {
     expect(res.status).toHaveBeenCalledWith(500);
     expect(mockGenerationJobManager.completeJob).toHaveBeenCalledWith(
       'conversation-123',
-      'mongo unavailable',
+      'An error occurred while processing the request',
       1000,
       expect.objectContaining({ beforeErrorPublication: expect.any(Function) }),
     );
@@ -3836,14 +3839,14 @@ describe('ResumableAgentController resume metadata', () => {
         expect.objectContaining({ userId: 'user-123' }),
         expect.objectContaining({
           messageId: 'user-message_',
-          text: 'provider exploded',
+          text: 'An error occurred while processing the request',
           error: true,
         }),
         expect.any(Object),
       );
       expect(mockGenerationJobManager.completeJob).toHaveBeenCalledWith(
         conversationId,
-        'provider exploded',
+        'An error occurred while processing the request',
         1000,
         expect.objectContaining({ beforeErrorPublication: expect.any(Function) }),
       );
@@ -3968,6 +3971,47 @@ describe('ResumableAgentController resume metadata', () => {
         null,
       );
 
+      expect(mockSaveMessage).not.toHaveBeenCalled();
+      expect(mockSaveConvo).not.toHaveBeenCalled();
+      expect(mockAppendMessageError).toHaveBeenCalledWith({
+        user: 'user-123', tenantId: undefined, conversationId,
+        parentMessageId: 'user-message', messageId: 'user-message_',
+        error: 'An error occurred while processing the request',
+      });
+    });
+
+    it('persists a late error below an existing live partial response before publishing it', async () => {
+      const events = [];
+      mockGetMessages.mockImplementation(async ({ messageId }) =>
+        messageId === 'server-response' ? [{ _id: 'partial' }] : []);
+      mockAppendMessageError.mockImplementation(async () => { events.push('error-saved'); return {}; });
+      mockGenerationJobManager.completeJob.mockImplementation(async (_id, _error, _at, options) => {
+        await options.beforeErrorPublication();
+        events.push('error-published');
+        return true;
+      });
+      const client = { options: {}, sendMessage: jest.fn(async (_text, options) => {
+        options.onStart({ messageId: 'server-user', conversationId, text: 'Hi', isCreatedByUser: true }, 'server-response');
+        throw new Error('database query containing private data');
+      }) };
+      await AgentController(createFailedRequest(), createResumableResponse(), jest.fn(), jest.fn().mockResolvedValue({ client }), null);
+      await flushBackgroundGeneration();
+      expect(mockAppendMessageError).toHaveBeenCalledWith(expect.objectContaining({ messageId: 'server-response', parentMessageId: 'server-user', error: 'An error occurred while processing the request' }));
+      expect(mockSaveMessage).not.toHaveBeenCalled();
+      expect(events).toEqual(['error-saved', 'error-published']);
+    });
+
+    it('does not publish or recreate a response when its guarded error append is rejected', async () => {
+      const published = jest.fn();
+      mockGetMessages.mockResolvedValue([{ _id: 'existing' }]);
+      mockAppendMessageError.mockResolvedValue(null);
+      mockGenerationJobManager.completeJob.mockImplementation(async (_id, _error, _at, options) => {
+        await options.beforeErrorPublication();
+        published();
+        return true;
+      });
+      await AgentController(createFailedRequest(), createResumableResponse(), jest.fn(), jest.fn().mockRejectedValue(new Error('late failure')), null);
+      expect(published).not.toHaveBeenCalled();
       expect(mockSaveMessage).not.toHaveBeenCalled();
       expect(mockSaveConvo).not.toHaveBeenCalled();
     });
@@ -4386,7 +4430,7 @@ describe('ResumableAgentController resume metadata', () => {
 
     expect(mockGenerationJobManager.completeJob).toHaveBeenCalledWith(
       'conversation-123',
-      generationError.message,
+      'An error occurred while processing the request',
       1000,
       expect.objectContaining({ beforeErrorPublication: expect.any(Function) }),
     );
@@ -4646,7 +4690,7 @@ describe('ResumableAgentController resume metadata', () => {
       const table = '## system_order\n\n| A |\n| --- |\n| 1 |';
       const saved = {
         messageId: 'target-response', conversationId: scope.conversationId, user: scope.userId,
-        text: table, content: [{ type: 'text', text: table },
+        text: `${table}\n\nmain summary\n\nbackend footer`, content: [{ type: 'text', text: table },
           { type: 'text', text: 'main summary' }, { type: 'text', text: 'backend footer' }],
         metadata: { steelQuotation: { version: 1, runId: 'run-a', outputId: 'output-a',
           sourceMessageId: 'source-response', receiptSha256: 'a'.repeat(64), admissionSequence: 1,
@@ -4693,9 +4737,10 @@ describe('ResumableAgentController resume metadata', () => {
       expect(mockMarkdownFinalize).toHaveBeenCalledTimes(1);
       const terminal = mockGenerationJobManager.publishTerminalClaim.mock.calls[0][1].responseMessage;
       expect(terminal.messageId).toBe(saved.messageId);
-      expect(terminal.text).toBe('main summary');
-      expect(terminal.content[0].text).toBe('');
-      expect(terminal.content[2].text).toBe('');
+      expect(terminal.text).toBe(saved.text);
+      expect(terminal.content).toEqual(saved.content);
+      expect(terminal.content[0].text).toContain('## system_order');
+      expect(terminal.content[2].text).toBe('backend footer');
     },
   );
 

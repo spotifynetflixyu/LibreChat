@@ -1,6 +1,5 @@
 import mongoose, { mongo } from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
-import type { Document as MongoDocument } from 'mongodb';
 import {
   createSteelConversationOcrStateModel,
   createSteelQuotationArtifactModel,
@@ -33,7 +32,11 @@ async function fenceSteelConversationWrites(connection: typeof mongoose, scope: 
 
 beforeAll(async () => {
   mongoServer = await MongoMemoryReplSet.create({
-    replSet: { count: 1, storageEngine: 'wiredTiger' },
+    replSet: {
+      count: 1,
+      storageEngine: 'wiredTiger',
+      args: ['--setParameter', 'enableTestCommands=1'],
+    },
   });
   await mongoose.connect(mongoServer.getUri());
   await Promise.all([
@@ -57,6 +60,103 @@ beforeEach(async () => {
 });
 
 describe('Steel conversation lifecycle fence', () => {
+  it('uses one deletion fence for all protected writes in one transaction, and reacquires it in the next', async () => {
+    const State = createSteelQuotationStateModel(mongoose);
+    const Artifact = createSteelQuotationArtifactModel(mongoose);
+    const scope = { userId: 'user-once', conversationId: 'conversation-once' };
+    const session = await mongoose.startSession();
+    const marker = mongoose.models.SteelConversationLifecycle;
+    const fence = jest.spyOn(marker.collection, 'findOneAndUpdate');
+    const cleanup = jest.spyOn(marker.collection, 'updateOne');
+    const artifact = { ...scope, runId: 'run-one', operationId: 'one', kind: 'main', sha256: 'a'.repeat(64), payload: 'one' };
+    try {
+      await session.withTransaction(async () => {
+        await State.create([stateDocument(scope.userId, scope.conversationId)], { session });
+        await Artifact.create([artifact], { session });
+        await State.updateOne(scope, { $set: { nextSignalIndex: 1 } }, { session });
+      });
+      expect(fence).toHaveBeenCalledTimes(1);
+      expect(cleanup).not.toHaveBeenCalled();
+      expect(await marker.findById(scope.conversationId).lean()).toMatchObject({ revision: 1, deleted: false });
+      await session.withTransaction(() => Artifact.create([{ ...artifact, operationId: 'two' }], { session }));
+      expect(fence).toHaveBeenCalledTimes(2);
+      expect(await marker.findById(scope.conversationId).lean()).toMatchObject({ revision: 2 });
+    } finally {
+      fence.mockRestore();
+      cleanup.mockRestore();
+      await session.endSession();
+    }
+  });
+
+  it('reacquires the deletion fence after the driver retries a whole transaction', async () => {
+    const Artifact = createSteelQuotationArtifactModel(mongoose);
+    const scope = { userId: 'user-retry', conversationId: 'conversation-retry' };
+    const marker = mongoose.models.SteelConversationLifecycle;
+    const fence = jest.spyOn(marker.collection, 'findOneAndUpdate');
+    const admin = mongoose.connection.db!.admin();
+    await admin.command({ configureFailPoint: 'failCommand', mode: { times: 1 },
+      data: { failCommands: ['insert'], errorCode: 112, errorLabels: ['TransientTransactionError'] } });
+    try {
+      await Artifact.create({ ...scope, runId: 'run-one', operationId: 'one', kind: 'main', sha256: 'a'.repeat(64), payload: 'one' });
+      expect(fence).toHaveBeenCalledTimes(2);
+      expect(await marker.findById(scope.conversationId).lean()).toMatchObject({ revision: 1, deleted: false });
+      expect(await Artifact.countDocuments(scope)).toBe(1);
+    } finally {
+      fence.mockRestore();
+      await admin.command({ configureFailPoint: 'failCommand', mode: 'off' });
+    }
+  });
+
+  it('rolls back a failed primary write without leaving a cleanup reservation', async () => {
+    const State = createSteelQuotationStateModel(mongoose);
+    const scope = { userId: 'user-rollback', conversationId: 'conversation-rollback' };
+    const document = { ...stateDocument(scope.userId, scope.conversationId), cycle: {} };
+    document.cycle = document;
+    await expect(State.collection.insertOne(document)).rejects.toBeInstanceOf(mongo.BSON.BSONError);
+    expect(await mongoose.models.SteelConversationLifecycle.findById(scope.conversationId)).toBeNull();
+    expect(await State.countDocuments(scope)).toBe(0);
+  });
+
+  it('rejects an unacknowledged write before creating a deletion marker', async () => {
+    const State = createSteelQuotationStateModel(mongoose);
+    const scope = { userId: 'user-w0', conversationId: 'conversation-w0' };
+    await expect(State.collection.insertOne(stateDocument(scope.userId, scope.conversationId), { writeConcern: { w: 0 } }))
+      .rejects.toThrow('acknowledged MongoDB operations');
+    expect(await mongoose.models.SteelConversationLifecycle.findById(scope.conversationId)).toBeNull();
+  });
+
+  it('rejects a delayed transaction whose snapshot predates the committed deletion marker', async () => {
+    const State = createSteelQuotationStateModel(mongoose);
+    const Conversation = createConversationModel(mongoose);
+    const scope = { userId: 'user-delayed', conversationId: 'conversation-delayed' };
+    await Conversation.create({ conversationId: scope.conversationId, user: scope.userId, endpoint: 'agents' });
+    const session = await mongoose.startSession();
+    let entered: () => void = () => undefined;
+    let release: () => void = () => undefined;
+    const ready = new Promise<void>((resolve) => { entered = resolve; });
+    const hold = new Promise<void>((resolve) => { release = resolve; });
+    let attempts = 0;
+    const writer = session.withTransaction(async () => {
+      attempts += 1;
+      await Conversation.findOne({ conversationId: scope.conversationId }).session(session);
+      if (attempts === 1) { entered(); await hold; }
+      await State.create([stateDocument(scope.userId, scope.conversationId)], { session });
+    });
+    const outcome = writer.catch((error: Error) => error);
+    try {
+      await ready;
+      await fenceWrites(mongoose, scope);
+      await Conversation.deleteOne({ conversationId: scope.conversationId });
+      release();
+      await expect(outcome).resolves.toMatchObject({ code: 'STEEL_CONVERSATION_DELETED' });
+      expect(await State.countDocuments(scope)).toBe(0);
+      expect(await readSteelConversationDeletionScope(mongoose, scope)).toEqual({ deleted: true });
+    } finally {
+      release();
+      await session.endSession();
+    }
+  });
+
   it('creates an active gate for normal writes, direct saves, and bulk inserts', async () => {
     const State = createSteelQuotationStateModel(mongoose);
     const scope = { userId: 'user-normal', conversationId: 'conversation-normal' };
@@ -71,7 +171,7 @@ describe('Steel conversation lifecycle fence', () => {
     const gate = await Gate.findOne({
       _id: scope.conversationId,
     }).lean();
-    expect(gate).toMatchObject({ deleted: false, pendingWrites: 0 });
+    expect(gate).toMatchObject({ deleted: false });
     expect(await State.countDocuments({ userId: scope.userId })).toBe(3);
   });
 
@@ -94,101 +194,6 @@ describe('Steel conversation lifecycle fence', () => {
     await expect(readSteelConversationDeletionScope(mongoose, scope)).resolves.toEqual({
       deleted: true,
       });
-  });
-
-  it('keeps cleanup incomplete while a durable writer reservation is pending', async () => {
-    const State = createSteelQuotationStateModel(mongoose);
-    const scope = { userId: 'user-pending', conversationId: 'conversation-pending' };
-    const gateKey = scope.conversationId;
-
-    await State.create(stateDocument(scope.userId, scope.conversationId));
-    const Gate = mongoose.models.SteelConversationLifecycle;
-    await Gate.updateOne({ _id: gateKey }, { $inc: { pendingWrites: 1 } });
-
-    await expect(fenceSteelConversationWrites(mongoose, scope)).rejects.toMatchObject({
-      code: 'STEEL_CONVERSATION_IDENTITY_PENDING',
-    });
-    await expect(readSteelConversationDeletionScope(mongoose, scope)).resolves.toEqual({
-      deleted: false,
-      });
-
-    await Gate.updateOne({ _id: gateKey }, { $inc: { pendingWrites: -1 } });
-    await expect(fenceSteelConversationWrites(mongoose, scope)).resolves.toBe(true);
-    await expect(readSteelConversationDeletionScope(mongoose, scope)).resolves.toEqual({
-      deleted: true,
-      });
-  });
-
-  it('releases a reservation after a definite duplicate-key rejection', async () => {
-    const State = createSteelQuotationStateModel(mongoose);
-    const scope = { userId: 'user-duplicate', conversationId: 'conversation-duplicate' };
-    await State.create(stateDocument(scope.userId, scope.conversationId));
-
-    await expect(State.create(stateDocument(scope.userId, scope.conversationId))).rejects.toMatchObject({
-      code: 11000,
-    });
-    const gate = await mongoose.models.SteelConversationLifecycle.findOne({
-      _id: scope.conversationId,
-    }).lean();
-    expect(gate).toMatchObject({ pendingWrites: 0 });
-  });
-
-  it('clears a reservation after local BSON serialization rejects before send', async () => {
-    const State = createSteelQuotationStateModel(mongoose);
-    const scope = { userId: 'user-ambiguous', conversationId: 'conversation-ambiguous' };
-    const document: Record<string, unknown> = stateDocument(scope.userId, scope.conversationId);
-    document.cycle = document;
-
-    await expect(State.collection.insertOne(document)).rejects.toThrow();
-    const gate = await mongoose.models.SteelConversationLifecycle.findOne({
-      _id: scope.conversationId,
-    }).lean();
-    expect(gate).toMatchObject({ pendingWrites: 0 });
-    await expect(fenceSteelConversationWrites(mongoose, scope)).resolves.toBe(true);
-  });
-
-  it('preserves a local write rejection when reservation cleanup also fails', async () => {
-    const State = createSteelQuotationStateModel(mongoose);
-    const scope = { userId: 'user-cleanup-error', conversationId: 'cleanup-error' };
-    const document: Record<string, unknown> = stateDocument(scope.userId, scope.conversationId);
-    document.cycle = document;
-    const cleanup = jest.spyOn(mongoose.models.SteelConversationLifecycle.collection, 'updateOne')
-      .mockRejectedValueOnce(new mongo.MongoNetworkError('cleanup unavailable'));
-    try {
-      await expect(State.collection.insertOne(document)).rejects.toBeInstanceOf(mongo.BSON.BSONError);
-    } finally {
-      cleanup.mockRestore();
-    }
-    expect(await mongoose.models.SteelConversationLifecycle.findById(scope.conversationId).lean())
-      .toMatchObject({ pendingWrites: 1 });
-  });
-
-  it('keeps a reservation when the driver outcome is an unknown network failure', async () => {
-    const State = createSteelQuotationStateModel(mongoose);
-    const scope = { userId: 'user-network', conversationId: 'conversation-network' };
-    const nativeCollection = (State.collection as unknown as {
-      collection: {
-        insertOne(document: MongoDocument, options?: Record<string, unknown>): Promise<unknown>;
-      };
-    }).collection;
-    const originalInsertOne = nativeCollection.insertOne;
-    nativeCollection.insertOne = async () => {
-      throw new mongo.MongoNetworkError('simulated network failure');
-    };
-    try {
-      await expect(State.collection.insertOne(stateDocument(scope.userId, scope.conversationId)))
-        .rejects.toThrow('simulated network failure');
-    } finally {
-      nativeCollection.insertOne = originalInsertOne;
-    }
-
-    const gate = await mongoose.models.SteelConversationLifecycle.findOne({
-      _id: scope.conversationId,
-    }).lean();
-    expect(gate).toMatchObject({ pendingWrites: 1 });
-    await expect(fenceSteelConversationWrites(mongoose, scope)).rejects.toMatchObject({
-      code: 'STEEL_CONVERSATION_IDENTITY_PENDING',
-    });
   });
 
   it('rejects ambiguous upserts and identity moves before the driver write', async () => {
@@ -365,24 +370,16 @@ describe('Steel conversation lifecycle fence', () => {
       await session.endSession();
     }
     expect(await mongoose.models.SteelConversationLifecycle.findById(scope.conversationId).lean())
-      .toMatchObject({ pendingWrites: 0 });
+      .toMatchObject({ deleted: false });
   });
 
-  it('preserves first-owner binding if the gate is claimed during deletion', async () => {
+  it('preserves the first owner when deletion is requested by a different marker owner', async () => {
     const scope = { userId: 'deleting-owner', conversationId: 'owner-claim' };
     await createConversationModel(mongoose).create({ conversationId: scope.conversationId, user: scope.userId, endpoint: 'openAI' });
-    const Gate = mongoose.models.SteelConversationLifecycle;
-    const originalUpdate = Gate.collection.updateOne.bind(Gate.collection);
-    const update = jest.spyOn(Gate.collection, 'updateOne').mockImplementationOnce(async (filter, values, options) => {
-      await createSteelQuotationStateModel(mongoose).create(stateDocument('claiming-owner', scope.conversationId));
-      return originalUpdate(filter, values, options);
-    });
-    try {
-      await expect(fenceWrites(mongoose, scope)).rejects.toMatchObject({ code: 'STEEL_CONVERSATION_OWNER_MISMATCH' });
-    } finally {
-      update.mockRestore();
-    }
-    expect(await Gate.findById(scope.conversationId).lean()).toMatchObject({ userId: 'claiming-owner', deleted: false });
+    await createSteelQuotationStateModel(mongoose).create(stateDocument('claiming-owner', scope.conversationId));
+    await expect(fenceWrites(mongoose, scope)).rejects.toMatchObject({ code: 'STEEL_CONVERSATION_OWNER_MISMATCH' });
+    expect(await mongoose.models.SteelConversationLifecycle.findById(scope.conversationId).lean())
+      .toMatchObject({ userId: 'claiming-owner', deleted: false });
   });
 
   it('refuses conflicting stored ownership outside the active tenant', async () => {
@@ -434,7 +431,7 @@ describe('Steel conversation lifecycle fence', () => {
     const gate = await mongoose.models.SteelConversationLifecycle.findOne({
       _id: scope.conversationId,
     }).lean();
-    expect(gate).toMatchObject({ deleted: false, pendingWrites: 0 });
+    expect(gate).toMatchObject({ deleted: false });
   }, 60_000);
 
   it('retries concurrent first gate bootstrap inside separate transactions', async () => {
@@ -472,6 +469,6 @@ describe('Steel conversation lifecycle fence', () => {
     const gate = await mongoose.models.SteelConversationLifecycle.findOne({
       _id: scope.conversationId,
     }).lean();
-    expect(gate).toMatchObject({ deleted: false, pendingWrites: 0 });
+    expect(gate).toMatchObject({ deleted: false });
   }, 60_000);
 });

@@ -1,15 +1,27 @@
-import { ErrorTypes } from 'librechat-data-provider';
+import { ErrorTypes, isCodeWorkspaceSelectionErrorReason } from 'librechat-data-provider';
 import type { SafeErrorMetadata } from '../../utils/errors';
 import type { ModelErrorTrackerCallback } from './tracker';
 import {
   resolveLangChainError,
+  GENERIC_PROVIDER_ERROR,
   getModelStreamFailure,
   resolveModelStreamError,
   getProviderErrorMessage,
 } from '../errors';
 import { getSafeErrorMetadata, isOwnedAbortError } from '../../utils/errors';
+import { AttachmentStorageError } from '../../files/encode/image';
 import { traceIdForMessage } from '../../langfuse/trace';
 import { createModelErrorTracker } from './tracker';
+
+/** Only classified, server-owned text may cross the outer chat failure boundary. */
+export function getTerminalFailureText(error: unknown): string {
+  if (error instanceof AttachmentStorageError) return new AttachmentStorageError().message;
+  if (error && typeof error === 'object' && Reflect.get(error, 'code') === ErrorTypes.CODE_WORKSPACE_UNAVAILABLE) {
+    const reason = Reflect.get(error, 'reason');
+    return JSON.stringify({ code: ErrorTypes.CODE_WORKSPACE_UNAVAILABLE, ...(isCodeWorkspaceSelectionErrorReason(reason) && { reason }) });
+  }
+  return GENERIC_PROVIDER_ERROR;
+}
 
 const UPSTREAM_MODEL_ERROR_CODE = 'UPSTREAM_MODEL_ERROR';
 const UPSTREAM_MODEL_ERROR_ORIGIN = 'model_provider';
@@ -100,6 +112,9 @@ export function createTerminalRunErrorObserver({
   return Object.freeze({
     modelCallback: modelErrorTracker.callback,
     getUserFacingError(error: unknown, fallback: () => string) {
+      if (error instanceof Error && error.name.startsWith('Mongo')) {
+        return GENERIC_PROVIDER_ERROR;
+      }
       const upstreamModelError = modelErrorTracker.getUpstreamModelError(error);
       if (upstreamModelError == null) {
         return fallback();

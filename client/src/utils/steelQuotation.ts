@@ -125,6 +125,71 @@ const renderContentText = (content: TMessage['content']): string | undefined => 
   return text.length > 0 ? text : undefined;
 };
 
+const getErrorPartKey = (part: TMessageContentParts): string | undefined => {
+  if (part.type !== ContentTypes.ERROR) {
+    return undefined;
+  }
+  let text = '';
+  if (typeof part.text === 'string') {
+    text = part.text;
+  } else if (part.text != null && typeof part.text === 'object' && 'value' in part.text) {
+    text = part.text.value;
+  }
+  return part.error ?? text;
+};
+
+const mergeErrorPartitions = (
+  content: TMessageContentParts[],
+  currentContent: TMessageContentParts[],
+  incomingErrors: TMessageContentParts[],
+  publication: SteelQuotationMessagePublication,
+  canonicalIncoming: boolean,
+): TMessageContentParts[] => {
+  const committedIndexes = [
+    publication.tableContentIndex,
+    publication.summaryContentIndex,
+    publication.footerContentIndex,
+  ];
+  const committedEnd = Math.max(...committedIndexes) + 1;
+  let next = [...content];
+
+  for (const index of committedIndexes) {
+    const currentPart = currentContent[index];
+    const incomingPart = next[index];
+    const currentText = getPartText(currentPart)?.trim();
+    const incomingText = getPartText(incomingPart)?.trim();
+    if (
+      currentPart != null &&
+      (index === publication.tableContentIndex || !incomingText || (!canonicalIncoming && currentText))
+    ) {
+      next = mergeAtIndex(next, index, currentContent[index]);
+    }
+  }
+
+  const currentErrors = currentContent.filter((part) => getErrorPartKey(part) != null);
+  for (let index = next.length - 1; index >= 0; index--) {
+    if (getErrorPartKey(next[index]) == null) {
+      continue;
+    }
+    if (index < committedEnd) {
+      next[index] = { type: ContentTypes.TEXT, text: '' };
+    } else {
+      next.splice(index, 1);
+    }
+  }
+
+  const seen = new Set<string>();
+  for (const error of [...currentErrors, ...incomingErrors]) {
+    const key = getErrorPartKey(error);
+    if (key == null || seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    next.push(error);
+  }
+  return next;
+};
+
 const copyContent = (content: TMessage['content']): TMessageContentParts[] =>
   Array.isArray(content) ? content.map((part) => ({ ...part })) : [];
 
@@ -276,10 +341,7 @@ export function mergeSteelQuotationMessageUpdate(
   const currentOutputId = getOwnerOutputId(current) ?? currentSteel?.outputId;
   const incomingVersion = getEffectiveVersion(incoming);
 
-  if (
-    update.update === 'summary' &&
-    !samePublicationIdentity(currentSteel, publication)
-  ) {
+  if (update.update === 'summary' && !samePublicationIdentity(currentSteel, publication)) {
     return current;
   }
 
@@ -327,8 +389,11 @@ export function mergeSteelQuotationMessageUpdate(
     return current;
   }
   let content =
-    update.update === 'order' && samePublicationIdentity(currentSteel, publication) && currentContent.length > 0
-      ? currentContent : incomingContent;
+    update.update === 'order' &&
+    samePublicationIdentity(currentSteel, publication) &&
+    currentContent.length > 0
+      ? currentContent
+      : incomingContent;
 
   if (update.update === 'order') {
     content = mergeAtIndex(
@@ -378,25 +443,38 @@ export function mergeSteelQuotationMainSnapshot(
   const incomingContent = copyContent(incoming.content);
   const incomingSteel = getSteelQuotationMetadata(incoming);
   if (incomingSteel && !samePublicationIdentity(currentSteel, incomingSteel)) {
-    if (incomingSteel.admissionSequence <= currentSteel.admissionSequence ||
-      !getPartText(incomingContent[incomingSteel.tableContentIndex])?.trim()) {
+    if (
+      incomingSteel.admissionSequence <= currentSteel.admissionSequence ||
+      !getPartText(incomingContent[incomingSteel.tableContentIndex])?.trim()
+    ) {
       return current;
     }
     return incoming;
   }
   let content = incomingContent;
+  const incomingErrors = incomingContent.filter((part) => getErrorPartKey(part) != null);
   const tablePart = currentContent[currentSteel.tableContentIndex];
   if (tablePart != null) {
     content = mergeAtIndex(content, currentSteel.tableContentIndex, tablePart);
   }
   const footerPart = currentContent[currentSteel.footerContentIndex];
-  if (footerPart != null) {
+  if (footerPart != null && incomingErrors.length === 0 &&
+    (!incomingSteel || !getPartText(incomingContent[currentSteel.footerContentIndex])?.trim())) {
     content = mergeAtIndex(content, currentSteel.footerContentIndex, footerPart);
   }
   for (let index = 0; index < currentContent.length; index++) {
     if (content[index] == null && currentContent[index] != null) {
       content = mergeAtIndex(content, index, currentContent[index]);
     }
+  }
+  if (incomingErrors.length > 0) {
+    content = mergeErrorPartitions(
+      content,
+      currentContent,
+      incomingErrors,
+      currentSteel,
+      incomingSteel != null && samePublicationIdentity(currentSteel, incomingSteel),
+    );
   }
   const renderedText = renderContentText(content);
   const currentMetadata = getMetadata(current) ?? {};

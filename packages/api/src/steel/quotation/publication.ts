@@ -37,9 +37,6 @@ const orderPublicationReceiptSchema = z
     systemOrderSha256: sha256,
   })
   .strict();
-const legacyPublicationReceiptSchema = z
-  .object({ finalSha256: sha256 })
-  .strict();
 const markdownReferenceSchema = z.object({
   kind: z.enum(['ocr_result', 'system_order', 'customer_data']),
   source: z.enum(['ai', 'human']),
@@ -72,7 +69,7 @@ export type PublishedQuotationOrderRead =
         state: ISteelQuotationState;
         run: SteelQuotationActiveRun;
         systemOrder: SteelQuotationCurrentSystemOrder;
-        receipt: SteelQuotationOrderPublicationReceipt | { legacy: true; finalSha256: string };
+        receipt: SteelQuotationOrderPublicationReceipt;
       };
     };
 
@@ -91,72 +88,7 @@ export async function readPublishedQuotationOrder(input: {
     (ref) => ref.operationId === 'system-order:normalized' && ref.kind === 'main',
   );
   if (!state || !run) return { status: 'absent' };
-  if (!hasPublicationMarker) {
-    const legacyPublicationRef = run.checkpointRefs.find(
-      (ref) => ref.operationId === 'published' && ref.kind === 'final',
-    );
-    const legacyFinalRef = run.checkpointRefs.find(
-      (ref) => ref.operationId === 'final' && ref.kind === 'final',
-    );
-    if (!legacyPublicationRef && !legacyFinalRef) return { status: 'absent' };
-    if (
-      !systemOrder ||
-      !legacyPublicationRef ||
-      !legacyFinalRef ||
-      run.status !== 'completed' ||
-      !run.targetMessageId ||
-      systemOrder.runId !== run.runId ||
-      systemOrder.messageId !== run.targetMessageId
-    ) {
-      return { status: 'invalid' };
-    }
-    if (!(await input.service.isPublishedRun(input.scope, run))) return { status: 'invalid' };
-    const [legacyPublication, legacyFinal] = await Promise.all([
-      input.service.getArtifact({ scope: input.scope, runId: run.runId, operationId: 'published' }),
-      input.service.getArtifact({ scope: input.scope, runId: run.runId, operationId: 'final' }),
-    ]);
-    if (
-      !legacyPublication ||
-      legacyPublication.kind !== 'final' ||
-      legacyPublication.sha256 !== legacyPublicationRef.sha256 ||
-      hash(legacyPublication.payload) !== legacyPublication.sha256 ||
-      !legacyFinal ||
-      legacyFinal.kind !== 'final' ||
-      legacyFinal.sha256 !== legacyFinalRef.sha256 ||
-      hash(legacyFinal.payload) !== legacyFinal.sha256
-    ) {
-      return { status: 'invalid' };
-    }
-    try {
-      const receipt = legacyPublicationReceiptSchema.safeParse(JSON.parse(legacyPublication.payload));
-      if (!receipt.success || receipt.data.finalSha256 !== legacyFinal.sha256) return { status: 'invalid' };
-      const canonical = canonicalizeSystemOrderMarkdown(
-        normalizeSystemOrderMarkdown(systemOrder.markdown),
-      );
-      const table = parseMarkdownTables(canonical?.markdown ?? '')[0];
-      if (
-        !canonical ||
-        canonical.markdown !== systemOrder.markdown ||
-        !table ||
-        table.rows.length === 0 ||
-        JSON.stringify(table.headers) !== JSON.stringify(systemOrderColumns) ||
-        hash(systemOrder.markdown) !== systemOrder.sha256
-      ) {
-        return { status: 'invalid' };
-      }
-      return {
-        status: 'published',
-        value: {
-          state,
-          run,
-          systemOrder,
-          receipt: { legacy: true, finalSha256: receipt.data.finalSha256 },
-        },
-      };
-    } catch {
-      return { status: 'invalid' };
-    }
-  }
+  if (!hasPublicationMarker) return { status: 'absent' };
   if (!systemOrder || !publicationRef) return { status: 'invalid' };
 
   // New publications are the completion proof themselves. They may be read

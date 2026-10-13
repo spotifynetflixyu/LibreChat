@@ -9,6 +9,64 @@ type GetMessagesByParentId = (
   select: '_id',
 ) => Promise<unknown[]>;
 
+/** The saved snapshot must come from this turn's successful persistence or validated adoption. */
+interface TerminalMessage {
+  messageId: string;
+  unfinished?: boolean;
+  finish_reason?: string;
+}
+
+export function projectTerminalMessage<TResponse extends TerminalMessage, TSaved extends TerminalMessage>({
+  response,
+  saved,
+}: {
+  response: TResponse;
+  saved?: TSaved | null;
+}): (TResponse | TSaved) & TerminalMessage {
+  if (!saved) return response;
+  return {
+    ...response,
+    ...saved,
+    ...(response.unfinished !== undefined && { unfinished: response.unfinished }),
+    ...(response.finish_reason !== undefined && { finish_reason: response.finish_reason }),
+  };
+}
+
+export interface FailedTurnMessageScope {
+  user: string;
+  tenantId?: string;
+  conversationId: string;
+  parentMessageId: string;
+  messageId: string;
+}
+
+/** Existing content is changed only by an atomic appender, never a stale whole-message save. */
+export async function preserveFailedTurnMessage(input: {
+  scope: Omit<FailedTurnMessageScope, 'messageId'>;
+  messageIds: string[];
+  errorText: string;
+  getMessages: GetMessagesByParentId;
+  appendError(scope: FailedTurnMessageScope & { error: string }): Promise<object | null>;
+  preservePublished?(): Promise<boolean>;
+}): Promise<boolean> {
+  if (!input.scope.parentMessageId) return false;
+  if (await input.preservePublished?.()) return true;
+  let found = false;
+  for (const messageId of new Set(input.messageIds)) {
+    const existing = await input.getMessages({
+      user: input.scope.user,
+      conversationId: input.scope.conversationId,
+      messageId,
+    }, '_id');
+    if (existing.length === 0) continue;
+    found = true;
+    const saved = await input.appendError({ ...input.scope, messageId, error: input.errorText });
+    if (saved) return true;
+  }
+  if (found) throw new Error('Existing response error could not be persisted.');
+  return false;
+}
+
 /** Fields to strip from files before client transmission */
 const FILE_STRIP_FIELDS = ['text', '_id', '__v'] as const;
 

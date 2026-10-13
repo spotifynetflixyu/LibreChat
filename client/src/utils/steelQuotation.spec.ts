@@ -33,6 +33,11 @@ const text = (value: string): TMessageContentParts => ({
   text: value,
 });
 
+const error = (value: string): TMessageContentParts => ({
+  type: ContentTypes.ERROR,
+  error: value,
+});
+
 describe('Steel quotation message partitions', () => {
   it('waits for the matching committed order before accepting a summary', () => {
     const current = message();
@@ -268,6 +273,31 @@ describe('Steel quotation message partitions', () => {
     ]);
   });
 
+  it('protects the reviewed table across a delta and the terminal main snapshot', () => {
+    const current = message({
+      metadata: { steelQuotation: publication },
+      content: [text('reviewed table'), text('live summary'), text('committed footer')],
+    });
+    const delta = mergeSteelQuotationMainSnapshot(
+      current,
+      message({
+        metadata: { steelQuotation: publication },
+        content: [text('stale delta table'), text('delta summary'), text('')],
+      }),
+    );
+    const terminal = mergeSteelQuotationMainSnapshot(
+      delta,
+      message({ content: [text('stale terminal table'), text('terminal summary'), text('')] }),
+    );
+
+    expect(delta.content?.[0]).toEqual(text('reviewed table'));
+    expect(terminal.content).toEqual([
+      text('reviewed table'),
+      text('terminal summary'),
+      text('committed footer'),
+    ]);
+  });
+
   it('preserves canonical review and markdown owner metadata while merging an order event', () => {
     const currentPublication = {
       ...publication,
@@ -430,5 +460,164 @@ describe('Steel quotation message partitions', () => {
     );
 
     expect(updated.content?.[2]).toEqual(text('committed footer'));
+  });
+
+  it('keeps committed partitions ahead of an error that collides with the table slot', () => {
+    const current = message({
+      metadata: { steelQuotation: publication },
+      content: [text('reviewed table'), text('committed summary'), text('committed footer')],
+    });
+    const updated = mergeSteelQuotationMainSnapshot(
+      current,
+      message({ content: [error('quotation failed'), text('ignored summary'), text('')] }),
+    );
+
+    expect(updated.content).toEqual([
+      text('reviewed table'),
+      text('committed summary'),
+      text('committed footer'),
+      error('quotation failed'),
+    ]);
+  });
+
+  it('keeps nonempty persisted summary and footer when cached slots are blank', () => {
+    const current = message({
+      metadata: { steelQuotation: publication },
+      content: [text('reviewed table'), text(''), text('')],
+    });
+    const updated = mergeSteelQuotationMainSnapshot(
+      current,
+      message({
+        content: [error('quotation failed'), text('persisted summary'), text('persisted footer')],
+      }),
+    );
+
+    expect(updated.content).toEqual([
+      text('reviewed table'),
+      text('persisted summary'),
+      text('persisted footer'),
+      error('quotation failed'),
+    ]);
+  });
+
+  it('replaces partial cached prose with the canonical terminal prose while preserving the reviewed table', () => {
+    const current = message({
+      metadata: { steelQuotation: publication },
+      content: [text('reviewed table'), text('partial summary'), text('stale footer')],
+    });
+    const updated = mergeSteelQuotationMainSnapshot(current, message({
+      metadata: { steelQuotation: publication },
+      content: [text('AI table'), text('complete summary'), text('complete footer'), error('quotation failed')],
+    }));
+    expect(updated.content).toEqual([
+      text('reviewed table'), text('complete summary'), text('complete footer'), error('quotation failed'),
+    ]);
+  });
+
+  it('accepts the full canonical final message without relying on a separate summary event', () => {
+    const current = message({
+      metadata: { steelQuotation: publication },
+      content: [text('reviewed table'), text('partial summary'), text('')],
+    });
+    const updated = mergeSteelQuotationMainSnapshot(current, message({
+      metadata: { steelQuotation: publication },
+      content: [text('AI table'), text('complete summary'), text('backend footer')],
+    }));
+    expect(updated.content).toEqual([
+      text('reviewed table'), text('complete summary'), text('backend footer'),
+    ]);
+  });
+
+  it('deduplicates an error repeated by saved and terminal snapshots', () => {
+    const current = message({
+      metadata: { steelQuotation: publication },
+      content: [text('reviewed table'), text('committed summary'), text('committed footer')],
+    });
+    const saved = mergeSteelQuotationMainSnapshot(
+      current,
+      message({ content: [error('quotation failed'), text(''), text('')] }),
+    );
+    const terminal = mergeSteelQuotationMainSnapshot(
+      saved,
+      message({ content: [error('quotation failed'), text(''), text('')] }),
+    );
+
+    expect(terminal.content?.filter((part) => part.type === ContentTypes.ERROR)).toEqual([
+      error('quotation failed'),
+    ]);
+  });
+
+  it('retains a distinct error appended after an existing canonical error', () => {
+    const current = message({
+      metadata: { steelQuotation: publication },
+      content: [
+        text('reviewed table'),
+        text('committed summary'),
+        text('committed footer'),
+        error('first failure'),
+      ],
+    });
+    const updated = mergeSteelQuotationMainSnapshot(
+      current,
+      message({ content: [error('second failure'), text(''), text('')] }),
+    );
+
+    expect(updated.content?.filter((part) => part.type === ContentTypes.ERROR)).toEqual([
+      error('first failure'),
+      error('second failure'),
+    ]);
+  });
+
+  it('keeps a full canonical error snapshot intact without cached quotation order', () => {
+    const incoming = message({
+      metadata: { steelQuotation: publication },
+      content: [
+        text('canonical table'),
+        text('canonical summary'),
+        text('canonical footer'),
+        error('quotation failed'),
+      ],
+    });
+
+    const updated = mergeSteelQuotationMainSnapshot(undefined, incoming);
+
+    expect(updated).toBe(incoming);
+    expect(updated.content).toEqual([
+      text('canonical table'),
+      text('canonical summary'),
+      text('canonical footer'),
+      error('quotation failed'),
+    ]);
+  });
+
+  it('retains the reviewed owner while appending an error after the committed table', () => {
+    const current = message({
+      metadata: {
+        steelQuotation: publication,
+        steelReview: { system_order: { outputId: publication.outputId, effectiveVersion: 3 } },
+      },
+      content: [text('reviewed table'), text('committed summary'), text('committed footer')],
+    });
+    const updated = mergeSteelQuotationMainSnapshot(
+      current,
+      message({ content: [error('quotation failed'), text(''), text('')] }),
+    );
+
+    expect(updated.metadata).toMatchObject({
+      steelReview: { system_order: { outputId: publication.outputId, effectiveVersion: 3 } },
+    });
+    expect(updated.content?.at(-1)).toEqual(error('quotation failed'));
+  });
+
+  it('leaves ordinary errors without quotation publication unchanged', () => {
+    const incoming = message({
+      text: 'ordinary failure',
+      error: true,
+      content: [error('ordinary failure')],
+    });
+
+    const updated = mergeSteelQuotationMainSnapshot(message(), incoming);
+
+    expect(updated).toBe(incoming);
   });
 });

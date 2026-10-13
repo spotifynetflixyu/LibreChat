@@ -1,4 +1,5 @@
 export * from './principal';
+export { hasConsistentMessageText } from './content';
 export * from './string';
 export * from './tempChatRetention';
 export * from './retention';

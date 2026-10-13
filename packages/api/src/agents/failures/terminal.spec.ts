@@ -1,5 +1,17 @@
 import { errors } from 'undici';
-import { createTerminalRunErrorObserver, getUpstreamModelErrorMetadata } from './terminal';
+import { createTerminalRunErrorObserver, getUpstreamModelErrorMetadata, getTerminalFailureText } from './terminal';
+import { AttachmentStorageError } from '../../files/encode/image';
+
+describe('shared terminal failure text', () => {
+  it('redacts unclassified database and service errors', () => {
+    expect(getTerminalFailureText(new Error('PRIVATE query payload'))).toBe('An error occurred while processing the request');
+  });
+  it('preserves a classified attachment failure without trusting mutable exception text', () => {
+    const error = new AttachmentStorageError();
+    error.message = 'PRIVATE storage URL';
+    expect(getTerminalFailureText(error)).toBe(new AttachmentStorageError().message);
+  });
+});
 
 describe('terminal agent-run error logging', () => {
   it('logs stable upstream metadata and deterministic trace correlation', () => {
@@ -161,6 +173,22 @@ describe('terminal agent-run error logging', () => {
     expect(fallback).toHaveBeenCalledTimes(1);
 
     expect(logger.error).toHaveBeenCalledWith('[Agent API] Error:', { type: 'Error' });
+  });
+
+  it('does not expose database diagnostics through the terminal error part', () => {
+    const observer = createTerminalRunErrorObserver({
+      logger: { error: jest.fn() },
+      source: '[Agent API]',
+      protectionEnabled: false,
+    });
+    const error = Object.assign(new Error('Write conflict: mongodb://secret query body'), {
+      name: 'MongoServerError',
+      code: 112,
+    });
+    const fallback = jest.fn(() => error.message);
+    expect(observer.getUserFacingError(error, fallback))
+      .toBe('An error occurred while processing the request');
+    expect(fallback).not.toHaveBeenCalled();
   });
 
   it('does not log a tracked client cancellation as an upstream failure', () => {

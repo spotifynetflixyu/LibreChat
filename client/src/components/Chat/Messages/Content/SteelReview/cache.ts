@@ -1,10 +1,14 @@
+import { steelQuotationMessagePublicationSchema } from 'librechat-data-provider';
 import type {
   SteelReviewKind,
   SteelReviewResponse,
   SteelReviewSavedSnapshot,
 } from 'librechat-data-provider';
 import type * as t from 'librechat-data-provider';
-import { applySteelQuotationReviewOwner } from '~/utils/steelQuotation';
+import {
+  applySteelQuotationReviewOwner,
+  mergeSteelQuotationMessageUpdate,
+} from '~/utils/steelQuotation';
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -55,7 +59,36 @@ export function applySteelReviewSnapshotToMessages(
       ...(content ? { content } : {}),
       ...(metadata ? { metadata } : {}),
     };
-    return kind === 'system_order' ? applySteelQuotationReviewOwner(updated, snapshot) : updated;
+    if (kind !== 'system_order') {
+      return updated;
+    }
+
+    const quotation = steelQuotationMessagePublicationSchema.safeParse(
+      currentMetadata.steelQuotation,
+    );
+    if (quotation.success && snapshot.outputId !== quotation.data.outputId) {
+      return message;
+    }
+    if (
+      quotation.success &&
+      (typeof snapshot.ownerUpdated?.effectiveVersion !== 'number' ||
+        !Number.isInteger(snapshot.ownerUpdated.effectiveVersion) ||
+        snapshot.ownerUpdated.effectiveVersion <= 0)
+    ) {
+      return message;
+    }
+    const ownerUpdated = applySteelQuotationReviewOwner(updated, snapshot);
+    if (!quotation.success) {
+      return ownerUpdated;
+    }
+    return mergeSteelQuotationMessageUpdate(
+      message,
+      {
+        message: ownerUpdated,
+        publication: quotation.data,
+        update: 'order',
+      },
+    );
   });
 }
 

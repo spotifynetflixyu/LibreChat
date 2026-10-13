@@ -1125,20 +1125,18 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
       summaryMarkdown: reviewDisplay,
       footerMarkdown: footer,
     };
-    let summaryResult: SteelQuotationSummaryResult | undefined;
     if (input.appendSummary) {
-      summaryResult = await input.appendSummary(summaryInput);
-      if (!summaryResult.ok) throw new SteelQuotationPublicationError(summaryResult.code);
-      await input.onSummaryCommitted?.(summaryResult.message);
+      const saved = await input.appendSummary(summaryInput);
+      if (!saved.ok) throw new SteelQuotationPublicationError(saved.code);
+      try {
+        await input.onSummaryCommitted?.(saved.message);
+      } catch {
+        // Delivery cannot undo the completed message already stored in the database.
+      }
+      return { status: 'completed', markdown: saved.message.text ?? systemOrder };
     }
     if (summaryStreamError) throw summaryStreamError;
-    await input.onProgress?.({ run: committedRun, ...getQuotationProgress(committedRun) });
-    return {
-      status: 'completed',
-      ...(summaryResult?.ok && summaryResult.message.text
-        ? { markdown: summaryResult.message.text }
-        : { markdown: systemOrder }),
-    };
+    return { status: 'completed', markdown: systemOrder };
 
     async function readCheckpoint(operationId: string): Promise<string | undefined> {
       try {
@@ -1505,6 +1503,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
       }
     }
     if (publicationCommitted) {
+      if (!isStop) throw error;
       return {
         status: 'completed',
         ...(current?.currentSystemOrder?.markdown

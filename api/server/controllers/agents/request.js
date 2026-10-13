@@ -39,7 +39,11 @@ const {
   createSteelQuotationStateService,
   createSteelMarkdownCompletionServices,
   createSteelQuotationMessageNotifier,
-  projectSteelQuotationTerminalMessage,
+  createSteelQuotationErrorAppender,
+  projectTerminalMessage,
+  preserveFailedTurnMessage,
+  createSteelQuotationFailurePersistence,
+  getTerminalFailureText,
   createSteelFullMarkdownPublisher,
   shouldDeferSteelMarkdownPersistence,
   createSteelOcrResponseAuditService,
@@ -75,6 +79,8 @@ const { recordScheduleOutcome, isScheduleLive } = require('~/server/services/Sch
 const {
   saveMessage,
   publishSteelMarkdown,
+  appendSteelQuotationErrors,
+  appendMessageError,
   getMessage,
   saveConvo,
   getMessages,
@@ -482,6 +488,7 @@ async function saveErrorTurn(
     endpointOption,
     isNewConvo,
     errorText,
+    existingErrorText = errorText,
     liveUserMessage,
     liveResponseMessageId,
     runCreated = false,
@@ -551,22 +558,20 @@ async function saveErrorTurn(
     }
 
     const userId = req.user.id;
-    const existing = await getMessages(
-      { user: userId, messageId: errorMessageId, conversationId },
-      '_id',
-    );
-    if (existing.length > 0) {
-      return;
-    }
-    if (liveResponseMessageId != null && liveResponseMessageId !== errorMessageId) {
-      const partial = await getMessages(
-        { user: userId, messageId: liveResponseMessageId, conversationId },
-        '_id',
-      );
-      if (partial.length > 0) {
-        return;
-      }
-    }
+    if (await preserveFailedTurnMessage({
+      scope: { user: userId, tenantId: req.user.tenantId, conversationId, parentMessageId: errorParentMessageId },
+      messageIds: [errorMessageId, liveResponseMessageId].filter(Boolean),
+      errorText: existingErrorText,
+      getMessages,
+      appendError: appendMessageError,
+      ...createSteelQuotationFailurePersistence({
+        req,
+        responseId: liveResponseMessageId,
+        errorText: existingErrorText,
+        getMessages,
+        append: appendSteelQuotationErrors,
+      }),
+    })) return;
 
     const reqCtx = {
       userId,
@@ -3278,6 +3283,14 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           publishedResponse: {
             load: ({ userId: publishedUserId, responseId: publishedResponseId }) =>
               getMessage({ user: publishedUserId, messageId: publishedResponseId }),
+            ...(req.steelNativeContext?.quotation?.scope && {
+              appendErrors: createSteelQuotationErrorAppender({
+                response,
+                scope: req.steelNativeContext.quotation.scope,
+                admission: req.steelNativeContext.quotation.publicationAdmission,
+                append: appendSteelQuotationErrors,
+              }),
+            }),
             accept: (saved) => {
               responseMessagePersisted = true;
               savedResponseMessage = saved;
@@ -3371,7 +3384,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
             conversation,
             title: conversation.title,
             requestMessage: sanitizeMessageForTransmit(userMessage),
-            responseMessage: projectSteelQuotationTerminalMessage({
+            responseMessage: projectTerminalMessage({
               response: {
                 ...response,
                 ...(responseIsUnfinished && { unfinished: true }),
@@ -3505,6 +3518,24 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         if (terminalClaim && !terminalClaimFinished) {
           ownsScheduledFailure = true;
           try {
+            await preserveFailedTurnMessage({
+              scope: { user: userId, tenantId: req.user.tenantId, conversationId, parentMessageId: userMessage?.messageId },
+              messageIds: [liveResponseMessageId].filter(Boolean),
+              errorText: getTerminalFailureText(error),
+              getMessages,
+              appendError: appendMessageError,
+              ...createSteelQuotationFailurePersistence({
+                req,
+                responseId: liveResponseMessageId,
+                errorText: getTerminalFailureText(error),
+                getMessages,
+                append: appendSteelQuotationErrors,
+              }),
+            });
+          } catch (persistError) {
+            logger.warn('[ResumableAgentController] Failed to append terminal persistence error', persistError);
+          }
+          try {
             await GenerationJobManager.publishTerminalClaim(terminalClaim, null);
           } catch (publishError) {
             logger.warn(
@@ -3541,7 +3572,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           // abortJob already handled emitDone and completeJob
         } else {
           logger.error(`[ResumableAgentController] Generation error for ${streamId}:`, error);
-          const generationError = error.message || 'Generation failed';
+          const generationError = getTerminalFailureText(error);
           try {
             // completeJob first wins running -> error and atomically parks steers, then publishes.
             ownsScheduledFailure =
@@ -3764,6 +3795,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
                 endpointOption,
                 isNewConvo,
                 errorText: initializationError,
+                existingErrorText: getTerminalFailureText(error),
                 initialAgentId: verifiedInitialAgentId,
               }),
           })
