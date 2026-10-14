@@ -94,8 +94,8 @@ const {
   getPaddleOcrResultContent,
   getPaddleOcrResultError,
   isExpiredSignedUrlError,
-  isPaddleOcrDiagnosticCode: isPaddleOcrDiagnosticCodeFromApi,
-  PADDLE_OCR_MCP_SERVER_NAME: paddleOcrMcpServerNameFromApi,
+  isPaddleOcrDiagnosticCode,
+  PADDLE_OCR_MCP_SERVER_NAME: steelPaddleOcrMcpServerName,
   resolveOcrPreprocessingChunkSizePages,
   buildPdfPageChunks,
   normalizeOcrPageChunks,
@@ -708,10 +708,6 @@ const steelNativeToolPerToolLimits = Object.freeze({
  * cap without introducing process-global state.
  */
 const steelNativeToolRunStates = new WeakMap();
-const steelPaddleOcrMcpServerName =
-  typeof paddleOcrMcpServerNameFromApi === 'string'
-    ? paddleOcrMcpServerNameFromApi
-    : process.env.STEEL_PADDLEOCR_MCP_SERVER_NAME || 'PaddleOCR';
 const steelPaddleOcrToolName = 'paddleocr_vl';
 const steelPaddleOcrRetryableErrorPatterns = [
   'connection timeout after',
@@ -762,21 +758,6 @@ const steelPaddleOcrMaxAttempts = 3;
 const steelPaddleOcrRetryDelayMs = 3000;
 const steelPaddleOcrTaskIntervalMs = 1000;
 const steelPaddleOcrCallTimeoutMs = 10 * 60 * 1000;
-const steelPaddleOcrDiagnosticCodes = new Set([
-  'ai_studio_auth',
-  'ai_studio_unavailable',
-  'ai_studio_rate_limited',
-  'ai_studio_timeout',
-  'ai_studio_invalid_request',
-  'ai_studio_job_failed',
-  'ai_studio_response_parse',
-  'ai_studio_inference',
-]);
-const isPaddleOcrDiagnosticCode = (value) =>
-  typeof isPaddleOcrDiagnosticCodeFromApi === 'function'
-    ? isPaddleOcrDiagnosticCodeFromApi(value)
-    : steelPaddleOcrDiagnosticCodes.has(value);
-
 const mcpServerPinPrefix = `${Constants.mcp_server}${Constants.mcp_delimiter}`;
 const isExpectedMCPTool = (toolName) =>
   toolName?.includes(Constants.mcp_delimiter) &&
@@ -903,13 +884,11 @@ async function emitSteelNativeEvents({ events, res, streamId, req, historyChange
   let steelHistoryChanged = historyChanged;
   for (const event of events) {
     if (event?.event === steelNativeStreamEventName) {
-      if (typeof appendSteelNativeActivityEvent === 'function') {
-        steelHistoryChanged =
-          appendSteelNativeActivityEvent(
-            req?.steelNativeContext?.steelHistory ?? req?.steelNativeContext?.steelActivityEvents,
-            event.data,
-          ) || steelHistoryChanged;
-      }
+      steelHistoryChanged =
+        appendSteelNativeActivityEvent(
+          req?.steelNativeContext?.steelHistory ?? req?.steelNativeContext?.steelActivityEvents,
+          event.data,
+        ) || steelHistoryChanged;
     }
   }
   if (

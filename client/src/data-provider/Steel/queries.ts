@@ -15,8 +15,6 @@ import type {
   OpenAIOAuthUsageRemaining,
   SteelCatalogQuery,
   SteelCustomerCommit,
-  SteelCustomerQuery,
-  SteelCustomerResponse,
   SteelCustomerSaveResponse,
   SteelReviewKind,
   SteelReviewCommit,
@@ -97,31 +95,6 @@ export const useGetSteelMarkdownVersionsQuery = (
   () => dataService.getSteelMarkdownVersions(conversationId),
   { enabled, staleTime: Infinity, refetchOnWindowFocus: false },
 );
-
-export const useGetSteelCustomerQuery = (
-  input?: SteelCustomerQuery | null,
-  config?: UseQueryOptions<SteelCustomerResponse>,
-): QueryObserverResult<SteelCustomerResponse> => {
-  const queriesEnabled = useRecoilValue<boolean>(store.queriesEnabled);
-  const enabled = Boolean(input) && (config?.enabled ?? true) && queriesEnabled;
-  return useQuery<SteelCustomerResponse>(
-    DynamicQueryKeys.steelCustomer(
-      input?.conversationId ?? '',
-      input?.messageId ?? '',
-      input?.title ?? '',
-      input?.outputId ?? '',
-    ),
-    () => dataService.getSteelCustomer(input!),
-    {
-      refetchOnWindowFocus: false,
-      refetchOnReconnect: true,
-      refetchOnMount: true,
-      staleTime: 0,
-      ...config,
-      enabled,
-    },
-  );
-};
 
 export const useGetSteelReviewQuery = (
   input?: {

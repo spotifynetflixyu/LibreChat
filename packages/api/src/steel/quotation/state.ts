@@ -19,7 +19,6 @@ import type {
   SteelQuotationOcrSelection,
   SteelQuotationOrder,
   SteelQuotationPendingMessage,
-  SteelQuotationPendingMessageFile,
   SteelQuotationRunStatus,
   SteelQuotationScope,
   SteelQuotationSelectionProvenance,
@@ -49,7 +48,6 @@ const unfinishedStatuses: readonly SteelQuotationRunStatus[] = [
   'finalizing',
   'interrupted',
 ];
-const terminalStatuses: readonly SteelQuotationRunStatus[] = ['completed', 'cancelled'];
 const leaseStatuses: readonly SteelQuotationRunStatus[] = [
   'queued',
   'running',
@@ -190,71 +188,6 @@ export interface SteelQuotationInterruptInput extends SteelQuotationRunInput {
   interruption?: SteelQuotationActiveRun['interruption'];
 }
 
-export interface SteelQuotationPendingMessageInput {
-  scope: SteelQuotationScope;
-  sourceMessageId: string;
-  sourceMessageText?: string;
-  sourceMessageFiles?: readonly SteelQuotationPendingMessageFile[];
-  targetMessageId?: string;
-  preserveExistingTarget?: boolean;
-  now?: Date;
-}
-
-export interface SteelQuotationClaimPendingInput {
-  scope: SteelQuotationScope;
-  claimToken?: string;
-  now?: Date;
-  leaseDurationMs?: number;
-}
-
-export interface SteelQuotationPendingClaim {
-  sourceMessageId: string;
-  sourceMessageText?: string;
-  sourceMessageFiles?: SteelQuotationPendingMessageFile[];
-  resultRef?: SteelQuotationArtifactRef;
-  resultMarkdown?: string;
-  targetMessageId?: string;
-  claimToken: string;
-  claimExpiresAt: Date;
-}
-
-export interface SteelQuotationCompletePendingInput {
-  scope: SteelQuotationScope;
-  sourceMessageId: string;
-  claimToken: string;
-  targetMessageId?: string;
-  now?: Date;
-}
-
-export interface SteelQuotationRenewPendingInput {
-  scope: SteelQuotationScope;
-  sourceMessageId: string;
-  claimToken: string;
-  now?: Date;
-  leaseDurationMs?: number;
-}
-
-export interface SteelQuotationSavePendingResultInput {
-  scope: SteelQuotationScope;
-  sourceMessageId: string;
-  claimToken: string;
-  markdown: string;
-  targetMessageId?: string;
-  now?: Date;
-}
-
-export interface SteelQuotationSavedPendingResult {
-  sourceMessageId: string;
-  markdown: string;
-  targetMessageId?: string;
-  resultRef: SteelQuotationArtifactRef;
-}
-
-export interface SteelQuotationCompletedPendingMessage {
-  sourceMessageId: string;
-  targetMessageId?: string;
-}
-
 export interface SteelQuotationDeleteResult {
   stateDeleted: number;
   artifactsDeleted: number;
@@ -264,11 +197,8 @@ export interface SteelQuotationStateService {
   ensureState(scope: SteelQuotationScope): Promise<ISteelQuotationState>;
   readState(scope: SteelQuotationScope): Promise<ISteelQuotationState | null>;
   isPublishedRun(scope: SteelQuotationScope, run: SteelQuotationActiveRun): Promise<boolean>;
-  readCurrentSystemOrder(scope: SteelQuotationScope): Promise<SteelQuotationCurrentSystemOrder | undefined>;
   hasSystemOrder(scope: SteelQuotationScope, preloadedState?: ISteelQuotationState | null): Promise<boolean>;
   setOrder(input: SteelQuotationOrderInput): Promise<ISteelQuotationState>;
-  readOcrInput(scope: SteelQuotationScope): Promise<SteelQuotationOcrInput | undefined>;
-  markOcrStale(scope: SteelQuotationScope, runId: string, selection: SteelQuotationOcrSelection): Promise<boolean>;
   prepareOcrOrder(scope: SteelQuotationScope, expectedOrderHash: string | null):
     Promise<{ state: ISteelQuotationState; input?: SteelQuotationOcrInput }>;
   saveCustomer(input: SteelQuotationSaveCustomerInput): Promise<SteelQuotationCustomerPreparation>;
@@ -304,21 +234,6 @@ export interface SteelQuotationStateService {
   cancelRun(input: Omit<SteelQuotationRunInput, 'leaseToken'> & { leaseToken?: string }): Promise<
     SteelQuotationActiveRun | undefined
   >;
-  enqueuePendingMessage(
-    input: SteelQuotationPendingMessageInput,
-  ): Promise<SteelQuotationPendingMessage>;
-  claimPendingMessage(
-    input: SteelQuotationClaimPendingInput,
-  ): Promise<SteelQuotationPendingClaim | undefined>;
-  renewPendingClaim(
-    input: SteelQuotationRenewPendingInput,
-  ): Promise<SteelQuotationPendingClaim | undefined>;
-  savePendingResult(
-    input: SteelQuotationSavePendingResultInput,
-  ): Promise<SteelQuotationSavedPendingResult | undefined>;
-  completePendingMessage(
-    input: SteelQuotationCompletePendingInput,
-  ): Promise<SteelQuotationCompletedPendingMessage | undefined>;
   deleteConversation(scope: SteelQuotationScope): Promise<SteelQuotationDeleteResult>;
 }
 
@@ -441,35 +356,6 @@ function validateLeaseDuration(value: number): void {
   }
 }
 
-function validatePendingFiles(files: readonly SteelQuotationPendingMessageFile[] | undefined): void {
-  if (!files) {
-    return;
-  }
-  if (files.length > MAX_QUOTATION_PENDING_FILES) {
-    throw new Error(`pending message exceeds ${MAX_QUOTATION_PENDING_FILES} files`);
-  }
-  for (const file of files) {
-    for (const [name, value] of [
-      ['fileId', file.fileId],
-      ['filename', file.filename],
-      ['storageKey', file.storageKey],
-      ['mediaType', file.mediaType],
-    ] as const) {
-      if (value !== undefined) {
-        validateText(value, `pending file ${name}`, 2_000);
-      }
-    }
-    for (const [name, value] of [
-      ['pageNumber', file.pageNumber],
-      ['imageIndex', file.imageIndex],
-    ] as const) {
-      if (value !== undefined && (!Number.isSafeInteger(value) || value < 0)) {
-        throw new Error(`pending file ${name} must be a non-negative safe integer`);
-      }
-    }
-  }
-}
-
 function validateSourceSnapshot(
   snapshot: SteelQuotationSnapshotPayload['sourceSnapshot'],
   orderHash: string,
@@ -546,15 +432,6 @@ interface SteelQuotationStateLike {
   tickets: SteelQuotationTicket[];
   activeRun?: SteelQuotationActiveRun;
   pendingMessages: SteelQuotationPendingMessage[];
-}
-
-interface SteelQuotationPendingCompletionReceipt {
-  sourceMessageId: string;
-  sourceMessageText?: string;
-  sourceMessageFiles?: SteelQuotationPendingMessageFile[];
-  targetMessageId?: string;
-  completedTargetMessageId?: string;
-  resultRef: SteelQuotationArtifactRef;
 }
 
 function assertAuthorityBounds(state: SteelQuotationStateLike): void {
@@ -688,29 +565,10 @@ export function createSteelQuotationStateService(
     return state;
   }
 
-  async function readOcrInput(scope: SteelQuotationScope): Promise<SteelQuotationOcrInput | undefined> {
-    const result = await inputs.readSteelQuotationOcrInput(scope);
-    if (!result.ok) throw new SteelQuotationInputError(result.code);
-    return result.input;
-  }
-
-  async function markOcrStale(scope: SteelQuotationScope, runId: string, selection: SteelQuotationOcrSelection): Promise<boolean> {
-    const result = await inputs.markSteelQuotationOcrStale({ scope, runId, selection });
-    if (!result.ok) throw new SteelQuotationInputError(result.code);
-    return result.needsRequote;
-  }
-
   async function prepareOcrOrder(scope: SteelQuotationScope, expectedOrderHash: string | null) {
     const result = await inputs.prepareSteelQuotationOcrInput({ scope, expectedOrderHash });
     if (!result.ok) throw new SteelQuotationInputError(result.code);
     return { state: result.state, ...(result.input ? { input: result.input } : {}) };
-  }
-
-  async function readCurrentSystemOrder(
-    scope: SteelQuotationScope,
-  ): Promise<SteelQuotationCurrentSystemOrder | undefined> {
-    const state = await readState(scope);
-    return state?.currentSystemOrder;
   }
 
   async function hasSystemOrder(
@@ -1137,152 +995,6 @@ export function createSteelQuotationStateService(
       operationId,
       ...(sha256 ? { sha256 } : {}),
     }).lean<ISteelQuotationArtifact>();
-  }
-
-  function pendingResultRunId(sourceMessageId: string): string {
-    return `pending:${hashText(sourceMessageId)}`;
-  }
-
-  function assertPendingMessageIdentity(
-    input: Pick<SteelQuotationPendingMessageInput, 'sourceMessageText' | 'sourceMessageFiles' | 'targetMessageId' | 'preserveExistingTarget'>,
-    receipt: Pick<SteelQuotationPendingCompletionReceipt, 'sourceMessageText' | 'sourceMessageFiles' | 'targetMessageId' | 'completedTargetMessageId'>,
-  ): void {
-    if (
-      input.sourceMessageText !== undefined &&
-      (receipt.sourceMessageText ?? '') !== input.sourceMessageText
-    ) {
-      throw new Error('pending message identity is immutable');
-    }
-    if (
-      input.sourceMessageFiles !== undefined &&
-      JSON.stringify(input.sourceMessageFiles) !== JSON.stringify(receipt.sourceMessageFiles ?? [])
-    ) {
-      throw new Error('pending message identity is immutable');
-    }
-    const completedTargetMessageId = receipt.completedTargetMessageId ?? receipt.targetMessageId;
-    if (
-      !input.preserveExistingTarget &&
-      input.targetMessageId !== undefined &&
-      completedTargetMessageId !== undefined &&
-      input.targetMessageId !== completedTargetMessageId
-    ) {
-      throw new Error('pending message identity is immutable');
-    }
-  }
-
-  function pendingMessageFromReceipt(
-    receipt: SteelQuotationPendingCompletionReceipt,
-    now: Date,
-  ): SteelQuotationPendingMessage {
-    return {
-      sourceMessageId: receipt.sourceMessageId,
-      ...(receipt.sourceMessageText !== undefined ? { sourceMessageText: receipt.sourceMessageText } : {}),
-      ...(receipt.sourceMessageFiles?.length ? { sourceMessageFiles: receipt.sourceMessageFiles } : {}),
-      ...(receipt.targetMessageId ? { targetMessageId: receipt.targetMessageId } : {}),
-      status: 'completed',
-      resultRef: receipt.resultRef,
-      ...(receipt.completedTargetMessageId
-        ? { completedTargetMessageId: receipt.completedTargetMessageId }
-        : {}),
-      enqueuedAt: now,
-      updatedAt: now,
-    };
-  }
-
-  async function readPendingCompletionReceipt(
-    scope: SteelQuotationScope,
-    sourceMessageId: string,
-  ): Promise<SteelQuotationPendingCompletionReceipt | undefined> {
-    const artifact = await findArtifact(scope, pendingResultRunId(sourceMessageId), 'completed');
-    if (!artifact) {
-      return undefined;
-    }
-    let receipt: SteelQuotationPendingCompletionReceipt;
-    try {
-      receipt = JSON.parse(artifact.payload) as SteelQuotationPendingCompletionReceipt;
-    } catch {
-      throw new Error('pending completion receipt is invalid');
-    }
-    if (
-      !receipt ||
-      receipt.sourceMessageId !== sourceMessageId ||
-      !receipt.resultRef ||
-      receipt.resultRef.userId !== scope.userId ||
-      receipt.resultRef.conversationId !== scope.conversationId ||
-      receipt.resultRef.runId !== pendingResultRunId(sourceMessageId) ||
-      receipt.resultRef.operationId !== 'result' ||
-      receipt.resultRef.kind !== 'main'
-    ) {
-      throw new Error('pending completion receipt is invalid');
-    }
-    return receipt;
-  }
-
-  async function writePendingCompletionReceipt(
-    scope: SteelQuotationScope,
-    message: SteelQuotationPendingMessage,
-    now: Date,
-  ): Promise<void> {
-    if (message.status !== 'completed' || !message.resultRef) {
-      return;
-    }
-    const receipt: SteelQuotationPendingCompletionReceipt = {
-      sourceMessageId: message.sourceMessageId,
-      ...(message.sourceMessageText !== undefined ? { sourceMessageText: message.sourceMessageText } : {}),
-      ...(message.sourceMessageFiles?.length ? { sourceMessageFiles: message.sourceMessageFiles } : {}),
-      ...(message.targetMessageId ? { targetMessageId: message.targetMessageId } : {}),
-      ...(message.completedTargetMessageId
-        ? { completedTargetMessageId: message.completedTargetMessageId }
-        : {}),
-      resultRef: message.resultRef,
-    };
-    const payload = JSON.stringify(receipt);
-    const ref = artifactRef(
-      scope,
-      pendingResultRunId(message.sourceMessageId),
-      'completed',
-      'main',
-      hashText(payload),
-    );
-    await writePendingArtifact(
-      scope,
-      pendingResultRunId(message.sourceMessageId),
-      'completed',
-      payload,
-      ref,
-      now,
-    );
-  }
-
-  async function archiveCompletedPendingMessages(
-    scope: SteelQuotationScope,
-    current: ISteelQuotationState,
-    now: Date,
-  ): Promise<void> {
-    const completed = current.pendingMessages.filter(
-      (message) => message.status === 'completed' && message.resultRef,
-    );
-    if (completed.length === 0) {
-      return;
-    }
-    for (const message of completed) {
-      await writePendingCompletionReceipt(scope, message, now);
-    }
-    await State.updateOne(
-      {
-        ...stateFilter(scope),
-        pendingMessages: {
-          $elemMatch: {
-            status: 'completed',
-            sourceMessageId: { $in: completed.map((message) => message.sourceMessageId) },
-          },
-        },
-      },
-      {
-        $pull: { pendingMessages: { sourceMessageId: { $in: completed.map((message) => message.sourceMessageId) } } },
-        $set: { updatedAt: now },
-      },
-    );
   }
 
   async function writeArtifact(
@@ -1776,502 +1488,6 @@ export function createSteelQuotationStateService(
     return undefined;
   }
 
-  async function enqueuePendingMessage(
-    input: SteelQuotationPendingMessageInput,
-  ): Promise<SteelQuotationPendingMessage> {
-    validateScope(input.scope);
-    validateText(input.sourceMessageId, 'sourceMessageId', 300);
-    if (input.sourceMessageText !== undefined &&
-      byteLength(input.sourceMessageText) > MAX_QUOTATION_CUSTOMER_BYTES) {
-      throw new Error(`sourceMessageText exceeds ${MAX_QUOTATION_CUSTOMER_BYTES} bytes`);
-    }
-    validatePendingFiles(input.sourceMessageFiles);
-    const now = nowOrDefault(input.now);
-    await ensureState(input.scope);
-    let current = await readState(input.scope);
-    if (!current) {
-      throw new Error('quotation authority state is unavailable');
-    }
-    const receipt = await readPendingCompletionReceipt(input.scope, input.sourceMessageId);
-    if (receipt) {
-      assertPendingMessageIdentity(input, receipt);
-      return pendingMessageFromReceipt(receipt, now);
-    }
-    const existing = current?.pendingMessages.find(
-      (message) => message.sourceMessageId === input.sourceMessageId,
-    );
-    if (existing) {
-      assertPendingMessageIdentity(input, existing);
-      return existing;
-    }
-    if ((current?.pendingMessages.length ?? 0) >= MAX_QUOTATION_PENDING_MESSAGES) {
-      await archiveCompletedPendingMessages(input.scope, current, now);
-      current = await readState(input.scope);
-      if (!current || current.pendingMessages.length >= MAX_QUOTATION_PENDING_MESSAGES) {
-        throw new Error(`quotation authority exceeds ${MAX_QUOTATION_PENDING_MESSAGES} pending messages`);
-      }
-    }
-    const message: SteelQuotationPendingMessage = {
-      sourceMessageId: input.sourceMessageId,
-      ...(input.sourceMessageText !== undefined ? { sourceMessageText: input.sourceMessageText } : {}),
-      ...(input.sourceMessageFiles?.length ? { sourceMessageFiles: [...input.sourceMessageFiles] } : {}),
-      ...(input.targetMessageId ? { targetMessageId: input.targetMessageId } : {}),
-      status: 'pending',
-      enqueuedAt: now,
-      updatedAt: now,
-    };
-    if (!current) {
-      throw new Error('quotation authority state is unavailable');
-    }
-    assertAuthorityBounds({
-      ...current,
-      pendingMessages: [...current.pendingMessages, message],
-    });
-    const updated = await State.findOneAndUpdate(
-      {
-        ...stateFilter(input.scope),
-        pendingMessages: { $not: { $elemMatch: { sourceMessageId: input.sourceMessageId } } },
-      },
-      { $push: { pendingMessages: message }, $set: { updatedAt: now } },
-      { new: true },
-    ).lean<ISteelQuotationState>();
-    if (!updated) {
-      const raced = await readState(input.scope);
-      const racedMessage = raced?.pendingMessages.find(
-        (candidate) => candidate.sourceMessageId === input.sourceMessageId,
-      );
-      if (racedMessage) {
-        assertPendingMessageIdentity(input, racedMessage);
-        return racedMessage;
-      }
-      throw new Error('pending message changed concurrently; retry the operation');
-    }
-    assertAuthorityBounds(updated);
-    const inserted = updated.pendingMessages.find(
-      (candidate) => candidate.sourceMessageId === input.sourceMessageId,
-    );
-    if (!inserted) {
-      throw new Error('pending message could not be persisted');
-    }
-    return inserted;
-  }
-
-  async function claimPendingMessage(
-    input: SteelQuotationClaimPendingInput,
-  ): Promise<SteelQuotationPendingClaim | undefined> {
-    validateScope(input.scope);
-    const now = nowOrDefault(input.now);
-    const duration = input.leaseDurationMs ?? DEFAULT_QUOTATION_LEASE_MS;
-    validateLeaseDuration(duration);
-    for (let attempt = 0; attempt < 4; attempt += 1) {
-      const state = await readState(input.scope);
-      if (!state || isUnfinished(state.activeRun?.status)) {
-        return undefined;
-      }
-      const candidate = state.pendingMessages.find((message) => message.status !== 'completed');
-      if (!candidate) {
-        return undefined;
-      }
-      if (
-        candidate.status === 'claimed' &&
-        (!candidate.claimExpiresAt || candidate.claimExpiresAt.getTime() > now.getTime())
-      ) {
-        return undefined;
-      }
-      const claimToken = input.claimToken ?? randomUUID();
-      const claimExpiresAt = new Date(now.getTime() + duration);
-      const updated = await State.findOneAndUpdate(
-        {
-          ...stateFilter(input.scope),
-          $and: [
-            {
-              $or: [
-                {
-                  pendingMessages: {
-                    $elemMatch: { sourceMessageId: candidate.sourceMessageId, status: 'pending' },
-                  },
-                },
-                {
-                  pendingMessages: {
-                    $elemMatch: {
-                      sourceMessageId: candidate.sourceMessageId,
-                      status: 'claimed',
-                      claimExpiresAt: { $lte: now },
-                    },
-                  },
-                },
-              ],
-            },
-            {
-              $or: [
-                { activeRun: { $exists: false } },
-                { 'activeRun.status': { $in: terminalStatuses } },
-              ],
-            },
-          ],
-        },
-        {
-          $set: {
-            'pendingMessages.$[message].status': 'claimed',
-            'pendingMessages.$[message].claimToken': claimToken,
-            'pendingMessages.$[message].claimExpiresAt': claimExpiresAt,
-            'pendingMessages.$[message].updatedAt': now,
-            updatedAt: now,
-          },
-        },
-        {
-          new: true,
-          arrayFilters: [
-            candidate.status === 'pending'
-              ? { 'message.sourceMessageId': candidate.sourceMessageId, 'message.status': 'pending' }
-              : {
-                  'message.sourceMessageId': candidate.sourceMessageId,
-                  'message.status': 'claimed',
-                  'message.claimExpiresAt': { $lte: now },
-                },
-          ],
-        },
-      ).lean<ISteelQuotationState>();
-      if (!updated) {
-        continue;
-      }
-      const claimed = updated.pendingMessages.find(
-        (message) => message.sourceMessageId === candidate.sourceMessageId,
-      );
-      if (!claimed || claimed.claimToken !== claimToken || !claimed.claimExpiresAt) {
-        continue;
-      }
-      const savedResult = claimed.resultRef
-        ? await readArtifact({ scope: input.scope, ref: claimed.resultRef })
-        : undefined;
-      return {
-        sourceMessageId: claimed.sourceMessageId,
-        ...(claimed.sourceMessageText ? { sourceMessageText: claimed.sourceMessageText } : {}),
-        ...(claimed.sourceMessageFiles ? { sourceMessageFiles: claimed.sourceMessageFiles } : {}),
-        ...(claimed.targetMessageId ? { targetMessageId: claimed.targetMessageId } : {}),
-        ...(claimed.resultRef ? { resultRef: claimed.resultRef } : {}),
-        ...(savedResult !== undefined ? { resultMarkdown: savedResult } : {}),
-        claimToken,
-        claimExpiresAt: claimed.claimExpiresAt,
-      };
-    }
-    return undefined;
-  }
-
-  async function renewPendingClaim(
-    input: SteelQuotationRenewPendingInput,
-  ): Promise<SteelQuotationPendingClaim | undefined> {
-    validateScope(input.scope);
-    validateText(input.sourceMessageId, 'sourceMessageId', 300);
-    validateText(input.claimToken, 'claimToken', 200);
-    const now = nowOrDefault(input.now);
-    const duration = input.leaseDurationMs ?? DEFAULT_QUOTATION_LEASE_MS;
-    validateLeaseDuration(duration);
-    const claimExpiresAt = new Date(now.getTime() + duration);
-    const updated = await State.findOneAndUpdate(
-      {
-        ...stateFilter(input.scope),
-        pendingMessages: {
-          $elemMatch: {
-            sourceMessageId: input.sourceMessageId,
-            status: 'claimed',
-            claimToken: input.claimToken,
-            claimExpiresAt: { $gt: now },
-          },
-        },
-      },
-      {
-        $set: {
-          'pendingMessages.$.claimExpiresAt': claimExpiresAt,
-          'pendingMessages.$.updatedAt': now,
-          updatedAt: now,
-        },
-      },
-      { new: true },
-    ).lean<ISteelQuotationState>();
-    const claimed = updated?.pendingMessages.find(
-      (message) => message.sourceMessageId === input.sourceMessageId,
-    );
-    if (!claimed || claimed.status !== 'claimed' || claimed.claimToken !== input.claimToken || !claimed.claimExpiresAt) {
-      return undefined;
-    }
-    const savedResult = claimed.resultRef
-      ? await readArtifact({ scope: input.scope, ref: claimed.resultRef })
-      : undefined;
-    return {
-      sourceMessageId: claimed.sourceMessageId,
-      ...(claimed.sourceMessageText ? { sourceMessageText: claimed.sourceMessageText } : {}),
-      ...(claimed.sourceMessageFiles ? { sourceMessageFiles: claimed.sourceMessageFiles } : {}),
-      ...(claimed.targetMessageId ? { targetMessageId: claimed.targetMessageId } : {}),
-      ...(claimed.resultRef ? { resultRef: claimed.resultRef } : {}),
-      ...(savedResult !== undefined ? { resultMarkdown: savedResult } : {}),
-      claimToken: input.claimToken,
-      claimExpiresAt: claimed.claimExpiresAt,
-    };
-  }
-
-  async function savePendingResult(
-    input: SteelQuotationSavePendingResultInput,
-  ): Promise<SteelQuotationSavedPendingResult | undefined> {
-    validateScope(input.scope);
-    validateText(input.sourceMessageId, 'sourceMessageId', 300);
-    validateText(input.claimToken, 'claimToken', 200);
-    validateText(input.markdown, 'pending result', MAX_QUOTATION_ARTIFACT_BYTES);
-    if (input.targetMessageId !== undefined) {
-      validateText(input.targetMessageId, 'targetMessageId', 300);
-    }
-    const now = nowOrDefault(input.now);
-    const current = await readState(input.scope);
-    const existing = current?.pendingMessages.find(
-      (message) => message.sourceMessageId === input.sourceMessageId,
-    );
-    if (
-      !current ||
-      !existing ||
-      existing.status !== 'claimed' ||
-      existing.claimToken !== input.claimToken ||
-      !existing.claimExpiresAt ||
-      existing.claimExpiresAt.getTime() <= now.getTime()
-    ) {
-      return undefined;
-    }
-    const resultRunId = pendingResultRunId(input.sourceMessageId);
-    const resultRef = artifactRef(
-      input.scope,
-      resultRunId,
-      'result',
-      'main',
-      hashText(input.markdown),
-    );
-    if (existing.resultRef) {
-      const saved = await readArtifact({ scope: input.scope, ref: existing.resultRef });
-      if (saved === undefined) {
-        throw new Error('pending result reference is missing');
-      }
-      if (saved !== input.markdown) {
-        throw new Error('pending result is immutable');
-      }
-      return {
-        sourceMessageId: input.sourceMessageId,
-        markdown: saved,
-        ...(existing.completedTargetMessageId ?? existing.targetMessageId
-          ? { targetMessageId: existing.completedTargetMessageId ?? existing.targetMessageId }
-          : {}),
-        resultRef: existing.resultRef,
-      };
-    }
-    assertAuthorityBounds({
-      ...current,
-      pendingMessages: current.pendingMessages.map((message) =>
-        message.sourceMessageId === input.sourceMessageId
-          ? {
-              ...message,
-              ...(input.targetMessageId ? { targetMessageId: input.targetMessageId } : {}),
-              resultRef,
-              updatedAt: now,
-            }
-          : message,
-      ),
-    });
-    await writePendingArtifact(input.scope, resultRunId, 'result', input.markdown, resultRef, now);
-    const updated = await State.findOneAndUpdate(
-      {
-        ...stateFilter(input.scope),
-        pendingMessages: {
-          $elemMatch: {
-            sourceMessageId: input.sourceMessageId,
-            status: 'claimed',
-            claimToken: input.claimToken,
-            claimExpiresAt: { $gt: now },
-            resultRef: { $exists: false },
-          },
-        },
-      },
-      {
-        $set: {
-          'pendingMessages.$.resultRef': resultRef,
-          ...(input.targetMessageId ? { 'pendingMessages.$.targetMessageId': input.targetMessageId } : {}),
-          'pendingMessages.$.updatedAt': now,
-          updatedAt: now,
-        },
-      },
-      { new: true },
-    ).lean<ISteelQuotationState>();
-    const savedMessage = updated?.pendingMessages.find(
-      (message) => message.sourceMessageId === input.sourceMessageId,
-    );
-    if (savedMessage?.resultRef) {
-      const saved = await readArtifact({ scope: input.scope, ref: savedMessage.resultRef });
-      if (saved === undefined) {
-        throw new Error('pending result reference is missing');
-      }
-      return {
-        sourceMessageId: input.sourceMessageId,
-        markdown: saved,
-        ...(input.targetMessageId ?? savedMessage.targetMessageId
-          ? { targetMessageId: input.targetMessageId ?? savedMessage.targetMessageId }
-          : {}),
-        resultRef: savedMessage.resultRef,
-      };
-    }
-    const raced = await readState(input.scope);
-    const racedMessage = raced?.pendingMessages.find(
-      (message) => message.sourceMessageId === input.sourceMessageId,
-    );
-    if (racedMessage?.resultRef) {
-      const saved = await readArtifact({ scope: input.scope, ref: racedMessage.resultRef });
-      if (saved === undefined) {
-        throw new Error('pending result reference is missing');
-      }
-      return {
-        sourceMessageId: input.sourceMessageId,
-        markdown: saved,
-        ...(racedMessage.targetMessageId ? { targetMessageId: racedMessage.targetMessageId } : {}),
-        resultRef: racedMessage.resultRef,
-      };
-    }
-    return undefined;
-  }
-
-  async function writePendingArtifact(
-    scope: SteelQuotationScope,
-    runId: string,
-    operationId: string,
-    payload: string,
-    ref: SteelQuotationArtifactRef,
-    now: Date,
-  ): Promise<void> {
-    if (byteLength(payload) > MAX_QUOTATION_ARTIFACT_BYTES) {
-      throw new Error(`artifact payload exceeds ${MAX_QUOTATION_ARTIFACT_BYTES} bytes`);
-    }
-    const sameHash = await findArtifact(scope, runId, operationId, ref.sha256);
-    if (sameHash) {
-      if (sameHash.payload !== payload || sameHash.kind !== 'main') {
-        throw new Error('pending result is immutable');
-      }
-      return;
-    }
-    const otherHash = await findArtifact(scope, runId, operationId);
-    if (otherHash && (otherHash.sha256 !== ref.sha256 || otherHash.kind !== 'main')) {
-      throw new Error('pending result is immutable');
-    }
-    try {
-      await Artifact.create({
-        userId: scope.userId,
-        conversationId: scope.conversationId,
-        ...(scope.tenantId !== undefined ? { tenantId: scope.tenantId } : {}),
-        runId,
-        operationId,
-        kind: 'main',
-        sha256: ref.sha256,
-        payload,
-        createdAt: now,
-        updatedAt: now,
-      });
-    } catch (error) {
-      if (!(error instanceof Error) || !isDuplicateKey(error)) {
-        throw error;
-      }
-      const raced = await findArtifact(scope, runId, operationId, ref.sha256);
-      if (!raced || raced.payload !== payload || raced.kind !== 'main') {
-        throw new Error('pending result changed concurrently');
-      }
-    }
-  }
-
-  async function completePendingMessage(
-    input: SteelQuotationCompletePendingInput,
-  ): Promise<SteelQuotationCompletedPendingMessage | undefined> {
-    validateScope(input.scope);
-    validateText(input.sourceMessageId, 'sourceMessageId', 300);
-    validateText(input.claimToken, 'claimToken', 200);
-    if (input.targetMessageId !== undefined) {
-      validateText(input.targetMessageId, 'targetMessageId', 300);
-    }
-    const now = nowOrDefault(input.now);
-    const current = await readState(input.scope);
-    const existing = current?.pendingMessages.find(
-      (message) => message.sourceMessageId === input.sourceMessageId,
-    );
-    if (!existing) {
-      const receipt = await readPendingCompletionReceipt(input.scope, input.sourceMessageId);
-      if (receipt) {
-        return {
-          sourceMessageId: receipt.sourceMessageId,
-          ...(receipt.completedTargetMessageId ?? receipt.targetMessageId
-            ? { targetMessageId: receipt.completedTargetMessageId ?? receipt.targetMessageId }
-            : {}),
-        };
-      }
-      return undefined;
-    }
-    if (existing.status === 'completed') {
-      await writePendingCompletionReceipt(input.scope, existing, now);
-      return {
-        sourceMessageId: input.sourceMessageId,
-        ...(existing.completedTargetMessageId
-          ? { targetMessageId: existing.completedTargetMessageId }
-          : {}),
-      };
-    }
-    if (!existing.resultRef) {
-      return undefined;
-    }
-    const targetMessageId = input.targetMessageId ?? existing.targetMessageId;
-    const updated = await State.findOneAndUpdate(
-      {
-        ...stateFilter(input.scope),
-        pendingMessages: {
-          $elemMatch: {
-            sourceMessageId: input.sourceMessageId,
-            status: 'claimed',
-            claimToken: input.claimToken,
-            claimExpiresAt: { $gt: now },
-          },
-        },
-      },
-      {
-        $set: {
-          'pendingMessages.$.status': 'completed',
-          ...(targetMessageId ? { 'pendingMessages.$.completedTargetMessageId': targetMessageId } : {}),
-          'pendingMessages.$.updatedAt': now,
-          updatedAt: now,
-        },
-        $unset: {
-          'pendingMessages.$.claimToken': 1,
-          'pendingMessages.$.claimExpiresAt': 1,
-        },
-      },
-      { new: true },
-    ).lean<ISteelQuotationState>();
-    if (updated) {
-      const done = updated.pendingMessages.find(
-        (message) => message.sourceMessageId === input.sourceMessageId,
-      );
-      if (done?.status === 'completed') {
-        await writePendingCompletionReceipt(input.scope, done, now);
-        return {
-          sourceMessageId: done.sourceMessageId,
-          ...(done.completedTargetMessageId ? { targetMessageId: done.completedTargetMessageId } : {}),
-        };
-      }
-    }
-    const raced = await readState(input.scope);
-    const racedMessage = raced?.pendingMessages.find(
-      (message) => message.sourceMessageId === input.sourceMessageId,
-    );
-    if (racedMessage?.status === 'completed') {
-      await writePendingCompletionReceipt(input.scope, racedMessage, now);
-      return {
-        sourceMessageId: racedMessage.sourceMessageId,
-        ...(racedMessage.completedTargetMessageId
-          ? { targetMessageId: racedMessage.completedTargetMessageId }
-          : {}),
-      };
-    }
-    return undefined;
-  }
-
   async function deleteConversation(scope: SteelQuotationScope): Promise<SteelQuotationDeleteResult> {
     validateScope(scope);
     const [stateResult, artifactResult] = await Promise.all([
@@ -2288,12 +1504,9 @@ export function createSteelQuotationStateService(
     ensureState,
     readState,
     isPublishedRun: inputs.isSteelQuotationRunPublished,
-    readCurrentSystemOrder,
     hasSystemOrder,
     setOrder,
-    readOcrInput,
     prepareOcrOrder,
-    markOcrStale,
     saveCustomer,
     saveCustomerLookupEvidence,
     clearCustomerLookupEvidence,
@@ -2311,11 +1524,6 @@ export function createSteelQuotationStateService(
     transitionRun,
     interruptRun,
     cancelRun,
-    enqueuePendingMessage,
-    claimPendingMessage,
-    renewPendingClaim,
-    savePendingResult,
-    completePendingMessage,
     deleteConversation,
   };
 }

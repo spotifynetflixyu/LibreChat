@@ -1,23 +1,11 @@
-const { ATTACHMENT_ONLY_TEXT } = require('@librechat/api');
+const { ATTACHMENT_ONLY_TEXT, prefixFileInstructions } = require('@librechat/api');
 const { EModelEndpoint, ContentTypes } = require('librechat-data-provider');
-const { prefixFileInstructions: importedPrefixFileInstructions } = require('@librechat/api');
 const {
   AIMessage,
   ToolMessage,
   HumanMessage,
   SystemMessage,
 } = require('@librechat/agents/langchain/messages');
-
-const prefixFileInstructions =
-  typeof importedPrefixFileInstructions === 'function'
-    ? importedPrefixFileInstructions
-    : (content, instructions) => {
-        const trimmedInstructions = instructions?.trim();
-        if (!trimmedInstructions || content.startsWith(trimmedInstructions)) {
-          return content;
-        }
-        return `${trimmedInstructions}\n\n${content}`;
-      };
 
 /**
  * Stands in for a user turn that carries no text and whose attachments are no longer

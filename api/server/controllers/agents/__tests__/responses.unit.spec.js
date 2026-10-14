@@ -384,8 +384,6 @@ jest.mock('@librechat/api', () => ({
     }
     return '';
   }),
-  stripPaddleOcrToolsForMainAgent: (config) => config,
-  stripSteelToolsForOcrTurn: jest.fn((config) => config),
   createSteelNativeHistory: jest.fn(() => ({ activityEvents: [], preflightToolCalls: [] })),
   stripSteelOcrPartsFromProviderMessages: (...args) =>
     mockStripSteelOcrPartsFromProviderMessages(...args),
@@ -4178,14 +4176,6 @@ describe('createResponse controller', () => {
   });
 
   describe('sub-agent skill priming', () => {
-    it('keeps Steel execution tools on standard turns', async () => {
-      const { stripSteelToolsForOcrTurn } = require('@librechat/api');
-
-      await createResponse(req, res);
-
-      expect(stripSteelToolsForOcrTurn).not.toHaveBeenCalled();
-    });
-
     it('keeps standard-turn skill primes in the provider messages after OCR file filtering', async () => {
       const { initializeAgent, injectSkillPrimes, createRun } = require('@librechat/api');
       initializeAgent.mockResolvedValueOnce({

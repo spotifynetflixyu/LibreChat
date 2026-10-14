@@ -190,9 +190,6 @@ export function parseSourceMappingTable(markdown: string): ParsedTable {
   return tableFromMarkdown(markdown, SOURCE_HEADERS, true);
 }
 
-/** Alias for callers parsing a generic OCR table. */
-export const parseOcrTable: typeof parseOcrResultTable = parseOcrResultTable;
-
 function mappingEntries(table: OcrTable): SourceMappingEntry[] {
   const sourceIndex = table.headers.indexOf(SOURCE_HEADERS[0]);
   const filenameIndex = table.headers.indexOf(SOURCE_HEADERS[1]);
@@ -515,10 +512,6 @@ function safeOtherText(document: ParsedAssistantMarkdown, used: ReadonlySet<Mark
     }
   }
   return chunks;
-}
-
-export function hasOcrResultUpdates(markdown: string): boolean {
-  return parseAssistantMarkdown(markdown).sections.some((section) => section.title === UPDATES_TITLE);
 }
 
 function renderResultSection(table: OcrTable, title = RESULT_TITLE): string {

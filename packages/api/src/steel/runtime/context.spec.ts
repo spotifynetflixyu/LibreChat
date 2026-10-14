@@ -31,8 +31,6 @@ function createAgentRule(overrides: Partial<SteelAgentRule> = {}): SteelAgentRul
 function createDependencies(): SteelRuntimeContextDependencies {
   return {
     listAgentRules: jest.fn(async () => [createAgentRule()]),
-    listReviewedInstructionPackets: jest.fn(async () => []),
-    listReviewedQuoteDefaults: jest.fn(async () => []),
     listReviewedQuoteRules: jest.fn(async () => []),
     listOutputRules: jest.fn(async () => []),
     listOtherGlobalRules: jest.fn(async () => ({

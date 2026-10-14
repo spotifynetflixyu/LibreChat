@@ -8,9 +8,7 @@ import type {
   SteelReviewKind,
   SteelReviewResponse,
   SteelMarkdownVersions,
-  SteelCustomerQuery,
   SteelCustomerCommit,
-  SteelCustomerResponse,
   SteelCustomerSaveResponse,
   SteelReviewReceiptStatus,
   SteelReviewPrepare,
@@ -199,10 +197,6 @@ export function getSteelQuotationStatus(conversationId: string): Promise<SteelQu
 
 export function getSteelMarkdownVersions(conversationId: string): Promise<SteelMarkdownVersions> {
   return request.get(endpoints.steelMarkdownVersions(conversationId));
-}
-
-export function getSteelCustomer(input: SteelCustomerQuery): Promise<SteelCustomerResponse> {
-  return request.get(endpoints.steelCustomer(input));
 }
 
 export function commitSteelCustomer(input: SteelCustomerCommit): Promise<SteelCustomerSaveResponse> {

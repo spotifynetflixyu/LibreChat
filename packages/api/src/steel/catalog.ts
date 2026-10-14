@@ -377,9 +377,3 @@ export function steelCatalogCustomerTier(
   return tier && /^[A-F]$/u.test(tier) ? (tier as SteelCatalogCustomerEvidence['tier']) : null;
 }
 
-export function createSteelReviewCatalogClient(
-  createClient: () => SteelRepositoryClient,
-): SteelReviewCatalogClient {
-  let client: SteelRepositoryClient | undefined;
-  return { getClient: () => (client ??= createClient()) };
-}

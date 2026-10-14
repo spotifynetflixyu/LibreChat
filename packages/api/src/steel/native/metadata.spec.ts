@@ -1,7 +1,7 @@
 import { buildSteelNativeResponseMessageMetadata } from './metadata';
 
 import { steelNativeInstructionPrefixSections } from './context';
-import { buildSteelQuoteAuditEvent } from './events';
+import { buildSteelDelegateOcrStatusEvent } from './events';
 
 describe('Steel native response metadata', () => {
   it('builds auditable Open Responses message metadata', () => {
@@ -48,7 +48,15 @@ describe('Steel native response metadata', () => {
   });
 
   it('includes bounded activity events without dropping native storage metadata', () => {
-    const activityEvents = [buildSteelQuoteAuditEvent({ conversationId: 'convo-1' })];
+    const activityEvents = [
+      buildSteelDelegateOcrStatusEvent({
+        conversationId: 'convo-1',
+        delegateOcrIndex: 1,
+        stage: 'paddleocr',
+        status: 'started',
+        message: 'OCR started',
+      }),
+    ];
     expect(
       buildSteelNativeResponseMessageMetadata({
         conversationId: 'convo-1',

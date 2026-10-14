@@ -1,17 +1,6 @@
 import {
-  createSteelAICapabilityModel,
-  createSteelAIRunModel,
-  createSteelAdminImportSessionModel,
-  createSteelAdminMappingProfileModel,
-  createSteelAdminMergeTableModel,
-  createSteelExcelExportModel,
   createSteelMemoryCandidateModel,
-  createSteelMemoryModel,
   createSteelOcrPdfChunkArtifactModel,
-  createSteelProjectModel,
-  createSteelProjectSourceModel,
-  createSteelSourceVersionModel,
-  createSteelToolCallModel,
   createSteelWorkingOrderMemoryModel,
   createSteelDelegateOcrRunModel,
   createSteelConversationOcrStateModel,
@@ -120,18 +109,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
   SteelQuotationState: ReturnType<typeof createSteelQuotationStateModel>;
   SteelQuotationArtifact: ReturnType<typeof createSteelQuotationArtifactModel>;
   SteelReviewOutput: ReturnType<typeof createSteelReviewOutputModel>;
-  SteelAIRun: ReturnType<typeof createSteelAIRunModel>;
-  SteelAICapability: ReturnType<typeof createSteelAICapabilityModel>;
-  SteelSourceVersion: ReturnType<typeof createSteelSourceVersionModel>;
-  SteelToolCall: ReturnType<typeof createSteelToolCallModel>;
-  SteelExcelExport: ReturnType<typeof createSteelExcelExportModel>;
-  SteelProject: ReturnType<typeof createSteelProjectModel>;
-  SteelProjectSource: ReturnType<typeof createSteelProjectSourceModel>;
-  SteelAdminImportSession: ReturnType<typeof createSteelAdminImportSessionModel>;
-  SteelAdminMergeTable: ReturnType<typeof createSteelAdminMergeTableModel>;
-  SteelAdminMappingProfile: ReturnType<typeof createSteelAdminMappingProfileModel>;
   SteelMemoryCandidate: ReturnType<typeof createSteelMemoryCandidateModel>;
-  SteelMemory: ReturnType<typeof createSteelMemoryModel>;
   SteelOcrPdfChunkArtifact: ReturnType<typeof createSteelOcrPdfChunkArtifactModel>;
   AgentTriggerDelivery: ReturnType<typeof createAgentTriggerDeliveryModel>;
   AgentTriggerLaneSequence: ReturnType<typeof createAgentTriggerLaneSequenceModel>;
@@ -190,18 +168,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
     SteelQuotationState: createSteelQuotationStateModel(mongoose),
     SteelQuotationArtifact: createSteelQuotationArtifactModel(mongoose),
     SteelReviewOutput: createSteelReviewOutputModel(mongoose),
-    SteelAIRun: createSteelAIRunModel(mongoose),
-    SteelAICapability: createSteelAICapabilityModel(mongoose),
-    SteelSourceVersion: createSteelSourceVersionModel(mongoose),
-    SteelToolCall: createSteelToolCallModel(mongoose),
-    SteelExcelExport: createSteelExcelExportModel(mongoose),
-    SteelProject: createSteelProjectModel(mongoose),
-    SteelProjectSource: createSteelProjectSourceModel(mongoose),
-    SteelAdminImportSession: createSteelAdminImportSessionModel(mongoose),
-    SteelAdminMergeTable: createSteelAdminMergeTableModel(mongoose),
-    SteelAdminMappingProfile: createSteelAdminMappingProfileModel(mongoose),
     SteelMemoryCandidate: createSteelMemoryCandidateModel(mongoose),
-    SteelMemory: createSteelMemoryModel(mongoose),
     SteelOcrPdfChunkArtifact: createSteelOcrPdfChunkArtifactModel(mongoose),
     AgentTriggerDelivery: createAgentTriggerDeliveryModel(mongoose),
     AgentTriggerLaneSequence: createAgentTriggerLaneSequenceModel(mongoose),
@@ -237,19 +204,8 @@ export function createModels(mongoose: typeof import('mongoose')): {
 }
 
 export {
-  createSteelAICapabilityModel,
-  createSteelAIRunModel,
-  createSteelAdminImportSessionModel,
-  createSteelAdminMappingProfileModel,
-  createSteelAdminMergeTableModel,
-  createSteelExcelExportModel,
   createSteelMemoryCandidateModel,
-  createSteelMemoryModel,
   createSteelOcrPdfChunkArtifactModel,
-  createSteelProjectModel,
-  createSteelProjectSourceModel,
-  createSteelSourceVersionModel,
-  createSteelToolCallModel,
   createSteelWorkingOrderMemoryModel,
   createSteelDelegateOcrRunModel,
   createSteelConversationOcrStateModel,

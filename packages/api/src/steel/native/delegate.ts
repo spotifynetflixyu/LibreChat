@@ -58,17 +58,6 @@ export type DelegateOcrStreamEventPayload =
       attemptToken?: string;
     };
 
-export function isDelegateOcrStreamedArtifact(
-  value: unknown,
-): value is DelegateOcrStreamedArtifact {
-  return (
-    value !== null &&
-    typeof value === 'object' &&
-    !Array.isArray(value) &&
-    (value as { delegateOcrStreamed?: unknown }).delegateOcrStreamed === true
-  );
-}
-
 export interface DelegateOcrPageRange {
   pageStart: number;
   pageEnd: number;
@@ -875,53 +864,6 @@ export function isDelegateOcrQuoteOnlyTurn(currentUserTurn: string | undefined):
   return false;
 }
 
-export function normalizeDelegateOcrPageRanges(
-  ranges: readonly DelegateOcrPageRange[] | undefined,
-): DelegateOcrPageRange[] | undefined {
-  if (!ranges || ranges.length === 0) {
-    return undefined;
-  }
-  const sorted = [...ranges]
-    .map((range) => ({ pageStart: range.pageStart, pageEnd: range.pageEnd }))
-    .sort((first, second) => first.pageStart - second.pageStart || first.pageEnd - second.pageEnd);
-  const merged: DelegateOcrPageRange[] = [];
-  for (const range of sorted) {
-    const previous = merged[merged.length - 1];
-    if (previous && range.pageStart <= previous.pageEnd + 1) {
-      previous.pageEnd = Math.max(previous.pageEnd, range.pageEnd);
-      continue;
-    }
-    merged.push(range);
-  }
-  return merged;
-}
-
-export function parseDelegateOcrPageRangesFromTurn(
-  currentUserTurn: string | undefined,
-): DelegateOcrPageRange[] | undefined {
-  if (!currentUserTurn?.trim()) {
-    return undefined;
-  }
-  const ranges: DelegateOcrPageRange[] = [];
-  const pageRangeExpression =
-    /(?:(?:第\s*)?(\d+)\s*頁?\s*[-–—~至到]\s*(?:第\s*)?(\d+)\s*頁|(?:pages?|p(?:age)?)\s*(\d+)\s*[-–—~至到]\s*(\d+))/giu;
-  for (const match of currentUserTurn.matchAll(pageRangeExpression)) {
-    const start = Number(match[1] ?? match[3]);
-    const end = Number(match[2] ?? match[4]);
-    if (Number.isInteger(start) && Number.isInteger(end) && start > 0 && end >= start) {
-      ranges.push({ pageStart: start, pageEnd: end });
-    }
-  }
-  const pageExpression = /(?:第\s*(\d+)\s*頁|(?:pages?|p(?:age)?)\s*(\d+))/giu;
-  for (const match of currentUserTurn.matchAll(pageExpression)) {
-    const page = Number(match[1] ?? match[2]);
-    if (Number.isInteger(page) && page > 0) {
-      ranges.push({ pageStart: page, pageEnd: page });
-    }
-  }
-  return normalizeDelegateOcrPageRanges(ranges);
-}
-
 function getDelegateOcrCurrentTurn(input: DelegateOcrInput): string {
   if (typeof input.currentUserTurn === 'string' && input.currentUserTurn.trim() !== '') {
     return input.currentUserTurn;
@@ -1432,13 +1374,6 @@ export async function delegateOcr(input: DelegateOcrInput): Promise<string> {
   }
 
   return answers.join('\n\n');
-}
-
-/** Explicit coordinator entry point for delegate-scoped preprocessing and finalization. */
-export async function runDelegateOcrWorkflow(
-  input: DelegateOcrInput & { workflow: DelegateOcrWorkflowInput },
-): Promise<string> {
-  return delegateOcr(input);
 }
 
 export function createDelegateOcrRequestExecute({

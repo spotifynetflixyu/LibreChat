@@ -38,7 +38,6 @@ export interface CaptureToolResultResult {
   totalTableCounts?: { [key: string]: number };
 }
 
-export type SteelOcrSource = 'assistant_ocr' | 'paddleocr_mcp';
 export type SteelOcrPreflightMode = 'regular' | 'delegate';
 
 export interface SteelDelegateOcrScope {
@@ -625,17 +624,6 @@ function getToolCaptureDocuments(input: CaptureToolResultInput) {
   }
 
   return [];
-}
-
-function toPaddleOcrEvidencePayload(payload: SteelJsonObject): SteelJsonObject {
-  const text = getPaddleOcrResultText(payload.result);
-  return {
-    ...payload,
-    kind: 'paddleocr_mcp_result',
-    ocrSource: 'paddleocr_mcp',
-    ocrEngine: 'paddleocr_vl',
-    ...(text !== undefined ? { content: text } : {}),
-  };
 }
 
 function getOcrPreprocessingMetadata(payload: SteelJsonObject): SteelJsonObject | undefined {

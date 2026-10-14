@@ -186,54 +186,6 @@ jest.mock('@librechat/api', () => ({
       mockCaptureOcrPreprocessingChunkMarkdown(...args),
   })),
   runOcrPreprocessingBatchPipeline: (...args) => mockRunOcrPreprocessingBatchPipeline(...args),
-  mergeOcrPreprocessingStateMarkdown: ({ state }) => {
-    const markdowns = state?.chunks
-      ?.filter((chunk) => chunk?.organizedSaved && chunk?.organizedMarkdown !== undefined)
-      .sort((first, second) => first.chunkIndex - second.chunkIndex)
-      .map((chunk) => chunk.organizedMarkdown);
-    if (!markdowns?.length) {
-      return undefined;
-    }
-
-    const tables = markdowns
-      .map((markdown) => {
-        const lines = markdown
-          .split('\n')
-          .map((line) => line.trim())
-          .filter((line) => line.startsWith('|') && line.endsWith('|'));
-        if (lines.length < 3) {
-          return undefined;
-        }
-        const headers = lines[0]
-          .split('|')
-          .slice(1, -1)
-          .map((cell) => cell.trim());
-        const rows = lines.slice(2).map((line) =>
-          line
-            .split('|')
-            .slice(1, -1)
-            .map((cell) => cell.trim()),
-        );
-        return { headers, rows };
-      })
-      .filter(Boolean);
-    if (!tables.length) {
-      return markdowns.join('\n\n');
-    }
-
-    const headers = [...new Set(tables.flatMap((table) => table.headers))];
-    const outputRows = tables.flatMap((table) =>
-      table.rows.map((row) => {
-        const values = new Map(table.headers.map((header, index) => [header, row[index] ?? '']));
-        return headers.map((header) => values.get(header) ?? '');
-      }),
-    );
-    return [
-      `| ${headers.join(' | ')} |`,
-      `| ${headers.map(() => '---').join(' | ')} |`,
-      ...outputRows.map((row) => `| ${row.join(' | ')} |`),
-    ].join('\n');
-  },
   getPaddleOcrResultContent: (result) => {
     if (typeof result === 'string') {
       return result;
@@ -249,7 +201,6 @@ jest.mock('@librechat/api', () => ({
   resolveOcrPreprocessingChunkSizePages: jest.fn(() => 50),
   buildPdfPageChunks: (...args) => mockBuildPdfPageChunks(...args),
   getPdfPageCount: (...args) => mockGetPdfPageCount(...args),
-  createPdfPageRangeChunk: (...args) => mockCreatePdfPageRangeChunk(...args),
   createPdfPageRangeChunker: (...args) => mockCreatePdfPageRangeChunker(...args),
   ensurePdfChunkArtifacts: (...args) => mockEnsurePdfChunkArtifacts(...args),
   loadExistingPdfChunkArtifacts: (...args) => mockLoadExistingPdfChunkArtifacts(...args),

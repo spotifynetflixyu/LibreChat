@@ -286,12 +286,6 @@ async function mergePersistedSteelActivityMetadata({
     ? currentSteel.preflightToolCalls
     : [];
   const steelHistory = createSteelNativeHistory();
-  if (
-    typeof appendSteelNativeActivityEvent !== 'function' ||
-    typeof upsertSteelNativePreflightToolCall !== 'function'
-  ) {
-    return responseMetadata ?? {};
-  }
   for (const event of [...persistedEvents, ...currentEvents]) {
     appendSteelNativeActivityEvent(steelHistory, event);
   }

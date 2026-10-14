@@ -792,12 +792,7 @@ function getDefaultHandlers({
   handlers[delegateOcrStreamEventName] = createDelegateOcrStreamHandler();
   handlers[steelNativeStreamEventName] = {
     handle: async (_event, data) => {
-      if (typeof appendSteelNativeActivityEvent === 'function') {
-        appendSteelNativeActivityEvent(
-          steelHistory ?? steelActivityEvents,
-          data,
-        );
-      }
+      appendSteelNativeActivityEvent(steelHistory ?? steelActivityEvents, data);
       await emitForJob({ event: steelNativeStreamEventName, data });
     },
   };

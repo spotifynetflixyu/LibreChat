@@ -1,6 +1,4 @@
 import type {
-  steelAIDrivers,
-  steelCapabilityStatuses,
   steelRuleProposalChargeTypes,
   steelRuleProposalConfidences,
   steelRuleProposalParameterValueTypes,
@@ -10,7 +8,6 @@ import type {
 } from 'librechat-data-provider';
 import type { Document } from 'mongoose';
 
-export type SteelProviderId = (typeof steelAIDrivers)[number];
 export type SteelWorkingOrderMemoryKind =
   | 'working_order_row'
   | 'customer_fact'
@@ -25,16 +22,6 @@ export type SteelWorkingOrderMemorySourceKind =
   | 'ocr_result'
   | 'user_input';
 export type SteelWorkingOrderMemoryState = 'active' | 'superseded';
-export type SteelCapabilityStatus = (typeof steelCapabilityStatuses)[number];
-
-export type SteelSourceOriginalFormat = 'xlsx' | 'xls' | 'docx' | 'doc';
-export type SteelSourceNormalizedFormat = 'xlsx' | 'docx';
-export type SteelSourceConversionStatus =
-  | 'not_required'
-  | 'pending'
-  | 'succeeded'
-  | 'failed'
-  | 'skipped';
 export type SteelRuleProposalType = (typeof steelRuleProposalTypes)[number];
 export type SteelRuleProposalStatus = (typeof steelRuleProposalStatuses)[number];
 export type SteelRuleProposalScopeType = (typeof steelRuleProposalScopeTypes)[number];
@@ -142,65 +129,6 @@ export interface ISteelOcrPdfChunkArtifact extends Document {
   updatedAt?: Date;
 }
 
-export interface ISteelAIRun extends Document {
-  conversationMetaId?: string;
-  requestedProvider: SteelProviderId;
-  effectiveProvider?: SteelProviderId;
-  selectedModel: string;
-  unsupportedSettings?: string[];
-  providerSessionId?: string;
-  providerConversationId?: string;
-  providerResponseId?: string;
-  contextRefs?: string[];
-  toolCallIds?: string[];
-  attachedFileRefs?: string[];
-  fallbackReason?: string;
-  errorCategory?: string;
-  errorSummary?: string;
-  createdAt?: Date;
-  updatedAt?: Date;
-}
-
-/** Exclude Mongoose's model() method because Steel stores a string model id. */
-export interface ISteelAICapability extends Omit<Document, 'model'> {
-  provider: SteelProviderId;
-  model: string;
-  capability: string;
-  status: SteelCapabilityStatus;
-  checkedAt?: Date;
-  errorCategory?: string;
-  errorSummary?: string;
-  createdAt?: Date;
-  updatedAt?: Date;
-}
-
-export interface ISteelSourceVersion extends Document {
-  projectSourceId?: string;
-  sourceId?: string;
-  originalFileId: string;
-  originalFormat: SteelSourceOriginalFormat;
-  normalizedFormat?: SteelSourceNormalizedFormat;
-  normalizedFileId?: string;
-  conversionStatus: SteelSourceConversionStatus;
-  conversionError?: string;
-  sourceFileType: string;
-  parseVersion?: string;
-  parseStatus: 'pending' | 'parsed' | 'failed' | 'rejected';
-  extractionSummary?: string;
-  reviewStatus?: 'pending' | 'approved' | 'rejected';
-  createdAt?: Date;
-  updatedAt?: Date;
-}
-
-export interface ISteelToolCall extends Document {
-  conversationMetaId?: string;
-  aiRunId?: string;
-  toolName: string;
-  status: 'pending' | 'succeeded' | 'failed';
-  createdAt?: Date;
-  updatedAt?: Date;
-}
-
 export interface ISteelMemoryCandidate extends Document {
   proposalType: SteelRuleProposalType;
   status: SteelRuleProposalStatus;
@@ -221,13 +149,6 @@ export interface ISteelMemoryCandidate extends Document {
   reviewNote?: string;
   reason: string;
   confidence: SteelRuleProposalConfidence;
-  createdAt?: Date;
-  updatedAt?: Date;
-}
-
-export interface ISteelNamedState extends Document {
-  name?: string;
-  status?: string;
   createdAt?: Date;
   updatedAt?: Date;
 }

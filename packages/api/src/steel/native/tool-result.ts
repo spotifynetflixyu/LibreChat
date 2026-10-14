@@ -6,13 +6,7 @@ import type { SteelToolResult } from '../tools/results';
 
 export type SteelNativeToolResultSkipReason =
   | 'missing_conversation_id'
-  | 'missing_message_id'
   | 'missing_turn_index'
-  | 'user_message'
-  | 'unfinished_message'
-  | 'error_message'
-  | 'temporary_message'
-  | 'blank_content'
   | 'missing_tool_name'
   | 'missing_provider_tool_call_id'
   | 'failed_tool_result';

@@ -106,21 +106,6 @@ const PADDLEOCR_MEDIA_TYPES_BY_EXTENSION = {
   '.tiff': 'image/tiff',
   '.webp': 'image/webp',
 };
-const paddleOcrDiagnosticCodes = new Set([
-  'ai_studio_auth',
-  'ai_studio_unavailable',
-  'ai_studio_rate_limited',
-  'ai_studio_timeout',
-  'ai_studio_invalid_request',
-  'ai_studio_job_failed',
-  'ai_studio_response_parse',
-  'ai_studio_inference',
-]);
-const isSafePaddleOcrDiagnosticCode = (value) =>
-  typeof isPaddleOcrDiagnosticCode === 'function'
-    ? isPaddleOcrDiagnosticCode(value)
-    : paddleOcrDiagnosticCodes.has(value);
-
 const missingToolCache = new Map();
 const MISSING_TOOL_TTL_MS = 10_000;
 
@@ -1783,7 +1768,7 @@ function createToolInstance({
         error.message === 'Pending OAuth flow reused - return early';
       const wrapMcpError = (message) => {
         const wrappedError = new Error(message);
-        if (isSafePaddleOcrDiagnosticCode(error?.diagnosticCode)) {
+        if (isPaddleOcrDiagnosticCode(error?.diagnosticCode)) {
           Object.defineProperty(wrappedError, 'diagnosticCode', {
             value: error.diagnosticCode,
             enumerable: false,
@@ -1808,7 +1793,7 @@ function createToolInstance({
         );
       }
 
-      const hasSafeDiagnosticCode = isSafePaddleOcrDiagnosticCode(error?.diagnosticCode);
+      const hasSafeDiagnosticCode = isPaddleOcrDiagnosticCode(error?.diagnosticCode);
       const wrappedError = wrapMcpError(
         `[MCP][${serverName}][${toolName}] tool call failed${
           hasSafeDiagnosticCode || !error?.message ? '.' : `: ${error.message}`

@@ -14,9 +14,7 @@ import {
   delegateOcrToolName,
   isDelegateOcrQuoteOnlyTurn,
   normalizeDelegateOcrChunk,
-  parseDelegateOcrPageRangesFromTurn,
   delegateOcrArgsSchema,
-  runDelegateOcrWorkflow,
   resolveDelegateOcrPolicy,
   resolveDelegateOcrFileKeys,
   type DelegateOcrFileRecord,
@@ -172,17 +170,6 @@ describe('delegate_ocr', () => {
       expect(isDelegateOcrQuoteOnlyTurn(prompt)).toBe(true);
     },
   );
-
-  it('parses and canonicalizes explicit page expressions from the current turn', () => {
-    expect(parseDelegateOcrPageRangesFromTurn('重新核對第 35 頁至第 37 頁、pages 40-41')).toEqual([
-      { pageStart: 35, pageEnd: 37 },
-      { pageStart: 40, pageEnd: 41 },
-    ]);
-  });
-
-  it('does not mistake a full-document page count for a selected page', () => {
-    expect(parseDelegateOcrPageRangesFromTurn('完整 OCR 106 頁 PDF')).toBeUndefined();
-  });
 
   it('rejects non-positive or inverted page ranges at the public tool seam', () => {
     expect(() =>
@@ -998,7 +985,7 @@ describe('delegate_ocr', () => {
       .mockResolvedValueOnce(wrongMapping);
 
     await expect(
-      runDelegateOcrWorkflow({
+      delegateOcr({
         files: [
           { fileKey: 'file:image-1', pageRanges: [{ pageStart: 35, pageEnd: 36 }] },
         ],
@@ -1087,7 +1074,7 @@ describe('delegate_ocr', () => {
     });
     const workflow = { auditResponse, finalize };
 
-    const result = await runDelegateOcrWorkflow({
+    const result = await delegateOcr({
       files: [{ fileKey: 'file:image-1' }],
       currentUserTurn: '重新核對圖面',
       modelOptions,
@@ -1115,7 +1102,7 @@ describe('delegate_ocr', () => {
   it('audits empty and retry answers before applying the finalizer', async () => {
     const emptyAudit = jest.fn(async () => undefined);
     await expect(
-      runDelegateOcrWorkflow({
+      delegateOcr({
         files: [{ fileKey: 'file:image-1' }],
         currentUserTurn: '重新核對圖面',
         modelOptions,
@@ -1142,7 +1129,7 @@ describe('delegate_ocr', () => {
         finalResponse: 'backend:retry-3',
         ocrResultMarkdown: '## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| F1 | A |',
       });
-    const result = await runDelegateOcrWorkflow({
+    const result = await delegateOcr({
       files: [{ fileKey: 'file:image-1' }],
       currentUserTurn: '重新核對圖面',
       modelOptions,

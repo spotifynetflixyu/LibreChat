@@ -30,15 +30,6 @@ export function replaceSteelResponsesMarkdown(response: Response, markdown: stri
   if (last) last.text = markdown.startsWith(prefix) ? markdown.slice(prefix.length) : markdown;
 }
 
-export function applySteelResponsesCompletionMarkdown(
-  response: Response,
-  message: { text: string },
-  markdown: string,
-): void {
-  replaceSteelResponsesMarkdown(response, markdown);
-  message.text = extractSteelNativeResponseOutputText(response);
-}
-
 export async function finalizeSteelResponsesTurn(
   input: {
     req: SteelResponseRequest;

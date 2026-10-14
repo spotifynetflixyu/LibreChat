@@ -36,7 +36,7 @@ import {
   delegateOcrStreamedArtifact,
   delegateOcrToolName,
   delegateOcrArgsSchema,
-  runDelegateOcrWorkflow,
+  delegateOcr,
   type DelegateOcrExecutableTool,
 } from './delegate';
 import {
@@ -283,7 +283,7 @@ describe('OpenAI OAuth model adapter', () => {
       })) as BindToolsInput[],
     };
 
-    const answer = await runDelegateOcrWorkflow({
+    const answer = await delegateOcr({
       files: [{ fileKey: 'file:pdf-1' }],
       currentUserTurn: '重新核對圖面',
       userId: 'user-1',

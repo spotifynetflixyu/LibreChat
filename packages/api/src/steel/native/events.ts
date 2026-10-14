@@ -380,10 +380,6 @@ export function parseSteelNativeHistory(value: unknown): SteelNativeHistory | un
   }
 }
 
-export function cloneSteelNativeHistory(value: unknown): SteelNativeHistory | undefined {
-  return parseSteelNativeHistory(value);
-}
-
 export function createSteelNativeHistory(): SteelNativeHistory {
   return { activityEvents: [], preflightToolCalls: [] };
 }
@@ -1524,9 +1520,6 @@ export function upsertSteelNativePreflightToolCall(
   }
 }
 
-export const appendSteelNativePreflightToolCall: typeof upsertSteelNativePreflightToolCall =
-  upsertSteelNativePreflightToolCall;
-
 export interface BuildSteelNativeEventEnvelopesInput extends SteelNativeEventBase {
   capture: CaptureSteelNativeToolResultResult;
 }
@@ -1609,8 +1602,6 @@ function baseEvent(input: SteelNativeEventBase): SteelNativeEventBase {
   };
 }
 
-export type BuildSteelQuoteAuditEventInput = Omit<SteelNativeEventBase, 'source'>;
-
 export interface BuildSteelDelegateOcrStatusEventInput extends Omit<SteelNativeEventBase, 'source'> {
   delegateOcrIndex: number;
   stage: SteelNativeDelegateOcrStage;
@@ -1676,11 +1667,6 @@ export function buildSteelDelegateOcrStatusEventEnvelopes(
 ): SteelNativeEventEnvelope[] {
   return [buildSteelDelegateOcrStatusEventEnvelope(input)];
 }
-
-export const buildSteelDelegateOcrEvent: typeof buildSteelDelegateOcrStatusEvent =
-  buildSteelDelegateOcrStatusEvent;
-export const buildSteelDelegateOcrEventEnvelope: typeof buildSteelDelegateOcrStatusEventEnvelope =
-  buildSteelDelegateOcrStatusEventEnvelope;
 
 function validQuotationRepairCounts(value: Record<string, unknown>): boolean {
   return (value.repairAttempt === undefined || (isSafeInteger(value.repairAttempt) && value.repairAttempt >= 1)) &&
@@ -1753,18 +1739,6 @@ export function buildSteelQuotationStatusEventEnvelope(
     data: buildSteelQuotationStatusEvent({ ...input,
       ocrSource: input.ocrSelection ? quotationOcrSource(input.ocrSelection) : input.ocrSource,
     }),
-  };
-}
-
-export function buildSteelQuoteAuditEvent(
-  input: BuildSteelQuoteAuditEventInput = {},
-): SteelNativeQuoteAuditStartedEvent {
-  return {
-    type: 'quote_audit',
-    message: 'Stage 2 started',
-    stage: 'stage_2',
-    status: 'started',
-    ...baseEvent({ ...input, source: 'quote_runtime' }),
   };
 }
 

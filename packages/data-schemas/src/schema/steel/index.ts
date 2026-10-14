@@ -1,16 +1,5 @@
-export { default as steelAICapabilitySchema } from './aiCapability';
-export { default as steelAIRunSchema } from './aiRun';
-export { default as steelAdminImportSessionSchema } from './adminImportSession';
-export { default as steelAdminMappingProfileSchema } from './adminMappingProfile';
-export { default as steelAdminMergeTableSchema } from './adminMergeTable';
-export { default as steelExcelExportSchema } from './excelExport';
 export { default as steelMemoryCandidateSchema } from './memoryCandidate';
-export { default as steelMemorySchema } from './memory';
 export { default as steelOcrPdfChunkArtifactSchema } from './ocrPdfChunkArtifact';
-export { default as steelProjectSchema } from './project';
-export { default as steelProjectSourceSchema } from './projectSource';
-export { default as steelSourceVersionSchema } from './sourceVersion';
-export { default as steelToolCallSchema } from './toolCall';
 export { default as steelWorkingOrderMemorySchema } from './workingOrderMemory';
 export { default as steelDelegateOcrRunSchema } from './delegateOcr';
 export { default as steelConversationOcrStateSchema } from './conversationOcrState';

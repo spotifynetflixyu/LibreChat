@@ -2,7 +2,6 @@ import { PDFDocument } from 'pdf-lib';
 
 import {
   buildPdfPageChunks,
-  createPdfPageRangeChunk,
   createPdfPageRangeChunker,
   getPdfPageCount,
   normalizeOcrPageChunks,
@@ -125,11 +124,8 @@ describe('OCR preprocessing PDF chunks', () => {
 
     await expect(getPdfPageCount({ pdfBytes: sourcePdf })).resolves.toBe(3);
 
-    const chunk = await createPdfPageRangeChunk({
-      pdfBytes: sourcePdf,
-      pageStart: 2,
-      pageEnd: 3,
-    });
+    const createChunk = await createPdfPageRangeChunker({ pdfBytes: sourcePdf });
+    const chunk = await createChunk({ pageStart: 2, pageEnd: 3 });
 
     await expect(getPdfPageCount({ pdfBytes: chunk })).resolves.toBe(2);
   });

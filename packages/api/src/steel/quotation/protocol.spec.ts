@@ -5,7 +5,6 @@ import type {
 } from './protocol';
 import type { SteelToolResult } from '../tools/results';
 import {
-  buildQuotationSystemOrder,
   buildQuotationSystemOrderForReview,
   buildQuotationChunks,
   buildQuotationFailureMarkdown,
@@ -590,7 +589,7 @@ describe('quotation protocol', () => {
         response: `## system_order_chunk\n\n${table(systemHeaders, rowsFor(chunk, chunk.category))}`,
       }))
       .reverse();
-    const built = buildQuotationSystemOrder({ fullOcrResult: order, childResults: children });
+    const built = buildQuotationSystemOrderForReview({ fullOcrResult: order, childResults: children }).systemOrderMarkdown;
     const rows = parseMarkdownTables(built)[0]!.rows;
     expect(rows.map((row) => row[1])).toEqual([
       '鐵板 P1',
@@ -662,13 +661,13 @@ describe('quotation protocol', () => {
       return row;
     });
     expect(() =>
-      buildQuotationSystemOrder({
+      buildQuotationSystemOrderForReview({
         fullOcrResult: order,
         childResults: [child(chunks[0]!, rows.slice(0, 1))],
       }),
     ).toThrow('material rows');
     expect(() =>
-      buildQuotationSystemOrder({
+      buildQuotationSystemOrderForReview({
         fullOcrResult: order,
         childResults: [child(chunks[0]!, [[...rows[0]!, 'extra']])],
       }),
@@ -676,7 +675,7 @@ describe('quotation protocol', () => {
     const processing = [...rows[0]!];
     processing[14] = '加工/孔';
     expect(() =>
-      buildQuotationSystemOrder({
+      buildQuotationSystemOrderForReview({
         fullOcrResult: order,
         childResults: [child(chunks[0]!, [processing, rows[0]!])],
       }),

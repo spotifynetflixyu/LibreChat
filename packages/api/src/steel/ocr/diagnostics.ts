@@ -72,5 +72,3 @@ export function classifyPaddleOcrDiagnostic(stderr: string): PaddleOcrDiagnostic
   return undefined;
 }
 
-export const classifyPaddleOcrDiagnosticCode: typeof classifyPaddleOcrDiagnostic =
-  classifyPaddleOcrDiagnostic;

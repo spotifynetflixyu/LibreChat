@@ -52,39 +52,3 @@ export function prefixFileInstructions(content: string, instructions?: string | 
   return `${trimmedInstructions}\n\n${content}`;
 }
 
-export function applyFileInstructionsToMessages<
-  T extends {
-    role: string;
-    content: string;
-    files?: FileInstructionTarget[];
-  },
->(messages: T[], config?: FileInstructionConfig | null): T[] {
-  const instructions = config?.fileAnalysis?.instructions?.trim();
-  if (!instructions) {
-    return messages;
-  }
-
-  let changed = false;
-  const nextMessages = messages.map((message) => {
-    if (
-      message.role !== 'user' ||
-      !message.files?.length ||
-      !hasFileInstructionTarget(message.files)
-    ) {
-      return message;
-    }
-
-    const content = prefixFileInstructions(message.content, instructions);
-    if (content === message.content) {
-      return message;
-    }
-
-    changed = true;
-    return {
-      ...message,
-      content,
-    };
-  });
-
-  return changed ? nextMessages : messages;
-}

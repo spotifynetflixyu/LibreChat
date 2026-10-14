@@ -1,12 +1,8 @@
 import {
   createSteelNativeTool,
-  getNativeSteelToolName,
   mergeSteelToolDefinitions,
   prepareSteelNativeToolConfig,
   resolveSteelProviderToolName,
-  resolveNativeSteelToolName,
-  stripPaddleOcrToolsForMainAgent,
-  stripSteelToolsForOcrTurn,
 } from './tools';
 
 import type { LCTool, LCToolRegistry } from '@librechat/agents';
@@ -153,12 +149,7 @@ describe('Steel native tool adapter', () => {
     expect(result.toolDefinitions?.find(({ name }) => name === 'delegate_ocr')?.description).toBe(
       getDelegateOcrToolDefinition().description,
     );
-    expect(getNativeSteelToolName('search_customers', result.nameMap)).toBe(
-      'steel_search_customers',
-    );
-    expect(resolveNativeSteelToolName('steel_search_customers', result.nameMap)).toBe(
-      'search_customers',
-    );
+    expect(result.nameMap.get('search_customers')).toBe('steel_search_customers');
     expect(result.toolRegistry.get('search_customers')).toBe(existingTool);
     expect(result.toolRegistry.get('steel_search_customers')).toEqual(
       expect.objectContaining({
@@ -647,58 +638,6 @@ describe('Steel native tool adapter', () => {
     expect(resolveSteelProviderToolName('steel_search_customers')).toBe('search_customers');
     expect(resolveSteelProviderToolName('steel_lookup_quote_rules')).toBeUndefined();
     expect(resolveSteelProviderToolName('web_search')).toBeUndefined();
-  });
-
-  it('removes PaddleOCR and Steel execution tools from OCR main agents', () => {
-    const result = stripSteelToolsForOcrTurn({
-      tools: [
-        { name: 'search_customers' },
-        { name: 'search_price_candidates' },
-        { name: 'delegate_ocr' },
-        { name: 'paddleocr_vl---PaddleOCR' },
-        { name: 'web_search' },
-      ],
-      toolDefinitions: [
-        { name: 'search_customers', description: '', parameters: { type: 'object', properties: {} } },
-        { name: 'search_price_candidates', description: '', parameters: { type: 'object', properties: {} } },
-        { name: 'delegate_ocr', description: '', parameters: { type: 'object', properties: {} } },
-        { name: 'paddleocr_vl---PaddleOCR', description: '', parameters: { type: 'object', properties: {} } },
-        { name: 'web_search', description: '', parameters: { type: 'object', properties: {} } },
-      ],
-      toolRegistry: new Map([
-        ['search_customers', { name: 'search_customers' }],
-        ['search_price_candidates', { name: 'search_price_candidates' }],
-        ['delegate_ocr', { name: 'delegate_ocr' }],
-        ['paddleocr_vl---PaddleOCR', { name: 'paddleocr_vl---PaddleOCR' }],
-        ['web_search', { name: 'web_search' }],
-      ]),
-    });
-
-    expect(result.tools?.map((tool) => (typeof tool === 'string' ? tool : tool?.name))).toEqual([
-      'web_search',
-    ]);
-    expect(result.toolDefinitions?.map((tool) => tool.name)).toEqual([
-      'web_search',
-    ]);
-    expect([...result.toolRegistry?.keys() ?? []]).toEqual([
-      'web_search',
-    ]);
-  });
-
-  it('removes PaddleOCR from a standard main agent without removing Steel tools', () => {
-    const result = stripPaddleOcrToolsForMainAgent({
-      tools: ['search_customers', 'delegate_ocr', 'paddleocr_vl---PaddleOCR', 'web_search'],
-      toolDefinitions: [
-        { name: 'search_customers', description: '', parameters: { type: 'object', properties: {} } },
-        { name: 'delegate_ocr', description: '', parameters: { type: 'object', properties: {} } },
-        { name: 'paddleocr_vl---PaddleOCR', description: '', parameters: { type: 'object', properties: {} } },
-      ],
-    });
-
-    expect(result.tools).toEqual(['search_customers', 'web_search']);
-    expect(result.toolDefinitions?.map((tool) => tool.name)).toEqual([
-      'search_customers',
-    ]);
   });
 
   it.each([

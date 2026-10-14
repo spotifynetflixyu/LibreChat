@@ -529,20 +529,6 @@ describe('initializeClient — processAgent ACL gate', () => {
     ).rejects.toBe(toolError);
   });
 
-  it('does not install an assistant Markdown persistence hook', async () => {
-    const req = makeReq();
-    mockInitializeAgent.mockResolvedValue(makePrimaryConfig([]));
-
-    await initializeClient({
-      req,
-      res: {},
-      signal: new AbortController().signal,
-      endpointOption: makeEndpointOption(),
-    });
-
-    expect(agentClientArgs.onResponseMessageSaved).toBeUndefined();
-  });
-
   it('should skip handoff agent and filter its edge when user lacks VIEW access', async () => {
     await createAgent({
       id: TARGET_ID,

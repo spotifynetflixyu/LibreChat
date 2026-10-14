@@ -40,9 +40,6 @@ export const quotationManualReviewColumns = [
 
 export const quotationSignal = '## quote_signal\n\nstart';
 
-export type QuotationSystemOrderColumn = (typeof quotationSystemOrderColumns)[number];
-export type QuotationManualReviewColumn = (typeof quotationManualReviewColumns)[number];
-
 export interface QuotationSignal {
   readonly action: 'start';
 }
@@ -263,8 +260,6 @@ export function extractCustomerDataTable(response: string): QuotationChunkTable 
     ? { headers: [...tables[0].headers], rows: tables[0].rows.map((row) => [...row]) }
     : undefined;
 }
-
-export const parseCustomerDataTable: typeof extractCustomerDataTable = extractCustomerDataTable;
 
 function renderTable(table: QuotationChunkTable): string {
   return [
@@ -665,11 +660,6 @@ export interface BuildQuotationSystemOrderInput {
   readonly childResults: readonly QuotationChildResultInput[];
 }
 
-/** Build the authoritative system_order directly from validated child rows. */
-export function buildQuotationSystemOrder(input: BuildQuotationSystemOrderInput): string {
-  return buildQuotationSystemOrderForReview(input).systemOrderMarkdown;
-}
-
 export function buildQuotationSystemOrderForReview(input: BuildQuotationSystemOrderInput): {
   systemOrderMarkdown: string;
   reviewRemarks: string;
@@ -987,9 +977,6 @@ export function validateQuotationChildResult(
   return validateChildTable(input);
 }
 
-export const validateQuotationChunkResult: typeof validateQuotationChildResult =
-  validateQuotationChildResult;
-
 function sectionRows(
   text: string,
   title: string,
@@ -1164,5 +1151,3 @@ export function finalizeQuotationMainResponse(
   };
 }
 
-export const finalizeQuotationResponse: typeof finalizeQuotationMainResponse =
-  finalizeQuotationMainResponse;

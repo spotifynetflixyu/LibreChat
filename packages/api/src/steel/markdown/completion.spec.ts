@@ -578,12 +578,12 @@ it('persists a later ordinary reply without adopting the previous completed quot
 
 it('rejects an ordinary AI response that tries to publish a replacement system order', async () => {
   const published = await seedPublishedOrder('Original summary');
-  const before = await services().quotation.readCurrentSystemOrder(scope);
+  const before = (await services().quotation.readState(scope))?.currentSystemOrder;
   const later = await turn(canonicalSystemOrder('AI replacement'), 'assistant-3', 'ai-3', '請說明');
   await expect(later.run()).rejects.toMatchObject({ code: 'invalid_system_order' });
   expect(later.persist).not.toHaveBeenCalled();
   expect(await db.getMessage({ user: scope.userId, messageId: 'assistant-3' })).toBeNull();
-  expect(await services().quotation.readCurrentSystemOrder(scope)).toMatchObject({ sha256: before?.sha256 });
+  expect((await services().quotation.readState(scope))?.currentSystemOrder).toMatchObject({ sha256: before?.sha256 });
   expect((await db.getMessage({ user: scope.userId, messageId: published.targetMessageId }))?.text)
     .toContain(canonicalSystemOrder('canonical'));
 });

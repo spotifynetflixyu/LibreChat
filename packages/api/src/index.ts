@@ -130,7 +130,6 @@ export * from './stream';
 /* Diagnostics */
 export { memoryDiagnostics } from './utils/memory';
 /* Steel */
-export * from './steel/access';
 export * from './steel/admin';
 export * from './steel/ai/config';
 export * from './steel/markdown/completion';
@@ -140,7 +139,6 @@ export * from './steel/memory/service';
 export * from './steel/messageGuard';
 export * from './steel/models';
 export * from './steel/native';
-export * from './steel/normalization';
 export * from './steel/ocr';
 export * from './steel/quotation';
 export * from './steel/catalog';
@@ -153,7 +151,6 @@ export * from './steel/review';
 export * from './steel/sources';
 export * from './steel/runtime/types';
 export * from './steel/tools';
-export * from './steel/vision/service';
 /* RUM */
 export * from './rum/proxy';
 /* OpenAPI */

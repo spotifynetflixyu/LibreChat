@@ -151,6 +151,12 @@ afterAll(async () => {
   await server.stop();
 });
 
+async function readOcrInput(target: SteelQuotationScope) {
+  const result = await createSteelQuotationInputMethods(mongoose).readSteelQuotationOcrInput(target);
+  if (!result.ok) throw Object.assign(new Error(result.code), { code: result.code });
+  return result.input;
+}
+
 it('uses legacy OCR only for its uniquely bound conversation owner', async () => {
   await mongoose.models.Message.create({ ...scope, user: scope.userId, messageId: 'legacy-ocr', text: orderMarkdown('2'), isCreatedByUser: false, unfinished: false });
   await createSteelConversationOcrStateModel(mongoose).updateOne(
@@ -375,7 +381,7 @@ async function admitPublishedHumanRun(customerResponseId = 'quote-response'): Pr
     text: '請使用已保存的 OCR 報價',
   });
   if (!prepared.state.currentOrder?.ocrSelection) throw new Error('Human OCR was not selected');
-  const input = await service.readOcrInput(scope);
+  const input = await readOcrInput(scope);
   if (!input) throw new Error('Quotation OCR input was not prepared');
   const customerResponse = `${renderQuotationCustomerMarkdown({ tier: 'B' })}\n\n## quote_signal\n\nstart`;
   await commitQuotationCustomerResponse({
@@ -547,7 +553,7 @@ it('selects the newer human Save, freezes its clean Markdown and mappings at adm
 
   await saveHuman('4');
   const after = await service.readState(scope);
-  const current = await service.readOcrInput(scope);
+  const current = await readOcrInput(scope);
   expect(current?.markdown).toContain('| 鐵板 | P1 | 4 | 6 | 100 | 200 | F1 |');
   expect(after?.activeRun?.runId).toBe(run.runId);
   const frozenPayload = JSON.parse((await service.readArtifact({ scope, ref: run.snapshotRef }))!) as SteelQuotationSnapshotPayload;
@@ -820,10 +826,10 @@ it('rejects a present human candidate whose exact saved receipt or version proof
     await Output.updateOne(scope, { $set: { receipts: output.receipts } });
   }
   await State.updateOne(scope, { $set: { 'markdownPublication.lastHumanOcr.version': (human.version ?? 2) + 1 } });
-  await expect(service.readOcrInput(scope)).rejects.toMatchObject({ code: 'invalid_snapshot' });
+  await expect(readOcrInput(scope)).rejects.toMatchObject({ code: 'invalid_snapshot' });
   await State.updateOne(scope, { $set: { 'markdownPublication.lastHumanOcr': human } });
   await Output.deleteOne(scope);
-  await expect(service.readOcrInput(scope)).rejects.toMatchObject({ code: 'invalid_snapshot' });
+  await expect(readOcrInput(scope)).rejects.toMatchObject({ code: 'invalid_snapshot' });
   expect((await service.readState(scope))?.activeRun).toBeUndefined();
   expect(await createSteelQuotationArtifactModel(mongoose).countDocuments({ ...scope, kind: 'snapshot' })).toBe(0);
 });
@@ -836,14 +842,13 @@ it('requires the exact historical AI OCR artifact before selecting a human-only 
   const aiArtifact = await Artifact.findOne({ ...scope, operationId: 'ai:ocr_result' }).lean();
   if (!aiArtifact?.markdownPublication) throw new Error('Missing original AI OCR artifact');
   await State.updateOne(scope, { $unset: { 'markdownPublication.current.ocr_result': 1 } });
-  const service = createSteelQuotationStateService(mongoose);
-  expect((await service.readOcrInput(scope))?.selection.selected.source).toBe('human');
+  expect((await readOcrInput(scope))?.selection.selected.source).toBe('human');
   await Artifact.deleteOne({ _id: aiArtifact._id });
   const { _id: _ignored, ...wrongKindArtifact } = aiArtifact;
   await Artifact.create({ ...wrongKindArtifact, operationId: 'ai:customer_data', markdownPublication: {
     ...aiArtifact.markdownPublication, reference: { ...aiArtifact.markdownPublication.reference, kind: 'customer_data' },
   } });
-  await expect(service.readOcrInput(scope)).rejects.toMatchObject({ code: 'invalid_snapshot' });
+  await expect(readOcrInput(scope)).rejects.toMatchObject({ code: 'invalid_snapshot' });
 });
 
 it('generates and regenerates bound quotation versions from a pre-v9 OCR conversation without opening review', async () => {

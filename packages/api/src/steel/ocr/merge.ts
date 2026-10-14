@@ -39,21 +39,6 @@ export function getSavedOcrPreprocessingChunkMarkdowns(
     }));
 }
 
-export function mergeOcrPreprocessingStateMarkdown(input: {
-  state: OcrPreprocessingMarkdownState;
-  ocrFileKey: string;
-  ocrRuleVersion: string;
-}): string | undefined {
-  const chunks = getSavedOcrPreprocessingChunkMarkdowns(input.state);
-  return chunks.length > 0
-    ? mergeChunkMarkdownForFileKey({
-        ocrFileKey: input.ocrFileKey,
-        ocrRuleVersion: input.ocrRuleVersion,
-        chunks,
-      })
-    : undefined;
-}
-
 function mergeChunkMarkdownTables(
   chunks: readonly {
     chunkIndex: number;

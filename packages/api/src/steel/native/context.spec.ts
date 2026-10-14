@@ -1,7 +1,6 @@
 import type { SteelAgentRule, SteelQuoteRule } from '../repositories/rules';
 import type { SteelRuntimeContextDependencies } from '../runtime/context';
 import type { SteelRepositoryClient } from '../repositories/types';
-import type { SteelQuoteDefault } from '../repositories/defaults';
 import {
   buildDefaultSteelGlobalAgentContext,
   buildSteelGlobalAgentContext,
@@ -51,35 +50,9 @@ function createQuoteRule(overrides: Partial<SteelQuoteRule> = {}): SteelQuoteRul
   };
 }
 
-function createQuoteDefault(overrides: Partial<SteelQuoteDefault> = {}): SteelQuoteDefault {
-  return {
-    id: 20,
-    defaultType: 'customer_tier',
-    originTable: 'steel.rules',
-    originId: 'fixture',
-    scopeType: 'company',
-    customerId: null,
-    customerTierId: null,
-    selector: {
-      whenCustomerTierUnknown: true,
-    },
-    effect: 'Use tier B when the customer tier is unknown.',
-    defaultParameters: {
-      customerTier: 'B',
-    },
-    priority: 20,
-    confidence: 'high',
-    active: true,
-    reviewState: 'reviewed',
-    ...overrides,
-  };
-}
-
 function createDependencies(): SteelRuntimeContextDependencies {
   return {
     listAgentRules: jest.fn(async () => [createAgentRule()]),
-    listReviewedInstructionPackets: jest.fn(async () => []),
-    listReviewedQuoteDefaults: jest.fn(async () => [createQuoteDefault()]),
     listReviewedQuoteRules: jest.fn(async () => [createQuoteRule()]),
     listOutputRules: jest.fn(async () => [
       createAgentRule({
@@ -283,7 +256,6 @@ describe('Steel native context adapter', () => {
 
     expect(context.mode).toBe('standard');
     expect(context.instructionPrefix).toContain('Agent rule fixture');
-    expect(context.instructionPrefix).toContain('Use tier B when the customer tier is unknown.');
     expect(context.instructionPrefix).toContain('Quote rule fixture');
     expect(context.instructionPrefix).toContain('Calculation output rule fixture');
     expect(context.instructionPrefix).toContain('Workbook output rule fixture');
@@ -346,10 +318,8 @@ describe('Steel native context adapter', () => {
     });
 
     expect(context.instructionPrefix).toContain('AI-actionable agent instruction');
-    expect(context.instructionPrefix).toContain('whenCustomerTierUnknown');
-    expect(context.instructionPrefix).toContain('"customerTier":"B"');
     expect(context.instructionPrefix).not.toMatch(
-      /steel-agent-rule|quote_rule:|quote_default:20|ruleType:|ruleSections:|scopeType: catalog_family|catalogFamily:|selectors:|parameters:|toolPolicy:|outputPolicy:|availableTools|carry_forward_previous_active_sheet|replace_previous_active_sheet|steel_global_rules_context|internalRouting/u,
+      /steel-agent-rule|quote_rule:|ruleType:|ruleSections:|scopeType: catalog_family|catalogFamily:|selectors:|parameters:|toolPolicy:|outputPolicy:|availableTools|carry_forward_previous_active_sheet|replace_previous_active_sheet|steel_global_rules_context|internalRouting/u,
     );
   });
 
@@ -486,7 +456,6 @@ describe('Steel native context adapter', () => {
 
     expect(context.mode).toBe('ocr');
     expect(context.instructionPrefix).not.toContain('Agent rule fixture');
-    expect(context.instructionPrefix).not.toContain('Use tier B when the customer tier is unknown.');
     expect(context.instructionPrefix).not.toContain('Quote rule fixture');
     expect(context.instructionPrefix).not.toContain('Calculation output rule fixture');
     expect(context.instructionPrefix).not.toContain('Workbook output rule fixture');
@@ -618,7 +587,6 @@ describe('Steel native context adapter', () => {
     expect(context.instructionPrefix.split('Quotation child lookup rule fixture')).toHaveLength(2);
     expect(context.instructionPrefix).toContain('Quote rule fixture');
     expect(context.instructionPrefix).toContain('Quotation calculation rule fixture');
-    expect(context.instructionPrefix).toContain('Use tier B when the customer tier is unknown.');
     expect(context.instructionPrefix).toContain('Workbook output rule fixture');
     expect(context.instructionPrefix.lastIndexOf('Quotation child lookup rule fixture')).toBeGreaterThan(
       context.instructionPrefix.indexOf('Workbook output rule fixture'),

@@ -6,17 +6,15 @@ import type {
   SteelRuntimeOcrSourceFileMapping,
 } from '../runtime/context';
 import type { SteelAgentRule, SteelQuoteRule } from '../repositories/rules';
-import type { SteelQuoteDefault } from '../repositories/defaults';
 import type { SteelRuntimeMessageRole } from '../runtime/types';
 import type { SteelRepositoryClient } from '../repositories';
 import {
   listReviewedSteelAgentRules,
   listReviewedSteelOtherRules,
   listReviewedSteelOutputRules,
-  listReviewedSteelQuoteDefaults,
   listReviewedSteelQuoteRules,
 } from '../repositories';
-import { prepareLibreChatSteelRuntimeContext } from '../runtime/context';
+import { prepareSteelRuntimeContext } from '../runtime/context';
 import { OCR_COMPLETION_DIRECTIVE_MARKER } from '../markdown/ocr';
 import { normalizeOcrOrganizerFileKey } from '../ocr/organizer';
 import { createSteelPostgresPool } from '../postgres';
@@ -159,17 +157,6 @@ function compactText(values: readonly (string | undefined)[]): string[] {
 
 function renderAgentRule(rule: SteelAgentRule): string {
   return compactText([`## ${rule.title}`, rule.prompt]).join('\n');
-}
-
-function renderQuoteDefault(quoteDefault: SteelQuoteDefault): string {
-  return compactText([
-    '## Quote default',
-    `defaultType: ${quoteDefault.defaultType}`,
-    `scopeType: ${quoteDefault.scopeType}`,
-    quoteDefault.effect,
-    `selector: ${JSON.stringify(quoteDefault.selector)}`,
-    `defaultParameters: ${JSON.stringify(quoteDefault.defaultParameters)}`,
-  ]).join('\n');
 }
 
 function renderQuoteRule(quoteRule: SteelQuoteRule): string {
@@ -479,10 +466,7 @@ function buildQuotationRuleItems(
 }
 
 function buildQuotationQuoteRuleItems(runtimeContext: SteelRuntimeContext): string[] {
-  return [
-    ...runtimeContext.rules.steelGlobalRules.quoteDefaults.map(renderQuoteDefault),
-    ...runtimeContext.rules.steelGlobalRules.quoteRules.map(renderQuoteRule),
-  ];
+  return runtimeContext.rules.steelGlobalRules.quoteRules.map(renderQuoteRule);
 }
 
 function buildQuotationWorkbookRuleItems(runtimeContext: SteelRuntimeContext): string[] {
@@ -562,10 +546,7 @@ export function buildSteelNativeInstructionPrefix({
   } else {
     sections = [
       buildSlot('agent', 'Steel Agent Rules', runtimeContext.rules.agentRules.filter((rule) => !isQuotationAgentRule(rule)).map(renderAgentRule)),
-      buildSlot('quote_rules', 'Steel Quote Defaults and Category Rules', [
-        ...runtimeContext.rules.steelGlobalRules.quoteDefaults.map(renderQuoteDefault),
-        ...runtimeContext.rules.steelGlobalRules.quoteRules.map(renderQuoteRule),
-      ]),
+      buildSlot('quote_rules', 'Steel Quote Defaults and Category Rules', buildQuotationQuoteRuleItems(runtimeContext)),
       buildSlot(
         'output',
         'Steel Output Rules',
@@ -699,7 +680,6 @@ export function createSteelContextDependencies({
   let agentRulesPromise: Promise<SteelAgentRule[]> | undefined;
   let otherRulesPromise: Promise<SteelAgentRule[]> | undefined;
   let outputRulesPromise: Promise<SteelAgentRule[]> | undefined;
-  let quoteDefaultsPromise: Promise<SteelQuoteDefault[]> | undefined;
   let quoteRulesPromise: Promise<SteelQuoteRule[]> | undefined;
   const getClient = () => runtimeRulesClient ?? getDefaultSteelNativeRulesClient();
 
@@ -709,15 +689,6 @@ export function createSteelContextDependencies({
         listReviewedSteelAgentRules(getClient()),
       );
       return agentRulesPromise;
-    },
-    listReviewedInstructionPackets() {
-      return Promise.resolve([]);
-    },
-    listReviewedQuoteDefaults() {
-      quoteDefaultsPromise ??= resolveSteelNativeContextList(() =>
-        listReviewedSteelQuoteDefaults(getClient()),
-      );
-      return quoteDefaultsPromise;
     },
     listReviewedQuoteRules() {
       quoteRulesPromise ??= resolveSteelNativeContextList(() =>
@@ -1046,7 +1017,7 @@ export async function buildSteelGlobalAgentContext({
   attachments,
   renderProfile = 'agent_client',
   mode = 'standard',
-  prepareRuntimeContext = prepareLibreChatSteelRuntimeContext,
+  prepareRuntimeContext = prepareSteelRuntimeContext,
 }: BuildSteelGlobalAgentContextInput): Promise<SteelNativeGlobalAgentContext> {
   const attachmentReferences = collectAttachmentReferences({ conversation, attachments });
   const preparedRuntimeContext = await prepareRuntimeContext({

@@ -3,7 +3,6 @@ import {
   listReviewedSteelOtherRules,
   listReviewedSteelOutputRules,
   listReviewedSteelQuoteRules,
-  searchSteelRules,
 } from './rules';
 
 import type { SteelRepositoryClient } from './types';
@@ -71,16 +70,6 @@ const otherRuleRow = {
 };
 
 describe('Steel agent and quote rule repositories', () => {
-  it('searches rules with a valid SELECT list', async () => {
-    const query = jest.fn().mockResolvedValue({ rows: [agentRuleRow] });
-
-    const result = await searchSteelRules({ query } as SteelRepositoryClient, {});
-    const sql = query.mock.calls[0]?.[0];
-
-    expect(sql).not.toMatch(/review_state,\s*FROM/u);
-    expect(result).toHaveLength(1);
-  });
-
   it('lists reviewed active agent rules without output or other rules', async () => {
     const query = jest.fn().mockResolvedValue({ rows: [agentRuleRow] });
 

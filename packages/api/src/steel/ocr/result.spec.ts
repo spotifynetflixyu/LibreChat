@@ -2,7 +2,6 @@ import type { OcrTable, SourceMappingEntry } from './result';
 import {
   buildOcrUpdateSummary,
   finalizeOcrResponse,
-  hasOcrResultUpdates,
   parseAssistantMarkdown,
   parseOcrResultTable,
   reconcileOcrResults,
@@ -512,10 +511,6 @@ describe('finalizeOcrResponse', () => {
     ).toEqual({ ok: false, reason: 'duplicate_ocr_result' });
     const fenced = `before\n\n\x60\x60\x60markdown\n## ocr_result_updates\nold\n\x60\x60\x60\n\n${full}`;
     expect(finalizeOcrResponse({ assistantResponse: fenced, canonicalMapping: [] }).ok).toBe(true);
-    expect(hasOcrResultUpdates('## ocr_result_updates\n\nlegacy')).toBe(true);
-    expect(
-      hasOcrResultUpdates(`\x60\x60\x60markdown\n## ocr_result_updates\nlegacy\n\x60\x60\x60`),
-    ).toBe(false);
   });
 });
 

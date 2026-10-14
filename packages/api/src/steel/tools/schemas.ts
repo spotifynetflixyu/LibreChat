@@ -2,16 +2,9 @@ import { z } from 'zod';
 
 import type { ProcessingPriceCategory } from '../pricing/processing-candidates';
 
-import {
-  defaultPriceTierCode,
-  priceCategories,
-  priceLookupMaterialKinds,
-  priceTierCodes,
-} from '../pricing/enums';
+import { priceCategories, priceLookupMaterialKinds } from '../pricing/enums';
 import { processingPriceCategories } from '../pricing/processing-candidates';
 import { isPriceSubcategory } from '../pricing/categories';
-
-export const defaultSteelPriceCustomerTier: (typeof priceTierCodes)[number] = defaultPriceTierCode;
 
 const nonEmptyString = z.string().trim().min(1);
 const positiveDecimalString = z
@@ -20,55 +13,8 @@ const positiveDecimalString = z
   .regex(/^(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)$/u)
   .refine((value) => Number(value) > 0, 'Thickness must be greater than zero');
 const limitSchema = z.number().int().min(1).max(100).optional();
-const optionalFilterString = z.preprocess(
-  (value) => (typeof value === 'string' && value.trim() === '' ? undefined : value),
-  nonEmptyString.optional(),
-);
-const reviewStateSchema = z.enum(['draft', 'needs_review', 'reviewed', 'rejected']).optional();
+
 const keywordsSchema = z.array(nonEmptyString).min(1).max(20);
-
-interface InstructionCatalogContextInput {
-  lineRefs?: string[];
-  packetGroupHints?: string[];
-  catalogCandidates?: string[];
-  productNameCandidates?: string[];
-  surfaceCandidates?: string[];
-  formulaCandidates?: string[];
-  processingTypes?: string[];
-  lowConfidenceReasons?: string[];
-}
-
-interface LookupCustomerContextInput {
-  customerId?: number;
-  customerTier?: (typeof priceTierCodes)[number];
-  customerName?: string;
-  tierKnown?: boolean;
-}
-
-type ReviewStateInput = 'draft' | 'needs_review' | 'reviewed' | 'rejected';
-
-export interface LookupDefaultsInput {
-  catalogContexts: InstructionCatalogContextInput[];
-  customerContext?: LookupCustomerContextInput;
-  reviewState?: ReviewStateInput;
-  includeInactive?: boolean;
-  limit?: number;
-}
-
-export interface LookupInstructionsInput {
-  taskTypes: string[];
-  packetGroupHints?: string[];
-  evidenceSummary: string;
-  catalogContexts: InstructionCatalogContextInput[];
-  customerContext?: Pick<LookupCustomerContextInput, 'customerName' | 'tierKnown'>;
-  reviewState?: ReviewStateInput;
-  includeInactive?: boolean;
-  limit?: number;
-}
-
-export interface LookupQuoteRulesInput extends Omit<LookupInstructionsInput, 'customerContext'> {
-  customerContext?: LookupCustomerContextInput;
-}
 
 interface SteelPriceLookupQueryInput {
   queryId: string;
@@ -100,77 +46,6 @@ interface SearchCustomersInput {
   keywords: string[];
   limit?: number;
 }
-
-export interface RunVisualInspectionInput {
-  filename?: string;
-  fileIndex?: number;
-  page?: number;
-  imageIndex?: number;
-  inspection_types: Array<
-    | 'holes'
-    | 'slots'
-    | 'continuous_edges'
-    | 'bends'
-    | 'cut_corners'
-    | 'notches'
-    | 'geometry_consistency'
-  >;
-  prompt: string;
-  dpi?: number;
-}
-
-const instructionCatalogContextSchema = z.object({
-  lineRefs: z.array(nonEmptyString).min(1).max(20).optional(),
-  packetGroupHints: z.array(nonEmptyString).min(1).max(20).optional(),
-  catalogCandidates: z.array(nonEmptyString).min(1).max(20).optional(),
-  productNameCandidates: z.array(nonEmptyString).min(1).max(20).optional(),
-  surfaceCandidates: z.array(nonEmptyString).min(1).max(20).optional(),
-  formulaCandidates: z.array(nonEmptyString).min(1).max(20).optional(),
-  processingTypes: z.array(nonEmptyString).min(1).max(20).optional(),
-  lowConfidenceReasons: z.array(nonEmptyString).min(1).max(20).optional(),
-});
-
-const lookupInstructionsSchema = z.object({
-  taskTypes: z.array(nonEmptyString).min(1).max(20),
-  packetGroupHints: z.array(nonEmptyString).min(1).max(20).optional(),
-  evidenceSummary: nonEmptyString,
-  catalogContexts: z.array(instructionCatalogContextSchema).min(1).max(20),
-  customerContext: z
-    .object({
-      customerName: nonEmptyString.optional(),
-      tierKnown: z.boolean().optional(),
-    })
-    .optional(),
-  reviewState: reviewStateSchema,
-  includeInactive: z.boolean().optional(),
-  limit: limitSchema,
-});
-
-const _legacyLookupQuoteRulesSchema = lookupInstructionsSchema.extend({
-  customerContext: z
-    .object({
-      customerId: z.number().int().positive().optional(),
-      customerTier: z.enum(priceTierCodes).optional(),
-      customerName: nonEmptyString.optional(),
-      tierKnown: z.boolean().optional(),
-    })
-    .optional(),
-});
-
-const _lookupDefaultsSchema = z.object({
-  catalogContexts: z.array(instructionCatalogContextSchema).min(1).max(20),
-  customerContext: z
-    .object({
-      customerId: z.number().int().positive().optional(),
-      customerTier: z.enum(priceTierCodes).optional(),
-      customerName: nonEmptyString.optional(),
-      tierKnown: z.boolean().optional(),
-    })
-    .optional(),
-  reviewState: reviewStateSchema,
-  includeInactive: z.boolean().optional(),
-  limit: limitSchema,
-});
 
 const stockLengthMmSchema = z.array(positiveDecimalString).min(1).max(20);
 
@@ -383,41 +258,6 @@ const searchPriceCandidatesSchema: z.ZodType<SearchPriceCandidatesInput, z.ZodTy
     }),
   );
 
-const _runVisualInspectionSchema: z.ZodType<RunVisualInspectionInput> = z
-  .object({
-    filename: nonEmptyString.optional(),
-    fileIndex: z.number().int().min(0).optional(),
-    page: z.number().int().min(1).optional(),
-    imageIndex: z.number().int().min(1).optional(),
-    inspection_types: z
-      .array(
-        z.enum([
-          'holes',
-          'slots',
-          'continuous_edges',
-          'bends',
-          'cut_corners',
-          'notches',
-          'geometry_consistency',
-        ]),
-      )
-      .min(1)
-      .max(10),
-    prompt: nonEmptyString,
-    dpi: z.number().int().min(150).max(600).optional(),
-  })
-  .strict()
-  .superRefine((input, ctx) => {
-    if (input.filename !== undefined || input.fileIndex !== undefined) {
-      return;
-    }
-
-    ctx.addIssue({
-      code: z.ZodIssueCode.custom,
-      message: 'Provide filename or fileIndex',
-    });
-  });
-
 const searchCustomersSchema: z.ZodType<SearchCustomersInput> = z.object({
   keywords: keywordsSchema,
   limit: limitSchema,
@@ -432,4 +272,4 @@ export const steelToolArgsSchemas: {
 } as const;
 
 export type SteelToolName = keyof typeof steelToolArgsSchemas;
-export type SteelBusinessToolName = SteelToolName;
+

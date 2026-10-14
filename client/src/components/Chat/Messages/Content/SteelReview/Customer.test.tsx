@@ -9,7 +9,7 @@ import type {
   SteelMarkdownVersion,
 } from 'librechat-data-provider';
 import type { TranslationKeys } from '~/hooks';
-import { useCommitSteelCustomerMutation, useGetSteelCustomerQuery } from '~/data-provider';
+import { useCommitSteelCustomerMutation } from '~/data-provider';
 import { steelReviewCustomerPriceTierFamily } from './state';
 import { useMessageContext } from '~/Providers';
 import SteelCustomer from './Customer';
@@ -17,7 +17,6 @@ import { useLocalize } from '~/hooks';
 
 jest.mock('~/data-provider', () => ({
   useCommitSteelCustomerMutation: jest.fn(),
-  useGetSteelCustomerQuery: jest.fn(),
 }));
 
 jest.mock('~/Providers', () => ({
@@ -29,7 +28,6 @@ jest.mock('~/hooks', () => ({
 }));
 
 const mockUseCommitSteelCustomerMutation = useCommitSteelCustomerMutation as jest.Mock;
-const mockUseGetSteelCustomerQuery = useGetSteelCustomerQuery as jest.Mock;
 const mockUseMessageContext = useMessageContext as jest.Mock;
 const mockUseLocalize = useLocalize as jest.Mock;
 
@@ -143,7 +141,6 @@ describe('SteelCustomer', () => {
       conversationId: input.conversationId,
       isSubmitting: false,
     });
-    mockUseGetSteelCustomerQuery.mockImplementation(() => query);
     mockUseCommitSteelCustomerMutation.mockImplementation(useTestCommitMutation);
     mockUseLocalize.mockReturnValue((key: TranslationKeys) => key);
   });
@@ -211,7 +208,6 @@ describe('SteelCustomer', () => {
     );
     expect(screen.getByRole('button', { name: 'com_ui_confirm' })).toBeEnabled();
     expect(screen.queryByText('com_ui_loading')).toBeNull();
-    expect(mockUseGetSteelCustomerQuery).not.toHaveBeenCalled();
   });
 
   it('rejects a missing Markdown tier without assuming a default', async () => {
@@ -221,7 +217,6 @@ describe('SteelCustomer', () => {
     await user.click(screen.getByTestId('steel-customer-edit'));
     expect(screen.getByRole('alert')).toHaveTextContent('com_ui_steel_customer_invalid_table');
     expect(screen.getByRole('button', { name: 'com_ui_confirm' })).toBeDisabled();
-    expect(mockUseGetSteelCustomerQuery).not.toHaveBeenCalled();
   });
 
   it('confirms the selected tier with the current revision', async () => {
@@ -267,7 +262,6 @@ describe('SteelCustomer', () => {
     expect(screen.getByRole('alert')).toHaveTextContent('com_ui_steel_customer_conflict');
     expect(screen.getByRole('button', { name: 'com_ui_confirm' })).toBeDisabled();
     expect(screen.queryByRole('button', { name: 'com_ui_retry' })).toBeNull();
-    expect(mockUseGetSteelCustomerQuery).not.toHaveBeenCalled();
     expect(saveMutation).not.toHaveBeenCalled();
   });
 

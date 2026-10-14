@@ -1,6 +1,5 @@
 import {
   buildSteelPostgresConfig,
-  checkSteelPostgresConnection,
   getSteelPostgresConnectionString,
 } from './postgres';
 
@@ -57,29 +56,6 @@ describe('Steel Postgres connection helpers', () => {
       keepAliveInitialDelayMillis: 10000,
       max: 5,
       ssl: true,
-    });
-  });
-
-  it('checks Steel schema availability with a read-only query', async () => {
-    const query = jest.fn().mockResolvedValue({
-      rows: [
-        {
-          steel_schema_exists: true,
-          steel_table_count: '21',
-          vector_extension_schema: 'public',
-          vector_extension_version: '0.8.0',
-        },
-      ],
-    });
-
-    const result = await checkSteelPostgresConnection({ query });
-
-    expect(query).toHaveBeenCalledWith(expect.stringContaining("to_regnamespace('steel')"));
-    expect(result).toEqual({
-      steelSchemaExists: true,
-      steelTableCount: 21,
-      vectorExtensionSchema: 'public',
-      vectorExtensionVersion: '0.8.0',
     });
   });
 });

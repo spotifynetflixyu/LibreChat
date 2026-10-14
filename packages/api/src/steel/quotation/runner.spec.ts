@@ -933,7 +933,7 @@ describe('quotation runner integration', () => {
     });
     const result = await runQuotationPreflight(runnerInput(model, createLookupExecutor()));
     expect(counts).toEqual([24, 12, 12, 6, 6, 3, 3]);
-    const rows = parseMarkdownTables((await service.readCurrentSystemOrder(scope))!.markdown)[0]!.rows;
+    const rows = parseMarkdownTables((await service.readState(scope))?.currentSystemOrder?.markdown ?? '')[0]!.rows;
     expect(rows).toHaveLength(24);
     expect(rows.slice(0, 21).every((row) => row[0] === 'ERP-PLATE')).toBe(true);
     const headers = parseMarkdownTables(result.markdown!)[0]!.headers;
@@ -977,7 +977,7 @@ describe('quotation runner integration', () => {
     expect(resumed.status).toBe('completed');
     expect(counts.slice(first.length)).toEqual([3]);
     expect(
-      parseMarkdownTables((await service.readCurrentSystemOrder(scope))!.markdown)[0]!.rows,
+      parseMarkdownTables((await service.readState(scope))?.currentSystemOrder?.markdown ?? '')[0]!.rows,
     ).toHaveLength(24);
     const restored = await readQuotationHistory({ scope, runId: run.runId });
     expect(restored.activityEvents[restored.activityEvents.length - 1]).toEqual(
@@ -2530,7 +2530,7 @@ describe('quotation runner integration', () => {
     const run = await prepareRun(1);
     const model = createModel();
     await expect(runQuotationPreflight(runnerInput(model, createLookupExecutor()))).resolves.toMatchObject({ status: 'completed' });
-    const current = await service.readCurrentSystemOrder(scope);
+    const current = (await service.readState(scope))?.currentSystemOrder;
     expect(current).toEqual(expect.objectContaining({ runId: run.runId, messageId: 'target-1' }));
     expect(current?.markdown).toContain('## system_order');
     expect(current?.markdown).not.toContain('## customer_quote');

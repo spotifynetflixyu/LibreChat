@@ -1,18 +1,6 @@
-import {
-  getLimit,
-  parseJsonObject,
-  parseNullableNumber,
-  parseNullableString,
-  parseRequiredNumber,
-  parseReviewState,
-} from './types';
+import { parseJsonObject, parseRequiredNumber, parseReviewState } from './types';
 
-import type {
-  SteelJsonValue,
-  SteelRepositoryClient,
-  SteelReviewState,
-  SteelSqlParameter,
-} from './types';
+import type { SteelJsonValue, SteelRepositoryClient, SteelReviewState } from './types';
 
 export type SteelRuleKind = 'agent' | 'output' | 'steel' | 'other';
 
@@ -69,55 +57,6 @@ export interface SteelQuoteRule {
   reviewState: SteelReviewState;
 }
 
-export interface SteelCustomerRule {
-  id: number;
-  ruleType: string;
-  customerId: number | null;
-  customerTierId: number | null;
-  catalogFamily?: string;
-  productFamily?: string;
-  chargeType?: string;
-  formulaCode?: string;
-  selectors: SteelJsonValue;
-  parameters: SteelJsonValue;
-  prompt: string;
-  priority: number;
-  confidence: string;
-  active: boolean;
-  reviewState: SteelReviewState;
-}
-
-export interface SearchSteelRulesInput {
-  keywords?: readonly string[];
-  ruleKinds?: readonly SteelRuleKind[];
-  reviewState?: SteelReviewState;
-  includeInactive?: boolean;
-  limit?: number;
-}
-
-export interface SearchSteelAgentRulesInput extends SearchSteelRulesInput {
-  ruleTypes?: readonly string[];
-  ruleSections?: readonly string[];
-  sheetIds?: readonly string[];
-}
-
-export interface SearchSteelQuoteRulesInput extends SearchSteelRulesInput {
-  catalogFamilies?: readonly string[];
-  productFamilies?: readonly string[];
-  chargeTypes?: readonly string[];
-  formulaCodes?: readonly string[];
-  ruleTypes?: readonly string[];
-}
-
-export interface SearchSteelCustomerRulesInput extends SearchSteelQuoteRulesInput {
-  customerIds?: readonly number[];
-  customerTierIds?: readonly number[];
-}
-
-function uniqueNonEmpty(values: readonly string[] | undefined): string[] {
-  return [...new Set((values ?? []).map((value) => value.trim()).filter(Boolean))];
-}
-
 function readJsonObjectField(value: SteelJsonValue, key: string): SteelJsonValue | undefined {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) {
     return undefined;
@@ -130,12 +69,6 @@ function readStringField(value: SteelJsonValue, key: string): string | undefined
   const field = readJsonObjectField(value, key);
 
   return typeof field === 'string' && field.trim() !== '' ? field : undefined;
-}
-
-function readNumberField(value: SteelJsonValue, key: string): number | null {
-  const field = readJsonObjectField(value, key);
-
-  return typeof field === 'number' && Number.isFinite(field) ? field : null;
 }
 
 function readStringArray(value: SteelJsonValue | string[] | null): string[] {
@@ -154,105 +87,6 @@ function toRuleKind(value: string): SteelRuleKind {
   }
 
   throw new Error(`Unexpected Steel rule_kind: ${value}`);
-}
-
-function addTextArrayFilter(
-  where: string[],
-  values: SteelSqlParameter[],
-  column: string,
-  matches: readonly string[] | undefined,
-) {
-  const uniqueMatches = uniqueNonEmpty(matches);
-
-  if (uniqueMatches.length === 0) {
-    return;
-  }
-
-  values.push(uniqueMatches);
-  where.push(`${column} = ANY($${values.length}::text[])`);
-}
-
-function addKeywordContainsFilter(
-  where: string[],
-  values: SteelSqlParameter[],
-  keywords: readonly string[] | undefined,
-) {
-  const uniqueKeywords = uniqueNonEmpty(keywords);
-  if (uniqueKeywords.length === 0) {
-    return;
-  }
-
-  const clauses = uniqueKeywords.map((keyword) => {
-    values.push(`%${keyword}%`);
-    const placeholder = `$${values.length}`;
-    return `(
-      slug ILIKE ${placeholder}
-      OR title ILIKE ${placeholder}
-      OR rule_sections::text ILIKE ${placeholder}
-      OR selectors::text ILIKE ${placeholder}
-      OR prompt ILIKE ${placeholder}
-      OR tool_policy::text ILIKE ${placeholder}
-      OR output_policy::text ILIKE ${placeholder}
-    )`;
-  });
-
-  where.push(`(${clauses.join('\n  OR ')})`);
-}
-
-function addCommonRuleFilters(
-  where: string[],
-  values: SteelSqlParameter[],
-  input: SearchSteelRulesInput,
-) {
-  values.push(input.reviewState ?? 'reviewed');
-  where.push(`review_state = $${values.length}`);
-
-  if (!input.includeInactive) {
-    where.push('active = true');
-  }
-
-  const ruleKinds = uniqueNonEmpty(input.ruleKinds);
-  if (ruleKinds.length > 0) {
-    values.push(ruleKinds);
-    where.push(`rule_kind = ANY($${values.length}::text[])`);
-  }
-
-  addKeywordContainsFilter(where, values, input.keywords);
-}
-
-function getRuleQuery(input: SearchSteelRulesInput): { sql: string; values: SteelSqlParameter[] } {
-  const where: string[] = [];
-  const values: SteelSqlParameter[] = [];
-
-  addCommonRuleFilters(where, values, input);
-  values.push(getLimit(input.limit));
-
-  return {
-    sql: `
-SELECT
-  id,
-  slug,
-  version,
-  rule_kind,
-  title,
-  locale,
-  rule_sections,
-  selectors,
-  prompt,
-  tool_policy,
-  output_policy,
-  priority,
-  active,
-  review_state
-FROM steel.rules
-WHERE ${where.join('\n  AND ')}
-ORDER BY
-  priority ASC,
-  id ASC
-LIMIT $${values.length}
-`,
-    values,
-  };
 }
 
 function parseSelectors(row: SteelUnifiedRuleRow): SteelJsonValue {
@@ -312,40 +146,6 @@ function toQuoteRule(row: SteelUnifiedRuleRow): SteelQuoteRule {
   };
 }
 
-function toCustomerRule(row: SteelUnifiedRuleRow): SteelCustomerRule {
-  const selectors = parseSelectors(row);
-  const quoteRule = toQuoteRule(row);
-
-  return {
-    ...quoteRule,
-    customerId: readNumberField(selectors, 'customerId'),
-    customerTierId: parseNullableNumber(readNumberField(selectors, 'customerTierId')),
-  };
-}
-
-export async function searchSteelRules(
-  client: SteelRepositoryClient,
-  input: SearchSteelRulesInput,
-): Promise<SteelAgentRule[]> {
-  const query = getRuleQuery(input);
-  const result = await client.query<SteelUnifiedRuleRow>(query.sql, query.values);
-
-  return result.rows.map(toAgentRule);
-}
-
-export async function searchSteelAgentRules(
-  client: SteelRepositoryClient,
-  input: SearchSteelAgentRulesInput,
-): Promise<SteelAgentRule[]> {
-  const query = getRuleQuery({
-    ...input,
-    ruleKinds: input.ruleKinds ?? ['agent'],
-  });
-  const result = await client.query<SteelUnifiedRuleRow>(query.sql, query.values);
-
-  return result.rows.map(toAgentRule);
-}
-
 export async function listReviewedSteelAgentRules(
   client: SteelRepositoryClient,
 ): Promise<SteelAgentRule[]> {
@@ -397,19 +197,6 @@ export async function listReviewedSteelOtherRules(
   return listReviewedSteelRulesByKind(client, 'other');
 }
 
-export async function searchSteelQuoteRules(
-  client: SteelRepositoryClient,
-  input: SearchSteelQuoteRulesInput,
-): Promise<SteelQuoteRule[]> {
-  const query = getRuleQuery({
-    ...input,
-    ruleKinds: input.ruleKinds ? undefined : ['steel'],
-  });
-  const result = await client.query<SteelUnifiedRuleRow>(query.sql, query.values);
-
-  return result.rows.map(toQuoteRule);
-}
-
 export async function listReviewedSteelQuoteRules(
   client: SteelRepositoryClient,
 ): Promise<SteelQuoteRule[]> {
@@ -440,17 +227,4 @@ ORDER BY priority ASC, id ASC
   );
 
   return result.rows.map(toQuoteRule);
-}
-
-export async function searchSteelCustomerRules(
-  client: SteelRepositoryClient,
-  input: SearchSteelCustomerRulesInput,
-): Promise<SteelCustomerRule[]> {
-  const query = getRuleQuery({
-    ...input,
-    ruleKinds: input.ruleKinds ? undefined : ['steel'],
-  });
-  const result = await client.query<SteelUnifiedRuleRow>(query.sql, query.values);
-
-  return result.rows.map(toCustomerRule);
 }

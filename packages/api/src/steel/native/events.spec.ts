@@ -1,12 +1,10 @@
 import {
   appendSteelNativeActivityEvent,
-  cloneSteelNativeHistory,
   upsertSteelNativePreflightToolCall,
   createSteelNativeHistory,
   ensureSteelNativeHistory,
   parseSteelNativeHistory,
   buildSteelCodeInterpreterAuditEvent,
-  buildSteelQuoteAuditEvent,
   buildSteelDelegateOcrStatusEvent,
   buildSteelDelegateOcrStatusEventEnvelope,
   buildSteelQuotationStatusEvent,
@@ -35,7 +33,7 @@ describe('Steel native event mapping', () => {
     expect(parsed).not.toBe(history);
     expect(parsed?.activityEvents).not.toBe(history.activityEvents);
 
-    const clone = cloneSteelNativeHistory(history);
+    const clone = parseSteelNativeHistory(history);
     expect(clone).toEqual(history);
     expect(clone).not.toBe(history);
   });
@@ -651,25 +649,6 @@ describe('Steel native event mapping', () => {
         missingPageRangesByFileKey: { 'file-1': [{ pageStart: 0, pageEnd: 2 }] },
       }),
     ).toBe(false);
-  });
-
-  it('builds a Stage 2 quote audit event with trace ids', () => {
-    expect(
-      buildSteelQuoteAuditEvent({
-        conversationId: 'conversation_1',
-        requestId: 'request_1',
-        messageId: 'message_1',
-      }),
-    ).toEqual({
-      type: 'quote_audit',
-      source: 'quote_runtime',
-      stage: 'stage_2',
-      status: 'started',
-      message: 'Stage 2 started',
-      conversationId: 'conversation_1',
-      requestId: 'request_1',
-      messageId: 'message_1',
-    });
   });
 
   it('builds and persists quotation status envelopes with stable progress fields', () => {

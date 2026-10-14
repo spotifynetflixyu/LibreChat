@@ -91,26 +91,6 @@ export interface CreateSteelNativeToolInput {
   execute: SteelNativeToolExecute;
 }
 
-export function getNativeSteelToolName(
-  toolName: SteelProviderToolName,
-  nameMap: NativeSteelToolNameMap,
-): string {
-  return nameMap.get(toolName) ?? toolName;
-}
-
-export function resolveNativeSteelToolName(
-  nativeToolName: string,
-  nameMap: NativeSteelToolNameMap,
-): SteelProviderToolName | undefined {
-  for (const [steelToolName, mappedName] of nameMap.entries()) {
-    if (nativeToolName === mappedName) {
-      return steelToolName;
-    }
-  }
-
-  return undefined;
-}
-
 export function resolveSteelProviderToolName(
   nativeToolName: string,
 ): SteelProviderToolName | undefined {
@@ -229,16 +209,6 @@ export function prepareSteelNativeToolConfig<T extends SteelNativeToolConfig>(
     }
   }
   return next;
-}
-
-/** Removes PaddleOCR and Steel tools from the OCR main agent. */
-export function stripSteelToolsForOcrTurn<T extends SteelNativeToolConfig>(config: T): T {
-  return prepareSteelNativeToolConfig(config, { ocrTurnActive: true });
-}
-
-/** Removes PaddleOCR from a main agent while leaving the MCP catalog unchanged. */
-export function stripPaddleOcrToolsForMainAgent<T extends SteelNativeToolConfig>(config: T): T {
-  return prepareSteelNativeToolConfig(config);
 }
 
 function getProviderToolCallId(config?: SteelNativeToolInvokeConfig): string | undefined {

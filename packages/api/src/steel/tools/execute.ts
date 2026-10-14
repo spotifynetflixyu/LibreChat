@@ -106,21 +106,7 @@ function summarizeInput(value: unknown): string {
 }
 
 function summarizeOutput(data: SteelToolJsonObject): string {
-  const summaryKeys = [
-    'packets',
-    'instructionPackets',
-    'packetGroups',
-    'instructionPacketGroups',
-    'catalogFamilyCandidates',
-    'defaultCandidates',
-    'quoteDefaults',
-    'formulaCandidates',
-    'customers',
-    'queryResults',
-    'priceCandidates',
-    'workingOrderRows',
-    'memoryEntries',
-  ];
+  const summaryKeys = ['customers', 'queryResults', 'priceCandidates'];
   const summary = summaryKeys
     .map((key) => {
       const value = data[key];

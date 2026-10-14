@@ -23,7 +23,6 @@ type CachedUsage = {
 };
 
 export type OpenAIOAuthUsageCache = {
-  entry?: CachedUsage;
   entries?: Map<string, CachedUsage>;
   inflight?: Map<string, Promise<OpenAIOAuthUsageRemaining>>;
 };
@@ -178,7 +177,7 @@ function getCachedResponse({
   key: string;
   nowMs: number;
 }): OpenAIOAuthUsageRemaining | undefined {
-  const entry = cache.entries?.get(key) ?? (key === 'default' ? cache.entry : undefined);
+  const entry = cache.entries?.get(key);
   if (!entry || entry.expiresAtMs <= nowMs) {
     return undefined;
   }
@@ -196,9 +195,6 @@ export function invalidateOpenAIOAuthUsageCache({
   const key = getCacheKey({ authFilePath });
   cache.entries?.delete(key);
   cache.inflight?.delete(key);
-  if (key === 'default') {
-    delete cache.entry;
-  }
 }
 
 function cacheResponse({
@@ -220,9 +216,6 @@ function cacheResponse({
   };
   cache.entries ??= new Map();
   cache.entries.set(key, entry);
-  if (key === 'default') {
-    cache.entry = entry;
-  }
 }
 
 async function loadOpenAIOAuthUsageRemaining({

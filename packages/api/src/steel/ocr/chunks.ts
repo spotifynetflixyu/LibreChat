@@ -225,14 +225,3 @@ export async function createPdfPageRangeChunker(input: {
     });
 }
 
-export async function createPdfPageRangeChunk(input: {
-  pdfBytes: Uint8Array;
-  pageStart: number;
-  pageEnd: number;
-}): Promise<Uint8Array> {
-  const createChunk = await createPdfPageRangeChunker({ pdfBytes: input.pdfBytes });
-  return createChunk({
-    pageStart: input.pageStart,
-    pageEnd: input.pageEnd,
-  });
-}

@@ -1,5 +1,4 @@
 import mongoose from 'mongoose';
-import { createHash } from 'node:crypto';
 import type {
   ISteelQuotationState,
   SteelMarkdownAdmission,
@@ -13,7 +12,7 @@ import type {
 import type { SteelToolJsonObject, SteelToolJsonValue, SteelToolResult } from '../tools/results';
 import type { SteelQuotationSaveCustomerInput, SteelQuotationStateService } from './state';
 import { parseAssistantMarkdown, parseOcrResultTable } from '../ocr/result';
-import { extractCustomerDataTable, quotationSignal } from './protocol';
+import { extractCustomerDataTable } from './protocol';
 import { escapeMarkdownTableCell } from '../markdown/row-codec';
 import { createSteelQuotationStateService } from './state';
 import { createSteelOcrStateService } from '../ocr/state';
@@ -475,10 +474,3 @@ export async function commitQuotationCustomerResponse(input: {
   return service.saveCustomer(prepared.input);
 }
 
-export function renderQuotationSignal(): string {
-  return quotationSignal;
-}
-
-export function quotationFingerprint(text: string): string {
-  return createHash('sha256').update(text).digest('hex');
-}
