@@ -1,14 +1,5 @@
-import {
-  createSteelMemoryCandidateModel,
-  createSteelOcrPdfChunkArtifactModel,
-  createSteelWorkingOrderMemoryModel,
-  createSteelDelegateOcrRunModel,
-  createSteelConversationOcrStateModel,
-  createSteelOcrResponseAuditModel,
-  createSteelQuotationStateModel,
-  createSteelQuotationArtifactModel,
-  createSteelReviewOutputModel,
-} from './steel';
+import { createSteelModels } from './steel';
+import type { SteelModels } from './steel';
 import { createAgentQueuedTurnModel, createAgentQueuedTurnSequenceModel } from './queuedTurn';
 import { createAgentTriggerLaneSequenceModel } from './triggerLaneSequence';
 import { createScheduleModel, createScheduleRunModel } from './schedule';
@@ -102,15 +93,6 @@ export function createModels(mongoose: typeof import('mongoose')): {
   AuditLog: ReturnType<typeof createAuditLogModel>;
   Group: ReturnType<typeof createGroupModel>;
   Config: ReturnType<typeof createConfigModel>;
-  SteelWorkingOrderMemory: ReturnType<typeof createSteelWorkingOrderMemoryModel>;
-  SteelDelegateOcrRun: ReturnType<typeof createSteelDelegateOcrRunModel>;
-  SteelConversationOcrState: ReturnType<typeof createSteelConversationOcrStateModel>;
-  SteelOcrResponseAudit: ReturnType<typeof createSteelOcrResponseAuditModel>;
-  SteelQuotationState: ReturnType<typeof createSteelQuotationStateModel>;
-  SteelQuotationArtifact: ReturnType<typeof createSteelQuotationArtifactModel>;
-  SteelReviewOutput: ReturnType<typeof createSteelReviewOutputModel>;
-  SteelMemoryCandidate: ReturnType<typeof createSteelMemoryCandidateModel>;
-  SteelOcrPdfChunkArtifact: ReturnType<typeof createSteelOcrPdfChunkArtifactModel>;
   AgentTriggerDelivery: ReturnType<typeof createAgentTriggerDeliveryModel>;
   AgentTriggerLaneSequence: ReturnType<typeof createAgentTriggerLaneSequenceModel>;
   AgentTriggerUserPurge: ReturnType<typeof createAgentTriggerUserPurgeModel>;
@@ -121,7 +103,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
   RefreshTokenBridge: ReturnType<typeof createRefreshTokenBridgeModel>;
   OpenIDRefreshFlight: ReturnType<typeof createOpenIDRefreshFlightModel>;
   OAuthCompaction: ReturnType<typeof createOAuthCompactionModel>;
-} {
+} & SteelModels {
   const models = {
     User: createUserModel(mongoose),
     Token: createTokenModel(mongoose),
@@ -161,15 +143,6 @@ export function createModels(mongoose: typeof import('mongoose')): {
     AuditLog: createAuditLogModel(mongoose),
     Group: createGroupModel(mongoose),
     Config: createConfigModel(mongoose),
-    SteelWorkingOrderMemory: createSteelWorkingOrderMemoryModel(mongoose),
-    SteelDelegateOcrRun: createSteelDelegateOcrRunModel(mongoose),
-    SteelConversationOcrState: createSteelConversationOcrStateModel(mongoose),
-    SteelOcrResponseAudit: createSteelOcrResponseAuditModel(mongoose),
-    SteelQuotationState: createSteelQuotationStateModel(mongoose),
-    SteelQuotationArtifact: createSteelQuotationArtifactModel(mongoose),
-    SteelReviewOutput: createSteelReviewOutputModel(mongoose),
-    SteelMemoryCandidate: createSteelMemoryCandidateModel(mongoose),
-    SteelOcrPdfChunkArtifact: createSteelOcrPdfChunkArtifactModel(mongoose),
     AgentTriggerDelivery: createAgentTriggerDeliveryModel(mongoose),
     AgentTriggerLaneSequence: createAgentTriggerLaneSequenceModel(mongoose),
     AgentTriggerUserPurge: createAgentTriggerUserPurgeModel(mongoose),
@@ -180,6 +153,7 @@ export function createModels(mongoose: typeof import('mongoose')): {
     RefreshTokenBridge: createRefreshTokenBridgeModel(mongoose),
     OpenIDRefreshFlight: createOpenIDRefreshFlightModel(mongoose),
     OAuthCompaction: createOAuthCompactionModel(mongoose),
+    ...createSteelModels(mongoose),
   };
   /**
    * Background index builds fail silently unless an 'index' listener is

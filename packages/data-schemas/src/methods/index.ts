@@ -25,10 +25,11 @@ export type {
   SteelReviewWriteMethods,
 } from './steelReview';
 export { createSteelReviewSourceMethods } from './steelSources';
+export type { SteelReviewSourceMethods } from './steelSources';
+export { createSteelMethods } from './steel';
+export type { SteelMethods } from './steel';
 export { createSteelScopedOcrMethods } from './ocr';
 export type { SteelScopedOcrMethods } from './ocr';
-import type { SteelQuotationInputMethods } from './steelQuotationInput';
-import { createSteelQuotationInputMethods } from './steelQuotationInput';
 export { createSteelQuotationInputMethods, STEEL_QUOTATION_INPUT_TTL_MS } from './steelQuotationInput';
 export type {
   SteelQuotationInputAdmission,
@@ -219,12 +220,7 @@ import {
 } from './mcpAuthority';
 /* Insights */
 import { createInsightsMethods, type InsightsMethods } from './insights';
-import {
-  createSteelReviewReadMethods,
-  createSteelReviewWriteMethods,
-  type SteelReviewReadMethods,
-} from './steelReview';
-import { createSteelReviewSourceMethods, type SteelReviewSourceMethods } from './steelSources';
+import { createSteelMethods, type SteelMethods } from './steel';
 
 export {
   runAfterTransaction,
@@ -309,9 +305,7 @@ export type AllMethods = UserMethods &
   ConfigMethods &
   MCPAuthorityMethods &
   InsightsMethods &
-  SteelReviewReadMethods &
-  SteelReviewSourceMethods &
-  SteelQuotationInputMethods;
+  SteelMethods;
 
 /** Dependencies injected from the api layer into createMethods */
 export interface CreateMethodsDeps {
@@ -555,10 +549,7 @@ export function createMethods(
     ...createMCPAuthorityMethods(mongoose),
     /* Insights */
     ...createInsightsMethods(mongoose),
-    ...createSteelReviewReadMethods(mongoose),
-    ...createSteelReviewWriteMethods(mongoose),
-    ...createSteelReviewSourceMethods(mongoose),
-    ...createSteelQuotationInputMethods(mongoose),
+    ...createSteelMethods(mongoose),
   };
 }
 
@@ -642,7 +633,6 @@ export type {
   MCPAuthorityConfigSourceDocument,
   MCPAuthorityCredentialSourceDocument,
   InsightsMethods,
-  SteelReviewSourceMethods,
 };
 
 export { recordAgentEventActorReceiptMetric, setAgentEventActorReceiptMetricObserver };

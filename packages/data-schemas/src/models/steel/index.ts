@@ -131,3 +131,29 @@ export function createSteelMemoryCandidateModel(
   );
 }
 
+export interface SteelModels {
+  SteelWorkingOrderMemory: ReturnType<typeof createSteelWorkingOrderMemoryModel>;
+  SteelDelegateOcrRun: ReturnType<typeof createSteelDelegateOcrRunModel>;
+  SteelConversationOcrState: ReturnType<typeof createSteelConversationOcrStateModel>;
+  SteelOcrResponseAudit: ReturnType<typeof createSteelOcrResponseAuditModel>;
+  SteelQuotationState: ReturnType<typeof createSteelQuotationStateModel>;
+  SteelQuotationArtifact: ReturnType<typeof createSteelQuotationArtifactModel>;
+  SteelReviewOutput: ReturnType<typeof createSteelReviewOutputModel>;
+  SteelMemoryCandidate: ReturnType<typeof createSteelMemoryCandidateModel>;
+  SteelOcrPdfChunkArtifact: ReturnType<typeof createSteelOcrPdfChunkArtifactModel>;
+}
+
+/** Registers every Steel model; upstream createModels spreads this once. */
+export function createSteelModels(mongoose: Mongoose): SteelModels {
+  return {
+    SteelWorkingOrderMemory: createSteelWorkingOrderMemoryModel(mongoose),
+    SteelDelegateOcrRun: createSteelDelegateOcrRunModel(mongoose),
+    SteelConversationOcrState: createSteelConversationOcrStateModel(mongoose),
+    SteelOcrResponseAudit: createSteelOcrResponseAuditModel(mongoose),
+    SteelQuotationState: createSteelQuotationStateModel(mongoose),
+    SteelQuotationArtifact: createSteelQuotationArtifactModel(mongoose),
+    SteelReviewOutput: createSteelReviewOutputModel(mongoose),
+    SteelMemoryCandidate: createSteelMemoryCandidateModel(mongoose),
+    SteelOcrPdfChunkArtifact: createSteelOcrPdfChunkArtifactModel(mongoose),
+  };
+}
