@@ -267,6 +267,11 @@ function isDuplicateKey(error: unknown): boolean {
   return isRecord(error) && error.code === 11000;
 }
 
+function isTransactionUnsupported(error: unknown): boolean {
+  return error instanceof mongo.MongoServerError && error.code === 20 &&
+    error.message.includes('Transaction numbers');
+}
+
 function sessionOptions(session?: ClientSession): PlainRecord {
   return session ? { session } : {};
 }
@@ -522,7 +527,10 @@ export function guardSteelConversationModel<T>(
   return model;
 }
 
-/** Called for an authorized deletion; absent parents require an existing owned deletion marker. */
+/**
+ * Called for an authorized deletion; absent parents require an existing owned deletion marker.
+ * Without transaction support guarded Steel writes fail closed, so no Steel state exists to fence.
+ */
 export async function fenceSteelConversationWrites(
   mongoose: Mongoose,
   scope: SteelConversationScope,
@@ -549,6 +557,9 @@ export async function fenceSteelConversationWrites(
       );
       return true;
     });
+  } catch (error) {
+    if (isTransactionUnsupported(error)) return false;
+    throw error;
   } finally {
     await session.endSession();
   }

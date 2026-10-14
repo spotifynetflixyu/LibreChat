@@ -1,4 +1,4 @@
-name: Web API Build
+name: Backend Build and Tests
 on:
   push:
     branches:
@@ -157,3 +157,181 @@ jobs:
         run: npx tsc --noEmit -p packages/data-schemas/tsconfig.json
       - name: Type check @librechat/api
         run: npx tsc --noEmit -p packages/api/tsconfig.json
+  test-packages-api:
+    name: 'Tests: @librechat/api (shard ${{ matrix.shard }}/4)'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@v5
+      - name: Use Node.js 24.16.0
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24.16.0
+      - name: Restore node_modules cache
+        id: cache-node-modules
+        uses: actions/cache@v5
+        with:
+          path: |
+            node_modules
+            api/node_modules
+            packages/api/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+          key: node-modules-backend-${{ runner.os }}-24.16.0-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+      - name: Download data-provider build
+        uses: actions/download-artifact@v7
+        with:
+          name: build-data-provider
+          path: packages/data-provider/dist
+      - name: Download data-schemas build
+        uses: actions/download-artifact@v7
+        with:
+          name: build-data-schemas
+          path: packages/data-schemas/dist
+      - name: Download api build
+        uses: actions/download-artifact@v7
+        with:
+          name: build-api
+          path: packages/api/dist
+      - name: Cache MongoDB memory-server binaries
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/mongodb-binaries
+          key: mongodb-binaries-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            mongodb-binaries-${{ runner.os }}-
+      - name: Run unit tests (shard ${{ matrix.shard }}/4)
+        working-directory: packages/api
+        run: npm run test:ci -- --shard=${{ matrix.shard }}/4
+  test-packages-api-isolated:
+    name: 'Tests: @librechat/api (isolated)'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Use Node.js 24.16.0
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24.16.0
+      - name: Restore node_modules cache
+        id: cache-node-modules
+        uses: actions/cache@v5
+        with:
+          path: |
+            node_modules
+            api/node_modules
+            packages/api/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+          key: node-modules-backend-${{ runner.os }}-24.16.0-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+      - name: Download data-provider build
+        uses: actions/download-artifact@v7
+        with:
+          name: build-data-provider
+          path: packages/data-provider/dist
+      - name: Download data-schemas build
+        uses: actions/download-artifact@v7
+        with:
+          name: build-data-schemas
+          path: packages/data-schemas/dist
+      - name: Download api build
+        uses: actions/download-artifact@v7
+        with:
+          name: build-api
+          path: packages/api/dist
+      - name: Run isolated-process specs
+        working-directory: packages/api
+        run: npm run test:ci:isolated
+      - name: Run keepalive script tests
+        working-directory: packages/api
+        run: npm run test:keepalive
+  test-data-schemas:
+    name: 'Tests: data-schemas'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - name: Use Node.js 24.16.0
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24.16.0
+      - name: Restore node_modules cache
+        id: cache-node-modules
+        uses: actions/cache@v5
+        with:
+          path: |
+            node_modules
+            api/node_modules
+            packages/api/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+          key: node-modules-backend-${{ runner.os }}-24.16.0-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+      - name: Download data-provider build
+        uses: actions/download-artifact@v7
+        with:
+          name: build-data-provider
+          path: packages/data-provider/dist
+      - name: Download data-schemas build
+        uses: actions/download-artifact@v7
+        with:
+          name: build-data-schemas
+          path: packages/data-schemas/dist
+      - name: Cache MongoDB memory-server binaries
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/mongodb-binaries
+          key: mongodb-binaries-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
+          restore-keys: |
+            mongodb-binaries-${{ runner.os }}-
+      - name: Run unit tests
+        working-directory: packages/data-schemas
+        run: npm run test:ci
+  test-data-provider:
+    name: 'Tests: data-provider'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - name: Use Node.js 24.16.0
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24.16.0
+      - name: Restore node_modules cache
+        id: cache-node-modules
+        uses: actions/cache@v5
+        with:
+          path: |
+            node_modules
+            api/node_modules
+            packages/api/node_modules
+            packages/data-provider/node_modules
+            packages/data-schemas/node_modules
+          key: node-modules-backend-${{ runner.os }}-24.16.0-${{ hashFiles('package-lock.json') }}
+      - name: Install dependencies
+        if: steps.cache-node-modules.outputs.cache-hit != 'true'
+        run: npm ci
+      - name: Download data-provider build
+        uses: actions/download-artifact@v7
+        with:
+          name: build-data-provider
+          path: packages/data-provider/dist
+      - name: Run unit tests
+        working-directory: packages/data-provider
+        run: npm run test:ci

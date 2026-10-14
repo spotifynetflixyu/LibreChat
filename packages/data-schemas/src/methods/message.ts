@@ -36,6 +36,7 @@ const MAX_NORMALIZED_USER_SUBMITTED_PATHS = MAX_STORED_USER_SUBMITTED_PATHS + 1;
 const MAX_STORED_USER_SUBMITTED_FIELD_PATHS = MAX_NORMALIZED_USER_SUBMITTED_PATHS;
 const MAX_USER_SUBMITTED_PATH_LENGTH = 2048;
 const MAX_PROVENANCE_CAS_ATTEMPTS = 8;
+const MAX_MESSAGE_ERROR_CAS_ATTEMPTS = 8;
 const MAX_SUBAGENT_CONTROL_RECEIPTS = 64;
 
 const MAX_SUBAGENT_CONTROL_MESSAGE_LENGTH = 4 * 1024;
@@ -266,6 +267,12 @@ function getMissingProvenanceFilter(): Record<string, unknown> {
     userSubmittedMessageFieldPaths: { $exists: false },
     isUserSubmitted: { $exists: false },
   };
+}
+
+function isErrorPart(part: unknown, error: string): boolean {
+  if (typeof part !== 'object' || part === null) return false;
+  const candidate = part as { type?: unknown; error?: unknown };
+  return candidate.type === 'error' && candidate.error === error;
 }
 
 function isDuplicateKeyError(err: unknown): boolean {
@@ -964,58 +971,34 @@ export function createMessageMethods(mongoose: typeof import('mongoose')): Messa
       throw new Error('Terminal message error requires a complete message identity.');
     }
     const Message = createMessageModel(mongoose);
-    const errorPart = { type: 'error', error: input.error };
-    return Message.findOneAndUpdate(
-      {
-        user: input.user,
-        conversationId: input.conversationId,
-        parentMessageId: input.parentMessageId,
-        messageId: input.messageId,
-        isCreatedByUser: false,
-        ...(input.tenantId == null ? { tenantId: { $exists: false } } : { tenantId: input.tenantId }),
-      },
-      [{
-        $set: {
-          content: {
-            $let: {
-              vars: {
-                parts: {
-                  $cond: [
-                    { $gt: [{ $size: { $ifNull: ['$content', []] } }, 0] },
-                    '$content',
-                    { $cond: [
-                      { $ne: [{ $ifNull: ['$text', ''] }, ''] },
-                      [{ type: 'text', text: '$text' }],
-                      [],
-                    ] },
-                  ],
-                },
-              },
-              in: {
-                $cond: [
-                  { $eq: ['$error', true] },
-                  { $ifNull: ['$content', '$$REMOVE'] },
-                  { $cond: [
-                    { $anyElementTrue: [{ $map: {
-                      input: '$$parts',
-                      as: 'part',
-                      in: { $and: [
-                        { $eq: ['$$part.type', 'error'] },
-                        { $eq: ['$$part.error', { $literal: input.error }] },
-                      ] },
-                    } }] },
-                    '$$parts',
-                    { $concatArrays: ['$$parts', { $literal: [errorPart] }] },
-                  ] },
-                ],
-              },
-            },
-          },
-          unfinished: { $cond: [{ $eq: ['$error', true] }, '$unfinished', false] },
+    const identity = {
+      user: input.user,
+      conversationId: input.conversationId,
+      parentMessageId: input.parentMessageId,
+      messageId: input.messageId,
+      isCreatedByUser: false,
+      ...(input.tenantId == null ? { tenantId: { $exists: false } } : { tenantId: input.tenantId }),
+    };
+    for (let attempt = 0; attempt < MAX_MESSAGE_ERROR_CAS_ATTEMPTS; attempt++) {
+      const current = await Message.findOne(identity).lean<IMessage>();
+      if (!current || current.error === true) return current;
+      const stored = current.content ?? [];
+      const parts = stored.length > 0 ? stored : current.text ? [{ type: 'text', text: current.text }] : [];
+      const hasError = parts.some((part) => isErrorPart(part, input.error));
+      if (hasError && stored.length > 0 && current.unfinished === false) return current;
+      const updated = await Message.findOneAndUpdate(
+        {
+          ...identity,
+          error: { $ne: true },
+          text: current.text ?? null,
+          ...(stored.length > 0 ? { content: stored } : { $or: [{ content: null }, { content: { $size: 0 } }] }),
         },
-      }],
-      { new: true, upsert: false },
-    ).lean<IMessage>();
+        { $set: { content: hasError ? parts : [...parts, { type: 'error', error: input.error }], unfinished: false } },
+        { new: true, upsert: false },
+      ).lean<IMessage>();
+      if (updated) return updated;
+    }
+    throw new Error('Terminal message error could not be appended after concurrent updates.');
   }
   /**
    * Saves a message in the database.

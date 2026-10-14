@@ -27,7 +27,7 @@ export default {
     '/__tests__/helpers/',
     '/src/steel/normalization/spec\\.ts$',
     '/scripts/keepalive\\.test\\.mts$',
-    // Native SDK imports retain the Jest VM context; CI runs each in a fresh process.
+    // Native SDK imports retain the Jest VM context; `test:ci:isolated` runs each in a fresh process.
     '/src/steel/native/credentials\\.spec\\.ts$',
     '/src/providers/openai/compaction/(transport|persistence)\\.spec\\.ts$',
     '\\.manual\\.spec\\.[jt]sx?$',

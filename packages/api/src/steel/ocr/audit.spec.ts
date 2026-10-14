@@ -17,6 +17,7 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await createSteelOcrResponseAuditModel(mongoose).deleteMany({});
+  await mongoose.connection.collection('steel_conversation_lifecycle').deleteMany({});
 });
 
 afterAll(async () => {

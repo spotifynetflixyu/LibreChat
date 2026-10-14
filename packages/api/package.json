@@ -34,6 +34,7 @@
     "openapi:copy": "node -e \"const fs=require('fs');fs.mkdirSync('dist',{recursive:true});fs.copyFileSync('openapi/agents.openapi.json','dist/agents.openapi.json')\"",
     "test": "jest --coverage --watch --testPathIgnorePatterns=\"\\.*integration\\.|\\.*helper\\.|__tests__/helpers/|src/steel/normalization/spec[.]ts$|scripts/keepalive[.]test[.]mts$|src/steel/native/credentials[.]spec[.]ts$|src/providers/openai/compaction/(transport|persistence)[.]spec[.]ts$|\\.*manual\\.spec\\.\"",
     "test:ci": "jest --coverage --ci --testPathIgnorePatterns=\"\\.*integration\\.|\\.*helper\\.|__tests__/helpers/|src/steel/normalization/spec[.]ts$|scripts/keepalive[.]test[.]mts$|src/steel/native/credentials[.]spec[.]ts$|src/providers/openai/compaction/(transport|persistence)[.]spec[.]ts$|\\.*manual\\.spec\\.\"",
+    "test:ci:isolated": "for f in src/steel/native/credentials.spec.ts src/providers/openai/compaction/transport.spec.ts src/providers/openai/compaction/persistence.spec.ts; do NODE_OPTIONS=\"$NODE_OPTIONS --experimental-vm-modules\" jest --ci --testPathIgnorePatterns=/node_modules/ --runTestsByPath \"$f\" || exit 1; done",
     "test:keepalive": "node --experimental-strip-types --test scripts/keepalive.test.mts",
     "test:cache-integration:core": "jest --testPathPatterns=\"src/(cache|middleware)/.*\\.cache_integration\\.(spec|test)\\.ts$\" --coverage=false",
     "test:cache-integration:cluster": "jest --testPathPatterns=\"src/cluster/.*\\.cache_integration\\.(spec|test)\\.ts$\" --coverage=false --runInBand",

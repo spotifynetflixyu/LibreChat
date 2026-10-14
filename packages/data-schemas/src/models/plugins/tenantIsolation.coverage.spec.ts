@@ -20,7 +20,9 @@ const TENANT_ISOLATION_APPLIED = Symbol.for('librechat:tenantIsolation');
  * its methods apply explicit tenant filters. Steel quotation state/artifacts
  * and review outputs carry their full conversation/message/user scope through
  * explicit service predicates, including legacy `{ tenantId: { $in: [tenantId,
- * null] } }` reads. OAuthCompaction copies its complete validated scope into
+ * null] } }` reads. SteelConversationLifecycle markers are keyed by
+ * conversationId and every read or fence compares the stored user and tenant
+ * against the caller's scope explicitly. OAuthCompaction copies its complete validated scope into
  * every operation and has a deliberate cross-tenant user cleanup path. Adding
  * an entry here must be a deliberate, reviewed decision — that is the whole
  * point of this guard.
@@ -33,6 +35,7 @@ const MANUAL_TENANT_SCOPING = new Set<string>([
   'SteelQuotationState',
   'SteelQuotationArtifact',
   'SteelReviewOutput',
+  'SteelConversationLifecycle',
   'OAuthCompaction',
 ]);
 
