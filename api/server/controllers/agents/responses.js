@@ -688,9 +688,7 @@ async function saveResponseOutput(
       providerStateMode:
         req.steelNativeContext?.providerStateMode ?? 'openai_responses_reconstructed',
       contextMetadata: req.steelNativeContext?.contextMetadata,
-      activityEvents:
-        req.steelNativeContext?.steelHistory?.activityEvents ??
-        req.steelNativeContext?.steelActivityEvents,
+      activityEvents: req.steelNativeContext?.steelHistory?.activityEvents,
       preflightToolCalls: req.steelNativeContext?.steelHistory?.preflightToolCalls,
     }),
   };
@@ -1456,9 +1454,7 @@ const executeResponse = async (envelope, { req, res }) => {
             providerStateMode:
               req.steelNativeContext?.providerStateMode ?? 'openai_responses_reconstructed',
             contextMetadata: req.steelNativeContext?.contextMetadata,
-            activityEvents:
-              req.steelNativeContext?.steelHistory?.activityEvents ??
-              req.steelNativeContext?.steelActivityEvents,
+            activityEvents: req.steelNativeContext?.steelHistory?.activityEvents,
             preflightToolCalls: req.steelNativeContext?.steelHistory?.preflightToolCalls,
           }),
         };
@@ -1505,7 +1501,6 @@ const executeResponse = async (envelope, { req, res }) => {
         providerStateMode: 'openai_responses_reconstructed',
         currentTurnFiles,
         steelHistory,
-        steelActivityEvents: steelHistory.activityEvents,
         delegateOcrContext: {
           ...(req.steelNativeContext?.delegateOcrContext ?? {}),
           currentUserTurnText: currentUserTurn?.content ?? '',

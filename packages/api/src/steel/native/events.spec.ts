@@ -413,33 +413,6 @@ describe('Steel native event mapping', () => {
     expect(history.preflightToolCalls).toEqual([]);
   });
 
-  it('upgrades legacy activity events without replacing their array', () => {
-    const activityEvents = [memoryEvent('legacy')];
-    const context: {
-      steelActivityEvents: typeof activityEvents;
-      steelHistory?: ReturnType<typeof createSteelNativeHistory>;
-    } = { steelActivityEvents: activityEvents };
-
-    const history = ensureSteelNativeHistory(context);
-
-    expect(history.activityEvents).toBe(activityEvents);
-    expect(history.preflightToolCalls).toEqual([]);
-    expect(context.steelHistory).toBe(history);
-    expect(context.steelActivityEvents).toBe(activityEvents);
-  });
-
-  it('prefers canonical history and repoints legacy alias', () => {
-    const canonical = createSteelNativeHistory();
-    const legacy = [memoryEvent('legacy')];
-    const context = { steelHistory: canonical, steelActivityEvents: legacy };
-
-    const history = ensureSteelNativeHistory(context);
-
-    expect(history).toBe(canonical);
-    expect(history.activityEvents).not.toBe(legacy);
-    expect(context.steelActivityEvents).toBe(canonical.activityEvents);
-  });
-
   it('appends validated events with bounded count and byte budgets', () => {
     const sink = [] as ReturnType<typeof memoryEvent>[];
     const identity = sink;

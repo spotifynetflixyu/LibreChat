@@ -154,9 +154,10 @@ describe('getDefaultHandlers', () => {
     await handlers.steel_event.handle('steel_event', {
       type: 'quote_audit',
       source: 'quote_runtime',
-      stage: 'stage_2',
-      status: 'started',
-      message: 'Stage 2 started',
+      stage: 'stage_1',
+      status: 'executed',
+      message: 'Code Interpreter executed',
+      toolName: 'code_interpreter',
       conversationId: 'conversation-1',
       messageId: 'message-1',
     });
@@ -168,9 +169,9 @@ describe('getDefaultHandlers', () => {
         data: expect.objectContaining({
           type: 'quote_audit',
           source: 'quote_runtime',
-          stage: 'stage_2',
-          status: 'started',
-          message: 'Stage 2 started',
+          stage: 'stage_1',
+          status: 'executed',
+          message: 'Code Interpreter executed',
         }),
       }),
     );
@@ -178,25 +179,26 @@ describe('getDefaultHandlers', () => {
 
   it('captures Steel events before forwarding them', async () => {
     const { appendSteelNativeActivityEvent } = require('@librechat/api');
-    const steelActivityEvents = [];
+    const steelHistory = { activityEvents: [], preflightToolCalls: [] };
     const handlers = getDefaultHandlers({
       res: { headersSent: true, writableEnded: false, write: jest.fn() },
       aggregateContent: jest.fn(),
       toolEndCallback: jest.fn(),
       collectedUsage: [],
-      steelActivityEvents,
+      steelHistory,
     });
     const data = {
       type: 'quote_audit',
       source: 'quote_runtime',
-      stage: 'stage_2',
-      status: 'started',
-      message: 'Stage 2 started',
+      stage: 'stage_1',
+      status: 'executed',
+      message: 'Code Interpreter executed',
+      toolName: 'code_interpreter',
     };
 
     await handlers.steel_event.handle(undefined, data);
 
-    expect(appendSteelNativeActivityEvent).toHaveBeenCalledWith(steelActivityEvents, data);
+    expect(appendSteelNativeActivityEvent).toHaveBeenCalledWith(steelHistory, data);
   });
 
   it('forwards Steel quote audit events through resumable job emission', async () => {

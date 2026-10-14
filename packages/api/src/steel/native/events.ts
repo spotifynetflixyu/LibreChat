@@ -180,7 +180,6 @@ export interface SteelNativeHistory {
 
 interface SteelNativeHistoryContext {
   steelHistory?: SteelNativeHistory;
-  steelActivityEvents?: SteelNativeStreamEvent[];
 }
 
 export type SteelNativeHistoryTarget = SteelNativeHistory | SteelNativeStreamEvent[];
@@ -396,29 +395,12 @@ export function ensureSteelNativeHistory(context: SteelNativeHistoryContext): St
         ...parsed.preflightToolCalls,
       );
       context.steelHistory = existingHistory;
-      context.steelActivityEvents = existingHistory.activityEvents;
       return existingHistory;
     }
   }
 
   const history = createSteelNativeHistory();
-  if (Array.isArray(context.steelActivityEvents)) {
-    const parsed = parseSteelNativeHistory({
-      activityEvents: context.steelActivityEvents,
-      preflightToolCalls: [],
-    });
-    if (parsed) {
-      context.steelActivityEvents.splice(
-        0,
-        context.steelActivityEvents.length,
-        ...parsed.activityEvents,
-      );
-      history.activityEvents = context.steelActivityEvents;
-    }
-  }
-
   context.steelHistory = history;
-  context.steelActivityEvents = history.activityEvents;
   return history;
 }
 

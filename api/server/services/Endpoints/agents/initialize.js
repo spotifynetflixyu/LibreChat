@@ -222,7 +222,6 @@ const initializeClientWithProvider = async ({
   req.steelNativeContext = {
     ...(req.steelNativeContext ?? {}),
     steelHistory,
-    steelActivityEvents: steelHistory.activityEvents,
   };
   const appConfig = req.config;
   const completionWakeupsEnabled = backgroundCompletionWakeupsEnabled(

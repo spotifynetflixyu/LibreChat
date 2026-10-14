@@ -476,7 +476,6 @@ function getDefaultHandlers({
   contextUsageSink = null,
   usageEmitSink = null,
   steelHistory = null,
-  steelActivityEvents = null,
   eventChildActivity = null,
   resolveMcpServerName = null,
   toolTimingReplayEvents = [],
@@ -792,7 +791,7 @@ function getDefaultHandlers({
   handlers[delegateOcrStreamEventName] = createDelegateOcrStreamHandler();
   handlers[steelNativeStreamEventName] = {
     handle: async (_event, data) => {
-      appendSteelNativeActivityEvent(steelHistory ?? steelActivityEvents, data);
+      appendSteelNativeActivityEvent(steelHistory, data);
       await emitForJob({ event: steelNativeStreamEventName, data });
     },
   };

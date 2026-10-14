@@ -3953,8 +3953,7 @@ class AgentClient extends BaseClient {
       };
     }
     const steelHistory = this.options?.req?.steelNativeContext?.steelHistory;
-    const activityEvents =
-      steelHistory?.activityEvents ?? this.options?.req?.steelNativeContext?.steelActivityEvents;
+    const activityEvents = steelHistory?.activityEvents;
     const preflightToolCalls = steelHistory?.preflightToolCalls;
     if (Array.isArray(activityEvents) && activityEvents.length > 0) {
       metadata.steel = {

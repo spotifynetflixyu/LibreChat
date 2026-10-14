@@ -886,7 +886,7 @@ async function emitSteelNativeEvents({ events, res, streamId, req, historyChange
     if (event?.event === steelNativeStreamEventName) {
       steelHistoryChanged =
         appendSteelNativeActivityEvent(
-          req?.steelNativeContext?.steelHistory ?? req?.steelNativeContext?.steelActivityEvents,
+          req?.steelNativeContext?.steelHistory,
           event.data,
         ) || steelHistoryChanged;
     }
