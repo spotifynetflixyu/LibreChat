@@ -181,7 +181,7 @@ describe('Steel native context adapter', () => {
 
     const groups = await dependencies.listOtherGlobalRules();
 
-    expect(query).toHaveBeenCalledWith(expect.any(String), ['reviewed', 'other']);
+    expect(query).toHaveBeenCalledWith(expect.any(String), ['reviewed', ['agent', 'output', 'other', 'steel']]);
     expect(groups.ocrSharedRules.map((rule) => rule.slug)).toEqual(['steel-ocr-shared']);
     expect(groups.ocrVisionRules.map((rule) => rule.slug)).toEqual(['steel-ocr-vision']);
     expect(groups.ocrMainRules.map((rule) => rule.slug)).toEqual(['steel-ocr-flow']);

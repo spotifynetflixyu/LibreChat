@@ -688,7 +688,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     try {
       const renewed = await service.heartbeatLease(leaseInput);
       if (renewed || orderPublished) return;
-      const active = (await service.readState(scope))?.activeRun;
+      const active = await service.readActiveRun(scope);
       if (active?.runId === runId && active.status === 'completed' &&
         await service.isPublishedRun(scope, active)) {
         orderPublished = true;
@@ -717,8 +717,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
   };
   const assertActive = async () => {
     controller.signal.throwIfAborted();
-    const state = await operational(() => service.readState(scope));
-    const active = state?.activeRun;
+    const active = await operational(() => service.readActiveRun(scope));
     if (
       !active ||
       active.runId !== runId ||

@@ -20,7 +20,6 @@ import type {
 } from '@librechat/data-schemas';
 import type { SteelQuotationMessagePublication } from 'librechat-data-provider';
 import type { SteelMarkdownCompletionInput, SteelPublishedResponsePort } from './completion';
-import type { SteelSqlParameter } from '../repositories/types';
 import { createSteelQuotationErrorAppender, projectSteelQuotationTerminalMessage } from '../quotation/wiring';
 import { createSteelMarkdownCompletionServices, shouldDeferSteelMarkdownPersistence } from './completion';
 import { prepareQuotationTurn, renderQuotationCustomerMarkdown } from '../quotation/preparation';
@@ -744,11 +743,7 @@ it('loads quotation prompt rules through the supplied PostgreSQL client', async 
     active: true,
     review_state: 'reviewed',
   }));
-  const query = jest
-    .fn()
-    .mockImplementation(async (_sql: string, values?: readonly SteelSqlParameter[]) => ({
-      rows: values?.[1] === 'agent' ? rules : [],
-    }));
+  const query = jest.fn().mockResolvedValue({ rows: rules });
   const runtimeRulesClient = { query };
   const acceptance = jest.spyOn(runner, 'acceptQuotationSignal');
   const result = await createSteelMarkdownCompletionServices({

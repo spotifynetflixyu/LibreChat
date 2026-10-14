@@ -5,15 +5,10 @@ import type {
   SteelRuntimeJsonObject,
   SteelRuntimeOcrSourceFileMapping,
 } from '../runtime/context';
-import type { SteelAgentRule, SteelQuoteRule } from '../repositories/rules';
+import type { SteelAgentRule, SteelQuoteRule, SteelReviewedRules } from '../repositories/rules';
 import type { SteelRuntimeMessageRole } from '../runtime/types';
 import type { SteelRepositoryClient } from '../repositories';
-import {
-  listReviewedSteelAgentRules,
-  listReviewedSteelOtherRules,
-  listReviewedSteelOutputRules,
-  listReviewedSteelQuoteRules,
-} from '../repositories';
+import { listReviewedSteelRules } from '../repositories';
 import { prepareSteelRuntimeContext } from '../runtime/context';
 import { OCR_COMPLETION_DIRECTIVE_MARKER } from '../markdown/ocr';
 import { normalizeOcrOrganizerFileKey } from '../ocr/organizer';
@@ -667,9 +662,35 @@ function getDefaultSteelNativeRulesClient() {
   return defaultSteelNativeRulesClient;
 }
 
-function resolveSteelNativeContextList<T>(load: () => Promise<T[]>): Promise<T[]> {
-  // Global Steel context is fail-open so unavailable Steel rule tables do not block ordinary chat.
-  return Promise.resolve().then(load).catch(() => []);
+const STEEL_RULES_CACHE_TTL_MS = 30_000;
+const reviewedRulesCache = new WeakMap<
+  SteelRepositoryClient,
+  { expiresAt: number; rules: Promise<SteelReviewedRules> }
+>();
+
+function emptyReviewedRules(): SteelReviewedRules {
+  return { agentRules: [], outputRules: [], otherRules: [], quoteRules: [] };
+}
+
+/**
+ * Reviewed rules change only through the sync script, so one query is shared
+ * per client for a short TTL. Global Steel context is fail-open: an unavailable
+ * rules table yields empty rules and is retried on the next request.
+ */
+function loadReviewedRules(client: SteelRepositoryClient): Promise<SteelReviewedRules> {
+  const now = Date.now();
+  const cached = reviewedRulesCache.get(client);
+  if (cached && cached.expiresAt > now) {
+    return cached.rules;
+  }
+  const rules = listReviewedSteelRules(client);
+  reviewedRulesCache.set(client, { expiresAt: now + STEEL_RULES_CACHE_TTL_MS, rules });
+  rules.catch(() => {
+    if (reviewedRulesCache.get(client)?.rules === rules) {
+      reviewedRulesCache.delete(client);
+    }
+  });
+  return rules;
 }
 
 export function createSteelContextDependencies({
@@ -677,37 +698,17 @@ export function createSteelContextDependencies({
 }: {
   runtimeRulesClient?: SteelRepositoryClient;
 } = {}): SteelRuntimeContextDependencies {
-  let agentRulesPromise: Promise<SteelAgentRule[]> | undefined;
-  let otherRulesPromise: Promise<SteelAgentRule[]> | undefined;
-  let outputRulesPromise: Promise<SteelAgentRule[]> | undefined;
-  let quoteRulesPromise: Promise<SteelQuoteRule[]> | undefined;
-  const getClient = () => runtimeRulesClient ?? getDefaultSteelNativeRulesClient();
+  let rulesPromise: Promise<SteelReviewedRules> | undefined;
+  const rules = () =>
+    (rulesPromise ??= Promise.resolve()
+      .then(() => loadReviewedRules(runtimeRulesClient ?? getDefaultSteelNativeRulesClient()))
+      .catch(emptyReviewedRules));
 
   return {
-    listAgentRules() {
-      agentRulesPromise ??= resolveSteelNativeContextList(() =>
-        listReviewedSteelAgentRules(getClient()),
-      );
-      return agentRulesPromise;
-    },
-    listReviewedQuoteRules() {
-      quoteRulesPromise ??= resolveSteelNativeContextList(() =>
-        listReviewedSteelQuoteRules(getClient()),
-      );
-      return quoteRulesPromise;
-    },
-    listOutputRules() {
-      outputRulesPromise ??= resolveSteelNativeContextList(() =>
-        listReviewedSteelOutputRules(getClient()),
-      );
-      return outputRulesPromise;
-    },
-    async listOtherGlobalRules() {
-      otherRulesPromise ??= resolveSteelNativeContextList(() =>
-        listReviewedSteelOtherRules(getClient()),
-      );
-      return filterOtherGlobalRules(await otherRulesPromise);
-    },
+    listAgentRules: async () => (await rules()).agentRules,
+    listReviewedQuoteRules: async () => (await rules()).quoteRules,
+    listOutputRules: async () => (await rules()).outputRules,
+    listOtherGlobalRules: async () => filterOtherGlobalRules((await rules()).otherRules),
   };
 }
 

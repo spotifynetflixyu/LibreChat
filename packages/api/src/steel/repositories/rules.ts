@@ -146,16 +146,15 @@ function toQuoteRule(row: SteelUnifiedRuleRow): SteelQuoteRule {
   };
 }
 
-export async function listReviewedSteelAgentRules(
-  client: SteelRepositoryClient,
-): Promise<SteelAgentRule[]> {
-  return listReviewedSteelRulesByKind(client, 'agent');
+export interface SteelReviewedRules {
+  agentRules: SteelAgentRule[];
+  outputRules: SteelAgentRule[];
+  otherRules: SteelAgentRule[];
+  quoteRules: SteelQuoteRule[];
 }
 
-async function listReviewedSteelRulesByKind(
-  client: SteelRepositoryClient,
-  ruleKind: SteelRuleKind,
-): Promise<SteelAgentRule[]> {
+/** Loads every reviewed active rule in one round trip and partitions it by rule kind. */
+export async function listReviewedSteelRules(client: SteelRepositoryClient): Promise<SteelReviewedRules> {
   const result = await client.query<SteelUnifiedRuleRow>(
     `
 SELECT
@@ -176,55 +175,18 @@ SELECT
 FROM steel.rules
 WHERE review_state = $1
   AND active = true
-  AND rule_kind = $2
+  AND rule_kind = ANY($2::text[])
 ORDER BY priority ASC, id ASC
 `,
-    ['reviewed', ruleKind],
+    ['reviewed', ['agent', 'output', 'other', 'steel']],
   );
-
-  return result.rows.map(toAgentRule);
-}
-
-export async function listReviewedSteelOutputRules(
-  client: SteelRepositoryClient,
-): Promise<SteelAgentRule[]> {
-  return listReviewedSteelRulesByKind(client, 'output');
-}
-
-export async function listReviewedSteelOtherRules(
-  client: SteelRepositoryClient,
-): Promise<SteelAgentRule[]> {
-  return listReviewedSteelRulesByKind(client, 'other');
-}
-
-export async function listReviewedSteelQuoteRules(
-  client: SteelRepositoryClient,
-): Promise<SteelQuoteRule[]> {
-  const result = await client.query<SteelUnifiedRuleRow>(
-    `
-SELECT
-  id,
-  slug,
-  version,
-  rule_kind,
-  title,
-  locale,
-  rule_sections,
-  selectors,
-  prompt,
-  tool_policy,
-  output_policy,
-  priority,
-  active,
-  review_state
-FROM steel.rules
-WHERE review_state = $1
-  AND active = true
-  AND rule_kind = 'steel'
-ORDER BY priority ASC, id ASC
-`,
-    ['reviewed'],
-  );
-
-  return result.rows.map(toQuoteRule);
+  const rules: SteelReviewedRules = { agentRules: [], outputRules: [], otherRules: [], quoteRules: [] };
+  for (const row of result.rows) {
+    const kind = toRuleKind(row.rule_kind);
+    if (kind === 'steel') rules.quoteRules.push(toQuoteRule(row));
+    else if (kind === 'agent') rules.agentRules.push(toAgentRule(row));
+    else if (kind === 'output') rules.outputRules.push(toAgentRule(row));
+    else rules.otherRules.push(toAgentRule(row));
+  }
+  return rules;
 }

@@ -164,6 +164,24 @@ describe('Steel delegate OCR state', () => {
     expect(second.sourceCode).toBe('F2');
   });
 
+  it('fails instead of retrying forever when the OCR state disappears during allocation', async () => {
+    const State = createSteelConversationOcrStateModel(mongoose);
+    const service = createSteelDelegateOcrStateService(mongoose);
+    const findOne = jest.spyOn(State, 'findOne');
+    findOne.mockImplementationOnce(() => State.findOne({ conversationId: 'conversation-missing' }));
+    try {
+      await expect(
+        service.allocateDelegateSourceMapping({
+          conversationId: 'conversation-mapping-removed',
+          fileId: 'file-1',
+          sourceFilename: 'removed.pdf',
+        }),
+      ).rejects.toThrow('removed while allocating');
+    } finally {
+      findOne.mockRestore();
+    }
+  });
+
   it('returns the winning source mapping when the same file is allocated concurrently', async () => {
     const service = createSteelDelegateOcrStateService(mongoose);
     const [first, second] = await Promise.all([

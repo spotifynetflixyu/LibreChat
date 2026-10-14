@@ -1,9 +1,4 @@
-import {
-  listReviewedSteelAgentRules,
-  listReviewedSteelOtherRules,
-  listReviewedSteelOutputRules,
-  listReviewedSteelQuoteRules,
-} from './rules';
+import { listReviewedSteelRules } from './rules';
 
 import type { SteelRepositoryClient } from './types';
 
@@ -70,21 +65,31 @@ const otherRuleRow = {
 };
 
 describe('Steel agent and quote rule repositories', () => {
-  it('lists reviewed active agent rules without output or other rules', async () => {
-    const query = jest.fn().mockResolvedValue({ rows: [agentRuleRow] });
+  it('loads every reviewed active rule kind in one unfiltered query', async () => {
+    const query = jest.fn().mockResolvedValue({ rows: [] });
 
-    const result = await listReviewedSteelAgentRules({ query } as SteelRepositoryClient);
-    const sql = query.mock.calls[0]?.[0];
+    await listReviewedSteelRules({ query } as SteelRepositoryClient);
 
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('FROM steel.rules'), [
-      'reviewed',
-      'agent',
-    ]);
+    expect(query).toHaveBeenCalledTimes(1);
+    const [sql, values] = query.mock.calls[0]!;
+    expect(values).toEqual(['reviewed', ['agent', 'output', 'other', 'steel']]);
+    expect(sql).toEqual(expect.stringContaining('FROM steel.rules'));
     expect(sql).toEqual(expect.stringContaining('active = true'));
-    expect(sql).toEqual(expect.stringContaining('rule_kind = $2'));
+    expect(sql).toEqual(expect.stringContaining('rule_kind = ANY($2::text[])'));
+    expect(sql).not.toMatch(/review_state,\s*FROM/u);
+    expect(sql).not.toEqual(expect.stringContaining('ILIKE'));
     expect(sql).not.toEqual(expect.stringContaining('LIMIT'));
-    expect(result).toHaveLength(1);
-    expect(result[0]).toMatchObject({
+  });
+
+  it('partitions rows by rule kind and maps agent and quote rule fields', async () => {
+    const query = jest.fn().mockResolvedValue({
+      rows: [agentRuleRow, outputRuleRow, otherRuleRow, quoteRuleRow],
+    });
+
+    const result = await listReviewedSteelRules({ query } as SteelRepositoryClient);
+
+    expect(result.agentRules).toHaveLength(1);
+    expect(result.agentRules[0]).toMatchObject({
       id: 1,
       slug: 'steel-default-agent-instruction',
       version: 1,
@@ -102,78 +107,29 @@ describe('Steel agent and quote rule repositories', () => {
       active: true,
       reviewState: 'reviewed',
     });
-  });
-
-  it('lists reviewed active output rules separately from agent and other rules', async () => {
-    const query = jest.fn().mockResolvedValue({ rows: [outputRuleRow] });
-
-    const result = await listReviewedSteelOutputRules({ query } as SteelRepositoryClient);
-    const sql = query.mock.calls[0]?.[0];
-
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('FROM steel.rules'), [
-      'reviewed',
-      'output',
+    expect(result.outputRules).toEqual([
+      expect.objectContaining({ id: 2, ruleType: 'output', ruleSections: ['workbook_output'] }),
     ]);
-    expect(sql).toEqual(expect.stringContaining('rule_kind = $2'));
-    expect(result).toHaveLength(1);
-    expect(result[0]).toMatchObject({
-      id: 2,
-      slug: 'steel-workbook-output-policy',
-      ruleType: 'output',
-      ruleSections: ['workbook_output'],
-    });
-  });
-
-  it('lists reviewed active other rules separately for conditional context', async () => {
-    const query = jest.fn().mockResolvedValue({ rows: [otherRuleRow] });
-
-    const result = await listReviewedSteelOtherRules({ query } as SteelRepositoryClient);
-    const sql = query.mock.calls[0]?.[0];
-
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('FROM steel.rules'), [
-      'reviewed',
-      'other',
+    expect(result.otherRules).toEqual([
+      expect.objectContaining({ id: 3, ruleType: 'other', ruleSections: ['file_ocr', 'drawing_ocr'] }),
     ]);
-    expect(sql).not.toMatch(/review_state,\s*FROM/u);
-    expect(sql).toEqual(expect.stringContaining('rule_kind = $2'));
-    expect(result).toHaveLength(1);
-    expect(result[0]).toMatchObject({
-      id: 3,
-      slug: 'steel-drawing-ocr-policy',
-      ruleType: 'other',
-      ruleSections: ['file_ocr', 'drawing_ocr'],
-    });
-  });
-
-  it('lists all reviewed active quote rules without keyword, scope, facet, or limit filters', async () => {
-    const query = jest.fn().mockResolvedValue({ rows: [quoteRuleRow] });
-
-    const result = await listReviewedSteelQuoteRules({ query } as SteelRepositoryClient);
-    const sql = query.mock.calls[0]?.[0];
-
-    expect(query).toHaveBeenCalledWith(expect.stringContaining('FROM steel.rules'), ['reviewed']);
-    expect(sql).not.toMatch(/review_state,\s*FROM/u);
-    expect(sql).toEqual(expect.stringContaining('active = true'));
-    expect(sql).toEqual(expect.stringContaining("rule_kind = 'steel'"));
-    expect(sql).not.toEqual(expect.stringContaining('ILIKE'));
-    expect(sql).not.toEqual(expect.stringContaining('ANY($'));
-    expect(sql).not.toEqual(expect.stringContaining('LIMIT'));
-    expect(result).toHaveLength(1);
-    expect(result[0]).toMatchObject({
-      id: 31,
-      ruleType: 'formula_rule',
-      scopeType: 'catalog_family',
-      catalogFamily: 'plate',
-      productFamily: 'laser_cut',
-      chargeType: 'cutting',
-      formulaCode: 'PL',
-      selectors: { catalogFamily: 'plate' },
-      parameters: { density: 7.85 },
-      prompt: 'Fixture quote rule',
-      priority: 40,
-      confidence: 'high',
-      active: true,
-      reviewState: 'reviewed',
-    });
+    expect(result.quoteRules).toEqual([
+      expect.objectContaining({
+        id: 31,
+        ruleType: 'formula_rule',
+        scopeType: 'catalog_family',
+        catalogFamily: 'plate',
+        productFamily: 'laser_cut',
+        chargeType: 'cutting',
+        formulaCode: 'PL',
+        selectors: expect.objectContaining({ catalogFamily: 'plate' }),
+        parameters: { density: 7.85 },
+        prompt: 'Fixture quote rule',
+        priority: 40,
+        confidence: 'high',
+        active: true,
+        reviewState: 'reviewed',
+      }),
+    ]);
   });
 });

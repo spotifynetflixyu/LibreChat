@@ -196,6 +196,8 @@ export interface SteelQuotationDeleteResult {
 export interface SteelQuotationStateService {
   ensureState(scope: SteelQuotationScope): Promise<ISteelQuotationState>;
   readState(scope: SteelQuotationScope): Promise<ISteelQuotationState | null>;
+  /** Reads only the active run for hot lease checks; expired runs fall back to readState retirement. */
+  readActiveRun(scope: SteelQuotationScope): Promise<SteelQuotationActiveRun | undefined>;
   isPublishedRun(scope: SteelQuotationScope, run: SteelQuotationActiveRun): Promise<boolean>;
   hasSystemOrder(scope: SteelQuotationScope, preloadedState?: ISteelQuotationState | null): Promise<boolean>;
   setOrder(input: SteelQuotationOrderInput): Promise<ISteelQuotationState>;
@@ -564,6 +566,19 @@ export function createSteelQuotationStateService(
     }
     return state;
   }
+  async function readActiveRun(scope: SteelQuotationScope): Promise<SteelQuotationActiveRun | undefined> {
+    validateScope(scope);
+    const state = await State.findOne(stateFilter(scope))
+      .select({ activeRun: 1 })
+      .lean<Pick<ISteelQuotationState, 'activeRun'>>();
+    const run = state?.activeRun;
+    if (run && run.status !== 'cancelled' &&
+      new Date(run.acceptedAt).getTime() + STEEL_QUOTATION_INPUT_TTL_MS <= Date.now()) {
+      return (await readState(scope))?.activeRun;
+    }
+    return run;
+  }
+
 
   async function prepareOcrOrder(scope: SteelQuotationScope, expectedOrderHash: string | null) {
     const result = await inputs.prepareSteelQuotationOcrInput({ scope, expectedOrderHash });
@@ -1503,6 +1518,7 @@ export function createSteelQuotationStateService(
   return {
     ensureState,
     readState,
+    readActiveRun,
     isPublishedRun: inputs.isSteelQuotationRunPublished,
     hasSystemOrder,
     setOrder,

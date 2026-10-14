@@ -24,6 +24,7 @@ import type {
 } from '@librechat/data-schemas';
 
 type Mongoose = typeof import('mongoose');
+const MAX_SOURCE_MAPPING_ATTEMPTS = 32;
 type ConversationStateModel = ReturnType<typeof createSteelConversationOcrStateModel>;
 
 export interface ClaimNewDelegateOcrIndexInput {
@@ -602,34 +603,22 @@ export function createSteelDelegateOcrStateService(
     input: AllocateDelegateSourceMappingInput,
   ): Promise<DelegateSourceMapping> {
     await ensureConversationState(State, input.conversationId);
-    const existing = await State.findOne({
-      conversationId: input.conversationId,
-      'sourceMappings.fileId': input.fileId,
-    })
-      .select({ sourceMappings: 1 })
-      .lean<ISteelConversationOcrState>();
-    const existingMapping = existing?.sourceMappings.find((mapping) => mapping.fileId === input.fileId);
-    if (existingMapping) {
-      return {
-        fileId: existingMapping.fileId,
-        sourceCode: existingMapping.sourceCode,
-        sourceFilename: existingMapping.sourceFilename,
-      };
-    }
-
-    for (;;) {
+    for (let attempt = 0; attempt < MAX_SOURCE_MAPPING_ATTEMPTS; attempt++) {
       const state = await State.findOne({ conversationId: input.conversationId })
         .select({ sourceMappings: 1 })
         .lean<ISteelConversationOcrState>();
-      const racedMapping = state?.sourceMappings.find((mapping) => mapping.fileId === input.fileId);
-      if (racedMapping) {
+      if (!state) {
+        throw new Error('Steel OCR state was removed while allocating a source mapping');
+      }
+      const existingMapping = state.sourceMappings.find((mapping) => mapping.fileId === input.fileId);
+      if (existingMapping) {
         return {
-          fileId: racedMapping.fileId,
-          sourceCode: racedMapping.sourceCode,
-          sourceFilename: racedMapping.sourceFilename,
+          fileId: existingMapping.fileId,
+          sourceCode: existingMapping.sourceCode,
+          sourceFilename: existingMapping.sourceFilename,
         };
       }
-      const highest = (state?.sourceMappings ?? []).reduce((max, mapping) => {
+      const highest = state.sourceMappings.reduce((max, mapping) => {
         const match = /^F(\d+)$/u.exec(mapping.sourceCode);
         const value = match ? Number(match[1]) : 0;
         return Number.isSafeInteger(value) ? Math.max(max, value) : max;
@@ -662,6 +651,7 @@ export function createSteelDelegateOcrStateService(
         };
       }
     }
+    throw new Error('Steel OCR source mapping allocation did not converge under concurrent updates');
   }
 
   async function upsertCurrentOcrResult(

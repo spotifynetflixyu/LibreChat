@@ -520,6 +520,12 @@ describe('quotation runner integration', () => {
     let renewalFinished = false;
     let publicationReads = 0;
     let heartbeatCalls = 0;
+    const countPublicationRead = (active?: { checkpointRefs: Array<{ operationId: string }> }) => {
+      if (active?.checkpointRefs.some((ref) => ref.operationId === 'calculation:basis') &&
+        ++publicationReads === 2) {
+        setImmediate(release);
+      }
+    };
     const heartbeatLease = jest.fn(async (input: Parameters<typeof service.heartbeatLease>[0]) => {
       if (++heartbeatCalls === 1) {
         await gate;
@@ -530,14 +536,20 @@ describe('quotation runner integration', () => {
       return service.heartbeatLease(input);
     });
     const factory = jest.spyOn(stateModule, 'createSteelQuotationStateService')
-      .mockReturnValue({ ...service, heartbeatLease, readState: async (input) => {
-        const state = await service.readState(input);
-        if (state?.activeRun?.checkpointRefs.some((ref) => ref.operationId === 'calculation:basis') &&
-          ++publicationReads === 2) {
-          setImmediate(release);
-        }
-        return state;
-      } });
+      .mockReturnValue({
+        ...service,
+        heartbeatLease,
+        readState: async (input) => {
+          const state = await service.readState(input);
+          countPublicationRead(state?.activeRun);
+          return state;
+        },
+        readActiveRun: async (input) => {
+          const active = await service.readActiveRun(input);
+          countPublicationRead(active);
+          return active;
+        },
+      });
     const originalInterval = global.setInterval;
     let tick!: () => Promise<void>;
     const timer = jest.spyOn(global, 'setInterval').mockImplementation((callback, delay) => {
