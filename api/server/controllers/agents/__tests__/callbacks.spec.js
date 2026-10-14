@@ -8,6 +8,7 @@ jest.mock('nanoid', () => ({
 jest.mock('@librechat/api', () => ({
   sendEvent: jest.fn(),
   delegateOcrStreamEventName: 'on_delegate_ocr_stream',
+  createDelegateOcrStreamHandler: jest.requireActual('@librechat/api').createDelegateOcrStreamHandler,
   steelNativeStreamEventName: 'steel_event',
   appendSteelNativeActivityEvent: jest.fn(() => false),
   writeAttachmentEvent: jest.fn(),

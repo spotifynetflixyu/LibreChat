@@ -28,6 +28,7 @@ const {
   createBackgroundCodeResultHandler: createCodeHarvestHandler,
   HOST_FILE_AUTHORING_ARTIFACT_KEY,
   delegateOcrStreamEventName,
+  createDelegateOcrStreamHandler,
   isCodeSessionToolName,
   isCodeArtifactToolOutput,
   getModelRefusalInfo,
@@ -369,61 +370,6 @@ function feedSubagentAggregator(aggregator, event, applyChildTiming) {
       target.mcpServerName = source.mcpServerName;
     }
   }
-}
-
-function createDelegateOcrStreamHandler() {
-  const messageStepIds = new Map();
-
-  return {
-    handle: async (_event, data, metadata, graph) => {
-      const providerToolCallId = data?.providerToolCallId;
-      if (!graph || typeof providerToolCallId !== 'string' || providerToolCallId === '') {
-        return;
-      }
-
-      const runId =
-        typeof metadata?.run_id === 'string' && metadata.run_id !== ''
-          ? metadata.run_id
-          : graph.runId || 'run';
-      const streamKey = `${runId}:${providerToolCallId}`;
-      if (data.phase === 'complete' || data.phase === 'error') {
-        messageStepIds.delete(streamKey);
-        return;
-      }
-      if (data.phase !== 'delta' || typeof data.delta !== 'string' || data.delta === '') {
-        return;
-      }
-
-      let messageStepId = messageStepIds.get(streamKey);
-      if (!messageStepId) {
-        messageStepId = await graph.dispatchRunStep(
-          `delegate_ocr_stream:${streamKey}:${nanoid()}`,
-          {
-            type: StepTypes.MESSAGE_CREATION,
-            message_creation: {
-              message_id: streamKey,
-            },
-          },
-          metadata,
-        );
-        messageStepIds.set(streamKey, messageStepId);
-      }
-
-      await graph.dispatchMessageDelta(
-        messageStepId,
-        {
-          content: [
-            {
-              type: 'text',
-              text: data.delta,
-              tool_call_ids: [providerToolCallId],
-            },
-          ],
-        },
-        metadata,
-      );
-    },
-  };
 }
 
 /**
