@@ -46,6 +46,9 @@ async function refreshOpenAIOAuthQueries(
   await queryClient.invalidateQueries([QueryKeys.openAIOAuthUsage]);
 }
 
+/** Source files are immutable per file id; keep a reopened preview from re-downloading it. */
+const STEEL_REVIEW_SOURCE_CACHE_MS = 5 * 60_000;
+
 export const useGetOpenAIOAuthUsageQuery = (
   config?: UseQueryOptions<OpenAIOAuthUsageRemaining>,
 ): QueryObserverResult<OpenAIOAuthUsageRemaining> => {
@@ -196,8 +199,8 @@ export const useGetSteelReviewSourceQuery = (
     {
       enabled,
       retry: false,
-      staleTime: 0,
-      cacheTime: 0,
+      staleTime: Infinity,
+      cacheTime: STEEL_REVIEW_SOURCE_CACHE_MS,
       ...config,
     },
   );

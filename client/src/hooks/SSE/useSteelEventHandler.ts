@@ -407,7 +407,7 @@ function getTargetMessageIds(
   return Array.from(ids);
 }
 
-function stableEventKey(event: SteelNativeActivityEvent): string {
+function computeStableEventKey(event: SteelNativeActivityEvent): string {
   if (event.type === 'quotation_status') {
     return JSON.stringify({
       type: event.type,
@@ -519,6 +519,18 @@ function getOcrPreprocessingProgressState(event: SteelNativeActivityEvent):
     }),
     state: match[1] === 'Ran' ? 'ran' : 'running',
   };
+}
+
+const stableEventKeys = new WeakMap<SteelNativeActivityEvent, string>();
+
+/** Activity events are immutable once stored, so their dedupe key is cached by identity. */
+function stableEventKey(event: SteelNativeActivityEvent): string {
+  let key = stableEventKeys.get(event);
+  if (key === undefined) {
+    key = computeStableEventKey(event);
+    stableEventKeys.set(event, key);
+  }
+  return key;
 }
 
 export function appendSteelNativeActivityEvent(

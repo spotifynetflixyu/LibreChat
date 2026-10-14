@@ -704,9 +704,10 @@ describe('OpenAI OAuth model adapter', () => {
         },
       ]),
     );
+    const dependencies = createFakeOpenAIOAuthDependencies({ doGenerate });
     const model = createOpenAIOAuthGraphModel({
       modelOptions: {
-        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
+        ...dependencies.options,
         model: 'gpt-5.5',
       },
       getSystemRunnable: () =>
@@ -738,6 +739,7 @@ describe('OpenAI OAuth model adapter', () => {
 
     await model.invoke([new SystemMessage('Already prepared'), new HumanMessage('確認後報價')]);
 
+    expect(dependencies.options.createOpenAIOAuthTransport).toHaveBeenCalledTimes(1);
     expect(getGenerateCall(doGenerate).prompt).toEqual([
       {
         role: 'system',

@@ -70,6 +70,8 @@ export interface OpenAIOAuthProviderOptions {
 }
 
 export interface OpenAIOAuthModelOptions extends OpenAIOAuthProviderOptions {
+  /** Reuses one provider across graph steps so its transport state is not rebuilt per step. */
+  providerModel?: Promise<LanguageModelV3>;
   onCodeInterpreterEvidence?: (evidence: {
     type: 'tool-call' | 'tool-result';
     toolCallId: string;
@@ -1375,6 +1377,10 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
     if (this.providerModel) {
       return this.providerModel;
     }
+    if (this.options.providerModel) {
+      this.providerModel = await this.options.providerModel;
+      return this.providerModel;
+    }
 
     const provider = await createStatelessOpenAIOAuthProvider(this.options);
     this.providerModel = provider(this.options.model);
@@ -1401,8 +1407,28 @@ export class OpenAIOAuthGraphModel extends Runnable<BaseMessage[], AIMessageChun
 
   lc_namespace: string[] = ['librechat', 'openai_oauth'];
 
+  private providerModel?: Promise<LanguageModelV3>;
+
   constructor(private readonly options: OpenAIOAuthGraphModelOptions) {
     super();
+  }
+
+  private createStepModel(): OpenAIOAuthModel {
+    const { modelOptions } = this.options;
+    if (!this.providerModel) {
+      const providerModel = createStatelessOpenAIOAuthProvider(modelOptions).then((provider) =>
+        provider(modelOptions.model),
+      );
+      providerModel.catch(() => {
+        if (this.providerModel === providerModel) this.providerModel = undefined;
+      });
+      this.providerModel = providerModel;
+    }
+    return createOpenAIOAuthModel({
+      ...modelOptions,
+      tools: this.getTools(),
+      providerModel: this.providerModel,
+    });
   }
 
   private async prepareMessages(
@@ -1468,10 +1494,7 @@ export class OpenAIOAuthGraphModel extends Runnable<BaseMessage[], AIMessageChun
     }
 
     const preparedMessages = await this.prepareMessages(messages, config);
-    return createOpenAIOAuthModel({
-      ...this.options.modelOptions,
-      tools: this.getTools(),
-    }).invoke(preparedMessages, config);
+    return this.createStepModel().invoke(preparedMessages, config);
   }
 
   async *_streamIterator(
@@ -1485,10 +1508,7 @@ export class OpenAIOAuthGraphModel extends Runnable<BaseMessage[], AIMessageChun
     }
 
     const preparedMessages = await this.prepareMessages(messages, config);
-    const stream = await createOpenAIOAuthModel({
-      ...this.options.modelOptions,
-      tools: this.getTools(),
-    }).stream(preparedMessages, config);
+    const stream = await this.createStepModel().stream(preparedMessages, config);
 
     for await (const chunk of stream) {
       yield chunk;
