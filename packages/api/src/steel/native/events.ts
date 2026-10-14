@@ -1291,49 +1291,6 @@ function canonicalizeSteelNativePreflightToolCall(
   return isSteelNativePreflightToolCall(card, allowLegacyError) ? card : undefined;
 }
 
-function canonicalizeHistoryEntries(history: SteelNativeHistory):
-  | {
-      activityEvents: SteelNativeStreamEvent[];
-      preflightToolCalls: SteelNativePreflightToolCall[];
-    }
-  | undefined {
-  const activityEvents: SteelNativeStreamEvent[] = [];
-  for (const event of history.activityEvents) {
-    const canonicalEvent = canonicalizeSteelNativeEvent(event);
-    if (!canonicalEvent) {
-      return undefined;
-    }
-    activityEvents.push(canonicalEvent);
-  }
-  const preflightToolCalls: SteelNativePreflightToolCall[] = [];
-  for (const card of history.preflightToolCalls) {
-    const canonicalCard = canonicalizeSteelNativePreflightToolCall(card, true);
-    if (!canonicalCard) {
-      return undefined;
-    }
-    preflightToolCalls.push(canonicalCard);
-  }
-  return {
-    activityEvents,
-    preflightToolCalls,
-  };
-}
-
-function replaceHistoryEntries(
-  history: SteelNativeHistory,
-  canonical: {
-    activityEvents: SteelNativeStreamEvent[];
-    preflightToolCalls: SteelNativePreflightToolCall[];
-  },
-): void {
-  history.activityEvents.splice(0, history.activityEvents.length, ...canonical.activityEvents);
-  history.preflightToolCalls.splice(
-    0,
-    history.preflightToolCalls.length,
-    ...canonical.preflightToolCalls,
-  );
-}
-
 function stripHistoryUnknownFields(history: SteelNativeHistory): void {
   for (const key of Object.keys(history)) {
     if (key !== 'activityEvents' && key !== 'preflightToolCalls') {
@@ -1349,6 +1306,30 @@ function getHistory(target: SteelNativeHistoryTarget): SteelNativeHistory {
   return target;
 }
 
+const entryByteCache = new WeakMap<object, number>();
+
+/** History entries are replaced, never mutated, so their serialized size is cached by identity. */
+function entryBytes(entry: object): number {
+  let bytes = entryByteCache.get(entry);
+  if (bytes === undefined) {
+    bytes = Buffer.byteLength(JSON.stringify(entry), 'utf8');
+    entryByteCache.set(entry, bytes);
+  }
+  return bytes;
+}
+
+function listBytes(entries: readonly object[]): number {
+  let bytes = entries.length > 0 ? entries.length + 1 : 2;
+  for (const entry of entries) bytes += entryBytes(entry);
+  return bytes;
+}
+
+const historyFrameBytes = '{"activityEvents":,"preflightToolCalls":}'.length;
+
+function historyBytes(history: SteelNativeHistory): number {
+  return historyFrameBytes + listBytes(history.activityEvents) + listBytes(history.preflightToolCalls);
+}
+
 function trimSteelNativeHistory(history: SteelNativeHistory): boolean {
   while (history.activityEvents.length > steelNativeActivityEventMaxCount) {
     history.activityEvents.shift();
@@ -1356,28 +1337,22 @@ function trimSteelNativeHistory(history: SteelNativeHistory): boolean {
   while (history.preflightToolCalls.length > steelNativePreflightToolCallMaxCount) {
     history.preflightToolCalls.shift();
   }
-  let activityBytes = history.activityEvents.reduce(
-    (total, event) => total + Buffer.byteLength(JSON.stringify(event), 'utf8'),
-    0,
-  );
+  let activityBytes = history.activityEvents.reduce((total, event) => total + entryBytes(event), 0);
   while (activityBytes > steelNativeActivityEventsMaxBytes) {
     const removed = history.activityEvents.shift();
     if (!removed) {
       return false;
     }
-    activityBytes -= Buffer.byteLength(JSON.stringify(removed), 'utf8');
+    activityBytes -= entryBytes(removed);
   }
 
-  let serialized = JSON.stringify(history);
-  while (Buffer.byteLength(serialized, 'utf8') > steelNativeHistoryMaxBytes) {
-    if (history.activityEvents.length > 0) {
-      history.activityEvents.shift();
-    } else if (history.preflightToolCalls.length > 0) {
-      history.preflightToolCalls.shift();
-    } else {
+  let totalBytes = historyBytes(history);
+  while (totalBytes > steelNativeHistoryMaxBytes) {
+    const removed = history.activityEvents.shift() ?? history.preflightToolCalls.shift();
+    if (!removed) {
       return false;
     }
-    serialized = JSON.stringify(history);
+    totalBytes = historyBytes(history);
   }
   return true;
 }
@@ -1417,33 +1392,21 @@ export function appendSteelNativeActivityEvent(
     }
 
     const cloned = JSON.parse(serialized) as SteelNativeStreamEvent;
+    entryByteCache.set(cloned, eventBytes);
 
     const history = getHistory(sink);
-    const canonicalHistory = canonicalizeHistoryEntries(history);
-    if (!canonicalHistory) {
-      return false;
-    }
-    replaceHistoryEntries(history, canonicalHistory);
     stripHistoryUnknownFields(history);
-    const entryBytes = history.activityEvents.map((entry) => {
-      const entryJson = JSON.stringify(entry);
-      if (typeof entryJson !== 'string') {
-        throw new Error('invalid existing Steel activity event');
-      }
-      return Buffer.byteLength(entryJson, 'utf8');
-    });
-    let totalBytes = entryBytes.reduce((total, bytes) => total + bytes, 0);
+    let totalBytes = history.activityEvents.reduce((total, entry) => total + entryBytes(entry), 0);
 
     while (
       history.activityEvents.length >= steelNativeActivityEventMaxCount ||
       totalBytes + eventBytes > steelNativeActivityEventsMaxBytes
     ) {
-      const removedBytes = entryBytes.shift();
-      if (removedBytes === undefined) {
+      const removed = history.activityEvents.shift();
+      if (!removed) {
         break;
       }
-      history.activityEvents.shift();
-      totalBytes -= removedBytes;
+      totalBytes -= entryBytes(removed);
     }
 
     if (
@@ -1476,11 +1439,6 @@ export function upsertSteelNativePreflightToolCall(
     ) {
       return false;
     }
-    const canonicalHistory = canonicalizeHistoryEntries(history);
-    if (!canonicalHistory) {
-      return false;
-    }
-    replaceHistoryEntries(history, canonicalHistory);
     stripHistoryUnknownFields(history);
     const canonicalCard = canonicalizeSteelNativePreflightToolCall(value);
     if (!canonicalCard) {

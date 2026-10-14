@@ -785,8 +785,10 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     for (const chunk of chunks) {
       interruptedChunkIndex = chunk.chunkIndex;
       const operationId = `chunk:${chunk.chunkIndex}`;
-      const stored = await readCheckpoint(operationId);
-      const treeSplit = await readCheckpoint(`split-v2:${chunk.chunkIndex}:r`);
+      const [stored, treeSplit] = await Promise.all([
+        readCheckpoint(operationId),
+        readCheckpoint(`split-v2:${chunk.chunkIndex}:r`),
+      ]);
       const children: LoadedQuotationChild[] = [];
       if (stored && !treeSplit) {
         children.push(await loadChild(chunk, stored));
@@ -1380,27 +1382,22 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
         ) {
           throw new Error('Saved quotation chunk does not match its source rows');
         }
-        const lookupEvidence: QuotationLookupEvidence[] = [];
-        for (const key of saved.lookupOperations) {
-          const evidence = await readCheckpoint(key);
-          if (!evidence) throw new Error('Quotation lookup evidence is missing');
-          const lookup = JSON.parse(evidence) as SavedQuotationLookup;
-          if (lookup.result.toolName !== 'search_price_candidates') {
-            throw new Error('Quotation lookup evidence is for an unauthorized tool');
-          }
-          lookupEvidence.push({
-            lookupCallId: lookup.lookupCallId,
-            persisted: true,
-            result: lookup.result,
-          });
-        }
-        const pythonEvidence: QuotationPythonEvidence[] = [];
-        for (const key of saved.pythonOperations) {
-          const payload = await readCheckpoint(key);
-          if (!payload) throw new Error('Quotation Python evidence is missing');
-          const parsed = JSON.parse(payload) as QuotationPythonEvidence;
-          pythonEvidence.push(parsed);
-        }
+        const [lookupEvidence, pythonEvidence] = await Promise.all([
+          Promise.all(saved.lookupOperations.map(async (key): Promise<QuotationLookupEvidence> => {
+            const evidence = await readCheckpoint(key);
+            if (!evidence) throw new Error('Quotation lookup evidence is missing');
+            const lookup = JSON.parse(evidence) as SavedQuotationLookup;
+            if (lookup.result.toolName !== 'search_price_candidates') {
+              throw new Error('Quotation lookup evidence is for an unauthorized tool');
+            }
+            return { lookupCallId: lookup.lookupCallId, persisted: true, result: lookup.result };
+          })),
+          Promise.all(saved.pythonOperations.map(async (key): Promise<QuotationPythonEvidence> => {
+            const payload = await readCheckpoint(key);
+            if (!payload) throw new Error('Quotation Python evidence is missing');
+            return JSON.parse(payload) as QuotationPythonEvidence;
+          })),
+        ]);
         return {
           chunk,
           response: normalizeSteelChunkMarkdown(

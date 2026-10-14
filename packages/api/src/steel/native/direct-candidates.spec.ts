@@ -54,6 +54,7 @@ describe('native direct candidate compaction', () => {
     expect(result.content.length).toBeLessThanOrEqual(200_000);
     const payload = JSON.parse(result.content) as { data: Record<string, unknown> };
     expect(JSON.stringify(payload.data).length).toBeLessThanOrEqual(199_500);
+    expect(JSON.stringify(payload.data).length).toBeGreaterThan(195_000);
     expect(payload.data.responseTruncated).toBe(true);
     const queryResults = payload.data.queryResults as Array<{
       queryId: string;

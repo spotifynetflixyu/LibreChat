@@ -1116,10 +1116,9 @@ export function createSteelQuotationStateService(
     runId: string;
     operationId: string;
   }): Promise<string | undefined> {
-    validateScope(input.scope);
-    const state = await readState(input.scope);
-    const ref = state?.activeRun?.runId === input.runId
-      ? state.activeRun.checkpointRefs.find((candidate) => candidate.operationId === input.operationId)
+    const activeRun = await readActiveRun(input.scope);
+    const ref = activeRun?.runId === input.runId
+      ? activeRun.checkpointRefs.find((candidate) => candidate.operationId === input.operationId)
       : undefined;
     if (ref) {
       return readArtifact({ scope: input.scope, ref: artifactRef(input.scope, input.runId, ref.operationId, ref.kind, ref.sha256) });

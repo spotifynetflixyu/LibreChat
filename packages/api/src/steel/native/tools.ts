@@ -406,6 +406,10 @@ function updateCandidateCollection(entry: CandidateCollection): void {
       : entry.items.length < totalAvailable;
 }
 
+function collectionMetadataLength(entry: CandidateCollection): number {
+  return JSON.stringify(entry.query.returnedCount).length + JSON.stringify(entry.query.truncated).length;
+}
+
 function updateProcessingReturnedCounts(processingQueries: SteelToolJsonObject[]): void {
   processingQueries.forEach((query) => {
     if (!Array.isArray(query.groups)) return;
@@ -503,13 +507,17 @@ function trimCompactPriceResult(
     ...cuttingCollections,
   ];
   for (const entry of candidateCollections) updateCandidateCollection(entry);
-  while (serializedLength() > maxSerializedChars) {
+  /** Tracks the exact serialized length so each pop does not re-serialize the payload. */
+  let length = serializedLength();
+  while (length > maxSerializedChars) {
     let removed = false;
     for (const entry of candidateCollections) {
-      if (serializedLength() <= maxSerializedChars) break;
+      if (length <= maxSerializedChars) break;
       if (entry.items.length <= 1) continue;
-      entry.items.pop();
+      const metadataBefore = collectionMetadataLength(entry);
+      const item = entry.items.pop();
       updateCandidateCollection(entry);
+      length -= JSON.stringify(item).length + 1 + metadataBefore - collectionMetadataLength(entry);
       removed = true;
     }
     if (!removed) break;
