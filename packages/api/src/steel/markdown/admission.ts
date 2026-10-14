@@ -1,3 +1,4 @@
+import { steelSectionBaseTitle } from 'librechat-data-provider';
 import type { MarkdownSection, ParsedAssistantMarkdown } from './parser';
 import { parseAssistantMarkdown } from './parser';
 
@@ -47,16 +48,12 @@ export type FullOnlyMarkdownAdmission =
   | FullOnlyMarkdownAdmissionSuccess
   | FullOnlyMarkdownAdmissionFailure;
 
-function baseTitle(title: string): string {
-  return title.split(/[｜|]/u)[0]?.trim() ?? '';
-}
-
 function isFullOnlyKind(value: string): value is FullOnlyMarkdownKind {
   return fullOnlyMarkdownKinds.includes(value as FullOnlyMarkdownKind);
 }
 
 function retiredTitle(title: string): RetiredMarkdownSectionTitle | undefined {
-  const base = baseTitle(title);
+  const base = steelSectionBaseTitle(title);
   return retiredMarkdownSectionTitles.includes(base as RetiredMarkdownSectionTitle)
     ? base as RetiredMarkdownSectionTitle
     : undefined;
@@ -72,7 +69,7 @@ export function admitFullOnlyMarkdown(
 ): FullOnlyMarkdownAdmission {
   const title = input.title.trim();
   const messageId = input.messageId.trim();
-  if (!isFullOnlyKind(input.kind) || !title || !messageId || baseTitle(title) !== input.kind) {
+  if (!isFullOnlyKind(input.kind) || !title || !messageId || steelSectionBaseTitle(title) !== input.kind) {
     return { ok: false, code: 'invalid_target' };
   }
 
@@ -84,7 +81,7 @@ export function admitFullOnlyMarkdown(
     return { ok: false, code: 'retired_control_section', retiredTitles };
   }
 
-  const fullSections = document.sections.filter((section) => baseTitle(section.title) === input.kind);
+  const fullSections = document.sections.filter((section) => steelSectionBaseTitle(section.title) === input.kind);
   if (fullSections.length === 0) {
     return { ok: false, code: 'missing_full_target' };
   }

@@ -1,5 +1,9 @@
 import { createHash } from 'node:crypto';
-import { createSteelReviewOcrContext, parseSteelReviewMarkdownTables } from 'librechat-data-provider';
+import {
+  createSteelReviewOcrContext,
+  parseSteelReviewMarkdownTables,
+  steelSectionBaseTitle,
+} from 'librechat-data-provider';
 import type { SteelReviewOcrContext } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import type {
@@ -633,12 +637,12 @@ export function createSteelQuotationInputMethods(mongoose: Mongoose): SteelQuota
     const output = outputs[0];
     const baseline = output?.aiBaselineMarkdown ?? output?.aiRawMarkdown ?? markdown;
     const tables = parseSteelReviewMarkdownTables(baseline).filter((table) =>
-      table.title?.split(/[｜|:：]/u)[0]?.trim() === 'ocr_result');
+      steelSectionBaseTitle(table.title ?? '') === 'ocr_result');
     const rendered = parseSteelReviewMarkdownTables(message.text ?? '');
     const renderedTables = rendered.filter((table) =>
-      table.title?.split(/[｜|:：]/u)[0]?.trim() === 'ocr_result');
+      steelSectionBaseTitle(table.title ?? '') === 'ocr_result');
     const renderedUpdates = rendered.filter((table) =>
-      table.title?.split(/[｜|:：]/u)[0]?.trim() === 'ocr_result_updates');
+      steelSectionBaseTitle(table.title ?? '') === 'ocr_result_updates');
     // Forks retain the original delta message while storing its reconstructed full OCR.
     const trustedDelta = renderedTables.length === 0 && renderedUpdates.length === 1 &&
       legacy.currentOcrResultProvenance?.generationId === generationId &&

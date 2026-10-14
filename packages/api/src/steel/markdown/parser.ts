@@ -50,7 +50,8 @@ function getLines(markdown: string): LinePart[] {
   return lines;
 }
 
-function normalizeTitle(line: string): string | undefined {
+/** Returns the trimmed H2 heading text without closing hashes, if the line is an H2. */
+export function getH2Title(line: string): string | undefined {
   const match = H2_PATTERN.exec(line);
   if (!match) {
     return undefined;
@@ -90,7 +91,7 @@ export function parseAssistantMarkdown(markdown: string): ParsedAssistantMarkdow
       fence = nextFence;
       continue;
     }
-    const title = normalizeTitle(line.content);
+    const title = getH2Title(line.content);
     if (title !== undefined) {
       starts.push({ index, title });
     }

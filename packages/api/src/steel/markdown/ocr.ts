@@ -1,12 +1,11 @@
+import type { MarkdownFence } from './parser';
 import { parseMarkdownTables } from './table';
+import { getFenceStart, closesFence, getH2Title } from './parser';
 
 export const OCR_COMPLETION_DIRECTIVE_MARKER = '# Current-turn OCR completion directive';
 
 const OCR_SUMMARY_PATTERN =
   /(?:^|\r?\n)OCR 整理完成：共 (?:\d+ 個來源、\d+ 筆資料，無待複核事項|\d+ 個來源、\d+ 筆資料(?:、\d+ 項待複核事項)?|\d+ 個來源、\d+ 項待複核事項|\d+ 個來源|\d+ 筆資料、\d+ 項待複核事項|\d+ 筆資料|\d+ 項待複核事項)。[ \t]*(?:\r?\n[ \t]*)*$/u;
-const H2_PATTERN = /^ {0,3}##(?!#)[ \t]+(.+?)[ \t]*$/u;
-const FENCE_START_PATTERN = /^ {0,3}(`{3,}|~{3,})/u;
-const FENCE_END_PATTERN = /^ {0,3}(`{3,}|~{3,})[ \t]*$/u;
 
 const SOURCE_SECTION_TITLE = 'source_file_mapping';
 const RESULT_SECTION_TITLE = 'ocr_result';
@@ -18,36 +17,6 @@ const REVIEW_REQUIRED_HEADERS = ['來源', '問題欄位'];
 interface OcrSection {
   body: string;
   title: string;
-}
-
-interface MarkdownFence {
-  length: number;
-  marker: '`' | '~';
-}
-
-function getFenceStart(line: string): MarkdownFence | undefined {
-  const match = FENCE_START_PATTERN.exec(line);
-  const fence = match?.[1];
-  const marker = fence?.[0];
-  if (!fence || (marker !== '`' && marker !== '~')) {
-    return undefined;
-  }
-
-  return { length: fence.length, marker };
-}
-
-function closesFence(line: string, fence: MarkdownFence): boolean {
-  const marker = FENCE_END_PATTERN.exec(line)?.[1];
-  return marker?.[0] === fence.marker && marker.length >= fence.length;
-}
-
-function normalizeH2Title(line: string): string | undefined {
-  const match = H2_PATTERN.exec(line);
-  if (!match) {
-    return undefined;
-  }
-
-  return (match[1] ?? '').replace(/[ \t]+#+[ \t]*$/u, '').trim();
 }
 
 function getOcrSections(text: string): OcrSection[] {
@@ -79,7 +48,7 @@ function getOcrSections(text: string): OcrSection[] {
       continue;
     }
 
-    const nextTitle = normalizeH2Title(line);
+    const nextTitle = getH2Title(line);
     if (nextTitle !== undefined) {
       pushSection();
       title = nextTitle;

@@ -1,10 +1,10 @@
 import { randomUUID, createHash } from 'node:crypto';
-import { parseSteelReviewMarkdownTables } from 'librechat-data-provider';
+import { parseSteelReviewMarkdownTables, steelSectionBaseTitle } from 'librechat-data-provider';
 import type { SteelMarkdownPublicationInput, SteelMarkdownPublicationResult, SteelMarkdownPublicationTarget, SteelQuotationPublicationMessage, SteelQuotationPublicationSaveContext } from '@librechat/data-schemas';
 import type { SteelMarkdownCompletionInput, SteelMarkdownCompletionDependencies, SteelFullPublisher } from './types';
 import { prepareQuotationCustomerResponse } from '../quotation/preparation';
 import { finalizeOcrResponse, parseAssistantMarkdown } from '../ocr/result';
-import { appendSteelNextStep, steelSectionTitle } from '../quotation/next';
+import { appendSteelNextStep } from '../quotation/next';
 import { SteelResponseCompletionError } from '../quotation/completion';
 import { createSteelReviewBaselineRows } from '../review';
 import { admitFullOnlyMarkdown } from './admission';
@@ -33,7 +33,7 @@ export async function publishFullMarkdown(input: SteelMarkdownCompletionInput, d
     throw new SteelResponseCompletionError('invalid_completion_receipt');
   }
   const sections = parseAssistantMarkdown(input.markdown).sections;
-  if (sections.some((section) => steelSectionTitle(section.title) === 'system_order')) {
+  if (sections.some((section) => steelSectionBaseTitle(section.title) === 'system_order')) {
     throw new SteelResponseCompletionError('invalid_system_order');
   }
   const [ocr, state] = await Promise.all([
@@ -41,18 +41,18 @@ export async function publishFullMarkdown(input: SteelMarkdownCompletionInput, d
   ]);
   const kinds = ['ocr_result', 'customer_data'] as const;
   for (const kind of kinds) {
-    const section = sections.find((entry) => steelSectionTitle(entry.title) === kind);
+    const section = sections.find((entry) => steelSectionBaseTitle(entry.title) === kind);
     if (!section) continue;
     const valid = admitFullOnlyMarkdown({ markdown: input.markdown, kind, title: section.title, messageId: input.responseId });
     if (!valid.ok) throw new SteelResponseCompletionError(valid.code);
   }
   let markdown = parseAssistantMarkdown(input.markdown).segments
-    .filter((segment) => segment.kind !== 'section' || steelSectionTitle(segment.section.title) !== 'customer_quote')
+    .filter((segment) => segment.kind !== 'section' || steelSectionBaseTitle(segment.section.title) !== 'customer_quote')
     .map((segment) => segment.kind === 'section' ? segment.section.raw : segment.text).join('').trimEnd();
   const delegate = context?.delegateOcrContext;
   const run = delegate?.activeRun ?? delegate?.delegateOcrRun;
   const agentKind = delegate?.didExecute || run ? 'delegate_ocr' : 'other';
-  if (sections.some((section) => steelSectionTitle(section.title) === 'ocr_result')) {
+  if (sections.some((section) => steelSectionBaseTitle(section.title) === 'ocr_result')) {
     const workflow = delegate?.delegateOcrWorkflow ?? delegate;
     if (!(workflow?.finalizedByBackend && workflow.finalizedResponse?.finalResponse === input.markdown)) {
       await dependencies.audit?.save({ rawResponse: input.markdown, sourceStage: 'normal_request', userId: scope.userId,
@@ -71,7 +71,7 @@ export async function publishFullMarkdown(input: SteelMarkdownCompletionInput, d
   const targets: SteelMarkdownPublicationTarget[] = [];
   let customer: SteelMarkdownPublicationInput['customer'];
   for (const kind of kinds) {
-    const section = parseAssistantMarkdown(markdown).sections.find((entry) => steelSectionTitle(entry.title) === kind);
+    const section = parseAssistantMarkdown(markdown).sections.find((entry) => steelSectionBaseTitle(entry.title) === kind);
     if (!section) continue;
     const baselineMarkdown = section.raw.trimEnd();
     const outputId = `${kind}:${admission.generationId}`;

@@ -1,3 +1,4 @@
+import { steelSectionBaseTitle } from 'librechat-data-provider';
 import type {
   SteelMarkdownHistoryRecord,
   SteelMarkdownHistoryReadInput,
@@ -200,7 +201,7 @@ function withoutUnfinishedManagedSections<T extends SteelMarkdownHistoryMessage>
   if (message.unfinished !== true || message.isCreatedByUser !== false) return message;
   const clean = (value: string): string => parseAssistantMarkdown(value).segments.map((segment) => {
     if (segment.kind === 'text') return segment.text;
-    const base = segment.section.title.split(/[｜|]/u)[0]?.trim();
+    const base = steelSectionBaseTitle(segment.section.title);
     return [...fullOnlyMarkdownKinds, ...retiredMarkdownSectionTitles].some((title) => title === base)
       ? '' : segment.section.raw;
   }).join('');

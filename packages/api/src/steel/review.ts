@@ -17,6 +17,7 @@ import {
   steelReviewReadQuerySchema,
   convertSteelDimensionToMillimetres,
   normalizeSteelDecimal,
+  isSteelSectionTitle,
 } from 'librechat-data-provider';
 import type {
   SteelReviewCell,
@@ -51,11 +52,13 @@ import type {
 import type { SteelMarkdownTable } from './markdown/table';
 import type { SteelReviewCatalogService } from './catalog';
 import type { ServerRequest } from '~/types/http';
+import type { MarkdownFence } from './markdown/parser';
 import { SteelReviewCatalogError, steelCatalogCustomerEvidenceForSnapshot } from './catalog';
 import { buildCustomerQuoteFromMarkdown } from './markdown/quote';
 import { escapeMarkdownTableCell } from './markdown/row-codec';
 import { reconcileSteelReviewOcrLinks } from './review/ocr';
 import { parseMarkdownTables } from './markdown/table';
+import { getFenceStart, closesFence, getH2Title } from './markdown/parser';
 
 export interface SteelReviewReader {
   readSteelReview(input: SteelReviewReadInput): Promise<SteelReviewReadRecord | null>;
@@ -180,11 +183,6 @@ interface ReviewTableCandidate extends SteelMarkdownTable {
   partIndex?: number;
 }
 
-interface MarkdownFence {
-  marker: '`' | '~';
-  length: number;
-}
-
 interface LocatedTable extends ReviewTableCandidate {
   start: number;
   end: number;
@@ -225,39 +223,15 @@ function appendRenderedText(current: string, next: string): string {
   return `${current}${next}`;
 }
 
-function headingTitle(line: string): string | undefined {
-  const match = line.match(/^ {0,3}##(?!#)[ \t]+(.+?)[ \t]*$/u);
-  return match?.[1]?.replace(/[ \t]+#+[ \t]*$/u, '').trim();
-}
-
 function isHeading(line: string): boolean {
   return /^ {0,3}#{1,6}(?:[ \t]+|$)/u.test(line);
-}
-
-function getFence(line: string): MarkdownFence | undefined {
-  const marker = line.match(/^ {0,3}(`{3,}|~{3,})/u)?.[1];
-  return marker ? { marker: marker[0] as '`' | '~', length: marker.length } : undefined;
-}
-
-function closesFence(line: string, fence: MarkdownFence): boolean {
-  const marker = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/u)?.[1];
-  return marker?.[0] === fence.marker && marker.length >= fence.length;
 }
 
 function isManagedTitle(kind: SteelReviewKind, title: string | undefined): boolean {
   if (!title) {
     return false;
   }
-  const prefix = kind === 'ocr_result' ? 'ocr_result' : 'system_order';
-  if (title === prefix) {
-    return true;
-  }
-  const separator = title.indexOf('｜');
-  return (
-    separator > 0 &&
-    title.slice(0, separator).trim() === prefix &&
-    title.slice(separator + 1).trim() !== ''
-  );
+  return isSteelSectionTitle(title, kind === 'ocr_result' ? 'ocr_result' : 'system_order');
 }
 
 function collectTables(markdown: string): ReviewTableCandidate[] {
@@ -826,13 +800,13 @@ function collectHeadings(markdown: string): LocatedHeading[] {
       }
       continue;
     }
-    const nextFence = getFence(line);
+    const nextFence = getFenceStart(line);
     if (nextFence) {
       fence = nextFence;
       continue;
     }
     if (isHeading(line)) {
-      headings.push({ start, title: headingTitle(line) });
+      headings.push({ start, title: getH2Title(line) });
     }
   }
   return headings;

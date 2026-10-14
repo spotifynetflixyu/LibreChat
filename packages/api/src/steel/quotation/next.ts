@@ -1,3 +1,4 @@
+import { steelSectionBaseTitle } from 'librechat-data-provider';
 import { parseAssistantMarkdown } from '../ocr/result';
 import { extractCustomerDataTable } from './protocol';
 import { hasQuotationOrder } from './preparation';
@@ -28,12 +29,8 @@ export interface SteelNextStepInput {
 
 export function hasSteelDataMarkdown(markdown: string): boolean {
   return parseAssistantMarkdown(markdown).sections.some((section) =>
-    DATA_TITLES.has(steelSectionTitle(section.title)),
+    DATA_TITLES.has(steelSectionBaseTitle(section.title)),
   );
-}
-
-export function steelSectionTitle(title: string): string {
-  return title.split(/[｜|]/u)[0]?.trim() ?? '';
 }
 
 export function hasSteelCustomerTier(markdown?: string): boolean {
@@ -49,7 +46,7 @@ export function appendSteelNextStep(input: SteelNextStepInput): string {
   const sections = parseAssistantMarkdown(input.markdown).sections;
   if (
     sections.some((section) =>
-      ['system_order', 'quote_signal'].includes(steelSectionTitle(section.title)),
+      ['system_order', 'quote_signal'].includes(steelSectionBaseTitle(section.title)),
     )
   ) {
     return input.markdown;

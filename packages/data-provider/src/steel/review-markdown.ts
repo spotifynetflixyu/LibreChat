@@ -13,6 +13,33 @@ export interface SteelReviewMarkdownTable {
   raw: string;
 }
 
+/** Models emit any of these between a section kind and its label, so all are accepted. */
+const steelSectionTitleSeparator = /[｜|:：]/;
+
+export interface SteelSectionTitle {
+  base: string;
+  label?: string;
+}
+
+export function parseSteelSectionTitle(title: string): SteelSectionTitle {
+  const index = title.search(steelSectionTitleSeparator);
+  if (index < 0) {
+    return { base: title.trim() };
+  }
+  const label = title.slice(index + 1).trim();
+  return { base: title.slice(0, index).trim(), ...(label ? { label } : {}) };
+}
+
+export function steelSectionBaseTitle(title: string): string {
+  return parseSteelSectionTitle(title).base;
+}
+
+/** True for `kind` alone or `kind` followed by a separator and a non-empty label. */
+export function isSteelSectionTitle(title: string, kind: string): boolean {
+  const parsed = parseSteelSectionTitle(title);
+  return parsed.base === kind && (parsed.label !== undefined || title.trim() === kind);
+}
+
 interface MarkdownFence {
   marker: '`' | '~';
   length: number;

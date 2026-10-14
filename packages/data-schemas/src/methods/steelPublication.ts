@@ -1,5 +1,12 @@
 import { createHash } from 'node:crypto';
-import { bindSteelReviewRowsToOcrContext, createSteelReviewOcrContext, parseSteelReviewMarkdownTables, normalizeSteelReviewLedgerRows, steelQuotationMessagePublicationSchema } from 'librechat-data-provider';
+import {
+  bindSteelReviewRowsToOcrContext,
+  createSteelReviewOcrContext,
+  parseSteelReviewMarkdownTables,
+  normalizeSteelReviewLedgerRows,
+  steelQuotationMessagePublicationSchema,
+  steelSectionBaseTitle,
+} from 'librechat-data-provider';
 import type { SteelReviewMetadata, SteelQuotationMessagePublication } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import type { IMessage, IConversation, ISteelQuotationState, ISteelQuotationArtifact, ISteelReviewOutput, ISteelConversationOcrState, SteelQuotationScope, SteelMarkdownAdmissionInput, SteelMarkdownAdmission, SteelMarkdownExpected, SteelMarkdownPublicationInput, SteelMarkdownPublicationResult, SteelMarkdownReference, SteelMarkdownKind, SteelMarkdownVersion, SteelQuotationSnapshotPayload, SteelQuotationOrderPublicationReceipt, SteelMarkdownQuotationOrderInput, SteelQuotationSummaryAppendInput, SteelQuotationSummaryAppendResult, SteelQuotationSummaryReceipt, SteelQuotationCheckpointRef, SteelQuotationErrorsAppendInput, SteelQuotationErrorsAppendResult } from '~/types';
@@ -49,7 +56,7 @@ function textContentIndex(content: unknown[] | undefined, predicate: (text: stri
 function hasSection(markdown: string, names: readonly string[]): boolean {
   const expected = new Set(names);
   return [...markdown.matchAll(/^ {0,3}#{1,6}[ \t]+([^\n#]+?)[ \t]*#?[ \t]*$/gmu)].some((match) => {
-    const title = match[1]?.split(/[｜|:：]/u)[0]?.trim().toLowerCase();
+    const title = steelSectionBaseTitle(match[1] ?? '').toLowerCase();
     return title !== undefined && expected.has(title);
   });
 }
@@ -160,7 +167,7 @@ function fallbackOcrContextMatches(
 ): boolean {
   const selected = snapshot.ocrSelection?.selected;
   const tables = parseSteelReviewMarkdownTables(snapshot.orderMarkdown).filter((table) =>
-    table.title?.split(/[｜|:：]/u)[0]?.trim() === 'ocr_result');
+    steelSectionBaseTitle(table.title ?? '') === 'ocr_result');
   if (tables.length !== 1 || !tables[0]?.title || !selected ||
     context.title !== tables[0].title || context.outputId !== selected.outputId ||
     context.revision !== selected.revision || JSON.stringify(context.headers) !== JSON.stringify(tables[0].headers) ||
@@ -190,7 +197,7 @@ function frozenChunkSourceRowIds(
 ): string[][] | null {
   if (chunks.length === 0) return null;
   const tables = parseSteelReviewMarkdownTables(orderMarkdown).filter((table) =>
-    table.title?.split(/[｜|:：]/u)[0]?.trim() === 'ocr_result');
+    steelSectionBaseTitle(table.title ?? '') === 'ocr_result');
   const table = tables.length === 1 ? tables[0] : undefined;
   const categoryIndex = table?.headers.indexOf('類別') ?? -1;
   if (!table || categoryIndex < 0 || table.rows.length === 0) return null;

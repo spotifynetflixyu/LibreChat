@@ -1,3 +1,4 @@
+import { steelSectionBaseTitle } from 'librechat-data-provider';
 import type { MarkdownFence, MarkdownSection, ParsedAssistantMarkdown } from '../markdown/parser';
 import type { OcrTable } from './normalize';
 import { escapeMarkdownTableCell } from '../markdown/row-codec';
@@ -450,7 +451,7 @@ export function finalizeOcrResponse(
 
 function finalizeOcrResponseInternal(input: FinalizeOcrResponseInput): FinalizeOcrResponseResult {
   const document = parseAssistantMarkdown(input.assistantResponse);
-  const resultTitle = document.sections.find((section) => section.title.split(/[｜|]/u)[0]?.trim() === RESULT_TITLE)?.title ?? RESULT_TITLE;
+  const resultTitle = document.sections.find((section) => steelSectionBaseTitle(section.title) === RESULT_TITLE)?.title ?? RESULT_TITLE;
   const admission = admitFullOnlyMarkdown({
     markdown: input.assistantResponse,
     kind: 'ocr_result',

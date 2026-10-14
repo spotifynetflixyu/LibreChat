@@ -1,4 +1,4 @@
-import { parseSteelReviewMarkdownTables } from 'librechat-data-provider';
+import { parseSteelReviewMarkdownTables, steelSectionBaseTitle } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
 import type { IConversation, SteelConversationOcrRecord, SteelQuotationScope } from '~/types';
 import { createSteelConversationOcrStateModel } from '~/models/steel';
@@ -93,7 +93,7 @@ export async function readScopedConversationOcrEvidence(
       ? { $or: [{ tenantId: { $exists: false } }, { tenantId: null }] } : { tenantId: scope.tenantId }],
   }).limit(2).select('text').session(session ?? null).lean<Array<{ text?: string }>>();
   if (messages.length !== 1) return { ok: false, code: 'untrusted_ocr' };
-  const kind = (title?: string) => title?.split(/[｜|:：]/u)[0]?.trim();
+  const kind = (title?: string) => steelSectionBaseTitle(title ?? '');
   const tables = parseSteelReviewMarkdownTables(state.currentOcrResultMarkdown)
     .filter((table) => kind(table.title) === 'ocr_result');
   if (tables.length !== 1) return { ok: false, code: 'untrusted_ocr' };

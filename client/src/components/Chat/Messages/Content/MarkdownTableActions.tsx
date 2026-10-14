@@ -3,7 +3,7 @@ import filenamify from 'filenamify';
 import { atom, useAtom } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import { createPortal } from 'react-dom';
-import { steelCustomerTierSchema } from 'librechat-data-provider';
+import { isSteelSectionTitle, steelCustomerTierSchema } from 'librechat-data-provider';
 import { Check, Copy, Download, FileSearch, Maximize2, X } from 'lucide-react';
 import {
   ControlCombobox,
@@ -82,7 +82,7 @@ function getReviewKind(markdownTitle?: string): SteelReviewKind | undefined {
   if (markdownTitle === 'ocr_result') {
     return 'ocr_result';
   }
-  if (markdownTitle === 'system_order' || markdownTitle?.startsWith('system_order｜')) {
+  if (markdownTitle !== undefined && isSteelSectionTitle(markdownTitle, 'system_order')) {
     return 'system_order';
   }
   return undefined;

@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { steelSectionBaseTitle } from 'librechat-data-provider';
 import type {
   ISteelQuotationState,
   SteelMarkdownAdmission,
@@ -118,7 +119,7 @@ export function isUnfinishedQuotation(status?: string): boolean {
 
 export function hasQuotationOrder(markdown?: string): boolean {
   if (!markdown) return false;
-  const sections = parseAssistantMarkdown(markdown).sections.filter((section) => section.title.split(/[｜|]/u)[0]?.trim() === 'ocr_result');
+  const sections = parseAssistantMarkdown(markdown).sections.filter((section) => steelSectionBaseTitle(section.title) === 'ocr_result');
   if (sections.length !== 1) return false;
   const result = parseOcrResultTable(sections[0].body);
   return result.ok && result.table.rows.length > 0 &&
@@ -367,7 +368,7 @@ export async function prepareQuotationCustomerResponse(input: {
   finishReason?: string;
 }): Promise<PreparedQuotationCustomerResponse | undefined> {
   const sections = parseAssistantMarkdown(input.response).sections;
-  const hasCustomerSection = sections.some((section) => section.title.split(/[｜|]/u)[0]?.trim() === 'customer_data');
+  const hasCustomerSection = sections.some((section) => steelSectionBaseTitle(section.title) === 'customer_data');
   if (!hasCustomerSection) return undefined;
   const customer = extractCustomerDataTable(input.response);
   if (!customer) {

@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { createHash } from 'node:crypto';
-import { parseSteelReviewMarkdownTables } from 'librechat-data-provider';
+import { parseSteelReviewMarkdownTables, steelSectionBaseTitle } from 'librechat-data-provider';
 import type {
   ISteelQuotationState,
   SteelQuotationActiveRun,
@@ -341,7 +341,7 @@ export function createSteelQuotationPublicationPublisher(
       throw new Error('Quotation publication scope is unavailable');
     }
 
-    const tables = parseSteelReviewMarkdownTables(proof.markdown).filter((table) => table.title?.split(/[｜|]/u)[0]?.trim() === 'system_order');
+    const tables = parseSteelReviewMarkdownTables(proof.markdown).filter((table) => steelSectionBaseTitle(table.title ?? '') === 'system_order');
     if (tables.length !== 1 || !tables[0].title) throw new Error('Quotation publication full target is unavailable');
     const table = tables[0];
     const section = parseAssistantMarkdown(proof.markdown).sections.find((entry) => entry.title === table.title);

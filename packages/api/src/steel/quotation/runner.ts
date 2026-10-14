@@ -4,6 +4,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   bindSteelReviewRowsToOcrContext,
   createSteelReviewOcrContext,
+  steelSectionBaseTitle,
 } from 'librechat-data-provider';
 import {
   steelCalculationCandidateEvidenceSchema,
@@ -104,11 +105,11 @@ function buildQuotationReviewMetadata(input: {
   const selected = input.snapshot.ocrSelection?.selected;
   const ocrSections = parseAssistantMarkdown(input.snapshot.orderMarkdown).sections;
   const ocrSection = ocrSections.find(
-    (section) => section.title.split(/[｜|:：]/u)[0]?.trim() === 'ocr_result',
+    (section) => steelSectionBaseTitle(section.title) === 'ocr_result',
   );
   const ocrTable = parseMarkdownTables(ocrSection?.body ?? input.snapshot.orderMarkdown)[0];
   const systemSection = parseAssistantMarkdown(input.systemOrderMarkdown).sections.find(
-    (section) => section.title.split(/[｜|:：]/u)[0]?.trim() === 'system_order',
+    (section) => steelSectionBaseTitle(section.title) === 'system_order',
   );
   const systemTable = parseMarkdownTables(systemSection?.body ?? input.systemOrderMarkdown)[0];
   if (!systemSection || !systemTable) return undefined;
@@ -174,7 +175,7 @@ const quotationSummaryControlTitles = new Set([
 ]);
 
 function quotationSummaryTitle(title: string): string {
-  return title.split(/[｜|:：]/u)[0]?.trim().toLowerCase() ?? '';
+  return steelSectionBaseTitle(title).toLowerCase();
 }
 
 function sanitizeQuotationSummary(markdown: string): string {
@@ -199,13 +200,8 @@ function createQuotationSummaryStreamFilter(): {
   let suppressed = false;
   const heading = /^ {0,3}#{1,3}[ \t]+(.+?)[ \t]*$/u;
   const processLine = (line: string): string => {
-    const title = line
-      .replace(/\r?\n$/u, '')
-      .match(heading)?.[1]
-      ?.replace(/[ \t]+#+[ \t]*$/u, '')
-      .split(/[｜|:：]/u)[0]
-      ?.trim()
-      .toLowerCase();
+    const headingText = line.replace(/\r?\n$/u, '').match(heading)?.[1]?.replace(/[ \t]+#+[ \t]*$/u, '');
+    const title = headingText === undefined ? undefined : steelSectionBaseTitle(headingText).toLowerCase();
     if (title !== undefined) suppressed = quotationSummaryControlTitles.has(title);
     return suppressed ? '' : line;
   };
@@ -447,7 +443,7 @@ export async function acceptQuotationResponse(input: {
   if (
     parseAssistantMarkdown(input.response).sections.some((section) =>
       retiredMarkdownSectionTitles.some(
-        (title) => title === section.title.split(/[｜|]/u)[0]?.trim(),
+        (title) => title === steelSectionBaseTitle(section.title),
       ),
     )
   ) {
@@ -456,7 +452,7 @@ export async function acceptQuotationResponse(input: {
   const signal = parseQuotationSignal(input.response);
   const sections = parseAssistantMarkdown(input.response).sections;
   const hasSection = (title: string) =>
-    sections.some((section) => section.title.split(/[｜|]/u)[0]?.trim() === title);
+    sections.some((section) => steelSectionBaseTitle(section.title) === title);
   const hasOrder = hasSection('ocr_result');
   const hasCustomerSection = hasSection('customer_data');
   const customer = extractCustomerDataTable(input.response);
@@ -479,7 +475,7 @@ export async function acceptQuotationResponse(input: {
     }
     if (hasCustomerSection) {
       const customerSections = sections.filter(
-        (section) => section.title.split(/[｜|]/u)[0]?.trim() === 'customer_data',
+        (section) => steelSectionBaseTitle(section.title) === 'customer_data',
       );
       if (
         customerSections.length !== 1 ||
@@ -492,7 +488,7 @@ export async function acceptQuotationResponse(input: {
     }
     if (hasOrder) {
       const orderSections = sections.filter((section) =>
-        ['ocr_result'].includes(section.title.split(/[｜|]/u)[0]?.trim() ?? ''),
+        ['ocr_result'].includes(steelSectionBaseTitle(section.title)),
       );
       const orderSection =
         orderSections.length === 1 && orderSections[0]?.title === 'ocr_result'
@@ -547,7 +543,7 @@ export async function acceptQuotationSignal(input: {
   if (
     parseAssistantMarkdown(input.response).sections.some((section) =>
       retiredMarkdownSectionTitles.some(
-        (title) => title === section.title.split(/[｜|]/u)[0]?.trim(),
+        (title) => title === steelSectionBaseTitle(section.title),
       ),
     )
   ) {

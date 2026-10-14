@@ -1,4 +1,7 @@
+import { isSteelSectionTitle } from 'librechat-data-provider';
+import type { MarkdownFence } from './parser';
 import { escapeMarkdownTableCell } from './row-codec';
+import { getFenceStart, closesFence, getH2Title } from './parser';
 
 export const systemOrderColumns = [
   '型號',
@@ -22,11 +25,6 @@ export const systemOrderColumns = [
 export interface SystemOrderNormalizer {
   append(delta: string): string;
   finish(options?: { raw?: boolean }): string;
-}
-
-interface Fence {
-  character: '`' | '~';
-  length: number;
 }
 
 interface RawCell {
@@ -104,29 +102,9 @@ function parseRawRow(line: string): RawRow | undefined {
   return { cells, values: cells.map((cell) => cell.value) };
 }
 
-function getH2Title(line: string): string | undefined {
-  const match = line.match(/^ {0,3}##(?!#)[ \t]+(.+?)[ \t]*$/u);
-  if (!match) return undefined;
-  return (match[1] ?? '').replace(/[ \t]+#+[ \t]*$/u, '').trim();
-}
-
 function isSystemOrderTitle(title: string): boolean {
   if (title === 'system_order_chunk' || title === 'system_order_updates') return true;
-  const separator = title.indexOf('｜');
-  if (separator < 0) return title === 'system_order';
-  return (
-    title.slice(0, separator).trim() === 'system_order' && title.slice(separator + 1).trim() !== ''
-  );
-}
-
-function getFenceOpening(line: string): Fence | undefined {
-  const marker = line.match(/^ {0,3}(`{3,}|~{3,})(?:.*)$/u)?.[1];
-  return marker ? { character: marker[0] as '`' | '~', length: marker.length } : undefined;
-}
-
-function isFenceClosing(line: string, fence: Fence): boolean {
-  const marker = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/u)?.[1];
-  return marker?.[0] === fence.character && marker.length >= fence.length;
+  return isSteelSectionTitle(title, 'system_order');
 }
 
 function cleanDecimal(value: string): string {
@@ -275,7 +253,7 @@ function reorderRow(line: string, row: RawRow, indices: readonly number[] | unde
 export function createSystemOrderNormalizer(): SystemOrderNormalizer {
   let pending = '';
   let finished = false;
-  let fence: Fence | undefined;
+  let fence: MarkdownFence | undefined;
   let sectionActive = false;
   let tableChecked = false;
   let candidateHeaders: string[] | undefined;
@@ -285,10 +263,10 @@ export function createSystemOrderNormalizer(): SystemOrderNormalizer {
 
   const processLine = (line: string): string => {
     if (fence) {
-      if (isFenceClosing(line, fence)) fence = undefined;
+      if (closesFence(line, fence)) fence = undefined;
       return line;
     }
-    const opening = getFenceOpening(line);
+    const opening = getFenceStart(line);
     if (opening) {
       fence = opening;
       candidateHeaders = undefined;

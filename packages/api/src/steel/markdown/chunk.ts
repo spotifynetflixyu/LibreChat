@@ -1,3 +1,7 @@
+import { steelSectionBaseTitle } from 'librechat-data-provider';
+import type { MarkdownFence } from './parser';
+import { getFenceStart, closesFence, getH2Title } from './parser';
+
 export type SteelChunkKind = 'ocr_result_chunk' | 'system_order_chunk';
 
 const STEEL_CHUNK_KINDS: readonly SteelChunkKind[] = [
@@ -13,36 +17,6 @@ const DATA_SECTION_TITLES = new Set([
   'system_order',
   'system_order_updates',
 ]);
-
-const H2_PATTERN = /^ {0,3}##(?!#)[ \t]+(.+?)[ \t]*$/u;
-const FENCE_START_PATTERN = /^ {0,3}(`{3,}|~{3,})/u;
-const FENCE_END_PATTERN = /^ {0,3}(`{3,}|~{3,})[ \t]*$/u;
-
-interface MarkdownFence {
-  readonly marker: '`' | '~';
-  readonly length: number;
-}
-
-function getSectionTitle(line: string): string | undefined {
-  const match = H2_PATTERN.exec(line);
-  if (!match) return undefined;
-  return (match[1] ?? '').replace(/[ \t]+#+[ \t]*$/u, '').trim();
-}
-
-function baseSectionTitle(title: string): string {
-  const separator = title.indexOf('｜');
-  return (separator < 0 ? title : title.slice(0, separator)).trim();
-}
-
-function getFenceOpening(line: string): MarkdownFence | undefined {
-  const marker = FENCE_START_PATTERN.exec(line)?.[1];
-  return marker ? { marker: marker[0] as '`' | '~', length: marker.length } : undefined;
-}
-
-function isFenceClosing(line: string, fence: MarkdownFence): boolean {
-  const marker = FENCE_END_PATTERN.exec(line)?.[1];
-  return marker?.[0] === fence.marker && marker.length >= fence.length;
-}
 
 function isSteelChunkKind(value: string): value is SteelChunkKind {
   return STEEL_CHUNK_KINDS.includes(value as SteelChunkKind);
@@ -69,19 +43,19 @@ export function normalizeSteelChunkMarkdown(kind: SteelChunkKind, markdown: stri
 
   lines.forEach((line, index) => {
     if (fence) {
-      if (isFenceClosing(line, fence)) fence = undefined;
+      if (closesFence(line, fence)) fence = undefined;
       return;
     }
 
-    const opening = getFenceOpening(line);
+    const opening = getFenceStart(line);
     if (opening) {
       fence = opening;
       return;
     }
 
-    const title = getSectionTitle(line);
+    const title = getH2Title(line);
     if (title === undefined) return;
-    const baseTitle = baseSectionTitle(title);
+    const baseTitle = steelSectionBaseTitle(title);
     if (!DATA_SECTION_TITLES.has(baseTitle)) return;
     sectionTitles.push(baseTitle);
     if (baseTitle === kind) matchingHeadingIndexes.push(index);

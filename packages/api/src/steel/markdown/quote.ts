@@ -1,8 +1,11 @@
+import { isSteelSectionTitle, parseSteelSectionTitle } from 'librechat-data-provider';
+import type { MarkdownFence } from './parser';
 import {
   escapeMarkdownTableCell,
   isMarkdownTableSeparatorCell,
   parsePipeTableRow,
 } from './row-codec';
+import { getFenceStart, closesFence, getH2Title } from './parser';
 
 export interface CustomerQuoteComposition {
   markdown: string;
@@ -13,11 +16,6 @@ export interface CustomerQuoteParser {
   append(delta: string): void;
   getSafeTextEnd(): number;
   finish(): CustomerQuoteComposition | undefined;
-}
-
-interface MarkdownFence {
-  character: '`' | '~';
-  length: number;
 }
 
 interface MarkdownLine {
@@ -48,50 +46,17 @@ const REQUIRED_HEADERS = {
 const BIGINT_ZERO = BigInt(0);
 const BIGINT_ONE = BigInt(1);
 
-function getFenceOpening(line: string): MarkdownFence | undefined {
-  const marker = line.match(/^ {0,3}(`{3,}|~{3,})(?:.*)$/)?.[1];
-  if (!marker) {
-    return undefined;
-  }
-
-  return {
-    character: marker[0] as '`' | '~',
-    length: marker.length,
-  };
-}
-
-function isFenceClosing(line: string, fence: MarkdownFence): boolean {
-  const marker = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/)?.[1];
-  return marker?.[0] === fence.character && marker.length >= fence.length;
-}
-
-function getH2Title(line: string): string | undefined {
-  const match = line.match(/^ {0,3}##(?!#)[ \t]+(.+?)[ \t]*$/);
-  if (!match) {
-    return undefined;
-  }
-
-  return (match[1] ?? '').replace(/[ \t]+#+[ \t]*$/, '').trim();
-}
-
 function parseSystemOrderHeading(line: string): SystemOrderHeading | undefined {
   const title = getH2Title(line);
   if (!title) {
     return undefined;
   }
 
-  const separatorIndex = title.indexOf('｜');
-  if (separatorIndex < 0) {
-    return title === 'system_order' ? {} : undefined;
-  }
-
-  const baseName = title.slice(0, separatorIndex).trim();
-  const suffix = title.slice(separatorIndex + 1).trim();
-  if (baseName !== 'system_order' || suffix.length === 0) {
+  if (!isSteelSectionTitle(title, 'system_order')) {
     return undefined;
   }
-
-  return { suffix };
+  const { label } = parseSteelSectionTitle(title);
+  return label ? { suffix: label } : {};
 }
 
 function isCustomerQuoteHeading(line: string): boolean {
@@ -100,15 +65,7 @@ function isCustomerQuoteHeading(line: string): boolean {
     return false;
   }
 
-  const separatorIndex = title.indexOf('｜');
-  if (separatorIndex < 0) {
-    return title === 'customer_quote';
-  }
-
-  return (
-    title.slice(0, separatorIndex).trim() === 'customer_quote' &&
-    title.slice(separatorIndex + 1).trim().length > 0
-  );
+  return isSteelSectionTitle(title, 'customer_quote');
 }
 
 function extractDecimal(value: string): DecimalValue | undefined {
@@ -257,14 +214,14 @@ export function createCustomerQuoteParser(): CustomerQuoteParser {
     const line = rawLine.endsWith('\r') ? rawLine.slice(0, -1) : rawLine;
 
     if (fence) {
-      if (isFenceClosing(line, fence)) {
+      if (closesFence(line, fence)) {
         fence = undefined;
       }
       safeTextEnd = existingCustomerQuote || !selectedTable ? sourceEnd : selectedTable.sourceEnd;
       return;
     }
 
-    const opening = getFenceOpening(line);
+    const opening = getFenceStart(line);
     if (opening) {
       fence = opening;
       if (selectedTable) {

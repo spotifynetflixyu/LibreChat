@@ -1,6 +1,9 @@
 import { createHash } from 'node:crypto';
 import { hasConsistentMessageText } from '@librechat/data-schemas';
-import { steelQuotationMessagePublicationSchema } from 'librechat-data-provider';
+import {
+  steelQuotationMessagePublicationSchema,
+  steelSectionBaseTitle,
+} from 'librechat-data-provider';
 import type {
   ISteelConversationOcrState,
   ISteelQuotationState,
@@ -22,7 +25,6 @@ import {
   appendSteelNextStep,
   hasSteelDataMarkdown,
   hasSteelCustomerTier,
-  steelSectionTitle,
 } from '../quotation/next';
 import {
   acceptQuotationSignal,
@@ -114,7 +116,7 @@ function scopeKey(scope: SteelQuotationScope): string {
 
 function sectionTitles(markdown: string): Set<string> {
   return new Set(
-    parseAssistantMarkdown(markdown).sections.map((entry) => steelSectionTitle(entry.title)),
+    parseAssistantMarkdown(markdown).sections.map((entry) => steelSectionBaseTitle(entry.title)),
   );
 }
 
@@ -250,11 +252,11 @@ function canonicalSystemOrderMatches(
 ): boolean {
   if (typeof text !== 'string') return false;
   const saved = parseAssistantMarkdown(systemOrder.markdown).sections.filter(
-    (section) => steelSectionTitle(section.title) === 'system_order',
+    (section) => steelSectionBaseTitle(section.title) === 'system_order',
   );
   const loadedDocument = parseAssistantMarkdown(text);
   const loaded = loadedDocument.sections.filter(
-    (section) => steelSectionTitle(section.title) === 'system_order',
+    (section) => steelSectionBaseTitle(section.title) === 'system_order',
   );
   if (saved.length !== 1 || loaded.length !== 1) return false;
   const savedSection = saved[0];
@@ -395,7 +397,7 @@ export async function finalizeSteelMarkdownTurn(
   }
   if (
     parseAssistantMarkdown(input.markdown).sections.some((section) =>
-      retiredMarkdownSectionTitles.some((title) => title === steelSectionTitle(section.title)),
+      retiredMarkdownSectionTitles.some((title) => title === steelSectionBaseTitle(section.title)),
     )
   ) {
     throw new SteelResponseCompletionError('retired_control_section');

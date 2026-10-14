@@ -1,4 +1,30 @@
-import { parseSteelReviewMarkdownTables, parseSteelReviewMarkdownRow } from './review-markdown';
+import {
+  isSteelSectionTitle,
+  parseSteelSectionTitle,
+  steelSectionBaseTitle,
+  parseSteelReviewMarkdownRow,
+  parseSteelReviewMarkdownTables,
+} from './review-markdown';
+
+describe('Steel section titles', () => {
+  it.each(['system_order｜A.pdf', 'system_order|A.pdf', 'system_order:A.pdf', 'system_order：A.pdf'])(
+    'accepts %s as a labeled system_order section',
+    (title) => {
+      expect(steelSectionBaseTitle(title)).toBe('system_order');
+      expect(parseSteelSectionTitle(title)).toEqual({ base: 'system_order', label: 'A.pdf' });
+      expect(isSteelSectionTitle(title, 'system_order')).toBe(true);
+    },
+  );
+
+  it('requires a label after a separator and an exact base', () => {
+    expect(isSteelSectionTitle('system_order', 'system_order')).toBe(true);
+    expect(isSteelSectionTitle('system_order｜ ', 'system_order')).toBe(false);
+    expect(isSteelSectionTitle('system_order_chunk', 'system_order')).toBe(false);
+    expect(isSteelSectionTitle('注意：說明', 'system_order')).toBe(false);
+    expect(steelSectionBaseTitle('  ocr_result  ')).toBe('ocr_result');
+  });
+});
+
 
 describe('Steel review Markdown authority parser', () => {
   it('keeps global table indexes and physical CRLF offsets across parts', () => {

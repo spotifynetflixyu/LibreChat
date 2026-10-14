@@ -1,30 +1,16 @@
-interface MarkdownFence {
-  character: '`' | '~';
-  length: number;
-}
+import { steelSectionBaseTitle } from 'librechat-data-provider';
+import type { MarkdownFence } from './parser';
+import { getFenceStart, closesFence, getH2Title } from './parser';
 
 export interface SteelMarkdownOutputFilter {
   append(delta: string): string;
   finish(): string;
 }
 
-function fenceOpening(line: string): MarkdownFence | undefined {
-  const marker = line.match(/^ {0,3}(`{3,}|~{3,})/u)?.[1];
-  if (!marker) return undefined;
-  return { character: marker[0] as '`' | '~', length: marker.length };
-}
-
-function isFenceClosing(line: string, fence: MarkdownFence): boolean {
-  const marker = line.match(/^ {0,3}(`{3,}|~{3,})[ \t]*$/u)?.[1];
-  return marker?.[0] === fence.character && marker.length >= fence.length;
-}
-
 function headingBaseName(line: string): string | undefined {
-  const title = line.match(/^ {0,3}##(?!#)[ \t]+(.+?)[ \t]*$/u)?.[1]
-    ?.replace(/[ \t]+#+[ \t]*$/u, '')
-    .trim();
+  const title = getH2Title(line);
   if (!title) return undefined;
-  return title.split(/[｜|]/u, 1)[0]?.trim();
+  return steelSectionBaseTitle(title);
 }
 
 function isCustomerQuoteHeading(line: string): boolean {
@@ -49,7 +35,7 @@ export function createSteelMarkdownOutputFilter(): SteelMarkdownOutputFilter {
     const withoutCarriageReturn = content.endsWith('\r') ? content.slice(0, -1) : content;
 
     if (fence) {
-      if (lineStart && isFenceClosing(withoutCarriageReturn, fence)) {
+      if (lineStart && closesFence(withoutCarriageReturn, fence)) {
         fence = undefined;
         const output = suppressFence ? '' : line;
         suppressFence = false;
@@ -58,7 +44,7 @@ export function createSteelMarkdownOutputFilter(): SteelMarkdownOutputFilter {
       return suppressFence ? '' : line;
     }
 
-    const opening = lineStart ? fenceOpening(withoutCarriageReturn) : undefined;
+    const opening = lineStart ? getFenceStart(withoutCarriageReturn) : undefined;
     if (opening) {
       fence = opening;
       suppressFence = suppressCustomerQuote;

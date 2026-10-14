@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { steelSectionBaseTitle } from 'librechat-data-provider';
 import type {
   SteelQuotationCurrentSystemOrder,
   SteelQuotationOcrSelection,
@@ -46,10 +47,6 @@ interface ParsedSystemOrder {
   rows: string[][];
 }
 
-function sectionBaseName(title: string): string {
-  return title.split('｜', 1)[0]?.trim() ?? '';
-}
-
 function validDecimal(value: string): boolean {
   return DECIMAL_PATTERN.test(value);
 }
@@ -70,7 +67,7 @@ function renderTable(headers: readonly string[], rows: readonly (readonly string
 
 function parseSystemOrder(markdown: string): ParsedSystemOrder | undefined {
   const sections = parseAssistantMarkdown(markdown).sections.filter(
-    (section) => sectionBaseName(section.title) === 'system_order',
+    (section) => steelSectionBaseTitle(section.title) === 'system_order',
   );
   if (sections.length !== 1) return undefined;
   const section = sections[0];

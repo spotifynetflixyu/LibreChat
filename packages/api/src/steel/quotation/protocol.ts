@@ -1,3 +1,4 @@
+import { steelSectionBaseTitle } from 'librechat-data-provider';
 import type { SteelQuotationChunkState } from '@librechat/data-schemas';
 import type { SteelToolResult } from '../tools/results';
 import { normalizeSystemOrderMarkdown, systemOrderColumns } from '../markdown/order';
@@ -144,11 +145,6 @@ export function quotationOutputRequiresFreshLookup(response: string): boolean {
   );
 }
 
-function baseSectionTitle(title: string): string {
-  const separator = title.indexOf('｜');
-  return (separator < 0 ? title : title.slice(0, separator)).trim();
-}
-
 function sectionBodyWithoutFences(body: string): string {
   const lines = body.split(/\r?\n/u);
   const visible: string[] = [];
@@ -172,7 +168,7 @@ function sectionBodyWithoutFences(body: string): string {
 }
 
 function exactSection(document: ReturnType<typeof parseAssistantMarkdown>, title: string) {
-  const sections = document.sections.filter((section) => baseSectionTitle(section.title) === title);
+  const sections = document.sections.filter((section) => steelSectionBaseTitle(section.title) === title);
   return sections.length === 1 ? sections[0] : undefined;
 }
 
@@ -923,7 +919,7 @@ function sectionRows(
 
 function sectionCount(text: string, title: string): number {
   return parseAssistantMarkdown(text).sections.filter(
-    (section) => baseSectionTitle(section.title) === title,
+    (section) => steelSectionBaseTitle(section.title) === title,
   ).length;
 }
 
@@ -943,7 +939,7 @@ function stripQuoteControls(text: string): string {
   ]);
   const chunks: string[] = [document.preamble.trimEnd()];
   document.sections.forEach((section) => {
-    if (!removedTitles.has(baseSectionTitle(section.title))) chunks.push(section.raw.trim());
+    if (!removedTitles.has(steelSectionBaseTitle(section.title))) chunks.push(section.raw.trim());
   });
   return chunks.filter(Boolean).join(document.newline + document.newline);
 }
@@ -1044,7 +1040,7 @@ export function finalizeQuotationMainResponse(
   let inserted = false;
   let manualReviewSection: string | undefined;
   document.sections.forEach((section) => {
-    const title = baseSectionTitle(section.title);
+    const title = steelSectionBaseTitle(section.title);
     if (title === 'system_order') {
       if (!inserted) {
         outputParts.push(systemOrderMarkdown);

@@ -10,6 +10,7 @@ import {
   normalizeSteelReviewEffectiveValue,
   sameSteelReviewSource,
   validateSteelReviewLedger,
+  isSteelSectionTitle,
 } from 'librechat-data-provider';
 import type {
   SteelReviewCell,
@@ -174,13 +175,7 @@ function isManagedReviewTitle(kind: SteelReviewKind, title: string | undefined):
   if (!title) {
     return false;
   }
-  const prefix = kind === 'ocr_result' ? 'ocr_result' : 'system_order';
-  if (title === prefix) {
-    return true;
-  }
-  const separator = title.indexOf('｜');
-  return separator > 0 && title.slice(0, separator).trim() === prefix &&
-    title.slice(separator + 1).trim().length > 0;
+  return isSteelSectionTitle(title, kind === 'ocr_result' ? 'ocr_result' : 'system_order');
 }
 
 function hasUniqueTitle(markdown: string | undefined, kind: SteelReviewKind, title: string): boolean {
