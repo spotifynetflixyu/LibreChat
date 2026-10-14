@@ -635,9 +635,10 @@ describe('Steel native event mapping', () => {
       appendSteelNativeActivityEvent(sink, {
         type: 'quote_audit',
         source: 'tool_result',
-        stage: 'stage_2',
-        status: 'started',
-        message: 'Stage 2 started',
+        stage: 'stage_1',
+        status: 'executed',
+        message: 'Code Interpreter executed',
+        toolName: 'code_interpreter',
       }),
     ).toBe(false);
     expect(

@@ -1559,9 +1559,10 @@ describe('SteelActivity', () => {
             {
               type: 'quote_audit',
               source: 'quote_runtime',
-              message: 'Stage 2 started',
-              stage: 'stage_2',
-              status: 'started',
+              message: 'Code Interpreter executed',
+              stage: 'stage_1',
+              status: 'executed',
+              toolName: 'code_interpreter',
             },
           ]);
         }}
@@ -1570,7 +1571,7 @@ describe('SteelActivity', () => {
       </RecoilRoot>,
     );
 
-    expect(screen.getByText('Stage 2 started')).toBeInTheDocument();
+    expect(screen.getByText('Code Interpreter executed')).toBeInTheDocument();
   });
 
   it('renders native Steel save status without successful parse rows', () => {

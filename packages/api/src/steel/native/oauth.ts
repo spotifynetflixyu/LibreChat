@@ -768,7 +768,7 @@ function getSteelQuoteAuditEventInput(
   };
 }
 
-type SteelCodeInterpreterAuditStage = 'stage_1' | 'stage_2';
+type SteelCodeInterpreterAuditStage = 'stage_1';
 type SteelCodeInterpreterAuditPart =
   | LanguageModelV3GenerateResult['content'][number]
   | LanguageModelV3StreamPart;

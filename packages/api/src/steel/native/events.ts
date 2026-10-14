@@ -125,24 +125,15 @@ export interface SteelNativeQuotationStatusEvent extends SteelNativeEventBase {
   ocrSource?: SteelQuotationOcrSource;
 }
 
-export interface SteelNativeQuoteAuditStartedEvent extends SteelNativeEventBase {
-  type: 'quote_audit';
-  stage: 'stage_2';
-  status: 'started';
-  message: 'Stage 2 started';
-}
-
 export interface SteelNativeCodeInterpreterAuditEvent extends SteelNativeEventBase {
   type: 'quote_audit';
-  stage: 'stage_1' | 'stage_2';
+  stage: 'stage_1';
   status: 'executed';
   message: 'Code Interpreter executed';
   toolName: 'code_interpreter';
 }
 
-export type SteelNativeQuoteAuditEvent =
-  | SteelNativeQuoteAuditStartedEvent
-  | SteelNativeCodeInterpreterAuditEvent;
+export type SteelNativeQuoteAuditEvent = SteelNativeCodeInterpreterAuditEvent;
 
 export type SteelNativeStreamEvent =
   | SteelNativeParseStatusEvent
@@ -637,22 +628,6 @@ function isSteelNativeEventData(value: unknown): value is SteelNativeStreamEvent
     return false;
   }
 
-  if (value.stage === 'stage_2' && value.status === 'started') {
-    if (
-      !hasOnlyKeys(value, [
-        'type',
-        'source',
-        ...steelNativeEventBaseFields,
-        'stage',
-        'status',
-        'message',
-      ])
-    ) {
-      return false;
-    }
-    return value.source === 'quote_runtime' && value.message === 'Stage 2 started';
-  }
-
   if (
     !hasOnlyKeys(value, [
       'type',
@@ -667,7 +642,7 @@ function isSteelNativeEventData(value: unknown): value is SteelNativeStreamEvent
   }
   return (
     value.source === 'quote_runtime' &&
-    (value.stage === 'stage_1' || value.stage === 'stage_2') &&
+    value.stage === 'stage_1' &&
     value.status === 'executed' &&
     value.message === 'Code Interpreter executed' &&
     value.toolName === 'code_interpreter'
@@ -1201,17 +1176,9 @@ function canonicalizeSteelNativeEvent(value: unknown): SteelNativeStreamEvent | 
       event.ocrSource = parsedSource.data;
     }
   } else if (value.type === 'quote_audit') {
-    if (value.stage === 'stage_2' && value.status === 'started') {
-      if (value.source !== 'quote_runtime' || value.message !== 'Stage 2 started') {
-        return undefined;
-      }
-      event.type = 'quote_audit';
-      event.stage = 'stage_2';
-      event.status = 'started';
-      event.message = 'Stage 2 started';
-    } else if (
+    if (
       value.source === 'quote_runtime' &&
-      (value.stage === 'stage_1' || value.stage === 'stage_2') &&
+      value.stage === 'stage_1' &&
       value.status === 'executed' &&
       value.message === 'Code Interpreter executed' &&
       value.toolName === 'code_interpreter'
@@ -1704,7 +1671,7 @@ export type BuildSteelCodeInterpreterAuditEventInput = Omit<
   SteelNativeEventBase,
   'source' | 'toolName'
 > & {
-  stage: 'stage_1' | 'stage_2';
+  stage: 'stage_1';
 };
 
 export function buildSteelCodeInterpreterAuditEvent({

@@ -43,9 +43,10 @@ describe('useSteelEventHandler', () => {
       data: {
         type: 'quote_audit' as const,
         source: 'quote_runtime' as const,
-        message: 'Stage 2 started' as const,
-        stage: 'stage_2' as const,
-        status: 'started' as const,
+        message: 'Code Interpreter executed' as const,
+        stage: 'stage_1' as const,
+        status: 'executed' as const,
+        toolName: 'code_interpreter' as const,
       },
     };
 
@@ -58,9 +59,10 @@ describe('useSteelEventHandler', () => {
       {
         type: 'quote_audit',
         source: 'quote_runtime',
-        message: 'Stage 2 started',
-        stage: 'stage_2',
-        status: 'started',
+        message: 'Code Interpreter executed',
+        stage: 'stage_1',
+        status: 'executed',
+        toolName: 'code_interpreter',
         receivedAt: expect.any(Number),
       },
     ]);
@@ -402,7 +404,7 @@ describe('useSteelEventHandler', () => {
         type: 'quote_audit' as const,
         source: 'quote_runtime' as const,
         message: 'Code Interpreter executed' as const,
-        stage: 'stage_2' as const,
+        stage: 'stage_1' as const,
         status: 'executed' as const,
         toolName: 'code_interpreter' as const,
         providerToolCallId,

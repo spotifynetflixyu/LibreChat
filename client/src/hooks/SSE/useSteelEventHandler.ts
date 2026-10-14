@@ -268,31 +268,9 @@ export function normalizeSteelActivityEvent(
 
   if (data.type === 'quote_audit') {
     if (
-      data.source === 'quote_runtime' &&
-      data.message === 'Stage 2 started' &&
-      data.stage === 'stage_2' &&
-      data.status === 'started'
-    ) {
-      return {
-        type: 'quote_audit',
-        source: 'quote_runtime',
-        message: 'Stage 2 started',
-        stage: 'stage_2',
-        status: 'started',
-        ...(typeof data.conversationId === 'string' ? { conversationId: data.conversationId } : {}),
-        ...(typeof data.requestId === 'string' ? { requestId: data.requestId } : {}),
-        ...(typeof data.messageId === 'string' ? { messageId: data.messageId } : {}),
-        ...(typeof data.toolName === 'string' ? { toolName: data.toolName } : {}),
-        ...(typeof data.providerToolCallId === 'string'
-          ? { providerToolCallId: data.providerToolCallId }
-          : {}),
-      };
-    }
-
-    if (
       data.source !== 'quote_runtime' ||
       data.message !== 'Code Interpreter executed' ||
-      (data.stage !== 'stage_1' && data.stage !== 'stage_2') ||
+      data.stage !== 'stage_1' ||
       data.status !== 'executed' ||
       data.toolName !== 'code_interpreter' ||
       (data.providerToolCallId !== undefined &&
