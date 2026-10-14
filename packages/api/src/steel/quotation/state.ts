@@ -1209,8 +1209,8 @@ export function createSteelQuotationStateService(
     input: SteelQuotationRunInput,
     now: Date,
   ): Promise<SteelQuotationActiveRun | undefined> {
-    const state = await readState(input.scope);
-    const run = getActiveRun(state, input.runId);
+    const active = await readActiveRun(input.scope);
+    const run = active?.runId === input.runId ? active : undefined;
     if (
       !run ||
       !leaseStatuses.includes(run.status) ||
