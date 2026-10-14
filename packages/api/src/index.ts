@@ -130,27 +130,7 @@ export * from './stream';
 /* Diagnostics */
 export { memoryDiagnostics } from './utils/memory';
 /* Steel */
-export * from './steel/admin';
-export * from './steel/ai/config';
-export * from './steel/markdown/completion';
-export * from './steel/markdown/full';
-export * from './steel/markdown/history';
-export * from './steel/memory/service';
-export * from './steel/messageGuard';
-export * from './steel/models';
-export * from './steel/native';
-export * from './steel/ocr';
-export * from './steel/quotation';
-export * from './steel/catalog';
-export * from './steel/pool';
-export * from './steel/postgres';
-export * from './steel/repositories';
-export * from './steel/routes';
-export * from './steel/customer';
-export * from './steel/review';
-export * from './steel/sources';
-export * from './steel/runtime/types';
-export * from './steel/tools';
+export * from './steel';
 /* RUM */
 export * from './rum/proxy';
 /* OpenAPI */
