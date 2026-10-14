@@ -94,12 +94,6 @@ export interface QuotationChildResultInput {
   readonly pythonEvidence?: readonly QuotationPythonEvidence[];
   readonly customerTier?: 'A' | 'B' | 'C' | 'D' | 'E' | 'F';
   readonly backendFailure?: QuotationBackendFailure;
-  /**
-   * New quotation runs keep review details in the row remarks. Omitted keeps
-   * the legacy reader permissive so saved 16-column tables and
-   * manual_reviews_chunk artifacts can still be recovered.
-   */
-  readonly allowManualReviews?: boolean;
 }
 
 export interface ValidatedQuotationChildResult {
@@ -107,7 +101,6 @@ export interface ValidatedQuotationChildResult {
   readonly markdown: string;
   readonly table: QuotationChunkTable;
   readonly rows: readonly (readonly string[])[];
-  readonly reviewTable?: QuotationChunkTable;
 }
 
 export interface QuotationProtocolFailure {
@@ -572,15 +565,7 @@ export function mergeQuotationChildResults(
   }
   const validated = children.map(validateQuotationChildResult);
   const rows = validated.flatMap((child) => child.rows);
-  const reviews = validated.flatMap((child) => child.reviewTable?.rows ?? []);
-  return [
-    renderQuotationChunkTable({ headers: quotationChildSystemOrderColumns, rows }),
-    ...(reviews.length
-      ? [
-          `## manual_reviews_chunk\n\n${renderTable({ headers: quotationManualReviewColumns, rows: reviews })}`,
-        ]
-      : []),
-  ].join('\n\n');
+  return renderQuotationChunkTable({ headers: quotationChildSystemOrderColumns, rows });
 }
 
 interface QuotationSystemOrderGroup {
@@ -622,28 +607,6 @@ function childSystemOrderGroups(
     );
   }
   return groups;
-}
-
-function sourcePartCode(chunk: QuotationChunk, sourceRow: QuotationSourceRow): string {
-  return sourceCell(chunk, sourceRow, ['零件編號']);
-}
-
-function upgradeLegacyChildTable(
-  child: QuotationChildResultInput,
-  table: QuotationChunkTable,
-): QuotationChunkTable {
-  return {
-    headers: quotationChildSystemOrderColumns,
-    rows: childSystemOrderGroups(child, table).flatMap((group) =>
-      group.rows.map((row) =>
-        quotationChildSystemOrderColumns.map((header) =>
-          header === '零件編號'
-            ? sourcePartCode(child.chunk, group.sourceRow)
-            : (row[table.headers.indexOf(header)] ?? ''),
-        ),
-      ),
-    ),
-  };
 }
 
 function sameQuotationSourceRow(actual: QuotationSourceRow, expected: QuotationSourceRow): boolean {
@@ -856,8 +819,7 @@ function validateChildTable(input: QuotationChildResultInput): ValidatedQuotatio
   );
   const document = parseAssistantMarkdown(sanitizedResponse);
   const section = exactSection(document, 'system_order_chunk');
-  const reviewSection = exactSection(document, 'manual_reviews_chunk');
-  if (input.allowManualReviews === false && reviewSection) {
+  if (exactSection(document, 'manual_reviews_chunk')) {
     protocolError(
       'invalid_child_result',
       'Quotation child review details must be kept in system_order 備註 for this execution.',
@@ -866,61 +828,30 @@ function validateChildTable(input: QuotationChildResultInput): ValidatedQuotatio
   if (
     !section ||
     section.title !== 'system_order_chunk' ||
-    document.sections[0] !== section ||
-    document.sections.length !== (reviewSection ? 2 : 1) ||
-    (reviewSection && reviewSection.title !== 'manual_reviews_chunk') ||
+    document.sections.length !== 1 ||
     /^ {0,3}(`{3,}|~{3,})/mu.test(sanitizedResponse)
   ) {
     protocolError(
       'invalid_child_result',
-      'Child result must contain one 17-column system_order_chunk followed by an optional manual_reviews_chunk Markdown table.',
+      'Child result must contain one 17-column system_order_chunk Markdown table.',
     );
   }
   const normalizedSectionBody = normalizeMissingTrailingPipes(
     section.body,
     quotationChildSystemOrderColumns.length,
   );
-  const currentTable = parseExactTable(normalizedSectionBody, quotationChildSystemOrderColumns);
-  const legacyBody =
-    input.allowManualReviews === false
-      ? undefined
-      : normalizeMissingTrailingPipes(section.body, quotationSystemOrderColumns.length);
-  const legacyTable =
-    !currentTable && legacyBody
-      ? parseExactTable(legacyBody, quotationSystemOrderColumns)
-      : undefined;
-  const normalizedReviewBody = reviewSection
-    ? normalizeMissingTrailingPipes(reviewSection.body, quotationManualReviewColumns.length)
-    : undefined;
-  for (const [title, body, width] of [
-    [
-      'system_order_chunk',
-      legacyTable ? legacyBody : normalizedSectionBody,
-      legacyTable ? quotationSystemOrderColumns.length : quotationChildSystemOrderColumns.length,
-    ],
-    ['manual_reviews_chunk', normalizedReviewBody, quotationManualReviewColumns.length],
-  ] as const) {
-    const row = body ? incompleteTableRow(body) : undefined;
-    if (row)
-      protocolError(
-        'invalid_child_result',
-        `Quotation child result contains an incomplete Markdown row in ${title} at section line ${row.line}: expected ${width} columns, found ${row.columns}; return the complete replacement table before saving the chunk.`,
-      );
-  }
-  if (!currentTable && !legacyTable) {
-    protocolError('invalid_child_result', 'Child result has an invalid system_order_chunk table.');
-  }
-  const reviewTable =
-    normalizedReviewBody && parseExactTable(normalizedReviewBody, quotationManualReviewColumns);
-  if (reviewSection && !reviewTable) {
+  const row = incompleteTableRow(normalizedSectionBody);
+  if (row) {
     protocolError(
       'invalid_child_result',
-      'Child result has an invalid manual_reviews_chunk table.',
+      `Quotation child result contains an incomplete Markdown row in system_order_chunk at section line ${row.line}: expected ${quotationChildSystemOrderColumns.length} columns, found ${row.columns}; return the complete replacement table before saving the chunk.`,
     );
   }
-  let table: QuotationChunkTable;
+  const table = parseExactTable(normalizedSectionBody, quotationChildSystemOrderColumns);
+  if (!table) {
+    protocolError('invalid_child_result', 'Child result has an invalid system_order_chunk table.');
+  }
   try {
-    table = currentTable ?? upgradeLegacyChildTable(input, legacyTable!);
     childSystemOrderGroups(input, table);
   } catch (error) {
     if (error instanceof QuotationProtocolError && error.code === 'incomplete_aggregate') {
@@ -936,7 +867,6 @@ function validateChildTable(input: QuotationChildResultInput): ValidatedQuotatio
   }
   if (input.backendFailure) {
     if (
-      reviewTable ||
       renderQuotationChunkTable(table) !==
         buildQuotationFailureMarkdown(input.chunk, input.backendFailure.reason)
     ) {
@@ -959,15 +889,9 @@ function validateChildTable(input: QuotationChildResultInput): ValidatedQuotatio
   }
   return {
     chunk: input.chunk,
-    markdown: [
-      renderQuotationChunkTable(table),
-      reviewTable ? `## manual_reviews_chunk\n\n${renderTable(reviewTable)}` : '',
-    ]
-      .filter(Boolean)
-      .join('\n\n'),
+    markdown: renderQuotationChunkTable(table),
     table,
     rows: table.rows,
-    ...(reviewTable ? { reviewTable } : {}),
   };
 }
 

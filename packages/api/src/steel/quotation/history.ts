@@ -135,7 +135,7 @@ export async function readQuotationHistory(input: {
         event.runId !== run.runId || event.index !== run.index || event.chunkIndex !== operation.sourceChunkIndex ||
         event.attempt !== operation.attempt || event.repairAttempt !== operation.repairAttempt ||
         event.stage !== operation.stage) continue;
-      const projected = getQuotationProgress(run, operation.sourceChunkIndex, operation.sliceIndex);
+      const projected = getQuotationProgress(run, operation.sourceChunkIndex);
       if (projected.chunkIndex === undefined) continue;
       appendSteelNativeActivityEvent(history, {
         ...event,

@@ -52,7 +52,7 @@ describe('quotation route handlers', () => {
     jest.clearAllMocks();
   });
 
-  it('projects split quotation progress into durable ten-row units', () => {
+  it('projects split quotation progress into durable v2 units', () => {
     const splitRun = {
       ...activeRun,
       chunks: [
@@ -60,8 +60,9 @@ describe('quotation route handlers', () => {
         { index: 2, sourceRowCount: 23, status: 'pending' as const },
       ],
       checkpointRefs: [
-        { operationId: 'split:2', kind: 'main' },
-        { operationId: 'slice:2:1', kind: 'chunk' },
+        { operationId: 'split-v2:2:r', kind: 'main' },
+        { operationId: 'split-v2:2:r.1', kind: 'main' },
+        { operationId: 'leaf-v2:2:r.1.1', kind: 'chunk' },
       ],
     };
     expect(quotationStatus({ activeRun: splitRun } as never, 'conversation-1')).toMatchObject({

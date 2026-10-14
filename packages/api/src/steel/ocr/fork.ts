@@ -7,7 +7,7 @@ import {
 } from '@librechat/data-schemas';
 import type { IConversation, IMongoFile, ISteelConversationOcrState, ISteelDelegateOcrRun, ISteelWorkingOrderMemory, SteelConversationOcrSourceMapping } from '@librechat/data-schemas';
 import type { Types } from 'mongoose';
-import { parseAssistantMarkdown, parseOcrResultTable, parseSourceMappingTable, reconstructLegacyOcrResponse } from './result';
+import { parseAssistantMarkdown, parseOcrResultTable, parseSourceMappingTable } from './result';
 
 type Mongoose = typeof import('mongoose');
 type ForkMessage = {
@@ -178,23 +178,10 @@ export function createSteelOcrForkService(mongoose: Mongoose) {
           }
         }
         const full = sections.filter((section) => section.title === 'ocr_result');
-        const updates = sections.filter((section) => section.title === 'ocr_result_updates');
         if (full.length > 0) {
           if (full.length !== 1) throw new Error('Duplicate OCR fork result sections');
           validateResult(full[0].raw);
           markdown = full[0].raw;
-          resultMessageId = message.messageId;
-        } else if (updates.length > 0) {
-          // A split without the base must remain unseeded, never borrow the source's latest order.
-          if (!markdown) continue;
-          const result = reconstructLegacyOcrResponse({
-            assistantResponse: text, previousOcrMarkdown: markdown,
-            canonicalMapping: [], agentKind: 'other',
-            currentUserTurn: messageText(path.find((entry) => entry.messageId === message.parentMessageId) ?? message),
-          });
-          if (!result.ok) throw new Error(`Cannot reconstruct OCR fork: ${result.reason}`);
-          validateResult(result.ocrResultMarkdown);
-          markdown = result.ocrResultMarkdown;
           resultMessageId = message.messageId;
         } else if (source?.currentOcrResultMessageId === message.messageId && source.currentOcrResultMarkdown &&
           (!source.currentOcrResultProvenance?.messageId || source.currentOcrResultProvenance.messageId === message.messageId)) {

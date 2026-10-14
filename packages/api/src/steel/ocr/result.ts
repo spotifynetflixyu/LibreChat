@@ -1,7 +1,6 @@
-import { createHash } from 'node:crypto';
 import type { MarkdownFence, MarkdownSection, ParsedAssistantMarkdown } from '../markdown/parser';
 import type { OcrTable } from './normalize';
-import { escapeMarkdownTableCell, parsePipeTableRow, isMarkdownTableSeparatorCell } from '../markdown/row-codec';
+import { escapeMarkdownTableCell } from '../markdown/row-codec';
 import { parseAssistantMarkdown, getFenceStart, closesFence } from '../markdown/parser';
 import { admitFullOnlyMarkdown } from '../markdown/admission';
 import { parseMarkdownTables } from '../markdown/table';
@@ -13,7 +12,7 @@ export { admitFullOnlyMarkdown } from '../markdown/admission';
 
 const SOURCE_TITLE = 'source_file_mapping';
 const RESULT_TITLE = 'ocr_result';
-const UPDATES_TITLE = 'ocr_result_updates';
+
 const REVIEW_TITLE = 'manual_review';
 const SUMMARY_TITLE = 'ocr_update_summary';
 const SOURCE_HEADERS = ['來源', '檔名'] as const;
@@ -66,14 +65,6 @@ export interface OcrReconciliation {
   readonly changedKeys: readonly string[];
 }
 
-export interface OcrUpdateSummary {
-  readonly markdown: string;
-  readonly changed: boolean;
-  readonly changedKeys: readonly string[];
-  readonly newKeys: readonly string[];
-  readonly unkeyedRows: readonly (readonly string[])[];
-}
-
 export type OcrAgentKind = 'delegate_ocr' | 'regular_ocr' | 'other';
 
 export interface FinalizeOcrResponseInput {
@@ -96,12 +87,8 @@ export interface FinalizeOcrResponseSuccess {
 }
 
 export type FinalizationFailureReason =
-  | 'invalid_ocr_deletion'
   | 'missing_ocr_result'
   | 'invalid_ocr_result_table'
-  | 'ambiguous_ocr_update'
-  | 'missing_ocr_base'
-  | 'conflicting_ocr_sections'
   | 'retired_control_section'
   | 'duplicate_ocr_result'
   | 'mapping_mismatch';
@@ -117,11 +104,6 @@ export type FinalizeOcrResponseResult =
   | FinalizeOcrResponseSuccess
   | FinalizeOcrResponseFailure;
 
-interface KeyedRow {
-  readonly key: string;
-  readonly row: readonly string[];
-}
-
 function validHeaders(headers: readonly string[], required: readonly string[], exact: boolean): boolean {
   if (headers.some((header) => header.length === 0) || new Set(headers).size !== headers.length) {
     return false;
@@ -131,7 +113,7 @@ function validHeaders(headers: readonly string[], required: readonly string[], e
     : required.every((header) => headers.includes(header));
 }
 
-function tableFromMarkdown(markdown: string, required: readonly string[], exact: boolean, allowEmpty = false): ParsedTable {
+function tableFromMarkdown(markdown: string, required: readonly string[], exact: boolean): ParsedTable {
   const visibleLines: string[] = [];
   let fence: MarkdownFence | undefined;
   for (const line of markdown.split(/\r?\n/u)) {
@@ -151,14 +133,7 @@ function tableFromMarkdown(markdown: string, required: readonly string[], exact:
   const visibleMarkdown = visibleLines.join('\n');
   const tables = parseMarkdownTables(visibleMarkdown);
   if (tables.length > 1) return { ok: false, reason: 'invalid_table' };
-  let table = tables[0];
-  if (!table && allowEmpty) {
-    const lines = visibleLines.filter((line) => line.trim().length > 0);
-    const headers = parsePipeTableRow(lines[0] ?? '');
-    const separator = parsePipeTableRow(lines[1] ?? '');
-    if (lines.length === 2 && headers && separator && headers.length === separator.length &&
-      separator.every(isMarkdownTableSeparatorCell)) table = { headers, rows: [] };
-  }
+  const table = tables[0];
   if (!table) {
     const hasPipeBlock = visibleLines.some((line) => {
       const trimmed = line.trim();
@@ -167,7 +142,7 @@ function tableFromMarkdown(markdown: string, required: readonly string[], exact:
     return { ok: false, reason: hasPipeBlock ? 'invalid_table' : 'missing_table' };
   }
   if (
-    (!allowEmpty && table.rows.length === 0) ||
+    table.rows.length === 0 ||
     !validHeaders(table.headers, required, exact) ||
     table.rows.some((row) => row.length !== table.headers.length)
   ) {
@@ -300,13 +275,6 @@ function sourceOf(row: readonly string[], headers: readonly string[]): string {
   return (row[headers.indexOf(RESULT_REQUIRED_HEADERS[0])] ?? '').trim();
 }
 
-function keyRows(rows: readonly (readonly string[])[], headers: readonly string[]): KeyedRow[] {
-  return rows.flatMap((row) => {
-    const key = tableKey(row, headers);
-    return key === undefined ? [] : [{ key, row }];
-  });
-}
-
 function changedCellCount(current: readonly string[], old: readonly string[], headers: readonly string[], oldHeaders: readonly string[]): boolean {
   return headers.some((header, index) => (current[index] ?? '') !== (old[oldHeaders.indexOf(header)] ?? ''));
 }
@@ -411,69 +379,6 @@ function renderTable(table: OcrTable): string {
   ].join('\n');
 }
 
-function summaryRowValue(current: string, old: string | undefined, matched: boolean): string {
-  if (!matched || current === (old ?? '')) {
-    return current;
-  }
-  return `${current} (~~${old ?? ''}~~)`;
-}
-
-/** Build delegate-only summary from current rows and previous values. */
-export function buildOcrUpdateSummary(
-  previous: OcrTable | undefined,
-  current: OcrTable,
-  reconciliation?: OcrReconciliation,
-): OcrUpdateSummary {
-  const result = reconciliation ?? reconcileOcrResults(previous, current);
-  const oldHeaders = previous?.headers ?? current.headers;
-  const oldRowsByKey = new Map<string, readonly string[]>();
-  const oldCounts = countKeys(previous?.rows ?? [], oldHeaders);
-  for (const keyed of keyRows(previous?.rows ?? [], oldHeaders)) {
-    if ((oldCounts.get(keyed.key) ?? 0) === 1 && !result.duplicateKeys.includes(keyed.key)) {
-      oldRowsByKey.set(keyed.key, keyed.row);
-    }
-  }
-  const currentCounts = countKeys(current.rows, current.headers);
-  const summaryRows: Array<readonly string[]> = [];
-  const changedKeys: string[] = [];
-  const newKeys: string[] = [];
-  const unkeyedRows: Array<readonly string[]> = [];
-  const seenCurrentKeys = new Set<string>();
-  for (const row of current.rows) {
-    const key = tableKey(row, current.headers);
-    if (key === undefined) {
-      summaryRows.push([...row]);
-      unkeyedRows.push([...row]);
-      continue;
-    }
-    if ((currentCounts.get(key) ?? 0) !== 1 || result.duplicateKeys.includes(key)) {
-      continue;
-    }
-    if (seenCurrentKeys.has(key)) {
-      continue;
-    }
-    seenCurrentKeys.add(key);
-    const old = oldRowsByKey.get(key);
-    if (!old) {
-      summaryRows.push([...row]);
-      newKeys.push(key);
-      continue;
-    }
-    if (changedCellCount(row, old, current.headers, oldHeaders)) {
-      summaryRows.push(current.headers.map((header, index) => {
-        const oldIndex = oldHeaders.indexOf(header);
-        return summaryRowValue(row[index] ?? '', oldIndex >= 0 ? old[oldIndex] : '', true);
-      }));
-      changedKeys.push(key);
-    }
-  }
-  const changed = summaryRows.length > 0;
-  const markdown = changed
-    ? `## ${SUMMARY_TITLE}\n\n${renderTable({ headers: current.headers, rows: summaryRows })}`
-    : '無變動資料';
-  return { markdown, changed, changedKeys, newKeys, unkeyedRows };
-}
-
 function getSection(document: ParsedAssistantMarkdown, title: string): MarkdownSection | undefined {
   return document.sections.find((section) => section.title === title);
 }
@@ -481,16 +386,6 @@ function getSection(document: ParsedAssistantMarkdown, title: string): MarkdownS
 function tableInSection(document: ParsedAssistantMarkdown, title: string, parser: (body: string) => ParsedTable): ParsedTable {
   const section = getSection(document, title);
   return section ? parser(section.body) : { ok: false, reason: 'missing_table' };
-}
-
-function parsePreviousTable(markdown: string | undefined): OcrTable | undefined {
-  if (!markdown) {
-    return undefined;
-  }
-  const document = parseAssistantMarkdown(markdown);
-  const section = getSection(document, RESULT_TITLE);
-  const parsed = tableFromMarkdown(section?.body ?? markdown, [], false, true);
-  return parsed.ok ? parsed.table : undefined;
 }
 
 function trimChunk(chunk: string): string {
@@ -516,34 +411,6 @@ function safeOtherText(document: ParsedAssistantMarkdown, used: ReadonlySet<Mark
 
 function renderResultSection(table: OcrTable, title = RESULT_TITLE): string {
   return `## ${title}\n\n${renderTable(table)}`;
-}
-
-function explicitDeletionKeys(
-  input: FinalizeOcrResponseInput,
-  document: ParsedAssistantMarkdown,
-  previous: OcrTable | undefined,
-): Set<string> | undefined {
-  const sections = document.sections.filter((section) => section.title === 'ocr_deletions');
-  if (sections.length === 0) return new Set();
-  if (sections.length !== 1 || !previous || !input.previousOcrMarkdown ||
-    !/(?:刪除|刪掉|删除|删掉|移除|去掉|只保留|\bdelete\b|\bremove\b)/iu.test(input.currentUserTurn ?? '')) {
-    return undefined;
-  }
-  const tables = parseMarkdownTables(sections[0].body);
-  const table = tables[0];
-  if (tables.length !== 1 || !table || table.headers.join('|') !== 'order_hash|來源|零件編號' ||
-    table.rows.length === 0) return undefined;
-  const hash = createHash('sha256').update(input.previousOcrMarkdown).digest('hex');
-  const previousCounts = countKeys(previous.rows, previous.headers);
-  const keys = new Set<string>();
-  for (const row of table.rows) {
-    const key = `${(row[1] ?? '').trim()}\u0000${(row[2] ?? '').trim()}`;
-    if (row.length !== 3 || row[0] !== hash || previousCounts.get(key) !== 1 || keys.has(key)) {
-      return undefined;
-    }
-    keys.add(key);
-  }
-  return keys;
 }
 
 function normalizeInput(
@@ -578,52 +445,28 @@ export function finalizeOcrResponse(
 ): FinalizeOcrResponseResult {
   return finalizeOcrResponseInternal(
     normalizeInput(inputOrResponse, previousOcrMarkdown, canonicalMapping, delegateSummary),
-    false,
   );
 }
 
-/**
- * Reconstructs a selected legacy fork history without admitting it as a new
- * OCR result. The normal completion path must use finalizeOcrResponse.
- */
-export function reconstructLegacyOcrResponse(
-  input: FinalizeOcrResponseInput,
-): FinalizeOcrResponseResult {
-  return finalizeOcrResponseInternal(input, true);
-}
-
-function finalizeOcrResponseInternal(
-  input: FinalizeOcrResponseInput,
-  legacyReconstruction: boolean,
-): FinalizeOcrResponseResult {
+function finalizeOcrResponseInternal(input: FinalizeOcrResponseInput): FinalizeOcrResponseResult {
   const document = parseAssistantMarkdown(input.assistantResponse);
-  const updates = legacyReconstruction
-    ? document.sections.filter((section) => section.title === UPDATES_TITLE)
-    : [];
-  const isUpdate = legacyReconstruction && updates.length > 0;
-  const resultTitle = legacyReconstruction ? RESULT_TITLE
-    : document.sections.find((section) => section.title.split(/[｜|]/u)[0]?.trim() === RESULT_TITLE)?.title ?? RESULT_TITLE;
-  if (!legacyReconstruction) {
-    const admission = admitFullOnlyMarkdown({
-      markdown: input.assistantResponse,
-      kind: 'ocr_result',
-      title: resultTitle,
-      messageId: input.messageId ?? 'completion-response',
-    });
-    if (!admission.ok) {
-      if (admission.code === 'retired_control_section') {
-        return { ok: false, reason: 'retired_control_section' };
-      }
-      if (admission.code === 'duplicate_full_target') {
-        return { ok: false, reason: 'duplicate_ocr_result' };
-      }
-      return { ok: false, reason: 'missing_ocr_result' };
+  const resultTitle = document.sections.find((section) => section.title.split(/[｜|]/u)[0]?.trim() === RESULT_TITLE)?.title ?? RESULT_TITLE;
+  const admission = admitFullOnlyMarkdown({
+    markdown: input.assistantResponse,
+    kind: 'ocr_result',
+    title: resultTitle,
+    messageId: input.messageId ?? 'completion-response',
+  });
+  if (!admission.ok) {
+    if (admission.code === 'retired_control_section') {
+      return { ok: false, reason: 'retired_control_section' };
     }
+    if (admission.code === 'duplicate_full_target') {
+      return { ok: false, reason: 'duplicate_ocr_result' };
+    }
+    return { ok: false, reason: 'missing_ocr_result' };
   }
-  if (updates.length > 1 || (isUpdate && document.sections.some((section) => section.title === RESULT_TITLE))) {
-    return { ok: false, reason: 'conflicting_ocr_sections' };
-  }
-  const resultParsed = tableInSection(document, isUpdate ? UPDATES_TITLE : resultTitle, (markdown) => tableFromMarkdown(markdown, [], false, legacyReconstruction));
+  const resultParsed = tableInSection(document, resultTitle, (markdown) => tableFromMarkdown(markdown, [], false));
   if (resultParsed.ok === false) {
     return { ok: false, reason: resultParsed.reason === 'missing_table' ? 'missing_ocr_result' : 'invalid_ocr_result_table' };
   }
@@ -659,44 +502,10 @@ function finalizeOcrResponseInternal(
     ? mappingValidation
     : { ok: true, entries: mappingParsed.ok ? mappingEntries(mappingParsed.table) : [] };
 
-  const previous = legacyReconstruction ? parsePreviousTable(input.previousOcrMarkdown) : undefined;
-  if (isUpdate && !previous) {
-    return { ok: false, reason: 'missing_ocr_base' };
-  }
-  const deletedKeys = legacyReconstruction ? explicitDeletionKeys(input, document, previous) : new Set<string>();
-  if (!deletedKeys || (resultParsed.table.rows.length === 0 &&
-    (!previous || (!isUpdate && (deletedKeys.size === 0 || deletedKeys.size !== previous.rows.length)))) || resultParsed.table.rows.some((row) => {
-    const key = tableKey(row, resultParsed.table.headers);
-    return key !== undefined && deletedKeys.has(key);
-  })) {
-    return { ok: false, reason: 'invalid_ocr_deletion' };
-  }
-  if (isUpdate && !RESULT_REQUIRED_HEADERS.every((header) =>
-    resultParsed.table.headers.includes(header) && previous?.headers.includes(header))) {
-    return { ok: false, reason: 'invalid_ocr_result_table' };
-  }
-  const oldCounts = countKeys(isUpdate ? previous?.rows ?? [] : [], previous?.headers ?? []);
-  const currentCounts = countKeys(resultParsed.table.rows, resultParsed.table.headers);
-  const missingPreviousColumns = previous?.headers.some((header) => !resultParsed.table.headers.includes(header));
-  for (const [key, count] of oldCounts) {
-    const currentCount = currentCounts.get(key) ?? 0;
-    if (count > 1 && currentCount > 0 && (currentCount < count || missingPreviousColumns)) {
-      return { ok: false, reason: 'ambiguous_ocr_update' };
-    }
-  }
-  const currentTable = legacyReconstruction
-    ? resultParsed.table
-    : normalizeOcrTable(resultParsed.table);
-  const reconciliation = reconcileOcrResults(
-    isUpdate ? previous : undefined,
-    currentTable,
-    deletedKeys,
-  );
-  const summaryResult = buildOcrUpdateSummary(previous, resultParsed.table, reconciliation);
+  const reconciliation = reconcileOcrResults(undefined, normalizeOcrTable(resultParsed.table));
   const review = getSection(document, REVIEW_TITLE);
   const used = new Set<MarkdownSection>([...document.sections.filter((section) =>
-    section.title === SOURCE_TITLE || section.title === resultTitle || section.title === REVIEW_TITLE ||
-    (legacyReconstruction && (section.title === SUMMARY_TITLE || section.title === 'ocr_deletions')))]);
+    section.title === SOURCE_TITLE || section.title === resultTitle || section.title === REVIEW_TITLE)]);
   const chunks: string[] = [];
   const sourceSection = getSection(document, SOURCE_TITLE);
   if (input.agentKind === 'regular_ocr') {
@@ -713,19 +522,14 @@ function finalizeOcrResponseInternal(
     chunks.push(review.raw);
   }
   chunks.push(...safeOtherText(document, used));
-  if (legacyReconstruction && input.delegateSummary) {
-    chunks.push(summaryResult.markdown);
-  }
   const ocrResultMarkdown = renderResultSection({ headers: reconciliation.headers, rows: reconciliation.rows }, resultTitle);
-  const finalResponse = isUpdate
-    ? `${document.sections.filter((section) => section.title !== 'ocr_deletions').map((section) => section.raw).join(document.newline + document.newline)}${document.newline}${document.newline}${input.delegateSummary ? `${summaryResult.markdown}${document.newline}${document.newline}` : ''}${ocrResultMarkdown.replace(/\n/gu, document.newline)}`
-    : joinChunks(chunks, document.newline);
+  const finalResponse = joinChunks(chunks, document.newline);
   return {
     ok: true,
     finalResponse,
     ocrResultMarkdown,
     mapping,
     reconciliation,
-    summary: legacyReconstruction && input.delegateSummary ? summaryResult.markdown : '',
+    summary: '',
   };
 }

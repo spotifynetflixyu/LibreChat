@@ -24,7 +24,7 @@ const messages: ForkMessages = [
   { messageId: 'u1', parentMessageId: null, isCreatedByUser: true, text: 'OCR', files: [{ file_id: 'file-1' }] },
   { messageId: 'a1', parentMessageId: 'u1', isCreatedByUser: false, text: full(7) },
   { messageId: 'u2', parentMessageId: 'a1', isCreatedByUser: true, text: '數量改為3' },
-  { messageId: 'a2', parentMessageId: 'u2', isCreatedByUser: false, text: full(3, 'ocr_result_updates') },
+  { messageId: 'a2', parentMessageId: 'u2', isCreatedByUser: false, text: full(3) },
 ];
 const input = (selected = messages, targetMessageId = selected[selected.length - 1].messageId) => ({
   userId, sourceConversationId: 'source', destinationConversationId: 'fork',
@@ -42,7 +42,7 @@ beforeAll(async () => {
   server = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } });
   await mongoose.connect(server.getUri());
   await Promise.all(Object.values(models).map((model) => model.init()));
-});
+}, 60000);
 afterAll(async () => {
   await mongoose.disconnect();
   await server?.stop();
@@ -121,8 +121,8 @@ it('prefers the published canonical full result appended after a visible delta',
   expect((await State.findOne({ conversationId: 'fork' }))?.currentOcrResultMarkdown).toBe(full(3));
 });
 
-it('does not promote a user-pasted table or an update without a copied base', async () => {
-  const selected = messages.slice(2).map((message) => message.messageId === 'u2' ? { ...message, text: full(100) } : message);
+it('does not promote a user-pasted table', async () => {
+  const selected = messages.slice(2, 3).map((message) => message.messageId === 'u2' ? { ...message, text: full(100) } : message);
   await (await createSteelOcrForkService(mongoose).prepare(input(selected))).persist();
   expect((await State.findOne({ conversationId: 'fork' }))?.currentOcrResultMarkdown).toBeUndefined();
 });
@@ -130,7 +130,6 @@ it('does not promote a user-pasted table or an update without a copied base', as
 it.each([
   '## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| F1 | broken |',
   `${full(3)}\n\n${full(4)}`,
-  '## ocr_result_updates\n\nbroken',
 ])('rejects malformed or ambiguous selected OCR instead of publishing a stale base: %s', async (text) => {
   const selected = messages.map((message) => message.messageId === 'a2' ? { ...message, text } : message);
   await expect(createSteelOcrForkService(mongoose).prepare(input(selected))).rejects.toThrow();

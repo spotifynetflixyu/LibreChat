@@ -189,7 +189,7 @@ function rowsForChunk(chunk: QuotationChunk): readonly (readonly string[])[] {
 }
 
 describe('quotation protocol', () => {
-  it('splits recovery source rows exactly once and merges complete material, processing and review tables', () => {
+  it('splits recovery source rows exactly once and merges complete material and processing tables', () => {
     const parent = chunkForRows(
       Array.from({ length: 23 }, (_, index) => [
         'F1',
@@ -206,14 +206,10 @@ describe('quotation protocol', () => {
     expect(slices.flatMap((slice) => slice.sourceRows)).toEqual(parent.sourceRows);
     const children = slices.map((chunk) => ({
       ...childInput(chunk, rowsForChunk(chunk)[0]!),
-      response: `## system_order_chunk\n\n${table(systemHeaders, rowsForChunk(chunk))}\n\n## manual_reviews_chunk\n\n${table(
-        reviewHeaders,
-        [['ocr_result', chunk.sourceRows[0]!.cells[1]!, '單價', '', '需確認', '報價']],
-      )}`,
+      response: `## system_order_chunk\n\n${table(systemHeaders, rowsForChunk(chunk))}`,
     }));
     const merged = mergeQuotationChildResults(parent, children);
     expect(merged.match(/## system_order_chunk/g)).toHaveLength(1);
-    expect(merged.match(/## manual_reviews_chunk/g)).toHaveLength(1);
     expect(
       validateQuotationChildResult({
         ...childInput(parent, rowsForChunk(parent)[0]!),
@@ -399,17 +395,12 @@ describe('quotation protocol', () => {
     expect(parseMarkdownTables(result.systemOrderMarkdown)[0]!.rows[0]![15]).toBe('Q9');
   });
 
-  it('upgrades saved 16-column child output while requiring 17 columns for new output', () => {
+  it('requires 17 columns for child output', () => {
     const chunk = chunkForRows();
-    const legacy = `## system_order_chunk\n\n${table(finalHeaders, [finalRow(blankRow)])}`;
-    const input = { chunk, response: legacy, lookupEvidence: [successfulLookup()] };
-    const restored = validateQuotationChildResult(input);
-    expect(restored.rows[0]![15]).toBe('P1');
-    expect(restored.rows[0]![16]).toBe('查無候選，需確認');
-    expect(restored.markdown).toContain('| 類別 | 零件編號 | 備註 |');
-    expect(() => validateQuotationChildResult({ ...input, allowManualReviews: false })).toThrow(
-      'invalid system_order_chunk',
-    );
+    const sixteenColumns = `## system_order_chunk\n\n${table(finalHeaders, [finalRow(blankRow)])}`;
+    expect(() =>
+      validateQuotationChildResult({ chunk, response: sixteenColumns, lookupEvidence: [successfulLookup()] }),
+    ).toThrow('invalid system_order_chunk');
   });
 
   it('builds and accepts the deterministic OCR fallback with canonical alias precedence', () => {
@@ -523,31 +514,14 @@ describe('quotation protocol', () => {
     ).toThrow('search_price_candidates attempt');
   });
 
-  it('retains optional child reviews together with the order table', () => {
-    const child = childInput(chunkForRows(), blankRow);
-    const reviews = `## manual_reviews_chunk\n\n${table(reviewHeaders, [['ocr_result', 'P1', '單價', '', '查無資料', '報價']])}`;
-    expect(
-      validateQuotationChildResult({ ...child, response: `${child.response}\n\n${reviews}` })
-        .markdown,
-    ).toBe(`${child.response}\n\n${reviews}`);
-    expect(validateQuotationChildResult(child).markdown).not.toContain('manual_reviews_chunk');
-    expect(
-      validateQuotationChildResult({
-        ...child,
-        response: `${child.response}\n\n${reviews.replace('## manual_reviews_chunk', '## manual_reviews_chunk\n\n以下項目待確認。')}\n\n請確認以上事項。`,
-      }).markdown,
-    ).toContain(reviews);
-  });
-
-  it('rejects a new strict child review sidecar while keeping the legacy default readable', () => {
+  it('rejects a child review sidecar', () => {
     const chunk = chunkForRows();
     const review = `## manual_reviews_chunk\n\n${table(reviewHeaders, [['ocr_result', 'P1', '單價', '', '查無資料', '報價']])}`;
     const input = {
       ...childInput(chunk, blankRow),
       response: `${childInput(chunk, blankRow).response}\n\n${review}`,
     };
-    expect(validateQuotationChildResult(input).reviewTable).toBeDefined();
-    expect(() => validateQuotationChildResult({ ...input, allowManualReviews: false })).toThrow(
+    expect(() => validateQuotationChildResult(input)).toThrow(
       'system_order 備註',
     );
   });
@@ -558,10 +532,7 @@ describe('quotation protocol', () => {
       ['F1', 'P2', '鐵板', '1', '8', '100', '200'],
     ]);
     expect(() =>
-      validateQuotationChildResult({
-        ...childInput(chunk, pricedRow),
-        allowManualReviews: false,
-      }),
+      validateQuotationChildResult(childInput(chunk, pricedRow)),
     ).toThrow('material rows');
   });
 
@@ -682,20 +653,6 @@ describe('quotation protocol', () => {
     ).toThrow('cannot start');
   });
 
-  it('rejects malformed, empty or duplicate child review sections', () => {
-    const child = childInput(chunkForRows(), blankRow);
-    const valid = `## manual_reviews_chunk\n\n${table(reviewHeaders, [['ocr_result', 'P1', '單價', '', '查無資料', '報價']])}`;
-    for (const review of [
-      `## manual_reviews_chunk\n\n${table(reviewHeaders, [])}`,
-      `## manual_reviews_chunk\n\n${table(['wrong'], [['value']])}`,
-      `${valid}\n\n${valid}`,
-    ]) {
-      expect(() =>
-        validateQuotationChildResult({ ...child, response: `${child.response}\n\n${review}` }),
-      ).toThrow();
-    }
-  });
-
   it('requires an actual persisted search attempt for every child', () => {
     expect(() => validateQuotationChildResult(childInput(chunkForRows(), blankRow, []))).toThrow(
       'search_price_candidates attempt',
@@ -807,17 +764,6 @@ describe('quotation protocol', () => {
     expect(result.rows).toEqual([expected]);
     expect(result.markdown).toContain('| 規格 \\| 特殊 |');
     expect(result.markdown).toContain('| 末端 \\| |');
-  });
-
-  it('normalizes a six-column manual review table with missing trailing pipes', () => {
-    const chunk = chunkForRows();
-    const reviewRow = ['ocr_result', 'P1', '單價', '', '查無資料', '報價'];
-    const review = `## manual_reviews_chunk\n\n${removeTrailingPipes(table(reviewHeaders, [reviewRow]))}`;
-    const response = `${removeTrailingPipes(childInput(chunk, blankRow).response!)}\n\n${review}`;
-    const result = validateQuotationChildResult({ ...childInput(chunk, blankRow), response });
-    expect(result.markdown).toBe(
-      `## system_order_chunk\n\n${table(systemHeaders, [blankRow])}\n\n## manual_reviews_chunk\n\n${table(reviewHeaders, [reviewRow])}`,
-    );
   });
 
   it('rejects wrong-width rows, headers, prose rows, and ambiguous empty final cells instead of padding them', () => {
@@ -950,18 +896,6 @@ describe('quotation protocol', () => {
     });
     expect(finalized.rows).toEqual([expected]);
     expect(finalized.systemOrderMarkdown).toBe(output.systemOrderMarkdown);
-  });
-
-  it('upgrades legacy child columns without separating processing from its material', () => {
-    const chunk = chunkForRows();
-    const processing = [...pricedRow];
-    processing[14] = '加工/孔';
-    const result = validateQuotationChildResult({
-      ...childInput(chunk, pricedRow),
-      response: `## system_order_chunk\n\n${table(finalHeaders, [finalRow(pricedRow), finalRow(processing)])}`,
-    });
-    expect(result.table.headers).toEqual(systemHeaders);
-    expect(result.rows).toEqual([pricedRow, processing]);
   });
 
   it('recalculates plate weight locally and rounds display dimensions without another model response', () => {

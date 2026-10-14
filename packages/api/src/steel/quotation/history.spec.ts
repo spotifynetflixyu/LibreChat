@@ -39,8 +39,9 @@ const quotationRun = (overrides: Record<string, unknown> = {}) => ({
     { index: 2, sourceRowCount: 23, status: 'pending' },
   ],
   checkpointRefs: [
-    ref('split:2', 'main'),
-    ref('slice:2:1', 'chunk'),
+    ref('split-v2:2:r', 'main'),
+    ref('split-v2:2:r.1', 'main'),
+    ref('leaf-v2:2:r.1.1', 'chunk'),
   ],
   acceptedAt: new Date(),
   updatedAt: new Date(),
@@ -120,7 +121,7 @@ it('retains resumed chunk progress when the execution attempt changes', () => {
     .toEqual([resumedEvent]);
 });
 
-it('rehydrates flattened progress from durable split checkpoints after interruption', async () => {
+it('rehydrates flattened progress from durable v2 split checkpoints after interruption', async () => {
   const historyModule = await import('./history');
   const history = await historyModule.readQuotationHistory({
     scope: { userId: 'owner', conversationId: 'conversation' },
@@ -134,12 +135,12 @@ it('rehydrates flattened progress from durable split checkpoints after interrupt
   ]);
 });
 
-it('projects a valid slice repair event to its flattened ordinal and current progress', async () => {
-  const attempt = 'slice-2-550e8400-e29b-41d4-a716-446655440000';
+it('projects a valid repair event to its flattened ordinal and current progress', async () => {
+  const attempt = '550e8400-e29b-41d4-a716-446655440000';
   const operationId = `repair:2:${attempt}:1:chunk_repair_started`;
   mockService.readState.mockResolvedValue({
     activeRun: quotationRun({
-      checkpointRefs: [ref('split:2', 'main'), ref('slice:2:1', 'chunk'), ref(operationId, 'main')],
+      checkpointRefs: [ref('split-v2:2:r', 'main'), ref('split-v2:2:r.1', 'main'), ref('leaf-v2:2:r.1.1', 'chunk'), ref(operationId, 'main')],
     }),
   });
   mockService.readCheckpoint.mockImplementation(async ({ operationId: requested }: { operationId: string }) =>
@@ -157,16 +158,16 @@ it('projects a valid slice repair event to its flattened ordinal and current pro
     runId: 'run-1',
   });
   expect(history.activityEvents).toContainEqual(expect.objectContaining({
-    stage: 'chunk_repair_started', chunkIndex: 3, completedChunks: 2, totalChunks: 4,
+    stage: 'chunk_repair_started', chunkIndex: 4, completedChunks: 2, totalChunks: 4,
   }));
 });
 
 it('ignores repair payloads whose canonical operation and event disagree', async () => {
-  const attempt = 'slice-2-550e8400-e29b-41d4-a716-446655440000';
+  const attempt = '550e8400-e29b-41d4-a716-446655440000';
   const operationId = `repair:2:${attempt}:1:chunk_repair_started`;
   mockService.readState.mockResolvedValue({
     activeRun: quotationRun({
-      checkpointRefs: [ref('split:2', 'main'), ref('slice:2:1', 'chunk'), ref(operationId, 'main')],
+      checkpointRefs: [ref('split-v2:2:r', 'main'), ref('split-v2:2:r.1', 'main'), ref('leaf-v2:2:r.1.1', 'chunk'), ref(operationId, 'main')],
     }),
   });
   mockService.readCheckpoint.mockResolvedValue(JSON.stringify({

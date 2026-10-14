@@ -738,13 +738,12 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     chunkIndex?: number,
     attempt?: string,
     stage?: QuotationProgress['stage'],
-    sliceIndex?: number,
     recoveryPath?: string,
   ) => {
     const active = await assertActive();
     await input.onProgress?.({
       run: active,
-      ...getQuotationProgress(active, chunkIndex, sliceIndex, recoveryPath),
+      ...getQuotationProgress(active, chunkIndex, recoveryPath),
       attempt: attempt ?? executionAttempt,
       ...(stage ? { stage } : {}),
     });
@@ -784,53 +783,17 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     const snapshot = JSON.parse(payload) as SteelQuotationSnapshotPayload;
     const chunks = restoreQuotationChunks(snapshot.orderMarkdown, run.chunks);
     const results: QuotationChildResultInput[] = [];
-    const recoveryPolicy = await readCheckpoint('recovery-policy');
-    if (!recoveryPolicy) {
-      await checkpoint(
-        'recovery-policy',
-        'main',
-        JSON.stringify({ version: 2, retrySizes: QUOTATION_V2_SPLIT_SIZES }),
-      );
-    }
     for (const chunk of chunks) {
       interruptedChunkIndex = chunk.chunkIndex;
       const operationId = `chunk:${chunk.chunkIndex}`;
       const stored = await readCheckpoint(operationId);
-      const legacySplit = await readCheckpoint(`split:${chunk.chunkIndex}`);
       const treeSplit = await readCheckpoint(`split-v2:${chunk.chunkIndex}:r`);
       const children: LoadedQuotationChild[] = [];
-      if (legacySplit) {
-        const slices = splitQuotationChunk(chunk, 10);
-        const plan = JSON.parse(legacySplit) as {
-          version: number;
-          rowsPerSlice: number;
-          sourceRowIds: string[][];
-        };
-        if (
-          plan.version !== 1 ||
-          plan.rowsPerSlice !== 10 ||
-          JSON.stringify(plan.sourceRowIds) !==
-            JSON.stringify(slices.map((slice) => slice.sourceRows.map((row) => row.sourceRowId)))
-        ) {
-          throw new Error('Saved quotation recovery plan does not match its source rows');
-        }
-        if (!run.checkpointRefs.some((ref) => ref.operationId === `split:${chunk.chunkIndex}`)) {
-          await checkpoint(`split:${chunk.chunkIndex}`, 'main', legacySplit);
-        }
-        for (let index = 0; index < slices.length; index += 1) {
-          const saved = await readCheckpoint(`slice:${chunk.chunkIndex}:${index + 1}`);
-          children.push(...(await recoverChild(slices[index]!, `s${index + 1}`, 1, saved)));
-        }
-      } else if (stored && !treeSplit) {
+      if (stored && !treeSplit) {
         children.push(await loadChild(chunk, stored));
         await progress(chunk.chunkIndex, undefined, 'chunk_saved');
       } else {
-        const rejectedParent =
-          !recoveryPolicy &&
-          !treeSplit &&
-          run.interruption?.reason === 'error' &&
-          run.interruption.chunkIndex === chunk.chunkIndex;
-        children.push(...(await recoverChild(chunk, 'r', 0, undefined, rejectedParent)));
+        children.push(...(await recoverChild(chunk, 'r', 0)));
       }
       if (!stored) {
         const lookupOperations = children.flatMap((child) => child.lookupOperations);
@@ -1151,8 +1114,6 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
       chunk: ReturnType<typeof buildQuotationChunks>[number],
       path: string,
       depth: number,
-      legacyOutput?: string,
-      rejectedParent = false,
     ): Promise<LoadedQuotationChild[]> {
       await assertActive();
       const leafOperation = `leaf-v2:${chunk.chunkIndex}:${path}`;
@@ -1161,18 +1122,18 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
         readCheckpoint(leafOperation),
         readCheckpoint(splitOperation),
       ]);
-      if ((saved || legacyOutput) && !split) {
-        const loaded = await loadChild(chunk, (saved ?? legacyOutput)!);
+      if (saved && !split) {
+        const loaded = await loadChild(chunk, saved);
         validateQuotationChildResult(loaded);
         const active = await assertActive();
-        if (saved && !active.checkpointRefs.some((ref) => ref.operationId === leafOperation)) {
+        if (!active.checkpointRefs.some((ref) => ref.operationId === leafOperation)) {
           await checkpoint(leafOperation, 'chunk', saved);
         }
-        await progress(chunk.chunkIndex, undefined, 'chunk_saved', undefined, path);
+        await progress(chunk.chunkIndex, undefined, 'chunk_saved', path);
         return [loaded];
       }
       let failureReason = '報價子 Agent 未能產出有效結果';
-      if (!split && !rejectedParent) {
+      if (!split) {
         let output: string;
         try {
           output = await generateChild(chunk, path);
@@ -1185,7 +1146,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
         if (output) {
           await checkpoint(leafOperation, 'chunk', output);
           const loaded = await loadChild(chunk, output);
-          await progress(chunk.chunkIndex, undefined, 'chunk_saved', undefined, path);
+          await progress(chunk.chunkIndex, undefined, 'chunk_saved', path);
           return [loaded];
         }
       }
@@ -1202,7 +1163,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
         await checkpoint(leafOperation, 'chunk', output);
         const loaded = await loadChild(chunk, output);
         validateQuotationChildResult(loaded);
-        await progress(chunk.chunkIndex, undefined, 'chunk_saved', undefined, path);
+        await progress(chunk.chunkIndex, undefined, 'chunk_saved', path);
         return [loaded];
       }
       const rowsPerSlice = QUOTATION_V2_SPLIT_SIZES[depth as 0 | 1 | 2]!;
@@ -1246,7 +1207,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
       recoveryPath: string,
     ): Promise<string> {
       const attempt = `node-${recoveryPath}-${randomUUID()}`;
-      await progress(chunk.chunkIndex, attempt, 'chunk_started', undefined, recoveryPath);
+      await progress(chunk.chunkIndex, attempt, 'chunk_started', recoveryPath);
       const lookupOperations: string[] = [];
       const pythonOperations: string[] = [];
       const toolState = createSteelToolRunState(120);
@@ -1302,7 +1263,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
             await operational(async () =>
               input.onProgress?.({
                 ...event,
-                ...getQuotationProgress(active, chunk.chunkIndex, undefined, recoveryPath),
+                ...getQuotationProgress(active, chunk.chunkIndex, recoveryPath),
                 stage: repair.stage,
                 run: active,
               }),
@@ -1322,10 +1283,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
               'main',
               output,
             );
-            validateQuotationChildResult({
-              ...(await loadChild(chunk, output)),
-              allowManualReviews: false,
-            });
+            validateQuotationChildResult(await loadChild(chunk, output));
           },
           onPythonEvidence: async (evidence) => {
             const key = `python:${chunk.chunkIndex}:${attempt}:${evidence.toolCallId}:${evidence.type}`;
@@ -1396,7 +1354,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
       const candidate = await loadChild(chunk, stored);
       let validated: ReturnType<typeof validateQuotationChildResult>;
       try {
-        validated = validateQuotationChildResult({ ...candidate, allowManualReviews: false });
+        validated = validateQuotationChildResult(candidate);
       } catch (error) {
         if (!(error instanceof QuotationProtocolError)) throw error;
         throw new QuotationChildFailure('報價表格不完整或格式無效');

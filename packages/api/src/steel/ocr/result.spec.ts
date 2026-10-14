@@ -1,11 +1,9 @@
 import type { OcrTable, SourceMappingEntry } from './result';
 import {
-  buildOcrUpdateSummary,
   finalizeOcrResponse,
   parseAssistantMarkdown,
   parseOcrResultTable,
   reconcileOcrResults,
-  reconstructLegacyOcrResponse,
   validateSourceMapping,
 } from './result';
 
@@ -186,8 +184,6 @@ describe('reconcileOcrResults', () => {
     expect(reconcileOcrResults(ocr(['來源', '零件編號'], [['F1', 'P1']]), current).rows).toEqual([
       ['F1', 'P1', 'new'],
     ]);
-    const summary = buildOcrUpdateSummary(ocr(['來源', '零件編號'], [['F1', 'P1']]), current);
-    expect(summary.markdown).toContain('new (~~~~)');
   });
 
   it('maps reordered delta columns by name and preserves absent cells', () => {
@@ -244,7 +240,6 @@ describe('reconcileOcrResults', () => {
     const result = reconcileOcrResults(previous, current);
     expect(result.rows).toEqual(current.rows);
     expect(result.duplicateKeys).toEqual(['F1\u0000P1']);
-    expect(buildOcrUpdateSummary(previous, current, result).markdown).toBe('無變動資料');
   });
 
   it('restores every previous duplicate row when the current result omits that key', () => {
@@ -481,15 +476,6 @@ describe('finalizeOcrResponse', () => {
     });
   });
 
-  it('keeps legacy reconstruction in its original column order and numeric format', () => {
-    const response = `## ocr_result\n\n${table(['來源', '零件編號', '數量', '厚度'], [['F1', 'P1', '2支', '6.35mm']])}`;
-    const result = reconstructLegacyOcrResponse({
-      assistantResponse: response,
-      canonicalMapping: [],
-    });
-    expect(result.ok).toBe(true);
-    if (result.ok) expect(result.ocrResultMarkdown).toBe(response);
-  });
   it.each([
     'ocr_result_updates',
     'ocr_deletions',

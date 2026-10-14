@@ -814,10 +814,8 @@ describe('quotation runner integration', () => {
       const rows = resumed.mock.calls
         .filter(([input]) => input.role === 'child')
         .map(([input]) => parseMarkdownTables(JSON.parse(input.input).chunk)[0]!.rows.length);
-      expect(rows).toEqual(
-        reason === 'paused' ? [30, 30, 30, 30, 30, 13] : [12, 12, 6, 30, 30, 30, 30, 13],
-      );
-      const total = reason === 'paused' ? 6 : 8;
+      expect(rows).toEqual([30, 30, 30, 30, 30, 13]);
+      const total = 6;
       expect(progress[progress.length - 1]).toEqual(
         expect.objectContaining({ completedChunks: total, totalChunks: total }),
       );
@@ -985,135 +983,6 @@ describe('quotation runner integration', () => {
     );
   });
 
-  it.each(['checkpointed', 'artifact only'])(
-    'resumes an exhausted legacy parent in 10-row slices with heartbeats and a %s recovery plan',
-    async (planState) => {
-      const run = await prepareRun(23);
-      const lease = await service.acquireLease({ scope, runId: run.runId });
-      const leased = { scope, runId: run.runId, leaseToken: lease!.leaseToken };
-      await service.checkpoint({
-        ...leased,
-        operationId: 'repair:1:legacy:2:chunk_repair_failed',
-        kind: 'main',
-        payload: JSON.stringify({
-          stage: 'chunk_repair_failed',
-          repairAttempt: 2,
-          maxRepairAttempts: 2,
-        }),
-      });
-      await service.checkpoint({
-        ...leased,
-        operationId: 'child-output:1:legacy',
-        kind: 'main',
-        payload: JSON.stringify({
-          markdown: '| incomplete',
-          lookupOperations: [],
-          pythonOperations: [],
-        }),
-      });
-      await service.interruptRun(leased);
-      {
-        const recoveryLease = await service.acquireLease({ scope, runId: run.runId });
-        const rows = buildQuotationChunks(orderMarkdown(23), 30)[0]!.sourceRows;
-        const persistPlan =
-          planState === 'artifact only' ? service.writeArtifact : service.checkpoint;
-        await persistPlan({
-          scope,
-          runId: run.runId,
-          leaseToken: recoveryLease!.leaseToken,
-          operationId: 'split:1',
-          kind: 'main',
-          payload: JSON.stringify({
-            version: 1,
-            rowsPerSlice: 10,
-            sourceRowIds: [rows.slice(0, 10), rows.slice(10, 20), rows.slice(20)].map((slice) =>
-              slice.map((row) => row.sourceRowId),
-            ),
-          }),
-        });
-        await service.interruptRun({
-          scope,
-          runId: run.runId,
-          leaseToken: recoveryLease!.leaseToken,
-        });
-      }
-      const State = createSteelQuotationStateModel(mongoose);
-      const update = State.collection.findOneAndUpdate.bind(State.collection);
-      const heartbeat = jest
-        .spyOn(State.collection, 'findOneAndUpdate')
-        .mockImplementation(async (...args) => {
-          if (!Array.isArray(args[1]) && args[1].$set?.['activeRun.checkpointRefs']) {
-            const active = (await service.readState(scope))!.activeRun!;
-            await service.heartbeatLease({
-              scope,
-              runId: run.runId,
-              leaseToken: active.leaseToken,
-              now: new Date(Math.max(Date.now(), active.updatedAt.getTime() + 1)),
-            });
-          }
-          return update(...args);
-        });
-      const model = createModel({
-        onChild: async (input) => {
-          const plan = JSON.parse(
-            (await service.readCheckpoint({ scope, runId: run.runId, operationId: 'split:1' }))!,
-          );
-          expect(plan.version).toBe(1);
-          expect(plan.rowsPerSlice).toBe(10);
-          expect(plan.sourceRowIds.map((ids: string[]) => ids.length)).toEqual([10, 10, 3]);
-          expect(input).not.toHaveProperty('continuation');
-          const rows = parseMarkdownTables(JSON.parse(input.input).chunk)[0]!.rows;
-          await input.lookup?.(`lookup-${rows[0]![1]}`, { queries: [] });
-          return {
-            markdown: childMarkdown(rows.map(systemRowFromSourceRow)),
-            lookups: [],
-            pythonEvidence: [],
-          };
-        },
-      });
-      try {
-        await expect(
-          runQuotationPreflight(runnerInput(model, createLookupExecutor())),
-        ).resolves.toEqual(expect.objectContaining({ status: 'completed' }));
-        expect(
-          model.mock.calls
-            .filter(([input]) => input.role === 'child')
-            .map(([input]) => parseMarkdownTables(JSON.parse(input.input).chunk)[0]!.rows.length),
-        ).toEqual([10, 10, 3]);
-        expect(
-          await createSteelQuotationArtifactModel(mongoose).countDocuments({
-            ...scope,
-            runId: run.runId,
-            operationId: 'split:1',
-          }),
-        ).toBe(1);
-      } finally {
-        heartbeat.mockRestore();
-      }
-    },
-  );
-
-  it('rejects a changed recovery source plan before invoking a child', async () => {
-    const run = await prepareRun(23);
-    const lease = await service.acquireLease({ scope, runId: run.runId });
-    const leased = { scope, runId: run.runId, leaseToken: lease!.leaseToken };
-    await service.checkpoint({
-      ...leased,
-      operationId: 'split:1',
-      kind: 'main',
-      payload: JSON.stringify({ version: 1, sourceRowIds: [['source-row-2']] }),
-    });
-    await service.interruptRun(leased);
-    const model = createModel();
-    await expect(runQuotationPreflight(runnerInput(model, createLookupExecutor()))).rejects.toThrow(
-      'recovery plan does not match',
-    );
-    expect(model).not.toHaveBeenCalled();
-    expect(
-      await service.readCheckpoint({ scope, runId: run.runId, operationId: 'chunk:1' }),
-    ).toBeUndefined();
-  });
-
   it('does not split valid saved output after interruption before the parent checkpoint', async () => {
     const run = await prepareRun(30);
     const lease = await service.acquireLease({ scope, runId: run.runId });
@@ -1151,7 +1020,7 @@ describe('quotation runner integration', () => {
     );
     expect(childInputs[0]![0]).not.toHaveProperty('continuation');
     expect(
-      await service.readCheckpoint({ scope, runId: run.runId, operationId: 'split:1' }),
+      await service.readCheckpoint({ scope, runId: run.runId, operationId: 'split-v2:1:r' }),
     ).toBeUndefined();
   });
 
