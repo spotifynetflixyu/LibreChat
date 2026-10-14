@@ -38,9 +38,7 @@ const {
   isStopConfirmed,
   toPendingSteer,
   isDelegateOcrQuoteOnlyTurn,
-  createSteelNativeHistory,
-  appendSteelNativeActivityEvent,
-  upsertSteelNativePreflightToolCall,
+  mergeSteelMessageMetadata,
   createMCPRuntimeRequestBody,
   getSafeErrorMetadata,
   isAgentEventRetentionActive,
@@ -245,10 +243,6 @@ function mergeAttachments(existing, incoming) {
   return out;
 }
 
-function isMetadataRecord(value) {
-  return value != null && typeof value === 'object' && !Array.isArray(value);
-}
-
 /** Merge activity captured before and after a HITL pause without trusting row metadata. */
 async function mergePersistedSteelActivityMetadata({
   responseMetadata,
@@ -266,67 +260,7 @@ async function mergePersistedSteelActivityMetadata({
     return responseMetadata ?? {};
   }
 
-  const persistedMetadata = isMetadataRecord(rows?.[0]?.metadata) ? rows[0].metadata : {};
-  const persistedSteel = isMetadataRecord(persistedMetadata.steel)
-    ? persistedMetadata.steel
-    : {};
-  const currentSteel = isMetadataRecord(responseMetadata?.steel)
-    ? responseMetadata.steel
-    : {};
-  const persistedEvents = Array.isArray(persistedSteel.activityEvents)
-    ? persistedSteel.activityEvents
-    : [];
-  const currentEvents = Array.isArray(currentSteel.activityEvents)
-    ? currentSteel.activityEvents
-    : [];
-  const persistedCards = Array.isArray(persistedSteel.preflightToolCalls)
-    ? persistedSteel.preflightToolCalls
-    : [];
-  const currentCards = Array.isArray(currentSteel.preflightToolCalls)
-    ? currentSteel.preflightToolCalls
-    : [];
-  const steelHistory = createSteelNativeHistory();
-  for (const event of [...persistedEvents, ...currentEvents]) {
-    appendSteelNativeActivityEvent(steelHistory, event);
-  }
-  for (const card of [...persistedCards, ...currentCards]) {
-    upsertSteelNativePreflightToolCall(steelHistory, card);
-  }
-
-  const persistedNative = isMetadataRecord(persistedSteel.native) ? persistedSteel.native : null;
-  const currentNative = isMetadataRecord(currentSteel.native) ? currentSteel.native : null;
-  const {
-    activityEvents: _persistedActivityEvents,
-    preflightToolCalls: _persistedPreflightToolCalls,
-    native: _persistedNative,
-    ...persistedSteelWithoutEvents
-  } = persistedSteel;
-  const {
-    activityEvents: _currentActivityEvents,
-    preflightToolCalls: _currentPreflightToolCalls,
-    native: _currentNative,
-    ...currentSteelWithoutEvents
-  } = currentSteel;
-  const mergedSteel = {
-    ...persistedSteelWithoutEvents,
-    ...currentSteelWithoutEvents,
-    ...(persistedNative || currentNative
-      ? { native: { ...(persistedNative ?? {}), ...(currentNative ?? {}) } }
-      : {}),
-    ...(steelHistory.activityEvents.length > 0
-      ? { activityEvents: steelHistory.activityEvents }
-      : {}),
-    ...(steelHistory.preflightToolCalls.length > 0
-      ? { preflightToolCalls: steelHistory.preflightToolCalls }
-      : {}),
-  };
-  const { steel: _ignoredSteel, ...mergedMetadata } = {
-    ...persistedMetadata,
-    ...(responseMetadata ?? {}),
-  };
-  return Object.keys(mergedSteel).length > 0
-    ? { ...mergedMetadata, steel: mergedSteel }
-    : mergedMetadata;
+  return mergeSteelMessageMetadata(rows?.[0]?.metadata, responseMetadata);
 }
 
 /**

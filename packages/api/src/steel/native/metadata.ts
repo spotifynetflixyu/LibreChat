@@ -1,9 +1,15 @@
+import type { IMessage } from '@librechat/data-schemas';
 import type { SteelNativeContextMetadata } from './context';
 import type {
   SteelNativePreflightToolCall,
   SteelNativeStreamEvent,
 } from './events';
 import type { SteelNativeProviderStateMode } from './provider';
+import {
+  createSteelNativeHistory,
+  appendSteelNativeActivityEvent,
+  upsertSteelNativePreflightToolCall,
+} from './events';
 
 export interface BuildSteelNativeResponseMessageMetadataInput {
   conversationId?: string;
@@ -85,4 +91,71 @@ export function buildSteelNativeResponseMessageMetadata({
         : {}),
     },
   };
+}
+
+type MessageMetadata = NonNullable<IMessage['metadata']>;
+
+function isMetadataRecord(value: unknown): value is MessageMetadata {
+  return value != null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function asMetadataRecord(value: unknown): MessageMetadata {
+  return isMetadataRecord(value) ? value : {};
+}
+
+function asArray(value: unknown): unknown[] {
+  return Array.isArray(value) ? value : [];
+}
+
+/**
+ * Merges Steel activity captured before and after a HITL pause. Events and
+ * cards are re-validated through the bounded history; other Steel fields are
+ * merged with the current response taking precedence.
+ */
+export function mergeSteelMessageMetadata(
+  persisted: unknown,
+  current: unknown,
+): MessageMetadata {
+  const persistedMetadata = asMetadataRecord(persisted);
+  const currentMetadata = asMetadataRecord(current);
+  const persistedSteel = asMetadataRecord(persistedMetadata.steel);
+  const currentSteel = asMetadataRecord(currentMetadata.steel);
+
+  const history = createSteelNativeHistory();
+  for (const event of [...asArray(persistedSteel.activityEvents), ...asArray(currentSteel.activityEvents)]) {
+    appendSteelNativeActivityEvent(history, event);
+  }
+  for (const card of [
+    ...asArray(persistedSteel.preflightToolCalls),
+    ...asArray(currentSteel.preflightToolCalls),
+  ]) {
+    upsertSteelNativePreflightToolCall(history, card);
+  }
+
+  const {
+    activityEvents: _persistedEvents,
+    preflightToolCalls: _persistedCards,
+    native: persistedNative,
+    ...persistedRest
+  } = persistedSteel;
+  const {
+    activityEvents: _currentEvents,
+    preflightToolCalls: _currentCards,
+    native: currentNative,
+    ...currentRest
+  } = currentSteel;
+  const hasNative = isMetadataRecord(persistedNative) || isMetadataRecord(currentNative);
+  const mergedSteel: MessageMetadata = {
+    ...persistedRest,
+    ...currentRest,
+    ...(hasNative
+      ? { native: { ...asMetadataRecord(persistedNative), ...asMetadataRecord(currentNative) } }
+      : {}),
+    ...(history.activityEvents.length > 0 ? { activityEvents: history.activityEvents } : {}),
+    ...(history.preflightToolCalls.length > 0
+      ? { preflightToolCalls: history.preflightToolCalls }
+      : {}),
+  };
+  const { steel: _steel, ...merged } = { ...persistedMetadata, ...currentMetadata };
+  return Object.keys(mergedSteel).length > 0 ? { ...merged, steel: mergedSteel } : merged;
 }

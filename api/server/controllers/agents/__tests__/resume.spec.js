@@ -126,24 +126,6 @@ jest.mock('@librechat/data-schemas', () => ({
 
 jest.mock('@librechat/api', () => ({
   ...jest.requireActual('@librechat/api'),
-  appendSteelNativeActivityEvent: (sink, event) => {
-    const target = Array.isArray(sink) ? sink : sink?.activityEvents;
-    if (!Array.isArray(target) || event == null || typeof event !== 'object') {
-      return false;
-    }
-    target.push(JSON.parse(JSON.stringify(event)));
-    return true;
-  },
-  upsertSteelNativePreflightToolCall: (history, card) => {
-    if (!Array.isArray(history?.preflightToolCalls) || card == null || typeof card !== 'object') {
-      return false;
-    }
-    const copy = JSON.parse(JSON.stringify(card));
-    const index = history.preflightToolCalls.findIndex((entry) => entry.id === copy.id);
-    if (index >= 0) history.preflightToolCalls[index] = copy;
-    else history.preflightToolCalls.push(copy);
-    return true;
-  },
   GenerationJobManager: mockGenerationJobManager,
   GENERATION_RECOVERY_FAILED_ERROR: 'generation_recovery_failed',
   captureAgentCheckpointGeneration: (...args) => mockCaptureAgentCheckpointGeneration(...args),
@@ -3662,9 +3644,10 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       const resumedEvent = {
         type: 'quote_audit',
         source: 'quote_runtime',
-        stage: 'stage_2',
-        status: 'started',
-        message: 'Stage 2 started',
+        stage: 'stage_1',
+        status: 'executed',
+        message: 'Code Interpreter executed',
+        toolName: 'code_interpreter',
       };
       mockGenerationJobManager.getJob.mockResolvedValue(makeToolApprovalJob());
       mockGetMessages.mockResolvedValue([
