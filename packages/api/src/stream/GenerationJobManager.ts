@@ -95,7 +95,12 @@ import { toClientPendingAction } from '~/agents/hitl/policy';
 import { ApprovalLifecycle, pausePersistenceActionId } from './ApprovalLifecycle';
 import { projectPendingMCPOAuthPrompts } from '~/mcp/oauth/resume';
 import { sanitizeJobMetadata } from './metadata';
-import { appendSteelNativeActivityEvent } from '../steel/native/events';
+import {
+  isSteelReplayEvent,
+  sanitizeSteelReplayEvents,
+  getStableSteelReplayEventKey,
+} from '~/steel/native/replay';
+import type { SteelReplayEvent } from '~/steel/native/replay';
 
 /** Terminal error surfaced to a client still attached when its approval window lapses. */
 const APPROVAL_EXPIRED_ERROR = 'Approval expired before a decision was made';
@@ -521,69 +526,6 @@ function isOAuthReplayEvent(event: t.ServerSentEvent): boolean {
   }
 
   return false;
-}
-
-type SteelReplayEvent = t.StreamEvent & {
-  event: 'steel_event';
-  data: Record<string, unknown>;
-};
-
-function isSteelReplayEvent(event: unknown): event is SteelReplayEvent {
-  return (
-    event != null &&
-    typeof event === 'object' &&
-    'event' in event &&
-    event.event === 'steel_event' &&
-    'data' in event &&
-    event.data != null &&
-    typeof event.data === 'object' &&
-    !Array.isArray(event.data)
-  );
-}
-
-function getStableSteelReplayEventKey(event: unknown): string | undefined {
-  if (!isSteelReplayEvent(event)) {
-    return undefined;
-  }
-
-  try {
-    return JSON.stringify(event);
-  } catch {
-    return undefined;
-  }
-}
-
-function sanitizeSteelReplayEvents(replayEvents: t.ServerSentEvent[]): void {
-  const acceptedSteelEvents: t.ServerSentEvent[] = [];
-  const validatedSteelActivityEvents: Parameters<typeof appendSteelNativeActivityEvent>[0] = [];
-
-  for (const event of replayEvents) {
-    if (!isSteelReplayEvent(event)) {
-      continue;
-    }
-    const candidateSteelActivityEvents = [...validatedSteelActivityEvents];
-    if (!appendSteelNativeActivityEvent(candidateSteelActivityEvents, event.data)) {
-      continue;
-    }
-
-    validatedSteelActivityEvents.splice(
-      0,
-      validatedSteelActivityEvents.length,
-      ...candidateSteelActivityEvents,
-    );
-    acceptedSteelEvents.push(event);
-    while (acceptedSteelEvents.length > validatedSteelActivityEvents.length) {
-      acceptedSteelEvents.shift();
-    }
-  }
-
-  const acceptedSteelEventSet = new Set(acceptedSteelEvents);
-  for (let index = replayEvents.length - 1; index >= 0; index -= 1) {
-    const event = replayEvents[index];
-    if (isSteelReplayEvent(event) && !acceptedSteelEventSet.has(event)) {
-      replayEvents.splice(index, 1);
-    }
-  }
 }
 
 function normalizeRunStepReplayIndices(
