@@ -2,7 +2,7 @@ import { useCallback, useMemo, memo } from 'react';
 import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
 import { Constants } from 'librechat-data-provider';
-import type { TMessage, TMessageContentParts } from 'librechat-data-provider';
+import type { TMessage } from 'librechat-data-provider';
 import type { TMessageProps, TMessageIcon, TMessageChatContext } from '~/common';
 import {
   cn,
@@ -13,11 +13,7 @@ import {
   areMessageFieldsEqual,
   getHeaderPrefixForScreenReader,
 } from '~/utils';
-import {
-  getPersistedSteelActivityEvents,
-  getPersistedSteelPreflightToolCallParts,
-  prependPersistedSteelPreflightToolCallParts,
-} from '~/utils/steel';
+import useSteelMessageContent from '~/hooks/Messages/useSteelMessageContent';
 import EmptyText, {
   CursorVisibilityContext,
 } from '~/components/Chat/Messages/Content/Parts/EmptyText';
@@ -142,23 +138,8 @@ const ContentRender = memo(function ContentRender({
     [msg?.children, msg?.depth, latestMessageDepth],
   );
   const isLatestMessage = msg?.messageId === latestMessageId;
-  const metadata = msg?.metadata;
-  const persistedActivityEvents = useMemo(
-    () => getPersistedSteelActivityEvents(metadata),
-    [metadata],
-  );
-  const persistedPreflightToolCallParts = useMemo(
-    () => getPersistedSteelPreflightToolCallParts(metadata),
-    [metadata],
-  );
-  const contentWithPersistedPreflight = useMemo(
-    () =>
-      prependPersistedSteelPreflightToolCallParts(
-        msg?.content as Array<TMessageContentParts | undefined> | undefined,
-        persistedPreflightToolCallParts,
-      ),
-    [msg?.content, persistedPreflightToolCallParts],
-  );
+  const { persistedActivityEvents, content: contentWithPersistedPreflight } =
+    useSteelMessageContent(msg);
 
   const iconData: TMessageIcon = useMemo(
     () => ({

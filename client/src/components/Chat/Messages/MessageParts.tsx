@@ -1,7 +1,6 @@
 import React, { useMemo } from 'react';
 import { useAtomValue } from 'jotai';
 import { useRecoilValue } from 'recoil';
-import type { TMessageContentParts } from 'librechat-data-provider';
 import type { TMessageProps, TMessageIcon } from '~/common';
 import {
   cn,
@@ -11,11 +10,7 @@ import {
   getMessageProcessingStartedAt,
   getMessageTimestampSource,
 } from '~/utils';
-import {
-  getPersistedSteelActivityEvents,
-  getPersistedSteelPreflightToolCallParts,
-  prependPersistedSteelPreflightToolCallParts,
-} from '~/utils/steel';
+import useSteelMessageContent from '~/hooks/Messages/useSteelMessageContent';
 import { useMessageHelpers, useLocalize, useAttachments, useContentMetadata } from '~/hooks';
 import ResumeAuthorHeader from '~/components/Chat/Messages/Content/Parts/ResumeAuthorHeader';
 import { ErrorSourceProvider } from '~/components/Messages/Content/Error/source';
@@ -68,23 +63,8 @@ function MessageParts(props: TMessageProps) {
   const autoExpandTools = useRecoilValue(store.autoExpandTools);
   const showThinking = useAtomValue(showThinkingAtom);
   const { messageId = null, isCreatedByUser } = message ?? {};
-  const metadata = message?.metadata;
-  const persistedActivityEvents = useMemo(
-    () => getPersistedSteelActivityEvents(metadata),
-    [metadata],
-  );
-  const persistedPreflightToolCallParts = useMemo(
-    () => getPersistedSteelPreflightToolCallParts(metadata),
-    [metadata],
-  );
-  const contentWithPersistedPreflight = useMemo(
-    () =>
-      prependPersistedSteelPreflightToolCallParts(
-        message?.content as Array<TMessageContentParts | undefined> | undefined,
-        persistedPreflightToolCallParts,
-      ),
-    [message?.content, persistedPreflightToolCallParts],
-  );
+  const { persistedActivityEvents, content: contentWithPersistedPreflight } =
+    useSteelMessageContent(message);
 
   const name = useMemo(() => {
     let result = '';
