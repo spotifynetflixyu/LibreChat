@@ -54,6 +54,7 @@ import {
 import { instrumentIORedisClient, RedisUseCases } from '~/cache/redisTelemetry';
 import { RecoveredSteerPayloadMismatchError } from '~/stream/SteerRecovery';
 import { isResolvedDelegateOcrPolicy } from '~/steel/native/delegate';
+import { parseSteelTurnToolVisibility } from '~/steel/native/tools';
 import { parseSteelNativeHistory } from '~/steel/native/events';
 import { createCheckpointNamespace } from '~/stream/checkpoints';
 import { createToolTimingTracker } from '~/agents/toolTiming';
@@ -5429,6 +5430,16 @@ export class RedisJobStore implements IJobStoreV2 {
             (policy.allowed === false || policy.allowedFileKeys.length > 0)
             ? policy
             : undefined;
+        } catch {
+          return undefined;
+        }
+      })(),
+      steelToolVisibility: (() => {
+        if (!data.steelToolVisibility) {
+          return undefined;
+        }
+        try {
+          return parseSteelTurnToolVisibility(JSON.parse(data.steelToolVisibility));
         } catch {
           return undefined;
         }

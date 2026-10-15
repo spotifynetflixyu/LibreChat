@@ -1,6 +1,7 @@
 import type { JobMetadataPatch } from './interfaces/IJobStore';
 import type { GenerationJobMetadata } from '~/types';
 import { isResolvedDelegateOcrPolicy } from '~/steel/native/delegate';
+import { parseSteelTurnToolVisibility } from '~/steel/native/tools';
 import { parseSteelNativeHistory } from '~/steel/native/events';
 
 export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): JobMetadataPatch {
@@ -118,6 +119,10 @@ export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): J
         ...new Set(metadata.delegateOcrPolicy.allowedFileKeys.map((key) => key.trim())),
       ],
     };
+  }
+  const steelToolVisibility = parseSteelTurnToolVisibility(metadata.steelToolVisibility);
+  if (steelToolVisibility) {
+    patch.steelToolVisibility = steelToolVisibility;
   }
   if (metadata.activityPhaseSnapshot) {
     patch.activityPhaseSnapshot = metadata.activityPhaseSnapshot;

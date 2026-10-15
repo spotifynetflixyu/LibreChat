@@ -2998,6 +2998,7 @@ class GenerationJobManagerClass {
         // replay them into createRun (the rebuilt graph passes `messages: []`).
         discoveredTools: jobData.discoveredTools,
         delegateOcrPolicy: jobData.delegateOcrPolicy,
+        steelToolVisibility: jobData.steelToolVisibility,
         activityPhaseSnapshot: jobData.activityPhaseSnapshot,
         compactionSemanticIndex: jobData.compactionSemanticIndex,
         contextMeta: jobData.contextMeta,

@@ -160,11 +160,61 @@ function isVisibleForSteelNativeTurn(
   );
 }
 
+/**
+ * The turn-scoped visibility a HITL pause persists. The delegate OCR policy is
+ * persisted on its own job field, so it is not part of this snapshot.
+ */
+export interface SteelTurnToolVisibility {
+  ocrTurnActive: boolean;
+  quotationRole?: 'preparation';
+  hasQuotationOrder?: boolean;
+}
+
 /** The `req.steelNativeContext` fields that decide a turn's Steel tool visibility. */
 export interface SteelTurnToolVisibilityContext {
   ocrTurnActive?: boolean;
   delegateOcrPolicy?: unknown;
   quotation?: { state?: { currentOrder?: { markdown?: string } | null } | null } | null;
+  /** Visibility captured at a HITL pause. A resumed request rebuilds no OCR or
+   *  quotation state, so this snapshot replaces the derived fields. */
+  restoredToolVisibility?: SteelTurnToolVisibility;
+}
+
+/** Captures the turn visibility that a resumed request cannot re-derive. */
+export function captureSteelTurnToolVisibility(
+  context: SteelTurnToolVisibilityContext | null | undefined,
+): SteelTurnToolVisibility {
+  if (context?.restoredToolVisibility != null) {
+    return context.restoredToolVisibility;
+  }
+  return {
+    ocrTurnActive: context?.ocrTurnActive === true,
+    ...(context?.quotation
+      ? {
+          quotationRole: 'preparation',
+          hasQuotationOrder: hasQuotationOrder(context.quotation.state?.currentOrder?.markdown),
+        }
+      : {}),
+  };
+}
+
+/** Accepts only a well-formed persisted snapshot; anything else is dropped. */
+export function parseSteelTurnToolVisibility(value: unknown): SteelTurnToolVisibility | undefined {
+  if (value == null || typeof value !== 'object' || Array.isArray(value)) {
+    return undefined;
+  }
+  const { ocrTurnActive, quotationRole, hasQuotationOrder: hasOrder } =
+    value as Partial<Record<keyof SteelTurnToolVisibility, unknown>>;
+  if (typeof ocrTurnActive !== 'boolean') {
+    return undefined;
+  }
+  if (quotationRole === undefined) {
+    return { ocrTurnActive };
+  }
+  if (quotationRole !== 'preparation' || typeof hasOrder !== 'boolean') {
+    return undefined;
+  }
+  return { ocrTurnActive, quotationRole, hasQuotationOrder: hasOrder };
 }
 
 /** Turn visibility shared by createRun and the execution-time tool loader. */
@@ -172,14 +222,8 @@ export function resolveSteelTurnToolVisibility(
   context: SteelTurnToolVisibilityContext | null | undefined,
 ): SteelNativeToolVisibilityOptions {
   return {
-    ocrTurnActive: context?.ocrTurnActive === true,
+    ...captureSteelTurnToolVisibility(context),
     delegateOcrPolicy: context?.delegateOcrPolicy,
-    ...(context?.quotation
-      ? {
-          quotationRole: 'preparation',
-          hasQuotationOrder: hasQuotationOrder(context.quotation.state?.currentOrder?.markdown),
-        }
-      : {}),
   };
 }
 

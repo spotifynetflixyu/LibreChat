@@ -14,6 +14,7 @@ import type { EarlyBufferOverflowState } from './earlyBufferRecovery';
 import type { ResolvedAskUserQuestion } from '../agents/hitl/resume';
 import type { MCPRuntimeRequestBody } from '../mcp/types';
 import type { ServerSentEvent } from './events';
+import type { SteelTurnToolVisibility } from '../steel/native/tools';
 import type { DelegateOcrPolicy } from '../steel/native/delegate';
 import type { SteelNativeHistory } from '../steel/native/events';
 
@@ -96,6 +97,8 @@ export interface GenerationJobMetadata {
   discoveredTools?: string[];
   /** Resolved delegate OCR availability and canonical authorized attachment keys. */
   delegateOcrPolicy?: DelegateOcrPolicy;
+  /** Steel OCR/quotation tool visibility captured at a HITL pause. */
+  steelToolVisibility?: SteelTurnToolVisibility;
   /** Bounded collector state for continuing a phase across HITL resume. */
   activityPhaseSnapshot?: ActivityPhaseSnapshot;
   /** Exact bounded compaction guidance captured atomically with a HITL pause. */

@@ -1682,6 +1682,30 @@ describe('GenerationJobManager HITL resume metadata (round 19)', () => {
     });
   });
 
+  test('updateMetadata persists Steel turn tool visibility and drops a malformed one', async () => {
+    const streamId = 'stream-steel-visibility';
+    await manager.createJob(streamId, 'user-1');
+    await manager.updateMetadata(streamId, {
+      steelToolVisibility: {
+        ocrTurnActive: false,
+        quotationRole: 'preparation',
+        hasQuotationOrder: true,
+      },
+    });
+    expect((await manager.getJob(streamId))?.metadata.steelToolVisibility).toEqual({
+      ocrTurnActive: false,
+      quotationRole: 'preparation',
+      hasQuotationOrder: true,
+    });
+
+    const malformedId = 'stream-steel-visibility-malformed';
+    await manager.createJob(malformedId, 'user-1');
+    await manager.updateMetadata(malformedId, {
+      steelToolVisibility: { ocrTurnActive: 'yes' } as never,
+    });
+    expect((await manager.getJob(malformedId))?.metadata.steelToolVisibility).toBeUndefined();
+  });
+
   test('updateMetadata exposes a paused legacy-event fence through the job facade', async () => {
     const streamId = 'stream-legacy-event';
     await manager.createJob(streamId, 'user-1');

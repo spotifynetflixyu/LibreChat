@@ -1,9 +1,11 @@
 import {
   createSteelNativeTool,
   mergeSteelToolDefinitions,
+  parseSteelTurnToolVisibility,
   prepareSteelNativeToolConfig,
-  resolveSteelTurnToolVisibility,
   resolveSteelProviderToolName,
+  resolveSteelTurnToolVisibility,
+  captureSteelTurnToolVisibility,
 } from './tools';
 
 import type { LCTool, LCToolRegistry } from '@librechat/agents';
@@ -849,5 +851,36 @@ describe('Steel turn tool visibility table', () => {
   ])('%s', (_label, context, extra, expected) => {
     const visibility = { ...resolveSteelTurnToolVisibility(context), ...extra };
     expect(prepareSteelNativeToolConfig({ tools: allTools }, visibility).tools).toEqual(expected);
+  });
+
+  it.each([
+    ['preparation without order', { quotation: {} }, ['web_search']],
+    ['preparation with order', { quotation: order }, ['search_customers', 'web_search']],
+    ['OCR turn', { ocrTurnActive: true, delegateOcrPolicy: allowed }, ['web_search']],
+  ])('a resumed request keeps the paused %s visibility', (_label, pausedContext, expected) => {
+    const persisted = JSON.parse(JSON.stringify(captureSteelTurnToolVisibility(pausedContext)));
+    const restoredToolVisibility = parseSteelTurnToolVisibility(persisted);
+    const resumedContext = {
+      delegateOcrPolicy: (pausedContext as { delegateOcrPolicy?: unknown }).delegateOcrPolicy,
+      restoredToolVisibility,
+    };
+
+    expect(
+      prepareSteelNativeToolConfig(
+        { tools: allTools },
+        resolveSteelTurnToolVisibility(resumedContext),
+      ).tools,
+    ).toEqual(expected);
+    expect(captureSteelTurnToolVisibility(resumedContext)).toEqual(restoredToolVisibility);
+  });
+
+  it.each([
+    ['null', null],
+    ['an array', []],
+    ['a missing OCR flag', { quotationRole: 'preparation', hasQuotationOrder: true }],
+    ['an unknown role', { ocrTurnActive: false, quotationRole: 'child', hasQuotationOrder: true }],
+    ['a role without order state', { ocrTurnActive: false, quotationRole: 'preparation' }],
+  ])('drops a persisted snapshot with %s', (_label, value) => {
+    expect(parseSteelTurnToolVisibility(value)).toBeUndefined();
   });
 });

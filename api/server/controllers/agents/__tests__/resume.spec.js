@@ -3020,6 +3020,25 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       );
     });
 
+    it('propagates the persisted Steel turn tool visibility through resume', async () => {
+      const steelToolVisibility = {
+        ocrTurnActive: false,
+        quotationRole: 'preparation',
+        hasQuotationOrder: true,
+      };
+      mockGenerationJobManager.getJob.mockResolvedValue(
+        makeToolApprovalJob({ metadata: { steelToolVisibility } }),
+      );
+      await post(approveBody());
+      await settled;
+      await flush();
+
+      const client = await mockInitializeClient.mock.results[0].value.then((r) => r.client);
+      expect(client.resumeCompletion).toHaveBeenCalledWith(
+        expect.objectContaining({ steelToolVisibility }),
+      );
+    });
+
     it('reuses the persisted generation checkpoint namespace and keeps legacy fallback explicit', async () => {
       mockGenerationJobManager.getJob.mockResolvedValue(
         makeToolApprovalJob({ metadata: { checkpointNamespace: 'generation-1000' } }),

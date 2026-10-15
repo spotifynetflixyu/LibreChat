@@ -350,6 +350,39 @@ describe('AgentClient retained answers', () => {
     expect(resume).toHaveBeenCalledTimes(1);
   });
 
+  it('restores the paused Steel turn tool visibility for the rebuilt run', async () => {
+    const client = makeClient();
+    const job = await GenerationJobManager.createJob('convo-123', 'user-123', 'convo-123');
+    client.jobCreatedAt = job.createdAt;
+    const delegateOcrPolicy = { resolved: true, allowed: false, allowedFileKeys: [] };
+    const steelToolVisibility = {
+      ocrTurnActive: false,
+      quotationRole: 'preparation',
+      hasQuotationOrder: false,
+    };
+    mockCreateRun.mockResolvedValueOnce({
+      Graph: null,
+      resume: jest.fn().mockResolvedValue(),
+      processStream: jest.fn().mockResolvedValue(),
+      getCalibrationRatio: jest.fn(() => 0),
+      getInterrupt: jest.fn(() => undefined),
+    });
+
+    await client.resumeCompletion({
+      resumeValue: { answer: 'staging' },
+      delegateOcrPolicy,
+      steelToolVisibility,
+    });
+
+    expect(client.options.req.steelNativeContext.restoredToolVisibility).toBe(
+      steelToolVisibility,
+    );
+    expect(mockCreateRun.mock.calls[0][0].steelToolVisibility).toEqual({
+      ...steelToolVisibility,
+      delegateOcrPolicy,
+    });
+  });
+
   it('reads nothing when the rows in memory already reach the branch root', async () => {
     const client = makeClient();
     client.shouldSummarize = false;

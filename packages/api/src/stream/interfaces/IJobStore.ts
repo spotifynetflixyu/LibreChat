@@ -14,6 +14,7 @@ import type { EarlyBufferOverflowState } from '../../types/earlyBufferRecovery';
 import type { ActivityPhaseSnapshot } from '~/agents/activityPhases/runtime';
 import type { ResolvedAskUserQuestion } from '~/agents/hitl/resume';
 import type { RecoveredSteerPayload } from '../SteerRecovery';
+import type { SteelTurnToolVisibility } from '~/steel/native/tools';
 import type { DelegateOcrPolicy } from '~/steel/native/delegate';
 import type { MCPRuntimeRequestBody } from '~/mcp/types';
 
@@ -244,6 +245,9 @@ export interface SerializableJobData {
 
   /** Resolved delegate OCR availability and canonical authorized attachment keys. */
   delegateOcrPolicy?: DelegateOcrPolicy;
+
+  /** Steel OCR/quotation tool visibility captured at a HITL pause. */
+  steelToolVisibility?: SteelTurnToolVisibility;
 
   /** Whether the user-message created event has been emitted */
   createdEventEmitted?: boolean;
@@ -486,6 +490,7 @@ export type JobMetadataPatch = Partial<
     | 'promptTokens'
     | 'discoveredTools'
     | 'delegateOcrPolicy'
+    | 'steelToolVisibility'
     | 'activityPhaseSnapshot'
     | 'compactionSemanticIndex'
     | 'contextMeta'

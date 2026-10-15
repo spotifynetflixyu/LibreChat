@@ -152,6 +152,7 @@ const {
   buildSteelAgentMessageMetadata,
   collectSteelNativeFileRecordReferences,
   resolveSteelTurnToolVisibility,
+  captureSteelTurnToolVisibility,
   prepareQuotationTurn,
   prepareSteelMarkdownHistory,
   stripSteelOcrPartsFromProviderMessages,
@@ -4616,7 +4617,10 @@ class AgentClient extends BaseClient {
         getSafeErrorMetadata(err),
       );
     }
-    const interruptMetadata = { discoveredTools };
+    const interruptMetadata = {
+      discoveredTools,
+      steelToolVisibility: captureSteelTurnToolVisibility(this.options.req?.steelNativeContext),
+    };
     const delegateOcrPolicy = this.options.req?.steelNativeContext?.delegateOcrPolicy;
     if (delegateOcrPolicy && typeof delegateOcrPolicy === 'object') {
       interruptMetadata.delegateOcrPolicy = delegateOcrPolicy;
@@ -5633,6 +5637,7 @@ class AgentClient extends BaseClient {
     userMCPAuthMap,
     discoveredToolNames,
     delegateOcrPolicy,
+    steelToolVisibility,
     currentUserTurnText,
     activityPhaseSnapshot,
     compactionSemanticIndex,
@@ -5648,6 +5653,7 @@ class AgentClient extends BaseClient {
     this.options.req.steelNativeContext = {
       ...(this.options.req.steelNativeContext ?? {}),
       delegateOcrPolicy,
+      restoredToolVisibility: steelToolVisibility,
       delegateOcrContext: {
         ...(this.options.req.steelNativeContext?.delegateOcrContext ?? {}),
         currentUserTurnText:
@@ -6079,6 +6085,7 @@ class AgentClient extends BaseClient {
         // rebuilt model binding. Undefined/empty for non-deferred turns is a no-op.
         discoveredToolNames,
         delegateOcrPolicy,
+        steelToolVisibility: resolveSteelTurnToolVisibility(this.options.req.steelNativeContext),
         initialSessions,
         ...resolveRunSeeds(this),
         runId: this.responseMessageId,
