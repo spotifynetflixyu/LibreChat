@@ -1,4 +1,3 @@
-const path = require('path');
 const { tool } = require('@librechat/agents/langchain/tools');
 const { logger, getTenantId } = require('@librechat/data-schemas');
 const { Providers, Constants: AgentConstants } = require('@librechat/agents');
@@ -44,6 +43,7 @@ const {
   createAuthIdentityContext,
   isOAuthServer,
   isPaddleOcrDiagnosticCode,
+  createSteelMCPToolArgumentPreparer,
   isAbortError,
   isDirectOpenIDBearerRecoveryEnabled,
   buildMCPDomainValidationConfig,
@@ -56,11 +56,9 @@ const {
   Time,
   CacheKeys,
   Constants,
-  FileSources,
   Permissions,
   PermissionTypes,
   isAssistantsEndpoint,
-  inferMimeType,
 } = require('librechat-data-provider');
 const {
   getOAuthReconnectionManager,
@@ -93,19 +91,7 @@ const {
 const MAX_CACHE_SIZE = 1000;
 const lastReconnectAttempts = new Map();
 const RECONNECT_THROTTLE_MS = 10_000;
-const PADDLEOCR_VL_TOOL_NAME = 'paddleocr_vl';
-const PADDLEOCR_MEDIA_TYPES_BY_EXTENSION = {
-  '.pdf': 'application/pdf',
-  '.png': 'image/png',
-  '.jpg': 'image/jpeg',
-  '.jpeg': 'image/jpeg',
-  '.bmp': 'image/bmp',
-  '.cif': 'image/cif',
-  '.gif': 'image/gif',
-  '.tif': 'image/tiff',
-  '.tiff': 'image/tiff',
-  '.webp': 'image/webp',
-};
+
 const missingToolCache = new Map();
 const MISSING_TOOL_TTL_MS = 10_000;
 
@@ -599,319 +585,11 @@ function isEmptyObjectSchema(jsonSchema) {
   );
 }
 
-function isPlainObject(value) {
-  return value != null && typeof value === 'object' && !Array.isArray(value);
-}
-
-function isLikelyBase64Input(value) {
-  const normalized = value.replace(/\s/g, '');
-  return normalized.length > 128 && /^[A-Za-z0-9+/]+={0,2}$/.test(normalized);
-}
-
-function isInlinePaddleInput(value) {
-  const trimmed = value.trim();
-  return /^data:/i.test(trimmed) || isLikelyBase64Input(trimmed);
-}
-
-function isUrlPaddleInput(value) {
-  return /^(?:https?|file):\/\//i.test(value.trim());
-}
-
-function isHttpUrlPaddleInput(value) {
-  return /^https?:\/\//i.test(value.trim());
-}
-
-function isDirectPaddleInput(value) {
-  return isInlinePaddleInput(value) || isHttpUrlPaddleInput(value);
-}
-
-function isLocalPathPaddleInput(value) {
-  const trimmed = value.trim();
-  return (
-    /^file:\/\//i.test(trimmed) ||
-    /^\/[^/]/.test(trimmed) ||
-    /^\.\.?(?:[\\/]|$)/.test(trimmed) ||
-    /^[A-Za-z]:[\\/]/.test(trimmed) ||
-    /^\\\\/.test(trimmed)
-  );
-}
-
-function safeDecode(value) {
-  try {
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
-}
-
-function cleanExtractedPaddleInput(value) {
-  return value
-    .trim()
-    .replace(/^[<"'([`]+/g, '')
-    .replace(/[>"'\])`,.]+$/g, '');
-}
-
-function addPaddleInputCandidate(candidates, seen, value) {
-  if (typeof value !== 'string') {
-    return;
-  }
-  const candidate = cleanExtractedPaddleInput(value);
-  if (!candidate || seen.has(candidate)) {
-    return;
-  }
-  seen.add(candidate);
-  candidates.push(candidate);
-}
-
-function collectPaddleInputCandidates(value) {
-  const candidates = [];
-  const seen = new Set();
-  const original = cleanExtractedPaddleInput(value);
-  addPaddleInputCandidate(candidates, seen, original);
-
-  for (const match of original.matchAll(/\bdata:[^\s"'<>]+/gi)) {
-    addPaddleInputCandidate(candidates, seen, match[0]);
-  }
-
-  for (const match of original.matchAll(/\b(?:https?|file):\/\/[^\s"'<>]+/gi)) {
-    addPaddleInputCandidate(candidates, seen, match[0]);
-  }
-
-  for (const match of original.matchAll(/\bfile:(?!\/\/)([A-Za-z0-9][A-Za-z0-9._~-]*)/gi)) {
-    addPaddleInputCandidate(candidates, seen, `file:${match[1]}`);
-    addPaddleInputCandidate(candidates, seen, match[1]);
-  }
-
-  let labelStripped = original;
-  for (let i = 0; i < 3; i++) {
-    const match = labelStripped.match(/^[A-Za-z][A-Za-z0-9_-]{0,63}\s*[:=]\s*(.+)$/);
-    if (!match || /^data:/i.test(labelStripped) || /^(?:https?|file):\/\//i.test(labelStripped)) {
-      break;
-    }
-    labelStripped = cleanExtractedPaddleInput(match[1]);
-    addPaddleInputCandidate(candidates, seen, labelStripped);
-  }
-
-  return candidates;
-}
-
-function normalizeFileName(value) {
-  if (typeof value !== 'string' || value.trim() === '') {
-    return '';
-  }
-  const trimmed = value.trim();
-  const normalizedInput = trimmed.startsWith('file:') ? trimmed.slice('file:'.length) : trimmed;
-  const normalizedPath = safeDecode(normalizedInput.split(/[?#]/)[0]).replace(/\\/g, '/');
-  return path.basename(normalizedPath).toLowerCase();
-}
-
-function getFileId(file) {
-  return file?.file_id ?? file?.fileId ?? file?.id;
-}
-
-function collectRequestFileRefs(requestBody, req) {
-  const refs = [];
-  const addRefs = (value) => {
-    if (Array.isArray(value)) {
-      refs.push(...value.filter(Boolean));
-    }
-  };
-
-  addRefs(requestBody?.files);
-  addRefs(requestBody?.attachments);
-  addRefs(req?.body?.files);
-  addRefs(req?.body?.attachments);
-  addRefs(req?.steelNativeContext?.currentTurnFiles);
-  return refs;
-}
-
-function buildOwnerFileFilter(fileIds, req, userId) {
-  const ownerId = req?.user?.id ?? userId;
-  if (!ownerId || fileIds.length === 0) {
-    return null;
-  }
-
-  const filter = {
-    file_id: { $in: fileIds },
-    user: ownerId,
-  };
-  if (req?.user?.tenantId) {
-    filter.tenantId = req.user.tenantId;
-  }
-  return filter;
-}
-
-async function getRequestFileRecords({ req, userId, requestBody }) {
-  const refs = collectRequestFileRefs(requestBody, req);
-  const fileIds = new Set();
-
-  for (const ref of refs) {
-    if (!isPlainObject(ref)) {
-      continue;
-    }
-
-    const fileId = getFileId(ref);
-    if (fileId) {
-      fileIds.add(fileId);
-    }
-  }
-
-  const fileFilter = buildOwnerFileFilter(Array.from(fileIds), req, userId);
-  if (!fileFilter) {
-    return [];
-  }
-
-  const records = new Map();
-  const fetchedFiles = (await db.getFiles(fileFilter, {}, {})) ?? [];
-  for (const file of fetchedFiles) {
-    const fileId = getFileId(file);
-    const recordKey = fileId ?? `${file.filename ?? ''}:${file.filepath ?? ''}`;
-    records.set(recordKey, file);
-  }
-  return Array.from(records.values());
-}
-
-function fileMatchesInputName(file, inputData) {
-  const candidates = collectPaddleInputCandidates(inputData);
-  for (const candidate of candidates) {
-    const inputName = normalizeFileName(candidate);
-    if (!inputName) {
-      continue;
-    }
-
-    if (
-      String(getFileId(file) ?? '')
-        .trim()
-        .toLowerCase() === inputName
-    ) {
-      return true;
-    }
-
-    if (
-      [file?.filename, file?.name, file?.originalname, file?.filepath].some(
-        (fileCandidate) => normalizeFileName(fileCandidate) === inputName,
-      )
-    ) {
-      return true;
-    }
-  }
-  return false;
-}
-
-function getPaddleInputLogLabel(inputData) {
-  const directInput = collectPaddleInputCandidates(inputData).find(isUrlPaddleInput);
-  if (!directInput) {
-    return inputData;
-  }
-  try {
-    const url = new URL(directInput);
-    return `${url.protocol}//${url.host}${url.pathname}`;
-  } catch {
-    return directInput.replace(/[?#].*$/u, '');
-  }
-}
-
-function getMediaTypeForFile(file, inputData) {
-  const explicitType = file?.type ?? file?.mimetype ?? file?.mediaType;
-  const normalizedExplicitType =
-    typeof explicitType === 'string' ? explicitType.trim().toLowerCase() : '';
-  if (normalizedExplicitType !== '' && normalizedExplicitType !== 'application/octet-stream') {
-    return explicitType.trim();
-  }
-
-  const extensionSource =
-    file?.filename ?? file?.name ?? file?.originalname ?? file?.filepath ?? inputData;
-  const fileName = normalizeFileName(extensionSource);
-  const extension = path.extname(fileName).toLowerCase();
-  return (
-    inferMimeType(fileName, '') ||
-    PADDLEOCR_MEDIA_TYPES_BY_EXTENSION[extension] ||
-    'application/octet-stream'
-  );
-}
-
-function shouldResolvePaddleInputAsDownloadUrl(source) {
-  return source === FileSources.s3;
-}
-
-async function resolvePaddleOcrInputData({ req, userId, requestBody, inputData }) {
-  const trimmedInput = inputData.trim();
-  const candidates = collectPaddleInputCandidates(trimmedInput);
-
-  const files = await getRequestFileRecords({ req, userId, requestBody });
-  const matchedFile = files.find((file) => fileMatchesInputName(file, trimmedInput));
-  if (!matchedFile) {
-    const directInput = candidates.find(isDirectPaddleInput);
-    if (directInput) {
-      return directInput;
-    }
-    if (candidates.some(isLocalPathPaddleInput)) {
-      throw new Error(
-        'Unsupported PaddleOCR input_data: local paths are not allowed. Use a current file id, filename, http(s) URL, or data URL.',
-      );
-    }
-    return inputData;
-  }
-
-  if (!matchedFile.filepath) {
-    throw new Error(
-      `Matched attachment "${matchedFile.filename ?? trimmedInput}" has no downloadable filepath`,
-    );
-  }
-
-  const source = matchedFile.source ?? FileSources.local;
-  const { getDownloadStream, getDownloadURL } = getStrategyFunctions(source);
-
-  if (shouldResolvePaddleInputAsDownloadUrl(source)) {
-    if (typeof getDownloadURL !== 'function') {
-      throw new Error(
-        `Matched attachment "${matchedFile.filename ?? trimmedInput}" cannot create a download URL`,
-      );
-    }
-
-    const downloadUrl = await getDownloadURL({ req, file: matchedFile });
-    logger.debug(
-      `[MCP][PaddleOCR] Resolved input_data "${getPaddleInputLogLabel(trimmedInput)}" from current request attachment "${matchedFile.filename ?? matchedFile.file_id ?? trimmedInput}" using a clean storage download URL.`,
-    );
-    return downloadUrl;
-  }
-
-  if (typeof getDownloadStream !== 'function') {
-    throw new Error(
-      `Matched attachment "${matchedFile.filename ?? trimmedInput}" is not downloadable`,
-    );
-  }
-
-  const mediaType = getMediaTypeForFile(matchedFile, trimmedInput);
-  const stream = await getDownloadStream(req, matchedFile.filepath);
-  const buffer = await streamToBuffer(stream);
-  logger.debug(
-    `[MCP][PaddleOCR] Resolved input_data "${getPaddleInputLogLabel(trimmedInput)}" from current request attachment "${matchedFile.filename ?? matchedFile.file_id ?? trimmedInput}".`,
-  );
-  return `data:${mediaType};base64,${buffer.toString('base64')}`;
-}
-
-async function prepareMCPToolArguments({ req, userId, requestBody, toolName, toolArguments }) {
-  if (
-    toolName !== PADDLEOCR_VL_TOOL_NAME ||
-    !isPlainObject(toolArguments) ||
-    typeof toolArguments.input_data !== 'string'
-  ) {
-    return toolArguments;
-  }
-
-  const inputData = toolArguments.input_data;
-  const resolvedInputData = await resolvePaddleOcrInputData({
-    req,
-    userId,
-    requestBody,
-    inputData,
-  });
-  if (resolvedInputData === inputData) {
-    return toolArguments;
-  }
-  return { ...toolArguments, input_data: resolvedInputData };
-}
+const prepareMCPToolArguments = createSteelMCPToolArgumentPreparer({
+  getFiles: (...args) => db.getFiles(...args),
+  getStrategyFunctions,
+  streamToBuffer,
+});
 
 /**
  * @param {object} params
