@@ -258,9 +258,6 @@ jest.mock('@librechat/data-schemas', () => ({
 jest.mock('@librechat/api', () => ({
   ...jest.requireActual('@librechat/api'),
   extractSteelAgentResponseMarkdown: jest.requireActual('@librechat/api').extractSteelAgentResponseMarkdown,
-  createSteelOcrStateService: jest.fn(() => ({})),
-  createSteelQuotationStateService: jest.fn(() => ({})),
-  createSteelOcrResponseAuditService: jest.fn(() => ({})),
   createSteelMarkdownCompletionServices: jest.fn(() => ({
     finalize: (...args) => mockMarkdownFinalize(...args),
   })),

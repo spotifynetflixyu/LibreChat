@@ -1,6 +1,5 @@
 const steelPostgres = require('~/server/services/Steel/postgres');
 const { nanoid } = require('nanoid');
-const mongoose = require('mongoose');
 const { v4: uuidv4 } = require('uuid');
 const { logger } = require('@librechat/data-schemas');
 const { Callback, formatAgentMessages } = require('@librechat/agents');
@@ -97,14 +96,11 @@ const {
   stripActivityLabelParts,
   stripUnusableSummaryParts,
   CHILD_THREAD_READ_ONLY_ERROR,
-  createSteelOcrStateService,
-  createSteelQuotationStateService,
   createSteelMarkdownCompletionServices,
   createSteelFullMarkdownPublisher,
   createSteelQuotationPublicationMessageBuilder,
   finalizeSteelResponsesTurn,
   replaceSteelResponsesMarkdown,
-  createSteelOcrResponseAuditService,
   executeAgentRun,
   waitForAgentExecutionWrites,
   resolveToolRoleGrants,
@@ -713,9 +709,6 @@ async function saveResponseOutput(
   };
   const markdownCompletion = createSteelMarkdownCompletionServices({
     runtimeRulesClient: steelPostgres.client,
-    ocr: createSteelOcrStateService(mongoose),
-    quotation: createSteelQuotationStateService(mongoose),
-    audit: createSteelOcrResponseAuditService(mongoose),
   });
   const completion = await markdownCompletion.finalize({
     req,

@@ -18,7 +18,6 @@ const mockResponsesOcrStateService = {
   transitionDelegateOcrRun: jest.fn(),
   clearCompletedDelegateClaim: jest.fn(),
 };
-const mockCreateSteelOcrStateService = jest.fn(() => mockResponsesOcrStateService);
 const mockPrepareDelegateOcrResume = jest.fn();
 const mockExecuteDelegateOcrResume = jest.fn();
 const mockPrepareQuotationTurn = jest.fn().mockResolvedValue({
@@ -299,8 +298,6 @@ jest.mock('@librechat/api', () => ({
   finalizeSteelResponsesTurn: jest.requireActual('@librechat/api').finalizeSteelResponsesTurn,
   replaceSteelResponsesMarkdown: jest.requireActual('@librechat/api').replaceSteelResponsesMarkdown,
   delegateOcrStreamEventName: 'on_delegate_ocr_stream',
-  createSteelOcrStateService: (...args) => mockCreateSteelOcrStateService(...args),
-  createSteelQuotationStateService: jest.fn(() => ({})),
   createSteelMarkdownCompletionServices: jest.fn(() => ({
     finalize: (...args) => mockMarkdownFinalize(...args),
   })),
@@ -319,7 +316,6 @@ jest.mock('@librechat/api', () => ({
       title: match[1],
     })),
   }),
-  createSteelOcrResponseAuditService: () => ({ save: mockSaveOcrAudit }),
   SteelOcrResponseAuditPersistenceError: MockOcrAuditPersistenceError,
   prepareQuotationTurn: (...args) => mockPrepareQuotationTurn(...args),
   isQuotationPreparationTurn: (...args) =>
@@ -805,7 +801,6 @@ describe('createResponse controller', () => {
       }
       return { markdown: finalMarkdown };
     });
-    mockCreateSteelOcrStateService.mockReturnValue(mockResponsesOcrStateService);
     mockResponsesOcrStateService.readConversationOcrState.mockResolvedValue(null);
     mockResponsesOcrStateService.upsertCurrentOcrResult.mockResolvedValue({});
     mockResponsesOcrStateService.setDelegateFinalizedCandidate.mockResolvedValue({});
@@ -2900,7 +2895,6 @@ describe('createResponse controller', () => {
       await createResponse(req, res);
 
       expect(mockFinalizeOcrResponse).not.toHaveBeenCalled();
-      expect(mockCreateSteelOcrStateService).toHaveBeenCalledTimes(1);
       expect(mockMarkdownFinalize).toHaveBeenCalledWith(
         expect.objectContaining({
           stage: 'ui',

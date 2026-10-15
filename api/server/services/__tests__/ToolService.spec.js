@@ -158,7 +158,6 @@ jest.mock('@librechat/api', () => ({
   createSteelMarkdownCompletionServices: () => ({
     finalize: (...args) => mockMarkdownFinalize(...args),
   }),
-  createSteelOcrStateService: () => ({}),
   AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE: 'AGENT_EXPECTED_MCP_TOOLS_UNAVAILABLE',
   isFatalAgentInitializationError: (error, { signal } = {}) =>
     (signal?.aborted === true && (error === signal.reason || error?.name === 'AbortError')) ||

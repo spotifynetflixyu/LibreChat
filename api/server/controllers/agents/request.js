@@ -1,5 +1,4 @@
 const steelPostgres = require('~/server/services/Steel/postgres');
-const mongoose = require('mongoose');
 const { logger, tenantStorage, createChatExpirationDate } = require('@librechat/data-schemas');
 const { v5: uuidv5 } = require('uuid');
 const {
@@ -35,8 +34,6 @@ const {
   getAttachmentTitleText,
   extractSteelAgentResponseMarkdown,
   resolvePersistedTurnConversation,
-  createSteelOcrStateService,
-  createSteelQuotationStateService,
   createSteelMarkdownCompletionServices,
   createSteelQuotationMessageNotifier,
   createSteelQuotationErrorAppender,
@@ -46,7 +43,6 @@ const {
   getTerminalFailureText,
   createSteelFullMarkdownPublisher,
   shouldDeferSteelMarkdownPersistence,
-  createSteelOcrResponseAuditService,
   createMCPRuntimeRequestBody,
   resolveRunCodeWorkspaces,
   getSafeErrorText,
@@ -3253,9 +3249,6 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         };
         const markdownCompletion = createSteelMarkdownCompletionServices({
           runtimeRulesClient: steelPostgres.client,
-          ocr: createSteelOcrStateService(mongoose),
-          quotation: createSteelQuotationStateService(mongoose),
-          audit: createSteelOcrResponseAuditService(mongoose),
         });
         await markdownCompletion.finalize({
           req,

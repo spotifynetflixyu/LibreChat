@@ -68,7 +68,6 @@ const {
   isQuotationPreparationComplete,
   buildSteelQuotationStatusEventEnvelope,
   createSteelMarkdownCompletionServices,
-  createSteelOcrStateService,
   createSteelQuotationStateService,
   hasQuotationOrder,
   isUnfinishedQuotation,
@@ -6582,9 +6581,7 @@ async function executeSteelQuotationWorkflow({
     };
     const completion = await createSteelMarkdownCompletionServices({
       runtimeRulesClient: steelPostgres.client,
-      ocr: createSteelOcrStateService(mongoose),
       quotation: service,
-      audit: createSteelOcrResponseAuditService(mongoose),
     }).finalize({
       req,
       responseId: context.requestId,

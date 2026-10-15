@@ -2,6 +2,7 @@ import { resolveLocalToolsForBinding } from '@librechat/agents';
 import type { AgentInputs } from '@librechat/agents';
 import type { BaseMessage } from '@librechat/agents/langchain/messages';
 import type { OpenAIReasoningEffort } from '../ai/config';
+import type { OpenAIOAuthModelOptions } from './oauth';
 import { parseOpenAIConfig, resolveOpenAIOAuthAuthFilePath } from '../ai/config';
 import { delegateOcrToolName, normalizeDelegateOcrChunk } from './delegate';
 import { createOpenAIOAuthGraphModel } from './oauth';
@@ -92,10 +93,22 @@ function getBooleanValue(
   return typeof value === 'boolean' ? value : undefined;
 }
 
+export type OpenAIOAuthSelectedModelOptions = Pick<
+  OpenAIOAuthModelOptions,
+  | 'authFilePath'
+  | 'ensureFresh'
+  | 'frequencyPenalty'
+  | 'maxOutputTokens'
+  | 'model'
+  | 'presencePenalty'
+  | 'reasoningEffort'
+  | 'topP'
+>;
+
 export function getOpenAIOAuthModelOptions(
   agentInput: AgentInputs,
   reasoningEffortOverride?: OpenAIReasoningEffort,
-) {
+): OpenAIOAuthSelectedModelOptions {
   const clientOptions = agentInput.clientOptions as Record<string, unknown> | undefined;
   const openAIConfig = parseOpenAIConfig(process.env);
   const model = getStringValue(clientOptions, 'model') ?? openAIConfig.model;

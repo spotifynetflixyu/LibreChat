@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import mongoose from 'mongoose';
 import { hasConsistentMessageText } from '@librechat/data-schemas';
 import {
   steelQuotationMessagePublicationSchema,
@@ -40,6 +41,9 @@ import { retiredMarkdownSectionTitles } from './admission';
 import { parseAssistantMarkdown } from '../ocr/result';
 import { parseMarkdownTables } from './table';
 import { publishFullMarkdown } from './full';
+import { createSteelQuotationStateService } from '../quotation/state';
+import { createSteelDelegateOcrStateService } from '../ocr/state';
+import { createSteelOcrResponseAuditService } from '../ocr/audit';
 
 export type {
   SteelMarkdownCompletionInput,
@@ -366,12 +370,19 @@ async function adoptPublishedQuotationOrder(
   return { markdown: persisted.text ?? savedText, acceptedRun: run };
 }
 
+/** OCR state, quotation state and the audit sink default to the shared mongoose services. */
 export function createSteelMarkdownCompletionServices(
-  dependencies: SteelMarkdownCompletionDependencies,
+  dependencies: Partial<SteelMarkdownCompletionDependencies> = {},
 ): {
   finalize(input: SteelMarkdownCompletionInput): Promise<SteelMarkdownCompletionResult>;
 } {
-  return { finalize: (input) => finalizeSteelMarkdownTurn(input, dependencies) };
+  const resolved: SteelMarkdownCompletionDependencies = {
+    ...dependencies,
+    ocr: dependencies.ocr ?? createSteelDelegateOcrStateService(mongoose),
+    quotation: dependencies.quotation ?? createSteelQuotationStateService(mongoose),
+    audit: dependencies.audit ?? createSteelOcrResponseAuditService(mongoose),
+  };
+  return { finalize: (input) => finalizeSteelMarkdownTurn(input, resolved) };
 }
 
 /** The caller owns only the final UI turn; child/artifact invocations never call this service. */

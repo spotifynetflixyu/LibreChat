@@ -220,7 +220,9 @@ function getMediaTypeForFile(file: PaddleOcrInputFile, inputData: string): strin
  * a clean download URL (S3) or an inline data URL, so the MCP server never
  * receives local paths or stale signed links.
  */
-export function createSteelMCPToolArgumentPreparer(deps: PaddleOcrInputDependencies) {
+export function createSteelMCPToolArgumentPreparer(
+  deps: PaddleOcrInputDependencies,
+): (input: PrepareMCPToolArgumentsInput) => Promise<unknown> {
   async function getRequestFileRecords(
     req: PaddleOcrInputRequest | undefined,
     userId: string | undefined,
