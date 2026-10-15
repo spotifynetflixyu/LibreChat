@@ -7,7 +7,8 @@ process.env.TS_NODE_COMPILER_OPTIONS = JSON.stringify({ module: 'CommonJS', modu
 process.env.TS_NODE_TRANSPILE_ONLY = 'true';
 require('ts-node/register/transpile-only');
 
-const XLSX = require('xlsx');
+const { readWorkbook, readSheetRecords } = require('./lib/workbook.cjs');
+const { parseScriptArgs } = require('./lib/args.cjs');
 const { createSteelPostgresPool } = require('../src/steel/postgres');
 const {
   CANONICAL_CUTTING_HEADERS,
@@ -27,16 +28,17 @@ const INSERT_COLUMNS = Object.freeze([
 const EXPECTED_RECONCILIATION = EXPECTED_CUTTING_PRICE_RECONCILIATION;
 
 function parseArgs(argv) {
-  const apply = argv.includes('--apply');
-  const explicitDryRun = argv.includes('--dry-run');
-  if (apply && explicitDryRun) throw new Error('Use either --dry-run or --apply, not both.');
-  const index = argv.indexOf('--workbook');
-  const workbookArg = index >= 0 ? argv[index + 1] : undefined;
-  if (index >= 0 && (!workbookArg || workbookArg.startsWith('--'))) throw new Error('--workbook requires a path.');
-  const known = new Set(['--apply', '--dry-run', '--help', '-h', '--workbook', workbookArg]);
-  const unknown = argv.find((arg) => !known.has(arg));
-  if (unknown) throw new Error(`Unknown argument: ${unknown}`);
-  return { apply, dryRun: !apply, help: argv.includes('--help') || argv.includes('-h'), workbookPath: workbookArg ? path.resolve(workbookArg) : DEFAULT_WORKBOOK_PATH };
+  const { help, flags, options } = parseScriptArgs(argv, {
+    flags: ['apply', 'dry-run'],
+    options: ['workbook'],
+  });
+  if (flags.apply && flags['dry-run']) throw new Error('Use either --dry-run or --apply, not both.');
+  return {
+    apply: flags.apply === true,
+    dryRun: flags.apply !== true,
+    help,
+    workbookPath: options.workbook ? path.resolve(options.workbook) : DEFAULT_WORKBOOK_PATH,
+  };
 }
 
 function parseNullableText(value) {
@@ -144,14 +146,17 @@ function parseWorkbookRow(raw, sheetName, cleanRow) {
 function readSheet(workbook) {
   const names = workbook.SheetNames;
   if (names.length !== 1 || names[0] !== PRICE_SHEET) throw new Error('Workbook must contain exactly one cutting_prices sheet');
-  const matrix = XLSX.utils.sheet_to_json(workbook.Sheets[PRICE_SHEET], { header: 1, defval: '', raw: false });
-  const headers = (matrix[0] || []).map(String);
-  if (headers.length !== EXPECTED_HEADERS.length || headers.some((header, index) => header !== EXPECTED_HEADERS[index])) throw new Error('cutting_prices headers do not match the exact cutting catalog contract');
-  return matrix.slice(1).filter((cells) => cells.some((cell) => String(cell).trim() !== '')).map((cells, index) => parseWorkbookRow(Object.fromEntries(EXPECTED_HEADERS.map((header, column) => [header, cells[column] ?? ''])), PRICE_SHEET, index + 2));
+  return readSheetRecords(workbook, {
+    sheetName: PRICE_SHEET,
+    headers: EXPECTED_HEADERS,
+    headerError: 'cutting_prices headers do not match the exact cutting catalog contract',
+  })
+    .filter((record) => Object.values(record).some((cell) => String(cell).trim() !== ''))
+    .map((record, index) => parseWorkbookRow(record, PRICE_SHEET, index + 2));
 }
 
 function loadWorkbookRows(workbookPath) {
-  return readSheet(XLSX.readFile(workbookPath, { raw: false, cellDates: false }));
+  return readSheet(readWorkbook(workbookPath));
 }
 
 function buildDryRunSummary(rows, workbookPath) {

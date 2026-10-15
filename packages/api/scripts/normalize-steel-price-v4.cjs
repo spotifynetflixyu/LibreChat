@@ -12,6 +12,8 @@ process.env.TS_NODE_TRANSPILE_ONLY = 'true';
 require('ts-node/register/transpile-only');
 
 const XLSX = require('xlsx');
+const { readWorkbook, readSheetRecords } = require('./lib/workbook.cjs');
+const { parseScriptArgs } = require('./lib/args.cjs');
 const ExcelJS = require('exceljs');
 
 const { steelPriceV4WorkbookHeaders } = require('../src/steel/pricing/v4');
@@ -125,43 +127,20 @@ const reviewHeaders = Object.freeze([
   'review_note',
 ]);
 
-function resolveOption(argv, name, fallback) {
-  const index = argv.indexOf(name);
-  if (index < 0) {
-    return fallback;
-  }
-  const value = argv[index + 1];
-  if (!value || value.startsWith('--')) {
-    throw new Error(`${name} requires a path`);
-  }
-  return path.resolve(value);
-}
-
 function parseArgs(argv) {
-  const help = argv.includes('--help') || argv.includes('-h');
-  const write = argv.includes('--write');
-  const inputPath = resolveOption(argv, '--input', DEFAULT_INPUT_PATH);
-  const outputPath = resolveOption(argv, '--output', DEFAULT_OUTPUT_PATH);
-  const enrichmentPath = resolveOption(argv, '--enrichment', DEFAULT_ENRICHMENT_PATH);
-  const reviewPath = resolveOption(argv, '--review', DEFAULT_REVIEW_PATH);
-  const known = new Set([
-    '--help',
-    '-h',
-    '--input',
-    '--output',
-    '--enrichment',
-    '--review',
-    '--write',
-    argv[argv.indexOf('--input') + 1],
-    argv[argv.indexOf('--output') + 1],
-    argv[argv.indexOf('--enrichment') + 1],
-    argv[argv.indexOf('--review') + 1],
-  ]);
-  const unknown = argv.find((argument) => !known.has(argument));
-  if (unknown) {
-    throw new Error(`Unknown argument: ${unknown}`);
-  }
-  return { help, write, inputPath, outputPath, enrichmentPath, reviewPath };
+  const { help, flags, options } = parseScriptArgs(argv, {
+    flags: ['write'],
+    options: ['input', 'output', 'enrichment', 'review'],
+  });
+  const resolve = (name, fallback) => (options[name] ? path.resolve(options[name]) : fallback);
+  return {
+    help,
+    write: flags.write === true,
+    inputPath: resolve('input', DEFAULT_INPUT_PATH),
+    outputPath: resolve('output', DEFAULT_OUTPUT_PATH),
+    enrichmentPath: resolve('enrichment', DEFAULT_ENRICHMENT_PATH),
+    reviewPath: resolve('review', DEFAULT_REVIEW_PATH),
+  };
 }
 
 function sameFile(left, right) {
@@ -234,35 +213,14 @@ function buildRawSourceRow(row) {
   return source;
 }
 
-function assertExactHeaders(headers) {
-  const matches =
-    headers.length === rawSteelPriceHeaders.length &&
-    headers.every((header, index) => header === rawSteelPriceHeaders[index]);
-  if (!matches) {
-    throw new Error(`${RAW_SHEET_NAME} row 5 headers do not match the 0701 raw contract`);
-  }
-}
-
 function loadRawWorkbook(inputPath) {
-  const workbook = XLSX.readFile(inputPath, { raw: false, cellDates: false });
-  const worksheet = workbook.Sheets[RAW_SHEET_NAME];
-  if (!worksheet) {
-    throw new Error(`${inputPath} missing ${RAW_SHEET_NAME} sheet`);
-  }
-  const matrix = XLSX.utils.sheet_to_json(worksheet, {
-    header: 1,
-    defval: '',
-    raw: false,
-  });
-  const headers = (matrix[RAW_HEADER_ROW_INDEX] || []).map(String);
-  assertExactHeaders(headers);
-  const rows = matrix
-    .slice(RAW_HEADER_ROW_INDEX + 1)
-    .map((cells) =>
-      buildRawSourceRow(
-        Object.fromEntries(headers.map((header, index) => [header, cells[index] ?? ''])),
-      ),
-    );
+  const workbook = readWorkbook(inputPath);
+  const rows = readSheetRecords(workbook, {
+    sheetName: RAW_SHEET_NAME,
+    headers: rawSteelPriceHeaders,
+    headerRowIndex: RAW_HEADER_ROW_INDEX,
+    headerError: `${RAW_SHEET_NAME} row 5 headers do not match the 0701 raw contract`,
+  }).map(buildRawSourceRow);
   return { workbook, rows };
 }
 

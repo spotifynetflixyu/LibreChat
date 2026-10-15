@@ -11,7 +11,8 @@ process.env.TS_NODE_TRANSPILE_ONLY = 'true';
 
 require('ts-node/register/transpile-only');
 
-const XLSX = require('xlsx');
+const { readWorkbook, readSheetRecords } = require('./lib/workbook.cjs');
+const { parseScriptArgs } = require('./lib/args.cjs');
 
 const { createSteelPostgresPool } = require('../src/steel/postgres');
 const { buildSteelPriceV4Rows, steelPriceV4WorkbookHeaders } = require('../src/steel/pricing/v4');
@@ -77,30 +78,18 @@ const INSERT_COLUMNS = Object.freeze([
 ]);
 
 function parseArgs(argv) {
-  const apply = argv.includes('--apply');
-  const explicitDryRun = argv.includes('--dry-run');
-  const help = argv.includes('--help') || argv.includes('-h');
-  const workbookIndex = argv.indexOf('--workbook');
-  const workbookArg = workbookIndex >= 0 ? argv[workbookIndex + 1] : undefined;
-
-  if (apply && explicitDryRun) {
+  const { help, flags, options } = parseScriptArgs(argv, {
+    flags: ['apply', 'dry-run'],
+    options: ['workbook'],
+  });
+  if (flags.apply && flags['dry-run']) {
     throw new Error('Use either --dry-run or --apply, not both.');
   }
-  if (workbookIndex >= 0 && (!workbookArg || workbookArg.startsWith('--'))) {
-    throw new Error('--workbook requires a path.');
-  }
-
-  const knownArgs = new Set(['--apply', '--dry-run', '--help', '-h', '--workbook', workbookArg]);
-  const unknownArg = argv.find((arg) => !knownArgs.has(arg));
-  if (unknownArg) {
-    throw new Error(`Unknown argument: ${unknownArg}`);
-  }
-
   return {
-    apply,
-    dryRun: !apply,
+    apply: flags.apply === true,
+    dryRun: flags.apply !== true,
     help,
-    workbookPath: workbookArg ? path.resolve(workbookArg) : DEFAULT_WORKBOOK_PATH,
+    workbookPath: options.workbook ? path.resolve(options.workbook) : DEFAULT_WORKBOOK_PATH,
   };
 }
 
@@ -118,39 +107,11 @@ one transaction that reconciles steel.prices to the exact workbook ERP set and v
 }
 
 function loadWorkbookRows(workbookPath) {
-  const workbook = XLSX.readFile(workbookPath, {
-    raw: false,
-    cellDates: false,
-  });
-  const sheet = workbook.Sheets[SHEET_NAME];
-  if (!sheet) {
-    throw new Error(`${workbookPath} missing ${SHEET_NAME} sheet`);
-  }
-
-  const matrix = XLSX.utils.sheet_to_json(sheet, {
-    header: 1,
-    defval: '',
-    raw: false,
-  });
-  const headers = (matrix[0] || []).map((value) => String(value));
-  const exactHeaders =
-    headers.length === EXPECTED_HEADERS.length &&
-    headers.every((header, index) => header === EXPECTED_HEADERS[index]);
-
-  if (!exactHeaders) {
-    throw new Error(`${SHEET_NAME} headers do not match the normalized v4.4 contract`);
-  }
-
-  return matrix
-    .slice(1)
-    .map((cells) =>
-      Object.fromEntries(
-        INPUT_HEADERS.map((header) => [
-          header,
-          cells[headers.indexOf(header)] === undefined ? '' : cells[headers.indexOf(header)],
-        ]),
-      ),
-    );
+  return readSheetRecords(readWorkbook(workbookPath), {
+    sheetName: SHEET_NAME,
+    headers: EXPECTED_HEADERS,
+    headerError: `${SHEET_NAME} headers do not match the normalized v4.4 contract`,
+  }).map((record) => Object.fromEntries(INPUT_HEADERS.map((header) => [header, record[header]])));
 }
 
 function buildReconciliationCounts(rows) {

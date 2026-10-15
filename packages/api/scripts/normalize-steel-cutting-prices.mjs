@@ -6,7 +6,8 @@ import { pathToFileURL } from 'node:url';
 
 const require = createRequire(import.meta.url);
 const ExcelJS = require('exceljs');
-const XLSX = require('xlsx');
+const { readWorkbook, readSheetRecords } = require('./lib/workbook.cjs');
+const { parseScriptArgs } = require('./lib/args.cjs');
 const {
   CANONICAL_CUTTING_HEADERS,
   EXPECTED_CUTTING_PRICE_RECONCILIATION,
@@ -17,38 +18,26 @@ const DEFAULT_INPUT_PATH = path.resolve(import.meta.dirname, '../../../docs/refe
 const DEFAULT_OUTPUT_PATH = path.resolve(import.meta.dirname, '../../../docs/reference/切工價錢-v4.4-normalized.xlsx');
 const RAW_SHEET = '全部整理資料';
 
-function optionValue(argv, name) {
-  const index = argv.indexOf(name);
-  if (index < 0) return undefined;
-  const value = argv[index + 1];
-  if (!value || value.startsWith('--')) throw new Error(`${name} requires a value`);
-  return value;
-}
+const RAW_HEADERS = ['來源區塊', '品項/尺寸', '加工', 'tier A/C/F', 'tier B', '備註'];
 
 function parseArgs(argv) {
-  const inputPath = path.resolve(optionValue(argv, '--input') ?? DEFAULT_INPUT_PATH);
-  const outputPath = path.resolve(optionValue(argv, '--output') ?? DEFAULT_OUTPUT_PATH);
+  const { options } = parseScriptArgs(argv, { options: ['input', 'output'] });
+  const inputPath = path.resolve(options.input ?? DEFAULT_INPUT_PATH);
+  const outputPath = path.resolve(options.output ?? DEFAULT_OUTPUT_PATH);
   if (inputPath === outputPath) throw new Error('Cutting workbook normalization requires a separate output path');
   return { inputPath, outputPath };
 }
 
 function sourceRowsFromWorkbook(workbook) {
-  const sheet = workbook.Sheets[RAW_SHEET];
-  if (!sheet) throw new Error(`Workbook missing ${RAW_SHEET} sheet`);
-  const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false });
-  const headers = matrix[0]?.map(String) ?? [];
-  const expected = ['來源區塊', '品項/尺寸', '加工', 'tier A/C/F', 'tier B', '備註'];
-  if (headers.length !== expected.length || headers.some((header, index) => header !== expected[index])) {
-    throw new Error('Raw 全部整理資料 headers do not match the exact cutting catalog contract');
-  }
-  return matrix
-    .slice(1)
-    .map((cells) => Object.fromEntries(expected.map((header, column) => [header, cells[column] ?? ''])));
+  return readSheetRecords(workbook, {
+    sheetName: RAW_SHEET,
+    headers: RAW_HEADERS,
+    headerError: 'Raw 全部整理資料 headers do not match the exact cutting catalog contract',
+  });
 }
 
 function mapRawRows(inputPath) {
-  const workbook = XLSX.readFile(inputPath, { raw: false, cellDates: false });
-  return sourceRowsFromWorkbook(workbook).map(mapRawCuttingRow).filter(Boolean);
+  return sourceRowsFromWorkbook(readWorkbook(inputPath)).map(mapRawCuttingRow).filter(Boolean);
 }
 
 function validateNormalizedRows(rows) {
