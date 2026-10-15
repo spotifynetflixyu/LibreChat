@@ -209,6 +209,35 @@ function quoteMessages(userText = '請報價'): BaseMessage[] {
   ];
 }
 
+function createTestGraphModel(input: { doGenerate: jest.Mock; doStream?: jest.Mock }) {
+  return createOpenAIOAuthGraphModel({
+    modelOptions: {
+      ...createFakeOpenAIOAuthDependencies(input).options,
+      model: 'gpt-5.5',
+    },
+    terminalToolNames: ['delegate_ocr'],
+  });
+}
+
+function priceTurnMessages(content = '{}'): BaseMessage[] {
+  return [
+    new HumanMessage('請報價'),
+    new ToolMessage({
+      content,
+      name: 'search_price_candidates',
+      tool_call_id: 'call_price_1',
+    }),
+  ];
+}
+
+async function collectStream<T>(stream: Promise<AsyncIterable<T>>): Promise<T[]> {
+  const chunks: T[] = [];
+  for await (const chunk of await stream) {
+    chunks.push(chunk);
+  }
+  return chunks;
+}
+
 function ocrMessages(): BaseMessage[] {
   return [new SystemMessage(OCR_COMPLETION_DIRECTIVE_MARKER), new HumanMessage('整理 OCR')];
 }
@@ -941,14 +970,7 @@ describe('OpenAI OAuth model adapter', () => {
       terminalToolNames: ['delegate_ocr'],
     });
 
-    const result = await model.invoke([
-      new HumanMessage('請報價'),
-      new ToolMessage({
-        content: '{"items":[]}',
-        name: 'search_price_candidates',
-        tool_call_id: 'call_price_1',
-      }),
-    ]);
+    const result = await model.invoke(priceTurnMessages('{"items":[]}'));
 
     expect(result.content).toBe('draft');
     expect(doGenerate).toHaveBeenCalledTimes(1);
@@ -964,23 +986,10 @@ describe('OpenAI OAuth model adapter', () => {
     ['fenced headings', '```markdown\n## system_order\n\nA\n\n## customer_quote\nDRAFT\n```', '```markdown\n## system_order\n\nA\n\n## customer_quote\nDRAFT\n```'],
   ])('filters %s without Stage2', async (_label, text, expected) => {
     const doGenerate = jest.fn(async () => createGenerateResult([{ type: 'text', text }]));
-    const model = createOpenAIOAuthGraphModel({
-      modelOptions: {
-        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
-        model: 'gpt-5.5',
-      },
-      terminalToolNames: ['delegate_ocr'],
-    });
+    const model = createTestGraphModel({ doGenerate });
 
     await expect(
-      model.invoke([
-        new HumanMessage('請報價'),
-        new ToolMessage({
-          content: '{}',
-          name: 'search_price_candidates',
-          tool_call_id: 'call_price_1',
-        }),
-      ]),
+      model.invoke(priceTurnMessages()),
     ).resolves.toEqual(expect.objectContaining({ content: expected }));
     expect(doGenerate).toHaveBeenCalledTimes(1);
     expect(dispatchCustomEvent).not.toHaveBeenCalled();
@@ -999,22 +1008,9 @@ describe('OpenAI OAuth model adapter', () => {
         },
       ]),
     );
-    const model = createOpenAIOAuthGraphModel({
-      modelOptions: {
-        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
-        model: 'gpt-5.5',
-      },
-      terminalToolNames: ['delegate_ocr'],
-    });
+    const model = createTestGraphModel({ doGenerate });
 
-    const result = await model.invoke([
-      new HumanMessage('請報價'),
-      new ToolMessage({
-        content: '{}',
-        name: 'search_price_candidates',
-        tool_call_id: 'call_price_1',
-      }),
-    ]);
+    const result = await model.invoke(priceTurnMessages());
 
     expect(result.content).toBe('## system_order\n\nA\n\n');
     expect(result.tool_calls).toEqual([
@@ -1037,13 +1033,7 @@ describe('OpenAI OAuth model adapter', () => {
         { type: 'text', text },
       ]),
     );
-    const model = createOpenAIOAuthGraphModel({
-      modelOptions: {
-        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
-        model: 'gpt-5.5',
-      },
-      terminalToolNames: ['delegate_ocr'],
-    });
+    const model = createTestGraphModel({ doGenerate });
     const config = {
       configurable: {
         thread_id: 'conversation_stage_1_generate',
@@ -1051,14 +1041,7 @@ describe('OpenAI OAuth model adapter', () => {
       },
     };
 
-    const result = await model.invoke([
-      new HumanMessage('請報價'),
-      new ToolMessage({
-        content: '{}',
-        name: 'search_price_candidates',
-        tool_call_id: 'call_price_1',
-      }),
-    ], config);
+    const result = await model.invoke(priceTurnMessages(), config);
 
     expect(result.content).toBe('## system_order\n\nA\n\n');
     expect(doGenerate).toHaveBeenCalledTimes(1);
@@ -1097,13 +1080,7 @@ describe('OpenAI OAuth model adapter', () => {
         },
       ]),
     );
-    const model = createOpenAIOAuthGraphModel({
-      modelOptions: {
-        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
-        model: 'gpt-5.5',
-      },
-      terminalToolNames: ['delegate_ocr'],
-    });
+    const model = createTestGraphModel({ doGenerate, doStream });
     const config = {
       configurable: {
         thread_id: 'conversation_stage_1_stream',
@@ -1111,20 +1088,10 @@ describe('OpenAI OAuth model adapter', () => {
       },
     };
 
-    const chunks = [];
-    for await (const chunk of await model.stream(
-      [
-        new HumanMessage('請報價'),
-        new ToolMessage({
-          content: '{}',
-          name: 'search_price_candidates',
-          tool_call_id: 'call_price_1',
-        }),
-      ],
+    const chunks = await collectStream(model.stream(
+      priceTurnMessages(),
       config,
-    )) {
-      chunks.push(chunk);
-    }
+    ));
 
     expect(chunks.map((chunk) => chunk.content).join('')).toBe('## system_order\n\nA\n\n');
     expect(doStream).toHaveBeenCalledTimes(1);
@@ -1156,23 +1123,10 @@ describe('OpenAI OAuth model adapter', () => {
         },
       ]),
     );
-    const model = createOpenAIOAuthGraphModel({
-      modelOptions: {
-        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
-        model: 'gpt-5.5',
-      },
-      terminalToolNames: ['delegate_ocr'],
-    });
+    const model = createTestGraphModel({ doGenerate });
 
     await model.invoke(
-      [
-        new HumanMessage('請報價'),
-        new ToolMessage({
-          content: '{}',
-          name: 'search_price_candidates',
-          tool_call_id: 'call_price_1',
-        }),
-      ],
+      priceTurnMessages(),
       { configurable: { thread_id: 'conversation_client_python' } },
     );
 
@@ -1203,25 +1157,9 @@ describe('OpenAI OAuth model adapter', () => {
         },
       ]),
     );
-    const model = createOpenAIOAuthGraphModel({
-      modelOptions: {
-        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
-        model: 'gpt-5.5',
-      },
-      terminalToolNames: ['delegate_ocr'],
-    });
+    const model = createTestGraphModel({ doGenerate, doStream });
 
-    const chunks = [];
-    for await (const chunk of await model.stream([
-      new HumanMessage('請報價'),
-      new ToolMessage({
-        content: '{}',
-        name: 'search_price_candidates',
-        tool_call_id: 'call_price_1',
-      }),
-    ])) {
-      chunks.push(chunk);
-    }
+    const chunks = await collectStream(model.stream(priceTurnMessages()));
 
     expect(chunks.map((chunk) => chunk.content).join('')).toBe(
       text.slice(0, text.indexOf('## customer_quote')),
@@ -1262,25 +1200,9 @@ describe('OpenAI OAuth model adapter', () => {
         },
       ]),
     );
-    const model = createOpenAIOAuthGraphModel({
-      modelOptions: {
-        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
-        model: 'gpt-5.5',
-      },
-      terminalToolNames: ['delegate_ocr'],
-    });
+    const model = createTestGraphModel({ doGenerate, doStream });
 
-    const chunks = [];
-    for await (const chunk of await model.stream([
-      new HumanMessage('請報價'),
-      new ToolMessage({
-        content: '{}',
-        name: 'search_price_candidates',
-        tool_call_id: 'call_price_1',
-      }),
-    ])) {
-      chunks.push(chunk);
-    }
+    const chunks = await collectStream(model.stream(priceTurnMessages()));
 
     expect(chunks.map((chunk) => chunk.content).join('')).toBe(`${stageOne}\n\n`);
     expect(chunks.map((chunk) => chunk.content).join('')).not.toContain('DRAFT');
@@ -1316,13 +1238,7 @@ describe('OpenAI OAuth model adapter', () => {
         { type: 'error', error: providerError },
       ]),
     );
-    const model = createOpenAIOAuthGraphModel({
-      modelOptions: {
-        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
-        model: 'gpt-5.5',
-      },
-      terminalToolNames: ['delegate_ocr'],
-    });
+    const model = createTestGraphModel({ doGenerate, doStream });
     const output = await model.stream(quoteMessages());
     const iterator = output[Symbol.asyncIterator]();
 
@@ -1389,22 +1305,9 @@ describe('OpenAI OAuth model adapter', () => {
     const truncatedResult = createGenerateResult([{ type: 'text', text: 'partial' }]);
     truncatedResult.finishReason = { unified: 'length', raw: 'length' };
     const doGenerate = jest.fn(async () => truncatedResult);
-    const model = createOpenAIOAuthGraphModel({
-      modelOptions: {
-        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
-        model: 'gpt-5.5',
-      },
-      terminalToolNames: ['delegate_ocr'],
-    });
+    const model = createTestGraphModel({ doGenerate });
 
-    const result = await model.invoke([
-      new HumanMessage('請報價'),
-      new ToolMessage({
-        content: '{}',
-        name: 'search_price_candidates',
-        tool_call_id: 'call_price_1',
-      }),
-    ]);
+    const result = await model.invoke(priceTurnMessages());
 
     expect(result.content).toBe('partial');
     expect(doGenerate).toHaveBeenCalledTimes(1);
@@ -1422,25 +1325,9 @@ describe('OpenAI OAuth model adapter', () => {
         },
       ]),
     );
-    const model = createOpenAIOAuthGraphModel({
-      modelOptions: {
-        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
-        model: 'gpt-5.5',
-      },
-      terminalToolNames: ['delegate_ocr'],
-    });
+    const model = createTestGraphModel({ doGenerate, doStream });
 
-    const chunks = [];
-    for await (const chunk of await model.stream([
-      new HumanMessage('請報價'),
-      new ToolMessage({
-        content: '{}',
-        name: 'search_price_candidates',
-        tool_call_id: 'call_price_1',
-      }),
-    ])) {
-      chunks.push(chunk);
-    }
+    const chunks = await collectStream(model.stream(priceTurnMessages()));
 
     expect(chunks.map((chunk) => chunk.content)).toEqual(['partial', '']);
     expect(doStream).toHaveBeenCalledTimes(1);
@@ -1462,22 +1349,9 @@ describe('OpenAI OAuth model adapter', () => {
         },
       ]),
     );
-    const model = createOpenAIOAuthGraphModel({
-      modelOptions: {
-        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
-        model: 'gpt-5.5',
-      },
-      terminalToolNames: ['delegate_ocr'],
-    });
+    const model = createTestGraphModel({ doGenerate });
 
-    const result = await model.invoke([
-      new HumanMessage('請報價'),
-      new ToolMessage({
-        content: '{"items":[{"name":"A"}]}',
-        name: 'search_price_candidates',
-        tool_call_id: 'call_price_1',
-      }),
-    ]);
+    const result = await model.invoke(priceTurnMessages('{"items":[{"name":"A"}]}'));
 
     expect(result.content).toBe('| 品項 | 價格 |\n|---|---:|\n| A | 100 |');
     expect(doGenerate).toHaveBeenCalledTimes(1);
@@ -1508,25 +1382,9 @@ describe('OpenAI OAuth model adapter', () => {
         },
       ]),
     );
-    const model = createOpenAIOAuthGraphModel({
-      modelOptions: {
-        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
-        model: 'gpt-5.5',
-      },
-      terminalToolNames: ['delegate_ocr'],
-    });
+    const model = createTestGraphModel({ doGenerate, doStream });
 
-    const chunks = [];
-    for await (const chunk of await model.stream([
-      new HumanMessage('請報價'),
-      new ToolMessage({
-        content: '{"items":[{"name":"A"}]}',
-        name: 'search_price_candidates',
-        tool_call_id: 'call_price_1',
-      }),
-    ])) {
-      chunks.push(chunk);
-    }
+    const chunks = await collectStream(model.stream(priceTurnMessages('{"items":[{"name":"A"}]}')));
 
     expect(chunks.map((chunk) => chunk.content).join('')).toBe(
       '| 品項 | 價格 |\n|---|---:|\n| A | 100 |',
@@ -1550,22 +1408,9 @@ describe('OpenAI OAuth model adapter', () => {
         },
       ]),
     );
-    const model = createOpenAIOAuthGraphModel({
-      modelOptions: {
-        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
-        model: 'gpt-5.5',
-      },
-      terminalToolNames: ['delegate_ocr'],
-    });
+    const model = createTestGraphModel({ doGenerate });
 
-    const result = await model.invoke([
-      new HumanMessage('請報價'),
-      new ToolMessage({
-        content: '{"items":[{"name":"A"}]}',
-        name: 'search_price_candidates',
-        tool_call_id: 'call_price_1',
-      }),
-    ]);
+    const result = await model.invoke(priceTurnMessages('{"items":[{"name":"A"}]}'));
 
     expect(result.tool_calls).toEqual([
       {
@@ -1591,25 +1436,9 @@ describe('OpenAI OAuth model adapter', () => {
         },
       ]),
     );
-    const model = createOpenAIOAuthGraphModel({
-      modelOptions: {
-        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
-        model: 'gpt-5.5',
-      },
-      terminalToolNames: ['delegate_ocr'],
-    });
+    const model = createTestGraphModel({ doGenerate, doStream });
 
-    const chunks = [];
-    for await (const chunk of await model.stream([
-      new HumanMessage('請報價'),
-      new ToolMessage({
-        content: '{"items":[{"name":"A"}]}',
-        name: 'search_price_candidates',
-        tool_call_id: 'call_price_1',
-      }),
-    ])) {
-      chunks.push(chunk);
-    }
+    const chunks = await collectStream(model.stream(priceTurnMessages('{"items":[{"name":"A"}]}')));
 
     expect(chunks[0]?.tool_calls).toEqual([
       {
@@ -1635,13 +1464,7 @@ describe('OpenAI OAuth model adapter', () => {
         },
       ]),
     );
-    const model = createOpenAIOAuthGraphModel({
-      modelOptions: {
-        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
-        model: 'gpt-5.5',
-      },
-      terminalToolNames: ['delegate_ocr'],
-    });
+    const model = createTestGraphModel({ doGenerate });
 
     await model.invoke([
       new HumanMessage('上一輪報價'),
@@ -1665,13 +1488,7 @@ describe('OpenAI OAuth model adapter', () => {
         },
       ]),
     );
-    const model = createOpenAIOAuthGraphModel({
-      modelOptions: {
-        ...createFakeOpenAIOAuthDependencies({ doGenerate }).options,
-        model: 'gpt-5.5',
-      },
-      terminalToolNames: ['delegate_ocr'],
-    });
+    const model = createTestGraphModel({ doGenerate });
 
     await model.invoke([new HumanMessage('請報價')]);
 
@@ -1697,14 +1514,7 @@ describe('OpenAI OAuth model adapter', () => {
       },
     } as unknown as BindToolsInput;
 
-    await model.bindTools([tool]).invoke([
-      new HumanMessage('請報價'),
-      new ToolMessage({
-        content: '{"items":[{"name":"A"}]}',
-        name: 'search_price_candidates',
-        tool_call_id: 'call_price_1',
-      }),
-    ]);
+    await model.bindTools([tool]).invoke(priceTurnMessages('{"items":[{"name":"A"}]}'));
 
     expect(doGenerate).toHaveBeenCalledTimes(1);
     expect(getGenerateCall(doGenerate).toolChoice).toEqual({ type: 'auto' });
@@ -2349,10 +2159,7 @@ describe('OpenAI OAuth model adapter', () => {
       model: 'gpt-5.5',
     });
 
-    const chunks = [];
-    for await (const chunk of await model.stream(ocrMessages())) {
-      chunks.push(chunk);
-    }
+    const chunks = await collectStream(model.stream(ocrMessages()));
 
     const summary = 'OCR 整理完成：共 1 個來源、1 筆資料。';
     expect(chunks.map((chunk) => chunk.content)).toEqual([
@@ -2392,10 +2199,7 @@ describe('OpenAI OAuth model adapter', () => {
       model: 'gpt-5.5',
     });
 
-    const chunks = [];
-    for await (const chunk of await model.stream(ocrMessages())) {
-      chunks.push(chunk);
-    }
+    const chunks = await collectStream(model.stream(ocrMessages()));
 
     expect(chunks.map((chunk) => chunk.content)).toEqual([
       source,
@@ -2420,10 +2224,7 @@ describe('OpenAI OAuth model adapter', () => {
         model: 'gpt-5.5',
       });
 
-      const chunks = [];
-      for await (const chunk of await model.stream(ocrMessages())) {
-        chunks.push(chunk);
-      }
+      const chunks = await collectStream(model.stream(ocrMessages()));
 
       expect(chunks.map((chunk) => chunk.content)).toEqual([source, '']);
       expect(chunks.map((chunk) => chunk.content).join('')).not.toContain('OCR 整理完成：');
@@ -2446,10 +2247,7 @@ describe('OpenAI OAuth model adapter', () => {
       model: 'gpt-5.5',
     });
 
-    const chunks = [];
-    for await (const chunk of await model.stream(ocrMessages())) {
-      chunks.push(chunk);
-    }
+    const chunks = await collectStream(model.stream(ocrMessages()));
 
     expect(chunks.map((chunk) => chunk.content)).toEqual([providerText, '']);
     expect(chunks.map((chunk) => chunk.content).join('')).toBe(providerText);
@@ -2515,10 +2313,7 @@ describe('OpenAI OAuth model adapter', () => {
       model: 'gpt-5.5',
     });
 
-    const chunks = [];
-    for await (const chunk of await model.stream(ocrMessages())) {
-      chunks.push(chunk);
-    }
+    const chunks = await collectStream(model.stream(ocrMessages()));
 
     expect(chunks.map((chunk) => chunk.content).join('')).toBe(source);
     expect(chunks.map((chunk) => chunk.content).join('')).not.toContain('OCR 整理完成：');
@@ -2680,10 +2475,7 @@ describe('OpenAI OAuth model adapter', () => {
       if (mode === 'invoke') {
         content = String((await model.invoke(quoteMessages())).content);
       } else {
-        const chunks = [];
-        for await (const chunk of await model.stream(quoteMessages())) {
-          chunks.push(chunk);
-        }
+        const chunks = await collectStream(model.stream(quoteMessages()));
         content = chunks.map((chunk) => chunk.content).join('');
       }
 
@@ -2730,10 +2522,7 @@ describe('OpenAI OAuth model adapter', () => {
       if (mode === 'invoke') {
         content = String((await model.invoke(quoteMessages())).content);
       } else {
-        const chunks = [];
-        for await (const chunk of await model.stream(quoteMessages())) {
-          chunks.push(chunk);
-        }
+        const chunks = await collectStream(model.stream(quoteMessages()));
         content = chunks.map((chunk) => chunk.content).join('');
       }
 
@@ -2774,10 +2563,7 @@ describe('OpenAI OAuth model adapter', () => {
       if (mode === 'invoke') {
         content = String((await model.invoke(messages)).content);
       } else {
-        const chunks = [];
-        for await (const chunk of await model.stream(messages)) {
-          chunks.push(chunk);
-        }
+        const chunks = await collectStream(model.stream(messages));
         content = chunks.map((chunk) => chunk.content).join('');
       }
 
@@ -2895,10 +2681,7 @@ it('captures provider Python call and result evidence from the normal stream exa
     onCodeInterpreterEvidence: evidence,
   });
 
-  const chunks = [];
-  for await (const chunk of await model.stream(quoteMessages('Calculate the chunk'))) {
-    chunks.push(chunk);
-  }
+  const chunks = await collectStream(model.stream(quoteMessages('Calculate the chunk')));
 
   expect(evidence).toHaveBeenCalledTimes(2);
   expect(evidence.mock.calls.map(([entry]) => entry.type)).toEqual(['tool-call', 'tool-result']);
@@ -2936,10 +2719,7 @@ it('captures provider Python call and result evidence from the OCR stream', asyn
     onCodeInterpreterEvidence: evidence,
   });
 
-  const chunks = [];
-  for await (const chunk of await model.stream(ocrMessages())) {
-    chunks.push(chunk);
-  }
+  const chunks = await collectStream(model.stream(ocrMessages()));
 
   expect(evidence).toHaveBeenCalledTimes(2);
   expect(evidence.mock.calls.map(([entry]) => entry.type)).toEqual(['tool-call', 'tool-result']);
@@ -3009,10 +2789,7 @@ it('does not report a client-executed code interpreter result as provider eviden
     onCodeInterpreterEvidence: evidence,
   });
 
-  const chunks = [];
-  for await (const chunk of await model.stream([new HumanMessage('Calculate the chunk')])) {
-    chunks.push(chunk);
-  }
+  const chunks = await collectStream(model.stream([new HumanMessage('Calculate the chunk')]));
 
   expect(evidence).not.toHaveBeenCalled();
   expect(chunks.some((chunk) => (chunk.tool_calls?.length ?? 0) > 0)).toBe(true);
@@ -3043,10 +2820,7 @@ it('hands off quotation preparation at text-end and cancels a stalled provider s
     quotationPreparation: true,
   });
 
-  const chunks = [];
-  for await (const chunk of await model.stream([new HumanMessage('準備報價')], { signal: parent.signal })) {
-    chunks.push(chunk);
-  }
+  const chunks = await collectStream(model.stream([new HumanMessage('準備報價')], { signal: parent.signal }));
 
   expect(chunks.map((chunk) => chunk.content).join('')).toBe('## quote_signal\n\nstart');
   const lastChunk = chunks[chunks.length - 1];
@@ -3087,10 +2861,7 @@ it('hands off on a newline terminated signal and drops queued provider tail cont
     quotationPreparation: true,
   });
 
-  const chunks = [];
-  for await (const chunk of await model.stream([new HumanMessage('準備報價')])) {
-    chunks.push(chunk);
-  }
+  const chunks = await collectStream(model.stream([new HumanMessage('準備報價')]));
 
   expect(chunks.map((chunk) => chunk.content).join('')).toBe('## quote_signal\n\nstart');
   expect(cancel).toHaveBeenCalledTimes(1);
@@ -3142,10 +2913,7 @@ it('keeps a successful handoff when reader cancellation rejects', async () => {
     quotationPreparation: true,
   });
 
-  const chunks = [];
-  for await (const chunk of await model.stream([new HumanMessage('準備報價')])) {
-    chunks.push(chunk);
-  }
+  const chunks = await collectStream(model.stream([new HumanMessage('準備報價')]));
 
   expect(chunks.map((chunk) => chunk.content).join('')).toBe('## quote_signal\n\nstart');
   expect(chunks[chunks.length - 1]?.response_metadata).toEqual(expect.objectContaining({
@@ -3169,10 +2937,7 @@ it('passes the parent signal through unchanged when quotation preparation is dis
     model: 'gpt-5.5',
   });
 
-  const chunks = [];
-  for await (const chunk of await model.stream([new HumanMessage('一般回覆')], { signal: parent.signal })) {
-    chunks.push(chunk);
-  }
+  const chunks = await collectStream(model.stream([new HumanMessage('一般回覆')], { signal: parent.signal }));
 
   expect(chunks.map((chunk) => chunk.content).join('')).toBe('ordinary');
   expect(providerAbortSignal).toBe(parent.signal);
@@ -3191,10 +2956,7 @@ it('flushes a malformed quotation candidate exactly once and continues normally'
     quotationPreparation: true,
   });
 
-  const chunks = [];
-  for await (const chunk of await model.stream([new HumanMessage('準備報價')])) {
-    chunks.push(chunk);
-  }
+  const chunks = await collectStream(model.stream([new HumanMessage('準備報價')]));
 
   const content = chunks.map((chunk) => chunk.content).join('');
   expect(content).toBe('## quote_signal\n\nstart now\ntail');
@@ -3221,10 +2983,7 @@ it('disarms on provider executed tools before a quotation signal', async () => {
     quotationPreparation: true,
   });
 
-  const chunks = [];
-  for await (const chunk of await model.stream([new HumanMessage('準備報價')])) {
-    chunks.push(chunk);
-  }
+  const chunks = await collectStream(model.stream([new HumanMessage('準備報價')]));
 
   expect(chunks.map((chunk) => chunk.content).join('')).toBe('## quote_signal\n\nstart after tool');
   expect(chunks[chunks.length - 1]?.response_metadata).toEqual(expect.objectContaining({ finish_reason: 'stop' }));
