@@ -18,11 +18,13 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          sparse-checkout: packages/api/scripts/keepalive.mts
+          sparse-checkout-cone-mode: false
       - uses: actions/setup-node@v4
         with:
           node-version: 24.18.0
-          cache: npm
-      - run: npm ci --ignore-scripts --workspace=@librechat/api --include-workspace-root=false
+      - run: npm install --ignore-scripts --no-save --no-package-lock --no-audit --no-fund mongodb@6.20.0 pg@8.23.0
       - run: node packages/api/scripts/keepalive.mts
         env:
           MONGO_DEV_URI: ${{ secrets.MONGO_DEV_URI }}

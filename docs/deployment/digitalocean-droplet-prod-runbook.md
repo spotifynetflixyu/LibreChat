@@ -548,7 +548,7 @@ Do not use local container paths for live OCR smoke.
 
 ## Post-Deploy Manual Verification
 
-Use this after a `master` push deploy. `/health` only proves the LibreChat site
+Use this after a manually dispatched `master` deploy. `/health` only proves the LibreChat site
 started. PaddleOCR must be checked separately with a freshly generated S3 smoke
 PDF URL so the same manual smoke verifies both S3 URL readability and the
 PaddleOCR `fileUrl` OCR path.
@@ -704,7 +704,7 @@ Current production observation:
   produced a 73 KB JSON result with parsed table/text blocks. This makes
   PDF-size reduction the preferred next production path.
 
-## GitHub Actions Auto Deploy
+## GitHub Actions Manual Deploy
 
 Production automation is defined in:
 
@@ -714,11 +714,13 @@ Production automation is defined in:
 
 The production automation is:
 
-1. Push to `master`.
-2. GitHub Actions builds the production `Dockerfile.multi` image.
-3. GitHub Actions pushes the image to GHCR.
-4. GitHub Actions SSHes to the Droplet as `deploy`.
-5. The Droplet pulls the new image and runs `docker compose up -d`.
+1. Push to `master`; pushes do not deploy on their own.
+2. Dispatch the workflow from `master`:
+   `gh workflow run "Deploy Production" --ref master`. Other refs are skipped.
+3. GitHub Actions builds the production `Dockerfile.multi` image.
+4. GitHub Actions pushes the image to GHCR.
+5. GitHub Actions SSHes to the Droplet as `deploy`.
+6. The Droplet pulls the new image and runs `docker compose up -d`.
 
 Do not enable the production workflow until these GitHub secrets exist:
 

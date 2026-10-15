@@ -544,7 +544,7 @@ Live OCR smoke 不要使用 local container path。
 
 ## 部署後手動驗證
 
-`master` push deploy 後使用這段。`/health` 只證明 LibreChat site 已啟動；
+手動觸發 `master` deploy 後使用這段。`/health` 只證明 LibreChat site 已啟動；
 PaddleOCR 必須另外用 fresh S3 smoke PDF URL 檢查。這個 manual smoke 同時驗證
 S3 URL 可讀性與 PaddleOCR `fileUrl` OCR path。
 
@@ -693,7 +693,7 @@ MCP server 設定保持一致。
   約 19 秒回 AI Studio job id，最後產生 73 KB JSON result。Production smoke
   優先使用精簡 PDF。
 
-## GitHub Actions Auto Deploy
+## GitHub Actions 手動 Deploy
 
 Production automation 定義於：
 
@@ -703,11 +703,13 @@ Production automation 定義於：
 
 流程：
 
-1. Push 到 `master`。
-2. GitHub Actions build production `Dockerfile.multi` image。
-3. GitHub Actions push image 到 GHCR。
-4. GitHub Actions SSH 到 Droplet as `deploy`。
-5. Droplet pull 新 image，執行 `docker compose up -d`。
+1. Push 到 `master`；push 本身不會觸發 deploy。
+2. 從 `master` 手動觸發 workflow：
+   `gh workflow run "Deploy Production" --ref master`。其他 ref 會被略過。
+3. GitHub Actions build production `Dockerfile.multi` image。
+4. GitHub Actions push image 到 GHCR。
+5. GitHub Actions SSH 到 Droplet as `deploy`。
+6. Droplet pull 新 image，執行 `docker compose up -d`。
 
 Production workflow 啟用前，GitHub secrets 必須存在：
 
