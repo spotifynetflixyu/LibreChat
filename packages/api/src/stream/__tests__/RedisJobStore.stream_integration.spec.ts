@@ -287,26 +287,6 @@ describe('RedisJobStore Integration Tests', () => {
       await store.destroy();
     });
 
-    test('round-trips delegate OCR quote-only state and clears it on replacement', async () => {
-      if (!ioredisClient) {
-        return;
-      }
-
-      const { RedisJobStore } = await import('../implementations/RedisJobStore');
-      const store = new RedisJobStore(ioredisClient);
-      await store.initialize();
-
-      const streamId = `test-stream-quote-only-${Date.now()}`;
-      await store.createJob(streamId, 'user-1', streamId);
-      await store.updateJob(streamId, { delegateOcrQuoteOnlyTurn: true });
-      expect((await store.getJob(streamId))?.delegateOcrQuoteOnlyTurn).toBe(true);
-
-      await store.createJob(streamId, 'user-1', streamId);
-      expect((await store.getJob(streamId))?.delegateOcrQuoteOnlyTurn).toBeUndefined();
-
-      await store.destroy();
-    });
-
     test('drops a malformed delegate OCR policy read from Redis', async () => {
       if (!ioredisClient) {
         return;

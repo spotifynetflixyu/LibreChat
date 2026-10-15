@@ -2184,7 +2184,7 @@ export async function createRun({
   messages?: BaseMessage[];
   /** Request-resolved delegate OCR visibility and authorized attachment keys. */
   delegateOcrPolicy?: DelegateOcrPolicy;
-  /** Turn-level Steel tool visibility for the run's top-level agents (not subagents). */
+  /** Turn-level Steel tool visibility for every agent in the run, subagent children included. */
   steelToolVisibility?: SteelNativeToolVisibilityOptions;
   /** The host may hand a completed preparation signal to the quotation workflow. */
   quotationPreparation?: boolean;
@@ -2552,7 +2552,7 @@ export async function createRun({
 
     const visibleToolConfig = prepareSteelNativeToolConfig(
       { tools, toolDefinitions, toolRegistry },
-      { ...(isSubagent ? {} : steelToolVisibility), delegateOcrPolicy },
+      { ...steelToolVisibility, delegateOcrPolicy },
     );
     tools = visibleToolConfig.tools as GenericTool[] | undefined;
     toolDefinitions = visibleToolConfig.toolDefinitions ?? [];

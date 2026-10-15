@@ -251,6 +251,37 @@ describe('createRun code-tool eager/session wiring', () => {
     expect((input.toolRegistry as Map<string, unknown>).size).toBe(0);
   });
 
+  it('applies turn-level Steel visibility to the bound tools', async () => {
+    const tools = ['search_customers', 'search_price_candidates', 'get_product'].map((name) => ({
+      name,
+      description: name,
+      parameters: {},
+    }));
+    const agent = makeAgent({
+      tools,
+      toolDefinitions: tools,
+      toolRegistry: new Map(tools.map((tool) => [tool.name, tool])),
+    });
+
+    await createRun({
+      agents: [agent] as never,
+      signal: new AbortController().signal,
+      messages: [new HumanMessage('報價')],
+      steelToolVisibility: { quotationRole: 'preparation', hasQuotationOrder: false },
+      streaming: true,
+      streamUsage: true,
+    });
+
+    const runConfig = (Run.create as jest.Mock).mock.calls[0][0] as {
+      graphConfig: { agents: Array<Record<string, unknown>> };
+    };
+    const input = runConfig.graphConfig.agents[0];
+    expect((input.toolDefinitions as Array<{ name: string }>).map(({ name }) => name)).toEqual([
+      'get_product',
+    ]);
+    expect([...(input.toolRegistry as Map<string, unknown>).keys()]).toEqual(['get_product']);
+  });
+
   it('removes delegate_ocr on empty resume without persisted policy', async () => {
     const delegate = { name: 'delegate_ocr', description: 'delegate', parameters: {} };
     const agent = makeAgent({

@@ -151,10 +151,9 @@ const {
   toSteelNativeRecordMessage,
   buildSteelAgentMessageMetadata,
   collectSteelNativeFileRecordReferences,
-  prepareSteelNativeToolConfig,
+  resolveSteelTurnToolVisibility,
   prepareQuotationTurn,
   prepareSteelMarkdownHistory,
-  hasQuotationOrder,
   stripSteelOcrPartsFromProviderMessages,
   buildAgentScopedAttachmentMap,
   resolveScopedTurnAttachments,
@@ -3026,21 +3025,6 @@ class AgentClient extends BaseClient {
           });
       this.options.req.steelNativeContext.delegateOcrPolicy = delegateOcrPolicy;
       this.options.req.steelNativeContext.delegateOcrResume = delegateOcrResume;
-      const runAgents = [
-        this.options.agent,
-        ...(this.agentConfigs ? Array.from(this.agentConfigs.values()) : []),
-      ];
-      for (const runAgent of runAgents) {
-        Object.assign(
-          runAgent,
-          prepareSteelNativeToolConfig(runAgent, {
-            quotationRole: 'preparation',
-            hasQuotationOrder: hasQuotationOrder(quotation.state?.currentOrder?.markdown),
-            ocrTurnActive: paddleOcrPreflight?.ocrTurnActive === true,
-            delegateOcrPolicy,
-          }),
-        );
-      }
     }
     payload = stripSteelOcrPartsFromProviderMessages(payload, currentTurnSteelFileReferences);
     if (this.options.req) {
@@ -5224,6 +5208,7 @@ class AgentClient extends BaseClient {
           customHandlers: reasoningLabel?.handlers(activityHandlers) ?? activityHandlers,
           openAIOAuthReasoningEffortOverride: this.options.openAIOAuthReasoningEffortOverride,
           delegateOcrPolicy: this.options.req?.steelNativeContext?.delegateOcrPolicy,
+          steelToolVisibility: resolveSteelTurnToolVisibility(this.options.req?.steelNativeContext),
           quotationPreparation: isQuotationPreparationTurn(
             this.options.req?.steelNativeContext,
             delegateOcrResume,

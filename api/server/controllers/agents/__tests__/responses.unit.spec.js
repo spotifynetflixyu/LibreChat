@@ -340,20 +340,8 @@ jest.mock('@librechat/api', () => ({
     jest.requireActual('@librechat/api').createTerminalRunErrorObserver(...args),
   buildInitialToolSessions: jest.fn().mockReturnValue(mockInitialSessions),
   applyContextToAgent: (...args) => mockApplyContextToAgent(...args),
-  prepareSteelNativeToolConfig: jest.fn((config) => config),
-  getLatestHumanMessageText: jest.fn((messages) => {
-    const latest = [...(messages ?? [])]
-      .reverse()
-      .find((message) => message?.getType?.() === 'human');
-    const content = latest?.content;
-    if (typeof content === 'string') {
-      return content;
-    }
-    if (Array.isArray(content)) {
-      return content.map((part) => part?.text ?? '').join('');
-    }
-    return '';
-  }),
+  resolveSteelTurnToolVisibility:
+    jest.requireActual('@librechat/api').resolveSteelTurnToolVisibility,
   createSteelNativeHistory: jest.fn(() => ({ activityEvents: [], preflightToolCalls: [] })),
   stripSteelOcrPartsFromProviderMessages: (...args) =>
     mockStripSteelOcrPartsFromProviderMessages(...args),
@@ -3463,23 +3451,6 @@ describe('createResponse controller', () => {
         run: { claimToken: 'claim-resume', delegateOcrIndex: 2 },
         files: [{ fileKey: 'filename:PL.pdf', pageRanges: [{ pageStart: 3, pageEnd: 7 }] }],
       };
-      const hideDelegateOcr = (config, options = {}) => {
-        const next = { ...config };
-        if (options.delegateOcrPolicy?.allowed === false) {
-          next.tools = (config.tools ?? []).filter((tool) => tool !== 'delegate_ocr');
-          next.toolDefinitions = (config.toolDefinitions ?? []).filter(
-            (definition) => definition?.name !== 'delegate_ocr',
-          );
-          next.toolRegistry = new Map(
-            [...(config.toolRegistry ?? new Map())].filter(([name]) => name !== 'delegate_ocr'),
-          );
-        }
-        return next;
-      };
-      api.prepareSteelNativeToolConfig
-        .mockImplementationOnce(hideDelegateOcr)
-        .mockImplementationOnce(hideDelegateOcr)
-        .mockImplementationOnce(hideDelegateOcr);
       api.initializeAgent.mockResolvedValueOnce({
         id: 'agent-123',
         model: 'claude-3',
@@ -3532,11 +3503,13 @@ describe('createResponse controller', () => {
         allowedFileKeys: [],
         reason: 'delegate_ocr_resume',
       });
-      expect(createRunArgs.agents[0].tools).not.toContain('delegate_ocr');
-      expect(createRunArgs.agents[0].toolDefinitions.map(({ name }) => name)).not.toContain(
-        'delegate_ocr',
+      expect(createRunArgs.steelToolVisibility).toEqual(
+        expect.objectContaining({
+          ocrTurnActive: false,
+          quotationRole: 'preparation',
+          delegateOcrPolicy: createRunArgs.delegateOcrPolicy,
+        }),
       );
-      expect(createRunArgs.agents[0].toolRegistry.has('delegate_ocr')).toBe(false);
     });
 
     it('resumes quotation directly without parent processStream or OCR preflight', async () => {
@@ -3557,7 +3530,6 @@ describe('createResponse controller', () => {
       api.convertInputToMessages.mockReturnValueOnce([
         { role: 'user', content: '繼續報價', messageId: 'user-quotation-resume-1' },
       ]);
-      api.getLatestHumanMessageText.mockReturnValueOnce('繼續報價');
       mockPrepareQuotationTurn.mockResolvedValueOnce(resume);
       mockExecuteSteelQuotationWorkflow.mockImplementationOnce(async ({ onText }) => {
         await onText('resumed quotation');

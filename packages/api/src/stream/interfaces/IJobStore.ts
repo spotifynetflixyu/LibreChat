@@ -242,8 +242,6 @@ export interface SerializableJobData {
    * true before provider startup and after the owner has fully unwound. */
   providerDrained?: boolean;
 
-  /** Whether paused turn is quote-only and must omit delegate_ocr on resume. */
-  delegateOcrQuoteOnlyTurn?: boolean;
   /** Resolved delegate OCR availability and canonical authorized attachment keys. */
   delegateOcrPolicy?: DelegateOcrPolicy;
 
@@ -487,7 +485,6 @@ export type JobMetadataPatch = Partial<
     | 'preserveForScheduleReconcile'
     | 'promptTokens'
     | 'discoveredTools'
-    | 'delegateOcrQuoteOnlyTurn'
     | 'delegateOcrPolicy'
     | 'activityPhaseSnapshot'
     | 'compactionSemanticIndex'

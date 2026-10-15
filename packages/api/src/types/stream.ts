@@ -94,8 +94,6 @@ export interface GenerationJobMetadata {
    * without them the rebuilt model would lose the discovered tool schemas.
    */
   discoveredTools?: string[];
-  /** Whether a paused turn was quote-only and must omit delegate_ocr on resume. */
-  delegateOcrQuoteOnlyTurn?: boolean;
   /** Resolved delegate OCR availability and canonical authorized attachment keys. */
   delegateOcrPolicy?: DelegateOcrPolicy;
   /** Bounded collector state for continuing a phase across HITL resume. */

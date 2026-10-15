@@ -5419,8 +5419,6 @@ export class RedisJobStore implements IJobStoreV2 {
       detachedAgentEventTerminalStatus,
       // Deferred tools discovered before a HITL pause; replayed into createRun on resume.
       discoveredTools: data.discoveredTools ? JSON.parse(data.discoveredTools) : undefined,
-      delegateOcrQuoteOnlyTurn:
-        data.delegateOcrQuoteOnlyTurn != null ? data.delegateOcrQuoteOnlyTurn === '1' : undefined,
       delegateOcrPolicy: (() => {
         if (!data.delegateOcrPolicy) {
           return undefined;

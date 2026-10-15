@@ -31,11 +31,10 @@ const {
   collectSteelNativeInputFileReferences,
   collectSteelNativeMessages,
   createSteelNativeHistory,
-  prepareSteelNativeToolConfig,
+  resolveSteelTurnToolVisibility,
   prepareQuotationTurn,
   isQuotationPreparationTurn,
   prepareSteelMarkdownHistory,
-  hasQuotationOrder,
   createSafeUser,
   initializeAgent,
   loadSkillStates,
@@ -1412,53 +1411,6 @@ const executeResponse = async (envelope, { req, res }) => {
             ocrTurnActive,
           });
       req.steelNativeContext.delegateOcrPolicy = delegateOcrPolicy;
-      for (const runAgent of runAgents) {
-        Object.assign(
-          runAgent,
-          prepareSteelNativeToolConfig(runAgent, {
-            quotationRole: 'preparation',
-            hasQuotationOrder: hasQuotationOrder(quotation.state?.currentOrder?.markdown),
-            ocrTurnActive,
-            delegateOcrPolicy: delegateOcrResume
-              ? {
-                  resolved: true,
-                  allowed: false,
-                  allowedFileKeys: [],
-                  reason: 'delegate_ocr_resume',
-                }
-              : delegateOcrPolicy,
-          }),
-        );
-      }
-      // Keep each request-scoped tool context in step with its agent config.
-      // Delegate resume policy filtering is applied to the registry as well as
-      // the serialized agent definition, so a resumed run cannot re-enable a
-      // hidden delegate tool through the loader context.
-      for (const toolContext of agentToolContexts.values()) {
-        if (toolContext?.agent) {
-          Object.assign(
-            toolContext.agent,
-            prepareSteelNativeToolConfig(toolContext.agent, {
-              quotationRole: 'preparation',
-              hasQuotationOrder: hasQuotationOrder(quotation.state?.currentOrder?.markdown),
-              ocrTurnActive,
-              delegateOcrPolicy,
-            }),
-          );
-        }
-        if (toolContext) {
-          Object.assign(
-            toolContext,
-            prepareSteelNativeToolConfig(toolContext, {
-              quotationRole: 'preparation',
-              hasQuotationOrder: hasQuotationOrder(quotation.state?.currentOrder?.markdown),
-              ocrTurnActive,
-              delegateOcrPolicy,
-            }),
-          );
-        }
-      }
-
       const attachments = {};
       if (ocrTurnActive) {
         if (paddleOcrPreflight?.currentOcrMarkdownResults?.length > 0) {
@@ -1796,6 +1748,7 @@ const executeResponse = async (envelope, { req, res }) => {
           signal: execution.signal,
           customHandlers: handlers,
           delegateOcrPolicy: req.steelNativeContext.delegateOcrPolicy,
+          steelToolVisibility: resolveSteelTurnToolVisibility(req.steelNativeContext),
           quotationPreparation: isQuotationPreparationTurn(req.steelNativeContext, delegateOcrResume),
           openAIOAuthModelOptionsSink: (modelOptions) => {
             req.steelNativeContext.delegateOcrContext.modelOptions = modelOptions;
@@ -2024,6 +1977,7 @@ const executeResponse = async (envelope, { req, res }) => {
           signal: execution.signal,
           customHandlers: handlers,
           delegateOcrPolicy: req.steelNativeContext.delegateOcrPolicy,
+          steelToolVisibility: resolveSteelTurnToolVisibility(req.steelNativeContext),
           quotationPreparation: isQuotationPreparationTurn(req.steelNativeContext, delegateOcrResume),
           openAIOAuthModelOptionsSink: (modelOptions) => {
             req.steelNativeContext.delegateOcrContext.modelOptions = modelOptions;

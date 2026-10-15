@@ -1667,7 +1667,6 @@ describe('GenerationJobManager HITL resume metadata (round 19)', () => {
     await manager.createJob(streamId, 'user-1');
     await manager.updateMetadata(streamId, {
       discoveredTools: ['deep_tool', 'other_tool'],
-      delegateOcrQuoteOnlyTurn: true,
       delegateOcrPolicy: {
         resolved: true,
         allowed: true,
@@ -1676,7 +1675,6 @@ describe('GenerationJobManager HITL resume metadata (round 19)', () => {
     });
     const job = await manager.getJob(streamId);
     expect(job?.metadata.discoveredTools).toEqual(['deep_tool', 'other_tool']);
-    expect(job?.metadata.delegateOcrQuoteOnlyTurn).toBe(true);
     expect(job?.metadata.delegateOcrPolicy).toEqual({
       resolved: true,
       allowed: true,

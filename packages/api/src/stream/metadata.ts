@@ -106,9 +106,6 @@ export function sanitizeJobMetadata(metadata: Partial<GenerationJobMetadata>): J
   if (metadata.discoveredTools) {
     patch.discoveredTools = metadata.discoveredTools;
   }
-  if (metadata.delegateOcrQuoteOnlyTurn !== undefined) {
-    patch.delegateOcrQuoteOnlyTurn = metadata.delegateOcrQuoteOnlyTurn;
-  }
   if (
     isResolvedDelegateOcrPolicy(metadata.delegateOcrPolicy) &&
     (metadata.delegateOcrPolicy.allowed === false ||

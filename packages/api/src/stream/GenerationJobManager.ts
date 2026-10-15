@@ -2997,7 +2997,6 @@ class GenerationJobManagerClass {
         // Surface deferred tools discovered before the pause so the resume route can
         // replay them into createRun (the rebuilt graph passes `messages: []`).
         discoveredTools: jobData.discoveredTools,
-        delegateOcrQuoteOnlyTurn: jobData.delegateOcrQuoteOnlyTurn,
         delegateOcrPolicy: jobData.delegateOcrPolicy,
         activityPhaseSnapshot: jobData.activityPhaseSnapshot,
         compactionSemanticIndex: jobData.compactionSemanticIndex,
