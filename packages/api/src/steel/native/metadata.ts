@@ -4,7 +4,7 @@ import type {
   SteelNativeStreamEvent,
   SteelNativePreflightToolCall,
 } from './events';
-import type { SteelNativeProviderStateMode } from './provider';
+import type { SteelNativeProviderMetadata, SteelNativeProviderStateMode } from './provider';
 import type { SteelNativeContextMetadata } from './context';
 import {
   createSteelNativeHistory,
@@ -120,6 +120,29 @@ export function buildSteelNativeResponseTurnMetadata(
     activityEvents: context?.steelHistory?.activityEvents,
     preflightToolCalls: context?.steelHistory?.preflightToolCalls,
   });
+}
+
+/** The `metadata.steel` block the agents client persists on its response message. */
+export interface SteelAgentMessageMetadata {
+  provider?: SteelNativeProviderMetadata;
+  activityEvents?: SteelNativeStreamEvent[];
+  preflightToolCalls?: SteelNativePreflightToolCall[];
+}
+
+export function buildSteelAgentMessageMetadata(
+  provider: SteelNativeProviderMetadata | undefined,
+  history: SteelNativeHistory | undefined,
+): SteelAgentMessageMetadata | undefined {
+  const activityEvents = history?.activityEvents ?? [];
+  const preflightToolCalls = history?.preflightToolCalls ?? [];
+  if (!provider && activityEvents.length === 0 && preflightToolCalls.length === 0) {
+    return undefined;
+  }
+  return {
+    ...(provider ? { provider } : {}),
+    ...(activityEvents.length > 0 ? { activityEvents: [...activityEvents] } : {}),
+    ...(preflightToolCalls.length > 0 ? { preflightToolCalls: [...preflightToolCalls] } : {}),
+  };
 }
 
 type MessageMetadata = NonNullable<IMessage['metadata']>;

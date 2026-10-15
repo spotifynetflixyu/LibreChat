@@ -148,6 +148,9 @@ const {
   buildAgentScopedContext,
   buildDefaultSteelGlobalAgentContext,
   prepareLibreChatSteelChatContext,
+  toSteelNativeRecordMessage,
+  buildSteelAgentMessageMetadata,
+  collectSteelNativeFileRecordReferences,
   prepareSteelNativeToolConfig,
   prepareQuotationTurn,
   prepareSteelMarkdownHistory,
@@ -255,38 +258,6 @@ const loadAgent = (params) =>
   });
 
 const MEMORY_INPUT_CHARS_PER_TOKEN = 8;
-function toSteelNativeFileReference(file, { conversationId, messageId } = {}) {
-  const fileId = file?.file_id ?? file?.fileId ?? file?.id;
-  if (!fileId) {
-    return;
-  }
-
-  return removeNullishValues({
-    fileId,
-    source: 'librechat_file_record',
-    mediaType: file.type ?? file.mimeType ?? file.mediaType ?? 'application/octet-stream',
-    conversationId: file.conversationId ?? conversationId,
-    messageId: file.messageId ?? messageId,
-    filename: file.filename ?? file.name ?? file.originalname,
-    width: file.width,
-    height: file.height,
-  });
-}
-
-function appendSteelNativeFileReferences(target, files, seenFileIds, options) {
-  for (const file of files ?? []) {
-    const reference = toSteelNativeFileReference(file, options);
-    if (!reference) {
-      continue;
-    }
-    if (seenFileIds.has(reference.fileId)) {
-      continue;
-    }
-    seenFileIds.add(reference.fileId);
-    target.push(reference);
-  }
-}
-
 function getAttachmentFilename(file) {
   const filename = file?.filename ?? file?.name ?? file?.originalname;
   if (typeof filename !== 'string') {
@@ -319,26 +290,6 @@ function createTitleContext({ attachments }) {
       `Title rule: Always use the conversation text as the source for the title. Treat every attached filename as title context. When filenames are provided, begin with the first attached filename exactly ("${firstFilename}"), then summarize the conversation text. Example: "PL.pdf OCR彙整表單製作".`,
     ].join('\n'),
   };
-}
-
-function toSteelNativeMessage(message, conversationId) {
-  const files = Array.isArray(message.files)
-    ? message.files
-        .map((file) =>
-          toSteelNativeFileReference(file, {
-            conversationId,
-            messageId: message.messageId,
-          }),
-        )
-        .filter(Boolean)
-    : undefined;
-
-  return removeNullishValues({
-    role: message.isCreatedByUser ? 'user' : 'assistant',
-    content: message.text ?? '',
-    messageId: message.messageId,
-    files: files?.length ? files : undefined,
-  });
 }
 
 function normalizeEventActorContextMeta(contextMeta) {
@@ -2650,22 +2601,9 @@ class AgentClient extends BaseClient {
         this.addFileContextToMessage(latestMessage, modelBoundRequestAttachments),
         this.processAttachments(latestMessage, attachments),
       ]);
-      const seenSteelFileIds = new Set();
-      const steelReferenceOptions = {
-        conversationId: this.conversationId,
-        messageId: latestMessage.messageId,
-      };
-      appendSteelNativeFileReferences(
-        currentTurnSteelFileReferences,
-        attachments,
-        seenSteelFileIds,
-        steelReferenceOptions,
-      );
-      appendSteelNativeFileReferences(
-        currentTurnSteelFileReferences,
-        files,
-        seenSteelFileIds,
-        steelReferenceOptions,
+      currentTurnSteelFileReferences = collectSteelNativeFileRecordReferences(
+        [attachments, files],
+        { conversationId: this.conversationId, messageId: latestMessage.messageId },
       );
       this.options.attachments = files;
     } else {
@@ -3038,10 +2976,10 @@ class AgentClient extends BaseClient {
         this.conversationId ??
         'unknown_request',
       activeHistory: orderedMessages.map((message) =>
-        toSteelNativeMessage(message, this.conversationId),
+        toSteelNativeRecordMessage(message, this.conversationId),
       ),
       currentUserTurn: latestOrdered
-        ? toSteelNativeMessage(latestOrdered, this.conversationId)
+        ? toSteelNativeRecordMessage(latestOrdered, this.conversationId)
         : undefined,
     });
     let paddleOcrPreflight;
@@ -3933,7 +3871,7 @@ class AgentClient extends BaseClient {
    * Returns undefined when nothing was captured.
    * @returns {{
    *   thoughtSignatures?: Record<string, string>,
-   *   steel?: { provider?: unknown, activityEvents?: Array<import('@librechat/api').SteelNativeStreamEvent>, preflightToolCalls?: Array<import('@librechat/api').SteelNativePreflightToolCall> },
+   *   steel?: import('@librechat/api').SteelAgentMessageMetadata,
    *   contextUsage?: import('librechat-data-provider').TContextUsageEvent,
    *   usage?: import('librechat-data-provider').TResponseUsage,
    * } | undefined}
@@ -3941,31 +3879,17 @@ class AgentClient extends BaseClient {
   buildResponseMetadata() {
     /** @type {{
      *   thoughtSignatures?: Record<string, string>,
-     *   steel?: { provider?: unknown, activityEvents?: Array<import('@librechat/api').SteelNativeStreamEvent>, preflightToolCalls?: Array<import('@librechat/api').SteelNativePreflightToolCall> },
+     *   steel?: import('@librechat/api').SteelAgentMessageMetadata,
      *   contextUsage?: import('librechat-data-provider').TContextUsageEvent,
      *   usage?: import('librechat-data-provider').TResponseUsage,
      * }} */
     const metadata = {};
-    if (this.options?.steelProviderMetadata) {
-      metadata.steel = {
-        ...(metadata.steel ?? {}),
-        provider: this.options.steelProviderMetadata,
-      };
-    }
-    const steelHistory = this.options?.req?.steelNativeContext?.steelHistory;
-    const activityEvents = steelHistory?.activityEvents;
-    const preflightToolCalls = steelHistory?.preflightToolCalls;
-    if (Array.isArray(activityEvents) && activityEvents.length > 0) {
-      metadata.steel = {
-        ...(metadata.steel ?? {}),
-        activityEvents: [...activityEvents],
-      };
-    }
-    if (Array.isArray(preflightToolCalls) && preflightToolCalls.length > 0) {
-      metadata.steel = {
-        ...(metadata.steel ?? {}),
-        preflightToolCalls: [...preflightToolCalls],
-      };
+    const steel = buildSteelAgentMessageMetadata(
+      this.options?.steelProviderMetadata,
+      this.options?.req?.steelNativeContext?.steelHistory,
+    );
+    if (steel) {
+      metadata.steel = steel;
     }
     const signatures = this.collectedThoughtSignatures;
     if (signatures && Object.keys(signatures).length > 0) {

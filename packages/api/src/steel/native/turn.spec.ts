@@ -1,4 +1,9 @@
-import { collectSteelNativeInputFileReferences, collectSteelNativeMessages } from './turn';
+import {
+  collectSteelNativeMessages,
+  toSteelNativeRecordMessage,
+  collectSteelNativeInputFileReferences,
+  collectSteelNativeFileRecordReferences,
+} from './turn';
 
 describe('collectSteelNativeInputFileReferences', () => {
   it('prefers raw Open Responses parts and dedupes converted user files', () => {
@@ -68,5 +73,59 @@ describe('collectSteelNativeMessages', () => {
       content: 'second',
       files: [{ fileId: 'file-1', mediaType: 'application/pdf', source: 'librechat_file_record' }],
     });
+  });
+});
+
+describe('toSteelNativeRecordMessage', () => {
+  it('maps a stored message and scopes its file records', () => {
+    expect(
+      toSteelNativeRecordMessage(
+        {
+          isCreatedByUser: true,
+          text: 'quote',
+          messageId: 'm1',
+          files: [
+            { file_id: 'f1', type: 'image/png', filename: 'a.png', width: 10, height: null },
+            { file_id: 'f1', type: 'image/png' },
+            { filename: 'no-id.pdf' },
+          ],
+        },
+        'convo-1',
+      ),
+    ).toEqual({
+      role: 'user',
+      content: 'quote',
+      messageId: 'm1',
+      files: [
+        {
+          fileId: 'f1',
+          source: 'librechat_file_record',
+          mediaType: 'image/png',
+          conversationId: 'convo-1',
+          messageId: 'm1',
+          filename: 'a.png',
+          width: 10,
+        },
+      ],
+    });
+    expect(toSteelNativeRecordMessage({ text: null })).toEqual({ role: 'assistant', content: '' });
+  });
+});
+
+describe('collectSteelNativeFileRecordReferences', () => {
+  it('keeps the first record per file id across lists', () => {
+    expect(
+      collectSteelNativeFileRecordReferences(
+        [
+          [{ fileId: 'f1', mimeType: 'application/pdf', name: 'one.pdf' }],
+          undefined,
+          [{ id: 'f1' }, { id: 'f2' }],
+        ],
+        { conversationId: 'c', messageId: 'm' },
+      ).map(({ fileId, mediaType, filename }) => ({ fileId, mediaType, filename })),
+    ).toEqual([
+      { fileId: 'f1', mediaType: 'application/pdf', filename: 'one.pdf' },
+      { fileId: 'f2', mediaType: 'application/octet-stream', filename: undefined },
+    ]);
   });
 });

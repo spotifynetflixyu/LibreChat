@@ -155,3 +155,89 @@ export function collectSteelNativeMessages(
   }
   return { activeHistory, currentUserTurn };
 }
+
+/** A LibreChat file record or request attachment as carried on stored messages. */
+export interface SteelNativeFileRecord {
+  file_id?: string | null;
+  fileId?: string | null;
+  id?: string | null;
+  type?: string | null;
+  mimeType?: string | null;
+  mediaType?: string | null;
+  conversationId?: string | null;
+  messageId?: string | null;
+  filename?: string | null;
+  name?: string | null;
+  originalname?: string | null;
+  width?: number | null;
+  height?: number | null;
+}
+
+/** A stored LibreChat message as ordered for the agents client. */
+export interface SteelNativeRecordMessage {
+  isCreatedByUser?: boolean;
+  text?: string | null;
+  messageId?: string | null;
+  files?: readonly SteelNativeFileRecord[] | null;
+}
+
+interface SteelNativeFileRecordScope {
+  conversationId?: string | null;
+  messageId?: string | null;
+}
+
+export function toSteelNativeFileRecordReference(
+  file: SteelNativeFileRecord | null | undefined,
+  scope: SteelNativeFileRecordScope = {},
+): SteelNativeFileReference | undefined {
+  const fileId = file?.file_id ?? file?.fileId ?? file?.id;
+  if (!file || !fileId) {
+    return undefined;
+  }
+  const conversationId = file.conversationId ?? scope.conversationId;
+  const messageId = file.messageId ?? scope.messageId;
+  const filename = file.filename ?? file.name ?? file.originalname;
+  return {
+    fileId,
+    source: 'librechat_file_record',
+    mediaType: file.type ?? file.mimeType ?? file.mediaType ?? 'application/octet-stream',
+    ...(conversationId != null ? { conversationId } : {}),
+    ...(messageId != null ? { messageId } : {}),
+    ...(filename != null ? { filename } : {}),
+    ...(file.width != null ? { width: file.width } : {}),
+    ...(file.height != null ? { height: file.height } : {}),
+  };
+}
+
+/** References for every listed file record, first occurrence of each file id wins. */
+export function collectSteelNativeFileRecordReferences(
+  fileLists: readonly (readonly SteelNativeFileRecord[] | null | undefined)[],
+  scope: SteelNativeFileRecordScope = {},
+): SteelNativeFileReference[] {
+  const filesById = new Map<string, SteelNativeFileReference>();
+  for (const files of fileLists) {
+    for (const file of files ?? []) {
+      const reference = toSteelNativeFileRecordReference(file, scope);
+      if (reference && !filesById.has(reference.fileId)) {
+        filesById.set(reference.fileId, reference);
+      }
+    }
+  }
+  return [...filesById.values()];
+}
+
+export function toSteelNativeRecordMessage(
+  message: SteelNativeRecordMessage,
+  conversationId?: string | null,
+): SteelNativeMessage {
+  const files = collectSteelNativeFileRecordReferences([message.files], {
+    conversationId,
+    messageId: message.messageId,
+  });
+  return {
+    role: message.isCreatedByUser ? 'user' : 'assistant',
+    content: message.text ?? '',
+    ...(message.messageId != null ? { messageId: message.messageId } : {}),
+    ...(files.length > 0 ? { files } : {}),
+  };
+}

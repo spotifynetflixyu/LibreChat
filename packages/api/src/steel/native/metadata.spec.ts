@@ -1,7 +1,10 @@
-import { buildSteelNativeResponseMessageMetadata } from './metadata';
-
+import type { SteelNativePreflightToolCall } from './events';
+import {
+  buildSteelAgentMessageMetadata,
+  buildSteelNativeResponseMessageMetadata,
+} from './metadata';
+import { buildSteelDelegateOcrStatusEvent, createSteelNativeHistory } from './events';
 import { steelNativeInstructionPrefixSections } from './context';
-import { buildSteelDelegateOcrStatusEvent } from './events';
 
 describe('Steel native response metadata', () => {
   it('builds auditable Open Responses message metadata', () => {
@@ -112,5 +115,16 @@ describe('Steel native response metadata', () => {
         },
       },
     });
+  });
+});
+
+describe('buildSteelAgentMessageMetadata', () => {
+  it('omits the block when nothing was captured and copies captured history', () => {
+    expect(buildSteelAgentMessageMetadata(undefined, createSteelNativeHistory())).toBeUndefined();
+    const history = createSteelNativeHistory();
+    history.preflightToolCalls.push({ id: 'card-1' } as SteelNativePreflightToolCall);
+    const metadata = buildSteelAgentMessageMetadata(undefined, history);
+    expect(metadata).toEqual({ preflightToolCalls: [{ id: 'card-1' }] });
+    expect(metadata?.preflightToolCalls).not.toBe(history.preflightToolCalls);
   });
 });
