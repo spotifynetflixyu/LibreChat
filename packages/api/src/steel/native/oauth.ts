@@ -788,6 +788,46 @@ function isProviderCodeInterpreterEvidence(
     (part.type === 'tool-result' || part.providerExecuted === true);
 }
 
+/**
+ * Yields provider stream parts after dispatching their Code Interpreter
+ * evidence and audit. Cancels the provider stream unless it ended on its own,
+ * then always releases the reader and runs `cleanup`.
+ */
+async function* readProviderParts(
+  reader: ReadableStreamDefaultReader<LanguageModelV3StreamPart>,
+  {
+    dispatchEvidence,
+    dispatchAudit,
+    cancel,
+    cleanup,
+  }: {
+    dispatchEvidence: (parts: readonly LanguageModelV3StreamPart[]) => Promise<void>;
+    dispatchAudit?: (parts: LanguageModelV3StreamPart[]) => Promise<void>;
+    cancel: () => Promise<void>;
+    cleanup: () => void;
+  },
+): AsyncGenerator<LanguageModelV3StreamPart> {
+  let completed = false;
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) {
+        completed = true;
+        return;
+      }
+      await dispatchEvidence([value]);
+      await dispatchAudit?.([value]);
+      yield value;
+    }
+  } finally {
+    if (!completed) {
+      await cancel();
+    }
+    reader.releaseLock();
+    cleanup();
+  }
+}
+
 function createCodeInterpreterEvidenceDispatcher(
   callback?: OpenAIOAuthModelOptions['onCodeInterpreterEvidence'],
 ): (parts: readonly CodeInterpreterEvidenceSource[]) => Promise<void> {
@@ -1084,29 +1124,34 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
       throw error;
     }
 
+    let readerCancelled = false;
+    const cancelReader = async () => {
+      if (readerCancelled) return;
+      readerCancelled = true;
+      await reader.cancel().catch(() => undefined);
+    };
+    const streamControls = {
+      dispatchEvidence: dispatchCodeInterpreterEvidence,
+      ...(inspectCodeInterpreter
+        ? {
+            dispatchAudit: (parts: LanguageModelV3StreamPart[]) =>
+              dispatchCodeInterpreterAudit('stage_1', parts),
+          }
+        : {}),
+      cancel: cancelReader,
+      cleanup: () => linkedSignal?.cleanup(),
+    };
+
     if (ocrMode) {
       let generatedText = '';
       let response: LanguageModelV3GenerateResult['response'];
       let usage: LanguageModelV3Usage | undefined;
       let finishReason: LanguageModelV3GenerateResult['finishReason'] | undefined;
-      let completed = false;
       let streamError: Error | undefined;
       let hasClientTool = false;
 
       try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) {
-            completed = true;
-            break;
-          }
-
-          await dispatchCodeInterpreterEvidence([value]);
-
-          if (inspectCodeInterpreter) {
-            await dispatchCodeInterpreterAudit('stage_1', [value]);
-          }
-
+        for await (const value of readProviderParts(reader, streamControls)) {
           if (value.type === 'text-delta') {
             generatedText += value.delta;
             if (value.delta !== '') {
@@ -1144,12 +1189,6 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
         }
       } catch (error) {
         streamError = error instanceof Error ? error : new Error(String(error));
-      } finally {
-        if (!completed) {
-          await reader.cancel().catch(() => undefined);
-        }
-        reader.releaseLock();
-        linkedSignal?.cleanup();
       }
 
       if (streamError) {
@@ -1176,16 +1215,8 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
     let usage: LanguageModelV3Usage | undefined;
     let finishReason: LanguageModelV3GenerateResult['finishReason'] | undefined;
     let bypassNormalization = false;
-    let completed = false;
     let streamError: Error | undefined;
     let quotationHandoff = false;
-    let readerCancelled = false;
-
-    const cancelReader = async () => {
-      if (readerCancelled) return;
-      readerCancelled = true;
-      await reader.cancel().catch(() => undefined);
-    };
 
     const processText = (delta: string): string => {
       if (bypassNormalization) {
@@ -1231,21 +1262,7 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
     };
 
     try {
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) {
-          const pendingCandidate = flushQuotationCandidate();
-          if (pendingCandidate) yield toStreamTextChunk(pendingCandidate, this.options.model);
-          completed = true;
-          break;
-        }
-
-        await dispatchCodeInterpreterEvidence([value]);
-
-        if (inspectCodeInterpreter) {
-          await dispatchCodeInterpreterAudit('stage_1', [value]);
-        }
-
+      for await (const value of readProviderParts(reader, streamControls)) {
         if (value.type === 'text-delta') {
           if (quotationDetector?.getState() === 'pending') {
             const detection = quotationDetector.append(value.delta);
@@ -1323,14 +1340,12 @@ export class OpenAIOAuthModel extends Runnable<BaseMessage[], AIMessageChunk, Ru
           finishReason = value.finishReason;
         }
       }
+      if (!quotationHandoff) {
+        const pendingCandidate = flushQuotationCandidate();
+        if (pendingCandidate) yield toStreamTextChunk(pendingCandidate, this.options.model);
+      }
     } catch (error) {
       streamError = error instanceof Error ? error : new Error(String(error));
-    } finally {
-      if (!completed) {
-        await cancelReader();
-      }
-      reader.releaseLock();
-      linkedSignal?.cleanup();
     }
 
     if (streamError) {
