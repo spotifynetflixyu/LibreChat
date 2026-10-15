@@ -3,7 +3,8 @@ import { HumanMessage } from '@librechat/agents/langchain/messages';
 import type { HostSubagentTaskConfig } from '~/agents/subagentDelivery';
 import { SUBAGENT_COMPLETION_DELIVERY } from '~/agents/subagentDelivery';
 import { CHECK_BACKGROUND_TASK_NAME } from '~/agents/background';
-import { createRun, getLatestHumanMessageText } from '~/agents/run';
+import { createRun } from '~/agents/run';
+import { getLatestHumanMessageText } from '~/steel/native/run';
 
 /**
  * Guards the code-tool eager/session wiring in `createRun`. The whole

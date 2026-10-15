@@ -2,13 +2,7 @@ import { randomUUID } from 'crypto';
 import { logger } from '@librechat/data-schemas';
 import { ensureHandler } from '@langchain/core/callbacks/manager';
 import { oauthCompactionConfigSchema } from 'librechat-data-provider';
-import {
-  Run,
-  Providers,
-  Constants,
-  HookRegistry,
-  resolveLocalToolsForBinding,
-} from '@librechat/agents';
+import { Run, Providers, Constants, HookRegistry } from '@librechat/agents';
 import {
   KnownEndpoints,
   EModelEndpoint,
@@ -113,16 +107,14 @@ import {
   healToolApprovalPolicy,
   exemptAskUserQuestionFromApproval,
 } from '~/agents/hitl/policy';
+import { isDelegateOcrQuoteOnlyTurn } from '~/steel/native/delegate';
+import type { OpenAIReasoningEffort } from '~/steel/ai/config';
 import {
-  delegateOcrToolName,
-  isDelegateOcrQuoteOnlyTurn,
-  normalizeDelegateOcrChunk,
-} from '~/steel/native/delegate';
-import {
-  parseOpenAIConfig,
-  resolveOpenAIOAuthAuthFilePath,
-  type OpenAIReasoningEffort,
-} from '~/steel/ai/config';
+  isOpenAIOAuthAgent,
+  getLatestHumanMessageText,
+  getOpenAIOAuthModelOptions,
+  applyOpenAIOAuthGraphOverride,
+} from '~/steel/native/run';
 import {
   oauthCompactionProvider,
   registerOAuthCompactionProvider,
@@ -146,7 +138,6 @@ import { buildAgentInitialToolSessions } from '~/agents/codeFilesSession';
 import { getDirectDispatcher, getProxyDispatcher } from '~/utils/proxy';
 import { getAzureCredentials, constructAzureURL } from '~/utils/azure';
 import { prepareSteelNativeToolConfig } from '~/steel/native/tools';
-import { createOpenAIOAuthGraphModel } from '~/steel/native/oauth';
 import { getBuiltInBaseURL } from '~/endpoints/openai/initialize';
 import { getProviderConfig } from '~/endpoints/config/providers';
 import { buildToolApprovalHooks } from '~/agents/hitl/hooks';
@@ -164,15 +155,6 @@ import { createSafeUser } from '~/utils/env';
 interface ToolSearchJsonResult {
   found?: number;
   tools?: Array<{ name: string }>;
-}
-
-const openAIOAuthProvider = 'openai_oauth_responses';
-
-export function getLatestHumanMessageText(messages?: BaseMessage[]): string {
-  const latestHumanMessage = [...(messages ?? [])]
-    .reverse()
-    .find((message) => (message.getType?.() ?? message._getType?.()) === 'human');
-  return normalizeDelegateOcrChunk(latestHumanMessage?.content);
 }
 
 /**
@@ -1795,143 +1777,6 @@ function anyAgentHasCodeEnv(agents: RunAgent[]): boolean {
     enqueueSubagentChildren(agent, pending, visited);
   }
   return false;
-}
-
-type OpenAIOAuthGraph = {
-  agentContexts?: Map<
-    string,
-    {
-      systemRunnable?: ReturnType<
-        NonNullable<Parameters<typeof createOpenAIOAuthGraphModel>[0]['getSystemRunnable']>
-      >;
-      getToolsForBinding?: () => Parameters<typeof resolveLocalToolsForBinding>[0]['tools'];
-    }
-  >;
-  overrideModel?: unknown;
-  toolExecution?: Parameters<typeof resolveLocalToolsForBinding>[0]['toolExecution'];
-};
-
-function isOpenAIOAuthAgent(agent: Pick<RunAgent, 'endpoint' | 'provider'> | undefined): boolean {
-  return agent?.provider === openAIOAuthProvider || agent?.endpoint === openAIOAuthProvider;
-}
-
-function getRecordValue(record: Record<string, unknown> | undefined, key: string): unknown {
-  return record ? record[key] : undefined;
-}
-
-function getStringValue(
-  record: Record<string, unknown> | undefined,
-  key: string,
-): string | undefined {
-  const value = getRecordValue(record, key);
-  return typeof value === 'string' && value.trim() !== '' ? value : undefined;
-}
-
-function getRecordField(
-  record: Record<string, unknown> | undefined,
-  key: string,
-): Record<string, unknown> | undefined {
-  const value = getRecordValue(record, key);
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? (value as Record<string, unknown>)
-    : undefined;
-}
-
-function getOpenAIOAuthReasoningEffort(
-  clientOptions: Record<string, unknown> | undefined,
-): string | undefined {
-  const modelKwargs = getRecordField(clientOptions, 'modelKwargs');
-  const reasoning = getRecordField(clientOptions, 'reasoning');
-  const modelKwargsReasoning = getRecordField(modelKwargs, 'reasoning');
-
-  return (
-    getStringValue(clientOptions, 'reasoningEffort') ??
-    getStringValue(clientOptions, 'reasoning_effort') ??
-    getStringValue(reasoning, 'effort') ??
-    getStringValue(modelKwargs, 'reasoning_effort') ??
-    getStringValue(modelKwargsReasoning, 'effort')
-  );
-}
-
-function getNumberValue(
-  record: Record<string, unknown> | undefined,
-  key: string,
-): number | undefined {
-  const value = getRecordValue(record, key);
-  return typeof value === 'number' && Number.isFinite(value) ? value : undefined;
-}
-
-function getBooleanValue(
-  record: Record<string, unknown> | undefined,
-  key: string,
-): boolean | undefined {
-  const value = getRecordValue(record, key);
-  return typeof value === 'boolean' ? value : undefined;
-}
-
-function getOpenAIOAuthModelOptions(
-  agentInput: AgentInputs,
-  reasoningEffortOverride?: OpenAIReasoningEffort,
-) {
-  const clientOptions = agentInput.clientOptions as Record<string, unknown> | undefined;
-  const openAIConfig = parseOpenAIConfig(process.env);
-  const model = getStringValue(clientOptions, 'model') ?? openAIConfig.model;
-
-  return {
-    authFilePath:
-      getStringValue(clientOptions, 'authFilePath') ?? resolveOpenAIOAuthAuthFilePath(process.env),
-    ensureFresh: getBooleanValue(clientOptions, 'ensureFresh'),
-    frequencyPenalty: getNumberValue(clientOptions, 'frequencyPenalty'),
-    maxOutputTokens:
-      getNumberValue(clientOptions, 'maxOutputTokens') ??
-      getNumberValue(clientOptions, 'maxTokens') ??
-      getNumberValue(clientOptions, 'maxCompletionTokens'),
-    model,
-    presencePenalty: getNumberValue(clientOptions, 'presencePenalty'),
-    reasoningEffort:
-      reasoningEffortOverride ??
-      getOpenAIOAuthReasoningEffort(clientOptions) ??
-      openAIConfig.reasoningEffort,
-    topP: getNumberValue(clientOptions, 'topP'),
-  };
-}
-
-function applyOpenAIOAuthGraphOverride({
-  agentInput,
-  quotationPreparation,
-  openAIOAuthReasoningEffortOverride,
-  run,
-  sourceAgent,
-}: {
-  agentInput?: AgentInputs;
-  quotationPreparation?: boolean;
-  openAIOAuthReasoningEffortOverride?: OpenAIReasoningEffort;
-  run: unknown;
-  sourceAgent?: Pick<RunAgent, 'endpoint' | 'provider'>;
-}): void {
-  if (!agentInput || !isOpenAIOAuthAgent(sourceAgent)) {
-    return;
-  }
-
-  const graph = (run as { Graph?: OpenAIOAuthGraph }).Graph;
-  if (!graph) {
-    return;
-  }
-
-  const agentId = agentInput.agentId;
-  graph.overrideModel = createOpenAIOAuthGraphModel({
-    modelOptions: {
-      ...getOpenAIOAuthModelOptions(agentInput, openAIOAuthReasoningEffortOverride),
-      quotationPreparation,
-    },
-    terminalToolNames: [delegateOcrToolName],
-    getSystemRunnable: () => graph.agentContexts?.get(agentId)?.systemRunnable,
-    getTools: () =>
-      resolveLocalToolsForBinding({
-        tools: graph.agentContexts?.get(agentId)?.getToolsForBinding?.(),
-        toolExecution: graph.toolExecution,
-      }),
-  });
 }
 
 /**
