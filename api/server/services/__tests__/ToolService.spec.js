@@ -2374,10 +2374,8 @@ describe('ToolService - Action Capability Gating', () => {
       expect(definitionNames).toEqual(
         expect.arrayContaining(['search_customers', 'search_price_candidates']),
       );
-      expect(definitionNames).not.toContain('delegate_ocr');
       expect(result.toolRegistry.has('search_customers')).toBe(true);
       expect(result.toolRegistry.has('search_price_candidates')).toBe(true);
-      expect(result.toolRegistry.has('delegate_ocr')).toBe(false);
     });
 
     it('keeps Steel native tools empty when the tools capability is disabled', async () => {
@@ -2505,60 +2503,6 @@ describe('ToolService - Action Capability Gating', () => {
           `${Constants.mcp_all}${Constants.mcp_delimiter}PaddleOCR`,
         ]),
       );
-    });
-
-    it('omits delegate_ocr from quote-only definitions and registry while retaining it for inspection turns', async () => {
-      const capabilities = [AgentCapabilities.tools];
-      const quoteReq = createMockReq(capabilities);
-      quoteReq.steelNativeContext = {
-        delegateOcrContext: {
-          steelConversation: {
-            currentUserTurn: { role: 'user', content: '第35頁報價' },
-            activeHistory: [{ role: 'user', content: '第35頁報價' }],
-          },
-        },
-      };
-      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
-
-      const quoteResult = await loadAgentTools({
-        req: quoteReq,
-        res: {},
-        agent: { id: 'agent_quote', tools: [regularTool, 'delegate_ocr'] },
-        definitionsOnly: true,
-      });
-
-      expect(quoteResult.toolDefinitions.map(getToolDefinitionName)).not.toContain('delegate_ocr');
-      expect(quoteResult.toolRegistry.has('delegate_ocr')).toBe(false);
-
-      jest.clearAllMocks();
-      mockLoadToolDefinitions.mockResolvedValue({
-        toolDefinitions: [],
-        toolRegistry: new Map(),
-        hasDeferredTools: false,
-      });
-      const inspectionReq = createMockReq(capabilities);
-      inspectionReq.steelNativeContext = {
-        delegateOcrContext: {
-          steelConversation: {
-            currentUserTurn: {
-              role: 'user',
-              content: "I don't need a quote; inspect the PDF",
-            },
-            activeHistory: [{ role: 'user', content: "I don't need a quote; inspect the PDF" }],
-          },
-        },
-      };
-      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig(capabilities));
-
-      const inspectionResult = await loadAgentTools({
-        req: inspectionReq,
-        res: {},
-        agent: { id: 'agent_inspection', tools: [regularTool, 'delegate_ocr'] },
-        definitionsOnly: true,
-      });
-
-      expect(inspectionResult.toolDefinitions.map(getToolDefinitionName)).toContain('delegate_ocr');
-      expect(inspectionResult.toolRegistry.has('delegate_ocr')).toBe(true);
     });
 
     it('routes every current OCR-capable file through the preprocessing pipeline', async () => {
@@ -7176,11 +7120,7 @@ describe('ToolService - Action Capability Gating', () => {
       const { HumanMessage } = require('@librechat/agents/langchain/messages');
       const req = createMockReq([AgentCapabilities.tools]);
       req.steelNativeContext = {
-        delegateOcrPolicy: {
-          resolved: true,
-          allowed: true,
-          allowedFileKeys: ['file:drawing-1'],
-        },
+        delegateOcrPolicy: { resolved: true, allowed: false, allowedFileKeys: [] },
         delegateOcrContext: {
           history: [new HumanMessage('第35頁報價')],
           modelOptions: { model: 'gpt-5.6-luna' },
@@ -7209,11 +7149,7 @@ describe('ToolService - Action Capability Gating', () => {
     it('hard-stops delegate OCR for mixed inspection and quote intent', async () => {
       const req = createMockReq([AgentCapabilities.tools]);
       req.steelNativeContext = {
-        delegateOcrPolicy: {
-          resolved: true,
-          allowed: true,
-          allowedFileKeys: ['file:drawing-1'],
-        },
+        delegateOcrPolicy: { resolved: true, allowed: false, allowedFileKeys: [] },
         delegateOcrContext: {
           modelOptions: { model: 'gpt-5.6-luna' },
           steelConversation: {

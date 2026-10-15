@@ -107,11 +107,10 @@ import {
   healToolApprovalPolicy,
   exemptAskUserQuestionFromApproval,
 } from '~/agents/hitl/policy';
-import { isDelegateOcrQuoteOnlyTurn } from '~/steel/native/delegate';
+import type { SteelNativeToolVisibilityOptions } from '~/steel/native/tools';
 import type { OpenAIReasoningEffort } from '~/steel/ai/config';
 import {
   isOpenAIOAuthAgent,
-  getLatestHumanMessageText,
   getOpenAIOAuthModelOptions,
   applyOpenAIOAuthGraphOverride,
 } from '~/steel/native/run';
@@ -2114,8 +2113,8 @@ export async function createRun({
   conversationId,
   agents,
   messages,
-  delegateOcrQuoteOnlyTurn,
   delegateOcrPolicy,
+  steelToolVisibility,
   quotationPreparation = false,
   discoveredToolNames,
   requestBody,
@@ -2183,10 +2182,10 @@ export async function createRun({
   traceContext?: LangfuseTraceContext;
   /** Message history for extracting previously discovered tools */
   messages?: BaseMessage[];
-  /** Explicit quote-only classification used by HITL resume when messages are rehydrated. */
-  delegateOcrQuoteOnlyTurn?: boolean;
   /** Request-resolved delegate OCR visibility and authorized attachment keys. */
   delegateOcrPolicy?: DelegateOcrPolicy;
+  /** Turn-level Steel tool visibility for the run's top-level agents (not subagents). */
+  steelToolVisibility?: SteelNativeToolVisibilityOptions;
   /** The host may hand a completed preparation signal to the quotation workflow. */
   quotationPreparation?: boolean;
   /**
@@ -2338,9 +2337,6 @@ export async function createRun({
    * where no agent uses deferred tool loading.
    */
   const hasAnyDeferredTools = agents.some((agent) => agent.hasDeferredTools === true);
-  const excludeDelegateOcr =
-    delegateOcrQuoteOnlyTurn ?? isDelegateOcrQuoteOnlyTurn(getLatestHumanMessageText(messages));
-
   const discoveredTools = new Set<string>();
   if (hasAnyDeferredTools) {
     // Normal path: extract from this run's message history (tool_search results).
@@ -2556,7 +2552,7 @@ export async function createRun({
 
     const visibleToolConfig = prepareSteelNativeToolConfig(
       { tools, toolDefinitions, toolRegistry },
-      { excludeDelegateOcr, delegateOcrPolicy },
+      { ...(isSubagent ? {} : steelToolVisibility), delegateOcrPolicy },
     );
     tools = visibleToolConfig.tools as GenericTool[] | undefined;
     toolDefinitions = visibleToolConfig.toolDefinitions ?? [];

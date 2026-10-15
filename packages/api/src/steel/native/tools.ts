@@ -1,5 +1,6 @@
 import { zodToJsonSchema } from 'zod-to-json-schema';
 import { getSteelToolDefinitions, isSteelToolName } from '../tools/registry';
+import { hasQuotationOrder } from '../quotation/preparation';
 import {
   delegateOcrToolName,
   getDelegateOcrToolDefinition,
@@ -41,7 +42,6 @@ export interface SteelNativeToolVisibilityOptions {
   hasQuotationOrder?: boolean;
   ocrTurnActive?: boolean;
   allowPaddleOcr?: boolean;
-  excludeDelegateOcr?: boolean;
   delegateOcrPolicy?: unknown;
   /** Internal initialization-only escape hatch. Never pass to provider binding. */
   initializationDefer?: boolean;
@@ -119,7 +119,6 @@ function isVisibleForSteelNativeTurn(
   {
     ocrTurnActive,
     allowPaddleOcr,
-    excludeDelegateOcr,
     delegateOcrPolicy,
     initializationDefer,
     quotationRole,
@@ -127,21 +126,17 @@ function isVisibleForSteelNativeTurn(
   }: Required<SteelNativeToolVisibilityOptions>,
 ): boolean {
   if (toolName === delegateOcrToolName) {
-    const policyAllowsDelegate =
-      isResolvedDelegateOcrPolicy(delegateOcrPolicy) &&
-      delegateOcrPolicy.allowed === true &&
-      delegateOcrPolicy.allowedFileKeys.length > 0;
-    if (
-      excludeDelegateOcr ||
-      ocrTurnActive ||
-      (!policyAllowsDelegate &&
-        !(initializationDefer && delegateOcrPolicy === undefined))
-    ) {
+    if (ocrTurnActive) {
       return false;
     }
-  }
-  if (excludeDelegateOcr && toolName === delegateOcrToolName) {
-    return false;
+    if (delegateOcrPolicy === undefined) {
+      return initializationDefer;
+    }
+    return (
+      isResolvedDelegateOcrPolicy(delegateOcrPolicy) &&
+      delegateOcrPolicy.allowed === true &&
+      delegateOcrPolicy.allowedFileKeys.length > 0
+    );
   }
   if (!allowPaddleOcr && !isPaddleOcrToolVisibleToMainAgent(toolName)) {
     return false;
@@ -165,6 +160,29 @@ function isVisibleForSteelNativeTurn(
   );
 }
 
+/** The `req.steelNativeContext` fields that decide a turn's Steel tool visibility. */
+export interface SteelTurnToolVisibilityContext {
+  ocrTurnActive?: boolean;
+  delegateOcrPolicy?: unknown;
+  quotation?: { state?: { currentOrder?: { markdown?: string } | null } | null } | null;
+}
+
+/** Turn visibility shared by createRun and the execution-time tool loader. */
+export function resolveSteelTurnToolVisibility(
+  context: SteelTurnToolVisibilityContext | null | undefined,
+): SteelNativeToolVisibilityOptions {
+  return {
+    ocrTurnActive: context?.ocrTurnActive === true,
+    delegateOcrPolicy: context?.delegateOcrPolicy,
+    ...(context?.quotation
+      ? {
+          quotationRole: 'preparation',
+          hasQuotationOrder: hasQuotationOrder(context.quotation.state?.currentOrder?.markdown),
+        }
+      : {}),
+  };
+}
+
 /** Applies the shared PaddleOCR and Steel-tool visibility policy to an initialized agent config. */
 export function prepareSteelNativeToolConfig<T extends SteelNativeToolConfig>(
   config: T,
@@ -175,7 +193,6 @@ export function prepareSteelNativeToolConfig<T extends SteelNativeToolConfig>(
     hasQuotationOrder: options.hasQuotationOrder === true,
     ocrTurnActive: options.ocrTurnActive === true,
     allowPaddleOcr: options.allowPaddleOcr === true,
-    excludeDelegateOcr: options.excludeDelegateOcr === true,
     delegateOcrPolicy: options.delegateOcrPolicy,
     initializationDefer: options.initializationDefer === true,
   };

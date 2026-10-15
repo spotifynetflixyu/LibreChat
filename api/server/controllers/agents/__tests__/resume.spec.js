@@ -2990,11 +2990,10 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       expect(capturedInit.requestBody).toBe(persistedMCPRequestBody);
     });
 
-    it('propagates persisted delegate OCR quote-only state through resume', async () => {
+    it('propagates the persisted delegate OCR policy through resume', async () => {
       mockGenerationJobManager.getJob.mockResolvedValue(
         makeToolApprovalJob({
           metadata: {
-            delegateOcrQuoteOnlyTurn: true,
             delegateOcrPolicy: {
               resolved: true,
               allowed: true,
@@ -3011,7 +3010,6 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
       const client = await mockInitializeClient.mock.results[0].value.then((r) => r.client);
       expect(client.resumeCompletion).toHaveBeenCalledWith(
         expect.objectContaining({
-          delegateOcrQuoteOnlyTurn: true,
           delegateOcrPolicy: {
             resolved: true,
             allowed: true,
@@ -3118,25 +3116,6 @@ describe('ResumeAgentController (POST /agents/chat/resume)', () => {
           providerDrained: true,
         }),
         1000,
-      );
-    });
-
-    it('classifies legacy paused jobs from persisted user message text when flag is absent', async () => {
-      mockGenerationJobManager.getJob.mockResolvedValue(
-        makeToolApprovalJob({
-          metadata: {
-            userMessage: { messageId: USER_MSG_ID, text: '第35頁報價' },
-          },
-        }),
-      );
-
-      await post(approveBody());
-      await settled;
-      await flush();
-
-      const client = await mockInitializeClient.mock.results[0].value.then((r) => r.client);
-      expect(client.resumeCompletion).toHaveBeenCalledWith(
-        expect.objectContaining({ delegateOcrQuoteOnlyTurn: true }),
       );
     });
 

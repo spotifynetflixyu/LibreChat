@@ -37,7 +37,6 @@ const {
   isSteerPreemptSupported,
   isStopConfirmed,
   toPendingSteer,
-  isDelegateOcrQuoteOnlyTurn,
   mergeSteelMessageMetadata,
   createMCPRuntimeRequestBody,
   getSafeErrorMetadata,
@@ -2052,11 +2051,6 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
       GenerationJobManager.setContentParts(streamId, client.contentParts, job.createdAt);
     }
 
-    const persistedQuoteOnly = job.metadata?.delegateOcrQuoteOnlyTurn;
-    const delegateOcrQuoteOnlyTurn =
-      typeof persistedQuoteOnly === 'boolean'
-        ? persistedQuoteOnly
-        : isDelegateOcrQuoteOnlyTurn(job.metadata?.userMessage?.text);
     const persistedDelegateOcrPolicy = job.metadata?.delegateOcrPolicy;
     const delegateOcrPolicy =
       persistedDelegateOcrPolicy && typeof persistedDelegateOcrPolicy === 'object'
@@ -2075,7 +2069,6 @@ const ResumeAgentController = async (req, res, next, initializeClient, addTitle)
         // Replay deferred tools discovered before the pause (captured at pause). The rebuilt
         // graph passes `messages: []`, so without these the model would lose their schemas.
         discoveredToolNames: job.metadata?.discoveredTools,
-        delegateOcrQuoteOnlyTurn,
         delegateOcrPolicy,
         currentUserTurnText: job.metadata?.userMessage?.text,
         activityPhaseSnapshot: job.metadata?.activityPhaseSnapshot,

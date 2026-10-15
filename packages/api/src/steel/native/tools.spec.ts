@@ -2,6 +2,7 @@ import {
   createSteelNativeTool,
   mergeSteelToolDefinitions,
   prepareSteelNativeToolConfig,
+  resolveSteelTurnToolVisibility,
   resolveSteelProviderToolName,
 } from './tools';
 
@@ -45,7 +46,10 @@ function collectExclusiveBounds(value: JsonSchemaValue): JsonSchemaValue[] {
   );
 }
 
-function findSchemaProperty(value: JsonSchemaValue, propertyName: string): JsonSchemaValue | undefined {
+function findSchemaProperty(
+  value: JsonSchemaValue,
+  propertyName: string,
+): JsonSchemaValue | undefined {
   if (Array.isArray(value)) {
     for (const nested of value) {
       const found = findSchemaProperty(nested, propertyName);
@@ -654,7 +658,12 @@ describe('Steel native tool adapter', () => {
     {
       name: 'preflight turns retain PaddleOCR and Steel tools',
       options: { allowPaddleOcr: true },
-      expected: ['search_customers', 'search_price_candidates', 'paddleocr_vl---PaddleOCR', 'web_search'],
+      expected: [
+        'search_customers',
+        'search_price_candidates',
+        'paddleocr_vl---PaddleOCR',
+        'web_search',
+      ],
     },
     {
       name: 'OCR preflight turns retain PaddleOCR and all Steel tools',
@@ -752,18 +761,93 @@ describe('Steel native tool adapter', () => {
       expected,
     );
     expect(result.toolDefinitions?.map((tool) => tool.name)).toEqual(expected);
-    expect([...result.toolRegistry?.keys() ?? []]).toEqual(expected);
+    expect([...(result.toolRegistry?.keys() ?? [])]).toEqual(expected);
   });
 });
 
 describe('quotation tool capability boundaries', () => {
-  const config = { tools: ['search_customers', 'search_price_candidates', 'steel_search_price_candidates', 'web_search'] };
+  const config = {
+    tools: [
+      'search_customers',
+      'search_price_candidates',
+      'steel_search_price_candidates',
+      'web_search',
+    ],
+  };
   it('only exposes customer lookup after saved OCR exists', () => {
-    expect(prepareSteelNativeToolConfig(config, { quotationRole: 'preparation' }).tools).toEqual(['web_search']);
-    expect(prepareSteelNativeToolConfig(config, { quotationRole: 'preparation', hasQuotationOrder: true }).tools).toEqual(['search_customers', 'web_search']);
+    expect(prepareSteelNativeToolConfig(config, { quotationRole: 'preparation' }).tools).toEqual([
+      'web_search',
+    ]);
+    expect(
+      prepareSteelNativeToolConfig(config, {
+        quotationRole: 'preparation',
+        hasQuotationOrder: true,
+      }).tools,
+    ).toEqual(['search_customers', 'web_search']);
   });
   it('exposes price lookup exclusively to the quotation child', () => {
-    expect(prepareSteelNativeToolConfig(config, { quotationRole: 'main', hasQuotationOrder: true }).tools).toEqual(['web_search']);
-    expect(prepareSteelNativeToolConfig(config, { quotationRole: 'child' }).tools).toEqual(['search_price_candidates', 'steel_search_price_candidates', 'web_search']);
+    expect(
+      prepareSteelNativeToolConfig(config, { quotationRole: 'main', hasQuotationOrder: true })
+        .tools,
+    ).toEqual(['web_search']);
+    expect(prepareSteelNativeToolConfig(config, { quotationRole: 'child' }).tools).toEqual([
+      'search_price_candidates',
+      'steel_search_price_candidates',
+      'web_search',
+    ]);
+  });
+});
+
+describe('Steel turn tool visibility table', () => {
+  const allTools = [
+    'delegate_ocr',
+    'search_customers',
+    'search_price_candidates',
+    'paddleocr_vl',
+    'web_search',
+  ];
+  const allowed = { resolved: true, allowed: true, allowedFileKeys: ['file:a'] };
+  const denied = { resolved: true, allowed: false, allowedFileKeys: [] };
+  const order = {
+    state: { currentOrder: { markdown: '## ocr_result\n\n| 來源 | 零件編號 | 數量 | 類別 |\n| --- | --- | --- | --- |\n| 文字訂單 | 1 | 2 | 鐵板 |' } },
+  };
+
+  it.each([
+    [
+      'initialization defers delegate',
+      {},
+      { initializationDefer: true },
+      ['delegate_ocr', 'search_customers', 'search_price_candidates', 'web_search'],
+    ],
+    [
+      'unresolved policy hides delegate',
+      {},
+      {},
+      ['search_customers', 'search_price_candidates', 'web_search'],
+    ],
+    [
+      'denied policy hides delegate',
+      { delegateOcrPolicy: denied },
+      {},
+      ['search_customers', 'search_price_candidates', 'web_search'],
+    ],
+    [
+      'allowed policy shows delegate',
+      { delegateOcrPolicy: allowed },
+      {},
+      ['delegate_ocr', 'search_customers', 'search_price_candidates', 'web_search'],
+    ],
+    ['preparation without order', { quotation: {} }, {}, ['web_search']],
+    ['preparation with order', { quotation: order }, {}, ['search_customers', 'web_search']],
+    ['OCR turn hides Steel tools', { ocrTurnActive: true, quotation: order }, {}, ['web_search']],
+    [
+      'preflight may load PaddleOCR',
+      { ocrTurnActive: true },
+      { allowPaddleOcr: true },
+      ['search_customers', 'search_price_candidates', 'paddleocr_vl', 'web_search'],
+    ],
+  ])('%s', (_label, context, extra, expected) => {
+    const visibility = { ...resolveSteelTurnToolVisibility(context), ...extra };
+    expect(prepareSteelNativeToolConfig({ tools: allTools }, visibility).tools).toEqual(expected);
   });
 });

@@ -46,8 +46,6 @@ const {
   captureCodeExecutionApprovalBinding,
   computeAgentRequestFingerprint,
   extractDiscoveredToolsFromHistory,
-  getLatestHumanMessageText,
-  isDelegateOcrQuoteOnlyTurn,
   computeLegacyAgentRequestFingerprint,
   getRunDiscoveredTools,
   captureResumeModelParameters,
@@ -4619,7 +4617,6 @@ class AgentClient extends BaseClient {
     // may live only in the interrupted SDK graph, so they must be committed atomically
     // with requires_action for an immediate/cross-replica resume to retain the schemas.
     let discoveredTools = [];
-    let delegateOcrQuoteOnlyTurn;
     try {
       discoveredTools = getRunDiscoveredTools(run);
       const runMessages =
@@ -4627,10 +4624,6 @@ class AgentClient extends BaseClient {
       if (Array.isArray(runMessages)) {
         if (discoveredTools.length === 0) {
           discoveredTools = Array.from(extractDiscoveredToolsFromHistory(runMessages));
-        }
-        const latestHumanMessageText = getLatestHumanMessageText(runMessages);
-        if (latestHumanMessageText) {
-          delegateOcrQuoteOnlyTurn = isDelegateOcrQuoteOnlyTurn(latestHumanMessageText);
         }
       }
     } catch (err) {
@@ -4643,9 +4636,6 @@ class AgentClient extends BaseClient {
     const delegateOcrPolicy = this.options.req?.steelNativeContext?.delegateOcrPolicy;
     if (delegateOcrPolicy && typeof delegateOcrPolicy === 'object') {
       interruptMetadata.delegateOcrPolicy = delegateOcrPolicy;
-    }
-    if (delegateOcrQuoteOnlyTurn !== undefined) {
-      interruptMetadata.delegateOcrQuoteOnlyTurn = delegateOcrQuoteOnlyTurn;
     }
     await GenerationJobManager.updateMetadata(streamId, interruptMetadata);
 
@@ -5657,7 +5647,6 @@ class AgentClient extends BaseClient {
     commandOptions,
     userMCPAuthMap,
     discoveredToolNames,
-    delegateOcrQuoteOnlyTurn,
     delegateOcrPolicy,
     currentUserTurnText,
     activityPhaseSnapshot,
@@ -6104,7 +6093,6 @@ class AgentClient extends BaseClient {
         // discovery scan finds nothing, so these names restore the schemas to the
         // rebuilt model binding. Undefined/empty for non-deferred turns is a no-op.
         discoveredToolNames,
-        delegateOcrQuoteOnlyTurn,
         delegateOcrPolicy,
         initialSessions,
         ...resolveRunSeeds(this),

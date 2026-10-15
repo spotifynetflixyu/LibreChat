@@ -1,10 +1,9 @@
 import { resolveLocalToolsForBinding } from '@librechat/agents';
 import type { AgentInputs } from '@librechat/agents';
-import type { BaseMessage } from '@librechat/agents/langchain/messages';
 import type { OpenAIReasoningEffort } from '../ai/config';
 import type { OpenAIOAuthModelOptions } from './oauth';
 import { parseOpenAIConfig, resolveOpenAIOAuthAuthFilePath } from '../ai/config';
-import { delegateOcrToolName, normalizeDelegateOcrChunk } from './delegate';
+import { delegateOcrToolName } from './delegate';
 import { createOpenAIOAuthGraphModel } from './oauth';
 
 interface OpenAIOAuthAgentIdentity {
@@ -13,13 +12,6 @@ interface OpenAIOAuthAgentIdentity {
 }
 
 const openAIOAuthProvider = 'openai_oauth_responses';
-
-export function getLatestHumanMessageText(messages?: BaseMessage[]): string {
-  const latestHumanMessage = [...(messages ?? [])]
-    .reverse()
-    .find((message) => (message.getType?.() ?? message._getType?.()) === 'human');
-  return normalizeDelegateOcrChunk(latestHumanMessage?.content);
-}
 
 type OpenAIOAuthGraph = {
   agentContexts?: Map<

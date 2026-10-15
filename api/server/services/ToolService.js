@@ -31,10 +31,9 @@ const {
   createSteelNativeTool,
   createDelegateOcrTool,
   delegateOcrToolName,
-  isDelegateOcrQuoteOnlyTurn,
-  hasQuotationOrder,
   resolveSteelProviderToolName,
   prepareSteelNativeToolConfig,
+  resolveSteelTurnToolVisibility,
   ASK_USER_QUESTION_TOOL_NAME,
   splitMCPToolKey,
   buildServerNameAliases,
@@ -118,7 +117,6 @@ const {
   createDelegateOcrExecute,
   prepareDelegateOcrResume,
   executeDelegateOcrResume,
-  getDelegateOcrCurrentUserTurn,
   resolveDelegateOcrPolicyForRequest,
 } = require('~/server/services/Steel/delegate');
 const { executeSteelQuotationWorkflow } = require('~/server/services/Steel/quotation');
@@ -712,10 +710,6 @@ async function loadToolDefinitionsWrapper({
 
   const appConfig = req.config;
   const hasExpectedMCPTools = Array.isArray(agent.tools) && agent.tools.some(isExpectedMCPTool);
-  const delegateOcrContext = req?.steelNativeContext?.delegateOcrContext;
-  const excludeDelegateOcr = isDelegateOcrQuoteOnlyTurn(
-    getDelegateOcrCurrentUserTurn(delegateOcrContext),
-  );
   const enabledCapabilities = await resolveAgentCapabilities(req, appConfig, agent.id);
   const checkCapability = (capability) => enabledCapabilities.has(capability);
   const areToolsEnabled = checkCapability(AgentCapabilities.tools);
@@ -747,9 +741,6 @@ async function loadToolDefinitionsWrapper({
     }
     if (tool === ASK_USER_QUESTION_TOOL_NAME) {
       return checkCapability(AgentCapabilities.ask_user_question);
-    }
-    if (excludeDelegateOcr && tool === delegateOcrToolName) {
-      return false;
     }
     if (isActionTool(tool)) {
       return actionsEnabled;
@@ -825,10 +816,7 @@ async function loadToolDefinitionsWrapper({
       actionsEnabled,
     };
     return areToolsEnabled
-      ? mergeSteelNativeToolDefinitions(baseResult, {
-          excludeDelegateOcr,
-          initializationDefer: true,
-        })
+      ? mergeSteelNativeToolDefinitions(baseResult, { initializationDefer: true })
       : baseResult;
   }
 
@@ -1429,10 +1417,7 @@ async function loadToolDefinitionsWrapper({
         toolDefinitions,
         toolRegistry,
       },
-      {
-        excludeDelegateOcr,
-        initializationDefer: true,
-      },
+      { initializationDefer: true },
     );
     toolDefinitions = mergedResult.toolDefinitions;
     toolRegistry = mergedResult.toolRegistry;
@@ -1969,26 +1954,9 @@ async function loadToolsForExecution({
   accessibleMcpServerNames,
 }) {
   const appConfig = req.config;
-  const ocrTurnActive = req?.steelNativeContext?.ocrTurnActive === true;
-  const excludeDelegateOcr = isDelegateOcrQuoteOnlyTurn(
-    getDelegateOcrCurrentUserTurn(req?.steelNativeContext?.delegateOcrContext),
-  );
   const visibleToolConfig = prepareSteelNativeToolConfig(
     { tools: toolNames, toolRegistry },
-    {
-      ocrTurnActive,
-      allowPaddleOcr,
-      excludeDelegateOcr,
-      delegateOcrPolicy: req?.steelNativeContext?.delegateOcrPolicy,
-      ...(req?.steelNativeContext?.quotation
-        ? {
-            quotationRole: 'preparation',
-            hasQuotationOrder: hasQuotationOrder(
-              req.steelNativeContext.quotation.state?.currentOrder?.markdown,
-            ),
-          }
-        : {}),
-    },
+    { ...resolveSteelTurnToolVisibility(req?.steelNativeContext), allowPaddleOcr },
   );
   const executionToolNames = (visibleToolConfig.tools ?? []).filter(
     (name) => typeof name === 'string',

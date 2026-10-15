@@ -4,7 +4,6 @@ import type { HostSubagentTaskConfig } from '~/agents/subagentDelivery';
 import { SUBAGENT_COMPLETION_DELIVERY } from '~/agents/subagentDelivery';
 import { CHECK_BACKGROUND_TASK_NAME } from '~/agents/background';
 import { createRun } from '~/agents/run';
-import { getLatestHumanMessageText } from '~/steel/native/run';
 
 /**
  * Guards the code-tool eager/session wiring in `createRun`. The whole
@@ -224,16 +223,7 @@ describe('createRun code-tool eager/session wiring', () => {
     expect((input.toolRegistry as Map<string, unknown>).has('delegate_ocr')).toBe(false);
   });
 
-  it('extracts latest human text from string and array content', () => {
-    expect(
-      getLatestHumanMessageText([
-        new HumanMessage('舊問題'),
-        new HumanMessage({ content: [{ type: 'text', text: '報價' }] }),
-      ]),
-    ).toBe('報價');
-  });
-
-  it('applies explicit quote-only override when resuming with empty messages and deferred tools', async () => {
+  it('hides delegate_ocr on resume when the persisted policy disallows it', async () => {
     const delegate = { name: 'delegate_ocr', description: 'delegate', parameters: {} };
     const agent = makeAgent({
       tools: [delegate],
@@ -247,7 +237,7 @@ describe('createRun code-tool eager/session wiring', () => {
       signal: new AbortController().signal,
       messages: [],
       discoveredToolNames: ['delegate_ocr'],
-      delegateOcrQuoteOnlyTurn: true,
+      delegateOcrPolicy: { resolved: true, allowed: false, allowedFileKeys: [] },
       streaming: true,
       streamUsage: true,
     });
@@ -273,7 +263,6 @@ describe('createRun code-tool eager/session wiring', () => {
       agents: [agent] as never,
       signal: new AbortController().signal,
       messages: [],
-      delegateOcrQuoteOnlyTurn: false,
       streaming: true,
       streamUsage: true,
     });
