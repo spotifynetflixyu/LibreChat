@@ -3,8 +3,14 @@ import { ocrPreprocessingChunkSizePagesEnvKey } from './config';
 import { mergeChunkMarkdownForFileKey } from './merge';
 import { runOcrPreprocessingBatchPipeline, runOcrPreprocessingPipeline } from './preprocess';
 import { parseMarkdownTables } from '../markdown/table';
+import { getPaddleOcrResultText } from './text';
 
-import type { OcrPreprocessingState } from '../memory/service';
+import type {
+  OcrPreprocessingState,
+  CapturePaddleOcrChunkResultInput,
+  OcrPreprocessingChunkCaptureInput,
+  CaptureOcrPreprocessingChunkMarkdownInput,
+} from '../memory/service';
 import type { OcrPreprocessingPageChunk } from './chunks';
 import type { OcrOrganizer } from './organizer';
 
@@ -22,6 +28,57 @@ function emptyState(input: {
     chunkSizePages: 50,
     chunkCount: input.chunkCount ?? 0,
     chunks: [],
+  };
+}
+
+function createMemoryStore(initialStates: readonly OcrPreprocessingState[]) {
+  const states = new Map(initialStates.map((state) => [state.ocrFileKey, structuredClone(state)]));
+  const chunkState = (input: {
+    file: { ocrFileKey?: string };
+    chunk: OcrPreprocessingChunkCaptureInput;
+  }) => {
+    const state = states.get(input.file.ocrFileKey ?? '');
+    if (!state) {
+      throw new Error(`No preprocessing state for ${input.file.ocrFileKey}`);
+    }
+    const { chunkIndex, chunkCount, pageStart, pageEnd } = input.chunk;
+    let entry = state.chunks.find((chunk) => chunk.pageStart === pageStart && chunk.pageEnd === pageEnd);
+    if (!entry) {
+      entry = {
+        chunkIndex,
+        chunkCount,
+        pageStart,
+        pageEnd,
+        chunkSizePages: input.chunk.chunkSizePages ?? state.chunkSizePages,
+        rawSaved: false,
+        organizedSaved: false,
+      };
+      state.chunks.push(entry);
+    }
+    return entry;
+  };
+  return {
+    readOcrPreprocessingState: jest.fn(async ({ ocrFileKey }: { ocrFileKey: string }) =>
+      structuredClone(states.get(ocrFileKey) as OcrPreprocessingState),
+    ),
+    capturePaddleOcrChunkResult: jest.fn(async (input: CapturePaddleOcrChunkResultInput) => {
+      Object.assign(chunkState(input), {
+        rawSaved: true,
+        rawResultHash: input.rawResultHash,
+        rawOcrText: getPaddleOcrResultText(input.data),
+      });
+      return { savedCounts: { paddleocr_preflight: 1 } };
+    }),
+    captureOcrPreprocessingChunkMarkdown: jest.fn(
+      async (input: CaptureOcrPreprocessingChunkMarkdownInput) => {
+        Object.assign(chunkState(input), {
+          organizedSaved: true,
+          organizedMarkdown: input.content,
+          ocrRuleVersion: input.ocrRuleVersion,
+        });
+        return { savedCounts: { ocr_preprocessing_chunk_markdown: 1 } };
+      },
+    ),
   };
 }
 
@@ -55,27 +112,7 @@ function organizerRetryFixture(input: { organizer: OcrOrganizer }) {
       },
     ],
   };
-  const organizedState: OcrPreprocessingState = {
-    ...rawState,
-    chunks: [
-      {
-        ...rawState.chunks[0],
-        organizedSaved: true,
-        organizedMarkdown: tableMarkdown('organized markdown'),
-      },
-    ],
-  };
-  const memory = {
-    readOcrPreprocessingState: jest
-      .fn()
-      .mockResolvedValueOnce(rawState)
-      .mockResolvedValueOnce(rawState)
-      .mockResolvedValueOnce(organizedState),
-    capturePaddleOcrChunkResult: jest.fn(),
-    captureOcrPreprocessingChunkMarkdown: jest.fn().mockResolvedValue({
-      savedCounts: { ocr_preprocessing_chunk_markdown: 1 },
-    }),
-  };
+  const memory = createMemoryStore([rawState]);
 
   return {
     chunks,
@@ -126,25 +163,7 @@ describe('OCR preprocessing orchestrator', () => {
         rawOcrText: `raw chunk ${chunk.chunkIndex}`,
       })),
     };
-    const organizedState: OcrPreprocessingState = {
-      ...rawState,
-      chunks: rawState.chunks.map((chunk) => ({
-        ...chunk,
-        organizedSaved: true,
-        organizedMarkdown: `| file | value |\n| --- | --- |\n| ${chunk.chunkIndex} | organized |`,
-      })),
-    };
-    const memory = {
-      readOcrPreprocessingState: jest
-        .fn()
-        .mockResolvedValueOnce(rawState)
-        .mockResolvedValueOnce(rawState)
-        .mockResolvedValueOnce(organizedState),
-      capturePaddleOcrChunkResult: jest.fn(),
-      captureOcrPreprocessingChunkMarkdown: jest.fn().mockResolvedValue({
-        savedCounts: { ocr_preprocessing_chunk_markdown: 1 },
-      }),
-    };
+    const memory = createMemoryStore([rawState]);
     const organizer = {
       organize: jest.fn(async ({ rawOcrText, artifactUrl }) => ({
         markdown: [
@@ -237,28 +256,6 @@ describe('OCR preprocessing orchestrator', () => {
       ocrRuleVersion: 'rules-v2',
       chunkCount: 1,
     });
-    const rawState: OcrPreprocessingState = {
-      ...baseState,
-      chunks: [
-        {
-          ...chunk,
-          rawSaved: true,
-          organizedSaved: false,
-          rawResultHash: 'hash-refreshed',
-          rawOcrText: 'raw refreshed OCR',
-        },
-      ],
-    };
-    const organizedState: OcrPreprocessingState = {
-      ...rawState,
-      chunks: [
-        {
-          ...rawState.chunks[0],
-          organizedSaved: true,
-          organizedMarkdown: tableMarkdown('organized refreshed OCR'),
-        },
-      ],
-    };
     const originalArtifact = {
       ...chunk,
       filepath: 'https://cdn.example/refreshed.pdf?signature=old',
@@ -269,15 +266,7 @@ describe('OCR preprocessing orchestrator', () => {
       ...originalArtifact,
       filepath: 'https://cdn.example/refreshed.pdf?signature=new',
     };
-    const memory = {
-      readOcrPreprocessingState: jest
-        .fn()
-        .mockResolvedValueOnce(baseState)
-        .mockResolvedValueOnce(rawState)
-        .mockResolvedValueOnce(organizedState),
-      capturePaddleOcrChunkResult: jest.fn().mockResolvedValue({ savedCounts: {} }),
-      captureOcrPreprocessingChunkMarkdown: jest.fn().mockResolvedValue({ savedCounts: {} }),
-    };
+    const memory = createMemoryStore([baseState]);
     const organizer = {
       organize: jest.fn().mockResolvedValue({ markdown: tableMarkdown('organized refreshed OCR') }),
     };
@@ -538,12 +527,6 @@ describe('OCR preprocessing orchestrator', () => {
         },
       ],
     };
-    const organizedState = {
-      ...state,
-      chunks: [
-        { ...state.chunks[0], organizedSaved: true, organizedMarkdown: tableMarkdown('organized photo') },
-      ],
-    };
     const organizer = { organize: jest.fn(async () => ({ markdown: tableMarkdown('organized photo') })) };
     const result = await runOcrPreprocessingPipeline({
       conversationId: 'steel_conversation_image',
@@ -566,17 +549,7 @@ describe('OCR preprocessing orchestrator', () => {
           },
         ]),
       },
-      memory: {
-        readOcrPreprocessingState: jest
-          .fn()
-          .mockResolvedValueOnce(state)
-          .mockResolvedValueOnce(state)
-          .mockResolvedValueOnce(organizedState),
-        capturePaddleOcrChunkResult: jest.fn(),
-        captureOcrPreprocessingChunkMarkdown: jest.fn().mockResolvedValue({
-          savedCounts: { ocr_preprocessing_chunk_markdown: 1 },
-        }),
-      },
+      memory: createMemoryStore([state]),
       organizer,
       paddleOcr: { runChunk: jest.fn() },
     });
@@ -1002,26 +975,7 @@ describe('OCR preprocessing orchestrator', () => {
         },
       ],
     };
-    const organizedState: OcrPreprocessingState = {
-      ...invalidState,
-      chunks: [
-        {
-          ...invalidState.chunks[0],
-          organizedMarkdown: tableMarkdown('rebuilt'),
-        },
-      ],
-    };
-    const memory = {
-      readOcrPreprocessingState: jest
-        .fn()
-        .mockResolvedValueOnce(invalidState)
-        .mockResolvedValueOnce(invalidState)
-        .mockResolvedValueOnce(organizedState),
-      capturePaddleOcrChunkResult: jest.fn(),
-      captureOcrPreprocessingChunkMarkdown: jest.fn().mockResolvedValue({
-        savedCounts: { ocr_preprocessing_chunk_markdown: 1 },
-      }),
-    };
+    const memory = createMemoryStore([invalidState]);
     const ensurePdfChunkArtifacts = jest.fn(async () => [
       {
         ...chunks[0],
@@ -1255,28 +1209,7 @@ describe('OCR preprocessing orchestrator', () => {
         },
       ],
     };
-    const organizedState: OcrPreprocessingState = {
-      ...initialState,
-      chunks: [
-        initialState.chunks[0],
-        {
-          ...initialState.chunks[1],
-          organizedSaved: true,
-          organizedMarkdown: tableMarkdown('organized 2'),
-        },
-      ],
-    };
-    const memory = {
-      readOcrPreprocessingState: jest
-        .fn()
-        .mockResolvedValueOnce(initialState)
-        .mockResolvedValueOnce(initialState)
-        .mockResolvedValueOnce(organizedState),
-      capturePaddleOcrChunkResult: jest.fn(),
-      captureOcrPreprocessingChunkMarkdown: jest.fn().mockResolvedValue({
-        savedCounts: { ocr_preprocessing_chunk_markdown: 1 },
-      }),
-    };
+    const memory = createMemoryStore([initialState]);
 
     const result = await runOcrPreprocessingPipeline({
       conversationId: 'steel_conversation_preprocess',
@@ -1436,40 +1369,7 @@ describe('OCR preprocessing orchestrator', () => {
       ocrRuleVersion: 'rules-v2',
       chunkCount: 3,
     });
-    const rawSavedState: OcrPreprocessingState = {
-      ...emptyPreprocessState,
-      chunks: chunks.map((chunk) => ({
-        ...chunk,
-        rawSaved: true,
-        organizedSaved: false,
-        rawResultHash: `hash-${chunk.chunkIndex}`,
-        rawOcrText: `raw pages ${chunk.pageStart}-${chunk.pageEnd}`,
-      })),
-    };
-    const organizedSavedState: OcrPreprocessingState = {
-      ...emptyPreprocessState,
-      chunks: chunks.map((chunk) => ({
-        ...chunk,
-        rawSaved: true,
-        organizedSaved: true,
-        rawResultHash: `hash-${chunk.chunkIndex}`,
-        rawOcrText: `raw pages ${chunk.pageStart}-${chunk.pageEnd}`,
-        organizedMarkdown: `organized ${chunk.chunkIndex}`,
-      })),
-    };
-    const memory = {
-      readOcrPreprocessingState: jest
-        .fn()
-        .mockResolvedValueOnce(emptyPreprocessState)
-        .mockResolvedValueOnce(rawSavedState)
-        .mockResolvedValueOnce(organizedSavedState),
-      capturePaddleOcrChunkResult: jest.fn().mockResolvedValue({
-        savedCounts: { paddleocr_preflight: 1 },
-      }),
-      captureOcrPreprocessingChunkMarkdown: jest.fn().mockResolvedValue({
-        savedCounts: { ocr_preprocessing_chunk_markdown: 1 },
-      }),
-    };
+    const memory = createMemoryStore([emptyPreprocessState]);
 
     await runOcrPreprocessingPipeline({
       conversationId: 'steel_conversation_preprocess',
@@ -1538,40 +1438,7 @@ describe('OCR preprocessing orchestrator', () => {
       ocrRuleVersion: 'rules-v2',
       chunkCount: 6,
     });
-    const rawSavedState: OcrPreprocessingState = {
-      ...emptyPreprocessState,
-      chunks: chunks.map((chunk) => ({
-        ...chunk,
-        rawSaved: true,
-        organizedSaved: false,
-        rawResultHash: `hash-${chunk.chunkIndex}`,
-        rawOcrText: `raw pages ${chunk.pageStart}-${chunk.pageEnd}`,
-      })),
-    };
-    const organizedSavedState: OcrPreprocessingState = {
-      ...emptyPreprocessState,
-      chunks: chunks.map((chunk) => ({
-        ...chunk,
-        rawSaved: true,
-        organizedSaved: true,
-        rawResultHash: `hash-${chunk.chunkIndex}`,
-        rawOcrText: `raw pages ${chunk.pageStart}-${chunk.pageEnd}`,
-        organizedMarkdown: `| chunk | pages |\n|---|---|\n| ${chunk.chunkIndex} | ${chunk.pageStart}-${chunk.pageEnd} |`,
-      })),
-    };
-    const memory = {
-      readOcrPreprocessingState: jest
-        .fn()
-        .mockResolvedValueOnce(emptyPreprocessState)
-        .mockResolvedValueOnce(rawSavedState)
-        .mockResolvedValueOnce(organizedSavedState),
-      capturePaddleOcrChunkResult: jest.fn().mockResolvedValue({
-        savedCounts: { paddleocr_preflight: 1 },
-      }),
-      captureOcrPreprocessingChunkMarkdown: jest.fn().mockResolvedValue({
-        savedCounts: { ocr_preprocessing_chunk_markdown: 1 },
-      }),
-    };
+    const memory = createMemoryStore([emptyPreprocessState]);
     const paddleOcr = {
       runChunk: jest.fn(async ({ chunk }) => ({
         rawResult: { text: `raw pages ${chunk.pageStart}-${chunk.pageEnd}` },
