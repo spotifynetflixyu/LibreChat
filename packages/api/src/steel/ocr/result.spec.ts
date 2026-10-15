@@ -384,7 +384,8 @@ describe('finalizeOcrResponse', () => {
         ],
       },
     });
-    expect(result.finalResponse).toContain(`## ${title}`);
+    expect(result.finalResponse).toContain('## ocr_result\n');
+    expect(result.finalResponse).not.toContain(title);
     expect(result.finalResponse).toContain('| 2或3 | 待確認 |');
     expect(
       finalizeOcrResponse({ assistantResponse: result.finalResponse, canonicalMapping: [] }),
@@ -504,7 +505,7 @@ function responseWithFullResult(): string {
   return `## ocr_result\n\n${table(['來源', '零件編號'], [['F1', 'P1']])}`;
 }
 
-it('preserves the exact full OCR title during finalization', () => {
+it('canonicalizes a labeled OCR title during finalization', () => {
   const title = 'ocr_result｜鋼材明細';
   const result = finalizeOcrResponse({
     assistantResponse: `## ${title}\n\n${table(['描述', '數量'], [['plate', '2']])}`,
@@ -514,7 +515,7 @@ it('preserves the exact full OCR title during finalization', () => {
   if (result.ok) {
     expect(
       parseAssistantMarkdown(result.finalResponse).sections.map((section) => section.title),
-    ).toEqual([title]);
-    expect(result.ocrResultMarkdown).toContain(`## ${title}\n`);
+    ).toEqual(['ocr_result']);
+    expect(result.ocrResultMarkdown).toContain('## ocr_result\n');
   }
 });

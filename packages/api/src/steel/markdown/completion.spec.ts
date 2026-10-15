@@ -784,7 +784,7 @@ it('overwrites the chat message with the normalized AI baseline while leaving ea
     ...scope,
     messageId: 'assistant-2',
     kind: 'ocr_result',
-    title: 'ocr_result｜測試',
+    title: 'ocr_result',
   });
   expect(table.rows[0].values['厚度']).toEqual({ baseline: '6', effective: '6' });
   expect(table.rows[0].values['長度']).toEqual({ baseline: '1250', effective: '1250' });

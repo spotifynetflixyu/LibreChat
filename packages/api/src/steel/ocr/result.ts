@@ -518,12 +518,12 @@ function finalizeOcrResponseInternal(input: FinalizeOcrResponseInput): FinalizeO
   } else if (requiresCanonicalMapping) {
     chunks.push(`## ${SOURCE_TITLE}\n\n${renderTable({ headers: SOURCE_HEADERS, rows: mapping.entries.map((entry) => [entry.sourceCode, entry.sourceFilename]) })}`);
   }
-  chunks.push(renderResultSection({ headers: reconciliation.headers, rows: reconciliation.rows }, resultTitle));
+  chunks.push(renderResultSection({ headers: reconciliation.headers, rows: reconciliation.rows }, RESULT_TITLE));
   if (review) {
     chunks.push(review.raw);
   }
   chunks.push(...safeOtherText(document, used));
-  const ocrResultMarkdown = renderResultSection({ headers: reconciliation.headers, rows: reconciliation.rows }, resultTitle);
+  const ocrResultMarkdown = renderResultSection({ headers: reconciliation.headers, rows: reconciliation.rows }, RESULT_TITLE);
   const finalResponse = joinChunks(chunks, document.newline);
   return {
     ok: true,

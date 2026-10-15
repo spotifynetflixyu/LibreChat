@@ -1,8 +1,10 @@
+import type { StderrCaptureSource } from './diagnostics';
 import {
-  classifyPaddleOcrDiagnostic,
-  isPaddleOcrDiagnosticCode,
   isPaddleOcrMcpServerName,
+  isPaddleOcrDiagnosticCode,
   PADDLE_OCR_MCP_SERVER_NAME,
+  classifyPaddleOcrDiagnostic,
+  startPaddleOcrDiagnosticCapture,
 } from './diagnostics';
 
 describe('PaddleOCR diagnostics', () => {
@@ -70,5 +72,38 @@ describe('PaddleOCR diagnostics', () => {
     const stderr =
       'download failed: https://s3.example.test/object?X-Amz-Credential=access-key%2Fscope';
     expect(classifyPaddleOcrDiagnostic(stderr)).toBeUndefined();
+  });
+});
+
+describe('startPaddleOcrDiagnosticCapture', () => {
+  const connection: StderrCaptureSource = {
+    hasStderrCapture: () => true,
+    getStderrCursor: () => 0,
+    readStderrSince: () => 'ResultParseError: invalid JSON',
+  };
+  const start = () =>
+    startPaddleOcrDiagnosticCapture({
+      connection,
+      serverName: PADDLE_OCR_MCP_SERVER_NAME,
+      toolName: 'paddleocr_vl',
+    });
+
+  it('classifies request-phase failures', async () => {
+    const capture = await start();
+    const error = new Error('request failed');
+    await capture?.annotate(error);
+    capture?.release();
+    expect((error as Error & { diagnosticCode?: string }).diagnosticCode).toBe(
+      'ai_studio_response_parse',
+    );
+  });
+
+  it('leaves errors raised after a successful tool result unclassified', async () => {
+    const capture = await start();
+    await capture?.assertResult(false);
+    const error = new Error('image exceeds the size limit');
+    await capture?.annotate(error);
+    capture?.release();
+    expect((error as Error & { diagnosticCode?: string }).diagnosticCode).toBeUndefined();
   });
 });

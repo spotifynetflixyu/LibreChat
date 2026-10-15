@@ -72,7 +72,6 @@ export function classifyPaddleOcrDiagnostic(stderr: string): PaddleOcrDiagnostic
   return undefined;
 }
 
-
 export interface StderrCaptureSource {
   hasStderrCapture?(): boolean;
   getStderrCursor(): number;
@@ -107,7 +106,11 @@ function waitAbortable(promise: Promise<void>, signal?: AbortSignal): Promise<vo
 function attachDiagnosticCode(error: unknown, code: PaddleOcrDiagnosticCode | undefined): void {
   if (!code || !error || typeof error !== 'object') return;
   try {
-    Object.defineProperty(error, 'diagnosticCode', { value: code, enumerable: false, configurable: true });
+    Object.defineProperty(error, 'diagnosticCode', {
+      value: code,
+      enumerable: false,
+      configurable: true,
+    });
   } catch {
     // Frozen errors keep their original shape.
   }
@@ -138,7 +141,10 @@ export async function startPaddleOcrDiagnosticCapture(input: {
   const current = new Promise<void>((resolve) => {
     releaseCurrent = resolve;
   });
-  captureLocks.set(connection, previous.then(() => current));
+  captureLocks.set(
+    connection,
+    previous.then(() => current),
+  );
   try {
     await waitAbortable(previous, signal);
   } catch (error) {
@@ -157,11 +163,15 @@ export async function startPaddleOcrDiagnosticCapture(input: {
     return classifyPaddleOcrDiagnostic(connection.readStderrSince(cursor));
   };
 
+  /** Only request-phase failures are classified; errors after the tool result arrives keep their own meaning. */
+  let requestSettled = false;
   return {
     async annotate(error) {
+      if (requestSettled) return;
       attachDiagnosticCode(error, await readDiagnostic());
     },
     async assertResult(isError) {
+      requestSettled = true;
       if (!isError) return;
       const code = await readDiagnostic();
       if (!code) return;
