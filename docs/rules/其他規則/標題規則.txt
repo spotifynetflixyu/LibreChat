@@ -1,0 +1,1 @@
+Title rule: Always use the conversation text as the source for the title. Treat every attached filename as title context. When filenames are provided, begin with the first attached filename exactly ("{{first_filename}}"), then summarize the conversation text. Example: "PL.pdf OCR彙整表單製作".

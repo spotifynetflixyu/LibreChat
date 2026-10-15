@@ -14,6 +14,7 @@ export interface SteelRuntimeOtherGlobalRules {
   fileRules: SteelAgentRule[];
   sourcePriorityRules: SteelAgentRule[];
   markdownOutputRules: SteelAgentRule[];
+  titleRules: SteelAgentRule[];
 }
 
 export interface SteelRuntimeOcrSourceFileMapping {

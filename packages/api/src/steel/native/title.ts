@@ -6,6 +6,7 @@ import { PromptTemplate } from '@librechat/agents/langchain/prompts';
 import { RunnableLambda, RunnableSequence } from '@librechat/agents/langchain/runnables';
 import type { AIMessageChunk } from '@librechat/agents/langchain/messages';
 import type { ChatModelInstance, ClientOptions, RunTitleOptions } from '@librechat/agents';
+import type { SteelRuntimeContextDependencies } from '../runtime/context';
 import type { OpenAIOAuthModelOptions } from './oauth';
 import { resolveOpenAIOAuthAuthFilePath } from '../ai/config';
 import { createOpenAIOAuthModel } from './oauth';
@@ -414,4 +415,45 @@ export async function generateTitle(input: GenerateTitleInput): Promise<Generate
     ...result,
     model: getClientModel(clientOptions),
   };
+}
+
+/** An attachment as carried on the agents client options. */
+export interface SteelTitleAttachment {
+  filename?: string | null;
+  name?: string | null;
+  originalname?: string | null;
+}
+
+const firstFilenameMarker = '{{first_filename}}';
+
+function getAttachmentFilename(file: SteelTitleAttachment | null | undefined): string | undefined {
+  const filename = file?.filename ?? file?.name ?? file?.originalname;
+  return typeof filename === 'string' ? filename.trim() || undefined : undefined;
+}
+
+/**
+ * Appends attachment filenames and the managed conversation-title rule to the
+ * endpoint title prompt; turns without attachments keep the prompt unchanged.
+ */
+export async function resolveSteelTitlePrompt({
+  titlePrompt,
+  attachments,
+  dependencies,
+}: {
+  titlePrompt?: string;
+  attachments?: readonly (SteelTitleAttachment | null | undefined)[] | null;
+  dependencies: Pick<SteelRuntimeContextDependencies, 'listOtherGlobalRules'>;
+}): Promise<string | undefined> {
+  const filenames = [
+    ...new Set((attachments ?? []).map(getAttachmentFilename).filter(Boolean)),
+  ] as string[];
+  if (filenames.length === 0) {
+    return titlePrompt;
+  }
+  const { titleRules } = await dependencies.listOtherGlobalRules();
+  const guidance = [
+    `File name(s): ${filenames.join('、')}`,
+    ...titleRules.map((rule) => rule.prompt.replaceAll(firstFilenameMarker, () => filenames[0])),
+  ].join('\n');
+  return [titlePrompt, guidance].filter(Boolean).join('\n\n');
 }

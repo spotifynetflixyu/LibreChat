@@ -652,6 +652,7 @@ function filterOtherGlobalRules(rules: readonly SteelAgentRule[]) {
     ),
     sourcePriorityRules: rules.filter((rule) => hasRuleSection(rule, ['source_priority'])),
     markdownOutputRules: rules.filter((rule) => hasRuleSection(rule, ['markdown_output'])),
+    titleRules: rules.filter((rule) => hasRuleSection(rule, ['conversation_title'])),
   };
 }
 

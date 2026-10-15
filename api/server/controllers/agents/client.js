@@ -148,6 +148,8 @@ const {
   buildAgentScopedContext,
   buildDefaultSteelGlobalAgentContext,
   prepareLibreChatSteelChatContext,
+  resolveSteelTitlePrompt,
+  createSteelContextDependencies,
   toSteelNativeRecordMessage,
   buildSteelAgentMessageMetadata,
   collectSteelNativeFileRecordReferences,
@@ -258,40 +260,6 @@ const loadAgent = (params) =>
   });
 
 const MEMORY_INPUT_CHARS_PER_TOKEN = 8;
-function getAttachmentFilename(file) {
-  const filename = file?.filename ?? file?.name ?? file?.originalname;
-  if (typeof filename !== 'string') {
-    return;
-  }
-  const trimmed = filename.trim();
-  return trimmed || undefined;
-}
-
-function appendTitleGuidance(titlePrompt, guidance) {
-  if (!guidance) {
-    return titlePrompt;
-  }
-  return [titlePrompt, guidance].filter(Boolean).join('\n\n');
-}
-
-function createTitleContext({ attachments }) {
-  const filenames = Array.isArray(attachments)
-    ? [...new Set(attachments.map(getAttachmentFilename).filter(Boolean))]
-    : [];
-  if (filenames.length === 0) {
-    return {};
-  }
-
-  const filenameText = filenames.join('、');
-  const firstFilename = filenames[0];
-  return {
-    guidance: [
-      `File name(s): ${filenameText}`,
-      `Title rule: Always use the conversation text as the source for the title. Treat every attached filename as title context. When filenames are provided, begin with the first attached filename exactly ("${firstFilename}"), then summarize the conversation text. Example: "PL.pdf OCR彙整表單製作".`,
-    ].join('\n'),
-  };
-}
-
 function normalizeEventActorContextMeta(contextMeta) {
   if (contextMeta == null) {
     return undefined;
@@ -6429,8 +6397,11 @@ class AgentClient extends BaseClient {
       clientOptions.model = endpointConfig.titleModel;
     }
 
-    const titleContext = createTitleContext({ attachments: this.options.attachments });
-    const titlePrompt = appendTitleGuidance(endpointConfig?.titlePrompt, titleContext.guidance);
+    const titlePrompt = await resolveSteelTitlePrompt({
+      titlePrompt: endpointConfig?.titlePrompt,
+      attachments: this.options.attachments,
+      dependencies: createSteelContextDependencies({ runtimeRulesClient: steelPostgres.client }),
+    });
     const chainOptions = {
       runName: 'TitleRun',
       signal: abortController?.signal,

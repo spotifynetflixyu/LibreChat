@@ -238,7 +238,7 @@ describe('Steel rule sources', () => {
     const summary = runDryRun();
     const sourceFiles = summary.rules.map((rule) => rule.sourceFile);
     expect(summary.mode).toBe('dry-run');
-    expect(summary.rules).toHaveLength(21);
+    expect(summary.rules).toHaveLength(22);
     expect([...sourceFiles, classificationSource, fieldExamplesSource].sort()).toEqual(
       listRuleFiles(rulesDir).sort(),
     );
@@ -255,6 +255,7 @@ describe('Steel rule sources', () => {
       builtCategoryRules.slice(1).every((rule) => rule.priority > builtCategoryRules[0]!.priority),
     ).toBe(true);
     expect(summary.rules.map((rule) => rule.slug).sort()).toEqual([
+      'steel-conversation-title-policy',
       'steel-default-agent-instruction',
       'steel-delegate-ocr-agent-update-policy',
       'steel-drawing-ocr-policy',

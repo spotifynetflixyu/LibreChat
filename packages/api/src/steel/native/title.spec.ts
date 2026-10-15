@@ -1,10 +1,12 @@
 import type { LanguageModelV3, LanguageModelV3GenerateResult } from '@ai-sdk/provider';
 import type { createOpenAIOAuthTransport as createOpenAIOAuthTransportType } from '@openai-oauth/core';
 import type { openaiCredentials as openaiCredentialsType } from '@openai-oauth/local';
+import type { SteelRuntimeOtherGlobalRules } from '../runtime/context';
+import type { SteelAgentRule } from '../repositories/rules';
 import { Providers, initializeModel } from '@librechat/agents';
 import { EModelEndpoint } from 'librechat-data-provider';
 import { RunnableLambda } from '@librechat/agents/langchain/runnables';
-import { generateTitle } from './title';
+import { generateTitle, resolveSteelTitlePrompt } from './title';
 
 jest.mock('@librechat/agents', () => ({
   ...jest.requireActual('@librechat/agents'),
@@ -339,4 +341,57 @@ describe('generateTitle', () => {
     expect(clientOptions).toEqual({ model: 'chat-model', temperature: 0.4 });
   });
 
+});
+
+describe('resolveSteelTitlePrompt', () => {
+  const titleRule: SteelAgentRule = {
+    id: 1,
+    slug: 'steel-conversation-title-policy',
+    version: 1,
+    ruleType: 'other',
+    title: '對話標題規則',
+    locale: 'zh-TW',
+    ruleSections: ['conversation_title'],
+    selectors: {},
+    prompt: 'Title rule: begin with "{{first_filename}}".',
+    toolPolicy: {},
+    outputPolicy: {},
+    priority: 40,
+    confidence: 'high',
+    active: true,
+    reviewState: 'reviewed',
+  };
+  const otherRules = (titleRules: SteelAgentRule[]): SteelRuntimeOtherGlobalRules => ({
+    ocrSharedRules: [],
+    ocrVisionRules: [],
+    ocrMainRules: [],
+    ocrOrganizerRules: [],
+    ocrDelegateRules: [],
+    fileRules: [],
+    sourcePriorityRules: [],
+    markdownOutputRules: [],
+    titleRules,
+  });
+
+  it('keeps the prompt and skips the rule read without attachments', async () => {
+    const listOtherGlobalRules = jest.fn();
+    await expect(
+      resolveSteelTitlePrompt({
+        titlePrompt: 'base',
+        attachments: [{ filename: '  ' }],
+        dependencies: { listOtherGlobalRules },
+      }),
+    ).resolves.toBe('base');
+    expect(listOtherGlobalRules).not.toHaveBeenCalled();
+  });
+
+  it('renders filenames and the managed title rule', async () => {
+    await expect(
+      resolveSteelTitlePrompt({
+        titlePrompt: 'base',
+        attachments: [{ filename: 'PL.pdf' }, { name: 'B.png' }, { originalname: 'PL.pdf' }],
+        dependencies: { listOtherGlobalRules: async () => otherRules([titleRule]) },
+      }),
+    ).resolves.toBe('base\n\nFile name(s): PL.pdf、B.png\nTitle rule: begin with "PL.pdf".');
+  });
 });

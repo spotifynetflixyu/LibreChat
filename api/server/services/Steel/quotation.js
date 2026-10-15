@@ -7,6 +7,7 @@ const {
   upsertQuotationToolContent,
   steelNativeStreamEventName,
   runQuotationPreflight,
+  getQuotationPreflightNotice,
   createSteelQuotationPublicationPublisher,
   createSteelQuotationMessageNotifier,
   createSteelQuotationSummaryAppender,
@@ -319,11 +320,10 @@ async function executeSteelQuotationWorkflow({
         ),
     });
   const result = await runPreflight();
-  if (result.status === 'busy') {
-    await onText('\n\n報價正在處理中，將接續同一個報價進程。');
-    return;
+  const notice = getQuotationPreflightNotice(result.status);
+  if (notice) {
+    await onText(notice);
   }
-  if (result.status === 'cancelled') await onText('\n\n報價已取消。');
 }
 
 module.exports = {

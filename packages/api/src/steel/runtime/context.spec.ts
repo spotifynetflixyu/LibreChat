@@ -42,6 +42,7 @@ function createDependencies(): SteelRuntimeContextDependencies {
       fileRules: [],
       sourcePriorityRules: [],
       markdownOutputRules: [],
+      titleRules: [],
     })),
   };
 }

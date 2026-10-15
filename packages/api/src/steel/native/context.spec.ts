@@ -138,6 +138,7 @@ function createDependencies(): SteelRuntimeContextDependencies {
       fileRules: [createAgentRule({ id: 8, slug: 'steel-file-rule', ruleSections: ['file_policy'] })],
       sourcePriorityRules: [],
       markdownOutputRules: [],
+      titleRules: [],
     })),
   };
 }

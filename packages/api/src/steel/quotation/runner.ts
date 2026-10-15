@@ -640,8 +640,20 @@ export async function acceptQuotationSignal(input: {
   });
 }
 
+export type QuotationPreflightStatus = 'completed' | 'cancelled' | 'busy' | 'idle';
+
+const quotationPreflightNotices: Partial<Record<QuotationPreflightStatus, string>> = {
+  busy: '\n\n報價正在處理中，將接續同一個報價進程。',
+  cancelled: '\n\n報價已取消。',
+};
+
+/** Fixed text streamed into the answer when preflight cannot continue the quotation. */
+export function getQuotationPreflightNotice(status: QuotationPreflightStatus): string | undefined {
+  return quotationPreflightNotices[status];
+}
+
 export async function runQuotationPreflight(input: QuotationRunnerInput): Promise<{
-  status: 'completed' | 'cancelled' | 'busy' | 'idle';
+  status: QuotationPreflightStatus;
   markdown?: string;
 }> {
   const service = createSteelQuotationStateService(mongoose);

@@ -390,6 +390,7 @@ function buildRules(repoRoot) {
     repoRoot,
     'docs/rules/其他規則/OCR委派Agent更新規則.txt',
   );
+  const conversationTitle = readRulePrompt(repoRoot, 'docs/rules/其他規則/標題規則.txt');
   const categoryRules = listTextFiles(repoRoot, 'docs/rules/類別規則')
     .map((sourceFile) => {
       const rule = readRulePrompt(repoRoot, sourceFile);
@@ -677,6 +678,26 @@ function buildRules(repoRoot) {
         'delegate_ocr OCR 更新規則',
         'delegate_ocr_result_update',
         ocrDelegateAgent.sha256,
+        'other_rule',
+      ),
+    }),
+    unifiedRule({
+      slug: 'steel-conversation-title-policy',
+      ruleKind: 'other',
+      title: '對話標題規則',
+      ruleSections: ['conversation_title'],
+      selectors: {
+        appliesTo: ['conversation_title'],
+        includeWhenFileContext: true,
+        confidence: 'high',
+      },
+      prompt: conversationTitle.prompt,
+      priority: 40,
+      source: ruleSource(
+        'docs/rules/其他規則/標題規則.txt',
+        '對話標題規則',
+        'conversation_title_attachment_prefix',
+        conversationTitle.sha256,
         'other_rule',
       ),
     }),
