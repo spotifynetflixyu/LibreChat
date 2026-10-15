@@ -224,14 +224,12 @@ describe('useSteelEventHandler', () => {
       chunkIndex: 2,
       repairAttempt: 1,
       maxRepairAttempts: 2,
-      savedCounts: { quotation_chunk: 1 },
     };
     const second: SteelNativeActivityEvent = {
       ...first,
       stage: 'chunk_repair_failed',
       repairAttempt: 2,
       message: 'Validator rejected the repaired chunk',
-      savedCounts: { quotation_chunk: 2 },
     };
 
     expect([first, second].reduce(appendSteelNativeActivityEvent, [])).toEqual([first, second]);
@@ -443,7 +441,7 @@ describe('useSteelEventHandler', () => {
           event: 'steel_event',
           data: {
             type: 'parse_status',
-            source: 'assistant_markdown',
+            source: 'tool_result',
             conversationId: 'conversation-1',
             messageId: 'assistant-2',
             message: 'Saved Markdown parse',
@@ -461,53 +459,13 @@ describe('useSteelEventHandler', () => {
     expect(result.current.activity).toEqual([
       expect.objectContaining({
         type: 'parse_status',
-        source: 'assistant_markdown',
+        source: 'tool_result',
         messageId: 'assistant-2',
         parseStatus: 'saved',
         savedCounts: { working_order_row: 2 },
         savedTableCounts: { system_order_table: 1 },
         totalSavedCounts: { paddleocr_preflight: 2, ocr_extract: 2, working_order_row: 2 },
         totalTableCounts: { ocr_table: 2, system_order_table: 1 },
-      }),
-    ]);
-  });
-
-  it('also stores assistant Markdown activity under the current assistant response id', () => {
-    const { result } = renderHook(
-      () => {
-        const steelEventHandler = useSteelEventHandler();
-        const eventActivity = useRecoilValue(steelNativeActivityByMessageId('assistant-saved'));
-        const currentActivity = useRecoilValue(steelNativeActivityByMessageId('assistant-live'));
-        return { currentActivity, eventActivity, steelEventHandler };
-      },
-      { wrapper: RecoilRoot },
-    );
-
-    act(() => {
-      result.current.steelEventHandler(
-        {
-          event: 'steel_event',
-          data: {
-            type: 'parse_status',
-            source: 'assistant_markdown',
-            conversationId: 'conversation-1',
-            messageId: 'assistant-saved',
-            message: 'Saved Markdown parse',
-            parseStatus: 'saved',
-            savedCounts: { working_order_row: 1 },
-          },
-        },
-        createSubmission('assistant-live'),
-      );
-    });
-
-    expect(result.current.eventActivity).toHaveLength(1);
-    expect(result.current.currentActivity).toEqual([
-      expect.objectContaining({
-        type: 'parse_status',
-        source: 'assistant_markdown',
-        messageId: 'assistant-saved',
-        parseStatus: 'saved',
       }),
     ]);
   });
@@ -794,7 +752,7 @@ describe('useSteelEventHandler', () => {
       event: 'steel_event' as const,
       data: {
         type: 'memory_saved' as const,
-        source: 'assistant_markdown' as const,
+        source: 'tool_result' as const,
         conversationId: 'conversation-1',
         messageId: 'assistant-1',
         message: 'Saved Working Order Memory',
@@ -811,7 +769,7 @@ describe('useSteelEventHandler', () => {
     });
 
     expect(result.current.activity).toHaveLength(1);
-    expect((result.current.activity[0] as SteelNativeActivityEvent).savedCounts).toEqual({
+    expect(result.current.activity[0]).toHaveProperty('savedCounts', {
       working_order_row: 2,
     });
   });
@@ -819,7 +777,7 @@ describe('useSteelEventHandler', () => {
   it('keeps activity events when displayed count metadata changes', () => {
     const first: SteelNativeActivityEvent = {
       type: 'memory_saved',
-      source: 'assistant_markdown',
+      source: 'tool_result',
       message: 'Saved Working Order Memory',
       messageId: 'assistant-1',
       savedCounts: { working_order_row: 1 },
@@ -836,7 +794,7 @@ describe('useSteelEventHandler', () => {
     );
 
     expect(activity).toHaveLength(2);
-    expect(activity[1]?.totalTableCounts).toEqual({ system_order_table: 2 });
+    expect(activity[1]).toHaveProperty('totalTableCounts', { system_order_table: 2 });
   });
 
   it('replaces OCR preprocessing running progress with matching completed progress', () => {
@@ -900,7 +858,7 @@ describe('useSteelEventHandler', () => {
           event: 'steel_event',
           data: {
             type: 'memory_saved',
-            source: 'assistant_markdown',
+            source: 'tool_result',
             conversationId: 'conversation-1',
             messageId: 'assistant-1',
             message: 'Saved Working Order Memory',

@@ -1,64 +1,45 @@
-import { steelQuotationOcrSourceSchema } from 'librechat-data-provider';
+import {
+  steelNativeStreamEventName,
+  parseSteelNativeActivityEvent,
+  parseSteelNativePreflightToolCall,
+  steelNativePreflightToolCallMaxCount,
+} from 'librechat-data-provider';
 import type { SteelQuotationOcrSelection } from '@librechat/data-schemas';
-import type { SteelQuotationOcrSource } from 'librechat-data-provider';
-import type { SteelToolJsonObject, SteelToolJsonValue } from '../tools/results';
+import type {
+  SteelQuotationOcrSource,
+  SteelNativeTableCounts,
+  SteelNativeSavedCounts,
+  SteelNativeEventSource,
+  SteelNativeActivityEvent,
+  SteelNativeQuotationStatus,
+  SteelNativeDelegateOcrStage,
+  SteelNativeDelegateOcrStatus,
+  SteelNativePreflightToolCall,
+} from 'librechat-data-provider';
 import type { SteelOcrMissingPageRangesByFileKey } from '../ocr/failures';
 import type { OcrPreprocessingPipelineProgress } from '../ocr/preprocess';
 import type { CaptureSteelNativeToolResultResult } from './tool-result';
-import { isPaddleOcrDiagnosticCode } from '../ocr/diagnostics';
 import { quotationOcrSource } from '../quotation/input';
 
-export const steelNativeStreamEventName = 'steel_event' as const;
+export {
+  steelNativeStreamEventName,
+  steelNativePreflightToolCallMaxCount,
+  steelNativeErrorMessageMaxLength,
+} from 'librechat-data-provider';
+export type {
+  SteelNativeEventSource,
+  SteelNativeDelegateOcrStage,
+  SteelNativeDelegateOcrStatus,
+  SteelNativeQuotationStatus,
+  SteelNativeSavedCounts,
+  SteelNativeTableCounts,
+  SteelNativePreflightToolCall,
+} from 'librechat-data-provider';
 
 export const steelNativeActivityEventMaxBytes: number = 16 * 1024;
 export const steelNativeActivityEventMaxCount: number = 100;
 export const steelNativeActivityEventsMaxBytes: number = 128 * 1024;
 export const steelNativeHistoryMaxBytes: number = 12 * 1024 * 1024;
-export const steelNativePreflightToolCallMaxCount: number = 100;
-export const steelNativePreflightToolCallIdMaxBytes: number = 256;
-export const steelNativePreflightToolCallOutputMaxBytes: number = 4 * 1024;
-/** Price lookup results use the provider's compact result payload rather than the OCR card shape. */
-export const steelNativePriceSearchOutputMaxBytes: number = steelNativeHistoryMaxBytes;
-export const steelNativeErrorMessageMaxLength: number = 512;
-
-export type SteelNativeEventSource =
-  | 'ocr_preprocessing'
-  | 'paddleocr_preflight'
-  | 'delegate_ocr_preflight'
-  | 'quotation_preflight'
-  | 'tool_result'
-  | 'quote_runtime';
-
-export type SteelNativeDelegateOcrStage =
-  | 'resume'
-  | 'paddleocr'
-  | 'organizer'
-  | 'agent'
-  | 'reconciliation'
-  | 'saving'
-  | 'summary'
-  | 'response';
-
-export type SteelNativeDelegateOcrStatus =
-  | 'started'
-  | 'progress'
-  | 'retrying'
-  | 'succeeded'
-  | 'failed'
-  | 'replaced';
-
-export type SteelNativeQuotationStatus =
-  | 'idle'
-  | 'queued'
-  | 'running'
-  | 'aggregating'
-  | 'finalizing'
-  | 'interrupted'
-  | 'completed'
-  | 'cancelled';
-
-export type SteelNativeSavedCounts = Record<string, number>;
-export type SteelNativeTableCounts = Record<string, number>;
 
 export interface SteelNativeEventBase {
   source: SteelNativeEventSource;
@@ -69,71 +50,29 @@ export interface SteelNativeEventBase {
   providerToolCallId?: string;
 }
 
-export interface SteelNativeParseStatusEvent extends SteelNativeEventBase {
-  type: 'parse_status';
-  message: string;
-  parseStatus: 'saved' | 'partial' | 'skipped';
-  errorMessage?: string;
-  failedKeys?: readonly string[];
-  missingPageRangesByFileKey?: SteelOcrMissingPageRangesByFileKey;
-  savedCounts?: SteelNativeSavedCounts;
-  savedTableCounts?: SteelNativeTableCounts;
-  totalSavedCounts?: SteelNativeSavedCounts;
-  totalTableCounts?: SteelNativeTableCounts;
-}
-
-export interface SteelNativeMemorySavedEvent extends SteelNativeEventBase {
-  type: 'memory_saved';
-  message: string;
-  savedCounts: SteelNativeSavedCounts;
-  savedTableCounts?: SteelNativeTableCounts;
-  totalSavedCounts?: SteelNativeSavedCounts;
-  totalTableCounts?: SteelNativeTableCounts;
-}
-
-export interface SteelNativeDelegateOcrStatusEvent extends SteelNativeEventBase {
-  type: 'delegate_ocr_status';
-  source: 'delegate_ocr_preflight';
-  delegateOcrIndex: number;
-  stage: SteelNativeDelegateOcrStage;
-  status: SteelNativeDelegateOcrStatus;
-  message: string;
-  errorMessage?: string;
-  chunkIndex?: number;
-  chunkCount?: number;
-  /** Correlation values are accepted on live events but are stripped before persistence. */
+export type SteelNativeParseStatusEvent = Extract<
+  SteelNativeActivityEvent,
+  { type: 'parse_status' }
+>;
+export type SteelNativeMemorySavedEvent = Extract<
+  SteelNativeActivityEvent,
+  { type: 'memory_saved' }
+>;
+export type SteelNativeQuotationStatusEvent = Extract<
+  SteelNativeActivityEvent,
+  { type: 'quotation_status' }
+>;
+export type SteelNativeQuoteAuditEvent = Extract<SteelNativeActivityEvent, { type: 'quote_audit' }>;
+export type SteelNativeCodeInterpreterAuditEvent = SteelNativeQuoteAuditEvent;
+/** Live delegate events carry workflow correlation tokens that never reach persistence. */
+export type SteelNativeDelegateOcrStatusEvent = Extract<
+  SteelNativeActivityEvent,
+  { type: 'delegate_ocr_status' }
+> & {
   claimToken?: string;
   generationId?: string;
   attemptToken?: string;
-}
-
-export interface SteelNativeQuotationStatusEvent extends SteelNativeEventBase {
-  type: 'quotation_status';
-  source: 'quotation_preflight';
-  conversationId: string;
-  index: number;
-  runId?: string;
-  stage: string;
-  status: SteelNativeQuotationStatus;
-  completedChunks: number;
-  totalChunks: number;
-  message?: string;
-  chunkIndex?: number;
-  attempt?: string;
-  repairAttempt?: number;
-  maxRepairAttempts?: number;
-  ocrSource?: SteelQuotationOcrSource;
-}
-
-export interface SteelNativeCodeInterpreterAuditEvent extends SteelNativeEventBase {
-  type: 'quote_audit';
-  stage: 'stage_1';
-  status: 'executed';
-  message: 'Code Interpreter executed';
-  toolName: 'code_interpreter';
-}
-
-export type SteelNativeQuoteAuditEvent = SteelNativeCodeInterpreterAuditEvent;
+};
 
 export type SteelNativeStreamEvent =
   | SteelNativeParseStatusEvent
@@ -145,32 +84,6 @@ export type SteelNativeStreamEvent =
 export interface SteelNativeEventEnvelope {
   event: typeof steelNativeStreamEventName;
   data: SteelNativeStreamEvent;
-}
-
-export interface SteelNativePaddleOcrPreflightToolCallArgs {
-  input_data?: string;
-  output_mode: 'detailed';
-  return_images: boolean;
-  use_doc_orientation_classify: boolean;
-  use_doc_unwarping: boolean;
-  use_layout_detection: boolean;
-}
-
-export interface SteelNativePriceSearchToolCallArgs {
-  queries: SteelToolJsonObject[];
-}
-
-export type SteelNativePreflightToolCallArgs =
-  | SteelNativePaddleOcrPreflightToolCallArgs
-  | SteelNativePriceSearchToolCallArgs;
-
-export interface SteelNativePreflightToolCall {
-  type: 'tool_call';
-  id: string;
-  name: string;
-  args: SteelNativePreflightToolCallArgs;
-  output?: string;
-  progress: 0 | 1;
 }
 
 export interface SteelNativeHistory {
@@ -196,112 +109,37 @@ function isSteelNativeHistory(value: unknown): value is SteelNativeHistory {
   );
 }
 
-const steelNativeEventBaseFields = [
-  'conversationId',
-  'requestId',
-  'messageId',
-  'toolName',
-  'providerToolCallId',
-] as const;
-
-const steelNativeEventSources = [
-  'ocr_preprocessing',
-  'paddleocr_preflight',
-  'delegate_ocr_preflight',
-  'quotation_preflight',
-  'tool_result',
-  'quote_runtime',
-] as const;
-const steelNativeEventSourceSet = new Set<string>(steelNativeEventSources);
-
-function isSteelNativeEventSource(value: unknown): value is SteelNativeEventSource {
-  return typeof value === 'string' && steelNativeEventSourceSet.has(value);
-}
-
-function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  return Object.keys(value).every((key) => keys.includes(key));
-}
-
-function sanitizeErrorMessage(value: unknown): string | undefined {
-  if (typeof value !== 'string') {
-    return undefined;
-  }
-
-  const normalized = value
-    .replace(/https?:\/\/[^\s<>"'`]+/giu, '[redacted-url]')
-    .replace(
-      /\b(?:api[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|authorization|credential|password|secret|signature|sig|token|key)\s*[:=]\s*[^\s&;,]+/giu,
-      (match) => `${match.slice(0, match.search(/[:=]/u) + 1)}[REDACTED]`,
-    )
-    .replace(/\bBearer\s+[^\s"'`]+/giu, 'Bearer [REDACTED]')
-    .replace(/\bsk-[a-z0-9_-]+/giu, 'sk-[REDACTED]')
-    .split('')
-    .map((character) => {
-      const codePoint = character.codePointAt(0) ?? 0;
-      return codePoint <= 31 ||
-        (codePoint >= 127 && codePoint <= 159) ||
-        codePoint === 0x2028 ||
-        codePoint === 0x2029
-        ? ' '
-        : character;
-    })
-    .join('')
-    .replace(/\s+/gu, ' ')
-    .trim();
-
-  if (!normalized) {
-    return undefined;
-  }
-
-  return normalized.length <= steelNativeErrorMessageMaxLength
-    ? normalized
-    : `${normalized.slice(0, steelNativeErrorMessageMaxLength - 3)}...`;
-}
-
-function canonicalizeCountMap(value: unknown): Record<string, number> | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (!isCountMap(value)) {
-    return undefined;
-  }
-
-  return Object.fromEntries(Object.entries(value));
-}
-
-function canonicalizeMissingPageRanges(
-  value: unknown,
-): SteelOcrMissingPageRangesByFileKey | undefined {
-  if (value === undefined) {
-    return undefined;
-  }
-  if (!isMissingPageRangesByFileKey(value)) {
-    return undefined;
-  }
-
-  return Object.fromEntries(
-    Object.entries(value).map(([fileKey, ranges]) => [
-      fileKey,
-      ranges.map(({ pageStart, pageEnd }) => ({ pageStart, pageEnd })),
-    ]),
+function isCountMap(value: unknown): value is Record<string, number> {
+  return (
+    isRecord(value) &&
+    Object.values(value).every((entry) => typeof entry === 'number' && Number.isFinite(entry))
   );
 }
 
-function copyBaseEventFields(
-  value: Record<string, unknown>,
-  target: Record<string, unknown>,
-): void {
-  target.source = value.source;
-  for (const field of steelNativeEventBaseFields) {
-    if (typeof value[field] === 'string') {
-      target[field] = value[field];
-    }
+/** Canonical, JSON-cloned event plus its serialized size, or undefined when invalid. */
+function cloneCanonicalEvent(
+  value: unknown,
+): { event: SteelNativeStreamEvent; bytes: number } | undefined {
+  const event = parseSteelNativeActivityEvent(value);
+  if (!event) {
+    return undefined;
   }
+  const serialized = JSON.stringify(event);
+  const bytes = Buffer.byteLength(serialized, 'utf8');
+  if (bytes > steelNativeActivityEventMaxBytes) {
+    return undefined;
+  }
+  return { event: JSON.parse(serialized) as SteelNativeStreamEvent, bytes };
+}
+
+function cloneCanonicalPreflightToolCall(value: unknown): SteelNativePreflightToolCall | undefined {
+  const card = parseSteelNativePreflightToolCall(value);
+  return card ? (JSON.parse(JSON.stringify(card)) as SteelNativePreflightToolCall) : undefined;
 }
 
 /**
- * Parse persisted Steel history through the same validators and bounds used by
- * the live event collectors. The returned value is always a deep clone, so
+ * Parse persisted Steel history through the shared event schema and the same
+ * bounds used by the live collectors. The result is always a deep clone, so
  * callers cannot mutate a job-store snapshot by retaining the input object.
  */
 export function parseSteelNativeHistory(value: unknown): SteelNativeHistory | undefined {
@@ -323,51 +161,32 @@ export function parseSteelNativeHistory(value: unknown): SteelNativeHistory | un
     return undefined;
   }
 
-  try {
-    const activityEvents = parsed.activityEvents.map((event) => {
-      const canonicalEvent = canonicalizeSteelNativeEvent(event);
-      if (!canonicalEvent) {
-        throw new Error('invalid Steel activity event');
-      }
-      const serialized = JSON.stringify(canonicalEvent);
-      if (
-        typeof serialized !== 'string' ||
-        Buffer.byteLength(serialized, 'utf8') > steelNativeActivityEventMaxBytes
-      ) {
-        throw new Error('oversized Steel activity event');
-      }
-      return JSON.parse(serialized) as SteelNativeStreamEvent;
-    });
-    const preflightToolCalls = parsed.preflightToolCalls.map((card) => {
-      const canonicalCard = canonicalizeSteelNativePreflightToolCall(card, true);
-      if (!canonicalCard) {
-        throw new Error('invalid Steel preflight tool call');
-      }
-      const serialized = JSON.stringify(canonicalCard);
-      if (typeof serialized !== 'string') {
-        throw new Error('invalid Steel preflight tool call serialization');
-      }
-      return JSON.parse(serialized) as SteelNativePreflightToolCall;
-    });
-    const history = { activityEvents, preflightToolCalls };
-    const activityBytes = activityEvents.reduce(
-      (total, event) => total + Buffer.byteLength(JSON.stringify(event), 'utf8'),
-      0,
-    );
-    if (activityBytes > steelNativeActivityEventsMaxBytes) {
+  const activityEvents: SteelNativeStreamEvent[] = [];
+  let activityBytes = 0;
+  for (const value of parsed.activityEvents) {
+    const canonical = cloneCanonicalEvent(value);
+    if (!canonical) {
       return undefined;
     }
-    const serialized = JSON.stringify(history);
-    if (
-      typeof serialized !== 'string' ||
-      Buffer.byteLength(serialized, 'utf8') > steelNativeHistoryMaxBytes
-    ) {
-      return undefined;
-    }
-    return history;
-  } catch {
+    activityEvents.push(canonical.event);
+    activityBytes += canonical.bytes;
+  }
+  if (activityBytes > steelNativeActivityEventsMaxBytes) {
     return undefined;
   }
+  const preflightToolCalls: SteelNativePreflightToolCall[] = [];
+  for (const value of parsed.preflightToolCalls) {
+    const card = cloneCanonicalPreflightToolCall(value);
+    if (!card) {
+      return undefined;
+    }
+    preflightToolCalls.push(card);
+  }
+  const history = { activityEvents, preflightToolCalls };
+  if (Buffer.byteLength(JSON.stringify(history), 'utf8') > steelNativeHistoryMaxBytes) {
+    return undefined;
+  }
+  return history;
 }
 
 export function createSteelNativeHistory(): SteelNativeHistory {
@@ -402,842 +221,6 @@ export function ensureSteelNativeHistory(context: SteelNativeHistoryContext): St
   const history = createSteelNativeHistory();
   context.steelHistory = history;
   return history;
-}
-
-function isStringArray(value: unknown): value is string[] {
-  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
-}
-
-function isSafeInteger(value: unknown): value is number {
-  return Number.isSafeInteger(value);
-}
-
-function isCountMap(value: unknown): value is Record<string, number> {
-  return (
-    isRecord(value) &&
-    Object.values(value).every((entry) => typeof entry === 'number' && Number.isFinite(entry))
-  );
-}
-
-function isSafePageRange(value: unknown): value is { pageStart: number; pageEnd: number } {
-  return (
-    isRecord(value) &&
-    Number.isSafeInteger(value.pageStart) &&
-    Number.isSafeInteger(value.pageEnd) &&
-    (value.pageStart as number) >= 1 &&
-    (value.pageEnd as number) >= (value.pageStart as number)
-  );
-}
-
-function isMissingPageRangesByFileKey(value: unknown): value is SteelOcrMissingPageRangesByFileKey {
-  return (
-    isRecord(value) &&
-    Object.values(value).every(
-      (ranges) => Array.isArray(ranges) && ranges.every((range) => isSafePageRange(range)),
-    )
-  );
-}
-
-function hasValidBaseEventFields(value: Record<string, unknown>): boolean {
-  return ['conversationId', 'requestId', 'messageId', 'toolName', 'providerToolCallId'].every(
-    (field) => value[field] === undefined || typeof value[field] === 'string',
-  );
-}
-
-function isSteelNativeEventData(value: unknown): value is SteelNativeStreamEvent {
-  if (
-    !isRecord(value) ||
-    typeof value.type !== 'string' ||
-    typeof value.source !== 'string' ||
-    !isSteelNativeEventSource(value.source) ||
-    !hasValidBaseEventFields(value)
-  ) {
-    return false;
-  }
-
-  if (value.type === 'parse_status') {
-    if (
-      !hasOnlyKeys(value, [
-        'type',
-        'source',
-        ...steelNativeEventBaseFields,
-        'message',
-        'parseStatus',
-        'errorMessage',
-        'failedKeys',
-        'missingPageRangesByFileKey',
-        'savedCounts',
-        'savedTableCounts',
-        'totalSavedCounts',
-        'totalTableCounts',
-      ])
-    ) {
-      return false;
-    }
-    return (
-      typeof value.message === 'string' &&
-      ['saved', 'partial', 'skipped'].includes(value.parseStatus as string) &&
-      (value.errorMessage === undefined || typeof value.errorMessage === 'string') &&
-      (value.failedKeys === undefined || isStringArray(value.failedKeys)) &&
-      (value.missingPageRangesByFileKey === undefined ||
-        isMissingPageRangesByFileKey(value.missingPageRangesByFileKey)) &&
-      (value.savedCounts === undefined || isCountMap(value.savedCounts)) &&
-      (value.totalSavedCounts === undefined || isCountMap(value.totalSavedCounts)) &&
-      (value.savedTableCounts === undefined || isCountMap(value.savedTableCounts)) &&
-      (value.totalTableCounts === undefined || isCountMap(value.totalTableCounts))
-    );
-  }
-
-  if (value.type === 'delegate_ocr_status') {
-    if (
-      !hasOnlyKeys(value, [
-        'type',
-        'source',
-        ...steelNativeEventBaseFields,
-        'delegateOcrIndex',
-        'stage',
-        'status',
-        'message',
-        'errorMessage',
-        'chunkIndex',
-        'chunkCount',
-        'claimToken',
-        'generationId',
-        'attemptToken',
-      ])
-    ) {
-      return false;
-    }
-    return (
-      value.source === 'delegate_ocr_preflight' &&
-      isSafeInteger(value.delegateOcrIndex) &&
-      value.delegateOcrIndex >= 1 &&
-      ['resume', 'paddleocr', 'organizer', 'agent', 'reconciliation', 'saving', 'summary', 'response'].includes(
-        value.stage as string,
-      ) &&
-      ['started', 'progress', 'retrying', 'succeeded', 'failed', 'replaced'].includes(
-        value.status as string,
-      ) &&
-      typeof value.message === 'string' &&
-      (value.errorMessage === undefined || typeof value.errorMessage === 'string') &&
-      (value.chunkIndex === undefined || (isSafeInteger(value.chunkIndex) && value.chunkIndex >= 0)) &&
-      (value.chunkCount === undefined || (isSafeInteger(value.chunkCount) && value.chunkCount >= 1)) &&
-      (value.claimToken === undefined || typeof value.claimToken === 'string') &&
-      (value.generationId === undefined || typeof value.generationId === 'string') &&
-      (value.attemptToken === undefined || typeof value.attemptToken === 'string')
-    );
-  }
-
-  if (value.type === 'quotation_status') {
-    if (
-      !hasOnlyKeys(value, [
-        'type',
-        'source',
-        ...steelNativeEventBaseFields,
-        'index',
-        'runId',
-        'stage',
-        'status',
-        'completedChunks',
-        'totalChunks',
-        'message',
-        'chunkIndex',
-        'attempt',
-        'repairAttempt',
-        'maxRepairAttempts',
-        'ocrSource',
-      ])
-    ) {
-      return false;
-    }
-    return (
-      value.source === 'quotation_preflight' &&
-      typeof value.conversationId === 'string' &&
-      value.conversationId.length > 0 &&
-      isSafeInteger(value.index) &&
-      value.index >= 0 &&
-      (value.runId === undefined || (typeof value.runId === 'string' && value.runId.length > 0)) &&
-      typeof value.stage === 'string' &&
-      value.stage.length > 0 &&
-      [
-        'idle',
-        'queued',
-        'running',
-        'aggregating',
-        'finalizing',
-        'interrupted',
-        'completed',
-        'cancelled',
-      ].includes(value.status as string) &&
-      isSafeInteger(value.completedChunks) &&
-      value.completedChunks >= 0 &&
-      isSafeInteger(value.totalChunks) &&
-      value.totalChunks >= 0 &&
-      value.completedChunks <= value.totalChunks &&
-      (value.message === undefined || typeof value.message === 'string') &&
-      (value.chunkIndex === undefined || (isSafeInteger(value.chunkIndex) && value.chunkIndex >= 0)) &&
-      (value.attempt === undefined || (typeof value.attempt === 'string' && value.attempt.length > 0)) &&
-      validQuotationRepairCounts(value) &&
-      (value.ocrSource === undefined || steelQuotationOcrSourceSchema.safeParse(value.ocrSource).success)
-    );
-  }
-
-  if (value.type === 'memory_saved') {
-    if (
-      !hasOnlyKeys(value, [
-        'type',
-        'source',
-        ...steelNativeEventBaseFields,
-        'message',
-        'savedCounts',
-        'savedTableCounts',
-        'totalSavedCounts',
-        'totalTableCounts',
-      ])
-    ) {
-      return false;
-    }
-    return (
-      typeof value.message === 'string' &&
-      isCountMap(value.savedCounts) &&
-      (value.savedTableCounts === undefined || isCountMap(value.savedTableCounts)) &&
-      (value.totalSavedCounts === undefined || isCountMap(value.totalSavedCounts)) &&
-      (value.totalTableCounts === undefined || isCountMap(value.totalTableCounts))
-    );
-  }
-
-  if (value.type !== 'quote_audit') {
-    return false;
-  }
-
-  if (
-    !hasOnlyKeys(value, [
-      'type',
-      'source',
-      ...steelNativeEventBaseFields,
-      'stage',
-      'status',
-      'message',
-    ])
-  ) {
-    return false;
-  }
-  return (
-    value.source === 'quote_runtime' &&
-    value.stage === 'stage_1' &&
-    value.status === 'executed' &&
-    value.message === 'Code Interpreter executed' &&
-    value.toolName === 'code_interpreter'
-  );
-}
-
-function isSteelToolJsonValue(
-  value: unknown,
-  seen = new WeakSet<object>(),
-): value is SteelToolJsonValue {
-  if (
-    value === null ||
-    typeof value === 'string' ||
-    typeof value === 'number' ||
-    typeof value === 'boolean'
-  ) {
-    return true;
-  }
-  if ((Array.isArray(value) || isRecord(value)) && seen.has(value)) {
-    return false;
-  }
-  if (Array.isArray(value)) {
-    seen.add(value);
-    try {
-      return value.every((entry) => isSteelToolJsonValue(entry, seen));
-    } finally {
-      seen.delete(value);
-    }
-  }
-  if (!isRecord(value)) {
-    return false;
-  }
-  seen.add(value);
-  try {
-    return Object.values(value).every((entry) => isSteelToolJsonValue(entry, seen));
-  } finally {
-    seen.delete(value);
-  }
-}
-
-function isPriceSearchToolCallArgs(value: unknown): value is SteelNativePriceSearchToolCallArgs {
-  if (!isRecord(value) || Object.keys(value).sort().join(',') !== 'queries') {
-    return false;
-  }
-  return (
-    Array.isArray(value.queries) &&
-    value.queries.length >= 1 &&
-    value.queries.length <= 100 &&
-    value.queries.every(
-      (query): query is SteelToolJsonObject =>
-        isRecord(query) && Object.values(query).every((entry) => isSteelToolJsonValue(entry)),
-    )
-  );
-}
-
-function isPreflightToolCallArgs(value: unknown): value is SteelNativePreflightToolCallArgs {
-  if (!isRecord(value)) {
-    return false;
-  }
-  if ('queries' in value) {
-    return isPriceSearchToolCallArgs(value);
-  }
-  const keys = Object.keys(value).sort();
-  const requiredKeys = [
-    'output_mode',
-    'return_images',
-    'use_doc_orientation_classify',
-    'use_doc_unwarping',
-    'use_layout_detection',
-  ];
-  const acceptedKeys =
-    value.input_data === undefined ? requiredKeys : [...requiredKeys, 'input_data'];
-  if (keys.join(',') !== acceptedKeys.sort().join(',')) {
-    return false;
-  }
-  return (
-    (value.input_data === undefined || typeof value.input_data === 'string') &&
-    value.output_mode === 'detailed' &&
-    typeof value.return_images === 'boolean' &&
-    typeof value.use_doc_orientation_classify === 'boolean' &&
-    typeof value.use_doc_unwarping === 'boolean' &&
-    typeof value.use_layout_detection === 'boolean'
-  );
-}
-
-function isPaddleOcrPreflightToolCallArgs(
-  value: unknown,
-): value is SteelNativePaddleOcrPreflightToolCallArgs {
-  return isPreflightToolCallArgs(value) && !isPriceSearchToolCallArgs(value);
-}
-
-const steelNativePaddleOcrCompactSuccessOutputKeys = [
-  'status',
-  'paddleocr',
-  'ocrEngine',
-  'ocrFileKey',
-  'filename',
-  'chunkIndex',
-  'chunkCount',
-  'pageStart',
-  'pageEnd',
-  'dataSizeBytes',
-] as const;
-
-const steelNativePaddleOcrHistoricalSuccessOutputKeys = [
-  'status',
-  'paddleocr',
-  'ocrEngine',
-  'ocrFileKey',
-  'filename',
-  'chunkIndex',
-  'chunkCount',
-  'pageStart',
-  'pageEnd',
-  'rawTextLength',
-  'rawResultHash',
-  'outputStorage',
-] as const;
-
-const steelNativePaddleOcrLegacySuccessOutputKeys =
-  steelNativePaddleOcrHistoricalSuccessOutputKeys.filter((key) => key !== 'paddleocr');
-
-const steelNativePaddleOcrFailureOutputKeys = [
-  'status',
-  'paddleocr',
-  'ocrEngine',
-  'ocrFileKey',
-  'filename',
-  'chunkIndex',
-  'chunkCount',
-  'pageStart',
-  'pageEnd',
-  'dataSizeBytes',
-  'attemptsUsed',
-  'error',
-  'errorMessage',
-] as const;
-
-function hasExactKeys(value: Record<string, unknown>, keys: readonly string[]): boolean {
-  const actualKeys = Object.keys(value).sort();
-  return actualKeys.join(',') === [...keys].sort().join(',');
-}
-
-function hasExactPaddleOcrFailureKeys(value: Record<string, unknown>): boolean {
-  return (
-    hasExactKeys(value, steelNativePaddleOcrFailureOutputKeys) ||
-    hasExactKeys(value, [...steelNativePaddleOcrFailureOutputKeys, 'errorCode'])
-  );
-}
-
-function isPaddleOcrChunkBounds(value: Record<string, unknown>): boolean {
-  return (
-    isSafeInteger(value.chunkIndex) &&
-    isSafeInteger(value.chunkCount) &&
-    isSafeInteger(value.pageStart) &&
-    isSafeInteger(value.pageEnd) &&
-    value.chunkIndex >= 0 &&
-    value.chunkCount >= 1 &&
-    value.pageStart >= 1 &&
-    value.pageEnd >= value.pageStart
-  );
-}
-
-function canonicalizePreflightOutput(value: string, allowLegacyError = false): string | undefined {
-  if (Buffer.byteLength(value, 'utf8') > steelNativePreflightToolCallOutputMaxBytes) {
-    return undefined;
-  }
-  if (value.startsWith('Error:')) {
-    if (!allowLegacyError) {
-      return undefined;
-    }
-    const errorOutput = sanitizeErrorMessage(value);
-    return errorOutput && errorOutput.length <= steelNativeErrorMessageMaxLength
-      ? errorOutput
-      : undefined;
-  }
-
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    if (
-      !isRecord(parsed) ||
-      typeof parsed.ocrEngine !== 'string' ||
-      parsed.ocrEngine !== 'paddleocr_vl'
-    ) {
-      return undefined;
-    }
-
-    const isCompactSuccess = hasExactKeys(parsed, steelNativePaddleOcrCompactSuccessOutputKeys);
-    const isHistoricalSuccess = hasExactKeys(
-      parsed,
-      steelNativePaddleOcrHistoricalSuccessOutputKeys,
-    );
-    const isLegacySuccess = hasExactKeys(parsed, steelNativePaddleOcrLegacySuccessOutputKeys);
-    if (
-      ((parsed.status === 'ok' && parsed.paddleocr === 'ok' && isCompactSuccess) ||
-        (parsed.status === 'completed' &&
-          (parsed.paddleocr === 'ok' || parsed.paddleocr === undefined) &&
-          (isHistoricalSuccess || isLegacySuccess))) &&
-      typeof parsed.ocrFileKey === 'string' &&
-      typeof parsed.filename === 'string' &&
-      isPaddleOcrChunkBounds(parsed) &&
-      ((isCompactSuccess && isSafeInteger(parsed.dataSizeBytes) && parsed.dataSizeBytes >= 0) ||
-        (!isCompactSuccess &&
-          isSafeInteger(parsed.rawTextLength) &&
-          parsed.rawTextLength >= 0 &&
-          typeof parsed.rawResultHash === 'string' &&
-          parsed.outputStorage === 'steel_working_order_memory:paddleocr_preflight'))
-    ) {
-      return JSON.stringify({
-        status: 'ok',
-        paddleocr: 'ok',
-        ocrEngine: 'paddleocr_vl',
-        ocrFileKey: parsed.ocrFileKey,
-        filename: parsed.filename,
-        chunkIndex: parsed.chunkIndex,
-        chunkCount: parsed.chunkCount,
-        pageStart: parsed.pageStart,
-        pageEnd: parsed.pageEnd,
-        dataSizeBytes: isCompactSuccess ? parsed.dataSizeBytes : parsed.rawTextLength,
-      });
-    }
-
-    const isCompactFailure = hasExactPaddleOcrFailureKeys(parsed);
-    const isHistoricalFailure =
-      parsed.status === 'failed' &&
-      parsed.paddleocr === 'fail' &&
-      (hasExactKeys(
-        parsed,
-        steelNativePaddleOcrFailureOutputKeys.filter(
-          (key) => !['dataSizeBytes', 'error'].includes(key),
-        ),
-      ) ||
-        hasExactKeys(parsed, [
-          ...steelNativePaddleOcrFailureOutputKeys.filter(
-            (key) => !['dataSizeBytes', 'error'].includes(key),
-          ),
-          'diagnosticCode',
-        ]));
-    if (
-      (parsed.status !== 'fail' && !isHistoricalFailure) ||
-      parsed.paddleocr !== 'fail' ||
-      (!isCompactFailure && !isHistoricalFailure) ||
-      typeof parsed.ocrFileKey !== 'string' ||
-      typeof parsed.filename !== 'string' ||
-      !isPaddleOcrChunkBounds(parsed) ||
-      !isSafeInteger(parsed.attemptsUsed) ||
-      parsed.attemptsUsed < 1 ||
-      (!isPaddleOcrDiagnosticCode(parsed.errorCode) && parsed.errorCode !== undefined) ||
-      (!isPaddleOcrDiagnosticCode(parsed.diagnosticCode) && parsed.diagnosticCode !== undefined) ||
-      (isCompactFailure &&
-        (!isSafeInteger(parsed.dataSizeBytes) ||
-          parsed.dataSizeBytes < 0 ||
-          typeof parsed.error !== 'string')) ||
-      typeof parsed.errorMessage !== 'string'
-    ) {
-      return undefined;
-    }
-
-    const errorMessage = sanitizeErrorMessage(parsed.errorMessage);
-    if (!errorMessage) {
-      return undefined;
-    }
-
-    return JSON.stringify({
-      status: 'fail',
-      paddleocr: 'fail',
-      ocrEngine: 'paddleocr_vl',
-      ocrFileKey: parsed.ocrFileKey,
-      filename: parsed.filename,
-      chunkIndex: parsed.chunkIndex,
-      chunkCount: parsed.chunkCount,
-      pageStart: parsed.pageStart,
-      pageEnd: parsed.pageEnd,
-      dataSizeBytes: isCompactFailure ? parsed.dataSizeBytes : Buffer.byteLength(value, 'utf8'),
-      attemptsUsed: parsed.attemptsUsed,
-      ...(parsed.errorCode !== undefined || parsed.diagnosticCode !== undefined
-        ? { errorCode: parsed.errorCode ?? parsed.diagnosticCode }
-        : {}),
-      error:
-        sanitizeErrorMessage(isCompactFailure ? parsed.error : parsed.errorMessage) ?? errorMessage,
-      errorMessage,
-    });
-  } catch {
-    return undefined;
-  }
-}
-
-function isSafePreflightOutput(value: string, allowLegacyError = false): boolean {
-  return canonicalizePreflightOutput(value, allowLegacyError) !== undefined;
-}
-
-function isPriceSearchToolName(value: unknown): value is string {
-  return value === 'search_price_candidates' || value === 'steel_search_price_candidates';
-}
-
-function canonicalizePriceSearchOutput(value: string): string | undefined {
-  if (Buffer.byteLength(value, 'utf8') > steelNativePriceSearchOutputMaxBytes) {
-    return undefined;
-  }
-  try {
-    const parsed = JSON.parse(value) as unknown;
-    if (!isRecord(parsed) || !isPriceSearchToolName(parsed.toolName)) {
-      return undefined;
-    }
-    if (parsed.ok === true) {
-      return isRecord(parsed.data) ? value : undefined;
-    }
-    if (parsed.ok === false) {
-      return typeof parsed.errorCategory === 'string' && typeof parsed.errorSummary === 'string'
-        ? value
-        : undefined;
-    }
-    return undefined;
-  } catch {
-    return undefined;
-  }
-}
-
-function isPaddleOcrToolName(value: unknown): value is string {
-  return (
-    typeof value === 'string' &&
-    (value === 'paddleocr_vl' || /^paddleocr_vl(?:---|_mcp_)[A-Za-z0-9_-]+$/u.test(value))
-  );
-}
-
-function isSteelNativePreflightToolCall(
-  value: unknown,
-  allowLegacyError = false,
-): value is SteelNativePreflightToolCall {
-  return (
-    isRecord(value) &&
-    value.type === 'tool_call' &&
-    (isPaddleOcrToolName(value.name) || isPriceSearchToolName(value.name)) &&
-    typeof value.id === 'string' &&
-    value.id.length > 0 &&
-    Buffer.byteLength(value.id, 'utf8') <= steelNativePreflightToolCallIdMaxBytes &&
-    isPreflightToolCallArgs(value.args) &&
-    (value.progress === 0 || value.progress === 1) &&
-    (value.output === undefined ||
-      (typeof value.output === 'string' &&
-        (isPriceSearchToolName(value.name)
-          ? canonicalizePriceSearchOutput(value.output) !== undefined
-          : isSafePreflightOutput(value.output, allowLegacyError))))
-  );
-}
-
-function canonicalizeSteelNativeEvent(value: unknown): SteelNativeStreamEvent | undefined {
-  if (
-    !isRecord(value) ||
-    typeof value.type !== 'string' ||
-    !isSteelNativeEventSource(value.source) ||
-    !hasValidBaseEventFields(value)
-  ) {
-    return undefined;
-  }
-
-  const event: Record<string, unknown> = {};
-  copyBaseEventFields(value, event);
-
-  if (value.type === 'parse_status') {
-    if (
-      typeof value.message !== 'string' ||
-      !['saved', 'partial', 'skipped'].includes(value.parseStatus as string)
-    ) {
-      return undefined;
-    }
-    event.type = 'parse_status';
-    event.message = value.message;
-    event.parseStatus = value.parseStatus;
-
-    if (value.errorMessage !== undefined) {
-      if (typeof value.errorMessage !== 'string') {
-        return undefined;
-      }
-      const errorMessage = sanitizeErrorMessage(value.errorMessage);
-      if (errorMessage) {
-        event.errorMessage = errorMessage;
-      }
-    }
-    if (value.failedKeys !== undefined) {
-      if (!isStringArray(value.failedKeys)) {
-        return undefined;
-      }
-      event.failedKeys = [...value.failedKeys];
-    }
-    if (value.missingPageRangesByFileKey !== undefined) {
-      const ranges = canonicalizeMissingPageRanges(value.missingPageRangesByFileKey);
-      if (!ranges) {
-        return undefined;
-      }
-      event.missingPageRangesByFileKey = ranges;
-    }
-    for (const field of [
-      'savedCounts',
-      'savedTableCounts',
-      'totalSavedCounts',
-      'totalTableCounts',
-    ]) {
-      if (value[field] !== undefined) {
-        const counts = canonicalizeCountMap(value[field]);
-        if (!counts) {
-          return undefined;
-        }
-        event[field] = counts;
-      }
-    }
-  } else if (value.type === 'memory_saved') {
-    if (typeof value.message !== 'string') {
-      return undefined;
-    }
-    const savedCounts = canonicalizeCountMap(value.savedCounts);
-    if (!savedCounts) {
-      return undefined;
-    }
-    event.type = 'memory_saved';
-    event.message = value.message;
-    event.savedCounts = savedCounts;
-    for (const field of ['savedTableCounts', 'totalSavedCounts', 'totalTableCounts']) {
-      if (value[field] !== undefined) {
-        const counts = canonicalizeCountMap(value[field]);
-        if (!counts) {
-          return undefined;
-        }
-        event[field] = counts;
-      }
-    }
-  } else if (value.type === 'delegate_ocr_status') {
-    if (
-      value.source !== 'delegate_ocr_preflight' ||
-      !isSafeInteger(value.delegateOcrIndex) ||
-      value.delegateOcrIndex < 1 ||
-      !['resume', 'paddleocr', 'organizer', 'agent', 'reconciliation', 'saving', 'summary', 'response'].includes(
-        value.stage as string,
-      ) ||
-      !['started', 'progress', 'retrying', 'succeeded', 'failed', 'replaced'].includes(
-        value.status as string,
-      ) ||
-      typeof value.message !== 'string'
-    ) {
-      return undefined;
-    }
-    event.type = 'delegate_ocr_status';
-    event.source = 'delegate_ocr_preflight';
-    event.delegateOcrIndex = value.delegateOcrIndex;
-    event.stage = value.stage;
-    event.status = value.status;
-    event.message = value.message;
-    if (value.errorMessage !== undefined) {
-      if (typeof value.errorMessage !== 'string') {
-        return undefined;
-      }
-      const errorMessage = sanitizeErrorMessage(value.errorMessage);
-      if (errorMessage) {
-        event.errorMessage = errorMessage;
-      }
-    }
-    if (value.chunkIndex !== undefined) {
-      if (!isSafeInteger(value.chunkIndex) || value.chunkIndex < 0) {
-        return undefined;
-      }
-      event.chunkIndex = value.chunkIndex;
-    }
-    if (value.chunkCount !== undefined) {
-      if (!isSafeInteger(value.chunkCount) || value.chunkCount < 1) {
-        return undefined;
-      }
-      event.chunkCount = value.chunkCount;
-    }
-    // claim/generation/attempt tokens intentionally do not cross persistence boundaries.
-  } else if (value.type === 'quotation_status') {
-    if (
-      value.source !== 'quotation_preflight' ||
-      typeof value.conversationId !== 'string' ||
-      value.conversationId.length === 0 ||
-      !isSafeInteger(value.index) ||
-      value.index < 0 ||
-      (value.runId !== undefined &&
-        (typeof value.runId !== 'string' || value.runId.length === 0)) ||
-      typeof value.stage !== 'string' ||
-      value.stage.length === 0 ||
-      ![
-        'idle',
-        'queued',
-        'running',
-        'aggregating',
-        'finalizing',
-        'interrupted',
-        'completed',
-        'cancelled',
-      ].includes(value.status as string) ||
-      !isSafeInteger(value.completedChunks) ||
-      value.completedChunks < 0 ||
-      !isSafeInteger(value.totalChunks) ||
-      value.totalChunks < 0 ||
-      value.completedChunks > value.totalChunks ||
-      (value.message !== undefined && typeof value.message !== 'string') ||
-      (value.chunkIndex !== undefined &&
-        (!isSafeInteger(value.chunkIndex) || value.chunkIndex < 0)) ||
-      (value.attempt !== undefined && (typeof value.attempt !== 'string' || value.attempt.length === 0)) ||
-      !validQuotationRepairCounts(value)
-    ) {
-      return undefined;
-    }
-    if (value.repairAttempt !== undefined) event.repairAttempt = value.repairAttempt;
-    if (value.maxRepairAttempts !== undefined) event.maxRepairAttempts = value.maxRepairAttempts;
-    event.type = 'quotation_status';
-    event.source = 'quotation_preflight';
-    event.conversationId = value.conversationId;
-    event.index = value.index;
-    event.stage = value.stage;
-    event.status = value.status;
-    event.completedChunks = value.completedChunks;
-    event.totalChunks = value.totalChunks;
-    if (value.runId !== undefined) {
-      event.runId = value.runId;
-    }
-    if (value.message !== undefined) {
-      event.message = value.message;
-    }
-    if (value.chunkIndex !== undefined) {
-      event.chunkIndex = value.chunkIndex;
-    }
-    if (value.attempt !== undefined) {
-      event.attempt = value.attempt;
-    }
-    if (value.ocrSource !== undefined) {
-      const parsedSource = steelQuotationOcrSourceSchema.safeParse(value.ocrSource);
-      if (!parsedSource.success) {
-        return undefined;
-      }
-      event.ocrSource = parsedSource.data;
-    }
-  } else if (value.type === 'quote_audit') {
-    if (
-      value.source === 'quote_runtime' &&
-      value.stage === 'stage_1' &&
-      value.status === 'executed' &&
-      value.message === 'Code Interpreter executed' &&
-      value.toolName === 'code_interpreter'
-    ) {
-      event.type = 'quote_audit';
-      event.stage = value.stage;
-      event.status = 'executed';
-      event.message = 'Code Interpreter executed';
-      event.toolName = 'code_interpreter';
-    } else {
-      return undefined;
-    }
-  } else {
-    return undefined;
-  }
-
-  return isSteelNativeEventData(event) ? event : undefined;
-}
-
-function canonicalizeSteelNativePreflightToolCall(
-  value: unknown,
-  allowLegacyError = false,
-): SteelNativePreflightToolCall | undefined {
-  if (
-    !isRecord(value) ||
-    value.type !== 'tool_call' ||
-    typeof value.id !== 'string' ||
-    value.id.length === 0 ||
-    Buffer.byteLength(value.id, 'utf8') > steelNativePreflightToolCallIdMaxBytes ||
-    (!isPaddleOcrToolName(value.name) && !isPriceSearchToolName(value.name)) ||
-    (isPriceSearchToolName(value.name)
-      ? !isPriceSearchToolCallArgs(value.args)
-      : !isPaddleOcrPreflightToolCallArgs(value.args)) ||
-    (value.progress !== 0 && value.progress !== 1)
-  ) {
-    return undefined;
-  }
-
-  let output: string | undefined;
-  if (value.output !== undefined) {
-    if (typeof value.output !== 'string') {
-      return undefined;
-    }
-    output = isPriceSearchToolName(value.name)
-      ? canonicalizePriceSearchOutput(value.output)
-      : canonicalizePreflightOutput(value.output, allowLegacyError);
-    if (output === undefined) {
-      return undefined;
-    }
-  }
-
-  let args: SteelNativePreflightToolCallArgs;
-  if (isPriceSearchToolName(value.name)) {
-    if (!isPriceSearchToolCallArgs(value.args)) return undefined;
-    args = { queries: value.args.queries.map((query) => ({ ...query })) };
-  } else {
-    if (!isPaddleOcrPreflightToolCallArgs(value.args)) return undefined;
-    args = {
-      ...(value.args.input_data !== undefined ? { input_data: value.args.input_data } : {}),
-      output_mode: value.args.output_mode,
-      return_images: value.args.return_images,
-      use_doc_orientation_classify: value.args.use_doc_orientation_classify,
-      use_doc_unwarping: value.args.use_doc_unwarping,
-      use_layout_detection: value.args.use_layout_detection,
-    };
-  }
-
-  const card: Record<string, unknown> = {
-    type: 'tool_call',
-    id: value.id,
-    name: value.name,
-    args,
-    progress: value.progress,
-    ...(output !== undefined ? { output } : {}),
-  };
-
-  return isSteelNativePreflightToolCall(card, allowLegacyError) ? card : undefined;
 }
 
 function stripHistoryUnknownFields(history: SteelNativeHistory): void {
@@ -1322,25 +305,11 @@ export function appendSteelNativeActivityEvent(
       return false;
     }
 
-    if (typeof JSON.stringify(value) !== 'string') {
+    const canonical = cloneCanonicalEvent(value);
+    if (!canonical) {
       return false;
     }
-
-    const canonicalEvent = canonicalizeSteelNativeEvent(value);
-    if (!canonicalEvent) {
-      return false;
-    }
-
-    const serialized = JSON.stringify(canonicalEvent);
-    if (typeof serialized !== 'string') {
-      return false;
-    }
-    const eventBytes = Buffer.byteLength(serialized, 'utf8');
-    if (eventBytes > steelNativeActivityEventMaxBytes) {
-      return false;
-    }
-
-    const cloned = JSON.parse(serialized) as SteelNativeStreamEvent;
+    const { event: cloned, bytes: eventBytes } = canonical;
     entryByteCache.set(cloned, eventBytes);
 
     const history = getHistory(sink);
@@ -1389,15 +358,10 @@ export function upsertSteelNativePreflightToolCall(
       return false;
     }
     stripHistoryUnknownFields(history);
-    const canonicalCard = canonicalizeSteelNativePreflightToolCall(value);
-    if (!canonicalCard) {
+    const cloned = cloneCanonicalPreflightToolCall(value);
+    if (!cloned) {
       return false;
     }
-    const serialized = JSON.stringify(canonicalCard);
-    if (typeof serialized !== 'string') {
-      return false;
-    }
-    const cloned = JSON.parse(serialized) as SteelNativePreflightToolCall;
     const previousActivityEvents = history.activityEvents.slice();
     const previousPreflightToolCalls = history.preflightToolCalls.slice();
     const existingIndex = history.preflightToolCalls.findIndex((entry) => entry.id === cloned.id);
@@ -1575,13 +539,6 @@ export function buildSteelDelegateOcrStatusEventEnvelopes(
   return [buildSteelDelegateOcrStatusEventEnvelope(input)];
 }
 
-function validQuotationRepairCounts(value: Record<string, unknown>): boolean {
-  return (value.repairAttempt === undefined || (isSafeInteger(value.repairAttempt) && value.repairAttempt >= 1)) &&
-    (value.maxRepairAttempts === undefined || (isSafeInteger(value.maxRepairAttempts) && value.maxRepairAttempts >= 1)) &&
-    (value.repairAttempt === undefined || value.maxRepairAttempts === undefined ||
-      (value.repairAttempt as number) <= (value.maxRepairAttempts as number));
-}
-
 export interface BuildSteelQuotationStatusEventInput {
   conversationId: string;
   requestId?: string;
@@ -1666,6 +623,7 @@ export function buildSteelCodeInterpreterAuditEvent({
     stage,
     status: 'executed',
     ...baseEvent({ ...input, source: 'quote_runtime' }),
+    source: 'quote_runtime',
     toolName: 'code_interpreter',
   };
 }
@@ -1752,7 +710,7 @@ export function buildSteelPaddleOcrPreflightEventEnvelopes({
         ...(preflight.errorMessage
           ? {
               errorMessage: preflight.errorMessage,
-              failedKeys: preflight.failedKeys ?? [],
+              failedKeys: [...(preflight.failedKeys ?? [])],
             }
           : {}),
         ...countMetadata,

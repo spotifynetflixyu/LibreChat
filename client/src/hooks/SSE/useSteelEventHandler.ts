@@ -1,362 +1,27 @@
 import { useCallback } from 'react';
 import { useRecoilCallback } from 'recoil';
-import { steelQuotationOcrSourceSchema } from 'librechat-data-provider';
-import type { EventSubmission, SteelQuotationOcrSource } from 'librechat-data-provider';
-import type {
-  SteelNativeActivityEnvelope,
-  SteelNativeActivityEvent,
-  SteelNativeDelegateOcrStage,
-  SteelNativeDelegateOcrStatus,
-  SteelNativeQuotationStatus,
-} from '~/store/steel';
+import { parseSteelNativeActivityEvent } from 'librechat-data-provider';
+import type { EventSubmission } from 'librechat-data-provider';
+import type { SteelNativeActivityEvent, SteelNativeQuotationStatus } from '~/store/steel';
 import { steelNativeActivityByMessageId, steelNativeStreamEventName } from '~/store/steel';
 
 const MAX_STEEL_ACTIVITY_EVENTS = 100;
 
-type MaybeSteelNativeActivityEnvelope = Partial<SteelNativeActivityEnvelope> & {
-  data?: Partial<SteelNativeActivityEvent>;
-};
-
-const steelActivitySources = new Set([
-  'assistant_markdown',
-  'ocr_preprocessing',
-  'paddleocr_preflight',
-  'delegate_ocr_preflight',
-  'quotation_preflight',
-  'quote_runtime',
-  'responses_output',
-  'tool_result',
-]);
-
-const steelActivityEventTypes = new Set([
-  'parse_status',
-  'memory_saved',
-  'quotation_status',
-  'quote_audit',
-  'delegate_ocr_status',
-]);
-const quotationRepairStages = new Set([
-  'chunk_repair_started',
-  'chunk_repair_succeeded',
-  'chunk_repair_failed',
-]);
-
-function isSavedCounts(value: unknown): value is Record<string, number> {
-  if (value == null || typeof value !== 'object' || Array.isArray(value)) {
-    return false;
-  }
-
-  return Object.values(value as object).every(
-    (count) => typeof count === 'number' && Number.isFinite(count),
-  );
-}
-
-function isPositiveSafeInteger(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
-}
-
-function isStringArray(value: unknown): value is readonly string[] {
-  return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
-}
-
-function isMissingPageRangesByFileKey(
-  value: unknown,
-): value is Record<string, readonly { pageStart: number; pageEnd: number }[]> {
-  if (value == null || typeof value !== 'object' || Array.isArray(value)) {
-    return false;
-  }
-
-  const entries = Object.entries(value);
-  return entries.length > 0 && entries.every(
-    ([fileKey, ranges]) =>
-      fileKey.length > 0 &&
-      Array.isArray(ranges) &&
-      ranges.length > 0 &&
-      ranges.every(
-        (range) =>
-          range != null &&
-          typeof range === 'object' &&
-          !Array.isArray(range) &&
-          Number.isInteger(range.pageStart) &&
-          Number.isInteger(range.pageEnd) &&
-          range.pageStart > 0 &&
-          range.pageStart <= range.pageEnd,
-      ),
-  );
-}
-
-const steelActivityErrorMaxLength = 512;
-
-function sanitizeSteelActivityError(value: unknown): string | undefined {
-  if (typeof value !== 'string') {
-    return undefined;
-  }
-
-  const normalized = value
-    .replace(/https?:\/\/[^\s<>"'`]+/giu, '[redacted-url]')
-    .replace(
-      /\b(?:api[-_]?key|access[-_]?token|refresh[-_]?token|id[-_]?token|authorization|credential|password|secret|signature|sig|token|key)\s*[:=]\s*[^\s&;,]+/giu,
-      (match) => `${match.slice(0, match.search(/[:=]/u) + 1)}[REDACTED]`,
-    )
-    .replace(/\bBearer\s+[^\s"'`]+/giu, 'Bearer [REDACTED]')
-    .replace(/\bsk-[a-z0-9_-]+/giu, 'sk-[REDACTED]')
-    .replace(/[\p{Cc}\u2028\u2029]/gu, ' ')
-    .replace(/\s+/gu, ' ')
-    .trim();
-
-  if (!normalized) {
-    return undefined;
-  }
-  return normalized.length <= steelActivityErrorMaxLength
-    ? normalized
-    : `${normalized.slice(0, steelActivityErrorMaxLength - 3)}...`;
-}
-
-function normalizedCountMetadata(data: Partial<SteelNativeActivityEvent>) {
-  return {
-    ...(isSavedCounts(data.savedTableCounts) ? { savedTableCounts: data.savedTableCounts } : {}),
-    ...(isSavedCounts(data.totalSavedCounts) ? { totalSavedCounts: data.totalSavedCounts } : {}),
-    ...(isSavedCounts(data.totalTableCounts) ? { totalTableCounts: data.totalTableCounts } : {}),
-  };
-}
-
-function normalizedQuotationOcrSource(value: unknown): SteelQuotationOcrSource | undefined {
-  const parsed = steelQuotationOcrSourceSchema.safeParse(value);
-  return parsed.success ? parsed.data : undefined;
-}
+type MaybeSteelNativeActivityEnvelope = { event?: unknown; data?: unknown };
 
 export function normalizeSteelActivityEvent(
   event: MaybeSteelNativeActivityEnvelope,
 ): SteelNativeActivityEvent | null {
-  if (event.event !== steelNativeStreamEventName || event.data == null) {
+  if (event.event !== steelNativeStreamEventName) {
     return null;
   }
-
-  const { data } = event;
-  if (
-    typeof data.type !== 'string' ||
-    !steelActivityEventTypes.has(data.type) ||
-    typeof data.source !== 'string' ||
-    !steelActivitySources.has(data.source) ||
-    (data.type !== 'quotation_status' && typeof data.message !== 'string')
-  ) {
-    return null;
-  }
-
-  if (data.type === 'quotation_status') {
-    const ocrSource =
-      data.ocrSource === undefined ? undefined : normalizedQuotationOcrSource(data.ocrSource);
-    if (
-      data.source !== 'quotation_preflight' ||
-      typeof data.conversationId !== 'string' ||
-      data.conversationId.length === 0 ||
-      !Number.isSafeInteger(data.index) ||
-      (data.index as number) < 0 ||
-      typeof data.stage !== 'string' ||
-      data.stage.length === 0 ||
-      ![
-        'idle',
-        'queued',
-        'running',
-        'aggregating',
-        'finalizing',
-        'interrupted',
-        'completed',
-        'cancelled',
-      ].includes(data.status as string) ||
-      !Number.isSafeInteger(data.completedChunks) ||
-      (data.completedChunks as number) < 0 ||
-      !Number.isSafeInteger(data.totalChunks) ||
-      (data.totalChunks as number) < 0 ||
-      (data.completedChunks as number) > (data.totalChunks as number) ||
-      (data.runId !== undefined &&
-        (typeof data.runId !== 'string' || data.runId.length === 0)) ||
-      (data.message !== undefined && typeof data.message !== 'string') ||
-      (data.chunkIndex !== undefined &&
-        (!Number.isSafeInteger(data.chunkIndex) || (data.chunkIndex as number) < 0)) ||
-      (data.attempt !== undefined &&
-        (typeof data.attempt !== 'string' || data.attempt.length === 0)) ||
-      (data.repairAttempt !== undefined && !isPositiveSafeInteger(data.repairAttempt)) ||
-      (data.maxRepairAttempts !== undefined && !isPositiveSafeInteger(data.maxRepairAttempts)) ||
-      (data.repairAttempt !== undefined &&
-        data.maxRepairAttempts !== undefined &&
-        (data.repairAttempt as number) > (data.maxRepairAttempts as number)) ||
-      (data.ocrSource !== undefined && ocrSource === undefined) ||
-      (quotationRepairStages.has(data.stage) && data.chunkIndex === undefined)
-    ) {
-      return null;
-    }
-
-    return {
-      type: 'quotation_status',
-      source: 'quotation_preflight',
-      conversationId: data.conversationId,
-      index: data.index as number,
-      stage: data.stage,
-      status: data.status as SteelNativeQuotationStatus,
-      completedChunks: data.completedChunks as number,
-      totalChunks: data.totalChunks as number,
-      ...(typeof data.requestId === 'string' ? { requestId: data.requestId } : {}),
-      ...(typeof data.messageId === 'string' ? { messageId: data.messageId } : {}),
-      ...(typeof data.runId === 'string' ? { runId: data.runId } : {}),
-      ...(typeof data.message === 'string' ? { message: data.message } : {}),
-      ...(typeof data.chunkIndex === 'number' ? { chunkIndex: data.chunkIndex } : {}),
-      ...(typeof data.attempt === 'string' ? { attempt: data.attempt } : {}),
-      ...(typeof data.repairAttempt === 'number' ? { repairAttempt: data.repairAttempt } : {}),
-      ...(typeof data.maxRepairAttempts === 'number'
-        ? { maxRepairAttempts: data.maxRepairAttempts }
-        : {}),
-      ...(ocrSource ? { ocrSource } : {}),
-      ...(isSavedCounts(data.savedCounts) ? { savedCounts: data.savedCounts } : {}),
-      ...normalizedCountMetadata(data),
-      ...(typeof data.toolName === 'string' ? { toolName: data.toolName } : {}),
-      ...(typeof data.providerToolCallId === 'string'
-        ? { providerToolCallId: data.providerToolCallId }
-        : {}),
-    };
-  }
-
-  if (data.type === 'delegate_ocr_status') {
-    if (
-      data.source !== 'delegate_ocr_preflight' ||
-      !Number.isSafeInteger(data.delegateOcrIndex) ||
-      (data.delegateOcrIndex as number) < 1 ||
-      ![
-        'resume',
-        'paddleocr',
-        'organizer',
-        'agent',
-        'reconciliation',
-        'saving',
-        'summary',
-        'response',
-      ].includes(data.stage as string) ||
-      !['started', 'progress', 'retrying', 'succeeded', 'failed', 'replaced'].includes(
-        data.status as string,
-      )
-    ) {
-      return null;
-    }
-    if (
-      (data.chunkIndex !== undefined &&
-        (!Number.isSafeInteger(data.chunkIndex) || (data.chunkIndex as number) < 0)) ||
-      (data.chunkCount !== undefined &&
-        (!Number.isSafeInteger(data.chunkCount) || (data.chunkCount as number) < 1))
-    ) {
-      return null;
-    }
-    const errorMessage = sanitizeSteelActivityError(data.errorMessage);
-    return {
-      type: 'delegate_ocr_status',
-      source: 'delegate_ocr_preflight',
-      message: data.message,
-      delegateOcrIndex: data.delegateOcrIndex as number,
-      stage: data.stage as SteelNativeDelegateOcrStage,
-      status: data.status as SteelNativeDelegateOcrStatus,
-      ...(errorMessage ? { errorMessage } : {}),
-      ...(typeof data.chunkIndex === 'number' ? { chunkIndex: data.chunkIndex } : {}),
-      ...(typeof data.chunkCount === 'number' ? { chunkCount: data.chunkCount } : {}),
-      ...(typeof data.conversationId === 'string' ? { conversationId: data.conversationId } : {}),
-      ...(typeof data.requestId === 'string' ? { requestId: data.requestId } : {}),
-      ...(typeof data.messageId === 'string' ? { messageId: data.messageId } : {}),
-      ...(typeof data.toolName === 'string' ? { toolName: data.toolName } : {}),
-      ...(typeof data.providerToolCallId === 'string'
-        ? { providerToolCallId: data.providerToolCallId }
-        : {}),
-    };
-  }
-
-  if (data.type === 'quote_audit') {
-    if (
-      data.source !== 'quote_runtime' ||
-      data.message !== 'Code Interpreter executed' ||
-      data.stage !== 'stage_1' ||
-      data.status !== 'executed' ||
-      data.toolName !== 'code_interpreter' ||
-      (data.providerToolCallId !== undefined &&
-        (typeof data.providerToolCallId !== 'string' || data.providerToolCallId === ''))
-    ) {
-      return null;
-    }
-
-    return {
-      type: 'quote_audit',
-      source: 'quote_runtime',
-      message: 'Code Interpreter executed',
-      stage: data.stage,
-      status: 'executed',
-      toolName: 'code_interpreter',
-      ...(typeof data.conversationId === 'string' ? { conversationId: data.conversationId } : {}),
-      ...(typeof data.requestId === 'string' ? { requestId: data.requestId } : {}),
-      ...(typeof data.messageId === 'string' ? { messageId: data.messageId } : {}),
-      ...(typeof data.providerToolCallId === 'string'
-        ? { providerToolCallId: data.providerToolCallId }
-        : {}),
-    };
-  }
-
-  if (data.type === 'parse_status') {
-    if (
-      data.parseStatus !== 'saved' &&
-      data.parseStatus !== 'partial' &&
-      data.parseStatus !== 'skipped'
-    ) {
-      return null;
-    }
-
-    return {
-      type: 'parse_status',
-      source: data.source,
-      message: data.message,
-      parseStatus: data.parseStatus,
-      ...(isSavedCounts(data.savedCounts) ? { savedCounts: data.savedCounts } : {}),
-      ...normalizedCountMetadata(data),
-      ...(typeof data.conversationId === 'string' ? { conversationId: data.conversationId } : {}),
-      ...(typeof data.requestId === 'string' ? { requestId: data.requestId } : {}),
-      ...(typeof data.messageId === 'string' ? { messageId: data.messageId } : {}),
-      ...(typeof data.toolName === 'string' ? { toolName: data.toolName } : {}),
-      ...(typeof data.providerToolCallId === 'string'
-        ? { providerToolCallId: data.providerToolCallId }
-        : {}),
-      ...(typeof data.errorMessage === 'string' ? { errorMessage: data.errorMessage } : {}),
-      ...(isStringArray(data.failedKeys) ? { failedKeys: data.failedKeys } : {}),
-      ...(isMissingPageRangesByFileKey(data.missingPageRangesByFileKey)
-        ? { missingPageRangesByFileKey: data.missingPageRangesByFileKey }
-        : {}),
-    };
-  }
-
-  if (!isSavedCounts(data.savedCounts)) {
-    return null;
-  }
-
-  return {
-    type: 'memory_saved',
-    source: data.source,
-    message: data.message,
-    savedCounts: data.savedCounts,
-    ...normalizedCountMetadata(data),
-    ...(typeof data.conversationId === 'string' ? { conversationId: data.conversationId } : {}),
-    ...(typeof data.requestId === 'string' ? { requestId: data.requestId } : {}),
-    ...(typeof data.messageId === 'string' ? { messageId: data.messageId } : {}),
-    ...(typeof data.toolName === 'string' ? { toolName: data.toolName } : {}),
-    ...(typeof data.providerToolCallId === 'string'
-      ? { providerToolCallId: data.providerToolCallId }
-      : {}),
-  };
+  return parseSteelNativeActivityEvent(event.data) ?? null;
 }
 
 export function normalizePersistedSteelActivityEvent(
   value: unknown,
 ): SteelNativeActivityEvent | null {
-  if (value == null || typeof value !== 'object' || Array.isArray(value)) {
-    return null;
-  }
-
-  return normalizeSteelActivityEvent({
-    event: steelNativeStreamEventName,
-    data: value,
-  } as MaybeSteelNativeActivityEnvelope);
+  return parseSteelNativeActivityEvent(value) ?? null;
 }
 
 function getTargetMessageIds(
@@ -371,7 +36,6 @@ function getTargetMessageIds(
   const currentResponseId = submission.initialResponse?.messageId;
   if (
     !event.messageId ||
-    event.source === 'assistant_markdown' ||
     event.source === 'ocr_preprocessing' ||
     event.source === 'paddleocr_preflight' ||
     event.source === 'delegate_ocr_preflight' ||
@@ -402,46 +66,13 @@ function computeStableEventKey(event: SteelNativeActivityEvent): string {
       repairAttempt: event.repairAttempt,
       maxRepairAttempts: event.maxRepairAttempts,
       ocrSource: event.ocrSource,
-      savedCounts: event.savedCounts,
-      savedTableCounts: event.savedTableCounts,
-      totalSavedCounts: event.totalSavedCounts,
-      totalTableCounts: event.totalTableCounts,
       toolName: event.toolName,
       providerToolCallId: event.providerToolCallId,
     });
   }
 
-  return JSON.stringify({
-    type: event.type,
-    source: event.source,
-    message: event.message,
-    conversationId: event.conversationId,
-    requestId: event.requestId,
-    messageId: event.messageId,
-    toolName: event.toolName,
-    providerToolCallId: event.providerToolCallId,
-    parseStatus: event.type === 'parse_status' ? event.parseStatus : undefined,
-    savedCounts: event.savedCounts,
-    savedTableCounts: event.savedTableCounts,
-    totalSavedCounts: event.totalSavedCounts,
-    totalTableCounts: event.totalTableCounts,
-    stage: event.type === 'quote_audit' ? event.stage : undefined,
-    status: event.type === 'quote_audit' ? event.status : undefined,
-    delegateOcrIndex: event.type === 'delegate_ocr_status' ? event.delegateOcrIndex : undefined,
-    delegateStage: event.type === 'delegate_ocr_status' ? event.stage : undefined,
-    delegateStatus: event.type === 'delegate_ocr_status' ? event.status : undefined,
-    delegateChunkIndex:
-      event.type === 'delegate_ocr_status' ? event.chunkIndex : undefined,
-    delegateChunkCount:
-      event.type === 'delegate_ocr_status' ? event.chunkCount : undefined,
-    errorMessage:
-      event.type === 'parse_status' || event.type === 'delegate_ocr_status'
-        ? event.errorMessage
-        : undefined,
-    failedKeys: event.type === 'parse_status' ? event.failedKeys : undefined,
-    missingPageRangesByFileKey:
-      event.type === 'parse_status' ? event.missingPageRangesByFileKey : undefined,
-  });
+  const { receivedAt: _receivedAt, ...canonical } = event;
+  return JSON.stringify(canonical);
 }
 
 function isTerminalQuotationStatus(status: SteelNativeQuotationStatus): boolean {

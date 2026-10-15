@@ -515,8 +515,24 @@ const SteelQuotationProgress = memo(function SteelQuotationProgress({
   );
 });
 
+type SteelCountedEvent = Extract<
+  SteelNativeActivityEvent,
+  { type: 'parse_status' | 'memory_saved' }
+>;
+type SteelEventCounts = Partial<
+  Pick<
+    SteelCountedEvent,
+    'savedCounts' | 'savedTableCounts' | 'totalSavedCounts' | 'totalTableCounts'
+  >
+>;
+
+/** Only parse and memory events carry saved-record counts. */
+function getEventCounts(event: SteelNativeActivityEvent | undefined): SteelEventCounts {
+  return event?.type === 'parse_status' || event?.type === 'memory_saved' ? event : {};
+}
+
 function getSavedCountTotal(event: SteelNativeActivityEvent): number {
-  return Object.values(event.savedCounts ?? {}).reduce((total, count) => {
+  return Object.values(getEventCounts(event).savedCounts ?? {}).reduce((total, count) => {
     if (!Number.isFinite(count) || count <= 0) {
       return total;
     }
@@ -718,9 +734,10 @@ function getSavedCountText(
     return null;
   }
 
+  const counts = getEventCounts(event);
   const sourceCounts = getCountTexts({
-    savedCounts: event.savedCounts,
-    tableCounts: event.savedTableCounts,
+    savedCounts: counts.savedCounts,
+    tableCounts: counts.savedTableCounts,
     localize,
   });
 
@@ -743,10 +760,10 @@ function getTotalCountText(
   localize: ReturnType<typeof useLocalize>,
 ) {
   for (let index = events.length - 1; index >= 0; index -= 1) {
-    const event = events[index];
+    const counts = getEventCounts(events[index]);
     const sourceCounts = getCountTexts({
-      savedCounts: event?.totalSavedCounts,
-      tableCounts: event?.totalTableCounts,
+      savedCounts: counts.totalSavedCounts,
+      tableCounts: counts.totalTableCounts,
       localize,
     });
 

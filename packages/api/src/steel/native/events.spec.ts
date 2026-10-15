@@ -186,28 +186,6 @@ describe('Steel native event mapping', () => {
     ).toBe(true);
     expect(sanitized?.length).toBeLessThanOrEqual(512);
 
-    const legacyHistory = parseSteelNativeHistory({
-      activityEvents: [],
-      preflightToolCalls: [
-        {
-          type: 'tool_call',
-          id: 'steel_paddleocr_preflight_pages_1_2',
-          name: 'paddleocr_vl---PaddleOCR',
-          args: {
-            output_mode: 'detailed',
-            return_images: false,
-            use_doc_orientation_classify: true,
-            use_doc_unwarping: true,
-            use_layout_detection: true,
-          },
-          output: `Error: ${errorMessage}`,
-          progress: 0,
-        },
-      ],
-    });
-    expect(legacyHistory?.preflightToolCalls[0]?.output).toContain('[redacted-url]');
-    expect(legacyHistory?.preflightToolCalls[0]?.output).not.toContain('super-secret');
-
     const history = createSteelNativeHistory();
     expect(
       upsertSteelNativePreflightToolCall(history, {
@@ -238,7 +216,7 @@ describe('Steel native event mapping', () => {
         use_layout_detection: true,
       },
       output: JSON.stringify({
-        status: 'failed',
+        status: 'fail',
         paddleocr: 'fail',
         ocrEngine: 'paddleocr_vl',
         ocrFileKey: 'file:pdf-1',
@@ -247,8 +225,10 @@ describe('Steel native event mapping', () => {
         chunkCount: 2,
         pageStart: 3,
         pageEnd: 4,
+        dataSizeBytes: 321,
         attemptsUsed: 2,
-        diagnosticCode: 'ai_studio_timeout',
+        errorCode: 'ai_studio_timeout',
+        error: 'failed https://signed.example.test/?token=secret',
         errorMessage: 'failed https://signed.example.test/?token=secret',
       }),
       progress: 1 as const,
@@ -268,7 +248,7 @@ describe('Steel native event mapping', () => {
       chunkCount: 2,
       pageStart: 3,
       pageEnd: 4,
-      dataSizeBytes: Buffer.byteLength(structuredFailure.output, 'utf8'),
+      dataSizeBytes: 321,
       attemptsUsed: 2,
       errorCode: 'ai_studio_timeout',
       error: 'failed [redacted-url]',
@@ -450,8 +430,16 @@ describe('Steel native event mapping', () => {
     expect(appendSteelNativeActivityEvent(sink, { ...memoryEvent('x'.repeat(20 * 1024)) })).toBe(
       false,
     );
-    expect(() => appendSteelNativeActivityEvent(sink, circular)).not.toThrow();
     expect(sink).toEqual([]);
+    expect(appendSteelNativeActivityEvent(sink, circular)).toBe(true);
+    expect(sink).toEqual([
+      {
+        type: 'memory_saved',
+        source: 'tool_result',
+        message: 'circular',
+        savedCounts: { price_evidence: 1 },
+      },
+    ]);
   });
 
   it('evicts oldest events to stay under total JSON byte budget', () => {
@@ -481,7 +469,7 @@ describe('Steel native event mapping', () => {
         use_layout_detection: true,
       },
       output: JSON.stringify({
-        status: 'completed',
+        status: 'ok',
         paddleocr: 'ok',
         ocrEngine: 'paddleocr_vl',
         ocrFileKey: 'file:pdf-1',
@@ -490,9 +478,7 @@ describe('Steel native event mapping', () => {
         chunkCount: 1,
         pageStart: 1,
         pageEnd: 50,
-        rawTextLength: 12,
-        rawResultHash: 'hash',
-        outputStorage: 'steel_working_order_memory:paddleocr_preflight',
+        dataSizeBytes: 12,
       }),
       progress: 0 as const,
     };

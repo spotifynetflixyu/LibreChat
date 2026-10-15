@@ -1,160 +1,26 @@
 import { atomFamily } from 'recoil';
-import type { SteelQuotationOcrSource } from 'librechat-data-provider';
+import type {
+  SteelNativeEventSource,
+  SteelNativeActivityEvent as SteelNativeEvent,
+} from 'librechat-data-provider';
 
-export const steelNativeStreamEventName = 'steel_event' as const;
+export { steelNativeStreamEventName } from 'librechat-data-provider';
+export type {
+  SteelNativeSavedCounts,
+  SteelNativeTableCounts,
+  SteelNativeQuotationStatus,
+  SteelNativeDelegateOcrStage,
+  SteelNativeDelegateOcrStatus,
+  SteelOcrMissingPageRangesByFileKey,
+} from 'librechat-data-provider';
 
-export type SteelNativeActivitySource =
-  | 'assistant_markdown'
-  | 'ocr_preprocessing'
-  | 'paddleocr_preflight'
-  | 'delegate_ocr_preflight'
-  | 'quotation_preflight'
-  | 'quote_runtime'
-  | 'responses_output'
-  | 'tool_result';
+export type SteelNativeActivitySource = SteelNativeEventSource;
 
-export type SteelNativeSavedCounts = Record<string, number>;
-export type SteelNativeTableCounts = Record<string, number>;
-export type SteelNativeDelegateOcrStage =
-  | 'resume'
-  | 'paddleocr'
-  | 'organizer'
-  | 'agent'
-  | 'reconciliation'
-  | 'saving'
-  | 'summary'
-  | 'response';
-export type SteelNativeDelegateOcrStatus =
-  | 'started'
-  | 'progress'
-  | 'retrying'
-  | 'succeeded'
-  | 'failed'
-  | 'replaced';
-export type SteelNativeQuotationStatus =
-  | 'idle'
-  | 'queued'
-  | 'running'
-  | 'aggregating'
-  | 'finalizing'
-  | 'interrupted'
-  | 'completed'
-  | 'cancelled';
-export interface SteelOcrMissingPageRange {
-  pageStart: number;
-  pageEnd: number;
-}
-
-export type SteelOcrMissingPageRangesByFileKey = Record<
-  string,
-  readonly SteelOcrMissingPageRange[]
->;
-
-export type SteelNativeActivityEvent =
-  | {
-      type: 'delegate_ocr_status';
-      source: 'delegate_ocr_preflight';
-      message: string;
-      delegateOcrIndex: number;
-      stage: SteelNativeDelegateOcrStage;
-      status: SteelNativeDelegateOcrStatus;
-      errorMessage?: string;
-      chunkIndex?: number;
-      chunkCount?: number;
-      savedCounts?: SteelNativeSavedCounts;
-      savedTableCounts?: SteelNativeTableCounts;
-      totalSavedCounts?: SteelNativeSavedCounts;
-      totalTableCounts?: SteelNativeTableCounts;
-      claimToken?: string;
-      generationId?: string;
-      attemptToken?: string;
-      conversationId?: string;
-      requestId?: string;
-      messageId?: string;
-      toolName?: string;
-      providerToolCallId?: string;
-      receivedAt?: number;
-    }
-  | {
-      type: 'quotation_status';
-      source: 'quotation_preflight';
-      conversationId: string;
-      requestId?: string;
-      messageId?: string;
-      index: number;
-      runId?: string;
-      stage: string;
-      status: SteelNativeQuotationStatus;
-      completedChunks: number;
-      totalChunks: number;
-      message?: string;
-      chunkIndex?: number;
-      attempt?: string;
-      repairAttempt?: number;
-      maxRepairAttempts?: number;
-      ocrSource?: SteelQuotationOcrSource;
-      toolName?: string;
-      providerToolCallId?: string;
-      savedCounts?: SteelNativeSavedCounts;
-      savedTableCounts?: SteelNativeTableCounts;
-      totalSavedCounts?: SteelNativeSavedCounts;
-      totalTableCounts?: SteelNativeTableCounts;
-      receivedAt?: number;
-    }
-  | {
-      type: 'quote_audit';
-      source: 'quote_runtime';
-      message: 'Code Interpreter executed';
-      stage: 'stage_1';
-      status: 'executed';
-      toolName: 'code_interpreter';
-      savedCounts?: SteelNativeSavedCounts;
-      savedTableCounts?: SteelNativeTableCounts;
-      totalSavedCounts?: SteelNativeSavedCounts;
-      totalTableCounts?: SteelNativeTableCounts;
-      conversationId?: string;
-      requestId?: string;
-      messageId?: string;
-      providerToolCallId?: string;
-      receivedAt?: number;
-    }
-  | {
-      type: 'parse_status';
-      source: SteelNativeActivitySource;
-      message: string;
-      parseStatus: 'saved' | 'partial' | 'skipped';
-      errorMessage?: string;
-      failedKeys?: readonly string[];
-      missingPageRangesByFileKey?: SteelOcrMissingPageRangesByFileKey;
-      savedCounts?: SteelNativeSavedCounts;
-      savedTableCounts?: SteelNativeTableCounts;
-      totalSavedCounts?: SteelNativeSavedCounts;
-      totalTableCounts?: SteelNativeTableCounts;
-      conversationId?: string;
-      requestId?: string;
-      messageId?: string;
-      toolName?: string;
-      providerToolCallId?: string;
-      receivedAt?: number;
-    }
-  | {
-      type: 'memory_saved';
-      source: SteelNativeActivitySource;
-      message: string;
-      savedCounts: SteelNativeSavedCounts;
-      savedTableCounts?: SteelNativeTableCounts;
-      totalSavedCounts?: SteelNativeSavedCounts;
-      totalTableCounts?: SteelNativeTableCounts;
-      conversationId?: string;
-      requestId?: string;
-      messageId?: string;
-      toolName?: string;
-      providerToolCallId?: string;
-      receivedAt?: number;
-    };
+/** A canonical Steel event plus the client receipt time used for ordering. */
+export type SteelNativeActivityEvent = SteelNativeEvent & { receivedAt?: number };
 
 export type SteelNativeActivityEnvelope = {
-  event: typeof steelNativeStreamEventName;
+  event: 'steel_event';
   data: SteelNativeActivityEvent;
 };
 

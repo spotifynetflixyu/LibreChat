@@ -1581,7 +1581,7 @@ describe('SteelActivity', () => {
           set(steelNativeActivityByMessageId('assistant-1'), [
             {
               type: 'parse_status',
-              source: 'assistant_markdown',
+              source: 'tool_result',
               conversationId: 'conversation-1',
               messageId: 'assistant-1',
               message: 'Saved Markdown parse',
@@ -1593,7 +1593,7 @@ describe('SteelActivity', () => {
             },
             {
               type: 'memory_saved',
-              source: 'assistant_markdown',
+              source: 'tool_result',
               conversationId: 'conversation-1',
               messageId: 'assistant-1',
               message: 'Saved Working Order Memory',
@@ -1625,7 +1625,7 @@ describe('SteelActivity', () => {
           set(steelNativeActivityByMessageId('assistant-ocr'), [
             {
               type: 'memory_saved',
-              source: 'assistant_markdown',
+              source: 'tool_result',
               conversationId: 'conversation-1',
               messageId: 'assistant-ocr',
               message: 'Saved Working Order Memory',
@@ -1653,7 +1653,7 @@ describe('SteelActivity', () => {
           set(steelNativeActivityByMessageId('assistant-official-ocr'), [
             {
               type: 'memory_saved',
-              source: 'assistant_markdown',
+              source: 'tool_result',
               conversationId: 'conversation-1',
               messageId: 'assistant-official-ocr',
               message: 'Saved Working Order Memory',
@@ -1706,7 +1706,7 @@ describe('SteelActivity', () => {
           set(steelNativeActivityByMessageId('assistant-mixed'), [
             {
               type: 'memory_saved',
-              source: 'assistant_markdown',
+              source: 'tool_result',
               conversationId: 'conversation-1',
               messageId: 'assistant-mixed',
               message: 'Saved Working Order Memory',
