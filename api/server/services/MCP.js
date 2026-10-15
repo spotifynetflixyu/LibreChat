@@ -36,7 +36,6 @@ const {
   getUserMCPAuthMap,
   getServerCustomUserVars,
   requiresEphemeralUserConnection,
-  resolveMCPToolKeyServerNames,
   requiresOAuthMachinery,
   hasRuntimeUrlPlaceholders,
   containsGraphTokenPlaceholder,
@@ -1010,7 +1009,6 @@ async function createMCPTools({
  * @param {{ canUseServers: (user?: IUser) => Promise<boolean> }} [params.mcpPermissionContext] - Request-scoped MCP permission context.
  * @param {IUser} params.user - The user from the request object.
  * @param {string} params.toolKey - The toolKey for the tool.
- * @param {string} [params.serverName] - Raw MCP server name for config/connection lookup.
  * @param {string} params.model - The model for the tool.
  * @param {number} [params.index]
  * @param {AbortSignal} [params.signal]
@@ -1037,7 +1035,6 @@ async function createMCPTool({
   index,
   signal,
   toolKey,
-  serverName: providedServerName,
   provider,
   userMCPAuthMap,
   availableTools,
@@ -1054,35 +1051,36 @@ async function createMCPTool({
   jobCreatedAt,
   recoveryPolicy,
 }) {
-  const knownServerNames = resolveMCPToolKeyServerNames({
-    suppliedServerNames: [providedServerName, resolvedServerName],
-    configServerNames: Object.keys(configServers ?? {}),
-  });
-  const [toolName, encodedServerName] = splitMCPToolKey(toolKey, knownServerNames);
-  let serverName = resolvedServerName ?? providedServerName ?? encodedServerName;
+  /** `loadTools` already resolved the server for this key; parsing is the fallback. */
+  const [parsedToolName, parsedServerName] = splitMCPToolKey(
+    toolKey,
+    /** Current keys embed the NORMALIZED server name, legacy persisted keys
+     *  the RAW one — the candidate list needs both spellings or a raw name
+     *  that contains the delimiter mis-splits under the generic fallback. */
+    resolvedServerName
+      ? [resolvedServerName, normalizeServerName(resolvedServerName)]
+      : Object.keys(configServers ?? {}).flatMap((name) => [name, normalizeServerName(name)]),
+  );
+  let serverName = resolvedServerName ?? parsedServerName;
+  const toolName = parsedToolName;
+
   let serverConfig =
     config ?? (await getMCPServersRegistry().getServerConfig(serverName, user?.id, configServers));
   /** DIRECT-FIRST alias fallback: only when the parsed name resolves to no
-   * server is it treated as the normalized spelling of a raw config name —
-   * a user-DB server named like an operator server's normalized form must keep
-   * its own identity. */
-  if (
-    !serverConfig &&
-    resolvedServerName == null &&
-    providedServerName == null &&
-    encodedServerName != null
-  ) {
+   *  server is it treated as the normalized spelling of a raw config name —
+   *  a user-DB server named like an operator server's normalized form must
+   *  keep its own identity. */
+  if (!serverConfig && resolvedServerName == null && parsedServerName != null) {
     const aliasedName = buildServerNameAliases(Object.keys(configServers ?? {})).get(
-      encodedServerName,
+      parsedServerName,
     );
-    if (aliasedName != null && aliasedName !== encodedServerName) {
-      const aliasedConfig = await getMCPServersRegistry().getServerConfig(
+    if (aliasedName != null && aliasedName !== parsedServerName) {
+      serverConfig = await getMCPServersRegistry().getServerConfig(
         aliasedName,
         user?.id,
         configServers,
       );
-      if (aliasedConfig) {
-        serverConfig = aliasedConfig;
+      if (serverConfig) {
         serverName = aliasedName;
       }
     }
