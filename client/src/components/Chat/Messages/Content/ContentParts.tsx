@@ -31,12 +31,11 @@ import {
   lastCursorContentIdx,
   getActivityLabelText,
 } from '~/utils/activityLabels';
-import { hasAcceptedQuotationPreflight, hideQuoteSignalFromContent } from './hideQuoteSignal';
 import WorkspaceChanges, { partitionWorkspaceChanges } from './Parts/WorkspaceChanges';
 import { ParallelContentRenderer, type PartWithIndex } from './ParallelContent';
 import { MediaContext, MessageContext, SearchContext } from '~/Providers';
 import MemoryArtifacts, { hasMemoryArtifacts } from './MemoryArtifacts';
-import SteelActivity, { useSteelActivityEvents } from './SteelActivity';
+import { useSteelResponseExtras } from './SteelResponse';
 import { hasParallelLanes, parallelLaneGroups } from '~/utils/lanes';
 import { activitiesFirst, isActivityPart } from './ordering';
 import { CursorVisibilityContext } from './Parts/EmptyText';
@@ -466,12 +465,13 @@ const ContentPartsBody = memo(function ContentPartsBody({
     (localIndex: number) => contentIndices?.[localIndex] ?? localIndex + contentIndexOffset,
     [contentIndexOffset, contentIndices],
   );
-  const steelActivityEvents = useSteelActivityEvents(messageId, persistedActivityEvents);
-  const displayContent = useMemo(() => {
-    const shouldHideQuoteSignal =
-      !isCreatedByUser && hasAcceptedQuotationPreflight(steelActivityEvents, messageId);
-    return hideQuoteSignalFromContent(content, shouldHideQuoteSignal);
-  }, [content, isCreatedByUser, messageId, steelActivityEvents]);
+  const { displayContent, steelActivity } = useSteelResponseExtras({
+    content,
+    messageId,
+    isCreatedByUser,
+    conversationId,
+    persistedActivityEvents,
+  });
   /** Hoisted above the early returns to feed the entrance-detection hook
    *  below, so it is memoized rather than re-walked on every unrelated
    *  re-render of a message that has no phases at all. */
@@ -686,14 +686,6 @@ const ContentPartsBody = memo(function ContentPartsBody({
     pendingSkills.map((name) => (
       <PendingSkillCall key={`pending-skill-${name}`} skillName={name} loaded={hasRealContent} />
     ));
-  const renderSteelActivity = () => (
-    <SteelActivity
-      messageId={messageId}
-      isCreatedByUser={isCreatedByUser}
-      conversationId={conversationId}
-      persistedActivityEvents={persistedActivityEvents}
-    />
-  );
 
   const renderPart = useCallback(
     (part: TMessageContentParts, idx: number, isLastPart: boolean) => {
@@ -887,7 +879,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
     return (
       <>
         {responseIndicator}
-        {renderSteelActivity()}
+        {steelActivity}
       </>
     );
   }
@@ -1322,7 +1314,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
         />
         {!nestedActivityPhase && <WorkspaceChanges attachments={workspaceChanges} />}
         {!nestedActivityPhase && responseIndicator}
-        {!nestedActivityPhase && renderSteelActivity()}
+        {!nestedActivityPhase && steelActivity}
       </>
     );
     return nestedActivityPhase ? (
@@ -1358,7 +1350,7 @@ const ContentPartsBody = memo(function ContentPartsBody({
           : renderGroups(groupedParts, lastContentIdx))}
       {!nestedActivityPhase && <WorkspaceChanges attachments={workspaceChanges} />}
       {!nestedActivityPhase && responseIndicator}
-      {!nestedActivityPhase && renderSteelActivity()}
+      {!nestedActivityPhase && steelActivity}
     </SearchContext.Provider>
   );
   if (nestedActivityPhase) {

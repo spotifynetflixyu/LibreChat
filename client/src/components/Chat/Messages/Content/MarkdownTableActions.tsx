@@ -28,6 +28,7 @@ import { useMessageContext } from '~/Providers';
 import { triggerDownload } from '~/utils';
 import { useLocalize } from '~/hooks';
 import store from '~/store';
+import './MarkdownTableActions.css';
 
 type MarkdownTableActionsProps = {
   children: React.ReactNode;

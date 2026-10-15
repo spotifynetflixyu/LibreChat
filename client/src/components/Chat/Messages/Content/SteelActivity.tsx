@@ -21,7 +21,7 @@ import useLocalize from '~/hooks/useLocalize';
 import { ChatContext } from '~/Providers';
 import { EmptyText } from './Parts';
 
-type SteelActivityProps = {
+export type SteelActivityProps = {
   messageId: string;
   isCreatedByUser?: boolean;
   conversationId?: string | null;

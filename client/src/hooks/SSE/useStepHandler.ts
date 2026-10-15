@@ -45,6 +45,7 @@ import {
 } from '~/store';
 import { isAskUserQuestionPart, isAnsweredAskUserQuestionPart } from '~/utils/approval';
 import { mergeSteelQuotationMainSnapshot } from '~/utils/steelQuotation';
+import { applyCompactionMarker } from '~/utils/compaction';
 import { MESSAGE_UPDATE_INTERVAL } from '~/common';
 import { isOAuthToolCallName } from './oauth';
 
@@ -934,45 +935,9 @@ export default function useStepHandler({
           return;
         }
 
-        const content = [...(response.content ?? [])];
-        const existingIndex = content.findIndex(
-          (part) =>
-            part?.type === ContentTypes.SUMMARY &&
-            part.nativeCompaction?.id === compaction.id &&
-            part.nativeCompaction.agentId === compaction.agentId &&
-            part.nativeCompaction.runId === compaction.runId,
-        );
-
-        if (existingIndex < 0) {
-          /** A terminal event without its start marker is an out-of-order
-           * replay. Persisted markers are already present in the response on
-           * resume, so do not synthesize a misleading status card here. */
-          if (compaction.phase !== 'started') {
-            return;
-          }
-          content.push({
-            type: ContentTypes.SUMMARY,
-            content: [],
-            nativeCompaction: compaction,
-            agentId: compaction.agentId,
-          });
-        } else {
-          const existing = content[existingIndex];
-          if (existing?.type !== ContentTypes.SUMMARY || !existing.nativeCompaction) {
-            return;
-          }
-          /** A terminal marker is final. Late starts and conflicting terminal
-           * phases must not regress a completed, failed, or cancelled card. */
-          if (
-            existing.nativeCompaction.phase !== 'started' &&
-            compaction.phase !== existing.nativeCompaction.phase
-          ) {
-            return;
-          }
-          content[existingIndex] = {
-            ...existing,
-            nativeCompaction: compaction,
-          };
+        const content = applyCompactionMarker(response.content, compaction);
+        if (!content) {
+          return;
         }
 
         const updatedResponse = { ...response, content };
