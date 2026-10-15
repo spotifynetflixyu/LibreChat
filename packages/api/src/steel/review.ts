@@ -59,6 +59,7 @@ import { escapeMarkdownTableCell } from './markdown/row-codec';
 import { reconcileSteelReviewOcrLinks } from './review/ocr';
 import { parseMarkdownTables } from './markdown/table';
 import { getFenceStart, closesFence, getH2Title } from './markdown/parser';
+import { sha256Hex } from './utils';
 
 export interface SteelReviewReader {
   readSteelReview(input: SteelReviewReadInput): Promise<SteelReviewReadRecord | null>;
@@ -1150,7 +1151,7 @@ export function createSteelReviewService({
     const isSystemOrderBaseline =
       record.kind === 'system_order' &&
       record.aiBaselineMarkdown !== undefined &&
-      createHash('sha256').update(record.aiBaselineMarkdown).digest('hex') === payload.revision;
+      sha256Hex(record.aiBaselineMarkdown) === payload.revision;
     if (!isInitialOcrRevision && !isSystemOrderBaseline) {
       return undefined;
     }
@@ -1960,12 +1961,12 @@ export function createSteelReviewService({
       sourceMappings: uniqueSourceMappings(trustedSourceMappings),
       headers,
       operationId,
-      messageSha256: createHash('sha256').update(fullText).digest('hex'),
+      messageSha256: sha256Hex(fullText),
       target: {
         ...(target.partIndex !== undefined ? { partIndex: target.partIndex } : {}),
         start: target.start,
         end: target.end,
-        sha256: createHash('sha256').update(target.raw).digest('hex'),
+        sha256: sha256Hex(target.raw),
       },
       targetText: target.raw,
       replacementText: cleanReplacementText,

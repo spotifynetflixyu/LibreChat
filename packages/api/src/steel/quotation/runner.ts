@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 import { logger } from '@librechat/data-schemas';
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 import {
   bindSteelReviewRowsToOcrContext,
   createSteelReviewOcrContext,
@@ -81,6 +81,7 @@ import { registerQuotationExecution } from './control';
 import { createSteelPostgresPool } from '../postgres';
 import { readQuotationHistory } from './history';
 import { invokeQuotationModel } from './model';
+import { isRecord, sha256Hex } from '../utils';
 
 export { commitQuotationCustomerResponse, prepareQuotationCustomerResponse } from './preparation';
 
@@ -232,10 +233,6 @@ function createQuotationSummaryStreamFilter(): {
       return output;
     },
   };
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function readExactCandidate(value: unknown): SteelCalculationCandidateEvidence | undefined {
@@ -404,7 +401,7 @@ function validateCompletionReceiptReplay(
 ): void {
   const receipt = ticket.completionReceipt;
   if (!receipt) return;
-  const matchesInput = createHash('sha256').update(response).digest('hex') === receipt.inputHash;
+  const matchesInput = sha256Hex(response) === receipt.inputHash;
   if (!matchesInput && response !== receipt.markdown) {
     throw new Error('Quotation completion receipt does not match the response');
   }
@@ -497,10 +494,7 @@ export async function acceptQuotationResponse(input: {
       const orderMarkdown = orderSection
         ? `## ${orderSection.title}\n\n${orderSection.body}`
         : undefined;
-      if (
-        !orderMarkdown ||
-        createHash('sha256').update(orderMarkdown).digest('hex') !== acceptedTicket.orderHash
-      ) {
+      if (!orderMarkdown || sha256Hex(orderMarkdown) !== acceptedTicket.orderHash) {
         throw new Error('Accepted quotation replay order data does not match the saved ticket');
       }
     }

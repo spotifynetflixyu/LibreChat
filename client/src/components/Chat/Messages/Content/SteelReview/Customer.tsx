@@ -23,6 +23,7 @@ import type {
 import type { TranslationKeys } from '~/hooks';
 import { useCommitSteelCustomerMutation } from '~/data-provider';
 import { steelReviewCustomerPriceTierFamily } from './state';
+import { getSteelErrorResponse } from '~/utils/steel';
 import { useMessageContext } from '~/Providers';
 import { useLocalize } from '~/hooks';
 
@@ -40,21 +41,7 @@ function isSteelCustomerTier(value: string): value is SteelCustomerTier {
 }
 
 function getSteelCustomerErrorCode(error: unknown): SteelCustomerErrorCode | undefined {
-  if (typeof error !== 'object' || error === null || !('response' in error)) {
-    return undefined;
-  }
-  const response = error.response;
-  if (typeof response !== 'object' || response === null || !('data' in response)) {
-    return undefined;
-  }
-  const data = response.data;
-  if (typeof data !== 'object' || data === null || !('code' in data)) {
-    return undefined;
-  }
-  const code = data.code;
-  if (typeof code !== 'string') {
-    return undefined;
-  }
+  const code = getSteelErrorResponse(error)?.data?.code;
   return steelCustomerErrorCodes.includes(code as SteelCustomerErrorCode)
     ? (code as SteelCustomerErrorCode)
     : undefined;

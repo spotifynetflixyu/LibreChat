@@ -8,6 +8,7 @@ import { appendSteelNextStep } from '../quotation/next';
 import { SteelResponseCompletionError } from '../quotation/completion';
 import { createSteelReviewBaselineRows } from '../review';
 import { admitFullOnlyMarkdown } from './admission';
+import { sha256Hex } from '../utils';
 
 export type { SteelFullPublication, SteelFullPublisher } from './types';
 
@@ -105,7 +106,7 @@ export async function publishFullMarkdown(input: SteelMarkdownCompletionInput, d
   let candidateToken: string | undefined;
   if (claimToken && targets.some((target) => target.kind === 'ocr_result')) {
     const currentRun = await dependencies.ocr.findDelegateOcrRunByClaimToken(claimToken);
-    candidateToken = `${admission.generationId}:${input.responseId}:${createHash('sha256').update(markdown).digest('hex')}`;
+    candidateToken = `${admission.generationId}:${input.responseId}:${sha256Hex(markdown)}`;
     if (!currentRun?.finalizationJournal.claimCleared) {
       if (!await dependencies.ocr.setDelegateFinalizedCandidate({ claimToken, executionLeaseToken,
         candidate: { token: candidateToken, markdown, source: 'backend', generationId: admission.generationId,

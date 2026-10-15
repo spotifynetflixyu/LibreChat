@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { createHash } from 'node:crypto';
 import { parseSteelReviewMarkdownTables, steelSectionBaseTitle } from 'librechat-data-provider';
 import type {
   ISteelQuotationState,
@@ -23,8 +22,8 @@ import { createSteelReviewBaselineRows } from '../review';
 import { parseMarkdownTables } from '../markdown/table';
 import { parseAssistantMarkdown } from '../ocr/result';
 import { sameQuotationOcrSelection } from './input';
+import { sha256Hex } from '../utils';
 
-const hash = (text: string): string => createHash('sha256').update(text).digest('hex');
 const sha256 = z.string().regex(/^[a-f0-9]{64}$/u);
 const orderPublicationReceiptSchema = z
   .object({
@@ -106,11 +105,11 @@ export async function readPublishedQuotationOrder(input: {
     !publication ||
     publication.kind !== 'main' ||
     publication.sha256 !== publicationRef.sha256 ||
-    hash(publication.payload) !== publication.sha256 ||
+    sha256Hex(publication.payload) !== publication.sha256 ||
     !normalized ||
     normalized.kind !== 'main' ||
     normalized.sha256 !== normalizedRef.sha256 ||
-    hash(normalized.payload) !== normalized.sha256
+    sha256Hex(normalized.payload) !== normalized.sha256
   ) {
     return { status: 'invalid' };
   }
@@ -138,7 +137,7 @@ export async function readPublishedQuotationOrder(input: {
     receipt.inputSnapshotSha256 !== run.snapshotRef.sha256 ||
     receipt.normalizedSha256 !== normalized.sha256 ||
     receipt.systemOrderSha256 !== normalized.sha256 ||
-    hash(systemOrder.markdown) !== systemOrder.sha256 ||
+    sha256Hex(systemOrder.markdown) !== systemOrder.sha256 ||
     !canonical ||
     canonical.markdown !== normalized.payload ||
     !table ||

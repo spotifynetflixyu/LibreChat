@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import mongoose from 'mongoose';
 import { hasConsistentMessageText } from '@librechat/data-schemas';
 import {
@@ -44,6 +43,7 @@ import { publishFullMarkdown } from './full';
 import { createSteelQuotationStateService } from '../quotation/state';
 import { createSteelDelegateOcrStateService } from '../ocr/state';
 import { createSteelOcrResponseAuditService } from '../ocr/audit';
+import { sha256Hex } from '../utils';
 
 export type {
   SteelMarkdownCompletionInput,
@@ -74,9 +74,6 @@ interface CompletionReceipt {
 /** Receipts belong to the server request, never to model output or a caller's boolean. */
 const receipts = new WeakMap<SteelResponseRequest, Map<string, CompletionReceipt>>();
 const publications = new WeakSet<SteelMarkdownPublication>();
-function hash(value: string): string {
-  return createHash('sha256').update(value).digest('hex');
-}
 
 function admittedSourceSnapshot(
   ocrState:
@@ -95,7 +92,7 @@ function admittedSourceSnapshot(
     !ocrState?.currentOcrResultGenerationId ||
     !ocrState.currentOcrResultMarkdown ||
     !orderHash ||
-    hash(ocrState.currentOcrResultMarkdown) !== orderHash
+    sha256Hex(ocrState.currentOcrResultMarkdown) !== orderHash
   ) {
     return undefined;
   }
@@ -147,7 +144,7 @@ async function verifyPublication(
     (publication.ocrSelection
       ? !sameQuotationOcrSelection(publication.ocrSelection, state?.activeRun?.ocrSelection)
       : publication.ocrGeneration !== ocr?.generationId ||
-        publication.ocrHash !== (ocr?.markdown ? hash(ocr.markdown) : undefined)) ||
+        publication.ocrHash !== (ocr?.markdown ? sha256Hex(ocr.markdown) : undefined)) ||
     publication.orderHash !== state?.currentOrder?.sha256 ||
     publication.customerPreparationId !== state?.currentCustomer?.preparationId ||
     publication.runId !== state?.activeRun?.runId ||
@@ -486,7 +483,7 @@ export async function finalizeSteelMarkdownTurn(
         generationId,
         markdown,
         ocrGeneration: ocr?.generationId,
-        ocrHash: ocr?.markdown ? hash(ocr.markdown) : undefined,
+        ocrHash: ocr?.markdown ? sha256Hex(ocr.markdown) : undefined,
         orderHash: latest?.currentOrder?.sha256,
         customerPreparationId: latest?.currentCustomer?.preparationId,
         runId: latest?.activeRun?.runId,
@@ -500,7 +497,7 @@ export async function finalizeSteelMarkdownTurn(
       scopeKey(scope),
       input.responseId,
       generationId,
-      hash(input.markdown),
+      sha256Hex(input.markdown),
     ]);
     let requestReceipts = receipts.get(input.req);
     if (!requestReceipts) {
@@ -522,11 +519,11 @@ export async function finalizeSteelMarkdownTurn(
         replayTicket &&
         parseQuotationSignal(input.markdown) &&
         (!titles.has('system_order') ||
-          savedCompletion.inputHash === hash(input.markdown) ||
+          savedCompletion.inputHash === sha256Hex(input.markdown) ||
           savedCompletion.markdown === input.markdown)
       ) {
         if (
-          savedCompletion.inputHash !== hash(input.markdown) &&
+          savedCompletion.inputHash !== sha256Hex(input.markdown) &&
           savedCompletion.markdown !== input.markdown
         ) {
           throw new SteelResponseCompletionError('invalid_completion_receipt');
@@ -541,7 +538,7 @@ export async function finalizeSteelMarkdownTurn(
           (!quotationState.activeRun?.ocrSelection &&
             savedCompletion.ocrGeneration &&
             (savedCompletion.ocrGeneration !== ocrState?.currentOcrResultGenerationId ||
-              savedCompletion.ocrHash !== hash(ocrState?.currentOcrResultMarkdown ?? ''))) ||
+              savedCompletion.ocrHash !== sha256Hex(ocrState?.currentOcrResultMarkdown ?? ''))) ||
           (savedCompletion.systemOrderHash &&
             quotationState.currentSystemOrder?.runId !== replayTicket.acceptedRunId &&
             savedCompletion.systemOrderHash !== quotationState.currentSystemOrder?.sha256)
@@ -584,7 +581,7 @@ export async function finalizeSteelMarkdownTurn(
           generationId,
           markdown,
           ocrGeneration: publishedOcr?.generationId,
-          ocrHash: publishedOcr?.markdown ? hash(publishedOcr.markdown) : undefined,
+          ocrHash: publishedOcr?.markdown ? sha256Hex(publishedOcr.markdown) : undefined,
           orderHash: publishedState?.currentOrder?.sha256,
           customerPreparationId: publishedState?.currentCustomer?.preparationId,
           runId: publishedState?.activeRun?.runId,
@@ -599,7 +596,7 @@ export async function finalizeSteelMarkdownTurn(
         scopeKey: scopeKey(scope),
         responseId: input.responseId,
         generationId,
-        inputHash: hash(input.markdown),
+        inputHash: sha256Hex(input.markdown),
         inputMarkdown: input.markdown,
         stage: input.stage ?? 'ui',
         canonicalMarkdown: input.markdown,
@@ -629,7 +626,7 @@ export async function finalizeSteelMarkdownTurn(
       receipt.scopeKey !== scopeKey(scope) ||
       receipt.responseId !== input.responseId ||
       receipt.generationId !== generationId ||
-      receipt.inputHash !== hash(input.markdown)
+      receipt.inputHash !== sha256Hex(input.markdown)
     ) {
       throw new SteelResponseCompletionError('invalid_completion_receipt');
     }
@@ -666,7 +663,7 @@ export async function finalizeSteelMarkdownTurn(
           ...(admittedOcrState?.currentOcrResultGenerationId
             ? {
                 ocrGeneration: admittedOcrState.currentOcrResultGenerationId,
-                ocrHash: hash(admittedOcrState.currentOcrResultMarkdown ?? ''),
+                ocrHash: sha256Hex(admittedOcrState.currentOcrResultMarkdown ?? ''),
               }
             : {}),
           ...(latest?.currentSystemOrder
@@ -719,7 +716,7 @@ export async function finalizeSteelMarkdownTurn(
       generationId,
       markdown,
       ocrGeneration: publishedOcr?.generationId,
-      ocrHash: publishedOcr?.markdown ? hash(publishedOcr.markdown) : undefined,
+      ocrHash: publishedOcr?.markdown ? sha256Hex(publishedOcr.markdown) : undefined,
       orderHash: publishedState?.currentOrder?.sha256,
       customerPreparationId: publishedState?.currentCustomer?.preparationId,
       runId: publishedState?.activeRun?.runId,

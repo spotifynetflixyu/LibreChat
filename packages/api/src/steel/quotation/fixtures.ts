@@ -1,5 +1,3 @@
-import { createHash } from 'node:crypto';
-
 import {
   createSteelQuotationArtifactModel,
   createSteelQuotationStateModel,
@@ -13,12 +11,9 @@ import type {
   SteelQuotationCurrentSystemOrder,
   SteelQuotationScope,
 } from '@librechat/data-schemas';
+import { sha256Hex } from '../utils';
 
 type Mongoose = typeof import('mongoose');
-
-function hash(value: string): string {
-  return createHash('sha256').update(value, 'utf8').digest('hex');
-}
 
 function ref(
   scope: SteelQuotationScope,
@@ -78,7 +73,7 @@ export async function seedLegacyPublication(input: {
 }> {
   const Artifact = createSteelQuotationArtifactModel(input.mongoose);
   const targetMessageId = input.targetMessageId ?? input.run.targetMessageId;
-  const finalSha256 = hash(input.markdown);
+  const finalSha256 = sha256Hex(input.markdown);
   const publicationPayload = JSON.stringify({ finalSha256 });
   const finalRef = ref(input.scope, input.run.runId, 'final', 'final', finalSha256);
   const publicationRef = ref(
@@ -86,7 +81,7 @@ export async function seedLegacyPublication(input: {
     input.run.runId,
     'published',
     'final',
-    hash(publicationPayload),
+    sha256Hex(publicationPayload),
   );
   const now = new Date();
   await Artifact.create([

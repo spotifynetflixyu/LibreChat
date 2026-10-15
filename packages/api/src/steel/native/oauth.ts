@@ -38,6 +38,7 @@ import { createOAuthCompactionFetch } from '~/providers/openai/compaction/gatewa
 import { loadOpenAIOAuthTokens, toOpenAIOAuthLibraryFetch } from './credentials';
 import { createQuotationSignalDetector } from '../quotation/signal';
 import { quotationSignal } from '../quotation/protocol';
+import { isRecord } from '../utils';
 
 const dynamicImportOpenAIOAuth = new Function('specifier', 'return import(specifier)') as (
   specifier: string,
@@ -100,10 +101,6 @@ async function loadCreateOpenAIOAuth(): Promise<CreateOpenAIOAuth> {
 async function loadCreateOpenAIOAuthTransport(): Promise<CreateOpenAIOAuthTransport> {
   const core = await dynamicImportOpenAIOAuthCore('@openai-oauth/core');
   return core.createOpenAIOAuthTransport;
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function omitUndefined<T extends Record<string, unknown>>(value: T): Partial<T> {

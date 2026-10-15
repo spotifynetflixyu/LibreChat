@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import {
   isSteelProcessingCatalogCandidateApplicable,
   steelCatalogOptionLabel,
@@ -10,6 +9,7 @@ import type {
   SteelProcessingMaterial,
 } from 'librechat-data-provider';
 import type { SteelRepositoryClient, SteelSqlParameter } from './types';
+import { sha256Hex } from '../utils';
 
 export type SteelCatalogKind = 'material' | 'processing';
 
@@ -123,7 +123,7 @@ function escapeLikeLiteral(value: string): string {
 function candidateRevision(row: SteelCatalogRow): string {
   const { unit_price: _selectedPrice, ...catalog } = row;
   const fields = Object.entries(catalog).sort(([left], [right]) => left.localeCompare(right));
-  return createHash('sha256').update(JSON.stringify(fields)).digest('hex');
+  return sha256Hex(JSON.stringify(fields));
 }
 
 function toCandidate(row: SteelCatalogRow): SteelCatalogCandidate {

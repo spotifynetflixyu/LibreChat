@@ -20,6 +20,7 @@ import type { SteelOcrMissingPageRangesByFileKey } from '../ocr/failures';
 import type { OcrPreprocessingPipelineProgress } from '../ocr/preprocess';
 import type { CaptureSteelNativeToolResultResult } from './tool-result';
 import { quotationOcrSource } from '../quotation/input';
+import { isRecord } from '../utils';
 
 export {
   steelNativeStreamEventName,
@@ -96,10 +97,6 @@ interface SteelNativeHistoryContext {
 }
 
 export type SteelNativeHistoryTarget = SteelNativeHistory | SteelNativeStreamEvent[];
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function isSteelNativeHistory(value: unknown): value is SteelNativeHistory {
   return (

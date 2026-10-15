@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import { steelSectionBaseTitle } from 'librechat-data-provider';
 import type {
   SteelQuotationCurrentSystemOrder,
@@ -8,6 +7,7 @@ import { escapeMarkdownTableCell } from '../markdown/row-codec';
 import { parseMarkdownTables } from '../markdown/table';
 import { parseAssistantMarkdown } from '../ocr/result';
 import { sameQuotationOcrSource } from './input';
+import { sha256Hex } from '../utils';
 
 const DECIMAL_PATTERN = /^(?:\d+(?:\.\d+)?|\d{1,3}(?:,\d{3})+(?:\.\d+)?)$/u;
 const NUMERIC_HEADERS = new Set(['數量', '單重', '總數', '單價', '厚度', '寬度', '長度', '肚']);
@@ -98,7 +98,7 @@ function canonicalSnapshot(markdown: string): { markdown: string; sha256: string
   const normalized = canonicalSystemOrder(parsed);
   return {
     markdown: normalized,
-    sha256: createHash('sha256').update(normalized, 'utf8').digest('hex'),
+    sha256: sha256Hex(normalized),
     parsed,
   };
 }

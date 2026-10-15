@@ -100,3 +100,19 @@ export function prependPersistedSteelPreflightToolCallParts(
     ...safeContent,
   ];
 }
+
+type SteelErrorResponse = {
+  status?: unknown;
+  data?: { code?: unknown; recovery?: unknown };
+};
+
+/** The HTTP status and body of a failed Steel API call, from an axios-shaped error. */
+export function getSteelErrorResponse(error: unknown): SteelErrorResponse | undefined {
+  if (typeof error !== 'object' || error === null || !('response' in error)) {
+    return undefined;
+  }
+  const response = error.response;
+  return typeof response === 'object' && response !== null
+    ? (response as SteelErrorResponse)
+    : undefined;
+}

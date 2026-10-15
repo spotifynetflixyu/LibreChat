@@ -13,6 +13,7 @@ import {
   markOpenAIOAuthCredentialInvalid,
 } from './auth-state';
 import { loadOpenAIOAuthTokens } from './credentials';
+import { isRecord } from '../utils';
 
 const usageEndpoint = 'https://chatgpt.com/backend-api/wham/usage';
 const defaultTtlMs = 60_000;
@@ -39,10 +40,6 @@ export type OpenAIOAuthUsageDeps = {
 
 const defaultCache: OpenAIOAuthUsageCache = {};
 const unavailableTtlMs = 10_000;
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null && !Array.isArray(value);
-}
 
 function getRecord(
   record: Record<string, unknown>,

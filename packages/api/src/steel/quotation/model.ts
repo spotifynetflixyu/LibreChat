@@ -1,4 +1,3 @@
-import { createHash } from 'node:crypto';
 import {
   AIMessage,
   HumanMessage,
@@ -15,6 +14,7 @@ import { createSteelNativeTool, mergeSteelToolDefinitions } from '../native/tool
 import { scopeOAuthCompaction } from '~/providers/openai/compaction/scope';
 import { createOpenAIOAuthModel } from '../native/oauth';
 import { QuotationProtocolError } from './protocol';
+import { sha256Hex } from '../utils';
 
 export interface QuotationModelLookup {
   id: string;
@@ -114,8 +114,7 @@ export async function invokeQuotationModel(input: QuotationModelInput): Promise<
   const model = createOpenAIOAuthModel({
     ...scopeOAuthCompaction(
       input.modelOptions,
-      input.executionId ??
-        `quotation:${input.role}:${createHash('sha256').update(input.input).digest('hex')}`,
+      input.executionId ?? `quotation:${input.role}:${sha256Hex(input.input)}`,
     ),
     enableCodeInterpreter: enablePython,
     tools: definitions,

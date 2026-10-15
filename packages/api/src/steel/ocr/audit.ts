@@ -1,8 +1,7 @@
-import { createHash } from 'node:crypto';
-
 import { createSteelOcrResponseAuditModel } from '@librechat/data-schemas';
 
 import type { ISteelOcrResponseAudit, SteelOcrResponseAuditStage } from '@librechat/data-schemas';
+import { sha256Hex } from '../utils';
 
 type Mongoose = typeof import('mongoose');
 type SteelOcrResponseAuditRecord = Pick<
@@ -55,7 +54,7 @@ export class SteelOcrResponseAuditPersistenceError extends Error {
 }
 
 export function hashSteelOcrAuditValue(value: string): string {
-  return createHash('sha256').update(value, 'utf8').digest('hex');
+  return sha256Hex(value);
 }
 
 function isDuplicateKeyError(error: unknown): boolean {

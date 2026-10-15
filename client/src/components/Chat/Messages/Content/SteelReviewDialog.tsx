@@ -103,6 +103,7 @@ import {
 } from './SteelReview/cache';
 import { getSteelReviewPreviewRows, getSteelReviewUnlinkedRowIds } from './SteelReview/filter';
 import SteelReviewSourcePreview from './SteelReview/SourcePreview';
+import { getSteelErrorResponse } from '~/utils/steel';
 import { SteelVersionsContext } from './SteelReview/heading';
 import translationEn from '~/locales/en/translation.json';
 import SteelReviewEditor from './SteelReview/Editor';
@@ -339,45 +340,17 @@ async function canApplySteelReviewMessageSnapshot(
 }
 
 function getErrorStatus(error: unknown): number | undefined {
-  if (typeof error !== 'object' || error === null || !('response' in error)) {
-    return undefined;
-  }
-  const response = error.response;
-  if (typeof response !== 'object' || response === null || !('status' in response)) {
-    return undefined;
-  }
-  return typeof response.status === 'number' ? response.status : undefined;
+  const status = getSteelErrorResponse(error)?.status;
+  return typeof status === 'number' ? status : undefined;
 }
 
 function getErrorCode(error: unknown): SteelReviewErrorCode | undefined {
-  if (typeof error !== 'object' || error === null || !('response' in error)) {
-    return undefined;
-  }
-  const response = error.response;
-  if (typeof response !== 'object' || response === null || !('data' in response)) {
-    return undefined;
-  }
-  const data = response.data;
-  if (typeof data !== 'object' || data === null || !('code' in data)) {
-    return undefined;
-  }
-  const parsed = steelReviewErrorCodeSchema.safeParse(data.code);
+  const parsed = steelReviewErrorCodeSchema.safeParse(getSteelErrorResponse(error)?.data?.code);
   return parsed.success ? parsed.data : undefined;
 }
 
 function getErrorRecovery(error: unknown): SteelReviewRecovery | undefined {
-  if (typeof error !== 'object' || error === null || !('response' in error)) {
-    return undefined;
-  }
-  const response = error.response;
-  if (typeof response !== 'object' || response === null || !('data' in response)) {
-    return undefined;
-  }
-  const data = response.data;
-  if (typeof data !== 'object' || data === null || !('recovery' in data)) {
-    return undefined;
-  }
-  const parsed = steelReviewRecoverySchema.safeParse(data.recovery);
+  const parsed = steelReviewRecoverySchema.safeParse(getSteelErrorResponse(error)?.data?.recovery);
   return parsed.success ? parsed.data : undefined;
 }
 

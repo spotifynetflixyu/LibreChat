@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { sha256Hex } from '../utils';
 
 export interface OcrOrganizerInput {
   ocrRulesText: string;
@@ -39,7 +39,7 @@ export function normalizeOcrOrganizerFileKey(input: { fileKey: string; fileId?: 
     return fileKey;
   }
 
-  return `file:${createHash('sha256').update(fileKey).digest('hex').slice(0, 24)}`;
+  return `file:${sha256Hex(fileKey).slice(0, 24)}`;
 }
 
 function normalizeOcrOrganizerSourceFile(sourceFile: string | null | undefined): string | null {

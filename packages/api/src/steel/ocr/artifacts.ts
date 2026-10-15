@@ -1,4 +1,3 @@
-import { createHash } from 'crypto';
 import { createSteelOcrPdfChunkArtifactModel } from '@librechat/data-schemas';
 
 import { ocrPreprocessingPipelineVersion } from '../memory/service';
@@ -11,6 +10,7 @@ import {
   type OcrPreprocessingPageChunk,
   validateOcrPageSplit,
 } from './chunks';
+import { sha256Hex } from '../utils';
 
 type Mongoose = typeof import('mongoose');
 
@@ -225,7 +225,7 @@ export function createMongooseOcrPdfChunkArtifactRepository(
         artifact.pageEnd,
       ];
       const deterministicId = new mongoose.Types.ObjectId(
-        createHash('sha256').update(JSON.stringify(rangeIdentity)).digest('hex').slice(0, 24),
+        sha256Hex(JSON.stringify(rangeIdentity)).slice(0, 24),
       );
       await SteelOcrPdfChunkArtifact.updateOne(
         { _id: deterministicId },
@@ -441,7 +441,7 @@ export function buildOcrPdfChunkArtifactStorageKey(input: {
   chunk: Pick<OcrPreprocessingPageChunk, 'pageStart' | 'pageEnd'>;
 }): string {
   const pipelineVersion = input.pipelineVersion ?? ocrPreprocessingPipelineVersion;
-  const sourceHash = createHash('sha256').update(input.sourcePdfKey).digest('hex');
+  const sourceHash = sha256Hex(input.sourcePdfKey);
   const pageStart = String(input.chunk.pageStart).padStart(6, '0');
   const pageEnd = String(input.chunk.pageEnd).padStart(6, '0');
 

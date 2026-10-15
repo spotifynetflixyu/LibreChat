@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from 'crypto';
+import { randomUUID } from 'crypto';
 import {
   createSteelQuotationInputMethods,
   STEEL_QUOTATION_INPUT_TTL_MS,
@@ -28,6 +28,7 @@ import type {
 } from '@librechat/data-schemas';
 import { isCurrentSystemOrderRun } from './revision';
 import { SteelQuotationInputError } from './input';
+import { sha256Hex } from '../utils';
 
 type Mongoose = typeof import('mongoose');
 export const MAX_QUOTATION_ORDER_BYTES = 250_000;
@@ -243,9 +244,6 @@ function nowOrDefault(now?: Date): Date {
   return now ? new Date(now.getTime()) : new Date();
 }
 
-function hashText(value: string): string {
-  return createHash('sha256').update(value, 'utf8').digest('hex');
-}
 
 function byteLength(value: string): number {
   return Buffer.byteLength(value, 'utf8');
@@ -613,7 +611,7 @@ export function createSteelQuotationStateService(
       validateText(input.expectedOrderHash, 'expectedOrderHash', 128);
     }
     const now = nowOrDefault(input.now);
-    const sha256 = hashText(input.fullMarkdown);
+    const sha256 = sha256Hex(input.fullMarkdown);
     const nextOrder: SteelQuotationOrder = {
       markdown: input.fullMarkdown,
       sha256,
@@ -1022,7 +1020,7 @@ export function createSteelQuotationStateService(
       throw new Error(`artifact payload exceeds ${MAX_QUOTATION_ARTIFACT_BYTES} bytes`);
     }
     if (input.kind === 'snapshot') throw new SteelQuotationInputError('invalid_snapshot');
-    const sha256 = hashText(input.payload);
+    const sha256 = sha256Hex(input.payload);
     if (input.sha256 && input.sha256 !== sha256) {
       throw new Error('artifact SHA does not match payload');
     }
@@ -1106,7 +1104,9 @@ export function createSteelQuotationStateService(
     }).lean<ISteelQuotationArtifact>();
     if (found?.kind === 'snapshot') {
       if (found.expiresAt && found.expiresAt.getTime() <= Date.now()) return undefined;
-      if (hashText(found.payload) !== found.sha256) throw new SteelQuotationInputError('invalid_snapshot');
+      if (sha256Hex(found.payload) !== found.sha256) {
+        throw new SteelQuotationInputError('invalid_snapshot');
+      }
     }
     return found?.payload;
   }

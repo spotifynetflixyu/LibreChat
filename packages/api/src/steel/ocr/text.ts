@@ -1,6 +1,4 @@
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return value !== null && typeof value === 'object' && !Array.isArray(value);
-}
+import { isRecord } from '../utils';
 
 function getNestedString(value: unknown, pathSegments: readonly string[]): string | undefined {
   let current = value;
