@@ -16,12 +16,17 @@ function readSheetRecords(workbook, { sheetName, headers, headerRowIndex = 0, he
   }
   const matrix = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', raw: false });
   const actual = (matrix[headerRowIndex] || []).map(String);
-  if (actual.length !== headers.length || actual.some((header, index) => header !== headers[index])) {
+  if (
+    actual.length !== headers.length ||
+    actual.some((header, index) => header !== headers[index])
+  ) {
     throw new Error(headerError);
   }
   return matrix
     .slice(headerRowIndex + 1)
-    .map((cells) => Object.fromEntries(headers.map((header, column) => [header, cells[column] ?? ''])));
+    .map((cells) =>
+      Object.fromEntries(headers.map((header, column) => [header, cells[column] ?? ''])),
+    );
 }
 
 module.exports = { readWorkbook, readSheetRecords };
