@@ -124,29 +124,6 @@ const mockSteelNativeContext = {
   },
 };
 const mockBuildDefaultSteelGlobalAgentContext = jest.fn().mockResolvedValue(mockSteelNativeContext);
-const mockExtractSteelNativeMarkdownText = jest.fn(({ content }) => {
-  if (typeof content === 'string') {
-    return content;
-  }
-  if (!Array.isArray(content)) {
-    return '';
-  }
-  return content
-    .map((part) => {
-      if (typeof part === 'string') {
-        return part;
-      }
-      if (!part || typeof part !== 'object') {
-        return '';
-      }
-      if (typeof part.text === 'string') {
-        return part.text;
-      }
-      return typeof part.text?.value === 'string' ? part.text.value : '';
-    })
-    .filter(Boolean)
-    .join('');
-});
 const mockPrepareLibreChatSteelChatContext = jest.fn((conversation) => {
   const currentUserTurn = conversation.currentUserTurn
     ? { ...conversation.currentUserTurn, content: '' }
@@ -242,6 +219,7 @@ jest.mock('@librechat/agents', () => ({
 jest.mock('@librechat/api', () => ({
   createSteelPostgresService: jest.requireActual('@librechat/api').createSteelPostgresService,
   createSteelPostgresPool: jest.fn(),
+  collectSteelNativeMessages: jest.requireActual('@librechat/api').collectSteelNativeMessages,
   delegateOcrStreamEventName: 'on_delegate_ocr_stream',
   getAgentErrorMetadata: (...args) =>
     jest.requireActual('@librechat/api').getAgentErrorMetadata(...args),
@@ -338,7 +316,6 @@ jest.mock('@librechat/api', () => ({
     if (typeof content === 'string') return content;
     return Array.isArray(content) ? content.map((part) => part?.text ?? '').join('') : '';
   },
-  extractSteelNativeMarkdownText: (...args) => mockExtractSteelNativeMarkdownText(...args),
   applySteelNativeGlobalContextToAgentConfigs: mockApplySteelNativeGlobalContextToAgentConfigs,
   createSubagentUsageSink: jest.fn().mockReturnValue(jest.fn()),
   resolveAgentTokenConfig: jest.fn(({ agentId, byAgentId, fallback }) =>

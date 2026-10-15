@@ -26,9 +26,10 @@ const {
   delegateOcrStreamEventName,
   prepareLibreChatSteelChatContext,
   stripSteelOcrPartsFromProviderMessages,
-  extractSteelNativeMarkdownText,
   extractSteelNativeResponseOutputText,
-  buildSteelNativeResponseMessageMetadata,
+  buildSteelNativeResponseTurnMetadata,
+  collectSteelNativeInputFileReferences,
+  collectSteelNativeMessages,
   createSteelNativeHistory,
   prepareSteelNativeToolConfig,
   prepareQuotationTurn,
@@ -236,129 +237,6 @@ function createToolLoader({ req, res, signal, definitionsOnly = true }) {
  */
 function convertToInternalMessages(input) {
   return convertInputToMessages(input);
-}
-
-const steelNativeResponseRoles = new Set(['system', 'user', 'assistant']);
-
-function parseSteelNativeDataUrlMediaType(value) {
-  if (typeof value !== 'string') {
-    return undefined;
-  }
-  const match = /^data:([^;,]+);base64,/i.exec(value);
-  return match?.[1];
-}
-
-function collectSteelNativeFilePartsFromContent(content) {
-  if (!Array.isArray(content)) {
-    return [];
-  }
-  return content.filter(
-    (part) =>
-      part != null &&
-      typeof part === 'object' &&
-      (part.type === 'input_file' || part.type === 'input_image'),
-  );
-}
-
-function addSteelNativeFileReference(filesById, part, conversationId) {
-  const fileId = part?.file_id ?? part?.fileId;
-  if (typeof fileId !== 'string' || fileId.trim() === '' || filesById.has(fileId)) {
-    return;
-  }
-  let mediaType = parseSteelNativeDataUrlMediaType(part.file_data);
-  if (typeof part.media_type === 'string') {
-    mediaType = part.media_type;
-  }
-  if (typeof part.mediaType === 'string') {
-    mediaType = part.mediaType;
-  }
-  mediaType ??= 'application/octet-stream';
-  filesById.set(fileId, {
-    fileId,
-    mediaType,
-    source: 'librechat_file_record',
-    ...(conversationId ? { conversationId } : {}),
-    ...(typeof part.filename === 'string' && part.filename.trim() !== ''
-      ? { filename: part.filename }
-      : {}),
-  });
-}
-
-function collectSteelNativeInputFileReferencesFromOpenResponsesInput(input, conversationId) {
-  const filesById = new Map();
-  if (!Array.isArray(input)) {
-    return filesById;
-  }
-  for (const item of input) {
-    if (item?.type !== 'message') {
-      continue;
-    }
-    for (const part of collectSteelNativeFilePartsFromContent(item.content)) {
-      addSteelNativeFileReference(filesById, part, conversationId);
-    }
-  }
-  return filesById;
-}
-
-function collectSteelNativeInputFileReferencesFromMessages(messages, conversationId) {
-  const filesById = new Map();
-  for (const message of messages ?? []) {
-    if (message?.role !== 'user') {
-      continue;
-    }
-    const fileParts = [...collectSteelNativeFilePartsFromContent(message.content)];
-    for (const file of message.files ?? []) {
-      const fileId = file?.file_id ?? file?.fileId;
-      if (typeof fileId === 'string' && fileId.trim() !== '') {
-        fileParts.push({ ...file, file_id: fileId });
-      }
-    }
-    for (const part of fileParts) {
-      addSteelNativeFileReference(filesById, part, conversationId);
-    }
-  }
-  return filesById;
-}
-
-function collectSteelNativeInputFileReferences({ requestInput, inputMessages, conversationId }) {
-  const filesById = collectSteelNativeInputFileReferencesFromOpenResponsesInput(
-    requestInput,
-    conversationId,
-  );
-  for (const [fileId, file] of collectSteelNativeInputFileReferencesFromMessages(
-    inputMessages,
-    conversationId,
-  )) {
-    if (!filesById.has(fileId)) {
-      filesById.set(fileId, file);
-    }
-  }
-  return [...filesById.values()];
-}
-
-function collectSteelNativeResponseMessages(messages, conversationId) {
-  const activeHistory = [];
-  let currentUserTurn;
-  for (const message of messages ?? []) {
-    if (!steelNativeResponseRoles.has(message?.role)) {
-      continue;
-    }
-    const files =
-      message.role === 'user'
-        ? [...collectSteelNativeInputFileReferencesFromMessages([message], conversationId).values()]
-        : [];
-    const steelMessage = {
-      role: message.role,
-      content: extractSteelNativeMarkdownText({ content: message.content }),
-      ...(typeof message.messageId === 'string' ? { messageId: message.messageId } : {}),
-      ...(files.length > 0 ? { files } : {}),
-    };
-    activeHistory.push(steelMessage);
-    if (steelMessage.role === 'user') {
-      currentUserTurn = steelMessage;
-    }
-  }
-  return { activeHistory, currentUserTurn };
 }
 
 function buildSharedRunContextWithSteel(
@@ -674,18 +552,9 @@ async function saveResponseOutput(
     ...(Number.isSafeInteger(processingDurationMs) && processingDurationMs >= 0
       ? { processingDurationMs }
       : {}),
-    metadata: buildSteelNativeResponseMessageMetadata({
+    metadata: buildSteelNativeResponseTurnMetadata(req.steelNativeContext, {
       conversationId,
       responseId,
-      turnIndex: req.steelNativeContext?.assistantTurnIndex,
-      checkpointTurnIndex: req.steelNativeContext?.memoryCheckpointTurnIndex,
-      requestedStore: req.steelNativeContext?.requestedStore,
-      store: req.steelNativeContext?.store === true,
-      providerStateMode:
-        req.steelNativeContext?.providerStateMode ?? 'openai_responses_reconstructed',
-      contextMetadata: req.steelNativeContext?.contextMetadata,
-      activityEvents: req.steelNativeContext?.steelHistory?.activityEvents,
-      preflightToolCalls: req.steelNativeContext?.steelHistory?.preflightToolCalls,
     }),
   };
   const saveMessageOperation = async (options = {}) => {
@@ -1437,18 +1306,9 @@ const executeResponse = async (envelope, { req, res }) => {
           tokenCount: usage.output_tokens,
           processingDurationMs: Math.max(0, Date.now() - requestStartTime),
           ...langfuseTraceFields,
-          metadata: buildSteelNativeResponseMessageMetadata({
+          metadata: buildSteelNativeResponseTurnMetadata(req.steelNativeContext, {
             conversationId,
             responseId,
-            turnIndex: req.steelNativeContext?.assistantTurnIndex,
-            checkpointTurnIndex: req.steelNativeContext?.memoryCheckpointTurnIndex,
-            requestedStore: req.steelNativeContext?.requestedStore,
-            store: req.steelNativeContext?.store === true,
-            providerStateMode:
-              req.steelNativeContext?.providerStateMode ?? 'openai_responses_reconstructed',
-            contextMetadata: req.steelNativeContext?.contextMetadata,
-            activityEvents: req.steelNativeContext?.steelHistory?.activityEvents,
-            preflightToolCalls: req.steelNativeContext?.steelHistory?.preflightToolCalls,
           }),
         };
       };
@@ -1469,7 +1329,7 @@ const executeResponse = async (envelope, { req, res }) => {
         setupStreamingResponse(res);
         streamingResponseReady = true;
       }
-      const { activeHistory, currentUserTurn } = collectSteelNativeResponseMessages(
+      const { activeHistory, currentUserTurn } = collectSteelNativeMessages(
         allMessages,
         conversationId,
       );

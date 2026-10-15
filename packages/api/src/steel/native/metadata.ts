@@ -1,10 +1,11 @@
 import type { IMessage } from '@librechat/data-schemas';
-import type { SteelNativeContextMetadata } from './context';
 import type {
-  SteelNativePreflightToolCall,
+  SteelNativeHistory,
   SteelNativeStreamEvent,
+  SteelNativePreflightToolCall,
 } from './events';
 import type { SteelNativeProviderStateMode } from './provider';
+import type { SteelNativeContextMetadata } from './context';
 import {
   createSteelNativeHistory,
   appendSteelNativeActivityEvent,
@@ -93,6 +94,34 @@ export function buildSteelNativeResponseMessageMetadata({
   };
 }
 
+/** The `req.steelNativeContext` fields a Responses turn records on its assistant message. */
+export interface SteelNativeResponseTurnContext {
+  assistantTurnIndex?: number;
+  memoryCheckpointTurnIndex?: number;
+  requestedStore?: boolean;
+  store?: boolean;
+  providerStateMode?: SteelNativeProviderStateMode;
+  contextMetadata?: SteelNativeContextMetadata;
+  steelHistory?: SteelNativeHistory;
+}
+
+export function buildSteelNativeResponseTurnMetadata(
+  context: SteelNativeResponseTurnContext | undefined,
+  ids: { conversationId?: string; responseId?: string },
+): SteelNativeResponseMessageMetadata {
+  return buildSteelNativeResponseMessageMetadata({
+    ...ids,
+    turnIndex: context?.assistantTurnIndex,
+    checkpointTurnIndex: context?.memoryCheckpointTurnIndex,
+    requestedStore: context?.requestedStore,
+    store: context?.store === true,
+    providerStateMode: context?.providerStateMode ?? 'openai_responses_reconstructed',
+    contextMetadata: context?.contextMetadata,
+    activityEvents: context?.steelHistory?.activityEvents,
+    preflightToolCalls: context?.steelHistory?.preflightToolCalls,
+  });
+}
+
 type MessageMetadata = NonNullable<IMessage['metadata']>;
 
 function isMetadataRecord(value: unknown): value is MessageMetadata {
@@ -112,17 +141,17 @@ function asArray(value: unknown): unknown[] {
  * cards are re-validated through the bounded history; other Steel fields are
  * merged with the current response taking precedence.
  */
-export function mergeSteelMessageMetadata(
-  persisted: unknown,
-  current: unknown,
-): MessageMetadata {
+export function mergeSteelMessageMetadata(persisted: unknown, current: unknown): MessageMetadata {
   const persistedMetadata = asMetadataRecord(persisted);
   const currentMetadata = asMetadataRecord(current);
   const persistedSteel = asMetadataRecord(persistedMetadata.steel);
   const currentSteel = asMetadataRecord(currentMetadata.steel);
 
   const history = createSteelNativeHistory();
-  for (const event of [...asArray(persistedSteel.activityEvents), ...asArray(currentSteel.activityEvents)]) {
+  for (const event of [
+    ...asArray(persistedSteel.activityEvents),
+    ...asArray(currentSteel.activityEvents),
+  ]) {
     appendSteelNativeActivityEvent(history, event);
   }
   for (const card of [

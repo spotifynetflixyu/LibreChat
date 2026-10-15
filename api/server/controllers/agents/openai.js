@@ -72,7 +72,7 @@ const {
   delegateOcrStreamEventName,
   normalizeDelegateOcrChunk,
   prepareLibreChatSteelChatContext,
-  extractSteelNativeMarkdownText,
+  collectSteelNativeMessages,
   applySteelNativeGlobalContextToAgentConfigs,
   isChatCompletionValidationFailure,
   stripActivityLabelParts,
@@ -204,30 +204,6 @@ function convertMessages(messages) {
       ...(msg.tool_call_id && { tool_call_id: msg.tool_call_id }),
     };
   });
-}
-
-const steelNativeChatCompletionRoles = new Set(['system', 'user', 'assistant']);
-
-function toSteelNativeChatCompletionMessages(messages) {
-  return messages.flatMap((message) => {
-    if (!steelNativeChatCompletionRoles.has(message.role)) {
-      return [];
-    }
-    return [
-      {
-        role: message.role,
-        content: extractSteelNativeMarkdownText({ content: message.content }),
-      },
-    ];
-  });
-}
-
-function getLatestSteelNativeUserTurn(messages) {
-  for (let index = messages.length - 1; index >= 0; index--) {
-    if (messages[index].role === 'user') {
-      return messages[index];
-    }
-  }
 }
 
 /**
@@ -795,12 +771,11 @@ const executeOpenAIChatCompletion = async (envelope, { req, res }) => {
 
       primaryConfig.edges = discoveredEdges;
       const runAgents = [primaryConfig, ...handoffAgentConfigs.values()];
-      const steelNativeMessages = toSteelNativeChatCompletionMessages(request.messages);
-      const currentUserTurn = getLatestSteelNativeUserTurn(steelNativeMessages);
+      const { activeHistory, currentUserTurn } = collectSteelNativeMessages(request.messages);
       const steelConversation = prepareLibreChatSteelChatContext({
         conversationId,
         requestId: responseId,
-        activeHistory: steelNativeMessages,
+        activeHistory,
         ...(currentUserTurn ? { currentUserTurn } : {}),
       });
       const currentUserTurnText = normalizeDelegateOcrChunk(currentUserTurn?.content);

@@ -174,29 +174,6 @@ const mockSteelNativeContext = {
   },
 };
 const mockBuildDefaultSteelGlobalAgentContext = jest.fn().mockResolvedValue(mockSteelNativeContext);
-const mockExtractSteelNativeMarkdownText = jest.fn(({ content }) => {
-  if (typeof content === 'string') {
-    return content;
-  }
-  if (!Array.isArray(content)) {
-    return '';
-  }
-  return content
-    .map((part) => {
-      if (typeof part === 'string') {
-        return part;
-      }
-      if (!part || typeof part !== 'object') {
-        return '';
-      }
-      if (typeof part.text === 'string') {
-        return part.text;
-      }
-      return typeof part.text?.value === 'string' ? part.text.value : '';
-    })
-    .filter(Boolean)
-    .join('');
-});
 const mockExtractSteelNativeResponseOutputText = jest.fn((response) =>
   (response?.output ?? [])
     .flatMap((item) => (Array.isArray(item?.content) ? item.content : []))
@@ -225,14 +202,6 @@ const mockPrepareLibreChatSteelChatContext = jest.fn((conversation) => {
       .map((message) => ({ ...message, content: '' })),
     ...(currentUserTurn ? { currentUserTurn } : {}),
   };
-});
-const mockBuildSteelNativeResponseMessageMetadata = jest.fn().mockReturnValue({
-  steel: {
-    native: {
-      ingress: 'open_responses',
-      renderProfile: 'open_responses',
-    },
-  },
 });
 const mockResponsesUsage = {
   input_tokens: 125,
@@ -295,6 +264,11 @@ jest.mock('@librechat/agents', () => ({
 jest.mock('@librechat/api', () => ({
   createSteelPostgresService: jest.requireActual('@librechat/api').createSteelPostgresService,
   createSteelPostgresPool: jest.fn(),
+  buildSteelNativeResponseTurnMetadata:
+    jest.requireActual('@librechat/api').buildSteelNativeResponseTurnMetadata,
+  collectSteelNativeInputFileReferences:
+    jest.requireActual('@librechat/api').collectSteelNativeInputFileReferences,
+  collectSteelNativeMessages: jest.requireActual('@librechat/api').collectSteelNativeMessages,
   finalizeSteelResponsesTurn: jest.requireActual('@librechat/api').finalizeSteelResponsesTurn,
   replaceSteelResponsesMarkdown: jest.requireActual('@librechat/api').replaceSteelResponsesMarkdown,
   delegateOcrStreamEventName: 'on_delegate_ocr_stream',
@@ -385,11 +359,8 @@ jest.mock('@librechat/api', () => ({
     mockStripSteelOcrPartsFromProviderMessages(...args),
   buildDefaultSteelGlobalAgentContext: mockBuildDefaultSteelGlobalAgentContext,
   prepareLibreChatSteelChatContext: (...args) => mockPrepareLibreChatSteelChatContext(...args),
-  extractSteelNativeMarkdownText: (...args) => mockExtractSteelNativeMarkdownText(...args),
   extractSteelNativeResponseOutputText: (...args) =>
     mockExtractSteelNativeResponseOutputText(...args),
-  buildSteelNativeResponseMessageMetadata: (...args) =>
-    mockBuildSteelNativeResponseMessageMetadata(...args),
   buildToolSet: jest.fn().mockReturnValue(new Set()),
   buildRunToolSet: jest.fn().mockReturnValue(new Set()),
   /** No fixture declares a caller-executed tool, so the handoff stays inert. */
@@ -2682,32 +2653,20 @@ describe('createResponse controller', () => {
 
       await createResponse(req, res);
 
-      expect(mockBuildSteelNativeResponseMessageMetadata).toHaveBeenCalledWith(
+      const assistantMessage = saveMessage.mock.calls
+        .map((call) => call[1])
+        .find((message) => message.isCreatedByUser === false);
+      expect(assistantMessage.messageId).toBe('resp_mock-123');
+      expect(assistantMessage.metadata.steel.native).toEqual(
         expect.objectContaining({
+          ingress: 'open_responses',
           conversationId: 'mock-uuid-456',
           responseId: 'resp_mock-123',
           turnIndex: 0,
           checkpointTurnIndex: 0,
-          requestedStore: false,
-          store: true,
           providerStateMode: 'openai_responses_reconstructed',
-          contextMetadata: mockSteelNativeContext.metadata,
-        }),
-      );
-      const assistantMessage = saveMessage.mock.calls
-        .map((call) => call[1])
-        .find((message) => message.isCreatedByUser === false);
-      expect(assistantMessage).toEqual(
-        expect.objectContaining({
-          messageId: 'resp_mock-123',
-          metadata: {
-            steel: {
-              native: {
-                ingress: 'open_responses',
-                renderProfile: 'open_responses',
-              },
-            },
-          },
+          renderProfile: mockSteelNativeContext.metadata.renderProfile,
+          storage: { requestedStore: false, store: true, durable: true },
         }),
       );
     });
@@ -3025,7 +2984,12 @@ describe('createResponse controller', () => {
             langfuseSampled: true,
             langfuseDestinationIds: ['destination-1'],
             metadata: {
-              steel: { native: { ingress: 'open_responses', renderProfile: 'open_responses' } },
+              steel: {
+                native: expect.objectContaining({
+                  ingress: 'open_responses',
+                  renderProfile: 'open_responses',
+                }),
+              },
             },
             messageId: 'canonical-response',
             text: `${expectedPrefix}\n\nfinal quotation`,
