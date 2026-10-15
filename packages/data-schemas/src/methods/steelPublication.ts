@@ -9,7 +9,7 @@ import {
 } from 'librechat-data-provider';
 import type { SteelReviewMetadata, SteelQuotationMessagePublication } from 'librechat-data-provider';
 import type { ClientSession } from 'mongoose';
-import type { IMessage, IConversation, ISteelQuotationState, ISteelQuotationArtifact, ISteelReviewOutput, ISteelConversationOcrState, SteelQuotationScope, SteelMarkdownAdmissionInput, SteelMarkdownAdmission, SteelMarkdownExpected, SteelMarkdownPublicationInput, SteelMarkdownPublicationResult, SteelMarkdownReference, SteelMarkdownKind, SteelMarkdownVersion, SteelQuotationSnapshotPayload, SteelQuotationOrderPublicationReceipt, SteelMarkdownQuotationOrderInput, SteelQuotationSummaryAppendInput, SteelQuotationSummaryAppendResult, SteelQuotationSummaryReceipt, SteelQuotationCheckpointRef, SteelQuotationErrorsAppendInput, SteelQuotationErrorsAppendResult } from '~/types';
+import type { IMessage, IConversation, ISteelQuotationState, ISteelQuotationArtifact, ISteelReviewOutput, ISteelConversationOcrState, SteelQuotationScope, SteelMarkdownAdmissionInput, SteelMarkdownAdmission, SteelMarkdownExpected, SteelMarkdownPublicationInput, SteelMarkdownPublicationResult, SteelMarkdownReference, SteelMarkdownKind, SteelMarkdownVersion, SteelQuotationSnapshotPayload, SteelQuotationOrderPublicationReceipt, SteelMarkdownQuotationOrderInput, SteelQuotationSummaryAppendInput, SteelQuotationSummaryAppendResult, SteelQuotationSummaryReceipt, SteelQuotationCheckpointRef, SteelQuotationErrorsAppendInput, SteelQuotationErrorsAppendResult, SteelQuotationPublicationProof, SteelQuotationPublicationSaveResult, SteelQuotationSavedMessage } from '~/types';
 import type { SteelReviewAuthorizedFile } from './steelSourceAuthorization';
 import { createSteelDelegateOcrRunModel, createSteelQuotationStateModel, createSteelQuotationArtifactModel, createSteelConversationOcrStateModel, createSteelReviewOutputModel } from '~/models/steel';
 import { hasConsistentMessageText, renderMessageTextContent } from '~/utils/content';
@@ -232,6 +232,7 @@ export interface SteelPublicationMethods {
   appendSteelQuotationSummary(input: SteelQuotationSummaryAppendInput): Promise<SteelQuotationSummaryAppendResult>;
   appendSteelQuotationErrors(input: SteelQuotationErrorsAppendInput): Promise<SteelQuotationErrorsAppendResult>;
   readSteelMarkdownVersions(scope: SteelQuotationScope): Promise<SteelMarkdownVersion[] | null>;
+  saveSteelQuotationMessage(input: SteelQuotationPublicationProof): Promise<SteelQuotationPublicationSaveResult>;
 }
 
 export function createSteelPublicationMethods(mongoose: Mongoose, saveMessage: SaveMessage): SteelPublicationMethods {
@@ -1000,5 +1001,88 @@ export function createSteelPublicationMethods(mongoose: Mongoose, saveMessage: S
     }
     return [...versions.values()];
   }
-  return { admitSteelMarkdown, publishSteelMarkdown, appendSteelQuotationSummary, appendSteelQuotationErrors, readSteelMarkdownVersions };
+  async function saveSteelQuotationMessage(
+    input: SteelQuotationPublicationProof,
+  ): Promise<SteelQuotationPublicationSaveResult> {
+    const { scope, message } = input;
+    if (!scope.userId || !scope.conversationId || !input.runId || !input.runTargetMessageId ||
+      input.targetMessageId !== message.messageId || message.conversationId !== scope.conversationId ||
+      typeof message.text !== 'string' || !/^[a-f0-9]{64}$/u.test(input.finalSha256) ||
+      !/^[a-f0-9]{64}$/u.test(input.currentOrderSha256) ||
+      !/^[a-f0-9]{64}$/u.test(input.currentSystemOrderSha256)) {
+      throw new Error('Quotation publication proof is invalid');
+    }
+    if (input.orderPublication) {
+      if (!input.reviewBaseline || input.orderPublication.systemOrder.sha256 !== input.orderPublication.normalizedSha256 ||
+        input.finalSha256 !== input.orderPublication.normalizedSha256) {
+        throw new Error('Quotation order publication proof is invalid');
+      }
+      const published = await publishSteelMarkdown({
+        scope,
+        admission: input.orderPublication.admission,
+        message,
+        rawMarkdown: message.text,
+        saveContext: input.saveContext,
+        targets: [input.reviewBaseline],
+        systemOrder: input.orderPublication.systemOrder,
+        quotationOrder: {
+          runId: input.runId,
+          runTargetMessageId: input.runTargetMessageId,
+          leaseToken: input.orderPublication.leaseToken,
+          inputSnapshotSha256: input.orderPublication.inputSnapshotSha256,
+          normalizedSha256: input.orderPublication.normalizedSha256,
+          customer: input.customer,
+          signal: input.orderPublication.signal,
+        },
+      });
+      return published.ok
+        ? { ok: true, message: published.message }
+        : { ok: false, code: 'superseded' };
+    }
+    const tenantFilter = scope.tenantId === undefined
+      ? { $or: [{ tenantId: { $exists: false } }, { tenantId: null }] }
+      : { tenantId: scope.tenantId };
+    const stateFilter = { userId: scope.userId, conversationId: scope.conversationId, ...tenantFilter };
+    const [quotation, currentMessage] = await Promise.all([
+      State.findOne(stateFilter).lean<ISteelQuotationState | null>(),
+      Message.findOne({ user: scope.userId, conversationId: scope.conversationId, messageId: input.targetMessageId, ...tenantFilter })
+        .lean<IMessage | null>(),
+    ]);
+    const run = quotation?.activeRun;
+    const currentSystemOrder = quotation?.currentSystemOrder;
+    const customer = quotation?.currentCustomer;
+    const finalCheckpoint = run?.checkpointRefs.find((ref) => ref.operationId === 'final' && ref.kind === 'final');
+    const owner = currentMessage?.metadata?.steelMarkdownOwners;
+    const systemOrderOwner = owner && typeof owner === 'object' && !Array.isArray(owner)
+      ? Reflect.get(owner, 'system_order')
+      : undefined;
+    const proof = run && createSteelQuotationPublicationProof(Artifact);
+    const isPublished = run && proof ? await proof.isPublished(scope, run) : false;
+    const valid = Boolean(currentMessage && quotation && run && isPublished &&
+      currentMessage.messageId === input.targetMessageId &&
+      currentMessage.user === scope.userId && currentMessage.conversationId === scope.conversationId &&
+      currentMessage.isCreatedByUser !== true && currentMessage.unfinished !== true &&
+      run.runId === input.runId && run.status === 'completed' && run.targetMessageId === input.runTargetMessageId &&
+      finalCheckpoint?.sha256 === input.finalSha256 &&
+      quotation.currentOrder?.sha256 === input.currentOrderSha256 &&
+      JSON.stringify(run.ocrSelection ?? null) === JSON.stringify(quotation.currentOrder?.ocrSelection ?? null) &&
+      JSON.stringify(run.ocrSelection ?? null) === JSON.stringify(currentSystemOrder?.ocrSelection ?? null) &&
+      customer?.preparationId === input.customer.preparationId &&
+      customer.customerIdentity === input.customer.customerIdentity &&
+      customer.customerMarkdown === input.customer.customerMarkdown &&
+      currentSystemOrder?.runId === input.runId && currentSystemOrder.messageId === input.targetMessageId &&
+      currentSystemOrder.sha256 === input.currentSystemOrderSha256 &&
+      JSON.stringify(currentSystemOrder.sourceSnapshot ?? null) === JSON.stringify(input.sourceSnapshot ?? null) &&
+      JSON.stringify(currentSystemOrder.calculationCheckpoint ?? null) === JSON.stringify(input.calculationCheckpoint ?? null) &&
+      systemOrderOwner && typeof systemOrderOwner === 'object' && !Array.isArray(systemOrderOwner) &&
+      Reflect.get(systemOrderOwner, 'source') === 'ai' &&
+      Reflect.get(systemOrderOwner, 'kind') === 'system_order' &&
+      Reflect.get(systemOrderOwner, 'outputId') === `system_order:${input.runId}` &&
+      Reflect.get(systemOrderOwner, 'messageId') === input.targetMessageId);
+    return valid
+      ? { ok: true, message: currentMessage as SteelQuotationSavedMessage }
+      : { ok: false, code: 'superseded' };
+  }
+
+  return { admitSteelMarkdown, publishSteelMarkdown, appendSteelQuotationSummary, appendSteelQuotationErrors, readSteelMarkdownVersions, saveSteelQuotationMessage };
 }
