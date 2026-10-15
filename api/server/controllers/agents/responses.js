@@ -1608,6 +1608,55 @@ const executeResponse = async (envelope, { req, res }) => {
        agent's `tools` list includes `execute_code`) — a skills-only
        agent never gains sandbox access even if the admin enabled the
        capability globally. */
+      const runSteelResponsesTurn = async ({ run, config, handlers, userMCPAuthMap }) => {
+        const executeQuotation = () => {
+          const buildPublicationMessage = createSteelQuotationPublicationMessageBuilder({
+            tracker,
+            aggregator,
+            buildMessageFields: buildQuotationMessageFields,
+          });
+          return executeSteelQuotationWorkflow({
+            req,
+            res,
+            signal: execution.signal,
+            agent: primaryConfig,
+            run,
+            userMCPAuthMap,
+            requestScopedConnections: agentToolContexts.get(primaryConfig.id)
+              ?.requestScopedConnections,
+            onUsage: async (usage) => collectedUsage.push(usage),
+            onText: async (text) =>
+              handlers.on_message_delta.handle('on_message_delta', {
+                id: `quotation:${responseId}`,
+                delta: { content: [{ type: 'text', text }] },
+              }),
+            buildPublicationMessage,
+          });
+        };
+        if (req.steelNativeContext?.quotation?.resume) {
+          return executeQuotation();
+        }
+        if (delegateOcrResume) {
+          return runPreparedResponsesDelegateOcr({
+            req,
+            res,
+            signal: execution.signal,
+            agent: primaryConfig,
+            resume: delegateOcrResume,
+            responseId,
+            messageDeltaHandler: handlers.on_message_delta,
+          });
+        }
+        await run.processStream({ messages: providerMessages }, config, {
+          callbacks: {
+            [Callback.TOOL_ERROR]: (graph, error, toolId) => {
+              logger.error(`[Responses API] Tool Error "${toolId}"`, getSafeErrorMetadata(error));
+            },
+          },
+        });
+        await executeQuotation();
+      };
+
       // Set up response for streaming
       if (actuallyStreaming) {
         if (!streamingResponseReady) {
@@ -1783,52 +1832,7 @@ const executeResponse = async (envelope, { req, res }) => {
           version: 'v2',
         };
 
-        const executeQuotation = () => {
-          const buildPublicationMessage = createSteelQuotationPublicationMessageBuilder({
-            tracker,
-            aggregator,
-            buildMessageFields: buildQuotationMessageFields,
-          });
-          return executeSteelQuotationWorkflow({
-            req,
-            res,
-            signal: execution.signal,
-            agent: primaryConfig,
-            run,
-            userMCPAuthMap,
-            requestScopedConnections: agentToolContexts.get(primaryConfig.id)
-              ?.requestScopedConnections,
-            onUsage: async (usage) => collectedUsage.push(usage),
-            onText: async (text) =>
-              handlers.on_message_delta.handle('on_message_delta', {
-                id: `quotation:${responseId}`,
-                delta: { content: [{ type: 'text', text }] },
-              }),
-            buildPublicationMessage,
-          });
-        };
-        if (req.steelNativeContext?.quotation?.resume) {
-          await executeQuotation();
-        } else if (delegateOcrResume) {
-          await runPreparedResponsesDelegateOcr({
-            req,
-            res,
-            signal: execution.signal,
-            agent: primaryConfig,
-            resume: delegateOcrResume,
-            responseId,
-            messageDeltaHandler: handlers.on_message_delta,
-          });
-        } else {
-          await run.processStream({ messages: providerMessages }, config, {
-            callbacks: {
-              [Callback.TOOL_ERROR]: (graph, error, toolId) => {
-                logger.error(`[Responses API] Tool Error "${toolId}"`, getSafeErrorMetadata(error));
-              },
-            },
-          });
-          await executeQuotation();
-        }
+        await runSteelResponsesTurn({ run, config, handlers, userMCPAuthMap });
 
         // Record token usage against balance
         const balanceConfig = getBalanceConfig(appConfig);
@@ -2055,52 +2059,7 @@ const executeResponse = async (envelope, { req, res }) => {
           version: 'v2',
         };
 
-        const executeQuotation = () => {
-          const buildPublicationMessage = createSteelQuotationPublicationMessageBuilder({
-            tracker,
-            aggregator,
-            buildMessageFields: buildQuotationMessageFields,
-          });
-          return executeSteelQuotationWorkflow({
-            req,
-            res,
-            signal: execution.signal,
-            agent: primaryConfig,
-            run,
-            userMCPAuthMap,
-            requestScopedConnections: agentToolContexts.get(primaryConfig.id)
-              ?.requestScopedConnections,
-            onUsage: async (usage) => collectedUsage.push(usage),
-            onText: async (text) =>
-              handlers.on_message_delta.handle('on_message_delta', {
-                id: `quotation:${responseId}`,
-                delta: { content: [{ type: 'text', text }] },
-              }),
-            buildPublicationMessage,
-          });
-        };
-        if (req.steelNativeContext?.quotation?.resume) {
-          await executeQuotation();
-        } else if (delegateOcrResume) {
-          await runPreparedResponsesDelegateOcr({
-            req,
-            res,
-            signal: execution.signal,
-            agent: primaryConfig,
-            resume: delegateOcrResume,
-            responseId,
-            messageDeltaHandler: handlers.on_message_delta,
-          });
-        } else {
-          await run.processStream({ messages: providerMessages }, config, {
-            callbacks: {
-              [Callback.TOOL_ERROR]: (graph, error, toolId) => {
-                logger.error(`[Responses API] Tool Error "${toolId}"`, getSafeErrorMetadata(error));
-              },
-            },
-          });
-          await executeQuotation();
-        }
+        await runSteelResponsesTurn({ run, config, handlers, userMCPAuthMap });
 
         // Record token usage against balance
         const balanceConfig = getBalanceConfig(appConfig);
