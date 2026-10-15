@@ -1,4 +1,5 @@
 import mongoose from 'mongoose';
+import { MongoMemoryServer } from 'mongodb-memory-server';
 import { createSteelOcrPdfChunkArtifactModel } from '@librechat/data-schemas';
 
 import { buildPdfPageChunks } from './chunks';
@@ -15,49 +16,54 @@ import {
   type OcrPdfChunkArtifactRecord,
 } from './artifacts';
 
-jest.mock('@librechat/data-schemas', () => ({
-  ...jest.requireActual('@librechat/data-schemas'),
-  createSteelOcrPdfChunkArtifactModel: jest.fn(),
-}));
+describe('OCR PDF chunk artifact repository', () => {
+  let mongoServer: MongoMemoryServer;
+  const artifact: OcrPdfChunkArtifactRecord = {
+    sourcePdfKey: 's3://bucket/original.pdf',
+    pipelineVersion: 1,
+    chunkIndex: 1,
+    chunkCount: 2,
+    pageStart: 1,
+    pageEnd: 50,
+    chunkSizePages: 50,
+    sourceFilename: 'original.pdf',
+    artifact: {
+      source: 's3',
+      storageKey: 'chunks/pages-1-50.pdf',
+      filepath: 'https://cdn.example/old.pdf',
+      filename: 'pages-1-50.pdf',
+      bytes: 100,
+      contentType: 'application/pdf',
+    },
+  };
+  const range = {
+    sourcePdfKey: artifact.sourcePdfKey,
+    pipelineVersion: artifact.pipelineVersion,
+    pageStart: artifact.pageStart,
+    pageEnd: artifact.pageEnd,
+  };
+  const rows = () => createSteelOcrPdfChunkArtifactModel(mongoose).find().lean();
 
-const createArtifactModel = jest.mocked(createSteelOcrPdfChunkArtifactModel);
+  beforeAll(async () => {
+    mongoServer = await MongoMemoryServer.create();
+    await mongoose.connect(mongoServer.getUri());
+  });
 
-describe('OCR PDF chunk artifacts', () => {
-  it('upserts by a deterministic source, version, and page-range id', async () => {
-    const updateOne = jest.fn<
-      Promise<void>,
-      [
-        { _id: mongoose.Types.ObjectId },
-        { $set: OcrPdfChunkArtifactRecord },
-        { upsert: true },
-      ]
-    >(async () => undefined);
-    createArtifactModel.mockReturnValueOnce({ updateOne } as never);
+  afterEach(async () => {
+    await mongoose.connection.dropDatabase();
+  });
+
+  afterAll(async () => {
+    await mongoose.disconnect();
+    await mongoServer.stop();
+  });
+
+  it('upserts one row per source, version and page range', async () => {
     const repository = createMongooseOcrPdfChunkArtifactRepository(mongoose);
-    const artifact: OcrPdfChunkArtifactRecord = {
-      sourcePdfKey: 's3://bucket/original.pdf',
-      pipelineVersion: 1,
-      chunkIndex: 1,
-      chunkCount: 2,
-      pageStart: 1,
-      pageEnd: 50,
-      chunkSizePages: 50,
-      sourceFilename: 'original.pdf',
-      artifact: {
-        source: 's3',
-        storageKey: 'chunks/pages-1-50.pdf',
-        filepath: 'https://cdn.example/chunks/pages-1-50.pdf',
-        filename: 'pages-1-50.pdf',
-        bytes: 100,
-        contentType: 'application/pdf',
-      },
-    };
-
     await repository.upsert(artifact);
     await repository.upsert({
       ...artifact,
       chunkIndex: 9,
-      chunkCount: 9,
       sourceFilename: 'renamed.pdf',
       artifact: { ...artifact.artifact, bytes: 200 },
     });
@@ -65,98 +71,90 @@ describe('OCR PDF chunk artifacts', () => {
     await repository.upsert({ ...artifact, pipelineVersion: 2 });
     await repository.upsert({ ...artifact, pageStart: 51, pageEnd: 100 });
 
-    const firstId = updateOne.mock.calls[0]?.[0]._id;
-    const secondId = updateOne.mock.calls[1]?.[0]._id;
-    const changedIdentityIds = updateOne.mock.calls.slice(2).map(([filter]) => filter._id);
-    expect(firstId).toBeInstanceOf(mongoose.Types.ObjectId);
-    expect(firstId).toEqual(secondId);
-    expect(changedIdentityIds).toHaveLength(3);
-    expect(changedIdentityIds.every((id) => !id.equals(firstId))).toBe(true);
-    expect(new Set(changedIdentityIds.map(String)).size).toBe(3);
-    expect(updateOne).toHaveBeenNthCalledWith(
-      1,
-      { _id: firstId },
-      { $set: artifact },
-      { upsert: true },
+    const saved = await rows();
+    expect(saved).toHaveLength(4);
+    const original = saved.find(
+      (row) =>
+        row.sourcePdfKey === artifact.sourcePdfKey &&
+        row.pipelineVersion === 1 &&
+        row.pageStart === 1,
     );
+    expect(original).toMatchObject({ chunkIndex: 9, sourceFilename: 'renamed.pdf' });
+    expect(original?.artifact.bytes).toBe(200);
   });
 
-  it('rotates a canonical URL with a targeted compare-and-set update', async () => {
-    const updateOne = jest.fn(async () => ({ matchedCount: 1, modifiedCount: 1 }));
-    createArtifactModel.mockReturnValueOnce({ updateOne } as never);
+  it('rotates a canonical URL with compare-and-set', async () => {
     const repository = createMongooseOcrPdfChunkArtifactRepository(mongoose);
+    await repository.upsert(artifact);
 
     await expect(
       repository.compareAndSetArtifactFilepath?.({
-        sourcePdfKey: 's3://bucket/original.pdf',
-        pipelineVersion: 1,
-        pageStart: 1,
-        pageEnd: 50,
+        ...range,
         previousFilepath: 'https://cdn.example/old.pdf',
         filepath: 'https://cdn.example/fresh.pdf',
       }),
     ).resolves.toBe('https://cdn.example/fresh.pdf');
-    expect(updateOne).toHaveBeenCalledWith(
-      {
-        sourcePdfKey: 's3://bucket/original.pdf',
-        pipelineVersion: 1,
-        pageStart: 1,
-        pageEnd: 50,
-        'artifact.filepath': 'https://cdn.example/old.pdf',
-      },
-      { $set: { 'artifact.filepath': 'https://cdn.example/fresh.pdf' } },
-    );
+    expect((await rows())[0]?.artifact.filepath).toBe('https://cdn.example/fresh.pdf');
   });
 
   it('returns the concurrent URL winner when compare-and-set loses the race', async () => {
-    const winner = {
-      artifact: {
-        filepath: 'https://cdn.example/winner.pdf',
-      },
-    };
-    const updateOne = jest.fn(async () => ({ matchedCount: 0, modifiedCount: 0 }));
-    const lean = jest.fn(async () => winner);
-    const findOne = jest.fn(() => ({ lean }));
-    createArtifactModel.mockReturnValueOnce({ updateOne, findOne } as never);
     const repository = createMongooseOcrPdfChunkArtifactRepository(mongoose);
-
-    await expect(
+    await repository.upsert(artifact);
+    await Promise.all([
       repository.compareAndSetArtifactFilepath?.({
-        sourcePdfKey: 's3://bucket/original.pdf',
-        pipelineVersion: 1,
-        pageStart: 1,
-        pageEnd: 50,
+        ...range,
         previousFilepath: 'https://cdn.example/old.pdf',
-        filepath: 'https://cdn.example/fresh.pdf',
+        filepath: 'https://cdn.example/first.pdf',
       }),
-    ).resolves.toBe('https://cdn.example/winner.pdf');
-    expect(findOne).toHaveBeenCalledWith({
-      sourcePdfKey: 's3://bucket/original.pdf',
-      pipelineVersion: 1,
-      pageStart: 1,
-      pageEnd: 50,
+      repository.compareAndSetArtifactFilepath?.({
+        ...range,
+        previousFilepath: 'https://cdn.example/old.pdf',
+        filepath: 'https://cdn.example/second.pdf',
+      }),
+    ]).then((results) => {
+      const winner = (results as string[])[0];
+      expect(results).toEqual([winner, winner]);
     });
+    const stored = (await rows())[0]?.artifact.filepath;
+    expect(['https://cdn.example/first.pdf', 'https://cdn.example/second.pdf']).toContain(stored);
   });
 
   it('fails closed when compare-and-set cannot find the canonical row', async () => {
-    const updateOne = jest.fn(async () => ({ matchedCount: 0, modifiedCount: 0 }));
-    const lean = jest.fn(async () => null);
-    const findOne = jest.fn(() => ({ lean }));
-    createArtifactModel.mockReturnValueOnce({ updateOne, findOne } as never);
     const repository = createMongooseOcrPdfChunkArtifactRepository(mongoose);
-
     await expect(
       repository.compareAndSetArtifactFilepath?.({
-        sourcePdfKey: 's3://bucket/original.pdf',
-        pipelineVersion: 1,
-        pageStart: 1,
-        pageEnd: 50,
+        ...range,
         previousFilepath: 'https://cdn.example/old.pdf',
         filepath: 'https://cdn.example/fresh.pdf',
       }),
     ).rejects.toThrow('Missing OCR artifact row');
   });
 
+  it('updates a reused legacy parent once when committing a new partial split', async () => {
+    const repository = createMongooseOcrPdfChunkArtifactRepository(mongoose);
+    await repository.upsert({ ...artifact, chunkCount: 1, pageEnd: 15 });
+    const split = {
+      sourcePdfKey: artifact.sourcePdfKey,
+      pipelineVersion: artifact.pipelineVersion,
+      parent: { pageStart: 1, pageEnd: 15, chunkSizePages: 24 },
+      supersededByRanges: [
+        { pageStart: 1, pageEnd: 12 },
+        { pageStart: 13, pageEnd: 15 },
+      ],
+    };
+
+    await expect(repository.compareAndSetSupersededByRanges?.(split)).resolves.toBe('updated');
+    await expect(repository.compareAndSetSupersededByRanges?.(split)).resolves.toBe('idempotent');
+    const [parent] = await rows();
+    expect(parent).toMatchObject({
+      chunkSizePages: 24,
+      supersededByRanges: split.supersededByRanges,
+    });
+    expect(parent?.supersededAt).toBeInstanceOf(Date);
+  });
+});
+
+describe('OCR PDF chunk artifacts', () => {
   it('builds deterministic storage keys from source PDF key and page range', () => {
     expect(
       buildOcrPdfChunkArtifactStorageKey({
@@ -448,51 +446,6 @@ describe('OCR PDF chunk artifacts', () => {
       }),
     ).rejects.toThrow('OCR artifact object is missing for 1:50');
     expect(storage.getDownloadUrl).not.toHaveBeenCalled();
-  });
-
-  it('updates reused legacy parent metadata when committing a new partial split', async () => {
-    const parentId = new mongoose.Types.ObjectId();
-    const legacyParent = {
-      _id: parentId,
-      sourcePdfKey: 's3://bucket/original.pdf',
-      pipelineVersion: 1,
-      chunkIndex: 1,
-      chunkCount: 1,
-      pageStart: 1,
-      pageEnd: 15,
-      chunkSizePages: 50,
-    };
-    const lean = jest.fn(async () => [legacyParent]);
-    const limit = jest.fn(() => ({ lean }));
-    const find = jest.fn(() => ({ limit }));
-    const updateOne = jest.fn(async () => ({ modifiedCount: 1 }));
-    createArtifactModel.mockReturnValueOnce({ find, updateOne } as never);
-    const repository = createMongooseOcrPdfChunkArtifactRepository(mongoose);
-
-    await expect(
-      repository.compareAndSetSupersededByRanges?.({
-        sourcePdfKey: legacyParent.sourcePdfKey,
-        pipelineVersion: legacyParent.pipelineVersion,
-        parent: { pageStart: 1, pageEnd: 15, chunkSizePages: 24 },
-        supersededByRanges: [
-          { pageStart: 1, pageEnd: 12 },
-          { pageStart: 13, pageEnd: 15 },
-        ],
-      }),
-    ).resolves.toBe('updated');
-    expect(updateOne).toHaveBeenCalledWith(
-      { _id: parentId, supersededByRanges: { $exists: false } },
-      {
-        $set: {
-          chunkSizePages: 24,
-          supersededByRanges: [
-            { pageStart: 1, pageEnd: 12 },
-            { pageStart: 13, pageEnd: 15 },
-          ],
-          supersededAt: expect.any(Date),
-        },
-      },
-    );
   });
 
   it('reuses global artifact rows for the same source PDF key across conversations', async () => {
