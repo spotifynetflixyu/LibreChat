@@ -6,6 +6,24 @@ import {
 } from './diagnostics';
 
 describe('PaddleOCR diagnostics', () => {
+  it('recognizes a configured PaddleOCR server alias case-insensitively', () => {
+    const previousServerName = process.env.STEEL_PADDLEOCR_MCP_SERVER_NAME;
+    process.env.STEEL_PADDLEOCR_MCP_SERVER_NAME = '  OCRAlias  ';
+    try {
+      jest.isolateModules(() => {
+        const isolated = require('./diagnostics') as typeof import('./diagnostics');
+        expect(isolated.isPaddleOcrMcpServerName('ocralias')).toBe(true);
+        expect(isolated.isPaddleOcrMcpServerName('other-server')).toBe(false);
+      });
+    } finally {
+      if (previousServerName === undefined) {
+        delete process.env.STEEL_PADDLEOCR_MCP_SERVER_NAME;
+      } else {
+        process.env.STEEL_PADDLEOCR_MCP_SERVER_NAME = previousServerName;
+      }
+    }
+  });
+
   it('uses PaddleOCR as default server name and matches aliases case-insensitively', () => {
     expect(PADDLE_OCR_MCP_SERVER_NAME).toBe(process.env.STEEL_PADDLEOCR_MCP_SERVER_NAME?.trim() || 'PaddleOCR');
     expect(isPaddleOcrMcpServerName(PADDLE_OCR_MCP_SERVER_NAME.toUpperCase())).toBe(true);

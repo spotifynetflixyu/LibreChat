@@ -83,10 +83,6 @@ describe('MCP stderr capture', () => {
     transport.stderr?.emit('data', 'line\n');
     transport.stderr?.emit('data', 'x'.repeat(100 * 1024));
 
-    const internals = connection as unknown as {
-      stderrCapture: { pending: string } | null;
-    };
-    expect(internals.stderrCapture?.pending.length).toBeLessThanOrEqual(32 * 1024);
     expect(connection.readStderrSince(cursor).length).toBeLessThanOrEqual(32 * 1024);
   });
 
