@@ -4,72 +4,33 @@ import { test } from 'node:test';
 import { MongoClient } from 'mongodb';
 import { MongoMemoryServer } from 'mongodb-memory-server';
 
-import type {
-  KeepaliveReadRecord,
-  KeepaliveStore,
-  PostgresQueryable,
-} from './keepalive.mts';
+import type { KeepaliveStore, PostgresQueryable } from './keepalive.mts';
 import {
-  KeepaliveRunError,
-  createKeepaliveRecords,
   createMongoStore,
   createPostgresStore,
   createRunId,
   getMongoDatabaseName,
   runTarget,
   runTargets,
-  verifyKeepaliveRecords,
 } from './keepalive.mts';
 
 class PostgresDouble implements PostgresQueryable {
-  readonly rows: KeepaliveReadRecord[] = [];
-  readonly queries: string[] = [];
+  readonly runIds: string[] = [];
   ended = false;
 
-  async query(
-    text: string,
-    values: unknown[] = [],
-  ): Promise<{
-    rows: Array<Partial<KeepaliveReadRecord> & { count?: number }>;
-    rowCount: number;
-  }> {
-    this.queries.push(text);
+  async query(text: string, values: unknown[] = []): Promise<{ rowCount: number }> {
+    const runId = values[0] as string;
     if (text.startsWith('INSERT')) {
-      const [runIds, sequences, createdAt, randomData] = values as [
-        string[],
-        number[],
-        Date[],
-        string[],
-      ];
-      this.rows.push(
-        ...sequences.map((sequence, index) => ({
-          run_id: runIds[index]!,
-          sequence,
-          created_at: createdAt[index]!,
-          random_data: randomData[index]!,
-        })),
-      );
-      return { rows: [], rowCount: this.rows.length };
-    }
-    if (text.startsWith('SELECT COUNT')) {
-      const runId = values[0] as string;
-      return {
-        rows: [{ count: this.rows.filter((row) => row.run_id === runId).length }],
-        rowCount: 1,
-      };
+      this.runIds.push(runId);
+      return { rowCount: 1 };
     }
     if (text.startsWith('SELECT')) {
-      const runId = values[0] as string;
-      return {
-        rows: this.rows.filter((row) => row.run_id === runId),
-        rowCount: this.rows.length,
-      };
+      return { rowCount: this.runIds.filter((id) => id === runId).length };
     }
     if (text.startsWith('DELETE')) {
-      const runId = values[0] as string;
-      const before = this.rows.length;
-      this.rows.splice(0, this.rows.length, ...this.rows.filter((row) => row.run_id !== runId));
-      return { rows: [], rowCount: before - this.rows.length };
+      const before = this.runIds.length;
+      this.runIds.splice(0, before, ...this.runIds.filter((id) => id !== runId));
+      return { rowCount: before - this.runIds.length };
     }
     throw new Error(`Unexpected SQL: ${text}`);
   }
@@ -79,199 +40,81 @@ class PostgresDouble implements PostgresQueryable {
   }
 }
 
-test('generates and validates exactly five records', () => {
-  const now = new Date('2026-07-22T01:02:03.000Z');
-  const records = createKeepaliveRecords('run-1', now);
-  assert.equal(records.length, 5);
-  assert.deepEqual(
-    records.map((record) => record.sequence),
-    [1, 2, 3, 4, 5],
-  );
-  assert.equal(new Set(records.map((record) => record.random_data)).size, 5);
-  assert(records.every((record) => /^[a-f0-9]{64}$/.test(record.random_data)));
-  verifyKeepaliveRecords(records, [...records].reverse());
-  assert.throws(() => verifyKeepaliveRecords(records, records.slice(0, 4)), /exactly 5/);
-});
-
 test('uses GitHub run id and attempt, or a local UUID', () => {
-  assert.equal(createRunId({ GITHUB_RUN_ID: '123', GITHUB_RUN_ATTEMPT: '2' }), 'github:123:2');
-  assert.equal(createRunId({ GITHUB_RUN_ID: '123' }), 'github:123:1');
-  assert.equal(createRunId({}, () => 'uuid'), 'local:uuid');
+  assert.equal(createRunId({ GITHUB_RUN_ID: '42', GITHUB_RUN_ATTEMPT: '3' }), 'github:42:3');
+  assert.equal(createRunId({ GITHUB_RUN_ID: '42' }), 'github:42:1');
+  assert.match(createRunId({}), /^local:[0-9a-f-]{36}$/);
 });
 
 test('requires an explicit Mongo database path', () => {
-  assert.equal(getMongoDatabaseName('mongodb://localhost/steel_dev'), 'steel_dev');
-  assert.throws(
-    () => getMongoDatabaseName('mongodb://localhost/'),
-    /explicit database path/,
-  );
-  assert.throws(
-    () => getMongoDatabaseName('mongodb+srv://localhost'),
-    /explicit database path/,
-  );
+  assert.equal(getMongoDatabaseName('mongodb://localhost:27017/steel'), 'steel');
+  assert.throws(() => getMongoDatabaseName('mongodb://localhost:27017'), /database path/);
+  assert.throws(() => getMongoDatabaseName('postgres://localhost/steel'), /mongodb/);
+  assert.throws(() => getMongoDatabaseName('not a uri'), /mongodb/);
 });
 
-test('runs real Mongo CRUD and leaves no records behind', async () => {
-  const server = await MongoMemoryServer.create({ instance: { dbName: 'keepalive_test' } });
-  const uri = server.getUri('keepalive_test');
-  const target = {
-    name: 'mongo-test',
-    createStore: () => createMongoStore(uri),
-  };
-  const client = new MongoClient(uri);
+test('writes, reads back and deletes a real Mongo record', async () => {
+  const server = await MongoMemoryServer.create();
+  const uri = `${server.getUri()}keepalive_test`;
   try {
-    await runTarget(target, 'mongo-run');
-    await client.connect();
-    assert.equal(await client.db('keepalive_test').collection('keepalive').countDocuments(), 0);
+    await runTarget({ name: 'mongo', createStore: () => createMongoStore(uri) }, 'run-1');
+    const client = await MongoClient.connect(uri);
+    try {
+      assert.equal(await client.db().collection('keepalive').countDocuments(), 0);
+    } finally {
+      await client.close();
+    }
   } finally {
-    await client.close();
     await server.stop();
   }
 });
 
-test('runs Postgres CRUD through a narrow queryable double', async () => {
-  const database = new PostgresDouble();
-  const store = createPostgresStore('postgres://test', () => database);
-  await runTarget({ name: 'postgres-test', createStore: async () => store }, 'postgres-run');
-  assert.equal(database.rows.length, 0);
-  assert.equal(database.ended, true);
-  assert(database.queries.some((query) => query.includes('steel.keepalive')));
+test('writes, reads back and deletes a Postgres record', async () => {
+  const pool = new PostgresDouble();
+  await runTarget({ name: 'pg', createStore: async () => createPostgresStore(pool) }, 'run-1');
+  assert.deepEqual(pool.runIds, []);
+  assert.equal(pool.ended, true);
 });
 
-test('attempts every target and preserves operation and cleanup failures', async () => {
-  let attempted = 0;
-  let cleaned = 0;
-  const passingStore: KeepaliveStore = {
-    async insert() {},
-    async read() {
-      return [];
-    },
-    async delete() {
-      cleaned += 1;
-      return 0;
-    },
-    async count() {
-      return 0;
-    },
-    async close() {},
+test('deletes and closes even when the record cannot be read back', async () => {
+  const calls: string[] = [];
+  const store: KeepaliveStore = {
+    insert: async () => void calls.push('insert'),
+    exists: async () => (calls.push('exists'), false),
+    delete: async () => void calls.push('delete'),
+    close: async () => void calls.push('close'),
   };
+  await assert.rejects(
+    runTarget({ name: 'broken', createStore: async () => store }, 'run-1'),
+    /not readable/,
+  );
+  assert.deepEqual(calls, ['insert', 'exists', 'delete', 'close']);
+});
 
+test('attempts every target and reports failures without database URLs', async () => {
+  const pool = new PostgresDouble();
+  const errors: string[] = [];
+  const info: string[] = [];
   await assert.rejects(
     runTargets(
       [
         {
-          name: 'failing',
+          name: 'mongo-prod',
           createStore: async () => {
-            attempted += 1;
-            throw new Error('operation failure');
+            throw new Error('connect failed for mongodb+srv://user:secret@cluster/db');
           },
         },
-        {
-          name: 'passing',
-          createStore: async () => {
-            attempted += 1;
-            return passingStore;
-          },
-        },
+        { name: 'supabase-dev', createStore: async () => createPostgresStore(pool) },
       ],
-      'run-all',
-      {},
+      'run-1',
+      {
+        info: (message: string) => info.push(message),
+        error: (message: string) => errors.push(message),
+      },
     ),
-    (error: Error) => error instanceof KeepaliveRunError,
+    /failed for 1 target/,
   );
-  assert.equal(attempted, 2);
-  assert.equal(cleaned, 1);
-
-  const cleanupFailureStore: KeepaliveStore = {
-    async insert() {
-      throw new Error('operation failure');
-    },
-    async read() {
-      return [];
-    },
-    async delete() {
-      throw new Error('cleanup failure');
-    },
-    async count() {
-      return 1;
-    },
-    async close() {},
-  };
-  await assert.rejects(
-    runTarget({ name: 'cleanup-failure', createStore: async () => cleanupFailureStore }, 'run'),
-    (error: Error) =>
-      error instanceof Error &&
-      'operationError' in error &&
-      (error as { operationError: Error }).operationError.message === 'operation failure' &&
-      Boolean((error as { cleanupError?: Error }).cleanupError),
-  );
-
-  const shortDeleteStore: KeepaliveStore = {
-    async insert() {},
-    async read() {
-      throw new Error('read failure');
-    },
-    async delete() {
-      return 4;
-    },
-    async count() {
-      return 0;
-    },
-    async close() {},
-  };
-  await assert.rejects(
-    runTarget({ name: 'short-delete', createStore: async () => shortDeleteStore }, 'run'),
-    (error: Error) =>
-      error instanceof Error &&
-      'operationError' in error &&
-      (error as { operationError: Error }).operationError.message === 'read failure' &&
-      Boolean((error as { cleanupError?: Error }).cleanupError),
-  );
-});
-
-test('logs actionable target and stage failures without exposing database URLs', async () => {
-  const errorLogs: string[] = [];
-  const operationCause = new Error('socket timed out');
-  const failingStore: KeepaliveStore = {
-    async insert() {
-      throw new Error(
-        'insert failed for postgresql://prod_app:super-secret@db.example.com:5432/postgres',
-        { cause: operationCause },
-      );
-    },
-    async read() {
-      return [];
-    },
-    async delete() {
-      throw new Error('delete failed for mongodb+srv://admin:mongo-secret@cluster.example.com/app');
-    },
-    async count() {
-      return 1;
-    },
-    async close() {
-      throw new Error('close failed');
-    },
-  };
-
-  await assert.rejects(
-    runTargets(
-      [{ name: 'supabase-prod', createStore: async () => failingStore }],
-      'github:123:2',
-      { error: (message) => errorLogs.push(message) },
-    ),
-    (error: Error) => error instanceof KeepaliveRunError,
-  );
-
-  const log = errorLogs.join('\n');
-  assert.match(log, /Database keepalive failed for 1 target\(s\)/);
-  assert.match(log, /Run ID: github:123:2/);
-  assert.match(log, /Target: supabase-prod/);
-  assert.match(log, /Operation stage: insert/);
-  assert.match(log, /Error: insert failed/);
-  assert.match(log, /Cause: Error: socket timed out/);
-  assert.match(log, /Cleanup stage: delete/);
-  assert.match(log, /Cleanup stage: count/);
-  assert.match(log, /Cleanup stage: close/);
-  assert.match(log, /<redacted-database-url>/);
-  assert.doesNotMatch(log, /super-secret|mongo-secret|db\.example\.com|cluster\.example\.com/);
+  assert.deepEqual(info, ['Database keepalive passed: supabase-dev']);
+  assert.match(errors[0] ?? '', /mongo-prod: Error: connect failed for <redacted-database-url>/);
+  assert.doesNotMatch(errors[0] ?? '', /secret/);
 });
