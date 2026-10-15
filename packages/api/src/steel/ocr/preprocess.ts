@@ -694,14 +694,16 @@ async function emitMergedMarkdownProgress(input: {
   });
 }
 
-export async function runOcrPreprocessingBatchPipeline(
-  input: RunOcrPreprocessingBatchPipelineInput,
-): Promise<RunOcrPreprocessingBatchPipelineResult> {
-  const turnIndex = input.turnIndex ?? 0;
-  const checkpointTurnIndex = input.checkpointTurnIndex ?? turnIndex;
-  const resultSlots = new Array<RunOcrPreprocessingBatchFileResult | undefined>(input.files.length);
-  const workItems: OcrPreprocessingBatchWorkItem[] = [];
+interface OcrPipelineRun {
+  input: RunOcrPreprocessingBatchPipelineInput;
+  turnIndex: number;
+  checkpointTurnIndex: number;
+  resultSlots: Array<RunOcrPreprocessingBatchFileResult | undefined>;
+  workItems: OcrPreprocessingBatchWorkItem[];
+}
 
+/** Splits files into ready results and work items that still need OCR or organizing. */
+async function planOcrWorkItems({ input, resultSlots, workItems }: OcrPipelineRun): Promise<void> {
   for (let index = 0; index < input.files.length; index += 1) {
     throwIfAborted(input.signal);
     const entry = input.files[index];
@@ -795,7 +797,14 @@ export async function runOcrPreprocessingBatchPipeline(
       organizerStateChanged: false,
     });
   }
+}
 
+/** Ensures PDF chunk artifacts for work items that still need OCR or organizing. */
+async function prepareOcrArtifacts({
+  input,
+  resultSlots,
+  workItems,
+}: OcrPipelineRun): Promise<void> {
   for (const workItem of workItems) {
     const needsArtifacts =
       hasMissingRawChunk(workItem.initialState, workItem.chunks) ||
@@ -833,7 +842,16 @@ export async function runOcrPreprocessingBatchPipeline(
       source: pdfChunkSource,
     });
   }
+}
 
+/** Runs and saves PaddleOCR for every missing raw chunk. */
+async function runRawOcrPhase({
+  input,
+  turnIndex,
+  checkpointTurnIndex,
+  resultSlots,
+  workItems,
+}: OcrPipelineRun): Promise<void> {
   const runRawChunk = async (captureInput: {
     workItem: OcrPreprocessingBatchWorkItem;
     chunk: OcrPreprocessingPageChunk;
@@ -1046,7 +1064,14 @@ export async function runOcrPreprocessingBatchPipeline(
       }
     }
   }
+}
 
+/** Re-reads state after raw OCR and reports chunks that are already organized. */
+async function loadOrganizerPreflightState({
+  input,
+  resultSlots,
+  workItems,
+}: OcrPipelineRun): Promise<void> {
   for (const workItem of workItems) {
     throwIfAborted(input.signal);
     if (resultSlots[workItem.index]?.status === 'failed') {
@@ -1072,7 +1097,16 @@ export async function runOcrPreprocessingBatchPipeline(
       }
     }
   }
+}
 
+/** Organizes every raw chunk that has no saved organizer Markdown yet. */
+async function runOrganizerPhase({
+  input,
+  turnIndex,
+  checkpointTurnIndex,
+  resultSlots,
+  workItems,
+}: OcrPipelineRun): Promise<void> {
   for (const workItem of workItems) {
     throwIfAborted(input.signal);
     if (resultSlots[workItem.index]?.status === 'failed') {
@@ -1230,7 +1264,10 @@ export async function runOcrPreprocessingBatchPipeline(
       }
     }
   }
+}
 
+/** Merges each file's organized chunks into its final result slot. */
+async function collectOcrResults({ input, resultSlots, workItems }: OcrPipelineRun): Promise<void> {
   for (const workItem of workItems) {
     throwIfAborted(input.signal);
     if (resultSlots[workItem.index]?.status === 'failed') {
@@ -1304,9 +1341,27 @@ export async function runOcrPreprocessingBatchPipeline(
       pageRanges: getResultPageRanges(workItem.file, workItem.chunks),
     };
   }
+}
 
+export async function runOcrPreprocessingBatchPipeline(
+  input: RunOcrPreprocessingBatchPipelineInput,
+): Promise<RunOcrPreprocessingBatchPipelineResult> {
+  const turnIndex = input.turnIndex ?? 0;
+  const run: OcrPipelineRun = {
+    input,
+    turnIndex,
+    checkpointTurnIndex: input.checkpointTurnIndex ?? turnIndex,
+    resultSlots: new Array<RunOcrPreprocessingBatchFileResult | undefined>(input.files.length),
+    workItems: [],
+  };
+  await planOcrWorkItems(run);
+  await prepareOcrArtifacts(run);
+  await runRawOcrPhase(run);
+  await loadOrganizerPreflightState(run);
+  await runOrganizerPhase(run);
+  await collectOcrResults(run);
   return {
-    files: resultSlots.filter(
+    files: run.resultSlots.filter(
       (result): result is RunOcrPreprocessingBatchFileResult => result !== undefined,
     ),
   };
