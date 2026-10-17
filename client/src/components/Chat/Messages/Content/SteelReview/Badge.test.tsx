@@ -3,21 +3,6 @@ import { render, screen } from '@testing-library/react';
 import type { SteelReviewTable } from 'librechat-data-provider';
 import { createSteelReviewOcrContextTable } from './reference';
 import SteelReviewBadge from './Badge';
-import { useLocalize } from '~/hooks';
-
-jest.mock('~/hooks', () => ({
-  useLocalize: jest.fn(),
-}));
-
-jest.mock('@librechat/client', () => ({
-  Tag: ({ label, variant }: { label: string; variant: string }) => (
-    <span data-testid="steel-review-badge" data-variant={variant}>
-      {label}
-    </span>
-  ),
-}));
-
-const mockUseLocalize = useLocalize as jest.Mock;
 
 const table = (overrides: Partial<SteelReviewTable> = {}): SteelReviewTable => ({
   conversationId: 'conversation-1',
@@ -35,20 +20,10 @@ const table = (overrides: Partial<SteelReviewTable> = {}): SteelReviewTable => (
 });
 
 describe('SteelReviewBadge', () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-    mockUseLocalize.mockReturnValue((key: string) => ({
-      com_ui_steel_review_latest_version: 'Latest version',
-      com_ui_steel_review_previous_version: 'Previous version',
-      com_ui_steel_review_readonly_badge: 'Read-only',
-    })[key]);
-  });
-
   it('uses the loaded legacy table state when no versions entry exists', () => {
     render(<SteelReviewBadge table={table()} />);
 
-    expect(screen.getByTestId('steel-review-badge')).toHaveTextContent('Latest version');
-    expect(screen.getByTestId('steel-review-badge')).toHaveAttribute('data-variant', 'success');
+    expect(screen.getByText('Latest version').parentElement).toHaveClass('text-status-success');
   });
 
   it('renders the frozen OCR snapshot as read-only', () => {
@@ -69,20 +44,19 @@ describe('SteelReviewBadge', () => {
 
     render(<SteelReviewBadge table={referenceTable} showReadOnly />);
 
-    expect(screen.getByTestId('steel-review-badge')).toHaveTextContent('Read-only');
-    expect(screen.getByTestId('steel-review-badge')).toHaveAttribute('data-variant', 'neutral');
+    expect(screen.getByText('Read-only').parentElement).toHaveClass('text-status-neutral');
   });
 
   it('derives a legacy previous version label from the loaded table state', () => {
     render(<SteelReviewBadge table={table({ isLatest: false, readOnly: true })} />);
 
-    expect(screen.getByTestId('steel-review-badge')).toHaveTextContent('Previous version');
+    expect(screen.getByText('Previous version')).toBeInTheDocument();
   });
 
   it('keeps the matching version save count when the entry is trustworthy', () => {
     render(<SteelReviewBadge table={table({ isLatest: false, readOnly: true })} version={{ latest: false, saves: 2 }} />);
 
-    expect(screen.getByTestId('steel-review-badge')).toHaveTextContent('Previous version v3');
+    expect(screen.getByText('Previous version v3')).toBeInTheDocument();
   });
 
   it('keeps a historical table previous while the versions cache still says latest', () => {
@@ -92,6 +66,6 @@ describe('SteelReviewBadge', () => {
         version={{ latest: true, saves: 0 }}
       />,
     );
-    expect(screen.getByTestId('steel-review-badge')).toHaveTextContent('Previous version');
+    expect(screen.getByText('Previous version')).toBeInTheDocument();
   });
 });
