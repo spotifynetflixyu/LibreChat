@@ -12,7 +12,7 @@ const {
   payloadParser,
   createSafeUser,
   initializeAgent,
-  generateTitle,
+  generateOpenAIOAuthTitle,
   resolveConfigHeaders,
   resolveRequestTenantId,
   countTokens,
@@ -6309,11 +6309,26 @@ class AgentClient extends BaseClient {
    * @param {Object} params
    * @param {string} params.text
    * @param {AbortController} params.abortController
-   * @param {boolean} [params.immediate] Kept for callers that schedule title
-   *   generation before streaming completes. Titles always derive from the user's
-   *   input only (`contentParts` is empty).
+   * @param {boolean} [params.immediate] When true, the title is generated as soon
+   *   as the request is made — the run is awaited (instead of throwing) and the
+   *   title derives from the user's input only (`contentParts` is empty).
    */
-  async titleConvo({ text, abortController }) {
+  async titleConvo({ text, abortController, immediate = false }) {
+    if (this.options.agent?.endpoint === EModelEndpoint.openAIOAuth) {
+      return this._titleOpenAIOAuthConvo({ text, abortController });
+    }
+    if (!this.run) {
+      if (!immediate) {
+        throw new Error('Run not initialized');
+      }
+      await this._waitForRun(abortController?.signal);
+      if (!this.run) {
+        logger.debug(
+          '[api/server/controllers/agents/client.js #titleConvo] Run unavailable for immediate title generation',
+        );
+        return;
+      }
+    }
     const { handleLLMEnd, collected: collectedMetadata } = createMetadataAggregator();
     const { req, agent } = this.options;
 
@@ -6326,6 +6341,7 @@ class AgentClient extends BaseClient {
 
     const appConfig = req.config;
     let endpoint = agent.endpoint;
+
     /** @type {import('@librechat/agents').ClientOptions} */
     let clientOptions = {
       model: agent.model || agent.model_parameters.model,
@@ -6375,61 +6391,6 @@ class AgentClient extends BaseClient {
       endpointConfig.titleModel !== Constants.CURRENT_MODEL
     ) {
       clientOptions.model = endpointConfig.titleModel;
-    }
-
-    const titlePrompt = await resolveSteelTitlePrompt({
-      titlePrompt: endpointConfig?.titlePrompt,
-      attachments: this.options.attachments,
-      dependencies: createSteelContextDependencies({ runtimeRulesClient: steelPostgres.client }),
-    });
-    const chainOptions = {
-      runName: 'TitleRun',
-      signal: abortController?.signal,
-      callbacks: [
-        {
-          handleLLMEnd,
-        },
-      ],
-      configurable: {
-        thread_id: this.conversationId,
-        user_id: this.user ?? this.options.req.user?.id,
-      },
-    };
-
-    if (endpoint === EModelEndpoint.openAIOAuth) {
-      try {
-        const titleResult = await generateTitle({
-          endpoint,
-          provider: endpoint,
-          clientOptions,
-          contentParts: [],
-          inputText: text,
-          titleMethod: endpointConfig?.titleMethod,
-          titlePrompt,
-          titlePromptTemplate: endpointConfig?.titlePromptTemplate,
-          chainOptions,
-        });
-        const balanceConfig = getBalanceConfig(appConfig);
-        const transactionsConfig = getTransactionsConfig(appConfig);
-        await this.recordCollectedUsage({
-          collectedUsage: titleResult.usage ? [titleResult.usage] : [],
-          context: 'title',
-          model: titleResult.model,
-          balance: balanceConfig,
-          transactions: transactionsConfig,
-          messageId: this.responseMessageId,
-        }).catch((err) => {
-          logger.error(
-            '[api/server/controllers/agents/client.js #titleConvo] Error recording collected usage',
-            err,
-          );
-        });
-
-        return sanitizeTitle(titleResult.title);
-      } catch (err) {
-        logger.error('[api/server/controllers/agents/client.js #titleConvo] Error', err);
-        return;
-      }
     }
 
     const options = await titleProviderConfig.getOptions({
@@ -6517,50 +6478,123 @@ class AgentClient extends BaseClient {
     });
 
     try {
-      const titleResult = await generateTitle({
-        endpoint,
+      const titleResult = await this.run.generateTitle({
         provider,
         clientOptions,
         inputText: text,
-        contentParts: [],
+        contentParts: immediate ? [] : this.contentParts,
         titleMethod: endpointConfig?.titleMethod,
-        titlePrompt,
+        titlePrompt: endpointConfig?.titlePrompt,
         titlePromptTemplate: endpointConfig?.titlePromptTemplate,
-        chainOptions,
+        chainOptions: {
+          runName: 'TitleRun',
+          signal: abortController.signal,
+          callbacks: [
+            {
+              handleLLMEnd,
+            },
+          ],
+          configurable: {
+            thread_id: this.conversationId,
+            user_id: this.user ?? this.options.req.user?.id,
+          },
+        },
       });
 
-      const collectedUsage = titleResult.usage
-        ? [titleResult.usage]
-        : collectedMetadata.map((item) => {
-            let input_tokens, output_tokens;
+      const collectedUsage = collectedMetadata.map((item) => {
+        let input_tokens, output_tokens;
 
-            if (item.usage) {
-              input_tokens =
-                item.usage.prompt_tokens || item.usage.input_tokens || item.usage.inputTokens;
-              output_tokens =
-                item.usage.completion_tokens || item.usage.output_tokens || item.usage.outputTokens;
-            } else if (item.tokenUsage) {
-              input_tokens = item.tokenUsage.promptTokens;
-              output_tokens = item.tokenUsage.completionTokens;
-            } else if (item.usage_metadata) {
-              input_tokens = item.usage_metadata.input_tokens;
-              output_tokens = item.usage_metadata.output_tokens;
-            }
+        if (item.usage) {
+          input_tokens =
+            item.usage.prompt_tokens || item.usage.input_tokens || item.usage.inputTokens;
+          output_tokens =
+            item.usage.completion_tokens || item.usage.output_tokens || item.usage.outputTokens;
+        } else if (item.tokenUsage) {
+          input_tokens = item.tokenUsage.promptTokens;
+          output_tokens = item.tokenUsage.completionTokens;
+        } else if (item.usage_metadata) {
+          input_tokens = item.usage_metadata.input_tokens;
+          output_tokens = item.usage_metadata.output_tokens;
+        }
 
-            return {
-              input_tokens: input_tokens,
-              output_tokens: output_tokens,
-            };
-          });
+        return {
+          input_tokens: input_tokens,
+          output_tokens: output_tokens,
+        };
+      });
 
       const balanceConfig = getBalanceConfig(appConfig);
       const transactionsConfig = getTransactionsConfig(appConfig);
       await this.recordCollectedUsage({
         collectedUsage,
         context: 'title',
-        model: titleResult.model ?? clientOptions.model,
+        model: clientOptions.model,
         balance: balanceConfig,
         transactions: transactionsConfig,
+        messageId: this.responseMessageId,
+      }).catch((err) => {
+        logger.error(
+          '[api/server/controllers/agents/client.js #titleConvo] Error recording collected usage',
+          getSafeErrorMetadata(err),
+        );
+      });
+
+      return sanitizeTitle(titleResult.title);
+    } catch (err) {
+      logger.error(
+        '[api/server/controllers/agents/client.js #titleConvo] Error',
+        getSafeErrorMetadata(err),
+      );
+      return;
+    }
+  }
+
+  /**
+   * Titles OpenAI OAuth conversations from the user's input without waiting for
+   * the run: Steel OCR preflight runs before the run exists and can outlast the
+   * title timeout.
+   * @param {Object} params
+   * @param {string} params.text
+   * @param {AbortController} params.abortController
+   */
+  async _titleOpenAIOAuthConvo({ text, abortController }) {
+    const { req } = this.options;
+    if (req?.body?.isTemporary) {
+      return;
+    }
+
+    const appConfig = req.config;
+    const endpointConfig =
+      appConfig.endpoints?.all ?? appConfig.endpoints?.[EModelEndpoint.openAIOAuth];
+    if (endpointConfig?.titleConvo === false) {
+      return;
+    }
+
+    try {
+      const titlePrompt = await resolveSteelTitlePrompt({
+        titlePrompt: endpointConfig?.titlePrompt,
+        attachments: this.options.attachments,
+        dependencies: createSteelContextDependencies({ runtimeRulesClient: steelPostgres.client }),
+      });
+      const titleResult = await generateOpenAIOAuthTitle({
+        inputText: text,
+        titlePrompt,
+        titlePromptTemplate: endpointConfig?.titlePromptTemplate,
+        chainOptions: {
+          runName: 'TitleRun',
+          signal: abortController?.signal,
+          configurable: {
+            thread_id: this.conversationId,
+            user_id: this.user ?? req.user?.id,
+          },
+        },
+      });
+      await this.recordCollectedUsage({
+        collectedUsage: titleResult.usage ? [titleResult.usage] : [],
+        context: 'title',
+        model: titleResult.model,
+        balance: getBalanceConfig(appConfig),
+        transactions: getTransactionsConfig(appConfig),
         messageId: this.responseMessageId,
       }).catch((err) => {
         logger.error(

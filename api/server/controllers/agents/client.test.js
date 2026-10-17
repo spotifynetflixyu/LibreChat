@@ -19,7 +19,7 @@ const mockFormatAgentMessages = jest.fn(() => ({
 const mockStripActivityLabelParts = jest.fn((payload) =>
   jest.requireActual('@librechat/api').stripActivityLabelParts(payload),
 );
-const mockGenerateTitle = jest.fn();
+const mockGenerateOpenAIOAuthTitle = jest.fn();
 const mockPrepareQuotationTurn = jest.fn();
 const mockBuildDefaultSteelGlobalAgentContext = jest.fn();
 const mockPrepareLibreChatSteelChatContext = jest.fn((...args) =>
@@ -29,7 +29,6 @@ const mockRunSteelPaddleOcrPreflight = jest.fn();
 const mockResolveDelegateOcrPolicyForRequest = jest.fn();
 const mockPrepareDelegateOcrResume = jest.fn();
 
-mockGenerateTitle.mockResolvedValue({ title: 'Generated Title' });
 mockPrepareQuotationTurn.mockResolvedValue({
   scope: {},
   state: {},
@@ -224,7 +223,7 @@ jest.mock('@librechat/agents', () => ({
 
 jest.mock('@librechat/api', () => ({
   ...jest.requireActual('@librechat/api'),
-  generateTitle: (...args) => mockGenerateTitle(...args),
+  generateOpenAIOAuthTitle: (...args) => mockGenerateOpenAIOAuthTitle(...args),
   buildAgentScopedContext: (...args) => mockBuildAgentScopedContext(...args),
   buildDefaultSteelGlobalAgentContext: (...args) =>
     mockBuildDefaultSteelGlobalAgentContext(...args),
@@ -3923,10 +3922,13 @@ describe('AgentClient - titleConvo', () => {
   beforeEach(() => {
     // Reset all mocks
     jest.clearAllMocks();
-    mockGenerateTitle.mockReset().mockResolvedValue({ title: 'Generated Title' });
 
     // Mock run object
-    mockRun = {};
+    mockRun = {
+      generateTitle: jest.fn().mockResolvedValue({
+        title: 'Generated Title',
+      }),
+    };
 
     // Mock agent - with both endpoint and provider
     mockAgent = {
@@ -3981,25 +3983,26 @@ describe('AgentClient - titleConvo', () => {
   });
 
   describe('titleConvo method', () => {
-    it('generates a title before the provider run is initialized', async () => {
+    it('should throw error if run is not initialized', async () => {
       client.run = null;
 
       await expect(
         client.titleConvo({ text: 'Test', abortController: new AbortController() }),
-      ).resolves.toBe('Generated Title');
-      expect(mockGenerateTitle).toHaveBeenCalledWith(
-        expect.objectContaining({ contentParts: [], inputText: 'Test' }),
-      );
+      ).rejects.toThrow('Run not initialized');
     });
 
-    it('generates an immediate title without waiting for the provider run', async () => {
+    it('waits for the run in immediate mode instead of throwing', async () => {
       client.run = null;
       const abortController = new AbortController();
 
-      await client.titleConvo({ text: 'Test', abortController, immediate: true });
-      expect(mockGenerateTitle).toHaveBeenCalledWith(
-        expect.objectContaining({ contentParts: [], inputText: 'Test' }),
-      );
+      const titlePromise = client.titleConvo({ text: 'Test', abortController, immediate: true });
+
+      // Simulate `chatCompletion` assigning the run (client.js: `this.run = run`).
+      client.run = mockRun;
+      client._resolveRun(mockRun);
+
+      await titlePromise;
+      expect(mockRun.generateTitle).toHaveBeenCalled();
     });
 
     it('passes empty contentParts in immediate mode (title from the user input only)', async () => {
@@ -4008,33 +4011,30 @@ describe('AgentClient - titleConvo', () => {
 
       await client.titleConvo({ text: 'Hello there', abortController, immediate: true });
 
-      const call = mockGenerateTitle.mock.calls[0][0];
+      const call = mockRun.generateTitle.mock.calls[0][0];
       expect(call.contentParts).toEqual([]);
       expect(call.inputText).toBe('Hello there');
     });
 
-    it('uses empty contentParts in non-immediate mode as well', async () => {
+    it('uses live contentParts in non-immediate (final) mode', async () => {
       client.contentParts = [{ type: 'text', text: 'Full response' }];
       const abortController = new AbortController();
 
       await client.titleConvo({ text: 'Hello there', abortController });
 
-      const call = mockGenerateTitle.mock.calls[0][0];
-      expect(call.contentParts).toEqual([]);
+      const call = mockRun.generateTitle.mock.calls[0][0];
+      expect(call.contentParts).toEqual([{ type: 'text', text: 'Full response' }]);
     });
 
-    it('passes an already-aborted signal to the independent title request', async () => {
+    it('rejects promptly when aborted before the run initializes in immediate mode', async () => {
       client.run = null;
       const abortController = new AbortController();
       abortController.abort();
 
-      await client.titleConvo({ text: 'Test', abortController, immediate: true });
-      expect(mockGenerateTitle).toHaveBeenCalledWith(
-        expect.objectContaining({
-          contentParts: [],
-          chainOptions: expect.objectContaining({ signal: abortController.signal }),
-        }),
-      );
+      await expect(
+        client.titleConvo({ text: 'Test', abortController, immediate: true }),
+      ).rejects.toThrow('Aborted before run initialization');
+      expect(mockRun.generateTitle).not.toHaveBeenCalled();
     });
 
     it('should use titlePrompt from endpoint config', async () => {
@@ -4043,7 +4043,7 @@ describe('AgentClient - titleConvo', () => {
 
       await client.titleConvo({ text, abortController });
 
-      expect(mockGenerateTitle).toHaveBeenCalledWith(
+      expect(mockRun.generateTitle).toHaveBeenCalledWith(
         expect.objectContaining({
           titlePrompt: 'Custom title prompt',
         }),
@@ -4056,7 +4056,7 @@ describe('AgentClient - titleConvo', () => {
 
       await client.titleConvo({ text, abortController });
 
-      expect(mockGenerateTitle).toHaveBeenCalledWith(
+      expect(mockRun.generateTitle).toHaveBeenCalledWith(
         expect.objectContaining({
           titlePromptTemplate: 'Template: {{content}}',
         }),
@@ -4069,7 +4069,7 @@ describe('AgentClient - titleConvo', () => {
 
       await client.titleConvo({ text, abortController });
 
-      expect(mockGenerateTitle).toHaveBeenCalledWith(
+      expect(mockRun.generateTitle).toHaveBeenCalledWith(
         expect.objectContaining({
           provider: Providers.OPENAI,
           titleMethod: 'structured',
@@ -4084,7 +4084,7 @@ describe('AgentClient - titleConvo', () => {
       await client.titleConvo({ text, abortController });
 
       // Check that generateTitle was called with correct clientOptions
-      const generateTitleCall = mockGenerateTitle.mock.calls[0][0];
+      const generateTitleCall = mockRun.generateTitle.mock.calls[0][0];
       expect(generateTitleCall.clientOptions.model).toBe('gpt-3.5-turbo');
     });
 
@@ -4119,7 +4119,7 @@ describe('AgentClient - titleConvo', () => {
         await anthropicClient.titleConvo({ text: 'Hello', abortController: new AbortController() });
 
         const defaultHeaders =
-          mockGenerateTitle.mock.calls[0][0].clientOptions?.clientOptions?.defaultHeaders;
+          mockRun.generateTitle.mock.calls[0][0].clientOptions?.clientOptions?.defaultHeaders;
         // Custom header survives the `omitTitleOptions` strip and resolves the conversationId
         expect(defaultHeaders?.['X-Conversation-Id']).toBe('convo-123');
         // Provider-managed beta header is preserved alongside it
@@ -4142,7 +4142,7 @@ describe('AgentClient - titleConvo', () => {
 
       await client.titleConvo({ text, abortController });
 
-      expect(mockGenerateTitle).toHaveBeenCalledWith(
+      expect(mockRun.generateTitle).toHaveBeenCalledWith(
         expect.objectContaining({
           titlePrompt: undefined,
           titlePromptTemplate: undefined,
@@ -4169,7 +4169,7 @@ describe('AgentClient - titleConvo', () => {
 
       await client.titleConvo({ text, abortController });
 
-      const generateTitleCall = mockGenerateTitle.mock.calls[0][0];
+      const generateTitleCall = mockRun.generateTitle.mock.calls[0][0];
       expect(generateTitleCall.clientOptions.model).toBe('gpt-4'); // Should use agent's model
     });
 
@@ -4190,7 +4190,7 @@ describe('AgentClient - titleConvo', () => {
 
       await client.titleConvo({ text, abortController });
 
-      const generateTitleCall = mockGenerateTitle.mock.calls[0][0];
+      const generateTitleCall = mockRun.generateTitle.mock.calls[0][0];
       expect(generateTitleCall.clientOptions.model).toBe('gpt-4'); // Should use agent's model
     });
 
@@ -4200,22 +4200,20 @@ describe('AgentClient - titleConvo', () => {
 
       await client.titleConvo({ text, abortController });
 
-      expect(mockGenerateTitle).toHaveBeenCalledWith(
-        expect.objectContaining({
-          provider: expect.any(String),
-          inputText: text,
-          contentParts: [],
-          clientOptions: expect.objectContaining({
-            model: 'gpt-3.5-turbo',
-          }),
-          titlePrompt: 'Custom title prompt',
-          titlePromptTemplate: 'Template: {{content}}',
-          titleMethod: 'structured',
-          chainOptions: expect.objectContaining({
-            signal: abortController.signal,
-          }),
+      expect(mockRun.generateTitle).toHaveBeenCalledWith({
+        provider: expect.any(String),
+        inputText: text,
+        contentParts: client.contentParts,
+        clientOptions: expect.objectContaining({
+          model: 'gpt-3.5-turbo',
         }),
-      );
+        titlePrompt: 'Custom title prompt',
+        titlePromptTemplate: 'Template: {{content}}',
+        titleMethod: 'structured',
+        chainOptions: expect.objectContaining({
+          signal: abortController.signal,
+        }),
+      });
     });
 
     it('should record collected usage after title generation', async () => {
@@ -4249,7 +4247,7 @@ describe('AgentClient - titleConvo', () => {
 
     it('should sanitize the generated title by removing think blocks', async () => {
       const titleWithThinkBlock = '<think>reasoning about the title</think> User Hi Greeting';
-      mockGenerateTitle.mockResolvedValue({
+      mockRun.generateTitle.mockResolvedValue({
         title: titleWithThinkBlock,
       });
 
@@ -4266,7 +4264,7 @@ describe('AgentClient - titleConvo', () => {
 
     it('should return fallback title when sanitization results in empty string', async () => {
       const titleOnlyThinkBlock = '<think>only reasoning no actual title</think>';
-      mockGenerateTitle.mockResolvedValue({
+      mockRun.generateTitle.mockResolvedValue({
         title: titleOnlyThinkBlock,
       });
 
@@ -4283,7 +4281,7 @@ describe('AgentClient - titleConvo', () => {
       const { logger } = require('@librechat/data-schemas');
       const privateValue = 'PRIVATE-TITLE-PROMPT';
       const errorSpy = jest.spyOn(logger, 'error').mockImplementation(() => logger);
-      mockGenerateTitle.mockRejectedValue(
+      mockRun.generateTitle.mockRejectedValue(
         Object.assign(new Error(`Provider echoed ${privateValue}`), {
           code: 'ERR_REMOTE',
           response: { status: 422, data: { prompt: privateValue } },
@@ -4327,7 +4325,7 @@ describe('AgentClient - titleConvo', () => {
       expect(result).toBeUndefined();
 
       // generateTitle should NOT have been called
-      expect(mockGenerateTitle).not.toHaveBeenCalled();
+      expect(mockRun.generateTitle).not.toHaveBeenCalled();
 
       // recordCollectedUsage should NOT have been called
       expect(client.recordCollectedUsage).not.toHaveBeenCalled();
@@ -4346,7 +4344,7 @@ describe('AgentClient - titleConvo', () => {
       expect(result).toBeUndefined();
 
       // generateTitle should NOT have been called
-      expect(mockGenerateTitle).not.toHaveBeenCalled();
+      expect(mockRun.generateTitle).not.toHaveBeenCalled();
 
       // recordCollectedUsage should NOT have been called
       expect(client.recordCollectedUsage).not.toHaveBeenCalled();
@@ -4375,7 +4373,7 @@ describe('AgentClient - titleConvo', () => {
       expect(result).toBeUndefined();
 
       // generateTitle should NOT have been called
-      expect(mockGenerateTitle).not.toHaveBeenCalled();
+      expect(mockRun.generateTitle).not.toHaveBeenCalled();
 
       // recordCollectedUsage should NOT have been called
       expect(client.recordCollectedUsage).not.toHaveBeenCalled();
@@ -4436,7 +4434,7 @@ describe('AgentClient - titleConvo', () => {
       expect(result).toBeUndefined();
 
       // generateTitle should NOT have been called
-      expect(mockGenerateTitle).not.toHaveBeenCalled();
+      expect(mockRun.generateTitle).not.toHaveBeenCalled();
 
       // recordCollectedUsage should NOT have been called
       expect(client.recordCollectedUsage).not.toHaveBeenCalled();
@@ -4466,7 +4464,7 @@ describe('AgentClient - titleConvo', () => {
       await client.titleConvo({ text, abortController });
 
       // Verify generateTitle was called with the custom configuration
-      expect(mockGenerateTitle).toHaveBeenCalledWith(
+      expect(mockRun.generateTitle).toHaveBeenCalledWith(
         expect.objectContaining({
           titleMethod: 'structured',
           provider: Providers.ANTHROPIC,
@@ -4502,7 +4500,7 @@ describe('AgentClient - titleConvo', () => {
       await client.titleConvo({ text, abortController });
 
       // Verify generateTitle was called with 'all' config values
-      expect(mockGenerateTitle).toHaveBeenCalledWith(
+      expect(mockRun.generateTitle).toHaveBeenCalledWith(
         expect.objectContaining({
           titleMethod: 'completion',
           titlePrompt: 'All config title prompt',
@@ -4511,7 +4509,7 @@ describe('AgentClient - titleConvo', () => {
       );
 
       // Check that the model was set from 'all' config
-      const generateTitleCall = mockGenerateTitle.mock.calls[0][0];
+      const generateTitleCall = mockRun.generateTitle.mock.calls[0][0];
       expect(generateTitleCall.clientOptions.model).toBe('gpt-4o-mini');
     });
 
@@ -4540,7 +4538,7 @@ describe('AgentClient - titleConvo', () => {
       await client.titleConvo({ text, abortController });
 
       // Verify 'all' config takes precedence over endpoint config
-      expect(mockGenerateTitle).toHaveBeenCalledWith(
+      expect(mockRun.generateTitle).toHaveBeenCalledWith(
         expect.objectContaining({
           titleMethod: 'completion',
           titlePrompt: 'All config title prompt',
@@ -4549,7 +4547,7 @@ describe('AgentClient - titleConvo', () => {
       );
 
       // Check that the model was set from 'all' config
-      const generateTitleCall = mockGenerateTitle.mock.calls[0][0];
+      const generateTitleCall = mockRun.generateTitle.mock.calls[0][0];
       expect(generateTitleCall.clientOptions.model).toBe('gpt-4o-mini');
     });
 
@@ -4578,19 +4576,19 @@ describe('AgentClient - titleConvo', () => {
       await client.titleConvo({ text, abortController });
 
       // Verify all config values were used
-      expect(mockGenerateTitle).toHaveBeenCalledWith(
+      expect(mockRun.generateTitle).toHaveBeenCalledWith(
         expect.objectContaining({
           provider: Providers.ANTHROPIC, // Critical: Verify provider switched to Anthropic
           titleMethod: 'completion',
           titlePrompt: 'Generate a concise, descriptive title for this conversation',
           titlePromptTemplate: 'Conversation summary: {{content}}',
           inputText: text,
-          contentParts: [],
+          contentParts: client.contentParts,
         }),
       );
 
       // Verify the model was set from 'all' config
-      const generateTitleCall = mockGenerateTitle.mock.calls[0][0];
+      const generateTitleCall = mockRun.generateTitle.mock.calls[0][0];
       expect(generateTitleCall.clientOptions.model).toBe('claude-3-haiku-20240307');
 
       // Verify other client options are set correctly
@@ -4613,7 +4611,7 @@ describe('AgentClient - titleConvo', () => {
 
       for (const method of titleMethods) {
         // Clear previous calls
-        mockGenerateTitle.mockClear();
+        mockRun.generateTitle.mockClear();
 
         // Set 'all' config with specific titleMethod
         mockReq.config = {
@@ -4633,7 +4631,7 @@ describe('AgentClient - titleConvo', () => {
         await client.titleConvo({ text, abortController });
 
         // Verify the correct titleMethod was used
-        expect(mockGenerateTitle).toHaveBeenCalledWith(
+        expect(mockRun.generateTitle).toHaveBeenCalledWith(
           expect.objectContaining({
             titleMethod: method,
             titlePrompt: `Testing ${method} method`,
@@ -4708,7 +4706,7 @@ describe('AgentClient - titleConvo', () => {
         await client.titleConvo({ text, abortController });
 
         // Verify provider was switched to OPENAI for serverless
-        expect(mockGenerateTitle).toHaveBeenCalledWith(
+        expect(mockRun.generateTitle).toHaveBeenCalledWith(
           expect.objectContaining({
             provider: Providers.OPENAI, // Should be OPENAI for serverless
             titleMethod: 'completion',
@@ -4759,7 +4757,7 @@ describe('AgentClient - titleConvo', () => {
         await client.titleConvo({ text, abortController });
 
         // Verify provider remains AZURE with instanceName
-        expect(mockGenerateTitle).toHaveBeenCalledWith(
+        expect(mockRun.generateTitle).toHaveBeenCalledWith(
           expect.objectContaining({
             provider: Providers.AZURE,
             titleMethod: 'structured',
@@ -4812,7 +4810,7 @@ describe('AgentClient - titleConvo', () => {
         await client.titleConvo({ text, abortController });
 
         // Verify it uses the correct model when titleModel is CURRENT_MODEL
-        const generateTitleCall = mockGenerateTitle.mock.calls[0][0];
+        const generateTitleCall = mockRun.generateTitle.mock.calls[0][0];
         // When CURRENT_MODEL is used with Azure, the model gets mapped to the deployment name
         // In this case, 'gpt-4o-latest' is mapped to 'gpt-4o-mini' deployment
         expect(generateTitleCall.clientOptions.model).toBe('gpt-4o-mini');
@@ -4890,14 +4888,14 @@ describe('AgentClient - titleConvo', () => {
         await client.titleConvo({ text, abortController });
 
         // Verify correct model and provider are used
-        expect(mockGenerateTitle).toHaveBeenCalledWith(
+        expect(mockRun.generateTitle).toHaveBeenCalledWith(
           expect.objectContaining({
             provider: Providers.AZURE,
             titleMethod: 'completion',
           }),
         );
 
-        const generateTitleCall = mockGenerateTitle.mock.calls[0][0];
+        const generateTitleCall = mockRun.generateTitle.mock.calls[0][0];
         expect(generateTitleCall.clientOptions.model).toBe('o1-mini');
         expect(generateTitleCall.clientOptions.maxTokens).toBeUndefined(); // o1 models shouldn't have maxTokens
       });
@@ -4947,7 +4945,7 @@ describe('AgentClient - titleConvo', () => {
         await client.titleConvo({ text, abortController });
 
         // Verify all config is used
-        expect(mockGenerateTitle).toHaveBeenCalledWith(
+        expect(mockRun.generateTitle).toHaveBeenCalledWith(
           expect.objectContaining({
             provider: Providers.OPENAI, // Should be OPENAI when no instanceName
             titleMethod: 'structured',
@@ -8792,6 +8790,101 @@ describe('AgentClient - titleConvo', () => {
         expect.any(Object),
       );
     });
+  });
+});
+
+describe('AgentClient - OpenAI OAuth titleConvo', () => {
+  let client;
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    mockGenerateOpenAIOAuthTitle
+      .mockReset()
+      .mockResolvedValue({ model: 'gpt-6-luna', title: 'OAuth Title', usage: undefined });
+    client = new AgentClient({
+      req: {
+        user: { id: 'user-123' },
+        body: {},
+        config: {
+          endpoints: {
+            [EModelEndpoint.openAIOAuth]: {
+              titlePrompt: 'OAuth prompt',
+              titlePromptTemplate: 'Q: {{input}}',
+            },
+          },
+        },
+      },
+      res: {},
+      agent: {
+        id: 'agent-123',
+        endpoint: EModelEndpoint.openAIOAuth,
+        provider: EModelEndpoint.openAIOAuth,
+        model_parameters: { model: 'gpt-6' },
+      },
+      endpointTokenConfig: {},
+    });
+    client.run = null;
+    client.responseMessageId = 'response-123';
+    client.conversationId = 'convo-123';
+    client.recordCollectedUsage = jest.fn().mockResolvedValue();
+  });
+
+  it('titles from the user input without waiting for the run', async () => {
+    const waitForRun = jest.spyOn(client, '_waitForRun');
+    const abortController = new AbortController();
+
+    await expect(client.titleConvo({ text: 'Quote plates', abortController })).resolves.toBe(
+      'OAuth Title',
+    );
+
+    expect(waitForRun).not.toHaveBeenCalled();
+    expect(mockGenerateOpenAIOAuthTitle).toHaveBeenCalledWith({
+      inputText: 'Quote plates',
+      titlePrompt: 'OAuth prompt',
+      titlePromptTemplate: 'Q: {{input}}',
+      chainOptions: {
+        runName: 'TitleRun',
+        signal: abortController.signal,
+        configurable: { thread_id: 'convo-123', user_id: 'user-123' },
+      },
+    });
+  });
+
+  it('records the title model usage', async () => {
+    mockGenerateOpenAIOAuthTitle.mockResolvedValue({
+      model: 'gpt-6-luna',
+      title: 'OAuth Title',
+      usage: { input_tokens: 12, output_tokens: 3 },
+    });
+
+    await client.titleConvo({ text: 'Quote plates', abortController: new AbortController() });
+
+    expect(client.recordCollectedUsage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        collectedUsage: [{ input_tokens: 12, output_tokens: 3 }],
+        context: 'title',
+        model: 'gpt-6-luna',
+        messageId: 'response-123',
+      }),
+    );
+  });
+
+  it('skips temporary conversations and endpoints with titles disabled', async () => {
+    client.options.req.body.isTemporary = true;
+    await expect(client.titleConvo({ text: 'Hi' })).resolves.toBeUndefined();
+
+    client.options.req.body.isTemporary = false;
+    client.options.req.config.endpoints[EModelEndpoint.openAIOAuth].titleConvo = false;
+    await expect(client.titleConvo({ text: 'Hi' })).resolves.toBeUndefined();
+
+    expect(mockGenerateOpenAIOAuthTitle).not.toHaveBeenCalled();
+  });
+
+  it('returns no title when generation fails', async () => {
+    mockGenerateOpenAIOAuthTitle.mockRejectedValue(new Error('transport failed'));
+
+    await expect(client.titleConvo({ text: 'Hi' })).resolves.toBeUndefined();
+    expect(client.recordCollectedUsage).not.toHaveBeenCalled();
   });
 });
 

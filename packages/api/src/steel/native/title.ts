@@ -1,11 +1,6 @@
-import { Providers, TitleMethod, initializeModel } from '@librechat/agents';
-import { EModelEndpoint } from 'librechat-data-provider';
-import type { Runnable, RunnableConfig } from '@librechat/agents/langchain/runnables';
 import { HumanMessage, SystemMessage } from '@librechat/agents/langchain/messages';
-import { PromptTemplate } from '@librechat/agents/langchain/prompts';
-import { RunnableLambda, RunnableSequence } from '@librechat/agents/langchain/runnables';
 import type { AIMessageChunk } from '@librechat/agents/langchain/messages';
-import type { ChatModelInstance, ClientOptions, RunTitleOptions } from '@librechat/agents';
+import type { RunnableConfig } from '@librechat/agents/langchain/runnables';
 import type { SteelRuntimeContextDependencies } from '../runtime/context';
 import type { OpenAIOAuthModelOptions } from './oauth';
 import { resolveOpenAIOAuthAuthFilePath } from '../ai/config';
@@ -14,36 +9,24 @@ import { createOpenAIOAuthModel } from './oauth';
 const DEFAULT_OPENAI_TITLE_MODEL = 'gpt-6-luna';
 const OPENAI_TITLE_REASONING_EFFORT = 'none';
 
-export interface OpenAIOAuthTitleContentPart {
-  text?: string;
-  type?: string;
-}
-
 export interface OpenAIOAuthTitleUsage {
   input_tokens: number;
   output_tokens: number;
 }
 
-export interface GenerateTitleInput {
-  endpoint?: string;
-  provider: RunTitleOptions['provider'] | string;
-  clientOptions?: ClientOptions;
-  contentParts?: OpenAIOAuthTitleContentPart[];
+export interface OpenAIOAuthTitleInput {
   createOpenAIOAuth?: OpenAIOAuthModelOptions['createOpenAIOAuth'];
   createOpenAIOAuthTransport?: OpenAIOAuthModelOptions['createOpenAIOAuthTransport'];
   inputText: string;
   openaiCredentials?: OpenAIOAuthModelOptions['openaiCredentials'];
-  skipLanguage?: boolean;
-  titleMethod?: TitleMethod;
   titlePrompt?: string;
   titlePromptTemplate?: string;
   chainOptions?: Partial<RunnableConfig>;
 }
 
-export interface GenerateTitleResult {
-  language?: string;
-  model?: string;
-  title?: string;
+export interface OpenAIOAuthTitleResult {
+  model: string;
+  title: string;
   usage?: OpenAIOAuthTitleUsage;
 }
 
@@ -52,46 +35,7 @@ const defaultTitlePrompt = `Provide a concise, 5-word-or-less title for the conv
 Conversation:
 {convo}`;
 
-const structuredTitlePrompt = `Analyze this conversation and provide:
-1. The detected language of the conversation
-2. A concise title in the detected language (5 words or less, no punctuation or quotation)
-
-{convo}`;
-
 const defaultTitleTemplate = 'User: {input}';
-
-const titleSchema = {
-  type: 'object',
-  properties: {
-    title: {
-      type: 'string',
-      description:
-        'A concise title for the conversation in 5 words or less, without punctuation or quotation',
-    },
-  },
-  required: ['title'],
-} as const;
-
-const combinedTitleSchema = {
-  type: 'object',
-  properties: {
-    language: {
-      type: 'string',
-      description: 'The detected language of the conversation',
-    },
-    title: {
-      type: 'string',
-      description:
-        'A concise title for the conversation in 5 words or less, without punctuation or quotation',
-    },
-  },
-  required: ['language', 'title'],
-} as const;
-
-type TitleResult = Pick<GenerateTitleResult, 'language' | 'title'>;
-type StructuredTitleModel = ChatModelInstance & {
-  withStructuredOutput: (schema: typeof titleSchema | typeof combinedTitleSchema) => Runnable;
-};
 
 function replaceTemplateValues(
   template: string,
@@ -117,7 +61,7 @@ function replaceTemplateValues(
 function createConversationText({
   inputText,
   titlePromptTemplate,
-}: Pick<GenerateTitleInput, 'inputText' | 'titlePromptTemplate'>): string {
+}: Pick<OpenAIOAuthTitleInput, 'inputText' | 'titlePromptTemplate'>): string {
   const output = '';
   const content = `User: ${inputText}`;
   return replaceTemplateValues(titlePromptTemplate ?? defaultTitleTemplate, {
@@ -202,139 +146,20 @@ function getUsage(message: AIMessageChunk): OpenAIOAuthTitleUsage | undefined {
   };
 }
 
-function isOpenAIOAuthTitleRequest({
-  endpoint,
-  provider,
-}: Pick<GenerateTitleInput, 'endpoint' | 'provider'>): boolean {
-  return endpoint === EModelEndpoint.openAIOAuth || provider === EModelEndpoint.openAIOAuth;
-}
-
-function isOpenAIProvider({
-  endpoint,
-  provider,
-}: Pick<GenerateTitleInput, 'endpoint' | 'provider'>): boolean {
-  if (endpoint !== undefined) {
-    return endpoint === EModelEndpoint.openAI;
-  }
-
-  return provider === Providers.OPENAI || provider === EModelEndpoint.openAI;
-}
-
 function getTitleSettings(): { model: string; reasoningEffort: string } {
-  const model = process.env.OPENAI_TITLE_MODEL?.trim();
-  const reasoningEffort = process.env.OPENAI_TITLE_REASONING_EFFORT?.trim();
   return {
-    model: model || DEFAULT_OPENAI_TITLE_MODEL,
-    reasoningEffort: reasoningEffort || OPENAI_TITLE_REASONING_EFFORT,
+    model: process.env.OPENAI_TITLE_MODEL?.trim() || DEFAULT_OPENAI_TITLE_MODEL,
+    reasoningEffort:
+      process.env.OPENAI_TITLE_REASONING_EFFORT?.trim() || OPENAI_TITLE_REASONING_EFFORT,
   };
 }
 
-function getTitleClientOptions(
-  request: Pick<GenerateTitleInput, 'endpoint' | 'provider'>,
-  clientOptions: ClientOptions | undefined,
-  settings: { model: string; reasoningEffort: string },
-): ClientOptions | undefined {
-  if (!isOpenAIProvider(request)) {
-    return clientOptions;
-  }
-
-  const titleClientOptions = {
-    ...clientOptions,
-    model: settings.model,
-    reasoning_effort: settings.reasoningEffort,
-  };
-  if ('temperature' in titleClientOptions) {
-    delete titleClientOptions.temperature;
-  }
-  return {
-    ...titleClientOptions,
-  };
-}
-
-function getClientModel(clientOptions: ClientOptions | undefined): string | undefined {
-  const options = clientOptions as Partial<{ model: string }> | undefined;
-  return typeof options?.model === 'string' ? options.model : undefined;
-}
-
-function isStructuredTitleModel(model: ChatModelInstance): model is StructuredTitleModel {
-  const candidate = model as ChatModelInstance & { withStructuredOutput?: unknown };
-  return typeof candidate.withStructuredOutput === 'function';
-}
-
-async function invokeCompletionTitle({
-  chainOptions,
-  conversation,
-  inputText,
-  model,
-  titlePrompt,
-}: {
-  chainOptions?: Partial<RunnableConfig>;
-  conversation: string;
-  inputText: string;
-  model: ChatModelInstance;
-  titlePrompt?: string;
-}): Promise<TitleResult> {
-  const prompt = PromptTemplate.fromTemplate(
-    normalizeTitlePrompt(titlePrompt) ?? defaultTitlePrompt,
-  );
-  const extractTitle = new RunnableLambda({
-    func: (response: AIMessageChunk): TitleResult => ({
-      title: getMessageText(response),
-    }),
-  });
-  const chain = RunnableSequence.from([prompt, model, extractTitle]);
-  return (await chain.invoke(
-    {
-      convo: conversation,
-      input: inputText,
-      output: '',
-    },
-    chainOptions,
-  )) as TitleResult;
-}
-
-async function invokeStructuredTitle({
-  chainOptions,
-  conversation,
-  inputText,
-  model,
-  skipLanguage,
-  titlePrompt,
-}: {
-  chainOptions?: Partial<RunnableConfig>;
-  conversation: string;
-  inputText: string;
-  model: ChatModelInstance;
-  skipLanguage?: boolean;
-  titlePrompt?: string;
-}): Promise<TitleResult> {
-  if (!isStructuredTitleModel(model)) {
-    return invokeCompletionTitle({ chainOptions, conversation, inputText, model, titlePrompt });
-  }
-
-  const prompt = PromptTemplate.fromTemplate(
-    normalizeTitlePrompt(titlePrompt) ?? structuredTitlePrompt,
-  );
-  const input = {
-    convo: conversation,
-    input: inputText,
-    output: '',
-  };
-  const chain = RunnableSequence.from([
-    prompt,
-    model.withStructuredOutput(skipLanguage ? titleSchema : combinedTitleSchema),
-  ]);
-
-  const result = (await chain.invoke(input, chainOptions)) as TitleResult;
-  return skipLanguage
-    ? result
-    : {
-        language: result.language ?? 'English',
-        title: result.title ?? '',
-      };
-}
-
-async function generateResponsesTitle({
+/**
+ * Titles an OpenAI OAuth (Codex) conversation through the Responses transport,
+ * which the agents SDK title chain cannot reach. Every other provider uses
+ * the SDK's `Run.generateTitle`.
+ */
+export async function generateOpenAIOAuthTitle({
   chainOptions,
   createOpenAIOAuth,
   createOpenAIOAuthTransport,
@@ -342,19 +167,10 @@ async function generateResponsesTitle({
   openaiCredentials,
   titlePrompt,
   titlePromptTemplate,
-  settings,
-}: GenerateTitleInput & {
-  settings: { model: string; reasoningEffort: string };
-}): Promise<GenerateTitleResult> {
-  const conversation = createConversationText({
-    inputText,
-    titlePromptTemplate,
-  });
-  const prompt = createTitlePrompt({
-    conversation,
-    inputText,
-    titlePrompt,
-  });
+}: OpenAIOAuthTitleInput): Promise<OpenAIOAuthTitleResult> {
+  const settings = getTitleSettings();
+  const conversation = createConversationText({ inputText, titlePromptTemplate });
+  const prompt = createTitlePrompt({ conversation, inputText, titlePrompt });
   const titleModel = createOpenAIOAuthModel({
     authFilePath: resolveOpenAIOAuthAuthFilePath(process.env),
     createOpenAIOAuth,
@@ -374,46 +190,6 @@ async function generateResponsesTitle({
     model: settings.model,
     title: getMessageText(message),
     usage: getUsage(message),
-  };
-}
-
-export async function generateTitle(input: GenerateTitleInput): Promise<GenerateTitleResult> {
-  const settings = getTitleSettings();
-  if (isOpenAIOAuthTitleRequest(input)) {
-    return generateResponsesTitle({ ...input, settings });
-  }
-
-  const conversation = createConversationText({
-    inputText: input.inputText,
-    titlePromptTemplate: input.titlePromptTemplate,
-  });
-  const clientOptions = getTitleClientOptions(input, input.clientOptions, settings);
-  const model = initializeModel({
-    provider: input.provider as Providers,
-    clientOptions,
-  }) as ChatModelInstance;
-  const titleMethod = input.titleMethod ?? TitleMethod.COMPLETION;
-  const result =
-    titleMethod === TitleMethod.COMPLETION
-      ? await invokeCompletionTitle({
-          chainOptions: input.chainOptions,
-          conversation,
-          inputText: input.inputText,
-          model,
-          titlePrompt: input.titlePrompt,
-        })
-      : await invokeStructuredTitle({
-          chainOptions: input.chainOptions,
-          conversation,
-          inputText: input.inputText,
-          model,
-          skipLanguage: input.skipLanguage,
-          titlePrompt: input.titlePrompt,
-        });
-
-  return {
-    ...result,
-    model: getClientModel(clientOptions),
   };
 }
 

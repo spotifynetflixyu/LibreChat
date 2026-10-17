@@ -3,17 +3,7 @@ import type { createOpenAIOAuthTransport as createOpenAIOAuthTransportType } fro
 import type { openaiCredentials as openaiCredentialsType } from '@openai-oauth/local';
 import type { SteelRuntimeOtherGlobalRules } from '../runtime/context';
 import type { SteelAgentRule } from '../repositories/rules';
-import { Providers, initializeModel } from '@librechat/agents';
-import { EModelEndpoint } from 'librechat-data-provider';
-import { RunnableLambda } from '@librechat/agents/langchain/runnables';
-import { generateTitle, resolveSteelTitlePrompt } from './title';
-
-jest.mock('@librechat/agents', () => ({
-  ...jest.requireActual('@librechat/agents'),
-  initializeModel: jest.fn(),
-}));
-
-const mockInitializeModel = jest.mocked(initializeModel);
+import { generateOpenAIOAuthTitle, resolveSteelTitlePrompt } from './title';
 
 function createUsage(): LanguageModelV3GenerateResult['usage'] {
   return {
@@ -79,7 +69,7 @@ function createFakeOpenAIOAuthDependencies(doGenerate: jest.Mock) {
   };
 }
 
-describe('generateTitle', () => {
+describe('generateOpenAIOAuthTitle', () => {
   const originalModel = process.env.OPENAI_TITLE_MODEL;
   const originalEffort = process.env.OPENAI_TITLE_REASONING_EFFORT;
   afterAll(() => {
@@ -89,7 +79,6 @@ describe('generateTitle', () => {
     else process.env.OPENAI_TITLE_REASONING_EFFORT = originalEffort;
   });
   beforeEach(() => {
-    mockInitializeModel.mockReset();
     delete process.env.OPENAI_TITLE_MODEL;
     delete process.env.OPENAI_TITLE_REASONING_EFFORT;
   });
@@ -111,13 +100,7 @@ describe('generateTitle', () => {
 
     const dependencies = createFakeOpenAIOAuthDependencies(doGenerate);
 
-    const result = await generateTitle({
-      endpoint: EModelEndpoint.openAIOAuth,
-      provider: Providers.OPENAI,
-      clientOptions: {
-        model: 'selected-chat-model',
-      },
-      contentParts: [{ type: 'text', text: 'Assistant OCR table' }],
+    const result = await generateOpenAIOAuthTitle({
       ...dependencies.options,
       inputText: 'OCR檔案內容，逐一列表給我核對。',
       titlePrompt: 'Only return a concise title.',
@@ -141,110 +124,11 @@ describe('generateTitle', () => {
     expect(callOptions.temperature).toBeUndefined();
     expect(callOptions.tools).toBeUndefined();
     expect(promptText).toContain('OCR檔案內容，逐一列表給我核對。');
-    expect(promptText).not.toContain('Assistant OCR table');
     expect(promptText).not.toContain('Steel Runtime Context');
     expect(dependencies.options.createOpenAIOAuthTransport).toHaveBeenCalledWith(
       expect.objectContaining({ responsesState: false }),
     );
     expect(dependencies.options.createOpenAIOAuth).toHaveBeenCalledWith(dependencies.transport);
-  });
-
-  it.each([
-    ['provider-only fallback', { provider: Providers.OPENAI }],
-    ['explicit OpenAI endpoint', { endpoint: EModelEndpoint.openAI, provider: Providers.OPENAI }],
-  ])(
-    'uses fallback title options for the OpenAI API through %s without mutating the selected client options',
-    async (_requestName, request) => {
-      const model = RunnableLambda.from(async () => ({ content: 'OpenAI API title' }));
-      mockInitializeModel.mockReturnValue(model);
-      const clientOptions = {
-        model: 'selected-chat-model',
-        temperature: 0.4,
-      };
-
-      const result = await generateTitle({
-        ...request,
-        clientOptions,
-        inputText: 'Summarize this conversation.',
-      });
-
-      expect(mockInitializeModel).toHaveBeenCalledWith({
-        provider: Providers.OPENAI,
-        clientOptions: {
-          model: 'gpt-6-luna',
-          reasoning_effort: 'none',
-        },
-      });
-      expect(clientOptions).toEqual({
-        model: 'selected-chat-model',
-        temperature: 0.4,
-      });
-      expect(result.model).toBe('gpt-6-luna');
-    },
-  );
-
-  it('preserves selected client options for a custom endpoint using Providers.OPENAI', async () => {
-    const model = RunnableLambda.from(async () => ({ content: 'Custom provider title' }));
-    mockInitializeModel.mockReturnValue(model);
-    const clientOptions = {
-      model: 'custom-selected-model',
-      temperature: 0.4,
-    };
-
-    const result = await generateTitle({
-      endpoint: 'custom-provider',
-      provider: Providers.OPENAI,
-      clientOptions,
-      inputText: 'Summarize this conversation.',
-    });
-
-    expect(mockInitializeModel).toHaveBeenCalledWith({
-      provider: Providers.OPENAI,
-      clientOptions,
-    });
-    expect(result.model).toBe('custom-selected-model');
-  });
-
-  it('preserves selected client options for Azure OpenAI using Providers.OPENAI', async () => {
-    const model = RunnableLambda.from(async () => ({ content: 'Azure OpenAI title' }));
-    mockInitializeModel.mockReturnValue(model);
-    const clientOptions = {
-      model: 'azure-selected-model',
-      temperature: 0.4,
-    };
-
-    const result = await generateTitle({
-      endpoint: EModelEndpoint.azureOpenAI,
-      provider: Providers.OPENAI,
-      clientOptions,
-      inputText: 'Summarize this conversation.',
-    });
-
-    expect(mockInitializeModel).toHaveBeenCalledWith({
-      provider: Providers.OPENAI,
-      clientOptions,
-    });
-    expect(result.model).toBe('azure-selected-model');
-  });
-
-  it('preserves client options for non-OpenAI providers', async () => {
-    const model = RunnableLambda.from(async () => ({ content: 'Anthropic title' }));
-    mockInitializeModel.mockReturnValue(model);
-    const clientOptions = {
-      model: 'claude-selected-model',
-      temperature: 0.4,
-    };
-
-    await generateTitle({
-      provider: Providers.ANTHROPIC,
-      clientOptions,
-      inputText: 'Summarize this conversation.',
-    });
-
-    expect(mockInitializeModel).toHaveBeenCalledWith({
-      provider: Providers.ANTHROPIC,
-      clientOptions,
-    });
   });
 
   it('adds file review guidance to the title prompt without overriding the model title', async () => {
@@ -264,13 +148,7 @@ describe('generateTitle', () => {
 
     const dependencies = createFakeOpenAIOAuthDependencies(doGenerate);
 
-    const result = await generateTitle({
-      endpoint: EModelEndpoint.openAIOAuth,
-      provider: Providers.OPENAI,
-      clientOptions: {
-        model: 'gpt-5.5',
-      },
-      contentParts: [],
+    const result = await generateOpenAIOAuthTitle({
       ...dependencies.options,
       inputText: 'OCR檔案內容，逐一列表給我核對。',
       titlePrompt: [
@@ -308,9 +186,7 @@ describe('generateTitle', () => {
       warnings: [],
     } satisfies LanguageModelV3GenerateResult);
     const dependencies = createFakeOpenAIOAuthDependencies(doGenerate);
-    const result = await generateTitle({
-      endpoint: EModelEndpoint.openAIOAuth,
-      provider: Providers.OPENAI,
+    const result = await generateOpenAIOAuthTitle({
       inputText: 'Title this conversation.',
       ...dependencies.options,
     });
@@ -319,28 +195,6 @@ describe('generateTitle', () => {
       openai: { reasoningEffort: effort },
     });
   });
-
-  it('uses env title options for the OpenAI API without mutating chat options', async () => {
-    process.env.OPENAI_TITLE_MODEL = ' custom-title-model ';
-    process.env.OPENAI_TITLE_REASONING_EFFORT = ' low ';
-    mockInitializeModel.mockReturnValue(
-      RunnableLambda.from(async () => ({ content: 'Configured API title' })),
-    );
-    const clientOptions = { model: 'chat-model', temperature: 0.4 };
-    const result = await generateTitle({
-      endpoint: EModelEndpoint.openAI,
-      provider: Providers.OPENAI,
-      clientOptions,
-      inputText: 'Title this conversation.',
-    });
-    expect(mockInitializeModel).toHaveBeenCalledWith({
-      provider: Providers.OPENAI,
-      clientOptions: { model: 'custom-title-model', reasoning_effort: 'low' },
-    });
-    expect(result.model).toBe('custom-title-model');
-    expect(clientOptions).toEqual({ model: 'chat-model', temperature: 0.4 });
-  });
-
 });
 
 describe('resolveSteelTitlePrompt', () => {
