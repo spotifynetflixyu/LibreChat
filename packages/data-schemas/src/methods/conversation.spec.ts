@@ -3520,7 +3520,20 @@ describe('Conversation Operations', () => {
       expect(tag?.count).toBe(2);
     });
 
-    it('reports message cleanup failure and recovers by the durable deleted identity', async () => {
+    it('retries a failed message cleanup once within the deletion', async () => {
+      const convoId = uuidv4();
+      await Conversation.create({ conversationId: convoId, user: 'user123', endpoint: EModelEndpoint.openAI });
+      deleteMessages.mockRejectedValueOnce(new Error('message cleanup interrupted'));
+      deleteMessages.mockResolvedValueOnce({ acknowledged: true, deletedCount: 2 });
+
+      const result = await deleteConvos('user123', { conversationId: convoId });
+
+      expect(result.deletedCount).toBe(1);
+      expect(result.messages.deletedCount).toBe(2);
+      expect(deleteMessages).toHaveBeenCalledTimes(2);
+    });
+
+    it('logs a persistent message cleanup failure and recovers by the durable deleted identity', async () => {
       await ConversationTag.create({ user: 'user123', tag: 'work', count: 2, position: 1 });
       const convoId = uuidv4();
       await Conversation.create({
@@ -3530,9 +3543,16 @@ describe('Conversation Operations', () => {
         tags: ['work'],
       });
 
-      deleteMessages.mockRejectedValueOnce(new Error('message cleanup failed'));
+      deleteMessages
+        .mockRejectedValueOnce(new Error('message cleanup failed'))
+        .mockRejectedValueOnce(new Error('message cleanup failed'));
 
-      await expect(deleteConvos('user123', { conversationId: convoId })).rejects.toThrow('message cleanup failed');
+      const failed = await deleteConvos('user123', { conversationId: convoId });
+      expect(failed).toMatchObject({
+        deletedCount: 1,
+        conversationIds: [convoId],
+        messages: { acknowledged: false, deletedCount: 0 },
+      });
       const result = await deleteConvos('user123', { conversationId: convoId });
       expect(result.deletedCount).toBe(0);
       expect(result.conversationIds).toEqual([convoId]);

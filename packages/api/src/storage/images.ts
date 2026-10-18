@@ -16,9 +16,7 @@ const JPEG_CONTENT_TYPE = 'image/jpeg';
 const JPEG_EXTENSION = '.jpg';
 const MAX_IMAGE_DIMENSION = 4096;
 const MAX_JPEG_UPLOAD_BYTES = 5 * 1024 * 1024;
-const JPEG_QUALITY_START = 85;
-const JPEG_QUALITY_MIN = 35;
-const JPEG_QUALITY_STEP = 5;
+const JPEG_QUALITY = 85;
 
 const replaceExtension = (fileName: string, extension: string): string => {
   const currentExtension = path.extname(fileName);
@@ -31,33 +29,20 @@ const replaceExtension = (fileName: string, extension: string): string => {
 const compressImageToJpeg = async (
   inputBuffer: Buffer,
 ): Promise<{ buffer: Buffer; width: number; height: number }> => {
-  const image = sharp(inputBuffer).rotate().resize({
-    width: MAX_IMAGE_DIMENSION,
-    height: MAX_IMAGE_DIMENSION,
-    fit: 'inside',
-    withoutEnlargement: true,
-  });
-
-  for (
-    let quality = JPEG_QUALITY_START;
-    quality >= JPEG_QUALITY_MIN;
-    quality -= JPEG_QUALITY_STEP
-  ) {
-    const { data, info } = await image
-      .clone()
-      .jpeg({ quality, mozjpeg: true })
-      .toBuffer({ resolveWithObject: true });
-
-    if (data.length <= MAX_JPEG_UPLOAD_BYTES) {
-      return {
-        buffer: data,
-        width: info.width,
-        height: info.height,
-      };
-    }
+  const { data, info } = await sharp(inputBuffer)
+    .rotate()
+    .resize({
+      width: MAX_IMAGE_DIMENSION,
+      height: MAX_IMAGE_DIMENSION,
+      fit: 'inside',
+      withoutEnlargement: true,
+    })
+    .jpeg({ quality: JPEG_QUALITY, mozjpeg: true })
+    .toBuffer({ resolveWithObject: true });
+  if (data.length > MAX_JPEG_UPLOAD_BYTES) {
+    throw new Error('Processed image exceeds 5 MB after JPEG compression');
   }
-
-  throw new Error('Processed image exceeds 5 MB after JPEG compression');
+  return { buffer: data, width: info.width, height: info.height };
 };
 
 export interface ImageServiceDeps {

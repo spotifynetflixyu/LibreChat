@@ -177,6 +177,7 @@ const ARCHIVE_CONVERSATION_BATCH_SIZE = 500;
 const PROJECT_STATS_REFRESH_CONCURRENCY = 10;
 const PROJECT_STATS_REFRESH_MAX_PASSES = 2;
 const PROJECT_DISCOVERY_MAX_ATTEMPTS = 3;
+const MESSAGE_CLEANUP_ATTEMPTS = 2;
 
 export type ConversationDeletionScope = Pick<IConversation, 'conversationId' | 'tenantId'>;
 
@@ -3557,33 +3558,43 @@ export function createConversationMethods(
 
       const deleteConvoResult: DeleteResult = { acknowledged, deletedCount };
 
-      // The durable scoped deletion gate allows payload cleanup to resume after the parent is gone.
+      /**
+       * Post-delete cleanup is best-effort: the conversations are already gone, so a
+       * thrown error here would hide the deletion from the caller — dropping the
+       * `conversationIds` that downstream cleanup (e.g. agent-checkpoint pruning)
+       * needs. One retry covers a transient failure; a later delete of the same
+       * conversation resumes the cleanup from its retained deletion scope.
+       */
+      const messageScopes = [
+        ...recoveryScopes,
+        ...deletedConversations.map(({ conversationId, tenantId }) => ({
+          conversationId,
+          ...(tenantId === undefined ? {} : { tenantId }),
+        })),
+      ];
+      const messageFilter: FilterQuery<IMessage> = messageScopes.every(
+        ({ tenantId }) => tenantId === undefined,
+      )
+        ? { conversationId: { $in: conversationIds }, user, tenantId: null }
+        : {
+            user,
+            $or: messageScopes.map(({ conversationId, tenantId }) => ({
+              conversationId,
+              ...(tenantId === undefined
+                ? { $or: [{ tenantId: { $exists: false } }, { tenantId: null }] }
+                : { tenantId }),
+            })),
+          };
       let deleteMessagesResult: DeleteResult = { acknowledged: false, deletedCount: 0 };
-      try {
-        const messageScopes = [
-          ...recoveryScopes,
-          ...deletedConversations.map(({ conversationId, tenantId }) => ({
-            conversationId,
-            ...(tenantId === undefined ? {} : { tenantId }),
-          })),
-        ];
-        const messageFilter: FilterQuery<IMessage> = messageScopes.every(
-          ({ tenantId }) => tenantId === undefined,
-        )
-          ? { conversationId: { $in: conversationIds }, user, tenantId: null }
-          : {
-              user,
-              $or: messageScopes.map(({ conversationId, tenantId }) => ({
-                conversationId,
-                ...(tenantId === undefined
-                  ? { $or: [{ tenantId: { $exists: false } }, { tenantId: null }] }
-                  : { tenantId }),
-              })),
-            };
-        deleteMessagesResult = await deleteMessages(messageFilter);
-      } catch (error) {
-        logger.error('[deleteConvos] Conversations deleted but message cleanup failed', error);
-        throw error;
+      for (let attempt = 1; attempt <= MESSAGE_CLEANUP_ATTEMPTS; attempt += 1) {
+        try {
+          deleteMessagesResult = await deleteMessages(messageFilter);
+          break;
+        } catch (error) {
+          if (attempt === MESSAGE_CLEANUP_ATTEMPTS) {
+            logger.error('[deleteConvos] Conversations deleted but message cleanup failed', error);
+          }
+        }
       }
 
       // conversationIds lets callers run sibling cleanup that lives in higher layers

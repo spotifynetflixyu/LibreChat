@@ -222,40 +222,21 @@ describe('ImageService', () => {
       );
     });
 
-    it('reduces JPEG quality until the image fits under 5 MB', async () => {
-      mockSharpState.outputs = [
-        {
-          buffer: Buffer.alloc(maxImageBytes + 1),
-          width: 4096,
-          height: 2304,
-        },
-        {
-          buffer: Buffer.alloc(maxImageBytes - 1),
-          width: 4096,
-          height: 2304,
-        },
-      ];
+    it('encodes at quality 85 and rejects an image still over 5 MB', async () => {
+      mockSharpState.outputs = [{ buffer: Buffer.alloc(maxImageBytes + 1), width: 4096, height: 2304 }];
 
-      await service.uploadImage({
-        req: mockReq as ServerRequest,
-        file: mockFile,
-        file_id: 'file-456',
-        endpoint: 'openAI',
-      });
-
-      expect(mockSharpState.instances[0].jpeg).toHaveBeenNthCalledWith(1, {
-        quality: 85,
-        mozjpeg: true,
-      });
-      expect(mockSharpState.instances[0].jpeg).toHaveBeenNthCalledWith(2, {
-        quality: 80,
-        mozjpeg: true,
-      });
-      expect(mockSaveBuffer).toHaveBeenCalledWith(
-        expect.objectContaining({
-          buffer: expect.objectContaining({ length: maxImageBytes - 1 }),
+      await expect(
+        service.uploadImage({
+          req: mockReq as ServerRequest,
+          file: mockFile,
+          file_id: 'file-456',
+          endpoint: 'openAI',
         }),
-      );
+      ).rejects.toThrow('Processed image exceeds 5 MB after JPEG compression');
+
+      expect(mockSharpState.instances[0].jpeg).toHaveBeenCalledTimes(1);
+      expect(mockSharpState.instances[0].jpeg).toHaveBeenCalledWith({ quality: 85, mozjpeg: true });
+      expect(mockSaveBuffer).not.toHaveBeenCalled();
     });
 
     it('uses custom basePath when provided', async () => {
