@@ -6,10 +6,8 @@ import { createSteelCustomerRouteHandlers } from './customer';
 const query = { conversationId: 'conversation', messageId: 'message', title: 'customer_data', outputId: 'output' };
 const commit = { ...query, revision: 'revision', tier: 'C', expectedTier: 'B' };
 const methods: SteelCustomerMethods = {
-  readSteelCustomer: jest.fn(),
   commitSteelCustomer: jest.fn(),
 };
-const read = jest.mocked(methods.readSteelCustomer);
 const save = jest.mocked(methods.commitSteelCustomer);
 const app = express();
 app.use(express.json());
@@ -18,7 +16,6 @@ app.use((req, _res, next) => {
   next();
 });
 const handlers = createSteelCustomerRouteHandlers(methods);
-app.get('/conversations/:conversationId/customer', handlers.read);
 app.post('/conversations/:conversationId/customer', handlers.commit);
 beforeEach(() => jest.resetAllMocks());
 
@@ -30,13 +27,9 @@ it('requires authentication and validates the request before database access', a
   expect(save).not.toHaveBeenCalled();
 });
 
-it('binds reads and writes to the authenticated tenant and returns only the saved projection', async () => {
+it('binds writes to the authenticated tenant and returns only the saved projection', async () => {
   const value = { ...query, tier: 'C' as const, revision: 'new', latest: true };
-  read.mockResolvedValue({ ok: true, value });
   save.mockResolvedValue({ ok: true, value: { ...value, message: { messageId: 'message', text: 'saved markdown' } } });
-  const response = await request(app).get('/conversations/conversation/customer').query({ messageId: 'message', title: 'customer_data', outputId: 'output' }).set('x-user', 'user');
-  expect(response.status).toBe(200);
-  expect(read).toHaveBeenCalledWith({ ...query, userId: 'user', tenantId: 'tenant' });
   const saved = await request(app).post('/conversations/conversation/customer').set('x-user', 'user').send(commit);
   expect(saved.status).toBe(200);
   expect(saved.body.message.text).toBe('saved markdown');

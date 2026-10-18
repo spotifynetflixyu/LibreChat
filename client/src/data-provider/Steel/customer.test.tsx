@@ -61,12 +61,6 @@ describe('useCommitSteelCustomerMutation', () => {
     const sibling = createMessage('message-2', 'sibling response');
     const messages = [target, sibling];
     const messageQueryKey = [QueryKeys.messages, input.conversationId] as const;
-    const customerQueryKey = DynamicQueryKeys.steelCustomer(
-      input.conversationId,
-      input.messageId,
-      input.title,
-      input.outputId,
-    );
     queryClient.setQueryData(messageQueryKey, messages);
     const boundVersion = { kind: 'customer_data' as const, messageId: input.messageId, title: input.title,
       outputId: input.outputId, revision: input.revision, latest: true, saves: 0 };
@@ -107,14 +101,12 @@ describe('useCommitSteelCustomerMutation', () => {
     expect(patchedMessages?.[0].metadata).toBe(target.metadata);
     expect(patchedMessages?.[0].files).toBe(target.files);
     expect(patchedMessages?.[1]).toBe(sibling);
-    expect(queryClient.getQueryData(customerQueryKey)).toEqual(response);
     const versions = queryClient.getQueryData<SteelMarkdownVersions>(versionsKey)?.versions;
     expect(versions?.[0]).toEqual({ ...boundVersion, revision: response.revision });
     expect(versions?.[1]).toBe(historyVersion);
     expect(invalidate).toHaveBeenCalledWith(
       DynamicQueryKeys.steelMarkdownVersions(input.conversationId),
     );
-    expect(invalidate).toHaveBeenCalledWith(customerQueryKey);
     expect(invalidate).toHaveBeenCalledWith(
       DynamicQueryKeys.steelQuotationStatus(input.conversationId),
     );

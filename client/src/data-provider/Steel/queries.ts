@@ -307,13 +307,6 @@ export const useCommitSteelCustomerMutation = (): UseMutationResult<
           );
         }
 
-        const customerQueryKey = DynamicQueryKeys.steelCustomer(
-          input.conversationId,
-          input.messageId,
-          input.title,
-          input.outputId,
-        );
-        queryClient.setQueryData(customerQueryKey, data);
         const versionsKey = DynamicQueryKeys.steelMarkdownVersions(input.conversationId);
         queryClient.setQueryData<SteelMarkdownVersions>(versionsKey, (current) => current ? {
           ...current,
@@ -324,7 +317,6 @@ export const useCommitSteelCustomerMutation = (): UseMutationResult<
               : version),
         } : current);
         void queryClient.invalidateQueries(versionsKey);
-        void queryClient.invalidateQueries(customerQueryKey);
         void queryClient.invalidateQueries(
           DynamicQueryKeys.steelQuotationStatus(input.conversationId),
         );

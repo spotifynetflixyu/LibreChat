@@ -43,8 +43,6 @@ const save = (tier: 'A' | 'B' | 'C' | 'D' | 'E' | 'F' = 'D', revision = ai.revis
   methods.commitSteelCustomer({ ...query, tier, revision, expectedTier });
 
 it('atomically changes the grade and description and persists customer preparation, text mirrors and immutable history', async () => {
-  const before = await methods.readSteelCustomer(query);
-  expect(before).toMatchObject({ ok: true, value: { tier: 'B', latest: true, revision: ai.revision } });
   const result = await save();
   expect(result).toMatchObject({ ok: true, value: { tier: 'D', latest: true, message: { text: text.replace('| B |', '| D |').replace('原始\\|說明', '指定為D等級') } } });
   const stored = await mongoose.models.Message.findOne({ messageId: query.messageId }).lean<IMessage>().orFail();
@@ -98,7 +96,6 @@ it('rejects stale revisions and serializes simultaneous edits', async () => {
 it('keeps previous customer edits in history and rejects edits after regeneration', async () => {
   expect(await save()).toMatchObject({ ok: true });
   await mongoose.models.SteelQuotationState.updateOne(scope, { $set: { 'markdownPublication.current.customer_data.ai.outputId': 'new:owner' } });
-  expect(await methods.readSteelCustomer(query)).toMatchObject({ ok: true, value: { latest: false, tier: 'D' } });
   expect(await save('A')).toEqual({ ok: false, code: 'CUSTOMER_HISTORICAL' });
   const stored = await mongoose.models.Message.findOne({ messageId: query.messageId }).lean<IMessage>().orFail();
   expect(await createSteelHistoryMethods(mongoose).readSteelMarkdownHistory({ ...scope, messages: [stored] }))
@@ -107,7 +104,6 @@ it('keeps previous customer edits in history and rejects edits after regeneratio
 
 it('does not reveal or change another user or tenant customer', async () => {
   for (const outside of [{ userId: 'other' }, { tenantId: 'other' }]) {
-    expect(await methods.readSteelCustomer({ ...query, ...outside })).toEqual({ ok: false, code: 'CUSTOMER_NOT_FOUND' });
     expect(await methods.commitSteelCustomer({ ...query, ...outside, tier: 'A', expectedTier: 'B', revision: ai.revision })).toEqual({ ok: false, code: 'CUSTOMER_NOT_FOUND' });
   }
   expect(await mongoose.models.SteelQuotationArtifact.countDocuments()).toBe(1);
@@ -150,7 +146,6 @@ it.each(['messageId', 'title', 'outputId', 'kind'] as const)('does not reuse a c
   } });
   const versions = await createMessageMethods(mongoose).readSteelMarkdownVersions(scope);
   expect(versions?.[0].revision).toBe(ai.revision);
-  expect(await methods.readSteelCustomer(query)).toEqual({ ok: false, code: 'CUSTOMER_CONFLICT' });
   const before = await mongoose.models.Message.findOne({ messageId: query.messageId }).lean<IMessage>().orFail();
   expect(await save('F', saved.value.revision)).toEqual({ ok: false, code: 'CUSTOMER_CONFLICT' });
   const after = await mongoose.models.Message.findOne({ messageId: query.messageId }).lean<IMessage>().orFail();

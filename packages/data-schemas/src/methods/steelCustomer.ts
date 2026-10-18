@@ -28,7 +28,6 @@ const scopeFilter = (scope: SteelQuotationScope) => ({ userId: scope.userId, con
 const messageFilter = (scope: SteelQuotationScope) => ({ user: scope.userId, conversationId: scope.conversationId, ...tenantFilter(scope) });
 
 export interface SteelCustomerMethods {
-  readSteelCustomer(input: CustomerRead): Promise<SteelCustomerResult<SteelCustomerResponse>>;
   commitSteelCustomer(input: CustomerCommit): Promise<SteelCustomerResult<SteelCustomerSaveResponse>>;
 }
 
@@ -94,11 +93,6 @@ export function createSteelCustomerMethods(mongoose: Mongoose): SteelCustomerMet
       current.effective.outputId !== input.outputId)) return { ok: false, code: 'CUSTOMER_CONFLICT' };
     return { ok: true, value: { message, state, reference: original.reference, tier: parsed.tier,
       revision: latest && current ? current.effective.revision : original.reference.revision, latest } };
-  }
-
-  async function readSteelCustomer(input: CustomerRead): Promise<SteelCustomerResult<SteelCustomerResponse>> {
-    const read = await snapshot(input);
-    return read.ok ? { ok: true, value: response(input, read.value) } : read;
   }
 
   async function commitSteelCustomer(input: CustomerCommit): Promise<SteelCustomerResult<SteelCustomerSaveResponse>> {
@@ -168,5 +162,5 @@ export function createSteelCustomerMethods(mongoose: Mongoose): SteelCustomerMet
     } finally { await session.endSession(); }
   }
 
-  return { readSteelCustomer, commitSteelCustomer };
+  return { commitSteelCustomer };
 }

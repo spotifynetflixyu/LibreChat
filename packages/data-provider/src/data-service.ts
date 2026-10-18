@@ -200,7 +200,7 @@ export function getSteelMarkdownVersions(conversationId: string): Promise<SteelM
 }
 
 export function commitSteelCustomer(input: SteelCustomerCommit): Promise<SteelCustomerSaveResponse> {
-  return request.post(endpoints.steelCustomer(input), input);
+  return request.post(endpoints.steelCustomer(input.conversationId), input);
 }
 
 export function getSteelReview(

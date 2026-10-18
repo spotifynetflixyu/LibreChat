@@ -120,7 +120,6 @@ export function SteelVersionsProvider({
     submitting.current = isSubmitting;
     if (completed && enabled) {
       void refetch();
-      void queryClient.invalidateQueries([QueryKeys.steelCustomer, conversationId]);
       void queryClient.invalidateQueries([QueryKeys.steelReview, conversationId]);
     }
   }, [conversationId, enabled, isSubmitting, queryClient, refetch]);
