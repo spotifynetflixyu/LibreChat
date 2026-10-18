@@ -223,7 +223,9 @@ describe('ImageService', () => {
     });
 
     it('encodes at quality 85 and rejects an image still over 5 MB', async () => {
-      mockSharpState.outputs = [{ buffer: Buffer.alloc(maxImageBytes + 1), width: 4096, height: 2304 }];
+      mockSharpState.outputs = [
+        { buffer: Buffer.alloc(maxImageBytes + 1), width: 4096, height: 2304 },
+      ];
 
       await expect(
         service.uploadImage({
