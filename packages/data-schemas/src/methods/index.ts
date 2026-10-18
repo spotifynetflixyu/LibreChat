@@ -221,6 +221,7 @@ import {
 /* Insights */
 import { createInsightsMethods, type InsightsMethods } from './insights';
 import { createSteelMethods, type SteelMethods } from './steel';
+import { createSteelConversationDeletionHooks } from '~/models/steel/deletion';
 
 export {
   runAfterTransaction,
@@ -372,6 +373,7 @@ export function createMethods(
     prepareAgentTriggerConversationResultErasure:
       agentTriggerDeliveryMethods.prepareAgentTriggerConversationResultErasure,
     deleteOAuthCompaction: oauthCompactionMethods.deleteOAuthCompaction,
+    ...createSteelConversationDeletionHooks(mongoose),
     deleteAgentQueuedTurns: async (user, conversations) => {
       /** Queued-turn ownership is ObjectId-backed. Conversation methods also
        * support synthetic/non-ObjectId owners in embedded integrations and

@@ -7,6 +7,7 @@ import { createConversationModel } from '~/models/convo';
 import { tenantStorage } from '~/config/tenantContext';
 import { createMessageModel } from '~/models/message';
 import { createSteelScopedOcrMethods } from './ocr';
+import { createSteelConversationDeletionHooks } from '~/models/steel/deletion';
 
 const markdown = '## ocr_result\n\n| 零件編號 | 數量 |\n| --- | --- |\n| P1 | 2 |';
 const Message = createMessageModel(mongoose);
@@ -112,7 +113,7 @@ it('does not hand a deleted owner OCR to the remaining identity, then cleans the
   await Conversation.deleteOne({ conversationId: scope.conversationId, tenantId: 'tenant-b' });
   await Message.deleteMany({ conversationId: scope.conversationId, tenantId: 'tenant-b' });
   expect(await reader.readScopedConversationOcrState({ ...scope, tenantId: 'tenant-a' })).toBeNull();
-  const deletion = createConversationMethods(mongoose, { getMessages: async () => [], deleteMessages: async (filter) => Message.deleteMany(filter) });
+  const deletion = createConversationMethods(mongoose, { getMessages: async () => [], deleteMessages: async (filter) => Message.deleteMany(filter), ...createSteelConversationDeletionHooks(mongoose) });
   await deletion.deleteConvos(scope.userId, { conversationId: scope.conversationId, tenantId: 'tenant-a' });
   expect(await State.findOne({ conversationId: scope.conversationId })).toBeNull();
 });

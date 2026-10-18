@@ -29,15 +29,6 @@ import type {
 import type { SchemaWithMeiliMethods } from '~/models/plugins/mongoMeili';
 import type { MessageMethods } from './message';
 import {
-  createSteelConversationOcrStateModel,
-  createSteelDelegateOcrRunModel,
-  createSteelOcrResponseAuditModel,
-  createSteelQuotationArtifactModel,
-  createSteelQuotationStateModel,
-  createSteelReviewOutputModel,
-  createSteelWorkingOrderMemoryModel,
-} from '~/models/steel';
-import {
   MAX_AGENT_EVENT_ACTOR_DISCOVERED_TOOLS,
   MAX_AGENT_EVENT_ACTOR_ENCODING_LENGTH,
   MAX_AGENT_EVENT_ACTOR_SKILLS,
@@ -49,7 +40,6 @@ import {
   buildRetentionVisibilityFilter,
   createFallbackRetentionDate,
 } from '~/utils/retention';
-import { fenceSteelConversationWrites, readSteelConversationDeletionScope } from '~/models/steel/lifecycle';
 import {
   refreshChatProjectStatsForUser,
   updateChatProjectLastConversationForUser,
@@ -188,7 +178,23 @@ const PROJECT_STATS_REFRESH_CONCURRENCY = 10;
 const PROJECT_STATS_REFRESH_MAX_PASSES = 2;
 const PROJECT_DISCOVERY_MAX_ATTEMPTS = 3;
 
-type ConversationDeletionScope = Pick<IConversation, 'conversationId' | 'tenantId'>;
+export type ConversationDeletionScope = Pick<IConversation, 'conversationId' | 'tenantId'>;
+
+/** Cleanup of state that other features keep per conversation, run by `deleteConvos`. */
+export interface ConversationDeletionHooks {
+  /** Whether a prior deletion of this owner's conversation was recorded, so a resumed delete may proceed. */
+  hasDeletedConversation: (user: string, scope: ConversationDeletionScope) => Promise<boolean>;
+  /** Runs before each deletion step, including a resumed or empty recovery sweep. */
+  beforeDeleteConversations: (
+    user: string,
+    scopes: readonly ConversationDeletionScope[],
+  ) => Promise<void>;
+  /** Runs after the conversations of a deletion step are removed. */
+  afterDeleteConversations: (
+    user: string,
+    scopes: readonly ConversationDeletionScope[],
+  ) => Promise<void>;
+}
 
 function conversationScopeFilter(
   scopes: readonly ConversationDeletionScope[],
@@ -232,58 +238,6 @@ function childConversationFilter(
         : { tenantId }),
     })),
   };
-}
-
-async function deleteSteelConversationState(
-  mongoose: typeof import('mongoose'),
-  userId: string,
-  scopes: readonly ConversationDeletionScope[],
-  legacyConversationIds: readonly string[],
-): Promise<void> {
-  if (scopes.length === 0 && legacyConversationIds.length === 0) {
-    return;
-  }
-  const deleteAttempt = async (): Promise<void> => {
-    const ConversationOcrState = createSteelConversationOcrStateModel(mongoose);
-    const DelegateOcrRun = createSteelDelegateOcrRunModel(mongoose);
-    const WorkingOrderMemory = createSteelWorkingOrderMemoryModel(mongoose);
-    const OcrResponseAudit = createSteelOcrResponseAuditModel(mongoose);
-    const State = createSteelQuotationStateModel(mongoose);
-    const Artifact = createSteelQuotationArtifactModel(mongoose);
-    const ReviewOutput = createSteelReviewOutputModel(mongoose);
-    const ownerScopeClauses = scopes.map(({ conversationId, tenantId }) => ({
-      conversationId,
-      ...(tenantId === undefined
-        ? { $or: [{ tenantId: { $exists: false } }, { tenantId: null }] }
-        : { tenantId }),
-    }));
-    const ownerFilter = { userId, $or: ownerScopeClauses };
-    const legacyFilter = { conversationId: { $in: legacyConversationIds } };
-
-    await Promise.all([
-      State.deleteMany(ownerFilter),
-      Artifact.deleteMany(ownerFilter),
-      ReviewOutput.deleteMany(ownerFilter),
-      OcrResponseAudit.deleteMany(ownerFilter),
-      ConversationOcrState.deleteMany(legacyFilter),
-      DelegateOcrRun.deleteMany(legacyFilter),
-      WorkingOrderMemory.deleteMany(legacyFilter),
-    ]);
-  };
-
-  let lastError: unknown;
-  for (let attempt = 1; attempt <= 3; attempt += 1) {
-    try {
-      await deleteAttempt();
-      return;
-    } catch (error) {
-      lastError = error;
-      if (attempt < 3) {
-        await new Promise((resolve) => setTimeout(resolve, 25 * attempt));
-      }
-    }
-  }
-  throw lastError;
 }
 
 const subagentThreadReadRecord = (conversation: IConversation): SubagentThreadReadRecord => ({
@@ -650,7 +604,8 @@ export interface ConversationMethods {
 }
 
 export interface ConversationMethodDeps
-  extends Pick<MessageMethods, 'getMessages' | 'deleteMessages'> {
+  extends Pick<MessageMethods, 'getMessages' | 'deleteMessages'>,
+    Partial<ConversationDeletionHooks> {
   deleteOAuthCompaction?: OAuthCompactionStore['deleteOAuthCompaction'];
   searchMessages?: MessageMethods['searchMessages'];
   deleteAgentQueuedTurns?: (
@@ -3406,7 +3361,7 @@ export function createConversationMethods(
         .select('conversationId tenantId chatProjectId tags')
         .lean<DeletionConversation[]>();
       const recoveryConversationIds: string[] = [];
-      const recoverySteelScopes: ConversationDeletionScope[] = [];
+      const recoveryScopes: ConversationDeletionScope[] = [];
       if (!conversations.length && typeof filter.conversationId === 'string') {
         /** A prior attempt may have deleted the root before a descendant read failed.
          * Resume from immutable root lineage and retain the root id for message,
@@ -3428,23 +3383,18 @@ export function createConversationMethods(
               : { $or: [{ tenantId: { $exists: false } }, { tenantId: null }] }),
           }, '_id', { limit: 1 }),
         ]);
-        const priorDeletion = await readSteelConversationDeletionScope(mongoose, { userId: user,
+        const rootScope = {
           conversationId: filter.conversationId,
           ...(typeof filter.tenantId === 'string' ? { tenantId: filter.tenantId } : {}),
-        });
-        if (descendants.length === 0 && rootMessages.length === 0 && options?.allowEmpty !== true && !priorDeletion.deleted) {
+        };
+        const priorDeletion = (await deps?.hasDeletedConversation?.(user, rootScope)) === true;
+        if (descendants.length === 0 && rootMessages.length === 0 && options?.allowEmpty !== true && !priorDeletion) {
           throw new Error('Conversation not found or already deleted.');
         }
         conversations = descendants;
         recoveryConversationIds.push(filter.conversationId);
-        recoverySteelScopes.push({
-          conversationId: filter.conversationId,
-          ...(typeof filter.tenantId === 'string' ? { tenantId: filter.tenantId } : {}),
-        });
-        const legacyProof = await fenceSteelConversationWrites(mongoose,
-          { userId: user, ...recoverySteelScopes[0] });
-        await deleteSteelConversationState(mongoose, user, recoverySteelScopes,
-          legacyProof ? [filter.conversationId] : []);
+        recoveryScopes.push(rootScope);
+        await deps?.beforeDeleteConversations?.(user, recoveryScopes);
       } else if (!conversations.length) {
         if (options?.allowEmpty === true) {
           const values: unknown = typeof filter.conversationId === 'object' && filter.conversationId !== null
@@ -3454,10 +3404,7 @@ export function createConversationMethods(
           const scopes = requestedIds.map((conversationId) => ({ conversationId,
             ...(typeof filter.tenantId === 'string' ? { tenantId: filter.tenantId } : {}),
           }));
-          const legacyProofs = await Promise.all(scopes.map((scope) =>
-            fenceSteelConversationWrites(mongoose, { userId: user, ...scope })));
-          await deleteSteelConversationState(mongoose, user, scopes,
-            scopes.filter((_scope, index) => legacyProofs[index]).map((scope) => scope.conversationId));
+          await deps?.beforeDeleteConversations?.(user, scopes);
           const messages = requestedIds.length > 0
             ? await deleteMessages({ user, ...conversationScopeFilter(scopes) })
             : { acknowledged: true, deletedCount: 0 };
@@ -3535,21 +3482,12 @@ export function createConversationMethods(
         );
         await options?.beforeDelete?.(waveIds);
         await eraseScopedTriggerResults(deps?.prepareAgentTriggerConversationResultErasure, user, waveScopes);
-        const legacyProofs = await Promise.all(waveScopes.map((scope) =>
-          fenceSteelConversationWrites(mongoose, { userId: user, ...scope })));
-        const waveLegacyConversationIds = waveScopes.filter((_scope, index) => legacyProofs[index])
-          .map(({ conversationId }) => conversationId);
-        await deleteSteelConversationState(
-          mongoose,
-          user,
-          waveScopes,
-          waveLegacyConversationIds,
-        );
+        await deps?.beforeDeleteConversations?.(user, waveScopes);
         const result = await Conversation.deleteMany({
           user,
           ...conversationScopeFilter(waveScopes),
         });
-        await deleteSteelConversationState(mongoose, user, waveScopes, waveLegacyConversationIds);
+        await deps?.afterDeleteConversations?.(user, waveScopes);
         if (result.deletedCount > 0) {
           /** Result erasure is irreversible. Keep receipts intact when a
            * pre-delete hook or the conversation delete itself fails, so a
@@ -3605,13 +3543,13 @@ export function createConversationMethods(
       if (recoveryConversationIds.length > 0) {
         await deps?.deleteAgentQueuedTurns?.(
           user,
-          recoverySteelScopes.map(({ conversationId, tenantId }) => ({
+          recoveryScopes.map(({ conversationId, tenantId }) => ({
             conversationId,
             ...(tenantId != null && { tenantId }),
           })),
         );
         try {
-          await eraseScopedTriggerResults(deps?.eraseAgentTriggerDeliveryConversationResults, user, recoverySteelScopes);
+          await eraseScopedTriggerResults(deps?.eraseAgentTriggerDeliveryConversationResults, user, recoveryScopes);
         } catch (error) {
           logger.error('[deleteConvos] Receipt erasure deferred to durable cleanup', error);
         }
@@ -3623,7 +3561,7 @@ export function createConversationMethods(
       let deleteMessagesResult: DeleteResult = { acknowledged: false, deletedCount: 0 };
       try {
         const messageScopes = [
-          ...recoverySteelScopes,
+          ...recoveryScopes,
           ...deletedConversations.map(({ conversationId, tenantId }) => ({
             conversationId,
             ...(tenantId === undefined ? {} : { tenantId }),

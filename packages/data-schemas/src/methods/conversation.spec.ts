@@ -29,6 +29,7 @@ import {
   createSteelReviewOutputModel,
   createSteelWorkingOrderMemoryModel,
 } from '../models/steel';
+import { createSteelConversationDeletionHooks } from '../models/steel/deletion';
 import { ConversationMethods, createConversationMethods } from './conversation';
 import { tenantStorage, runAsSystem } from '~/config/tenantContext';
 import { createModels } from '../models';
@@ -87,7 +88,12 @@ beforeAll(async () => {
   SteelOcrResponseAudit = createSteelOcrResponseAuditModel(mongoose);
   SteelReviewOutput = createSteelReviewOutputModel(mongoose);
 
-  methods = createConversationMethods(mongoose, { getMessages, deleteMessages, searchMessages });
+  methods = createConversationMethods(mongoose, {
+    getMessages,
+    deleteMessages,
+    searchMessages,
+    ...createSteelConversationDeletionHooks(mongoose),
+  });
 
   await mongoose.connect(mongoUri);
 });
@@ -3099,6 +3105,69 @@ describe('Conversation Operations', () => {
       await deleteConvos('user123', { conversationId, tenantId: 'tenant-a' });
       expect(await Conversation.findOne({ conversationId, tenantId: 'tenant-a' })).toBeNull();
       expect(await SteelReviewOutput.findOne({ conversationId, tenantId: 'tenant-a' })).toBeNull();
+    });
+
+    it('resumes a deleted root from its Steel deletion marker and rejects another owner', async () => {
+      const conversationId = uuidv4();
+      const scope = { userId: 'user123', conversationId, tenantId: 'tenant-a' };
+      await Conversation.create({ conversationId, user: scope.userId, tenantId: scope.tenantId, endpoint: EModelEndpoint.agents });
+      await SteelQuotationState.create({ ...scope, nextSignalIndex: 0, tickets: [], pendingMessages: [] });
+      await deleteConvos(scope.userId, { conversationId, tenantId: scope.tenantId });
+
+      const resumed = await deleteConvos(scope.userId, { conversationId, tenantId: scope.tenantId });
+
+      expect(resumed).toMatchObject({ deletedCount: 0, conversationIds: [conversationId] });
+      expect(deleteMessages).toHaveBeenLastCalledWith({ user: scope.userId,
+        $or: [{ conversationId, tenantId: scope.tenantId }] });
+      expect(await SteelQuotationState.countDocuments(scope)).toBe(0);
+      await expect(deleteConvos('other-user', { conversationId, tenantId: scope.tenantId }))
+        .rejects.toThrow('Conversation not found or already deleted.');
+    });
+
+    it('deletes the Steel state of every subagent child in the cascade', async () => {
+      const parentId = uuidv4();
+      const childId = uuidv4();
+      await Conversation.create([
+        { conversationId: parentId, user: 'user123', endpoint: EModelEndpoint.agents },
+        {
+          conversationId: childId,
+          user: 'user123',
+          endpoint: EModelEndpoint.agents,
+          subagentThread: {
+            rootConversationId: parentId,
+            parentConversationId: parentId,
+            parentMessageId: 'message-1',
+            parentToolCallId: 'tool-1',
+            subagentType: 'agent-child',
+            subagentKind: 'agent',
+            depth: 1,
+          },
+        },
+      ]);
+      await SteelQuotationState.create([parentId, childId].map((conversationId) => ({
+        userId: 'user123', conversationId, nextSignalIndex: 0, tickets: [], pendingMessages: [],
+      })));
+      await SteelConversationOcrState.create({ conversationId: childId, sourceMappings: [] });
+
+      const result = await deleteConvos('user123', { conversationId: parentId });
+
+      expect(result.conversationIds).toEqual([parentId, childId]);
+      expect(await SteelQuotationState.countDocuments({ conversationId: { $in: [parentId, childId] } })).toBe(0);
+      expect(await SteelConversationOcrState.findOne({ conversationId: childId })).toBeNull();
+    });
+
+    it('retries a transient Steel cleanup failure within one deletion', async () => {
+      const conversationId = uuidv4();
+      await Conversation.create({ conversationId, user: 'user123', endpoint: EModelEndpoint.agents });
+      await SteelQuotationState.create({ userId: 'user123', conversationId, nextSignalIndex: 0, tickets: [], pendingMessages: [] });
+      const deleteMany = jest.spyOn(SteelQuotationState, 'deleteMany')
+        .mockRejectedValueOnce(new Error('Steel cleanup interrupted'));
+
+      await expect(deleteConvos('user123', { conversationId })).resolves.toMatchObject({ deletedCount: 1 });
+      expect(deleteMany).toHaveBeenCalledTimes(3);
+      deleteMany.mockRestore();
+      expect(await Conversation.findOne({ conversationId })).toBeNull();
+      expect(await SteelQuotationState.countDocuments({ conversationId })).toBe(0);
     });
 
     it('cascades parent deletion through owner-scoped child-thread lineage', async () => {
