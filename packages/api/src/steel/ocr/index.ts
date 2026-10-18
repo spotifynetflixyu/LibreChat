@@ -3,6 +3,7 @@ export * from './audit';
 export * from './chunks';
 export * from './diagnostics';
 export * from './failures';
+export * from './files';
 export * from './input';
 export * from './fork';
 export * from './merge';

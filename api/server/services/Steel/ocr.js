@@ -15,16 +15,12 @@ const {
   ocrPreprocessingPipelineVersion,
   createMongooseSteelWorkingOrderMemoryWriter,
   createMongooseOcrPdfChunkArtifactRepository,
-  createSteelContextDependencies,
   createSteelDelegateOcrStateService,
-  parseAssistantMarkdown,
-  parseOcrResultTable,
   createOpenAIOAuthModel,
   resolveOpenAIOAuthAuthFilePath,
   buildOcrOrganizerPrompt,
   buildOcrOrganizerAttachment,
   normalizeOcrOrganizerFileKey,
-  resolveOcrOrganizerRulesText,
   runOcrPreprocessingBatchPipeline,
   getPaddleOcrResultContent,
   getPaddleOcrResultError,
@@ -58,6 +54,16 @@ const {
   getSteelRequestConversationId,
   steelPaddleOcrToolName,
   stringifySteelPaddleOcrPayload,
+  isHttpUrl,
+  isPdfSteelFile,
+  getSteelFileId,
+  getMessageContentText,
+  buildSingleOriginalOcrChunk,
+  toSteelOcrPreprocessingFile,
+  getSuggestedOcrResultColumns,
+  extractCanonicalDelegateOcrResult,
+  createSteelContextDependencies,
+  resolveOcrOrganizerRulesText,
   createSteelPaddleOcrRunStepEvent,
   createSteelPaddleOcrRunStepDeltaEvent,
   createSteelPaddleOcrRunStepCompletedEvent,
@@ -76,33 +82,6 @@ let loadToolsForExecution;
 /** ToolService registers its execution loader so PaddleOCR preflight avoids a circular require. */
 function registerSteelToolLoader(loader) {
   loadToolsForExecution = loader;
-}
-
-function getSteelFileId(file) {
-  const fileId = file?.fileId ?? file?.file_id ?? file?.id;
-  return typeof fileId === 'string' && fileId.trim() !== '' ? fileId : undefined;
-}
-
-function extractCanonicalDelegateOcrResult(markdown) {
-  const sections = parseAssistantMarkdown(markdown).sections.filter(
-    (section) => section.title.trim() === 'ocr_result',
-  );
-  return sections.at(-1)?.raw?.trim() || undefined;
-}
-
-function isPdfSteelFile(file) {
-  const mediaType = String(file?.mediaType ?? file?.mimeType ?? file?.mimetype ?? file?.type ?? '')
-    .trim()
-    .toLowerCase();
-  if (mediaType === 'application/pdf') {
-    return true;
-  }
-  const filename = String(
-    file?.filename ?? file?.name ?? file?.originalname ?? file?.filepath ?? '',
-  )
-    .trim()
-    .toLowerCase();
-  return filename.endsWith('.pdf');
 }
 
 function uniqueStrings(values) {
@@ -150,37 +129,6 @@ async function readSteelStoredFileBytes({ req, fileRecord }) {
   }
 
   return streamToBuffer(await getDownloadStream(req, filePath));
-}
-
-function getSteelSourcePdfKey(file, fileRecord) {
-  return (
-    fileRecord?.storageKey ??
-    fileRecord?.filepath ??
-    file?.storageKey ??
-    file?.filepath ??
-    file?.ocrFileKey
-  );
-}
-
-function toSteelOcrPreprocessingFile(file, fileRecord) {
-  const sourcePdfKey = getSteelSourcePdfKey(file, fileRecord);
-  if (!sourcePdfKey) {
-    return undefined;
-  }
-
-  const sourceFilename = typeof fileRecord?.filename === 'string' ? fileRecord.filename.trim() : '';
-
-  return {
-    ...file,
-    fileId: file.fileId ?? fileRecord?.file_id,
-    filename: file.filename ?? fileRecord?.filename,
-    mediaType: file.mediaType ?? fileRecord?.type ?? fileRecord?.mimetype,
-    filepath: file.filepath ?? fileRecord?.filepath,
-    storageKey: file.storageKey ?? fileRecord?.storageKey,
-    ocrFileKey: file.ocrFileKey,
-    sourcePdfKey,
-    sourceFilename,
-  };
 }
 
 function getSteelOcrSourceCode(value) {
@@ -237,28 +185,6 @@ async function resolveSteelOcrPreprocessingRules() {
     ocrRulesText: renderedRules,
     ocrRuleVersion: `ocr-rules:${versionHash}`,
   };
-}
-
-function getMessageContentText(message) {
-  const content = message?.content;
-  if (typeof content === 'string') {
-    return content;
-  }
-  if (Array.isArray(content)) {
-    return content
-      .map((part) => {
-        if (typeof part === 'string') {
-          return part;
-        }
-        if (typeof part?.text === 'string') {
-          return part.text;
-        }
-        return '';
-      })
-      .filter((text) => text.trim() !== '')
-      .join('\n');
-  }
-  return String(content ?? '');
 }
 
 const steelOpenAIOAuthProvider = 'openai_oauth_responses';
@@ -548,10 +474,6 @@ function isSingleOriginalPdfChunk(chunks) {
   );
 }
 
-function isHttpUrl(value) {
-  return typeof value === 'string' && /^https?:\/\//iu.test(value);
-}
-
 function getOriginalPdfStorageKey(file, fileRecord) {
   return fileRecord?.storageKey ?? file?.storageKey;
 }
@@ -778,10 +700,6 @@ function createSteelOcrPdfChunkArtifactStore({ file, fileRecord, pdfBytes, force
       });
     },
   };
-}
-
-function buildSingleOriginalOcrChunk() {
-  return buildPdfPageChunks({ pageCount: 1, chunkSizePages: 1 });
 }
 
 function toReusableOcrPreprocessingChunks(state, fallbackChunkSizePages) {
@@ -1669,16 +1587,6 @@ function createPreflightResult({
     ...(totalSavedCounts ? { totalSavedCounts } : {}),
     ...(totalTableCounts ? { totalTableCounts } : {}),
   };
-}
-
-function getSuggestedOcrResultColumns(markdown) {
-  if (typeof markdown !== 'string' || markdown.trim() === '') {
-    return [];
-  }
-  const parsedDocument = parseAssistantMarkdown(markdown);
-  const resultSection = parsedDocument.sections.find(({ title }) => title === 'ocr_result');
-  const parsedTable = parseOcrResultTable(resultSection?.body ?? markdown);
-  return parsedTable.ok ? [...parsedTable.table.headers] : [];
 }
 
 function normalizeSafeSteelAiUrl(value) {

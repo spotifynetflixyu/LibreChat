@@ -2,6 +2,7 @@ export * from './agents';
 export * from './context';
 export * from './delegate';
 export * from './events';
+export * from './delegation';
 export * from './execute';
 export * from './markdown';
 export * from './tool-result';
