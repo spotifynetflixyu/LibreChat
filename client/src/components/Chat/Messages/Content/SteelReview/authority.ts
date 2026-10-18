@@ -143,8 +143,8 @@ export function isAuthorizedCurrentTable(
  */
 export async function canApplySteelReviewMessageSnapshot(
   messages: readonly TMessage[] | undefined,
-  prepared: SteelReviewPrepared,
-  snapshot: SteelReviewSavedSnapshot,
+  prepared: Pick<SteelReviewPrepared, 'messageSha256'>,
+  snapshot: Pick<SteelReviewSavedSnapshot, 'messageId' | 'messageText'>,
 ): Promise<boolean> {
   if (!messages) {
     return true;

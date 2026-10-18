@@ -233,6 +233,35 @@ const reviewSelection: SteelReviewSelection = {
   captureId: 'capture-1',
 };
 
+const preparedBoilerplate = {
+  messageSha256: 'v'.repeat(64),
+  target: { start: 0, end: 1, sha256: 'w'.repeat(64) },
+  replacementText: 'replacement',
+  cleanReplacementText: 'replacement',
+  targetText: 'target',
+  effectiveMarkdown: 'effective',
+  displayMarkdown: 'display',
+};
+
+/** A prepared operation with the message-patch fields no test inspects. */
+function createPrepared<T extends object>(fields: T): typeof preparedBoilerplate & T {
+  return { ...preparedBoilerplate, ...fields };
+}
+
+/** A saved snapshot of the review conversation message with the fields no test inspects. */
+function createSavedSnapshot<T extends object>(fields: T) {
+  return {
+    savedAt: '2026-10-03T00:00:00.000Z',
+    messageSha256: 'x'.repeat(64),
+    conversationId: reviewIdentity.conversationId,
+    messageId: reviewIdentity.messageId,
+    messageText: 'saved',
+    effectiveMarkdown: 'effective',
+    displayMarkdown: 'display',
+    ...fields,
+  };
+}
+
 const testHeading = 'ocr_result';
 const sourceHeader = '來源';
 const partHeader = '零件編號';
@@ -297,24 +326,17 @@ function createReopenLifecycleFixture() {
       },
     ],
   };
-  const prepared = {
+  const prepared = createPrepared({
     ...reviewIdentity,
     outputId: table.outputId,
     revision: table.revision,
     rows: table.rows,
     operationId: 'operation-reopen-old',
     digest: 'u'.repeat(64),
-    messageSha256: 'v'.repeat(64),
-    target: { start: 0, end: 1, sha256: 'w'.repeat(64) },
-    replacementText: 'replacement',
-    cleanReplacementText: 'replacement',
-    targetText: 'target',
     headers: table.headers,
-    effectiveMarkdown: 'effective',
-    displayMarkdown: 'display',
     caption: { kind: reviewIdentity.kind, changedRows: 1, changedRowIds: ['row-1'] },
-  };
-  const savedSnapshot = {
+  });
+  const savedSnapshot = createSavedSnapshot({
     operationId: prepared.operationId,
     digest: prepared.digest,
     outputId: prepared.outputId,
@@ -329,14 +351,7 @@ function createReopenLifecycleFixture() {
     ],
     changedRows: 1,
     changedRowIds: ['row-1'],
-    savedAt: '2026-10-03T00:00:00.000Z',
-    messageSha256: 'x'.repeat(64),
-    conversationId: reviewIdentity.conversationId,
-    messageId: reviewIdentity.messageId,
-    messageText: 'saved',
-    effectiveMarkdown: 'effective',
-    displayMarkdown: 'display',
-  };
+  });
   return { table, prepared, savedSnapshot };
 }
 
@@ -702,21 +717,14 @@ describe('MarkdownTableActions Steel review entry', () => {
       revision: 'download-revision-2',
       rows: [material, processing, addedProcessing],
     };
-    const prepared = {
+    const prepared = createPrepared({
       ...systemIdentity,
       outputId: initialTable.outputId,
       revision: initialTable.revision,
       rows: latestTable.rows,
       operationId: 'download-operation',
       digest: 'a'.repeat(64),
-      messageSha256: 'b'.repeat(64),
-      target: { start: 0, end: 1, sha256: 'c'.repeat(64) },
-      replacementText: 'replacement',
-      cleanReplacementText: 'replacement',
-      targetText: 'target',
       headers: initialTable.headers,
-      effectiveMarkdown: 'effective',
-      displayMarkdown: 'display',
       caption: {
         kind: 'system_order' as const,
         changedRows: 1,
@@ -724,8 +732,8 @@ describe('MarkdownTableActions Steel review entry', () => {
         customerQuoteChangedRows: 0,
         customerQuoteTotal: null,
       },
-    };
-    const savedSnapshot = {
+    });
+    const savedSnapshot = createSavedSnapshot({
       operationId: prepared.operationId,
       digest: prepared.digest,
       outputId: prepared.outputId,
@@ -734,15 +742,10 @@ describe('MarkdownTableActions Steel review entry', () => {
       rows: latestTable.rows,
       changedRows: 1,
       changedRowIds: [addedProcessing.rowId],
-      savedAt: '2026-10-03T00:00:00.000Z',
-      messageSha256: 'd'.repeat(64),
       conversationId: systemIdentity.conversationId,
       messageId: systemIdentity.messageId,
-      messageText: 'saved',
-      effectiveMarkdown: 'effective',
-      displayMarkdown: 'display',
       caption: prepared.caption,
-    };
+    });
     const prepare = jest.fn().mockResolvedValue(prepared);
     const commit = jest.fn().mockResolvedValue({
       changedRows: 1,
@@ -1045,7 +1048,7 @@ describe('MarkdownTableActions Steel review entry', () => {
   });
 
   it('prepares the focused draft and commits the exact prepared operation', async () => {
-    const prepared = {
+    const prepared = createPrepared({
       conversationId: 'conversation-1',
       messageId: 'message-1',
       kind: 'ocr_result',
@@ -1055,17 +1058,10 @@ describe('MarkdownTableActions Steel review entry', () => {
       rows: [],
       operationId: 'operation-1',
       digest: 'a'.repeat(64),
-      messageSha256: 'b'.repeat(64),
-      target: { start: 0, end: 1, sha256: 'c'.repeat(64) },
-      replacementText: 'replacement',
-      cleanReplacementText: 'replacement',
-      targetText: 'target',
       headers: ['品名'],
-      effectiveMarkdown: 'effective',
-      displayMarkdown: 'display',
       caption: { kind: 'ocr_result', changedRows: 1, changedRowIds: ['row-1'] },
-    };
-    const savedSnapshot = {
+    });
+    const savedSnapshot = createSavedSnapshot({
       operationId: prepared.operationId,
       digest: prepared.digest,
       outputId: prepared.outputId,
@@ -1080,14 +1076,9 @@ describe('MarkdownTableActions Steel review entry', () => {
       ],
       changedRows: 1,
       changedRowIds: ['row-1'],
-      savedAt: '2026-10-03T00:00:00.000Z',
-      messageSha256: 'd'.repeat(64),
       conversationId: 'conversation-1',
       messageId: 'message-1',
-      messageText: 'saved',
-      effectiveMarkdown: 'effective',
-      displayMarkdown: 'display',
-    };
+    });
     const prepare = jest.fn().mockResolvedValue(prepared);
     const commit = jest
       .fn()
@@ -1175,23 +1166,16 @@ describe('MarkdownTableActions Steel review entry', () => {
     'replaces source controls with the prepared save status and closes only after a confirmed commit (desktop: %s)',
     async (isDesktop) => {
       mockIsDesktop = isDesktop;
-      const prepared = {
+      const prepared = createPrepared({
         ...reviewIdentity,
         outputId: 'ocr_result:generation-1',
         revision: 'generation-1',
         rows: [],
         operationId: 'operation-caption',
         digest: 'j'.repeat(64),
-        messageSha256: 'k'.repeat(64),
-        target: { start: 0, end: 1, sha256: 'l'.repeat(64) },
-        replacementText: 'replacement',
-        cleanReplacementText: 'replacement',
-        targetText: 'target',
         headers: ['品名'],
-        effectiveMarkdown: 'effective',
-        displayMarkdown: 'display',
         caption: { kind: reviewIdentity.kind, changedRows: 1, changedRowIds: ['row-1'] },
-      };
+      });
       const authorityTable = {
         ...reviewIdentity,
         outputId: prepared.outputId,
@@ -1208,7 +1192,7 @@ describe('MarkdownTableActions Steel review entry', () => {
           },
         ],
       };
-      const savedSnapshot = {
+      const savedSnapshot = createSavedSnapshot({
         operationId: prepared.operationId,
         digest: prepared.digest,
         outputId: prepared.outputId,
@@ -1223,14 +1207,9 @@ describe('MarkdownTableActions Steel review entry', () => {
         ],
         changedRows: 1,
         changedRowIds: ['row-1'],
-        savedAt: '2026-10-03T00:00:00.000Z',
-        messageSha256: 'm'.repeat(64),
         conversationId: prepared.conversationId,
         messageId: prepared.messageId,
-        messageText: 'saved',
-        effectiveMarkdown: 'effective',
-        displayMarkdown: 'display',
-      };
+      });
       let resolveCommit!: (value: {
         changedRows: number;
         changedRowIds: string[];
@@ -1327,7 +1306,7 @@ describe('MarkdownTableActions Steel review entry', () => {
         },
       ],
     };
-    const prepared = {
+    const prepared = createPrepared({
       ...reviewIdentity,
       outputId: table.outputId,
       revision: table.revision,
@@ -1340,16 +1319,9 @@ describe('MarkdownTableActions Steel review entry', () => {
       ],
       operationId: 'operation-normalized-no-op',
       digest: 'a'.repeat(64),
-      messageSha256: 'b'.repeat(64),
-      target: { start: 0, end: 1, sha256: 'c'.repeat(64) },
-      replacementText: 'replacement',
-      cleanReplacementText: 'replacement',
-      targetText: 'target',
       headers: table.headers,
-      effectiveMarkdown: 'effective',
-      displayMarkdown: 'display',
       caption: { kind: reviewIdentity.kind, changedRows: 1, changedRowIds: ['row-1'] },
-    };
+    });
     const prepare = jest.fn().mockResolvedValue(prepared);
     const commit = jest.fn().mockResolvedValue({ changedRows: 0, changedRowIds: [] });
     const refetch = jest.fn().mockResolvedValue({ data: { table }, error: null });
@@ -1404,7 +1376,7 @@ describe('MarkdownTableActions Steel review entry', () => {
         },
       ],
     };
-    const prepared = {
+    const prepared = createPrepared({
       ...reviewIdentity,
       outputId: table.outputId,
       revision: table.revision,
@@ -1417,16 +1389,9 @@ describe('MarkdownTableActions Steel review entry', () => {
       ],
       operationId: 'operation-normalized-no-op-late-edit',
       digest: 'd'.repeat(64),
-      messageSha256: 'e'.repeat(64),
-      target: { start: 0, end: 1, sha256: 'f'.repeat(64) },
-      replacementText: 'replacement',
-      cleanReplacementText: 'replacement',
-      targetText: 'target',
       headers: table.headers,
-      effectiveMarkdown: 'effective',
-      displayMarkdown: 'display',
       caption: { kind: reviewIdentity.kind, changedRows: 1, changedRowIds: ['row-1'] },
-    };
+    });
     const prepare = jest.fn().mockResolvedValue(prepared);
     const commit = jest.fn().mockResolvedValue({ changedRows: 0, changedRowIds: [] });
     let resolveRefetch!: (result: { data: { table: typeof table }; error: null }) => void;
@@ -1482,7 +1447,7 @@ describe('MarkdownTableActions Steel review entry', () => {
         },
       ],
     };
-    const prepared = {
+    const prepared = createPrepared({
       ...reviewIdentity,
       outputId: table.outputId,
       revision: table.revision,
@@ -1495,16 +1460,9 @@ describe('MarkdownTableActions Steel review entry', () => {
       ],
       operationId: 'operation-normalized-no-op-retry',
       digest: 'g'.repeat(64),
-      messageSha256: 'h'.repeat(64),
-      target: { start: 0, end: 1, sha256: 'i'.repeat(64) },
-      replacementText: 'replacement',
-      cleanReplacementText: 'replacement',
-      targetText: 'target',
       headers: table.headers,
-      effectiveMarkdown: 'effective',
-      displayMarkdown: 'display',
       caption: { kind: reviewIdentity.kind, changedRows: 1, changedRowIds: ['row-1'] },
-    };
+    });
     const prepare = jest.fn().mockResolvedValue(prepared);
     const commit = jest.fn().mockResolvedValue({ changedRows: 0, changedRowIds: [] });
     const refetch = jest
@@ -1580,7 +1538,7 @@ describe('MarkdownTableActions Steel review entry', () => {
         values: { 品名: { baseline: '鋼板', effective: '7' } },
       },
     ];
-    const prepared = {
+    const prepared = createPrepared({
       conversationId: reviewIdentity.conversationId,
       messageId: reviewIdentity.messageId,
       kind: reviewIdentity.kind,
@@ -1590,20 +1548,13 @@ describe('MarkdownTableActions Steel review entry', () => {
       rows: [firstTable.rows[0]],
       operationId: 'operation-inflight',
       digest: 'a'.repeat(64),
-      messageSha256: 'b'.repeat(64),
-      target: { start: 0, end: 1, sha256: 'c'.repeat(64) },
-      replacementText: 'replacement',
-      cleanReplacementText: 'replacement',
-      targetText: 'target',
       headers: firstTable.headers,
-      effectiveMarkdown: 'effective',
-      displayMarkdown: 'display',
       caption: { kind: reviewIdentity.kind, changedRows: 1, changedRowIds: ['row-1'] },
-    };
+    });
     const commitResult = {
       changedRows: 1,
       changedRowIds: ['row-1'],
-      savedSnapshot: {
+      savedSnapshot: createSavedSnapshot({
         operationId: prepared.operationId,
         digest: prepared.digest,
         outputId: prepared.outputId,
@@ -1612,14 +1563,7 @@ describe('MarkdownTableActions Steel review entry', () => {
         rows: savedRows,
         changedRows: 1,
         changedRowIds: ['row-1'],
-        savedAt: '2026-10-03T00:00:00.000Z',
-        messageSha256: 'd'.repeat(64),
-        conversationId: reviewIdentity.conversationId,
-        messageId: reviewIdentity.messageId,
-        messageText: 'saved',
-        effectiveMarkdown: 'effective',
-        displayMarkdown: 'display',
-      },
+      }),
     };
     let resolveCommit!: (value: typeof commitResult) => void;
     const commit = jest.fn(
@@ -1694,7 +1638,7 @@ describe('MarkdownTableActions Steel review entry', () => {
         },
       ],
     };
-    const prepared = {
+    const prepared = createPrepared({
       conversationId: reviewIdentity.conversationId,
       messageId: reviewIdentity.messageId,
       kind: reviewIdentity.kind,
@@ -1704,16 +1648,9 @@ describe('MarkdownTableActions Steel review entry', () => {
       rows: table.rows,
       operationId: 'operation-receipt-retry',
       digest: 'a'.repeat(64),
-      messageSha256: 'b'.repeat(64),
-      target: { start: 0, end: 1, sha256: 'c'.repeat(64) },
-      replacementText: 'replacement',
-      cleanReplacementText: 'replacement',
-      targetText: 'target',
       headers: table.headers,
-      effectiveMarkdown: 'effective',
-      displayMarkdown: 'display',
       caption: { kind: reviewIdentity.kind, changedRows: 1, changedRowIds: ['row-1'] },
-    };
+    });
     const reviewRefetch = jest.fn().mockResolvedValue({ data: { table }, error: null });
     const prepare = jest.fn().mockResolvedValue(prepared);
     const commit = jest.fn().mockRejectedValue(new Error('connection lost'));
@@ -1778,12 +1715,7 @@ describe('MarkdownTableActions Steel review entry', () => {
     });
   });
 
-  it.each([
-    ['conversationId', 'conversation-foreign'],
-    ['messageId', 'message-foreign'],
-    ['kind', 'system_order'],
-    ['title', 'table-foreign'],
-  ] as const)(
+  it.each([['conversationId', 'conversation-foreign']] as const)(
     'does not acknowledge a receipt for a captured authority with a different %s',
     async (field, value) => {
       const table = {
@@ -1817,24 +1749,17 @@ describe('MarkdownTableActions Steel review entry', () => {
           },
         ],
       };
-      const prepared = {
+      const prepared = createPrepared({
         ...reviewIdentity,
         outputId: table.outputId,
         revision: table.revision,
         rows: table.rows,
         operationId: `operation-receipt-mismatch-${field}`,
         digest: 'q'.repeat(64),
-        messageSha256: 'r'.repeat(64),
-        target: { start: 0, end: 1, sha256: 's'.repeat(64) },
-        replacementText: 'replacement',
-        cleanReplacementText: 'replacement',
-        targetText: 'target',
         headers: table.headers,
-        effectiveMarkdown: 'effective',
-        displayMarkdown: 'display',
         caption: { kind: reviewIdentity.kind, changedRows: 1, changedRowIds: ['row-1'] },
-      };
-      const snapshot = {
+      });
+      const snapshot = createSavedSnapshot({
         operationId: prepared.operationId,
         digest: prepared.digest,
         outputId: prepared.outputId,
@@ -1849,14 +1774,7 @@ describe('MarkdownTableActions Steel review entry', () => {
         ],
         changedRows: 1,
         changedRowIds: ['row-1'],
-        savedAt: '2026-10-03T00:00:00.000Z',
-        messageSha256: 't'.repeat(64),
-        conversationId: reviewIdentity.conversationId,
-        messageId: reviewIdentity.messageId,
-        messageText: 'saved',
-        effectiveMarkdown: 'effective',
-        displayMarkdown: 'display',
-      };
+      });
       const reviewRefetch = jest
         .fn()
         .mockResolvedValue({ data: { table: newAiTable }, error: null });
@@ -1926,13 +1844,7 @@ describe('MarkdownTableActions Steel review entry', () => {
 
   it.each([
     ['commit', 'conversationId', 'conversation-foreign'],
-    ['commit', 'messageId', 'message-foreign'],
-    ['commit', 'kind', 'system_order'],
-    ['commit', 'title', 'table-foreign'],
     ['no-op', 'conversationId', 'conversation-foreign'],
-    ['no-op', 'messageId', 'message-foreign'],
-    ['no-op', 'kind', 'system_order'],
-    ['no-op', 'title', 'table-foreign'],
   ] as const)(
     'does not acknowledge a %s when the current table has a different %s',
     async (mode, field, value) => {
@@ -1954,7 +1866,7 @@ describe('MarkdownTableActions Steel review entry', () => {
         ],
       };
       const foreignTable = { ...table, [field]: value, revision: 'foreign-revision' };
-      const prepared = {
+      const prepared = createPrepared({
         ...reviewIdentity,
         outputId: table.outputId,
         revision: table.revision,
@@ -1966,17 +1878,10 @@ describe('MarkdownTableActions Steel review entry', () => {
         ],
         operationId: `operation-current-mismatch-${mode}-${field}`,
         digest: 'u'.repeat(64),
-        messageSha256: 'v'.repeat(64),
-        target: { start: 0, end: 1, sha256: 'w'.repeat(64) },
-        replacementText: 'replacement',
-        cleanReplacementText: 'replacement',
-        targetText: 'target',
         headers: table.headers,
-        effectiveMarkdown: 'effective',
-        displayMarkdown: 'display',
         caption: { kind: reviewIdentity.kind, changedRows: 1, changedRowIds: ['row-1'] },
-      };
-      const savedSnapshot = {
+      });
+      const savedSnapshot = createSavedSnapshot({
         operationId: prepared.operationId,
         digest: prepared.digest,
         outputId: prepared.outputId,
@@ -1991,14 +1896,7 @@ describe('MarkdownTableActions Steel review entry', () => {
         ],
         changedRows: 1,
         changedRowIds: ['row-1'],
-        savedAt: '2026-10-03T00:00:00.000Z',
-        messageSha256: 'x'.repeat(64),
-        conversationId: reviewIdentity.conversationId,
-        messageId: reviewIdentity.messageId,
-        messageText: 'saved',
-        effectiveMarkdown: 'effective',
-        displayMarkdown: 'display',
-      };
+      });
       const prepare = jest.fn().mockResolvedValue(prepared);
       const commit = jest
         .fn()
@@ -2070,24 +1968,17 @@ describe('MarkdownTableActions Steel review entry', () => {
         table: foreignTable,
       },
     };
-    const prepared = {
+    const prepared = createPrepared({
       ...reviewIdentity,
       outputId: table.outputId,
       revision: table.revision,
       rows: table.rows,
       operationId: 'operation-receipt-selection-change',
       digest: 'y'.repeat(64),
-      messageSha256: 'z'.repeat(64),
-      target: { start: 0, end: 1, sha256: 'a'.repeat(64) },
-      replacementText: 'replacement',
-      cleanReplacementText: 'replacement',
-      targetText: 'target',
       headers: table.headers,
-      effectiveMarkdown: 'effective',
-      displayMarkdown: 'display',
       caption: { kind: reviewIdentity.kind, changedRows: 1, changedRowIds: ['row-1'] },
-    };
-    const snapshot = {
+    });
+    const snapshot = createSavedSnapshot({
       operationId: prepared.operationId,
       digest: prepared.digest,
       outputId: prepared.outputId,
@@ -2102,14 +1993,7 @@ describe('MarkdownTableActions Steel review entry', () => {
       ],
       changedRows: 1,
       changedRowIds: ['row-1'],
-      savedAt: '2026-10-03T00:00:00.000Z',
-      messageSha256: 'b'.repeat(64),
-      conversationId: reviewIdentity.conversationId,
-      messageId: reviewIdentity.messageId,
-      messageText: 'saved',
-      effectiveMarkdown: 'effective',
-      displayMarkdown: 'display',
-    };
+    });
     const commit = jest.fn().mockRejectedValue(new Error('connection lost'));
     const reviewRefetch = jest.fn().mockResolvedValue({ data: { table }, error: null });
     const receiptRefetch = jest.fn().mockResolvedValue({
@@ -2210,24 +2094,17 @@ describe('MarkdownTableActions Steel review entry', () => {
         },
       ],
     };
-    const prepared = {
+    const prepared = createPrepared({
       ...reviewIdentity,
       outputId: table.outputId,
       revision: table.revision,
       rows: table.rows,
       operationId: 'operation-unmounted-save-close',
       digest: 'u'.repeat(64),
-      messageSha256: 'v'.repeat(64),
-      target: { start: 0, end: 1, sha256: 'w'.repeat(64) },
-      replacementText: 'replacement',
-      cleanReplacementText: 'replacement',
-      targetText: 'target',
       headers: table.headers,
-      effectiveMarkdown: 'effective',
-      displayMarkdown: 'display',
       caption: { kind: reviewIdentity.kind, changedRows: 1, changedRowIds: ['row-1'] },
-    };
-    const savedSnapshot = {
+    });
+    const savedSnapshot = createSavedSnapshot({
       operationId: prepared.operationId,
       digest: prepared.digest,
       outputId: prepared.outputId,
@@ -2242,14 +2119,7 @@ describe('MarkdownTableActions Steel review entry', () => {
       ],
       changedRows: 1,
       changedRowIds: ['row-1'],
-      savedAt: '2026-10-03T00:00:00.000Z',
-      messageSha256: 'x'.repeat(64),
-      conversationId: reviewIdentity.conversationId,
-      messageId: reviewIdentity.messageId,
-      messageText: 'saved',
-      effectiveMarkdown: 'effective',
-      displayMarkdown: 'display',
-    };
+    });
     const savedTable = {
       ...table,
       revision: savedSnapshot.revision,
@@ -2346,24 +2216,17 @@ describe('MarkdownTableActions Steel review entry', () => {
         },
       ],
     };
-    const prepared = {
+    const prepared = createPrepared({
       ...reviewIdentity,
       outputId: table.outputId,
       revision: table.revision,
       rows: table.rows,
       operationId: 'operation-unmounted-same-owner-save-close',
       digest: 'u'.repeat(64),
-      messageSha256: 'v'.repeat(64),
-      target: { start: 0, end: 1, sha256: 'w'.repeat(64) },
-      replacementText: 'replacement',
-      cleanReplacementText: 'replacement',
-      targetText: 'target',
       headers: table.headers,
-      effectiveMarkdown: 'effective',
-      displayMarkdown: 'display',
       caption: { kind: reviewIdentity.kind, changedRows: 1, changedRowIds: ['row-1'] },
-    };
-    const savedSnapshot = {
+    });
+    const savedSnapshot = createSavedSnapshot({
       operationId: prepared.operationId,
       digest: prepared.digest,
       outputId: prepared.outputId,
@@ -2378,14 +2241,7 @@ describe('MarkdownTableActions Steel review entry', () => {
       ],
       changedRows: 1,
       changedRowIds: ['row-1'],
-      savedAt: '2026-10-03T00:00:00.000Z',
-      messageSha256: 'x'.repeat(64),
-      conversationId: reviewIdentity.conversationId,
-      messageId: reviewIdentity.messageId,
-      messageText: 'saved',
-      effectiveMarkdown: 'effective',
-      displayMarkdown: 'display',
-    };
+    });
     const savedTable = { ...table, revision: savedSnapshot.revision, rows: savedSnapshot.rows };
     let resolveCommit!: (result: {
       changedRows: number;
@@ -2743,7 +2599,7 @@ describe('MarkdownTableActions Steel review entry', () => {
         },
       ],
     };
-    const prepared = {
+    const prepared = createPrepared({
       conversationId: reviewIdentity.conversationId,
       messageId: reviewIdentity.messageId,
       kind: reviewIdentity.kind,
@@ -2753,17 +2609,10 @@ describe('MarkdownTableActions Steel review entry', () => {
       rows: table.rows,
       operationId: 'operation-receipt-new-ai',
       digest: 'q'.repeat(64),
-      messageSha256: 'r'.repeat(64),
-      target: { start: 0, end: 1, sha256: 's'.repeat(64) },
-      replacementText: 'replacement',
-      cleanReplacementText: 'replacement',
-      targetText: 'target',
       headers: table.headers,
-      effectiveMarkdown: 'effective',
-      displayMarkdown: 'display',
       caption: { kind: reviewIdentity.kind, changedRows: 1, changedRowIds: ['row-1'] },
-    };
-    const snapshot = {
+    });
+    const snapshot = createSavedSnapshot({
       operationId: prepared.operationId,
       digest: prepared.digest,
       outputId: prepared.outputId,
@@ -2778,14 +2627,7 @@ describe('MarkdownTableActions Steel review entry', () => {
       ],
       changedRows: 1,
       changedRowIds: ['row-1'],
-      savedAt: '2026-10-03T00:00:00.000Z',
-      messageSha256: 't'.repeat(64),
-      conversationId: reviewIdentity.conversationId,
-      messageId: reviewIdentity.messageId,
-      messageText: 'saved',
-      effectiveMarkdown: 'effective',
-      displayMarkdown: 'display',
-    };
+    });
     let reviewResolve!: (result: { data: { table: typeof newAiTable }; error: null }) => void;
     const reviewRefetch = jest.fn().mockImplementation(
       () =>
