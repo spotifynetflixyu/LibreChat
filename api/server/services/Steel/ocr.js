@@ -48,6 +48,15 @@ const {
   getCloudFrontDownloadURLForKey,
   cloudFrontObjectExistsByKey,
   saveBufferToCloudFrontStorageKey,
+  steelPaddleOcrRetryableErrorPatterns,
+  steelPaddleOcrTransportErrorPatterns,
+  steelPaddleOcrRetryDelayMs,
+  emitSteelNativeEvents,
+  steelPaddleOcrMaxAttempts,
+  steelPaddleOcrCallTimeoutMs,
+  steelPaddleOcrTaskIntervalMs,
+  getSteelRequestConversationId,
+  steelPaddleOcrToolName,
 } = require('@librechat/api');
 const {
   Time,
@@ -63,17 +72,6 @@ const { resolveMcpServerContext } = require('~/server/services/MCP');
 const db = require('~/models');
 const { getMCPManager } = require('~/config');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
-const {
-  steelPaddleOcrRetryableErrorPatterns,
-  steelPaddleOcrTransportErrorPatterns,
-  steelPaddleOcrRetryDelayMs,
-  emitSteelNativeEvents,
-  steelPaddleOcrMaxAttempts,
-  steelPaddleOcrCallTimeoutMs,
-  steelPaddleOcrTaskIntervalMs,
-  getRequestConversationId,
-  steelPaddleOcrToolName,
-} = require('./native');
 
 /** @type {typeof import('~/server/services/ToolService').loadToolsForExecution | undefined} */
 let loadToolsForExecution;
@@ -2093,7 +2091,7 @@ async function runSteelPaddleOcrPreflight({
   if (req?.steelNativeContext) {
     ensureSteelNativeHistory(req.steelNativeContext);
   }
-  const conversationId = getRequestConversationId(req);
+  const conversationId = getSteelRequestConversationId(req);
   const turnIndex = req?.steelNativeContext?.assistantTurnIndex;
   const checkpointTurnIndex = req?.steelNativeContext?.memoryCheckpointTurnIndex;
   const requestId = req?.steelNativeContext?.requestId;

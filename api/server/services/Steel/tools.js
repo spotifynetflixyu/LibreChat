@@ -2,18 +2,17 @@ const {
   createSteelNativeTool,
   createDelegateOcrTool,
   delegateOcrToolName,
-  resolveSteelProviderToolName,
-  prepareSteelNativeToolConfig,
-  resolveSteelTurnToolVisibility,
-} = require('@librechat/api');
-const { AgentCapabilities } = require('librechat-data-provider');
-const {
   addSteelPaddleOcrMcpTool,
   getSteelNativeToolRunState,
+  resolveSteelProviderToolName,
+  prepareSteelNativeToolConfig,
   createSteelNativeToolExecute,
+  resolveSteelTurnToolVisibility,
   mergeSteelNativeToolDefinitions,
-} = require('./native');
+} = require('@librechat/api');
+const { AgentCapabilities } = require('librechat-data-provider');
 const { createDelegateOcrExecute } = require('./delegate');
+const steelPostgres = require('./postgres');
 
 /**
  * Wraps the upstream agent tool loader so every agent gets the Steel tool
@@ -142,6 +141,7 @@ function withSteelExecutionTools(loadToolsForExecution) {
         req,
         res,
         streamId,
+        client: steelPostgres.client,
         runState: getSteelNativeToolRunState({
           req,
           requestScopedConnections: result.configurable.requestScopedConnections,

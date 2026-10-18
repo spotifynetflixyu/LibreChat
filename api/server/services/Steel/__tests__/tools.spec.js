@@ -94,17 +94,6 @@ jest.mock('@librechat/agents', () => ({
 
 const mockLoadToolDefinitions = jest.fn();
 const mockGetUserMCPAuthMap = jest.fn();
-const mockExecuteSteelTool = jest.fn();
-const mockCreateSteelToolRunState = jest.fn((maxCalls, maxCallsByTool) => ({
-  maxCalls,
-  callsUsed: 0,
-  maxCallsByTool,
-  callsUsedByTool: {},
-}));
-const mockCaptureSteelNativeToolResult = jest.fn().mockResolvedValue({
-  status: 'skipped',
-  reason: 'missing_conversation_id',
-});
 const mockFindMissingPaddleOcrFileKeys = jest.fn();
 const mockCapturePaddleOcrResult = jest.fn();
 const mockReadOcrPreprocessingState = jest.fn();
@@ -168,7 +157,6 @@ jest.mock('@librechat/api', () => ({
   getUserMCPAuthMap: (...args) => mockGetUserMCPAuthMap(...args),
   getPaddleOcrResultError: (...args) => mockGetPaddleOcrResultError(...args),
   createSteelPostgresPool: jest.fn(() => ({ query: jest.fn() })),
-  createSteelToolRunState: (...args) => mockCreateSteelToolRunState(...args),
   createMongooseSteelWorkingOrderMemoryWriter: jest.fn(() => ({
     captureToolResult: jest.fn(),
     findMissingPaddleOcrFileKeys: (...args) => mockFindMissingPaddleOcrFileKeys(...args),
@@ -234,8 +222,6 @@ jest.mock('@librechat/api', () => ({
         providerToolCallId: config?.toolCall?.id,
       }),
   }),
-  executeSteelTool: (...args) => mockExecuteSteelTool(...args),
-  captureSteelNativeToolResult: (...args) => mockCaptureSteelNativeToolResult(...args),
   buildSteelPaddleOcrPreflightEventEnvelopes: (...args) =>
     mockBuildSteelPaddleOcrPreflightEventEnvelopes(...args),
   resolveSteelProviderToolName: (name) => {
@@ -251,10 +237,6 @@ jest.mock('@librechat/api', () => ({
     openidIssuer: user?.openidIssuer,
   }),
   sendEvent: (...args) => mockSendEvent(...args),
-  GenerationJobManager: {
-    emitChunk: (...args) => mockEmitChunk(...args),
-    updateMetadata: (...args) => mockUpdateGenerationMetadata(...args),
-  },
   resolveCodeExecutionContext: (...args) => mockResolveCodeExecutionContext(...args),
   resolveCodeExecutionWorkspaceContext: (...args) =>
     mockResolveCodeExecutionWorkspaceContext(...args),
@@ -367,6 +349,17 @@ const {
   processRequiredActions,
   runSteelPaddleOcrPreflight,
 } = require('~/server/services/ToolService');
+const { GenerationJobManager } = require('@librechat/api');
+
+/** Steel events reach the job stream through the real manager, so spy on it rather than replace it. */
+beforeEach(() => {
+  jest
+    .spyOn(GenerationJobManager, 'emitChunk')
+    .mockImplementation((...args) => mockEmitChunk(...args));
+  jest
+    .spyOn(GenerationJobManager, 'updateMetadata')
+    .mockImplementation((...args) => mockUpdateGenerationMetadata(...args));
+});
 const { reinitMCPServer } = require('~/server/services/Tools/mcp');
 
 /** Role document shape `checkAccess` reads; all three role-gated tools granted. */
@@ -828,13 +821,6 @@ describe('Steel tool loading through ToolService', () => {
       getDownloadStream: jest.fn().mockResolvedValue(Buffer.from('%PDF-1.7')),
       saveBuffer: jest.fn().mockResolvedValue('https://files.example.test/chunk.pdf'),
       getDownloadURL: jest.fn().mockResolvedValue('https://files.example.test/chunk.pdf'),
-    });
-    mockExecuteSteelTool.mockResolvedValue({
-      ok: true,
-      toolName: 'search_customers',
-      data: { customers: [] },
-      durationMs: 1,
-      redactionVersion: 1,
     });
     mockResolveMcpServerNames.mockResolvedValue([]);
     mockPrimeSearchFiles.mockResolvedValue({});
@@ -2949,14 +2935,15 @@ describe('Steel tool loading through ToolService', () => {
           }),
         }),
       );
-      expect(mockSendEvent).toHaveBeenCalledWith(
-        res,
-        expect.objectContaining({
-          data: expect.objectContaining({
-            message: 'Reused PaddleOCR preflight',
-            parseStatus: 'saved',
+      expect(res.write.mock.calls.map(([chunk]) => JSON.parse(chunk.split('data: ')[1]))).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            data: expect.objectContaining({
+              message: 'Reused PaddleOCR preflight',
+              parseStatus: 'saved',
+            }),
           }),
-        }),
+        ]),
       );
       expect(mockRunOcrPreprocessingBatchPipeline).toHaveBeenCalledTimes(1);
       expect(mockRunOcrPreprocessingBatchPipeline.mock.calls[0][0].files[0].chunks).toEqual([
@@ -3940,10 +3927,6 @@ describe('Steel tool loading through ToolService', () => {
           },
         ],
       };
-      mockCaptureSteelNativeToolResult.mockResolvedValueOnce({
-        status: 'captured',
-        result: { savedCounts: { ocr_extract: 1 } },
-      });
       mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig([AgentCapabilities.tools]));
 
       const result = await loadToolsForExecution({
@@ -3957,128 +3940,12 @@ describe('Steel tool loading through ToolService', () => {
       const ocrTool = result.loadedTools.find((tool) => tool.name === 'run_file_ocr');
 
       expect(ocrTool).toBeUndefined();
-      expect(mockExecuteSteelTool).not.toHaveBeenCalledWith(
-        expect.objectContaining({ toolName: 'run_file_ocr' }),
-      );
       expect(mockEmitChunk).not.toHaveBeenCalledWith(
         'stream-1',
         expect.objectContaining({
           data: expect.objectContaining({ toolName: 'run_file_ocr' }),
         }),
       );
-    });
-
-    it('limits price candidate retries independently of the broader Steel call cap', async () => {
-      const req = createMockReq([AgentCapabilities.tools]);
-      req.body = { conversationId: 'convo-price-limit' };
-      mockGetEndpointsConfig.mockResolvedValue(createEndpointsConfig([AgentCapabilities.tools]));
-      mockCreateSteelToolRunState.mockClear();
-      mockExecuteSteelTool.mockImplementation(async ({ toolName, runState }) => {
-        const callsForTool = runState.callsUsedByTool?.[toolName] ?? 0;
-        const perToolLimit = runState.maxCallsByTool?.[toolName];
-        if (
-          runState.callsUsed >= runState.maxCalls ||
-          (perToolLimit !== undefined && callsForTool >= perToolLimit)
-        ) {
-          return {
-            ok: false,
-            toolName,
-            errorCategory: 'rate_limited',
-            errorSummary: 'Steel tool call limit exceeded',
-            durationMs: 0,
-            redactionVersion: 1,
-          };
-        }
-        runState.callsUsed += 1;
-        runState.callsUsedByTool[toolName] = callsForTool + 1;
-        return {
-          ok: true,
-          toolName,
-          data: {},
-          durationMs: 0,
-          redactionVersion: 1,
-        };
-      });
-
-      const firstResult = await loadToolsForExecution({
-        req,
-        res: {},
-        agent: { id: 'agent_price_limit' },
-        toolNames: ['search_price_candidates', 'search_customers'],
-        actionsEnabled: false,
-      });
-      const priceTool = firstResult.loadedTools.find(
-        (tool) => tool.name === 'search_price_candidates',
-      );
-
-      expect(mockCreateSteelToolRunState).toHaveBeenCalledWith(8, {
-        search_price_candidates: 2,
-      });
-      await expect(priceTool.invoke({})).resolves.toMatchObject({ ok: true });
-
-      const secondResult = await loadToolsForExecution({
-        req,
-        res: {},
-        agent: { id: 'agent_price_limit' },
-        toolNames: ['search_price_candidates'],
-        requestScopedConnections: firstResult.configurable.requestScopedConnections,
-        actionsEnabled: false,
-      });
-      const secondPriceTool = secondResult.loadedTools.find(
-        (tool) => tool.name === 'search_price_candidates',
-      );
-      await expect(secondPriceTool.invoke({})).resolves.toMatchObject({ ok: true });
-
-      const thirdResult = await loadToolsForExecution({
-        req,
-        res: {},
-        agent: { id: 'agent_price_limit' },
-        toolNames: ['search_price_candidates'],
-        requestScopedConnections: secondResult.configurable.requestScopedConnections,
-        actionsEnabled: false,
-      });
-      const thirdPriceTool = thirdResult.loadedTools.find(
-        (tool) => tool.name === 'search_price_candidates',
-      );
-      await expect(thirdPriceTool.invoke({})).resolves.toMatchObject({
-        ok: false,
-        errorCategory: 'rate_limited',
-      });
-      expect(mockCreateSteelToolRunState).toHaveBeenCalledTimes(1);
-
-      const freshReq = createMockReq([AgentCapabilities.tools]);
-      freshReq.body = { conversationId: 'convo-price-limit-fresh' };
-      const freshPriceResult = await loadToolsForExecution({
-        req: freshReq,
-        res: {},
-        agent: { id: 'agent_price_limit_fresh' },
-        toolNames: ['search_price_candidates'],
-        actionsEnabled: false,
-      });
-      const freshPriceTool = freshPriceResult.loadedTools.find(
-        (tool) => tool.name === 'search_price_candidates',
-      );
-      await expect(freshPriceTool.invoke({})).resolves.toMatchObject({ ok: true });
-      expect(mockCreateSteelToolRunState).toHaveBeenCalledTimes(2);
-
-      const customerResult = await loadToolsForExecution({
-        req: freshReq,
-        res: {},
-        agent: { id: 'agent_customer_limit' },
-        toolNames: ['search_customers'],
-        requestScopedConnections: freshPriceResult.configurable.requestScopedConnections,
-        actionsEnabled: false,
-      });
-      const customerToolOnly = customerResult.loadedTools.find(
-        (tool) => tool.name === 'search_customers',
-      );
-      for (let index = 0; index < 7; index += 1) {
-        await expect(customerToolOnly.invoke({})).resolves.toMatchObject({ ok: true });
-      }
-      await expect(customerToolOnly.invoke({})).resolves.toMatchObject({
-        ok: false,
-        errorCategory: 'rate_limited',
-      });
     });
 
     it('loads delegate_ocr with owner-only lookup, fresh range-artifact signing, and current turn only', async () => {

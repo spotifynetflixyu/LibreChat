@@ -7,6 +7,7 @@ export * from './input';
 export * from './fork';
 export * from './merge';
 export * from './organizer';
+export * from './paddle';
 export * from './preprocess';
 export * from './result';
 export * from './text';

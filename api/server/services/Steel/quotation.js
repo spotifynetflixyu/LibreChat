@@ -18,9 +18,9 @@ const {
   buildSteelQuotationStatusEventEnvelope,
   createSteelMarkdownCompletionServices,
   createSteelQuotationStateService,
+  emitSteelNativeEvents,
 } = require('@librechat/api');
 const db = require('~/models');
-const { emitSteelNativeEvents } = require('./native');
 const {
   createSteelPaddleOcrRunStepEvent,
   createSteelPaddleOcrRunStepDeltaEvent,

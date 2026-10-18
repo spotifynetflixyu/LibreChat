@@ -225,6 +225,22 @@ describe('executeSteelTool', () => {
     expect(client.calls).toHaveLength(1);
   });
 
+  it('enforces a per-tool limit below the run-wide cap', async () => {
+    const client = createClient([[], []]);
+    const runState = createSteelToolRunState(8, { search_customers: 1 });
+    const call = () =>
+      executeSteelTool({
+        client,
+        runState,
+        toolName: 'search_customers',
+        arguments: { keywords: ['龍頂'] },
+      });
+
+    await expect(call()).resolves.toMatchObject({ ok: true });
+    await expect(call()).resolves.toMatchObject({ ok: false, errorCategory: 'rate_limited' });
+    expect(client.calls).toHaveLength(1);
+  });
+
   it('shapes material candidates independently per query and preserves full cutting matches', async () => {
     const manyCandidates = Array.from({ length: 11 }, (_, index) =>
       createHMaterialRow(1000 + index, 200 + index, 100),

@@ -1,7 +1,13 @@
 import { nanoid } from 'nanoid';
 import { StepTypes } from 'librechat-data-provider';
 import type { EventHandler } from '@librechat/agents';
+import type { Response } from 'express';
+import type { StreamEvent } from '~/types/events';
 import type { DelegateOcrStreamEventPayload } from './delegate';
+import type { SteelNativeHistory } from './events';
+import { appendSteelNativeActivityEvent, steelNativeStreamEventName } from './events';
+import { GenerationJobManager } from '~/stream/GenerationJobManager';
+import { sendEvent } from '~/utils/events';
 
 function isDelegateOcrStreamEventPayload(value: unknown): value is DelegateOcrStreamEventPayload {
   if (value == null || typeof value !== 'object') return false;
@@ -49,4 +55,61 @@ export function createDelegateOcrStreamHandler(): EventHandler {
       );
     },
   };
+}
+
+/** The request fields a Steel event emission reads. */
+export interface SteelNativeEventRequest {
+  _resumableJobCreatedAt?: number;
+  steelNativeContext?: { steelHistory?: SteelNativeHistory };
+}
+
+export interface EmitSteelNativeEventsInput {
+  events: readonly StreamEvent[];
+  req?: SteelNativeEventRequest;
+  res?: Response;
+  streamId?: string | null;
+  historyChanged?: boolean;
+}
+
+/**
+ * Records Steel activity events in the turn's history, persists that history on
+ * the resumable job, then emits every event through the job stream or, without
+ * one, directly to the response.
+ */
+export async function emitSteelNativeEvents({
+  events,
+  req,
+  res,
+  streamId,
+  historyChanged = false,
+}: EmitSteelNativeEventsInput): Promise<void> {
+  const history = req?.steelNativeContext?.steelHistory;
+  let steelHistoryChanged = historyChanged;
+  if (history) {
+    for (const event of events) {
+      if (event.event === steelNativeStreamEventName) {
+        steelHistoryChanged =
+          appendSteelNativeActivityEvent(history, event.data) || steelHistoryChanged;
+      }
+    }
+  }
+  const expectedCreatedAt = req?._resumableJobCreatedAt;
+  if (steelHistoryChanged && streamId && history) {
+    await GenerationJobManager.updateMetadata(
+      streamId,
+      { steelHistory: history },
+      expectedCreatedAt,
+    );
+  }
+  for (const event of events) {
+    if (streamId) {
+      await GenerationJobManager.emitChunk(
+        streamId,
+        event,
+        expectedCreatedAt == null ? undefined : { expectedCreatedAt },
+      );
+    } else if (typeof res?.write === 'function' && !res.writableEnded) {
+      sendEvent(res, event);
+    }
+  }
 }

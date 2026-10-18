@@ -14,12 +14,13 @@ const {
   createSteelOcrResponseAuditService,
   createOpenAIOAuthModel,
   runOcrPreprocessingBatchPipeline,
+  steelPaddleOcrToolName,
+  emitSteelNativeEvents,
   PADDLE_OCR_MCP_SERVER_NAME: steelPaddleOcrMcpServerName,
 } = require('@librechat/api');
 const { FileSources } = require('librechat-data-provider');
 const db = require('~/models');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
-const { steelPaddleOcrToolName, emitSteelNativeEvents } = require('./native');
 const {
   getSteelFileId,
   getMessageContentText,
