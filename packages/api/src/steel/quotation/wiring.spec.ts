@@ -140,6 +140,37 @@ it('reserves the committed summary slot without copying the backend table into t
   expect(step).toHaveBeenCalledWith('on_run_step', expect.objectContaining({ index: 2 }), expect.any(Object));
 });
 
+it('resets only the streamed summary slot and never the published system_order', async () => {
+  const contentParts: SteelQuotationPublicationContentPart[] = [
+    { type: 'text', text: 'primary' },
+    { type: 'text', text: '## system_order\n\ntable' },
+  ];
+  const reset = jest.fn(async () => undefined);
+  const wiring = createSteelQuotationTextWiring({
+    responseId: 'response', conversationId: scope.conversationId, contentParts,
+    stepHandler: { handle: jest.fn(async () => undefined) },
+    resetHandler: { handle: reset },
+    buildMessageFields: () => ({ sourceMessageId: 'response', conversationId: scope.conversationId, user: scope.userId }),
+  });
+  await wiring.onTextReset();
+  expect(reset).not.toHaveBeenCalled();
+
+  wiring.onCommittedMessage(saved);
+  await wiring.onText('一半的總結');
+  await wiring.onTextReset();
+
+  expect(reset).toHaveBeenCalledWith('on_steel_content_reset', { id: 'quotation:response' }, expect.any(Object));
+  const local = createSteelQuotationTextWiring({
+    responseId: 'response', conversationId: scope.conversationId, contentParts,
+    buildMessageFields: () => ({ sourceMessageId: 'response', conversationId: scope.conversationId, user: scope.userId }),
+  });
+  local.onCommittedMessage(saved);
+  await local.onText('一半的總結');
+  await local.onTextReset();
+  expect(contentParts[1]).toEqual({ type: 'text', text: '## system_order\n\ntable' });
+  expect(contentParts[2]).toEqual({ type: 'text', text: '' });
+});
+
 it('publishes the actual committed message through a separate ordered event', async () => {
   const emit = jest.fn(async () => undefined);
   const adopt = jest.fn();

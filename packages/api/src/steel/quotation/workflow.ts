@@ -32,7 +32,7 @@ import {
 } from '../native/steps';
 import { getQuotationHistoryDelta, upsertQuotationToolContent } from './history';
 import { createSteelMarkdownCompletionServices } from '../markdown/completion';
-import { getQuotationPreflightNotice, runQuotationPreflight } from './runner';
+import { getQuotationPreflightNotice, runQuotationPreflightWithRetries } from './runner';
 import { createSteelQuotationPublicationPublisher } from './publication';
 import { createSteelFullMarkdownPublisher } from '../markdown/full';
 import { isQuotationPreparationComplete } from './signal';
@@ -95,6 +95,7 @@ export interface SteelQuotationWorkflowInput {
   agent?: SteelQuotationWorkflowAgent;
   run?: SteelQuotationWorkflowRun;
   onText(text: string): Promise<void>;
+  onTextReset?: QuotationRunnerInput['onTextReset'];
   onUsage?: QuotationRunnerInput['onUsage'];
   contentParts?: unknown[];
   buildPublicationMessage(
@@ -144,6 +145,7 @@ export function createSteelQuotationWorkflow({ db, client }: SteelQuotationWorkf
     agent,
     run,
     onText,
+    onTextReset,
     onUsage,
     contentParts,
     buildPublicationMessage,
@@ -260,7 +262,7 @@ export function createSteelQuotationWorkflow({ db, client }: SteelQuotationWorkf
       onPublicationCommitted: (message) => notifyQuotationMessage(message, 'order'),
     });
 
-    const result = await runQuotationPreflight({
+    const result = await runQuotationPreflightWithRetries({
       scope,
       modelOptions,
       signal,
@@ -376,6 +378,7 @@ export function createSteelQuotationWorkflow({ db, client }: SteelQuotationWorkf
         admit: db.admitSteelMarkdown,
       }),
       onSummaryCommitted: (message) => notifyQuotationMessage(message, 'summary'),
+      onTextReset,
       onCompletedReplay: (targetMessageId) =>
         notifyQuotationMessage(
           () => db.getMessage({ user: scope.userId, messageId: targetMessageId }),

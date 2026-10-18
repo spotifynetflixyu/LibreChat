@@ -1,5 +1,6 @@
 import { nanoid } from 'nanoid';
-import { StepTypes } from 'librechat-data-provider';
+import { StepTypes, steelContentResetEvent } from 'librechat-data-provider';
+import type { Agents } from 'librechat-data-provider';
 import type { EventHandler } from '@librechat/agents';
 import type { Response } from 'express';
 import type { StreamEvent } from '~/types/events';
@@ -12,14 +13,45 @@ import { sendEvent } from '~/utils/events';
 function isDelegateOcrStreamEventPayload(value: unknown): value is DelegateOcrStreamEventPayload {
   if (value == null || typeof value !== 'object') return false;
   const phase = (value as { phase?: unknown }).phase;
-  return phase === 'delta' || phase === 'complete' || phase === 'error';
+  return phase === 'delta' || phase === 'complete' || phase === 'error' || phase === 'reset';
+}
+
+/** Clears one run step's streamed text in the turn's aggregated content and on the client. */
+export type SteelStepTextReset = (stepId: string) => Promise<void>;
+
+export interface CreateSteelStepTextResetInput {
+  contentParts?: Agents.MessageContentComplex[] | null;
+  stepMap?: Map<string, { index: number }> | null;
+  emit(event: { event: string; data: object }): Promise<void>;
+}
+
+/**
+ * The reset a retried Steel attempt runs before it streams again: the step's
+ * text part is emptied in place, so later deltas, the resume snapshot and the
+ * saved message all continue from the new attempt only.
+ */
+export function createSteelStepTextReset({
+  contentParts,
+  stepMap,
+  emit,
+}: CreateSteelStepTextResetInput): SteelStepTextReset {
+  return async (stepId) => {
+    const index = stepMap?.get(stepId)?.index;
+    const part = index === undefined ? undefined : contentParts?.[index];
+    if (index === undefined || !contentParts || part?.type !== 'text') {
+      return;
+    }
+    contentParts[index] = { ...part, text: '' };
+    await emit({ event: steelContentResetEvent, data: { id: stepId } });
+  };
 }
 
 /**
  * Streams delegate_ocr deltas into the assistant message as one message-creation
  * step per run and provider tool call, so the OCR answer renders while it is produced.
+ * A `reset` clears that step's text before a retried attempt streams into it again.
  */
-export function createDelegateOcrStreamHandler(): EventHandler {
+export function createDelegateOcrStreamHandler(resetStepText?: SteelStepTextReset): EventHandler {
   const messageStepIds = new Map<string, string>();
 
   return {
@@ -32,6 +64,13 @@ export function createDelegateOcrStreamHandler(): EventHandler {
       const runId =
         typeof metadataRunId === 'string' && metadataRunId !== '' ? metadataRunId : graph.runId || 'run';
       const streamKey = `${runId}:${providerToolCallId}`;
+      if (data.phase === 'reset') {
+        const messageStepId = messageStepIds.get(streamKey);
+        if (messageStepId) {
+          await resetStepText?.(messageStepId);
+        }
+        return;
+      }
       if (data.phase !== 'delta') {
         messageStepIds.delete(streamKey);
         return;

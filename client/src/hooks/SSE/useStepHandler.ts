@@ -11,6 +11,7 @@ import {
   getRunStepDurationMs,
   getRunStepCloseMetadata,
   getToolTimingDurations,
+  steelContentResetEvent,
 } from 'librechat-data-provider';
 import type {
   Agents,
@@ -23,6 +24,7 @@ import type {
   SubagentUpdateEvent,
   SandboxStartingEvent,
   PtcToolCallEvent,
+  SteelContentResetEventData,
 } from 'librechat-data-provider';
 import type { SetterOrUpdater } from 'recoil';
 import type { AnnounceOptions } from '~/common';
@@ -45,6 +47,7 @@ import {
 } from '~/store';
 import { isAskUserQuestionPart, isAnsweredAskUserQuestionPart } from '~/utils/approval';
 import { mergeSteelQuotationMainSnapshot } from '~/utils/steelQuotation';
+import { clearSteelStepText } from '~/utils/steel';
 import { applyCompactionMarker } from '~/utils/compaction';
 import { MESSAGE_UPDATE_INTERVAL } from '~/common';
 import { isOAuthToolCallName } from './oauth';
@@ -83,7 +86,8 @@ type TStepEvent =
   | { event: StepEvents.ON_CONTEXT_COMPACTION; data: Agents.OAuthCompactionEvent }
   | { event: StepEvents.ON_SUBAGENT_UPDATE; data: SubagentUpdateEvent }
   | { event: StepEvents.ON_SANDBOX_STARTING; data: SandboxStartingEvent }
-  | { event: StepEvents.ON_PTC_TOOL_CALL; data: PtcToolCallEvent };
+  | { event: StepEvents.ON_PTC_TOOL_CALL; data: PtcToolCallEvent }
+  | { event: typeof steelContentResetEvent; data: SteelContentResetEventData };
 
 type MessageDeltaUpdate = {
   type: ContentTypes.TEXT;
@@ -1250,6 +1254,34 @@ export default function useStepHandler({
             messageMap.current.set(responseMessageId, updatedResponse);
             scheduleCoalescedMessagesFlush(responseMessageId);
           }
+        }
+      } else if (stepEvent.event === steelContentResetEvent) {
+        const runStep = stepMap.current.get(stepEvent.data.id);
+        let responseMessageId = runStep?.runId ?? '';
+        if (responseMessageId === Constants.USE_PRELIM_RESPONSE_MESSAGE_ID) {
+          responseMessageId = submission?.initialResponse?.messageId ?? '';
+        }
+        if (!runStep || !responseMessageId) {
+          const buffer = pendingDeltaBuffer.current.get(stepEvent.data.id) ?? [];
+          buffer.push(stepEvent);
+          pendingDeltaBuffer.current.set(stepEvent.data.id, buffer);
+          return;
+        }
+        const response = messageMap.current.get(responseMessageId);
+        const cleared =
+          response &&
+          clearSteelStepText(
+            response,
+            calculateContentIndex(
+              runStep.index,
+              editPrefixOffset,
+              ContentTypes.TEXT,
+              response.content,
+            ),
+          );
+        if (cleared) {
+          messageMap.current.set(responseMessageId, cleared);
+          scheduleCoalescedMessagesFlush(responseMessageId);
         }
       } else if (stepEvent.event === StepEvents.ON_REASONING_DELTA) {
         const reasoningDelta = stepEvent.data;

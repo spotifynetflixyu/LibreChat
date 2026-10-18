@@ -9,6 +9,7 @@ jest.mock('@librechat/api', () => ({
   sendEvent: jest.fn(),
   delegateOcrStreamEventName: 'on_delegate_ocr_stream',
   createDelegateOcrStreamHandler: jest.requireActual('@librechat/api').createDelegateOcrStreamHandler,
+  createSteelStepTextReset: jest.requireActual('@librechat/api').createSteelStepTextReset,
   steelNativeStreamEventName: 'steel_event',
   appendSteelNativeActivityEvent: jest.fn(() => false),
   writeAttachmentEvent: jest.fn(),
@@ -338,6 +339,49 @@ describe('getDefaultHandlers', () => {
           },
         ],
       },
+      metadata,
+    );
+  });
+
+  it('clears a retried delegate OCR step in place and tells the client', async () => {
+    const res = { headersSent: true, write: jest.fn() };
+    const contentParts = [{ type: 'text', text: '第一次一半', tool_call_ids: ['call-ocr-1'] }];
+    const handlers = getDefaultHandlers({
+      res,
+      aggregateContent: jest.fn(),
+      contentParts,
+      stepMap: new Map([['ocr-message-step-1', { index: 0 }]]),
+      toolEndCallback: jest.fn(),
+      collectedUsage: [],
+    });
+    const handler = handlers.on_delegate_ocr_stream;
+    const graph = {
+      runId: 'run-1',
+      dispatchRunStep: jest.fn().mockResolvedValue('ocr-message-step-1'),
+      dispatchMessageDelta: jest.fn().mockResolvedValue(undefined),
+    };
+    const metadata = { run_id: 'run-1', langgraph_node: 'agent-1' };
+    const event = (data) =>
+      handler.handle(
+        'on_delegate_ocr_stream',
+        { providerToolCallId: 'call-ocr-1', ...data },
+        metadata,
+        graph,
+      );
+
+    await event({ phase: 'delta', delta: '第一次一半' });
+    await event({ phase: 'reset' });
+    await event({ phase: 'delta', delta: '第二次' });
+
+    expect(contentParts[0]).toEqual({ type: 'text', text: '', tool_call_ids: ['call-ocr-1'] });
+    expect(sendEvent).toHaveBeenCalledWith(res, {
+      event: 'on_steel_content_reset',
+      data: { id: 'ocr-message-step-1' },
+    });
+    expect(graph.dispatchRunStep).toHaveBeenCalledTimes(1);
+    expect(graph.dispatchMessageDelta).toHaveBeenLastCalledWith(
+      'ocr-message-step-1',
+      { content: [{ type: 'text', text: '第二次', tool_call_ids: ['call-ocr-1'] }] },
       metadata,
     );
   });

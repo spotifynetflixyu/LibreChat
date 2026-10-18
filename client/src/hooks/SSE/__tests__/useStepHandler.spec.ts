@@ -8,6 +8,7 @@ import {
   StepEvents,
   ContentTypes,
   ToolCallTypes,
+  steelContentResetEvent,
 } from 'librechat-data-provider';
 import type {
   TMessageContentParts,
@@ -512,6 +513,27 @@ describe('useStepHandler', () => {
       expect(responseMsg?.content).toContainEqual(
         expect.objectContaining({ type: ContentTypes.TEXT, text: 'Hello' }),
       );
+    });
+
+    it('clears a retried Steel step and streams the next attempt over it', () => {
+      mockGetMessages.mockReturnValue([createResponseMessage()]);
+      const { result } = renderHook(() => useStepHandler(createHookParams()));
+      const submission = createSubmission();
+      const send = (event: Parameters<typeof result.current.stepHandler>[0]) =>
+        act(() => {
+          result.current.stepHandler(event, submission);
+        });
+
+      send({ event: StepEvents.ON_RUN_STEP, data: createRunStep({ id: 'step-ocr' }) });
+      send({ event: StepEvents.ON_MESSAGE_DELTA, data: createMessageDelta('step-ocr', '第一次一半') });
+      send({ event: steelContentResetEvent, data: { id: 'step-ocr' } });
+      send({ event: StepEvents.ON_MESSAGE_DELTA, data: createMessageDelta('step-ocr', '第二次') });
+
+      const lastCall = mockSetMessages.mock.calls[mockSetMessages.mock.calls.length - 1][0];
+      const response = lastCall.find((m: TMessage) => !m.isCreatedByUser);
+      expect(response?.content).toEqual([
+        expect.objectContaining({ type: ContentTypes.TEXT, text: '第二次' }),
+      ]);
     });
 
     it('should ensure userMessage is present in multi-tab scenarios', () => {

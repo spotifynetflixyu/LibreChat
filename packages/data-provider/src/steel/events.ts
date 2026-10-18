@@ -3,6 +3,14 @@ import { steelQuotationOcrSourceSchema } from './quotation';
 
 export const steelNativeStreamEventName = 'steel_event' as const;
 
+/** Discards the streamed text of one run step before a failed Steel attempt is retried. */
+export const steelContentResetEvent = 'on_steel_content_reset' as const;
+
+export interface SteelContentResetEventData {
+  /** The message-creation run step whose text is cleared. */
+  id: string;
+}
+
 export const steelNativeErrorMessageMaxLength = 512;
 export const steelNativePreflightToolCallMaxCount = 100;
 export const steelNativePreflightToolCallIdMaxBytes = 256;

@@ -116,3 +116,14 @@ export function getSteelErrorResponse(error: unknown): SteelErrorResponse | unde
     ? (response as SteelErrorResponse)
     : undefined;
 }
+
+/** Empties one streamed text part so a retried Steel attempt can stream over it. */
+export function clearSteelStepText(message: TMessage, index: number): TMessage | undefined {
+  const part = message.content?.[index];
+  if (!message.content || part?.type !== ContentTypes.TEXT) {
+    return undefined;
+  }
+  const content = [...message.content];
+  content[index] = { ...part, text: '' };
+  return { ...message, content };
+}

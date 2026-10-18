@@ -10,6 +10,7 @@ const {
   UsageEvents,
   getRunStepDurationMs,
   getRunStepCloseMetadata,
+  steelContentResetEvent,
 } = require('librechat-data-provider');
 const {
   GraphEvents,
@@ -29,6 +30,7 @@ const {
   HOST_FILE_AUTHORING_ARTIFACT_KEY,
   delegateOcrStreamEventName,
   createDelegateOcrStreamHandler,
+  createSteelStepTextReset,
   isCodeSessionToolName,
   isCodeArtifactToolOutput,
   getModelRefusalInfo,
@@ -734,7 +736,11 @@ function getDefaultHandlers({
   if (toolExecuteOptions) {
     handlers[GraphEvents.ON_TOOL_EXECUTE] = createToolExecuteHandler(toolExecuteOptions);
   }
-  handlers[delegateOcrStreamEventName] = createDelegateOcrStreamHandler();
+  const resetSteelStepText = createSteelStepTextReset({ contentParts, stepMap, emit: emitForJob });
+  handlers[delegateOcrStreamEventName] = createDelegateOcrStreamHandler(resetSteelStepText);
+  handlers[steelContentResetEvent] = {
+    handle: (_event, data) => resetSteelStepText(data.id),
+  };
   handlers[steelNativeStreamEventName] = {
     handle: async (_event, data) => {
       appendSteelNativeActivityEvent(steelHistory, data);

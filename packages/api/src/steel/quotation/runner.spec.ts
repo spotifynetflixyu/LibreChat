@@ -41,7 +41,9 @@ import {
   acceptQuotationResponse,
   acceptQuotationSignal,
   hasCompleteSteelFormula,
+  QUOTATION_MAX_ATTEMPTS,
   runQuotationPreflight,
+  runQuotationPreflightWithRetries,
 } from './runner';
 import { getQuotationHistoryDelta, readQuotationHistory } from './history';
 import { createSteelQuotationPublicationPublisher } from './publication';
@@ -492,6 +494,98 @@ describe('quotation runner integration', () => {
     expect(state?.activeRun?.status).toBe('completed');
     expect(state?.currentSystemOrder).toBeDefined();
     expect(state?.activeRun?.interruption).toBeUndefined();
+  });
+
+  it('retries a failed summary agent over its own streamed text without republishing the table', async () => {
+    await prepareRun(1);
+    const executeLookup = createLookupExecutor();
+    const publishFinal = jest.fn(async () => undefined);
+    const streamed: string[] = [];
+    const onTextReset = jest.fn(async () => {
+      streamed.length = 0;
+    });
+    let mainCalls = 0;
+    const model = createModel({
+      streamMain: true,
+      onMain: async (input) => {
+        mainCalls += 1;
+        if (mainCalls === 1) {
+          await input.onTextDelta?.('## manual_reviews\n\n一半');
+          throw new Error('summary stream disconnected');
+        }
+      },
+    });
+
+    const result = await runQuotationPreflight({
+      ...runnerInput(model, executeLookup, {
+        publishFinal,
+        onTextDelta: async (text) => {
+          streamed.push(text);
+        },
+      }),
+      onTextReset,
+    });
+
+    expect(result.status).toBe('completed');
+    expect(mainCalls).toBe(2);
+    expect(onTextReset).toHaveBeenCalledTimes(1);
+    expect(streamed.join('')).not.toContain('一半');
+    expect(publishFinal).toHaveBeenCalledTimes(1);
+    expect(executeLookup).toHaveBeenCalledTimes(1);
+  });
+
+  it('reruns an interrupted quotation from its checkpoints within the same turn', async () => {
+    await prepareRun(1);
+    const executeLookup = createLookupExecutor();
+    const publishFinal = jest.fn(async () => undefined);
+    const model = createModel({ failChunk: (call) => call === 1 });
+
+    const result = await runQuotationPreflightWithRetries(
+      runnerInput(model, executeLookup, { publishFinal }),
+    );
+
+    expect(result.status).toBe('completed');
+    expect(publishFinal).toHaveBeenCalledTimes(1);
+    expect((await service.readState(scope))?.activeRun?.status).toBe('completed');
+  });
+
+  it('does not rerun a published quotation whose summary keeps failing', async () => {
+    await prepareRun(1);
+    const mainError = new Error('main review failed');
+    const model = createModel();
+    const publishFinal = jest.fn(async () => undefined);
+    const invokeModel = jest.fn(async (input: QuotationModelInput) => {
+      if (input.role === 'main') throw mainError;
+      return model(input);
+    });
+
+    await expect(
+      runQuotationPreflightWithRetries(
+        runnerInput(invokeModel, createLookupExecutor(), { publishFinal }),
+      ),
+    ).rejects.toBe(mainError);
+    expect(invokeModel.mock.calls.filter(([input]) => input.role === 'main')).toHaveLength(
+      QUOTATION_MAX_ATTEMPTS,
+    );
+    expect(publishFinal).toHaveBeenCalledTimes(1);
+    expect((await service.readState(scope))?.activeRun?.status).toBe('completed');
+  });
+
+  it('gives up after three interrupted attempts and leaves the run resumable', async () => {
+    await prepareRun(1);
+    const executeLookup = createLookupExecutor();
+    const publishFinal = jest.fn(async () => {
+      throw new Error('publication storage unavailable');
+    });
+
+    await expect(
+      runQuotationPreflightWithRetries(
+        runnerInput(createModel(), executeLookup, { publishFinal }),
+      ),
+    ).rejects.toThrow('publication storage unavailable');
+    expect(publishFinal).toHaveBeenCalledTimes(QUOTATION_MAX_ATTEMPTS);
+    expect(executeLookup).toHaveBeenCalledTimes(1);
+    expect((await service.readState(scope))?.activeRun?.status).toBe('interrupted');
   });
 
   it('refuses a completed publication marker without its durable receipt after a publisher error', async () => {

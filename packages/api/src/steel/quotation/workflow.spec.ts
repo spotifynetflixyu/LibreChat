@@ -9,7 +9,7 @@ const mockFinalize = jest.fn();
 
 jest.mock('./runner', () => ({
   ...jest.requireActual('./runner'),
-  runQuotationPreflight: (input: QuotationRunnerInput) => mockRunQuotation(input),
+  runQuotationPreflightWithRetries: (input: QuotationRunnerInput) => mockRunQuotation(input),
 }));
 jest.mock('../markdown/completion', () => ({
   ...jest.requireActual('../markdown/completion'),

@@ -1,5 +1,11 @@
 import { logger } from '@librechat/data-schemas';
-import { ContentTypes, StepTypes, steelQuotationMessagePublicationSchema, steelQuotationMessageUpdateEvent } from 'librechat-data-provider';
+import {
+  StepTypes,
+  ContentTypes,
+  steelContentResetEvent,
+  steelQuotationMessageUpdateEvent,
+  steelQuotationMessagePublicationSchema,
+} from 'librechat-data-provider';
 import type { SteelQuotationErrorPart, SteelQuotationErrorsAppendInput, SteelQuotationErrorsAppendResult, SteelQuotationSavedMessage, SteelQuotationScope, SteelQuotationSummaryInput, SteelQuotationSummaryResult } from '@librechat/data-schemas';
 import type { SteelMarkdownAdmission, SteelMarkdownAdmissionInput } from '@librechat/data-schemas';
 import type {
@@ -22,6 +28,8 @@ interface QuotationHandler {
 
 interface QuotationTextWiring {
   onText(text: string): Promise<void>;
+  /** Clears only the summary slot; the published table and footer slots are untouched. */
+  onTextReset(): Promise<void>;
   onCommittedMessage(message: SteelQuotationSavedMessage): void;
   buildPublicationMessage(input: { targetMessageId: string; markdown: string }): SteelQuotationPublicationMessageSnapshot;
 }
@@ -222,6 +230,8 @@ export function createSteelQuotationTextWiring(input: {
   configurable?: object;
   stepHandler?: QuotationHandler;
   deltaHandler?: QuotationHandler;
+  /** Clears a run step's streamed text in the aggregated content and on the client. */
+  resetHandler?: QuotationHandler;
   stepMap?: { get(stepId: string): { index: number } | undefined };
   buildMessageFields(targetMessageId: string): SteelQuotationPublicationMessageFields;
 }): QuotationTextWiring {
@@ -267,8 +277,21 @@ export function createSteelQuotationTextWiring(input: {
     };
   };
 
+  const onTextReset = async (): Promise<void> => {
+    if (!seeded || summaryIndex === undefined) return;
+    if (input.resetHandler) {
+      await input.resetHandler.handle(steelContentResetEvent, { id: stepId }, metadata);
+      return;
+    }
+    const existing = input.contentParts[summaryIndex];
+    if (existing?.type === ContentTypes.TEXT) {
+      input.contentParts[summaryIndex] = { ...existing, text: '' };
+    }
+  };
+
   return {
     onText,
+    onTextReset,
     onCommittedMessage: (message: SteelQuotationSavedMessage): void => {
       const publication = steelQuotationMessagePublicationSchema.parse(message.metadata?.steelQuotation);
       messageId = message.messageId;

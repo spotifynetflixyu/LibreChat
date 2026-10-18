@@ -56,7 +56,21 @@ export type DelegateOcrStreamEventPayload =
       claimToken?: string;
       generationId?: string;
       attemptToken?: string;
+    }
+  | {
+      /** A failed attempt is retried: its streamed text is discarded. */
+      phase: 'reset';
+      providerToolCallId?: string;
+      claimToken?: string;
+      generationId?: string;
+      attemptToken?: string;
     };
+
+/** One OCR main-agent turn runs at most this many attempts (two retries). */
+export const DELEGATE_OCR_MAX_ATTEMPTS = 3;
+
+/** Called before a retry so the streamed text of the failed attempt can be discarded. */
+export type DelegateOcrOnRetry = (attemptNumber: number) => void | Promise<void>;
 
 export interface DelegateOcrPageRange {
   pageStart: number;
@@ -280,6 +294,8 @@ export interface DelegateOcrPreprocessingInput {
 }
 
 export interface DelegateOcrPreprocessingResult {
+  /** Some OCR chunks failed; the next attempt's progress check reruns them. */
+  incomplete?: boolean;
   organizerMarkdown?: string | readonly string[];
   paddleOcrMarkdown?: string | readonly string[];
   fallbackMarkdown?: string | readonly string[];
@@ -392,6 +408,7 @@ export interface DelegateOcrInput {
   prepareBatches?: PrepareDelegateOcrBatches;
   signal?: AbortSignal;
   onDelta?: DelegateOcrOnDelta;
+  onRetry?: DelegateOcrOnRetry;
   workflow?: DelegateOcrWorkflowInput;
 }
 
@@ -399,6 +416,7 @@ export interface DelegateOcrExecuteInput {
   files: DelegateOcrFileInput[];
   providerToolCallId?: string;
   onDelta?: DelegateOcrOnDelta;
+  onRetry?: DelegateOcrOnRetry;
   claimToken?: string;
   generationId?: string;
   attemptToken?: string;
@@ -1045,8 +1063,13 @@ interface DelegateOcrWorkflowContext {
   previousOcrResultMarkdown: string | undefined;
   suggestedOcrResultColumns: readonly string[];
   selectedMetadata: DelegateOcrSelectedFileMetadata[];
-  organizerMarkdown: string[];
+  /** Checks OCR progress: reuses the saved chunks and reruns only unfinished ones. */
+  loadOrganizerMarkdown: () => Promise<string[]>;
 }
+
+type DelegateOcrAttemptOutcome =
+  | { ok: true; accepted: string }
+  | { ok: false; reason: string; retryable: boolean; failure: DelegateOcrFinalizerInput };
 
 function delegateBatchError(batch: DelegateOcrPreparedBatch, error: unknown): Error {
   const range = batch.range;
@@ -1057,8 +1080,8 @@ function delegateBatchError(batch: DelegateOcrPreparedBatch, error: unknown): Er
   );
 }
 
-/** Workflow mode: one agent answer over every file, finalized against the canonical mapping. */
-async function runDelegateOcrWorkflow(
+/** One workflow attempt: recheck OCR progress, then one agent answer over every file, finalized against the canonical mapping. */
+async function runDelegateOcrAttempt(
   input: DelegateOcrInput,
   {
     workflow,
@@ -1067,158 +1090,190 @@ async function runDelegateOcrWorkflow(
     previousOcrResultMarkdown,
     suggestedOcrResultColumns,
     selectedMetadata,
-    organizerMarkdown,
+    loadOrganizerMarkdown,
   }: DelegateOcrWorkflowContext,
-): Promise<string> {
-  for (let agentAttempt = 1; agentAttempt <= 3; agentAttempt += 1) {
-    const attemptToken =
-      workflow?.attemptToken && agentAttempt === 1 ? workflow.attemptToken : randomUUID();
-    const attemptInput: DelegateOcrRunAttemptInput = {
-      claimToken: workflow?.claimToken,
-      generationId: workflow?.generationId,
-      attemptNumber: agentAttempt,
-      attemptToken,
-    };
-    if (workflow?.runStore?.beginAttempt) {
-      const begun = await workflow.runStore.beginAttempt(attemptInput);
-      if (typeof begun === 'string' && begun.trim() !== '') {
-        attemptInput.attemptToken = begun;
-      } else if (
-        begun !== null &&
-        typeof begun === 'object' &&
-        typeof begun.attemptToken === 'string' &&
-        begun.attemptToken.trim() !== ''
-      ) {
-        attemptInput.attemptToken = begun.attemptToken;
-      }
+  attemptNumber: number,
+): Promise<DelegateOcrAttemptOutcome> {
+  const organizerMarkdown = await loadOrganizerMarkdown();
+  const attemptToken =
+    workflow?.attemptToken && attemptNumber === 1 ? workflow.attemptToken : randomUUID();
+  const attemptInput: DelegateOcrRunAttemptInput = {
+    claimToken: workflow?.claimToken,
+    generationId: workflow?.generationId,
+    attemptNumber,
+    attemptToken,
+  };
+  if (workflow?.runStore?.beginAttempt) {
+    const begun = await workflow.runStore.beginAttempt(attemptInput);
+    if (typeof begun === 'string' && begun.trim() !== '') {
+      attemptInput.attemptToken = begun;
+    } else if (
+      begun !== null &&
+      typeof begun === 'object' &&
+      typeof begun.attemptToken === 'string' &&
+      begun.attemptToken.trim() !== ''
+    ) {
+      attemptInput.attemptToken = begun.attemptToken;
     }
-    await workflow?.runStore?.persistAttempt?.(attemptInput);
-    const messages = buildDelegateOcrWorkflowMessages({
-      ocrRulesText: input.ocrRulesText,
-      canonicalMapping,
-      previousOcrResultMarkdown,
-      suggestedOcrResultColumns,
-      selectedFiles: selectedMetadata,
-      organizerMarkdown,
-    });
-    /** Hold only the short mapping prefix. Once its canonical pairs are
-     * validated, release it and stream the rest live. A rejected mapping is
-     * never emitted, so retries cannot contaminate the accepted response. */
-    let bufferedDelta = '';
-    let mappingReleased = false;
-    const answer = await (input.invokeModel ?? invokeNativeOcrModel)({
-      messages,
-      modelOptions: scopeOAuthCompaction(
-        delegateModelOptions,
-        `ocr:${attemptInput.attemptToken ?? randomUUID()}`,
-      ),
-      signal: input.signal,
-      attemptNumber: agentAttempt,
-      attemptToken: attemptInput.attemptToken,
-      onDelta: input.onDelta
-        ? async (delta, metadata) => {
-            const deltaMetadata = {
-              claimToken: workflow?.claimToken,
-              generationId: workflow?.generationId,
-              attemptToken: metadata?.attemptToken ?? attemptInput.attemptToken,
-            };
-            if (mappingReleased) {
-              await input.onDelta?.(delta, deltaMetadata);
-              return;
-            }
-            bufferedDelta += delta;
-            if (hasValidatedCanonicalMappingPrefix(bufferedDelta, canonicalMapping)) {
-              mappingReleased = true;
-              const acceptedPrefix = bufferedDelta;
-              bufferedDelta = '';
-              await input.onDelta?.(acceptedPrefix, deltaMetadata);
-            }
+  }
+  await workflow?.runStore?.persistAttempt?.(attemptInput);
+  const messages = buildDelegateOcrWorkflowMessages({
+    ocrRulesText: input.ocrRulesText,
+    canonicalMapping,
+    previousOcrResultMarkdown,
+    suggestedOcrResultColumns,
+    selectedFiles: selectedMetadata,
+    organizerMarkdown,
+  });
+  /** Hold only the short mapping prefix. Once its canonical pairs are
+   * validated, release it and stream the rest live; a retry discards the
+   * streamed text through `onRetry`. */
+  let bufferedDelta = '';
+  let mappingReleased = false;
+  const answer = await (input.invokeModel ?? invokeNativeOcrModel)({
+    messages,
+    modelOptions: scopeOAuthCompaction(
+      delegateModelOptions,
+      `ocr:${attemptInput.attemptToken ?? randomUUID()}`,
+    ),
+    signal: input.signal,
+    attemptNumber,
+    attemptToken: attemptInput.attemptToken,
+    onDelta: input.onDelta
+      ? async (delta, metadata) => {
+          const deltaMetadata = {
+            claimToken: workflow?.claimToken,
+            generationId: workflow?.generationId,
+            attemptToken: metadata?.attemptToken ?? attemptInput.attemptToken,
+          };
+          if (mappingReleased) {
+            await input.onDelta?.(delta, deltaMetadata);
+            return;
           }
-        : undefined,
-    });
-    await workflow?.auditResponse?.({
-      assistantResponse: answer,
-      canonicalMapping,
-      previousOcrResultMarkdown,
-      suggestedOcrResultColumns,
-      attemptNumber: agentAttempt,
-      attemptToken: attemptInput.attemptToken,
-    });
-    if (answer.trim() === '') {
-      throw new Error('delegate_ocr model returned an empty answer');
-    }
-    const emitAccepted = async (accepted: string): Promise<string> => {
-      if (!mappingReleased) {
-        await input.onDelta?.(accepted, {
-          claimToken: workflow?.claimToken,
-          generationId: workflow?.generationId,
-          attemptToken: attemptInput.attemptToken,
-        });
-      }
-      return accepted;
-    };
-    let finalized: DelegateOcrFinalizerResult = undefined;
-    if (workflow?.finalize) {
-      finalized = await workflow.finalize({
-        assistantResponse: answer,
-        canonicalMapping,
-        previousOcrResultMarkdown,
-        suggestedOcrResultColumns,
-        attemptNumber: agentAttempt,
+          bufferedDelta += delta;
+          if (hasValidatedCanonicalMappingPrefix(bufferedDelta, canonicalMapping)) {
+            mappingReleased = true;
+            const acceptedPrefix = bufferedDelta;
+            bufferedDelta = '';
+            await input.onDelta?.(acceptedPrefix, deltaMetadata);
+          }
+        }
+      : undefined,
+  });
+  await workflow?.auditResponse?.({
+    assistantResponse: answer,
+    canonicalMapping,
+    previousOcrResultMarkdown,
+    suggestedOcrResultColumns,
+    attemptNumber,
+    attemptToken: attemptInput.attemptToken,
+  });
+  if (answer.trim() === '') {
+    throw new Error('delegate_ocr model returned an empty answer');
+  }
+  const emitAccepted = async (accepted: string): Promise<string> => {
+    if (!mappingReleased) {
+      await input.onDelta?.(accepted, {
+        claimToken: workflow?.claimToken,
+        generationId: workflow?.generationId,
         attemptToken: attemptInput.attemptToken,
       });
-    } else if (canonicalMapping.length > 0) {
-      const result = finalizeOcrResponse({
-        assistantResponse: answer,
-        previousOcrMarkdown: previousOcrResultMarkdown,
-        canonicalMapping,
-        delegateSummary: true,
-        agentKind: 'delegate_ocr',
-      });
-      finalized = result.ok
-        ? { ok: true, finalResponse: result.finalResponse, ocrResultMarkdown: result.ocrResultMarkdown }
-        : { ok: false, reason: result.reason, mappingRetryable: result.mappingRetryable };
     }
-    if (finalized === undefined || typeof finalized === 'string') {
-      const accepted =
-        typeof finalized === 'string' && finalized.trim() !== '' ? finalized : answer;
-      return emitAccepted(accepted);
-    }
-    if (finalized.ok) {
-      const accepted = finalized.finalResponse ?? answer;
-      if (workflow) {
-        workflow.finalizedByBackend = true;
-        workflow.finalizedResponse = {
-          ok: true,
-          finalResponse: accepted,
-          ...(typeof finalized.ocrResultMarkdown === 'string'
-            ? { ocrResultMarkdown: finalized.ocrResultMarkdown }
-            : {}),
-        };
-      }
-      return emitAccepted(accepted);
-    }
-    const mappingRetryable =
-      finalized.reason === 'mapping_mismatch' && finalized.mappingRetryable !== false;
-    if (mappingRetryable && agentAttempt < 3) {
-      continue;
-    }
-    await workflow?.saveFailed?.({
+    return accepted;
+  };
+  let finalized: DelegateOcrFinalizerResult = undefined;
+  if (workflow?.finalize) {
+    finalized = await workflow.finalize({
       assistantResponse: answer,
       canonicalMapping,
       previousOcrResultMarkdown,
       suggestedOcrResultColumns,
-      attemptNumber: agentAttempt,
+      attemptNumber,
       attemptToken: attemptInput.attemptToken,
-      reason: finalized.reason,
     });
+  } else if (canonicalMapping.length > 0) {
+    const result = finalizeOcrResponse({
+      assistantResponse: answer,
+      previousOcrMarkdown: previousOcrResultMarkdown,
+      canonicalMapping,
+      delegateSummary: true,
+      agentKind: 'delegate_ocr',
+    });
+    finalized = result.ok
+      ? { ok: true, finalResponse: result.finalResponse, ocrResultMarkdown: result.ocrResultMarkdown }
+      : { ok: false, reason: result.reason, mappingRetryable: result.mappingRetryable };
+  }
+  if (finalized === undefined || typeof finalized === 'string') {
+    const accepted =
+      typeof finalized === 'string' && finalized.trim() !== '' ? finalized : answer;
+    return { ok: true, accepted: await emitAccepted(accepted) };
+  }
+  if (finalized.ok) {
+    const accepted = finalized.finalResponse ?? answer;
+    if (workflow) {
+      workflow.finalizedByBackend = true;
+      workflow.finalizedResponse = {
+        ok: true,
+        finalResponse: accepted,
+        ...(typeof finalized.ocrResultMarkdown === 'string'
+          ? { ocrResultMarkdown: finalized.ocrResultMarkdown }
+          : {}),
+      };
+    }
+    return { ok: true, accepted: await emitAccepted(accepted) };
+  }
+  const failure: DelegateOcrFinalizerInput = {
+    assistantResponse: answer,
+    canonicalMapping,
+    previousOcrResultMarkdown,
+    suggestedOcrResultColumns,
+    attemptNumber,
+    attemptToken: attemptInput.attemptToken,
+  };
+  return {
+    ok: false,
+    reason: finalized.reason,
+    retryable: !(finalized.reason === 'mapping_mismatch' && finalized.mappingRetryable === false),
+    failure,
+  };
+}
+
+/**
+ * Workflow mode: a failed attempt (a model or stream error, an empty answer, or
+ * a rejected OCR result) is retried from the saved OCR progress, up to
+ * {@link DELEGATE_OCR_MAX_ATTEMPTS} attempts. A stop request is never retried.
+ */
+async function runDelegateOcrWorkflow(
+  input: DelegateOcrInput,
+  context: DelegateOcrWorkflowContext,
+): Promise<string> {
+  for (let attemptNumber = 1; ; attemptNumber += 1) {
+    if (attemptNumber > 1) {
+      await input.onRetry?.(attemptNumber);
+    }
+    const lastAttempt = attemptNumber >= DELEGATE_OCR_MAX_ATTEMPTS;
+    let outcome: DelegateOcrAttemptOutcome;
+    try {
+      outcome = await runDelegateOcrAttempt(input, context, attemptNumber);
+    } catch (error) {
+      if (lastAttempt || input.signal?.aborted) {
+        throw error;
+      }
+      continue;
+    }
+    if (outcome.ok) {
+      return outcome.accepted;
+    }
+    if (outcome.retryable && !lastAttempt) {
+      continue;
+    }
+    await context.workflow?.saveFailed?.({ ...outcome.failure, reason: outcome.reason });
     throw new Error(
-      mappingRetryable
+      outcome.reason === 'mapping_mismatch'
         ? '目前 AI model 暫時不可用，建議先切換別的 model。'
-        : `delegate_ocr ${finalized.reason}`,
+        : `delegate_ocr ${outcome.reason}`,
     );
   }
-  throw new Error('目前 AI model 暫時不可用，建議先切換別的 model。');
 }
 
 /** Batch mode: one model answer per prepared batch, joined in order. */
@@ -1343,23 +1398,51 @@ export async function delegateOcr(input: DelegateOcrInput): Promise<string> {
     throw new Error('delegate_ocr audit callback is required for workflow finalization');
   }
 
-  const signedBatches: DelegateOcrSignedBatch[] = [];
-  for (const batch of batches) {
-    try {
-      signedBatches.push({
-        batch,
-        signedFiles: await Promise.all(
-          batch.files.map(async (file) => ({ file, url: await batch.signFile(file) })),
-        ),
-      });
-    } catch (error) {
-      throw delegateBatchError(batch, error);
+  const signBatches = async (): Promise<DelegateOcrSignedBatch[]> => {
+    const signedBatches: DelegateOcrSignedBatch[] = [];
+    for (const batch of batches) {
+      try {
+        signedBatches.push({
+          batch,
+          signedFiles: await Promise.all(
+            batch.files.map(async (file) => ({ file, url: await batch.signFile(file) })),
+          ),
+        });
+      } catch (error) {
+        throw delegateBatchError(batch, error);
+      }
     }
-  }
+    return signedBatches;
+  };
 
   const suggestedOcrResultColumns = workflow?.suggestedOcrResultColumns ?? [];
-  const organizerMarkdown: string[] = [];
-  if (workflow?.runPreprocessing) {
+  const selectedMetadata = selectedFiles.map((file, index) =>
+    toSelectedFileMetadata(
+      parsed.files[index] ?? { fileKey: `file:${file.fileId}` },
+      file,
+    ),
+  );
+  if (!workflowEnabled) {
+    return runDelegateOcrBatches(
+      input,
+      await signBatches(),
+      currentUserTurn,
+      delegateModelOptions,
+      workflow?.attemptToken || randomUUID(),
+    );
+  }
+
+  let preparedOrganizerMarkdown: string[] | undefined;
+  const loadOrganizerMarkdown = async (): Promise<string[]> => {
+    if (preparedOrganizerMarkdown) {
+      return preparedOrganizerMarkdown;
+    }
+    const signedBatches = await signBatches();
+    const organizerMarkdown: string[] = [];
+    if (!workflow?.runPreprocessing) {
+      return organizerMarkdown;
+    }
+    let complete = true;
     for (const { batch, signedFiles } of signedBatches) {
       const file = batch.files[0];
       if (!file) {
@@ -1380,37 +1463,26 @@ export async function delegateOcr(input: DelegateOcrInput): Promise<string> {
         suggestedOcrResultColumns,
       });
       if (result) {
-        organizerMarkdown.push(
-          ...toMarkdownList(result.organizerMarkdown),
-        );
+        organizerMarkdown.push(...toMarkdownList(result.organizerMarkdown));
+        complete &&= result.incomplete !== true;
       }
     }
-  }
+    /** Completed OCR progress is reused; unfinished chunks are checked again on the next attempt. */
+    if (complete) {
+      preparedOrganizerMarkdown = organizerMarkdown;
+    }
+    return organizerMarkdown;
+  };
 
-  const selectedMetadata = selectedFiles.map((file, index) =>
-    toSelectedFileMetadata(
-      parsed.files[index] ?? { fileKey: `file:${file.fileId}` },
-      file,
-    ),
-  );
-  if (workflowEnabled) {
-    return runDelegateOcrWorkflow(input, {
-      workflow,
-      delegateModelOptions,
-      canonicalMapping,
-      previousOcrResultMarkdown,
-      suggestedOcrResultColumns,
-      selectedMetadata,
-      organizerMarkdown,
-    });
-  }
-  return runDelegateOcrBatches(
-    input,
-    signedBatches,
-    currentUserTurn,
+  return runDelegateOcrWorkflow(input, {
+    workflow,
     delegateModelOptions,
-    workflow?.attemptToken || randomUUID(),
-  );
+    canonicalMapping,
+    previousOcrResultMarkdown,
+    suggestedOcrResultColumns,
+    selectedMetadata,
+    loadOrganizerMarkdown,
+  });
 }
 
 export function createDelegateOcrRequestExecute({
@@ -1428,7 +1500,7 @@ export function createDelegateOcrRequestExecute({
   signal,
   workflow,
 }: CreateDelegateOcrRequestExecuteInput): DelegateOcrExecute {
-  return async ({ files, onDelta }) => {
+  return async ({ files, onDelta, onRetry }) => {
     const parsed = delegateOcrArgsSchema.parse({ files });
     const storedFileById = new Map<string, DelegateOcrStoredFileRecord>();
     const resolvedFileKeys = resolveDelegateOcrFileKeys(
@@ -1493,6 +1565,7 @@ export function createDelegateOcrRequestExecute({
       invokeModel,
       signal,
       onDelta,
+      onRetry,
       workflow,
     });
   };
@@ -1572,6 +1645,17 @@ export function createDelegateOcrTool({
             dispatchedDelta = dispatched || dispatchedDelta;
           }
         : undefined;
+      const onRetry = streamingEnabled
+        ? async (): Promise<void> => {
+            await dispatchStreamEvent({
+              phase: 'reset',
+              providerToolCallId,
+              ...(claimToken ? { claimToken } : {}),
+              ...(generationId ? { generationId } : {}),
+              ...(activeAttemptToken ? { attemptToken: activeAttemptToken } : {}),
+            });
+          }
+        : undefined;
 
       try {
         const parsed = delegateOcrArgsSchema.parse(toolArguments);
@@ -1579,6 +1663,7 @@ export function createDelegateOcrTool({
           files: parsed.files,
           providerToolCallId,
           onDelta,
+          onRetry,
           claimToken,
           generationId,
           attemptToken,

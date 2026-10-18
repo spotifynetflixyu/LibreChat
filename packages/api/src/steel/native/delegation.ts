@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import mongoose from 'mongoose';
+import { logger } from '@librechat/data-schemas';
 import { FileSources } from 'librechat-data-provider';
 import type { Response } from 'express';
 import type { AllMethods, IMongoFile, ISteelDelegateOcrRun } from '@librechat/data-schemas';
@@ -53,6 +54,7 @@ import {
 } from '../ocr/files';
 import {
   delegateOcrArgsSchema,
+  DELEGATE_OCR_MAX_ATTEMPTS,
   resolveDelegateOcrPolicy,
   normalizeDelegateOcrChunk,
   isDelegateOcrQuoteOnlyTurn,
@@ -357,6 +359,7 @@ export interface SteelDelegateOcrService {
     input: CreateSteelDelegateOcrExecuteInput & {
       resume?: SteelDelegateOcrResume;
       onDelta?: DelegateOcrExecuteInput['onDelta'];
+      onRetry?: DelegateOcrExecuteInput['onRetry'];
     },
   ): Promise<string>;
   resolveDelegateOcrPolicyForRequest(input: {
@@ -584,16 +587,20 @@ export function createSteelDelegateOcrService(
         return undefined;
       }
       if (fileResult.status === 'failed') {
-        await statusEvent({
-          delegateOcrIndex,
-          stage: 'paddleocr',
-          status: 'failed',
-          message: `Delegate OCR preprocessing failed (${fileResult.file.ocrFileKey})`,
-          errorMessage: fileResult.errorMessage,
+        /** A failed PaddleOCR chunk is not a turn error: the agent continues with
+         * the completed chunks, and a later attempt's progress check reruns it. */
+        logger.warn('[Steel OCR] Delegate OCR preprocessing left unfinished chunks', {
+          conversationId,
+          requestId,
+          ocrFileKey: fileResult.file.ocrFileKey,
+          error: fileResult.errorMessage,
         });
-        return fileResult.partial?.markdown
-          ? { organizerMarkdown: fileResult.partial.markdown }
-          : undefined;
+        return {
+          incomplete: true,
+          ...(fileResult.partial?.markdown
+            ? { organizerMarkdown: fileResult.partial.markdown }
+            : {}),
+        };
       }
       await statusEvent({
         delegateOcrIndex,
@@ -1096,7 +1103,7 @@ export function createSteelDelegateOcrService(
           status: attemptNumber > 1 ? 'retrying' : 'started',
           message:
             attemptNumber > 1
-              ? `Retrying Delegate OCR Agent (${attemptNumber}/3)`
+              ? `Retrying Delegate OCR Agent (${attemptNumber}/${DELEGATE_OCR_MAX_ATTEMPTS})`
               : 'Delegate OCR Agent started',
         });
         try {
@@ -1311,9 +1318,11 @@ export function createSteelDelegateOcrService(
     agent,
     resume,
     onDelta,
+    onRetry,
   }: CreateSteelDelegateOcrExecuteInput & {
     resume?: SteelDelegateOcrResume;
     onDelta?: DelegateOcrExecuteInput['onDelta'];
+    onRetry?: DelegateOcrExecuteInput['onRetry'];
   }): Promise<string> {
     if (!resume?.run || resume.files.length === 0) {
       throw new Error('delegate_ocr resume state is unavailable');
@@ -1360,7 +1369,7 @@ export function createSteelDelegateOcrService(
       filesOverride: resume.files,
     };
     const execute = createDelegateOcrExecute({ req, res, streamId, signal, agent });
-    return execute({ files: resume.files, onDelta });
+    return execute({ files: resume.files, onDelta, onRetry });
   }
 
   return {

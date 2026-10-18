@@ -11,6 +11,7 @@ import {
   delegateOcr,
   delegateOcrStreamEventName,
   delegateOcrStreamedArtifact,
+  DELEGATE_OCR_MAX_ATTEMPTS,
   delegateOcrToolName,
   isDelegateOcrQuoteOnlyTurn,
   normalizeDelegateOcrChunk,
@@ -1057,6 +1058,129 @@ describe('delegate_ocr', () => {
       },
     ]);
     expect(poisonedModelOptions.tools).toHaveLength(6);
+  });
+
+  describe('workflow retries', () => {
+    const correctMapping =
+      '## source_file_mapping\n\n| 來源 | 檔名 |\n| --- | --- |\n| F1 | drawing.png |\n\n## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| F1 | A |';
+    const runWorkflow = (
+      overrides: Partial<Parameters<typeof delegateOcr>[0]> & {
+        invokeModel: InvokeModelMock;
+        runPreprocessing?: NonNullable<Parameters<typeof delegateOcr>[0]['workflow']>['runPreprocessing'];
+      },
+    ) => {
+      const { runPreprocessing, ...input } = overrides;
+      return delegateOcr({
+        files: [{ fileKey: 'file:image-1' }],
+        currentUserTurn: '請辨識圖面',
+        modelOptions,
+        ocrRulesText: 'OCR rules',
+        userId: 'user-1',
+        findOwnedFiles: async () => [files[0]],
+        signFile: async () => 'https://fresh.example/drawing.png',
+        workflow: {
+          runPreprocessing: runPreprocessing ?? (async () => ({ organizerMarkdown: 'chunk' })),
+          auditResponse: async () => undefined,
+          canonicalMapping: [{ sourceCode: 'F1', sourceFilename: 'drawing.png' }],
+        },
+        ...input,
+      });
+    };
+
+    it('retries a model error and resets the streamed text before the next attempt', async () => {
+      const events: string[] = [];
+      const invokeModel = createInvokeModelMock()
+        .mockImplementationOnce(async () => {
+          throw new Error('stream disconnected');
+        })
+        .mockResolvedValueOnce(correctMapping);
+      const onRetry = jest.fn(async (attemptNumber: number) => {
+        events.push(`retry:${attemptNumber}`);
+      });
+
+      await expect(runWorkflow({ invokeModel, onRetry })).resolves.toContain('| A | F1 |');
+      expect(invokeModel).toHaveBeenCalledTimes(2);
+      expect(invokeModel.mock.calls.map(([call]) => call.attemptNumber)).toEqual([1, 2]);
+      expect(events).toEqual(['retry:2']);
+    });
+
+    it('reruns an unfinished OCR progress check but reuses a completed one', async () => {
+      const runPreprocessing = jest
+        .fn()
+        .mockRejectedValueOnce(new Error('PaddleOCR chunk failed'))
+        .mockResolvedValue({ organizerMarkdown: 'chunk' });
+      const invokeModel = createInvokeModelMock()
+        .mockImplementationOnce(async () => {
+          throw new Error('provider unavailable');
+        })
+        .mockResolvedValueOnce(correctMapping);
+
+      await expect(runWorkflow({ invokeModel, runPreprocessing })).resolves.toContain('| A | F1 |');
+      expect(runPreprocessing).toHaveBeenCalledTimes(2);
+      expect(invokeModel).toHaveBeenCalledTimes(2);
+    });
+
+    it('continues past failed OCR chunks without using an attempt', async () => {
+      const runPreprocessing = jest.fn(async () => ({ incomplete: true, organizerMarkdown: 'partial' }));
+      const invokeModel = createInvokeModelMock().mockResolvedValueOnce(correctMapping);
+      const onRetry = jest.fn();
+
+      await expect(runWorkflow({ invokeModel, runPreprocessing, onRetry })).resolves.toContain('| A | F1 |');
+      expect(invokeModel).toHaveBeenCalledTimes(1);
+      expect(onRetry).not.toHaveBeenCalled();
+    });
+
+    it('rechecks failed OCR chunks when a later attempt runs', async () => {
+      const runPreprocessing = jest
+        .fn()
+        .mockResolvedValueOnce({ incomplete: true, organizerMarkdown: 'partial' })
+        .mockResolvedValue({ organizerMarkdown: 'complete' });
+      const invokeModel = createInvokeModelMock()
+        .mockImplementationOnce(async () => {
+          throw new Error('stream disconnected');
+        })
+        .mockResolvedValueOnce(correctMapping)
+        .mockResolvedValueOnce(correctMapping);
+
+      await expect(runWorkflow({ invokeModel, runPreprocessing })).resolves.toContain('| A | F1 |');
+      expect(runPreprocessing).toHaveBeenCalledTimes(2);
+      expect(JSON.stringify(invokeModel.mock.calls[1]?.[0]?.messages)).toContain('complete');
+    });
+
+    it('gives up with the last error after three failed attempts', async () => {
+      const invokeModel = createInvokeModelMock(async () => {
+        throw new Error('stream disconnected');
+      });
+      const onRetry = jest.fn();
+
+      await expect(runWorkflow({ invokeModel, onRetry })).rejects.toThrow('stream disconnected');
+      expect(invokeModel).toHaveBeenCalledTimes(DELEGATE_OCR_MAX_ATTEMPTS);
+      expect(onRetry.mock.calls).toEqual([[2], [3]]);
+    });
+
+    it('retries an empty answer within the same attempt budget', async () => {
+      const invokeModel = createInvokeModelMock()
+        .mockResolvedValueOnce('')
+        .mockResolvedValueOnce(correctMapping);
+
+      await expect(runWorkflow({ invokeModel })).resolves.toContain('| A | F1 |');
+      expect(invokeModel).toHaveBeenCalledTimes(2);
+    });
+
+    it('does not retry a stopped request', async () => {
+      const controller = new AbortController();
+      const invokeModel = createInvokeModelMock(async () => {
+        controller.abort();
+        throw new Error('aborted');
+      });
+      const onRetry = jest.fn();
+
+      await expect(
+        runWorkflow({ invokeModel, onRetry, signal: controller.signal }),
+      ).rejects.toThrow('aborted');
+      expect(invokeModel).toHaveBeenCalledTimes(1);
+      expect(onRetry).not.toHaveBeenCalled();
+    });
   });
 
   it('audits each raw answer before finalization and exposes trusted backend provenance', async () => {

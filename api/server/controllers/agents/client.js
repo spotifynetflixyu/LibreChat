@@ -232,6 +232,7 @@ const {
   removeNullishValues,
   stripLangChainTroubleshootingUrl,
   DEFAULT_MEMORY_MAX_INPUT_TOKENS,
+  steelContentResetEvent,
 } = require('librechat-data-provider');
 const { filterFilesByAgentAccess } = require('~/server/services/Files/permissions');
 const { encodeAndFormat } = require('~/server/services/Files/images/encode');
@@ -1617,6 +1618,7 @@ class AgentClient extends BaseClient {
       configurable: config.configurable,
       stepHandler: this.options.eventHandlers?.on_run_step,
       deltaHandler: this.options.eventHandlers?.on_message_delta,
+      resetHandler: this.options.eventHandlers?.[steelContentResetEvent],
       stepMap: this.stepMap,
       buildMessageFields: (targetMessageId) => ({
         messageId: targetMessageId,
@@ -5367,6 +5369,11 @@ class AgentClient extends BaseClient {
                   this.contentParts.push({ type: ContentTypes.TEXT, text: delta });
                 }
               },
+              onRetry: () =>
+                this.options.eventHandlers?.[steelContentResetEvent]?.handle(
+                  steelContentResetEvent,
+                  { id: resumeStepId },
+                ),
             });
           } else {
             const invocationMessages = await prepareRetainedAnswerInvocationMessages(

@@ -161,6 +161,9 @@ function buildQuotationReviewMetadata(input: {
   };
 }
 
+/** A quotation run, and separately its summary main agent, runs at most this many attempts (two retries). */
+export const QUOTATION_MAX_ATTEMPTS = 3;
+
 const quotationSummaryControlTitles = new Set([
   ...retiredMarkdownSectionTitles,
   'system_order',
@@ -383,6 +386,8 @@ export interface QuotationRunnerInput {
   ): Promise<SteelQuotationPublicationSaveResult | void>;
   appendSummary?(input: SteelQuotationSummaryInput): Promise<SteelQuotationSummaryResult>;
   onSummaryCommitted?(message: SteelQuotationSavedMessage): Promise<void>;
+  /** Discards the streamed summary text before a failed summary attempt is retried. */
+  onTextReset?(): Promise<void>;
   onCompletedReplay?(targetMessageId: string): Promise<void>;
   refreshPublicationAdmission?(): Promise<SteelMarkdownAdmission | undefined>;
   summarySourceMessageId?: string;
@@ -644,6 +649,27 @@ const quotationPreflightNotices: Partial<Record<QuotationPreflightStatus, string
 /** Fixed text streamed into the answer when preflight cannot continue the quotation. */
 export function getQuotationPreflightNotice(status: QuotationPreflightStatus): string | undefined {
   return quotationPreflightNotices[status];
+}
+
+/**
+ * Runs the quotation and reruns it from its saved checkpoints after a failure,
+ * up to {@link QUOTATION_MAX_ATTEMPTS} attempts. Only an interrupted run is
+ * rerun: a stop request, a cancelled run, and a published (completed) run whose
+ * summary failed end the turn with the error.
+ */
+export async function runQuotationPreflightWithRetries(
+  input: QuotationRunnerInput,
+): Promise<Awaited<ReturnType<typeof runQuotationPreflight>>> {
+  const service = createSteelQuotationStateService(mongoose);
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await runQuotationPreflight(input);
+    } catch (error) {
+      if (attempt >= QUOTATION_MAX_ATTEMPTS || input.signal.aborted) throw error;
+      const active = await service.readActiveRun(input.scope);
+      if (!isUnfinishedQuotation(active?.status)) throw error;
+    }
+  }
 }
 
 export async function runQuotationPreflight(input: QuotationRunnerInput): Promise<{
@@ -975,67 +1001,85 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
       ...getQuotationProgress(committedRun),
       stage: 'main_review_started',
     });
-    const summaryStreamFilter = createQuotationSummaryStreamFilter();
-    let summaryStream = Promise.resolve();
-    let streamedSummary = false;
     let summaryStreamingStarted = false;
-    let streamedSummaryText = '';
-    let summaryStreamError: unknown;
-    const streamSummaryDelta = async (text: string): Promise<void> => {
-      const safe = summaryStreamFilter.append(text);
-      if (!safe) return;
-      streamedSummary = true;
-      streamedSummaryText += safe;
-      if (!summaryStreamingStarted) {
-        summaryStreamingStarted = true;
-        await input.onProgress?.({
-          run: committedRun,
-          ...getQuotationProgress(committedRun),
-          stage: 'main_streaming',
-        });
-      }
-      summaryStream = summaryStream.then(async () => {
-        try {
-          await input.onTextDelta!(safe);
-        } catch (error) {
-          summaryStreamError ??= error;
+    /** One summary attempt: its own stream filter and streamed text, so a retry starts clean. */
+    const invokeSummary = async () => {
+      const summaryStreamFilter = createQuotationSummaryStreamFilter();
+      let summaryStream = Promise.resolve();
+      let streamedText = '';
+      let streamError: unknown;
+      const streamSummaryDelta = async (text: string): Promise<void> => {
+        const safe = summaryStreamFilter.append(text);
+        if (!safe) return;
+        streamedText += safe;
+        if (!summaryStreamingStarted) {
+          summaryStreamingStarted = true;
+          await input.onProgress?.({
+            run: committedRun,
+            ...getQuotationProgress(committedRun),
+            stage: 'main_streaming',
+          });
         }
+        summaryStream = summaryStream.then(async () => {
+          try {
+            await input.onTextDelta!(safe);
+          } catch (error) {
+            streamError ??= error;
+          }
+        });
+        await summaryStream;
+      };
+      const output = await (input.invokeModel ?? invokeQuotationModel)({
+        role: 'main',
+        executionId: `quotation:${runId}:main`,
+        // Main output is streamed through a bounded section filter. Provider
+        // deltas cannot write backend tables or quotation control sections.
+        onTextDelta: input.onTextDelta ? streamSummaryDelta : undefined,
+        prompt: snapshot.prompts.main,
+        input: JSON.stringify({
+          order: snapshot.orderMarkdown,
+          ...(snapshot.sourceSnapshot ? { source_mappings: snapshot.sourceSnapshot.mappings } : {}),
+          customer: snapshot.customerMarkdown,
+          system_order: systemOrder,
+          review_remarks: aggregate.reviewRemarks,
+        }),
+        modelOptions: input.modelOptions,
+        signal: controller.signal,
+        assertActive: async () => {
+          await assertSummaryActive();
+        },
+        onUsage: input.onUsage ? (usage) => operational(() => input.onUsage!(usage)) : undefined,
+        onPythonEvidence: async () => {
+          await assertSummaryActive();
+        },
       });
-      await summaryStream;
+      await assertSummaryActive();
+      if (input.onTextDelta) {
+        const tail = summaryStreamFilter.finish();
+        if (tail) await streamSummaryDelta(tail);
+        await summaryStream;
+      }
+      return {
+        markdown: output.markdown || streamedText,
+        streamed: streamedText !== '',
+        streamError,
+      };
     };
-    const output = await (input.invokeModel ?? invokeQuotationModel)({
-      role: 'main',
-      executionId: `quotation:${runId}:main`,
-      // Main output is streamed through a bounded section filter. Provider
-      // deltas cannot write backend tables or quotation control sections.
-      onTextDelta: input.onTextDelta ? streamSummaryDelta : undefined,
-      prompt: snapshot.prompts.main,
-      input: JSON.stringify({
-        order: snapshot.orderMarkdown,
-        ...(snapshot.sourceSnapshot
-          ? { source_mappings: snapshot.sourceSnapshot.mappings }
-          : {}),
-        customer: snapshot.customerMarkdown,
-        system_order: systemOrder,
-        review_remarks: aggregate.reviewRemarks,
-      }),
-      modelOptions: input.modelOptions,
-      signal: controller.signal,
-      assertActive: async () => {
+    /** A failed summary attempt is retried while the published run still owns it; its streamed text is reset first. */
+    let summaryAttempt: Awaited<ReturnType<typeof invokeSummary>>;
+    for (let attempt = 1; ; attempt += 1) {
+      try {
+        summaryAttempt = await invokeSummary();
+        break;
+      } catch (error) {
+        if (attempt >= QUOTATION_MAX_ATTEMPTS || controller.signal.aborted) throw error;
         await assertSummaryActive();
-      },
-      onUsage: input.onUsage ? (usage) => operational(() => input.onUsage!(usage)) : undefined,
-      onPythonEvidence: async () => {
-        await assertSummaryActive();
-      },
-    });
-    await assertSummaryActive();
-    if (input.onTextDelta) {
-      const tail = summaryStreamFilter.finish();
-      if (tail) await streamSummaryDelta(tail);
-      await summaryStream;
+        await input.onTextReset?.();
+      }
     }
-    reviewOutput = sanitizeQuotationSummary(output.markdown || streamedSummaryText || reviewOutput);
+    const streamedSummary = summaryAttempt.streamed;
+    const summaryStreamError = summaryAttempt.streamError;
+    reviewOutput = sanitizeQuotationSummary(summaryAttempt.markdown || reviewOutput);
     // Review prose is model-owned. Counting display rows never gates the saved quotation.
     const reviews = reviewOutput.trim() === '無待複核事項。' ? '' : reviewOutput.trim();
     const reviewDocument = parseAssistantMarkdown(reviews);
