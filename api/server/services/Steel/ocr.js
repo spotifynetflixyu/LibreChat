@@ -57,15 +57,12 @@ const {
   steelPaddleOcrTaskIntervalMs,
   getSteelRequestConversationId,
   steelPaddleOcrToolName,
+  stringifySteelPaddleOcrPayload,
+  createSteelPaddleOcrRunStepEvent,
+  createSteelPaddleOcrRunStepDeltaEvent,
+  createSteelPaddleOcrRunStepCompletedEvent,
 } = require('@librechat/api');
-const {
-  Time,
-  Constants,
-  StepEvents,
-  StepTypes,
-  FileSources,
-  ToolCallTypes,
-} = require('librechat-data-provider');
+const { Time, FileSources } = require('librechat-data-provider');
 const { streamToBuffer } = require('~/server/utils/stream');
 const { reinitMCPServer } = require('~/server/services/Tools/mcp');
 const { resolveMcpServerContext } = require('~/server/services/MCP');
@@ -869,21 +866,6 @@ function getSteelPaddleOcrPreflightStepId(providerToolCallId) {
   return `${providerToolCallId}_step`;
 }
 
-function stringifySteelPaddleOcrPayload(value) {
-  if (typeof value === 'string') {
-    return value;
-  }
-
-  try {
-    return JSON.stringify(value);
-  } catch (error) {
-    return JSON.stringify({
-      error: 'PaddleOCR payload could not be serialized',
-      message: error?.message,
-    });
-  }
-}
-
 function getSafeSteelPaddleOcrErrorMessage(error) {
   return redactMessage(error?.message ?? 'PaddleOCR preflight failed', 512).replace(
     /https?:\/\/\S+/giu,
@@ -1213,16 +1195,6 @@ async function rebuildSteelPaddleOcrPreflightTool({
   });
 }
 
-function createSteelPaddleOcrToolCall({ providerToolCallId, toolName, args, output }) {
-  return {
-    id: providerToolCallId,
-    name: toolName,
-    args: stringifySteelPaddleOcrPayload(args),
-    ...(output !== undefined ? { output: stringifySteelPaddleOcrPayload(output) } : {}),
-    type: ToolCallTypes.TOOL_CALL,
-  };
-}
-
 function createSteelPaddleOcrHistoryToolCall({
   providerToolCallId,
   toolName,
@@ -1292,89 +1264,6 @@ function createSteelPaddleOcrHistoryToolCall({
     args: compactArgs,
     ...(compactOutput !== undefined ? { output: compactOutput } : {}),
     progress: progress === 1 ? 1 : 0,
-  };
-}
-
-function createSteelPaddleOcrRunStepEvent({
-  requestId,
-  stepId,
-  providerToolCallId,
-  toolName,
-  index,
-}) {
-  const toolCall = createSteelPaddleOcrToolCall({
-    providerToolCallId,
-    toolName,
-    args: '',
-  });
-
-  return {
-    event: StepEvents.ON_RUN_STEP,
-    data: {
-      runId: requestId ?? Constants.USE_PRELIM_RESPONSE_MESSAGE_ID,
-      id: stepId,
-      type: StepTypes.TOOL_CALLS,
-      index,
-      stepDetails: {
-        type: StepTypes.TOOL_CALLS,
-        tool_calls: [toolCall],
-      },
-    },
-  };
-}
-
-function createSteelPaddleOcrRunStepDeltaEvent({
-  stepId,
-  providerToolCallId,
-  toolName,
-  args,
-  index,
-}) {
-  return {
-    event: StepEvents.ON_RUN_STEP_DELTA,
-    data: {
-      id: stepId,
-      delta: {
-        type: StepTypes.TOOL_CALLS,
-        tool_calls: [
-          {
-            index,
-            id: providerToolCallId,
-            name: toolName,
-            args: stringifySteelPaddleOcrPayload(args),
-            type: ToolCallTypes.TOOL_CALL,
-          },
-        ],
-      },
-    },
-  };
-}
-
-function createSteelPaddleOcrRunStepCompletedEvent({
-  stepId,
-  providerToolCallId,
-  toolName,
-  args,
-  output,
-  index,
-}) {
-  return {
-    event: StepEvents.ON_RUN_STEP_COMPLETED,
-    data: {
-      result: {
-        id: stepId,
-        index,
-        tool_call: {
-          ...createSteelPaddleOcrToolCall({
-            providerToolCallId,
-            toolName,
-            args,
-            output,
-          }),
-          progress: 1,
-        },
-      },
-    },
   };
 }
 
@@ -2542,10 +2431,7 @@ module.exports = {
   buildSingleOriginalOcrChunk,
   getSuggestedOcrResultColumns,
   createSteelPaddleOcrChunkRunner,
-  createSteelPaddleOcrRunStepEvent,
   resolveSteelOcrPreprocessingRules,
   extractCanonicalDelegateOcrResult,
   createSteelOcrPdfChunkArtifactStore,
-  createSteelPaddleOcrRunStepDeltaEvent,
-  createSteelPaddleOcrRunStepCompletedEvent,
 };

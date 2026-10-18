@@ -12,6 +12,7 @@ export * from './replay';
 export * from './routing';
 export * from './run';
 export * from './stream';
+export * from './steps';
 export * from './title';
 export * from './token';
 export * from './tools';

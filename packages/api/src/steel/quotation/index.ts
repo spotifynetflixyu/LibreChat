@@ -14,3 +14,4 @@ export * from './revision';
 export * from './publication';
 export * from './wiring';
 export * from './signal';
+export * from './workflow';

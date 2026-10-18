@@ -63,8 +63,14 @@ export interface SteelNativeEventRequest {
   steelNativeContext?: { steelHistory?: SteelNativeHistory };
 }
 
+/** A server-sent event a Steel workflow emits: activity envelopes and tool run steps. */
+export interface SteelEmittedEvent {
+  event: string;
+  data: object;
+}
+
 export interface EmitSteelNativeEventsInput {
-  events: readonly StreamEvent[];
+  events: readonly SteelEmittedEvent[];
   req?: SteelNativeEventRequest;
   res?: Response;
   streamId?: string | null;
@@ -105,11 +111,11 @@ export async function emitSteelNativeEvents({
     if (streamId) {
       await GenerationJobManager.emitChunk(
         streamId,
-        event,
+        event as StreamEvent,
         expectedCreatedAt == null ? undefined : { expectedCreatedAt },
       );
     } else if (typeof res?.write === 'function' && !res.writableEnded) {
-      sendEvent(res, event);
+      sendEvent(res, event as StreamEvent);
     }
   }
 }
