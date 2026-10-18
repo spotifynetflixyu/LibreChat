@@ -17,7 +17,6 @@ import type {
 import type {
   DelegateOcrPolicy,
   DelegateOcrFileInput,
-  DelegateOcrPageRange,
   DelegateOcrFileRecord,
   DelegateOcrExecuteInput,
   DelegateOcrPreparedBatch,
@@ -37,8 +36,11 @@ import type { OcrPreprocessingPageChunk } from '../ocr/chunks';
 import type { SteelRepositoryClient } from '../repositories/types';
 import type { SteelNativeConversationInput } from './context';
 import type { OpenAIOAuthModelOptions } from './oauth';
-import type { OcrOrganizer } from '../ocr/organizer';
 import type { SteelNativeHistory } from './events';
+import type { SteelOcrService } from '../ocr/preflight';
+import type { SteelPaddleOcrAgent } from '../ocr/paddle';
+import type { SteelOcrOrganizerAgent } from '../ocr/agent';
+import type { SteelOcrPdfChunkArtifactStore, SteelOcrStoredArtifact } from '../ocr/storage';
 import {
   isHttpUrl,
   isPdfSteelFile,
@@ -69,9 +71,7 @@ import { createOpenAIOAuthModel } from './oauth';
 import { emitSteelNativeEvents } from './stream';
 
 /** The agent config a delegate OCR run hands to the OCR organizer and PaddleOCR runner. */
-export interface SteelDelegateOcrAgent {
-  id?: string;
-}
+export type SteelDelegateOcrAgent = SteelPaddleOcrAgent & SteelOcrOrganizerAgent;
 
 /** The workflow object shared with the delegate executor across one tool call. */
 export interface SteelDelegateOcrWorkflow extends DelegateOcrWorkflowInput {
@@ -127,48 +127,14 @@ export interface SteelDelegateOcrRequest {
   };
 }
 
-/** A PDF range artifact store that can also load the artifacts already split from the original. */
-export interface SteelDelegateOcrArtifactStore extends OcrPreprocessingArtifactStore {
-  loadExistingPdfChunkArtifacts(input: {
-    sourcePdfKey: string;
-    pageRanges: readonly DelegateOcrPageRange[];
-  }): Promise<SteelDelegateOcrPdfArtifact[]>;
-  refreshPdfChunkArtifact(
-    input: Parameters<NonNullable<OcrPreprocessingArtifactStore['refreshPdfChunkArtifact']>>[0],
-  ): Promise<SteelDelegateOcrPdfArtifact>;
-}
-
-export interface SteelDelegatePaddleOcrRunnerInput {
-  req: SteelDelegateOcrRequest;
-  res?: Response;
-  signal?: AbortSignal;
-  agent?: SteelDelegateOcrAgent;
-  streamId?: string | null;
-  conversationId: string;
-  requestId?: string;
-  toolName: string;
-  refreshArtifact(input: {
-    artifact: OcrPdfChunkArtifact;
-    chunk: OcrPreprocessingPageChunk;
-  }): Promise<OcrPdfChunkArtifact>;
-  getNextIndex(): number;
-}
-
-/** OCR building blocks that need the server's MCP, model, rules and storage wiring. */
-export interface SteelDelegateOcrServices {
-  resolvePreprocessingRules(): Promise<SteelOcrPreprocessingRules>;
-  createPaddleOcrChunkRunner(input: SteelDelegatePaddleOcrRunnerInput): PaddleOcrChunkRunner;
-  createOrganizer(input: {
-    agent?: SteelDelegateOcrAgent;
-    signal?: AbortSignal;
-    latestUserMessage: string;
-    suggestedOcrResultColumns: readonly string[];
-  }): OcrOrganizer;
-  createPdfChunkArtifactStore(input: {
-    file: SteelOcrPreprocessingSourceFile;
-    fileRecord: DelegateOcrStoredFileRecord;
-  }): SteelDelegateOcrArtifactStore;
-}
+/** OCR building blocks delegate OCR reuses from the Steel OCR service. */
+export type SteelDelegateOcrServices = Pick<
+  SteelOcrService,
+  | 'resolvePreprocessingRules'
+  | 'createOrganizer'
+  | 'createPaddleOcrChunkRunner'
+  | 'createPdfChunkArtifactStore'
+>;
 
 export interface SteelDelegateOcrDependencies {
   db: Pick<AllMethods, 'getFiles'>;
@@ -188,19 +154,14 @@ export interface CreateSteelDelegateOcrExecuteInput {
   agent?: SteelDelegateOcrAgent;
 }
 
-/** A PDF range artifact as the artifact repository returns it. */
-export interface SteelDelegateOcrPdfArtifact extends OcrPdfChunkArtifact {
-  filename?: string;
-}
-
 type DelegateBatchArtifactStore = OcrPreprocessingArtifactStore &
   Required<Pick<OcrPreprocessingArtifactStore, 'refreshPdfChunkArtifact'>>;
 
 interface DelegateBatchPreprocessing {
   file: SteelOcrPreprocessingSourceFile;
   chunks: OcrPreprocessingPageChunk[];
-  artifacts?: SteelDelegateOcrArtifactStore;
-  artifact?: SteelDelegateOcrPdfArtifact;
+  artifacts?: SteelOcrPdfChunkArtifactStore;
+  artifact?: SteelOcrStoredArtifact;
 }
 
 type DelegateStatusEvent = Parameters<typeof buildSteelDelegateOcrStatusEventEnvelopes>[0];
@@ -326,7 +287,11 @@ function createDelegateOcrArtifactStore({
     },
     async refreshPdfChunkArtifact(input) {
       if (artifactStore) {
-        return artifactStore.refreshPdfChunkArtifact(input);
+        return artifactStore.refreshPdfChunkArtifact({
+          file,
+          chunk: input.chunk,
+          artifact: input.artifact,
+        });
       }
       return { ...input.artifact, filepath: signedUrl ?? input.artifact.filepath };
     },
@@ -1032,7 +997,7 @@ export function createSteelDelegateOcrService(
             file: preprocessingFile,
             fileRecord: storedFile,
           });
-          let artifacts: SteelDelegateOcrPdfArtifact[];
+          let artifacts: SteelOcrStoredArtifact[];
           try {
             artifacts = await artifactStore.loadExistingPdfChunkArtifacts({
               sourcePdfKey,

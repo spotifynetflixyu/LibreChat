@@ -2,14 +2,9 @@ const { createSteelDelegateOcrService } = require('@librechat/api');
 const db = require('~/models');
 const steelPostgres = require('./postgres');
 const { getStrategyFunctions } = require('~/server/services/Files/strategies');
-const {
-  createSteelOcrOrganizer,
-  resolveSteelOcrPreprocessingRules,
-  createSteelPaddleOcrChunkRunner,
-  createSteelOcrPdfChunkArtifactStore,
-} = require('./ocr');
+const { steelOcr } = require('./ocr');
 
-/** Delegate OCR bound to the server models, file storage, and the OCR services in ocr.js. */
+/** Delegate OCR bound to the server models, file storage, and the Steel OCR service. */
 const {
   createDelegateOcrExecute,
   prepareDelegateOcrResume,
@@ -19,12 +14,7 @@ const {
   db,
   client: steelPostgres.client,
   getStrategy: getStrategyFunctions,
-  ocr: {
-    resolvePreprocessingRules: resolveSteelOcrPreprocessingRules,
-    createOrganizer: createSteelOcrOrganizer,
-    createPaddleOcrChunkRunner: createSteelPaddleOcrChunkRunner,
-    createPdfChunkArtifactStore: createSteelOcrPdfChunkArtifactStore,
-  },
+  ocr: steelOcr,
 });
 
 module.exports = {

@@ -2,12 +2,8 @@ import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import { createMethods, createModels } from '@librechat/data-schemas';
 import type { IMongoFile } from '@librechat/data-schemas';
-import type {
-  SteelDelegateOcrRequest,
-  SteelDelegateOcrPdfArtifact,
-  SteelDelegateOcrArtifactStore,
-  SteelDelegateOcrDependencies,
-} from './delegation';
+import type { SteelOcrPdfChunkArtifactStore, SteelOcrStoredArtifact } from '../ocr/storage';
+import type { SteelDelegateOcrRequest, SteelDelegateOcrDependencies } from './delegation';
 import type { DelegateOcrFileInput, DelegateOcrStoredFileRecord } from './delegate';
 import { createSteelDelegateOcrStateService } from '../ocr/state';
 import { createSteelDelegateOcrService } from './delegation';
@@ -79,8 +75,8 @@ function rangeArtifact(pageStart: number, pageEnd: number, index = 1, count = 1)
 }
 
 function createArtifactStore(
-  loadExisting: SteelDelegateOcrArtifactStore['loadExistingPdfChunkArtifacts'],
-): SteelDelegateOcrArtifactStore &
+  loadExisting: SteelOcrPdfChunkArtifactStore['loadExistingPdfChunkArtifacts'],
+): SteelOcrPdfChunkArtifactStore &
   Record<'loadExistingPdfChunkArtifacts' | 'refreshPdfChunkArtifact', jest.Mock> {
   return {
     loadExistingPdfChunkArtifacts: jest.fn(loadExisting),
@@ -89,7 +85,7 @@ function createArtifactStore(
   };
 }
 
-function createDeps(artifactStore?: SteelDelegateOcrArtifactStore) {
+function createDeps(artifactStore?: SteelOcrPdfChunkArtifactStore) {
   const getDownloadURL = jest.fn(
     async ({ file }: { file: DelegateOcrStoredFileRecord }) =>
       `https://signed.example/${file.filename}`,
@@ -404,7 +400,7 @@ describe('createDelegateOcrExecute', () => {
   it('refreshes an expired range URL before retrying the agent', async () => {
     await insertFile({ file_id: 'drawing-1', storageKey: drawingKey });
     const artifact = rangeArtifact(1, 50);
-    const refreshed: SteelDelegateOcrPdfArtifact = {
+    const refreshed: SteelOcrStoredArtifact = {
       ...artifact,
       filepath: 'https://fresh.example/ocr/pages-1-50.pdf?Expires=4102444800',
     };
