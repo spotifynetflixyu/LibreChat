@@ -201,6 +201,7 @@ const {
   resolvePersistableCodeEnvironmentDecision,
   createSteelQuotationTextWiring,
   isQuotationPreparationTurn,
+  runSteelOcrTurnWithRetries,
 } = require('@librechat/api');
 const {
   Run,
@@ -5402,7 +5403,30 @@ class AgentClient extends BaseClient {
       };
 
       this.options.startupTelemetry?.mark('run_input_prepared');
-      await runAgents(initialMessages);
+      const steelOcrTurnTerminalCodes = new Set([
+        'SCHEDULED_HITL_REQUIRES_SHARED_STORE',
+        'SCHEDULED_HITL_REQUIRES_DURABLE_CHECKPOINT',
+        'HITL_CHECKPOINT_UNAVAILABLE',
+        PENDING_ACTION_EXPIRED_CODE,
+      ]);
+      await runSteelOcrTurnWithRetries({
+        context: this.options.req?.steelNativeContext,
+        contentParts: this.contentParts,
+        stepMap: this.stepMap,
+        resetStepText: (stepId) =>
+          this.options.eventHandlers?.[steelContentResetEvent]?.handle(steelContentResetEvent, {
+            id: stepId,
+          }),
+        getIndexOffset: () => this.steerOffsetState.offset,
+        run: () => runAgents(initialMessages),
+        isRetryable: (err) =>
+          !isAgentRunCancellation(err, abortController.signal) &&
+          !isStepLimitError(err) &&
+          !isContentFilterError(err) &&
+          !isAgentAttachmentLimitError(err) &&
+          !isAttachmentObjectNotFoundError(err) &&
+          !steelOcrTurnTerminalCodes.has(err?.code),
+      });
 
       /**
        * Surface a completed `skill` tool_call content part per *manually*-

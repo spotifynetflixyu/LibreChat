@@ -117,13 +117,21 @@ export function getSteelErrorResponse(error: unknown): SteelErrorResponse | unde
     : undefined;
 }
 
-/** Empties one streamed text part so a retried Steel attempt can stream over it. */
+/** Empties one streamed text or reasoning part so a retried Steel attempt can stream over it. */
 export function clearSteelStepText(message: TMessage, index: number): TMessage | undefined {
   const part = message.content?.[index];
-  if (!message.content || part?.type !== ContentTypes.TEXT) {
+  if (!message.content || !part) {
+    return undefined;
+  }
+  let cleared: TMessageContentParts;
+  if (part.type === ContentTypes.TEXT) {
+    cleared = { ...part, text: '' };
+  } else if (part.type === ContentTypes.THINK) {
+    cleared = { ...part, think: '' };
+  } else {
     return undefined;
   }
   const content = [...message.content];
-  content[index] = { ...part, text: '' };
+  content[index] = cleared;
   return { ...message, content };
 }

@@ -1,5 +1,5 @@
 import { nanoid } from 'nanoid';
-import { StepTypes, steelContentResetEvent } from 'librechat-data-provider';
+import { StepTypes, ContentTypes, steelContentResetEvent } from 'librechat-data-provider';
 import type { Agents } from 'librechat-data-provider';
 import type { EventHandler } from '@librechat/agents';
 import type { Response } from 'express';
@@ -16,7 +16,7 @@ function isDelegateOcrStreamEventPayload(value: unknown): value is DelegateOcrSt
   return phase === 'delta' || phase === 'complete' || phase === 'error' || phase === 'reset';
 }
 
-/** Clears one run step's streamed text in the turn's aggregated content and on the client. */
+/** Clears one run step's streamed text or reasoning in the turn's aggregated content and on the client. */
 export type SteelStepTextReset = (stepId: string) => Promise<void>;
 
 export interface CreateSteelStepTextResetInput {
@@ -38,10 +38,16 @@ export function createSteelStepTextReset({
   return async (stepId) => {
     const index = stepMap?.get(stepId)?.index;
     const part = index === undefined ? undefined : contentParts?.[index];
-    if (index === undefined || !contentParts || part?.type !== 'text') {
+    if (index === undefined || !contentParts || !part) {
       return;
     }
-    contentParts[index] = { ...part, text: '' };
+    if (part.type === ContentTypes.TEXT) {
+      contentParts[index] = { ...part, text: '' };
+    } else if (part.type === ContentTypes.THINK) {
+      contentParts[index] = { ...part, think: '' };
+    } else {
+      return;
+    }
     await emit({ event: steelContentResetEvent, data: { id: stepId } });
   };
 }

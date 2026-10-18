@@ -865,6 +865,12 @@ export function createSteelOcrService(deps: SteelOcrServiceDependencies): SteelO
             if (!failedKeys.includes(fileResult.file.ocrFileKey)) {
               failedKeys.push(fileResult.file.ocrFileKey);
             }
+            logger.warn('[Steel OCR] OCR preprocessing left unfinished chunks', {
+              conversationId,
+              requestId,
+              ocrFileKey: fileResult.file.ocrFileKey,
+              error: fileResult.errorMessage,
+            });
             const partialMarkdownResult = getCurrentOcrPartialMarkdownResult({
               fileResult: { ...fileResult, file: sourceFileOf(fileResult.file) },
               ocrRuleVersion: rules.ocrRuleVersion,

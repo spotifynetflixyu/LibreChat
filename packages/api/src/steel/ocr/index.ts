@@ -17,3 +17,4 @@ export * from './preprocess';
 export * from './result';
 export * from './text';
 export * from './state';
+export * from './retry';
