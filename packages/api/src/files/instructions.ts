@@ -51,4 +51,3 @@ export function prefixFileInstructions(content: string, instructions?: string | 
 
   return `${trimmedInstructions}\n\n${content}`;
 }
-

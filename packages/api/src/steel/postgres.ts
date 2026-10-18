@@ -58,4 +58,3 @@ export function buildSteelPostgresConfig(env: SteelPostgresEnv = process.env): P
 export function createSteelPostgresPool(env: SteelPostgresEnv = process.env): Pool {
   return new Pool(buildSteelPostgresConfig(env));
 }
-

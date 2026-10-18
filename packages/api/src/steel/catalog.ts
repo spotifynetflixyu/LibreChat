@@ -376,4 +376,3 @@ export function steelCatalogCustomerTier(
   const tier = markdownTier ?? identityTier;
   return tier && /^[A-F]$/u.test(tier) ? (tier as SteelCatalogCustomerEvidence['tier']) : null;
 }
-

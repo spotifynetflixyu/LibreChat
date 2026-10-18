@@ -474,4 +474,3 @@ export async function commitQuotationCustomerResponse(input: {
   const service = input.service ?? createSteelQuotationStateService(mongoose);
   return service.saveCustomer(prepared.input);
 }
-
