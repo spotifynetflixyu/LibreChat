@@ -11,7 +11,6 @@ import {
   delegateOcr,
   delegateOcrStreamEventName,
   delegateOcrStreamedArtifact,
-  DELEGATE_OCR_MAX_ATTEMPTS,
   delegateOcrToolName,
   isDelegateOcrQuoteOnlyTurn,
   normalizeDelegateOcrChunk,
@@ -24,6 +23,18 @@ import {
   type AuditDelegateOcrResponse,
   type InvokeDelegateOcrModel,
 } from './delegate';
+import { SteelOcrChunkError, STEEL_OCR_MAX_ATTEMPTS } from '../ocr/retry';
+
+/** Settles a delegate run while its OCR retry waits run on fake timers. */
+async function withRetryTimers<T>(promise: Promise<T>): Promise<T> {
+  const settled = Promise.allSettled([promise]);
+  await jest.runAllTimersAsync();
+  const [outcome] = await settled;
+  if (outcome.status === 'rejected') {
+    throw outcome.reason;
+  }
+  return outcome.value;
+}
 
 const modelOptions = {
   authFilePath: '/tmp/codex-auth.json',
@@ -1061,6 +1072,14 @@ describe('delegate_ocr', () => {
   });
 
   describe('workflow retries', () => {
+    beforeEach(() => {
+      jest.useFakeTimers();
+    });
+
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
     const correctMapping =
       '## source_file_mapping\n\n| 來源 | 檔名 |\n| --- | --- |\n| F1 | drawing.png |\n\n## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| F1 | A |';
     const runWorkflow = (
@@ -1098,52 +1117,41 @@ describe('delegate_ocr', () => {
         events.push(`retry:${attemptNumber}`);
       });
 
-      await expect(runWorkflow({ invokeModel, onRetry })).resolves.toContain('| A | F1 |');
+      await expect(withRetryTimers(runWorkflow({ invokeModel, onRetry }))).resolves.toContain(
+        '| A | F1 |',
+      );
       expect(invokeModel).toHaveBeenCalledTimes(2);
       expect(invokeModel.mock.calls.map(([call]) => call.attemptNumber)).toEqual([1, 2]);
       expect(events).toEqual(['retry:2']);
     });
 
-    it('reruns an unfinished OCR progress check but reuses a completed one', async () => {
-      const runPreprocessing = jest
-        .fn()
-        .mockRejectedValueOnce(new Error('PaddleOCR chunk failed'))
-        .mockResolvedValue({ organizerMarkdown: 'chunk' });
-      const invokeModel = createInvokeModelMock()
-        .mockImplementationOnce(async () => {
-          throw new Error('provider unavailable');
-        })
-        .mockResolvedValueOnce(correctMapping);
-
-      await expect(runWorkflow({ invokeModel, runPreprocessing })).resolves.toContain('| A | F1 |');
-      expect(runPreprocessing).toHaveBeenCalledTimes(2);
-      expect(invokeModel).toHaveBeenCalledTimes(2);
-    });
-
-    it('continues past failed OCR chunks without using an attempt', async () => {
-      const runPreprocessing = jest.fn(async () => ({ incomplete: true, organizerMarkdown: 'partial' }));
-      const invokeModel = createInvokeModelMock().mockResolvedValueOnce(correctMapping);
+    it('fails without asking the agent when an OCR result chunk is missing', async () => {
+      const runPreprocessing = jest.fn(async () => {
+        throw new SteelOcrChunkError('OCR failed: file:image-1 (organizer): organizer down');
+      });
+      const invokeModel = createInvokeModelMock();
       const onRetry = jest.fn();
 
-      await expect(runWorkflow({ invokeModel, runPreprocessing, onRetry })).resolves.toContain('| A | F1 |');
-      expect(invokeModel).toHaveBeenCalledTimes(1);
+      await expect(
+        withRetryTimers(runWorkflow({ invokeModel, runPreprocessing, onRetry })),
+      ).rejects.toThrow('organizer down');
+      expect(runPreprocessing).toHaveBeenCalledTimes(1);
+      expect(invokeModel).not.toHaveBeenCalled();
       expect(onRetry).not.toHaveBeenCalled();
     });
 
-    it('rechecks failed OCR chunks when a later attempt runs', async () => {
-      const runPreprocessing = jest
-        .fn()
-        .mockResolvedValueOnce({ incomplete: true, organizerMarkdown: 'partial' })
-        .mockResolvedValue({ organizerMarkdown: 'complete' });
+    it('prepares OCR chunks once and reuses them on every retry', async () => {
+      const runPreprocessing = jest.fn(async () => ({ organizerMarkdown: 'complete' }));
       const invokeModel = createInvokeModelMock()
         .mockImplementationOnce(async () => {
           throw new Error('stream disconnected');
         })
-        .mockResolvedValueOnce(correctMapping)
         .mockResolvedValueOnce(correctMapping);
 
-      await expect(runWorkflow({ invokeModel, runPreprocessing })).resolves.toContain('| A | F1 |');
-      expect(runPreprocessing).toHaveBeenCalledTimes(2);
+      await expect(
+        withRetryTimers(runWorkflow({ invokeModel, runPreprocessing })),
+      ).resolves.toContain('| A | F1 |');
+      expect(runPreprocessing).toHaveBeenCalledTimes(1);
       expect(JSON.stringify(invokeModel.mock.calls[1]?.[0]?.messages)).toContain('complete');
     });
 
@@ -1153,8 +1161,10 @@ describe('delegate_ocr', () => {
       });
       const onRetry = jest.fn();
 
-      await expect(runWorkflow({ invokeModel, onRetry })).rejects.toThrow('stream disconnected');
-      expect(invokeModel).toHaveBeenCalledTimes(DELEGATE_OCR_MAX_ATTEMPTS);
+      await expect(withRetryTimers(runWorkflow({ invokeModel, onRetry }))).rejects.toThrow(
+        'stream disconnected',
+      );
+      expect(invokeModel).toHaveBeenCalledTimes(STEEL_OCR_MAX_ATTEMPTS);
       expect(onRetry.mock.calls).toEqual([[2], [3]]);
     });
 
@@ -1163,7 +1173,7 @@ describe('delegate_ocr', () => {
         .mockResolvedValueOnce('')
         .mockResolvedValueOnce(correctMapping);
 
-      await expect(runWorkflow({ invokeModel })).resolves.toContain('| A | F1 |');
+      await expect(withRetryTimers(runWorkflow({ invokeModel }))).resolves.toContain('| A | F1 |');
       expect(invokeModel).toHaveBeenCalledTimes(2);
     });
 
@@ -1176,7 +1186,7 @@ describe('delegate_ocr', () => {
       const onRetry = jest.fn();
 
       await expect(
-        runWorkflow({ invokeModel, onRetry, signal: controller.signal }),
+        withRetryTimers(runWorkflow({ invokeModel, onRetry, signal: controller.signal })),
       ).rejects.toThrow('aborted');
       expect(invokeModel).toHaveBeenCalledTimes(1);
       expect(onRetry).not.toHaveBeenCalled();
@@ -1224,19 +1234,22 @@ describe('delegate_ocr', () => {
   });
 
   it('audits empty and retry answers before applying the finalizer', async () => {
+    jest.useFakeTimers();
     const emptyAudit = jest.fn(async () => undefined);
     await expect(
-      delegateOcr({
-        files: [{ fileKey: 'file:image-1' }],
-        currentUserTurn: '重新核對圖面',
-        modelOptions,
-        ocrRulesText: 'OCR rules',
-        userId: 'user-1',
-        findOwnedFiles: async () => [files[0]],
-        signFile: async () => 'https://fresh.example/drawing.png',
-        invokeModel: async () => '',
-        workflow: { auditResponse: emptyAudit, runStore: {} },
-      }),
+      withRetryTimers(
+        delegateOcr({
+          files: [{ fileKey: 'file:image-1' }],
+          currentUserTurn: '重新核對圖面',
+          modelOptions,
+          ocrRulesText: 'OCR rules',
+          userId: 'user-1',
+          findOwnedFiles: async () => [files[0]],
+          signFile: async () => 'https://fresh.example/drawing.png',
+          invokeModel: async () => '',
+          workflow: { auditResponse: emptyAudit, runStore: {} },
+        }),
+      ),
     ).rejects.toThrow('empty answer');
     expect(emptyAudit).toHaveBeenCalledWith(expect.objectContaining({ assistantResponse: '' }));
 
@@ -1253,17 +1266,20 @@ describe('delegate_ocr', () => {
         finalResponse: 'backend:retry-3',
         ocrResultMarkdown: '## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| F1 | A |',
       });
-    const result = await delegateOcr({
-      files: [{ fileKey: 'file:image-1' }],
-      currentUserTurn: '重新核對圖面',
-      modelOptions,
-      ocrRulesText: 'OCR rules',
-      userId: 'user-1',
-      findOwnedFiles: async () => [files[0]],
-      signFile: async () => 'https://fresh.example/drawing.png',
-      invokeModel: async ({ attemptNumber }) => `retry-${attemptNumber}`,
-      workflow: { auditResponse: retryAudit, finalize },
-    });
+    const result = await withRetryTimers(
+      delegateOcr({
+        files: [{ fileKey: 'file:image-1' }],
+        currentUserTurn: '重新核對圖面',
+        modelOptions,
+        ocrRulesText: 'OCR rules',
+        userId: 'user-1',
+        findOwnedFiles: async () => [files[0]],
+        signFile: async () => 'https://fresh.example/drawing.png',
+        invokeModel: async ({ attemptNumber }) => `retry-${attemptNumber}`,
+        workflow: { auditResponse: retryAudit, finalize },
+      }),
+    );
+    jest.useRealTimers();
 
     expect(result).toBe('backend:retry-3');
     expect(retryAudit.mock.calls.map(([input]) => [input.assistantResponse, input.attemptNumber])).toEqual([

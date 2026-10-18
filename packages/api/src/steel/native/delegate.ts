@@ -19,6 +19,7 @@ import {
 } from '../ocr/result';
 import { scopeOAuthCompaction } from '~/providers/openai/compaction/scope';
 import { isExpiredSignedUrlError } from '../../storage/url';
+import { runWithSteelOcrRetries } from '../ocr/retry';
 import { isSteelToolName } from '../tools/registry';
 import { createOpenAIOAuthModel } from './oauth';
 
@@ -65,9 +66,6 @@ export type DelegateOcrStreamEventPayload =
       generationId?: string;
       attemptToken?: string;
     };
-
-/** One OCR main-agent turn runs at most this many attempts (two retries). */
-export const DELEGATE_OCR_MAX_ATTEMPTS = 3;
 
 /** Called before a retry so the streamed text of the failed attempt can be discarded. */
 export type DelegateOcrOnRetry = (attemptNumber: number) => void | Promise<void>;
@@ -294,8 +292,6 @@ export interface DelegateOcrPreprocessingInput {
 }
 
 export interface DelegateOcrPreprocessingResult {
-  /** Some OCR chunks failed; the next attempt's progress check reruns them. */
-  incomplete?: boolean;
   organizerMarkdown?: string | readonly string[];
   paddleOcrMarkdown?: string | readonly string[];
   fallbackMarkdown?: string | readonly string[];
@@ -1063,7 +1059,7 @@ interface DelegateOcrWorkflowContext {
   previousOcrResultMarkdown: string | undefined;
   suggestedOcrResultColumns: readonly string[];
   selectedMetadata: DelegateOcrSelectedFileMetadata[];
-  /** Checks OCR progress: reuses the saved chunks and reruns only unfinished ones. */
+  /** Runs or reuses OCR preprocessing; throws when any OCR result chunk is missing. */
   loadOrganizerMarkdown: () => Promise<string[]>;
 }
 
@@ -1080,7 +1076,7 @@ function delegateBatchError(batch: DelegateOcrPreparedBatch, error: unknown): Er
   );
 }
 
-/** One workflow attempt: recheck OCR progress, then one agent answer over every file, finalized against the canonical mapping. */
+/** One workflow attempt: one agent answer over every file's saved OCR chunks, finalized against the canonical mapping. */
 async function runDelegateOcrAttempt(
   input: DelegateOcrInput,
   {
@@ -1090,11 +1086,10 @@ async function runDelegateOcrAttempt(
     previousOcrResultMarkdown,
     suggestedOcrResultColumns,
     selectedMetadata,
-    loadOrganizerMarkdown,
   }: DelegateOcrWorkflowContext,
+  organizerMarkdown: readonly string[],
   attemptNumber: number,
 ): Promise<DelegateOcrAttemptOutcome> {
-  const organizerMarkdown = await loadOrganizerMarkdown();
   const attemptToken =
     workflow?.attemptToken && attemptNumber === 1 ? workflow.attemptToken : randomUUID();
   const attemptInput: DelegateOcrRunAttemptInput = {
@@ -1238,35 +1233,47 @@ async function runDelegateOcrAttempt(
   };
 }
 
+/** A rejected OCR result: retried unless its mapping can never match. */
+class DelegateOcrRejectedError extends Error {
+  constructor(readonly outcome: Extract<DelegateOcrAttemptOutcome, { ok: false }>) {
+    super(`delegate_ocr ${outcome.reason}`);
+  }
+}
+
 /**
- * Workflow mode: a failed attempt (a model or stream error, an empty answer, or
- * a rejected OCR result) is retried from the saved OCR progress, up to
- * {@link DELEGATE_OCR_MAX_ATTEMPTS} attempts. A stop request is never retried.
+ * Workflow mode: every OCR result chunk is already saved. A failed attempt (a
+ * model or stream error, an empty answer, or a rejected OCR result) is retried
+ * through the shared OCR retry loop. A stop request is never retried.
  */
 async function runDelegateOcrWorkflow(
   input: DelegateOcrInput,
   context: DelegateOcrWorkflowContext,
 ): Promise<string> {
-  for (let attemptNumber = 1; ; attemptNumber += 1) {
-    if (attemptNumber > 1) {
-      await input.onRetry?.(attemptNumber);
+  const organizerMarkdown = await context.loadOrganizerMarkdown();
+  try {
+    return await runWithSteelOcrRetries({
+      signal: input.signal,
+      isRetryable: (error) =>
+        !(error instanceof DelegateOcrRejectedError) || error.outcome.retryable,
+      onRetry: input.onRetry,
+      run: async (attemptNumber) => {
+        const outcome = await runDelegateOcrAttempt(
+          input,
+          context,
+          organizerMarkdown,
+          attemptNumber,
+        );
+        if (!outcome.ok) {
+          throw new DelegateOcrRejectedError(outcome);
+        }
+        return outcome.accepted;
+      },
+    });
+  } catch (error) {
+    if (!(error instanceof DelegateOcrRejectedError)) {
+      throw error;
     }
-    const lastAttempt = attemptNumber >= DELEGATE_OCR_MAX_ATTEMPTS;
-    let outcome: DelegateOcrAttemptOutcome;
-    try {
-      outcome = await runDelegateOcrAttempt(input, context, attemptNumber);
-    } catch (error) {
-      if (lastAttempt || input.signal?.aborted) {
-        throw error;
-      }
-      continue;
-    }
-    if (outcome.ok) {
-      return outcome.accepted;
-    }
-    if (outcome.retryable && !lastAttempt) {
-      continue;
-    }
+    const { outcome } = error;
     await context.workflow?.saveFailed?.({ ...outcome.failure, reason: outcome.reason });
     throw new Error(
       outcome.reason === 'mapping_mismatch'
@@ -1432,17 +1439,12 @@ export async function delegateOcr(input: DelegateOcrInput): Promise<string> {
     );
   }
 
-  let preparedOrganizerMarkdown: string[] | undefined;
   const loadOrganizerMarkdown = async (): Promise<string[]> => {
-    if (preparedOrganizerMarkdown) {
-      return preparedOrganizerMarkdown;
-    }
     const signedBatches = await signBatches();
     const organizerMarkdown: string[] = [];
     if (!workflow?.runPreprocessing) {
       return organizerMarkdown;
     }
-    let complete = true;
     for (const { batch, signedFiles } of signedBatches) {
       const file = batch.files[0];
       if (!file) {
@@ -1464,12 +1466,7 @@ export async function delegateOcr(input: DelegateOcrInput): Promise<string> {
       });
       if (result) {
         organizerMarkdown.push(...toMarkdownList(result.organizerMarkdown));
-        complete &&= result.incomplete !== true;
       }
-    }
-    /** Completed OCR progress is reused; unfinished chunks are checked again on the next attempt. */
-    if (complete) {
-      preparedOrganizerMarkdown = organizerMarkdown;
     }
     return organizerMarkdown;
   };

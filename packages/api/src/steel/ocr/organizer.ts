@@ -2,7 +2,8 @@ import { sha256Hex } from '../utils';
 
 export interface OcrOrganizerInput {
   ocrRulesText: string;
-  rawOcrText: string;
+  /** Absent when PaddleOCR gave up on the chunk; the Organizer reads the attached pages alone. */
+  rawOcrText?: string;
   sourceFile?: string | null;
   /** Signed URL for the exact source artifact represented by this chunk. */
   artifactUrl?: string | null;
@@ -282,7 +283,8 @@ export function buildOcrOrganizerPrompt(input: OcrOrganizerInput): string {
     resolveOcrOrganizerRulesText(input.ocrRulesText),
     '',
     'Raw OCR text:',
-    input.rawOcrText,
+    input.rawOcrText ??
+      'Unavailable: PaddleOCR failed for this chunk. Read the attached source pages directly.',
   ].join('\n');
 
   const artifactUrl = input.artifactUrl?.trim();

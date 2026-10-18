@@ -12,6 +12,7 @@ import {
   createSteelPaddleOcrRunStepDeltaEvent,
   createSteelPaddleOcrRunStepCompletedEvent,
 } from '../native/steps';
+import { STEEL_OCR_MAX_ATTEMPTS, STEEL_OCR_RETRY_DELAY_MS, sleepSteelOcrDelay } from './retry';
 import { getPaddleOcrResultContent, getPaddleOcrResultError } from './text';
 import { isPaddleOcrDiagnosticCode, PADDLE_OCR_MCP_SERVER_NAME } from './diagnostics';
 import { upsertSteelNativePreflightToolCall } from '../native/events';
@@ -71,9 +72,9 @@ export const steelPaddleOcrTransportErrorPatterns: readonly string[] = [
   'network error',
 ];
 
-export const steelPaddleOcrMaxAttempts = 3;
+export const steelPaddleOcrMaxAttempts = STEEL_OCR_MAX_ATTEMPTS;
 
-export const steelPaddleOcrRetryDelayMs = 3000;
+export const steelPaddleOcrRetryDelayMs = STEEL_OCR_RETRY_DELAY_MS;
 
 export const steelPaddleOcrTaskIntervalMs = 1000;
 
@@ -83,7 +84,6 @@ export const steelPaddleOcrCallTimeoutMs: number = 10 * 60 * 1000;
 export interface SteelPaddleOcrError extends Error {
   diagnosticCode?: PaddleOcrDiagnosticCode;
   ocrFileUrl?: string;
-  ocrAdaptiveSplitEligible?: boolean;
   rebuildError?: unknown;
 }
 
@@ -319,37 +319,6 @@ function isTransportSteelPaddleOcrError(error: unknown): boolean {
     Boolean(combined) &&
     steelPaddleOcrTransportErrorPatterns.some((pattern) => combined.includes(pattern))
   );
-}
-
-function sleepSteelPaddleOcrDelay({
-  signal,
-  delay,
-  abortMessage,
-}: {
-  signal?: AbortSignal;
-  delay: number;
-  abortMessage: string;
-}): Promise<void> {
-  const abortError = () => {
-    const error = new Error(abortMessage);
-    error.name = 'AbortError';
-    return error;
-  };
-  return new Promise((resolve, reject) => {
-    if (signal?.aborted) {
-      reject(abortError());
-      return;
-    }
-    const onAbort = () => {
-      clearTimeout(timer);
-      reject(abortError());
-    };
-    const timer = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
-      resolve();
-    }, delay);
-    signal?.addEventListener('abort', onAbort, { once: true });
-  });
 }
 
 /** Keeps the provider error primary while recording why the MCP rebuild failed too. */
@@ -767,7 +736,6 @@ export function createSteelPaddleOcrChunkRunner({
 
     let lastError: unknown;
     let attemptsUsed = 0;
-    let invokeAttemptsUsed = 0;
     for (let attemptIndex = 0; attemptIndex < steelPaddleOcrMaxAttempts; attemptIndex += 1) {
       attemptsUsed = attemptIndex + 1;
       let timeoutSignal: AbortSignal | undefined;
@@ -783,7 +751,6 @@ export function createSteelPaddleOcrChunkRunner({
         if (!paddleTool) {
           throw new Error('missing_paddleocr_tool');
         }
-        invokeAttemptsUsed += 1;
         timeoutSignal = AbortSignal.timeout(steelPaddleOcrCallTimeoutMs);
         const callSignal = signal ? AbortSignal.any([signal, timeoutSignal]) : timeoutSignal;
         result = await invokeLoadedTool(paddleTool, args, {
@@ -822,7 +789,7 @@ export function createSteelPaddleOcrChunkRunner({
           break;
         }
 
-        await sleepSteelPaddleOcrDelay({
+        await sleepSteelOcrDelay({
           signal,
           delay: steelPaddleOcrRetryDelayMs,
           abortMessage: 'OCR retry aborted',
@@ -880,7 +847,6 @@ export function createSteelPaddleOcrChunkRunner({
     if (typeof currentArtifact.filepath === 'string') {
       exhaustedError.ocrFileUrl = currentArtifact.filepath;
     }
-    exhaustedError.ocrAdaptiveSplitEligible = invokeAttemptsUsed === steelPaddleOcrMaxAttempts;
     await complete(
       createPaddleOcrChunkFailureToolOutput({
         file,
@@ -899,7 +865,7 @@ export function createSteelPaddleOcrChunkRunner({
       if (lastTaskCompletedAt !== undefined) {
         const elapsed = performance.now() - lastTaskCompletedAt;
         if (elapsed < steelPaddleOcrTaskIntervalMs) {
-          await sleepSteelPaddleOcrDelay({
+          await sleepSteelOcrDelay({
             signal,
             delay: steelPaddleOcrTaskIntervalMs - elapsed,
             abortMessage: 'OCR task interval aborted',

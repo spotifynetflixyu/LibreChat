@@ -40,8 +40,10 @@ import {
   type DelegateOcrExecutableTool,
 } from './delegate';
 import {
-  createOpenAIOAuthGraphModel,
+  SteelTerminalToolError,
   createOpenAIOAuthModel,
+  createOpenAIOAuthGraphModel,
+  STEEL_TERMINAL_TOOL_FAILED_CODE,
   createStatelessOpenAIOAuthProvider,
 } from './oauth';
 import { clearOpenAIOAuthCredentialInvalid, isOpenAIOAuthCredentialInvalid } from './auth-state';
@@ -821,6 +823,68 @@ describe('OpenAI OAuth model adapter', () => {
     expect(runSystemContext).not.toHaveBeenCalled();
     expect(doGenerate).not.toHaveBeenCalled();
     expect(doStream).not.toHaveBeenCalled();
+  });
+
+  it('fails the turn when the terminal tool failed instead of answering with its error', async () => {
+    const doGenerate = jest.fn(async () => createGenerateResult([]));
+    const doStream = jest.fn();
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        ...createFakeOpenAIOAuthDependencies({ doGenerate, doStream }).options,
+        model: 'gpt-5.6-luna',
+      },
+      terminalToolNames: ['delegate_ocr'],
+    });
+    const messages = [
+      new HumanMessage('請辨識圖面'),
+      new ToolMessage({
+        status: 'error',
+        content:
+          'Error: OCR failed: file:image-1 (organizer): organizer down\n Please fix your mistakes.',
+        name: 'delegate_ocr',
+        tool_call_id: 'call_delegate_failed',
+      }),
+    ];
+
+    await expect(model.invoke(messages)).rejects.toEqual(
+      expect.objectContaining({
+        code: STEEL_TERMINAL_TOOL_FAILED_CODE,
+        message: 'OCR failed: file:image-1 (organizer): organizer down',
+      }),
+    );
+    await expect(
+      (async () => {
+        for await (const _chunk of await model.stream(messages)) {
+          // drain
+        }
+      })(),
+    ).rejects.toBeInstanceOf(SteelTerminalToolError);
+    expect(doGenerate).not.toHaveBeenCalled();
+    expect(doStream).not.toHaveBeenCalled();
+  });
+
+  it('keeps a stopped terminal tool result instead of failing the turn', async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const model = createOpenAIOAuthGraphModel({
+      modelOptions: {
+        ...createFakeOpenAIOAuthDependencies({ doGenerate: jest.fn() }).options,
+        model: 'gpt-5.6-luna',
+      },
+      terminalToolNames: ['delegate_ocr'],
+    });
+    const messages = [
+      new ToolMessage({
+        status: 'error',
+        content: 'Tool execution stopped',
+        name: 'delegate_ocr',
+        tool_call_id: 'call_delegate_stopped',
+      }),
+    ];
+
+    await expect(model.invoke(messages, { signal: controller.signal })).resolves.toEqual(
+      expect.objectContaining({ content: 'Tool execution stopped' }),
+    );
   });
 
   it('dedupes an artifact-marked ToolNode delegate while preserving unmarked terminal output', async () => {

@@ -266,11 +266,18 @@ function mockSingleFilePaddleOcrPipeline(
 ) {
   mockPipeline.mockImplementationOnce(async (input: RunOcrPreprocessingBatchPipelineInput) => {
     const { file } = input.files[0];
-    await input.paddleOcr.runChunk({
-      file,
-      chunk: singleChunk,
-      artifact: artifactFor(singleChunk, file.filename ?? 'file'),
-    });
+    try {
+      await input.paddleOcr.runChunk({
+        file,
+        chunk: singleChunk,
+        artifact: artifactFor(singleChunk, file.filename ?? 'file'),
+      });
+    } catch (error) {
+      /** PaddleOCR gave up: the real pipeline saves `paddle_failed` and the file still completes. */
+      if (input.signal?.aborted) {
+        throw error;
+      }
+    }
     await input.onProgress?.({
       file,
       progress: { stage: 'paddleocr_chunk_saved', chunkIndex: 1, chunkCount: 1 },
@@ -337,15 +344,21 @@ function mockPaddleOcrBatchWithOrganizer(
         ],
       };
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : String(error);
-      const failure = {
-        stage: 'paddleocr' as const,
-        chunkIndex: 1,
-        pageStart: 1,
-        pageEnd: 1,
-        errorMessage,
+      if (input.signal?.aborted) {
+        throw error;
+      }
+      /** PaddleOCR gave up: the real pipeline saves `paddle_failed` and organizes the pages alone. */
+      return {
+        files: [
+          {
+            file,
+            status: 'completed',
+            markdown: '| result |\n| --- |\n| organized without PaddleOCR |',
+            chunkCount: 1,
+            pageRanges: isImage ? [] : [{ pageStart: 1, pageEnd: 1 }],
+          },
+        ],
       };
-      return { files: [{ file, status: 'failed', ...failure, failures: [failure] }] };
     }
   });
 }
@@ -483,7 +496,7 @@ describe('runSteelPaddleOcrPreflight orchestration', () => {
     });
   });
 
-  it('keeps request-scoped source codes stable across failures and partial results', async () => {
+  it('fails the turn when any file fails and keeps request-scoped source codes', async () => {
     const req = createRequest(
       ['a', 'b', 'c'].map((suffix) => ({
         fileId: `file-${suffix}`,
@@ -534,7 +547,6 @@ describe('runSteelPaddleOcrPreflight orchestration', () => {
             stage: 'organizer',
             errorMessage: 'second file partial',
             failures: [{ stage: 'organizer', errorMessage: 'second file partial' }],
-            partial: { markdown: '| OCR |\n| --- |\n| partial |', chunkCount: 1, pageRanges: [] },
           },
           {
             file: third.file,
@@ -547,7 +559,9 @@ describe('runSteelPaddleOcrPreflight orchestration', () => {
       };
     });
 
-    const result = await runPreflight({ req });
+    await expect(runPreflight({ req })).rejects.toThrow(
+      'OCR failed: a.png (paddleocr): first file failed; b.png (organizer): second file partial',
+    );
 
     const pipelineInput = mockPipeline.mock.calls[0][0] as RunOcrPreprocessingBatchPipelineInput;
     expect(
@@ -556,40 +570,11 @@ describe('runSteelPaddleOcrPreflight orchestration', () => {
     expect(mockWriter.capturePaddleOcrChunkResult).toHaveBeenCalledWith(
       expect.objectContaining({ file: expect.not.objectContaining({ sourceCode: 'F1' }) }),
     );
-    expect(result).toEqual(
+    expect(preflightSummary()).toEqual(
       expect.objectContaining({
         status: 'partial',
         completedKeys: ['file:file-c'],
         failedKeys: ['file:file-a', 'file:file-b'],
-        currentOcrFailures: [
-          expect.objectContaining({
-            ocrFileKey: 'file:file-a',
-            sourceCode: 'F1',
-            sourceFilename: 'persisted-a.png',
-          }),
-          expect.objectContaining({
-            ocrFileKey: 'file:file-b',
-            sourceCode: 'F2',
-            sourceFilename: 'persisted-b.png',
-          }),
-        ],
-        currentOcrMarkdownResults: [
-          expect.objectContaining({
-            ocrFileKey: 'file:file-b',
-            sourceCode: 'F2',
-            sourceFilename: 'persisted-b.png',
-          }),
-          expect.objectContaining({
-            ocrFileKey: 'file:file-c',
-            sourceCode: 'F3',
-            sourceFilename: 'persisted-c.png',
-          }),
-        ],
-        currentOcrSourceFileMapping: [
-          { sourceCode: 'F1', sourceFilename: 'persisted-a.png' },
-          { sourceCode: 'F2', sourceFilename: 'persisted-b.png' },
-          { sourceCode: 'F3', sourceFilename: 'persisted-c.png' },
-        ],
       }),
     );
   });
@@ -636,20 +621,9 @@ describe('runSteelPaddleOcrPreflight orchestration', () => {
       ],
     });
 
-    const result = await runPreflight({ req });
+    await expect(runPreflight({ req })).rejects.toThrow(/organizer rule markers/u);
 
     expect(mockPipeline).not.toHaveBeenCalled();
-    expect(result).toEqual(
-      expect.objectContaining({
-        status: 'partial',
-        failedKeys: ['file:image-malformed-rules'],
-        currentOcrFailures: [
-          expect.objectContaining({
-            errorMessage: expect.stringMatching(/organizer rule markers/u),
-          }),
-        ],
-      }),
-    );
   });
 
   it('uses the empty-rule fallback only when OCR rules cannot be loaded', async () => {
@@ -693,7 +667,7 @@ describe('runSteelPaddleOcrPreflight orchestration', () => {
       {},
     );
     expect(mockGetPdfPageCount).toHaveBeenCalledWith({ pdfBytes: expect.any(Buffer) });
-    expect(mockBuildPdfPageChunks).toHaveBeenCalledWith({ pageCount: 75, chunkSizePages: 50 });
+    expect(mockBuildPdfPageChunks).toHaveBeenCalledWith({ pageCount: 75, chunkSizePages: 16 });
     const pipelineInput = mockPipeline.mock.calls[0][0] as RunOcrPreprocessingBatchPipelineInput;
     expect(pipelineInput.files).toEqual([
       expect.objectContaining({
@@ -766,19 +740,20 @@ describe('runSteelPaddleOcrPreflight orchestration', () => {
     );
   });
 
-  it('returns PDF preparation failures to the OCR/Vision fallback turn', async () => {
+  it('fails the turn when a PDF cannot be prepared', async () => {
     const req = createRequest([
       { fileId: 'pdf-prepare', filename: 'prepare.pdf', mediaType: 'application/pdf' },
     ]);
     getFiles.mockResolvedValueOnce([storedPdf('pdf-prepare', 'prepare.pdf')]);
     mockGetPdfPageCount.mockRejectedValueOnce(new Error('invalid PDF'));
 
-    const result = await runPreflight({ req, streamId: 'stream-1' });
+    await expect(runPreflight({ req, streamId: 'stream-1' })).rejects.toThrow(
+      'OCR failed: prepare.pdf (preflight): invalid PDF',
+    );
 
-    expect(result).toEqual(
+    expect(preflightSummary()).toEqual(
       expect.objectContaining({
         status: 'partial',
-        ocrTurnActive: true,
         attemptedKeys: ['file:pdf-prepare'],
         failedKeys: ['file:pdf-prepare'],
       }),
@@ -786,24 +761,17 @@ describe('runSteelPaddleOcrPreflight orchestration', () => {
     expect(mockPipeline).not.toHaveBeenCalled();
   });
 
-  it('returns a failed batch to the OCR/Vision fallback turn with its error', async () => {
+  it('fails the turn with the batch error and reports it to the client', async () => {
     const req = createRequest([
       { fileId: 'pdf-1', filename: 'quote.pdf', mediaType: 'application/pdf' },
     ]);
     getFiles.mockResolvedValueOnce([storedPdf('pdf-1', 'quote.pdf')]);
     mockPipeline.mockRejectedValueOnce(new Error('organizer timeout'));
 
-    const result = await runPreflight({ req, streamId: 'stream-1' });
-
-    expect(result).toEqual(
-      expect.objectContaining({
-        status: 'partial',
-        ocrTurnActive: true,
-        attemptedKeys: ['file:pdf-1'],
-        failedKeys: ['file:pdf-1'],
-      }),
+    await expect(runPreflight({ req, streamId: 'stream-1' })).rejects.toThrow(
+      'OCR failed: quote.pdf (preflight): organizer timeout',
     );
-    expect(result).not.toHaveProperty('currentOcrMarkdownResults');
+
     expect(emittedEvents()).toEqual(
       expect.arrayContaining([
         {
@@ -820,7 +788,7 @@ describe('runSteelPaddleOcrPreflight orchestration', () => {
     );
   });
 
-  it('keeps completed organizer Markdown when another file fails and reports its missing ranges', async () => {
+  it('fails the turn when another file fails and reports its missing ranges', async () => {
     const req = createRequest([
       { fileId: 'pdf-a', filename: 'a.pdf', mediaType: 'application/pdf' },
       { fileId: 'pdf-b', filename: 'b.pdf', mediaType: 'application/pdf' },
@@ -843,11 +811,6 @@ describe('runSteelPaddleOcrPreflight orchestration', () => {
           pageStart: 1,
           pageEnd: 1,
           errorMessage: 'file B failed',
-          partial: {
-            markdown: '| file | value |\n|---|---|\n| B | organized pages 51-100 |',
-            pageRanges: [{ pageStart: 51, pageEnd: 100 }],
-            chunkCount: 1,
-          },
           failures: [
             {
               stage: 'paddleocr',
@@ -869,41 +832,10 @@ describe('runSteelPaddleOcrPreflight orchestration', () => {
       ],
     }));
 
-    const result = await runPreflight({ req, streamId: 'stream-1' });
-
-    expect(result).toEqual(
-      expect.objectContaining({
-        status: 'partial',
-        ocrTurnActive: true,
-        completedKeys: ['file:pdf-a'],
-        failedKeys: ['file:pdf-b'],
-        currentOcrMarkdownResults: [
-          expect.objectContaining({
-            ocrFileKey: 'file:pdf-a',
-            content: expect.stringContaining('| A | organized |'),
-          }),
-          expect.objectContaining({
-            ocrFileKey: 'file:pdf-b',
-            fileId: 'pdf-b',
-            content: expect.stringContaining('| B | organized pages 51-100 |'),
-            ocrPreprocessing: expect.objectContaining({
-              partial: true,
-              chunkCount: 1,
-              pageRanges: [{ pageStart: 51, pageEnd: 100 }],
-            }),
-          }),
-        ],
-        currentOcrFailures: [
-          expect.objectContaining({
-            ocrFileKey: 'file:pdf-b',
-            pageStart: 1,
-            pageEnd: 50,
-            fileUrl: 'https://files.example.test/uploads/user_123/pdf-b__b.pdf',
-          }),
-          expect.objectContaining({ ocrFileKey: 'file:pdf-b', pageStart: 101, pageEnd: 120 }),
-        ],
-      }),
+    await expect(runPreflight({ req, streamId: 'stream-1' })).rejects.toThrow(
+      'OCR failed: b.pdf pages 1-50 (paddleocr): file B chunk 1 failed; b.pdf pages 101-120 (paddleocr): file B chunk 3 failed',
     );
+
     expect(emittedEvents()).toEqual(
       expect.arrayContaining([
         {
@@ -924,7 +856,7 @@ describe('runSteelPaddleOcrPreflight orchestration', () => {
     );
   });
 
-  it('keeps organizer failures active without exposing raw OCR to the main turn', async () => {
+  it('fails the turn on an organizer error without exposing raw OCR', async () => {
     const req = createRequest([
       { fileId: 'pdf-1', filename: 'quote.pdf', mediaType: 'application/pdf' },
     ]);
@@ -948,16 +880,14 @@ describe('runSteelPaddleOcrPreflight orchestration', () => {
       return mockBatchResult(input);
     });
 
-    const result = await runPreflight({ req, agent: oauthAgent, streamId: 'stream-1' });
-
-    expect(result).toEqual(
-      expect.objectContaining({
-        status: 'partial',
-        ocrTurnActive: true,
-        failedKeys: ['file:pdf-1'],
-      }),
+    const error = await runPreflight({ req, agent: oauthAgent, streamId: 'stream-1' }).catch(
+      (caught: unknown) => caught,
     );
-    expect(JSON.stringify(result)).not.toContain('raw chunk OCR text');
+
+    expect(error).toEqual(
+      expect.objectContaining({ message: 'OCR failed: quote.pdf (preflight): terminated' }),
+    );
+    expect(String((error as Error).message)).not.toContain('raw chunk OCR text');
   });
 
   it('inlines the exact PDF chunk for a frontend-selected OpenAI organizer model', async () => {
@@ -1067,22 +997,14 @@ describe('runSteelPaddleOcrPreflight orchestration', () => {
     );
   });
 
-  it('does not save a failed batch as completed OCR and keeps the fallback turn active', async () => {
+  it('does not save a failed batch as completed OCR and fails the turn', async () => {
     const req = createRequest([
       { fileId: 'file-fallback', filename: 'fallback.pdf', mediaType: 'application/pdf' },
     ]);
     mockPipeline.mockRejectedValueOnce(new Error('provider timeout'));
 
-    const result = await runPreflight({ req, streamId: 'stream-1' });
+    await expect(runPreflight({ req, streamId: 'stream-1' })).rejects.toThrow('provider timeout');
 
-    expect(result).toEqual(
-      expect.objectContaining({
-        status: 'partial',
-        ocrTurnActive: true,
-        attemptedKeys: ['file:file-fallback'],
-        failedKeys: ['file:file-fallback'],
-      }),
-    );
     expect(preflightSummary()).toEqual(
       expect.objectContaining({ status: 'partial', paddleOcrSavedCount: 0 }),
     );
@@ -1404,7 +1326,7 @@ describe('runSteelPaddleOcrPreflight PaddleOCR calls', () => {
     }
   });
 
-  it('keeps persistent error content recoverable without saving or organizing raw OCR', async () => {
+  it('gives up on persistent error content without saving or organizing raw OCR', async () => {
     const req = imageRequest('file-error-content-failure', 'error-content-failure.jpg');
     const invoke = jest
       .fn()
@@ -1424,27 +1346,10 @@ describe('runSteelPaddleOcrPreflight PaddleOCR calls', () => {
       expect(organizerInputs).toEqual([]);
       expect(result).toEqual(
         expect.objectContaining({
-          status: 'partial',
-          completedKeys: [],
-          failedKeys: ['file:file-error-content-failure'],
-          currentOcrFailures: [
-            expect.objectContaining({
-              ocrFileKey: 'file:file-error-content-failure',
-              errorMessage: expect.stringContaining("Error calling tool 'paddleocr_vl'"),
-            }),
-          ],
+          status: 'completed',
+          completedKeys: ['file:file-error-content-failure'],
+          failedKeys: [],
         }),
-      );
-      expect(result).not.toHaveProperty('currentOcrMarkdownResults');
-      expect(emittedEvents()).toEqual(
-        expect.arrayContaining([
-          expect.objectContaining({
-            data: expect.objectContaining({
-              source: 'ocr_preprocessing',
-              errorMessage: expect.stringContaining("Error calling tool 'paddleocr_vl'"),
-            }),
-          }),
-        ]),
       );
     } finally {
       jest.useRealTimers();
@@ -1487,9 +1392,7 @@ describe('runSteelPaddleOcrPreflight PaddleOCR calls', () => {
             .output,
         ),
       ).toEqual(expect.objectContaining({ attemptsUsed: 3, diagnosticCode: 'ai_studio_timeout' }));
-      expect(result.currentOcrFailures).toEqual([
-        expect.objectContaining({ diagnosticCode: 'ai_studio_timeout', stage: 'preflight' }),
-      ]);
+      expect(result).toEqual(expect.objectContaining({ status: 'completed', failedKeys: [] }));
     } finally {
       jest.useRealTimers();
     }
@@ -1658,7 +1561,7 @@ describe('runSteelPaddleOcrPreflight PaddleOCR calls', () => {
           });
         await expect(
           runChunk({ chunkIndex: 1, chunkCount: 1, pageStart: 1, pageEnd: 50, chunkSizePages: 50 }),
-        ).rejects.toMatchObject({ ocrAdaptiveSplitEligible: true });
+        ).rejects.toThrow('parent timeout 3');
         await runChunk({
           chunkIndex: 1,
           chunkCount: 2,
@@ -1725,9 +1628,8 @@ describe('runSteelPaddleOcrPreflight PaddleOCR calls', () => {
     expect(reinitServer).not.toHaveBeenCalled();
     expect(result).toEqual(
       expect.objectContaining({
-        status: 'partial',
-        failedKeys: ['file:file-invalid'],
-        currentOcrFailures: [expect.objectContaining({ errorMessage: providerError.message })],
+        status: 'completed',
+        failedKeys: [],
         currentPaddleOcrStatuses: [
           {
             paddleocr: 'fail',
@@ -1791,9 +1693,8 @@ describe('runSteelPaddleOcrPreflight PaddleOCR calls', () => {
       expect(loadTools).toHaveBeenCalledTimes(2);
       expect(result).toEqual(
         expect.objectContaining({
-          status: 'partial',
-          failedKeys: ['file:file-rebuild'],
-          currentOcrFailures: [expect.objectContaining({ errorMessage: providerError.message })],
+          status: 'completed',
+          failedKeys: [],
         }),
       );
       expect(providerError.cause).toBe(rebuildError);
@@ -1802,7 +1703,7 @@ describe('runSteelPaddleOcrPreflight PaddleOCR calls', () => {
     }
   });
 
-  it('retries HTTP 408 twice without rebuilding MCP and keeps the fallback turn active', async () => {
+  it('retries HTTP 408 twice without rebuilding MCP, then gives the chunk up', async () => {
     const req = imageRequest('file-timeout', 'timeout.pdf');
     const invoke = jest.fn().mockRejectedValue(new Error('HTTP 408: Request Timeout'));
     mockPaddleOcrBatchWithOrganizer([]);
@@ -1819,9 +1720,9 @@ describe('runSteelPaddleOcrPreflight PaddleOCR calls', () => {
       expect(invoke).toHaveBeenCalledTimes(3);
       expect(result).toEqual(
         expect.objectContaining({
-          status: 'partial',
+          status: 'completed',
           ocrTurnActive: true,
-          failedKeys: ['file:file-timeout'],
+          failedKeys: [],
         }),
       );
     } finally {

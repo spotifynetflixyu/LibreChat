@@ -12,7 +12,7 @@ import type {
   CaptureOcrPreprocessingChunkMarkdownInput,
 } from '../memory/service';
 import type { OcrPreprocessingPageChunk } from './chunks';
-import type { OcrOrganizer } from './organizer';
+import type { OcrOrganizer, OcrOrganizerInput } from './organizer';
 
 function emptyState(input: {
   ocrFileKey: string;
@@ -65,7 +65,8 @@ function createMemoryStore(initialStates: readonly OcrPreprocessingState[]) {
       Object.assign(chunkState(input), {
         rawSaved: true,
         rawResultHash: input.rawResultHash,
-        rawOcrText: getPaddleOcrResultText(input.data),
+        rawOcrText: input.paddleFailed ? undefined : getPaddleOcrResultText(input.data),
+        paddleFailed: input.paddleFailed === true,
       });
       return { savedCounts: { paddleocr_preflight: 1 } };
     }),
@@ -84,12 +85,6 @@ function createMemoryStore(initialStates: readonly OcrPreprocessingState[]) {
 
 function tableMarkdown(value: string): string {
   return `## ocr_result_chunk\n\n| result |\n| --- |\n| ${value} |`;
-}
-
-function adaptiveSplitEligibleError(message: string) {
-  const error = new Error(message) as Error & { ocrAdaptiveSplitEligible: boolean };
-  error.ocrAdaptiveSplitEligible = true;
-  return error;
 }
 
 function organizerRetryFixture(input: { organizer: OcrOrganizer }) {
@@ -145,6 +140,22 @@ function organizerRetryFixture(input: { organizer: OcrOrganizer }) {
 }
 
 describe('OCR preprocessing orchestrator', () => {
+  const originalChunkSizeEnv = process.env[ocrPreprocessingChunkSizePagesEnvKey];
+
+  /** The fixtures below are written for 50-page chunks; split tests set their own size. */
+  beforeEach(() => {
+    process.env[ocrPreprocessingChunkSizePagesEnvKey] = '50';
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    if (originalChunkSizeEnv === undefined) {
+      delete process.env[ocrPreprocessingChunkSizePagesEnvKey];
+      return;
+    }
+    process.env[ocrPreprocessingChunkSizePagesEnvKey] = originalChunkSizeEnv;
+  });
+
   it('pairs each chunk raw text with its own signed artifact and stores a fixed heading with tables', async () => {
     const chunks = buildPdfPageChunks({ pageCount: 100 });
     const baseState = emptyState({
@@ -402,7 +413,7 @@ describe('OCR preprocessing orchestrator', () => {
       organize: jest.fn(async (input) => {
         calls.push(`organize:${input.rawOcrText}`);
         return {
-          markdown: tableMarkdown(`organized ${input.rawOcrText.replace('raw ', '')}`),
+          markdown: tableMarkdown(`organized ${(input.rawOcrText ?? '').replace('raw ', '')}`),
         };
       }),
     };
@@ -770,7 +781,7 @@ describe('OCR preprocessing orchestrator', () => {
       organize: jest.fn(async (input) => {
         calls.push(`organize:${input.rawOcrText}`);
         return {
-          markdown: tableMarkdown(`organized ${input.rawOcrText.replace('raw ', '')}`),
+          markdown: tableMarkdown(`organized ${(input.rawOcrText ?? '').replace('raw ', '')}`),
         };
       }),
     };
@@ -1181,7 +1192,7 @@ describe('OCR preprocessing orchestrator', () => {
     const rawRunner = jest.fn();
     const organizer: OcrOrganizer = {
       organize: jest.fn(async (input) => ({
-        markdown: tableMarkdown(`organized ${input.rawOcrText.replace('raw ', '')}`),
+        markdown: tableMarkdown(`organized ${(input.rawOcrText ?? '').replace('raw ', '')}`),
       })),
     };
     const initialState: OcrPreprocessingState = {
@@ -1685,98 +1696,134 @@ describe('OCR preprocessing orchestrator', () => {
     ]);
   });
 
-  it('continues later chunks in the same file after one PaddleOCR chunk fails', async () => {
-    const chunks = buildPdfPageChunks({ pageCount: 70, chunkSizePages: 25 });
-    const initialState = emptyState({
-      ocrFileKey: 'file:partial',
-      sourcePdfKey: 'uploads/partial.pdf',
-      ocrRuleVersion: 'rules-v2',
-      chunkCount: 3,
-    });
-    const rawState: OcrPreprocessingState = {
-      ...initialState,
-      chunks: [chunks[0], chunks[2]].map((chunk) => ({
-        ...chunk,
-        rawSaved: true,
-        organizedSaved: false,
-        rawResultHash: `hash-${chunk.chunkIndex}`,
-        rawOcrText: `raw-${chunk.chunkIndex}`,
+  it('saves a chunk PaddleOCR gives up on as paddle_failed and organizes its pages alone', async () => {
+    const chunks = buildPdfPageChunks({ pageCount: 1 });
+    const memory = createMemoryStore([
+      emptyState({
+        ocrFileKey: 'file:paddle-failed',
+        sourcePdfKey: 'uploads/paddle-failed.png',
+        ocrRuleVersion: 'rules-v2',
+      }),
+    ]);
+    const organizer = {
+      organize: jest.fn(async (_input: OcrOrganizerInput) => ({
+        markdown: tableMarkdown('vision only'),
       })),
     };
-    const organizedState: OcrPreprocessingState = {
-      ...rawState,
-      chunks: [
-        ...rawState.chunks.map((chunk) => ({
-          ...chunk,
-          organizedSaved: true,
-          organizedMarkdown:
-            chunk.chunkIndex === 1
-              ? '| item | value |\n|---|---|\n| first | 1 |'
-              : '| item | value |\n|---|---|\n| third | 3 |',
-        })),
-        {
-          ...chunks[1]!,
-          rawSaved: false,
-          organizedSaved: true,
-          organizedMarkdown: '| item | value |\n|---|---|\n| stale failed | 2 |',
-        },
-      ],
-    };
-    const paddleError = new Error('chunk 2 failed') as Error & { ocrFileUrl: string };
-    paddleError.ocrFileUrl = 'https://refreshed.example/chunk-2.pdf';
+    const paddleError = new Error('PaddleOCR failed after 3 attempts');
     Object.defineProperty(paddleError, 'diagnosticCode', {
       value: 'ai_studio_job_failed',
       enumerable: false,
     });
-    const paddleOcr = {
-      runChunk: jest.fn(async ({ chunk }) => {
-        if (chunk.chunkIndex === 2) {
-          throw paddleError;
-        }
-        return {
-          rawResult: { text: `raw-${chunk.chunkIndex}` },
-          rawOcrText: `raw-${chunk.chunkIndex}`,
-          rawResultHash: `hash-${chunk.chunkIndex}`,
-        };
-      }),
-    };
-    const organizer = {
-      organize: jest.fn(async () => ({ markdown: tableMarkdown('organized') })),
-    };
-    const memory = {
-      readOcrPreprocessingState: jest
-        .fn()
-        .mockResolvedValueOnce(initialState)
-        .mockResolvedValueOnce(rawState)
-        .mockResolvedValueOnce(organizedState),
-      capturePaddleOcrChunkResult: jest.fn().mockResolvedValue({
-        savedCounts: { paddleocr_preflight: 1 },
-      }),
-      captureOcrPreprocessingChunkMarkdown: jest.fn().mockResolvedValue({
-        savedCounts: { ocr_preprocessing_chunk_markdown: 1 },
-      }),
-    };
 
     const result = await runOcrPreprocessingBatchPipeline({
-      conversationId: 'steel_conversation_partial_file',
+      conversationId: 'steel_conversation_paddle_failed',
       ocrRuleVersion: 'rules-v2',
       ocrRulesText: 'rules',
       files: [
         {
           file: {
-            ocrFileKey: 'file:partial',
-            filename: 'partial.pdf',
-            sourcePdfKey: 'uploads/partial.pdf',
+            ocrFileKey: 'file:paddle-failed',
+            filename: 'paddle-failed.png',
+            mediaType: 'image/png',
+            sourcePdfKey: 'uploads/paddle-failed.png',
           },
           chunks,
           artifacts: {
-            ensurePdfChunkArtifacts: jest.fn(async () =>
-              chunks.map((chunk) => ({
-                ...chunk,
-                filepath: `https://cdn.example/chunk-${chunk.chunkIndex}.pdf`,
-                storageKey: `chunks/${chunk.chunkIndex}.pdf`,
-              })),
-            ),
+            ensurePdfChunkArtifacts: jest.fn(async () => [
+              {
+                ...chunks[0]!,
+                filepath: 'https://cdn.example/paddle-failed.png',
+                storageKey: 'uploads/paddle-failed.png',
+              },
+            ]),
+          },
+        },
+      ],
+      memory,
+      organizer,
+      paddleOcr: {
+        runChunk: jest.fn(async () => {
+          throw paddleError;
+        }),
+      },
+    });
+
+    expect(memory.capturePaddleOcrChunkResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        rawResultHash: 'paddle_failed',
+        paddleFailed: true,
+        data: {
+          paddleOcrFailed: true,
+          errorMessage: 'PaddleOCR failed after 3 attempts',
+          diagnosticCode: 'ai_studio_job_failed',
+        },
+      }),
+    );
+    expect(organizer.organize).toHaveBeenCalledTimes(1);
+    expect(organizer.organize.mock.calls[0]?.[0]).not.toHaveProperty('rawOcrText');
+    expect(organizer.organize).toHaveBeenCalledWith(
+      expect.objectContaining({
+        artifactUrl: 'https://cdn.example/paddle-failed.png',
+        mediaType: 'image/png',
+      }),
+    );
+    expect(memory.captureOcrPreprocessingChunkMarkdown).toHaveBeenCalledWith(
+      expect.objectContaining({ rawResultHash: 'paddle_failed' }),
+    );
+    expect(result.files[0]).toEqual(
+      expect.objectContaining({ status: 'completed', markdown: tableMarkdown('vision only') }),
+    );
+  });
+
+  it('never retries PaddleOCR for a paddle_failed chunk on a resumed run', async () => {
+    const chunks = buildPdfPageChunks({ pageCount: 4, chunkSizePages: 4 });
+    const memory = createMemoryStore([
+      {
+        ...emptyState({
+          ocrFileKey: 'file:paddle-failed-resume',
+          sourcePdfKey: 'uploads/paddle-failed-resume.pdf',
+          ocrRuleVersion: 'rules-v2',
+          chunkCount: 1,
+        }),
+        chunks: [
+          {
+            ...chunks[0]!,
+            rawSaved: true,
+            organizedSaved: false,
+            rawResultHash: 'paddle_failed',
+            paddleFailed: true,
+          },
+        ],
+      },
+    ]);
+    const paddleOcr = { runChunk: jest.fn() };
+    const organizer = {
+      organize: jest.fn(async (_input: OcrOrganizerInput) => ({
+        markdown: tableMarkdown('resumed vision'),
+      })),
+    };
+
+    const result = await runOcrPreprocessingBatchPipeline({
+      conversationId: 'steel_conversation_paddle_failed_resume',
+      ocrRuleVersion: 'rules-v2',
+      ocrRulesText: 'rules',
+      files: [
+        {
+          file: {
+            ocrFileKey: 'file:paddle-failed-resume',
+            filename: 'paddle-failed-resume.pdf',
+            sourcePdfKey: 'uploads/paddle-failed-resume.pdf',
+          },
+          chunks,
+          artifacts: {
+            ensurePdfChunkArtifacts: jest.fn(async () => [
+              {
+                ...chunks[0]!,
+                filepath: 'https://cdn.example/1-4.pdf',
+                storageKey: 'chunks/1-4.pdf',
+              },
+            ]),
           },
         },
       ],
@@ -1785,132 +1832,9 @@ describe('OCR preprocessing orchestrator', () => {
       paddleOcr,
     });
 
-    expect(paddleOcr.runChunk).toHaveBeenCalledTimes(3);
-    expect(organizer.organize).toHaveBeenCalledTimes(2);
-    expect(memory.capturePaddleOcrChunkResult).toHaveBeenCalledTimes(2);
-    expect(memory.captureOcrPreprocessingChunkMarkdown).toHaveBeenCalledTimes(2);
-    expect(result.files[0]).toEqual(
-      expect.objectContaining({
-        status: 'failed',
-        failures: [
-          expect.objectContaining({
-            stage: 'paddleocr',
-            chunkIndex: 2,
-            pageStart: 26,
-            pageEnd: 50,
-            fileUrl: 'https://refreshed.example/chunk-2.pdf',
-            diagnosticCode: 'ai_studio_job_failed',
-          }),
-        ],
-        partial: {
-          markdown: '## ocr_result_chunk\n\n| item | value |\n| --- | --- |\n| first | 1 |\n| third | 3 |',
-          pageRanges: [
-            { pageStart: 1, pageEnd: 25 },
-            { pageStart: 51, pageEnd: 70 },
-          ],
-          chunkCount: 2,
-        },
-      }),
-    );
-    expect(result.files[0]).not.toHaveProperty('markdown');
-  });
-
-  it('retains primary PaddleOCR failure when partial state reread fails', async () => {
-    const chunks = buildPdfPageChunks({ pageCount: 2, chunkSizePages: 1 });
-    const initialState = emptyState({
-      ocrFileKey: 'file:partial-reread-failure',
-      sourcePdfKey: 'uploads/partial-reread-failure.pdf',
-      ocrRuleVersion: 'rules-v2',
-      chunkCount: 2,
-    });
-    const rawState: OcrPreprocessingState = {
-      ...initialState,
-      chunks: [
-        {
-          ...chunks[0]!,
-          rawSaved: true,
-          organizedSaved: false,
-          rawResultHash: 'hash-1',
-          rawOcrText: 'raw-1',
-        },
-      ],
-    };
-    const paddleError = new Error('chunk 2 failed');
-    const memory = {
-      readOcrPreprocessingState: jest
-        .fn()
-        .mockResolvedValueOnce(initialState)
-        .mockResolvedValueOnce(rawState)
-        .mockRejectedValueOnce(new Error('state reread failed')),
-      capturePaddleOcrChunkResult: jest.fn().mockResolvedValue({
-        savedCounts: { paddleocr_preflight: 1 },
-      }),
-      captureOcrPreprocessingChunkMarkdown: jest.fn().mockResolvedValue({
-        savedCounts: { ocr_preprocessing_chunk_markdown: 1 },
-      }),
-    };
-
-    const result = await runOcrPreprocessingBatchPipeline({
-      conversationId: 'steel_conversation_partial_reread_failure',
-      ocrRuleVersion: 'rules-v2',
-      ocrRulesText: 'rules',
-      files: [
-        {
-          file: {
-            ocrFileKey: 'file:partial-reread-failure',
-            filename: 'partial-reread-failure.pdf',
-            sourcePdfKey: 'uploads/partial-reread-failure.pdf',
-          },
-          chunks,
-          artifacts: {
-            ensurePdfChunkArtifacts: jest.fn(async () =>
-              chunks.map((chunk) => ({
-                ...chunk,
-                filepath: `https://cdn.example/chunk-${chunk.chunkIndex}.pdf`,
-                storageKey: `chunks/${chunk.chunkIndex}.pdf`,
-              })),
-            ),
-          },
-        },
-      ],
-      memory,
-      organizer: { organize: jest.fn(async () => ({ markdown: tableMarkdown('organized first') })) },
-      paddleOcr: {
-        runChunk: jest.fn(async ({ chunk }) => {
-          if (chunk.chunkIndex === 2) {
-            throw paddleError;
-          }
-          return {
-            rawResult: { text: 'raw-1' },
-            rawOcrText: 'raw-1',
-            rawResultHash: 'hash-1',
-          };
-        }),
-      },
-    });
-
-    expect(result.files[0]).toEqual(
-      expect.objectContaining({
-        status: 'failed',
-        stage: 'paddleocr',
-        chunkIndex: 2,
-        pageStart: 2,
-        pageEnd: 2,
-        fileUrl: 'https://cdn.example/chunk-2.pdf',
-        errorMessage: 'chunk 2 failed',
-        failures: [
-          expect.objectContaining({
-            stage: 'paddleocr',
-            chunkIndex: 2,
-            pageStart: 2,
-            pageEnd: 2,
-            fileUrl: 'https://cdn.example/chunk-2.pdf',
-            errorMessage: 'chunk 2 failed',
-          }),
-        ],
-      }),
-    );
-    expect(result.files[0]).not.toHaveProperty('partial');
+    expect(paddleOcr.runChunk).not.toHaveBeenCalled();
+    expect(organizer.organize.mock.calls[0]?.[0]).not.toHaveProperty('rawOcrText');
+    expect(result.files[0]).toEqual(expect.objectContaining({ status: 'completed' }));
   });
 
   it('splits configured 24-page parents and partial 15-page parents into retry ranges', async () => {
@@ -1950,7 +1874,7 @@ describe('OCR preprocessing orchestrator', () => {
         runChunk: jest.fn(async ({ chunk }) => {
           paddleRanges.push(rangeKey(chunk));
           if (!['1-12', '13-24', '25-36', '37-39'].includes(rangeKey(chunk))) {
-            throw adaptiveSplitEligibleError(`parent exhausted ${rangeKey(chunk)}`);
+            throw new Error(`parent exhausted ${rangeKey(chunk)}`);
           }
           return {
             rawResult: { text: `raw-${rangeKey(chunk)}` },
@@ -2061,7 +1985,7 @@ describe('OCR preprocessing orchestrator', () => {
       runChunk: jest.fn(async ({ chunk }) => {
         paddleRanges.push(rangeKey(chunk));
         if (rangeKey(chunk) === '1-50') {
-          throw adaptiveSplitEligibleError('parent exhausted');
+          throw new Error('parent exhausted');
         }
         return {
           rawResult: { text: `raw-${rangeKey(chunk)}` },
@@ -2136,133 +2060,104 @@ describe('OCR preprocessing orchestrator', () => {
     expect(result.files[0]).not.toHaveProperty('failures');
   });
 
-  it('does not split an exact 50-page parent before two PaddleOCR invokes are exhausted', async () => {
-    const chunks = buildPdfPageChunks({ pageCount: 50, chunkSizePages: 50 });
-    const state = emptyState({
-      ocrFileKey: 'file:no-early-split',
-      sourcePdfKey: 'uploads/no-early-split.pdf',
-      ocrRuleVersion: 'rules-v2',
-      chunkCount: 1,
-    });
-    const commitPdfChunkSplit = jest.fn();
+  it('halves a failing 16-page chunk down to 4 pages before saving it as paddle_failed', async () => {
+    process.env[ocrPreprocessingChunkSizePagesEnvKey] = '16';
+    const initialChunks = buildPdfPageChunks({ pageCount: 16 });
+    let effectiveChunks = initialChunks;
+    const rangeKey = (chunk: { pageStart: number; pageEnd: number }) =>
+      `${chunk.pageStart}-${chunk.pageEnd}`;
+    const memory = createMemoryStore([
+      emptyState({
+        ocrFileKey: 'file:split-to-minimum',
+        sourcePdfKey: 'uploads/split-to-minimum.pdf',
+        ocrRuleVersion: 'rules-v2',
+      }),
+    ]);
+    const toArtifacts = (chunks: readonly OcrPreprocessingPageChunk[]) =>
+      chunks.map((chunk) => ({
+        ...chunk,
+        filepath: `https://cdn.example/${rangeKey(chunk)}.pdf`,
+        storageKey: `chunks/${rangeKey(chunk)}.pdf`,
+      }));
+    const artifacts = {
+      ensurePdfChunkArtifacts: jest.fn(
+        async ({ chunks }: { chunks: readonly OcrPreprocessingPageChunk[] }) => toArtifacts(chunks),
+      ),
+      commitPdfChunkSplit: jest.fn(
+        async ({ chunks }: { chunks: readonly OcrPreprocessingPageChunk[] }) => {
+          effectiveChunks = [...chunks];
+          return toArtifacts(chunks);
+        },
+      ),
+    };
+    const paddleRanges: string[] = [];
+    const paddleOcr = {
+      runChunk: jest.fn(async ({ chunk }) => {
+        paddleRanges.push(rangeKey(chunk));
+        if (rangeKey(chunk) === '1-8') {
+          return {
+            rawResult: { text: 'raw 1-8' },
+            rawOcrText: 'raw 1-8',
+            rawResultHash: 'hash-1-8',
+          };
+        }
+        throw new Error(`invalid credentials ${rangeKey(chunk)}`);
+      }),
+    };
+    const organizer = {
+      organize: jest.fn(async ({ pageStart, pageEnd }) => ({
+        markdown: tableMarkdown(`${pageStart}-${pageEnd}`),
+      })),
+    };
+
     const result = await runOcrPreprocessingBatchPipeline({
-      conversationId: 'steel_conversation_no_early_split',
+      conversationId: 'steel_conversation_split_to_minimum',
       ocrRuleVersion: 'rules-v2',
       ocrRulesText: 'rules',
       files: [
         {
           file: {
-            ocrFileKey: 'file:no-early-split',
-            filename: 'no-early-split.pdf',
-            sourcePdfKey: 'uploads/no-early-split.pdf',
+            ocrFileKey: 'file:split-to-minimum',
+            filename: 'split-to-minimum.pdf',
+            sourcePdfKey: 'uploads/split-to-minimum.pdf',
           },
-          chunks,
-          artifacts: {
-            ensurePdfChunkArtifacts: jest.fn(async () => [
-              {
-                ...chunks[0]!,
-                filepath: 'https://cdn.example/parent.pdf',
-                storageKey: 'chunks/parent.pdf',
-              },
-            ]),
-            commitPdfChunkSplit,
-          },
+          chunks: initialChunks,
+          artifacts,
         },
       ],
-      memory: {
-        readOcrPreprocessingState: jest.fn(async () => state),
-        capturePaddleOcrChunkResult: jest.fn(),
-        captureOcrPreprocessingChunkMarkdown: jest.fn(),
-      },
-      organizer: { organize: jest.fn() },
-      paddleOcr: { runChunk: jest.fn(async () => { throw new Error('invalid credentials'); }) },
-    });
-
-    expect(commitPdfChunkSplit).not.toHaveBeenCalled();
-    expect(result.files[0]).toEqual(
-      expect.objectContaining({
-        status: 'failed',
-        pageStart: 1,
-        pageEnd: 50,
-        failures: [expect.objectContaining({ pageStart: 1, pageEnd: 50 })],
-      }),
-    );
-  });
-
-  it('reports only the unresolved 25-page child when a split child fails', async () => {
-    const initialChunks = buildPdfPageChunks({ pageCount: 50, chunkSizePages: 50 });
-    let effectiveChunks = initialChunks;
-    const rawRanges = new Set<string>();
-    const rangeKey = (chunk: { pageStart: number; pageEnd: number }) => `${chunk.pageStart}-${chunk.pageEnd}`;
-    const memory = {
-      readOcrPreprocessingState: jest.fn(async () => ({
-        ocrFileKey: 'file:split-child-failure',
-        sourcePdfKey: 'uploads/split-child-failure.pdf',
-        pipelineVersion: 1,
-        ocrRuleVersion: 'rules-v2',
-        chunkSizePages: 50,
-        chunkCount: effectiveChunks.length,
-        chunks: effectiveChunks.map((chunk) => ({
-          ...chunk,
-          rawSaved: rawRanges.has(rangeKey(chunk)),
-          organizedSaved: false,
-          ...(rawRanges.has(rangeKey(chunk))
-            ? { rawResultHash: `hash-${rangeKey(chunk)}`, rawOcrText: `raw-${rangeKey(chunk)}` }
-            : {}),
-        })),
-      })),
-      capturePaddleOcrChunkResult: jest.fn(async ({ chunk }) => {
-        rawRanges.add(rangeKey(chunk));
-        return { savedCounts: { paddleocr_preflight: 1 } };
-      }),
-      captureOcrPreprocessingChunkMarkdown: jest.fn().mockResolvedValue({
-        savedCounts: { ocr_preprocessing_chunk_markdown: 1 },
-      }),
-    };
-    const artifacts = {
-      ensurePdfChunkArtifacts: jest.fn(async ({ chunks }: { chunks: readonly OcrPreprocessingPageChunk[] }) =>
-        chunks.map((chunk) => ({ ...chunk, filepath: `https://cdn/${rangeKey(chunk)}.pdf`, storageKey: rangeKey(chunk) })),
-      ),
-      commitPdfChunkSplit: jest.fn(async ({ chunks }: { chunks: readonly OcrPreprocessingPageChunk[] }) => {
-        effectiveChunks = [...chunks];
-        return chunks.map((chunk) => ({ ...chunk, filepath: `https://cdn/${rangeKey(chunk)}.pdf`, storageKey: rangeKey(chunk) }));
-      }),
-    };
-    const result = await runOcrPreprocessingBatchPipeline({
-      conversationId: 'steel_conversation_split_child_failure',
-      ocrRuleVersion: 'rules-v2',
-      ocrRulesText: 'rules',
-      files: [{ file: { ocrFileKey: 'file:split-child-failure', filename: 'split.pdf', sourcePdfKey: 'uploads/split-child-failure.pdf' }, chunks: initialChunks, artifacts }],
       memory,
-      organizer: { organize: jest.fn(async () => ({ markdown: tableMarkdown('organized') })) },
-      paddleOcr: {
-        runChunk: jest.fn(async ({ chunk }) => {
-          if (rangeKey(chunk) === '1-50') {
-            throw adaptiveSplitEligibleError('failed 1-50');
-          }
-          if (rangeKey(chunk) === '26-50') {
-            throw new Error(`failed ${rangeKey(chunk)}`);
-          }
-          return { rawResult: { text: 'raw' }, rawOcrText: 'raw', rawResultHash: 'hash' };
-        }),
-      },
+      organizer,
+      paddleOcr,
     });
 
+    expect(paddleRanges).toEqual(['1-16', '1-8', '9-16', '9-12', '13-16']);
+    expect(artifacts.commitPdfChunkSplit).toHaveBeenCalledTimes(2);
+    expect(effectiveChunks.map(rangeKey)).toEqual(['1-8', '9-12', '13-16']);
+    expect(
+      memory.capturePaddleOcrChunkResult.mock.calls
+        .filter(([input]) => input.paddleFailed === true)
+        .map(([input]) => rangeKey(input.chunk)),
+    ).toEqual(['9-12', '13-16']);
+    expect(
+      organizer.organize.mock.calls.map(([input]) => [
+        `${input.pageStart}-${input.pageEnd}`,
+        input.rawOcrText,
+      ]),
+    ).toEqual([
+      ['1-8', 'raw 1-8'],
+      ['9-12', undefined],
+      ['13-16', undefined],
+    ]);
     expect(result.files[0]).toEqual(
       expect.objectContaining({
-        status: 'failed',
-        pageStart: 26,
-        pageEnd: 50,
-        failures: [expect.objectContaining({ pageStart: 26, pageEnd: 50 })],
+        status: 'completed',
+        chunkCount: 3,
+        pageRanges: [
+          { pageStart: 1, pageEnd: 8 },
+          { pageStart: 9, pageEnd: 12 },
+          { pageStart: 13, pageEnd: 16 },
+        ],
       }),
-    );
-    const failedFile = result.files[0];
-    expect(failedFile?.status).toBe('failed');
-    if (failedFile?.status !== 'failed') {
-      throw new Error('Expected split child failure');
-    }
-    expect(failedFile.failures).not.toEqual(
-      expect.arrayContaining([expect.objectContaining({ pageStart: 1, pageEnd: 50 })]),
     );
   });
 
@@ -2326,7 +2221,7 @@ describe('OCR preprocessing orchestrator', () => {
     expect(result.files[0]).toEqual(expect.objectContaining({ status: 'completed', chunkCount: 3 }));
   });
 
-  it('retries a transient organizer failure once and persists the second result', async () => {
+  it('retries a transient organizer failure and persists the next result', async () => {
     const organizer: OcrOrganizer = {
       organize: jest
         .fn()
@@ -2334,8 +2229,15 @@ describe('OCR preprocessing orchestrator', () => {
         .mockResolvedValueOnce({ markdown: tableMarkdown('organized markdown') }),
     };
     const fixture = organizerRetryFixture({ organizer });
+    jest.useFakeTimers();
 
-    const result = await runOcrPreprocessingPipeline(fixture.input);
+    const settled = Promise.allSettled([runOcrPreprocessingPipeline(fixture.input)]);
+    await jest.runAllTimersAsync();
+    const [outcome] = await settled;
+    if (outcome?.status !== 'fulfilled') {
+      throw new Error('Expected the organizer retry to succeed');
+    }
+    const result = outcome.value;
 
     expect(organizer.organize).toHaveBeenCalledTimes(2);
     expect(fixture.memory.captureOcrPreprocessingChunkMarkdown).toHaveBeenCalledTimes(1);
@@ -2353,118 +2255,116 @@ describe('OCR preprocessing orchestrator', () => {
     }
   });
 
-  it('returns one ranged organizer failure after both organizer attempts fail', async () => {
-    const finalError = new Error('final organizer failure');
+  it('fails the chunk after three organizer attempts and starts no later chunk', async () => {
+    jest.useFakeTimers();
+    const chunks = buildPdfPageChunks({ pageCount: 2, chunkSizePages: 1 });
+    const memory = createMemoryStore([
+      {
+        ...emptyState({
+          ocrFileKey: 'file:organizer-fails',
+          sourcePdfKey: 'uploads/organizer-fails.pdf',
+          ocrRuleVersion: 'rules-v2',
+          chunkCount: 2,
+        }),
+        chunks: chunks.map((chunk) => ({
+          ...chunk,
+          rawSaved: true,
+          organizedSaved: false,
+          rawResultHash: `hash-${chunk.chunkIndex}`,
+          rawOcrText: `raw-${chunk.chunkIndex}`,
+        })),
+      },
+    ]);
     const organizer: OcrOrganizer = {
-      organize: jest
-        .fn()
-        .mockRejectedValueOnce(new Error('transient organizer failure'))
-        .mockRejectedValueOnce(finalError),
+      organize: jest.fn(async () => {
+        throw new Error('final organizer failure');
+      }),
     };
-    const fixture = organizerRetryFixture({ organizer });
+    const refreshPdfChunkArtifact = jest.fn(async ({ artifact }) => artifact);
 
-    const result = await runOcrPreprocessingPipeline(fixture.input);
-
-    expect(organizer.organize).toHaveBeenCalledTimes(2);
-    expect(fixture.memory.captureOcrPreprocessingChunkMarkdown).not.toHaveBeenCalled();
-    expect(result).toEqual(
-      expect.objectContaining({
-        status: 'failed',
-        stage: 'organizer',
-        chunkIndex: 1,
-        pageStart: 1,
-        pageEnd: 1,
-        errorMessage: 'final organizer failure',
-        failures: [
+    const settled = Promise.allSettled([
+      runOcrPreprocessingBatchPipeline({
+        conversationId: 'steel_conversation_organizer_fails',
+        ocrRuleVersion: 'rules-v2',
+        ocrRulesText: 'rules',
+        files: [
           {
+            file: {
+              ocrFileKey: 'file:organizer-fails',
+              filename: 'organizer-fails.pdf',
+              sourcePdfKey: 'uploads/organizer-fails.pdf',
+            },
+            chunks,
+            artifacts: {
+              ensurePdfChunkArtifacts: jest.fn(async () =>
+                chunks.map((chunk) => ({
+                  ...chunk,
+                  filepath: `https://cdn.example/chunk-${chunk.chunkIndex}.pdf`,
+                  storageKey: `chunks/${chunk.chunkIndex}.pdf`,
+                })),
+              ),
+              refreshPdfChunkArtifact,
+            },
+          },
+        ],
+        memory,
+        organizer,
+        paddleOcr: { runChunk: jest.fn() },
+      }),
+    ]);
+    await jest.runAllTimersAsync();
+    const [outcome] = await settled;
+
+    expect(organizer.organize).toHaveBeenCalledTimes(3);
+    expect(refreshPdfChunkArtifact).toHaveBeenCalledTimes(2);
+    expect(organizer.organize).toHaveBeenCalledWith(expect.objectContaining({ pageStart: 1 }));
+    expect(organizer.organize).not.toHaveBeenCalledWith(expect.objectContaining({ pageStart: 2 }));
+    expect(memory.captureOcrPreprocessingChunkMarkdown).not.toHaveBeenCalled();
+    expect(outcome).toEqual({
+      status: 'fulfilled',
+      value: {
+        files: [
+          expect.objectContaining({
+            status: 'failed',
             stage: 'organizer',
-            chunkIndex: 1,
             pageStart: 1,
             pageEnd: 1,
             errorMessage: 'final organizer failure',
-          },
+            failures: [
+              {
+                stage: 'organizer',
+                chunkIndex: 1,
+                pageStart: 1,
+                pageEnd: 1,
+                errorMessage: 'final organizer failure',
+              },
+            ],
+          }),
         ],
-      }),
-    );
-    expect(result).not.toHaveProperty('markdown');
+      },
+    });
   });
 
-  it('uses cached organized chunks for partial output without rereading unchanged state', async () => {
-    const chunks = buildPdfPageChunks({ pageCount: 2, chunkSizePages: 1 });
-    const state = {
-      ...emptyState({
-        ocrFileKey: 'file:cached-partial',
-        sourcePdfKey: 'uploads/cached-partial.pdf',
-        ocrRuleVersion: 'rules-v2',
-        chunkCount: 2,
-      }),
-      chunks: [
-        {
-          ...chunks[0]!,
-          rawSaved: true,
-          organizedSaved: true,
-          rawResultHash: 'hash-1',
-          rawOcrText: 'raw-1',
-          organizedMarkdown: '| item | value |\n|---|---|\n| cached | 1 |',
-        },
-        {
-          ...chunks[1]!,
-          rawSaved: true,
-          organizedSaved: false,
-          rawResultHash: 'hash-2',
-          rawOcrText: 'raw-2',
-        },
-      ],
+  it('retries a failed save without asking the Organizer again', async () => {
+    jest.useFakeTimers();
+    const organizer: OcrOrganizer = {
+      organize: jest.fn(async () => ({ markdown: tableMarkdown('organized markdown') })),
     };
-    const memory = {
-      readOcrPreprocessingState: jest.fn().mockResolvedValue(state),
-      capturePaddleOcrChunkResult: jest.fn(),
-      captureOcrPreprocessingChunkMarkdown: jest.fn(),
-    };
-    const organizer = {
-      organize: jest.fn().mockRejectedValue(new Error('organizer unavailable')),
-    };
-    const result = await runOcrPreprocessingBatchPipeline({
-      conversationId: 'steel_conversation_cached_partial',
-      ocrRuleVersion: 'rules-v2',
-      ocrRulesText: 'rules',
-      files: [
-        {
-          file: {
-            ocrFileKey: 'file:cached-partial',
-            filename: 'cached-partial.pdf',
-            sourcePdfKey: 'uploads/cached-partial.pdf',
-          },
-          chunks,
-          artifacts: {
-            ensurePdfChunkArtifacts: jest.fn(async () =>
-              chunks.map((chunk) => ({
-                ...chunk,
-                filepath: `https://cdn.example/chunk-${chunk.chunkIndex}.pdf`,
-                storageKey: `chunks/${chunk.chunkIndex}.pdf`,
-              })),
-            ),
-          },
-        },
-      ],
-      memory,
-      organizer,
-      paddleOcr: { runChunk: jest.fn() },
-    });
+    const fixture = organizerRetryFixture({ organizer });
+    const capture = fixture.memory.captureOcrPreprocessingChunkMarkdown;
+    const saveOnce = capture.getMockImplementation()!;
+    capture.mockRejectedValueOnce(new Error('write conflict')).mockImplementation(saveOnce);
 
-    expect(memory.readOcrPreprocessingState).toHaveBeenCalledTimes(2);
-    expect(organizer.organize).toHaveBeenCalledTimes(2);
-    expect(memory.captureOcrPreprocessingChunkMarkdown).not.toHaveBeenCalled();
-    expect(result.files[0]).toEqual(
-      expect.objectContaining({
-        status: 'failed',
-        partial: {
-          markdown: '## ocr_result_chunk\n\n| item | value |\n| --- | --- |\n| cached | 1 |',
-          pageRanges: [{ pageStart: 1, pageEnd: 1 }],
-          chunkCount: 1,
-        },
-      }),
-    );
+    const settled = Promise.allSettled([runOcrPreprocessingPipeline(fixture.input)]);
+    await jest.runAllTimersAsync();
+    const [outcome] = await settled;
+
+    expect(organizer.organize).toHaveBeenCalledTimes(1);
+    expect(capture).toHaveBeenCalledTimes(2);
+    expect(outcome).toEqual({
+      status: 'fulfilled',
+      value: expect.objectContaining({ status: 'completed' }),
+    });
   });
 
   it('propagates PaddleOCR save cancellation without continuing to organizer', async () => {

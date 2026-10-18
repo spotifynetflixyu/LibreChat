@@ -4,7 +4,6 @@ import { ocrPreprocessingPipelineVersion } from '../memory/service';
 
 import {
   getOcrPageRangeKey,
-  getOcrPageRangePageCount,
   normalizeOcrPageChunks,
   type OcrPageRange,
   type OcrPreprocessingPageChunk,
@@ -300,7 +299,7 @@ export function createMongooseOcrPdfChunkArtifactRepository(
       const expected = validateOcrPageSplit({
         parent: existing.supersededByRanges ? existing : parent,
         children: supersededByRanges,
-      });
+      }).map(({ pageStart, pageEnd }) => ({ pageStart, pageEnd }));
       if (existing.supersededByRanges) {
         const current = normalizeOcrPageChunks(existing.supersededByRanges).map(
           ({ pageStart, pageEnd }) => ({ pageStart, pageEnd }),
@@ -375,19 +374,7 @@ export function resolveCanonicalOcrPageChunks(input: {
         next.push(chunk);
         continue;
       }
-      const children = validateOcrPageSplit({
-        parent: row,
-        children: row.supersededByRanges,
-      });
-      const childChunkSizePages = (row.chunkSizePages ?? getOcrPageRangePageCount(row)) / 2;
-      next.push(
-        ...children.map((child, index) => ({
-          ...child,
-          chunkIndex: index + 1,
-          chunkCount: children.length,
-          chunkSizePages: childChunkSizePages,
-        })),
-      );
+      next.push(...validateOcrPageSplit({ parent: row, children: row.supersededByRanges }));
       changed = true;
     }
     chunks = normalizeOcrPageChunks(next);
@@ -807,7 +794,7 @@ export async function commitOcrPdfChunkSplit(
     sourcePdfKey: input.sourcePdfKey,
     pipelineVersion: ocrPreprocessingPipelineVersion,
     parent: input.parent,
-    supersededByRanges: children,
+    supersededByRanges: children.map(({ pageStart, pageEnd }) => ({ pageStart, pageEnd })),
   });
   return artifacts;
 }

@@ -81,7 +81,6 @@ export interface SteelNativeContextAttachmentsInput {
   currentTurnFiles?: readonly SteelNativeFileReference[];
   currentPaddleOcrStatuses?: readonly SteelRuntimeJsonObject[];
   currentOcrMarkdownResults?: readonly SteelRuntimeJsonObject[];
-  currentOcrFailures?: readonly SteelRuntimeJsonObject[];
   currentOcrSourceFileMapping?: readonly SteelRuntimeOcrSourceFileMapping[];
   previousOcrResultMarkdown?: string;
   suggestedOcrResultColumns?: readonly string[];
@@ -168,7 +167,6 @@ function readValidOcrPreprocessingMetadata(
 
   const chunkCount = preprocessing.chunkCount;
   const pageRanges = preprocessing.pageRanges;
-  const partial = preprocessing.partial === true;
   if (
     typeof chunkCount !== 'number' ||
     !Number.isInteger(chunkCount) ||
@@ -198,46 +196,13 @@ function readValidOcrPreprocessingMetadata(
       return undefined;
     }
     const previous = normalizedRanges[normalizedRanges.length - 1];
-    if (previous && (pageStart <= previous.pageEnd || (!partial && pageStart !== previous.pageEnd + 1))) {
+    if (previous && pageStart !== previous.pageEnd + 1) {
       return undefined;
     }
     normalizedRanges.push({ pageStart, pageEnd });
   }
 
   return { chunkCount, pageRanges: normalizedRanges };
-}
-
-function normalizeSafeSteelAiUrl(value: string | undefined): string | undefined {
-  if (!value || value.trim() === '') {
-    return undefined;
-  }
-
-  try {
-    const url = new URL(value.trim());
-    if (!['http:', 'https:'].includes(url.protocol) || url.username || url.password) {
-      return undefined;
-    }
-    return url.toString();
-  } catch {
-    return undefined;
-  }
-}
-
-interface NativeOcrFailureGroup {
-  fileKey: string;
-  fileUrl: string;
-  stage: string;
-  ranges: { pageStart: number; pageEnd: number }[];
-}
-
-function getNativeOcrFailureStage(failure: SteelRuntimeJsonObject): string {
-  const stage = typeof failure.stage === 'string' ? failure.stage.trim().toLowerCase() : '';
-  if (stage === 'paddleocr') {
-    return stage;
-  }
-  return ['artifacts', 'organizer', 'merge', 'preflight', 'state'].includes(stage)
-    ? stage
-    : 'generic';
 }
 
 function readNativeOcrFailureRange(
@@ -297,37 +262,6 @@ function renderOcrPageRange(range: ReturnType<typeof readNativeOcrFailureRange>)
     return 'unavailable';
   }
   return range.pageStart === range.pageEnd ? range.pageStart : `${range.pageStart}-${range.pageEnd}`;
-}
-
-function mergeNativeOcrFailureRanges(
-  ranges: readonly { pageStart: number; pageEnd: number }[],
-): { pageStart: number; pageEnd: number }[] {
-  const sortedRanges = [...ranges].sort(
-    (left, right) => left.pageStart - right.pageStart || left.pageEnd - right.pageEnd,
-  );
-  const mergedRanges: { pageStart: number; pageEnd: number }[] = [];
-  for (const range of sortedRanges) {
-    const previous = mergedRanges[mergedRanges.length - 1];
-    if (previous && range.pageStart <= previous.pageEnd + 1) {
-      previous.pageEnd = Math.max(previous.pageEnd, range.pageEnd);
-      continue;
-    }
-    mergedRanges.push({ ...range });
-  }
-  return mergedRanges;
-}
-
-function renderNativeOcrFailureRanges(
-  ranges: readonly { pageStart: number; pageEnd: number }[],
-): string {
-  const mergedRanges = mergeNativeOcrFailureRanges(ranges);
-  return mergedRanges.length > 0
-    ? mergedRanges
-        .map(({ pageStart, pageEnd }) =>
-          pageStart === pageEnd ? String(pageStart) : `${pageStart}-${pageEnd}`,
-        )
-        .join(', ')
-    : 'unavailable';
 }
 
 function readOcrFileKey(result: SteelRuntimeJsonObject): {
@@ -947,70 +881,12 @@ export function buildSteelNativeRuntimeContextText({
 
   if (
     runtimeContext.attachments.currentPaddleOcrStatuses.length === 0 &&
-    runtimeContext.attachments.currentOcrMarkdownResults.length === 0 &&
-    runtimeContext.attachments.currentOcrFailures.length === 0
+    runtimeContext.attachments.currentOcrMarkdownResults.length === 0
   ) {
     return attachmentContextText;
   }
 
-  const paddleOcrFailures: string[] = [];
-  const failuresByGroup = new Map<string, NativeOcrFailureGroup>();
-  for (const failure of runtimeContext.attachments.currentOcrFailures) {
-    const { safeFileKey } = readOcrFileKey(failure);
-    const fileKey = safeFileKey || 'unknown';
-    const fileUrl = [failure.fileUrl, failure.ocrFileUrl]
-      .filter((value): value is string => typeof value === 'string')
-      .map(normalizeSafeSteelAiUrl)
-      .find((value): value is string => value !== undefined);
-    const stage = getNativeOcrFailureStage(failure);
-    if (stage === 'paddleocr') {
-      const range = readNativeOcrFailureRange(failure);
-      if (hasPaddleOcrStatus(fileKey, range)) {
-        continue;
-      }
-      const chunkIndex =
-        typeof failure.chunkIndex === 'number' &&
-        Number.isSafeInteger(failure.chunkIndex) &&
-        failure.chunkIndex >= 1
-          ? failure.chunkIndex
-          : 'unavailable';
-      paddleOcrFailures.push(
-        [
-          'ocr_failure_stage: paddleocr',
-          'paddleocr_status: fail',
-          `file_key: ${fileKey}`,
-          `chunk_index: ${chunkIndex}`,
-          `page_range: ${renderOcrPageRange(range)}`,
-        ].join('\n'),
-      );
-      continue;
-    }
-    const groupKey = `${stage}\u0000${fileKey}\u0000${fileUrl ?? 'unavailable'}`;
-    const current =
-      failuresByGroup.get(groupKey) ?? {
-        fileKey,
-        fileUrl: fileUrl ?? 'unavailable',
-        stage,
-        ranges: [],
-      };
-    const range = readNativeOcrFailureRange(failure);
-    if (range) {
-      current.ranges.push(range);
-    }
-    failuresByGroup.set(groupKey, current);
-  }
-  const otherFailures = [...failuresByGroup.values()].map((failure) => {
-    const commonFields = [
-      `file_key: ${failure.fileKey}`,
-      `failed_page_ranges: ${renderNativeOcrFailureRanges(failure.ranges)}`,
-      `file_url: ${failure.fileUrl}`,
-    ];
-    return [`ocr_failure_stage: ${failure.stage}`, ...commonFields].join('\n');
-  });
-  const failures = [...paddleOcrFailures, ...otherFailures].join('\n\n');
-  return [attachmentContextText, paddleOcrStatuses, failures, markdown]
-    .filter(Boolean)
-    .join('\n\n');
+  return [attachmentContextText, paddleOcrStatuses, markdown].filter(Boolean).join('\n\n');
 }
 
 export async function buildSteelGlobalAgentContext({
@@ -1032,10 +908,6 @@ export async function buildSteelGlobalAgentContext({
       currentOcrMarkdownResults:
         attachments?.currentOcrMarkdownResults !== undefined
           ? [...attachments.currentOcrMarkdownResults]
-          : undefined,
-      currentOcrFailures:
-        attachments?.currentOcrFailures !== undefined
-          ? [...attachments.currentOcrFailures]
           : undefined,
       currentOcrSourceFileMapping:
         attachments?.currentOcrSourceFileMapping !== undefined

@@ -3069,9 +3069,6 @@ class AgentClient extends BaseClient {
             ...(paddleOcrPreflight?.currentOcrMarkdownResults?.length > 0
               ? { currentOcrMarkdownResults: paddleOcrPreflight.currentOcrMarkdownResults }
               : {}),
-            ...(paddleOcrPreflight?.currentOcrFailures?.length > 0
-              ? { currentOcrFailures: paddleOcrPreflight.currentOcrFailures }
-              : {}),
             ...(paddleOcrPreflight?.currentOcrSourceFileMapping?.length > 0
               ? { currentOcrSourceFileMapping: paddleOcrPreflight.currentOcrSourceFileMapping }
               : {}),
@@ -5419,6 +5416,7 @@ class AgentClient extends BaseClient {
           }),
         getIndexOffset: () => this.steerOffsetState.offset,
         run: () => runAgents(initialMessages),
+        signal: abortController.signal,
         isRetryable: (err) =>
           !isAgentRunCancellation(err, abortController.signal) &&
           !isStepLimitError(err) &&

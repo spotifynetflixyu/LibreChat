@@ -145,6 +145,8 @@ export interface CapturePaddleOcrChunkResultInput {
   chunk: OcrPreprocessingChunkCaptureInput;
   rawResultHash: string;
   data: unknown;
+  /** PaddleOCR failed at the minimum chunk size; the Organizer reads the PDF chunk alone. */
+  paddleFailed?: boolean;
   includeTotals?: boolean;
   preflightMode?: SteelOcrPreflightMode;
   delegateOcrIndex?: number;
@@ -200,6 +202,8 @@ export interface OcrPreprocessingChunkState {
   organizedSaved: boolean;
   rawResultHash?: string;
   rawOcrText?: string;
+  /** PaddleOCR gave up on this chunk; it is never retried and has no raw text. */
+  paddleFailed?: boolean;
   ocrRuleVersion?: string;
   organizedMarkdown?: string;
 }
@@ -723,6 +727,7 @@ function toOcrPreprocessingState({
         ...currentChunk,
         rawResultHash,
         rawOcrText: getPaddleOcrResultText(document.payload.result) ?? currentChunk.rawOcrText,
+        paddleFailed: metadata.paddleFailed === true,
         rawSaved: true,
         ...(organizerMatchesRaw
           ? {}
@@ -822,14 +827,19 @@ function createPaddleOcrChunkPayload({
   chunk,
   rawResultHash,
   data,
+  paddleFailed,
   preflightMode,
   delegateOcrIndex,
 }: Pick<
   CapturePaddleOcrChunkResultInput,
-  'file' | 'chunk' | 'rawResultHash' | 'data' | 'preflightMode' | 'delegateOcrIndex'
->):
-  | SteelJsonObject
-  | undefined {
+  | 'file'
+  | 'chunk'
+  | 'rawResultHash'
+  | 'data'
+  | 'paddleFailed'
+  | 'preflightMode'
+  | 'delegateOcrIndex'
+>): SteelJsonObject | undefined {
   const descriptor = getSteelOcrFileDescriptor(file);
   if (!descriptor || chunk.pdfChunk === undefined) {
     return undefined;
@@ -854,6 +864,7 @@ function createPaddleOcrChunkPayload({
       chunkSizePages: chunk.chunkSizePages ?? resolveOcrPreprocessingChunkSizePages(),
       pdfChunk: toOcrPreprocessingPdfChunkPayload(chunk.pdfChunk),
       rawResultHash,
+      ...(paddleFailed ? { paddleFailed: true } : {}),
       ...(resolvedPreflightMode !== undefined ? { preflightMode: resolvedPreflightMode } : {}),
       ...(resolvedDelegateOcrIndex !== undefined ? { delegateOcrIndex: resolvedDelegateOcrIndex } : {}),
     },

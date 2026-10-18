@@ -1414,6 +1414,29 @@ export interface OpenAIOAuthGraphModelOptions {
   terminalToolNames?: readonly string[];
 }
 
+export const STEEL_TERMINAL_TOOL_FAILED_CODE = 'STEEL_TERMINAL_TOOL_FAILED';
+
+/** A terminal tool (delegate_ocr) failed: the turn fails with its error instead of answering with it. */
+export class SteelTerminalToolError extends Error {
+  readonly code = STEEL_TERMINAL_TOOL_FAILED_CODE;
+
+  constructor(message: string) {
+    super(message);
+    this.name = 'SteelTerminalToolError';
+  }
+}
+
+/** Recovers the tool's own error message from the ToolNode error content. */
+function readTerminalToolErrorMessage(content: BaseMessage['content']): string {
+  const text = typeof content === 'string' ? content : JSON.stringify(content);
+  return (
+    text
+      .replace(/^Error: /u, '')
+      .replace(/\n Please fix your mistakes\.$/u, '')
+      .trim() || 'Terminal tool failed'
+  );
+}
+
 export class OpenAIOAuthGraphModel extends Runnable<BaseMessage[], AIMessageChunk, RunnableConfig> {
   readonly providerId = 'openai_oauth_responses';
 
@@ -1463,7 +1486,15 @@ export class OpenAIOAuthGraphModel extends Runnable<BaseMessage[], AIMessageChun
     return this.options.boundTools ?? this.options.getTools?.();
   }
 
-  private getTerminalToolResponse(messages: BaseMessage[]): AIMessageChunk | undefined {
+  /**
+   * After a terminal tool the model is not called again: its output is the
+   * answer. A failed terminal tool throws, so the turn ends with an error and
+   * the model never sees the failure as a tool result it could retry.
+   */
+  private getTerminalToolResponse(
+    messages: BaseMessage[],
+    config?: Partial<RunnableConfig>,
+  ): AIMessageChunk | undefined {
     let terminalMessage: BaseMessage | undefined;
     for (let index = messages.length - 1; index >= 0; index -= 1) {
       const message = messages[index];
@@ -1478,6 +1509,10 @@ export class OpenAIOAuthGraphModel extends Runnable<BaseMessage[], AIMessageChun
     }
     if (!terminalMessage) {
       return undefined;
+    }
+    const status = (terminalMessage as BaseMessage & { status?: unknown }).status;
+    if (status === 'error' && config?.signal?.aborted !== true) {
+      throw new SteelTerminalToolError(readTerminalToolErrorMessage(terminalMessage.content));
     }
 
     const artifact = (terminalMessage as BaseMessage & { artifact?: unknown }).artifact;
@@ -1500,7 +1535,7 @@ export class OpenAIOAuthGraphModel extends Runnable<BaseMessage[], AIMessageChun
   }
 
   async invoke(messages: BaseMessage[], config?: Partial<RunnableConfig>): Promise<AIMessageChunk> {
-    const terminalResponse = this.getTerminalToolResponse(messages);
+    const terminalResponse = this.getTerminalToolResponse(messages, config);
     if (terminalResponse) {
       return terminalResponse;
     }
@@ -1513,7 +1548,7 @@ export class OpenAIOAuthGraphModel extends Runnable<BaseMessage[], AIMessageChun
     messages: BaseMessage[],
     config?: Partial<RunnableConfig>,
   ): AsyncGenerator<AIMessageChunk> {
-    const terminalResponse = this.getTerminalToolResponse(messages);
+    const terminalResponse = this.getTerminalToolResponse(messages, config);
     if (terminalResponse) {
       yield terminalResponse;
       return;

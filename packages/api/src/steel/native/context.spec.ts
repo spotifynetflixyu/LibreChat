@@ -398,56 +398,6 @@ describe('Steel native context adapter', () => {
               '<file:676b6f2c-0361-412a-92f0-92711c94ffef>\n| 品名 | 數量 |\n|---|---:|\n| 鐵板 | 2 |',
           },
         ],
-        currentOcrFailures: [
-          {
-            ocrFileKey: 'file:missing.pdf',
-            sourceCode: 'F2',
-            filename: 'missing.pdf',
-            sourceFilename: 'missing.pdf',
-            mediaType: 'application/pdf',
-            fileUrl: 'https://files.example.test/missing.pdf',
-            stage: 'paddleocr',
-            chunkIndex: 1,
-            pageStart: 1,
-            pageEnd: 2,
-            errorMessage: 'PaddleOCR timeout 1',
-          },
-          {
-            ocrFileKey: 'file:missing.pdf',
-            sourceCode: 'F2',
-            filename: 'missing.pdf',
-            sourceFilename: 'missing.pdf',
-            mediaType: 'application/pdf',
-            fileUrl: 'https://files.example.test/missing.pdf',
-            stage: 'paddleocr',
-            chunkIndex: 3,
-            pageStart: 4,
-            pageEnd: 5,
-            errorMessage: 'PaddleOCR timeout 2',
-          },
-          {
-            ocrFileKey: 'file:other.pdf',
-            filename: 'other.pdf',
-            mediaType: 'application/pdf',
-            fileUrl: 'https://files.example.test/other.pdf',
-            stage: 'organizer',
-            chunkIndex: 2,
-            pageStart: 3,
-            pageEnd: 3,
-            errorMessage: 'Organizer failed',
-          },
-          {
-            ocrFileKey: 'file:photo.jpg',
-            filename: 'photo.jpg',
-            mediaType: 'image/jpeg',
-            fileUrl: 'https://files.example.test/photo.jpg',
-            stage: 'paddleocr',
-            chunkIndex: 1,
-            pageStart: 1,
-            pageEnd: 1,
-            errorMessage: 'Image OCR failed',
-          },
-        ],
         currentOcrSourceFileMapping: [
           { sourceCode: 'F1', sourceFilename: 'PL.pdf' },
           { sourceCode: 'F2', sourceFilename: 'missing.pdf' },
@@ -663,7 +613,7 @@ describe('Steel native context adapter', () => {
     );
   });
 
-  it('renders explicit OCR source mapping even when every file fails', async () => {
+  it('renders explicit OCR source mapping without organized Markdown', async () => {
     const context = await buildSteelGlobalAgentContext({
       conversation: { requestId: 'request_ocr_mapping_only', activeHistory: [] },
       dependencies: createDependencies(),
@@ -672,14 +622,6 @@ describe('Steel native context adapter', () => {
         currentOcrSourceFileMapping: [
           { sourceCode: 'F1', sourceFilename: '' },
           { sourceCode: 'F2', sourceFilename: 'second.pdf' },
-        ],
-        currentOcrFailures: [
-          {
-            ocrFileKey: 'file:first.pdf',
-            sourceCode: 'F1',
-            filename: 'request-first.pdf',
-            stage: 'paddleocr',
-          },
         ],
       },
     });
@@ -776,20 +718,6 @@ describe('Steel native context adapter', () => {
               ],
             },
           },
-          {
-            ocrFileKey: 'file:partial-gap.pdf',
-            filename: 'partial-gap.pdf',
-            sourceFilename: 'partial-gap.pdf',
-            content: '<file:partial-gap.pdf>\n| OCR |\n| --- |\n| partial gap |',
-            ocrPreprocessing: {
-              chunkCount: 2,
-              pageRanges: [
-                { pageStart: 1, pageEnd: 10 },
-                { pageStart: 21, pageEnd: 30 },
-              ],
-              partial: true,
-            },
-          },
         ],
       },
     });
@@ -804,59 +732,6 @@ describe('Steel native context adapter', () => {
     expect(context.runtimeContextText).toContain('file_key: file:legacy.pdf\n<file:legacy.pdf>');
     expect(context.runtimeContextText).toContain('file_key: file:gap.pdf\n<file:gap.pdf>');
     expect(context.runtimeContextText).not.toContain('file_key: file:gap.pdf\npage_ranges:');
-    expect(context.runtimeContextText).toContain(
-      'file_key: file:partial-gap.pdf\nsource_filename: "partial-gap.pdf"\npage_ranges: 1-10, 21-30\nchunk_count: 2\n<file:partial-gap.pdf>',
-    );
-  });
-
-  it('keeps PaddleOCR failure URLs out of AI-visible context', async () => {
-    const context = await buildSteelGlobalAgentContext({
-      conversation: { requestId: 'request_ocr_failure_urls', activeHistory: [] },
-      dependencies: createDependencies(),
-      mode: 'ocr',
-      attachments: {
-        currentOcrFailures: [
-          {
-            ocrFileKey: 'file:safe-fallback.pdf',
-            fileUrl: 'storage:private/chunk.pdf',
-            ocrFileUrl: 'https://files.example.test/safe-fallback.pdf?signature=ok',
-            stage: 'paddleocr',
-            pageStart: 1,
-            pageEnd: 2,
-          },
-          {
-            ocrFileKey: 'file:credentialed.pdf',
-            fileUrl: 'https://user:secret@files.example.test/private.pdf',
-            stage: 'paddleocr',
-            pageStart: 3,
-            pageEnd: 4,
-          },
-          {
-            ocrFileKey: 'file:local.pdf',
-            fileUrl: '/srv/librechat/uploads/local.pdf',
-            stage: 'paddleocr',
-            pageStart: 5,
-            pageEnd: 6,
-          },
-          {
-            ocrFileKey: 'file:distinct.pdf',
-            fileUrl: 'https://files.example.test/distinct-pages-7-8.pdf',
-            stage: 'paddleocr',
-            pageStart: 7,
-            pageEnd: 8,
-          },
-          {
-            ocrFileKey: 'file:distinct.pdf',
-            fileUrl: 'https://files.example.test/distinct-pages-9-10.pdf',
-            stage: 'paddleocr',
-            pageStart: 9,
-            pageEnd: 10,
-          },
-        ],
-      },
-    });
-
-    expect(context.runtimeContextText).toBe('');
   });
 
   it('renders image OCR Markdown without page metadata', async () => {
@@ -917,20 +792,11 @@ describe('Steel native context adapter', () => {
   });
 
   it('does not add the OCR completion directive without organized Markdown or in standard mode', async () => {
-    const failureOnlyContext = await buildSteelGlobalAgentContext({
-      conversation: { requestId: 'request_ocr_failure_only', activeHistory: [] },
+    const emptyOcrContext = await buildSteelGlobalAgentContext({
+      conversation: { requestId: 'request_ocr_without_markdown', activeHistory: [] },
       dependencies: createDependencies(),
       mode: 'ocr',
-      attachments: {
-        currentOcrFailures: [
-          {
-            ocrFileKey: 'file:missing.pdf',
-            fileUrl: 'https://files.example.test/missing.pdf',
-            pageStart: 1,
-            pageEnd: 2,
-          },
-        ],
-      },
+      attachments: {},
     });
 
     const standardContext = await buildSteelGlobalAgentContext({
@@ -942,7 +808,7 @@ describe('Steel native context adapter', () => {
       },
     });
 
-    expect(failureOnlyContext.runtimeContextText).not.toContain(
+    expect(emptyOcrContext.runtimeContextText).not.toContain(
       '# Current-turn OCR completion directive',
     );
     expect(standardContext.runtimeContextText).not.toContain(

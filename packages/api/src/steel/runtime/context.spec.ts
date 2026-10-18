@@ -88,7 +88,6 @@ describe('Steel runtime context', () => {
     expect(context.attachments).toEqual({
       currentPaddleOcrStatuses: [],
       currentOcrMarkdownResults: [expect.objectContaining({ ocrFileKey: 'file:quote.pdf' })],
-      currentOcrFailures: [],
       currentOcrSourceFileMapping: [],
     });
     expect(JSON.stringify(context)).not.toContain('currentPaddleOcrResults');

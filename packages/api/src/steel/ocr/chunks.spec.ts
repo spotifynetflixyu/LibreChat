@@ -31,19 +31,19 @@ describe('OCR preprocessing PDF chunks', () => {
     process.env[ocrPreprocessingChunkSizePagesEnvKey] = originalChunkSizeEnv;
   });
 
-  it('builds default 50-page PDF chunks', () => {
+  it('builds default 16-page PDF chunks', () => {
     expect(buildPdfPageChunks({ pageCount: 1 })).toEqual([
-      { chunkIndex: 1, chunkCount: 1, pageStart: 1, pageEnd: 1, chunkSizePages: 50 },
+      { chunkIndex: 1, chunkCount: 1, pageStart: 1, pageEnd: 1, chunkSizePages: 16 },
     ]);
-    expect(buildPdfPageChunks({ pageCount: 250 })).toHaveLength(5);
-    expect(buildPdfPageChunks({ pageCount: 251 })).toHaveLength(6);
-    const chunks = buildPdfPageChunks({ pageCount: 251 });
+    expect(buildPdfPageChunks({ pageCount: 64 })).toHaveLength(4);
+    const chunks = buildPdfPageChunks({ pageCount: 65 });
+    expect(chunks).toHaveLength(5);
     expect(chunks[chunks.length - 1]).toEqual({
-      chunkIndex: 6,
-      chunkCount: 6,
-      pageStart: 251,
-      pageEnd: 251,
-      chunkSizePages: 50,
+      chunkIndex: 5,
+      chunkCount: 5,
+      pageStart: 65,
+      pageEnd: 65,
+      chunkSizePages: 16,
     });
   });
 
@@ -78,44 +78,62 @@ describe('OCR preprocessing PDF chunks', () => {
     ]);
   });
 
-  it('splits eligible ranges into contiguous retry-sized ranges', () => {
-    const children = splitOcrPageRange({ pageStart: 1, pageEnd: 24 }, 24);
-    expect(children).toHaveLength(2);
-    expect(children).toEqual([
-      { chunkIndex: 1, chunkCount: 2, pageStart: 1, pageEnd: 12, chunkSizePages: 12 },
-      { chunkIndex: 2, chunkCount: 2, pageStart: 13, pageEnd: 24, chunkSizePages: 12 },
+  it('halves a failed range down to the 4-page minimum', () => {
+    expect(splitOcrPageRange({ pageStart: 1, pageEnd: 16 })).toEqual([
+      { chunkIndex: 1, chunkCount: 2, pageStart: 1, pageEnd: 8, chunkSizePages: 8 },
+      { chunkIndex: 2, chunkCount: 2, pageStart: 9, pageEnd: 16, chunkSizePages: 8 },
     ]);
+    expect(splitOcrPageRange({ pageStart: 9, pageEnd: 16 })).toEqual([
+      { chunkIndex: 1, chunkCount: 2, pageStart: 9, pageEnd: 12, chunkSizePages: 4 },
+      { chunkIndex: 2, chunkCount: 2, pageStart: 13, pageEnd: 16, chunkSizePages: 4 },
+    ]);
+    expect(splitOcrPageRange({ pageStart: 1, pageEnd: 5 })).toEqual([
+      { chunkIndex: 1, chunkCount: 2, pageStart: 1, pageEnd: 4, chunkSizePages: 4 },
+      { chunkIndex: 2, chunkCount: 2, pageStart: 5, pageEnd: 5, chunkSizePages: 4 },
+    ]);
+    expect(splitOcrPageRange({ pageStart: 13, pageEnd: 16 })).toBeUndefined();
+    expect(splitOcrPageRange({ pageStart: 1, pageEnd: 1 })).toBeUndefined();
+  });
+
+  it('validates a committed split against the expected halves', () => {
     expect(
       validateOcrPageSplit({
-        parent: { pageStart: 1, pageEnd: 50, chunkSizePages: 50 },
-        children: splitOcrPageRange({ pageStart: 1, pageEnd: 50 }, 50)!,
+        parent: { pageStart: 1, pageEnd: 16 },
+        children: [
+          { pageStart: 9, pageEnd: 16 },
+          { pageStart: 1, pageEnd: 8 },
+        ],
       }),
     ).toEqual([
-      { pageStart: 1, pageEnd: 25 },
-      { pageStart: 26, pageEnd: 50 },
-    ]);
-    expect(splitOcrPageRange({ pageStart: 1, pageEnd: 12 }, 24)).toBeUndefined();
-    expect(splitOcrPageRange({ pageStart: 1, pageEnd: 15 }, 24)).toEqual([
-      { chunkIndex: 1, chunkCount: 2, pageStart: 1, pageEnd: 12, chunkSizePages: 12 },
-      { chunkIndex: 2, chunkCount: 2, pageStart: 13, pageEnd: 15, chunkSizePages: 12 },
+      { chunkIndex: 1, chunkCount: 2, pageStart: 1, pageEnd: 8, chunkSizePages: 8 },
+      { chunkIndex: 2, chunkCount: 2, pageStart: 9, pageEnd: 16, chunkSizePages: 8 },
     ]);
     expect(() =>
       validateOcrPageSplit({
-        parent: { pageStart: 1, pageEnd: 50, chunkSizePages: 50 },
+        parent: { pageStart: 1, pageEnd: 16 },
         children: [
-          { pageStart: 1, pageEnd: 24 },
-          { pageStart: 25, pageEnd: 50 },
+          { pageStart: 1, pageEnd: 7 },
+          { pageStart: 8, pageEnd: 16 },
+        ],
+      }),
+    ).toThrow();
+    expect(() =>
+      validateOcrPageSplit({
+        parent: { pageStart: 1, pageEnd: 4 },
+        children: [
+          { pageStart: 1, pageEnd: 2 },
+          { pageStart: 3, pageEnd: 4 },
         ],
       }),
     ).toThrow();
   });
 
-  it('falls back to 50 pages when STEEL_OCR_PREPROCESSING_CHUNK_SIZE_PAGES is invalid', () => {
+  it('falls back to 16 pages when STEEL_OCR_PREPROCESSING_CHUNK_SIZE_PAGES is invalid', () => {
     process.env[ocrPreprocessingChunkSizePagesEnvKey] = 'not-a-number';
 
-    expect(buildPdfPageChunks({ pageCount: 51 })).toEqual([
-      { chunkIndex: 1, chunkCount: 2, pageStart: 1, pageEnd: 50, chunkSizePages: 50 },
-      { chunkIndex: 2, chunkCount: 2, pageStart: 51, pageEnd: 51, chunkSizePages: 50 },
+    expect(buildPdfPageChunks({ pageCount: 17 })).toEqual([
+      { chunkIndex: 1, chunkCount: 2, pageStart: 1, pageEnd: 16, chunkSizePages: 16 },
+      { chunkIndex: 2, chunkCount: 2, pageStart: 17, pageEnd: 17, chunkSizePages: 16 },
     ]);
   });
 

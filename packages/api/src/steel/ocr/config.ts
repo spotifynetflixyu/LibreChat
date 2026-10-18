@@ -1,5 +1,8 @@
 export const ocrPreprocessingChunkSizePagesEnvKey = 'STEEL_OCR_PREPROCESSING_CHUNK_SIZE_PAGES';
-export const defaultOcrPreprocessingChunkSizePages = 50;
+export const defaultOcrPreprocessingChunkSizePages = 16;
+
+/** A failed PaddleOCR chunk is halved down to this many pages before it is given up. */
+export const minOcrPreprocessingChunkSizePages = 4;
 
 export function resolveOcrPreprocessingChunkSizePages(
   env: Record<string, string | undefined> = process.env,

@@ -34,7 +34,6 @@ export interface SteelRuntimeContext {
   attachments: {
     currentPaddleOcrStatuses: SteelRuntimeJsonObject[];
     currentOcrMarkdownResults: SteelRuntimeJsonObject[];
-    currentOcrFailures: SteelRuntimeJsonObject[];
     currentOcrSourceFileMapping: SteelRuntimeOcrSourceFileMapping[];
     previousOcrResultMarkdown?: string;
     suggestedOcrResultColumns?: string[];
@@ -48,7 +47,6 @@ export interface SteelRuntimeContextConversationInput {
 export interface SteelRuntimeContextAttachmentsInput {
   currentPaddleOcrStatuses?: SteelRuntimeJsonObject[];
   currentOcrMarkdownResults?: SteelRuntimeJsonObject[];
-  currentOcrFailures?: SteelRuntimeJsonObject[];
   currentOcrSourceFileMapping?: SteelRuntimeOcrSourceFileMapping[];
   previousOcrResultMarkdown?: string;
   suggestedOcrResultColumns?: string[];
@@ -89,7 +87,6 @@ export async function prepareSteelRuntimeContext({
     attachments: {
       currentPaddleOcrStatuses: attachments?.currentPaddleOcrStatuses ?? [],
       currentOcrMarkdownResults: attachments?.currentOcrMarkdownResults ?? [],
-      currentOcrFailures: attachments?.currentOcrFailures ?? [],
       currentOcrSourceFileMapping: attachments?.currentOcrSourceFileMapping ?? [],
       ...(attachments?.previousOcrResultMarkdown !== undefined
         ? { previousOcrResultMarkdown: attachments.previousOcrResultMarkdown }

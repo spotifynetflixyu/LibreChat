@@ -1,6 +1,6 @@
 import { PDFDocument } from 'pdf-lib';
 
-import { resolveOcrPreprocessingChunkSizePages } from './config';
+import { minOcrPreprocessingChunkSizePages, resolveOcrPreprocessingChunkSizePages } from './config';
 
 type PdfJsModule = typeof import('pdfjs-dist/legacy/build/pdf.mjs');
 
@@ -78,17 +78,33 @@ export function normalizeOcrPageChunks<
   }));
 }
 
+/** The halved retry sizes below the configured chunk size, largest first, down to the minimum. */
+function getOcrRetryChunkSizes(chunkSizePages: number): number[] {
+  const sizes: number[] = [];
+  for (
+    let size = Math.floor(chunkSizePages / 2);
+    size >= minOcrPreprocessingChunkSizePages;
+    size = Math.floor(size / 2)
+  ) {
+    sizes.push(size);
+  }
+  return sizes;
+}
+
+/**
+ * Halves a failed range into two children at the largest retry size below its
+ * page count. A range at or below the minimum size cannot be split.
+ */
 export function splitOcrPageRange(
   range: OcrPageRange,
   chunkSizePages: number = resolveOcrPreprocessingChunkSizePages(),
 ): [OcrPreprocessingPageChunk, OcrPreprocessingPageChunk] | undefined {
   assertOcrPageRange(range);
-  if (!Number.isInteger(chunkSizePages) || chunkSizePages < 2 || chunkSizePages % 2 !== 0) {
-    throw new Error('OCR preprocessing chunk size must be a positive even integer');
-  }
-  const retryChunkSizePages = chunkSizePages / 2;
   const pageCount = getOcrPageRangePageCount(range);
-  if (pageCount <= retryChunkSizePages || pageCount > chunkSizePages) {
+  const retryChunkSizePages = getOcrRetryChunkSizes(chunkSizePages).find(
+    (size) => size < pageCount,
+  );
+  if (retryChunkSizePages === undefined) {
     return undefined;
   }
   const middle = range.pageStart + retryChunkSizePages - 1;
@@ -111,10 +127,10 @@ export function splitOcrPageRange(
 }
 
 export function validateOcrPageSplit(input: {
-  parent: OcrPageRange & Pick<OcrPreprocessingPageChunk, 'chunkSizePages'>;
+  parent: OcrPageRange;
   children: readonly OcrPageRange[];
-}): [OcrPageRange, OcrPageRange] {
-  const expected = splitOcrPageRange(input.parent, input.parent.chunkSizePages);
+}): [OcrPreprocessingPageChunk, OcrPreprocessingPageChunk] {
+  const expected = splitOcrPageRange(input.parent);
   if (!expected || input.children.length !== 2) {
     throw new Error('OCR split must replace one eligible range with two contiguous retry ranges');
   }
@@ -126,7 +142,7 @@ export function validateOcrPageSplit(input: {
   if (JSON.stringify(actual) !== JSON.stringify(expectedRanges)) {
     throw new Error('OCR split children must be the two contiguous retry ranges');
   }
-  return expectedRanges as [OcrPageRange, OcrPageRange];
+  return expected;
 }
 
 export function buildPdfPageChunks(input: {

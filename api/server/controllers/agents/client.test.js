@@ -45,7 +45,6 @@ mockRunSteelPaddleOcrPreflight.mockResolvedValue({
   ocrTurnActive: false,
   currentPaddleOcrStatuses: [],
   currentOcrMarkdownResults: [],
-  currentOcrFailures: [],
   currentOcrSourceFileMapping: [],
 });
 mockResolveDelegateOcrPolicyForRequest.mockResolvedValue({

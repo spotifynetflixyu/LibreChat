@@ -54,7 +54,6 @@ import {
 } from '../ocr/files';
 import {
   delegateOcrArgsSchema,
-  DELEGATE_OCR_MAX_ATTEMPTS,
   resolveDelegateOcrPolicy,
   normalizeDelegateOcrChunk,
   isDelegateOcrQuoteOnlyTurn,
@@ -63,8 +62,9 @@ import {
 import { createMongooseSteelWorkingOrderMemoryWriter } from '../memory/service';
 import { buildSteelDelegateOcrStatusEventEnvelopes } from './events';
 import { createSteelDelegateOcrStateService } from '../ocr/state';
-import { runOcrPreprocessingBatchPipeline } from '../ocr/preprocess';
+import { runOcrPreprocessingBatchPipeline, toSteelOcrChunkError } from '../ocr/preprocess';
 import { createSteelOcrResponseAuditService } from '../ocr/audit';
+import { STEEL_OCR_MAX_ATTEMPTS } from '../ocr/retry';
 import { PADDLE_OCR_MCP_SERVER_NAME } from '../ocr/diagnostics';
 import { buildDefaultSteelGlobalAgentContext } from './context';
 import { buildMCPToolKey } from '~/mcp/utils';
@@ -587,20 +587,13 @@ export function createSteelDelegateOcrService(
         return undefined;
       }
       if (fileResult.status === 'failed') {
-        /** A failed PaddleOCR chunk is not a turn error: the agent continues with
-         * the completed chunks, and a later attempt's progress check reruns it. */
-        logger.warn('[Steel OCR] Delegate OCR preprocessing left unfinished chunks', {
+        logger.error('[Steel OCR] Delegate OCR preprocessing failed', {
           conversationId,
           requestId,
           ocrFileKey: fileResult.file.ocrFileKey,
           error: fileResult.errorMessage,
         });
-        return {
-          incomplete: true,
-          ...(fileResult.partial?.markdown
-            ? { organizerMarkdown: fileResult.partial.markdown }
-            : {}),
-        };
+        throw toSteelOcrChunkError([fileResult]);
       }
       await statusEvent({
         delegateOcrIndex,
@@ -1103,7 +1096,7 @@ export function createSteelDelegateOcrService(
           status: attemptNumber > 1 ? 'retrying' : 'started',
           message:
             attemptNumber > 1
-              ? `Retrying Delegate OCR Agent (${attemptNumber}/${DELEGATE_OCR_MAX_ATTEMPTS})`
+              ? `Retrying Delegate OCR Agent (${attemptNumber}/${STEEL_OCR_MAX_ATTEMPTS})`
               : 'Delegate OCR Agent started',
         });
         try {

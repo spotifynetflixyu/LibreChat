@@ -8,7 +8,6 @@ import type {
   OcrPreprocessingFile,
   OcrPreprocessingFailure,
   RunOcrPreprocessingBatchFileInput,
-  RunOcrPreprocessingFailedFileResult,
 } from './preprocess';
 import type {
   SteelPaddleOcrServer,
@@ -71,6 +70,7 @@ import { emitSteelNativeEvents } from '../native/stream';
 import { resolveSteelOcrPreprocessingRules } from './rules';
 import { isPaddleOcrDiagnosticCode, PADDLE_OCR_MCP_SERVER_NAME } from './diagnostics';
 import { runOcrPreprocessingBatchPipeline } from './preprocess';
+import { createSteelOcrChunkError } from './retry';
 import { createSteelOcrOrganizer } from './agent';
 import { buildMCPToolKey } from '~/mcp/utils';
 
@@ -87,7 +87,7 @@ export interface SteelOcrPreflightRequest extends SteelPaddleOcrRequest {
   };
 }
 
-/** A failed OCR file or range, shown to the turn's model so it can fall back to Vision. */
+/** A failed OCR file or range; any one of them fails the turn. */
 export interface SteelOcrCurrentFailure {
   ocrFileKey: string;
   filename?: string;
@@ -118,7 +118,6 @@ export interface SteelOcrMergedMarkdownResult
     pageRanges: OcrPageRange[];
     ocrRuleVersion: string;
     source: 'paddleocr_markdowns';
-    partial?: true;
   };
 }
 
@@ -132,7 +131,6 @@ export interface SteelPaddleOcrPreflightResult {
   currentPaddleOcrResults: [];
   currentPaddleOcrStatuses?: SteelPaddleOcrChunkStatus[];
   currentOcrMarkdownResults?: SteelOcrMergedMarkdownResult[];
-  currentOcrFailures?: SteelOcrCurrentFailure[];
   currentOcrSourceFileMapping?: { sourceCode: string; sourceFilename: string }[];
   previousOcrResultMarkdown?: string;
   suggestedOcrResultColumns?: string[];
@@ -296,7 +294,6 @@ function createCurrentOcrFailureResult({
 function sanitizeCurrentOcrPageRanges(
   pageRanges: readonly OcrPageRange[],
   chunkCount: number,
-  { allowGaps = false } = {},
 ): OcrPageRange[] {
   if (!Number.isInteger(chunkCount) || chunkCount < 1 || pageRanges.length !== chunkCount) {
     return [];
@@ -313,11 +310,7 @@ function sanitizeCurrentOcrPageRanges(
       return [];
     }
     const previous = sanitized[sanitized.length - 1];
-    if (
-      previous &&
-      (range.pageStart <= previous.pageEnd ||
-        (!allowGaps && range.pageStart !== previous.pageEnd + 1))
-    ) {
+    if (previous && range.pageStart !== previous.pageEnd + 1) {
       return [];
     }
     sanitized.push({ pageStart: range.pageStart, pageEnd: range.pageEnd });
@@ -331,14 +324,12 @@ function createCurrentOcrMergedMarkdownResult({
   chunkCount,
   pageRanges = [],
   ocrRuleVersion,
-  partial = false,
 }: {
   file: SteelOcrVisibleFile;
   markdown: string;
   chunkCount: number;
   pageRanges?: readonly OcrPageRange[];
   ocrRuleVersion: string;
-  partial?: boolean;
 }): SteelOcrMergedMarkdownResult {
   const safeOcrFileKey = normalizeOcrOrganizerFileKey({
     fileKey:
@@ -389,42 +380,11 @@ function createCurrentOcrMergedMarkdownResult({
       pipelineVersion: ocrPreprocessingPipelineVersion,
       ...(isHttpUrl(sourcePdfKey) ? {} : { sourcePdfKey }),
       chunkCount,
-      pageRanges: sanitizeCurrentOcrPageRanges(pageRanges, chunkCount, { allowGaps: partial }),
+      pageRanges: sanitizeCurrentOcrPageRanges(pageRanges, chunkCount),
       ocrRuleVersion,
       source: 'paddleocr_markdowns',
-      ...(partial ? { partial: true as const } : {}),
     },
   };
-}
-
-function getCurrentOcrPartialMarkdownResult({
-  fileResult,
-  ocrRuleVersion,
-}: {
-  fileResult: Pick<RunOcrPreprocessingFailedFileResult, 'partial'> & {
-    file: SteelOcrPreprocessingSourceFile;
-  };
-  ocrRuleVersion: string;
-}): SteelOcrMergedMarkdownResult | undefined {
-  const partial = fileResult.partial;
-  if (!partial?.markdown.trim()) {
-    return undefined;
-  }
-  const chunkCount =
-    Number.isInteger(partial.chunkCount) && partial.chunkCount > 0
-      ? partial.chunkCount
-      : partial.pageRanges.length;
-  if (chunkCount < 1) {
-    return undefined;
-  }
-  return createCurrentOcrMergedMarkdownResult({
-    file: fileResult.file,
-    markdown: partial.markdown,
-    chunkCount,
-    pageRanges: partial.pageRanges,
-    ocrRuleVersion,
-    partial: true,
-  });
 }
 
 /** Drops a failed chunk's status once its adaptive child ranges fully covered it. */
@@ -616,9 +576,7 @@ export function createSteelOcrService(deps: SteelOcrServiceDependencies): SteelO
       const preflight: SteelPaddleOcrPreflightResult = {
         ...result,
         ocrTurnActive:
-          result.attemptedKeys.length > 0 ||
-          (result.currentOcrMarkdownResults?.length ?? 0) > 0 ||
-          (result.currentOcrFailures?.length ?? 0) > 0,
+          result.attemptedKeys.length > 0 || (result.currentOcrMarkdownResults?.length ?? 0) > 0,
         currentPaddleOcrResults: [],
       };
       await emitSteelNativeEvents({
@@ -803,7 +761,7 @@ export function createSteelOcrService(deps: SteelOcrServiceDependencies): SteelO
     const sourceFileOf = (file: OcrPreprocessingFile): SteelOcrPreprocessingSourceFile =>
       batchSourceFiles.get(file.ocrFileKey) ?? { ...file, sourceFilename: '' };
 
-    if (batchFiles.length > 0) {
+    if (batchFiles.length > 0 && failedKeys.length === 0) {
       try {
         const rules = (ocrPreprocessingRules ??= await resolvePreprocessingRules());
         const batchResult = await runOcrPreprocessingBatchPipeline({
@@ -865,19 +823,12 @@ export function createSteelOcrService(deps: SteelOcrServiceDependencies): SteelO
             if (!failedKeys.includes(fileResult.file.ocrFileKey)) {
               failedKeys.push(fileResult.file.ocrFileKey);
             }
-            logger.warn('[Steel OCR] OCR preprocessing left unfinished chunks', {
+            logger.warn('[Steel OCR] OCR preprocessing failed for a current file', {
               conversationId,
               requestId,
               ocrFileKey: fileResult.file.ocrFileKey,
               error: fileResult.errorMessage,
             });
-            const partialMarkdownResult = getCurrentOcrPartialMarkdownResult({
-              fileResult: { ...fileResult, file: sourceFileOf(fileResult.file) },
-              ocrRuleVersion: rules.ocrRuleVersion,
-            });
-            if (partialMarkdownResult) {
-              currentOcrMarkdownResults.push(partialMarkdownResult);
-            }
             const failures = fileResult.failures.length > 0 ? fileResult.failures : [fileResult];
             const currentFileFailures = failures.map((failure) =>
               createCurrentOcrFailureResult({
@@ -939,6 +890,21 @@ export function createSteelOcrService(deps: SteelOcrServiceDependencies): SteelO
     }
 
     const finalStatuses = getFinalPaddleOcrChunkStatuses(currentPaddleOcrStatuses);
+    if (failedKeys.length > 0) {
+      await finish({
+        status: 'partial',
+        completedKeys: uniqueStrings(attemptedKeys.filter((key) => !failedKeys.includes(key))),
+        attemptedKeys,
+        failedKeys,
+        ...(finalStatuses.length > 0 ? { currentPaddleOcrStatuses: finalStatuses } : {}),
+      });
+      throw createSteelOcrChunkError(
+        currentOcrFailures.map((failure) => ({
+          ...failure,
+          label: failure.filename ?? failure.ocrFileKey,
+        })),
+      );
+    }
     return finish({
       status: failedKeys.length > 0 ? 'partial' : 'completed',
       completedKeys: uniqueStrings(attemptedKeys.filter((key) => !failedKeys.includes(key))),
@@ -949,7 +915,6 @@ export function createSteelOcrService(deps: SteelOcrServiceDependencies): SteelO
       ...(suggestedOcrResultColumns.length > 0 ? { suggestedOcrResultColumns } : {}),
       ...(finalStatuses.length > 0 ? { currentPaddleOcrStatuses: finalStatuses } : {}),
       ...(currentOcrMarkdownResults.length > 0 ? { currentOcrMarkdownResults } : {}),
-      ...(currentOcrFailures.length > 0 ? { currentOcrFailures } : {}),
     });
   }
 
