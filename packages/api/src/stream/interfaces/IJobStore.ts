@@ -13,9 +13,9 @@ import type { AgentEventDetachedTerminalEvidence } from '~/agents/triggers/types
 import type { EarlyBufferOverflowState } from '../../types/earlyBufferRecovery';
 import type { ActivityPhaseSnapshot } from '~/agents/activityPhases/runtime';
 import type { ResolvedAskUserQuestion } from '~/agents/hitl/resume';
-import type { RecoveredSteerPayload } from '../SteerRecovery';
 import type { SteelTurnToolVisibility } from '~/steel/native/tools';
 import type { DelegateOcrPolicy } from '~/steel/native/delegate';
+import type { RecoveredSteerPayload } from '../SteerRecovery';
 import type { MCPRuntimeRequestBody } from '~/mcp/types';
 
 /**
@@ -1724,7 +1724,7 @@ export interface IEventTransport {
    * generating Replica A receives signal and stops.
    * Optional - only implemented in Redis transport.
    */
-  emitAbort?(streamId: string, generationId?: number): void;
+  emitAbort?(streamId: string, generationId?: number, reason?: 'user_pause'): void;
 
   /** Awaitable, generation-correlated abort handoff. Resolves true only after
    * the replica owning that generation processes the abort. */
@@ -1766,7 +1766,7 @@ export interface IEventTransport {
   onAbort?(
     streamId: string,
     /** Return true only when this replica owns and stopped the tagged generation. */
-    callback: (generationId?: number) => void | boolean,
+    callback: (generationId?: number, reason?: 'user_pause') => void | boolean,
   ): void | (() => void) | Promise<void | (() => void)>;
 
   /**

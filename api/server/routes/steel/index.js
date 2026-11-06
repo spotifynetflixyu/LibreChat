@@ -7,6 +7,9 @@ const {
   createSteelReviewSourceService,
   createSteelReviewSourceStorageReader,
   createQuotationRouteHandlers,
+  createOcrRouteHandlers,
+  GenerationJobManager,
+  createSteelGenerationReader,
   resolveDownloadPath,
 } = require('@librechat/api');
 const db = require('~/models');
@@ -42,6 +45,13 @@ const handlers = createSteelRouteHandlers({
 });
 const customer = createSteelCustomerRouteHandlers(db);
 const quotation = createQuotationRouteHandlers({
+  readGeneration: createSteelGenerationReader(GenerationJobManager),
+  ownsConversation: async (userId, conversationId) =>
+    Boolean(await db.getConvo(userId, conversationId)),
+});
+
+const ocr = createOcrRouteHandlers({
+  readGeneration: createSteelGenerationReader(GenerationJobManager),
   ownsConversation: async (userId, conversationId) =>
     Boolean(await db.getConvo(userId, conversationId)),
 });
@@ -93,5 +103,13 @@ router.post(
   requireJwtAuth,
   quotation.cancel,
 );
+
+router.post('/conversations/:conversationId/quotation/:index/pause', requireJwtAuth, quotation.pause);
+router.post('/conversations/:conversationId/quotation/:index/resume', requireJwtAuth, quotation.resume);
+router.get('/conversations/:conversationId/ocr/:runId/status', requireJwtAuth, ocr.status);
+router.post('/conversations/:conversationId/ocr/:runId/pause', requireJwtAuth, ocr.pause);
+router.post('/conversations/:conversationId/ocr/:runId/resume', requireJwtAuth, ocr.resume);
+router.post('/conversations/:conversationId/ocr/:runId/retry', requireJwtAuth, ocr.retry);
+router.post('/conversations/:conversationId/ocr/:runId/cancel', requireJwtAuth, ocr.cancel);
 
 module.exports = router;

@@ -94,10 +94,9 @@ export const steelNativeDelegateOcrStatusSchema = z.enum([
 
 export const steelNativeQuotationStatusSchema = z.enum([
   'idle',
-  'queued',
   'running',
-  'aggregating',
-  'finalizing',
+  'paused',
+  'failed',
   'interrupted',
   'completed',
   'cancelled',

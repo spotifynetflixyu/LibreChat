@@ -3,13 +3,14 @@ import type { Document } from 'mongoose';
 import type { SteelMarkdownAdmission, SteelMarkdownReference, SteelMarkdownState, SteelMarkdownSnapshot, SteelMarkdownPublicationTarget } from './versions';
 
 export type SteelQuotationRunStatus =
-  | 'queued'
   | 'running'
-  | 'aggregating'
-  | 'finalizing'
+  | 'paused'
   | 'interrupted'
+  | 'failed'
   | 'completed'
   | 'cancelled';
+
+export type SteelQuotationRunStage = 'queued' | 'running' | 'aggregating' | 'finalizing';
 
 export type SteelQuotationArtifactKind =
   | 'snapshot'
@@ -343,6 +344,10 @@ export interface SteelQuotationActiveRun {
   runId: string;
   index: number;
   status: SteelQuotationRunStatus;
+  stage?: SteelQuotationRunStage;
+  errorMessage?: string;
+  executionResponseId?: string;
+  executionEpoch?: number;
   triggerMessageId: string;
   targetMessageId?: string;
   ocrSelection?: SteelQuotationOcrSelection;

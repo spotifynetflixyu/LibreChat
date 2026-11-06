@@ -110,7 +110,7 @@ describe('quotation route handlers', () => {
     );
 
     expect(response.status).toHaveBeenCalledWith(409);
-    expect(response.json).toHaveBeenCalledWith({ message: 'Quotation has changed' });
+    expect(response.json).toHaveBeenCalledWith({ code: 'flow_expired' });
     expect(cancelRun).not.toHaveBeenCalled();
     expect(mockedAbortQuotationExecution).not.toHaveBeenCalled();
   });
@@ -141,6 +141,7 @@ describe('quotation route handlers', () => {
       conversationId: 'conversation-1',
       index: 1,
       runId: 'run-1',
+      latestRunId: 'run-1',
       status: 'completed',
       completedChunks: 1,
       totalChunks: 2,

@@ -1,9 +1,9 @@
 import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 
-import { createSteelConversationOcrStateModel, createSteelDelegateOcrRunModel } from '@librechat/data-schemas';
+import { createSteelConversationOcrStateModel, createSteelOcrRunModel } from '@librechat/data-schemas';
 
-import { createSteelDelegateOcrStateService } from './state';
+import { createSteelOcrStateService } from './state';
 
 let mongoServer: MongoMemoryReplSet;
 
@@ -23,7 +23,7 @@ afterAll(async () => {
 
 describe('Steel delegate OCR state', () => {
   it('allocates one index to competing first claimants and increments later claims', async () => {
-    const service = createSteelDelegateOcrStateService(mongoose);
+    const service = createSteelOcrStateService(mongoose);
     const [first, second] = await Promise.all([
       service.claimNewDelegateOcrIndex({
         conversationId: 'conversation-claim-race',
@@ -68,7 +68,7 @@ describe('Steel delegate OCR state', () => {
   });
 
   it('claims indexes atomically and materializes idempotently', async () => {
-    const service = createSteelDelegateOcrStateService(mongoose);
+    const service = createSteelOcrStateService(mongoose);
     const first = await service.claimNewDelegateOcrIndex({
       conversationId: 'conversation-state',
       triggeringMessageId: 'message-1',
@@ -102,7 +102,7 @@ describe('Steel delegate OCR state', () => {
   });
 
   it('heals terminal and expired orphan claims before allocating the next index', async () => {
-    const service = createSteelDelegateOcrStateService(mongoose);
+    const service = createSteelOcrStateService(mongoose);
     await service.claimNewDelegateOcrIndex({
       conversationId: 'conversation-heal-terminal',
       triggeringMessageId: 'message-1',
@@ -143,7 +143,7 @@ describe('Steel delegate OCR state', () => {
   });
 
   it('keeps source mappings stable and never recycles codes', async () => {
-    const service = createSteelDelegateOcrStateService(mongoose);
+    const service = createSteelOcrStateService(mongoose);
     const first = await service.allocateDelegateSourceMapping({
       conversationId: 'conversation-mapping',
       fileId: 'file-1',
@@ -166,7 +166,7 @@ describe('Steel delegate OCR state', () => {
 
   it('fails instead of retrying forever when the OCR state disappears during allocation', async () => {
     const State = createSteelConversationOcrStateModel(mongoose);
-    const service = createSteelDelegateOcrStateService(mongoose);
+    const service = createSteelOcrStateService(mongoose);
     const findOne = jest.spyOn(State, 'findOne');
     findOne.mockImplementationOnce(() => State.findOne({ conversationId: 'conversation-missing' }));
     try {
@@ -183,7 +183,7 @@ describe('Steel delegate OCR state', () => {
   });
 
   it('returns the winning source mapping when the same file is allocated concurrently', async () => {
-    const service = createSteelDelegateOcrStateService(mongoose);
+    const service = createSteelOcrStateService(mongoose);
     const [first, second] = await Promise.all([
       service.allocateDelegateSourceMapping({
         conversationId: 'conversation-mapping-race',
@@ -201,7 +201,7 @@ describe('Steel delegate OCR state', () => {
   });
 
   it('clears claims only with exact token and rejects stale result generation', async () => {
-    const service = createSteelDelegateOcrStateService(mongoose);
+    const service = createSteelOcrStateService(mongoose);
     await service.claimNewDelegateOcrIndex({
       conversationId: 'conversation-cas',
       triggeringMessageId: 'message-1',
@@ -276,7 +276,7 @@ describe('Steel delegate OCR state', () => {
   });
 
   it('saves regular OCR results without delegate claim and rejects stale generation', async () => {
-    const service = createSteelDelegateOcrStateService(mongoose);
+    const service = createSteelOcrStateService(mongoose);
     await expect(
       service.upsertCurrentOcrResult({
         conversationId: 'conversation-regular-result',
@@ -302,7 +302,7 @@ describe('Steel delegate OCR state', () => {
   });
 
   it('acquires, reclaims, and guards execution leases', async () => {
-    const service = createSteelDelegateOcrStateService(mongoose);
+    const service = createSteelOcrStateService(mongoose);
     await service.claimNewDelegateOcrIndex({
       conversationId: 'conversation-lease',
       triggeringMessageId: 'message-lease',
@@ -344,7 +344,7 @@ describe('Steel delegate OCR state', () => {
   });
 
   it('takes over resumable leases with compare-and-set fencing', async () => {
-    const service = createSteelDelegateOcrStateService(mongoose);
+    const service = createSteelOcrStateService(mongoose);
     const State = createSteelConversationOcrStateModel(mongoose);
     const conversationId = 'conversation-resume-cas';
     const triggeringMessageId = 'message-resume-cas';
@@ -438,9 +438,9 @@ describe('Steel delegate OCR state', () => {
       service.transitionDelegateOcrRun({
         claimToken,
         executionLeaseToken: 'lease-resume-new',
-        status: 'agent_failed',
+        status: 'failed',
       }),
-    ).resolves.toEqual(expect.objectContaining({ status: 'agent_failed' }));
+    ).resolves.toEqual(expect.objectContaining({ status: 'failed' }));
     await State.updateOne(
       { conversationId },
       { $unset: { 'activeDelegateClaim.executionLeaseToken': 1 } },
@@ -461,11 +461,11 @@ describe('Steel delegate OCR state', () => {
   });
 
   it('matches missing and explicit null lease tokens, but never reclaims terminal runs', async () => {
-    const service = createSteelDelegateOcrStateService(mongoose);
-    const Run = createSteelDelegateOcrRunModel(mongoose);
+    const service = createSteelOcrStateService(mongoose);
+    const Run = createSteelOcrRunModel(mongoose);
     const createRun = async (
       suffix: string,
-      status?: 'completed' | 'superseded' | 'save_failed',
+      status?: 'completed' | 'cancelled' | 'failed',
     ) => {
       const conversationId = `conversation-null-cas-${suffix}`;
       const triggeringMessageId = `message-null-cas-${suffix}`;
@@ -525,7 +525,7 @@ describe('Steel delegate OCR state', () => {
       }),
     ).resolves.toBeUndefined();
 
-    const superseded = await createRun('superseded', 'superseded');
+    const superseded = await createRun('superseded', 'cancelled');
     await expect(
       service.acquireDelegateExecutionLease({
         claimToken: superseded.claimToken,
@@ -537,7 +537,7 @@ describe('Steel delegate OCR state', () => {
       }),
     ).resolves.toBeUndefined();
 
-    const failed = await createRun('failed', 'save_failed');
+    const failed = await createRun('failed', 'failed');
     await expect(
       service.acquireDelegateExecutionLease({
         claimToken: failed.claimToken,
@@ -549,7 +549,7 @@ describe('Steel delegate OCR state', () => {
       }),
     ).resolves.toEqual(expect.objectContaining({ executionLeaseToken: 'lease-save-failed' }));
     await expect(service.findResumableDelegateOcrRun(failed)).resolves.toEqual(
-      expect.objectContaining({ status: 'save_failed' }),
+      expect.objectContaining({ status: 'running' }),
     );
     await expect(
       service.findResumableDelegateOcrRun({
@@ -560,9 +560,9 @@ describe('Steel delegate OCR state', () => {
   });
 
   it('creates expected collections and indexes', () => {
-    const Run = createSteelDelegateOcrRunModel(mongoose);
+    const Run = createSteelOcrRunModel(mongoose);
     const State = createSteelConversationOcrStateModel(mongoose);
-    expect(Run.collection.name).toBe('steel_delegate_ocr_runs');
+    expect(Run.collection.name).toBe('steel_ocr_runs');
     expect(State.collection.name).toBe('steel_conversation_ocr_state');
     expect(Run.schema.indexes()).toContainEqual([
       { conversationId: 1, delegateOcrIndex: 1 },

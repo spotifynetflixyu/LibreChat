@@ -5297,6 +5297,8 @@ describe('AgentClient - titleConvo', () => {
         {},
       );
 
+      await new Promise((resolve) => setImmediate(resolve));
+
       expect(client.contextHandlers.createContext).toHaveBeenCalledTimes(1);
       expect(client.useMemory).toHaveBeenCalledTimes(1);
       expect(resolveConfigServers).toHaveBeenCalledWith(mockReq);
@@ -5347,6 +5349,8 @@ describe('AgentClient - titleConvo', () => {
         {},
       );
 
+      await new Promise((resolve) => setImmediate(resolve));
+
       expect(client.useMemory).toHaveBeenCalledTimes(1);
       expect(resolveConfigServers).toHaveBeenCalledWith(mockReq);
       expect(mockBuildAgentScopedContext).not.toHaveBeenCalled();
@@ -5354,7 +5358,7 @@ describe('AgentClient - titleConvo', () => {
       expect(client.processAttachments).not.toHaveBeenCalled();
 
       requestAttachments.resolve([requestFile]);
-      await Promise.resolve();
+      await new Promise((resolve) => setImmediate(resolve));
 
       expect(mockBuildAgentScopedContext).toHaveBeenCalledTimes(1);
       const scopedContextArgs = mockBuildAgentScopedContext.mock.calls[0][0];
@@ -5369,7 +5373,7 @@ describe('AgentClient - titleConvo', () => {
       );
 
       providerAttachments.resolve([requestFile]);
-      await Promise.resolve();
+      await new Promise((resolve) => setImmediate(resolve));
       expect(client.options.attachments).toBe(requestAttachments.promise);
 
       fileContext.resolve();

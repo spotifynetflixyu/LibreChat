@@ -641,3 +641,6 @@ export { recordAgentEventActorReceiptMetric, setAgentEventActorReceiptMetricObse
 
 export { createSteelCustomerMethods } from './steelCustomer';
 export type { SteelCustomerMethods } from './steelCustomer';
+
+export { createSteelOcrRunMethods } from './steelOcrRun';
+export type { SteelOcrRunMethods, SteelOcrRunRecord, SteelOcrTurnInput, SteelOcrSettleInput, SteelOcrProgressInput, SteelOcrControlResult } from './steelOcrRun';

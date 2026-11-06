@@ -157,7 +157,11 @@ describe('Agent Abort Endpoint', () => {
         expect(response.headers['x-librechat-generation-protocol']).toBe('1');
         expect(mockGenerationJobManager.abortJob).toHaveBeenCalledWith(
           jobStreamId,
-          expect.objectContaining({ transformAbortContent: expect.any(Function) }),
+          expect.objectContaining({
+            reason: 'user_pause',
+            beforeAbort: expect.any(Function),
+            transformAbortContent: expect.any(Function),
+          }),
         );
       });
 

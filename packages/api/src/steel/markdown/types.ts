@@ -8,7 +8,7 @@ import type { SteelQuotationStateService } from '../quotation/state';
 import type { SteelResponseRequest } from '../quotation/completion';
 import type { SteelRepositoryClient } from '../repositories/types';
 import type { SteelOcrResponseAuditService } from '../ocr/audit';
-import type { SteelDelegateOcrStateService } from '../ocr/state';
+import type { SteelOcrStateService } from '../ocr/state';
 
 export type SteelFullPublication = Omit<
   SteelMarkdownPublicationInput,
@@ -83,7 +83,7 @@ export interface SteelMarkdownPublication {
 
 export interface SteelMarkdownCompletionDependencies {
   runtimeRulesClient?: SteelRepositoryClient;
-  ocr: SteelDelegateOcrStateService;
+  ocr: SteelOcrStateService;
   quotation: SteelQuotationStateService;
   audit?: SteelOcrResponseAuditService;
 }

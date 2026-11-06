@@ -1,3 +1,7 @@
+jest.mock('~/server/services/Steel/flow', () => ({
+  settleTurn: jest.fn().mockResolvedValue(undefined),
+}));
+
 /**
  * Unit tests for Open Responses API controller
  * Tests that recordCollectedUsage is called correctly for token spending
@@ -744,7 +748,7 @@ describe('createResponse controller', () => {
           claimToken: delegateRun.claimToken,
           executionLeaseToken,
           status: 'completed',
-          currentStage: 'completed',
+          stage: 'completed',
         });
         if (transitioned == null) {
           throw new Error('Steel response could not be finalized');
@@ -3118,7 +3122,7 @@ describe('createResponse controller', () => {
         claimToken: 'claim-stale',
         executionLeaseToken: 'lease-stale',
         status: 'completed',
-        currentStage: 'completed',
+        stage: 'completed',
       });
       expect(mockResponsesOcrStateService.clearCompletedDelegateClaim).not.toHaveBeenCalled();
       expect(api.sendResponsesErrorResponse).toHaveBeenCalledWith(

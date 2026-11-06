@@ -1,7 +1,8 @@
 import { Schema } from 'mongoose';
+import { randomUUID } from 'crypto';
 
 import type {
-  ISteelDelegateOcrRun,
+  ISteelOcrRun,
   SteelDelegateOcrFinalizationJournal,
   SteelDelegateOcrFinalizedCandidate,
   SteelDelegateOcrSupersedeProvenance,
@@ -66,9 +67,17 @@ const steelDelegateOcrSupersedeProvenanceSchema: Schema<SteelDelegateOcrSupersed
     { _id: false },
   );
 
-const steelDelegateOcrRunSchema = new Schema(
+const steelOcrRunSchema = new Schema(
   {
     conversationId: { type: String, required: true, index: true },
+    userId: { type: String, index: true },
+    tenantId: { type: String, index: true },
+    runId: { type: String, required: true, unique: true, default: () => randomUUID() },
+    kind: { type: String, enum: ['preflight', 'delegate'], required: true, default: 'delegate' },
+    completedChunks: { type: Number, required: true, default: 0, min: 0 },
+    totalChunks: { type: Number, required: true, default: 0, min: 0 },
+    errorMessage: { type: String },
+    awaitingExecution: { type: Boolean, default: false },
     delegateOcrIndex: { type: Number, required: true },
     claimToken: { type: String, required: true, unique: true },
     activeResumeKey: { type: String, unique: true, sparse: true },
@@ -78,21 +87,12 @@ const steelDelegateOcrRunSchema = new Schema(
     files: { type: [steelDelegateOcrToolFileSchema], required: true, default: [] },
     status: {
       type: String,
-      enum: [
-        'running',
-        'agent_running',
-        'finalizing',
-        'completed',
-        'agent_failed',
-        'save_failed',
-        'superseded',
-      ],
+      enum: ['running', 'paused', 'interrupted', 'failed', 'completed', 'cancelled'],
       required: true,
       index: true,
     },
-    currentStage: {
+    stage: {
       type: String,
-      enum: ['claiming', 'preflight', 'agent', 'saving', 'finalizing', 'completed', 'failed'],
       required: true,
       index: true,
     },
@@ -103,6 +103,7 @@ const steelDelegateOcrRunSchema = new Schema(
     saveAttemptNumber: { type: Number, required: true, default: 0 },
     saveAttemptToken: { type: String, index: true },
     responseGenerationId: { type: String, index: true },
+    executionEpoch: { type: Number },
     targetMessageId: { type: String, index: true },
     finalizedCandidate: { type: steelDelegateOcrFinalizedCandidateSchema },
     failureKind: { type: String, enum: ['invalid_output', 'persistence'] },
@@ -114,10 +115,12 @@ const steelDelegateOcrRunSchema = new Schema(
     supersedeProvenance: { type: steelDelegateOcrSupersedeProvenanceSchema },
   },
   { timestamps: true },
-) as unknown as Schema<ISteelDelegateOcrRun>;
+) as unknown as Schema<ISteelOcrRun>;
 
-steelDelegateOcrRunSchema.index({ conversationId: 1, delegateOcrIndex: 1 }, { unique: true });
-steelDelegateOcrRunSchema.index({ conversationId: 1, triggeringMessageId: 1, status: 1 });
-steelDelegateOcrRunSchema.index({ conversationId: 1, status: 1, executionLeaseExpiresAt: 1 });
+steelOcrRunSchema.index({ conversationId: 1, delegateOcrIndex: 1 }, { unique: true, partialFilterExpression: { kind: 'delegate' } });
+steelOcrRunSchema.index({ userId: 1, tenantId: 1, conversationId: 1, kind: 1, createdAt: -1 });
+steelOcrRunSchema.index({ conversationId: 1, triggeringMessageId: 1, status: 1 });
+steelOcrRunSchema.index({ conversationId: 1, status: 1, executionLeaseExpiresAt: 1 });
+steelOcrRunSchema.index({ userId: 1, tenantId: 1, conversationId: 1, responseGenerationId: 1, executionEpoch: 1 }, { unique: true, partialFilterExpression: { kind: 'preflight' } });
 
-export default steelDelegateOcrRunSchema;
+export default steelOcrRunSchema;

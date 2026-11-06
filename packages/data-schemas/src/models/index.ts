@@ -1,4 +1,3 @@
-import { createSteelModels } from './steel';
 import type { SteelModels } from './steel';
 import { createAgentQueuedTurnModel, createAgentQueuedTurnSequenceModel } from './queuedTurn';
 import { createAgentTriggerLaneSequenceModel } from './triggerLaneSequence';
@@ -39,6 +38,7 @@ import { createPresetModel } from './preset';
 import { createPromptModel } from './prompt';
 import { createMemoryModel } from './memory';
 import { createConfigModel } from './config';
+import { createSteelModels } from './steel';
 import { createTokenModel } from './token';
 import { createAgentModel } from './agent';
 import { createSkillModel } from './skill';
@@ -181,7 +181,7 @@ export {
   createSteelMemoryCandidateModel,
   createSteelOcrPdfChunkArtifactModel,
   createSteelWorkingOrderMemoryModel,
-  createSteelDelegateOcrRunModel,
+  createSteelOcrRunModel,
   createSteelConversationOcrStateModel,
   createSteelOcrResponseAuditModel,
   createSteelQuotationStateModel,

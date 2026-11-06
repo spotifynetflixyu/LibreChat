@@ -20,3 +20,4 @@ export * from './rules';
 export * from './runtime/types';
 export * from './sources';
 export * from './tools';
+export * from './lifecycle';

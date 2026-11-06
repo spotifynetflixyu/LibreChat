@@ -1418,7 +1418,7 @@ export const STEEL_TERMINAL_TOOL_FAILED_CODE = 'STEEL_TERMINAL_TOOL_FAILED';
 
 /** A terminal tool (delegate_ocr) failed: the turn fails with its error instead of answering with it. */
 export class SteelTerminalToolError extends Error {
-  readonly code = STEEL_TERMINAL_TOOL_FAILED_CODE;
+  readonly code: typeof STEEL_TERMINAL_TOOL_FAILED_CODE = STEEL_TERMINAL_TOOL_FAILED_CODE;
 
   constructor(message: string) {
     super(message);

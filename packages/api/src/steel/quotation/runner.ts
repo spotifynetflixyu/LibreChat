@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
-import { logger } from '@librechat/data-schemas';
 import { randomUUID } from 'node:crypto';
+import { logger } from '@librechat/data-schemas';
 import {
   bindSteelReviewRowsToOcrContext,
   createSteelReviewOcrContext,
@@ -367,6 +367,7 @@ export interface QuotationProgress {
 }
 
 export interface QuotationRunnerInput {
+  executionEpoch?: number;
   client?: SteelRepositoryClient;
   scope: SteelQuotationScope;
   modelOptions: OpenAIOAuthModelOptions;
@@ -665,9 +666,20 @@ export async function runQuotationPreflightWithRetries(
     try {
       return await runQuotationPreflight(input);
     } catch (error) {
-      if (attempt >= QUOTATION_MAX_ATTEMPTS || input.signal.aborted) throw error;
+      if (attempt >= QUOTATION_MAX_ATTEMPTS || input.signal.aborted) {
+        const active = await service.readActiveRun(input.scope);
+        if (!input.signal.aborted && active?.status === 'interrupted') {
+          await service.failRun({
+            scope: input.scope,
+            runId: active.runId,
+            executionEpoch: input.executionEpoch,
+            executionResponseId: input.summarySourceMessageId,
+          });
+        }
+        throw error;
+      }
       const active = await service.readActiveRun(input.scope);
-      if (!isUnfinishedQuotation(active?.status)) throw error;
+      if (active?.status !== 'interrupted') throw error;
     }
   }
 }
@@ -700,7 +712,12 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     }
     return { status: 'completed', markdown: published.value.systemOrder.markdown };
   }
-  const lease = await service.acquireLease({ scope, runId });
+  const lease = await service.acquireLease({
+    scope,
+    runId,
+    executionResponseId: input.summarySourceMessageId ?? run.targetMessageId,
+    executionEpoch: input.executionEpoch,
+  });
   if (!lease) return { status: 'busy' };
   const leaseInput = { scope, runId, leaseToken: lease.leaseToken };
   const executionAttempt = randomUUID();
@@ -750,8 +767,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
       !active ||
       active.runId !== runId ||
       active.leaseToken !== lease.leaseToken ||
-      active.status === 'cancelled' ||
-      active.status === 'completed' ||
+      active.status !== 'running' ||
       !active.leaseExpiresAt ||
       new Date(active.leaseExpiresAt).getTime() <= Date.now()
     ) {
@@ -802,7 +818,11 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     refreshedPublicationAdmission = await input.refreshPublicationAdmission?.();
     controller.signal.throwIfAborted();
     heartbeatEnabled = true;
-    const running = await service.transitionRun({ ...leaseInput, status: 'running' });
+    const running = await service.transitionRun({
+      ...leaseInput,
+      status: 'running',
+      stage: 'running',
+    });
     if (!running) throw new Error('Quotation could not start with its execution lease');
     await progress(undefined, undefined, 'started');
     const payload = await service.readArtifact({ scope, ref: run.snapshotRef });
@@ -853,7 +873,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
       });
     }
     interruptedChunkIndex = undefined;
-    await service.transitionRun({ ...leaseInput, status: 'finalizing' });
+    await service.transitionRun({ ...leaseInput, status: 'running', stage: 'finalizing' });
     const aggregate = buildQuotationSystemOrderForReview({
       fullOcrResult: snapshot.orderMarkdown,
       childResults: results,
@@ -1520,8 +1540,10 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     }
     const interrupted = await service.interruptRun({
       ...leaseInput,
+      status:
+        input.signal.aborted && input.signal.reason === 'user_pause' ? 'paused' : 'interrupted',
       interruption: {
-        reason: isStop ? 'paused' : 'error',
+        reason: input.signal.reason === 'user_pause' ? 'paused' : 'error',
         ...(interruptedChunkIndex !== undefined && { chunkIndex: interruptedChunkIndex }),
       },
     });

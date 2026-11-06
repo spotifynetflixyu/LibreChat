@@ -1,9 +1,9 @@
 import { Time } from 'librechat-data-provider';
 import { logger, redactMessage } from '@librechat/data-schemas';
 import type { Response } from 'express';
-import type { RequestScopedMCPConnectionStore } from '~/mcp/types';
 import type { OcrPdfChunkArtifact, PaddleOcrChunkRunner, OcrPreprocessingFile } from './preprocess';
 import type { SteelEmittedEvent, SteelNativeEventRequest } from '../native/stream';
+import type { RequestScopedMCPConnectionStore } from '~/mcp/types';
 import type { PaddleOcrDiagnosticCode } from './diagnostics';
 import type { OcrPreprocessingPageChunk } from './chunks';
 import {
@@ -13,8 +13,8 @@ import {
   createSteelPaddleOcrRunStepCompletedEvent,
 } from '../native/steps';
 import { STEEL_OCR_MAX_ATTEMPTS, STEEL_OCR_RETRY_DELAY_MS, sleepSteelOcrDelay } from './retry';
-import { getPaddleOcrResultContent, getPaddleOcrResultError } from './text';
 import { isPaddleOcrDiagnosticCode, PADDLE_OCR_MCP_SERVER_NAME } from './diagnostics';
+import { getPaddleOcrResultContent, getPaddleOcrResultError } from './text';
 import { upsertSteelNativePreflightToolCall } from '../native/events';
 import { emitSteelNativeEvents } from '../native/stream';
 import { isExpiredSignedUrlError } from '~/storage/url';
@@ -72,9 +72,9 @@ export const steelPaddleOcrTransportErrorPatterns: readonly string[] = [
   'network error',
 ];
 
-export const steelPaddleOcrMaxAttempts = STEEL_OCR_MAX_ATTEMPTS;
+export const steelPaddleOcrMaxAttempts: number = STEEL_OCR_MAX_ATTEMPTS;
 
-export const steelPaddleOcrRetryDelayMs = STEEL_OCR_RETRY_DELAY_MS;
+export const steelPaddleOcrRetryDelayMs: number = STEEL_OCR_RETRY_DELAY_MS;
 
 export const steelPaddleOcrTaskIntervalMs = 1000;
 

@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import {
   createSteelConversationOcrStateModel,
-  createSteelDelegateOcrRunModel,
+  createSteelOcrRunModel,
   createSteelQuotationStateModel,
   createSteelWorkingOrderMemoryModel,
 } from '@librechat/data-schemas';
-import type { IConversation, IMongoFile, ISteelConversationOcrState, ISteelDelegateOcrRun, ISteelWorkingOrderMemory, SteelConversationOcrSourceMapping } from '@librechat/data-schemas';
+import type { IConversation, IMongoFile, ISteelConversationOcrState, ISteelOcrRun, ISteelWorkingOrderMemory, SteelConversationOcrSourceMapping } from '@librechat/data-schemas';
 import type { Types } from 'mongoose';
 import { parseAssistantMarkdown, parseOcrResultTable, parseSourceMappingTable } from './result';
 
@@ -112,7 +112,7 @@ function referencedFiles(value: unknown, ids: Set<string>): void {
 export function createSteelOcrForkService(mongoose: Mongoose) {
   const State = createSteelConversationOcrStateModel(mongoose);
   const Memory = createSteelWorkingOrderMemoryModel(mongoose);
-  const Runs = createSteelDelegateOcrRunModel(mongoose);
+  const Runs = createSteelOcrRunModel(mongoose);
   const Quotation = createSteelQuotationStateModel(mongoose);
   const Conversation = mongoose.model<IConversation>('Conversation');
   const File = mongoose.model<IMongoFile>('File');
@@ -140,7 +140,7 @@ export function createSteelOcrForkService(mongoose: Mongoose) {
       const path = selectedPath(input);
       const [source, runs, memories] = await Promise.all([
         State.findOne({ conversationId: input.sourceConversationId }).lean<ISteelConversationOcrState>(),
-        Runs.find({ conversationId: input.sourceConversationId, status: 'completed' }).lean<ISteelDelegateOcrRun[]>(),
+        Runs.find({ conversationId: input.sourceConversationId, status: 'completed' }).lean<ISteelOcrRun[]>(),
         Memory.find({ conversationId: input.sourceConversationId, memoryKind: { $in: ['ocr_extract', 'paddleocr_preflight'] } }).lean<ISteelWorkingOrderMemory[]>(),
       ]);
       const generations = new Map<string, string>();

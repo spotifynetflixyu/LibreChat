@@ -1,5 +1,5 @@
 import type { Agents } from 'librechat-data-provider';
-import type { SteelStepTextReset } from '../native/stream';
+import type { SteelStepTextReset } from '../native/reset';
 
 /** Every OCR step (PaddleOCR call, Organizer chunk, main OCR agent) runs at most this many times. */
 export const STEEL_OCR_MAX_ATTEMPTS = 3;
@@ -11,7 +11,7 @@ export const STEEL_OCR_CHUNK_FAILED_CODE = 'STEEL_OCR_CHUNK_FAILED';
 
 /** An OCR result chunk could not be produced; the turn fails without a rerun. */
 export class SteelOcrChunkError extends Error {
-  readonly code = STEEL_OCR_CHUNK_FAILED_CODE;
+  readonly code: typeof STEEL_OCR_CHUNK_FAILED_CODE = STEEL_OCR_CHUNK_FAILED_CODE;
 
   constructor(message: string, options?: { cause?: unknown }) {
     super(message, options);

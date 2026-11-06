@@ -53,7 +53,6 @@ import {
   setGenerationJobsInFlight,
   recordGenerationJob,
 } from '~/app/metrics';
-import { isOAuthToolCallName } from '~/mcp/utils';
 import {
   GenerationPublicationFencedError,
   JobCreationSupersededError,
@@ -67,6 +66,7 @@ import {
 import { isRecoveredSteerPayload, RecoveredSteerPayloadMismatchError } from './SteerRecovery';
 import { projectTerminalEvent } from './terminalProjection';
 import { assertJobStoreV2 } from './jobStoreCapabilities';
+import { isOAuthToolCallName } from '~/mcp/utils';
 
 /**
  * Tombstone budget per generation. Twice the queue depth so a full queue's
@@ -1357,7 +1357,7 @@ class GenerationJobManagerClass {
       return;
     }
 
-    const unsubscribe = await this.eventTransport.onAbort(streamId, (generationId) => {
+    const unsubscribe = await this.eventTransport.onAbort(streamId, (generationId, reason) => {
       const currentRuntime = this.runtimeState.get(streamId);
       if (
         currentRuntime !== runtime ||
@@ -1369,7 +1369,7 @@ class GenerationJobManagerClass {
       const ownsProvider = this.ownedJobs.get(streamId) === currentRuntime.createdAt;
       if (!currentRuntime.abortController.signal.aborted) {
         logger.debug(`[GenerationJobManager] Received cross-replica abort for ${streamId}`);
-        currentRuntime.abortController.abort();
+        currentRuntime.abortController.abort(reason);
         this.releaseAbortSubscription(currentRuntime);
       }
       return ownsProvider;
@@ -4505,6 +4505,9 @@ class GenerationJobManagerClass {
   async abortJob(
     streamId: string,
     options?: {
+      reason?: 'user_pause';
+      /** Runs after the exact-generation claim and before any local or remote abort signal. */
+      beforeAbort?: (jobData: SerializableJobData) => void | Promise<void>;
       transformAbortContent?: (
         content: TMessageContentParts[],
         jobData: SerializableJobData,
@@ -4756,9 +4759,16 @@ class GenerationJobManagerClass {
       // Signal only the generation whose terminal transaction won above. The
       // transport tag prevents a delayed predecessor abort from reaching a
       // same-stream replacement on another replica.
+      let pausePersistenceFailed = false;
+      try {
+        await options?.beforeAbort?.(jobData);
+      } catch {
+        pausePersistenceFailed = true;
+        logger.error(`[GenerationJobManager] Required pre-abort persistence failed for ${streamId}`);
+      }
       if (this.eventTransport.emitAbort) {
         try {
-          this.eventTransport.emitAbort(streamId, jobData.createdAt);
+          this.eventTransport.emitAbort(streamId, jobData.createdAt, options?.reason);
         } catch (abortError) {
           logger.error(
             `[GenerationJobManager] Failed to publish terminal abort for ${streamId}:`,
@@ -4769,7 +4779,7 @@ class GenerationJobManagerClass {
       if (runtime) {
         this.releaseAbortSubscription(runtime);
       }
-      runtime?.abortController.abort();
+      runtime?.abortController.abort(options?.reason);
 
       if (options?.awaitProviderDrain) {
         await this.waitForProviderDrainIfRequired(streamId, jobData);
@@ -4904,7 +4914,7 @@ class GenerationJobManagerClass {
         ...(pendingSteers.length > 0 && { pendingSteers }),
       };
 
-      let requiredPersistenceFailed = false;
+      let requiredPersistenceFailed = pausePersistenceFailed;
       try {
         if (options?.beforePublish) {
           await options.beforePublish(abortResult);

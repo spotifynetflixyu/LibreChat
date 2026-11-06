@@ -1,24 +1,19 @@
 import mongoose from 'mongoose';
 import { parseSteelNativePreflightToolCall } from 'librechat-data-provider';
-import type { Response } from 'express';
 import type {
   AllMethods,
   SteelQuotationScope,
   SteelQuotationSavedMessage,
 } from '@librechat/data-schemas';
 import type { AIMessage, BaseMessage } from '@librechat/agents/langchain/messages';
-import type { SteelQuotationPublicationMessageSnapshot } from './publication';
+import type { Response } from 'express';
 import type { SteelNativeHistory, SteelNativeEventEnvelope } from '../native/events';
+import type { SteelQuotationPublicationMessageSnapshot } from './publication';
 import type { SteelRepositoryClient } from '../repositories/types';
-import type { SteelResponseRequest } from './completion';
 import type { OpenAIOAuthModelOptions } from '../native/oauth';
-import type { QuotationRunnerInput } from './runner';
 import type { SteelEmittedEvent } from '../native/stream';
-import {
-  createSteelQuotationMessageNotifier,
-  createSteelQuotationSummaryAppender,
-  createSteelQuotationPublicationAdmission,
-} from './wiring';
+import type { SteelResponseRequest } from './completion';
+import type { QuotationRunnerInput } from './runner';
 import {
   ensureSteelNativeHistory,
   steelNativeStreamEventName,
@@ -30,13 +25,18 @@ import {
   createSteelPaddleOcrRunStepDeltaEvent,
   createSteelPaddleOcrRunStepCompletedEvent,
 } from '../native/steps';
+import {
+  createSteelQuotationMessageNotifier,
+  createSteelQuotationSummaryAppender,
+  createSteelQuotationPublicationAdmission,
+} from './wiring';
+import { getQuotationPreflightNotice, runQuotationPreflightWithRetries } from './runner';
 import { getQuotationHistoryDelta, upsertQuotationToolContent } from './history';
 import { createSteelMarkdownCompletionServices } from '../markdown/completion';
-import { getQuotationPreflightNotice, runQuotationPreflightWithRetries } from './runner';
 import { createSteelQuotationPublicationPublisher } from './publication';
 import { createSteelFullMarkdownPublisher } from '../markdown/full';
-import { isQuotationPreparationComplete } from './signal';
 import { createSteelQuotationStateService } from './state';
+import { isQuotationPreparationComplete } from './signal';
 import { emitSteelNativeEvents } from '../native/stream';
 import { quotationMessageText } from './model';
 
@@ -370,6 +370,7 @@ export function createSteelQuotationWorkflow({ db, client }: SteelQuotationWorkf
         buildMessage: buildPublicationMessage,
       }),
       summarySourceMessageId: requestId,
+      executionEpoch: req._resumableJobCreatedAt,
       refreshPublicationAdmission: createSteelQuotationPublicationAdmission({
         req,
         scope,

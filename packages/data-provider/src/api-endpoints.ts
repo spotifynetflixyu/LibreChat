@@ -1,6 +1,6 @@
-import type { SteelCatalogQuery } from './steel';
 import type { StartupConfigContext } from './config';
 import type { AssistantsEndpoint } from './schemas';
+import type { SteelCatalogQuery } from './steel';
 import { ResourceType } from './accessPermissions';
 import * as q from './types/queries';
 
@@ -703,3 +703,13 @@ export const getAllEffectivePermissions = (resourceType: ResourceType) =>
 // SharePoint Graph API Token
 export const graphToken = (scopes: string) =>
   `${BASE_URL}/api/auth/graph-token?scopes=${encodeURIComponent(scopes)}`;
+
+export const steelOcrStatus = (conversationId: string, runId: string) =>
+  `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/ocr/${encodeURIComponent(runId)}/status`;
+export const steelOcrControl = (
+  conversationId: string, runId: string, action: 'pause' | 'resume' | 'retry' | 'cancel',
+) => `${steelOcrStatus(conversationId, runId).replace(/\/status$/, '')}/${action}`;
+export const steelQuotationPause = (conversationId: string, index: number) =>
+  `${steelQuotationStatus(conversationId)}/${encodeURIComponent(String(index))}/pause`;
+export const steelQuotationResume = (conversationId: string, index: number) =>
+  `${steelQuotationStatus(conversationId)}/${encodeURIComponent(String(index))}/resume`;

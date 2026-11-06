@@ -6,7 +6,7 @@ import type { SteelReviewRow } from 'librechat-data-provider';
 import type { SteelQuotationActiveRun, SteelQuotationScope } from '~/types';
 import {
   createSteelConversationOcrStateModel,
-  createSteelDelegateOcrRunModel,
+  createSteelOcrRunModel,
   createSteelQuotationArtifactModel,
   createSteelQuotationStateModel,
   createSteelReviewOutputModel,
@@ -1299,7 +1299,7 @@ describe('Steel review read methods', () => {
 
   it('does not expose an unaccepted superseded OCR candidate as history', async () => {
     const models = createModels(mongoose);
-    const Run = createSteelDelegateOcrRunModel(mongoose);
+    const Run = createSteelOcrRunModel(mongoose);
     const read = createSteelReviewReadMethods(mongoose);
     const markdown = '## ocr_result\n\n| 來源 | 零件編號 |\n| --- | --- |\n| A | P-1 |';
     await models.Conversation.create({
@@ -1323,8 +1323,8 @@ describe('Steel review read methods', () => {
       triggeringMessageId: 'trigger-message',
       toolParameters: {},
       files: [],
-      status: 'superseded',
-      currentStage: 'failed',
+      status: 'cancelled',
+      stage: 'failed',
       finalizedCandidate: {
         token: 'candidate-token',
         markdown,
@@ -1681,7 +1681,8 @@ describe('Steel review read methods', () => {
       content: [{ type: 'text', text: markdown }],
     });
     const currentRun = quotationRunFixture(scope, 'new-unpublished-run', 'new-message', 'c'.repeat(64));
-    currentRun.status = 'queued';
+    currentRun.status = 'running';
+    currentRun.stage = 'queued';
     await QuotationState.create({
       ...scope,
       currentSystemOrder: {

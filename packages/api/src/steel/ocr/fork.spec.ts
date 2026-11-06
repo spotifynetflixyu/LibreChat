@@ -3,7 +3,7 @@ import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import {
   createModels,
   createSteelConversationOcrStateModel,
-  createSteelDelegateOcrRunModel,
+  createSteelOcrRunModel,
   createSteelWorkingOrderMemoryModel,
 } from '@librechat/data-schemas';
 import { prepareQuotationTurn } from '../quotation/preparation';
@@ -17,7 +17,7 @@ const otherUserId = new mongoose.Types.ObjectId().toString();
 const models = createModels(mongoose);
 const State = createSteelConversationOcrStateModel(mongoose);
 const Memory = createSteelWorkingOrderMemoryModel(mongoose);
-const Runs = createSteelDelegateOcrRunModel(mongoose);
+const Runs = createSteelOcrRunModel(mongoose);
 const full = (quantity: number, title = 'ocr_result'): string => `## ${title}\n\n| 來源 | 零件編號 | 類別 | 數量 | 備註 |\n| --- | --- | --- | --- | --- |\n| F1 | A-6M06 | H型鋼 | ${quantity} | 每件14孔；總${quantity * 14}孔 |`;
 type ForkMessages = Parameters<ReturnType<typeof createSteelOcrForkService>['prepare']>[0]['messages'];
 const messages: ForkMessages = [
@@ -137,9 +137,9 @@ it.each([
 });
 
 it('copies completed delegate evidence only with selected generation provenance and remaps references', async () => {
-  const run = { conversationId: 'source', delegateOcrIndex: 1, claimToken: 'old-claim', triggeringMessageId: 'u1', targetMessageId: 'a1', responseGenerationId: 'gen-1', status: 'completed', currentStage: 'completed', toolParameters: {}, files: [{ fileId: 'file-1', filename: 'AH.pdf' }] };
+  const run = { conversationId: 'source', delegateOcrIndex: 1, claimToken: 'old-claim', triggeringMessageId: 'u1', targetMessageId: 'a1', responseGenerationId: 'gen-1', status: 'completed', stage: 'completed', toolParameters: {}, files: [{ fileId: 'file-1', filename: 'AH.pdf' }] };
   await Runs.create(run);
-  await Runs.create({ ...run, delegateOcrIndex: 2, claimToken: 'active-claim', responseGenerationId: 'active-gen', status: 'agent_running' });
+  await Runs.create({ ...run, delegateOcrIndex: 2, claimToken: 'active-claim', responseGenerationId: 'active-gen', status: 'running' });
   await Memory.create(memory('gen-1', { preflightMode: 'delegate', delegateOcrIndex: 1, targetMessageId: 'a1', generationId: 'gen-1', ocrPreprocessing: { preflightMode: 'delegate', delegateOcrIndex: 1 } }));
   await Memory.create(memory('active-gen', { preflightMode: 'delegate', delegateOcrIndex: 2 }));
   await (await createSteelOcrForkService(mongoose).prepare(input(messages.slice(0, 2)))).persist();

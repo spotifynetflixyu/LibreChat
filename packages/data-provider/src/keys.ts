@@ -98,6 +98,7 @@ export enum QueryKeys {
   /* Steel */
   steelModels = 'steelModels',
   steelQuotationStatus = 'steelQuotationStatus',
+  steelOcrStatus = 'steelOcrStatus',
   steelReview = 'steelReview',
   steelMarkdownVersions = 'steelMarkdownVersions',
   openAIOAuthUsage = 'openAIOAuthUsage',
@@ -118,6 +119,8 @@ export enum QueryKeys {
 // Dynamic query keys that require parameters
 export const DynamicQueryKeys = {
   agentFiles: (agentId: string) => ['agentFiles', agentId] as const,
+  steelOcrStatus: (conversationId: string, runId: string) =>
+    [QueryKeys.steelOcrStatus, conversationId, runId] as const,
   steelQuotationStatus: (conversationId: string) =>
     [QueryKeys.steelQuotationStatus, conversationId] as const,
   steelMarkdownVersions: (conversationId: string) =>
@@ -154,6 +157,12 @@ export enum MutationKeys {
   startOpenAIOAuthCodexLogin = 'startOpenAIOAuthCodexLogin',
   cancelOpenAIOAuthCodexLogin = 'cancelOpenAIOAuthCodexLogin',
   cancelSteelQuotation = 'cancelSteelQuotation',
+  pauseSteelQuotation = 'pauseSteelQuotation',
+  resumeSteelQuotation = 'resumeSteelQuotation',
+  pauseSteelOcr = 'pauseSteelOcr',
+  resumeSteelOcr = 'resumeSteelOcr',
+  retrySteelOcr = 'retrySteelOcr',
+  cancelSteelOcr = 'cancelSteelOcr',
   prepareSteelReview = 'prepareSteelReview',
   commitSteelReview = 'commitSteelReview',
   commitSteelCustomer = 'commitSteelCustomer',

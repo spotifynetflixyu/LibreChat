@@ -5,8 +5,8 @@ import type { IMongoFile } from '@librechat/data-schemas';
 import type { SteelOcrPdfChunkArtifactStore, SteelOcrStoredArtifact } from '../ocr/storage';
 import type { SteelDelegateOcrRequest, SteelDelegateOcrDependencies } from './delegation';
 import type { DelegateOcrFileInput, DelegateOcrStoredFileRecord } from './delegate';
-import { createSteelDelegateOcrStateService } from '../ocr/state';
 import { createSteelDelegateOcrService } from './delegation';
+import { createSteelOcrStateService } from '../ocr/state';
 
 const mockCreateModel = jest.fn();
 const mockBuildContext = jest.fn();
@@ -94,7 +94,7 @@ function createDeps(artifactStore?: SteelOcrPdfChunkArtifactStore) {
     db,
     client,
     getStrategy: jest.fn(() => ({ getDownloadURL })),
-    stateService: createSteelDelegateOcrStateService(mongoose),
+    stateService: createSteelOcrStateService(mongoose),
     ocr: {
       resolvePreprocessingRules: jest.fn(),
       createOrganizer: jest.fn(),
@@ -152,7 +152,7 @@ async function seedResumableRun({
   fileIds: string[];
   triggeringMessageId?: string;
 }) {
-  const stateService = createSteelDelegateOcrStateService(mongoose);
+  const stateService = createSteelOcrStateService(mongoose);
   const claim = await stateService.claimNewDelegateOcrIndex({
     conversationId: 'convo-1',
     triggeringMessageId,
@@ -308,10 +308,11 @@ describe('executeDelegateOcrResume', () => {
       files: [{ fileKey: 'file:file-1' }],
       fileIds: ['file-1'],
     });
-    const stateService = createSteelDelegateOcrStateService(mongoose);
+    const stateService = createSteelOcrStateService(mongoose);
     await stateService.transitionDelegateOcrRun({
       claimToken: claim.claimToken,
-      status: 'save_failed',
+      status: 'failed',
+      stage: 'saving',
       responseGenerationId: 'generation-4',
     });
     const run = await stateService.findDelegateOcrRunByClaimToken(claim.claimToken);

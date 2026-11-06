@@ -392,6 +392,35 @@ describe('terminal agent-run error logging', () => {
     expect(fallback).not.toHaveBeenCalled();
   });
 
+  it('classifies a tracked Error whose name and message accessors throw', () => {
+    const observer = createTerminalRunErrorObserver({
+      logger: { error: jest.fn() },
+      source: '[Agent API]',
+      protectionEnabled: false,
+    });
+    const providerError = Object.assign(new Error(), { status: 503 });
+    Object.defineProperties(providerError, {
+      name: {
+        get() {
+          throw new Error('PRIVATE provider name');
+        },
+      },
+      message: {
+        get() {
+          throw new Error('PRIVATE provider message');
+        },
+      },
+    });
+    observer.modelCallback.handleLLMError(providerError);
+    const fallback = jest.fn(() => 'legacy fallback');
+
+    expect(observer.getUserFacingError(providerError, fallback)).toBe(
+      'The model provider could not complete this request.\n' +
+        JSON.stringify({ type: 'upstream_model_error', status: 503 }),
+    );
+    expect(fallback).not.toHaveBeenCalled();
+  });
+
   it('uses a bounded fallback type and omits unavailable trace correlation', () => {
     expect(getUpstreamModelErrorMetadata(new Error('provider failed'))).toEqual({
       type: 'Error',

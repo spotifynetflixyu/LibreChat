@@ -33,11 +33,6 @@ import {
   renderQuotationCustomerMarkdown,
 } from './preparation';
 import {
-  createSteelNativeHistory,
-  appendSteelNativeActivityEvent,
-  upsertSteelNativePreflightToolCall,
-} from '../native/events';
-import {
   acceptQuotationResponse,
   acceptQuotationSignal,
   hasCompleteSteelFormula,
@@ -45,6 +40,11 @@ import {
   runQuotationPreflight,
   runQuotationPreflightWithRetries,
 } from './runner';
+import {
+  createSteelNativeHistory,
+  appendSteelNativeActivityEvent,
+  upsertSteelNativePreflightToolCall,
+} from '../native/events';
 import { getQuotationHistoryDelta, readQuotationHistory } from './history';
 import { createSteelQuotationPublicationPublisher } from './publication';
 import { buildQuotationChunks, quotationSignal } from './protocol';
@@ -571,7 +571,22 @@ describe('quotation runner integration', () => {
     expect((await service.readState(scope))?.activeRun?.status).toBe('completed');
   });
 
-  it('gives up after three interrupted attempts and leaves the run resumable', async () => {
+  it('does not restart a run paused through its control API', async () => {
+    const run = await prepareRun(1);
+    const publishFinal = jest.fn(async () => {
+      await service.pauseRun({ scope, runId: run.runId });
+      throw new Error('user pause');
+    });
+    await expect(
+      runQuotationPreflightWithRetries(
+        runnerInput(createModel(), createLookupExecutor(), { publishFinal }),
+      ),
+    ).rejects.toThrow('user pause');
+    expect(publishFinal).toHaveBeenCalledTimes(1);
+    expect((await service.readState(scope))?.activeRun?.status).toBe('paused');
+  });
+
+  it('records a failed resumable run after three interrupted attempts', async () => {
     await prepareRun(1);
     const executeLookup = createLookupExecutor();
     const publishFinal = jest.fn(async () => {
@@ -585,7 +600,7 @@ describe('quotation runner integration', () => {
     ).rejects.toThrow('publication storage unavailable');
     expect(publishFinal).toHaveBeenCalledTimes(QUOTATION_MAX_ATTEMPTS);
     expect(executeLookup).toHaveBeenCalledTimes(1);
-    expect((await service.readState(scope))?.activeRun?.status).toBe('interrupted');
+    expect((await service.readState(scope))?.activeRun?.status).toBe('failed');
   });
 
   it('refuses a completed publication marker without its durable receipt after a publisher error', async () => {
@@ -958,12 +973,13 @@ describe('quotation runner integration', () => {
             event.completedChunks === 4 &&
             event.totalChunks === 8
           ) {
-            controller.abort(new Error('Paused after first recovery slice'));
+            controller.abort('user_pause');
           }
         },
       }),
-    ).rejects.toThrow('Paused after first recovery slice');
+    ).rejects.toBe('user_pause');
     const paused = await service.readState(scope);
+    expect(paused?.activeRun?.status).toBe('paused');
     expect(paused?.activeRun?.interruption).toEqual({ reason: 'paused', chunkIndex: 4 });
     expect(quotationStatus(paused, scope.conversationId)).toEqual(
       expect.objectContaining({ completedChunks: 4, totalChunks: 8 }),
@@ -2122,7 +2138,7 @@ describe('quotation runner integration', () => {
       }),
     ).rejects.toThrow('stale preparation');
     const run = await acceptPreparedSignal('fresh-confirmation');
-    expect(run?.status).toBe('queued');
+    expect(run?.status).toBe('running');
     expect((await service.readState(scope))?.currentCustomer?.customerMarkdown).toContain('| F |');
   });
 

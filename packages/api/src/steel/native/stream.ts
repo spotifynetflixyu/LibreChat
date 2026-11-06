@@ -3,9 +3,10 @@ import { StepTypes, ContentTypes, steelContentResetEvent } from 'librechat-data-
 import type { Agents } from 'librechat-data-provider';
 import type { EventHandler } from '@librechat/agents';
 import type { Response } from 'express';
-import type { StreamEvent } from '~/types/events';
 import type { DelegateOcrStreamEventPayload } from './delegate';
 import type { SteelNativeHistory } from './events';
+import type { StreamEvent } from '~/types/events';
+import type { SteelStepTextReset } from './reset';
 import { appendSteelNativeActivityEvent, steelNativeStreamEventName } from './events';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
 import { sendEvent } from '~/utils/events';
@@ -16,8 +17,7 @@ function isDelegateOcrStreamEventPayload(value: unknown): value is DelegateOcrSt
   return phase === 'delta' || phase === 'complete' || phase === 'error' || phase === 'reset';
 }
 
-/** Clears one run step's streamed text or reasoning in the turn's aggregated content and on the client. */
-export type SteelStepTextReset = (stepId: string) => Promise<void>;
+export type { SteelStepTextReset } from './reset';
 
 export interface CreateSteelStepTextResetInput {
   contentParts?: Agents.MessageContentComplex[] | null;

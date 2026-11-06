@@ -28,6 +28,15 @@ const UPSTREAM_MODEL_ERROR_ORIGIN = 'model_provider';
 const UNKNOWN_UPSTREAM_MODEL_ERROR_TYPE = '_OTHER';
 const UPSTREAM_MODEL_ERROR_FALLBACK = 'The model provider could not complete this request.';
 
+function isMongoError(error: unknown): boolean {
+  try {
+    const name = error instanceof Error ? error.name : undefined;
+    return typeof name === 'string' && name.startsWith('Mongo');
+  } catch {
+    return false;
+  }
+}
+
 function safelyResolveLangChainError(error: unknown): string | undefined {
   try {
     return resolveLangChainError(error);
@@ -112,7 +121,7 @@ export function createTerminalRunErrorObserver({
   return Object.freeze({
     modelCallback: modelErrorTracker.callback,
     getUserFacingError(error: unknown, fallback: () => string) {
-      if (error instanceof Error && error.name.startsWith('Mongo')) {
+      if (isMongoError(error)) {
         return GENERIC_PROVIDER_ERROR;
       }
       const upstreamModelError = modelErrorTracker.getUpstreamModelError(error);

@@ -2,7 +2,7 @@ import mongoose from 'mongoose';
 
 import {
   createSteelConversationOcrStateModel,
-  createSteelDelegateOcrRunModel,
+  createSteelOcrRunModel,
 } from '../models/steel';
 
 describe('Steel delegate OCR Mongo schemas', () => {
@@ -11,16 +11,10 @@ describe('Steel delegate OCR Mongo schemas', () => {
   });
 
   it('defines run statuses, required fields, and idempotency indexes', () => {
-    const Run = createSteelDelegateOcrRunModel(mongoose);
-    expect(Run.collection.name).toBe('steel_delegate_ocr_runs');
+    const Run = createSteelOcrRunModel(mongoose);
+    expect(Run.collection.name).toBe('steel_ocr_runs');
     expect(Run.schema.path('status').options.enum).toEqual([
-      'running',
-      'agent_running',
-      'finalizing',
-      'completed',
-      'agent_failed',
-      'save_failed',
-      'superseded',
+      'running', 'paused', 'interrupted', 'failed', 'completed', 'cancelled',
     ]);
     expect(Run.schema.path('toolParameters')).toBeDefined();
     expect(Run.schema.path('files')).toBeDefined();
@@ -39,7 +33,7 @@ describe('Steel delegate OCR Mongo schemas', () => {
   });
 
   it('validates delegate run status and conversation state fields', async () => {
-    const Run = createSteelDelegateOcrRunModel(mongoose);
+    const Run = createSteelOcrRunModel(mongoose);
     const State = createSteelConversationOcrStateModel(mongoose);
     const run = new Run({
       conversationId: 'conversation-schema',
@@ -49,7 +43,7 @@ describe('Steel delegate OCR Mongo schemas', () => {
       toolParameters: { prompt: 'extract' },
       files: [{ fileId: 'file-1', filename: 'drawing.pdf' }],
       status: 'bad-status',
-      currentStage: 'agent',
+      stage: 'agent',
       finalizationJournal: {},
     });
     await expect(run.validate()).rejects.toThrow(/`bad-status` is not a valid enum value/u);

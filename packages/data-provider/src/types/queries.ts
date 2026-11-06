@@ -310,3 +310,25 @@ export type GraphTokenResponse = {
   expires_in: number;
   scope: string;
 };
+
+export type SteelFlowStatus = 'running' | 'paused' | 'interrupted' | 'failed' | 'completed' | 'cancelled';
+export type SteelOcrKind = 'preflight' | 'delegate';
+
+export interface SteelOcrControlResult {
+  runId: string;
+  kind: SteelOcrKind;
+}
+
+export interface SteelOcrStatus extends SteelOcrControlResult {
+  status: SteelFlowStatus;
+  stage: string;
+  completedChunks: number;
+  totalChunks: number;
+  errorMessage: string | null;
+  latestRunId: string;
+}
+
+export interface SteelQuotationControlResult {
+  runId: string;
+  kind: 'quotation';
+}

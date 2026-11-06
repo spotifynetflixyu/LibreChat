@@ -344,7 +344,7 @@ const prepareEarlyOrderPublication = async () => {
     { ...scope, runId, operationId: normalizedRef.operationId, kind: 'main', sha256: normalizedRef.sha256, payload: order },
   ]);
   await State.updateOne(scope, { $set: { activeRun: {
-    runId, index: 1, status: 'aggregating', triggerMessageId: 'trigger', targetMessageId: responseId,
+    runId, index: 1, status: 'running', stage: 'aggregating', triggerMessageId: 'trigger', targetMessageId: responseId,
     leaseToken: 'lease-token', leaseExpiresAt: new Date(Date.now() + 60_000), acceptedAt: now, updatedAt: now,
     snapshotRef, ocrSelection: undefined, chunks: [{ index: 1, sourceRowCount: 1, status: 'completed', checkpointRef: chunkRef }],
     checkpointRefs: [chunkRef, normalizedRef],

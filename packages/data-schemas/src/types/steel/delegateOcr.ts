@@ -1,13 +1,6 @@
 import type { Document } from 'mongoose';
 
-export type SteelDelegateOcrStatus =
-  | 'running'
-  | 'agent_running'
-  | 'finalizing'
-  | 'completed'
-  | 'agent_failed'
-  | 'save_failed'
-  | 'superseded';
+export type SteelDelegateOcrStatus = 'running' | 'paused' | 'interrupted' | 'failed' | 'completed' | 'cancelled';
 
 export type SteelDelegateOcrStage =
   | 'claiming'
@@ -72,7 +65,15 @@ export interface SteelDelegateOcrSupersedeProvenance {
   at: Date;
 }
 
-export interface ISteelDelegateOcrRun extends Document {
+export interface ISteelOcrRun extends Document {
+  userId?: string;
+  tenantId?: string;
+  runId: string;
+  kind: 'preflight' | 'delegate';
+  completedChunks: number;
+  totalChunks: number;
+  errorMessage?: string;
+  awaitingExecution?: boolean;
   conversationId: string;
   delegateOcrIndex: number;
   claimToken: string;
@@ -82,7 +83,7 @@ export interface ISteelDelegateOcrRun extends Document {
   toolParameters: SteelDelegateOcrToolParameters;
   files: SteelDelegateOcrToolFile[];
   status: SteelDelegateOcrStatus;
-  currentStage: SteelDelegateOcrStage;
+  stage: string;
   executionLeaseToken?: string;
   executionLeaseExpiresAt?: Date;
   agentAttemptNumber: number;
@@ -90,6 +91,7 @@ export interface ISteelDelegateOcrRun extends Document {
   saveAttemptNumber: number;
   saveAttemptToken?: string;
   responseGenerationId?: string;
+  executionEpoch?: number;
   targetMessageId?: string;
   finalizedCandidate?: SteelDelegateOcrFinalizedCandidate;
   failureKind?: SteelDelegateOcrFailureKind;

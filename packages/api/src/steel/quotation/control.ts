@@ -21,6 +21,10 @@ export function registerQuotationExecution(scope: SteelQuotationScope, runId: st
   };
 }
 
-export function abortQuotationExecution(scope: SteelQuotationScope, runId: string): void {
-  executions.get(executionKey(scope, runId))?.abort(new Error('Quotation cancelled'));
+export function abortQuotationExecution(
+  scope: SteelQuotationScope,
+  runId: string,
+  reason?: 'user_pause',
+): void {
+  executions.get(executionKey(scope, runId))?.abort(reason ?? new Error('Quotation cancelled'));
 }

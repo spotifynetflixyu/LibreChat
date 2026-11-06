@@ -5,7 +5,7 @@ import { encodeSteelReviewDigest } from 'librechat-data-provider';
 import type { SteelReviewRow } from 'librechat-data-provider';
 import {
   createSteelConversationOcrStateModel,
-  createSteelDelegateOcrRunModel,
+  createSteelOcrRunModel,
   createSteelQuotationStateModel,
   createSteelReviewOutputModel,
 } from '~/models/steel';
@@ -1361,7 +1361,7 @@ describe('Steel review write methods', () => {
   it('classifies only an owned message and trusted OCR history as managed', async () => {
     const models = createModels(mongoose);
     const State = createSteelConversationOcrStateModel(mongoose);
-    const Run = createSteelDelegateOcrRunModel(mongoose);
+    const Run = createSteelOcrRunModel(mongoose);
     const conversationId = 'conversation-guard';
     const messageId = 'assistant-guard';
     await models.Conversation.create({
@@ -1410,7 +1410,7 @@ describe('Steel review write methods', () => {
       toolParameters: {},
       files: [],
       status: 'completed',
-      currentStage: 'completed',
+      stage: 'completed',
       responseGenerationId: 'generation-history',
       finalizedCandidate: {
         token: 'guard-history-token',

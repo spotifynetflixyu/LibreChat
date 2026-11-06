@@ -1,3 +1,4 @@
+const steelFlow = require('~/server/services/Steel/flow');
 const steelPostgres = require('~/server/services/Steel/postgres');
 const { logger, tenantStorage, createChatExpirationDate } = require('@librechat/data-schemas');
 const { v5: uuidv5 } = require('uuid');
@@ -3475,6 +3476,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
           }
         }
       } catch (error) {
+        await steelFlow.settleTurn({ req, conversationId, signal: job.abortController.signal, failed: true });
         // Any failure (user Stop, or a preflight/quota failure before the run is
         // even created) must cancel in-flight title generation and unblock its
         // waits: the title's `_waitForRun` would otherwise never resolve,
@@ -3627,6 +3629,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
     // Start generation and handle any unhandled errors
     void startGeneration()
       .catch(async (err) => {
+        await steelFlow.settleTurn({ req, conversationId, signal: job.abortController.signal, failed: true });
         logger.error(
           `[ResumableAgentController] Unhandled error in background generation: ${err.message}`,
         );
@@ -3665,6 +3668,7 @@ const ResumableAgentController = async (req, res, next, initializeClient, addTit
         }
       })
       .finally(async () => {
+        await steelFlow.settleTurn({ req, conversationId, signal: job.abortController.signal });
         await Promise.allSettled([immediateTitlePromise, trailingWritePromise].filter(Boolean));
         if (providerExecutionId) {
           await GenerationJobManager.markProviderExecutionDrained?.(

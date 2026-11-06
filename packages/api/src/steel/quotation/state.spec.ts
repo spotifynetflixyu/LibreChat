@@ -1,21 +1,22 @@
 import mongoose from 'mongoose';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
-
 import {
   createSteelQuotationArtifactModel,
   createSteelQuotationStateModel,
 } from '@librechat/data-schemas';
-
 import type {
   SteelQuotationActiveRun,
   SteelQuotationCustomerPreparation,
   SteelQuotationScope,
   SteelQuotationTicket,
 } from '@librechat/data-schemas';
+import type { Request, Response } from 'express';
 import {
   createSteelQuotationStateService as createService,
   MAX_QUOTATION_ARTIFACT_BYTES,
 } from './state';
+import { createQuotationRouteHandlers } from './routes';
+import { registerQuotationExecution } from './control';
 import { seedLegacyPublication } from './fixtures';
 
 let mongoServer: MongoMemoryReplSet;
@@ -101,6 +102,128 @@ afterAll(async () => {
 });
 
 describe('Steel quotation state service', () => {
+  it('pauses before abort and fences an old worker after a state-only resume', async () => {
+    const { run } = await prepareRun();
+    const lease = (await service.acquireLease({ scope, runId: run.runId }))!;
+    const execution = registerQuotationExecution(scope, run.runId);
+    const handlers = createQuotationRouteHandlers({ ownsConversation: async () => true });
+    const response = { status: jest.fn(), json: jest.fn() };
+    response.status.mockReturnValue(response);
+    const request = {
+      params: { conversationId: scope.conversationId, index: String(run.index) },
+      user: { id: scope.userId },
+    } as Partial<Request> as Request;
+    await handlers.pause(request, response as Partial<Response> as Response);
+    expect((await service.readActiveRun(scope))?.status).toBe('paused');
+    expect(execution.controller.signal.reason).toBe('user_pause');
+    expect(response.json).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        status: 'paused',
+        latestRunId: run.runId,
+        stage: 'queued',
+      }),
+    );
+    await expect(
+      service.interruptRun({ scope, runId: run.runId, leaseToken: lease.leaseToken }),
+    ).resolves.toBeUndefined();
+    await handlers.resume(request, response as Partial<Response> as Response);
+    expect(response.json).toHaveBeenLastCalledWith({ runId: run.runId, kind: 'quotation' });
+    const resumed = await service.readActiveRun(scope);
+    expect(resumed?.status).toBe('running');
+    expect(resumed?.leaseToken).toBeUndefined();
+    await expect(
+      service.transitionRun({
+        scope,
+        runId: run.runId,
+        leaseToken: lease.leaseToken,
+        status: 'running',
+        stage: 'finalizing',
+      }),
+    ).resolves.toBeUndefined();
+    execution.dispose();
+  });
+
+  it.each(['cancel', 'pause', 'resume'] as const)(
+    'rejects an expired index through the %s API',
+    async (action) => {
+      const { run } = await prepareRun();
+      const handlers = createQuotationRouteHandlers({ ownsConversation: async () => true });
+      const response = { status: jest.fn(), json: jest.fn() };
+      response.status.mockReturnValue(response);
+      await handlers[action](
+        {
+          params: { conversationId: scope.conversationId, index: String(run.index + 1) },
+          user: { id: scope.userId },
+        } as Partial<Request> as Request,
+        response as Partial<Response> as Response,
+      );
+      expect(response.status).toHaveBeenCalledWith(409);
+      expect(response.json).toHaveBeenCalledWith({ code: 'flow_expired' });
+      expect((await service.readActiveRun(scope))?.status).toBe('running');
+    },
+  );
+
+  it('distinguishes disconnect interruption, terminal failure, and pause by turn owner', async () => {
+    const { run } = await prepareRun();
+    const lease = (await service.acquireLease({ scope, runId: run.runId }))!;
+    await service.interruptRun({ scope, runId: run.runId, leaseToken: lease.leaseToken });
+    expect((await service.readActiveRun(scope))?.status).toBe('interrupted');
+    await service.failRun({ scope, runId: run.runId });
+    expect((await service.readActiveRun(scope))?.status).toBe('failed');
+    await service.resumeRun({ scope, runId: run.runId });
+    await expect(
+      service.pauseTurn({ scope, targetMessageId: 'different-turn' }),
+    ).resolves.toBeUndefined();
+    await service.pauseTurn({ scope, targetMessageId: run.targetMessageId });
+    expect((await service.readActiveRun(scope))?.status).toBe('paused');
+    await service.failRun({ scope, runId: run.runId });
+    expect((await service.readActiveRun(scope))?.status).toBe('paused');
+  });
+
+  it('binds resumed execution to its current response and ignores stop from an older turn', async () => {
+    const { run } = await prepareRun();
+    const lease = await service.acquireLease({
+      scope,
+      runId: run.runId,
+      executionResponseId: 'resumed-response',
+    });
+    expect(lease).toBeDefined();
+    await expect(
+      service.pauseTurn({ scope, targetMessageId: run.targetMessageId }),
+    ).resolves.toBeUndefined();
+    const paused = await service.pauseTurn({ scope, targetMessageId: 'resumed-response' });
+    expect(paused?.status).toBe('paused');
+  });
+
+  it('fences a regenerated turn even when it reuses the response id', async () => {
+    const { run } = await prepareRun();
+    await service.acquireLease({
+      scope,
+      runId: run.runId,
+      executionResponseId: run.targetMessageId,
+      executionEpoch: 200,
+    });
+    await expect(
+      service.pauseTurn({ scope, targetMessageId: run.targetMessageId, executionEpoch: 100 }),
+    ).resolves.toBeUndefined();
+    expect((await service.readActiveRun(scope))?.status).toBe('running');
+    await service.pauseTurn({ scope, targetMessageId: run.targetMessageId, executionEpoch: 200 });
+    expect((await service.readActiveRun(scope))?.status).toBe('paused');
+  });
+
+  it('waits for publication while completed and fails an unpublished run only at turn end', async () => {
+    const { run } = await prepareRun();
+    const State = createSteelQuotationStateModel(mongoose);
+    await State.updateOne(scope, { $set: { 'activeRun.status': 'completed' } });
+    await expect(service.resumeRun({ scope, runId: run.runId })).resolves.toBeUndefined();
+    await expect(
+      service.pauseTurn({ scope, targetMessageId: run.targetMessageId }),
+    ).resolves.toBeUndefined();
+    expect((await service.readActiveRun(scope))?.status).toBe('completed');
+    await service.settleTurn({ scope, targetMessageId: run.targetMessageId });
+    expect((await service.readActiveRun(scope))?.status).toBe('failed');
+  });
+
   it('fences order replacement and stores lookup evidence separately from canonical customer data', async () => {
     const order = await service.setOrder({ scope, fullMarkdown: '# order' });
     await expect(service.setOrder({ scope, fullMarkdown: '# stale', expectedOrderHash: 'wrong' })).rejects.toThrow('order changed');
@@ -723,7 +846,7 @@ describe('Steel quotation state service', () => {
       orderHash: ticket.orderHash, customerMarkdown: ticket.customerMarkdown,
       customerIdentity: ticket.customerIdentity, prompts, chunks: [{ index: 1, sourceRowCount: 1 }] });
     expect(next.runId).not.toBe(first.run.runId);
-    expect(next.status).toBe('queued');
+    expect(next.status).toBe('running');
     expect(next.chunks.every((chunk) => chunk.status !== 'completed')).toBe(true);
     expect(next.checkpointRefs).toHaveLength(0);
     await expect(service.acquireLease({ scope, runId: first.run.runId })).resolves.toBeUndefined();

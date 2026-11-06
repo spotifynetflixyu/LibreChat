@@ -10,7 +10,7 @@ export {
   createSteelMemoryCandidateModel,
   createSteelOcrPdfChunkArtifactModel,
   createSteelWorkingOrderMemoryModel,
-  createSteelDelegateOcrRunModel,
+  createSteelOcrRunModel,
   createSteelConversationOcrStateModel,
   createSteelOcrResponseAuditModel,
   createSteelQuotationStateModel,
@@ -130,3 +130,6 @@ export {
   dropSupersededPromptGroupIndexes,
   backfillMCPServerNormalizedNames,
 } from './migrations';
+
+export { createSteelOcrRunMethods } from './methods';
+export type { SteelOcrRunMethods, SteelOcrRunRecord, SteelOcrTurnInput, SteelOcrSettleInput, SteelOcrProgressInput, SteelOcrControlResult } from './methods';

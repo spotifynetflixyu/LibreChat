@@ -1,14 +1,14 @@
-import type { ConversationDeletionHooks, ConversationDeletionScope } from '~/methods/conversation';
-import { fenceSteelConversationWrites, readSteelConversationDeletionScope } from './lifecycle';
 import {
   createSteelReviewOutputModel,
-  createSteelDelegateOcrRunModel,
+  createSteelOcrRunModel,
   createSteelQuotationStateModel,
   createSteelOcrResponseAuditModel,
   createSteelQuotationArtifactModel,
   createSteelWorkingOrderMemoryModel,
   createSteelConversationOcrStateModel,
 } from '.';
+import type { ConversationDeletionHooks, ConversationDeletionScope } from '~/methods/conversation';
+import { fenceSteelConversationWrites, readSteelConversationDeletionScope } from './lifecycle';
 
 type Mongoose = typeof import('mongoose');
 
@@ -49,7 +49,7 @@ async function deleteSteelConversationState(
       createSteelReviewOutputModel(mongoose).deleteMany(ownerFilter),
       createSteelOcrResponseAuditModel(mongoose).deleteMany(ownerFilter),
       createSteelConversationOcrStateModel(mongoose).deleteMany(fencedFilter),
-      createSteelDelegateOcrRunModel(mongoose).deleteMany(fencedFilter),
+      createSteelOcrRunModel(mongoose).deleteMany(fencedFilter),
       createSteelWorkingOrderMemoryModel(mongoose).deleteMany(fencedFilter),
     ]);
 

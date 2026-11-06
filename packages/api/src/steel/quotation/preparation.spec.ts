@@ -286,7 +286,7 @@ it('rejects customer lookup without saved OCR', async () => {
   mockRead.mockResolvedValue({ pendingMessages: [] });
   await expect(bindQuotationCustomerResult({ expectedOrderHash: 'order-hash', scope, messageId: 'confirm', responseId: 'response-1', result: success([]) })).rejects.toThrow('saved order');
 });
-it.each(['queued', 'running', 'aggregating', 'finalizing', 'interrupted'])('resumes the existing unfinished %s quotation without preparing a new turn', async (status) => {
+it.each(['running', 'paused', 'failed', 'interrupted'])('resumes the existing unfinished %s quotation without preparing a new turn', async (status) => {
   const activeRun = { runId: 'r1', status, triggerMessageId: 'old' };
   mockRead.mockResolvedValue({
     currentOrder: { markdown: order, sha256: 'order-hash' },

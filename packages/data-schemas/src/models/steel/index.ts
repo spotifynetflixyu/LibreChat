@@ -4,7 +4,7 @@ import {
   steelMemoryCandidateSchema,
   steelOcrPdfChunkArtifactSchema,
   steelWorkingOrderMemorySchema,
-  steelDelegateOcrRunSchema,
+  steelOcrRunSchema,
   steelConversationOcrStateSchema,
   steelOcrResponseAuditSchema,
   steelQuotationStateSchema,
@@ -46,14 +46,14 @@ export function createSteelWorkingOrderMemoryModel(
   ), true);
 }
 
-export function createSteelDelegateOcrRunModel(
+export function createSteelOcrRunModel(
   mongoose: Mongoose,
-): Model<t.ISteelDelegateOcrRun> {
+): Model<t.ISteelOcrRun> {
   return guardSteelConversationModel(mongoose, createSteelModel(
     mongoose,
-    'SteelDelegateOcrRun',
-    steelDelegateOcrRunSchema,
-    'steel_delegate_ocr_runs',
+    'SteelOcrRun',
+    steelOcrRunSchema,
+    'steel_ocr_runs',
   ), true);
 }
 
@@ -133,7 +133,7 @@ export function createSteelMemoryCandidateModel(
 
 export interface SteelModels {
   SteelWorkingOrderMemory: ReturnType<typeof createSteelWorkingOrderMemoryModel>;
-  SteelDelegateOcrRun: ReturnType<typeof createSteelDelegateOcrRunModel>;
+  SteelOcrRun: ReturnType<typeof createSteelOcrRunModel>;
   SteelConversationOcrState: ReturnType<typeof createSteelConversationOcrStateModel>;
   SteelOcrResponseAudit: ReturnType<typeof createSteelOcrResponseAuditModel>;
   SteelQuotationState: ReturnType<typeof createSteelQuotationStateModel>;
@@ -147,7 +147,7 @@ export interface SteelModels {
 export function createSteelModels(mongoose: Mongoose): SteelModels {
   return {
     SteelWorkingOrderMemory: createSteelWorkingOrderMemoryModel(mongoose),
-    SteelDelegateOcrRun: createSteelDelegateOcrRunModel(mongoose),
+    SteelOcrRun: createSteelOcrRunModel(mongoose),
     SteelConversationOcrState: createSteelConversationOcrStateModel(mongoose),
     SteelOcrResponseAudit: createSteelOcrResponseAuditModel(mongoose),
     SteelQuotationState: createSteelQuotationStateModel(mongoose),

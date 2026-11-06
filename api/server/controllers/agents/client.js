@@ -1,3 +1,4 @@
+const steelFlow = require('~/server/services/Steel/flow');
 const steelPostgres = require('~/server/services/Steel/postgres');
 require('events').EventEmitter.defaultMaxListeners = 100;
 const { logger, MAX_AGENT_EVENT_ACTOR_ENCODING_LENGTH } = require('@librechat/data-schemas');
@@ -4673,12 +4674,15 @@ class AgentClient extends BaseClient {
         appConfig?.messageFilter?.pii,
       ),
     });
+    let disposeSteelFlow;
     const balanceConfig = getBalanceConfig(appConfig);
     const transactionsConfig = getTransactionsConfig(appConfig);
     try {
       if (!abortController) {
         abortController = new AbortController();
       }
+      disposeSteelFlow = steelFlow.registerTurn({ req: this.options.req,
+        conversationId: this.conversationId, controller: abortController });
 
       /** Scheduled approvals are unattended by definition. Their pending action,
        * replay context, and resolution fence must be shared across workers; their
@@ -5483,6 +5487,8 @@ class AgentClient extends BaseClient {
       this.applyHideSequentialOutputsFilter();
       this.rebaseActivityPhaseBounds(contentBeforeReshape);
     } catch (err) {
+      await steelFlow.settleTurn({ req: this.options.req, conversationId: this.conversationId,
+        signal: abortController.signal, failed: true });
       if (
         err?.code === 'SCHEDULED_HITL_REQUIRES_SHARED_STORE' ||
         err?.code === 'SCHEDULED_HITL_REQUIRES_DURABLE_CHECKPOINT' ||
@@ -5563,6 +5569,7 @@ class AgentClient extends BaseClient {
         });
       }
     } finally {
+      disposeSteelFlow?.();
       this.chatCompletionAborted = abortController?.signal?.aborted === true;
       /** An aborted/erroring run can still have completed compaction before
        * the failure; retain that model-visible state for actor reconciliation. */

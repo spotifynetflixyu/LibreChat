@@ -1,14 +1,10 @@
 import mongoose from 'mongoose';
 import { FileSources } from 'librechat-data-provider';
 import { logger, redactMessage } from '@librechat/data-schemas';
+import { createSteelOcrRunMethods } from '@librechat/data-schemas';
+import type { AllMethods, SteelOcrRunMethods } from '@librechat/data-schemas';
 import type { Readable } from 'node:stream';
 import type { Response } from 'express';
-import type { AllMethods } from '@librechat/data-schemas';
-import type {
-  OcrPreprocessingFile,
-  OcrPreprocessingFailure,
-  RunOcrPreprocessingBatchFileInput,
-} from './preprocess';
 import type {
   SteelPaddleOcrServer,
   SteelPaddleOcrRequest,
@@ -17,17 +13,22 @@ import type {
   CreateSteelPaddleOcrChunkRunnerInput,
 } from './paddle';
 import type {
+  OcrPreprocessingFile,
+  OcrPreprocessingFailure,
+  RunOcrPreprocessingBatchFileInput,
+} from './preprocess';
+import type {
   SteelOcrFile,
   SteelOcrPreprocessingRules,
   SteelOcrPreprocessingSourceFile,
 } from './files';
-import type { SteelOcrStoredFileRecord } from './storage';
-import type { SteelDelegateOcrStateService } from './state';
 import type { SteelRepositoryClient } from '../repositories/types';
 import type { SteelOcrFileReference } from '../memory/service';
-import type { SteelPaddleOcrAgent } from './paddle';
 import type { SteelNativeHistory } from '../native/events';
+import type { SteelOcrStoredFileRecord } from './storage';
 import type { SteelOcrOrganizerAgent } from './agent';
+import type { SteelOcrStateService } from './state';
+import type { SteelPaddleOcrAgent } from './paddle';
 import type { OcrPageRange } from './chunks';
 import {
   isHttpUrl,
@@ -43,6 +44,11 @@ import {
   buildSteelPaddleOcrPreflightEventEnvelopes,
 } from '../native/events';
 import {
+  getSteelOcrFileDescriptor,
+  ocrPreprocessingPipelineVersion,
+  createMongooseSteelWorkingOrderMemoryWriter,
+} from '../memory/service';
+import {
   createSteelOcrPdfChunkArtifactStore,
   createSteelOcrOriginalFileArtifactStore,
 } from './storage';
@@ -52,30 +58,27 @@ import {
   createSteelPaddleOcrChunkRunner,
 } from './paddle';
 import {
-  getSteelOcrFileDescriptor,
-  ocrPreprocessingPipelineVersion,
-  createMongooseSteelWorkingOrderMemoryWriter,
-} from '../memory/service';
-import { buildPdfPageChunks, getPdfPageCount, normalizeOcrPageChunks } from './chunks';
-import {
   createMongooseOcrPdfChunkArtifactRepository,
   resolveCanonicalOcrPageChunks,
 } from './artifacts';
-import { getSteelRequestConversationId } from '../native/execute';
-import { groupSteelOcrMissingPageRangesByFileKey } from './failures';
-import { resolveOcrPreprocessingChunkSizePages } from './config';
-import { normalizeOcrOrganizerFileKey } from './organizer';
-import { createSteelDelegateOcrStateService } from './state';
-import { emitSteelNativeEvents } from '../native/stream';
-import { resolveSteelOcrPreprocessingRules } from './rules';
+import { buildPdfPageChunks, getPdfPageCount, normalizeOcrPageChunks } from './chunks';
 import { isPaddleOcrDiagnosticCode, PADDLE_OCR_MCP_SERVER_NAME } from './diagnostics';
+import { runWithSteelOcrExecution, getSteelOcrFailureStatus } from './control';
+import { groupSteelOcrMissingPageRangesByFileKey } from './failures';
+import { getSteelRequestConversationId } from '../native/execute';
+import { resolveOcrPreprocessingChunkSizePages } from './config';
 import { runOcrPreprocessingBatchPipeline } from './preprocess';
+import { resolveSteelOcrPreprocessingRules } from './rules';
+import { normalizeOcrOrganizerFileKey } from './organizer';
+import { emitSteelNativeEvents } from '../native/stream';
+import { createSteelOcrStateService } from './state';
 import { createSteelOcrChunkError } from './retry';
 import { createSteelOcrOrganizer } from './agent';
 import { buildMCPToolKey } from '~/mcp/utils';
 
 /** The request fields PaddleOCR preflight reads; its tool cards and activity land on the history. */
 export interface SteelOcrPreflightRequest extends SteelPaddleOcrRequest {
+  _resumableJobCreatedAt?: number;
   body?: { conversationId?: string };
   steelNativeContext?: {
     conversationId?: string;
@@ -145,11 +148,12 @@ export interface SteelOcrServiceDependencies {
   };
   server: SteelPaddleOcrServer;
   stateService?: SteelOcrSourceMappingStore;
+  runStore?: Pick<SteelOcrRunMethods, 'createPreflightRun' | 'updatePreflightRun' | 'settleTurn'>;
 }
 
 /** The conversation OCR state preflight reads and the source codes it allocates. */
 export type SteelOcrSourceMappingStore = Pick<
-  SteelDelegateOcrStateService,
+  SteelOcrStateService,
   'readConversationOcrState' | 'allocateDelegateSourceMapping' | 'readSourceMappings'
 >;
 
@@ -478,7 +482,7 @@ async function readStreamBytes(stream: Readable): Promise<Buffer> {
  */
 export function createSteelOcrService(deps: SteelOcrServiceDependencies): SteelOcrService {
   const getStateService = (): SteelOcrSourceMappingStore =>
-    deps.stateService ?? createSteelDelegateOcrStateService(mongoose);
+    deps.stateService ?? createSteelOcrStateService(mongoose);
   const resolvePreprocessingRules = () => resolveSteelOcrPreprocessingRules(deps.client);
   const createPaddleOcrChunkRunner: SteelOcrService['createPaddleOcrChunkRunner'] = (input) =>
     createSteelPaddleOcrChunkRunner({ ...input, server: deps.server });
@@ -530,7 +534,7 @@ export function createSteelOcrService(deps: SteelOcrServiceDependencies): SteelO
     return readStreamBytes(await getDownloadStream(req, filePath));
   }
 
-  async function runSteelPaddleOcrPreflight({
+  async function runPreflight({
     req,
     res,
     signal,
@@ -538,7 +542,8 @@ export function createSteelOcrService(deps: SteelOcrServiceDependencies): SteelO
     streamId = null,
     userMCPAuthMap,
     requestScopedConnections,
-  }: RunSteelPaddleOcrPreflightInput): Promise<SteelPaddleOcrPreflightResult> {
+    track,
+  }: RunSteelPaddleOcrPreflightInput & { track?: (file: Pick<OcrPreprocessingFile, 'ocrFileKey' | 'filename'>, progress: Parameters<typeof buildSteelOcrPreprocessingEventEnvelopes>[0]['progress']) => Promise<void> }): Promise<SteelPaddleOcrPreflightResult> {
     const nativeContext = req.steelNativeContext;
     if (nativeContext) {
       ensureSteelNativeHistory(nativeContext);
@@ -558,8 +563,8 @@ export function createSteelOcrService(deps: SteelOcrServiceDependencies): SteelO
     const emitPreprocessing = (
       file: Pick<OcrPreprocessingFile, 'ocrFileKey' | 'filename'>,
       progress: Parameters<typeof buildSteelOcrPreprocessingEventEnvelopes>[0]['progress'],
-    ) =>
-      emitSteelNativeEvents({
+    ) => {
+      const emit = () => emitSteelNativeEvents({
         req,
         res,
         streamId,
@@ -570,6 +575,8 @@ export function createSteelOcrService(deps: SteelOcrServiceDependencies): SteelO
           progress,
         }),
       });
+      return track ? track(file, progress).then(emit) : emit();
+    };
     const finish = async (
       result: Omit<SteelPaddleOcrPreflightResult, 'ocrTurnActive' | 'currentPaddleOcrResults'>,
     ): Promise<SteelPaddleOcrPreflightResult> => {
@@ -915,6 +922,51 @@ export function createSteelOcrService(deps: SteelOcrServiceDependencies): SteelO
       ...(suggestedOcrResultColumns.length > 0 ? { suggestedOcrResultColumns } : {}),
       ...(finalStatuses.length > 0 ? { currentPaddleOcrStatuses: finalStatuses } : {}),
       ...(currentOcrMarkdownResults.length > 0 ? { currentOcrMarkdownResults } : {}),
+    });
+  }
+
+  async function runSteelPaddleOcrPreflight(input: RunSteelPaddleOcrPreflightInput): Promise<SteelPaddleOcrPreflightResult> {
+    const context = input.req.steelNativeContext;
+    const conversationId = getSteelRequestConversationId(input.req);
+    const userId = input.req.user?.id;
+    const responseGenerationId = context?.requestId;
+    if (!conversationId || !userId || !responseGenerationId || context?.assistantTurnIndex === undefined ||
+      !context.currentTurnFiles?.some((file) => getSteelOcrFileDescriptor(file))) return runPreflight(input);
+    const scope = { userId, conversationId, tenantId: input.req.user?.tenantId };
+    const runs = deps.runStore ?? createSteelOcrRunMethods(mongoose);
+    const executionEpoch = input.req._resumableJobCreatedAt;
+    const run = await runs.createPreflightRun({ scope, responseGenerationId, executionEpoch, triggeringMessageId: responseGenerationId });
+    const progressByFile = new Map<string, { total: number; completed: Set<number> }>();
+    const track = async (file: Pick<OcrPreprocessingFile, 'ocrFileKey' | 'filename'>,
+      progress: Parameters<typeof buildSteelOcrPreprocessingEventEnvelopes>[0]['progress']) => {
+      const entry = progressByFile.get(file.ocrFileKey) ?? { total: 0, completed: new Set<number>() };
+      if ('chunkCount' in progress && typeof progress.chunkCount === 'number') entry.total = progress.chunkCount;
+      if ((progress.stage === 'organizer_chunk_saved' || progress.stage === 'organizer_chunk_loaded') &&
+        'chunkIndex' in progress && typeof progress.chunkIndex === 'number') entry.completed.add(progress.chunkIndex);
+      if (progress.stage === 'processing_with_merged_markdown') {
+        entry.completed = new Set(Array.from({ length: progress.chunkCount }, (_, index) => index + 1));
+      }
+      progressByFile.set(file.ocrFileKey, entry);
+      let totalChunks = 0;
+      let completedChunks = 0;
+      for (const item of progressByFile.values()) {
+        totalChunks += item.total;
+        completedChunks += item.completed.size;
+      }
+      const updated = await runs.updatePreflightRun({ scope, runId: run.runId, stage: progress.stage,
+        totalChunks: Math.max(totalChunks, completedChunks), completedChunks });
+      if (!updated) throw new DOMException('OCR execution is no longer active', 'AbortError');
+    };
+    return runWithSteelOcrExecution({ scope, responseGenerationId, executionEpoch, signal: input.signal }, async (signal) => {
+      try {
+        const result = await runPreflight({ ...input, signal, track });
+        await runs.updatePreflightRun({ scope, runId: run.runId, stage: 'agent' });
+        return result;
+      } catch (error) {
+        await runs.settleTurn({ scope, responseGenerationId, executionEpoch,
+          status: getSteelOcrFailureStatus(signal) });
+        throw error;
+      }
     });
   }
 

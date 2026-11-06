@@ -29,7 +29,7 @@ import type { SteelReviewMetadata } from 'librechat-data-provider';
 import type {
   IMessage,
   ISteelConversationOcrState,
-  ISteelDelegateOcrRun,
+  ISteelOcrRun,
   ISteelQuotationState,
   ISteelReviewOutput,
   SteelReviewReadInput,
@@ -46,7 +46,7 @@ import type {
 import type { SteelReviewAuthorizedFile } from './steelSourceAuthorization';
 import {
   createSteelConversationOcrStateModel,
-  createSteelDelegateOcrRunModel,
+  createSteelOcrRunModel,
   createSteelQuotationArtifactModel,
   createSteelQuotationStateModel,
   createSteelReviewOutputModel,
@@ -1062,7 +1062,7 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
   const Message = createMessageModel(mongoose);
   const Conversation = createConversationModel(mongoose);
   const OcrState = createSteelConversationOcrStateModel(mongoose);
-  const OcrRun = createSteelDelegateOcrRunModel(mongoose);
+  const OcrRun = createSteelOcrRunModel(mongoose);
   const QuotationState = createSteelQuotationStateModel(mongoose);
   const QuotationArtifact = createSteelQuotationArtifactModel(mongoose);
   const ReviewOutput = createSteelReviewOutputModel(mongoose);
@@ -1293,7 +1293,7 @@ export function createSteelReviewReadMethods(mongoose: Mongoose): SteelReviewRea
                 'finalizedCandidate.targetMessageId': input.messageId,
               })
                 .sort({ updatedAt: -1 })
-                .lean<ISteelDelegateOcrRun>(),
+                .lean<ISteelOcrRun>(),
             ])
             : Promise.resolve([undefined, undefined] as const),
         ]);
@@ -1813,7 +1813,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
   const Message = createMessageModel(mongoose);
   const Conversation = createConversationModel(mongoose);
   const OcrState = createSteelConversationOcrStateModel(mongoose);
-  const OcrRun = createSteelDelegateOcrRunModel(mongoose);
+  const OcrRun = createSteelOcrRunModel(mongoose);
   const QuotationState = createSteelQuotationStateModel(mongoose);
   const ReviewOutput = createSteelReviewOutputModel(mongoose);
   const authorizeFiles = createSteelReviewSourceAuthorization(mongoose);
@@ -1945,7 +1945,7 @@ export function createSteelReviewWriteMethods(mongoose: Mongoose): SteelReviewWr
         })
           .limit(2)
           .select({ finalizedCandidate: 1, responseGenerationId: 1 })
-          .lean<Pick<ISteelDelegateOcrRun, 'finalizedCandidate' | 'responseGenerationId'>[]>(),
+          .lean<Pick<ISteelOcrRun, 'finalizedCandidate' | 'responseGenerationId'>[]>(),
       ]);
       const historicalOcr = historicalRuns.some((run) => {
         const candidate = run.finalizedCandidate;

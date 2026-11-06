@@ -168,6 +168,64 @@ describe('GenerationJobManager startup telemetry', () => {
     await manager.destroy();
   });
 
+  it('awaits durable user pause before signalling the provider', async () => {
+    const manager = createManager();
+    const job = await manager.createJob('steel-pause-order', 'user-1');
+    let paused = false;
+    let observedPause = false;
+    job.abortController.signal.addEventListener('abort', () => {
+      observedPause = paused;
+    });
+    try {
+      const result = await manager.abortJob('steel-pause-order', {
+        expectedCreatedAt: job.createdAt,
+        reason: 'user_pause',
+        beforeAbort: async (claimed) => {
+          expect(claimed.createdAt).toBe(job.createdAt);
+          expect(job.abortController.signal.aborted).toBe(false);
+          await Promise.resolve();
+          paused = true;
+        },
+      });
+      expect(result.success).toBe(true);
+      expect(observedPause).toBe(true);
+      expect(job.abortController.signal.reason).toBe('user_pause');
+    } finally {
+      await manager.destroy();
+    }
+  });
+
+  it('still aborts and publishes reconciliation when durable pause fails', async () => {
+    const manager = createManager();
+    const job = await manager.createJob('steel-pause-outage', 'user-1');
+    try {
+      const result = await manager.abortJob('steel-pause-outage', {
+        expectedCreatedAt: job.createdAt, reason: 'user_pause',
+        beforeAbort: async () => { throw new Error('Database unavailable'); },
+      });
+      expect(job.abortController.signal.aborted).toBe(true);
+      expect(result.persistenceFailed).toBe(true);
+    } finally {
+      await manager.destroy();
+    }
+  });
+
+  it('does not pause a replacement when a stop names an older generation', async () => {
+    const manager = createManager();
+    const job = await manager.createJob('steel-stale-pause', 'user-1');
+    const beforeAbort = jest.fn();
+    try {
+      const result = await manager.abortJob('steel-stale-pause', {
+        expectedCreatedAt: job.createdAt - 1, reason: 'user_pause', beforeAbort,
+      });
+      expect(result.success).toBe(false);
+      expect(beforeAbort).not.toHaveBeenCalled();
+      expect(job.abortController.signal.aborted).toBe(false);
+    } finally {
+      await manager.destroy();
+    }
+  });
+
   it('retains a terminal generation until its exact provider segment has drained', async () => {
     const manager = createManager();
     const streamId = 'stream-provider-drain-retention';

@@ -43,19 +43,12 @@ export const MAX_QUOTATION_CHUNKS = 512;
 export const DEFAULT_QUOTATION_LEASE_MS = 60_000;
 
 const unfinishedStatuses: readonly SteelQuotationRunStatus[] = [
-  'queued',
   'running',
-  'aggregating',
-  'finalizing',
+  'paused',
   'interrupted',
+  'failed',
 ];
-const leaseStatuses: readonly SteelQuotationRunStatus[] = [
-  'queued',
-  'running',
-  'aggregating',
-  'finalizing',
-  'interrupted',
-];
+const leaseStatuses: readonly SteelQuotationRunStatus[] = ['running'];
 
 export interface SteelQuotationOrderInput {
   scope: SteelQuotationScope;
@@ -161,6 +154,8 @@ export interface SteelQuotationCheckpointInput {
 }
 
 export interface SteelQuotationAcquireLeaseInput {
+  executionResponseId?: string;
+  executionEpoch?: number;
   scope: SteelQuotationScope;
   runId: string;
   leaseToken?: string;
@@ -182,11 +177,30 @@ export interface SteelQuotationRunInput {
 }
 
 export interface SteelQuotationTransitionRunInput extends SteelQuotationRunInput {
-  status: Exclude<SteelQuotationRunStatus, 'completed' | 'cancelled' | 'interrupted'>;
+  status: 'running';
+  stage?: SteelQuotationActiveRun['stage'];
 }
 
 export interface SteelQuotationInterruptInput extends SteelQuotationRunInput {
   interruption?: SteelQuotationActiveRun['interruption'];
+  status?: 'paused' | 'interrupted' | 'failed';
+  errorMessage?: string;
+}
+
+export interface SteelQuotationControlInput {
+  executionEpoch?: number;
+  executionResponseId?: string;
+  scope: SteelQuotationScope;
+  runId: string;
+  now?: Date;
+}
+
+export interface SteelQuotationTurnInput {
+  executionEpoch?: number;
+  status?: 'paused' | 'interrupted' | 'failed' | 'completed';
+  scope: SteelQuotationScope;
+  targetMessageId?: string;
+  triggerMessageId?: string;
 }
 
 export interface SteelQuotationDeleteResult {
@@ -234,6 +248,11 @@ export interface SteelQuotationStateService {
     input: SteelQuotationTransitionRunInput,
   ): Promise<SteelQuotationActiveRun | undefined>;
   interruptRun(input: SteelQuotationInterruptInput): Promise<SteelQuotationActiveRun | undefined>;
+  pauseRun(input: SteelQuotationControlInput): Promise<SteelQuotationActiveRun | undefined>;
+  resumeRun(input: SteelQuotationControlInput): Promise<SteelQuotationActiveRun | undefined>;
+  failRun(input: SteelQuotationControlInput): Promise<SteelQuotationActiveRun | undefined>;
+  settleTurn(input: SteelQuotationTurnInput): Promise<SteelQuotationActiveRun | undefined>;
+  pauseTurn(input: SteelQuotationTurnInput): Promise<SteelQuotationActiveRun | undefined>;
   cancelRun(input: Omit<SteelQuotationRunInput, 'leaseToken'> & { leaseToken?: string }): Promise<
     SteelQuotationActiveRun | undefined
   >;
@@ -1237,7 +1256,7 @@ export function createSteelQuotationStateService(
       {
         ...stateFilter(input.scope),
         'activeRun.runId': input.runId,
-        'activeRun.status': { $in: leaseStatuses },
+        'activeRun.status': { $in: unfinishedStatuses },
         'activeRun.acceptedAt': { $gt: new Date(now.getTime() - STEEL_QUOTATION_INPUT_TTL_MS) },
         $or: [
           { 'activeRun.leaseToken': { $exists: false } },
@@ -1247,6 +1266,13 @@ export function createSteelQuotationStateService(
       },
       {
         $set: {
+          'activeRun.status': 'running',
+          ...(input.executionEpoch !== undefined && {
+            'activeRun.executionEpoch': input.executionEpoch,
+          }),
+          ...(input.executionResponseId && {
+            'activeRun.executionResponseId': input.executionResponseId,
+          }),
           'activeRun.leaseToken': leaseToken,
           'activeRun.leaseExpiresAt': expiresAt,
           'activeRun.updatedAt': now,
@@ -1331,7 +1357,14 @@ export function createSteelQuotationStateService(
         'activeRun.leaseExpiresAt': { $gt: now },
         'activeRun.acceptedAt': { $gt: new Date(now.getTime() - STEEL_QUOTATION_INPUT_TTL_MS) },
       },
-      { $set: { 'activeRun.status': input.status, 'activeRun.updatedAt': now, updatedAt: now } },
+      {
+        $set: {
+          'activeRun.status': input.status,
+          ...(input.stage && { 'activeRun.stage': input.stage }),
+          'activeRun.updatedAt': now,
+          updatedAt: now,
+        },
+      },
       { new: true },
     ).lean<ISteelQuotationState>();
     return getActiveRun(updated, input.runId);
@@ -1362,7 +1395,10 @@ export function createSteelQuotationStateService(
       },
       {
         $set: {
-          'activeRun.status': 'interrupted', 'activeRun.updatedAt': now, updatedAt: now,
+          'activeRun.status': input.status ?? 'interrupted',
+          'activeRun.updatedAt': now,
+          updatedAt: now,
+          ...(input.errorMessage && { 'activeRun.errorMessage': input.errorMessage }),
           ...(input.interruption && { 'activeRun.interruption': input.interruption }),
         },
         $unset: {
@@ -1373,6 +1409,116 @@ export function createSteelQuotationStateService(
       { new: true },
     ).lean<ISteelQuotationState>();
     return getActiveRun(updated, input.runId);
+  }
+
+  async function controlRun(
+    input: SteelQuotationControlInput,
+    status: 'paused' | 'running' | 'interrupted' | 'failed',
+    allowed: readonly SteelQuotationRunStatus[],
+    expectedRun?: SteelQuotationActiveRun,
+  ): Promise<SteelQuotationActiveRun | undefined> {
+    validateScope(input.scope);
+    const now = nowOrDefault(input.now);
+    const updated = await State.findOneAndUpdate(
+      {
+        ...stateFilter(input.scope),
+        'activeRun.runId': input.runId,
+        'activeRun.status': { $in: allowed },
+        ...(input.executionEpoch !== undefined && {
+          'activeRun.executionEpoch': input.executionEpoch,
+        }),
+        ...(input.executionResponseId && {
+          'activeRun.executionResponseId': input.executionResponseId,
+        }),
+        ...(expectedRun && {
+          'activeRun.executionResponseId': expectedRun.executionResponseId ?? null,
+          'activeRun.executionEpoch': expectedRun.executionEpoch ?? null,
+          'activeRun.leaseToken': expectedRun.leaseToken ?? null,
+        }),
+      },
+      {
+        $set: {
+          'activeRun.status': status,
+          'activeRun.updatedAt': now,
+          updatedAt: now,
+          ...(status === 'failed' && {
+            'activeRun.errorMessage': 'Quotation did not finish publishing.',
+          }),
+        },
+        $unset: {
+          'activeRun.leaseToken': 1,
+          'activeRun.leaseExpiresAt': 1,
+          ...(status === 'running' && {
+            'activeRun.errorMessage': 1,
+            'activeRun.executionResponseId': 1,
+            'activeRun.executionEpoch': 1,
+          }),
+        },
+      },
+      { new: true },
+    ).lean<ISteelQuotationState>();
+    return getActiveRun(updated, input.runId);
+  }
+
+  function pauseRun(
+    input: SteelQuotationControlInput,
+  ): Promise<SteelQuotationActiveRun | undefined> {
+    return controlRun(input, 'paused', ['running']);
+  }
+
+  function resumeRun(
+    input: SteelQuotationControlInput,
+  ): Promise<SteelQuotationActiveRun | undefined> {
+    return controlRun(input, 'running', ['paused', 'interrupted', 'failed']);
+  }
+
+  function failRun(
+    input: SteelQuotationControlInput,
+  ): Promise<SteelQuotationActiveRun | undefined> {
+    return controlRun(input, 'failed', ['running', 'interrupted']);
+  }
+
+  async function turnRun(
+    input: SteelQuotationTurnInput,
+  ): Promise<SteelQuotationActiveRun | undefined> {
+    if (!input.targetMessageId && !input.triggerMessageId) return undefined;
+    const run = await readActiveRun(input.scope);
+    if (
+      !run ||
+      (input.targetMessageId &&
+        (run.executionResponseId ?? run.targetMessageId) !== input.targetMessageId) ||
+      (input.triggerMessageId && run.triggerMessageId !== input.triggerMessageId) ||
+      (input.executionEpoch !== undefined && run.executionEpoch !== input.executionEpoch)
+    ) {
+      return undefined;
+    }
+    return run;
+  }
+
+  async function pauseTurn(
+    input: SteelQuotationTurnInput,
+  ): Promise<SteelQuotationActiveRun | undefined> {
+    const run = await turnRun(input);
+    if (!run) return undefined;
+    return controlRun({ scope: input.scope, runId: run.runId }, 'paused', ['running', 'interrupted'], run);
+  }
+
+  async function settleTurn(
+    input: SteelQuotationTurnInput,
+  ): Promise<SteelQuotationActiveRun | undefined> {
+    const run = await turnRun(input);
+    if (
+      !run ||
+      !['running', 'completed'].includes(run.status) ||
+      (run.status === 'completed' && (await inputs.isSteelQuotationRunPublished(input.scope, run)))
+    ) {
+      return undefined;
+    }
+    const status =
+      run.status === 'completed' || input.status === 'completed'
+        ? 'failed'
+        : (input.status ?? 'failed');
+    return controlRun({ scope: input.scope, runId: run.runId }, status, [run.status], run);
   }
 
   async function cancelRun(
@@ -1538,6 +1684,11 @@ export function createSteelQuotationStateService(
     releaseLease,
     transitionRun,
     interruptRun,
+    pauseRun,
+    resumeRun,
+    failRun,
+    pauseTurn,
+    settleTurn,
     cancelRun,
     deleteConversation,
   };

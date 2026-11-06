@@ -691,7 +691,7 @@ describe('Steel native event mapping', () => {
       conversationId: 'conversation_1',
       index: 1,
       stage: 'aggregation',
-      status: 'aggregating',
+      status: 'running',
       completedChunks: 2,
       totalChunks: 2,
     });

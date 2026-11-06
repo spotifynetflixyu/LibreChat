@@ -17,7 +17,7 @@ import type {
 import type { OcrPreprocessingPageChunk } from './chunks';
 import type { SteelOcrFile } from './files';
 import { GenerationJobManager } from '~/stream/GenerationJobManager';
-import { createSteelDelegateOcrStateService } from './state';
+import { createSteelOcrStateService } from './state';
 import { createSteelOcrService } from './preflight';
 
 const mockPipeline = jest.fn();
@@ -174,12 +174,21 @@ let useMemorySourceMappings = false;
 function createService() {
   return createSteelOcrService({
     db: { getFiles },
+    ...(useMemorySourceMappings ? { runStore: {
+      createPreflightRun: async ({ scope, responseGenerationId, triggeringMessageId }) => ({
+        runId: responseGenerationId, kind: 'preflight' as const, status: 'running' as const, stage: 'preflight',
+        conversationId: scope.conversationId, responseGenerationId, triggeringMessageId,
+        completedChunks: 0, totalChunks: 0,
+      }),
+      updatePreflightRun: async () => true,
+      settleTurn: async () => undefined,
+    } } : {}),
     client: { query: jest.fn() },
     getStrategy: () => ({ getDownloadStream }),
     server: { loadTools, disconnectAppConnection, resolveConfigServers, reinitServer },
     stateService: useMemorySourceMappings
       ? createMemorySourceMappings()
-      : createSteelDelegateOcrStateService(mongoose),
+      : createSteelOcrStateService(mongoose),
   });
 }
 
@@ -452,10 +461,18 @@ describe('runSteelPaddleOcrPreflight orchestration', () => {
         file: input.files[0].file,
         progress: { stage: 'paddleocr_chunk_loaded', chunkIndex: 1, chunkCount: 1 },
       });
+      await input.onProgress?.({
+        file: input.files[0].file,
+        progress: { stage: 'organizer_chunk_saved', chunkIndex: 1, chunkCount: 1 },
+      });
       return mockBatchResult(input);
     });
 
     const result = await runPreflight({ req, signal, streamId: 'stream-1' });
+    const runs = await mongoose.connection.collection('steel_ocr_runs').find({ conversationId: 'convo-1' }).toArray();
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({ kind: 'preflight', status: 'running', stage: 'agent',
+      completedChunks: 1, totalChunks: 1, responseGenerationId: 'resp-1' });
 
     expect(loadTools).not.toHaveBeenCalled();
     expect(preflightSummary()).toEqual(
@@ -463,7 +480,7 @@ describe('runSteelPaddleOcrPreflight orchestration', () => {
     );
     const pipelineInput = mockPipeline.mock.calls[0][0] as RunOcrPreprocessingBatchPipelineInput;
     expect(mockPipeline).toHaveBeenCalledTimes(1);
-    expect(pipelineInput.signal).toBe(signal);
+    expect(pipelineInput.signal).toBeInstanceOf(AbortSignal);
     expect(req.steelNativeContext?.steelHistory?.activityEvents).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ type: 'parse_status', parseStatus: 'partial' }),

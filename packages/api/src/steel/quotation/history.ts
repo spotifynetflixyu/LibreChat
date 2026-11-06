@@ -69,7 +69,13 @@ export async function readQuotationHistory(input: {
   const state = await service.readState(input.scope);
   const run = state?.activeRun;
   if (!run || run.runId !== input.runId) return history;
-  if (run.status === 'queued' && run.checkpointRefs.every((ref) => ref.kind === 'snapshot')) return history;
+  if (
+    run.status === 'running' &&
+    run.stage === 'queued' &&
+    run.checkpointRefs.every((ref) => ref.kind === 'snapshot')
+  ) {
+    return history;
+  }
 
   const lookups = await Promise.all(run.checkpointRefs
     .filter((ref) => ref.kind === 'tool' && ref.operationId.startsWith('lookup:'))

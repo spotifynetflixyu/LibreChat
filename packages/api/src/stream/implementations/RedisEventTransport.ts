@@ -59,6 +59,7 @@ const EventTypes = {
 } as const;
 
 interface PubSubMessage {
+  reason?: 'user_pause';
   type: (typeof EventTypes)[keyof typeof EventTypes];
   /** Sequence number for ordering (critical for Redis Cluster) */
   seq?: number;
@@ -107,7 +108,7 @@ interface ReorderBuffer {
 }
 
 interface AbortRegistration {
-  callback: (generationId?: number) => void | boolean;
+  callback: (generationId?: number, reason?: 'user_pause') => void | boolean;
 }
 
 interface AbortAckWaiter {
@@ -1147,7 +1148,7 @@ export class RedisEventTransport implements IEventTransport {
             ownerAcknowledged = registration.callback() === true || ownerAcknowledged;
           } else {
             ownerAcknowledged =
-              registration.callback(message.generationId) === true || ownerAcknowledged;
+              registration.callback(message.generationId, message.reason === 'user_pause' ? message.reason : undefined) === true || ownerAcknowledged;
           }
         } catch (err) {
           logger.error(`[RedisEventTransport] Error in abort callback:`, err);
@@ -1496,8 +1497,8 @@ export class RedisEventTransport implements IEventTransport {
    * This enables cross-replica abort: when a user aborts on Replica B,
    * the generating Replica A receives the signal and stops.
    */
-  emitAbort(streamId: string, generationId?: number): void {
-    void this.publishAbort(streamId, generationId).catch((err) => {
+  emitAbort(streamId: string, generationId?: number, reason?: 'user_pause'): void {
+    void this.publishAbort(streamId, generationId, undefined, reason).catch((err) => {
       logger.error(`[RedisEventTransport] Failed to publish abort:`, err);
     });
   }
@@ -1506,10 +1507,12 @@ export class RedisEventTransport implements IEventTransport {
     streamId: string,
     generationId?: number,
     abortRequestId?: string,
+    reason?: 'user_pause',
   ): Promise<number> {
     const channel = CHANNELS.events(streamId);
     const message: PubSubMessage = {
       type: EventTypes.ABORT,
+      ...(reason === 'user_pause' && { reason }),
       ...(generationId != null && { generationId }),
       ...(abortRequestId != null && { abortRequestId }),
     };
@@ -1658,7 +1661,7 @@ export class RedisEventTransport implements IEventTransport {
    */
   async onAbort(
     streamId: string,
-    callback: (generationId?: number) => void | boolean,
+    callback: (generationId?: number, reason?: 'user_pause') => void | boolean,
   ): Promise<() => void> {
     const state = this.getOrCreateStreamState(streamId);
 

@@ -15,7 +15,7 @@ import type {
   IChatProject,
   IConversation,
   ISteelConversationOcrState,
-  ISteelDelegateOcrRun,
+  ISteelOcrRun,
   ISteelOcrResponseAudit,
   AppConfig,
   ISteelQuotationArtifact,
@@ -24,7 +24,7 @@ import type {
 } from '../types';
 import {
   createSteelConversationOcrStateModel,
-  createSteelDelegateOcrRunModel,
+  createSteelOcrRunModel,
   createSteelOcrResponseAuditModel,
   createSteelReviewOutputModel,
   createSteelWorkingOrderMemoryModel,
@@ -54,7 +54,7 @@ let ConversationTag: mongoose.Model<{
 let SteelQuotationState: mongoose.Model<ISteelQuotationState>;
 let SteelQuotationArtifact: mongoose.Model<ISteelQuotationArtifact>;
 let SteelConversationOcrState: mongoose.Model<ISteelConversationOcrState>;
-let SteelDelegateOcrRun: mongoose.Model<ISteelDelegateOcrRun>;
+let SteelOcrRun: mongoose.Model<ISteelOcrRun>;
 let SteelOcrResponseAudit: mongoose.Model<ISteelOcrResponseAudit>;
 let SteelReviewOutput: mongoose.Model<ISteelReviewOutput>;
 let modelsToCleanup: string[] = [];
@@ -84,7 +84,7 @@ beforeAll(async () => {
   SteelQuotationState = models.SteelQuotationState;
   SteelQuotationArtifact = models.SteelQuotationArtifact;
   SteelConversationOcrState = createSteelConversationOcrStateModel(mongoose);
-  SteelDelegateOcrRun = createSteelDelegateOcrRunModel(mongoose);
+  SteelOcrRun = createSteelOcrRunModel(mongoose);
   SteelOcrResponseAudit = createSteelOcrResponseAuditModel(mongoose);
   SteelReviewOutput = createSteelReviewOutputModel(mongoose);
 
@@ -3012,7 +3012,7 @@ describe('Conversation Operations', () => {
         toolParameters: {},
         files: [],
         status: 'completed' as const,
-        currentStage: 'completed' as const,
+        stage: 'completed' as const,
         agentAttemptNumber: 1,
         saveAttemptNumber: 1,
         finalizationJournal: {
@@ -3026,7 +3026,7 @@ describe('Conversation Operations', () => {
         { conversationId: uniqueConversationId, sourceMappings: [] },
         { conversationId: sharedConversationId, sourceMappings: [] },
       ]);
-      await SteelDelegateOcrRun.create([
+      await SteelOcrRun.create([
         createDelegateRun(uniqueConversationId, 'unique-run'),
         createDelegateRun(sharedConversationId, 'shared-run'),
       ]);
@@ -3044,9 +3044,9 @@ describe('Conversation Operations', () => {
       expect(await Memory.findOne({ conversationId: uniqueConversationId })).toBeNull();
       expect(await Memory.findOne({ conversationId: sharedConversationId })).not.toBeNull();
       expect(await SteelConversationOcrState.findOne({ conversationId: uniqueConversationId })).toBeNull();
-      expect(await SteelDelegateOcrRun.findOne({ conversationId: uniqueConversationId })).toBeNull();
+      expect(await SteelOcrRun.findOne({ conversationId: uniqueConversationId })).toBeNull();
       expect(await SteelConversationOcrState.findOne({ conversationId: sharedConversationId })).not.toBeNull();
-      expect(await SteelDelegateOcrRun.findOne({ conversationId: sharedConversationId })).not.toBeNull();
+      expect(await SteelOcrRun.findOne({ conversationId: sharedConversationId })).not.toBeNull();
       expect(await Conversation.findOne({ conversationId: sharedConversationId, tenantId: 'tenant-b' })).not.toBeNull();
     });
 

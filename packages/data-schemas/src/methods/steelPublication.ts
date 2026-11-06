@@ -11,7 +11,7 @@ import type { SteelReviewMetadata, SteelQuotationMessagePublication } from 'libr
 import type { ClientSession } from 'mongoose';
 import type { IMessage, IConversation, ISteelQuotationState, ISteelQuotationArtifact, ISteelReviewOutput, ISteelConversationOcrState, SteelQuotationScope, SteelMarkdownAdmissionInput, SteelMarkdownAdmission, SteelMarkdownExpected, SteelMarkdownPublicationInput, SteelMarkdownPublicationResult, SteelMarkdownReference, SteelMarkdownKind, SteelMarkdownVersion, SteelQuotationSnapshotPayload, SteelQuotationOrderPublicationReceipt, SteelMarkdownQuotationOrderInput, SteelQuotationSummaryAppendInput, SteelQuotationSummaryAppendResult, SteelQuotationSummaryReceipt, SteelQuotationCheckpointRef, SteelQuotationErrorsAppendInput, SteelQuotationErrorsAppendResult, SteelQuotationPublicationProof, SteelQuotationPublicationSaveResult, SteelQuotationSavedMessage } from '~/types';
 import type { SteelReviewAuthorizedFile } from './steelSourceAuthorization';
-import { createSteelDelegateOcrRunModel, createSteelQuotationStateModel, createSteelQuotationArtifactModel, createSteelConversationOcrStateModel, createSteelReviewOutputModel } from '~/models/steel';
+import { createSteelOcrRunModel, createSteelQuotationStateModel, createSteelQuotationArtifactModel, createSteelConversationOcrStateModel, createSteelReviewOutputModel } from '~/models/steel';
 import { hasConsistentMessageText, renderMessageTextContent } from '~/utils/content';
 import { createSteelReviewSourceAuthorization } from './steelSourceAuthorization';
 import { createSteelScopedOcrMethods, hasUniqueSteelOcrScope } from './ocr';
@@ -237,7 +237,7 @@ export interface SteelPublicationMethods {
 
 export function createSteelPublicationMethods(mongoose: Mongoose, saveMessage: SaveMessage): SteelPublicationMethods {
   const State = createSteelQuotationStateModel(mongoose);
-  const DelegateRun = createSteelDelegateOcrRunModel(mongoose);
+  const DelegateRun = createSteelOcrRunModel(mongoose);
   const Ocr = createSteelConversationOcrStateModel(mongoose);
   const Artifact = createSteelQuotationArtifactModel(mongoose);
   const Output = createSteelReviewOutputModel(mongoose);
@@ -328,7 +328,7 @@ export function createSteelPublicationMethods(mongoose: Mongoose, saveMessage: S
     const admissionMatches = Boolean(state.markdownPublication?.admission &&
       sameJson(state.markdownPublication.admission, input.admission) &&
       state.markdownPublication.nextSequence === input.admission.sequence);
-    const liveRun = Boolean(run && (run.status === 'aggregating' || run.status === 'finalizing') &&
+    const liveRun = Boolean(run && run.status === 'running' && (run.stage === 'aggregating' || run.stage === 'finalizing') &&
       run.runId === quotationOrder.runId && run.targetMessageId === quotationOrder.runTargetMessageId &&
       run.leaseToken === quotationOrder.leaseToken && run.leaseExpiresAt && new Date(run.leaseExpiresAt).getTime() > now.getTime() &&
       new Date(run.acceptedAt).getTime() + STEEL_QUOTATION_INPUT_TTL_MS > now.getTime());
@@ -536,7 +536,7 @@ export function createSteelPublicationMethods(mongoose: Mongoose, saveMessage: S
             ocr?.activeDelegateClaim?.claimToken !== input.ocr.claimToken ||
             ocr.activeDelegateClaim.executionLeaseToken !== input.ocr.executionLeaseToken ||
             ocr.activeDelegateClaim.delegateOcrIndex !== input.ocr.delegateOcrIndex) return;
-          const delegate = await DelegateRun.exists({ conversationId: input.scope.conversationId, claimToken: input.ocr.claimToken,
+          const delegate = await DelegateRun.exists({ status: 'running', conversationId: input.scope.conversationId, claimToken: input.ocr.claimToken,
             delegateOcrIndex: input.ocr.delegateOcrIndex, executionLeaseToken: input.ocr.executionLeaseToken,
             executionLeaseExpiresAt: { $gt: new Date() }, 'finalizedCandidate.token': input.ocr.candidateToken,
             'finalizedCandidate.generationId': input.admission.generationId, 'finalizedCandidate.targetMessageId': input.message.messageId,
@@ -735,8 +735,8 @@ export function createSteelPublicationMethods(mongoose: Mongoose, saveMessage: S
         if (ocrTarget && !input.quotationOrder && input.ocr?.claimToken && input.ocr.candidateToken) {
           const token = input.ocr.candidateToken;
           const finished = await DelegateRun.updateOne({ conversationId: input.scope.conversationId, claimToken: input.ocr.claimToken,
-            executionLeaseToken: input.ocr.executionLeaseToken, 'finalizedCandidate.token': token }, { $set: {
-              status: 'completed', currentStage: 'completed', 'finalizationJournal.messagePersisted': true,
+            status: 'running', executionLeaseToken: input.ocr.executionLeaseToken, 'finalizedCandidate.token': token }, { $set: {
+              status: 'completed', stage: 'completed', 'finalizationJournal.messagePersisted': true,
               'finalizationJournal.messagePersistedToken': token, 'finalizationJournal.resultPersisted': true,
               'finalizationJournal.resultPersistedToken': token, 'finalizationJournal.claimCleared': true,
               'finalizationJournal.claimClearedToken': token } }, { session });
@@ -768,7 +768,7 @@ export function createSteelPublicationMethods(mongoose: Mongoose, saveMessage: S
         let activeRunFilter: Record<string, unknown>;
         if (input.quotationOrder) {
           activeRunFilter = { 'activeRun.runId': input.quotationOrder.runId, 'activeRun.targetMessageId': input.quotationOrder.runTargetMessageId,
-            'activeRun.status': { $in: ['aggregating', 'finalizing'] }, 'activeRun.leaseToken': input.quotationOrder.leaseToken,
+            'activeRun.status': 'running', 'activeRun.stage': { $in: ['aggregating', 'finalizing'] }, 'activeRun.leaseToken': input.quotationOrder.leaseToken,
             'activeRun.leaseExpiresAt': { $gt: now }, 'activeRun.acceptedAt': { $gt: new Date(now.getTime() - STEEL_QUOTATION_INPUT_TTL_MS) },
             'activeRun.checkpointRefs': state.activeRun?.checkpointRefs, 'activeRun.chunks': state.activeRun?.chunks,
             'currentOrder.sha256': input.admission.expected.orderHash };

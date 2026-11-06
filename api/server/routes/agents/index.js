@@ -1,4 +1,5 @@
 const express = require('express');
+const steelFlow = require('~/server/services/Steel/flow');
 const {
   reportLocatorTraversalFailure,
   isEnabled,
@@ -764,6 +765,8 @@ router.post('/chat/abort', configMiddleware, async (req, res, next) => {
         scheduledStopStamped = stopStamp === true;
       }
       const abortResult = await GenerationJobManager.abortJob(jobStreamId, {
+        reason: 'user_pause',
+        beforeAbort: steelFlow.pauseJob,
         expectedCreatedAt: job.createdAt,
         awaitProviderDrain: true,
         transformAbortContent: (content, abortJobData) => {

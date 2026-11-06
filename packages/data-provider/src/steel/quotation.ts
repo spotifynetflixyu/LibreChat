@@ -32,10 +32,9 @@ export interface SteelQuotationMessageUpdate {
 
 export const steelQuotationStatuses = [
   'idle',
-  'queued',
   'running',
-  'aggregating',
-  'finalizing',
+  'paused',
+  'failed',
   'interrupted',
   'completed',
   'cancelled',
@@ -63,6 +62,9 @@ export const steelQuotationStatusSchema = z
     index: z.number().int().nonnegative().nullable(),
     runId: z.string().min(1).optional(),
     status: z.enum(steelQuotationStatuses),
+    stage: z.string().optional(),
+    errorMessage: z.string().optional(),
+    latestRunId: z.string().min(1).optional(),
     completedChunks: z.number().int().nonnegative(),
     totalChunks: z.number().int().nonnegative(),
     canCancel: z.boolean(),
@@ -76,10 +78,5 @@ export type SteelQuotationStatusName = (typeof steelQuotationStatuses)[number];
 export type SteelQuotationStatus = z.infer<typeof steelQuotationStatusSchema>;
 
 export function isSteelQuotationActiveStatus(status: SteelQuotationStatusName): boolean {
-  return (
-    status === 'queued' ||
-    status === 'running' ||
-    status === 'aggregating' ||
-    status === 'finalizing'
-  );
+  return status === 'running';
 }

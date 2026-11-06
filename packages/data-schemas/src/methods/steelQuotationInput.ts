@@ -871,7 +871,8 @@ export function createSteelQuotationInputMethods(mongoose: Mongoose): SteelQuota
         const nextRun: SteelQuotationActiveRun = {
           runId,
           index: input.index,
-          status: 'queued',
+          status: 'running',
+          stage: 'queued',
           triggerMessageId: ticket.triggeringMessageId,
           ...(input.targetMessageId ? { targetMessageId: input.targetMessageId } : {}),
           ...(selected ? { ocrSelection: selected.selection } : {}),

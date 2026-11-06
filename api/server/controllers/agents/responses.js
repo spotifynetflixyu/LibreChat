@@ -1,3 +1,4 @@
+const steelFlow = require('~/server/services/Steel/flow');
 const steelPostgres = require('~/server/services/Steel/postgres');
 const { nanoid } = require('nanoid');
 const { v4: uuidv4 } = require('uuid');
@@ -881,7 +882,9 @@ const executeResponse = async (envelope, { req, res }) => {
     /** Conversation delete-all uses the shared owner-admission fence. Remote
      * execution must observe it after durable enrollment and before provider work. */
     isPrincipalActive: db.isSubagentOwnerAdmissible,
-    beforeSettle: (execution) => {
+    beforeSettle: async (execution, error) => {
+      await steelFlow.settleTurn({ req, conversationId, responseId, signal: execution.signal,
+        failed: error != null });
       if (!artifactWritesCovered && artifactPromises.length > 0) {
         execution.track(
           waitForAgentExecutionWrites(artifactPromises).catch((artifactError) => {

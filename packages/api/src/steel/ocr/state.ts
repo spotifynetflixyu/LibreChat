@@ -2,24 +2,25 @@ import { randomUUID } from 'crypto';
 
 import {
   createSteelConversationOcrStateModel,
-  createSteelDelegateOcrRunModel,
+  createSteelOcrRunModel,
   createSteelScopedOcrMethods,
+  createSteelOcrRunMethods,
 } from '@librechat/data-schemas';
 
 import type {
   ISteelConversationOcrState,
-  ISteelDelegateOcrRun,
+  ISteelOcrRun,
   SteelConversationOcrResultProvenance,
   SteelDelegateOcrFailureKind,
   SteelDelegateOcrFinalizationJournal,
   SteelDelegateOcrFinalizedCandidate,
-  SteelDelegateOcrStage,
   SteelDelegateOcrStatus,
   SteelDelegateOcrSupersedeProvenance,
   SteelDelegateOcrToolFile,
   SteelDelegateOcrToolParameters,
   SteelQuotationScope,
   SteelScopedOcrMethods,
+  SteelOcrRunMethods,
   SteelConversationOcrRecord,
 } from '@librechat/data-schemas';
 
@@ -32,6 +33,7 @@ export interface ClaimNewDelegateOcrIndexInput {
   triggeringMessageId: string;
   claimToken?: string;
   responseGenerationId?: string;
+  executionEpoch?: number;
   now?: Date;
 }
 
@@ -46,6 +48,8 @@ export interface DelegateOcrClaim {
 
 export interface MaterializeDelegateOcrRunInput {
   conversationId: string;
+  userId?: string;
+  tenantId?: string;
   delegateOcrIndex: number;
   claimToken: string;
   triggeringMessageId: string;
@@ -54,9 +58,12 @@ export interface MaterializeDelegateOcrRunInput {
   toolParameters: SteelDelegateOcrToolParameters;
   files: SteelDelegateOcrToolFile[];
   responseGenerationId?: string;
+  executionEpoch?: number;
 }
 
 export interface AcquireDelegateExecutionLeaseInput {
+  executionEpoch?: number;
+  responseGenerationId?: string;
   claimToken: string;
   leaseToken?: string;
   expectedConversationId?: string;
@@ -77,10 +84,13 @@ export interface TransitionDelegateOcrRunInput {
   claimToken: string;
   executionLeaseToken?: string;
   status?: SteelDelegateOcrStatus;
-  currentStage?: SteelDelegateOcrStage;
+  stage?: string;
   failureKind?: SteelDelegateOcrFailureKind;
   responseGenerationId?: string;
   targetMessageId?: string;
+  errorMessage?: string;
+  completedChunks?: number;
+  totalChunks?: number;
 }
 
 export interface BeginDelegateAttemptInput {
@@ -152,19 +162,19 @@ export interface CurrentOcrResult {
   provenance?: SteelConversationOcrResultProvenance;
 }
 
-export interface SteelDelegateOcrStateService {
+export interface SteelOcrStateService extends SteelOcrRunMethods {
   claimNewDelegateOcrIndex(input: ClaimNewDelegateOcrIndexInput): Promise<DelegateOcrClaim | undefined>;
-  materializeDelegateOcrRun(input: MaterializeDelegateOcrRunInput): Promise<ISteelDelegateOcrRun>;
-  findResumableDelegateOcrRun(input: { conversationId: string; triggeringMessageId: string }): Promise<ISteelDelegateOcrRun | null>;
+  materializeDelegateOcrRun(input: MaterializeDelegateOcrRunInput): Promise<ISteelOcrRun>;
+  findResumableDelegateOcrRun(input: { conversationId: string; triggeringMessageId: string }): Promise<ISteelOcrRun | null>;
   acquireDelegateExecutionLease(input: AcquireDelegateExecutionLeaseInput): Promise<DelegateExecutionLease | undefined>;
-  transitionDelegateOcrRun(input: TransitionDelegateOcrRunInput): Promise<ISteelDelegateOcrRun | null>;
-  beginDelegateAgentAttempt(input: BeginDelegateAttemptInput): Promise<ISteelDelegateOcrRun | null>;
-  beginDelegateSaveAttempt(input: BeginDelegateAttemptInput): Promise<ISteelDelegateOcrRun | null>;
-  setDelegateFinalizedCandidate(input: SetFinalizedCandidateInput): Promise<ISteelDelegateOcrRun | null>;
-  updateDelegateFinalizationJournal(input: UpdateFinalizationJournalInput): Promise<ISteelDelegateOcrRun | null>;
+  transitionDelegateOcrRun(input: TransitionDelegateOcrRunInput): Promise<ISteelOcrRun | null>;
+  beginDelegateAgentAttempt(input: BeginDelegateAttemptInput): Promise<ISteelOcrRun | null>;
+  beginDelegateSaveAttempt(input: BeginDelegateAttemptInput): Promise<ISteelOcrRun | null>;
+  setDelegateFinalizedCandidate(input: SetFinalizedCandidateInput): Promise<ISteelOcrRun | null>;
+  updateDelegateFinalizationJournal(input: UpdateFinalizationJournalInput): Promise<ISteelOcrRun | null>;
   clearCompletedDelegateClaim(input: ClearCompletedClaimInput): Promise<ISteelConversationOcrState | null>;
   recordSupersededDelegateClaim(input: SupersedeDelegateClaimInput): Promise<ISteelConversationOcrState | null>;
-  supersedeDelegateOcrRun(input: { claimToken: string; provenance: SteelDelegateOcrSupersedeProvenance }): Promise<ISteelDelegateOcrRun | null>;
+  supersedeDelegateOcrRun(input: { claimToken: string; provenance: SteelDelegateOcrSupersedeProvenance }): Promise<ISteelOcrRun | null>;
   allocateDelegateSourceMapping(input: AllocateDelegateSourceMappingInput): Promise<DelegateSourceMapping>;
   upsertCurrentOcrResult(input: UpsertCurrentOcrResultInput): Promise<ISteelConversationOcrState | null>;
   readConversationOcrState(conversationId: string): Promise<ISteelConversationOcrState | null>;
@@ -173,8 +183,8 @@ export interface SteelDelegateOcrStateService {
   readScopedCurrentOcrResult(scope: SteelQuotationScope): Promise<CurrentOcrResult | undefined>;
   readActiveDelegateClaim(conversationId: string): Promise<ISteelConversationOcrState['activeDelegateClaim'] | undefined>;
   readSourceMappings(conversationId: string): Promise<DelegateSourceMapping[]>;
-  findDelegateOcrRunByClaimToken(claimToken: string): Promise<ISteelDelegateOcrRun | null>;
-  findActiveDelegateOcrRun(conversationId: string): Promise<ISteelDelegateOcrRun | null>;
+  findDelegateOcrRunByClaimToken(claimToken: string): Promise<ISteelOcrRun | null>;
+  findActiveDelegateOcrRun(conversationId: string): Promise<ISteelOcrRun | null>;
 }
 
 function currentOcrResult(state: SteelConversationOcrRecord | null): CurrentOcrResult | undefined {
@@ -217,6 +227,8 @@ function getRunFilter(input: {
 }) {
   return {
     claimToken: input.claimToken,
+    status: 'running',
+    awaitingExecution: { $ne: true },
     ...(input.executionLeaseToken
       ? { executionLeaseToken: input.executionLeaseToken }
       : {}),
@@ -249,11 +261,11 @@ async function ensureConversationState(
   }
 }
 
-export function createSteelDelegateOcrStateService(
+export function createSteelOcrStateService(
   mongoose: Mongoose,
   scoped: SteelScopedOcrMethods = createSteelScopedOcrMethods(mongoose),
-): SteelDelegateOcrStateService {
-  const Run = createSteelDelegateOcrRunModel(mongoose);
+): SteelOcrStateService {
+  const Run = createSteelOcrRunModel(mongoose);
   const State = createSteelConversationOcrStateModel(mongoose);
 
   async function claimNewDelegateOcrIndex(
@@ -270,12 +282,12 @@ export function createSteelDelegateOcrStateService(
     if (existingClaim) {
       const existingRun = await Run.findOne({ claimToken: existingClaim.claimToken })
         .select({ status: 1 })
-        .lean<ISteelDelegateOcrRun>();
+        .lean<ISteelOcrRun>();
       const missingRunExpired =
         !existingRun &&
         existingClaim.claimedAt instanceof Date &&
         existingClaim.claimedAt.getTime() <= now.getTime() - 60_000;
-      if (missingRunExpired || ['completed', 'superseded'].includes(existingRun?.status ?? '')) {
+      if (missingRunExpired || ['completed', 'cancelled'].includes(existingRun?.status ?? '')) {
         await State.updateOne(
           {
             conversationId: input.conversationId,
@@ -335,11 +347,15 @@ export function createSteelDelegateOcrStateService(
 
   async function materializeDelegateOcrRun(
     input: MaterializeDelegateOcrRunInput,
-  ): Promise<ISteelDelegateOcrRun> {
+  ): Promise<ISteelOcrRun> {
     assertDelegateOcrIndex(input.delegateOcrIndex);
     const update = {
       $setOnInsert: {
         conversationId: input.conversationId,
+        userId: input.userId,
+        tenantId: input.tenantId,
+        runId: randomUUID(),
+        kind: 'delegate',
         delegateOcrIndex: input.delegateOcrIndex,
         claimToken: input.claimToken,
         activeResumeKey: input.activeResumeKey,
@@ -348,10 +364,11 @@ export function createSteelDelegateOcrStateService(
         toolParameters: input.toolParameters,
         files: input.files,
         status: 'running' as const,
-        currentStage: 'claiming' as const,
+        stage: 'claiming' as const,
         agentAttemptNumber: 0,
         saveAttemptNumber: 0,
         responseGenerationId: input.responseGenerationId,
+        executionEpoch: input.executionEpoch,
         finalizationJournal: {
           candidateValidated: false,
           resultPersisted: false,
@@ -365,7 +382,7 @@ export function createSteelDelegateOcrStateService(
         { conversationId: input.conversationId, delegateOcrIndex: input.delegateOcrIndex },
         update,
         { upsert: true, new: true, setDefaultsOnInsert: true },
-      ).lean<ISteelDelegateOcrRun>();
+      ).lean<ISteelOcrRun>();
       if (!run) {
         throw new Error('delegate OCR run materialization returned no document');
       }
@@ -377,7 +394,7 @@ export function createSteelDelegateOcrStateService(
       const run = await Run.findOne({
         conversationId: input.conversationId,
         delegateOcrIndex: input.delegateOcrIndex,
-      }).lean<ISteelDelegateOcrRun>();
+      }).lean<ISteelOcrRun>();
       if (!run) {
         throw error;
       }
@@ -388,14 +405,15 @@ export function createSteelDelegateOcrStateService(
   function findResumableDelegateOcrRun(input: {
     conversationId: string;
     triggeringMessageId: string;
-  }): Promise<ISteelDelegateOcrRun | null> {
+  }): Promise<ISteelOcrRun | null> {
     return Run.findOne({
       conversationId: input.conversationId,
+      kind: 'delegate',
       triggeringMessageId: input.triggeringMessageId,
-      status: { $in: ['running', 'agent_running', 'finalizing', 'agent_failed', 'save_failed'] },
+      status: { $in: ['running', 'paused', 'interrupted', 'failed'] },
     })
       .sort({ delegateOcrIndex: -1 })
-      .lean<ISteelDelegateOcrRun>();
+      .lean<ISteelOcrRun>();
   }
 
   async function acquireDelegateExecutionLease(
@@ -425,7 +443,7 @@ export function createSteelDelegateOcrStateService(
         claimToken: input.claimToken,
         triggeringMessageId: input.expectedTriggeringMessageId,
         status: {
-          $in: ['running', 'agent_running', 'finalizing', 'agent_failed', 'save_failed'],
+          $in: ['running', 'paused', 'interrupted', 'failed'],
         },
         ...(input.expectedLeaseToken === null
           ? {
@@ -439,7 +457,7 @@ export function createSteelDelegateOcrStateService(
     } else {
       runFilter = {
         claimToken: input.claimToken,
-        status: { $nin: ['completed', 'superseded'] },
+        status: { $nin: ['completed', 'cancelled'] },
         $or: [
           { executionLeaseToken },
           { executionLeaseExpiresAt: { $exists: false } },
@@ -449,9 +467,11 @@ export function createSteelDelegateOcrStateService(
     }
     const run = await Run.findOneAndUpdate(
       runFilter,
-      { $set: { executionLeaseToken, executionLeaseExpiresAt } },
+      { $set: { executionLeaseToken, executionLeaseExpiresAt, status: 'running', awaitingExecution: false,
+        ...(input.executionEpoch !== undefined ? { executionEpoch: input.executionEpoch } : {}),
+        ...(input.responseGenerationId ? { responseGenerationId: input.responseGenerationId } : {}) } },
       { new: true },
-    ).lean<ISteelDelegateOcrRun>();
+    ).lean<ISteelOcrRun>();
     if (!run) {
       return undefined;
     }
@@ -475,58 +495,61 @@ export function createSteelDelegateOcrStateService(
 
   function transitionDelegateOcrRun(
     input: TransitionDelegateOcrRunInput,
-  ): Promise<ISteelDelegateOcrRun | null> {
+  ): Promise<ISteelOcrRun | null> {
     const $set = {
       ...(input.status ? { status: input.status } : {}),
-      ...(input.currentStage ? { currentStage: input.currentStage } : {}),
+      ...(input.errorMessage ? { errorMessage: input.errorMessage } : {}),
+      ...(input.completedChunks !== undefined ? { completedChunks: input.completedChunks } : {}),
+      ...(input.totalChunks !== undefined ? { totalChunks: input.totalChunks } : {}),
+      ...(input.stage ? { stage: input.stage } : {}),
       ...(input.failureKind ? { failureKind: input.failureKind } : {}),
       ...(input.responseGenerationId ? { responseGenerationId: input.responseGenerationId } : {}),
       ...(input.targetMessageId ? { targetMessageId: input.targetMessageId } : {}),
     };
-    return Run.findOneAndUpdate(getRunFilter(input), { $set }, { new: true }).lean<ISteelDelegateOcrRun>();
+    return Run.findOneAndUpdate(getRunFilter(input), { $set }, { new: true }).lean<ISteelOcrRun>();
   }
 
   async function beginDelegateAgentAttempt(
     input: BeginDelegateAttemptInput,
-  ): Promise<ISteelDelegateOcrRun | null> {
+  ): Promise<ISteelOcrRun | null> {
     const agentAttemptToken = input.attemptToken ?? randomUUID();
     return Run.findOneAndUpdate(
       getRunFilter(input),
       {
         $inc: { agentAttemptNumber: 1 },
-        $set: { agentAttemptToken, status: 'agent_running', currentStage: 'agent' },
+        $set: { agentAttemptToken, status: 'running', stage: 'agent' },
       },
       { new: true },
-    ).lean<ISteelDelegateOcrRun>();
+    ).lean<ISteelOcrRun>();
   }
 
   async function beginDelegateSaveAttempt(
     input: BeginDelegateAttemptInput,
-  ): Promise<ISteelDelegateOcrRun | null> {
+  ): Promise<ISteelOcrRun | null> {
     const saveAttemptToken = input.attemptToken ?? randomUUID();
     return Run.findOneAndUpdate(
       getRunFilter(input),
       {
         $inc: { saveAttemptNumber: 1 },
-        $set: { saveAttemptToken, status: 'finalizing', currentStage: 'saving' },
+        $set: { saveAttemptToken, status: 'running', stage: 'saving' },
       },
       { new: true },
-    ).lean<ISteelDelegateOcrRun>();
+    ).lean<ISteelOcrRun>();
   }
 
   function setDelegateFinalizedCandidate(
     input: SetFinalizedCandidateInput,
-  ): Promise<ISteelDelegateOcrRun | null> {
+  ): Promise<ISteelOcrRun | null> {
     return Run.findOneAndUpdate(
       getRunFilter(input),
-      { $set: { finalizedCandidate: input.candidate, currentStage: 'finalizing', status: 'finalizing' } },
+      { $set: { finalizedCandidate: input.candidate, stage: 'finalizing', status: 'running' } },
       { new: true },
-    ).lean<ISteelDelegateOcrRun>();
+    ).lean<ISteelOcrRun>();
   }
 
   function updateDelegateFinalizationJournal(
     input: UpdateFinalizationJournalInput,
-  ): Promise<ISteelDelegateOcrRun | null> {
+  ): Promise<ISteelOcrRun | null> {
     const journalUpdates = Object.entries(input.journal).reduce(
       (updates, [key, value]) => {
         updates[`finalizationJournal.${key}`] = value;
@@ -537,11 +560,12 @@ export function createSteelDelegateOcrStateService(
     return Run.findOneAndUpdate(
       {
         ...getRunFilter(input),
+        status: { $in: ['running', 'completed'] },
         'finalizedCandidate.token': input.candidateToken,
       },
       { $set: journalUpdates },
       { new: true },
-    ).lean<ISteelDelegateOcrRun>();
+    ).lean<ISteelOcrRun>();
   }
 
   function clearCompletedDelegateClaim(
@@ -591,12 +615,12 @@ export function createSteelDelegateOcrStateService(
   async function supersedeDelegateOcrRun(input: {
     claimToken: string;
     provenance: SteelDelegateOcrSupersedeProvenance;
-  }): Promise<ISteelDelegateOcrRun | null> {
+  }): Promise<ISteelOcrRun | null> {
     return Run.findOneAndUpdate(
-      { claimToken: input.claimToken, status: { $nin: ['completed', 'superseded'] } },
-      { $set: { status: 'superseded', currentStage: 'completed', supersedeProvenance: input.provenance } },
+      { claimToken: input.claimToken, status: { $nin: ['completed', 'cancelled'] } },
+      { $set: { status: 'cancelled', stage: 'completed', supersedeProvenance: input.provenance } },
       { new: true },
-    ).lean<ISteelDelegateOcrRun>();
+    ).lean<ISteelOcrRun>();
   }
 
   async function allocateDelegateSourceMapping(
@@ -769,22 +793,24 @@ export function createSteelDelegateOcrStateService(
 
   function findDelegateOcrRunByClaimToken(
     claimToken: string,
-  ): Promise<ISteelDelegateOcrRun | null> {
-    return Run.findOne({ claimToken }).lean<ISteelDelegateOcrRun>();
+  ): Promise<ISteelOcrRun | null> {
+    return Run.findOne({ claimToken }).lean<ISteelOcrRun>();
   }
 
   function findActiveDelegateOcrRun(
     conversationId: string,
-  ): Promise<ISteelDelegateOcrRun | null> {
+  ): Promise<ISteelOcrRun | null> {
     return Run.findOne({
       conversationId,
-      status: { $nin: ['completed', 'superseded'] },
+      kind: 'delegate',
+      status: { $nin: ['completed', 'cancelled'] },
     })
       .sort({ delegateOcrIndex: -1 })
-      .lean<ISteelDelegateOcrRun>();
+      .lean<ISteelOcrRun>();
   }
 
   return {
+    ...createSteelOcrRunMethods(mongoose),
     claimNewDelegateOcrIndex,
     materializeDelegateOcrRun,
     findResumableDelegateOcrRun,
@@ -809,6 +835,3 @@ export function createSteelDelegateOcrStateService(
     findActiveDelegateOcrRun,
   };
 }
-
-export const createSteelOcrStateService: typeof createSteelDelegateOcrStateService =
-  createSteelDelegateOcrStateService;

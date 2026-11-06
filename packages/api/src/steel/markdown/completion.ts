@@ -22,27 +22,27 @@ import type {
 } from './types';
 import type { SteelResponseRequest } from '../quotation/completion';
 import {
-  appendSteelNextStep,
-  hasSteelDataMarkdown,
-  hasSteelCustomerTier,
-} from '../quotation/next';
-import {
   acceptQuotationSignal,
   acceptQuotationResponse,
   SteelQuotationPublicationError,
 } from '../quotation/runner';
+import {
+  appendSteelNextStep,
+  hasSteelDataMarkdown,
+  hasSteelCustomerTier,
+} from '../quotation/next';
 import { isUnfinishedQuotation, hasQuotationOrder } from '../quotation/preparation';
 import { SteelResponseCompletionError } from '../quotation/completion';
+import { createSteelQuotationStateService } from '../quotation/state';
+import { createSteelOcrResponseAuditService } from '../ocr/audit';
 import { resolveRequestTenantId } from '../../middleware/tenant';
 import { sameQuotationOcrSelection } from '../quotation/input';
 import { parseQuotationSignal } from '../quotation/protocol';
 import { retiredMarkdownSectionTitles } from './admission';
+import { createSteelOcrStateService } from '../ocr/state';
 import { parseAssistantMarkdown } from '../ocr/result';
 import { parseMarkdownTables } from './table';
 import { publishFullMarkdown } from './full';
-import { createSteelQuotationStateService } from '../quotation/state';
-import { createSteelDelegateOcrStateService } from '../ocr/state';
-import { createSteelOcrResponseAuditService } from '../ocr/audit';
 import { sha256Hex } from '../utils';
 
 export type {
@@ -375,7 +375,7 @@ export function createSteelMarkdownCompletionServices(
 } {
   const resolved: SteelMarkdownCompletionDependencies = {
     ...dependencies,
-    ocr: dependencies.ocr ?? createSteelDelegateOcrStateService(mongoose),
+    ocr: dependencies.ocr ?? createSteelOcrStateService(mongoose),
     quotation: dependencies.quotation ?? createSteelQuotationStateService(mongoose),
     audit: dependencies.audit ?? createSteelOcrResponseAuditService(mongoose),
   };

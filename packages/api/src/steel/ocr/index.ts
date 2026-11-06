@@ -18,3 +18,5 @@ export * from './result';
 export * from './text';
 export * from './state';
 export * from './retry';
+export * from './routes';
+export * from './control';

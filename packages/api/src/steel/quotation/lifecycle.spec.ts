@@ -1,4 +1,6 @@
+import express from 'express';
 import mongoose from 'mongoose';
+import request from 'supertest';
 import { createHash } from 'node:crypto';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
 import {
@@ -14,6 +16,7 @@ import type {
 } from '@librechat/data-schemas';
 import { seedCompletedRun, seedLegacyPublication } from './fixtures';
 import { createSteelQuotationStateService } from './state';
+import { createQuotationRouteHandlers } from './routes';
 
 const prompts = {
   child: 'child quotation rules',
@@ -284,7 +287,7 @@ describe('Steel quotation temporary input lifecycle', () => {
       chunks: [{ index: 1, sourceRowCount: 1 }],
     });
     expect(nextRun.runId).not.toBe(first.run.runId);
-    expect(nextRun.status).toBe('queued');
+    expect(nextRun.status).toBe('running');
   });
 
   it('retires expired leased runs, fences late mutations, heals a missing TTL snapshot, and permits a new run', async () => {
@@ -359,7 +362,7 @@ describe('Steel quotation temporary input lifecycle', () => {
       deleteSpy.mockRestore();
     }
     const rolledBack = await State.findOne(scope).lean();
-    expect(rolledBack?.activeRun?.status).toBe('queued');
+    expect(rolledBack?.activeRun?.status).toBe('running');
     expect(rolledBack?.activeRun?.leaseToken).toBeUndefined();
     expect(await Artifact.countDocuments({ ...scope, runId: prepared.run.runId, operationId: 'snapshot' })).toBe(1);
 
@@ -402,4 +405,16 @@ describe('Steel quotation temporary input lifecycle', () => {
     expect(await Artifact.countDocuments({ ...scope, runId: prepared.run.runId, operationId: 'published' })).toBe(1);
     expect(await Artifact.countDocuments({ expiresAt: { $exists: true } })).toBe(0);
   });
+});
+
+it('reconciles a disappeared quotation generation as interrupted through the status API', async () => {
+  const { run } = await acceptRun();
+  await service.acquireLease({ scope, runId: run.runId, executionResponseId: 'response', executionEpoch: 42 });
+  const app = express();
+  app.use((req, _res, next) => { Object.assign(req, { user: { id: scope.userId } }); next(); });
+  const handlers = createQuotationRouteHandlers({ ownsConversation: async () => true, readGeneration: async () => null });
+  app.get('/status/:conversationId', handlers.status);
+  const result = await request(app).get(`/status/${scope.conversationId}`);
+  expect(result.status).toBe(200);
+  expect(result.body).toMatchObject({ runId: run.runId, latestRunId: run.runId, status: 'interrupted' });
 });
