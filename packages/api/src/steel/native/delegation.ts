@@ -78,6 +78,9 @@ export type SteelDelegateOcrAgent = SteelPaddleOcrAgent & SteelOcrOrganizerAgent
 
 /** The workflow object shared with the delegate executor across one tool call. */
 export interface SteelDelegateOcrWorkflow extends DelegateOcrWorkflowInput {
+  runId?: string;
+  completedChunks?: number;
+  totalChunks?: number;
   delegateOcrIndex?: number;
   delegateOcrClaimToken?: string;
   executionLeaseToken?: string;
@@ -459,6 +462,14 @@ export function createSteelDelegateOcrService(
           conversationId,
           requestId,
           messageId: requestId,
+          ...(isNonEmptyString(workflow.runId) ? { runId: workflow.runId, kind: 'delegate' as const } : {}),
+          ...(typeof workflow.completedChunks === 'number'
+            ? { completedChunks: workflow.completedChunks }
+            : {}),
+          ...(typeof workflow.totalChunks === 'number'
+            ? { totalChunks: workflow.totalChunks }
+            : {}),
+          flowStatus: event.status === 'failed' ? 'failed' : 'running',
           ...event,
           ...(isNonEmptyString(workflow.claimToken) ? { claimToken: workflow.claimToken } : {}),
           ...(isNonEmptyString(workflow.generationId)
@@ -592,10 +603,13 @@ export function createSteelDelegateOcrService(
             completedChunks += item.completed.size;
             totalChunks += item.total;
           }
+          const normalizedTotalChunks = Math.max(totalChunks, completedChunks);
+          workflow.completedChunks = completedChunks;
+          workflow.totalChunks = normalizedTotalChunks;
           if (workflow.claimToken) {
             const updated = await getStateService().transitionDelegateOcrRun({
               claimToken: workflow.claimToken, executionLeaseToken: workflow.executionLeaseToken,
-              stage: progress.stage, completedChunks, totalChunks: Math.max(totalChunks, completedChunks),
+              stage: progress.stage, completedChunks, totalChunks: normalizedTotalChunks,
             });
             if (!updated) throw new DOMException('OCR execution is no longer active', 'AbortError');
           }
@@ -676,6 +690,11 @@ export function createSteelDelegateOcrService(
       /** The workflow the delegate executor receives; kept on the request so
        * backend-only finalization provenance crosses the tool boundary. */
       const workflow: SteelDelegateOcrWorkflow = {
+        ...(typeof previous?.runId === 'string' ? { runId: previous.runId } : {}),
+        ...(typeof previous?.completedChunks === 'number'
+          ? { completedChunks: previous.completedChunks }
+          : {}),
+        ...(typeof previous?.totalChunks === 'number' ? { totalChunks: previous.totalChunks } : {}),
         ...(previous?.canonicalMapping ? { canonicalMapping: previous.canonicalMapping } : {}),
         ...(typeof previous?.previousOcrResultMarkdown === 'string'
           ? { previousOcrResultMarkdown: previous.previousOcrResultMarkdown }
@@ -719,7 +738,20 @@ export function createSteelDelegateOcrService(
           req,
           res,
           streamId,
-          events: buildSteelDelegateOcrStatusEventEnvelopes({ conversationId, ...event }),
+          events: buildSteelDelegateOcrStatusEventEnvelopes({
+            conversationId,
+            ...(isNonEmptyString(workflow.runId)
+              ? { runId: workflow.runId, kind: 'delegate' as const }
+              : {}),
+            ...(typeof workflow.completedChunks === 'number'
+              ? { completedChunks: workflow.completedChunks }
+              : {}),
+            ...(typeof workflow.totalChunks === 'number'
+              ? { totalChunks: workflow.totalChunks }
+              : {}),
+            flowStatus: event.status === 'failed' ? 'failed' : 'running',
+            ...event,
+          }),
         });
 
       let delegateRunInitialized = false;
@@ -871,6 +903,11 @@ export function createSteelDelegateOcrService(
 
         Object.assign(workflow, {
           enabled: true,
+          ...(isNonEmptyString(run.runId) ? { runId: run.runId } : {}),
+          ...(typeof run.completedChunks === 'number'
+            ? { completedChunks: run.completedChunks }
+            : {}),
+          ...(typeof run.totalChunks === 'number' ? { totalChunks: run.totalChunks } : {}),
           claimToken: claim.claimToken,
           executionLeaseToken: lease.executionLeaseToken,
           delegateOcrIndex: claim.delegateOcrIndex,
@@ -1207,10 +1244,23 @@ export function createSteelDelegateOcrService(
       } catch (error) {
         const failedClaim = delegateContext.delegateOcrClaim;
         if (failedClaim) {
+          const failureStatus = getSteelOcrFailureStatus(signal);
           await stateService.transitionDelegateOcrRun({ claimToken: failedClaim.claimToken,
             executionLeaseToken: delegateContext.delegateOcrExecutionLease?.executionLeaseToken,
-            status: getSteelOcrFailureStatus(signal),
+            status: failureStatus,
             errorMessage: signal?.aborted ? undefined : 'OCR processing failed.' });
+          await emitStatus({
+            requestId: generationId,
+            messageId: triggeringMessageId,
+            delegateOcrIndex: failedClaim.delegateOcrIndex,
+            stage: delegateContext.delegateOcrRun?.stage === 'agent' ? 'agent' : 'paddleocr',
+            status: 'failed',
+            flowStatus: failureStatus,
+            message: signal?.aborted ? 'Delegate OCR paused or interrupted' : 'Delegate OCR failed',
+            ...(signal?.aborted ? {} : { errorMessage: 'OCR processing failed.' }),
+            claimToken: failedClaim.claimToken,
+            ...(typeof generationId === 'string' ? { generationId } : {}),
+          });
         }
         throw error;
       }
@@ -1340,6 +1390,11 @@ export function createSteelDelegateOcrService(
       delegateOcrWorkflow: {
         ...delegateContext.delegateOcrWorkflow,
         enabled: true,
+        ...(isNonEmptyString(run.runId) ? { runId: run.runId } : {}),
+        ...(typeof run.completedChunks === 'number'
+          ? { completedChunks: run.completedChunks }
+          : {}),
+        ...(typeof run.totalChunks === 'number' ? { totalChunks: run.totalChunks } : {}),
         claimToken: run.claimToken,
         delegateOcrClaimToken: run.claimToken,
         delegateOcrIndex: run.delegateOcrIndex,
@@ -1388,6 +1443,35 @@ export function createSteelDelegateOcrService(
           ocrResultMarkdown: canonicalOcrResultMarkdown,
         };
       }
+      if (isNonEmptyString(resume.run.conversationId) && isNonEmptyString(resume.run.runId)) {
+        await emitSteelNativeEvents({
+          req,
+          res,
+          streamId,
+          events: buildSteelDelegateOcrStatusEventEnvelopes({
+            conversationId: resume.run.conversationId,
+            requestId: req.steelNativeContext?.requestId ?? resume.run.responseGenerationId,
+            messageId: resume.run.triggeringMessageId,
+            runId: resume.run.runId,
+            kind: 'delegate',
+            delegateOcrIndex: resume.run.delegateOcrIndex,
+            stage: 'saving',
+            status: 'succeeded',
+            flowStatus: 'running',
+            ...(typeof resume.run.completedChunks === 'number'
+              ? { completedChunks: resume.run.completedChunks }
+              : {}),
+            ...(typeof resume.run.totalChunks === 'number'
+              ? { totalChunks: resume.run.totalChunks }
+              : {}),
+            message: `Resuming Delegate OCR run N=${resume.run.delegateOcrIndex}`,
+            claimToken: resume.run.claimToken,
+            ...(isNonEmptyString(resume.run.responseGenerationId)
+              ? { generationId: resume.run.responseGenerationId }
+              : {}),
+          }),
+        });
+      }
       await onDelta?.(resume.candidate.markdown, {
         claimToken: resume.run.claimToken,
         generationId: resume.run.responseGenerationId,
@@ -1404,6 +1488,13 @@ export function createSteelDelegateOcrService(
     delegateContext.delegateOcrWorkflow = {
       ...delegateContext.delegateOcrWorkflow,
       enabled: true,
+      ...(isNonEmptyString(resume.run.runId) ? { runId: resume.run.runId } : {}),
+      ...(typeof resume.run.completedChunks === 'number'
+        ? { completedChunks: resume.run.completedChunks }
+        : {}),
+      ...(typeof resume.run.totalChunks === 'number'
+        ? { totalChunks: resume.run.totalChunks }
+        : {}),
       claimToken: resume.run.claimToken,
       delegateOcrClaimToken: resume.run.claimToken,
       delegateOcrIndex: resume.run.delegateOcrIndex,

@@ -1292,4 +1292,63 @@ describe('Steel native event mapping', () => {
       }),
     ]);
   });
+
+  it('projects backend OCR run identity and chunk progress on preflight and delegate status events', () => {
+    expect(
+      buildSteelOcrPreprocessingEventEnvelopes({
+        conversationId: 'conversation_1',
+        requestId: 'request_1',
+        messageId: 'message_2',
+        runId: 'ocr-preflight-run-1',
+        kind: 'preflight',
+        stage: 'organizer',
+        flowStatus: 'running',
+        completedChunks: 2,
+        totalChunks: 4,
+        ocrFileKey: 'file:file-a',
+        progress: { stage: 'merged_markdowns_read', chunkCount: 4 },
+      }).map((entry) => entry.data),
+    ).toEqual([
+      expect.objectContaining({
+        type: 'parse_status',
+        source: 'ocr_preprocessing',
+        runId: 'ocr-preflight-run-1',
+        kind: 'preflight',
+        stage: 'organizer',
+        flowStatus: 'running',
+        completedChunks: 2,
+        totalChunks: 4,
+      }),
+    ]);
+
+    expect(
+      buildSteelDelegateOcrStatusEvent({
+        conversationId: 'conversation_1',
+        requestId: 'request_1',
+        messageId: 'message_2',
+        runId: 'ocr-delegate-run-2',
+        kind: 'delegate',
+        delegateOcrIndex: 2,
+        stage: 'agent',
+        status: 'progress',
+        flowStatus: 'running',
+        completedChunks: 1,
+        totalChunks: 3,
+        message: 'Running delegate OCR 2',
+      }),
+    ).toEqual(
+      expect.objectContaining({
+        type: 'delegate_ocr_status',
+        source: 'delegate_ocr_preflight',
+        runId: 'ocr-delegate-run-2',
+        kind: 'delegate',
+        delegateOcrIndex: 2,
+        stage: 'agent',
+        status: 'progress',
+        flowStatus: 'running',
+        completedChunks: 1,
+        totalChunks: 3,
+      }),
+    );
+  });
 });

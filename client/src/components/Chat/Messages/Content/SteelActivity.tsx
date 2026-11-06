@@ -2,30 +2,49 @@ import { memo, useContext, useEffect, useMemo, useRef, useState } from 'react';
 import { useRecoilValue } from 'recoil';
 import { Button } from '@librechat/client';
 import { AlertTriangle, CheckCircle2, ChevronDown, LoaderCircle } from 'lucide-react';
-import type { SteelQuotationStatus } from 'librechat-data-provider';
+import type {
+  SteelFlowStatus,
+  SteelOcrKind,
+  SteelQuotationStatus,
+} from 'librechat-data-provider';
 import type {
   SteelNativeActivityEvent,
   SteelNativeSavedCounts,
   SteelNativeTableCounts,
 } from '~/store/steel';
 import {
+  isSteelFlowExpiredError,
+  useCancelSteelOcrMutation,
+  useCancelSteelQuotationMutation,
+  useGetSteelOcrStatusQuery,
+  useGetSteelQuotationStatusQuery,
+  usePauseSteelOcrMutation,
+  usePauseSteelQuotationMutation,
+} from '~/data-provider/Steel';
+import {
   appendSteelNativeActivityEvent,
   normalizePersistedSteelActivityEvent,
 } from '~/hooks/SSE/useSteelEventHandler';
-import {
-  useCancelSteelQuotationMutation,
-  useGetSteelQuotationStatusQuery,
-} from '~/data-provider/Steel';
 import { steelNativeActivityByMessageId } from '~/store/steel';
 import useLocalize from '~/hooks/useLocalize';
 import { ChatContext } from '~/Providers';
 import { EmptyText } from './Parts';
+
+export type SteelFlowKind = SteelOcrKind | 'quotation';
+
+export type SteelFlowActionTarget = {
+  kind: SteelFlowKind;
+  runId: string;
+  index?: number;
+};
 
 export type SteelActivityProps = {
   messageId: string;
   isCreatedByUser?: boolean;
   conversationId?: string | null;
   persistedActivityEvents?: readonly unknown[];
+  onResumeFlow?: (target: SteelFlowActionTarget) => void;
+  onRetryFlow?: (target: SteelFlowActionTarget) => void;
 };
 
 type Localize = ReturnType<typeof useLocalize>;
@@ -114,25 +133,18 @@ function getQuotationRepairStatusText(
 
 function isQuotationCancellableStatus(status: SteelQuotationStatus['status']): boolean {
   return (
-    status === 'queued' ||
     status === 'running' ||
-    status === 'aggregating' ||
-    status === 'finalizing' ||
-    status === 'interrupted'
+    status === 'paused' ||
+    status === 'interrupted' ||
+    status === 'failed'
   );
 }
 
-function isQuotationActiveStatus(status: SteelQuotationStatus['status']): boolean {
-  return (
-    status === 'queued' ||
-    status === 'running' ||
-    status === 'aggregating' ||
-    status === 'finalizing'
-  );
-}
-
-function isQuotationPreflightWaitingStatus(status: SteelQuotationStatus['status']): boolean {
-  return status === 'queued' || status === 'running' || status === 'aggregating';
+function isQuotationPreflightWaitingStatus(
+  status: SteelQuotationStatus['status'],
+  stage?: string | null,
+): boolean {
+  return status === 'running' && stage !== 'finalizing';
 }
 
 function getQuotationStatusText(
@@ -140,12 +152,24 @@ function getQuotationStatusText(
   status: SteelQuotationStatus['status'],
   completedChunks: number,
   totalChunks: number,
-  stage?: string,
+  stage?: string | null,
   chunkIndex?: number,
   repairAttempt?: number,
   maxRepairAttempts?: number,
 ): string {
-  if (stage === 'main_consolidating') {
+  if (status === 'paused') {
+    return localize('com_ui_steel_quote_status_paused', { completedChunks, totalChunks });
+  }
+  if (status === 'interrupted') {
+    return localize('com_ui_steel_quote_status_interrupted');
+  }
+  if (status === 'failed') {
+    return localize('com_ui_steel_quote_status_failed');
+  }
+  if (status === 'cancelled') {
+    return localize('com_ui_steel_quote_status_cancelled');
+  }
+  if (stage === 'main_consolidating' || stage === 'aggregating') {
     return localize('com_ui_steel_quote_status_main_consolidating', {
       completedChunks,
       totalChunks,
@@ -163,13 +187,16 @@ function getQuotationStatusText(
       totalChunks,
     });
   }
-  if (status === 'queued') {
+  if (stage === 'queued') {
     return localize('com_ui_steel_quote_status_preparing');
+  }
+  if (stage === 'finalizing' && status === 'running') {
+    return localize('com_ui_steel_quote_status_finalizing', { completedChunks, totalChunks });
   }
   if (status === 'running') {
     const repairText = getQuotationRepairStatusText(
       localize,
-      stage,
+      stage ?? undefined,
       chunkIndex,
       repairAttempt,
       maxRepairAttempts,
@@ -202,40 +229,362 @@ function getQuotationStatusText(
     }
     return localize('com_ui_steel_quote_status_running', { completedChunks, totalChunks });
   }
-  if (status === 'aggregating') {
-    return localize('com_ui_steel_quote_status_main_consolidating', {
-      completedChunks,
-      totalChunks,
-    });
-  }
-  if (status === 'finalizing') {
-    return localize('com_ui_steel_quote_status_finalizing', { completedChunks, totalChunks });
-  }
-  if (status === 'interrupted') {
-    return localize('com_ui_steel_quote_status_interrupted');
-  }
   if (status === 'completed') {
     return localize('com_ui_steel_quote_status_completed', { completedChunks, totalChunks });
-  }
-  if (status === 'cancelled') {
-    return localize('com_ui_steel_quote_status_cancelled');
   }
   return localize('com_ui_steel_quote_status_idle');
 }
 
-function getQuotationCancelError(error: unknown): string | undefined {
-  let message: string | undefined;
-  if (error instanceof Error && error.message) {
-    message = error.message;
-  } else if (typeof error === 'string' && error) {
-    message = error;
+function getOcrStatusText(
+  localize: Localize,
+  status: SteelFlowStatus,
+  completedChunks: number,
+  totalChunks: number,
+): string {
+  if (status === 'running') {
+    return localize('com_ui_steel_ocr_status_running', { completedChunks, totalChunks });
   }
-  return message;
+  if (status === 'paused') {
+    return localize('com_ui_steel_ocr_status_paused', { completedChunks, totalChunks });
+  }
+  if (status === 'interrupted') {
+    return localize('com_ui_steel_ocr_status_interrupted');
+  }
+  if (status === 'failed') {
+    return localize('com_ui_steel_ocr_status_failed');
+  }
+  if (status === 'completed') {
+    return localize('com_ui_steel_ocr_status_completed', { completedChunks, totalChunks });
+  }
+  return localize('com_ui_steel_ocr_status_cancelled');
+}
+
+function getFlowActionErrorMessage(error: unknown): string | undefined {
+  if (error instanceof Error && error.message) {
+    return error.message;
+  }
+  if (typeof error === 'string' && error) {
+    return error;
+  }
+  return undefined;
 }
 
 function getQuotationRetryError(error: unknown, localize: Localize): string {
-  return getQuotationCancelError(error) ?? localize('com_ui_steel_quote_retry_status_failed');
+  return getFlowActionErrorMessage(error) ?? localize('com_ui_steel_quote_retry_status_failed');
 }
+
+export type SteelFlowCardProps = {
+  kind: SteelFlowKind;
+  runId?: string;
+  status: SteelFlowStatus | 'idle';
+  stage?: string | null;
+  statusText: string;
+  note?: string;
+  metadataText?: string;
+  errorMessage?: string | null;
+  actionError?: string;
+  isWarningState?: boolean;
+  canPause?: boolean;
+  canCancel?: boolean;
+  canResume?: boolean;
+  canRetry?: boolean;
+  isPausing?: boolean;
+  isCanceling?: boolean;
+  isResuming?: boolean;
+  isRetrying?: boolean;
+  disableRetry?: boolean;
+  onPause?: () => void;
+  onCancel?: () => void;
+  onResume?: () => void;
+  onRetry?: () => void;
+  localize: Localize;
+};
+
+export const SteelFlowCard = memo(function SteelFlowCard({
+  kind,
+  runId,
+  status,
+  stage,
+  statusText,
+  note,
+  metadataText,
+  errorMessage,
+  actionError,
+  isWarningState = false,
+  canPause = false,
+  canCancel = false,
+  canResume = false,
+  canRetry = false,
+  isPausing = false,
+  isCanceling = false,
+  isResuming = false,
+  isRetrying = false,
+  disableRetry = false,
+  onPause,
+  onCancel,
+  onResume,
+  onRetry,
+  localize,
+}: SteelFlowCardProps) {
+  const isBusy = isPausing || isCanceling || isResuming || isRetrying;
+  const isActive = status === 'running';
+  let StatusIcon = AlertTriangle;
+  let statusIconClass = 'text-status-error';
+  if ((isActive && !isWarningState) || isBusy) {
+    StatusIcon = LoaderCircle;
+    statusIconClass = 'animate-spin text-text-secondary motion-reduce:animate-none';
+  } else if (status === 'completed') {
+    StatusIcon = CheckCircle2;
+    statusIconClass = 'text-status-success';
+  }
+
+  let flowTitleKey: LocalizeKey = 'com_ui_steel_flow_quotation';
+  let regionLabelKey: LocalizeKey = 'com_ui_steel_activity_quotation';
+  if (kind === 'preflight') {
+    flowTitleKey = 'com_ui_steel_flow_ocr_preflight';
+    regionLabelKey = 'com_ui_steel_flow_ocr_preflight';
+  } else if (kind === 'delegate') {
+    flowTitleKey = 'com_ui_steel_flow_ocr_delegate';
+    regionLabelKey = 'com_ui_steel_flow_ocr_delegate';
+  }
+
+  const showPause = Boolean(onPause) && canPause;
+  const showCancel = Boolean(onCancel) && canCancel;
+  const showResume = Boolean(onResume) && canResume;
+  const showRetry = Boolean(onRetry) && canRetry;
+
+  return (
+    <div
+      role="region"
+      data-testid={`steel-flow-card-${kind}${runId ? `-${runId}` : ''}`}
+      className="my-3 flex min-h-5 flex-wrap items-center gap-x-1.5 gap-y-1 rounded-md border border-border-light bg-surface-secondary px-2 py-1 dark:border-border-medium dark:bg-surface-tertiary"
+      aria-label={localize(regionLabelKey)}
+    >
+      <StatusIcon aria-hidden="true" className={`h-3.5 w-3.5 shrink-0 ${statusIconClass}`} />
+      <span className="shrink-0 font-medium text-text-primary">{localize(flowTitleKey)}</span>
+      <span className="min-w-0 flex-1 whitespace-normal break-words">{statusText}</span>
+      {stage && (
+        <span className="shrink-0 text-text-tertiary">
+          {localize('com_ui_steel_flow_stage', { stage })}
+        </span>
+      )}
+      {note && (
+        <span className="min-w-0 whitespace-normal break-words text-text-tertiary">{note}</span>
+      )}
+      {metadataText && (
+        <span className="min-w-0 whitespace-normal break-words text-text-tertiary">
+          {metadataText}
+        </span>
+      )}
+      {errorMessage && (
+        <span className="min-w-0 whitespace-normal break-words text-status-error">
+          {errorMessage}
+        </span>
+      )}
+      {showResume && (
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="ms-auto h-7 shrink-0 px-2 py-1"
+          disabled={isBusy}
+          onClick={onResume}
+        >
+          {localize('com_ui_resume')}
+        </Button>
+      )}
+      {showRetry && (
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="ms-auto h-7 shrink-0 px-2 py-1"
+          disabled={disableRetry || isBusy}
+          onClick={onRetry}
+        >
+          {localize('com_ui_retry')}
+        </Button>
+      )}
+      {showPause && (
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="ms-auto h-7 shrink-0 px-2 py-1"
+          disabled={isBusy}
+          onClick={onPause}
+        >
+          {localize('com_ui_pause')}
+        </Button>
+      )}
+      {showCancel && (
+        <Button
+          type="button"
+          size="sm"
+          variant="outline"
+          className="ms-auto h-7 shrink-0 px-2 py-1"
+          disabled={isBusy}
+          onClick={onCancel}
+        >
+          {localize('com_ui_cancel')}
+        </Button>
+      )}
+      {actionError && (
+        <span role="alert" className="min-w-0 whitespace-normal break-words text-status-error">
+          {actionError}
+        </span>
+      )}
+    </div>
+  );
+});
+
+type SteelOcrFlowSummary = {
+  runId: string;
+  kind: SteelOcrKind;
+  conversationId: string;
+  flowStatus: SteelFlowStatus;
+  stage?: string;
+  completedChunks: number;
+  totalChunks: number;
+  errorMessage?: string;
+};
+
+type SteelOcrFlowCardProps = {
+  summary: SteelOcrFlowSummary;
+  localize: Localize;
+  onResumeFlow?: (target: SteelFlowActionTarget) => void;
+  onRetryFlow?: (target: SteelFlowActionTarget) => void;
+};
+
+const SteelOcrFlowCard = memo(function SteelOcrFlowCard({
+  summary,
+  localize,
+  onResumeFlow,
+  onRetryFlow,
+}: SteelOcrFlowCardProps) {
+  const { conversationId, runId, kind } = summary;
+  const ocrQuery = useGetSteelOcrStatusQuery(conversationId, runId);
+  const pauseMutation = usePauseSteelOcrMutation(conversationId);
+  const cancelMutation = useCancelSteelOcrMutation(conversationId);
+  const pauseInFlightRef = useRef(false);
+  const cancelInFlightRef = useRef(false);
+
+  const queryData = ocrQuery?.data;
+  const isMatchingQuery = Boolean(
+    queryData && queryData.runId === runId && queryData.kind === kind,
+  );
+  const terminalEventWins = Boolean(
+    isMatchingQuery &&
+      (summary.flowStatus === 'completed' || summary.flowStatus === 'cancelled') &&
+      queryData?.status !== 'completed' &&
+      queryData?.status !== 'cancelled',
+  );
+  const status: SteelFlowStatus =
+    !isMatchingQuery || terminalEventWins || !queryData ? summary.flowStatus : queryData.status;
+  const stage =
+    !isMatchingQuery || terminalEventWins || !queryData
+      ? summary.stage
+      : (queryData.stage ?? summary.stage);
+  const completedChunks = isMatchingQuery && queryData
+    ? Math.max(queryData.completedChunks, summary.completedChunks)
+    : summary.completedChunks;
+  const totalChunks = isMatchingQuery && queryData
+    ? Math.max(queryData.totalChunks, summary.totalChunks)
+    : summary.totalChunks;
+  const errorMessage = isMatchingQuery && queryData
+    ? (queryData.errorMessage ?? summary.errorMessage)
+    : summary.errorMessage;
+
+  const isExpiredByQuery = Boolean(
+    isMatchingQuery && queryData?.latestRunId && queryData.latestRunId !== runId,
+  );
+  const isExpiredByMutation =
+    isSteelFlowExpiredError(pauseMutation?.error) ||
+    isSteelFlowExpiredError(cancelMutation?.error);
+  const isSuperseded = isExpiredByQuery || isExpiredByMutation;
+  const isTerminal = status === 'completed' || status === 'cancelled';
+
+  const isPausing = Boolean(pauseMutation?.isLoading);
+  const isCanceling = Boolean(cancelMutation?.isLoading);
+
+  useEffect(() => {
+    pauseInFlightRef.current = false;
+  }, [isPausing, pauseMutation?.error, status, runId]);
+
+  useEffect(() => {
+    cancelInFlightRef.current = false;
+  }, [isCanceling, cancelMutation?.error, status, runId]);
+
+  const canPause = !isSuperseded && !isTerminal && status === 'running';
+  const canCancel =
+    !isSuperseded &&
+    !isTerminal &&
+    (status === 'running' ||
+      status === 'paused' ||
+      status === 'interrupted' ||
+      status === 'failed');
+  const canResume =
+    !isSuperseded &&
+    !isTerminal &&
+    Boolean(onResumeFlow) &&
+    (status === 'paused' || status === 'interrupted');
+  const canRetry =
+    !isSuperseded && !isTerminal && Boolean(onRetryFlow) && status === 'failed';
+
+  let actionError: string | undefined;
+  if (isExpiredByMutation) {
+    actionError = localize('com_ui_steel_flow_expired');
+  } else if (pauseMutation?.error) {
+    const message = getFlowActionErrorMessage(pauseMutation.error);
+    if (message) {
+      actionError = localize('com_ui_steel_ocr_pause_failed', { error: message });
+    }
+  } else if (cancelMutation?.error) {
+    const message = getFlowActionErrorMessage(cancelMutation.error);
+    if (message) {
+      actionError = localize('com_ui_steel_ocr_cancel_failed', { error: message });
+    }
+  }
+
+  const handlePause = () => {
+    if (!canPause || pauseInFlightRef.current || isPausing || isCanceling) {
+      return;
+    }
+    pauseInFlightRef.current = true;
+    pauseMutation.mutate(runId);
+  };
+
+  const handleCancel = () => {
+    if (!canCancel || cancelInFlightRef.current || isCanceling || isPausing) {
+      return;
+    }
+    cancelInFlightRef.current = true;
+    cancelMutation.mutate(runId);
+  };
+
+  return (
+    <SteelFlowCard
+      kind={kind}
+      runId={runId}
+      status={status}
+      stage={stage}
+      statusText={getOcrStatusText(localize, status, completedChunks, totalChunks)}
+      errorMessage={errorMessage}
+      actionError={actionError}
+      canPause={canPause}
+      canCancel={canCancel}
+      canResume={canResume}
+      canRetry={canRetry}
+      isPausing={isPausing}
+      isCanceling={isCanceling}
+      onPause={handlePause}
+      onCancel={handleCancel}
+      onResume={onResumeFlow ? () => onResumeFlow({ kind, runId }) : undefined}
+      onRetry={onRetryFlow ? () => onRetryFlow({ kind, runId }) : undefined}
+      localize={localize}
+    />
+  );
+});
 
 type SteelQuotationProgressProps = {
   conversationId: string;
@@ -243,6 +592,8 @@ type SteelQuotationProgressProps = {
   event?: Extract<SteelNativeActivityEvent, { type: 'quotation_status' }>;
   localize: Localize;
   showLoadingDot: boolean;
+  onResumeFlow?: (target: SteelFlowActionTarget) => void;
+  onRetryFlow?: (target: SteelFlowActionTarget) => void;
 };
 
 const SteelQuotationProgress = memo(function SteelQuotationProgress({
@@ -251,8 +602,11 @@ const SteelQuotationProgress = memo(function SteelQuotationProgress({
   event,
   localize,
   showLoadingDot,
+  onResumeFlow,
+  onRetryFlow,
 }: SteelQuotationProgressProps) {
   const quotationQuery = useGetSteelQuotationStatusQuery(conversationId);
+  const pauseMutation = usePauseSteelQuotationMutation?.(conversationId);
   const cancelMutation = useCancelSteelQuotationMutation(conversationId);
   const chat = useContext(ChatContext);
   const [isRetrying, setIsRetrying] = useState(false);
@@ -262,6 +616,8 @@ const SteelQuotationProgress = memo(function SteelQuotationProgress({
   const retryDispatchedRef = useRef(false);
   const retrySubmissionStartedRef = useRef(false);
   const retryRunRef = useRef<{ index: number; runId?: string } | null>(null);
+  const pauseInFlightRef = useRef(false);
+  const cancelInFlightRef = useRef(false);
   const currentConversationIdRef = useRef(chat?.conversation?.conversationId);
   const isSubmittingRef = useRef(chat?.isSubmitting ?? false);
   currentConversationIdRef.current = chat?.conversation?.conversationId;
@@ -299,6 +655,17 @@ const SteelQuotationProgress = memo(function SteelQuotationProgress({
   let ocrSource = event?.conversationId === conversationId ? event.ocrSource : undefined;
   if (sameRunQuery) ocrSource = queryData?.ocrSource ?? ocrSource;
 
+  const isPausing = Boolean(pauseMutation?.isLoading);
+  const isCanceling = Boolean(cancelMutation?.isLoading);
+
+  useEffect(() => {
+    pauseInFlightRef.current = false;
+  }, [isPausing, pauseMutation?.error, statusName, statusIndex, statusRunId]);
+
+  useEffect(() => {
+    cancelInFlightRef.current = false;
+  }, [isCanceling, cancelMutation?.error, statusName, statusIndex, statusRunId]);
+
   useEffect(() => {
     setRetryError(undefined);
     const retryRun = retryRunRef.current;
@@ -334,49 +701,84 @@ const SteelQuotationProgress = memo(function SteelQuotationProgress({
     ? Math.max(status.totalChunks, event.totalChunks)
     : status.totalChunks;
   const index = status.index ?? event?.index ?? null;
+  const isExpiredByQuery = Boolean(
+    !hasMismatchedQuery &&
+      queryData?.latestRunId &&
+      statusRunId &&
+      queryData.latestRunId !== statusRunId,
+  );
+  const isExpiredByMutation =
+    isSteelFlowExpiredError(pauseMutation?.error) ||
+    isSteelFlowExpiredError(cancelMutation?.error);
+  const isSuperseded = isExpiredByQuery || isExpiredByMutation;
+  const isTerminal = status.status === 'completed' || status.status === 'cancelled';
+
   const canCancel =
     !hasMismatchedQuery &&
     !terminalEventWins &&
+    !isSuperseded &&
+    !isTerminal &&
+    index !== null &&
     (queryData?.canCancel ?? isQuotationCancellableStatus(status.status));
+  const canPause =
+    !hasMismatchedQuery &&
+    !terminalEventWins &&
+    !isSuperseded &&
+    status.status === 'running' &&
+    index !== null &&
+    Boolean(pauseMutation);
   const isCurrentConversation = currentConversationIdRef.current === conversationId;
-  const canRetry =
+  const canRetryInterrupted =
     isCurrentConversation && canCancel && status.status === 'interrupted' && index !== null;
-  let cancelError: string | undefined;
-  if (!hasMismatchedQuery && !terminalEventWins) {
-    cancelError = getQuotationCancelError(cancelMutation.error);
+  const showInterruptedRetry =
+    !hasMismatchedQuery &&
+    !terminalEventWins &&
+    !isSuperseded &&
+    status.status === 'interrupted' &&
+    index !== null;
+  const showCallbackRetry =
+    !hasMismatchedQuery &&
+    !terminalEventWins &&
+    !isSuperseded &&
+    status.status === 'failed' &&
+    Boolean(onRetryFlow) &&
+    Boolean(statusRunId);
+  const showCallbackResume =
+    !hasMismatchedQuery &&
+    !terminalEventWins &&
+    !isSuperseded &&
+    status.status === 'paused' &&
+    Boolean(onResumeFlow) &&
+    Boolean(statusRunId);
+
+  let resolvedStage = event?.stage;
+  if (!hasMismatchedQuery && !terminalEventWins && queryData) {
+    resolvedStage = queryData.stage ?? (event?.status === queryData.status ? event.stage : undefined);
   }
+  const resolvedErrorMessage =
+    hasMismatchedQuery || terminalEventWins ? undefined : queryData?.errorMessage;
+
   const statusText = getQuotationStatusText(
     localize,
     status.status,
     completedChunks,
     totalChunks,
-    event?.status === status.status ? event.stage : undefined,
+    resolvedStage,
     event?.chunkIndex,
     event?.repairAttempt,
     event?.maxRepairAttempts,
   );
-  const isCanceling = cancelMutation.isLoading;
   const repairFailed = isQuotationRepairFailure(event);
   const shouldShowLoadingDot =
     showLoadingDot &&
     !hasMismatchedQuery &&
-    isQuotationPreflightWaitingStatus(status.status) &&
+    isQuotationPreflightWaitingStatus(status.status, resolvedStage) &&
     !repairFailed &&
-    (queryData == null || isQuotationPreflightWaitingStatus(queryData.status));
-  const isActive = isQuotationActiveStatus(status.status);
-  let StatusIcon = AlertTriangle;
-  let statusIconClass = 'text-status-error';
-  if ((isActive && !repairFailed) || isCanceling || isRetrying) {
-    StatusIcon = LoaderCircle;
-    statusIconClass = 'animate-spin text-text-secondary';
-  } else if (status.status === 'completed') {
-    StatusIcon = CheckCircle2;
-    statusIconClass = 'text-status-success';
-  }
+    (queryData == null || isQuotationPreflightWaitingStatus(queryData.status, queryData.stage));
 
   const retryQuotation = async () => {
     if (
-      !canRetry ||
+      !canRetryInterrupted ||
       retryInFlightRef.current ||
       isRetrying ||
       retryDispatchedRef.current ||
@@ -441,71 +843,94 @@ const SteelQuotationProgress = memo(function SteelQuotationProgress({
       setIsRetrying(false);
     }
   };
-  const actionError = status.status === 'interrupted' ? retryError : cancelError;
+
+  let actionError: string | undefined;
+  if (!hasMismatchedQuery && !terminalEventWins) {
+    if (isExpiredByMutation) {
+      actionError = localize('com_ui_steel_flow_expired');
+    } else if (status.status === 'interrupted' && retryError) {
+      actionError = localize('com_ui_steel_quote_retry_failed', { error: retryError });
+    } else if (pauseMutation?.error) {
+      const pauseErr = getFlowActionErrorMessage(pauseMutation.error);
+      if (pauseErr) {
+        actionError = localize('com_ui_steel_quote_pause_failed', { error: pauseErr });
+      }
+    } else if (cancelMutation?.error) {
+      const cancelErr = getFlowActionErrorMessage(cancelMutation.error);
+      if (cancelErr) {
+        actionError = localize('com_ui_steel_quote_cancel_failed', { error: cancelErr });
+      }
+    }
+  }
+
+  const handlePause = () => {
+    if (!canPause || index === null || pauseInFlightRef.current || isPausing || isCanceling) {
+      return;
+    }
+    pauseInFlightRef.current = true;
+    pauseMutation?.mutate(index);
+  };
+
+  const handleCancel = () => {
+    if (!canCancel || index === null || cancelInFlightRef.current || isCanceling || isPausing) {
+      return;
+    }
+    cancelInFlightRef.current = true;
+    cancelMutation.mutate(index);
+  };
+
+  const metadataText = ocrSource
+    ? localize(
+        ocrSource.source === 'ai'
+          ? 'com_ui_steel_quote_source_ai'
+          : 'com_ui_steel_quote_source_human',
+        { version: ocrSource.version },
+      )
+    : undefined;
+
+  let handleRetry: (() => void) | undefined;
+  if (showInterruptedRetry) {
+    handleRetry = retryQuotation;
+  } else if (showCallbackRetry && onRetryFlow && statusRunId) {
+    handleRetry = () =>
+      onRetryFlow({ kind: 'quotation', runId: statusRunId, index: index ?? undefined });
+  }
 
   return (
     <>
-      <div
-        className="my-3 flex min-h-5 flex-wrap items-center gap-x-1.5 gap-y-1 rounded-md border border-border-light bg-surface-secondary px-2 py-1 dark:border-border-medium dark:bg-surface-tertiary"
-        aria-label={localize('com_ui_steel_activity_quotation')}
-      >
-        <StatusIcon aria-hidden="true" className={`h-3.5 w-3.5 shrink-0 ${statusIconClass}`} />
-        <span className="min-w-0 flex-1 whitespace-normal break-words">{statusText}</span>
-        {event?.message && (
-          <span className="min-w-0 whitespace-normal break-words text-text-tertiary">
-            {event.message}
-          </span>
-        )}
-        {ocrSource && (
-          <span className="min-w-0 whitespace-normal break-words text-text-tertiary">
-            {localize(
-              ocrSource.source === 'ai'
-                ? 'com_ui_steel_quote_source_ai'
-                : 'com_ui_steel_quote_source_human',
-              { version: ocrSource.version },
-            )}
-          </span>
-        )}
-        {!hasMismatchedQuery &&
-          !terminalEventWins &&
-          (status.status === 'interrupted' || canCancel) &&
-          index !== null &&
-          status.status !== 'completed' &&
-          status.status !== 'cancelled' &&
-          (status.status === 'interrupted' ? (
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="ms-auto h-7 shrink-0 px-2 py-1"
-              disabled={!canRetry || isRetrying || isRetryDispatched || isSubmittingRef.current}
-              onClick={retryQuotation}
-            >
-              {localize('com_ui_retry')}
-            </Button>
-          ) : (
-            <Button
-              type="button"
-              size="sm"
-              variant="outline"
-              className="ms-auto h-7 shrink-0 px-2 py-1"
-              disabled={isCanceling}
-              onClick={() => cancelMutation.mutate(index)}
-            >
-              {localize('com_ui_cancel')}
-            </Button>
-          ))}
-        {actionError && (
-          <span className="min-w-0 whitespace-normal break-words text-status-error">
-            {localize(
-              status.status === 'interrupted'
-                ? 'com_ui_steel_quote_retry_failed'
-                : 'com_ui_steel_quote_cancel_failed',
-              { error: actionError },
-            )}
-          </span>
-        )}
-      </div>
+      <SteelFlowCard
+        kind="quotation"
+        runId={statusRunId}
+        status={status.status}
+        stage={resolvedStage}
+        statusText={statusText}
+        note={event?.message}
+        metadataText={metadataText}
+        errorMessage={resolvedErrorMessage}
+        actionError={actionError}
+        isWarningState={repairFailed}
+        canPause={canPause}
+        canCancel={canCancel && status.status !== 'interrupted'}
+        canResume={showCallbackResume}
+        canRetry={showInterruptedRetry || showCallbackRetry}
+        isPausing={isPausing}
+        isCanceling={isCanceling}
+        isRetrying={isRetrying}
+        disableRetry={
+          showInterruptedRetry
+            ? !canRetryInterrupted || isRetrying || isRetryDispatched || isSubmittingRef.current
+            : false
+        }
+        onPause={pauseMutation ? handlePause : undefined}
+        onCancel={handleCancel}
+        onResume={
+          showCallbackResume && onResumeFlow && statusRunId
+            ? () => onResumeFlow({ kind: 'quotation', runId: statusRunId, index: index ?? undefined })
+            : undefined
+        }
+        onRetry={handleRetry}
+        localize={localize}
+      />
       {shouldShowLoadingDot && (
         <div className="relative min-h-8 overflow-visible ps-2 pt-2">
           <EmptyText />
@@ -779,7 +1204,7 @@ function getTotalCountText(
 
 function shouldDisplayEvent(event: SteelNativeActivityEvent): boolean {
   if (event.type === 'quotation_status') {
-    return event.status !== 'queued';
+    return event.stage !== 'queued';
   }
 
   if (event.type === 'delegate_ocr_status') {
@@ -795,6 +1220,126 @@ function shouldDisplayEvent(event: SteelNativeActivityEvent): boolean {
   }
 
   return event.parseStatus !== 'saved';
+}
+
+function resolveEventOcrFlowStatus(
+  event: Extract<SteelNativeActivityEvent, { type: 'parse_status' | 'delegate_ocr_status' }>,
+): SteelFlowStatus {
+  if (event.flowStatus) {
+    return event.flowStatus;
+  }
+  if (event.type === 'delegate_ocr_status') {
+    if (event.status === 'succeeded') {
+      return 'completed';
+    }
+    if (event.status === 'failed') {
+      return 'failed';
+    }
+    return 'running';
+  }
+  if (event.parseStatus === 'saved') {
+    return 'completed';
+  }
+  if (event.errorMessage) {
+    return 'failed';
+  }
+  return 'running';
+}
+
+function extractOcrFlowSummaries(
+  events: readonly SteelNativeActivityEvent[],
+  fallbackConversationId?: string | null,
+): SteelOcrFlowSummary[] {
+  const summariesByRunId = new Map<string, SteelOcrFlowSummary>();
+  for (const event of events) {
+    if (event.type !== 'parse_status' && event.type !== 'delegate_ocr_status') {
+      continue;
+    }
+    if (
+      event.type === 'parse_status' &&
+      event.source !== 'ocr_preprocessing' &&
+      event.source !== 'paddleocr_preflight'
+    ) {
+      continue;
+    }
+    const runId = event.runId?.trim();
+    const resolvedConversationId = (event.conversationId ?? fallbackConversationId ?? '').trim();
+    if (!runId || !resolvedConversationId) {
+      continue;
+    }
+    const kind: SteelOcrKind =
+      event.kind ?? (event.type === 'delegate_ocr_status' ? 'delegate' : 'preflight');
+    const eventStatus = resolveEventOcrFlowStatus(event);
+    const existing = summariesByRunId.get(runId);
+    if (!existing) {
+      summariesByRunId.set(runId, {
+        runId,
+        kind,
+        conversationId: resolvedConversationId,
+        flowStatus: eventStatus,
+        stage: event.stage,
+        completedChunks: event.completedChunks ?? 0,
+        totalChunks: event.totalChunks ?? 0,
+        errorMessage: event.errorMessage,
+      });
+      continue;
+    }
+    const isExistingTerminal =
+      existing.flowStatus === 'completed' || existing.flowStatus === 'cancelled';
+    const isIncomingTerminal = eventStatus === 'completed' || eventStatus === 'cancelled';
+    if (isExistingTerminal && !isIncomingTerminal) {
+      continue;
+    }
+    summariesByRunId.set(runId, {
+      ...existing,
+      flowStatus: eventStatus,
+      stage: event.stage ?? existing.stage,
+      completedChunks: Math.max(existing.completedChunks, event.completedChunks ?? 0),
+      totalChunks: Math.max(existing.totalChunks, event.totalChunks ?? 0),
+      errorMessage: event.errorMessage ?? existing.errorMessage,
+    });
+  }
+  return [...summariesByRunId.values()];
+}
+
+export function isSteelFlowActiveInEvents(
+  events: readonly SteelNativeActivityEvent[],
+  conversationId?: string | null,
+): boolean {
+  const latestQuotationEvent = [...events]
+    .reverse()
+    .find(
+      (event): event is Extract<SteelNativeActivityEvent, { type: 'quotation_status' }> =>
+        event.type === 'quotation_status' &&
+        (!conversationId || !event.conversationId || event.conversationId === conversationId),
+    );
+  if (latestQuotationEvent?.status === 'running') {
+    return true;
+  }
+
+  const ocrSummaries = extractOcrFlowSummaries(events, conversationId);
+  if (ocrSummaries.some((summary) => summary.flowStatus === 'running')) {
+    return true;
+  }
+
+  const latestOcrEvent = [...events]
+    .reverse()
+    .find(
+      (
+        event,
+      ): event is Extract<
+        SteelNativeActivityEvent,
+        { type: 'parse_status' | 'delegate_ocr_status' }
+      > =>
+        (event.type === 'delegate_ocr_status' ||
+          (event.type === 'parse_status' &&
+            (event.source === 'ocr_preprocessing' || event.source === 'paddleocr_preflight'))) &&
+        (!conversationId || !event.conversationId || event.conversationId === conversationId),
+    );
+  if (!latestOcrEvent) {
+    return false;
+  }
+  return resolveEventOcrFlowStatus(latestOcrEvent) === 'running';
 }
 
 function getErrorMessage(event: SteelNativeActivityEvent): string | undefined {
@@ -849,6 +1394,8 @@ const SteelActivity = memo(function SteelActivity({
   isCreatedByUser,
   conversationId,
   persistedActivityEvents,
+  onResumeFlow,
+  onRetryFlow,
 }: SteelActivityProps) {
   const localize = useLocalize();
   const chatConversationId = useContext(ChatContext)?.conversation?.conversationId;
@@ -858,6 +1405,10 @@ const SteelActivity = memo(function SteelActivity({
   const displayEvents = useMemo(
     () => allActivityEvents.filter(shouldDisplayEvent),
     [allActivityEvents],
+  );
+  const ocrFlowSummaries = useMemo(
+    () => extractOcrFlowSummaries(allActivityEvents, conversationId ?? chatConversationId),
+    [allActivityEvents, chatConversationId, conversationId],
   );
   const latestQuotationEvent = useMemo(
     () =>
@@ -871,14 +1422,18 @@ const SteelActivity = memo(function SteelActivity({
   );
   const showQuotationLoadingDot = Boolean(
     latestQuotationEvent &&
-      isQuotationPreflightWaitingStatus(latestQuotationEvent.status) &&
+      isQuotationPreflightWaitingStatus(latestQuotationEvent.status, latestQuotationEvent.stage) &&
       !isQuotationRepairFailure(latestQuotationEvent),
   );
   const quotationConversationId =
     conversationId ?? latestQuotationEvent?.conversationId ?? chatConversationId;
   const hasQuotationActivity = latestQuotationEvent !== undefined;
+  const hasOcrFlowActivity = ocrFlowSummaries.length > 0;
 
-  if (isCreatedByUser || (displayEvents.length === 0 && !hasQuotationActivity)) {
+  if (
+    isCreatedByUser ||
+    (displayEvents.length === 0 && !hasQuotationActivity && !hasOcrFlowActivity)
+  ) {
     return null;
   }
 
@@ -898,6 +1453,15 @@ const SteelActivity = memo(function SteelActivity({
       aria-label={localize('com_ui_steel_activity')}
       className="mt-1 flex flex-col gap-1 text-xs text-text-secondary"
     >
+      {ocrFlowSummaries.map((summary) => (
+        <SteelOcrFlowCard
+          key={summary.runId}
+          summary={summary}
+          localize={localize}
+          onResumeFlow={onResumeFlow}
+          onRetryFlow={onRetryFlow}
+        />
+      ))}
       {hasQuotationActivity && quotationConversationId && (
         <SteelQuotationProgress
           conversationId={quotationConversationId}
@@ -905,6 +1469,8 @@ const SteelActivity = memo(function SteelActivity({
           event={latestQuotationEvent}
           localize={localize}
           showLoadingDot={showQuotationLoadingDot}
+          onResumeFlow={onResumeFlow}
+          onRetryFlow={onRetryFlow}
         />
       )}
       {isCollapsible && (
@@ -919,7 +1485,7 @@ const SteelActivity = memo(function SteelActivity({
           <span className="font-medium">{eventCountText}</span>
           <ChevronDown
             className={[
-              'size-4 shrink-0 text-text-secondary transition-transform duration-200 ease-out',
+              'size-4 shrink-0 text-text-secondary transition-transform duration-200 ease-out motion-reduce:transition-none',
               isExpanded ? 'rotate-180' : '',
             ].join(' ')}
             aria-hidden="true"
@@ -933,7 +1499,7 @@ const SteelActivity = memo(function SteelActivity({
         </div>
       )}
       {missingPageTexts.length > 0 && (
-        <div className="flex min-h-5 items-start gap-1.5 rounded-md border border-border-light bg-surface-secondary px-2 py-1 text-red-600 dark:border-border-medium dark:bg-surface-tertiary">
+        <div className="flex min-h-5 items-start gap-1.5 rounded-md border border-border-light bg-surface-secondary px-2 py-1 text-status-error dark:border-border-medium dark:bg-surface-tertiary">
           <AlertTriangle aria-hidden="true" className="mt-0.5 h-3.5 w-3.5 shrink-0" />
           <div className="min-w-0 space-y-0.5">
             {missingPageTexts.map((missingPageText) => (
@@ -958,7 +1524,7 @@ const SteelActivity = memo(function SteelActivity({
           >
             <Icon
               aria-hidden="true"
-              className={`h-3.5 w-3.5 shrink-0 ${hasError ? 'text-red-600' : 'text-status-success'}`}
+              className={`h-3.5 w-3.5 shrink-0 ${hasError ? 'text-status-error' : 'text-status-success'}`}
             />
             <span className="min-w-0 whitespace-normal break-words">
               {getActivityLabel(event, localize)}
@@ -973,7 +1539,7 @@ const SteelActivity = memo(function SteelActivity({
               </span>
             )}
             {errorMessage && (
-              <span className="min-w-0 whitespace-normal break-words text-red-600">
+              <span className="min-w-0 whitespace-normal break-words text-status-error">
                 {errorMessage}
               </span>
             )}

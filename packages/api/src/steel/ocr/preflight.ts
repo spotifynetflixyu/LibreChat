@@ -542,8 +542,24 @@ export function createSteelOcrService(deps: SteelOcrServiceDependencies): SteelO
     streamId = null,
     userMCPAuthMap,
     requestScopedConnections,
-    track,
-  }: RunSteelPaddleOcrPreflightInput & { track?: (file: Pick<OcrPreprocessingFile, 'ocrFileKey' | 'filename'>, progress: Parameters<typeof buildSteelOcrPreprocessingEventEnvelopes>[0]['progress']) => Promise<void> }): Promise<SteelPaddleOcrPreflightResult> {
+    flow,
+  }: RunSteelPaddleOcrPreflightInput & {
+    flow?: {
+      runId: string;
+      getSummary: () => { stage: string; completedChunks: number; totalChunks: number };
+      track: (
+        file: Pick<OcrPreprocessingFile, 'ocrFileKey' | 'filename'>,
+        progress: Parameters<typeof buildSteelOcrPreprocessingEventEnvelopes>[0]['progress'],
+      ) => Promise<{
+        runId: string;
+        kind: 'preflight';
+        stage: string;
+        flowStatus: 'running' | 'failed';
+        completedChunks: number;
+        totalChunks: number;
+      }>;
+    };
+  }): Promise<SteelPaddleOcrPreflightResult> {
     const nativeContext = req.steelNativeContext;
     if (nativeContext) {
       ensureSteelNativeHistory(nativeContext);
@@ -560,11 +576,12 @@ export function createSteelOcrService(deps: SteelOcrServiceDependencies): SteelO
     let currentPaddleOcrSavedCount = 0;
     let nextToolEventIndex = 0;
     const eventScope = { conversationId, requestId, messageId: requestId };
-    const emitPreprocessing = (
+    const emitPreprocessing = async (
       file: Pick<OcrPreprocessingFile, 'ocrFileKey' | 'filename'>,
       progress: Parameters<typeof buildSteelOcrPreprocessingEventEnvelopes>[0]['progress'],
     ) => {
-      const emit = () => emitSteelNativeEvents({
+      const tracked = flow ? await flow.track(file, progress) : undefined;
+      await emitSteelNativeEvents({
         req,
         res,
         streamId,
@@ -573,9 +590,9 @@ export function createSteelOcrService(deps: SteelOcrServiceDependencies): SteelO
           ocrFileKey: file.ocrFileKey,
           filename: file.filename,
           progress,
+          ...(tracked ?? {}),
         }),
       });
-      return track ? track(file, progress).then(emit) : emit();
     };
     const finish = async (
       result: Omit<SteelPaddleOcrPreflightResult, 'ocrTurnActive' | 'currentPaddleOcrResults'>,
@@ -586,6 +603,7 @@ export function createSteelOcrService(deps: SteelOcrServiceDependencies): SteelO
           result.attemptedKeys.length > 0 || (result.currentOcrMarkdownResults?.length ?? 0) > 0,
         currentPaddleOcrResults: [],
       };
+      const summary = flow?.getSummary();
       await emitSteelNativeEvents({
         req,
         res,
@@ -593,6 +611,16 @@ export function createSteelOcrService(deps: SteelOcrServiceDependencies): SteelO
         events: buildSteelPaddleOcrPreflightEventEnvelopes({
           ...eventScope,
           preflight: { ...preflight, paddleOcrSavedCount: currentPaddleOcrSavedCount },
+          ...(flow && summary
+            ? {
+                runId: flow.runId,
+                kind: 'preflight',
+                stage: preflight.status === 'partial' ? 'failed' : 'agent',
+                flowStatus: preflight.status === 'partial' ? 'failed' : 'running',
+                completedChunks: summary.completedChunks,
+                totalChunks: summary.totalChunks,
+              }
+            : {}),
         }),
       });
       return preflight;
@@ -937,6 +965,9 @@ export function createSteelOcrService(deps: SteelOcrServiceDependencies): SteelO
     const executionEpoch = input.req._resumableJobCreatedAt;
     const run = await runs.createPreflightRun({ scope, responseGenerationId, executionEpoch, triggeringMessageId: responseGenerationId });
     const progressByFile = new Map<string, { total: number; completed: Set<number> }>();
+    let latestStage = 'preflight';
+    let latestTotalChunks = 0;
+    let latestCompletedChunks = 0;
     const track = async (file: Pick<OcrPreprocessingFile, 'ocrFileKey' | 'filename'>,
       progress: Parameters<typeof buildSteelOcrPreprocessingEventEnvelopes>[0]['progress']) => {
       const entry = progressByFile.get(file.ocrFileKey) ?? { total: 0, completed: new Set<number>() };
@@ -953,13 +984,36 @@ export function createSteelOcrService(deps: SteelOcrServiceDependencies): SteelO
         totalChunks += item.total;
         completedChunks += item.completed.size;
       }
+      latestStage = progress.stage;
+      latestTotalChunks = Math.max(totalChunks, completedChunks);
+      latestCompletedChunks = completedChunks;
       const updated = await runs.updatePreflightRun({ scope, runId: run.runId, stage: progress.stage,
-        totalChunks: Math.max(totalChunks, completedChunks), completedChunks });
+        totalChunks: latestTotalChunks, completedChunks: latestCompletedChunks });
       if (!updated) throw new DOMException('OCR execution is no longer active', 'AbortError');
+      return {
+        runId: run.runId,
+        kind: 'preflight' as const,
+        stage: latestStage,
+        flowStatus: (progress.stage === 'failed' ? 'failed' : 'running') as 'running' | 'failed',
+        completedChunks: latestCompletedChunks,
+        totalChunks: latestTotalChunks,
+      };
     };
     return runWithSteelOcrExecution({ scope, responseGenerationId, executionEpoch, signal: input.signal }, async (signal) => {
       try {
-        const result = await runPreflight({ ...input, signal, track });
+        const result = await runPreflight({
+          ...input,
+          signal,
+          flow: {
+            runId: run.runId,
+            getSummary: () => ({
+              stage: latestStage,
+              completedChunks: latestCompletedChunks,
+              totalChunks: latestTotalChunks,
+            }),
+            track,
+          },
+        });
         await runs.updatePreflightRun({ scope, runId: run.runId, stage: 'agent' });
         return result;
       } catch (error) {

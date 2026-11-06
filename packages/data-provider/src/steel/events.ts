@@ -102,6 +102,17 @@ export const steelNativeQuotationStatusSchema = z.enum([
   'cancelled',
 ]);
 
+export const steelFlowStatusSchema = z.enum([
+  'running',
+  'paused',
+  'interrupted',
+  'failed',
+  'completed',
+  'cancelled',
+]);
+
+export const steelOcrKindSchema = z.enum(['preflight', 'delegate']);
+
 const baseFields = {
   conversationId: z.string().optional(),
   requestId: z.string().optional(),
@@ -123,6 +134,12 @@ const parseStatusEventSchema = z.object({
   source: steelNativeEventSourceSchema,
   message: z.string(),
   parseStatus: z.enum(['saved', 'partial', 'skipped']),
+  runId: z.string().min(1).optional(),
+  kind: steelOcrKindSchema.optional(),
+  stage: z.string().min(1).optional(),
+  flowStatus: steelFlowStatusSchema.optional(),
+  completedChunks: nonNegativeInteger.optional(),
+  totalChunks: nonNegativeInteger.optional(),
   errorMessage: optionalErrorMessageSchema,
   failedKeys: z.array(z.string()).optional(),
   missingPageRangesByFileKey: z.record(z.array(pageRangeSchema)).optional(),
@@ -142,9 +159,14 @@ const delegateOcrStatusEventSchema = z.object({
   ...baseFields,
   type: z.literal('delegate_ocr_status'),
   source: z.literal('delegate_ocr_preflight'),
+  runId: z.string().min(1).optional(),
+  kind: z.literal('delegate').optional(),
   delegateOcrIndex: positiveInteger,
   stage: steelNativeDelegateOcrStageSchema,
   status: steelNativeDelegateOcrStatusSchema,
+  flowStatus: steelFlowStatusSchema.optional(),
+  completedChunks: nonNegativeInteger.optional(),
+  totalChunks: nonNegativeInteger.optional(),
   message: z.string(),
   errorMessage: optionalErrorMessageSchema,
   chunkIndex: nonNegativeInteger.optional(),

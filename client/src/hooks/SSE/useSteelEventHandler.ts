@@ -79,6 +79,10 @@ function isTerminalQuotationStatus(status: SteelNativeQuotationStatus): boolean 
   return status === 'completed' || status === 'cancelled';
 }
 
+function isTerminalOcrFlowStatus(status?: string): boolean {
+  return status === 'completed' || status === 'cancelled';
+}
+
 function isSameQuotationRun(
   left: Extract<SteelNativeActivityEvent, { type: 'quotation_status' }>,
   right: Extract<SteelNativeActivityEvent, { type: 'quotation_status' }>,
@@ -87,6 +91,17 @@ function isSameQuotationRun(
     left.conversationId === right.conversationId &&
     left.index === right.index &&
     left.runId === right.runId
+  );
+}
+
+function isSameOcrRun(
+  left: Extract<SteelNativeActivityEvent, { type: 'parse_status' | 'delegate_ocr_status' }>,
+  right: Extract<SteelNativeActivityEvent, { type: 'parse_status' | 'delegate_ocr_status' }>,
+): boolean {
+  return (
+    Boolean(left.runId && right.runId) &&
+    left.runId === right.runId &&
+    left.conversationId === right.conversationId
   );
 }
 
@@ -154,6 +169,27 @@ export function appendSteelNativeActivityEvent(
         isSameQuotationRun(event, incoming),
     );
     if (terminalEvent) {
+      return current;
+    }
+  }
+
+  if (
+    (incoming.type === 'parse_status' || incoming.type === 'delegate_ocr_status') &&
+    incoming.runId &&
+    !isTerminalOcrFlowStatus(incoming.flowStatus)
+  ) {
+    const terminalOcrEvent = current.find(
+      (
+        event,
+      ): event is Extract<
+        SteelNativeActivityEvent,
+        { type: 'parse_status' | 'delegate_ocr_status' }
+      > =>
+        (event.type === 'parse_status' || event.type === 'delegate_ocr_status') &&
+        isTerminalOcrFlowStatus(event.flowStatus) &&
+        isSameOcrRun(event, incoming),
+    );
+    if (terminalOcrEvent) {
       return current;
     }
   }

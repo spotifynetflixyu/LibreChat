@@ -5,21 +5,26 @@ import { useLocalize } from '~/hooks';
 export default memo(function StopButton({
   stop,
   setShowStopButton,
+  isSteelFlowRunning = false,
 }: {
   stop: (e: React.MouseEvent<HTMLButtonElement>) => void;
   setShowStopButton: (value: boolean) => void;
+  isSteelFlowRunning?: boolean;
 }) {
   const localize = useLocalize();
+  const stopLabel = localize(
+    isSteelFlowRunning ? 'com_nav_pause_flow' : 'com_nav_stop_generating',
+  );
 
   return (
     <TooltipAnchor
-      description={localize('com_nav_stop_generating')}
+      description={stopLabel}
       render={
         <button
           type="button"
           data-testid="stop-generation-button"
           className={composerSubmitClasses()}
-          aria-label={localize('com_nav_stop_generating')}
+          aria-label={stopLabel}
           onClick={(e) => {
             setShowStopButton(false);
             stop(e);

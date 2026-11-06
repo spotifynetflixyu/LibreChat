@@ -18,6 +18,9 @@ import type {
 } from '@librechat/data-schemas';
 import type { SummaryContentPart, TMessageContentParts } from 'librechat-data-provider';
 import type { IAgentEventActorSummary } from '@librechat/data-schemas';
+import type { SteelAgentMessageMetadata } from '../steel/native/metadata';
+import type { SteelNativeHistory } from '../steel/native/events';
+import { buildSteelAgentMessageMetadata } from '../steel/native/metadata';
 import { createAgentEventActorSummary } from './compatibility';
 
 /** Text of a summary content part, in any persisted shape — `content` blocks
@@ -189,11 +192,13 @@ function compactionFailureContent(
 export function resolveFailedTurnContent(
   requestBody: { compact?: boolean } | null | undefined,
   errorText: string,
-): { content?: TMessageContentParts[] } {
-  if (requestBody?.compact !== true) {
-    return {};
-  }
-  return { content: compactionFailureContent(errorText) };
+  steelHistory?: SteelNativeHistory,
+): { content?: TMessageContentParts[]; metadata?: { steel: SteelAgentMessageMetadata } } {
+  const steel = buildSteelAgentMessageMetadata(undefined, steelHistory);
+  return {
+    ...(requestBody?.compact === true ? { content: compactionFailureContent(errorText) } : {}),
+    ...(steel ? { metadata: { steel } } : {}),
+  };
 }
 
 /**

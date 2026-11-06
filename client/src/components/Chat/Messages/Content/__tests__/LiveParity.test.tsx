@@ -225,7 +225,7 @@ describe('one message-level streaming cursor', () => {
     const view = (
       content: TMessageContentParts[],
       submitting = true,
-      status?: SteelNativeQuotationStatus,
+      quotationState?: { status: SteelNativeQuotationStatus; stage: string },
     ) => (
       <QueryClientProvider client={queryClient}>
         <Provider store={atomStore}>
@@ -241,7 +241,7 @@ describe('one message-level streaming cursor', () => {
                 responseIndicator={<EmptyText owner="message" />}
                 showThinking={false}
                 persistedActivityEvents={
-                  status
+                  quotationState
                     ? [
                         {
                           type: 'quotation_status',
@@ -249,8 +249,8 @@ describe('one message-level streaming cursor', () => {
                           conversationId: 'cursor-conversation',
                           index: 0,
                           runId: 'cursor-quotation',
-                          stage: status,
-                          status,
+                          stage: quotationState.stage,
+                          status: quotationState.status,
                           completedChunks: 2,
                           totalChunks: 2,
                         },
@@ -290,8 +290,14 @@ describe('one message-level streaming cursor', () => {
       expect(result.container.querySelectorAll('.result-thinking')).toHaveLength(1);
       expect(result.container.querySelectorAll('.result-streaming')).toHaveLength(0);
     }
-    for (const status of ['queued', 'running', 'aggregating', 'finalizing', 'completed'] as const) {
-      result.rerender(view(scenarios[3], true, status));
+    for (const quotationState of [
+      { status: 'running', stage: 'queued' },
+      { status: 'running', stage: 'chunk' },
+      { status: 'running', stage: 'aggregating' },
+      { status: 'running', stage: 'finalizing' },
+      { status: 'completed', stage: 'completed' },
+    ] as const) {
+      result.rerender(view(scenarios[3], true, quotationState));
       expect(result.container.querySelectorAll('.result-thinking')).toHaveLength(1);
       const indicator = result.container.querySelector('.result-thinking');
       const events = result.container.querySelector('[aria-label="Steel activity"]');
@@ -323,8 +329,8 @@ describe('quotation flow response ordering', () => {
     }> = [
       { stage: 'chunk_started', status: 'running', completedChunks: 0 },
       { stage: 'chunk_saved', status: 'running', completedChunks: 1 },
-      { stage: 'main_review_started', status: 'aggregating', completedChunks: 1 },
-      { stage: 'main_finalizing', status: 'finalizing', completedChunks: 1 },
+      { stage: 'main_review_started', status: 'running', completedChunks: 1 },
+      { stage: 'main_finalizing', status: 'running', completedChunks: 1 },
       { stage: 'completed', status: 'completed', completedChunks: 1 },
     ];
     const view = (checkpoint: number) => (

@@ -623,7 +623,7 @@ async function saveErrorTurn(
         error: true,
         unfinished: false,
         isCreatedByUser: false,
-        ...resolveFailedTurnContent(req.body, errorText),
+        ...resolveFailedTurnContent(req.body, errorText, req.steelNativeContext?.steelHistory),
       },
       { context },
     );

@@ -39,8 +39,10 @@ import {
   PendingToolApprovalButton,
   PendingToolApprovalPanel,
 } from '~/components/Chat/approval/Review';
+import { isSteelFlowActiveInEvents } from '~/components/Chat/Messages/Content/SteelActivity';
 import PendingManualSkillsChips from './PendingManualSkillsChips';
 import usePastedTextEdit from '~/hooks/Files/usePastedTextEdit';
+import { steelNativeActivityByMessageId } from '~/store/steel';
 import useAskAnswerMode from '~/hooks/Input/useAskAnswerMode';
 import AskUserQuestionPopover from './AskUserQuestionPopover';
 import InterruptSteerButton from './InterruptSteerButton';
@@ -119,6 +121,7 @@ interface ChatFormProps {
   newConversation: ConvoGenerator;
   handleStopGenerating: (e: React.MouseEvent<HTMLButtonElement>) => void;
   stopGenerating: () => void;
+  isSteelFlowRunning?: boolean;
 }
 
 /** Targets that own focus themselves: form fields and links, popup disclosures
@@ -154,6 +157,7 @@ const ChatForm = memo(function ChatForm({
   newConversation,
   handleStopGenerating,
   stopGenerating,
+  isSteelFlowRunning = false,
 }: ChatFormProps) {
   const submitButtonRef = useRef<HTMLButtonElement>(null);
   const textAreaRef = useRef<HTMLTextAreaElement>(null);
@@ -587,7 +591,13 @@ const ChatForm = memo(function ChatForm({
       );
     }
     if (showStopButton) {
-      return <StopButton stop={handleStopGenerating} setShowStopButton={setShowStopButton} />;
+      return (
+        <StopButton
+          stop={handleStopGenerating}
+          setShowStopButton={setShowStopButton}
+          isSteelFlowRunning={isSteelFlowRunning}
+        />
+      );
     }
     return null;
   })();
@@ -970,7 +980,37 @@ function ChatFormWrapper({
     newConversation,
     handleStopGenerating,
     stopGenerating,
+    latestMessageId,
+    getMessages,
   } = useChatContext();
+
+  const activeMessageId = useMemo(() => {
+    if (!isSubmitting) {
+      return '';
+    }
+    if (latestMessageId) {
+      return latestMessageId;
+    }
+    const messages = getMessages?.();
+    if (!Array.isArray(messages) || messages.length === 0) {
+      return '';
+    }
+    for (let i = messages.length - 1; i >= 0; i -= 1) {
+      const msg = messages[i];
+      if (msg?.isCreatedByUser === false && msg.messageId) {
+        return msg.messageId;
+      }
+    }
+    return '';
+  }, [getMessages, isSubmitting, latestMessageId]);
+
+  const activeSteelEvents = useRecoilValue(steelNativeActivityByMessageId(activeMessageId));
+  const isSteelFlowRunning = useMemo(
+    () =>
+      isSubmitting &&
+      isSteelFlowActiveInEvents(activeSteelEvents, conversation?.conversationId),
+    [activeSteelEvents, conversation?.conversationId, isSubmitting],
+  );
 
   /**
    * Stabilize conversation reference: only update when rendering-relevant fields change,
@@ -1036,6 +1076,7 @@ function ChatFormWrapper({
       newConversation={stableNewConversation}
       handleStopGenerating={stableHandleStop}
       stopGenerating={stableStop}
+      isSteelFlowRunning={isSteelFlowRunning}
     />
   );
 }

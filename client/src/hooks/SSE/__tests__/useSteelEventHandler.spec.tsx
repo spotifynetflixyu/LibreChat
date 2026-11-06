@@ -871,4 +871,36 @@ describe('useSteelEventHandler', () => {
 
     expect(result.current.activity).toEqual([]);
   });
+
+  it('prevents delayed non-terminal OCR events from regressing a terminal OCR run', () => {
+    const completedEvent: SteelNativeActivityEvent = {
+      type: 'delegate_ocr_status',
+      source: 'delegate_ocr_preflight',
+      conversationId: 'conversation-1',
+      runId: 'delegate-run-terminal',
+      kind: 'delegate',
+      delegateOcrIndex: 2,
+      stage: 'response',
+      status: 'succeeded',
+      flowStatus: 'completed',
+      completedChunks: 3,
+      totalChunks: 3,
+      message: 'Delegate OCR completed',
+    };
+    const delayedRunningEvent: SteelNativeActivityEvent = {
+      ...completedEvent,
+      stage: 'agent',
+      status: 'progress',
+      flowStatus: 'running',
+      completedChunks: 2,
+      message: 'Delayed chunk event',
+    };
+
+    const activity = [completedEvent, delayedRunningEvent].reduce<SteelNativeActivityEvent[]>(
+      appendSteelNativeActivityEvent,
+      [],
+    );
+
+    expect(activity).toEqual([completedEvent]);
+  });
 });

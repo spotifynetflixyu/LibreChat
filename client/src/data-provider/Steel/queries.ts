@@ -27,6 +27,7 @@ import type {
   SteelReviewSourcesResponse,
   SteelReviewSourcePageCount,
   SteelQuotationStatus,
+  SteelOcrStatus,
   TMessage,
 } from 'librechat-data-provider';
 import type {
@@ -64,6 +65,43 @@ export const useGetOpenAIOAuthUsageQuery = (
       staleTime: 30_000,
       ...config,
       enabled: (config?.enabled ?? true) === true && queriesEnabled,
+    },
+  );
+};
+
+export function isSteelFlowExpiredError(error: unknown): boolean {
+  if (!error || typeof error !== 'object') {
+    return false;
+  }
+  const candidate = error as {
+    status?: number;
+    code?: string;
+    response?: { status?: number; data?: { code?: string } };
+  };
+  if (candidate.code === 'flow_expired' || candidate.response?.data?.code === 'flow_expired') {
+    return true;
+  }
+  return candidate.status === 409 || candidate.response?.status === 409;
+}
+
+export const useGetSteelOcrStatusQuery = (
+  conversationId?: string | null,
+  runId?: string | null,
+  config?: UseQueryOptions<SteelOcrStatus>,
+): QueryObserverResult<SteelOcrStatus> => {
+  const queriesEnabled = useRecoilValue<boolean>(store.queriesEnabled);
+  const enabled = Boolean(conversationId && runId) && (config?.enabled ?? true) && queriesEnabled;
+  return useQuery<SteelOcrStatus>(
+    DynamicQueryKeys.steelOcrStatus(conversationId ?? '', runId ?? ''),
+    () => dataService.getSteelOcrStatus(conversationId ?? '', runId ?? ''),
+    {
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: true,
+      refetchOnMount: true,
+      refetchInterval: (data) => (data?.status === 'running' ? 1_000 : false),
+      staleTime: 0,
+      ...config,
+      enabled,
     },
   );
 };
@@ -424,6 +462,76 @@ export const useRefreshOpenAIOAuthTokenMutation = (): UseMutationResult<
   );
 };
 
+export const usePauseSteelOcrMutation = (
+  conversationId?: string | null,
+): UseMutationResult<SteelOcrStatus, unknown, string, unknown> => {
+  const queryClient = useQueryClient();
+  return useMutation(
+    [MutationKeys.pauseSteelOcr, conversationId],
+    (runId: string) => dataService.pauseSteelOcr(conversationId ?? '', runId),
+    {
+      onSuccess: (data, runId) => {
+        queryClient.setQueryData(
+          DynamicQueryKeys.steelOcrStatus(conversationId ?? '', data.runId || runId),
+          data,
+        );
+      },
+      onError: (error, runId) => {
+        if (conversationId && isSteelFlowExpiredError(error)) {
+          void queryClient.invalidateQueries(
+            DynamicQueryKeys.steelOcrStatus(conversationId, runId),
+          );
+        }
+      },
+    },
+  );
+};
+
+export const useCancelSteelOcrMutation = (
+  conversationId?: string | null,
+): UseMutationResult<SteelOcrStatus, unknown, string, unknown> => {
+  const queryClient = useQueryClient();
+  return useMutation(
+    [MutationKeys.cancelSteelOcr, conversationId],
+    (runId: string) => dataService.cancelSteelOcr(conversationId ?? '', runId),
+    {
+      onSuccess: (data, runId) => {
+        queryClient.setQueryData(
+          DynamicQueryKeys.steelOcrStatus(conversationId ?? '', data.runId || runId),
+          data,
+        );
+      },
+      onError: (error, runId) => {
+        if (conversationId && isSteelFlowExpiredError(error)) {
+          void queryClient.invalidateQueries(
+            DynamicQueryKeys.steelOcrStatus(conversationId, runId),
+          );
+        }
+      },
+    },
+  );
+};
+
+export const usePauseSteelQuotationMutation = (
+  conversationId?: string | null,
+): UseMutationResult<SteelQuotationStatus, unknown, number, unknown> => {
+  const queryClient = useQueryClient();
+  return useMutation(
+    [MutationKeys.pauseSteelQuotation, conversationId],
+    (index: number) => dataService.pauseSteelQuotation(conversationId ?? '', index),
+    {
+      onSuccess: (data) => {
+        queryClient.setQueryData(DynamicQueryKeys.steelQuotationStatus(conversationId ?? ''), data);
+      },
+      onError: (error) => {
+        if (conversationId && isSteelFlowExpiredError(error)) {
+          void queryClient.invalidateQueries(DynamicQueryKeys.steelQuotationStatus(conversationId));
+        }
+      },
+    },
+  );
+};
+
 export const useCancelSteelQuotationMutation = (
   conversationId?: string | null,
 ): UseMutationResult<SteelQuotationStatus, unknown, number, unknown> => {
@@ -434,6 +542,11 @@ export const useCancelSteelQuotationMutation = (
     {
       onSuccess: (data) => {
         queryClient.setQueryData(DynamicQueryKeys.steelQuotationStatus(conversationId ?? ''), data);
+      },
+      onError: (error) => {
+        if (conversationId && isSteelFlowExpiredError(error)) {
+          void queryClient.invalidateQueries(DynamicQueryKeys.steelQuotationStatus(conversationId));
+        }
       },
     },
   );

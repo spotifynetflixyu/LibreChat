@@ -263,6 +263,48 @@ describe('resolveFailedTurnContent', () => {
   ])('leaves %s with its text-only shape', (_label, requestBody) => {
     expect(resolveFailedTurnContent(requestBody, 'Something failed')).toEqual({});
   });
+
+  it('persists Steel activity metadata on failed turns so OCR flow cards recover after reload', () => {
+    expect(
+      resolveFailedTurnContent({ compact: false }, 'OCR failed', {
+        activityEvents: [
+          {
+            type: 'parse_status',
+            source: 'ocr_preprocessing',
+            conversationId: 'conv-1',
+            messageId: 'msg-1',
+            runId: 'ocr-run-failed-1',
+            kind: 'preflight',
+            stage: 'organizer',
+            flowStatus: 'failed',
+            completedChunks: 1,
+            totalChunks: 3,
+            parseStatus: 'partial',
+            message: 'ocr preprocessing failed (file:BH.pdf)',
+            errorMessage: 'organizer failed',
+          },
+        ],
+        preflightToolCalls: [],
+      }),
+    ).toEqual({
+      metadata: {
+        steel: {
+          activityEvents: [
+            expect.objectContaining({
+              type: 'parse_status',
+              runId: 'ocr-run-failed-1',
+              kind: 'preflight',
+              stage: 'organizer',
+              flowStatus: 'failed',
+              completedChunks: 1,
+              totalChunks: 3,
+              errorMessage: 'organizer failed',
+            }),
+          ],
+        },
+      },
+    });
+  });
 });
 
 describe('resolveCheckpointMessage', () => {

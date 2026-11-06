@@ -4,8 +4,9 @@ import {
   parseSteelNativePreflightToolCall,
   steelNativePreflightToolCallMaxCount,
 } from 'librechat-data-provider';
-import type { SteelQuotationOcrSelection } from '@librechat/data-schemas';
 import type {
+  SteelFlowStatus,
+  SteelOcrKind,
   SteelQuotationOcrSource,
   SteelNativeTableCounts,
   SteelNativeSavedCounts,
@@ -16,6 +17,7 @@ import type {
   SteelNativeDelegateOcrStatus,
   SteelNativePreflightToolCall,
 } from 'librechat-data-provider';
+import type { SteelQuotationOcrSelection } from '@librechat/data-schemas';
 import type { SteelOcrMissingPageRangesByFileKey } from '../ocr/failures';
 import type { OcrPreprocessingPipelineProgress } from '../ocr/preprocess';
 import type { CaptureSteelNativeToolResultResult } from './tool-result';
@@ -407,6 +409,12 @@ export interface SteelPaddleOcrPreflightActivityResult {
 export interface BuildSteelPaddleOcrPreflightEventEnvelopesInput
   extends Omit<SteelNativeEventBase, 'source'> {
   preflight: SteelPaddleOcrPreflightActivityResult;
+  runId?: string;
+  kind?: SteelOcrKind;
+  stage?: string;
+  flowStatus?: SteelFlowStatus;
+  completedChunks?: number;
+  totalChunks?: number;
 }
 
 export type SteelOcrPreprocessingProgress =
@@ -422,6 +430,12 @@ export interface BuildSteelOcrPreprocessingEventEnvelopesInput
   ocrFileKey: string;
   filename?: string;
   progress: SteelOcrPreprocessingProgress;
+  runId?: string;
+  kind?: SteelOcrKind;
+  stage?: string;
+  flowStatus?: SteelFlowStatus;
+  completedChunks?: number;
+  totalChunks?: number;
 }
 
 function hasSavedCounts(savedCounts: unknown): savedCounts is SteelNativeSavedCounts {
@@ -471,9 +485,14 @@ function baseEvent(input: SteelNativeEventBase): SteelNativeEventBase {
 }
 
 export interface BuildSteelDelegateOcrStatusEventInput extends Omit<SteelNativeEventBase, 'source'> {
+  runId?: string;
+  kind?: 'delegate';
   delegateOcrIndex: number;
   stage: SteelNativeDelegateOcrStage;
   status: SteelNativeDelegateOcrStatus;
+  flowStatus?: SteelFlowStatus;
+  completedChunks?: number;
+  totalChunks?: number;
   message: string;
   errorMessage?: string;
   chunkIndex?: number;
@@ -485,9 +504,14 @@ export interface BuildSteelDelegateOcrStatusEventInput extends Omit<SteelNativeE
 
 /** Build one delegate OCR lifecycle event. Correlation tokens are for live gating only. */
 export function buildSteelDelegateOcrStatusEvent({
+  runId,
+  kind,
   delegateOcrIndex,
   stage,
   status,
+  flowStatus,
+  completedChunks,
+  totalChunks,
   message,
   errorMessage,
   chunkIndex,
@@ -508,9 +532,14 @@ export function buildSteelDelegateOcrStatusEvent({
   return {
     ...eventBase,
     type: 'delegate_ocr_status',
+    ...(runId !== undefined ? { runId } : {}),
+    ...(kind !== undefined ? { kind } : {}),
     delegateOcrIndex,
     stage,
     status,
+    ...(flowStatus !== undefined ? { flowStatus } : {}),
+    ...(completedChunks !== undefined ? { completedChunks } : {}),
+    ...(totalChunks !== undefined ? { totalChunks } : {}),
     message,
     ...(errorMessage !== undefined ? { errorMessage } : {}),
     ...(chunkIndex !== undefined ? { chunkIndex } : {}),
@@ -684,6 +713,12 @@ function getPaddleOcrParseStatus(
 
 export function buildSteelPaddleOcrPreflightEventEnvelopes({
   preflight,
+  runId,
+  kind,
+  stage,
+  flowStatus,
+  completedChunks,
+  totalChunks,
   ...input
 }: BuildSteelPaddleOcrPreflightEventEnvelopesInput): SteelNativeEventEnvelope[] {
   const savedCount = getPaddleOcrSavedCount(preflight);
@@ -691,6 +726,14 @@ export function buildSteelPaddleOcrPreflightEventEnvelopes({
   const eventBase = baseEvent({ ...input, source: 'paddleocr_preflight' });
   const savedCounts = savedCount > 0 ? { paddleocr_preflight: savedCount } : undefined;
   const countMetadata = preflightCountMetadata(preflight);
+  const flowMetadata = {
+    ...(runId !== undefined ? { runId } : {}),
+    ...(kind !== undefined ? { kind } : {}),
+    ...(stage !== undefined ? { stage } : {}),
+    ...(flowStatus !== undefined ? { flowStatus } : {}),
+    ...(completedChunks !== undefined ? { completedChunks } : {}),
+    ...(totalChunks !== undefined ? { totalChunks } : {}),
+  };
   const events: SteelNativeEventEnvelope[] = [];
 
   if (parseStatus) {
@@ -710,6 +753,7 @@ export function buildSteelPaddleOcrPreflightEventEnvelopes({
               failedKeys: [...(preflight.failedKeys ?? [])],
             }
           : {}),
+        ...flowMetadata,
         ...countMetadata,
         ...eventBase,
       },
@@ -736,10 +780,29 @@ export function buildSteelOcrPreprocessingEventEnvelopes({
   ocrFileKey,
   filename,
   progress,
+  runId,
+  kind,
+  stage,
+  flowStatus,
+  completedChunks,
+  totalChunks,
   ...input
 }: BuildSteelOcrPreprocessingEventEnvelopesInput): SteelNativeEventEnvelope[] {
   const eventBase = baseEvent({ ...input, source: 'ocr_preprocessing' });
   const displayName = filename?.trim() || ocrFileKey;
+  const resolvedStage = stage ?? progress.stage;
+  let resolvedFlowStatus = flowStatus;
+  if (resolvedFlowStatus === undefined && runId) {
+    resolvedFlowStatus = progress.stage === 'failed' ? 'failed' : 'running';
+  }
+  const flowMetadata = {
+    ...(runId !== undefined ? { runId } : {}),
+    ...(kind !== undefined ? { kind } : {}),
+    ...(runId !== undefined || stage !== undefined ? { stage: resolvedStage } : {}),
+    ...(resolvedFlowStatus !== undefined ? { flowStatus: resolvedFlowStatus } : {}),
+    ...(completedChunks !== undefined ? { completedChunks } : {}),
+    ...(totalChunks !== undefined ? { totalChunks } : {}),
+  };
 
   switch (progress.stage) {
     case 'pdf_chunks_ready': {
@@ -754,6 +817,7 @@ export function buildSteelOcrPreprocessingEventEnvelopes({
             type: 'parse_status',
             message,
             parseStatus: 'partial',
+            ...flowMetadata,
             ...eventBase,
           },
         },
@@ -767,6 +831,7 @@ export function buildSteelOcrPreprocessingEventEnvelopes({
             type: 'parse_status',
             message: `Running paddleocr_vl in PaddleOCR (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${displayName})`,
             parseStatus: 'partial',
+            ...flowMetadata,
             ...eventBase,
           },
         },
@@ -779,6 +844,7 @@ export function buildSteelOcrPreprocessingEventEnvelopes({
             type: 'parse_status',
             message: `Loaded saved PaddleOCR (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${displayName})`,
             parseStatus: 'partial',
+            ...flowMetadata,
             ...eventBase,
           },
         },
@@ -791,6 +857,7 @@ export function buildSteelOcrPreprocessingEventEnvelopes({
             type: 'parse_status',
             message: `Ran paddleocr_vl in PaddleOCR (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${displayName})`,
             parseStatus: 'partial',
+            ...flowMetadata,
             ...eventBase,
           },
         },
@@ -812,6 +879,7 @@ export function buildSteelOcrPreprocessingEventEnvelopes({
             type: 'parse_status',
             message: `Running OCR markdown process (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${displayName})`,
             parseStatus: 'partial',
+            ...flowMetadata,
             ...eventBase,
           },
         },
@@ -824,6 +892,7 @@ export function buildSteelOcrPreprocessingEventEnvelopes({
             type: 'parse_status',
             message: `Loaded saved OCR markdown (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${displayName})`,
             parseStatus: 'partial',
+            ...flowMetadata,
             ...eventBase,
           },
         },
@@ -836,6 +905,7 @@ export function buildSteelOcrPreprocessingEventEnvelopes({
             type: 'parse_status',
             message: `Ran OCR markdown process (chunk ${progress.chunkIndex}/${progress.chunkCount}) (${displayName})`,
             parseStatus: 'partial',
+            ...flowMetadata,
             ...eventBase,
           },
         },
@@ -857,6 +927,7 @@ export function buildSteelOcrPreprocessingEventEnvelopes({
             type: 'parse_status',
             message: `Read OCR markdowns (${displayName}: ${progress.chunkCount} chunks)`,
             parseStatus: 'partial',
+            ...flowMetadata,
             ...eventBase,
           },
         },
@@ -869,6 +940,7 @@ export function buildSteelOcrPreprocessingEventEnvelopes({
             type: 'parse_status',
             message: `Processing pdf with OCR markdowns (${displayName})`,
             parseStatus: 'partial',
+            ...flowMetadata,
             ...eventBase,
           },
         },
@@ -886,6 +958,7 @@ export function buildSteelOcrPreprocessingEventEnvelopes({
             ...(progress.missingPageRangesByFileKey
               ? { missingPageRangesByFileKey: progress.missingPageRangesByFileKey }
               : {}),
+            ...flowMetadata,
             ...eventBase,
           },
         },
