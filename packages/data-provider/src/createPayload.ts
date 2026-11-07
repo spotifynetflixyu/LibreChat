@@ -20,7 +20,7 @@ export default function createPayload(submission: t.TSubmission) {
     isTemporary,
     isRegenerate,
     compact,
-    steelFlowReplay,
+    steelFlowResume,
     conversation,
     editedContent,
     ephemeralAgent,
@@ -58,7 +58,7 @@ export default function createPayload(submission: t.TSubmission) {
     /** A compaction borrows the regenerate shape client-side only: the server
      *  must see it as a compaction, never as a regenerated user turn. */
     isRegenerate: compact === true ? undefined : isRegenerate,
-    ...(steelFlowReplay && { steelFlowReplay }),
+    ...(steelFlowResume && { steelFlowResume }),
     ...(compact === true && { compact: true }),
     editedContent,
     conversationId,

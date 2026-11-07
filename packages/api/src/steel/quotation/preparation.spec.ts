@@ -2,6 +2,7 @@ import type { SteelToolResult } from '../tools/results';
 import { bindQuotationCustomerResult, hasQuotationOrder, parseQuotationTierSelection, prepareQuotationTurn, quotationPreparationStatus, renderQuotationCustomerMarkdown } from './preparation';
 
 const mockRead = jest.fn();
+const mockClaimResume = jest.fn();
 const mockSave = jest.fn();
 const mockSaveEvidence = jest.fn();
 const mockClear = jest.fn();
@@ -14,7 +15,7 @@ const mockHasSystemOrder = jest.fn();
 const mockReadCurrentSystemOrder = jest.fn();
 const mockReadCheckpoint = jest.fn();
 jest.mock('./state', () => ({ createSteelQuotationStateService: () => ({
-  ensureState: mockRead, readState: mockRead, saveCustomer: mockSave, clearCustomer: mockClear,
+  ensureState: mockRead, readState: mockRead, claimResume: mockClaimResume, saveCustomer: mockSave, clearCustomer: mockClear,
   saveCustomerLookupEvidence: mockSaveEvidence, clearCustomerLookupEvidence: mockClearEvidence,
   setOrder: mockSetOrder, isPublishedRun: mockIsPublished,
   prepareOcrOrder: mockPrepareOcrOrder,
@@ -221,7 +222,7 @@ it('does not inject completed system-order revision data while a quotation is un
 
   const prepared = await prepareQuotationTurn({ scope, messageId: 'u4', responseId: 'a4', text: '修改數量' });
 
-  expect(prepared.instruction).toBe('');
+  expect(prepared.instruction).toContain('# Saved quotation state for this turn');
   expect(prepared.instruction).not.toContain(completedSystemOrder);
   expect(mockReadCheckpoint).not.toHaveBeenCalled();
 });
@@ -286,41 +287,26 @@ it('rejects customer lookup without saved OCR', async () => {
   mockRead.mockResolvedValue({ pendingMessages: [] });
   await expect(bindQuotationCustomerResult({ expectedOrderHash: 'order-hash', scope, messageId: 'confirm', responseId: 'response-1', result: success([]) })).rejects.toThrow('saved order');
 });
-it.each(['running', 'paused', 'failed', 'interrupted'])('resumes the existing unfinished %s quotation without preparing a new turn', async (status) => {
-  const activeRun = { runId: 'r1', status, triggerMessageId: 'old' };
-  mockRead.mockResolvedValue({
-    currentOrder: { markdown: order, sha256: 'order-hash' },
-    currentCustomer: { customerMarkdown: 'saved customer' }, activeRun, pendingMessages: [],
-  });
-  const result = await prepareQuotationTurn({
-    scope, messageId: 'new', responseId: 'a2', text: '數量改成 3',
-    files: [{ fileId: 'file-1', filename: 'order.pdf' }],
-  });
-  expect(result.resume).toBe(true);
-  expect(result.messageText).toBe('數量改成 3');
-  expect(result.messageFiles).toEqual([{ fileId: 'file-1', filename: 'order.pdf' }]);
-  expect(result.instruction).toBe('');
-  expect(mockReadOcr).not.toHaveBeenCalled();
-  expect(mockSetOrder).not.toHaveBeenCalled();
-});
-it('recovers completed but unpublished quotations before a new turn', async () => {
-  mockRead.mockResolvedValue({ activeRun: { runId: 'r1', status: 'completed', triggerMessageId: 'old' }, pendingMessages: [] });
-  expect((await prepareQuotationTurn({ scope, messageId: 'new', responseId: 'a2', text: '改成 3' })).resume).toBe(true);
-});
-
-it('resumes the original quotation request without treating it as a new turn', async () => {
-  const activeRun = { runId: 'r1', status: 'interrupted', triggerMessageId: 'confirm' };
-  mockRead.mockResolvedValue({ activeRun, pendingMessages: [] });
-  const result = await prepareQuotationTurn({
-    scope, messageId: 'confirm', responseId: 'original-response', text: '確認，開始報價',
-  });
-  expect(result.resume).toBe(true);
-  expect(result.messageText).toBe('確認，開始報價');
-  expect(result.instruction).toBe('');
-  expect(result.state.activeRun).toEqual(activeRun);
-  expect(mockSetOrder).not.toHaveBeenCalled();
-  expect(mockReadOcr).not.toHaveBeenCalled();
-});
+it.each(['running', 'paused', 'failed', 'interrupted', 'completed'])(
+  'prepares ordinary messages without resuming a %s quotation',
+  async (status) => {
+    const activeRun = { runId: 'r1', status, triggerMessageId: 'old' };
+    mockRead.mockResolvedValue({
+      currentOrder: { markdown: order, sha256: 'order-hash' },
+      currentCustomer: { customerMarkdown: 'saved customer' }, activeRun, pendingMessages: [],
+    });
+    const result = await prepareQuotationTurn({
+      scope, messageId: 'new', responseId: 'a2', text: '數量改成 3',
+      files: [{ fileId: 'file-1', filename: 'order.pdf' }],
+    });
+    expect(result.resume).toBe(false);
+    expect(result.messageText).toBe('數量改成 3');
+    expect(result.messageFiles).toEqual([{ fileId: 'file-1', filename: 'order.pdf' }]);
+    expect(result.instruction).toContain(order);
+    expect(mockClaimResume).not.toHaveBeenCalled();
+    expect(mockSetOrder).not.toHaveBeenCalled();
+  },
+);
 
 it('ignores legacy pending input and prepares a fresh terminal turn', async () => {
   mockRead.mockResolvedValue({
@@ -344,17 +330,18 @@ it('does not resume a cancelled quotation when there are no pending messages', a
   expect(result.resume).toBe(false);
 });
 
-it('replays only the explicitly selected recoverable quotation', async () => {
-  const turn = { scope, messageId: 'user', responseId: 'assistant', text: '報價' };
-  mockRead.mockResolvedValue({ activeRun: { runId: 'current', targetMessageId: 'original', status: 'paused' } });
-  await expect(prepareQuotationTurn({
-    ...turn, replay: { kind: 'quotation', runId: 'older', sourceMessageId: 'original' },
-  })).rejects.toThrow('Steel flow is no longer available');
-  await expect(prepareQuotationTurn({
-    ...turn, replay: { kind: 'preflight', runId: 'ocr', sourceMessageId: 'ocr-message' },
-  })).rejects.toThrow('Steel flow is no longer available');
-  await expect(prepareQuotationTurn({
-    ...turn, replay: { kind: 'quotation', runId: 'current', sourceMessageId: 'original' },
-  })).resolves.toMatchObject({ resume: true, state: { activeRun: { runId: 'current' } } });
+it('prepares the explicitly claimed quotation on the fork with its lease', async () => {
+  const resume = { runId: 'current', sourceMessageId: 'original' };
+  const turn = { scope, messageId: 'user', responseId: 'assistant', executionEpoch: 123, text: '報價', resume };
+  const activeRun = { runId: 'current', targetMessageId: 'assistant', status: 'running' };
+  const lease = { runId: 'current', leaseToken: 'execution-lease', expiresAt: new Date() };
+  mockClaimResume.mockResolvedValueOnce({ ok: false, code: 'flow_expired' });
+  await expect(prepareQuotationTurn(turn)).rejects.toMatchObject({ code: 'flow_expired' });
+  mockClaimResume.mockResolvedValueOnce({ ok: true, state: { activeRun }, lease });
+  await expect(prepareQuotationTurn(turn)).resolves.toMatchObject({
+    resume: true, resumeLease: lease, instruction: '', messageText: '報價', state: { activeRun },
+  });
+  expect(mockClaimResume).toHaveBeenCalledWith({ scope, ...resume, responseId: 'assistant', executionEpoch: 123 });
   expect(mockPrepareOcrOrder).not.toHaveBeenCalled();
+  expect(mockReadOcr).not.toHaveBeenCalled();
 });

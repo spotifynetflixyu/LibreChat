@@ -42,12 +42,12 @@ export const MAX_QUOTATION_PENDING_FILES = 32;
 export const MAX_QUOTATION_CHUNKS = 512;
 export const DEFAULT_QUOTATION_LEASE_MS = 60_000;
 
-const unfinishedStatuses: readonly SteelQuotationRunStatus[] = [
-  'running',
+const recoverableStatuses: readonly SteelQuotationRunStatus[] = [
   'paused',
   'interrupted',
   'failed',
 ];
+const unfinishedStatuses: readonly SteelQuotationRunStatus[] = ['running', ...recoverableStatuses];
 const leaseStatuses: readonly SteelQuotationRunStatus[] = ['running'];
 
 export interface SteelQuotationOrderInput {
@@ -169,6 +169,18 @@ export interface SteelQuotationLease {
   expiresAt: Date;
 }
 
+interface SteelQuotationResumeInput {
+  scope: SteelQuotationScope;
+  runId: string;
+  sourceMessageId: string;
+  responseId: string;
+  executionEpoch?: number;
+}
+
+type SteelQuotationResumeResult =
+  | { ok: true; state: ISteelQuotationState; lease: SteelQuotationLease }
+  | { ok: false; code: 'flow_expired' | 'flow_not_found' | 'flow_not_resumable' };
+
 export interface SteelQuotationRunInput {
   scope: SteelQuotationScope;
   runId: string;
@@ -249,7 +261,7 @@ export interface SteelQuotationStateService {
   ): Promise<SteelQuotationActiveRun | undefined>;
   interruptRun(input: SteelQuotationInterruptInput): Promise<SteelQuotationActiveRun | undefined>;
   pauseRun(input: SteelQuotationControlInput): Promise<SteelQuotationActiveRun | undefined>;
-  resumeRun(input: SteelQuotationControlInput): Promise<SteelQuotationActiveRun | undefined>;
+  claimResume(input: SteelQuotationResumeInput): Promise<SteelQuotationResumeResult>;
   failRun(input: SteelQuotationControlInput): Promise<SteelQuotationActiveRun | undefined>;
   settleTurn(input: SteelQuotationTurnInput): Promise<SteelQuotationActiveRun | undefined>;
   pauseTurn(input: SteelQuotationTurnInput): Promise<SteelQuotationActiveRun | undefined>;
@@ -951,7 +963,8 @@ export function createSteelQuotationStateService(
       if (!current?.currentOrder) {
         throw new Error('cannot issue quotation ticket without a current order');
       }
-      if (await blocksInputMutation(input.scope, current.activeRun)) {
+      if (!(hasBinding && current.activeRun && recoverableStatuses.includes(current.activeRun.status)) &&
+        await blocksInputMutation(input.scope, current.activeRun)) {
         throw new Error('cannot issue quotation ticket while a run is unfinished or unpublished');
       }
       if (current.tickets.length >= MAX_QUOTATION_TICKETS) {
@@ -1218,9 +1231,6 @@ export function createSteelQuotationStateService(
         throw new Error('quotation signal customer preparation is stale');
       }
     }
-    if (isUnfinished(current.activeRun?.status)) {
-      throw new Error('another quotation run is unfinished');
-    }
     return admit();
   }
 
@@ -1245,8 +1255,15 @@ export function createSteelQuotationStateService(
   async function acquireLease(
     input: SteelQuotationAcquireLeaseInput,
   ): Promise<SteelQuotationLease | undefined> {
+    return (await claimLease(input))?.lease;
+  }
+
+  async function claimLease(
+    input: SteelQuotationAcquireLeaseInput,
+    sourceMessageId?: string,
+  ): Promise<{ state: ISteelQuotationState; lease: SteelQuotationLease } | undefined> {
     validateScope(input.scope);
-    validateText(input.runId, 'runId', 200);
+    validateText(input.runId, 'runId', 512);
     const now = nowOrDefault(input.now);
     const duration = input.leaseDurationMs ?? DEFAULT_QUOTATION_LEASE_MS;
     validateLeaseDuration(duration);
@@ -1256,12 +1273,19 @@ export function createSteelQuotationStateService(
       {
         ...stateFilter(input.scope),
         'activeRun.runId': input.runId,
-        'activeRun.status': { $in: unfinishedStatuses },
+        'activeRun.status': { $in: sourceMessageId ? recoverableStatuses : unfinishedStatuses },
         'activeRun.acceptedAt': { $gt: new Date(now.getTime() - STEEL_QUOTATION_INPUT_TTL_MS) },
-        $or: [
-          { 'activeRun.leaseToken': { $exists: false } },
-          { 'activeRun.leaseToken': null },
-          { 'activeRun.leaseExpiresAt': { $lte: now } },
+        $and: [
+          { $or: [
+            { 'activeRun.leaseToken': null },
+            { 'activeRun.leaseExpiresAt': { $lte: now } },
+          ] },
+          ...(sourceMessageId ? [{ $or: [
+            { 'activeRun.targetMessageId': sourceMessageId },
+            { 'activeRun.executionResponseId': sourceMessageId },
+            { 'activeRun.resumeSourceMessageIds': sourceMessageId },
+            { tickets: { $elemMatch: { acceptedRunId: input.runId, responseId: sourceMessageId } } },
+          ] }] : []),
         ],
       },
       {
@@ -1273,18 +1297,62 @@ export function createSteelQuotationStateService(
           ...(input.executionResponseId && {
             'activeRun.executionResponseId': input.executionResponseId,
           }),
+          ...(sourceMessageId && { 'activeRun.targetMessageId': input.executionResponseId }),
           'activeRun.leaseToken': leaseToken,
           'activeRun.leaseExpiresAt': expiresAt,
           'activeRun.updatedAt': now,
           updatedAt: now,
         },
+        ...(sourceMessageId && {
+          $unset: { 'activeRun.errorMessage': 1 },
+          $addToSet: {
+            'activeRun.resumeSourceMessageIds': { $each: [sourceMessageId, input.executionResponseId] },
+          },
+        }),
       },
       { new: true },
     ).lean<ISteelQuotationState>();
     if (!updated?.activeRun || updated.activeRun.runId !== input.runId) {
       return undefined;
     }
-    return { runId: input.runId, leaseToken, expiresAt };
+    return { state: updated, lease: { runId: input.runId, leaseToken, expiresAt } };
+  }
+
+  async function claimResume(input: SteelQuotationResumeInput): Promise<SteelQuotationResumeResult> {
+    const claimed = await claimLease({
+      scope: input.scope,
+      runId: input.runId,
+      executionResponseId: input.responseId,
+      executionEpoch: input.executionEpoch,
+    }, input.sourceMessageId).catch((error: unknown) => {
+      if (error instanceof Error && 'code' in error &&
+          error.code === 'STEEL_CONVERSATION_OWNER_MISMATCH') {
+        return undefined;
+      }
+      throw error;
+    });
+    if (claimed) return { ok: true, ...claimed };
+    const state = await State.findOne(stateFilter(input.scope)).lean<ISteelQuotationState>();
+    const run = state?.activeRun;
+    if (run?.runId !== input.runId) {
+      return {
+        ok: false,
+        code: state?.tickets.some((ticket) => ticket.acceptedRunId === input.runId)
+          ? 'flow_expired'
+          : 'flow_not_found',
+      };
+    }
+    if (run.targetMessageId !== input.sourceMessageId &&
+      run.executionResponseId !== input.sourceMessageId &&
+      !run.resumeSourceMessageIds?.includes(input.sourceMessageId) &&
+      !state?.tickets.some((ticket) => ticket.acceptedRunId === input.runId &&
+        ticket.responseId === input.sourceMessageId)) {
+      return { ok: false, code: 'flow_not_found' };
+    }
+    if (new Date(run.acceptedAt).getTime() + STEEL_QUOTATION_INPUT_TTL_MS <= Date.now()) {
+      return { ok: false, code: 'flow_expired' };
+    }
+    return { ok: false, code: 'flow_not_resumable' };
   }
 
   async function heartbeatLease(
@@ -1413,7 +1481,7 @@ export function createSteelQuotationStateService(
 
   async function controlRun(
     input: SteelQuotationControlInput,
-    status: 'paused' | 'running' | 'interrupted' | 'failed',
+    status: 'paused' | 'interrupted' | 'failed',
     allowed: readonly SteelQuotationRunStatus[],
     expectedRun?: SteelQuotationActiveRun,
   ): Promise<SteelQuotationActiveRun | undefined> {
@@ -1442,17 +1510,14 @@ export function createSteelQuotationStateService(
           'activeRun.updatedAt': now,
           updatedAt: now,
           ...(status === 'failed' && {
-            'activeRun.errorMessage': 'Quotation did not finish publishing.',
+            'activeRun.errorMessage': expectedRun?.status === 'completed'
+              ? 'quotation_unpublished'
+              : 'Quotation did not finish publishing.',
           }),
         },
         $unset: {
           'activeRun.leaseToken': 1,
           'activeRun.leaseExpiresAt': 1,
-          ...(status === 'running' && {
-            'activeRun.errorMessage': 1,
-            'activeRun.executionResponseId': 1,
-            'activeRun.executionEpoch': 1,
-          }),
         },
       },
       { new: true },
@@ -1464,12 +1529,6 @@ export function createSteelQuotationStateService(
     input: SteelQuotationControlInput,
   ): Promise<SteelQuotationActiveRun | undefined> {
     return controlRun(input, 'paused', ['running']);
-  }
-
-  function resumeRun(
-    input: SteelQuotationControlInput,
-  ): Promise<SteelQuotationActiveRun | undefined> {
-    return controlRun(input, 'running', ['paused', 'interrupted', 'failed']);
   }
 
   function failRun(
@@ -1685,7 +1744,7 @@ export function createSteelQuotationStateService(
     transitionRun,
     interruptRun,
     pauseRun,
-    resumeRun,
+    claimResume,
     failRun,
     pauseTurn,
     settleTurn,

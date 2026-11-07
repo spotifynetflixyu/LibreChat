@@ -2,13 +2,17 @@ import express from 'express';
 import mongoose from 'mongoose';
 import request from 'supertest';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
-import { tenantStorage, createSteelOcrRunModel } from '@librechat/data-schemas';
+import { tenantStorage, createSteelOcrRunModel, createSteelOcrRunMethods } from '@librechat/data-schemas';
 import { InMemoryEventTransport } from '../stream/implementations/InMemoryEventTransport';
 import { createSteelFlowLifecycle, createSteelGenerationReader } from './lifecycle';
 import { InMemoryJobStore } from '../stream/implementations/InMemoryJobStore';
 import { GenerationJobManagerClass } from '../stream/GenerationJobManager';
 import { createSteelOcrStateService } from './ocr/state';
 import { createOcrRouteHandlers } from './ocr/routes';
+import { prepareSteelFlowTurn } from './flow/resume';
+import { SteelFlowReplayError } from './replay';
+
+type FlowPreflight = Parameters<typeof prepareSteelFlowTurn>[1]['runSteelPaddleOcrPreflight'];
 
 let mongo: MongoMemoryReplSet;
 const scope = { userId: 'owner', conversationId: 'conversation', tenantId: 'tenant' };
@@ -100,21 +104,46 @@ it('rejects recovery of superseded OCR without changing either run', async () =>
   });
   const body = {
     isRegenerate: true,
-    steelFlowReplay: { kind: 'preflight', runId: old.runId, sourceMessageId: 'old' },
+    responseMessageId: 'old_',
+    steelFlowResume: { kind: 'preflight' as const, runId: old.runId },
   };
   const input = {
-    scope, body, parentMessageId: 'input', files: [{ filename: 'order.pdf', fileId: 'file' }],
+    scope, body, messageId: 'input', responseId: 'fork', text: '',
+    ocr: { req: {} },
     readMessage: async () => ({
       conversationId: scope.conversationId, parentMessageId: 'input', isCreatedByUser: false,
     }),
   };
-  await expect(lifecycle.readReplay({ ...input, parentMessageId: 'other' }))
-    .rejects.toThrow('Steel flow is no longer available');
-  await expect(lifecycle.readReplay(input)).resolves.toEqual(body.steelFlowReplay);
+  const runStore = createSteelOcrRunMethods(mongoose);
+  const dependencies = {
+    prepareQuotationTurn: jest.fn().mockResolvedValue({ resume: false }),
+    prepareDelegateOcrResume: jest.fn(),
+    runSteelPaddleOcrPreflight: jest.fn<ReturnType<FlowPreflight>, Parameters<FlowPreflight>>(async ({ resume }) => {
+      if (resume) {
+        const claim = await runStore.claimResumeRun({ ...resume, scope, kind: 'preflight',
+          responseGenerationId: 'fork', executionEpoch: 3 });
+        if (!claim.ok) throw new SteelFlowReplayError(claim.code);
+      }
+      return { status: 'skipped', ocrTurnActive: false, completedKeys: [],
+        attemptedKeys: [], failedKeys: [], currentPaddleOcrResults: [] };
+    }),
+  };
+  await expect(prepareSteelFlowTurn({ ...input, messageId: 'other' }, dependencies))
+    .rejects.toMatchObject({ code: 'flow_not_found' });
+  expect(dependencies.runSteelPaddleOcrPreflight).not.toHaveBeenCalled();
+
+  await prepareSteelFlowTurn({ ...input, body: undefined }, dependencies);
+  expect(dependencies.prepareDelegateOcrResume).not.toHaveBeenCalled();
+  expect(dependencies.runSteelPaddleOcrPreflight).toHaveBeenLastCalledWith(input.ocr);
+  expect(await createSteelOcrRunModel(mongoose).findOne({ runId: old.runId }).lean())
+    .toMatchObject({ status: 'paused' });
+
   await ocr.createPreflightRun({
     scope, responseGenerationId: 'current', triggeringMessageId: 'next', executionEpoch: 2,
   });
-  await expect(lifecycle.readReplay(input)).rejects.toThrow('Steel flow is no longer available');
+  await expect(prepareSteelFlowTurn(input, dependencies))
+    .rejects.toMatchObject({ code: 'flow_expired' });
+  expect(dependencies.prepareQuotationTurn).toHaveBeenCalledTimes(1);
   expect(await createSteelOcrRunModel(mongoose).findOne({ runId: old.runId }).lean())
     .toMatchObject({ status: 'paused' });
 });

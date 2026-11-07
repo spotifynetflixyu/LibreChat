@@ -17,7 +17,7 @@ import { createModelErrorTracker } from './tracker';
 /** Only classified, server-owned text may cross the outer chat failure boundary. */
 export function getTerminalFailureText(error: unknown): string {
   if (error instanceof SteelFlowReplayError) {
-    return JSON.stringify({ code: ErrorTypes.STEEL_FLOW_REPLAY_UNAVAILABLE });
+    return JSON.stringify({ code: error.code });
   }
   if (error instanceof AttachmentStorageError) return new AttachmentStorageError().message;
   if (error && typeof error === 'object' && Reflect.get(error, 'code') === ErrorTypes.CODE_WORKSPACE_UNAVAILABLE) {

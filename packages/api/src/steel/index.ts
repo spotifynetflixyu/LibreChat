@@ -21,3 +21,5 @@ export * from './runtime/types';
 export * from './sources';
 export * from './tools';
 export * from './lifecycle';
+export { SteelFlowReplayError } from './replay';
+export { prepareSteelFlowTurn, rejectInvalidSteelFlowResume } from './flow/resume';

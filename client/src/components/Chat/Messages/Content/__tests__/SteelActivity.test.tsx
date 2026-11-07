@@ -2,6 +2,7 @@ import React from 'react';
 import { RecoilRoot } from 'recoil';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { TMessage } from 'librechat-data-provider';
+import type { SteelActivityProps } from '../SteelActivity';
 import {
   isSteelFlowExpiredError,
   useCancelSteelOcrMutation,
@@ -10,7 +11,11 @@ import {
   useGetSteelQuotationStatusQuery,
 } from '~/data-provider/Steel';
 import { steelNativeActivityByMessageId } from '~/store/steel';
-import SteelActivity from '../SteelActivity';
+import { useSteelResponseExtras } from '../SteelResponse';
+
+function SteelActivity(props: SteelActivityProps) {
+  return useSteelResponseExtras({ ...props, content: undefined }).steelActivity;
+}
 import { ChatContext } from '~/Providers';
 
 jest.mock('~/data-provider/Steel', () => ({
@@ -152,9 +157,9 @@ describe('SteelActivity', () => {
     fireEvent.click(retry);
 
     await waitFor(() => expect(regenerate).toHaveBeenCalledWith(assistantMessage, {
-      steelFlowReplay: { kind: 'quotation', runId: interruptedQuotationStatus.runId, sourceMessageId: assistantMessage.messageId },
+      steelFlowResume: { kind: 'quotation', runId: interruptedQuotationStatus.runId },
     }));
-    expect(refetch).toHaveBeenCalledTimes(1);
+    expect(refetch).not.toHaveBeenCalled();
     expect(mockUseCancelSteelQuotationMutation().mutate).not.toHaveBeenCalled();
   });
 
@@ -197,7 +202,7 @@ describe('SteelActivity', () => {
     await waitFor(() => expect(regenerate).toHaveBeenCalledTimes(1));
     expect(retry).toBeDisabled();
     fireEvent.click(retry);
-    expect(refetch).toHaveBeenCalledTimes(1);
+    expect(refetch).not.toHaveBeenCalled();
   });
 
   it('disables retry while another chat submission is active', () => {
@@ -227,7 +232,7 @@ describe('SteelActivity', () => {
     expect(refetch).not.toHaveBeenCalled();
   });
 
-  it('does not regenerate when a fresh status refetch finds a newer run', async () => {
+  it('does not regenerate when the status query reports a newer run', async () => {
     const refetch = jest.fn().mockResolvedValue({
       data: interruptedQuotationStatus,
       isError: true,
@@ -242,6 +247,7 @@ describe('SteelActivity', () => {
     } as TMessage;
     mockUseGetSteelQuotationStatusQuery.mockReturnValue({
       data: interruptedQuotationStatus,
+      error: { response: { status: 409, data: { code: 'flow_expired' } } },
       refetch,
     } as unknown as ReturnType<typeof useGetSteelQuotationStatusQuery>);
 
@@ -269,11 +275,11 @@ describe('SteelActivity', () => {
       await screen.findByText('This flow has been superseded by a newer run.'),
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Retry' })).toBeDisabled();
-    expect(refetch).toHaveBeenCalledTimes(1);
+    expect(refetch).not.toHaveBeenCalled();
     expect(regenerate).not.toHaveBeenCalled();
   });
 
-  it('shows a localized retry error when the fresh status refetch fails', async () => {
+  it('shows a localized retry error when the assistant message is missing', async () => {
     const refetch = jest.fn().mockResolvedValue({
       data: interruptedQuotationStatus,
       isError: true,
@@ -294,7 +300,7 @@ describe('SteelActivity', () => {
     render(
       <ChatContext.Provider
         value={createChatContext({
-          getMessages: jest.fn(() => [parentMessage, assistantMessage]),
+          getMessages: jest.fn(() => [parentMessage]),
           regenerate,
         })}
       >
@@ -388,7 +394,7 @@ describe('SteelActivity', () => {
     expect(retry).toBeEnabled();
     fireEvent.click(retry);
     await waitFor(() => expect(regenerate).toHaveBeenCalledTimes(2));
-    expect(refetch).toHaveBeenCalledTimes(2);
+    expect(refetch).not.toHaveBeenCalled();
   });
 
   it('releases the retry latch when regeneration cannot start', async () => {
@@ -2061,23 +2067,24 @@ describe('SteelActivity', () => {
       }
     });
 
-    it('renders a completed quotation waiting for publication as normal completion, not a recoverable failure', () => {
+    it('offers Retry when quotation settlement reports an unpublished result', () => {
       mockUseGetSteelQuotationStatusQuery.mockReturnValue({
         data: {
           conversationId: 'conversation-1',
           index: 4,
           runId: 'quotation-run-unpublished',
           latestRunId: 'quotation-run-unpublished',
-          status: 'completed',
+          status: 'failed',
           stage: 'finalizing',
-          errorMessage: null,
+          errorMessage: 'quotation_unpublished',
           completedChunks: 3,
           totalChunks: 3,
           canCancel: false,
         },
       } as unknown as ReturnType<typeof useGetSteelQuotationStatusQuery>);
 
-      const { container } = render(
+      render(
+        <ChatContext.Provider value={createChatContext()}>
         <RecoilRoot>
           <SteelActivity
             messageId="assistant-unpublished"
@@ -2095,14 +2102,14 @@ describe('SteelActivity', () => {
               },
             ]}
           />
-        </RecoilRoot>,
+        </RecoilRoot>
+        </ChatContext.Provider>,
       );
 
-      expect(screen.getByText('Quotation completed (3/3 chunks)')).toBeInTheDocument();
+      expect(screen.getByText('Quotation failed')).toBeInTheDocument();
       expect(screen.getByText('Stage: finalizing')).toBeInTheDocument();
-      expect(container.querySelector('.my-3 .text-status-success')).toBeInTheDocument();
-      expect(container.querySelector('.my-3 .text-status-error')).not.toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: 'Retry' })).not.toBeInTheDocument();
+      expect(screen.getByText('The quotation could not be published.')).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'Retry' })).toBeEnabled();
       expect(screen.queryByRole('button', { name: 'Resume' })).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
       expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument();
@@ -2275,9 +2282,9 @@ describe('SteelActivity', () => {
 
         fireEvent.click(screen.getByRole('button', { name: action }));
         await waitFor(() => expect(regenerate).toHaveBeenCalledWith(assistantMessage, {
-          steelFlowReplay: { kind, runId: event.runId, sourceMessageId: assistantMessage.messageId },
+          steelFlowResume: { kind, runId: event.runId },
         }));
-        expect(refetch).toHaveBeenCalledTimes(1);
+        expect(refetch).not.toHaveBeenCalled();
       },
     );
   });

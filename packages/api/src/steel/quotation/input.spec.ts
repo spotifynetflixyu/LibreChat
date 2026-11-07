@@ -477,7 +477,7 @@ it('publishes the Chat quotation after a quote_signal text part through the guar
 
 it.each([
   ['regenerate', 'quote-message'],
-  ['resend', 'resent-quote-message'],
+  ['after a regular turn', 'resent-quote-message'],
 ])('completes %s after an interrupted multi-turn quotation without rerunning completed children', async (mode, messageId) => {
   const { service, run } = await admitPublishedHumanRun('customer-response');
   const model = createRunnerModel([], []);
@@ -498,17 +498,24 @@ it.each([
   expect((await service.readState(scope))?.activeRun?.status).toBe('interrupted');
   const callsBeforeRetry = model.mock.calls.length;
   const responseId = `${mode}-response`;
-  const prepared = await prepareQuotationTurn({
+  const turn = {
     scope,
     messageId,
     responseId,
     generationId: `${mode}-generation`,
     publicationStore: db,
     text: '報價',
+  };
+  if (mode !== 'regenerate') {
+    expect((await prepareQuotationTurn(turn)).resume).toBe(false);
+  }
+  const prepared = await prepareQuotationTurn({
+    ...turn, resume: { runId: run.runId, sourceMessageId: run.targetMessageId! },
   });
   expect(prepared.resume).toBe(true);
   const result = await runQuotationPreflight({
     ...runnerInput,
+    resumeLease: prepared.resumeLease,
     summarySourceMessageId: responseId,
     publishFinal: createChatQuotationPublisher(responseId),
     refreshPublicationAdmission: createSteelQuotationPublicationAdmission({
@@ -521,7 +528,7 @@ it.each([
   });
   expect(result.status).toBe('completed');
   expect(model.mock.calls.slice(callsBeforeRetry).map(([input]) => input.role)).toEqual(['main']);
-  const message = await db.getMessage({ user: scope.userId, messageId: run.targetMessageId! });
+  const message = await db.getMessage({ user: scope.userId, messageId: responseId });
   expect(message?.text).toContain('## system_order');
   expect(message?.text).toContain('## quote_summary');
   expect((await service.readState(scope))?.activeRun?.status).toBe('completed');

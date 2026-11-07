@@ -180,6 +180,7 @@ function createService() {
         conversationId: scope.conversationId, responseGenerationId, triggeringMessageId,
         completedChunks: 0, totalChunks: 0,
       }),
+      claimResumeRun: async () => ({ ok: false as const, code: 'flow_not_resumable' as const }),
       updatePreflightRun: async () => true,
       settleTurn: async () => undefined,
     } } : {}),

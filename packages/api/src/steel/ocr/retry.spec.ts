@@ -44,8 +44,8 @@ describe('isSteelOcrPreflightTurn', () => {
     ['an OCR preflight turn', ocrTurn, true],
     ['an ordinary turn', {}, false],
     ['a delegate_ocr turn', { ...ocrTurn, delegateOcrPolicy: { allowed: true } }, false],
-    ['a delegate_ocr resume', { ...ocrTurn, delegateOcrResume: {} }, false],
-    ['a quotation resume', { ...ocrTurn, quotation: { resume: true } }, false],
+    ['a delegate_ocr resume', { ocrTurnActive: false, delegateOcrResume: {} }, false],
+    ['a quotation resume', { ocrTurnActive: false, quotation: { resume: true } }, false],
   ])('%s retries: %s', (_label, context, expected) => {
     expect(isSteelOcrPreflightTurn(context)).toBe(expected);
   });

@@ -714,6 +714,26 @@ describe('resolveErrorTurn', () => {
     expect(errorResponse.parentMessageId).toBe('user-1');
   });
 
+  it('leaves pre-existing assistant content on its branch when Steel regeneration fails', () => {
+    const oldResponse = { ...streamedResponse, messageId: 'old-assistant' };
+    const { errorResponse } = resolveErrorTurn({
+      data: startFailure,
+      submission: {
+        ...submission,
+        isRegenerate: true,
+        initialResponse: { ...initialResponse, messageId: 'old-assistant_' },
+        regenerateMessages: [userMessage, oldResponse],
+        steelFlowResume: { kind: 'preflight', runId: 'run-1' },
+      },
+      getMessages: () => [userMessage, oldResponse],
+      isNewConversationRoute: false,
+    });
+
+    expect(errorResponse.messageId).toBe('old-assistant_');
+    expect(errorResponse.text).toBe(startFailureText);
+    expect(errorResponse.content).toBeUndefined();
+  });
+
   it('never takes a user row at the tail for the failed response', () => {
     const { errorResponse } = resolveErrorTurn({
       data: startFailure,

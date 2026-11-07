@@ -96,7 +96,7 @@ describe('Steel delegate OCR state', () => {
     const run = await service.materializeDelegateOcrRun(input);
     const same = await service.materializeDelegateOcrRun(input);
     expect(run._id).toEqual(same._id);
-    expect(await service.findResumableDelegateOcrRun(input)).toEqual(
+    expect(await service.findDelegateOcrRunByClaimToken(input.claimToken)).toEqual(
       expect.objectContaining({ claimToken: 'claim-1' }),
     );
   });
@@ -548,15 +548,9 @@ describe('Steel delegate OCR state', () => {
         expectedLeaseToken: null,
       }),
     ).resolves.toEqual(expect.objectContaining({ executionLeaseToken: 'lease-save-failed' }));
-    await expect(service.findResumableDelegateOcrRun(failed)).resolves.toEqual(
+    await expect(service.findDelegateOcrRunByClaimToken(failed.claimToken)).resolves.toEqual(
       expect.objectContaining({ status: 'running' }),
     );
-    await expect(
-      service.findResumableDelegateOcrRun({
-        conversationId: failed.conversationId,
-        triggeringMessageId: 'message-different',
-      }),
-    ).resolves.toBeNull();
   });
 
   it('creates expected collections and indexes', () => {

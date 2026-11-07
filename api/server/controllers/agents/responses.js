@@ -34,6 +34,7 @@ const {
   createSteelNativeHistory,
   resolveSteelTurnToolVisibility,
   prepareQuotationTurn,
+  prepareSteelFlowTurn,
   isQuotationPreparationTurn,
   prepareSteelMarkdownHistory,
   createSafeUser,
@@ -1362,43 +1363,25 @@ const executeResponse = async (envelope, { req, res }) => {
           steelConversation,
         },
       };
-      const quotation = await prepareQuotationTurn({
+      const { quotation, delegateOcrResume, paddleOcrPreflight } = await prepareSteelFlowTurn({
         scope: { userId: principal.userId, conversationId, tenantId: principal.tenantId },
         messageId: currentUserTurn?.messageId ?? responseId,
         responseId,
         generationId: responseId,
         publicationStore: db,
+        readMessage: db.getMessage,
         text: currentUserTurn?.content ?? '',
         files: currentTurnFiles,
-      });
-      req.steelNativeContext.quotation = {
-        ...quotation,
-        messageId: currentUserTurn?.messageId ?? responseId,
-      };
-      const delegateOcrResume =
-        !quotation.resume && typeof prepareDelegateOcrResume === 'function'
-          ? await prepareDelegateOcrResume({
-              req,
-              conversationId,
-              triggeringMessageId: currentUserTurn?.messageId,
-              userId: principal.userId,
-            })
-          : undefined;
-      let paddleOcrPreflight;
-      if (quotation.resume) {
-        paddleOcrPreflight = { ocrTurnActive: false };
-      } else if (delegateOcrResume) {
-        paddleOcrPreflight = { ocrTurnActive: false, delegateOcrResume: true };
-      } else {
-        paddleOcrPreflight = await runSteelPaddleOcrPreflight({
+        ocr: {
           req,
           res,
           agent: primaryConfig,
           signal: execution.signal,
           streamId: req._resumableStreamId || null,
           userMCPAuthMap: mergedMCPAuthMap,
-        });
-      }
+        },
+      }, { prepareQuotationTurn, prepareDelegateOcrResume, runSteelPaddleOcrPreflight });
+      req.steelNativeContext.quotation = quotation;
       const ocrTurnActive = paddleOcrPreflight?.ocrTurnActive === true;
       req.steelNativeContext = {
         ...(req.steelNativeContext ?? {}),
@@ -2113,7 +2096,7 @@ const createResponse = async (req, res) => {
   const receivedAt = Date.now();
   const validation = validateResponseRequest(req.body);
   if (isValidationFailure(validation)) {
-    return sendResponsesErrorResponse(res, 400, validation.error);
+    return sendResponsesErrorResponse(res, 400, validation.error, 'invalid_request', validation.code);
   }
 
   let envelope;

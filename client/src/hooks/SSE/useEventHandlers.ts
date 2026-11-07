@@ -5,6 +5,8 @@ import { useSetRecoilState, useRecoilCallback } from 'recoil';
 import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import {
   QueryKeys,
+  DynamicQueryKeys,
+  ErrorTypes,
   Constants,
   EndpointURLs,
   ContentTypes,
@@ -51,15 +53,15 @@ import {
   markTitleGenerationProcessed,
   useReconcileConversationCodeEnvironmentMutation,
 } from '~/data-provider';
-import { mergeSteelQuotationMainSnapshot } from '~/utils/steelQuotation';
 import {
   getFailedCodeDecisionRequest,
   withSubmittedCodeDecision,
 } from '~/hooks/Agents/codeDecision';
 import useFocusRegeneratedResponse from '~/hooks/Chat/useFocusRegeneratedResponse';
+import useSteelQuotationUpdates from '~/hooks/SSE/useSteelQuotationUpdates';
+import { mergeSteelQuotationMainSnapshot } from '~/utils/steelQuotation';
 import { shouldResetSubagentAtomsOnConversationChange } from './cleanup';
 import useAttachmentHandler from '~/hooks/SSE/useAttachmentHandler';
-import useSteelQuotationUpdates from '~/hooks/SSE/useSteelQuotationUpdates';
 import useSteelEventHandler from '~/hooks/SSE/useSteelEventHandler';
 import useContentHandler from '~/hooks/SSE/useContentHandler';
 import useStepHandler from '~/hooks/SSE/useStepHandler';
@@ -462,7 +464,10 @@ const createErrorMessage = ({
     (errorMetadata?.text || text || (error as Error | undefined)?.message) ??
     'Error cancelling request';
   const streamedContent = getStreamedContent(latestMessage);
-  if (latestMessage?.conversationId && latestMessage.messageId && streamedContent.length > 0) {
+  const existedBeforeRecovery = submission.steelFlowResume &&
+    submission.regenerateMessages?.some((message) => message.messageId === latestMessage?.messageId);
+  if (!existedBeforeRecovery && latestMessage?.conversationId &&
+      latestMessage.messageId && streamedContent.length > 0) {
     /** The row keeps the envelope it streamed under — author, model, icon, creation time — and
      *  takes from the failure only what describes the failure: a server payload names `System`
      *  as its sender and the schema dates a fresh envelope now, neither of which applies to a
@@ -1529,6 +1534,21 @@ export default function useEventHandlers({
         getMessages,
         isNewConversationRoute: paramId === Constants.NEW_CONVO,
       });
+      const flow = submission.steelFlowResume;
+      const errorText = data?.responseMessage?.text ?? (data && 'text' in data ? data.text : undefined);
+      if (flow && typeof errorText === 'string') {
+        let expired = false;
+        try {
+          expired = JSON.parse(errorText)?.code === ErrorTypes.STEEL_FLOW_EXPIRED;
+        } catch {
+          // Other errors may use plain text.
+        }
+        if (expired) {
+          void queryClient.invalidateQueries(
+            DynamicQueryKeys.steelFlowStatus(conversationId, flow.kind, flow.runId),
+          );
+        }
+      }
       const currentResponse = getMessages()?.find(
         (message) => message.messageId === errorResponse.messageId,
       );

@@ -295,6 +295,9 @@ jest.mock('@librechat/api', () => ({
     })),
   }),
   SteelOcrResponseAuditPersistenceError: MockOcrAuditPersistenceError,
+  prepareSteelFlowTurn: jest.fn((...args) =>
+    jest.requireActual('@librechat/api').prepareSteelFlowTurn(...args),
+  ),
   prepareQuotationTurn: (...args) => mockPrepareQuotationTurn(...args),
   isQuotationPreparationTurn: (...args) =>
     jest.requireActual('@librechat/api').isQuotationPreparationTurn(...args),
@@ -804,6 +807,26 @@ describe('createResponse controller', () => {
     };
   });
 
+  it('rejects Steel recovery on an ordinary Responses request', async () => {
+    const api = require('@librechat/api');
+    req.body = { model: 'agent-123', input: 'Continue', steelFlowResume: {
+      kind: 'preflight', runId: 'run-1',
+    } };
+    api.isValidationFailure.mockImplementationOnce(
+      jest.requireActual('@librechat/api').isValidationFailure,
+    );
+    api.validateResponseRequest.mockImplementationOnce(
+      jest.requireActual('@librechat/api').validateResponseRequest,
+    );
+
+    await createResponse(req, res);
+
+    expect(api.sendResponsesErrorResponse).toHaveBeenCalledWith(
+      res, 400, expect.any(String), 'invalid_request', 'flow_not_resumable',
+    );
+    expect(api.prepareSteelFlowTurn).not.toHaveBeenCalled();
+  });
+
   it.each([
     [false, false],
     [true, false],
@@ -814,7 +837,10 @@ describe('createResponse controller', () => {
     api.validateResponseRequest.mockReturnValueOnce({
       request: { model: 'agent-123', input: '報價', stream },
     });
-    mockPrepareDelegateOcrResume.mockResolvedValueOnce(ocrResume ? { runId: 'ocr-resume' } : undefined);
+    if (ocrResume) {
+      api.prepareSteelFlowTurn.mockResolvedValueOnce({ quotation: { resume: false },
+        delegateOcrResume: { runId: 'ocr-resume' }, paddleOcrPreflight: { ocrTurnActive: false } });
+    }
 
     await createResponse(req, res);
 
@@ -3478,17 +3504,16 @@ describe('createResponse controller', () => {
       api.convertInputToMessages.mockReturnValueOnce([
         { role: 'user', content: 'resume OCR', messageId: 'user-resume-1' },
       ]);
-      mockPrepareDelegateOcrResume.mockResolvedValueOnce(resume);
+      api.prepareSteelFlowTurn.mockResolvedValueOnce({ quotation: { resume: false },
+        delegateOcrResume: resume, paddleOcrPreflight: { ocrTurnActive: false, delegateOcrResume: true } });
       mockExecuteDelegateOcrResume.mockResolvedValueOnce('resumed OCR markdown');
 
       await createResponse(req, res);
 
-      expect(mockPrepareDelegateOcrResume).toHaveBeenCalledWith({
-        req,
-        conversationId: 'mock-uuid-456',
-        triggeringMessageId: 'user-resume-1',
-        userId: 'user-123',
-      });
+      expect(api.prepareSteelFlowTurn).toHaveBeenCalledWith(
+        expect.objectContaining({ messageId: 'user-resume-1' }),
+        expect.any(Object),
+      );
       expect(
         require('~/server/services/ToolService').runSteelPaddleOcrPreflight,
       ).not.toHaveBeenCalled();
@@ -3534,20 +3559,22 @@ describe('createResponse controller', () => {
       api.convertInputToMessages.mockReturnValueOnce([
         { role: 'user', content: '繼續報價', messageId: 'user-quotation-resume-1' },
       ]);
-      mockPrepareQuotationTurn.mockResolvedValueOnce(resume);
+      api.prepareSteelFlowTurn.mockResolvedValueOnce({ quotation: resume,
+        paddleOcrPreflight: { ocrTurnActive: false } });
       mockExecuteSteelQuotationWorkflow.mockImplementationOnce(async ({ onText }) => {
         await onText('resumed quotation');
       });
 
       await createResponse(req, res);
 
-      expect(mockPrepareQuotationTurn).toHaveBeenCalledWith(
+      expect(api.prepareSteelFlowTurn).toHaveBeenCalledWith(
         expect.objectContaining({
           scope: { userId: 'user-123', conversationId: 'mock-uuid-456' },
           messageId: 'user-quotation-resume-1',
           responseId: 'resp_mock-123',
           text: '繼續報價',
         }),
+        expect.any(Object),
       );
       expect(runSteelPaddleOcrPreflight).not.toHaveBeenCalled();
       const run = await api.createRun.mock.results.at(-1).value;
@@ -3560,7 +3587,7 @@ describe('createResponse controller', () => {
     it('fails closed on delegate OCR resume CAS loss without creating or streaming a parent run', async () => {
       const api = require('@librechat/api');
       const casError = new Error('delegate_ocr resume execution lease is unavailable');
-      mockPrepareDelegateOcrResume.mockRejectedValueOnce(casError);
+      api.prepareSteelFlowTurn.mockRejectedValueOnce(casError);
       api.validateResponseRequest.mockReturnValueOnce({
         request: {
           model: 'agent-123',
@@ -3574,7 +3601,7 @@ describe('createResponse controller', () => {
 
       await createResponse(req, res);
 
-      expect(mockPrepareDelegateOcrResume).toHaveBeenCalled();
+      expect(api.prepareSteelFlowTurn).toHaveBeenCalled();
       expect(api.createRun).not.toHaveBeenCalled();
       expect(mockExecuteDelegateOcrResume).not.toHaveBeenCalled();
       expect(res.json).not.toHaveBeenCalled();

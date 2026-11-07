@@ -42,6 +42,7 @@ const {
   preserveFailedTurnMessage,
   createSteelQuotationFailurePersistence,
   getTerminalFailureText,
+  rejectInvalidSteelFlowResume,
   createSteelFullMarkdownPublisher,
   shouldDeferSteelMarkdownPersistence,
   createMCPRuntimeRequestBody,
@@ -519,9 +520,10 @@ async function saveErrorTurn(
       errorMessageId = getPreliminaryResponseMessageId({ messageId: liveUserMessage.messageId });
       errorParentMessageId = liveUserMessage.messageId;
     } else if (isRegenerate) {
+      const targetResponseId = req.body?.steelFlowResume ? liveResponseMessageId : responseMessageId;
       errorMessageId =
-        typeof responseMessageId === 'string' && responseMessageId.length > 0
-          ? responseMessageId
+        typeof targetResponseId === 'string' && targetResponseId.length > 0
+          ? targetResponseId
           : null;
       errorParentMessageId = liveUserMessage?.messageId ?? overrideParentMessageId ?? null;
     } else {
@@ -859,6 +861,7 @@ function rejectMissingTriggerParentMessageId(res, generationProtocolVersion) {
 const ResumableAgentController = async (req, res, next, initializeClient, addTitle) => {
   const startupTelemetry = getAgentStartupTelemetry(req);
   let generationProtocolVersion = negotiateNewGenerationProtocol(req);
+  if (rejectInvalidSteelFlowResume(req, res)) return;
   const {
     text,
     isRegenerate,

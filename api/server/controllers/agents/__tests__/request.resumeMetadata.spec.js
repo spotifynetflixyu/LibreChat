@@ -1,3 +1,5 @@
+jest.mock('~/server/services/Steel/flow', () => ({ settleTurn: jest.fn() }));
+
 const { EventEmitter } = require('events');
 
 const mockLogger = {
@@ -466,6 +468,18 @@ function nextTick() {
 }
 
 describe('ResumableAgentController resume metadata', () => {
+  it('rejects a Steel recovery field on a new chat turn before starting a job', async () => {
+    const req = { body: { steelFlowResume: { kind: 'quotation', runId: 'run-1' } } };
+    const res = { status: jest.fn().mockReturnThis(), json: jest.fn() };
+    const initializeClient = jest.fn();
+
+    await AgentController(req, res, jest.fn(), initializeClient);
+
+    expect(res.status).toHaveBeenCalledWith(400);
+    expect(res.json).toHaveBeenCalledWith({ code: 'flow_not_resumable' });
+    expect(initializeClient).not.toHaveBeenCalled();
+  });
+
   it('exposes shared Steel completion APIs through the public package entry', () => {
     const api = jest.requireActual('@librechat/api');
     const completionExports = [

@@ -42,6 +42,7 @@ import type { SteelRepositoryClient } from '../repositories/types';
 import type { OpenAIOAuthModelOptions } from '../native/oauth';
 import type { SteelNativeHistory } from '../native/events';
 import type { SavedQuotationLookup } from './history';
+import type { SteelQuotationLease } from './state';
 import {
   buildQuotationChunks,
   quotationSystemOrderColumns,
@@ -369,6 +370,7 @@ export interface QuotationProgress {
 
 export interface QuotationRunnerInput {
   expectedRunId?: string;
+  resumeLease?: SteelQuotationLease;
   executionEpoch?: number;
   client?: SteelRepositoryClient;
   scope: SteelQuotationScope;
@@ -584,12 +586,6 @@ export async function acceptQuotationSignal(input: {
     throw new Error('Quotation signal is based on stale preparation data');
   }
   if (
-    isUnfinishedQuotation(state.activeRun?.status) ||
-    (state.activeRun?.status === 'completed' &&
-      !(await service.isPublishedRun(input.scope, state.activeRun)))
-  )
-    return state.activeRun;
-  if (
     input.ocrSelection &&
     !sameQuotationOcrSelection(input.ocrSelection, state.currentOrder.ocrSelection)
   ) {
@@ -666,7 +662,7 @@ export async function runQuotationPreflightWithRetries(
   const service = createSteelQuotationStateService(mongoose);
   for (let attempt = 1; ; attempt += 1) {
     try {
-      return await runQuotationPreflight(input);
+      return await runQuotationPreflight(attempt === 1 ? input : { ...input, resumeLease: undefined });
     } catch (error) {
       if (attempt >= QUOTATION_MAX_ATTEMPTS || input.signal.aborted) {
         const active = await service.readActiveRun(input.scope);
@@ -703,9 +699,13 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
   const initial = await service.readState(input.scope);
   const run = initial?.activeRun;
   if (input.expectedRunId && run?.runId !== input.expectedRunId) {
-    throw new SteelFlowReplayError();
+    throw new SteelFlowReplayError('flow_expired');
   }
   if (!run) return { status: 'idle' };
+  if (input.resumeLease && (run.status !== 'running' || run.leaseToken !== input.resumeLease.leaseToken ||
+    run.runId !== input.resumeLease.runId)) {
+    throw new SteelFlowReplayError('flow_not_resumable');
+  }
   if (input.onHistory) {
     await input.onHistory(await readQuotationHistory({ scope: input.scope, runId: run.runId }));
   }
@@ -726,7 +726,7 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
     }
     return { status: 'completed', markdown: published.value.systemOrder.markdown };
   }
-  const lease = await service.acquireLease({
+  const lease = input.resumeLease ?? await service.acquireLease({
     scope,
     runId,
     executionResponseId: input.summarySourceMessageId ?? run.targetMessageId,

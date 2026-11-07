@@ -155,6 +155,8 @@ const {
   resolveSteelTurnToolVisibility,
   captureSteelTurnToolVisibility,
   prepareQuotationTurn,
+  prepareSteelFlowTurn,
+  SteelFlowReplayError,
   prepareSteelMarkdownHistory,
   stripSteelOcrPartsFromProviderMessages,
   buildAgentScopedAttachmentMap,
@@ -2974,53 +2976,27 @@ class AgentClient extends BaseClient {
         conversationId: this.conversationId,
         tenantId: resolveRequestTenantId(this.options.req),
       };
-      const replay = await steelFlow.readReplay({
+      let quotation;
+      ({ quotation, delegateOcrResume, paddleOcrPreflight } = await prepareSteelFlowTurn({
         scope,
         body: this.options.req.body,
-        parentMessageId: latestOrdered?.messageId,
-        files: currentTurnSteelFileReferences,
-        readMessage: db.getMessage,
-      });
-      const quotation = await prepareQuotationTurn({
-        scope,
-        replay,
         messageId: latestOrdered?.messageId ?? this.responseMessageId,
         responseId: this.responseMessageId,
         generationId: String(this.options.req._resumableJobCreatedAt ?? this.responseMessageId),
+        executionEpoch: this.options.req._resumableJobCreatedAt,
         publicationStore: db,
+        readMessage: db.getMessage,
         text: currentUserTurnText,
         files: currentTurnSteelFileReferences,
-      });
-      this.options.req.steelNativeContext.quotation = {
-        ...quotation,
-        messageId: latestOrdered?.messageId ?? this.responseMessageId,
-      };
-      delegateOcrResume =
-        !quotation.resume && typeof prepareDelegateOcrResume === 'function'
-          ? await prepareDelegateOcrResume({
-              req: this.options.req,
-              conversationId: this.conversationId,
-              triggeringMessageId: latestOrdered?.messageId,
-              replay,
-              userId: this.options.req.user?.id,
-            })
-          : undefined;
-      if (quotation.resume) {
-        paddleOcrPreflight = { ocrTurnActive: false };
-      } else if (delegateOcrResume) {
-        /** A resumed delegate run owns this turn's OCR work. Hide the
-         * parent-facing tool and skip regular Paddle preflight; the direct
-         * coordinator runs only after OAuth model options are available. */
-        paddleOcrPreflight = { ocrTurnActive: false, delegateOcrResume: true };
-      } else {
-        paddleOcrPreflight = await runSteelPaddleOcrPreflight({
+        ocr: {
           req: this.options.req,
           res: this.options.res,
           agent: this.options.agent,
           signal: opts?.abortController?.signal,
           streamId: this.options.req?._resumableStreamId || null,
-        });
-      }
+        },
+      }, { prepareQuotationTurn, prepareDelegateOcrResume, runSteelPaddleOcrPreflight }));
+      this.options.req.steelNativeContext.quotation = quotation;
       this.options.req.steelNativeContext = {
         ...(this.options.req.steelNativeContext ?? {}),
         paddleOcrPreflight,
@@ -5500,6 +5476,7 @@ class AgentClient extends BaseClient {
       await steelFlow.settleTurn({ req: this.options.req, conversationId: this.conversationId,
         signal: abortController.signal, failed: true });
       if (
+        err instanceof SteelFlowReplayError ||
         err?.code === 'SCHEDULED_HITL_REQUIRES_SHARED_STORE' ||
         err?.code === 'SCHEDULED_HITL_REQUIRES_DURABLE_CHECKPOINT' ||
         err?.code === 'HITL_CHECKPOINT_UNAVAILABLE' ||

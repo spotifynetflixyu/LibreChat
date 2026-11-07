@@ -707,9 +707,7 @@ export const graphToken = (scopes: string) =>
 export const steelOcrStatus = (conversationId: string, runId: string) =>
   `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/ocr/${encodeURIComponent(runId)}/status`;
 export const steelOcrControl = (
-  conversationId: string, runId: string, action: 'pause' | 'resume' | 'retry' | 'cancel',
+  conversationId: string, runId: string, action: 'pause' | 'cancel',
 ) => `${steelOcrStatus(conversationId, runId).replace(/\/status$/, '')}/${action}`;
 export const steelQuotationPause = (conversationId: string, index: number) =>
   `${steelQuotationStatus(conversationId)}/${encodeURIComponent(String(index))}/pause`;
-export const steelQuotationResume = (conversationId: string, index: number) =>
-  `${steelQuotationStatus(conversationId)}/${encodeURIComponent(String(index))}/resume`;

@@ -61,6 +61,8 @@ export interface MaterializeDelegateOcrRunInput {
   executionEpoch?: number;
 }
 
+export const STEEL_DELEGATE_OCR_LEASE_MS = 60_000;
+
 export interface AcquireDelegateExecutionLeaseInput {
   executionEpoch?: number;
   responseGenerationId?: string;
@@ -165,7 +167,6 @@ export interface CurrentOcrResult {
 export interface SteelOcrStateService extends SteelOcrRunMethods {
   claimNewDelegateOcrIndex(input: ClaimNewDelegateOcrIndexInput): Promise<DelegateOcrClaim | undefined>;
   materializeDelegateOcrRun(input: MaterializeDelegateOcrRunInput): Promise<ISteelOcrRun>;
-  findResumableDelegateOcrRun(input: { conversationId: string; triggeringMessageId: string }): Promise<ISteelOcrRun | null>;
   acquireDelegateExecutionLease(input: AcquireDelegateExecutionLeaseInput): Promise<DelegateExecutionLease | undefined>;
   transitionDelegateOcrRun(input: TransitionDelegateOcrRunInput): Promise<ISteelOcrRun | null>;
   beginDelegateAgentAttempt(input: BeginDelegateAttemptInput): Promise<ISteelOcrRun | null>;
@@ -228,7 +229,6 @@ function getRunFilter(input: {
   return {
     claimToken: input.claimToken,
     status: 'running',
-    awaitingExecution: { $ne: true },
     ...(input.executionLeaseToken
       ? { executionLeaseToken: input.executionLeaseToken }
       : {}),
@@ -402,26 +402,12 @@ export function createSteelOcrStateService(
     }
   }
 
-  function findResumableDelegateOcrRun(input: {
-    conversationId: string;
-    triggeringMessageId: string;
-  }): Promise<ISteelOcrRun | null> {
-    return Run.findOne({
-      conversationId: input.conversationId,
-      kind: 'delegate',
-      triggeringMessageId: input.triggeringMessageId,
-      status: { $in: ['running', 'paused', 'interrupted', 'failed'] },
-    })
-      .sort({ delegateOcrIndex: -1 })
-      .lean<ISteelOcrRun>();
-  }
-
   async function acquireDelegateExecutionLease(
     input: AcquireDelegateExecutionLeaseInput,
   ): Promise<DelegateExecutionLease | undefined> {
     const now = input.now ?? new Date();
     const executionLeaseToken = input.leaseToken ?? randomUUID();
-    const leaseDurationMs = input.leaseDurationMs ?? 60_000;
+    const leaseDurationMs = input.leaseDurationMs ?? STEEL_DELEGATE_OCR_LEASE_MS;
     const executionLeaseExpiresAt = new Date(now.getTime() + leaseDurationMs);
     const expectedLeaseTokenSupplied = Object.prototype.hasOwnProperty.call(
       input,
@@ -467,7 +453,7 @@ export function createSteelOcrStateService(
     }
     const run = await Run.findOneAndUpdate(
       runFilter,
-      { $set: { executionLeaseToken, executionLeaseExpiresAt, status: 'running', awaitingExecution: false,
+      { $set: { executionLeaseToken, executionLeaseExpiresAt, status: 'running',
         ...(input.executionEpoch !== undefined ? { executionEpoch: input.executionEpoch } : {}),
         ...(input.responseGenerationId ? { responseGenerationId: input.responseGenerationId } : {}) } },
       { new: true },
@@ -813,7 +799,6 @@ export function createSteelOcrStateService(
     ...createSteelOcrRunMethods(mongoose),
     claimNewDelegateOcrIndex,
     materializeDelegateOcrRun,
-    findResumableDelegateOcrRun,
     acquireDelegateExecutionLease,
     transitionDelegateOcrRun,
     beginDelegateAgentAttempt,

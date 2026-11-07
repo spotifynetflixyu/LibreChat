@@ -1,5 +1,6 @@
 import type { ISteelQuotationState, SteelMarkdownAdmission, SteelQuotationScope, SteelQuotationPendingMessageFile } from '@librechat/data-schemas';
 import type { FinalizeOcrResponseSuccess } from '../ocr/result';
+import type { SteelQuotationLease } from './state';
 
 export interface SteelResponseRequest {
   _resumableJobCreatedAt?: number;
@@ -31,6 +32,7 @@ export interface SteelResponseRequest {
     quotation?: {
       scope: SteelQuotationScope;
       resume?: boolean;
+      resumeLease?: SteelQuotationLease;
       publicationAdmission?: SteelMarkdownAdmission;
       state?: ISteelQuotationState;
       messageId?: string;

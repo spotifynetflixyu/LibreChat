@@ -113,6 +113,7 @@ function createRequest(turn: string, extra: SteelDelegateOcrRequest['steelNative
     user: { id: userId },
     config: { fileStrategy: 's3' },
     steelNativeContext: {
+      requestId: 'response-2',
       delegateOcrPolicy: { resolved: true, allowed: true, allowedFileKeys: ['file:drawing-1'] },
       delegateOcrContext: {
         modelOptions: { model: 'gpt-5.6-luna', tools: [] },
@@ -158,8 +159,10 @@ async function seedResumableRun({
     triggeringMessageId,
   });
   if (!claim) throw new Error('Expected a delegate OCR claim');
-  await stateService.materializeDelegateOcrRun({
+  const run = await stateService.materializeDelegateOcrRun({
     conversationId: 'convo-1',
+    userId,
+    responseGenerationId: 'response-1',
     delegateOcrIndex: claim.delegateOcrIndex,
     claimToken: claim.claimToken,
     triggeringMessageId,
@@ -171,8 +174,7 @@ async function seedResumableRun({
     },
     files: fileIds.map((fileId) => ({ fileId, filename: `${fileId}.pdf` })),
   });
-  await stateService.transitionDelegateOcrRun({ claimToken: claim.claimToken, status: 'running' });
-  return claim;
+  return { ...claim, runId: run.runId };
 }
 
 describe('resolveDelegateOcrPolicyForRequest', () => {
@@ -223,26 +225,30 @@ describe('prepareDelegateOcrResume', () => {
     { fileKey: 'filename:file-1.pdf', pageRanges: [{ pageStart: 3, pageEnd: 7 }] },
   ];
 
-  it('resumes only the exact user message with its saved params after re-authorizing the files', async () => {
+  it('resumes only the exact assistant branch with its saved params after re-authorizing the files', async () => {
     await insertFile({ file_id: 'file-1' });
     const claim = await seedResumableRun({ files: originalFiles, fileIds: ['file-1'] });
     const { deps } = createDeps();
     const service = createSteelDelegateOcrService(deps);
     const req = createRequest('繼續');
+    await createSteelOcrStateService(mongoose).pauseScope({ scope: { userId, conversationId: 'convo-1' } });
 
     await expect(
       service.prepareDelegateOcrResume({
         req,
         conversationId: 'convo-1',
-        triggeringMessageId: 'other-message',
         userId,
       }),
     ).resolves.toBeUndefined();
+    await expect(service.prepareDelegateOcrResume({
+      req, conversationId: 'convo-1', userId,
+      resume: { runId: claim.runId, sourceMessageId: 'other-response' },
+    })).rejects.toMatchObject({ code: 'flow_not_found' });
     const resume = await service.prepareDelegateOcrResume({
       req,
       conversationId: 'convo-1',
-      triggeringMessageId: 'user-message-1',
       userId,
+      resume: { runId: claim.runId, sourceMessageId: 'response-1' },
     });
 
     expect(resume?.files).toEqual(originalFiles);
@@ -270,34 +276,30 @@ describe('prepareDelegateOcrResume', () => {
 
   it('fails closed when a saved file is no longer owned or the lease CAS loses the race', async () => {
     await insertFile({ file_id: 'file-1' }, otherUserId);
-    await seedResumableRun({ files: originalFiles, fileIds: ['file-1'] });
+    const run = await seedResumableRun({ files: originalFiles, fileIds: ['file-1'] });
+    await createSteelOcrStateService(mongoose).pauseScope({ scope: { userId, conversationId: 'convo-1' } });
     const { deps } = createDeps();
     const service = createSteelDelegateOcrService(deps);
     const input = {
       req: createRequest('繼續'),
       conversationId: 'convo-1',
-      triggeringMessageId: 'user-message-1',
       userId,
+      resume: { runId: run.runId, sourceMessageId: 'response-1' },
     };
 
-    await expect(service.prepareDelegateOcrResume(input)).rejects.toThrow(
-      'delegate_ocr resume authorization failed',
-    );
+    await expect(service.prepareDelegateOcrResume(input)).rejects.toMatchObject({
+      code: 'flow_not_found',
+    });
 
     await insertFile({ file_id: 'file-1' });
-    const acquire = jest
-      .spyOn(deps.stateService!, 'acquireDelegateExecutionLease')
-      .mockResolvedValue(undefined);
-    await expect(service.prepareDelegateOcrResume(input)).rejects.toThrow(
-      'delegate_ocr resume execution lease is unavailable',
-    );
-    expect(acquire).toHaveBeenCalledWith(
-      expect.objectContaining({
-        expectedConversationId: 'convo-1',
-        expectedTriggeringMessageId: 'user-message-1',
-        expectedLeaseToken: null,
-      }),
-    );
+    const attempts = await Promise.allSettled([
+      service.prepareDelegateOcrResume(input),
+      service.prepareDelegateOcrResume({ ...input, req: createRequest('繼續', { requestId: 'response-3' }) }),
+    ]);
+    expect(attempts).toEqual(expect.arrayContaining([
+      expect.objectContaining({ status: 'fulfilled', value: expect.objectContaining({ run: expect.objectContaining({ runId: run.runId }) }) }),
+      expect.objectContaining({ status: 'rejected', reason: expect.objectContaining({ code: 'flow_not_resumable' }) }),
+    ]));
   });
 });
 

@@ -951,7 +951,7 @@ describe('quotation runner integration', () => {
     },
   );
 
-  it('resumes the remaining small chunks after pause and a new message without changing the total', async () => {
+  it('resumes the remaining small chunks after an explicit regenerate without changing the total', async () => {
     const run = await prepareRun(163);
     const controller = new AbortController();
     const validModel = createModel();
@@ -994,6 +994,7 @@ describe('quotation runner integration', () => {
       scope,
       messageId: 'resume-message',
       responseId: 'resume-response',
+      resume: { runId: run.runId, sourceMessageId: run.targetMessageId! },
       text: '接續報價',
     });
     expect(prepared.resume).toBe(true);
@@ -1002,6 +1003,7 @@ describe('quotation runner integration', () => {
     const events: QuotationProgress[] = [];
     await runQuotationPreflight({
       ...runnerInput(resumed, createLookupExecutor()),
+      resumeLease: prepared.resumeLease,
       onProgress: async (event) => {
         events.push(event);
       },
@@ -1886,7 +1888,7 @@ describe('quotation runner integration', () => {
     expect(run?.triggerMessageId).toBe('confirmation-user');
   });
 
-  it('waits for an AI signal and resumes the same interrupted run without issuing another ticket', async () => {
+  it('requires a new AI signal and supersedes an interrupted run with a fresh ticket', async () => {
     await prepareCustomer();
     const first = (await acceptPreparedSignal('response-1'))!;
     const lease = await service.acquireLease({ scope, runId: first.runId });
@@ -1902,7 +1904,7 @@ describe('quotation runner integration', () => {
       responseId: 'continue-response',
       text: '請繼續處理這份報價',
     });
-    expect(prepared.resume).toBe(true);
+    expect(prepared.resume).toBe(false);
     const request = {
       scope,
       responseId: 'continue-response',
@@ -1924,14 +1926,17 @@ describe('quotation runner integration', () => {
     const accepted = await Promise.all(
       [1, 2].map(() => acceptQuotationResponse({ ...request, response: quotationSignal })),
     );
-    expect(accepted.map((run) => run?.runId)).toEqual([first.runId, first.runId]);
+    const nextRunId = accepted[0]?.runId;
+    expect(nextRunId).toBeDefined();
+    expect(nextRunId).not.toBe(first.runId);
+    expect(accepted[1]?.runId).toBe(nextRunId);
     const state = await service.readState(scope);
-    expect(state?.nextSignalIndex).toBe(first.index);
-    expect(state?.tickets).toHaveLength(1);
+    expect(state?.nextSignalIndex).toBe(first.index + 1);
+    expect(state?.tickets).toHaveLength(2);
     expect(state?.pendingMessages).toHaveLength(0);
-    expect(state?.activeRun?.interruption?.reason).toBe('paused');
+    expect(state?.activeRun?.interruption).toBeUndefined();
     const concurrent = await Promise.all(
-      [1, 2].map(() => service.acquireLease({ scope, runId: first.runId })),
+      [1, 2].map(() => service.acquireLease({ scope, runId: nextRunId! })),
     );
     expect(concurrent.filter(Boolean)).toHaveLength(1);
   });

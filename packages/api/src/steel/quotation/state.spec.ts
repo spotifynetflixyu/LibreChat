@@ -102,7 +102,7 @@ afterAll(async () => {
 });
 
 describe('Steel quotation state service', () => {
-  it('pauses before abort and fences an old worker after a state-only resume', async () => {
+  it('pauses before abort and fences the old worker after a new turn claims the run', async () => {
     const { run } = await prepareRun();
     const lease = (await service.acquireLease({ scope, runId: run.runId }))!;
     const execution = registerQuotationExecution(scope, run.runId);
@@ -126,11 +126,17 @@ describe('Steel quotation state service', () => {
     await expect(
       service.interruptRun({ scope, runId: run.runId, leaseToken: lease.leaseToken }),
     ).resolves.toBeUndefined();
-    await handlers.resume(request, response as Partial<Response> as Response);
-    expect(response.json).toHaveBeenLastCalledWith({ runId: run.runId, kind: 'quotation' });
-    const resumed = await service.readActiveRun(scope);
-    expect(resumed?.status).toBe('running');
-    expect(resumed?.leaseToken).toBeUndefined();
+    const claim = await service.claimResume({
+      scope, runId: run.runId, sourceMessageId: 'assistant-target-1',
+      responseId: 'assistant-fork', executionEpoch: 20,
+    });
+    expect(claim).toMatchObject({
+      ok: true,
+      state: { activeRun: {
+        status: 'running', targetMessageId: 'assistant-fork', executionResponseId: 'assistant-fork',
+        executionEpoch: 20, leaseToken: expect.any(String),
+      } },
+    });
     await expect(
       service.transitionRun({
         scope,
@@ -143,7 +149,7 @@ describe('Steel quotation state service', () => {
     execution.dispose();
   });
 
-  it.each(['cancel', 'pause', 'resume'] as const)(
+  it.each(['cancel', 'pause'] as const)(
     'rejects an expired index through the %s API',
     async (action) => {
       const { run } = await prepareRun();
@@ -170,11 +176,13 @@ describe('Steel quotation state service', () => {
     expect((await service.readActiveRun(scope))?.status).toBe('interrupted');
     await service.failRun({ scope, runId: run.runId });
     expect((await service.readActiveRun(scope))?.status).toBe('failed');
-    await service.resumeRun({ scope, runId: run.runId });
+    await service.claimResume({
+      scope, runId: run.runId, sourceMessageId: 'assistant-target-1', responseId: 'failed-run-fork',
+    });
     await expect(
       service.pauseTurn({ scope, targetMessageId: 'different-turn' }),
     ).resolves.toBeUndefined();
-    await service.pauseTurn({ scope, targetMessageId: run.targetMessageId });
+    await service.pauseTurn({ scope, targetMessageId: 'failed-run-fork' });
     expect((await service.readActiveRun(scope))?.status).toBe('paused');
     await service.failRun({ scope, runId: run.runId });
     expect((await service.readActiveRun(scope))?.status).toBe('paused');
@@ -215,13 +223,42 @@ describe('Steel quotation state service', () => {
     const { run } = await prepareRun();
     const State = createSteelQuotationStateModel(mongoose);
     await State.updateOne(scope, { $set: { 'activeRun.status': 'completed' } });
-    await expect(service.resumeRun({ scope, runId: run.runId })).resolves.toBeUndefined();
+    const resume = { scope, runId: run.runId, sourceMessageId: 'assistant-target-1', responseId: 'unpublished-fork' };
+    await expect(service.claimResume(resume)).resolves.toEqual({ ok: false, code: 'flow_not_resumable' });
     await expect(
       service.pauseTurn({ scope, targetMessageId: run.targetMessageId }),
     ).resolves.toBeUndefined();
     expect((await service.readActiveRun(scope))?.status).toBe('completed');
     await service.settleTurn({ scope, targetMessageId: run.targetMessageId });
-    expect((await service.readActiveRun(scope))?.status).toBe('failed');
+    expect(await service.readActiveRun(scope)).toMatchObject({
+      status: 'failed', errorMessage: 'quotation_unpublished',
+    });
+    await expect(service.claimResume(resume)).resolves.toMatchObject({ ok: true });
+  });
+
+  it.each([
+    { userId: 'other-user' },
+    { tenantId: 'other-tenant' },
+    { conversationId: 'other-conversation' },
+  ])('returns not found for a mismatched quotation scope %o', async (scopeOverride) => {
+    const { run } = await prepareRun();
+    await service.pauseRun({ scope, runId: run.runId });
+    await expect(service.claimResume({
+      scope: { ...scope, ...scopeOverride }, runId: run.runId,
+      sourceMessageId: 'assistant-target-1', responseId: 'assistant-fork',
+    })).resolves.toEqual({ ok: false, code: 'flow_not_found' });
+    expect((await service.readActiveRun(scope))?.status).toBe('paused');
+  });
+
+  it('claims the latest recoverable run at most once under concurrent requests', async () => {
+    const { run } = await prepareRun();
+    await service.pauseRun({ scope, runId: run.runId });
+    const results = await Promise.all([21, 22].map((executionEpoch) => service.claimResume({
+      scope, runId: run.runId, sourceMessageId: 'assistant-target-1',
+      responseId: `assistant-fork-${executionEpoch}`, executionEpoch,
+    })));
+    expect(results.filter((result) => result.ok)).toHaveLength(1);
+    expect(results.filter((result) => !result.ok)).toEqual([{ ok: false, code: 'flow_not_resumable' }]);
   });
 
   it('fences order replacement and stores lookup evidence separately from canonical customer data', async () => {

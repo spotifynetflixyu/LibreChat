@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto';
 import { logger } from '@librechat/data-schemas';
 import { FileSources } from 'librechat-data-provider';
 import type { AllMethods, IMongoFile, ISteelOcrRun } from '@librechat/data-schemas';
-import type { SteelFlowReplay } from 'librechat-data-provider';
 import type { Response } from 'express';
 import type {
   DelegateOcrPolicy,
@@ -61,16 +60,17 @@ import {
   createDelegateOcrRequestExecute,
 } from './delegate';
 import { runOcrPreprocessingBatchPipeline, toSteelOcrChunkError } from '../ocr/preprocess';
+import { createSteelOcrStateService, STEEL_DELEGATE_OCR_LEASE_MS } from '../ocr/state';
 import { runWithSteelOcrExecution, getSteelOcrFailureStatus } from '../ocr/control';
 import { createMongooseSteelWorkingOrderMemoryWriter } from '../memory/service';
-import { isSteelFlowRecoverable, SteelFlowReplayError } from '../replay';
 import { buildSteelDelegateOcrStatusEventEnvelopes } from './events';
 import { createSteelOcrResponseAuditService } from '../ocr/audit';
+import { resolveRequestTenantId } from '../../middleware/tenant';
 import { PADDLE_OCR_MCP_SERVER_NAME } from '../ocr/diagnostics';
 import { buildDefaultSteelGlobalAgentContext } from './context';
-import { createSteelOcrStateService } from '../ocr/state';
 import { steelPaddleOcrToolName } from '../ocr/paddle';
 import { STEEL_OCR_MAX_ATTEMPTS } from '../ocr/retry';
+import { SteelFlowReplayError } from '../replay';
 import { createOpenAIOAuthModel } from './oauth';
 import { emitSteelNativeEvents } from './stream';
 import { buildMCPToolKey } from '~/mcp/utils';
@@ -118,6 +118,7 @@ export interface SteelDelegateOcrContext {
 
 /** The request fields delegate OCR reads and the run state it leaves on the request. */
 export interface SteelDelegateOcrRequest {
+  tenantId?: string;
   _resumableJobCreatedAt?: number;
   user?: { id?: string; tenantId?: string };
   config?: { fileStrategy?: string };
@@ -247,7 +248,7 @@ function readSavedDelegateFiles(run: ISteelOcrRun): DelegateOcrFileInput[] | und
   }
   const parsed = delegateOcrArgsSchema.safeParse({ files });
   if (!parsed.success) {
-    throw new Error('delegate_ocr resume parameters unavailable');
+    throw new SteelFlowReplayError('flow_not_resumable');
   }
   return parsed.data.files;
 }
@@ -358,9 +359,8 @@ export interface SteelDelegateOcrService {
   prepareDelegateOcrResume(input: {
     req: SteelDelegateOcrRequest;
     conversationId?: string;
-    triggeringMessageId?: string;
     userId?: string;
-    replay?: SteelFlowReplay;
+    resume?: { runId: string; sourceMessageId: string };
   }): Promise<SteelDelegateOcrResume | undefined>;
   executeDelegateOcrResume(
     input: CreateSteelDelegateOcrExecuteInput & {
@@ -656,7 +656,7 @@ export function createSteelDelegateOcrService(
   }: CreateSteelDelegateOcrExecuteInput) {
     return async (input: DelegateOcrExecuteInput): Promise<string> => runWithSteelOcrExecution({
       scope: req.user?.id && req.steelNativeContext?.conversationId
-        ? { userId: req.user.id, conversationId: req.steelNativeContext.conversationId, tenantId: req.user.tenantId }
+        ? { userId: req.user.id, conversationId: req.steelNativeContext.conversationId, tenantId: resolveRequestTenantId(req) }
         : undefined,
       responseGenerationId: req.steelNativeContext?.requestId,
       executionEpoch: req._resumableJobCreatedAt,
@@ -767,20 +767,11 @@ export function createSteelDelegateOcrService(
           return;
         }
         delegateRunInitialized = true;
-        let run = await stateService.findResumableDelegateOcrRun({
-          conversationId,
-          triggeringMessageId,
-        });
-        const wasResumed = Boolean(run);
+        const prepared = delegateContext.delegateOcrResume;
+        let run: ISteelOcrRun;
         let claim: SteelDelegateOcrClaimRef;
-        if (run) {
-          claim = {
-            conversationId,
-            delegateOcrIndex: run.delegateOcrIndex,
-            claimToken: run.claimToken,
-            triggeringMessageId,
-            ...(run.responseGenerationId ? { responseGenerationId: run.responseGenerationId } : {}),
-          };
+        if (prepared) {
+          ({ run, claim } = prepared);
         } else {
           const activeRun = await stateService.findActiveDelegateOcrRun(conversationId);
           const nextClaimToken = activeRun ? randomUUID() : undefined;
@@ -820,7 +811,7 @@ export function createSteelDelegateOcrService(
             run = await stateService.materializeDelegateOcrRun({
               conversationId,
               userId,
-              tenantId: req.user?.tenantId,
+              tenantId: resolveRequestTenantId(req),
               executionEpoch: req._resumableJobCreatedAt,
               delegateOcrIndex: claim.delegateOcrIndex,
               claimToken: claim.claimToken,
@@ -866,7 +857,7 @@ export function createSteelDelegateOcrService(
         if (savedFiles) {
           workflow.filesOverride = savedFiles;
         }
-        const lease = await stateService.acquireDelegateExecutionLease({
+        const lease = prepared?.lease ?? await stateService.acquireDelegateExecutionLease({
           executionEpoch: req._resumableJobCreatedAt,
           responseGenerationId: generationId,
           claimToken: claim.claimToken,
@@ -948,7 +939,7 @@ export function createSteelDelegateOcrService(
               rawResponse: assistantResponse,
               sourceStage: 'delegate',
               userId: auditUserId,
-              tenantId: req.user?.tenantId,
+              tenantId: resolveRequestTenantId(req),
               conversationId,
               messageId: triggeringMessageId,
               generationId,
@@ -978,7 +969,7 @@ export function createSteelDelegateOcrService(
         delegateContext.delegateOcrRun = run;
         delegateContext.delegateOcrClaim = claim;
         delegateContext.delegateOcrExecutionLease = lease;
-        if (wasResumed) {
+        if (prepared) {
           await emitStatus({
             requestId: generationId,
             messageId: triggeringMessageId,
@@ -992,15 +983,8 @@ export function createSteelDelegateOcrService(
         }
       };
 
-      if (isNonEmptyString(triggeringMessageId) && isNonEmptyString(conversationId)) {
-        const resumable = await stateService.findResumableDelegateOcrRun({
-          conversationId,
-          triggeringMessageId,
-        });
-        const savedFiles = resumable ? readSavedDelegateFiles(resumable) : undefined;
-        if (savedFiles) {
-          workflow.filesOverride = savedFiles;
-        }
+      if (delegateContext.delegateOcrResume) {
+        workflow.filesOverride = delegateContext.delegateOcrResume.files;
       }
 
       const signStoredFile = async (file: DelegateOcrStoredFileRecord): Promise<string> => {
@@ -1270,65 +1254,42 @@ export function createSteelDelegateOcrService(
     });
   }
 
-  /**
-   * Resolves an unfinished delegate OCR run for the exact triggering user
-   * message. It never falls back to a different message and re-authorizes every
-   * saved file id before allowing a resume.
-   */
   async function prepareDelegateOcrResume({
     req,
     conversationId,
-    triggeringMessageId,
     userId,
-    replay,
-  }: {
-    req: SteelDelegateOcrRequest;
-    conversationId?: string;
-    triggeringMessageId?: string;
-    userId?: string;
-    replay?: SteelFlowReplay;
-  }): Promise<SteelDelegateOcrResume | undefined> {
-    if (
-      !isNonEmptyString(conversationId) ||
-      !isNonEmptyString(triggeringMessageId) ||
-      !isNonEmptyString(userId)
-    ) {
-      return undefined;
+    resume: target,
+  }: Parameters<SteelDelegateOcrService['prepareDelegateOcrResume']>[0]): Promise<SteelDelegateOcrResume | undefined> {
+    if (!target) return undefined;
+    const responseGenerationId = req.steelNativeContext?.requestId;
+    if (!conversationId || !userId || !responseGenerationId) {
+      throw new SteelFlowReplayError('flow_not_found');
     }
-
-    if (replay && replay.kind !== 'delegate') return undefined;
 
     const context = (req.steelNativeContext ??= {});
     const delegateContext = context.delegateOcrContext ?? {};
     const stateService = getStateService();
-    const run = await stateService.findResumableDelegateOcrRun({
-      conversationId,
-      triggeringMessageId,
-    });
-    if (replay && (run?.runId !== replay.runId || !isSteelFlowRecoverable(run.status))) {
-      throw new SteelFlowReplayError();
-    }
-    if (!run) return undefined;
-
-    const claim: SteelDelegateOcrClaimRef = {
-      conversationId,
-      delegateOcrIndex: run.delegateOcrIndex,
-      claimToken: run.claimToken,
-      triggeringMessageId,
-      ...(run.responseGenerationId ? { responseGenerationId: run.responseGenerationId } : {}),
+    const lookup = {
+      ...target,
+      scope: { userId, conversationId, tenantId: resolveRequestTenantId(req) },
+      kind: 'delegate' as const,
     };
+    const result = await stateService.readResumeRun(lookup);
+    if (!result.ok) throw new SteelFlowReplayError(result.code);
+    const { run } = result;
+    const { triggeringMessageId } = run;
     const files = readSavedDelegateFiles(run);
     if (!files) {
-      throw new Error('delegate_ocr resume parameters unavailable');
+      throw new SteelFlowReplayError('flow_not_resumable');
     }
     const fileIds = (Array.isArray(run.files) ? run.files : [])
       .map(getSteelFileId)
       .filter(isNonEmptyString);
     if (fileIds.length !== files.length) {
-      throw new Error('delegate_ocr resume file metadata is unavailable');
+      throw new SteelFlowReplayError('flow_not_resumable');
     }
     if (new Set(fileIds).size !== fileIds.length) {
-      throw new Error('delegate_ocr resume contains duplicate file ids');
+      throw new SteelFlowReplayError('flow_not_resumable');
     }
 
     const records =
@@ -1336,7 +1297,7 @@ export function createSteelDelegateOcrService(
         {
           user: userId,
           file_id: { $in: fileIds },
-          ...(req.user?.tenantId ? { tenantId: req.user.tenantId } : {}),
+          ...(lookup.scope.tenantId ? { tenantId: lookup.scope.tenantId } : {}),
         },
         {},
         {},
@@ -1345,26 +1306,29 @@ export function createSteelDelegateOcrService(
       records.map((record) => getSteelFileId(record)).filter(isNonEmptyString),
     );
     if (ownedIds.size !== fileIds.length || fileIds.some((fileId) => !ownedIds.has(fileId))) {
-      throw new Error('delegate_ocr resume authorization failed');
+      throw new SteelFlowReplayError('flow_not_found');
     }
 
-    /** Acquire the run lease only after every persisted file is re-authorized for this user. */
-    const lease = await stateService.acquireDelegateExecutionLease({
+    const executionLeaseToken = randomUUID();
+    const executionLeaseExpiresAt = new Date(Date.now() + STEEL_DELEGATE_OCR_LEASE_MS);
+    const claimed = await stateService.claimResumeRun({
+      ...lookup,
+      responseGenerationId,
       executionEpoch: req._resumableJobCreatedAt,
-      responseGenerationId: req.steelNativeContext?.requestId,
-      claimToken: run.claimToken,
-      leaseToken: randomUUID(),
-      expectedConversationId: conversationId,
-      expectedDelegateOcrIndex: run.delegateOcrIndex,
-      expectedTriggeringMessageId: triggeringMessageId,
-      expectedLeaseToken: run.executionLeaseToken ?? null,
+      lease: { token: executionLeaseToken, expiresAt: executionLeaseExpiresAt },
     });
-    if (!lease) {
-      throw new Error('delegate_ocr resume execution lease is unavailable');
-    }
+    if (!claimed.ok) throw new SteelFlowReplayError(claimed.code);
+    const claim: SteelDelegateOcrClaimRef = {
+      conversationId,
+      delegateOcrIndex: run.delegateOcrIndex,
+      claimToken: run.claimToken,
+      triggeringMessageId,
+      responseGenerationId,
+    };
+    const lease = { claimToken: run.claimToken, executionLeaseToken, executionLeaseExpiresAt };
 
     const resume: SteelDelegateOcrResume = {
-      run,
+      run: claimed.run,
       claim,
       lease,
       files,
@@ -1385,7 +1349,7 @@ export function createSteelDelegateOcrService(
     context.delegateOcrResume = resume;
     context.delegateOcrContext = {
       ...delegateContext,
-      delegateOcrRun: run,
+      delegateOcrRun: claimed.run,
       delegateOcrClaim: claim,
       delegateOcrExecutionLease: lease,
       delegateOcrResume: resume,
@@ -1406,7 +1370,7 @@ export function createSteelDelegateOcrService(
         claimToken: run.claimToken,
         delegateOcrClaimToken: run.claimToken,
         delegateOcrIndex: run.delegateOcrIndex,
-        responseGenerationId: run.responseGenerationId,
+        responseGenerationId,
         triggeringMessageId,
         filesOverride: files,
         executionLeaseToken: lease.executionLeaseToken,

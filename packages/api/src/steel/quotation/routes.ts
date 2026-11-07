@@ -44,7 +44,6 @@ export function createQuotationRouteHandlers(dependencies: {
   status: QuotationHandler;
   cancel: QuotationHandler;
   pause: QuotationHandler;
-  resume: QuotationHandler;
 } {
   async function scopeFor(req: QuotationRequest, res: Response): Promise<SteelQuotationScope | undefined> {
     const conversationId = req.params.conversationId;
@@ -60,7 +59,7 @@ export function createQuotationRouteHandlers(dependencies: {
     }
     return { userId, conversationId, tenantId: resolveRequestTenantId(req) };
   }
-  function control(action: 'cancel' | 'pause' | 'resume'): QuotationHandler {
+  function control(action: 'cancel' | 'pause'): QuotationHandler {
     return async (req, res) => {
       try {
         const scope = await scopeFor(req, res);
@@ -78,18 +77,6 @@ export function createQuotationRouteHandlers(dependencies: {
           return;
         }
         const input = { scope, runId: run.runId };
-        if (action === 'resume') {
-          const resumed = await service.resumeRun(input);
-          if (!resumed) {
-            const latest = await service.readActiveRun(scope);
-            res.status(409).json({
-              code: latest?.runId === run.runId ? 'flow_not_resumable' : 'flow_expired',
-            });
-            return;
-          }
-          res.json({ runId: resumed.runId, kind: 'quotation' });
-          return;
-        }
         if (action === 'pause') {
           const paused = await service.pauseRun(input);
           if (paused) abortQuotationExecution(scope, run.runId, 'user_pause');
@@ -132,6 +119,5 @@ export function createQuotationRouteHandlers(dependencies: {
     },
     cancel: control('cancel'),
     pause: control('pause'),
-    resume: control('resume'),
   };
 }

@@ -1,8 +1,8 @@
 import { createElement } from 'react';
 import { createStore, Provider } from 'jotai';
 import { act, renderHook } from '@testing-library/react';
-import { dataService, EModelEndpoint } from 'librechat-data-provider';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { dataService, DynamicQueryKeys, EModelEndpoint } from 'librechat-data-provider';
 import type { EventSubmission, TConversation, TMessage } from 'librechat-data-provider';
 import type { ReactNode } from 'react';
 import { useIsReplacingConversationCodeEnvironment } from '~/data-provider/CodeEnvironments';
@@ -163,3 +163,37 @@ describe('local cancellation decision reconciliation', () => {
     },
   );
 });
+
+it.each(['quotation', 'preflight', 'delegate'] as const)(
+  'invalidates the status of an expired %s recovery',
+  (kind) => {
+    const queryClient = new QueryClient();
+    const invalidate = jest.spyOn(queryClient, 'invalidateQueries');
+    const store = createStore();
+    const wrapper = ({ children }: { children: ReactNode }) =>
+      createElement(
+        Provider,
+        { store },
+        createElement(QueryClientProvider, { client: queryClient }, children),
+      );
+    const { result } = renderHook(() => useEventHandlers({
+      getMessages: () => [user, response],
+      setMessages: jest.fn(),
+      setCompleted: jest.fn(),
+      setConversation: jest.fn(),
+      setIsSubmitting: jest.fn(),
+      setShowStopButton: jest.fn(),
+      newConversation: jest.fn(),
+    }), { wrapper });
+
+    act(() => result.current.errorHandler({
+      data: { conversation: { conversationId: 'saved' } as TConversation, requestMessage: user,
+        responseMessage: { ...response, text: '{"code":"flow_expired"}' } },
+      submission: { ...submission, steelFlowResume: { kind, runId: 'run' } },
+    }));
+
+    expect(invalidate).toHaveBeenCalledWith(
+      DynamicQueryKeys.steelFlowStatus('saved', kind, 'run'),
+    );
+  },
+);

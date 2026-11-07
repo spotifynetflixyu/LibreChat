@@ -1,16 +1,11 @@
-import { steelFlowReplaySchema } from 'librechat-data-provider';
-import { createSteelOcrRunMethods, logger } from '@librechat/data-schemas';
+import { logger } from '@librechat/data-schemas';
 import type { SteelQuotationScope } from '@librechat/data-schemas';
-import type { SteelFlowReplay } from 'librechat-data-provider';
 import type { SerializableJobData } from '../stream/interfaces/IJobStore';
 import type { SteelResponseRequest } from './quotation/completion';
-import type { SteelOcrFileReference } from './memory/service';
 import type { GenerationJob } from '../types';
 import { registerSteelOcrExecution, getSteelOcrFailureStatus } from './ocr/control';
-import { isSteelFlowRecoverable, SteelFlowReplayError } from './replay';
 import { createSteelQuotationStateService } from './quotation/state';
 import { resolveRequestTenantId } from '../middleware/tenant';
-import { getSteelOcrFileDescriptor } from './memory/service';
 import { createSteelOcrStateService } from './ocr/state';
 
 type Mongoose = typeof import('mongoose');
@@ -24,20 +19,7 @@ interface SteelFlowSettlement {
   failed?: boolean;
 }
 
-interface SteelFlowReplayInput {
-  scope: SteelQuotationScope;
-  body?: { steelFlowReplay?: unknown; isRegenerate?: boolean };
-  parentMessageId?: string;
-  files?: readonly SteelOcrFileReference[];
-  readMessage(input: { user: string; messageId: string }): Promise<{
-    conversationId?: string | null;
-    isCreatedByUser?: boolean;
-    parentMessageId?: string | null;
-  } | null>;
-}
-
 interface SteelFlowLifecycle {
-  readReplay(input: SteelFlowReplayInput): Promise<SteelFlowReplay | undefined>;
   pauseJob(job: SteelFlowJob): Promise<void>;
   settleTurn(input: SteelFlowSettlement): Promise<void>;
   registerTurn(input: SteelFlowSettlement & { controller: AbortController }): () => void;
@@ -46,53 +28,6 @@ interface SteelFlowLifecycle {
 export function createSteelFlowLifecycle(mongoose: Mongoose): SteelFlowLifecycle {
   const ocr = createSteelOcrStateService(mongoose);
   const quotation = createSteelQuotationStateService(mongoose);
-
-  async function readReplay({
-    scope,
-    body,
-    parentMessageId,
-    files,
-    readMessage,
-  }: SteelFlowReplayInput): Promise<SteelFlowReplay | undefined> {
-    if (body?.steelFlowReplay === undefined) return undefined;
-    const parsed = steelFlowReplaySchema.safeParse(body.steelFlowReplay);
-    if (!parsed.success || body.isRegenerate !== true) {
-      throw new SteelFlowReplayError();
-    }
-    const target = parsed.data;
-    const [source, result] = await Promise.all([
-      readMessage({ user: scope.userId, messageId: target.sourceMessageId }),
-      target.kind === 'quotation'
-        ? undefined
-        : createSteelOcrRunMethods(mongoose).readRun(scope, target.runId),
-    ]);
-    if (
-      !source ||
-      source.conversationId !== scope.conversationId ||
-      source.isCreatedByUser !== false ||
-      !parentMessageId ||
-      source.parentMessageId !== parentMessageId
-    ) {
-      throw new SteelFlowReplayError();
-    }
-    if (target.kind === 'quotation') return target;
-    if (
-      !result?.ok ||
-      result.latestRunId !== target.runId ||
-      result.run.kind !== target.kind ||
-      !isSteelFlowRecoverable(result.run.status)
-    ) {
-      throw new SteelFlowReplayError();
-    }
-    if (
-      target.kind === 'preflight' &&
-      (result.run.responseGenerationId !== target.sourceMessageId ||
-        !files?.some((file) => getSteelOcrFileDescriptor(file)))
-    ) {
-      throw new SteelFlowReplayError();
-    }
-    return target;
-  }
 
   async function pauseJob(job: SteelFlowJob): Promise<void> {
     const userId = job.userId;
@@ -119,7 +54,6 @@ export function createSteelFlowLifecycle(mongoose: Mongoose): SteelFlowLifecycle
     ]);
   }
   return {
-    readReplay,
     pauseJob,
     registerTurn(input) {
       const userId = input.req?.user?.id;

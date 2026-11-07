@@ -10,16 +10,15 @@ import type {
   SteelQuotationPendingMessageFile,
   SteelQuotationScope,
 } from '@librechat/data-schemas';
-import type { SteelFlowReplay } from 'librechat-data-provider';
+import type { SteelQuotationSaveCustomerInput, SteelQuotationStateService, SteelQuotationLease } from './state';
 import type { SteelToolJsonObject, SteelToolJsonValue, SteelToolResult } from '../tools/results';
-import type { SteelQuotationSaveCustomerInput, SteelQuotationStateService } from './state';
 import { parseAssistantMarkdown, parseOcrResultTable } from '../ocr/result';
-import { isSteelFlowRecoverable, SteelFlowReplayError } from '../replay';
 import { escapeMarkdownTableCell } from '../markdown/row-codec';
 import { createSteelQuotationStateService } from './state';
 import { createSteelOcrStateService } from '../ocr/state';
 import { extractCustomerDataTable } from './protocol';
 import { isCurrentSystemOrderRun } from './revision';
+import { SteelFlowReplayError } from '../replay';
 
 export type QuotationCustomerTier = 'A' | 'B' | 'C' | 'D' | 'E' | 'F';
 
@@ -133,7 +132,8 @@ export async function prepareQuotationTurn(input: {
   messageId: string;
   responseId: string;
   generationId?: string;
-  replay?: SteelFlowReplay;
+  executionEpoch?: number;
+  resume?: { runId: string; sourceMessageId: string };
   publicationStore?: { admitSteelMarkdown(input: SteelMarkdownAdmissionInput): Promise<SteelMarkdownAdmission | null> };
   service?: SteelQuotationStateService;
   text: string;
@@ -144,42 +144,36 @@ export async function prepareQuotationTurn(input: {
   state: ISteelQuotationState;
   instruction: string;
   resume: boolean;
+  resumeLease?: SteelQuotationLease;
   publicationAdmission?: SteelMarkdownAdmission;
   messageText: string;
   messageFiles?: readonly SteelQuotationPendingMessageFile[];
 }> {
   const service = input.service ?? createSteelQuotationStateService(mongoose);
-  let state = await service.ensureState(input.scope);
   const admit = async () => input.publicationStore ? (await input.publicationStore.admitSteelMarkdown({ scope: input.scope, responseId: input.responseId, generationId: input.generationId ?? input.responseId })) ?? undefined : undefined;
   const originalMessage = {
     messageText: input.text,
     ...(input.files ? { messageFiles: input.files } : {}),
   };
-  if (input.replay?.kind === 'quotation') {
-    const run = state.activeRun;
-    if (
-      run?.runId !== input.replay.runId ||
-      ![run.targetMessageId, run.executionResponseId].includes(input.replay.sourceMessageId) ||
-      !isSteelFlowRecoverable(run.status)
-    ) {
-      throw new SteelFlowReplayError();
-    }
-  } else if (input.replay && isUnfinishedQuotation(state.activeRun?.status)) {
-    throw new SteelFlowReplayError();
+  if (input.resume) {
+    const claimed = await service.claimResume({
+      scope: input.scope, ...input.resume, responseId: input.responseId, executionEpoch: input.executionEpoch,
+    });
+    if (!claimed.ok) throw new SteelFlowReplayError(claimed.code);
+    return {
+      scope: input.scope, messageId: input.messageId, state: claimed.state, instruction: '',
+      resume: true, resumeLease: claimed.lease, ...originalMessage,
+    };
   }
-  if (isUnfinishedQuotation(state.activeRun?.status)) {
-    return { scope: input.scope, messageId: input.messageId, state, instruction: '', resume: true, ...originalMessage };
-  }
-  const unpublished = state.activeRun?.status === 'completed' &&
-    !await service.isPublishedRun(input.scope, state.activeRun);
-  if (unpublished) {
-    if (input.replay) throw new SteelFlowReplayError();
-    return { scope: input.scope, messageId: input.messageId, state, instruction: '', resume: true, ...originalMessage };
-  }
-  const selected = await service.prepareOcrOrder(input.scope, state.currentOrder?.sha256 ?? null);
+  let state = await service.ensureState(input.scope);
+  const locked = isUnfinishedQuotation(state.activeRun?.status) ||
+    (state.activeRun?.status === 'completed' && !await service.isPublishedRun(input.scope, state.activeRun));
+  const selected = locked
+    ? { state, input: undefined }
+    : await service.prepareOcrOrder(input.scope, state.currentOrder?.sha256 ?? null);
   state = selected.state;
   const [ocr, hasSavedSystemOrder] = await Promise.all([
-    selected.input ? Promise.resolve(null) : createSteelOcrStateService(mongoose).readScopedConversationOcrState(input.scope),
+    locked || selected.input ? Promise.resolve(null) : createSteelOcrStateService(mongoose).readScopedConversationOcrState(input.scope),
     service.hasSystemOrder(input.scope, state),
   ]);
   const markdown = ocr?.currentOcrResultMarkdown;

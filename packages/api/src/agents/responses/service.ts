@@ -6,6 +6,7 @@
  */
 import {
   ContentTypes,
+  ErrorTypes,
   isCodeEnvironmentMode,
   isCodeWorkspaceSelections,
 } from 'librechat-data-provider';
@@ -88,6 +89,10 @@ export function validateResponseRequest(body: unknown): RequestValidationResult 
   }
 
   const request = body as Record<string, unknown>;
+  if (request.steelFlowResume !== undefined) {
+    return { valid: false, error: 'Steel flow recovery requires chat regeneration',
+      code: ErrorTypes.STEEL_FLOW_NOT_RESUMABLE };
+  }
   if (
     request.code_environment_mode !== undefined &&
     !isCodeEnvironmentMode(request.code_environment_mode)
@@ -253,7 +258,7 @@ export function validateInputToolExchanges(
  */
 export function isValidationFailure(
   result: RequestValidationResult,
-): result is { valid: false; error: string } {
+): result is { valid: false; error: string; code?: string } {
   return !result.valid;
 }
 

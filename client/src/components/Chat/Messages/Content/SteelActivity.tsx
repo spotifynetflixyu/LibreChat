@@ -1,15 +1,14 @@
-import { memo, useContext, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useEffect, useMemo, useRef, useState } from 'react';
 import { useRecoilValue } from 'recoil';
 import { Button } from '@librechat/client';
 import { AlertTriangle, CheckCircle2, ChevronDown, LoaderCircle } from 'lucide-react';
 import type {
-  SteelFlowReplay,
+  SteelFlowResume,
   SteelFlowStatus,
   SteelOcrStatus,
   SteelOcrKind,
 } from 'librechat-data-provider';
 import type { SteelQuotationStatus } from 'librechat-data-provider';
-import type { QueryObserverResult } from '@tanstack/react-query';
 import type {
   SteelNativeActivityEvent,
   SteelNativeSavedCounts,
@@ -30,12 +29,17 @@ import {
 import { isSupersededSteelFlow, resolveEventOcrFlowStatus } from '~/data-provider/Steel/flow';
 import { steelNativeActivityByMessageId } from '~/store/steel';
 import useLocalize from '~/hooks/useLocalize';
-import { ChatContext } from '~/Providers';
 import { EmptyText } from './Parts';
 
 export type SteelFlowKind = SteelOcrKind | 'quotation';
 
-export type SteelActivityProps = {
+type SteelFlowActions = {
+  onResumeFlow?: (target: SteelFlowResume) => false | void;
+  onRetryFlow?: (target: SteelFlowResume) => false | void;
+  isSubmitting?: boolean;
+};
+
+export type SteelActivityProps = SteelFlowActions & {
   messageId: string;
   isCreatedByUser?: boolean;
   conversationId?: string | null;
@@ -428,108 +432,52 @@ type SteelOcrFlowSummary = {
   errorMessage?: string;
 };
 
-function useFlowReplay(conversationId: string, messageId: string, localize: Localize) {
-  const chat = useContext(ChatContext);
-  const latestChat = useRef(chat);
-  latestChat.current = chat;
-  const phase = useRef<'idle' | 'checking' | 'dispatched' | 'submitting'>('idle');
+function useFlowRecovery(
+  { onResumeFlow, onRetryFlow, isSubmitting }: SteelFlowActions,
+  localize: Localize,
+) {
+  const requested = useRef(false);
   const [isReplaying, setIsReplaying] = useState(false);
   const [error, setError] = useState<string>();
-  const [isExpired, setIsExpired] = useState(false);
 
   useEffect(() => {
-    if (phase.current === 'dispatched' && chat?.isSubmitting) {
-      phase.current = 'submitting';
-    } else if (phase.current === 'submitting' && !chat?.isSubmitting) {
-      phase.current = 'idle';
+    if (!isSubmitting) {
+      requested.current = false;
       setIsReplaying(false);
     }
-  }, [chat?.isSubmitting]);
+  }, [isSubmitting]);
 
-  const getReplayTarget = () => {
-    const current = latestChat.current;
-    if (current?.conversation?.conversationId !== conversationId || current.isSubmitting) {
-      return;
-    }
-    const messages = current.getMessages(conversationId);
-    const message = messages?.find(
-      (entry) => entry.messageId === messageId && entry.isCreatedByUser === false,
-    );
-    if (
-      !message ||
-      !messages?.some(
-        (entry) => entry.messageId === message.parentMessageId && entry.isCreatedByUser,
-      )
-    ) {
-      return;
-    }
-    return { current, message };
-  };
-
-  const replay = async <T extends SteelOcrStatus | SteelQuotationFlowStatus>(
-    query: QueryObserverResult<T>,
-    status: T['status'],
-    kind: SteelFlowKind,
-    matches: (data: T) => boolean,
+  const recover = (
+    action: 'resume' | 'retry',
+    target: SteelFlowResume,
+    isSuperseded: boolean,
   ) => {
-    if (phase.current !== 'idle') {
-      return;
-    }
-    if (!getReplayTarget()) {
-      setError(localize('com_ui_steel_flow_replay_unavailable'));
-      return;
-    }
-    phase.current = 'checking';
-    setIsReplaying(true);
+    const callback = action === 'resume' ? onResumeFlow : onRetryFlow;
+    if (!callback || isSubmitting || isSuperseded || requested.current) return;
+    requested.current = true;
     setError(undefined);
     try {
-      const fresh = await query.refetch({ throwOnError: false });
-      const data = fresh.isError ? undefined : fresh.data;
-      if (
-        isSteelFlowExpiredError(fresh.error) ||
-        (data && (!matches(data) || isSupersededSteelFlow(data)))
-      ) {
-        setIsExpired(true);
+      if (callback(target) !== false) {
+        setIsReplaying(true);
         return;
       }
-
-      const target = getReplayTarget();
-      if (!data?.runId || data.status !== status || !target) {
-        setError(localize('com_ui_steel_flow_replay_unavailable'));
-        return;
-      }
-      const steelFlowReplay: SteelFlowReplay = { kind, runId: data.runId, sourceMessageId: messageId };
-      if (target.current.regenerate(target.message, { steelFlowReplay }) === false) {
-        setError(localize('com_ui_steel_flow_replay_unavailable'));
-        return;
-      }
-      phase.current = 'dispatched';
     } catch {
-      setError(localize('com_ui_steel_flow_replay_unavailable'));
-    } finally {
-      if (phase.current === 'checking') {
-        phase.current = 'idle';
-        setIsReplaying(false);
-      }
+      // Starting the submission can fail before the stream opens.
     }
+    requested.current = false;
+    setError(localize('com_ui_steel_flow_replay_unavailable'));
   };
 
-  return {
-    replay,
-    isReplaying,
-    error,
-    isExpired,
-    disabled: chat?.conversation?.conversationId !== conversationId || chat.isSubmitting,
-  };
+  return { recover, isReplaying, error };
 }
 
 function SteelOcrFlowCard({
   summary,
-  messageId,
+  actions,
   localize,
 }: {
   summary: SteelOcrFlowSummary;
-  messageId: string;
+  actions: SteelFlowActions;
   localize: Localize;
 }) {
   const { conversationId, runId, kind } = summary;
@@ -545,15 +493,13 @@ function SteelOcrFlowCard({
   };
   const query = useGetSteelOcrStatusQuery(conversationId, runId, kind, initialData);
   const cancel = useCancelSteelOcrMutation(conversationId);
-  const recovery = useFlowReplay(conversationId, messageId, localize);
+  const recovery = useFlowRecovery(actions, localize);
   const data = query.data ?? initialData;
   const { status, stage, completedChunks, totalChunks, errorMessage } = data;
   const isSuperseded =
     isSupersededSteelFlow(data) ||
-    recovery.isExpired ||
     isSteelFlowExpiredError(query.error) ||
     isSteelFlowExpiredError(cancel.error);
-  const recover = () => recovery.replay(query, status, kind, (fresh) => fresh.runId === runId);
   const cancelError = getFlowActionErrorMessage(cancel.error);
   const actionError =
     recovery.error ??
@@ -571,10 +517,12 @@ function SteelOcrFlowCard({
       isSuperseded={isSuperseded}
       isCanceling={cancel.isLoading}
       isReplaying={recovery.isReplaying}
-      disableRecovery={recovery.disabled}
+      disableRecovery={
+        actions.isSubmitting || !(status === 'paused' ? actions.onResumeFlow : actions.onRetryFlow)
+      }
       onCancel={() => cancel.mutate(runId)}
-      onResume={recover}
-      onRetry={recover}
+      onResume={() => recovery.recover('resume', { kind, runId }, isSuperseded)}
+      onRetry={() => recovery.recover('retry', { kind, runId }, isSuperseded)}
       localize={localize}
     />
   );
@@ -582,12 +530,12 @@ function SteelOcrFlowCard({
 
 function SteelQuotationProgress({
   conversationId,
-  messageId,
+  actions,
   event,
   localize,
 }: {
   conversationId: string;
-  messageId: string;
+  actions: SteelFlowActions;
   event: Extract<SteelNativeActivityEvent, { type: 'quotation_status' }>;
   localize: Localize;
 }) {
@@ -599,21 +547,18 @@ function SteelQuotationProgress({
   };
   const query = useGetSteelQuotationStatusQuery(conversationId, runKey, initialData);
   const cancel = useCancelSteelQuotationMutation(conversationId);
-  const recovery = useFlowReplay(conversationId, messageId, localize);
-  const data = query.data ?? initialData;
+  const recovery = useFlowRecovery(actions, localize);
+  const mismatchedQuery = Boolean(
+    query.data &&
+      (query.data.index !== event.index || (event.runId && query.data.runId !== event.runId)),
+  );
+  const data = mismatchedQuery ? initialData : query.data ?? initialData;
   const { index, status, runId, stage, completedChunks, totalChunks, ocrSource } = data;
   const isSuperseded =
+    mismatchedQuery ||
     isSupersededSteelFlow(data) ||
-    recovery.isExpired ||
     isSteelFlowExpiredError(query.error) ||
     isSteelFlowExpiredError(cancel.error);
-  const recover = () =>
-    recovery.replay(
-      query,
-      status,
-      'quotation',
-      (fresh) => fresh.index === index && (runId === undefined || fresh.runId === runId),
-    );
   const cancelError = getFlowActionErrorMessage(cancel.error);
   const actionError =
     recovery.error ??
@@ -648,17 +593,29 @@ function SteelQuotationProgress({
         statusText={statusText}
         note={data.note}
         metadataText={metadataText}
-        errorMessage={data.errorMessage}
+        errorMessage={
+          data.errorMessage === 'quotation_unpublished'
+            ? localize('com_ui_steel_quote_unpublished')
+            : data.errorMessage
+        }
         actionError={isSuperseded ? undefined : actionError}
         isWarningState={repairFailed}
         isSuperseded={isSuperseded}
         canCancel={data.canCancel && index !== null}
         isCanceling={cancel.isLoading}
         isReplaying={recovery.isReplaying}
-        disableRecovery={recovery.disabled}
+        disableRecovery={
+          !runId ||
+          actions.isSubmitting ||
+          !(status === 'paused' ? actions.onResumeFlow : actions.onRetryFlow)
+        }
         onCancel={() => index !== null && cancel.mutate(index)}
-        onResume={recover}
-        onRetry={recover}
+        onResume={() =>
+          runId && recovery.recover('resume', { kind: 'quotation', runId }, isSuperseded)
+        }
+        onRetry={() =>
+          runId && recovery.recover('retry', { kind: 'quotation', runId }, isSuperseded)
+        }
         localize={localize}
       />
       {showProgress && (
@@ -1100,9 +1057,9 @@ const SteelActivity = memo(function SteelActivity({
   isCreatedByUser,
   conversationId,
   persistedActivityEvents,
+  ...actions
 }: SteelActivityProps) {
   const localize = useLocalize();
-  const chatConversationId = useContext(ChatContext)?.conversation?.conversationId;
   const [isExpanded, setIsExpanded] = useState(false);
   const allActivityEvents = useSteelActivityEvents(messageId, persistedActivityEvents);
 
@@ -1111,8 +1068,8 @@ const SteelActivity = memo(function SteelActivity({
     [allActivityEvents],
   );
   const ocrFlowSummaries = useMemo(
-    () => extractOcrFlowSummaries(allActivityEvents, conversationId ?? chatConversationId),
-    [allActivityEvents, chatConversationId, conversationId],
+    () => extractOcrFlowSummaries(allActivityEvents, conversationId),
+    [allActivityEvents, conversationId],
   );
   const latestQuotationEvent = useMemo(
     () =>
@@ -1125,7 +1082,7 @@ const SteelActivity = memo(function SteelActivity({
     [allActivityEvents],
   );
   const quotationConversationId =
-    conversationId ?? latestQuotationEvent?.conversationId ?? chatConversationId;
+    conversationId ?? latestQuotationEvent?.conversationId;
   const hasQuotationActivity = latestQuotationEvent !== undefined;
   const hasOcrFlowActivity = ocrFlowSummaries.length > 0;
 
@@ -1156,7 +1113,7 @@ const SteelActivity = memo(function SteelActivity({
         <SteelOcrFlowCard
           key={summary.runId}
           summary={summary}
-          messageId={messageId}
+          actions={actions}
           localize={localize}
         />
       ))}
@@ -1164,7 +1121,7 @@ const SteelActivity = memo(function SteelActivity({
         <SteelQuotationProgress
           key={latestQuotationEvent.runId ?? latestQuotationEvent.index}
           conversationId={quotationConversationId}
-          messageId={messageId}
+          actions={actions}
           event={latestQuotationEvent}
           localize={localize}
         />

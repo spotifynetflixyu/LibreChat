@@ -327,8 +327,3 @@ export interface SteelOcrStatus extends SteelOcrControlResult {
   errorMessage: string | null;
   latestRunId: string;
 }
-
-export interface SteelQuotationControlResult {
-  runId: string;
-  kind: 'quotation';
-}

@@ -73,7 +73,6 @@ export interface ISteelOcrRun extends Document {
   completedChunks: number;
   totalChunks: number;
   errorMessage?: string;
-  awaitingExecution?: boolean;
   conversationId: string;
   delegateOcrIndex: number;
   claimToken: string;
@@ -91,6 +90,7 @@ export interface ISteelOcrRun extends Document {
   saveAttemptNumber: number;
   saveAttemptToken?: string;
   responseGenerationId?: string;
+  resumeSourceMessageIds?: string[];
   executionEpoch?: number;
   targetMessageId?: string;
   finalizedCandidate?: SteelDelegateOcrFinalizedCandidate;

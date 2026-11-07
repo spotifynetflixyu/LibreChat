@@ -67,6 +67,7 @@ import { runWithSteelOcrExecution, getSteelOcrFailureStatus } from './control';
 import { groupSteelOcrMissingPageRangesByFileKey } from './failures';
 import { getSteelRequestConversationId } from '../native/execute';
 import { resolveOcrPreprocessingChunkSizePages } from './config';
+import { resolveRequestTenantId } from '../../middleware/tenant';
 import { runOcrPreprocessingBatchPipeline } from './preprocess';
 import { resolveSteelOcrPreprocessingRules } from './rules';
 import { normalizeOcrOrganizerFileKey } from './organizer';
@@ -74,10 +75,12 @@ import { emitSteelNativeEvents } from '../native/stream';
 import { createSteelOcrStateService } from './state';
 import { createSteelOcrChunkError } from './retry';
 import { createSteelOcrOrganizer } from './agent';
+import { SteelFlowReplayError } from '../replay';
 import { buildMCPToolKey } from '~/mcp/utils';
 
 /** The request fields PaddleOCR preflight reads; its tool cards and activity land on the history. */
 export interface SteelOcrPreflightRequest extends SteelPaddleOcrRequest {
+  tenantId?: string;
   _resumableJobCreatedAt?: number;
   body?: { conversationId?: string };
   steelNativeContext?: {
@@ -148,7 +151,7 @@ export interface SteelOcrServiceDependencies {
   };
   server: SteelPaddleOcrServer;
   stateService?: SteelOcrSourceMappingStore;
-  runStore?: Pick<SteelOcrRunMethods, 'createPreflightRun' | 'updatePreflightRun' | 'settleTurn'>;
+  runStore?: Pick<SteelOcrRunMethods, 'createPreflightRun' | 'claimResumeRun' | 'updatePreflightRun' | 'settleTurn'>;
 }
 
 /** The conversation OCR state preflight reads and the source codes it allocates. */
@@ -163,6 +166,7 @@ export interface RunSteelPaddleOcrPreflightInput extends SteelPaddleOcrMcpScope 
   signal?: AbortSignal;
   agent?: SteelPaddleOcrAgent & SteelOcrOrganizerAgent;
   streamId?: string | null;
+  resume?: { runId: string; sourceMessageId: string };
 }
 
 export interface SteelOcrService {
@@ -959,15 +963,26 @@ export function createSteelOcrService(deps: SteelOcrServiceDependencies): SteelO
     const userId = input.req.user?.id;
     const responseGenerationId = context?.requestId;
     if (!conversationId || !userId || !responseGenerationId || context?.assistantTurnIndex === undefined ||
-      !context.currentTurnFiles?.some((file) => getSteelOcrFileDescriptor(file))) return runPreflight(input);
-    const scope = { userId, conversationId, tenantId: input.req.user?.tenantId };
+      !context.currentTurnFiles?.some((file) => getSteelOcrFileDescriptor(file))) {
+      if (input.resume) throw new SteelFlowReplayError('flow_not_resumable');
+      return runPreflight(input);
+    }
+    const scope = { userId, conversationId, tenantId: resolveRequestTenantId(input.req) };
     const runs = deps.runStore ?? createSteelOcrRunMethods(mongoose);
     const executionEpoch = input.req._resumableJobCreatedAt;
-    const run = await runs.createPreflightRun({ scope, responseGenerationId, executionEpoch, triggeringMessageId: responseGenerationId });
+    const turn = { scope, responseGenerationId, executionEpoch };
+    input.signal?.throwIfAborted();
+    const claimed = input.resume && await runs.claimResumeRun({
+      ...turn, ...input.resume, kind: 'preflight',
+    });
+    if (claimed && !claimed.ok) throw new SteelFlowReplayError(claimed.code);
+    const run = claimed ? claimed.run : await runs.createPreflightRun({
+      ...turn, triggeringMessageId: responseGenerationId,
+    });
     const progressByFile = new Map<string, { total: number; completed: Set<number> }>();
     let latestStage = 'preflight';
-    let latestTotalChunks = 0;
-    let latestCompletedChunks = 0;
+    let latestTotalChunks = run.totalChunks;
+    let latestCompletedChunks = run.completedChunks;
     const track = async (file: Pick<OcrPreprocessingFile, 'ocrFileKey' | 'filename'>,
       progress: Parameters<typeof buildSteelOcrPreprocessingEventEnvelopes>[0]['progress']) => {
       const entry = progressByFile.get(file.ocrFileKey) ?? { total: 0, completed: new Set<number>() };
@@ -987,7 +1002,7 @@ export function createSteelOcrService(deps: SteelOcrServiceDependencies): SteelO
       latestStage = progress.stage;
       latestTotalChunks = Math.max(totalChunks, completedChunks);
       latestCompletedChunks = completedChunks;
-      const updated = await runs.updatePreflightRun({ scope, runId: run.runId, stage: progress.stage,
+      const updated = await runs.updatePreflightRun({ ...turn, runId: run.runId, stage: progress.stage,
         totalChunks: latestTotalChunks, completedChunks: latestCompletedChunks });
       if (!updated) throw new DOMException('OCR execution is no longer active', 'AbortError');
       return {
@@ -1014,7 +1029,10 @@ export function createSteelOcrService(deps: SteelOcrServiceDependencies): SteelO
             track,
           },
         });
-        await runs.updatePreflightRun({ scope, runId: run.runId, stage: 'agent' });
+        if (input.resume && result.status === 'skipped') {
+          throw new SteelFlowReplayError('flow_not_resumable');
+        }
+        await runs.updatePreflightRun({ ...turn, runId: run.runId, stage: 'agent' });
         return result;
       } catch (error) {
         await runs.settleTurn({ scope, responseGenerationId, executionEpoch,

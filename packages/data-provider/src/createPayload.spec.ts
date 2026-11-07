@@ -24,7 +24,7 @@ describe('createPayload', () => {
         files,
       },
       isRegenerate: true,
-      steelFlowReplay: { kind: 'preflight', runId: 'ocr-run-1', sourceMessageId: 'assistant-1' },
+      steelFlowResume: { kind: 'preflight', runId: 'ocr-run-1' },
       isTemporary: false,
       messages: [],
       conversation: {
@@ -43,6 +43,6 @@ describe('createPayload', () => {
 
     expect(payload.isRegenerate).toBe(true);
     expect(payload.files).toEqual(files);
-    expect(payload.steelFlowReplay).toEqual(submission.steelFlowReplay);
+    expect(payload.steelFlowResume).toEqual(submission.steelFlowResume);
   });
 });

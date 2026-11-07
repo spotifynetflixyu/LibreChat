@@ -28,8 +28,8 @@ import type {
   TTraceRecordParams,
   TTraceRecordDetail,
 } from './types/traces';
-import type { SteelOcrStatus, SteelOcrControlResult, SteelQuotationControlResult } from './types/queries';
 import type { TInsightsAccessResponse, TInsightsParams, TInsightsResponse } from './types/insights';
+import type { SteelOcrStatus } from './types/queries';
 import type { TFileConfig } from './file-config';
 import type * as tl from './types/tools';
 import type * as t from './types';
@@ -1864,22 +1864,10 @@ export function pauseSteelOcr(conversationId: string, runId: string): Promise<St
   return request.post(endpoints.steelOcrControl(conversationId, runId, 'pause'));
 }
 
-export function resumeSteelOcr(conversationId: string, runId: string): Promise<SteelOcrControlResult> {
-  return request.post(endpoints.steelOcrControl(conversationId, runId, 'resume'));
-}
-
-export function retrySteelOcr(conversationId: string, runId: string): Promise<SteelOcrControlResult> {
-  return request.post(endpoints.steelOcrControl(conversationId, runId, 'retry'));
-}
-
 export function cancelSteelOcr(conversationId: string, runId: string): Promise<SteelOcrStatus> {
   return request.post(endpoints.steelOcrControl(conversationId, runId, 'cancel'));
 }
 
 export function pauseSteelQuotation(conversationId: string, index: number): Promise<SteelQuotationStatus> {
   return request.post(endpoints.steelQuotationPause(conversationId, index));
-}
-
-export function resumeSteelQuotation(conversationId: string, index: number): Promise<SteelQuotationControlResult> {
-  return request.post(endpoints.steelQuotationResume(conversationId, index));
 }

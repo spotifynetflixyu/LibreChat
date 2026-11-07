@@ -69,6 +69,7 @@ jest.mock('~/models', () => ({
   getMultiplier: jest.fn(),
   getFiles: jest.fn(),
   getMessages: jest.fn(),
+  getMessage: jest.fn(),
   getRoleByName: jest.fn(),
   getUserMemories: jest.fn(),
   getFormattedMemories: jest.fn(),
@@ -82,7 +83,7 @@ jest.mock('~/config', () => ({
 }));
 
 const { Constants, ContentTypes, EModelEndpoint } = require('librechat-data-provider');
-const { getMessages } = require('~/models');
+const { getMessage, getMessages } = require('~/models');
 const AgentClient = require('../client');
 const { applyRetainedAnswers, GenerationJobManager } = jest.requireActual('@librechat/api');
 const { formatAgentMessages } = jest.requireActual('@librechat/agents');
@@ -235,6 +236,27 @@ describe('AgentClient retained answers', () => {
     jest.clearAllMocks();
     mockFormatInstructions.mockResolvedValue('');
     getMessages.mockResolvedValue([]);
+  });
+
+  it('passes the regenerate target to the shared Steel preparation before preflight', async () => {
+    const client = makeClient();
+    client.options.req.body = {
+      ...client.options.req.body,
+      isRegenerate: true,
+      responseMessageId: 'old-assistant_',
+      steelFlowResume: { kind: 'preflight', runId: 'ocr-run' },
+    };
+    getMessage.mockResolvedValueOnce({
+      conversationId: 'convo-123', parentMessageId: 'u3', isCreatedByUser: false,
+    });
+    await buildPrompt(client, compactedBranch(), 'u3');
+
+    expect(getMessage).toHaveBeenCalledWith({ user: 'user-123', messageId: 'old-assistant' });
+    const tools = require('~/server/services/ToolService');
+    expect(tools.runSteelPaddleOcrPreflight).toHaveBeenCalledWith(expect.objectContaining({
+      resume: { kind: 'preflight', runId: 'ocr-run', sourceMessageId: 'old-assistant' },
+    }));
+    expect(tools.prepareDelegateOcrResume).not.toHaveBeenCalled();
   });
 
   it('completes the branch the history read cut at the summary and quotes the answer in the user turn', async () => {

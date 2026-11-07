@@ -143,9 +143,7 @@ export async function runWithSteelOcrRetries<T>(input: RunWithSteelOcrRetriesInp
 /** The turn fields that decide whether an OCR preflight main agent may be retried. */
 export interface SteelOcrTurnContext {
   ocrTurnActive?: boolean;
-  delegateOcrResume?: object;
   delegateOcrPolicy?: { allowed?: boolean };
-  quotation?: { resume?: boolean };
 }
 
 /**
@@ -155,9 +153,7 @@ export interface SteelOcrTurnContext {
 export function isSteelOcrPreflightTurn(context: SteelOcrTurnContext | undefined): boolean {
   return (
     context?.ocrTurnActive === true &&
-    context.delegateOcrResume == null &&
-    context.delegateOcrPolicy?.allowed !== true &&
-    context.quotation?.resume !== true
+    context.delegateOcrPolicy?.allowed !== true
   );
 }
 

@@ -797,6 +797,7 @@ export interface ResponseContext {
 /** Validation result for requests */
 export interface RequestValidationResult {
   valid: boolean;
+  code?: string;
   request?: ResponseRequest;
   error?: string;
 }

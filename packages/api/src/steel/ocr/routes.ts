@@ -11,7 +11,7 @@ interface OcrRequest extends Request {
   tenantId?: string;
 }
 
-type Action = 'pause' | 'resume' | 'retry' | 'cancel';
+type Action = 'pause' | 'cancel';
 type Handler = (req: OcrRequest, res: Response) => Promise<void>;
 
 export function createOcrRouteHandlers(dependencies: {
@@ -45,7 +45,7 @@ export function createOcrRouteHandlers(dependencies: {
           return;
         }
         let result = action ? await runs.controlRun({ scope, runId, action }) : await runs.readRun(scope, runId);
-        if (!action && result.ok && result.run.status === 'running' && !result.run.awaitingExecution &&
+        if (!action && result.ok && result.run.status === 'running' &&
           result.run.executionEpoch !== undefined && dependencies.readGeneration) {
           const generation = await dependencies.readGeneration(scope.conversationId);
           if (!generation || generation.createdAt !== result.run.executionEpoch ||
@@ -62,10 +62,6 @@ export function createOcrRouteHandlers(dependencies: {
         if ((action === 'pause' || action === 'cancel') && result.run.responseGenerationId) {
           abortSteelOcrExecution(scope, result.run.responseGenerationId, action === 'pause' ? 'user_pause' : 'cancelled', result.run.executionEpoch);
         }
-        if (action === 'resume' || action === 'retry') {
-          res.json({ runId: result.run.runId, kind: result.run.kind });
-          return;
-        }
         const { run } = result;
         res.json({ runId: run.runId, kind: run.kind, status: run.status, stage: run.stage,
           completedChunks: run.completedChunks, totalChunks: run.totalChunks,
@@ -75,6 +71,5 @@ export function createOcrRouteHandlers(dependencies: {
       }
     };
   }
-  return { status: handler(), pause: handler('pause'), resume: handler('resume'),
-    retry: handler('retry'), cancel: handler('cancel') };
+  return { status: handler(), pause: handler('pause'), cancel: handler('cancel') };
 }

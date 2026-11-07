@@ -26,10 +26,10 @@ function request(runId: string, userId = scope.userId, tenantId = scope.tenantId
 }
 const handlers = () => createOcrRouteHandlers({ ownsConversation: async () => true });
 
-it('tracks preflight progress, pauses durably, resumes without executing, and cancels', async () => {
+it('tracks preflight progress, pauses durably, claims a new execution, and cancels', async () => {
   const service = createSteelOcrStateService(mongoose);
   const run = await service.createPreflightRun({ scope, responseGenerationId: 'turn', triggeringMessageId: 'message' });
-  await service.updatePreflightRun({ scope, runId: run.runId, stage: 'organizer_chunk_saved', completedChunks: 1, totalChunks: 2 });
+  await service.updatePreflightRun({ scope, responseGenerationId: 'turn', runId: run.runId, stage: 'organizer_chunk_saved', completedChunks: 1, totalChunks: 2 });
   const status = response();
   await handlers().status(request(run.runId), status as Partial<Response> as Response);
   expect(status.payload).toMatchObject({ runId: run.runId, kind: 'preflight', status: 'running',
@@ -39,9 +39,10 @@ it('tracks preflight progress, pauses durably, resumes without executing, and ca
   expect(paused.payload).toMatchObject({ status: 'paused' });
   await service.settleTurn({ scope, responseGenerationId: 'turn', status: 'interrupted' });
   expect((await service.readRun(scope, run.runId))).toMatchObject({ ok: true, run: { status: 'paused' } });
-  const resumed = response();
-  await handlers().resume(request(run.runId), resumed as Partial<Response> as Response);
-  expect(resumed.payload).toEqual({ runId: run.runId, kind: 'preflight' });
+  expect(await service.claimResumeRun({
+    scope, runId: run.runId, kind: 'preflight', sourceMessageId: 'turn',
+    responseGenerationId: 'regenerated', executionEpoch: 2,
+  })).toMatchObject({ ok: true, run: { runId: run.runId, status: 'running' } });
   const cancelled = response();
   await handlers().cancel(request(run.runId), cancelled as Partial<Response> as Response);
   expect(cancelled.payload).toMatchObject({ status: 'cancelled' });
@@ -52,13 +53,13 @@ it('records disconnection and exhausted retries separately and retries failed ru
   const run = await service.createPreflightRun({ scope, responseGenerationId: 'turn', triggeringMessageId: 'message' });
   await service.settleTurn({ scope, responseGenerationId: 'turn', status: 'interrupted' });
   expect(await service.readRun(scope, run.runId)).toMatchObject({ run: { status: 'interrupted' } });
-  await service.controlRun({ scope, runId: run.runId, action: 'resume' });
-  await createSteelOcrRunModel(mongoose).updateOne({ runId: run.runId }, { $set: { awaitingExecution: false } });
-  await service.settleTurn({ scope, responseGenerationId: 'turn', status: 'failed' });
+  const target = { scope, runId: run.runId, kind: 'preflight' as const, sourceMessageId: 'turn' };
+  await service.claimResumeRun({ ...target, responseGenerationId: 'regenerated', executionEpoch: 2 });
+  await service.settleTurn({ scope, responseGenerationId: 'regenerated', executionEpoch: 2, status: 'failed' });
   expect(await service.readRun(scope, run.runId)).toMatchObject({ run: { status: 'failed', errorMessage: 'OCR processing failed.' } });
-  const retried = response();
-  await handlers().retry(request(run.runId), retried as Partial<Response> as Response);
-  expect(retried.payload).toEqual({ runId: run.runId, kind: 'preflight' });
+  expect(await service.claimResumeRun({
+    ...target, responseGenerationId: 'retry', executionEpoch: 3,
+  })).toMatchObject({ ok: true, run: { runId: run.runId, status: 'running', executionEpoch: 3 } });
 });
 
 it('rejects every stale destructive action within its kind but keeps kinds independent', async () => {
@@ -67,12 +68,14 @@ it('rejects every stale destructive action within its kind but keeps kinds indep
   await service.createPreflightRun({ scope, responseGenerationId: 'new', triggeringMessageId: 'new-message' });
   const delegate = await service.materializeDelegateOcrRun({ ...scope, delegateOcrIndex: 1,
     claimToken: 'claim', triggeringMessageId: 'delegate-message', toolParameters: {}, files: [] });
-  for (const action of ['resume', 'retry', 'cancel'] as const) {
-    const res = response();
-    await handlers()[action](request(old.runId), res as Partial<Response> as Response);
-    expect(res.statusCode).toBe(409);
-    expect(res.payload).toEqual({ code: 'flow_expired' });
-  }
+  const res = response();
+  await handlers().cancel(request(old.runId), res as Partial<Response> as Response);
+  expect(res.statusCode).toBe(409);
+  expect(res.payload).toEqual({ code: 'flow_expired' });
+  expect(await service.claimResumeRun({
+    scope, runId: old.runId, kind: 'preflight', sourceMessageId: 'old',
+    responseGenerationId: 'retry',
+  })).toEqual({ ok: false, code: 'flow_expired' });
   const result = await service.readRun(scope, delegate.runId);
   expect(result).toMatchObject({ ok: true, latestRunId: delegate.runId, run: { kind: 'delegate' } });
 });
@@ -87,7 +90,7 @@ it('scopes all controls to owner and tenant and refuses invalid state transition
   }
   await service.settleTurn({ scope, responseGenerationId: 'turn', status: 'completed' });
   const res = response();
-  await handlers().resume(request(run.runId), res as Partial<Response> as Response);
+  await handlers().cancel(request(run.runId), res as Partial<Response> as Response);
   expect(res.statusCode).toBe(409);
   expect(res.payload).toEqual({ code: 'flow_invalid_state' });
 });
@@ -115,14 +118,19 @@ it('creates a fresh run for regenerated epochs and fences delayed settlement aft
   await service.pauseScope({ scope, executionEpoch: 1 });
   expect(await service.readRun(scope, current.runId)).toMatchObject({ run: { status: 'running' } });
   await service.pauseScope({ scope, executionEpoch: 2 });
-  await service.controlRun({ scope, runId: current.runId, action: 'resume' });
+  expect(await service.claimResumeRun({
+    scope, runId: current.runId, kind: 'preflight', sourceMessageId: 'same-message',
+    responseGenerationId: 'fork', executionEpoch: 3,
+  })).toMatchObject({ ok: true });
   await service.settleTurn({ scope, responseGenerationId: 'same-message', executionEpoch: 2, status: 'failed' });
   await service.pauseScope({ scope, executionEpoch: 2 });
   expect(await service.readRun(scope, current.runId)).toMatchObject({ run: { status: 'running' } });
-  expect(await service.updatePreflightRun({ scope, runId: current.runId, stage: 'completed' })).toBe(false);
+  expect(await service.updatePreflightRun({
+    scope, runId: current.runId, responseGenerationId: 'same-message', executionEpoch: 2, stage: 'completed',
+  })).toBe(false);
 });
 
-it('reconciles a disappeared generation while preserving live owners and pending resumes', async () => {
+it('reconciles a disappeared generation while preserving live owners', async () => {
   const service = createSteelOcrStateService(mongoose);
   const run = await service.createPreflightRun({ scope, responseGenerationId: 'turn', executionEpoch: 10, triggeringMessageId: 'message' });
   const active = createOcrRouteHandlers({ ownsConversation: async () => true,
@@ -134,8 +142,34 @@ it('reconciles a disappeared generation while preserving live owners and pending
   const interrupted = response();
   await missing.status(request(run.runId), interrupted as Partial<Response> as Response);
   expect(interrupted.payload).toMatchObject({ status: 'interrupted' });
-  await service.controlRun({ scope, runId: run.runId, action: 'resume' });
-  const pending = response();
-  await missing.status(request(run.runId), pending as Partial<Response> as Response);
-  expect(pending.payload).toMatchObject({ status: 'running' });
+});
+
+it('fences concurrent OCR recovery claims by scope, status and generation', async () => {
+  const service = createSteelOcrStateService(mongoose);
+  const run = await service.createPreflightRun({
+    scope, responseGenerationId: 'assistant-original', triggeringMessageId: 'input',
+    executionEpoch: 1,
+  });
+  const target = {
+    scope, runId: run.runId, kind: 'preflight' as const, sourceMessageId: 'assistant-original',
+    responseGenerationId: 'fork', executionEpoch: 2,
+  };
+  await expect(service.claimResumeRun(target)).resolves.toEqual({
+    ok: false, code: 'flow_not_resumable',
+  });
+  await service.pauseScope({ scope, executionEpoch: 1 });
+  for (const override of [
+    { userId: 'other-user' }, { tenantId: 'other-tenant' }, { conversationId: 'other-conversation' },
+  ]) {
+    await expect(service.claimResumeRun({ ...target, scope: { ...scope, ...override } }))
+      .resolves.toEqual({ ok: false, code: 'flow_not_found' });
+  }
+  const results = await Promise.all([
+    service.claimResumeRun(target),
+    service.claimResumeRun({ ...target, responseGenerationId: 'other-fork', executionEpoch: 3 }),
+  ]);
+  expect(results.filter((result) => result.ok)).toHaveLength(1);
+  expect(results.filter((result) => !result.ok)).toEqual([
+    { ok: false, code: 'flow_not_resumable' },
+  ]);
 });

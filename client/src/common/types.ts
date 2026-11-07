@@ -355,7 +355,7 @@ export type TOptions = {
    * conversation tail.
    */
   targetResponseMessageId?: string | null;
-  steelFlowReplay?: t.SteelFlowReplay;
+  steelFlowResume?: t.SteelFlowResume;
   /**
    * Carry forward a user message's manually-invoked skills when the caller
    * is resubmitting / regenerating that same message — the compose-time
@@ -400,7 +400,7 @@ export type TMessageChatContext = {
   index: number;
   regenerate: (
     message: t.TMessage,
-    options?: { addedConvo?: t.TConversation | null; steelFlowReplay?: t.SteelFlowReplay },
+    options?: { addedConvo?: t.TConversation | null; steelFlowResume?: t.SteelFlowResume },
   ) => false | void;
   conversation: t.TConversation | null;
   /** Getter backed by a ref, for reads at call time. Rendering reads the row's

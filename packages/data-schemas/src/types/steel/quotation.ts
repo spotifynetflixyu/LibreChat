@@ -350,6 +350,7 @@ export interface SteelQuotationActiveRun {
   executionEpoch?: number;
   triggerMessageId: string;
   targetMessageId?: string;
+  resumeSourceMessageIds?: string[];
   ocrSelection?: SteelQuotationOcrSelection;
   snapshotRef: SteelQuotationArtifactRef;
   chunks: SteelQuotationChunkState[];

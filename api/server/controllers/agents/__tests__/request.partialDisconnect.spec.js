@@ -1,3 +1,6 @@
+jest.mock('~/server/services/Steel/flow', () => ({ settleTurn: jest.fn() }));
+jest.mock('~/server/services/Steel/postgres', () => ({}));
+
 const mockLogger = {
   debug: jest.fn(),
   warn: jest.fn(),
@@ -47,6 +50,7 @@ jest.mock('@librechat/data-schemas', () => ({
 }));
 
 jest.mock('@librechat/api', () => ({
+  rejectInvalidSteelFlowResume: jest.requireActual('@librechat/api').rejectInvalidSteelFlowResume,
   extractSteelAgentResponseMarkdown: jest.requireActual('@librechat/api').extractSteelAgentResponseMarkdown,
   shouldDeferSteelMarkdownPersistence: jest.fn(() => false),
   getAgentErrorMetadata: (...args) =>

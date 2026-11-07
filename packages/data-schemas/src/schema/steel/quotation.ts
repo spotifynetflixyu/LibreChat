@@ -23,7 +23,7 @@ import type {
   SteelQuotationSourceSnapshot,
   SteelQuotationTicket,
 } from '~/types';
-import { steelReviewMetadataSchema, steelReviewRowSchema } from './review';
+import { steelReviewMetadataSchema } from './review';
 
 const steelMarkdownReferenceSchema = new Schema({
   kind: { type: String, enum: ['ocr_result', 'system_order', 'customer_data'], required: true },
@@ -301,6 +301,7 @@ const steelQuotationActiveRunSchema = new Schema<SteelQuotationActiveRun>(
     executionEpoch: { type: Number },
     triggerMessageId: { type: String, required: true },
     targetMessageId: { type: String },
+    resumeSourceMessageIds: { type: [String], default: undefined },
     ocrSelection: { type: steelQuotationOcrSelectionSchema },
     snapshotRef: { type: steelQuotationArtifactRefSchema, required: true },
     chunks: { type: [steelQuotationChunkSchema], required: true, default: [] },

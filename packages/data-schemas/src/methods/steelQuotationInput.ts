@@ -393,14 +393,6 @@ function candidateReferences(state: ISteelQuotationState): {
   };
 }
 
-function completedRun(status: SteelQuotationActiveRun['status'] | undefined): boolean {
-  return status === 'completed' || status === 'cancelled';
-}
-
-function unfinishedRun(status: SteelQuotationActiveRun['status'] | undefined): boolean {
-  return status !== undefined && !completedRun(status);
-}
-
 function artifactRef(
   scope: SteelQuotationScope,
   runId: string,
@@ -423,7 +415,7 @@ function artifactRef(
 function archivedRun(payload: string, expectedRunId: string): SteelQuotationActiveRun | undefined {
   try {
     const parsed = JSON.parse(payload) as { run?: SteelQuotationActiveRun };
-    if (!parsed.run || parsed.run.runId !== expectedRunId || !completedRun(parsed.run.status) ||
+    if (!parsed.run || parsed.run.runId !== expectedRunId || parsed.run.status === 'running' ||
       parsed.run.snapshotRef?.runId !== expectedRunId || parsed.run.snapshotRef.kind !== 'snapshot') return undefined;
     return parsed.run;
   } catch {
@@ -597,10 +589,15 @@ export function createSteelQuotationInputMethods(mongoose: Mongoose): SteelQuota
     return isRunPublished(scope, run);
   }
 
-  async function blocksFreshRun(scope: SteelQuotationScope, run?: SteelQuotationActiveRun,
-    session?: ClientSession): Promise<boolean> {
-    return Boolean(run && (unfinishedRun(run.status) ||
-      (run.status === 'completed' && !await isRunPublished(scope, run, session))));
+  async function blocksFreshRun(
+    scope: SteelQuotationScope,
+    run: SteelQuotationActiveRun | undefined,
+    session: ClientSession,
+    supersedeRecoverable = false,
+  ): Promise<boolean> {
+    if (!run || run.status === 'cancelled') return false;
+    if (run.status === 'completed') return !(await isRunPublished(scope, run, session));
+    return run.status === 'running' || !supersedeRecoverable;
   }
 
   async function readSteelQuotationOcrInput(
@@ -828,7 +825,8 @@ export function createSteelQuotationInputMethods(mongoose: Mongoose): SteelQuota
           result = { ok: false, code: 'concurrent_change' };
           return;
         }
-        if (await blocksFreshRun(input.scope, current.activeRun, session)) {
+        const responseBound = ticket.responseId !== undefined && input.targetMessageId === ticket.responseId;
+        if (await blocksFreshRun(input.scope, current.activeRun, session, responseBound)) {
           result = { ok: false, code: 'concurrent_change' };
           return;
         }
@@ -915,7 +913,7 @@ export function createSteelQuotationInputMethods(mongoose: Mongoose): SteelQuota
           createdAt: now,
           updatedAt: now,
         }], { session });
-        if (current.activeRun && completedRun(current.activeRun.status)) {
+        if (current.activeRun) {
           const archivePayload = JSON.stringify({ run: current.activeRun });
           const archiveHash = hashText(archivePayload);
           await Artifact.create([{

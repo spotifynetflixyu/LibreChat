@@ -13,11 +13,11 @@ describe('shared terminal failure text', () => {
     expect(getTerminalFailureText(error)).toBe(new AttachmentStorageError().message);
   });
 
-  it('exposes only the stable code for an unavailable Steel replay', () => {
-    const error = new SteelFlowReplayError();
+  it.each(['flow_not_found', 'flow_not_resumable', 'flow_expired'] as const)('exposes only %s for a failed Steel recovery', (code) => {
+    const error = new SteelFlowReplayError(code);
     error.message = 'PRIVATE run details';
     expect(JSON.parse(getTerminalFailureText(error))).toEqual({
-      code: 'steel_flow_replay_unavailable',
+      code,
     });
   });
 });

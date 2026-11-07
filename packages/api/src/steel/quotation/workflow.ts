@@ -165,6 +165,7 @@ export function createSteelQuotationWorkflow({ db, client }: SteelQuotationWorkf
     const emit = (events: readonly SteelEmittedEvent[], historyChanged?: boolean) =>
       emitSteelNativeEvents({ req, res, streamId, events, historyChanged });
     const service = createSteelQuotationStateService(mongoose);
+    let expectedRunId = quotation.state?.activeRun?.runId;
 
     if (!quotation.resume) {
       const last = findFinalAiMessage(run);
@@ -230,7 +231,10 @@ export function createSteelQuotationWorkflow({ db, client }: SteelQuotationWorkf
         },
         persistMarkdown: persistWorkflowResponse,
       });
-      if (!completion.acceptedRun) return;
+      const accepted = completion.acceptedRun;
+      if (!accepted || accepted.targetMessageId !== requestId ||
+        (accepted.status !== 'running' && accepted.status !== 'completed')) return;
+      expectedRunId = accepted.runId;
     }
 
     const modelOptions = context.delegateOcrContext?.modelOptions;
@@ -264,7 +268,8 @@ export function createSteelQuotationWorkflow({ db, client }: SteelQuotationWorkf
 
     const result = await runQuotationPreflightWithRetries({
       scope,
-      expectedRunId: quotation.resume ? quotation.state?.activeRun?.runId : undefined,
+      expectedRunId,
+      resumeLease: quotation.resumeLease,
       modelOptions,
       signal,
       onUsage,

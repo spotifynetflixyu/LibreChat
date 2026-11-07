@@ -305,7 +305,7 @@ export default function useChatFunctions({
       overrideMessages,
       overrideFiles,
       targetResponseMessageId,
-      steelFlowReplay,
+      steelFlowResume,
       overrideManualSkills,
       overrideQuotes,
       addedConvo,
@@ -520,6 +520,11 @@ export default function useChatFunctions({
           latestMessage,
         })
       : null;
+
+    if (steelFlowResume && (!targetResponseMessageId ||
+      targetResponseMessage?.messageId !== targetResponseMessageId)) {
+      return false;
+    }
 
     let thread_id = targetParentMessage?.thread_id ?? latestMessage?.thread_id;
     if (thread_id == null) {
@@ -771,7 +776,7 @@ export default function useChatFunctions({
       isEdited: isEditOrContinue,
       isContinued,
       isRegenerate: regenerateShaped,
-      ...(steelFlowReplay && { steelFlowReplay }),
+      ...(steelFlowResume && { steelFlowResume }),
       ...(compact && { compact: true }),
       initialResponse,
       isTemporary,
@@ -811,7 +816,7 @@ export default function useChatFunctions({
 
   const regenerate = (
     message: Partial<Pick<TMessage, 'messageId' | 'parentMessageId' | 'isCreatedByUser'>>,
-    options?: { addedConvo?: TConversation | null; steelFlowReplay?: TOptions['steelFlowReplay'] },
+    options?: { addedConvo?: TConversation | null; steelFlowResume?: TOptions['steelFlowResume'] },
   ) => {
     const messages = getMessages();
     const parentMessageId =
@@ -827,7 +832,7 @@ export default function useChatFunctions({
           isRegenerate: true,
           addedConvo: options?.addedConvo ?? undefined,
           targetResponseMessageId,
-          steelFlowReplay: options?.steelFlowReplay,
+          steelFlowResume: options?.steelFlowResume,
           /** Carry the original user message's manual skill picks forward
            *  so the regenerated response is primed with the same skills.
            *  The compose-time atom was drained on the first submit; without

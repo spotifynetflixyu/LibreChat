@@ -82,7 +82,7 @@ async function acceptCompletedSignal(input: {
   }
   input.applyMarkdown(input.markdown);
   await input.persistMarkdown();
-  return { markdown: input.markdown, acceptedRun: { runId: 'run-1' } };
+  return { markdown: input.markdown, acceptedRun: { runId: 'run-1', status: 'running', targetMessageId: 'response-1' } };
 }
 
 let store: ReturnType<typeof createStore>;
