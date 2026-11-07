@@ -1,16 +1,15 @@
 import React from 'react';
-import { RecoilRoot } from 'recoil';
+import { RecoilRoot, useRecoilValue } from 'recoil';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import type { TMessage } from 'librechat-data-provider';
 import type { SteelActivityProps } from '../SteelActivity';
 import {
   isSteelFlowExpiredError,
-  useCancelSteelOcrMutation,
-  useCancelSteelQuotationMutation,
   useGetSteelOcrStatusQuery,
   useGetSteelQuotationStatusQuery,
 } from '~/data-provider/Steel';
 import { steelNativeActivityByMessageId } from '~/store/steel';
+import store from '~/store';
 import { useSteelResponseExtras } from '../SteelResponse';
 
 function SteelActivity(props: SteelActivityProps) {
@@ -21,15 +20,11 @@ import { ChatContext } from '~/Providers';
 jest.mock('~/data-provider/Steel', () => ({
   __esModule: true,
   isSteelFlowExpiredError: jest.fn(),
-  useCancelSteelOcrMutation: jest.fn(),
-  useCancelSteelQuotationMutation: jest.fn(),
   useGetSteelOcrStatusQuery: jest.fn(),
   useGetSteelQuotationStatusQuery: jest.fn(),
 }));
 
 const mockIsSteelFlowExpiredError = jest.mocked(isSteelFlowExpiredError);
-const mockUseCancelSteelOcrMutation = jest.mocked(useCancelSteelOcrMutation);
-const mockUseCancelSteelQuotationMutation = jest.mocked(useCancelSteelQuotationMutation);
 const mockUseGetSteelOcrStatusQuery = jest.mocked(useGetSteelOcrStatusQuery);
 const mockUseGetSteelQuotationStatusQuery = jest.mocked(useGetSteelQuotationStatusQuery);
 type ChatContextValue = NonNullable<React.ContextType<typeof ChatContext>>;
@@ -40,8 +35,27 @@ function createChatContext(overrides: Partial<ChatContextValue> = {}): ChatConte
     getMessages: jest.fn(() => undefined),
     regenerate: jest.fn(),
     isSubmitting: false,
+    index: 0,
+    stopGenerating: jest.fn(),
     ...overrides,
   } as unknown as ChatContextValue;
+}
+
+function StopButtonState() {
+  const visible = useRecoilValue(store.showStopButtonByIndex(0));
+  return <span data-testid="chat-stop-button">{String(visible)}</span>;
+}
+
+function renderInSubmittingChat(
+  ui: React.ReactElement,
+  chat = createChatContext({ isSubmitting: true }),
+) {
+  render(
+    <ChatContext.Provider value={chat}>
+      <RecoilRoot>{ui}</RecoilRoot>
+    </ChatContext.Provider>,
+  );
+  return chat;
 }
 
 const quotationStatusEvent = {
@@ -80,42 +94,61 @@ beforeEach(() => {
   mockUseGetSteelOcrStatusQuery.mockReturnValue({ data: undefined } as ReturnType<
     typeof useGetSteelOcrStatusQuery
   >);
-  mockUseCancelSteelQuotationMutation.mockReturnValue({
-    isLoading: false,
-    error: null,
-    mutate: jest.fn(),
-  } as unknown as ReturnType<typeof useCancelSteelQuotationMutation>);
-  mockUseCancelSteelOcrMutation.mockReturnValue({
-    isLoading: false,
-    error: null,
-    mutate: jest.fn(),
-  } as unknown as ReturnType<typeof useCancelSteelOcrMutation>);
 });
 
 describe('SteelActivity', () => {
-  it('renders quotation progress and sends the specific quotation index to cancel', () => {
-    const mutate = jest.fn();
-    mockUseCancelSteelQuotationMutation.mockReturnValue({
-      isLoading: false,
-      error: null,
-      mutate,
-    } as unknown as ReturnType<typeof useCancelSteelQuotationMutation>);
-
+  it('pauses a running quotation through the chat input Stop', () => {
+    const chat = createChatContext({ isSubmitting: true });
     const { container } = render(
-      <RecoilRoot
-        initializeState={({ set }) => {
-          set(steelNativeActivityByMessageId('assistant-quotation'), [quotationStatusEvent]);
-        }}
-      >
-        <SteelActivity messageId="assistant-quotation" isCreatedByUser={false} />
-      </RecoilRoot>,
+      <ChatContext.Provider value={chat}>
+        <RecoilRoot
+          initializeState={({ set }) => {
+            set(steelNativeActivityByMessageId('assistant-quotation'), [quotationStatusEvent]);
+            set(store.showStopButtonByIndex(0), true);
+          }}
+        >
+          <SteelActivity messageId="assistant-quotation" isCreatedByUser={false} />
+          <StopButtonState />
+        </RecoilRoot>
+      </ChatContext.Provider>,
     );
 
     expect(screen.getAllByText('Quotation in progress (1/3 chunks)')).toHaveLength(2);
-    const cancel = screen.getByRole('button', { name: 'Cancel' });
+    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
+    const pause = screen.getByRole('button', { name: 'Pause' });
     expect(container.querySelector('.my-3 .animate-spin')).toBeInTheDocument();
-    fireEvent.click(cancel);
-    expect(mutate).toHaveBeenCalledWith(4);
+    fireEvent.click(pause);
+    fireEvent.click(pause);
+    expect(chat.stopGenerating).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('chat-stop-button')).toHaveTextContent('false');
+    expect(pause).toBeDisabled();
+  });
+
+  it.each([
+    ['without a chat', undefined],
+    ['when the chat is idle', createChatContext({ isSubmitting: false })],
+    [
+      'when the chat shows another conversation',
+      createChatContext({
+        isSubmitting: true,
+        conversation: { conversationId: 'conversation-2' },
+      } as Partial<ChatContextValue>),
+    ],
+  ])('does not offer Pause %s', (_label, chat) => {
+    const activity = (
+      <RecoilRoot>
+        <SteelActivity
+          messageId="assistant-quotation"
+          isCreatedByUser={false}
+          conversationId="conversation-1"
+          persistedActivityEvents={[quotationStatusEvent]}
+        />
+      </RecoilRoot>
+    );
+    render(chat ? <ChatContext.Provider value={chat}>{activity}</ChatContext.Provider> : activity);
+
+    expect(screen.getAllByText('Quotation in progress (1/3 chunks)').length).toBeGreaterThan(0);
+    expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument();
   });
 
   it('retries an interrupted quotation with the original assistant message', async () => {
@@ -160,7 +193,6 @@ describe('SteelActivity', () => {
       steelFlowResume: { kind: 'quotation', runId: interruptedQuotationStatus.runId },
     }));
     expect(refetch).not.toHaveBeenCalled();
-    expect(mockUseCancelSteelQuotationMutation().mutate).not.toHaveBeenCalled();
   });
 
   it('guards an interrupted quotation against duplicate retry clicks', async () => {
@@ -465,55 +497,10 @@ describe('SteelActivity', () => {
     );
 
     expect(screen.getByRole('button', { name: 'Retry' })).toBeDisabled();
-    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument();
   });
 
-  it('disables duplicate cancellation clicks while cancellation is pending', () => {
-    mockUseCancelSteelQuotationMutation.mockReturnValue({
-      isLoading: true,
-      error: null,
-      mutate: jest.fn(),
-    } as unknown as ReturnType<typeof useCancelSteelQuotationMutation>);
-
-    render(
-      <RecoilRoot
-        initializeState={({ set }) => {
-          set(steelNativeActivityByMessageId('assistant-quotation-pending'), [
-            { ...quotationStatusEvent, messageId: 'assistant-quotation-pending' },
-          ]);
-        }}
-      >
-        <SteelActivity messageId="assistant-quotation-pending" isCreatedByUser={false} />
-      </RecoilRoot>,
-    );
-
-    expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
-  });
-
-  it('keeps the cancel action available and reports a failed cancellation', () => {
-    mockUseCancelSteelQuotationMutation.mockReturnValue({
-      isLoading: false,
-      error: new Error('request failed'),
-      mutate: jest.fn(),
-    } as unknown as ReturnType<typeof useCancelSteelQuotationMutation>);
-
-    render(
-      <RecoilRoot
-        initializeState={({ set }) => {
-          set(steelNativeActivityByMessageId('assistant-quotation-error'), [
-            { ...quotationStatusEvent, messageId: 'assistant-quotation-error' },
-          ]);
-        }}
-      >
-        <SteelActivity messageId="assistant-quotation-error" isCreatedByUser={false} />
-      </RecoilRoot>,
-    );
-
-    expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled();
-    expect(screen.getByText('Quotation cancellation failed: request failed')).toBeInTheDocument();
-  });
-
-  it('hides cancellation after the backend reports completion', () => {
+  it('hides Pause after the backend reports completion', () => {
     mockUseGetSteelQuotationStatusQuery.mockReturnValue({
       data: {
         conversationId: 'conversation-1',
@@ -527,19 +514,21 @@ describe('SteelActivity', () => {
     } as ReturnType<typeof useGetSteelQuotationStatusQuery>);
 
     const { container } = render(
-      <RecoilRoot
-        initializeState={({ set }) => {
-          set(steelNativeActivityByMessageId('assistant-quotation-completed'), [
-            { ...quotationStatusEvent, messageId: 'assistant-quotation-completed' },
-          ]);
-        }}
-      >
-        <SteelActivity messageId="assistant-quotation-completed" isCreatedByUser={false} />
-      </RecoilRoot>,
+      <ChatContext.Provider value={createChatContext({ isSubmitting: true })}>
+        <RecoilRoot
+          initializeState={({ set }) => {
+            set(steelNativeActivityByMessageId('assistant-quotation-completed'), [
+              { ...quotationStatusEvent, messageId: 'assistant-quotation-completed' },
+            ]);
+          }}
+        >
+          <SteelActivity messageId="assistant-quotation-completed" isCreatedByUser={false} />
+        </RecoilRoot>
+      </ChatContext.Provider>,
     );
 
     expect(screen.getByText('Quotation completed (3/3 chunks)')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument();
     expect(container.querySelector('.my-3 .animate-spin')).not.toBeInTheDocument();
     expect(container.querySelector('.my-3 .text-status-success')).toBeInTheDocument();
   });
@@ -1613,7 +1602,7 @@ describe('SteelActivity', () => {
         expectedTitle: 'OCR Preflight',
         expectedStatusText: 'OCR in progress (1/3 chunks)',
         expectedStageText: 'Stage: paddleocr',
-        expectCancel: true,
+        expectPause: true,
       },
       {
         kind: 'preflight' as const,
@@ -1624,7 +1613,7 @@ describe('SteelActivity', () => {
         expectedTitle: 'OCR Preflight',
         expectedStatusText: 'OCR paused (2/3 chunks)',
         expectedStageText: 'Stage: organizer',
-        expectCancel: false,
+        expectPause: false,
       },
       {
         kind: 'preflight' as const,
@@ -1635,7 +1624,7 @@ describe('SteelActivity', () => {
         expectedTitle: 'OCR Preflight',
         expectedStatusText: 'OCR interrupted',
         expectedStageText: 'Stage: agent',
-        expectCancel: false,
+        expectPause: false,
       },
       {
         kind: 'preflight' as const,
@@ -1646,7 +1635,7 @@ describe('SteelActivity', () => {
         expectedTitle: 'OCR Preflight',
         expectedStatusText: 'OCR failed',
         expectedStageText: 'Stage: organizer',
-        expectCancel: false,
+        expectPause: false,
       },
       {
         kind: 'preflight' as const,
@@ -1657,7 +1646,7 @@ describe('SteelActivity', () => {
         expectedTitle: 'OCR Preflight',
         expectedStatusText: 'OCR completed (3/3 chunks)',
         expectedStageText: 'Stage: saving',
-        expectCancel: false,
+        expectPause: false,
       },
       {
         kind: 'preflight' as const,
@@ -1668,7 +1657,7 @@ describe('SteelActivity', () => {
         expectedTitle: 'OCR Preflight',
         expectedStatusText: 'OCR cancelled',
         expectedStageText: 'Stage: paddleocr',
-        expectCancel: false,
+        expectPause: false,
       },
       {
         kind: 'delegate' as const,
@@ -1679,7 +1668,7 @@ describe('SteelActivity', () => {
         expectedTitle: 'Delegate OCR',
         expectedStatusText: 'OCR in progress (2/4 chunks)',
         expectedStageText: 'Stage: agent',
-        expectCancel: true,
+        expectPause: true,
       },
       {
         kind: 'delegate' as const,
@@ -1690,7 +1679,7 @@ describe('SteelActivity', () => {
         expectedTitle: 'Delegate OCR',
         expectedStatusText: 'OCR paused (2/4 chunks)',
         expectedStageText: 'Stage: organizer',
-        expectCancel: false,
+        expectPause: false,
       },
       {
         kind: 'delegate' as const,
@@ -1701,7 +1690,7 @@ describe('SteelActivity', () => {
         expectedTitle: 'Delegate OCR',
         expectedStatusText: 'OCR interrupted',
         expectedStageText: 'Stage: reconciliation',
-        expectCancel: false,
+        expectPause: false,
       },
       {
         kind: 'delegate' as const,
@@ -1712,7 +1701,7 @@ describe('SteelActivity', () => {
         expectedTitle: 'Delegate OCR',
         expectedStatusText: 'OCR failed',
         expectedStageText: 'Stage: agent',
-        expectCancel: false,
+        expectPause: false,
       },
       {
         kind: 'delegate' as const,
@@ -1723,7 +1712,7 @@ describe('SteelActivity', () => {
         expectedTitle: 'Delegate OCR',
         expectedStatusText: 'OCR completed (4/4 chunks)',
         expectedStageText: 'Stage: response',
-        expectCancel: false,
+        expectPause: false,
       },
       {
         kind: 'delegate' as const,
@@ -1734,7 +1723,7 @@ describe('SteelActivity', () => {
         expectedTitle: 'Delegate OCR',
         expectedStatusText: 'OCR cancelled',
         expectedStageText: 'Stage: saving',
-        expectCancel: false,
+        expectPause: false,
       },
     ])(
       'renders $kind OCR flow card in $flowStatus status with stage $stage and progress',
@@ -1747,7 +1736,7 @@ describe('SteelActivity', () => {
         expectedTitle,
         expectedStatusText,
         expectedStageText,
-        expectCancel,
+        expectPause,
       }) => {
         const runId = `ocr-${kind}-${flowStatus}`;
         const event =
@@ -1795,15 +1784,13 @@ describe('SteelActivity', () => {
           },
         } as ReturnType<typeof useGetSteelOcrStatusQuery>);
 
-        render(
-          <RecoilRoot>
-            <SteelActivity
-              messageId={`msg-${runId}`}
-              isCreatedByUser={false}
-              conversationId="conversation-1"
-              persistedActivityEvents={[event]}
-            />
-          </RecoilRoot>,
+        renderInSubmittingChat(
+          <SteelActivity
+            messageId={`msg-${runId}`}
+            isCreatedByUser={false}
+            conversationId="conversation-1"
+            persistedActivityEvents={[event]}
+          />,
         );
 
         const card = screen.getByRole('region', { name: expectedTitle });
@@ -1814,11 +1801,11 @@ describe('SteelActivity', () => {
         if (flowStatus === 'failed') {
           expect(screen.getByText('Safe OCR failure reason')).toBeInTheDocument();
         }
-        expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument();
-        if (expectCancel) {
-          expect(screen.getByRole('button', { name: 'Cancel' })).toBeEnabled();
+        expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
+        if (expectPause) {
+          expect(screen.getByRole('button', { name: 'Pause' })).toBeEnabled();
         } else {
-          expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
+          expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument();
         }
         if (flowStatus === 'paused') {
           expect(screen.getByRole('button', { name: 'Resume' })).toBeDisabled();
@@ -1954,61 +1941,46 @@ describe('SteelActivity', () => {
       expect(screen.getByText('Stage: organizer')).toBeInTheDocument();
     });
 
-    it('sends cancel mutations for OCR and Quotation and prevents duplicate clicks', () => {
-      const cancelOcr = jest.fn();
-      const cancelQuote = jest.fn();
-      mockUseCancelSteelOcrMutation.mockReturnValue({
-        isLoading: false,
-        error: null,
-        mutate: cancelOcr,
-      } as unknown as ReturnType<typeof useCancelSteelOcrMutation>);
-      mockUseCancelSteelQuotationMutation.mockReturnValue({
-        isLoading: false,
-        error: null,
-        mutate: cancelQuote,
-      } as unknown as ReturnType<typeof useCancelSteelQuotationMutation>);
-
-      render(
-        <RecoilRoot>
-          <SteelActivity
-            messageId="assistant-controls"
-            isCreatedByUser={false}
-            conversationId="conversation-1"
-            persistedActivityEvents={[
-              {
-                type: 'delegate_ocr_status',
-                source: 'delegate_ocr_preflight',
-                conversationId: 'conversation-1',
-                messageId: 'assistant-controls',
-                runId: 'delegate-run-1',
-                kind: 'delegate',
-                delegateOcrIndex: 1,
-                stage: 'agent',
-                status: 'progress',
-                flowStatus: 'running',
-                completedChunks: 1,
-                totalChunks: 2,
-                message: 'Running delegate OCR',
-              },
-              quotationStatusEvent,
-            ]}
-          />
-        </RecoilRoot>,
+    it('pauses OCR and quotation cards through the chat input Stop', () => {
+      const chat = createChatContext({ isSubmitting: true });
+      renderInSubmittingChat(
+        <SteelActivity
+          messageId="assistant-controls"
+          isCreatedByUser={false}
+          conversationId="conversation-1"
+          persistedActivityEvents={[
+            {
+              type: 'delegate_ocr_status',
+              source: 'delegate_ocr_preflight',
+              conversationId: 'conversation-1',
+              messageId: 'assistant-controls',
+              runId: 'delegate-run-1',
+              kind: 'delegate',
+              delegateOcrIndex: 1,
+              stage: 'agent',
+              status: 'progress',
+              flowStatus: 'running',
+              completedChunks: 1,
+              totalChunks: 2,
+              message: 'Running delegate OCR',
+            },
+            quotationStatusEvent,
+          ]}
+        />,
+        chat,
       );
 
-      expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument();
-      const cancelButtons = screen.getAllByRole('button', { name: 'Cancel' });
-      expect(cancelButtons).toHaveLength(2);
+      expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
+      const pauseButtons = screen.getAllByRole('button', { name: 'Pause' });
+      expect(pauseButtons).toHaveLength(2);
 
-      fireEvent.click(cancelButtons[0]);
-      fireEvent.click(cancelButtons[0]);
-      expect(cancelOcr).toHaveBeenCalledTimes(1);
-      expect(cancelOcr).toHaveBeenCalledWith('delegate-run-1');
+      fireEvent.click(pauseButtons[0]);
+      fireEvent.click(pauseButtons[0]);
+      expect(chat.stopGenerating).toHaveBeenCalledTimes(1);
 
-      fireEvent.click(cancelButtons[1]);
-      fireEvent.click(cancelButtons[1]);
-      expect(cancelQuote).toHaveBeenCalledTimes(1);
-      expect(cancelQuote).toHaveBeenCalledWith(4);
+      fireEvent.click(pauseButtons[1]);
+      fireEvent.click(pauseButtons[1]);
+      expect(chat.stopGenerating).toHaveBeenCalledTimes(2);
     });
 
     it('disables controls and shows a localized message when flow_expired occurs or latestRunId supersedes the card', () => {
@@ -2032,37 +2004,35 @@ describe('SteelActivity', () => {
         },
       } as ReturnType<typeof useGetSteelQuotationStatusQuery>);
 
-      render(
-        <RecoilRoot>
-          <SteelActivity
-            messageId="assistant-expired"
-            isCreatedByUser={false}
-            conversationId="conversation-1"
-            persistedActivityEvents={[
-              {
-                type: 'parse_status',
-                source: 'ocr_preprocessing',
-                conversationId: 'conversation-1',
-                messageId: 'assistant-expired',
-                runId: 'ocr-run-old',
-                kind: 'preflight',
-                stage: 'paddleocr',
-                flowStatus: 'running',
-                completedChunks: 1,
-                totalChunks: 2,
-                parseStatus: 'partial',
-                message: 'Running PaddleOCR',
-              },
-              quotationStatusEvent,
-            ]}
-          />
-        </RecoilRoot>,
+      renderInSubmittingChat(
+        <SteelActivity
+          messageId="assistant-expired"
+          isCreatedByUser={false}
+          conversationId="conversation-1"
+          persistedActivityEvents={[
+            {
+              type: 'parse_status',
+              source: 'ocr_preprocessing',
+              conversationId: 'conversation-1',
+              messageId: 'assistant-expired',
+              runId: 'ocr-run-old',
+              kind: 'preflight',
+              stage: 'paddleocr',
+              flowStatus: 'running',
+              completedChunks: 1,
+              totalChunks: 2,
+              parseStatus: 'partial',
+              message: 'Running PaddleOCR',
+            },
+            quotationStatusEvent,
+          ]}
+        />,
       );
 
       expect(screen.getAllByText('This flow has been superseded by a newer run.')).toHaveLength(2);
-      expect(screen.queryByRole('button', { name: 'Pause' })).not.toBeInTheDocument();
-      expect(screen.getAllByRole('button', { name: 'Cancel' })).toHaveLength(2);
-      for (const button of screen.getAllByRole('button', { name: 'Cancel' })) {
+      expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
+      expect(screen.getAllByRole('button', { name: 'Pause' })).toHaveLength(2);
+      for (const button of screen.getAllByRole('button', { name: 'Pause' })) {
         expect(button).toBeDisabled();
       }
     });
@@ -2179,13 +2149,7 @@ describe('SteelActivity', () => {
       expect(screen.getByText('OCR completed (2/2 chunks)')).toBeInTheDocument();
     });
 
-    it('disables OCR controls while cancel is pending and renders localized failure alerts', () => {
-      mockUseCancelSteelOcrMutation.mockReturnValue({
-        isLoading: true,
-        error: new Error('network timeout'),
-        mutate: jest.fn(),
-      } as unknown as ReturnType<typeof useCancelSteelOcrMutation>);
-
+    it('renders a running OCR card with a reduced-motion spinner', () => {
       const { container } = render(
         <RecoilRoot>
           <SteelActivity
@@ -2212,10 +2176,7 @@ describe('SteelActivity', () => {
         </RecoilRoot>,
       );
 
-      const cancelBtn = screen.getByRole('button', { name: 'Cancel' });
-      expect(cancelBtn).toBeDisabled();
-      const alert = screen.getByRole('alert');
-      expect(alert).toHaveTextContent('OCR cancellation failed: network timeout');
+      expect(screen.queryByRole('button', { name: 'Cancel' })).not.toBeInTheDocument();
       const card = screen.getByRole('region', { name: 'OCR Preflight' });
       expect(card).toHaveClass('bg-surface-secondary', 'dark:bg-surface-tertiary');
       expect(container.querySelector('.motion-reduce\\:animate-none')).toBeInTheDocument();

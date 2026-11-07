@@ -17,8 +17,6 @@ import type {
 import type { SteelQuotationFlowStatus } from '~/data-provider/Steel';
 import {
   isSteelFlowExpiredError,
-  useCancelSteelOcrMutation,
-  useCancelSteelQuotationMutation,
   useGetSteelOcrStatusQuery,
   useGetSteelQuotationStatusQuery,
 } from '~/data-provider/Steel';
@@ -36,6 +34,8 @@ export type SteelFlowKind = SteelOcrKind | 'quotation';
 type SteelFlowActions = {
   onResumeFlow?: (target: SteelFlowResume) => false | void;
   onRetryFlow?: (target: SteelFlowResume) => false | void;
+  /** Set only while this chat is generating; pauses through the chat input Stop. */
+  onPauseFlow?: () => void;
   isSubmitting?: boolean;
 };
 
@@ -249,16 +249,6 @@ function getOcrStatusText(
   return localize('com_ui_steel_ocr_status_cancelled');
 }
 
-function getFlowActionErrorMessage(error: unknown): string | undefined {
-  if (error instanceof Error && error.message) {
-    return error.message;
-  }
-  if (typeof error === 'string' && error) {
-    return error;
-  }
-  return undefined;
-}
-
 export type SteelFlowCardProps = {
   kind: SteelFlowKind;
   runId?: string;
@@ -270,12 +260,10 @@ export type SteelFlowCardProps = {
   errorMessage?: string | null;
   actionError?: string;
   isWarningState?: boolean;
-  canCancel?: boolean;
-  isCanceling?: boolean;
   isReplaying?: boolean;
   disableRecovery?: boolean;
   isSuperseded?: boolean;
-  onCancel?: () => void;
+  onPause?: () => void;
   onResume?: () => void;
   onRetry?: () => void;
   localize: Localize;
@@ -292,21 +280,19 @@ export const SteelFlowCard = memo(function SteelFlowCard({
   errorMessage,
   actionError,
   isWarningState = false,
-  canCancel = true,
-  isCanceling = false,
   isReplaying = false,
   disableRecovery = false,
   isSuperseded = false,
-  onCancel,
+  onPause,
   onResume,
   onRetry,
   localize,
 }: SteelFlowCardProps) {
-  const cancelRequested = useRef(false);
+  const [isPausing, setIsPausing] = useState(false);
   useEffect(() => {
-    cancelRequested.current = false;
-  }, [actionError, isCanceling, status, runId]);
-  const isBusy = isCanceling || isReplaying;
+    setIsPausing(false);
+  }, [onPause, status, runId]);
+  const isBusy = isPausing || isReplaying;
   const isActive = status === 'running' && !isSuperseded;
   let StatusIcon = AlertTriangle;
   let statusIconClass = 'text-status-error';
@@ -328,7 +314,7 @@ export const SteelFlowCard = memo(function SteelFlowCard({
     regionLabelKey = 'com_ui_steel_flow_ocr_delegate';
   }
 
-  const showCancel = Boolean(onCancel) && canCancel && status === 'running';
+  const showPause = Boolean(onPause) && status === 'running';
   const showResume = Boolean(onResume) && status === 'paused';
   const showRetry = Boolean(onRetry) && (status === 'interrupted' || status === 'failed');
 
@@ -373,7 +359,7 @@ export const SteelFlowCard = memo(function SteelFlowCard({
           {actionError}
         </span>
       )}
-      {(showResume || showRetry || showCancel) && (
+      {(showResume || showRetry || showPause) && (
         <div className="flex items-center justify-end gap-1.5">
           {showResume && (
             <Button
@@ -399,20 +385,20 @@ export const SteelFlowCard = memo(function SteelFlowCard({
               {localize('com_ui_retry')}
             </Button>
           )}
-          {showCancel && (
+          {showPause && (
             <Button
               type="button"
               size="sm"
               variant="outline"
-              className="h-7 shrink-0 border-border-destructive px-2 py-1 text-text-destructive hover:bg-status-error-subtle hover:text-text-destructive"
+              className="h-7 shrink-0 px-2 py-1"
               disabled={isBusy || isSuperseded}
               onClick={() => {
-                if (cancelRequested.current) return;
-                cancelRequested.current = true;
-                onCancel?.();
+                if (isPausing) return;
+                setIsPausing(true);
+                onPause?.();
               }}
             >
-              {localize('com_ui_cancel')}
+              {localize('com_ui_pause')}
             </Button>
           )}
         </div>
@@ -492,18 +478,10 @@ function SteelOcrFlowCard({
     latestRunId: runId,
   };
   const query = useGetSteelOcrStatusQuery(conversationId, runId, kind, initialData);
-  const cancel = useCancelSteelOcrMutation(conversationId);
   const recovery = useFlowRecovery(actions, localize);
   const data = query.data ?? initialData;
   const { status, stage, completedChunks, totalChunks, errorMessage } = data;
-  const isSuperseded =
-    isSupersededSteelFlow(data) ||
-    isSteelFlowExpiredError(query.error) ||
-    isSteelFlowExpiredError(cancel.error);
-  const cancelError = getFlowActionErrorMessage(cancel.error);
-  const actionError =
-    recovery.error ??
-    (cancelError ? localize('com_ui_steel_ocr_cancel_failed', { error: cancelError }) : undefined);
+  const isSuperseded = isSupersededSteelFlow(data) || isSteelFlowExpiredError(query.error);
 
   return (
     <SteelFlowCard
@@ -513,14 +491,13 @@ function SteelOcrFlowCard({
       stage={stage}
       statusText={getOcrStatusText(localize, status, completedChunks, totalChunks)}
       errorMessage={errorMessage}
-      actionError={isSuperseded ? undefined : actionError}
+      actionError={isSuperseded ? undefined : recovery.error}
       isSuperseded={isSuperseded}
-      isCanceling={cancel.isLoading}
       isReplaying={recovery.isReplaying}
       disableRecovery={
         actions.isSubmitting || !(status === 'paused' ? actions.onResumeFlow : actions.onRetryFlow)
       }
-      onCancel={() => cancel.mutate(runId)}
+      onPause={actions.onPauseFlow}
       onResume={() => recovery.recover('resume', { kind, runId }, isSuperseded)}
       onRetry={() => recovery.recover('retry', { kind, runId }, isSuperseded)}
       localize={localize}
@@ -546,23 +523,15 @@ function SteelQuotationProgress({
     canCancel: event.status === 'running',
   };
   const query = useGetSteelQuotationStatusQuery(conversationId, runKey, initialData);
-  const cancel = useCancelSteelQuotationMutation(conversationId);
   const recovery = useFlowRecovery(actions, localize);
   const mismatchedQuery = Boolean(
     query.data &&
       (query.data.index !== event.index || (event.runId && query.data.runId !== event.runId)),
   );
   const data = mismatchedQuery ? initialData : query.data ?? initialData;
-  const { index, status, runId, stage, completedChunks, totalChunks, ocrSource } = data;
+  const { status, runId, stage, completedChunks, totalChunks, ocrSource } = data;
   const isSuperseded =
-    mismatchedQuery ||
-    isSupersededSteelFlow(data) ||
-    isSteelFlowExpiredError(query.error) ||
-    isSteelFlowExpiredError(cancel.error);
-  const cancelError = getFlowActionErrorMessage(cancel.error);
-  const actionError =
-    recovery.error ??
-    (cancelError ? localize('com_ui_steel_quote_cancel_failed', { error: cancelError }) : undefined);
+    mismatchedQuery || isSupersededSteelFlow(data) || isSteelFlowExpiredError(query.error);
   const repairFailed = stage === 'chunk_repair_failed';
   const showProgress =
     !isSuperseded && !repairFailed && isQuotationPreflightWaitingStatus(status, stage);
@@ -598,18 +567,16 @@ function SteelQuotationProgress({
             ? localize('com_ui_steel_quote_unpublished')
             : data.errorMessage
         }
-        actionError={isSuperseded ? undefined : actionError}
+        actionError={isSuperseded ? undefined : recovery.error}
         isWarningState={repairFailed}
         isSuperseded={isSuperseded}
-        canCancel={data.canCancel && index !== null}
-        isCanceling={cancel.isLoading}
         isReplaying={recovery.isReplaying}
         disableRecovery={
           !runId ||
           actions.isSubmitting ||
           !(status === 'paused' ? actions.onResumeFlow : actions.onRetryFlow)
         }
-        onCancel={() => index !== null && cancel.mutate(index)}
+        onPause={actions.onPauseFlow}
         onResume={() =>
           runId && recovery.recover('resume', { kind: 'quotation', runId }, isSuperseded)
         }

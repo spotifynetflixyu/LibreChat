@@ -1,13 +1,15 @@
 import { useCallback, useContext, useMemo } from 'react';
+import { useSetRecoilState } from 'recoil';
 import type { SteelFlowResume, TMessageContentParts } from 'librechat-data-provider';
 import type { SteelActivityProps } from './SteelActivity';
 import { hasAcceptedQuotationPreflight, hideQuoteSignalFromContent } from './hideQuoteSignal';
 import SteelActivity, { useSteelActivityEvents } from './SteelActivity';
 import { ChatContext } from '~/Providers';
+import store from '~/store';
 
 type SteelResponseExtrasOptions = Omit<
   SteelActivityProps,
-  'onResumeFlow' | 'onRetryFlow' | 'isSubmitting'
+  'onResumeFlow' | 'onRetryFlow' | 'onPauseFlow' | 'isSubmitting'
 > & {
   content: Array<TMessageContentParts | undefined> | undefined;
 };
@@ -30,6 +32,13 @@ export function useSteelResponseExtras({ content, ...activityProps }: SteelRespo
     },
     [chat, conversationId, messageId],
   );
+  const setShowStopButton = useSetRecoilState(store.showStopButtonByIndex(chat?.index ?? 0));
+  const canPause =
+    chat?.isSubmitting === true && chat.conversation?.conversationId === conversationId;
+  const pauseFlow = useCallback(() => {
+    setShowStopButton(false);
+    chat?.stopGenerating();
+  }, [chat, setShowStopButton]);
   const events = useSteelActivityEvents(messageId, persistedActivityEvents);
   const displayContent = useMemo(
     () =>
@@ -46,6 +55,7 @@ export function useSteelResponseExtras({ content, ...activityProps }: SteelRespo
         {...activityProps}
         conversationId={conversationId}
         isSubmitting={chat?.isSubmitting}
+        onPauseFlow={canPause ? pauseFlow : undefined}
         onResumeFlow={chat ? recoverFlow : undefined}
         onRetryFlow={chat ? recoverFlow : undefined}
       />
