@@ -357,82 +357,92 @@ export const SteelFlowCard = memo(function SteelFlowCard({
     <div
       role="region"
       data-testid={`steel-flow-card-${kind}${runId ? `-${runId}` : ''}`}
-      className="my-3 flex min-h-5 flex-wrap items-center gap-x-1.5 gap-y-1 rounded-md border border-border-light bg-surface-secondary px-2 py-1 dark:border-border-medium dark:bg-surface-tertiary"
+      className="my-3 flex min-h-5 flex-col gap-1 rounded-md border border-border-light bg-surface-secondary px-2 py-1 dark:border-border-medium dark:bg-surface-tertiary"
       aria-label={localize(regionLabelKey)}
     >
-      <StatusIcon aria-hidden="true" className={`h-3.5 w-3.5 shrink-0 ${statusIconClass}`} />
-      <span className="shrink-0 font-medium text-text-primary">{localize(flowTitleKey)}</span>
-      <span className="min-w-0 flex-1 whitespace-normal break-words">{statusText}</span>
-      {stage && (
-        <span className="shrink-0 text-text-tertiary">
-          {localize('com_ui_steel_flow_stage', { stage })}
-        </span>
-      )}
-      {note && (
-        <span className="min-w-0 whitespace-normal break-words text-text-tertiary">{note}</span>
-      )}
-      {metadataText && (
-        <span className="min-w-0 whitespace-normal break-words text-text-tertiary">
-          {metadataText}
-        </span>
-      )}
-      {errorMessage && (
-        <span className="min-w-0 whitespace-normal break-words text-status-error">
-          {errorMessage}
-        </span>
-      )}
-      {showResume && (
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="ms-auto h-7 shrink-0 px-2 py-1"
-          disabled={isBusy}
-          onClick={onResume}
-        >
-          {localize('com_ui_resume')}
-        </Button>
-      )}
-      {showRetry && (
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="ms-auto h-7 shrink-0 px-2 py-1"
-          disabled={disableRetry || isBusy}
-          onClick={onRetry}
-        >
-          {localize('com_ui_retry')}
-        </Button>
-      )}
-      {showPause && (
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="ms-auto h-7 shrink-0 px-2 py-1"
-          disabled={isBusy}
-          onClick={onPause}
-        >
-          {localize('com_ui_pause')}
-        </Button>
-      )}
-      {showCancel && (
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          className="ms-auto h-7 shrink-0 px-2 py-1"
-          disabled={isBusy}
-          onClick={onCancel}
-        >
-          {localize('com_ui_cancel')}
-        </Button>
+      <div className="flex min-w-0 items-center gap-x-1.5 gap-y-1">
+        <StatusIcon aria-hidden="true" className={`h-3.5 w-3.5 shrink-0 ${statusIconClass}`} />
+        <span className="shrink-0 font-medium text-text-primary">{localize(flowTitleKey)}</span>
+        <span className="min-w-0 flex-1 whitespace-normal break-words">{statusText}</span>
+        {stage && (
+          <span className="ms-auto shrink-0 text-text-tertiary">
+            {localize('com_ui_steel_flow_stage', { stage })}
+          </span>
+        )}
+      </div>
+      {(note || metadataText || errorMessage) && (
+        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-1">
+          {note && (
+            <span className="min-w-0 whitespace-normal break-words text-text-tertiary">{note}</span>
+          )}
+          {metadataText && (
+            <span className="min-w-0 whitespace-normal break-words text-text-tertiary">
+              {metadataText}
+            </span>
+          )}
+          {errorMessage && (
+            <span className="min-w-0 whitespace-normal break-words text-status-error">
+              {errorMessage}
+            </span>
+          )}
+        </div>
       )}
       {actionError && (
         <span role="alert" className="min-w-0 whitespace-normal break-words text-status-error">
           {actionError}
         </span>
+      )}
+      {(showResume || showRetry || showPause || showCancel) && (
+        <div className="flex items-center justify-end gap-1.5">
+          {showResume && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-7 shrink-0 px-2 py-1"
+              disabled={isBusy}
+              onClick={onResume}
+            >
+              {localize('com_ui_resume')}
+            </Button>
+          )}
+          {showRetry && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-7 shrink-0 px-2 py-1"
+              disabled={disableRetry || isBusy}
+              onClick={onRetry}
+            >
+              {localize('com_ui_retry')}
+            </Button>
+          )}
+          {showPause && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-7 shrink-0 px-2 py-1"
+              disabled={isBusy}
+              onClick={onPause}
+            >
+              {localize('com_ui_pause')}
+            </Button>
+          )}
+          {showCancel && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-7 shrink-0 border-border-destructive px-2 py-1 text-text-destructive hover:bg-status-error-subtle hover:text-text-destructive"
+              disabled={isBusy}
+              onClick={onCancel}
+            >
+              {localize('com_ui_cancel')}
+            </Button>
+          )}
+        </div>
       )}
     </div>
   );
