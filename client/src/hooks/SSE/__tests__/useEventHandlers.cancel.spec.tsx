@@ -164,36 +164,37 @@ describe('local cancellation decision reconciliation', () => {
   );
 });
 
-it.each(['quotation', 'preflight', 'delegate'] as const)(
-  'invalidates the status of an expired %s recovery',
-  (kind) => {
-    const queryClient = new QueryClient();
-    const invalidate = jest.spyOn(queryClient, 'invalidateQueries');
-    const store = createStore();
-    const wrapper = ({ children }: { children: ReactNode }) =>
-      createElement(
-        Provider,
-        { store },
-        createElement(QueryClientProvider, { client: queryClient }, children),
-      );
-    const { result } = renderHook(() => useEventHandlers({
-      getMessages: () => [user, response],
-      setMessages: jest.fn(),
-      setCompleted: jest.fn(),
-      setConversation: jest.fn(),
-      setIsSubmitting: jest.fn(),
-      setShowStopButton: jest.fn(),
-      newConversation: jest.fn(),
-    }), { wrapper });
-
-    act(() => result.current.errorHandler({
-      data: { conversation: { conversationId: 'saved' } as TConversation, requestMessage: user,
-        responseMessage: { ...response, text: '{"code":"flow_expired"}' } },
-      submission: { ...submission, steelFlowResume: { kind, runId: 'run' } },
-    }));
-
-    expect(invalidate).toHaveBeenCalledWith(
-      DynamicQueryKeys.steelFlowStatus('saved', kind, 'run'),
+it.each([
+  ['quotation', 'flow_expired'],
+  ['preflight', 'flow_not_resumable'],
+  ['delegate', 'flow_not_found'],
+] as const)('invalidates the status of a %s recovery rejected with %s', (kind, code) => {
+  const queryClient = new QueryClient();
+  const invalidate = jest.spyOn(queryClient, 'invalidateQueries');
+  const store = createStore();
+  const wrapper = ({ children }: { children: ReactNode }) =>
+    createElement(
+      Provider,
+      { store },
+      createElement(QueryClientProvider, { client: queryClient }, children),
     );
-  },
-);
+  const { result } = renderHook(() => useEventHandlers({
+    getMessages: () => [user, response],
+    setMessages: jest.fn(),
+    setCompleted: jest.fn(),
+    setConversation: jest.fn(),
+    setIsSubmitting: jest.fn(),
+    setShowStopButton: jest.fn(),
+    newConversation: jest.fn(),
+  }), { wrapper });
+
+  act(() => result.current.errorHandler({
+    data: { conversation: { conversationId: 'saved' } as TConversation, requestMessage: user,
+      responseMessage: { ...response, text: JSON.stringify({ code }) } },
+    submission: { ...submission, steelFlowResume: { kind, runId: 'run' } },
+  }));
+
+  expect(invalidate).toHaveBeenCalledWith(
+    DynamicQueryKeys.steelFlowStatus('saved', kind, 'run'),
+  );
+});

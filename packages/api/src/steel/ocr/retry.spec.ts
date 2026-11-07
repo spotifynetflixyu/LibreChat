@@ -137,6 +137,28 @@ describe('runWithSteelOcrRetries', () => {
     expect((await settled)[0]).toMatchObject({ status: 'rejected' });
     expect(run).toHaveBeenCalledTimes(1);
   });
+
+  it('does not start the next attempt when a pause arrives during retry cleanup', async () => {
+    const controller = new AbortController();
+    const run = jest.fn(async () => {
+      throw new Error('stream disconnected');
+    });
+    const onRetry = jest.fn(async () => {
+      controller.abort('user_pause');
+    });
+    const settled = Promise.allSettled([
+      runWithSteelOcrRetries({ run, onRetry, signal: controller.signal }),
+    ]);
+
+    await jest.advanceTimersByTimeAsync(3000);
+
+    expect((await settled)[0]).toMatchObject({
+      status: 'rejected',
+      reason: expect.objectContaining({ name: 'AbortError' }),
+    });
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(run).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('runSteelOcrTurnWithRetries', () => {

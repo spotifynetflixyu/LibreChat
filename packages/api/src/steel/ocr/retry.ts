@@ -76,6 +76,12 @@ export function isTerminalSteelOcrModelError(error: unknown): boolean {
   );
 }
 
+function createSteelOcrAbortError(message: string): Error {
+  const error = new Error(message);
+  error.name = 'AbortError';
+  return error;
+}
+
 export function sleepSteelOcrDelay({
   signal,
   delay = STEEL_OCR_RETRY_DELAY_MS,
@@ -85,19 +91,14 @@ export function sleepSteelOcrDelay({
   delay?: number;
   abortMessage?: string;
 }): Promise<void> {
-  const abortError = () => {
-    const error = new Error(abortMessage);
-    error.name = 'AbortError';
-    return error;
-  };
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
-      reject(abortError());
+      reject(createSteelOcrAbortError(abortMessage));
       return;
     }
     const onAbort = () => {
       clearTimeout(timer);
-      reject(abortError());
+      reject(createSteelOcrAbortError(abortMessage));
     };
     const timer = setTimeout(() => {
       signal?.removeEventListener('abort', onAbort);
@@ -137,6 +138,9 @@ export async function runWithSteelOcrRetries<T>(input: RunWithSteelOcrRetriesInp
     }
     await sleepSteelOcrDelay({ signal: input.signal });
     await input.onRetry?.(attemptNumber + 1);
+    if (input.signal?.aborted) {
+      throw createSteelOcrAbortError('OCR retry aborted');
+    }
   }
 }
 

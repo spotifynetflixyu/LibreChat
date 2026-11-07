@@ -2,7 +2,12 @@ import express from 'express';
 import mongoose from 'mongoose';
 import request from 'supertest';
 import { MongoMemoryReplSet } from 'mongodb-memory-server';
-import { tenantStorage, createSteelOcrRunModel, createSteelOcrRunMethods } from '@librechat/data-schemas';
+import {
+  tenantStorage,
+  createSteelOcrRunModel,
+  createSteelOcrRunMethods,
+  createSteelConversationOcrStateModel,
+} from '@librechat/data-schemas';
 import { InMemoryEventTransport } from '../stream/implementations/InMemoryEventTransport';
 import { createSteelFlowLifecycle, createSteelGenerationReader } from './lifecycle';
 import { InMemoryJobStore } from '../stream/implementations/InMemoryJobStore';
@@ -146,4 +151,43 @@ it('rejects recovery of superseded OCR without changing either run', async () =>
   expect(dependencies.prepareQuotationTurn).toHaveBeenCalledTimes(1);
   expect(await createSteelOcrRunModel(mongoose).findOne({ runId: old.runId }).lean())
     .toMatchObject({ status: 'paused' });
+});
+
+it('serializes a preflight recovery claim with a newer preflight run', async () => {
+  const runs = createSteelOcrRunMethods(mongoose);
+  const old = await runs.createPreflightRun({
+    scope,
+    responseGenerationId: 'old',
+    triggeringMessageId: 'input',
+    executionEpoch: 1,
+  });
+  await runs.pauseScope({ scope, responseGenerationId: 'old', executionEpoch: 1 });
+  const State = createSteelConversationOcrStateModel(mongoose);
+  const stateFilter = { conversationId: scope.conversationId };
+  expect(await State.findOne(stateFilter).lean()).toMatchObject({
+    latestPreflightRunId: old.runId,
+  });
+
+  await State.updateOne(stateFilter, {
+    $set: { latestPreflightRunId: 'registered-before-insert' },
+  });
+  const claim = {
+    scope,
+    kind: 'preflight' as const,
+    runId: old.runId,
+    sourceMessageId: 'old',
+    responseGenerationId: 'fork',
+    executionEpoch: 2,
+  };
+  await expect(runs.claimResumeRun(claim)).resolves.toEqual({ ok: false, code: 'flow_expired' });
+  expect(await createSteelOcrRunModel(mongoose).findOne({ runId: old.runId }).lean()).toMatchObject(
+    { status: 'paused', responseGenerationId: 'old' },
+  );
+
+  await State.updateOne(stateFilter, { $set: { latestPreflightRunId: old.runId } });
+  const [first, second] = await Promise.all([
+    runs.claimResumeRun(claim),
+    runs.claimResumeRun({ ...claim, responseGenerationId: 'other-fork', executionEpoch: 3 }),
+  ]);
+  expect([first.ok, second.ok].filter(Boolean)).toHaveLength(1);
 });

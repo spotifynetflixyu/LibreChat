@@ -37,6 +37,7 @@ export interface SteelConversationOcrResultProvenance {
 export interface SteelConversationOcrRecord {
   conversationId: string;
   nextDelegateOcrIndex: number;
+  latestPreflightRunId?: string;
   activeDelegateClaim?: SteelActiveDelegateClaim;
   supersededClaimRecovery?: SteelSupersededClaimRecovery;
   sourceMappings: SteelConversationOcrSourceMapping[];

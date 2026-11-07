@@ -113,6 +113,13 @@ const SKILL_QUERY_KEYS = [
   QueryKeys.skillNodeContent,
 ] as const;
 
+/** A rejected flow recovery leaves its card stale until the run status is read again. */
+const steelFlowRecoveryErrors: ReadonlySet<string> = new Set([
+  ErrorTypes.STEEL_FLOW_EXPIRED,
+  ErrorTypes.STEEL_FLOW_NOT_FOUND,
+  ErrorTypes.STEEL_FLOW_NOT_RESUMABLE,
+]);
+
 /** A regenerated response is parented to the saved turn, never its unsaved replay copy. */
 const responseParentMessageId = (
   initialResponse: TMessage,
@@ -1537,13 +1544,13 @@ export default function useEventHandlers({
       const flow = submission.steelFlowResume;
       const errorText = data?.responseMessage?.text ?? (data && 'text' in data ? data.text : undefined);
       if (flow && typeof errorText === 'string') {
-        let expired = false;
+        let rejected = false;
         try {
-          expired = JSON.parse(errorText)?.code === ErrorTypes.STEEL_FLOW_EXPIRED;
+          rejected = steelFlowRecoveryErrors.has(JSON.parse(errorText)?.code);
         } catch {
           // Other errors may use plain text.
         }
-        if (expired) {
+        if (rejected) {
           void queryClient.invalidateQueries(
             DynamicQueryKeys.steelFlowStatus(conversationId, flow.kind, flow.runId),
           );

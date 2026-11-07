@@ -62,8 +62,22 @@ export function createSteelOcrRunMethods(mongoose: Mongoose): SteelOcrRunMethods
     return { conversationId: scope.conversationId, userId: scope.userId,
       tenantId: scope.tenantId ?? { $exists: false } };
   }
+  /** Records the newest preflight run on the conversation document that recovery claims also write. */
+  async function markLatestPreflightRun(conversationId: string, runId: string): Promise<void> {
+    const update = {
+      $set: { latestPreflightRunId: runId },
+      $setOnInsert: { conversationId, nextDelegateOcrIndex: 0, sourceMappings: [] },
+    };
+    try {
+      await State.updateOne({ conversationId }, update, { upsert: true });
+    } catch (error) {
+      if ((error as { code?: number }).code !== 11000) throw error;
+      await State.updateOne({ conversationId }, { $set: update.$set });
+    }
+  }
   async function createPreflightRun(input: SteelOcrTurnInput & { triggeringMessageId: string }): Promise<SteelOcrRunRecord> {
     const runId = randomUUID();
+    await markLatestPreflightRun(input.scope.conversationId, runId);
     const run = await Run.findOneAndUpdate(
       { ...scoped(input.scope), kind: 'preflight', responseGenerationId: input.responseGenerationId, executionEpoch: input.executionEpoch },
       { $setOnInsert: { ...input.scope, runId, kind: 'preflight', status: 'running', stage: 'preflight',
@@ -72,6 +86,12 @@ export function createSteelOcrRunMethods(mongoose: Mongoose): SteelOcrRunMethods
       { upsert: true, new: true, setDefaultsOnInsert: true },
     ).lean<SteelOcrRunRecord>();
     if (!run) throw new Error('OCR run creation returned no document');
+    if (run.runId !== runId) {
+      await State.updateOne(
+        { conversationId: input.scope.conversationId, latestPreflightRunId: runId },
+        { $set: { latestPreflightRunId: run.runId } },
+      );
+    }
     return run;
   }
   async function updatePreflightRun(input: SteelOcrProgressInput): Promise<boolean> {
@@ -134,6 +154,14 @@ export function createSteelOcrRunMethods(mongoose: Mongoose): SteelOcrRunMethods
       const result = await readResumeRun(input, session);
       if (!result.ok) return result;
       const { run } = result;
+      if (input.kind === 'preflight') {
+        const state = await State.updateOne(
+          { conversationId: input.scope.conversationId, latestPreflightRunId: run.runId },
+          { $set: { latestPreflightRunId: run.runId } },
+          { session },
+        );
+        if (state.matchedCount !== 1) return { ok: false, code: 'flow_expired' };
+      }
       if (input.kind === 'delegate') {
         if (!input.lease) return { ok: false, code: 'flow_not_resumable' };
         const state = await State.updateOne({

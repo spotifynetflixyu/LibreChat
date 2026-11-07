@@ -63,6 +63,7 @@ const steelConversationOcrStateSchema: Schema<ISteelConversationOcrState> =
     {
       conversationId: { type: String, required: true, unique: true, index: true },
       nextDelegateOcrIndex: { type: Number, required: true, default: 0 },
+      latestPreflightRunId: { type: String },
       activeDelegateClaim: { type: steelActiveDelegateClaimSchema },
       supersededClaimRecovery: { type: steelSupersededClaimRecoverySchema },
       sourceMappings: {
