@@ -10,13 +10,15 @@ import type {
   SteelQuotationPendingMessageFile,
   SteelQuotationScope,
 } from '@librechat/data-schemas';
+import type { SteelFlowReplay } from 'librechat-data-provider';
 import type { SteelToolJsonObject, SteelToolJsonValue, SteelToolResult } from '../tools/results';
 import type { SteelQuotationSaveCustomerInput, SteelQuotationStateService } from './state';
 import { parseAssistantMarkdown, parseOcrResultTable } from '../ocr/result';
-import { extractCustomerDataTable } from './protocol';
+import { isSteelFlowRecoverable, SteelFlowReplayError } from '../replay';
 import { escapeMarkdownTableCell } from '../markdown/row-codec';
 import { createSteelQuotationStateService } from './state';
 import { createSteelOcrStateService } from '../ocr/state';
+import { extractCustomerDataTable } from './protocol';
 import { isCurrentSystemOrderRun } from './revision';
 
 export type QuotationCustomerTier = 'A' | 'B' | 'C' | 'D' | 'E' | 'F';
@@ -131,6 +133,7 @@ export async function prepareQuotationTurn(input: {
   messageId: string;
   responseId: string;
   generationId?: string;
+  replay?: SteelFlowReplay;
   publicationStore?: { admitSteelMarkdown(input: SteelMarkdownAdmissionInput): Promise<SteelMarkdownAdmission | null> };
   service?: SteelQuotationStateService;
   text: string;
@@ -152,12 +155,25 @@ export async function prepareQuotationTurn(input: {
     messageText: input.text,
     ...(input.files ? { messageFiles: input.files } : {}),
   };
+  if (input.replay?.kind === 'quotation') {
+    const run = state.activeRun;
+    if (
+      run?.runId !== input.replay.runId ||
+      ![run.targetMessageId, run.executionResponseId].includes(input.replay.sourceMessageId) ||
+      !isSteelFlowRecoverable(run.status)
+    ) {
+      throw new SteelFlowReplayError();
+    }
+  } else if (input.replay && isUnfinishedQuotation(state.activeRun?.status)) {
+    throw new SteelFlowReplayError();
+  }
   if (isUnfinishedQuotation(state.activeRun?.status)) {
     return { scope: input.scope, messageId: input.messageId, state, instruction: '', resume: true, ...originalMessage };
   }
   const unpublished = state.activeRun?.status === 'completed' &&
     !await service.isPublishedRun(input.scope, state.activeRun);
   if (unpublished) {
+    if (input.replay) throw new SteelFlowReplayError();
     return { scope: input.scope, messageId: input.messageId, state, instruction: '', resume: true, ...originalMessage };
   }
   const selected = await service.prepareOcrOrder(input.scope, state.currentOrder?.sha256 ?? null);

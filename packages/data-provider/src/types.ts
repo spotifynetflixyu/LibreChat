@@ -23,6 +23,7 @@ import type {
 } from './config';
 import type { StatefulCodeEnvironment } from './stateful-code';
 import type { CodeApprovalMode } from './code/approval';
+import type { SteelFlowReplay } from './steel/events';
 import type { EToolResources } from './types/tools';
 import type { RefillIntervalUnit } from './balance';
 import type { SettingDefinition } from './generate';
@@ -146,6 +147,7 @@ export type TPayload = Partial<TMessage> &
   Partial<TEndpointOption> & {
     isContinued: boolean;
     isRegenerate?: boolean;
+    steelFlowReplay?: SteelFlowReplay;
     /** Manual context compaction: summarize the branch up to `parentMessageId`
      *  and end without a reply. No user message is created. */
     compact?: boolean;
@@ -209,6 +211,7 @@ export type TSubmission = {
   /** Client-only full message context used to restore branch siblings after scoped regenerate. */
   regenerateMessages?: TMessage[];
   isRegenerate?: boolean;
+  steelFlowReplay?: SteelFlowReplay;
   /** Manual context compaction; shaped like a regenerate on the client (no new
    *  user bubble) and sent to the server as a summarize-only turn. */
   compact?: boolean;

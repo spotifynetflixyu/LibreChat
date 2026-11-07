@@ -3,6 +3,7 @@ import { v4 } from 'uuid';
 import { SSE } from 'sse.js';
 import { useStore } from 'jotai';
 import { useSetRecoilState } from 'recoil';
+import { useQueryClient } from '@tanstack/react-query';
 import {
   request,
   UsageEvents,
@@ -24,6 +25,7 @@ import type { TResData } from '~/common';
 import { clearComposerDrafts, applyPendingAction, findPendingActionMessageIndex } from '~/utils';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
 import { useGetStartupConfig, useGetUserBalance } from '~/data-provider';
+import { trackSteelStream } from '~/data-provider/Steel/flow';
 import { startedAsNewConversation } from './useEventHandlers';
 import { steelNativeStreamEventName } from '~/store/steel';
 import { useAuthContext } from '~/hooks/AuthContext';
@@ -43,6 +45,7 @@ export default function useSSE(
   runIndex = 0,
 ) {
   const jotaiStore = useStore();
+  const queryClient = useQueryClient();
   const setActiveRunId = useSetRecoilState(store.activeRunFamily(runIndex));
 
   const { token, isAuthenticated } = useAuthContext();
@@ -115,6 +118,13 @@ export default function useSSE(
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
     });
 
+    const syncSteelStream = trackSteelStream(
+      queryClient,
+      jotaiStore,
+      sse,
+      () => userMessage.conversationId ?? submission.conversation?.conversationId,
+    );
+
     sse.addEventListener('attachment', (e: MessageEvent) => {
       try {
         const data = JSON.parse(e.data);
@@ -154,6 +164,7 @@ export default function useSSE(
           overrideParentMessageId: userMessage.overrideParentMessageId,
         };
 
+        syncSteelStream();
         createdHandler(data, { ...submission, userMessage } as EventSubmission);
       } else if (data.event === 'title') {
         titleHandler(data);

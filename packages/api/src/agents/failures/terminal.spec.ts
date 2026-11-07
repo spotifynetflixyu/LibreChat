@@ -1,6 +1,7 @@
 import { errors } from 'undici';
 import { createTerminalRunErrorObserver, getUpstreamModelErrorMetadata, getTerminalFailureText } from './terminal';
 import { AttachmentStorageError } from '../../files/encode/image';
+import { SteelFlowReplayError } from '../../steel/replay';
 
 describe('shared terminal failure text', () => {
   it('redacts unclassified database and service errors', () => {
@@ -10,6 +11,14 @@ describe('shared terminal failure text', () => {
     const error = new AttachmentStorageError();
     error.message = 'PRIVATE storage URL';
     expect(getTerminalFailureText(error)).toBe(new AttachmentStorageError().message);
+  });
+
+  it('exposes only the stable code for an unavailable Steel replay', () => {
+    const error = new SteelFlowReplayError();
+    error.message = 'PRIVATE run details';
+    expect(JSON.parse(getTerminalFailureText(error))).toEqual({
+      code: 'steel_flow_replay_unavailable',
+    });
   });
 });
 

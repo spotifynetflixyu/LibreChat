@@ -343,3 +343,18 @@ it('does not resume a cancelled quotation when there are no pending messages', a
   const result = await prepareQuotationTurn({ scope, messageId: 'new', responseId: 'a-new', text: '你好' });
   expect(result.resume).toBe(false);
 });
+
+it('replays only the explicitly selected recoverable quotation', async () => {
+  const turn = { scope, messageId: 'user', responseId: 'assistant', text: '報價' };
+  mockRead.mockResolvedValue({ activeRun: { runId: 'current', targetMessageId: 'original', status: 'paused' } });
+  await expect(prepareQuotationTurn({
+    ...turn, replay: { kind: 'quotation', runId: 'older', sourceMessageId: 'original' },
+  })).rejects.toThrow('Steel flow is no longer available');
+  await expect(prepareQuotationTurn({
+    ...turn, replay: { kind: 'preflight', runId: 'ocr', sourceMessageId: 'ocr-message' },
+  })).rejects.toThrow('Steel flow is no longer available');
+  await expect(prepareQuotationTurn({
+    ...turn, replay: { kind: 'quotation', runId: 'current', sourceMessageId: 'original' },
+  })).resolves.toMatchObject({ resume: true, state: { activeRun: { runId: 'current' } } });
+  expect(mockPrepareOcrOrder).not.toHaveBeenCalled();
+});

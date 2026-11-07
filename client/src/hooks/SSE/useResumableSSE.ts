@@ -95,6 +95,7 @@ import useEventHandlers, {
 } from './useEventHandlers';
 import { preferDefinedString, toResumeTimestamp, withResumeTimestamp } from './resume';
 import { pendingApprovalActionFamily } from '~/components/Chat/approval/state';
+import { trackSteelStream } from '~/data-provider/Steel/flow';
 import useSteerConvert from '~/hooks/Chat/useSteerConvert';
 import { steelNativeStreamEventName } from '~/store/steel';
 import { useAuthContext } from '~/hooks/AuthContext';
@@ -2117,6 +2118,7 @@ export default function useResumableSSE(
         method: 'GET',
       });
       sseRef.current = sse;
+      trackSteelStream(queryClient, jotaiStore, sse, () => currentStreamId);
       const isCurrentSubscription = () =>
         lifecycleSignal?.aborted !== true &&
         sseRef.current === sse &&
@@ -2441,7 +2443,7 @@ export default function useResumableSSE(
           }
 
           if (data.event === steelNativeStreamEventName) {
-            steelEventHandler(data, currentSubmission as EventSubmission);
+            steelEventHandler(data, currentSubmission as EventSubmission, generationCreatedAt);
             return;
           }
 
@@ -2768,7 +2770,7 @@ export default function useResumableSSE(
                 } else if (replayEvent.event === UsageEvents.ON_TOKEN_USAGE) {
                   usageHandler(replayEvent.data, resumeSubmission);
                 } else if (replayEvent.event === steelNativeStreamEventName) {
-                  steelEventHandler(replayEvent, resumeSubmission);
+                  steelEventHandler(replayEvent, resumeSubmission, generationCreatedAt);
                 } else if (replayEvent.event === ApprovalEvents.ON_PENDING_ACTION) {
                   // A pause that landed after the resume snapshot must still render its
                   // controls (mirror the live handler), not fall through to stepHandler.
@@ -2805,7 +2807,7 @@ export default function useResumableSSE(
                 } else if (pendingEvent.event === UsageEvents.ON_TOKEN_USAGE) {
                   usageHandler(pendingEvent.data, resumeSubmission);
                 } else if (pendingEvent.event === steelNativeStreamEventName) {
-                  steelEventHandler(pendingEvent, resumeSubmission);
+                  steelEventHandler(pendingEvent, resumeSubmission, generationCreatedAt);
                 } else if (pendingEvent.event === ApprovalEvents.ON_PENDING_ACTION) {
                   // In-memory mode can surface a pause that landed between getResumeState()
                   // and the subscription here; route it to the same handler as a live event

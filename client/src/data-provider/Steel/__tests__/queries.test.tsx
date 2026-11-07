@@ -1,14 +1,18 @@
-import { act, renderHook } from '@testing-library/react';
-import { QueryKeys, dataService } from 'librechat-data-provider';
+import { SSE } from 'sse.js';
+import { Provider, createStore } from 'jotai';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import type { OpenAIOAuthTokenStatus } from 'librechat-data-provider';
+import { DynamicQueryKeys, QueryKeys, dataService } from 'librechat-data-provider';
+import type { OpenAIOAuthTokenStatus, SteelQuotationStatus } from 'librechat-data-provider';
 import type { PropsWithChildren } from 'react';
 import {
   useCancelSteelQuotationMutation,
+  useGetSteelQuotationStatusQuery,
   useGetSteelReviewReceiptQuery,
   useLogoutOpenAIOAuthCodexMutation,
   useRefreshOpenAIOAuthTokenMutation,
 } from '../queries';
+import { trackSteelStream, writeSteelFlowStatus } from '../flow';
 
 jest.mock('recoil', () => ({
   useRecoilValue: jest.fn(() => true),
@@ -109,14 +113,14 @@ describe('Steel quotation cancellation', () => {
       await result.current.mutateAsync(4);
     });
 
-    expect(queryClient.getQueryData([QueryKeys.steelQuotationStatus, conversationId])).toEqual(
+    expect(queryClient.getQueryData(DynamicQueryKeys.steelFlowStatus(conversationId, 'quotation', runningStatus.runId))).toEqual(
       cancelledStatus,
     );
   });
 
   it('does not fabricate a terminal cancellation result when the API fails', async () => {
     const queryClient = new QueryClient();
-    queryClient.setQueryData([QueryKeys.steelQuotationStatus, conversationId], runningStatus);
+    queryClient.setQueryData(DynamicQueryKeys.steelFlowStatus(conversationId, 'quotation', runningStatus.runId), runningStatus);
     jest.spyOn(dataService, 'cancelSteelQuotation').mockRejectedValue(new Error('request failed'));
     const { result } = renderHook(() => useCancelSteelQuotationMutation(conversationId), {
       wrapper: createWrapper(queryClient),
@@ -126,9 +130,142 @@ describe('Steel quotation cancellation', () => {
       await expect(result.current.mutateAsync(4)).rejects.toThrow('request failed');
     });
 
-    expect(queryClient.getQueryData([QueryKeys.steelQuotationStatus, conversationId])).toEqual(
+    expect(queryClient.getQueryData(DynamicQueryKeys.steelFlowStatus(conversationId, 'quotation', runningStatus.runId))).toEqual(
       runningStatus,
     );
+  });
+});
+
+describe('Steel flow status cache', () => {
+  const conversationId = 'conversation-flow';
+  const running: SteelQuotationStatus = {
+    conversationId,
+    index: 1,
+    runId: 'run-a',
+    status: 'running',
+    completedChunks: 0,
+    totalChunks: 3,
+    canCancel: true,
+  };
+
+  it('shares a fresh status across mounts and preserves a replaced run’s own progress', async () => {
+    const client = new QueryClient();
+    const getStatus = jest.spyOn(dataService, 'getSteelQuotationStatus').mockResolvedValue({
+      ...running,
+      completedChunks: 1,
+    });
+    const Wrapper = createWrapper(client);
+    const first = renderHook(() => useGetSteelQuotationStatusQuery(conversationId, 'run-a', running), {
+      wrapper: Wrapper,
+    });
+    await waitFor(() => expect(first.result.current.data?.completedChunks).toBe(1));
+    renderHook(() => useGetSteelQuotationStatusQuery(conversationId, 'run-a', running), {
+      wrapper: Wrapper,
+    });
+    expect(getStatus).toHaveBeenCalledTimes(1);
+
+    getStatus.mockResolvedValue({ ...running, index: 2, runId: 'run-b', completedChunks: 3 });
+    await act(async () => {
+      const refreshed = await first.result.current.refetch();
+      expect(refreshed.data).toMatchObject({
+        runId: 'run-a',
+        latestRunId: 'run-b',
+        completedChunks: 1,
+      });
+    });
+  });
+
+  it('expires an older quotation card when a newer terminal run is fetched', async () => {
+    const client = new QueryClient();
+    const olderKey = DynamicQueryKeys.steelFlowStatus(conversationId, 'quotation', 'run-a');
+    client.setQueryData(olderKey, { ...running, status: 'paused', completedChunks: 1 });
+    jest.spyOn(dataService, 'getSteelQuotationStatus').mockResolvedValue({
+      ...running,
+      index: 2,
+      runId: 'run-b',
+      status: 'completed',
+      completedChunks: 3,
+    });
+    renderHook(() => useGetSteelQuotationStatusQuery(conversationId, 'run-b'), {
+      wrapper: createWrapper(client),
+    });
+    await waitFor(() => expect(client.getQueryData(olderKey)).toMatchObject({
+      runId: 'run-a',
+      latestRunId: 'run-b',
+      status: 'paused',
+      completedChunks: 1,
+    }));
+  });
+
+  it('polls a disconnected running flow once per interval across cards and stops when paused', async () => {
+    jest.useFakeTimers();
+    try {
+      const client = new QueryClient();
+      const getStatus = jest.spyOn(dataService, 'getSteelQuotationStatus')
+        .mockResolvedValueOnce(running)
+        .mockResolvedValue({ ...running, status: 'paused' });
+      const wrapper = createWrapper(client);
+      const useStatus = () => useGetSteelQuotationStatusQuery(conversationId, 'run-a', running);
+      renderHook(useStatus, { wrapper });
+      renderHook(useStatus, { wrapper });
+      await act(async () => { await jest.advanceTimersByTimeAsync(2_499); });
+      expect(getStatus).toHaveBeenCalledTimes(1);
+      await act(async () => { await jest.advanceTimersByTimeAsync(2); });
+      expect(getStatus).toHaveBeenCalledTimes(2);
+      await act(async () => { await jest.advanceTimersByTimeAsync(10_000); });
+      expect(getStatus).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('cancels polling on attach, ignores a late HTTP result, and fetches after the last detach', async () => {
+    const client = new QueryClient();
+    const store = createStore();
+    let resolveStatus: (value: SteelQuotationStatus) => void = () => {};
+    const getStatus = jest.spyOn(dataService, 'getSteelQuotationStatus')
+      .mockImplementationOnce(() => new Promise((resolve) => { resolveStatus = resolve; }))
+      .mockResolvedValue({ ...running, status: 'paused', completedChunks: 2 });
+    const createConnection = () => {
+      const events = new EventTarget();
+      const stream = {
+        readyState: Number(SSE.CONNECTING),
+        addEventListener: (_event: string, callback: () => void) =>
+          events.addEventListener('readystatechange', callback),
+      };
+      trackSteelStream(client, store, stream, () => conversationId);
+      return (state: number) => {
+        stream.readyState = state;
+        events.dispatchEvent(new Event('readystatechange'));
+      };
+    };
+    const first = createConnection();
+    const replacement = createConnection();
+    function Wrapper({ children }: PropsWithChildren) {
+      return (
+        <Provider store={store}>
+          <QueryClientProvider client={client}>{children}</QueryClientProvider>
+        </Provider>
+      );
+    }
+    const { result } = renderHook(() => useGetSteelQuotationStatusQuery(conversationId, 'run-a', running), {
+      wrapper: Wrapper,
+    });
+    expect(getStatus).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      first(SSE.OPEN);
+      replacement(SSE.OPEN);
+      writeSteelFlowStatus(client, conversationId, 'quotation', 'run-a', { ...running, completedChunks: 2 });
+      first(SSE.CLOSED);
+      resolveStatus(running);
+    });
+    expect(result.current.data?.completedChunks).toBe(2);
+    expect(getStatus).toHaveBeenCalledTimes(1);
+
+    act(() => replacement(SSE.CLOSED));
+    await waitFor(() => expect(result.current.data?.status).toBe('paused'));
+    expect(getStatus).toHaveBeenCalledTimes(2);
   });
 });
 

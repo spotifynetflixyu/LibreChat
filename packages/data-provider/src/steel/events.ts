@@ -111,6 +111,14 @@ export const steelFlowStatusSchema = z.enum([
   'cancelled',
 ]);
 
+export const steelFlowReplaySchema = z.object({
+  kind: z.enum(['preflight', 'delegate', 'quotation']),
+  runId: z.string().min(1).max(512),
+  sourceMessageId: z.string().min(1).max(512),
+});
+
+export type SteelFlowReplay = z.infer<typeof steelFlowReplaySchema>;
+
 export const steelOcrKindSchema = z.enum(['preflight', 'delegate']);
 
 const baseFields = {

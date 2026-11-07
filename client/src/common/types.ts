@@ -355,6 +355,7 @@ export type TOptions = {
    * conversation tail.
    */
   targetResponseMessageId?: string | null;
+  steelFlowReplay?: t.SteelFlowReplay;
   /**
    * Carry forward a user message's manually-invoked skills when the caller
    * is resubmitting / regenerating that same message — the compose-time
@@ -397,7 +398,10 @@ export type TAskFunction = (props: TAskProps, options?: TOptions) => false | voi
 export type TMessageChatContext = {
   ask: TAskFunction;
   index: number;
-  regenerate: (message: t.TMessage, options?: { addedConvo?: t.TConversation | null }) => void;
+  regenerate: (
+    message: t.TMessage,
+    options?: { addedConvo?: t.TConversation | null; steelFlowReplay?: t.SteelFlowReplay },
+  ) => false | void;
   conversation: t.TConversation | null;
   /** Getter backed by a ref, for reads at call time. Rendering reads the row's
    *  `latestMessageId` prop, which its comparator gates on the row's relation. */

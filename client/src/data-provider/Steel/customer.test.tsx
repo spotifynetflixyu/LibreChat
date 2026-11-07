@@ -108,7 +108,7 @@ describe('useCommitSteelCustomerMutation', () => {
       DynamicQueryKeys.steelMarkdownVersions(input.conversationId),
     );
     expect(invalidate).toHaveBeenCalledWith(
-      DynamicQueryKeys.steelQuotationStatus(input.conversationId),
+      DynamicQueryKeys.steelQuotationStatusPrefix(input.conversationId),
     );
     expect(invalidate).toHaveBeenCalledWith([QueryKeys.steelReview, input.conversationId]);
   });

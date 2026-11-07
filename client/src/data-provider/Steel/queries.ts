@@ -1,11 +1,12 @@
+import { useMemo } from 'react';
 import { useRecoilValue } from 'recoil';
+import { atom, useAtomValue, useStore } from 'jotai';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   DynamicQueryKeys,
   MutationKeys,
   QueryKeys,
   dataService,
-  isSteelQuotationActiveStatus,
 } from 'librechat-data-provider';
 import type {
   OpenAIOAuthTokenLoginStatus,
@@ -28,6 +29,7 @@ import type {
   SteelReviewSourcePageCount,
   SteelQuotationStatus,
   SteelOcrStatus,
+  SteelOcrKind,
   TMessage,
 } from 'librechat-data-provider';
 import type {
@@ -35,6 +37,14 @@ import type {
   UseMutationResult,
   UseQueryOptions,
 } from '@tanstack/react-query';
+import type { SteelQuotationFlowStatus, SteelOcrFlowStatus } from './flow';
+import {
+  isSupersededSteelFlow,
+  markOlderSteelFlows,
+  quotationFlowKey,
+  steelStreamOwners,
+  writeSteelFlowStatus,
+} from './flow';
 import store from '~/store';
 
 async function refreshOpenAIOAuthQueries(
@@ -73,60 +83,113 @@ export function isSteelFlowExpiredError(error: unknown): boolean {
   if (!error || typeof error !== 'object') {
     return false;
   }
-  const candidate = error as {
-    status?: number;
-    code?: string;
-    response?: { status?: number; data?: { code?: string } };
-  };
-  if (candidate.code === 'flow_expired' || candidate.response?.data?.code === 'flow_expired') {
-    return true;
+  const candidate = error as { code?: string; response?: { data?: { code?: string } } };
+  return candidate.code === 'flow_expired' || candidate.response?.data?.code === 'flow_expired';
+}
+
+const STEEL_FLOW_POLL_MS = 2_500;
+const STEEL_FLOW_STALE_MS = 5_000;
+
+class SteelFlowExpiredError extends Error {
+  readonly code = 'flow_expired';
+
+  constructor() {
+    super('Flow has been superseded');
   }
-  return candidate.status === 409 || candidate.response?.status === 409;
+}
+
+function useSteelStatusQuery<T extends SteelOcrFlowStatus | SteelQuotationFlowStatus>(
+  conversationId: string,
+  kind: SteelOcrKind | 'quotation',
+  runId: string,
+  load: (current?: T) => Promise<T>,
+  initialData?: T,
+): QueryObserverResult<T> {
+  const queriesEnabled = useRecoilValue<boolean>(store.queriesEnabled);
+  const liveAtom = useMemo(
+    () => atom((get) => get(steelStreamOwners).has(conversationId)),
+    [conversationId],
+  );
+  const live = useAtomValue(liveAtom);
+  const jotaiStore = useStore();
+  const queryClient = useQueryClient();
+  const key = DynamicQueryKeys.steelFlowStatus(conversationId, kind, runId);
+  return useQuery<T>(
+    key,
+    () => {
+      // Covers the gap between the transport's OPEN notification and the observer update.
+      const current = queryClient.getQueryData<T>(key);
+      if (current && jotaiStore.get(steelStreamOwners).has(conversationId)) {
+        return current;
+      }
+      return load(current);
+    },
+    {
+      enabled: Boolean(conversationId && runId) && queriesEnabled && !live,
+      initialData,
+      initialDataUpdatedAt: 0,
+      refetchOnWindowFocus: false,
+      refetchOnReconnect: true,
+      refetchInterval: (data, query) =>
+        data?.status === 'running' &&
+        !isSupersededSteelFlow(data) &&
+        !isSteelFlowExpiredError(query.state.error)
+          ? STEEL_FLOW_POLL_MS
+          : false,
+      retry: (count, error) => !isSteelFlowExpiredError(error) && count < 2,
+      onSuccess: (data) => {
+        if (kind === 'quotation') {
+          markOlderSteelFlows(queryClient, conversationId, kind, runId, data);
+        }
+      },
+      staleTime: STEEL_FLOW_STALE_MS,
+    },
+  );
 }
 
 export const useGetSteelOcrStatusQuery = (
-  conversationId?: string | null,
-  runId?: string | null,
-  config?: UseQueryOptions<SteelOcrStatus>,
-): QueryObserverResult<SteelOcrStatus> => {
-  const queriesEnabled = useRecoilValue<boolean>(store.queriesEnabled);
-  const enabled = Boolean(conversationId && runId) && (config?.enabled ?? true) && queriesEnabled;
-  return useQuery<SteelOcrStatus>(
-    DynamicQueryKeys.steelOcrStatus(conversationId ?? '', runId ?? ''),
-    () => dataService.getSteelOcrStatus(conversationId ?? '', runId ?? ''),
-    {
-      refetchOnWindowFocus: false,
-      refetchOnReconnect: true,
-      refetchOnMount: true,
-      refetchInterval: (data) => (data?.status === 'running' ? 1_000 : false),
-      staleTime: 0,
-      ...config,
-      enabled,
-    },
-  );
-};
+  conversationId: string,
+  runId: string,
+  kind: SteelOcrKind,
+  initialData?: SteelOcrStatus,
+): QueryObserverResult<SteelOcrStatus> =>
+  useSteelStatusQuery<SteelOcrFlowStatus>(conversationId, kind, runId, async (current) => {
+    const data = await dataService.getSteelOcrStatus(conversationId, runId);
+    if (data.runId !== runId || data.kind !== kind) {
+      throw new SteelFlowExpiredError();
+    }
+    return {
+      ...data,
+      generationCreatedAt: current?.generationCreatedAt,
+      delegateOcrIndex: current?.delegateOcrIndex,
+      verifiedByStatus: true,
+    };
+  }, initialData);
 
 export const useGetSteelQuotationStatusQuery = (
-  conversationId?: string | null,
-  config?: UseQueryOptions<SteelQuotationStatus>,
-): QueryObserverResult<SteelQuotationStatus> => {
-  const queriesEnabled = useRecoilValue<boolean>(store.queriesEnabled);
-  const enabled = Boolean(conversationId) && (config?.enabled ?? true) && queriesEnabled;
-  return useQuery<SteelQuotationStatus>(
-    DynamicQueryKeys.steelQuotationStatus(conversationId ?? ''),
-    () => dataService.getSteelQuotationStatus(conversationId ?? ''),
-    {
-      refetchOnWindowFocus: false,
-      refetchOnReconnect: true,
-      refetchOnMount: true,
-      refetchInterval: (data) =>
-        data && isSteelQuotationActiveStatus(data.status) ? 1_000 : false,
-      staleTime: 0,
-      ...config,
-      enabled,
-    },
-  );
-};
+  conversationId: string,
+  runId: string,
+  initialData?: SteelQuotationFlowStatus,
+): QueryObserverResult<SteelQuotationFlowStatus> =>
+  useSteelStatusQuery<SteelQuotationFlowStatus>(conversationId, 'quotation', runId, async (current) => {
+    const data = await dataService.getSteelQuotationStatus(conversationId);
+    if (data.conversationId !== conversationId) {
+      throw new SteelFlowExpiredError();
+    }
+    const actualKey = quotationFlowKey(data);
+    const matchesLegacyIndex = data.index != null && runId === `legacy:${data.index}`;
+    if (!matchesLegacyIndex && actualKey !== runId) {
+      if (current && actualKey) {
+        return { ...current, latestRunId: actualKey };
+      }
+      throw new SteelFlowExpiredError();
+    }
+    if (!current || current.stage !== data.stage || current.status !== data.status) {
+      return data;
+    }
+    const { note, chunkIndex, repairAttempt, maxRepairAttempts } = current;
+    return { ...data, note, chunkIndex, repairAttempt, maxRepairAttempts };
+  }, initialData);
 
 export const useGetSteelMarkdownVersionsQuery = (
   conversationId: string,
@@ -356,7 +419,7 @@ export const useCommitSteelCustomerMutation = (): UseMutationResult<
         } : current);
         void queryClient.invalidateQueries(versionsKey);
         void queryClient.invalidateQueries(
-          DynamicQueryKeys.steelQuotationStatus(input.conversationId),
+          DynamicQueryKeys.steelQuotationStatusPrefix(input.conversationId),
         );
         void queryClient.invalidateQueries([QueryKeys.steelReview, input.conversationId]);
       },
@@ -462,31 +525,6 @@ export const useRefreshOpenAIOAuthTokenMutation = (): UseMutationResult<
   );
 };
 
-export const usePauseSteelOcrMutation = (
-  conversationId?: string | null,
-): UseMutationResult<SteelOcrStatus, unknown, string, unknown> => {
-  const queryClient = useQueryClient();
-  return useMutation(
-    [MutationKeys.pauseSteelOcr, conversationId],
-    (runId: string) => dataService.pauseSteelOcr(conversationId ?? '', runId),
-    {
-      onSuccess: (data, runId) => {
-        queryClient.setQueryData(
-          DynamicQueryKeys.steelOcrStatus(conversationId ?? '', data.runId || runId),
-          data,
-        );
-      },
-      onError: (error, runId) => {
-        if (conversationId && isSteelFlowExpiredError(error)) {
-          void queryClient.invalidateQueries(
-            DynamicQueryKeys.steelOcrStatus(conversationId, runId),
-          );
-        }
-      },
-    },
-  );
-};
-
 export const useCancelSteelOcrMutation = (
   conversationId?: string | null,
 ): UseMutationResult<SteelOcrStatus, unknown, string, unknown> => {
@@ -496,36 +534,13 @@ export const useCancelSteelOcrMutation = (
     (runId: string) => dataService.cancelSteelOcr(conversationId ?? '', runId),
     {
       onSuccess: (data, runId) => {
-        queryClient.setQueryData(
-          DynamicQueryKeys.steelOcrStatus(conversationId ?? '', data.runId || runId),
-          data,
-        );
-      },
-      onError: (error, runId) => {
-        if (conversationId && isSteelFlowExpiredError(error)) {
-          void queryClient.invalidateQueries(
-            DynamicQueryKeys.steelOcrStatus(conversationId, runId),
-          );
+        if (conversationId) {
+          writeSteelFlowStatus(queryClient, conversationId, data.kind, data.runId || runId, data);
         }
-      },
-    },
-  );
-};
-
-export const usePauseSteelQuotationMutation = (
-  conversationId?: string | null,
-): UseMutationResult<SteelQuotationStatus, unknown, number, unknown> => {
-  const queryClient = useQueryClient();
-  return useMutation(
-    [MutationKeys.pauseSteelQuotation, conversationId],
-    (index: number) => dataService.pauseSteelQuotation(conversationId ?? '', index),
-    {
-      onSuccess: (data) => {
-        queryClient.setQueryData(DynamicQueryKeys.steelQuotationStatus(conversationId ?? ''), data);
       },
       onError: (error) => {
         if (conversationId && isSteelFlowExpiredError(error)) {
-          void queryClient.invalidateQueries(DynamicQueryKeys.steelQuotationStatus(conversationId));
+          void queryClient.invalidateQueries([QueryKeys.steelFlowStatus, conversationId]);
         }
       },
     },
@@ -541,11 +556,14 @@ export const useCancelSteelQuotationMutation = (
     (index: number) => dataService.cancelSteelQuotation(conversationId ?? '', index),
     {
       onSuccess: (data) => {
-        queryClient.setQueryData(DynamicQueryKeys.steelQuotationStatus(conversationId ?? ''), data);
+        const runId = quotationFlowKey(data);
+        if (conversationId && runId) {
+          writeSteelFlowStatus(queryClient, conversationId, 'quotation', runId, data);
+        }
       },
       onError: (error) => {
         if (conversationId && isSteelFlowExpiredError(error)) {
-          void queryClient.invalidateQueries(DynamicQueryKeys.steelQuotationStatus(conversationId));
+          void queryClient.invalidateQueries(DynamicQueryKeys.steelQuotationStatusPrefix(conversationId));
         }
       },
     },

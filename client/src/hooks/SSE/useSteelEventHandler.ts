@@ -1,9 +1,11 @@
 import { useCallback } from 'react';
 import { useRecoilCallback } from 'recoil';
+import { useQueryClient } from '@tanstack/react-query';
 import { parseSteelNativeActivityEvent } from 'librechat-data-provider';
 import type { EventSubmission } from 'librechat-data-provider';
 import type { SteelNativeActivityEvent, SteelNativeQuotationStatus } from '~/store/steel';
 import { steelNativeActivityByMessageId, steelNativeStreamEventName } from '~/store/steel';
+import { writeSteelFlowEvent } from '~/data-provider/Steel/flow';
 
 const MAX_STEEL_ACTIVITY_EVENTS = 100;
 
@@ -212,6 +214,7 @@ export function appendSteelNativeActivityEvent(
 }
 
 export default function useSteelEventHandler() {
+  const queryClient = useQueryClient();
   const setSteelActivity = useRecoilCallback(
     ({ set }) =>
       (messageId: string, event: SteelNativeActivityEvent) => {
@@ -226,12 +229,27 @@ export default function useSteelEventHandler() {
   );
 
   return useCallback(
-    (event: MaybeSteelNativeActivityEnvelope, submission: EventSubmission) => {
+    (
+      event: MaybeSteelNativeActivityEnvelope,
+      submission: EventSubmission,
+      generationCreatedAt?: number,
+    ) => {
       const activityEvent = normalizeSteelActivityEvent(event);
       if (!activityEvent) {
         return;
       }
 
+      const conversationId =
+        activityEvent.conversationId ??
+        submission.userMessage?.conversationId ??
+        submission.conversation?.conversationId;
+      writeSteelFlowEvent(
+        queryClient,
+        !activityEvent.conversationId && conversationId
+          ? { ...activityEvent, conversationId }
+          : activityEvent,
+        generationCreatedAt,
+      );
       const messageIds = getTargetMessageIds(activityEvent, submission);
       if (messageIds.length === 0) {
         return;
@@ -241,6 +259,6 @@ export default function useSteelEventHandler() {
         setSteelActivity(messageId, activityEvent);
       }
     },
-    [setSteelActivity],
+    [queryClient, setSteelActivity],
   );
 }

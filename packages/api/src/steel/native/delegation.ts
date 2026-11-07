@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { logger } from '@librechat/data-schemas';
 import { FileSources } from 'librechat-data-provider';
 import type { AllMethods, IMongoFile, ISteelOcrRun } from '@librechat/data-schemas';
+import type { SteelFlowReplay } from 'librechat-data-provider';
 import type { Response } from 'express';
 import type {
   DelegateOcrPolicy,
@@ -62,6 +63,7 @@ import {
 import { runOcrPreprocessingBatchPipeline, toSteelOcrChunkError } from '../ocr/preprocess';
 import { runWithSteelOcrExecution, getSteelOcrFailureStatus } from '../ocr/control';
 import { createMongooseSteelWorkingOrderMemoryWriter } from '../memory/service';
+import { isSteelFlowRecoverable, SteelFlowReplayError } from '../replay';
 import { buildSteelDelegateOcrStatusEventEnvelopes } from './events';
 import { createSteelOcrResponseAuditService } from '../ocr/audit';
 import { PADDLE_OCR_MCP_SERVER_NAME } from '../ocr/diagnostics';
@@ -358,6 +360,7 @@ export interface SteelDelegateOcrService {
     conversationId?: string;
     triggeringMessageId?: string;
     userId?: string;
+    replay?: SteelFlowReplay;
   }): Promise<SteelDelegateOcrResume | undefined>;
   executeDelegateOcrResume(
     input: CreateSteelDelegateOcrExecuteInput & {
@@ -1277,11 +1280,13 @@ export function createSteelDelegateOcrService(
     conversationId,
     triggeringMessageId,
     userId,
+    replay,
   }: {
     req: SteelDelegateOcrRequest;
     conversationId?: string;
     triggeringMessageId?: string;
     userId?: string;
+    replay?: SteelFlowReplay;
   }): Promise<SteelDelegateOcrResume | undefined> {
     if (
       !isNonEmptyString(conversationId) ||
@@ -1291,6 +1296,8 @@ export function createSteelDelegateOcrService(
       return undefined;
     }
 
+    if (replay && replay.kind !== 'delegate') return undefined;
+
     const context = (req.steelNativeContext ??= {});
     const delegateContext = context.delegateOcrContext ?? {};
     const stateService = getStateService();
@@ -1298,9 +1305,10 @@ export function createSteelDelegateOcrService(
       conversationId,
       triggeringMessageId,
     });
-    if (!run) {
-      return undefined;
+    if (replay && (run?.runId !== replay.runId || !isSteelFlowRecoverable(run.status))) {
+      throw new SteelFlowReplayError();
     }
+    if (!run) return undefined;
 
     const claim: SteelDelegateOcrClaimRef = {
       conversationId,

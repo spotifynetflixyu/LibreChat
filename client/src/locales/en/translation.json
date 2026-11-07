@@ -3126,6 +3126,7 @@
   "com_ui_steel_flow_ocr_delegate": "Delegate OCR",
   "com_ui_steel_flow_quotation": "Quotation",
   "com_ui_steel_flow_stage": "Stage: {{stage}}",
+  "com_ui_steel_flow_replay_unavailable": "Could not restart this flow. Refresh the conversation and try again.",
   "com_ui_steel_flow_expired": "This flow has been superseded by a newer run.",
   "com_ui_steel_ocr_status_running": "OCR in progress ({{completedChunks}}/{{totalChunks}} chunks)",
   "com_ui_steel_ocr_status_paused": "OCR paused ({{completedChunks}}/{{totalChunks}} chunks)",

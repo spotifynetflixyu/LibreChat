@@ -170,7 +170,7 @@ export default function useSteelQuotationUpdates({
         );
       if (!conversationId) return;
       void queryClient.invalidateQueries(DynamicQueryKeys.steelMarkdownVersions(conversationId));
-      void queryClient.invalidateQueries(DynamicQueryKeys.steelQuotationStatus(conversationId));
+      void queryClient.invalidateQueries(DynamicQueryKeys.steelQuotationStatusPrefix(conversationId));
       /** Steel review keys include kind/message/title, while a publication
        * carries only the committed message snapshot. The conversation prefix
        * refreshes the system_order owner without guessing those display keys. */

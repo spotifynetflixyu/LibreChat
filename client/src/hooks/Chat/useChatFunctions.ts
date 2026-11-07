@@ -26,7 +26,7 @@ import type {
   EndpointSchemaKey,
 } from 'librechat-data-provider';
 import type { SetterOrUpdater } from 'recoil';
-import type { TAskFunction, ExtendedFile } from '~/common';
+import type { TAskFunction, TOptions, ExtendedFile } from '~/common';
 import {
   logger,
   requestChatFocus,
@@ -305,6 +305,7 @@ export default function useChatFunctions({
       overrideMessages,
       overrideFiles,
       targetResponseMessageId,
+      steelFlowReplay,
       overrideManualSkills,
       overrideQuotes,
       addedConvo,
@@ -770,6 +771,7 @@ export default function useChatFunctions({
       isEdited: isEditOrContinue,
       isContinued,
       isRegenerate: regenerateShaped,
+      ...(steelFlowReplay && { steelFlowReplay }),
       ...(compact && { compact: true }),
       initialResponse,
       isTemporary,
@@ -809,7 +811,7 @@ export default function useChatFunctions({
 
   const regenerate = (
     message: Partial<Pick<TMessage, 'messageId' | 'parentMessageId' | 'isCreatedByUser'>>,
-    options?: { addedConvo?: TConversation | null },
+    options?: { addedConvo?: TConversation | null; steelFlowReplay?: TOptions['steelFlowReplay'] },
   ) => {
     const messages = getMessages();
     const parentMessageId =
@@ -825,6 +827,7 @@ export default function useChatFunctions({
           isRegenerate: true,
           addedConvo: options?.addedConvo ?? undefined,
           targetResponseMessageId,
+          steelFlowReplay: options?.steelFlowReplay,
           /** Carry the original user message's manual skill picks forward
            *  so the regenerated response is primed with the same skills.
            *  The compose-time atom was drained on the first submit; without

@@ -2969,12 +2969,21 @@ class AgentClient extends BaseClient {
           steelConversation,
         },
       };
+      const scope = {
+        userId: this.options.req.user.id,
+        conversationId: this.conversationId,
+        tenantId: resolveRequestTenantId(this.options.req),
+      };
+      const replay = await steelFlow.readReplay({
+        scope,
+        body: this.options.req.body,
+        parentMessageId: latestOrdered?.messageId,
+        files: currentTurnSteelFileReferences,
+        readMessage: db.getMessage,
+      });
       const quotation = await prepareQuotationTurn({
-        scope: {
-          userId: this.options.req.user.id,
-          conversationId: this.conversationId,
-          tenantId: resolveRequestTenantId(this.options.req),
-        },
+        scope,
+        replay,
         messageId: latestOrdered?.messageId ?? this.responseMessageId,
         responseId: this.responseMessageId,
         generationId: String(this.options.req._resumableJobCreatedAt ?? this.responseMessageId),
@@ -2992,6 +3001,7 @@ class AgentClient extends BaseClient {
               req: this.options.req,
               conversationId: this.conversationId,
               triggeringMessageId: latestOrdered?.messageId,
+              replay,
               userId: this.options.req.user?.id,
             })
           : undefined;

@@ -1,6 +1,10 @@
+import { useState } from 'react';
 import { RecoilRoot, useRecoilValue } from 'recoil';
 import { renderHook, act } from '@testing-library/react';
+import { DynamicQueryKeys } from 'librechat-data-provider';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import type { EventSubmission, TMessage } from 'librechat-data-provider';
+import type { PropsWithChildren } from 'react';
 import useSteelEventHandler, {
   appendSteelNativeActivityEvent,
   normalizePersistedSteelActivityEvent,
@@ -32,10 +36,81 @@ const useHarness = (messageId: string) => {
   return { activity, steelEventHandler };
 };
 
+function Wrapper({ children }: PropsWithChildren) {
+  const [client] = useState(() => new QueryClient());
+  return <QueryClientProvider client={client}><RecoilRoot>{children}</RecoilRoot></QueryClientProvider>;
+}
+
 describe('useSteelEventHandler', () => {
+  it('writes each SSE run to its own cache and expires a replaced card without copying progress', () => {
+    const client = new QueryClient();
+    const { result } = renderHook(() => useHarness('assistant-live'), {
+      wrapper: ({ children }: PropsWithChildren) =>
+        <QueryClientProvider client={client}><RecoilRoot>{children}</RecoilRoot></QueryClientProvider>,
+    });
+    const first = {
+      type: 'quotation_status',
+      source: 'quotation_preflight',
+      conversationId: 'conversation-1',
+      index: 1,
+      runId: 'old',
+      status: 'running',
+      stage: 'chunk',
+      completedChunks: 2,
+      totalChunks: 3,
+    };
+
+    act(() => {
+      const submission = createSubmission('assistant-live');
+      result.current.steelEventHandler({ event: 'steel_event', data: first }, submission);
+      result.current.steelEventHandler({
+        event: 'steel_event',
+        data: { ...first, index: 2, runId: 'new', completedChunks: 0 },
+      }, submission);
+      result.current.steelEventHandler({ event: 'steel_event', data: first }, submission);
+    });
+
+    expect(client.getQueryData(DynamicQueryKeys.steelFlowStatus('conversation-1', 'quotation', 'old')))
+      .toMatchObject({ runId: 'old', latestRunId: 'new', completedChunks: 2 });
+    expect(client.getQueryData(DynamicQueryKeys.steelFlowStatus('conversation-1', 'quotation', 'new')))
+      .toMatchObject({ runId: 'new', latestRunId: 'new', completedChunks: 0 });
+  });
+
+  it('cannot expire a newer OCR run when an unseen old generation frame arrives late', () => {
+    const client = new QueryClient();
+    const { result } = renderHook(() => useHarness('assistant-live'), {
+      wrapper: ({ children }: PropsWithChildren) => (
+        <QueryClientProvider client={client}><RecoilRoot>{children}</RecoilRoot></QueryClientProvider>
+      ),
+    });
+    const event = {
+      type: 'parse_status',
+      source: 'paddleocr_preflight',
+      runId: 'new',
+      message: 'Processing OCR',
+      parseStatus: 'partial',
+      completedChunks: 0,
+      totalChunks: 3,
+    };
+    act(() => {
+      const submission = createSubmission('assistant-live');
+      result.current.steelEventHandler({ event: 'steel_event', data: event }, submission, 200);
+      result.current.steelEventHandler({
+        event: 'steel_event',
+        data: { ...event, runId: 'unseen-old', parseStatus: 'saved', completedChunks: 3 },
+      }, submission, 100);
+    });
+
+    expect(client.getQueryData(DynamicQueryKeys.steelFlowStatus('conversation-1', 'preflight', 'new')))
+      .toMatchObject({ runId: 'new', latestRunId: 'new', status: 'running' });
+    expect(client.getQueryData(
+      DynamicQueryKeys.steelFlowStatus('conversation-1', 'preflight', 'unseen-old'),
+    )).toMatchObject({ runId: 'unseen-old', latestRunId: 'new', status: 'completed' });
+  });
+
   it('normalizes and deduplicates quote audit events under current response', () => {
     const { result } = renderHook(() => useHarness('assistant-live'), {
-      wrapper: RecoilRoot,
+      wrapper: Wrapper,
     });
 
     const event = {
@@ -70,7 +145,7 @@ describe('useSteelEventHandler', () => {
 
   it('normalizes and deduplicates quotation status events by run and progress identity', () => {
     const { result } = renderHook(() => useHarness('assistant-quotation'), {
-      wrapper: RecoilRoot,
+      wrapper: Wrapper,
     });
     const event = {
       event: 'steel_event' as const,
@@ -334,7 +409,7 @@ describe('useSteelEventHandler', () => {
 
   it('stores indexed delegate OCR lifecycle events in the top-level activity state', () => {
     const { result } = renderHook(() => useHarness('assistant-delegate'), {
-      wrapper: RecoilRoot,
+      wrapper: Wrapper,
     });
 
     act(() => {
@@ -394,7 +469,7 @@ describe('useSteelEventHandler', () => {
 
   it('keeps distinct Code Interpreter executions and deduplicates replayed ids', () => {
     const { result } = renderHook(() => useHarness('assistant-ci-audit'), {
-      wrapper: RecoilRoot,
+      wrapper: Wrapper,
     });
     const createEvent = (providerToolCallId: string) => ({
       event: 'steel_event' as const,
@@ -432,7 +507,7 @@ describe('useSteelEventHandler', () => {
 
   it('stores Steel parse activity under the event message id', () => {
     const { result } = renderHook(() => useHarness('assistant-2'), {
-      wrapper: RecoilRoot,
+      wrapper: Wrapper,
     });
 
     act(() => {
@@ -480,7 +555,7 @@ describe('useSteelEventHandler', () => {
         );
         return { currentActivity, eventActivity, steelEventHandler };
       },
-      { wrapper: RecoilRoot },
+      { wrapper: Wrapper },
     );
 
     act(() => {
@@ -515,7 +590,7 @@ describe('useSteelEventHandler', () => {
 
   it('falls back to the current assistant response for tool-result events without message id', () => {
     const { result } = renderHook(() => useHarness('assistant-live'), {
-      wrapper: RecoilRoot,
+      wrapper: Wrapper,
     });
 
     act(() => {
@@ -550,7 +625,7 @@ describe('useSteelEventHandler', () => {
 
   it('stores PaddleOCR preflight activity under the current assistant response id', () => {
     const { result } = renderHook(() => useHarness('assistant-live'), {
-      wrapper: RecoilRoot,
+      wrapper: Wrapper,
     });
 
     act(() => {
@@ -581,7 +656,7 @@ describe('useSteelEventHandler', () => {
 
   it('stores reused PaddleOCR preflight parse activity under the current assistant response id', () => {
     const { result } = renderHook(() => useHarness('assistant-live'), {
-      wrapper: RecoilRoot,
+      wrapper: Wrapper,
     });
 
     act(() => {
@@ -613,7 +688,7 @@ describe('useSteelEventHandler', () => {
 
   it('stores OCR preprocessing progress events and replaces matching running messages', () => {
     const { result } = renderHook(() => useHarness('assistant-live'), {
-      wrapper: RecoilRoot,
+      wrapper: Wrapper,
     });
 
     const progressEventBase = {
@@ -704,7 +779,7 @@ describe('useSteelEventHandler', () => {
 
   it('preserves OCR preprocessing error details for the activity UI', () => {
     const { result } = renderHook(() => useHarness('assistant-live'), {
-      wrapper: RecoilRoot,
+      wrapper: Wrapper,
     });
 
     act(() => {
@@ -760,7 +835,7 @@ describe('useSteelEventHandler', () => {
       },
     };
     const { result } = renderHook(() => useHarness('assistant-1'), {
-      wrapper: RecoilRoot,
+      wrapper: Wrapper,
     });
 
     act(() => {
@@ -849,7 +924,7 @@ describe('useSteelEventHandler', () => {
 
   it('ignores activity envelopes with non-finite saved counts', () => {
     const { result } = renderHook(() => useHarness('assistant-1'), {
-      wrapper: RecoilRoot,
+      wrapper: Wrapper,
     });
 
     act(() => {

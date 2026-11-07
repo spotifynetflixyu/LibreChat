@@ -97,8 +97,7 @@ export enum QueryKeys {
   favorites = 'favorites',
   /* Steel */
   steelModels = 'steelModels',
-  steelQuotationStatus = 'steelQuotationStatus',
-  steelOcrStatus = 'steelOcrStatus',
+  steelFlowStatus = 'steelFlowStatus',
   steelReview = 'steelReview',
   steelMarkdownVersions = 'steelMarkdownVersions',
   openAIOAuthUsage = 'openAIOAuthUsage',
@@ -119,10 +118,10 @@ export enum QueryKeys {
 // Dynamic query keys that require parameters
 export const DynamicQueryKeys = {
   agentFiles: (agentId: string) => ['agentFiles', agentId] as const,
-  steelOcrStatus: (conversationId: string, runId: string) =>
-    [QueryKeys.steelOcrStatus, conversationId, runId] as const,
-  steelQuotationStatus: (conversationId: string) =>
-    [QueryKeys.steelQuotationStatus, conversationId] as const,
+  steelFlowStatus: (conversationId: string, kind: 'quotation' | 'preflight' | 'delegate', runId: string) =>
+    [QueryKeys.steelFlowStatus, conversationId, kind, runId] as const,
+  steelQuotationStatusPrefix: (conversationId: string) =>
+    [QueryKeys.steelFlowStatus, conversationId, 'quotation'] as const,
   steelMarkdownVersions: (conversationId: string) =>
     [QueryKeys.steelMarkdownVersions, conversationId] as const,
   steelReview: (conversationId: string, kind: string, messageId: string, title: string) =>

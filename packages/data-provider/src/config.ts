@@ -4099,6 +4099,7 @@ export enum ErrorTypes {
    * A manual compaction whose summarizer produced nothing; history is untouched
    */
   COMPACTION_FAILED = 'compaction_failed',
+  STEEL_FLOW_REPLAY_UNAVAILABLE = 'steel_flow_replay_unavailable',
 }
 
 /**

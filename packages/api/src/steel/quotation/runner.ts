@@ -79,6 +79,7 @@ import { parseMarkdownTables } from '../markdown/table';
 import { parseAssistantMarkdown } from '../ocr/result';
 import { registerQuotationExecution } from './control';
 import { createSteelPostgresPool } from '../postgres';
+import { SteelFlowReplayError } from '../replay';
 import { readQuotationHistory } from './history';
 import { invokeQuotationModel } from './model';
 import { isRecord, sha256Hex } from '../utils';
@@ -367,6 +368,7 @@ export interface QuotationProgress {
 }
 
 export interface QuotationRunnerInput {
+  expectedRunId?: string;
   executionEpoch?: number;
   client?: SteelRepositoryClient;
   scope: SteelQuotationScope;
@@ -668,7 +670,11 @@ export async function runQuotationPreflightWithRetries(
     } catch (error) {
       if (attempt >= QUOTATION_MAX_ATTEMPTS || input.signal.aborted) {
         const active = await service.readActiveRun(input.scope);
-        if (!input.signal.aborted && active?.status === 'interrupted') {
+        if (
+          !input.signal.aborted &&
+          active?.status === 'interrupted' &&
+          (!input.expectedRunId || active.runId === input.expectedRunId)
+        ) {
           await service.failRun({
             scope: input.scope,
             runId: active.runId,
@@ -679,7 +685,12 @@ export async function runQuotationPreflightWithRetries(
         throw error;
       }
       const active = await service.readActiveRun(input.scope);
-      if (active?.status !== 'interrupted') throw error;
+      if (
+        active?.status !== 'interrupted' ||
+        (input.expectedRunId && active.runId !== input.expectedRunId)
+      ) {
+        throw error;
+      }
     }
   }
 }
@@ -691,6 +702,9 @@ export async function runQuotationPreflight(input: QuotationRunnerInput): Promis
   const service = createSteelQuotationStateService(mongoose);
   const initial = await service.readState(input.scope);
   const run = initial?.activeRun;
+  if (input.expectedRunId && run?.runId !== input.expectedRunId) {
+    throw new SteelFlowReplayError();
+  }
   if (!run) return { status: 'idle' };
   if (input.onHistory) {
     await input.onHistory(await readQuotationHistory({ scope: input.scope, runId: run.runId }));

@@ -1,9 +1,9 @@
+import type { TSubmission } from './types';
 import createPayload from './createPayload';
 import { EModelEndpoint } from './schemas';
-import type { TSubmission } from './types';
 
 describe('createPayload', () => {
-  it('preserves regenerated user PDF files and regenerate state', () => {
+  it('preserves the Steel replay target and original PDF in a regenerated turn', () => {
     const files = [
       {
         file_id: 'file-bh-pdf',
@@ -24,6 +24,7 @@ describe('createPayload', () => {
         files,
       },
       isRegenerate: true,
+      steelFlowReplay: { kind: 'preflight', runId: 'ocr-run-1', sourceMessageId: 'assistant-1' },
       isTemporary: false,
       messages: [],
       conversation: {
@@ -42,5 +43,6 @@ describe('createPayload', () => {
 
     expect(payload.isRegenerate).toBe(true);
     expect(payload.files).toEqual(files);
+    expect(payload.steelFlowReplay).toEqual(submission.steelFlowReplay);
   });
 });

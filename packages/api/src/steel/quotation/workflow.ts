@@ -264,6 +264,7 @@ export function createSteelQuotationWorkflow({ db, client }: SteelQuotationWorkf
 
     const result = await runQuotationPreflightWithRetries({
       scope,
+      expectedRunId: quotation.resume ? quotation.state?.activeRun?.runId : undefined,
       modelOptions,
       signal,
       onUsage,

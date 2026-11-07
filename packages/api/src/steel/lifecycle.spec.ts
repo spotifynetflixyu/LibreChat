@@ -88,3 +88,33 @@ it('keeps a stop paused when status is read between the terminal claim and durab
     await manager.destroy();
   }
 });
+
+it('rejects recovery of superseded OCR without changing either run', async () => {
+  const ocr = createSteelOcrStateService(mongoose);
+  const lifecycle = createSteelFlowLifecycle(mongoose);
+  const old = await ocr.createPreflightRun({
+    scope, responseGenerationId: 'old', triggeringMessageId: 'input', executionEpoch: 1,
+  });
+  await lifecycle.pauseJob({
+    ...scope, responseMessageId: 'old', createdAt: 1,
+  });
+  const body = {
+    isRegenerate: true,
+    steelFlowReplay: { kind: 'preflight', runId: old.runId, sourceMessageId: 'old' },
+  };
+  const input = {
+    scope, body, parentMessageId: 'input', files: [{ filename: 'order.pdf', fileId: 'file' }],
+    readMessage: async () => ({
+      conversationId: scope.conversationId, parentMessageId: 'input', isCreatedByUser: false,
+    }),
+  };
+  await expect(lifecycle.readReplay({ ...input, parentMessageId: 'other' }))
+    .rejects.toThrow('Steel flow is no longer available');
+  await expect(lifecycle.readReplay(input)).resolves.toEqual(body.steelFlowReplay);
+  await ocr.createPreflightRun({
+    scope, responseGenerationId: 'current', triggeringMessageId: 'next', executionEpoch: 2,
+  });
+  await expect(lifecycle.readReplay(input)).rejects.toThrow('Steel flow is no longer available');
+  expect(await createSteelOcrRunModel(mongoose).findOne({ runId: old.runId }).lean())
+    .toMatchObject({ status: 'paused' });
+});
