@@ -104,23 +104,12 @@ function renderReviewedOrder(isSubmitting = false): QueryClient {
 }
 
 describe('reviewed system_order grouped download', () => {
-  it('shows the generating tooltip on hover and keyboard focus while review is disabled', async () => {
-    const user = userEvent.setup();
+  it('keeps system_order review available while the response is generating', async () => {
     const client = renderReviewedOrder(true);
     try {
       const open = await screen.findByRole('button', { name: 'com_ui_steel_review_open' });
-      expect(open).toBeDisabled();
-      const anchor = screen.getByLabelText('com_ui_steel_review_open', { selector: 'span' });
-      await user.hover(anchor);
-      expect(await screen.findByRole('tooltip')).toHaveTextContent('com_ui_generating');
-      await user.unhover(anchor);
-      await user.tab();
-      await user.tab();
-      await user.tab();
-      expect(anchor).toHaveFocus();
-      expect(await screen.findByRole('tooltip')).toHaveTextContent('com_ui_generating');
-      await user.keyboard('{Enter} ');
-      expect(screen.queryByRole('dialog')).toBeNull();
+      expect(open).toBeEnabled();
+      expect(screen.queryByText('com_ui_generating')).toBeNull();
     } finally {
       client.clear();
     }

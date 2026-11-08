@@ -433,11 +433,7 @@ function useFlowRecovery(
     }
   }, [isSubmitting]);
 
-  const recover = (
-    action: 'resume' | 'retry',
-    target: SteelFlowResume,
-    isSuperseded: boolean,
-  ) => {
+  const recover = (action: 'resume' | 'retry', target: SteelFlowResume, isSuperseded: boolean) => {
     const callback = action === 'resume' ? onResumeFlow : onRetryFlow;
     if (!callback || isSubmitting || isSuperseded || requested.current) return;
     requested.current = true;
@@ -520,7 +516,6 @@ function SteelQuotationProgress({
   const initialData: SteelQuotationFlowStatus = {
     ...event,
     note: event.message,
-    canCancel: event.status === 'running',
   };
   const query = useGetSteelQuotationStatusQuery(conversationId, runKey, initialData);
   const recovery = useFlowRecovery(actions, localize);
@@ -528,7 +523,7 @@ function SteelQuotationProgress({
     query.data &&
       (query.data.index !== event.index || (event.runId && query.data.runId !== event.runId)),
   );
-  const data = mismatchedQuery ? initialData : query.data ?? initialData;
+  const data = mismatchedQuery ? initialData : (query.data ?? initialData);
   const { status, runId, stage, completedChunks, totalChunks, ocrSource } = data;
   const isSuperseded =
     mismatchedQuery || isSupersededSteelFlow(data) || isSteelFlowExpiredError(query.error);
@@ -547,7 +542,9 @@ function SteelQuotationProgress({
   );
   const metadataText = ocrSource
     ? localize(
-        ocrSource.source === 'ai' ? 'com_ui_steel_quote_source_ai' : 'com_ui_steel_quote_source_human',
+        ocrSource.source === 'ai'
+          ? 'com_ui_steel_quote_source_ai'
+          : 'com_ui_steel_quote_source_human',
         { version: ocrSource.version },
       )
     : undefined;
@@ -1048,8 +1045,7 @@ const SteelActivity = memo(function SteelActivity({
         ),
     [allActivityEvents],
   );
-  const quotationConversationId =
-    conversationId ?? latestQuotationEvent?.conversationId;
+  const quotationConversationId = conversationId ?? latestQuotationEvent?.conversationId;
   const hasQuotationActivity = latestQuotationEvent !== undefined;
   const hasOcrFlowActivity = ocrFlowSummaries.length > 0;
 

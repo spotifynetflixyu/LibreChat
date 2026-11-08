@@ -2977,25 +2977,28 @@ class AgentClient extends BaseClient {
         tenantId: resolveRequestTenantId(this.options.req),
       };
       let quotation;
-      ({ quotation, delegateOcrResume, paddleOcrPreflight } = await prepareSteelFlowTurn({
-        scope,
-        body: this.options.req.body,
-        messageId: latestOrdered?.messageId ?? this.responseMessageId,
-        responseId: this.responseMessageId,
-        generationId: String(this.options.req._resumableJobCreatedAt ?? this.responseMessageId),
-        executionEpoch: this.options.req._resumableJobCreatedAt,
-        publicationStore: db,
-        readMessage: db.getMessage,
-        text: currentUserTurnText,
-        files: currentTurnSteelFileReferences,
-        ocr: {
-          req: this.options.req,
-          res: this.options.res,
-          agent: this.options.agent,
-          signal: opts?.abortController?.signal,
-          streamId: this.options.req?._resumableStreamId || null,
+      ({ quotation, delegateOcrResume, paddleOcrPreflight } = await prepareSteelFlowTurn(
+        {
+          scope,
+          body: this.options.req.body,
+          messageId: latestOrdered?.messageId ?? this.responseMessageId,
+          responseId: this.responseMessageId,
+          generationId: String(this.options.req._resumableJobCreatedAt ?? this.responseMessageId),
+          executionEpoch: this.options.req._resumableJobCreatedAt,
+          publicationStore: db,
+          readMessage: db.getMessage,
+          text: currentUserTurnText,
+          files: currentTurnSteelFileReferences,
+          ocr: {
+            req: this.options.req,
+            res: this.options.res,
+            agent: this.options.agent,
+            signal: opts?.abortController?.signal,
+            streamId: this.options.req?._resumableStreamId || null,
+          },
         },
-      }, { prepareQuotationTurn, prepareDelegateOcrResume, runSteelPaddleOcrPreflight }));
+        { prepareQuotationTurn, prepareDelegateOcrResume, runSteelPaddleOcrPreflight },
+      ));
       this.options.req.steelNativeContext.quotation = quotation;
       this.options.req.steelNativeContext = {
         ...(this.options.req.steelNativeContext ?? {}),
@@ -4660,15 +4663,12 @@ class AgentClient extends BaseClient {
         appConfig?.messageFilter?.pii,
       ),
     });
-    let disposeSteelFlow;
     const balanceConfig = getBalanceConfig(appConfig);
     const transactionsConfig = getTransactionsConfig(appConfig);
     try {
       if (!abortController) {
         abortController = new AbortController();
       }
-      disposeSteelFlow = steelFlow.registerTurn({ req: this.options.req,
-        conversationId: this.conversationId, controller: abortController });
 
       /** Scheduled approvals are unattended by definition. Their pending action,
        * replay context, and resolution fence must be shared across workers; their
@@ -5473,8 +5473,12 @@ class AgentClient extends BaseClient {
       this.applyHideSequentialOutputsFilter();
       this.rebaseActivityPhaseBounds(contentBeforeReshape);
     } catch (err) {
-      await steelFlow.settleTurn({ req: this.options.req, conversationId: this.conversationId,
-        signal: abortController.signal, failed: true });
+      await steelFlow.settleTurn({
+        req: this.options.req,
+        conversationId: this.conversationId,
+        signal: abortController.signal,
+        failed: true,
+      });
       if (
         err instanceof SteelFlowReplayError ||
         err?.code === 'SCHEDULED_HITL_REQUIRES_SHARED_STORE' ||
@@ -5556,7 +5560,6 @@ class AgentClient extends BaseClient {
         });
       }
     } finally {
-      disposeSteelFlow?.();
       this.chatCompletionAborted = abortController?.signal?.aborted === true;
       /** An aborted/erroring run can still have completed compaction before
        * the failure; retain that model-visible state for actor reconciliation. */

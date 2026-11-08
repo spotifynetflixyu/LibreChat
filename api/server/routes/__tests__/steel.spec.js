@@ -104,10 +104,8 @@ const mockRequireCapability = jest.fn(() => (_req, _res, next) => next());
 const mockRequireJwtAuth = jest.fn((_req, _res, next) => next());
 
 const mockQuotationStatus = jest.fn((_req, res) => res.json({ status: 'running' }));
-const mockQuotationCancel = jest.fn((_req, res) => res.json({ status: 'cancelled' }));
 const mockCreateQuotationHandlers = jest.fn(() => ({
   status: mockQuotationStatus,
-  cancel: mockQuotationCancel,
 }));
 const mockPostgres = { getClient: jest.fn(), initialize: jest.fn(), close: jest.fn() };
 const mockCreateSteelPostgresService = jest.fn(() => mockPostgres);
@@ -119,6 +117,9 @@ jest.mock('~/models', () => ({ getConvo: jest.fn().mockResolvedValue({ conversat
 
 jest.mock('@librechat/api', () => ({
   createQuotationRouteHandlers: (...args) => mockCreateQuotationHandlers(...args),
+  createOcrRouteHandlers: jest.fn(() => ({ status: jest.fn() })),
+  createSteelGenerationReader: jest.fn(() => jest.fn()),
+  GenerationJobManager: {},
   createSteelPostgresService: (...args) => mockCreateSteelPostgresService(...args),
   createSteelPostgresPool: jest.fn(),
   createSteelCustomerRouteHandlers: jest.fn(() => ({
@@ -266,10 +267,16 @@ describe('Steel route shells', () => {
   });
 });
 
-it('mounts authenticated quotation status and cancellation endpoints', async () => {
+it('mounts the quotation status endpoint without flow control endpoints', async () => {
   const app = createApp();
   await request(app).get('/api/steel/conversations/c1/quotation').expect(200);
-  await request(app).post('/api/steel/conversations/c1/quotation/1/cancel').expect(200);
   expect(mockQuotationStatus).toHaveBeenCalled();
-  expect(mockQuotationCancel).toHaveBeenCalled();
+  for (const path of [
+    '/api/steel/conversations/c1/quotation/1/cancel',
+    '/api/steel/conversations/c1/quotation/1/pause',
+    '/api/steel/conversations/c1/ocr/run-1/cancel',
+    '/api/steel/conversations/c1/ocr/run-1/pause',
+  ]) {
+    await request(app).post(path).expect(404);
+  }
 });

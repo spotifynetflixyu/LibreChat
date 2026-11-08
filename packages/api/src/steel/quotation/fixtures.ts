@@ -1,4 +1,6 @@
 import {
+  STEEL_QUOTATION_INPUT_TTL_MS,
+  createSteelQuotationInputMethods,
   createSteelQuotationArtifactModel,
   createSteelQuotationStateModel,
 } from '@librechat/data-schemas';
@@ -51,8 +53,12 @@ export async function seedCompletedRun(input: {
   delete activeRun.leaseToken;
   delete activeRun.leaseExpiresAt;
   const state = await State.findOneAndUpdate(
-    { userId: input.scope.userId, conversationId: input.scope.conversationId, tenantId: input.scope.tenantId ?? null,
-      'activeRun.runId': input.run.runId },
+    {
+      userId: input.scope.userId,
+      conversationId: input.scope.conversationId,
+      tenantId: input.scope.tenantId ?? null,
+      'activeRun.runId': input.run.runId,
+    },
     { $set: { activeRun, updatedAt: now } },
     { new: true },
   ).lean<ISteelQuotationState>();
@@ -114,7 +120,9 @@ export async function seedLegacyPublication(input: {
   });
   const State = createSteelQuotationStateModel(input.mongoose);
   const checkpointRefs = [
-    ...input.run.checkpointRefs.filter((entry) => entry.operationId !== 'final' && entry.operationId !== 'published'),
+    ...input.run.checkpointRefs.filter(
+      (entry) => entry.operationId !== 'final' && entry.operationId !== 'published',
+    ),
     { ...finalRef, updatedAt: now },
     { ...publicationRef, updatedAt: now },
   ];
@@ -138,16 +146,43 @@ export async function seedLegacyPublication(input: {
       }
     : undefined;
   const state = await State.findOneAndUpdate(
-    { userId: input.scope.userId, conversationId: input.scope.conversationId, tenantId: input.scope.tenantId ?? null,
-      'activeRun.runId': input.run.runId },
-    { $set: {
-      'activeRun.checkpointRefs': checkpointRefs,
-      currentSystemOrder: systemOrder,
-      ...(currentCustomer ? { currentCustomer } : {}),
-      updatedAt: now,
-    } },
+    {
+      userId: input.scope.userId,
+      conversationId: input.scope.conversationId,
+      tenantId: input.scope.tenantId ?? null,
+      'activeRun.runId': input.run.runId,
+    },
+    {
+      $set: {
+        'activeRun.checkpointRefs': checkpointRefs,
+        currentSystemOrder: systemOrder,
+        ...(currentCustomer ? { currentCustomer } : {}),
+        updatedAt: now,
+      },
+    },
     { new: true },
   ).lean<ISteelQuotationState>();
-  await Artifact.deleteOne({ ...input.scope, runId: input.run.runId, operationId: 'snapshot', kind: 'snapshot' });
+  await Artifact.deleteOne({
+    ...input.scope,
+    runId: input.run.runId,
+    operationId: 'snapshot',
+    kind: 'snapshot',
+  });
   return { finalRef, publicationRef, state: state ?? completed };
+}
+
+/** Retires a run as its input TTL lapsing would, the one production path to a cancelled run. */
+export async function expireQuotationRun(input: {
+  mongoose: Mongoose;
+  scope: SteelQuotationScope;
+  runId: string;
+}): Promise<SteelQuotationActiveRun | undefined> {
+  const retired = await createSteelQuotationInputMethods(input.mongoose).retireSteelQuotationInput({
+    scope: input.scope,
+    runId: input.runId,
+    now: new Date(Date.now() + STEEL_QUOTATION_INPUT_TTL_MS + 1_000),
+  });
+  if (!retired.ok) throw new Error(`quotation run could not expire: ${retired.code}`);
+  const run = retired.state?.activeRun;
+  return run?.runId === input.runId ? run : undefined;
 }

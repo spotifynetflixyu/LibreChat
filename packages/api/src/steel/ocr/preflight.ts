@@ -63,7 +63,7 @@ import {
 } from './artifacts';
 import { buildPdfPageChunks, getPdfPageCount, normalizeOcrPageChunks } from './chunks';
 import { isPaddleOcrDiagnosticCode, PADDLE_OCR_MCP_SERVER_NAME } from './diagnostics';
-import { runWithSteelOcrExecution, getSteelOcrFailureStatus } from './control';
+import { getSteelOcrFailureStatus } from './control';
 import { groupSteelOcrMissingPageRangesByFileKey } from './failures';
 import { getSteelRequestConversationId } from '../native/execute';
 import { resolveOcrPreprocessingChunkSizePages } from './config';
@@ -151,7 +151,10 @@ export interface SteelOcrServiceDependencies {
   };
   server: SteelPaddleOcrServer;
   stateService?: SteelOcrSourceMappingStore;
-  runStore?: Pick<SteelOcrRunMethods, 'createPreflightRun' | 'claimResumeRun' | 'updatePreflightRun' | 'settleTurn'>;
+  runStore?: Pick<
+    SteelOcrRunMethods,
+    'createPreflightRun' | 'claimResumeRun' | 'updatePreflightRun' | 'settleTurn'
+  >;
 }
 
 /** The conversation OCR state preflight reads and the source codes it allocates. */
@@ -957,13 +960,20 @@ export function createSteelOcrService(deps: SteelOcrServiceDependencies): SteelO
     });
   }
 
-  async function runSteelPaddleOcrPreflight(input: RunSteelPaddleOcrPreflightInput): Promise<SteelPaddleOcrPreflightResult> {
+  async function runSteelPaddleOcrPreflight(
+    input: RunSteelPaddleOcrPreflightInput,
+  ): Promise<SteelPaddleOcrPreflightResult> {
     const context = input.req.steelNativeContext;
     const conversationId = getSteelRequestConversationId(input.req);
     const userId = input.req.user?.id;
     const responseGenerationId = context?.requestId;
-    if (!conversationId || !userId || !responseGenerationId || context?.assistantTurnIndex === undefined ||
-      !context.currentTurnFiles?.some((file) => getSteelOcrFileDescriptor(file))) {
+    if (
+      !conversationId ||
+      !userId ||
+      !responseGenerationId ||
+      context?.assistantTurnIndex === undefined ||
+      !context.currentTurnFiles?.some((file) => getSteelOcrFileDescriptor(file))
+    ) {
       if (input.resume) throw new SteelFlowReplayError('flow_not_resumable');
       return runPreflight(input);
     }
@@ -972,25 +982,45 @@ export function createSteelOcrService(deps: SteelOcrServiceDependencies): SteelO
     const executionEpoch = input.req._resumableJobCreatedAt;
     const turn = { scope, responseGenerationId, executionEpoch };
     input.signal?.throwIfAborted();
-    const claimed = input.resume && await runs.claimResumeRun({
-      ...turn, ...input.resume, kind: 'preflight',
-    });
+    const claimed =
+      input.resume &&
+      (await runs.claimResumeRun({
+        ...turn,
+        ...input.resume,
+        kind: 'preflight',
+      }));
     if (claimed && !claimed.ok) throw new SteelFlowReplayError(claimed.code);
-    const run = claimed ? claimed.run : await runs.createPreflightRun({
-      ...turn, triggeringMessageId: responseGenerationId,
-    });
+    const run = claimed
+      ? claimed.run
+      : await runs.createPreflightRun({
+          ...turn,
+          triggeringMessageId: responseGenerationId,
+        });
     const progressByFile = new Map<string, { total: number; completed: Set<number> }>();
     let latestStage = 'preflight';
     let latestTotalChunks = run.totalChunks;
     let latestCompletedChunks = run.completedChunks;
-    const track = async (file: Pick<OcrPreprocessingFile, 'ocrFileKey' | 'filename'>,
-      progress: Parameters<typeof buildSteelOcrPreprocessingEventEnvelopes>[0]['progress']) => {
-      const entry = progressByFile.get(file.ocrFileKey) ?? { total: 0, completed: new Set<number>() };
-      if ('chunkCount' in progress && typeof progress.chunkCount === 'number') entry.total = progress.chunkCount;
-      if ((progress.stage === 'organizer_chunk_saved' || progress.stage === 'organizer_chunk_loaded') &&
-        'chunkIndex' in progress && typeof progress.chunkIndex === 'number') entry.completed.add(progress.chunkIndex);
+    const track = async (
+      file: Pick<OcrPreprocessingFile, 'ocrFileKey' | 'filename'>,
+      progress: Parameters<typeof buildSteelOcrPreprocessingEventEnvelopes>[0]['progress'],
+    ) => {
+      const entry = progressByFile.get(file.ocrFileKey) ?? {
+        total: 0,
+        completed: new Set<number>(),
+      };
+      if ('chunkCount' in progress && typeof progress.chunkCount === 'number')
+        entry.total = progress.chunkCount;
+      if (
+        (progress.stage === 'organizer_chunk_saved' ||
+          progress.stage === 'organizer_chunk_loaded') &&
+        'chunkIndex' in progress &&
+        typeof progress.chunkIndex === 'number'
+      )
+        entry.completed.add(progress.chunkIndex);
       if (progress.stage === 'processing_with_merged_markdown') {
-        entry.completed = new Set(Array.from({ length: progress.chunkCount }, (_, index) => index + 1));
+        entry.completed = new Set(
+          Array.from({ length: progress.chunkCount }, (_, index) => index + 1),
+        );
       }
       progressByFile.set(file.ocrFileKey, entry);
       let totalChunks = 0;
@@ -1002,8 +1032,13 @@ export function createSteelOcrService(deps: SteelOcrServiceDependencies): SteelO
       latestStage = progress.stage;
       latestTotalChunks = Math.max(totalChunks, completedChunks);
       latestCompletedChunks = completedChunks;
-      const updated = await runs.updatePreflightRun({ ...turn, runId: run.runId, stage: progress.stage,
-        totalChunks: latestTotalChunks, completedChunks: latestCompletedChunks });
+      const updated = await runs.updatePreflightRun({
+        ...turn,
+        runId: run.runId,
+        stage: progress.stage,
+        totalChunks: latestTotalChunks,
+        completedChunks: latestCompletedChunks,
+      });
       if (!updated) throw new DOMException('OCR execution is no longer active', 'AbortError');
       return {
         runId: run.runId,
@@ -1014,32 +1049,31 @@ export function createSteelOcrService(deps: SteelOcrServiceDependencies): SteelO
         totalChunks: latestTotalChunks,
       };
     };
-    return runWithSteelOcrExecution({ scope, responseGenerationId, executionEpoch, signal: input.signal }, async (signal) => {
-      try {
-        const result = await runPreflight({
-          ...input,
-          signal,
-          flow: {
-            runId: run.runId,
-            getSummary: () => ({
-              stage: latestStage,
-              completedChunks: latestCompletedChunks,
-              totalChunks: latestTotalChunks,
-            }),
-            track,
-          },
-        });
-        if (input.resume && result.status === 'skipped') {
-          throw new SteelFlowReplayError('flow_not_resumable');
-        }
-        await runs.updatePreflightRun({ ...turn, runId: run.runId, stage: 'agent' });
-        return result;
-      } catch (error) {
-        await runs.settleTurn({ scope, responseGenerationId, executionEpoch,
-          status: getSteelOcrFailureStatus(signal) });
-        throw error;
-      }
-    });
+    const { signal } = input;
+    try {
+      const result = await runPreflight({
+        ...input,
+        flow: {
+          runId: run.runId,
+          getSummary: () => ({
+            stage: latestStage,
+            completedChunks: latestCompletedChunks,
+            totalChunks: latestTotalChunks,
+          }),
+          track,
+        },
+      });
+      await runs.updatePreflightRun({ ...turn, runId: run.runId, stage: 'agent' });
+      return result;
+    } catch (error) {
+      await runs.settleTurn({
+        scope,
+        responseGenerationId,
+        executionEpoch,
+        status: getSteelOcrFailureStatus(signal),
+      });
+      throw error;
+    }
   }
 
   return {

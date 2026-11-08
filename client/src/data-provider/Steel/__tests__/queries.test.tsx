@@ -6,7 +6,6 @@ import { DynamicQueryKeys, QueryKeys, dataService } from 'librechat-data-provide
 import type { OpenAIOAuthTokenStatus, SteelQuotationStatus } from 'librechat-data-provider';
 import type { PropsWithChildren } from 'react';
 import {
-  useCancelSteelQuotationMutation,
   useGetSteelQuotationStatusQuery,
   useGetSteelReviewReceiptQuery,
   useLogoutOpenAIOAuthCodexMutation,
@@ -89,53 +88,6 @@ describe('OpenAI OAuth token mutations', () => {
   });
 });
 
-describe('Steel quotation cancellation', () => {
-  const conversationId = 'conversation-1';
-  const runningStatus = {
-    conversationId,
-    index: 4,
-    runId: 'quotation-run-4',
-    status: 'running' as const,
-    completedChunks: 1,
-    totalChunks: 3,
-    canCancel: true,
-  };
-
-  it('stores the backend cancellation result under the exact status query key', async () => {
-    const queryClient = new QueryClient();
-    const cancelledStatus = { ...runningStatus, status: 'cancelled' as const, canCancel: false };
-    jest.spyOn(dataService, 'cancelSteelQuotation').mockResolvedValue(cancelledStatus);
-    const { result } = renderHook(() => useCancelSteelQuotationMutation(conversationId), {
-      wrapper: createWrapper(queryClient),
-    });
-
-    await act(async () => {
-      await result.current.mutateAsync(4);
-    });
-
-    expect(queryClient.getQueryData(DynamicQueryKeys.steelFlowStatus(conversationId, 'quotation', runningStatus.runId))).toEqual(
-      cancelledStatus,
-    );
-  });
-
-  it('does not fabricate a terminal cancellation result when the API fails', async () => {
-    const queryClient = new QueryClient();
-    queryClient.setQueryData(DynamicQueryKeys.steelFlowStatus(conversationId, 'quotation', runningStatus.runId), runningStatus);
-    jest.spyOn(dataService, 'cancelSteelQuotation').mockRejectedValue(new Error('request failed'));
-    const { result } = renderHook(() => useCancelSteelQuotationMutation(conversationId), {
-      wrapper: createWrapper(queryClient),
-    });
-
-    await act(async () => {
-      await expect(result.current.mutateAsync(4)).rejects.toThrow('request failed');
-    });
-
-    expect(queryClient.getQueryData(DynamicQueryKeys.steelFlowStatus(conversationId, 'quotation', runningStatus.runId))).toEqual(
-      runningStatus,
-    );
-  });
-});
-
 describe('Steel flow status cache', () => {
   const conversationId = 'conversation-flow';
   const running: SteelQuotationStatus = {
@@ -145,7 +97,6 @@ describe('Steel flow status cache', () => {
     status: 'running',
     completedChunks: 0,
     totalChunks: 3,
-    canCancel: true,
   };
 
   it('shares a fresh status across mounts and preserves a replaced run’s own progress', async () => {
@@ -155,9 +106,12 @@ describe('Steel flow status cache', () => {
       completedChunks: 1,
     });
     const Wrapper = createWrapper(client);
-    const first = renderHook(() => useGetSteelQuotationStatusQuery(conversationId, 'run-a', running), {
-      wrapper: Wrapper,
-    });
+    const first = renderHook(
+      () => useGetSteelQuotationStatusQuery(conversationId, 'run-a', running),
+      {
+        wrapper: Wrapper,
+      },
+    );
     await waitFor(() => expect(first.result.current.data?.completedChunks).toBe(1));
     renderHook(() => useGetSteelQuotationStatusQuery(conversationId, 'run-a', running), {
       wrapper: Wrapper,
@@ -189,30 +143,39 @@ describe('Steel flow status cache', () => {
     renderHook(() => useGetSteelQuotationStatusQuery(conversationId, 'run-b'), {
       wrapper: createWrapper(client),
     });
-    await waitFor(() => expect(client.getQueryData(olderKey)).toMatchObject({
-      runId: 'run-a',
-      latestRunId: 'run-b',
-      status: 'paused',
-      completedChunks: 1,
-    }));
+    await waitFor(() =>
+      expect(client.getQueryData(olderKey)).toMatchObject({
+        runId: 'run-a',
+        latestRunId: 'run-b',
+        status: 'paused',
+        completedChunks: 1,
+      }),
+    );
   });
 
   it('polls a disconnected running flow once per interval across cards and stops when paused', async () => {
     jest.useFakeTimers();
     try {
       const client = new QueryClient();
-      const getStatus = jest.spyOn(dataService, 'getSteelQuotationStatus')
+      const getStatus = jest
+        .spyOn(dataService, 'getSteelQuotationStatus')
         .mockResolvedValueOnce(running)
         .mockResolvedValue({ ...running, status: 'paused' });
       const wrapper = createWrapper(client);
       const useStatus = () => useGetSteelQuotationStatusQuery(conversationId, 'run-a', running);
       renderHook(useStatus, { wrapper });
       renderHook(useStatus, { wrapper });
-      await act(async () => { await jest.advanceTimersByTimeAsync(2_499); });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(2_499);
+      });
       expect(getStatus).toHaveBeenCalledTimes(1);
-      await act(async () => { await jest.advanceTimersByTimeAsync(2); });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(2);
+      });
       expect(getStatus).toHaveBeenCalledTimes(2);
-      await act(async () => { await jest.advanceTimersByTimeAsync(10_000); });
+      await act(async () => {
+        await jest.advanceTimersByTimeAsync(10_000);
+      });
       expect(getStatus).toHaveBeenCalledTimes(2);
     } finally {
       jest.useRealTimers();
@@ -223,8 +186,14 @@ describe('Steel flow status cache', () => {
     const client = new QueryClient();
     const store = createStore();
     let resolveStatus: (value: SteelQuotationStatus) => void = () => {};
-    const getStatus = jest.spyOn(dataService, 'getSteelQuotationStatus')
-      .mockImplementationOnce(() => new Promise((resolve) => { resolveStatus = resolve; }))
+    const getStatus = jest
+      .spyOn(dataService, 'getSteelQuotationStatus')
+      .mockImplementationOnce(
+        () =>
+          new Promise((resolve) => {
+            resolveStatus = resolve;
+          }),
+      )
       .mockResolvedValue({ ...running, status: 'paused', completedChunks: 2 });
     const createConnection = () => {
       const events = new EventTarget();
@@ -248,15 +217,21 @@ describe('Steel flow status cache', () => {
         </Provider>
       );
     }
-    const { result } = renderHook(() => useGetSteelQuotationStatusQuery(conversationId, 'run-a', running), {
-      wrapper: Wrapper,
-    });
+    const { result } = renderHook(
+      () => useGetSteelQuotationStatusQuery(conversationId, 'run-a', running),
+      {
+        wrapper: Wrapper,
+      },
+    );
     expect(getStatus).toHaveBeenCalledTimes(1);
 
     await act(async () => {
       first(SSE.OPEN);
       replacement(SSE.OPEN);
-      writeSteelFlowStatus(client, conversationId, 'quotation', 'run-a', { ...running, completedChunks: 2 });
+      writeSteelFlowStatus(client, conversationId, 'quotation', 'run-a', {
+        ...running,
+        completedChunks: 2,
+      });
       first(SSE.CLOSED);
       resolveStatus(running);
     });
@@ -275,17 +250,24 @@ describe('Steel review receipt query', () => {
       throw new Error('receipt query must not read the global Recoil toggle');
     });
     try {
-      const { result } = renderHook(() => useGetSteelReviewReceiptQuery({
-        conversationId: 'conversation-1',
-        kind: 'ocr_result',
-        messageId: 'message-1',
-        title: 'ocr_result',
-        outputId: 'ocr_result:generation-1',
-        operationId: 'operation-1',
-        digest: 'a'.repeat(64),
-      }, { enabled: false }), {
-        wrapper: createWrapper(new QueryClient()),
-      });
+      const { result } = renderHook(
+        () =>
+          useGetSteelReviewReceiptQuery(
+            {
+              conversationId: 'conversation-1',
+              kind: 'ocr_result',
+              messageId: 'message-1',
+              title: 'ocr_result',
+              outputId: 'ocr_result:generation-1',
+              operationId: 'operation-1',
+              digest: 'a'.repeat(64),
+            },
+            { enabled: false },
+          ),
+        {
+          wrapper: createWrapper(new QueryClient()),
+        },
+      );
       expect(result.current.fetchStatus).toBe('idle');
     } finally {
       recoil.useRecoilValue.mockImplementation(() => true);

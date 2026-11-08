@@ -130,7 +130,10 @@ const SettledMarkdown = ({ content }: { content: string }) => (
  * elements, so it is visually and functionally irrelevant — normalize it away
  * before comparing structure.
  */
-const normalizeHtml = (html: string) => html.replace(/>\s+</g, '><').trim();
+/** React `useId` values depend on how many components rendered before, not on the markup. */
+const normalizeIds = (html: string) => html.replace(/(["\s])id=":[^"]+:"/g, '$1id=":id:"');
+
+const normalizeHtml = (html: string) => normalizeIds(html).replace(/>\s+</g, '><').trim();
 
 const indicesIn = (container: HTMLElement) =>
   Array.from(container.querySelectorAll('[data-testid="cb"]')).map((el) => ({
@@ -333,7 +336,7 @@ describe('MarkdownBlocks finished and streamed messages', () => {
     expect(splitSpy).not.toHaveBeenCalled();
     // One pipeline reproduces the whole-message renderer exactly, down to the
     // whitespace between blocks that separately parsed blocks cannot carry.
-    expect(settledC.innerHTML).toBe(oldC.innerHTML);
+    expect(normalizeIds(settledC.innerHTML)).toBe(normalizeIds(oldC.innerHTML));
   });
 
   it('splits the message that is generating, so only its last block re-parses', () => {

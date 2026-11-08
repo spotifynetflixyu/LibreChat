@@ -14,7 +14,7 @@ import type {
   SteelQuotationScope,
   SteelQuotationTicket,
 } from '@librechat/data-schemas';
-import { seedCompletedRun, seedLegacyPublication } from './fixtures';
+import { expireQuotationRun, seedCompletedRun, seedLegacyPublication } from './fixtures';
 import { createSteelQuotationStateService } from './state';
 import { createQuotationRouteHandlers } from './routes';
 
@@ -113,37 +113,73 @@ describe('Steel quotation temporary input lifecycle', () => {
     const firstTicket = await prepareTicket();
     const delayedTicket = await prepareTicket();
     const admission = (ticket: SteelQuotationTicket) => ({
-      scope, index: ticket.index, token: ticket.token, orderHash: ticket.orderHash,
-      customerMarkdown: ticket.customerMarkdown, customerIdentity: ticket.customerIdentity,
-      prompts, chunks: [{ index: 1, sourceRowCount: 1 }],
+      scope,
+      index: ticket.index,
+      token: ticket.token,
+      orderHash: ticket.orderHash,
+      customerMarkdown: ticket.customerMarkdown,
+      customerIdentity: ticket.customerIdentity,
+      prompts,
+      chunks: [{ index: 1, sourceRowCount: 1 }],
     });
     const first = await service.acceptSignal(admission(firstTicket));
     await seedCompletedRun({ mongoose, scope, run: first });
     const completed = (await service.readState(scope))?.activeRun;
     if (!completed) throw new Error('Missing completed run');
     const before = await service.readState(scope);
-    const issue = () => service.issueTicket({ scope, customerMarkdown: firstTicket.customerMarkdown,
-      customerIdentity: firstTicket.customerIdentity, triggeringMessageId: 'late-response',
-      selectionProvenance: firstTicket.selectionProvenance });
+    const issue = () =>
+      service.issueTicket({
+        scope,
+        customerMarkdown: firstTicket.customerMarkdown,
+        customerIdentity: firstTicket.customerIdentity,
+        triggeringMessageId: 'late-response',
+        selectionProvenance: firstTicket.selectionProvenance,
+      });
     await expect(issue()).rejects.toThrow('unfinished or unpublished');
-    await expect(service.saveCustomer({ scope, customerMarkdown: 'changed customer',
-      customerIdentity: 'changed', triggeringMessageId: 'late-customer', responseId: 'late-customer-response',
-      orderHash: firstTicket.orderHash, selectionProvenance: firstTicket.selectionProvenance }))
-      .rejects.toThrow('unfinished or unpublished');
-    await expect(service.acceptSignal(admission(delayedTicket))).rejects.toMatchObject({ code: 'concurrent_change' });
+    await expect(
+      service.saveCustomer({
+        scope,
+        customerMarkdown: 'changed customer',
+        customerIdentity: 'changed',
+        triggeringMessageId: 'late-customer',
+        responseId: 'late-customer-response',
+        orderHash: firstTicket.orderHash,
+        selectionProvenance: firstTicket.selectionProvenance,
+      }),
+    ).rejects.toThrow('unfinished or unpublished');
+    await expect(service.acceptSignal(admission(delayedTicket))).rejects.toMatchObject({
+      code: 'concurrent_change',
+    });
     expect((await service.readState(scope))?.tickets).toEqual(before?.tickets);
     expect((await service.readState(scope))?.activeRun).toEqual(completed);
     expect(await Artifact.countDocuments({ ...scope, kind: 'snapshot' })).toBe(1);
     expect(await Artifact.countDocuments({ ...scope, kind: 'archive' })).toBe(0);
 
     // A checkpoint alone is insufficient: the durable receipt and final hash must verify.
-    await State.updateOne(scope, { $push: { 'activeRun.checkpointRefs': {
-      operationId: 'published', kind: 'final', artifactId: 'missing', sha256: 'missing', updatedAt: new Date(),
-    } } });
+    await State.updateOne(scope, {
+      $push: {
+        'activeRun.checkpointRefs': {
+          operationId: 'published',
+          kind: 'final',
+          artifactId: 'missing',
+          sha256: 'missing',
+          updatedAt: new Date(),
+        },
+      },
+    });
     await expect(issue()).rejects.toThrow('unfinished or unpublished');
-    await expect(service.acceptSignal(admission(delayedTicket))).rejects.toMatchObject({ code: 'concurrent_change' });
-    await State.updateOne(scope, { $set: { 'activeRun.checkpointRefs': completed.checkpointRefs } });
-    await seedLegacyPublication({ mongoose, scope, run: first, markdown: 'completed published result' });
+    await expect(service.acceptSignal(admission(delayedTicket))).rejects.toMatchObject({
+      code: 'concurrent_change',
+    });
+    await State.updateOne(scope, {
+      $set: { 'activeRun.checkpointRefs': completed.checkpointRefs },
+    });
+    await seedLegacyPublication({
+      mongoose,
+      scope,
+      run: first,
+      markdown: 'completed published result',
+    });
     const methods = createSteelQuotationInputMethods(mongoose);
     let raced = false;
     const delayedIssuer = createSteelQuotationStateService(mongoose, {
@@ -159,16 +195,24 @@ describe('Steel quotation temporary input lifecycle', () => {
       },
     });
     // Complete another admitted run between the issuer's publication check and ticket CAS.
-    await expect(delayedIssuer.issueTicket({ scope, customerMarkdown: firstTicket.customerMarkdown,
-      customerIdentity: firstTicket.customerIdentity, triggeringMessageId: 'delayed-ticket-cas',
-      selectionProvenance: firstTicket.selectionProvenance })).rejects.toThrow('unfinished or unpublished');
+    await expect(
+      delayedIssuer.issueTicket({
+        scope,
+        customerMarkdown: firstTicket.customerMarkdown,
+        customerIdentity: firstTicket.customerIdentity,
+        triggeringMessageId: 'delayed-ticket-cas',
+        selectionProvenance: firstTicket.selectionProvenance,
+      }),
+    ).rejects.toThrow('unfinished or unpublished');
     const afterRace = await service.readState(scope);
     expect(afterRace?.activeRun?.runId).toBe(delayedTicket.token);
     expect(afterRace?.activeRun?.status).toBe('completed');
     expect(afterRace?.tickets).toHaveLength(2);
     expect(afterRace?.nextSignalIndex).toBe(2);
     expect(await Artifact.countDocuments({ ...scope, kind: 'snapshot' })).toBe(1);
-    expect(await Artifact.countDocuments({ ...scope, runId: first.runId, kind: 'archive' })).toBe(1);
+    expect(await Artifact.countDocuments({ ...scope, runId: first.runId, kind: 'archive' })).toBe(
+      1,
+    );
   });
 
   it('admits one immutable input, records its TTL, and blocks generic snapshot recreation', async () => {
@@ -200,21 +244,23 @@ describe('Steel quotation temporary input lifecycle', () => {
     expect(snapshots[0].expiresAt?.getTime()).toBe(
       snapshots[0].createdAt!.getTime() + STEEL_QUOTATION_INPUT_TTL_MS,
     );
-    await expect(service.writeArtifact({
-      scope,
-      runId: runs[0].runId,
-      operationId: 'snapshot-recreated',
-      kind: 'snapshot',
-      payload: 'recreated input',
-    })).rejects.toThrow('Quotation OCR input is unavailable or changed');
+    await expect(
+      service.writeArtifact({
+        scope,
+        runId: runs[0].runId,
+        operationId: 'snapshot-recreated',
+        kind: 'snapshot',
+        payload: 'recreated input',
+      }),
+    ).rejects.toThrow('Quotation OCR input is unavailable or changed');
   });
 
-  it('cancels only the scoped snapshot, retains runtime artifacts, and allows a fresh ticket', async () => {
+  it('expires only the scoped snapshot, retains runtime artifacts, and allows a fresh ticket', async () => {
     const first = await acceptRun();
     const lease = await service.acquireLease({
       scope,
       runId: first.run.runId,
-      leaseToken: 'cancel-lease',
+      leaseToken: 'expiring-lease',
     });
     if (!lease) throw new Error('test setup did not acquire a lease');
     await service.checkpoint({
@@ -246,28 +292,33 @@ describe('Steel quotation temporary input lifecycle', () => {
       payload: foreignPayload,
     });
 
-    await expect(service.cancelRun({ scope, runId: first.run.runId })).resolves.toEqual(
-      expect.objectContaining({ status: 'cancelled' }),
-    );
-    await expect(service.cancelRun({ scope, runId: first.run.runId })).resolves.toEqual(
-      expect.objectContaining({ status: 'cancelled' }),
-    );
-    expect(await Artifact.countDocuments({ ...scope, runId: first.run.runId, operationId: 'snapshot' })).toBe(0);
-    expect(await Artifact.countDocuments({ ...scope, runId: first.run.runId, operationId: 'chunk:1' })).toBe(1);
-    expect(await Artifact.countDocuments({ ...scope, runId: first.run.runId, operationId: 'final' })).toBe(1);
+    const expire = () => expireQuotationRun({ mongoose, scope, runId: first.run.runId });
+    await expect(expire()).resolves.toEqual(expect.objectContaining({ status: 'cancelled' }));
+    await expect(expire()).resolves.toEqual(expect.objectContaining({ status: 'cancelled' }));
+    expect(
+      await Artifact.countDocuments({ ...scope, runId: first.run.runId, operationId: 'snapshot' }),
+    ).toBe(0);
+    expect(
+      await Artifact.countDocuments({ ...scope, runId: first.run.runId, operationId: 'chunk:1' }),
+    ).toBe(1);
+    expect(
+      await Artifact.countDocuments({ ...scope, runId: first.run.runId, operationId: 'final' }),
+    ).toBe(1);
     expect(await Artifact.countDocuments(foreignScope)).toBe(1);
     expect((await service.readState(scope))?.tickets[0]?.acceptedRunId).toBe(first.run.runId);
 
-    await expect(service.acceptSignal({
-      scope,
-      index: first.ticket.index,
-      token: first.ticket.token,
-      orderHash: first.ticket.orderHash,
-      customerMarkdown: first.ticket.customerMarkdown,
-      customerIdentity: first.ticket.customerIdentity,
-      prompts,
-      chunks: [{ index: 1, sourceRowCount: 1 }],
-    })).resolves.toEqual(expect.objectContaining({ runId: first.run.runId, status: 'cancelled' }));
+    await expect(
+      service.acceptSignal({
+        scope,
+        index: first.ticket.index,
+        token: first.ticket.token,
+        orderHash: first.ticket.orderHash,
+        customerMarkdown: first.ticket.customerMarkdown,
+        customerIdentity: first.ticket.customerIdentity,
+        prompts,
+        chunks: [{ index: 1, sourceRowCount: 1 }],
+      }),
+    ).resolves.toEqual(expect.objectContaining({ runId: first.run.runId, status: 'cancelled' }));
 
     const nextTicket = await service.issueTicket({
       scope,
@@ -302,29 +353,41 @@ describe('Steel quotation temporary input lifecycle', () => {
     expect(lease).toBeDefined();
     await State.updateOne(
       { ...scope, 'activeRun.runId': first.run.runId },
-      { $set: { 'activeRun.acceptedAt': new Date(acceptedAt.getTime() - STEEL_QUOTATION_INPUT_TTL_MS - 1_000) } },
+      {
+        $set: {
+          'activeRun.acceptedAt': new Date(
+            acceptedAt.getTime() - STEEL_QUOTATION_INPUT_TTL_MS - 1_000,
+          ),
+        },
+      },
     );
     await Artifact.deleteOne({ ...scope, runId: first.run.runId, operationId: 'snapshot' });
     const expiredAt = new Date();
 
-    await expect(service.heartbeatLease({
-      scope,
-      runId: first.run.runId,
-      leaseToken: lease!.leaseToken,
-      now: expiredAt,
-    })).resolves.toBeUndefined();
-    await expect(service.checkpoint({
-      scope,
-      runId: first.run.runId,
-      leaseToken: lease!.leaseToken,
-      operationId: 'chunk:late',
-      kind: 'chunk',
-      payload: 'late checkpoint',
-      chunkIndex: 1,
-      now: expiredAt,
-    })).resolves.toBeUndefined();
+    await expect(
+      service.heartbeatLease({
+        scope,
+        runId: first.run.runId,
+        leaseToken: lease!.leaseToken,
+        now: expiredAt,
+      }),
+    ).resolves.toBeUndefined();
+    await expect(
+      service.checkpoint({
+        scope,
+        runId: first.run.runId,
+        leaseToken: lease!.leaseToken,
+        operationId: 'chunk:late',
+        kind: 'chunk',
+        payload: 'late checkpoint',
+        chunkIndex: 1,
+        now: expiredAt,
+      }),
+    ).resolves.toBeUndefined();
     expect((await service.readState(scope))?.activeRun?.status).toBe('cancelled');
-    expect(await Artifact.countDocuments({ ...scope, runId: first.run.runId, operationId: 'snapshot' })).toBe(0);
+    expect(
+      await Artifact.countDocuments({ ...scope, runId: first.run.runId, operationId: 'snapshot' }),
+    ).toBe(0);
 
     const nextTicket = await service.issueTicket({
       scope,
@@ -346,30 +409,43 @@ describe('Steel quotation temporary input lifecycle', () => {
     expect(nextRun.runId).not.toBe(first.run.runId);
   });
 
-  it('rolls back cancellation when scoped snapshot deletion fails and succeeds on retry', async () => {
+  it('rolls back expiry when scoped snapshot deletion fails and succeeds on retry', async () => {
     const prepared = await acceptRun();
     const originalDeleteOne = Artifact.collection.deleteOne.bind(Artifact.collection);
-    const deleteSpy = jest.spyOn(Artifact.collection, 'deleteOne')
+    const deleteSpy = jest
+      .spyOn(Artifact.collection, 'deleteOne')
       .mockImplementationOnce(async () => {
         throw new Error('injected snapshot delete failure');
       })
       .mockImplementation((...args) => originalDeleteOne(...args));
     try {
-      await expect(service.cancelRun({ scope, runId: prepared.run.runId })).rejects.toThrow(
-        'injected snapshot delete failure',
-      );
+      await expect(
+        expireQuotationRun({ mongoose, scope, runId: prepared.run.runId }),
+      ).rejects.toThrow('injected snapshot delete failure');
     } finally {
       deleteSpy.mockRestore();
     }
     const rolledBack = await State.findOne(scope).lean();
     expect(rolledBack?.activeRun?.status).toBe('running');
     expect(rolledBack?.activeRun?.leaseToken).toBeUndefined();
-    expect(await Artifact.countDocuments({ ...scope, runId: prepared.run.runId, operationId: 'snapshot' })).toBe(1);
+    expect(
+      await Artifact.countDocuments({
+        ...scope,
+        runId: prepared.run.runId,
+        operationId: 'snapshot',
+      }),
+    ).toBe(1);
 
-    await expect(service.cancelRun({ scope, runId: prepared.run.runId })).resolves.toEqual(
-      expect.objectContaining({ status: 'cancelled' }),
-    );
-    expect(await Artifact.countDocuments({ ...scope, runId: prepared.run.runId, operationId: 'snapshot' })).toBe(0);
+    await expect(
+      expireQuotationRun({ mongoose, scope, runId: prepared.run.runId }),
+    ).resolves.toEqual(expect.objectContaining({ status: 'cancelled' }));
+    expect(
+      await Artifact.countDocuments({
+        ...scope,
+        runId: prepared.run.runId,
+        operationId: 'snapshot',
+      }),
+    ).toBe(0);
   });
 
   it('lets MongoDB TTL delete only expired snapshots while final and publication artifacts remain', async () => {
@@ -398,23 +474,51 @@ describe('Steel quotation temporary input lifecycle', () => {
       { $set: { expiresAt: new Date(Date.now() + 1_000) } },
     );
 
-    await waitFor(async () =>
-      (await Artifact.countDocuments({ ...scope, runId: prepared.run.runId, operationId: 'snapshot' })) === 0,
+    await waitFor(
+      async () =>
+        (await Artifact.countDocuments({
+          ...scope,
+          runId: prepared.run.runId,
+          operationId: 'snapshot',
+        })) === 0,
     );
-    expect(await Artifact.countDocuments({ ...scope, runId: prepared.run.runId, operationId: 'final' })).toBe(1);
-    expect(await Artifact.countDocuments({ ...scope, runId: prepared.run.runId, operationId: 'published' })).toBe(1);
+    expect(
+      await Artifact.countDocuments({ ...scope, runId: prepared.run.runId, operationId: 'final' }),
+    ).toBe(1);
+    expect(
+      await Artifact.countDocuments({
+        ...scope,
+        runId: prepared.run.runId,
+        operationId: 'published',
+      }),
+    ).toBe(1);
     expect(await Artifact.countDocuments({ expiresAt: { $exists: true } })).toBe(0);
   });
 });
 
 it('reconciles a disappeared quotation generation as interrupted through the status API', async () => {
   const { run } = await acceptRun();
-  await service.acquireLease({ scope, runId: run.runId, executionResponseId: 'response', executionEpoch: 42 });
+  await service.acquireLease({
+    scope,
+    runId: run.runId,
+    executionResponseId: 'response',
+    executionEpoch: 42,
+  });
   const app = express();
-  app.use((req, _res, next) => { Object.assign(req, { user: { id: scope.userId } }); next(); });
-  const handlers = createQuotationRouteHandlers({ ownsConversation: async () => true, readGeneration: async () => null });
+  app.use((req, _res, next) => {
+    Object.assign(req, { user: { id: scope.userId } });
+    next();
+  });
+  const handlers = createQuotationRouteHandlers({
+    ownsConversation: async () => true,
+    readGeneration: async () => null,
+  });
   app.get('/status/:conversationId', handlers.status);
   const result = await request(app).get(`/status/${scope.conversationId}`);
   expect(result.status).toBe(200);
-  expect(result.body).toMatchObject({ runId: run.runId, latestRunId: run.runId, status: 'interrupted' });
+  expect(result.body).toMatchObject({
+    runId: run.runId,
+    latestRunId: run.runId,
+    status: 'interrupted',
+  });
 });

@@ -98,15 +98,6 @@ router.get(
   handlers.readReviewSourcePageCount,
 );
 router.get('/conversations/:conversationId/quotation', requireJwtAuth, quotation.status);
-router.post(
-  '/conversations/:conversationId/quotation/:index/cancel',
-  requireJwtAuth,
-  quotation.cancel,
-);
-
-router.post('/conversations/:conversationId/quotation/:index/pause', requireJwtAuth, quotation.pause);
 router.get('/conversations/:conversationId/ocr/:runId/status', requireJwtAuth, ocr.status);
-router.post('/conversations/:conversationId/ocr/:runId/pause', requireJwtAuth, ocr.pause);
-router.post('/conversations/:conversationId/ocr/:runId/cancel', requireJwtAuth, ocr.cancel);
 
 module.exports = router;

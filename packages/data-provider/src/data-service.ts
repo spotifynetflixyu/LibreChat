@@ -200,7 +200,9 @@ export function getSteelMarkdownVersions(conversationId: string): Promise<SteelM
   return request.get(endpoints.steelMarkdownVersions(conversationId));
 }
 
-export function commitSteelCustomer(input: SteelCustomerCommit): Promise<SteelCustomerSaveResponse> {
+export function commitSteelCustomer(
+  input: SteelCustomerCommit,
+): Promise<SteelCustomerSaveResponse> {
   return request.post(endpoints.steelCustomer(input.conversationId), input);
 }
 
@@ -240,15 +242,17 @@ export function getSteelReviewReceipt(
   digest: string,
   title: string,
 ): Promise<SteelReviewReceiptStatus> {
-  return request.get(endpoints.steelReviewReceipt(
-    conversationId,
-    kind,
-    messageId,
-    outputId,
-    operationId,
-    digest,
-    title,
-  ));
+  return request.get(
+    endpoints.steelReviewReceipt(
+      conversationId,
+      kind,
+      messageId,
+      outputId,
+      operationId,
+      digest,
+      title,
+    ),
+  );
 }
 
 export function getSteelReviewSources(
@@ -279,13 +283,6 @@ export function getSteelReviewSourcePageCount(
   messageId: string,
 ): Promise<SteelReviewSourcePageCount> {
   return request.get(endpoints.steelReviewSourcePageCount(conversationId, kind, fileId, messageId));
-}
-
-export function cancelSteelQuotation(
-  conversationId: string,
-  index: number,
-): Promise<SteelQuotationStatus> {
-  return request.post(endpoints.steelQuotationCancel(conversationId, index));
 }
 
 export function getOpenAIOAuthTokenStatus(): Promise<OpenAIOAuthTokenStatus> {
@@ -1858,16 +1855,4 @@ export const getActiveJobs = (): Promise<ActiveJobsResponse> => {
 
 export function getSteelOcrStatus(conversationId: string, runId: string): Promise<SteelOcrStatus> {
   return request.get(endpoints.steelOcrStatus(conversationId, runId));
-}
-
-export function pauseSteelOcr(conversationId: string, runId: string): Promise<SteelOcrStatus> {
-  return request.post(endpoints.steelOcrControl(conversationId, runId, 'pause'));
-}
-
-export function cancelSteelOcr(conversationId: string, runId: string): Promise<SteelOcrStatus> {
-  return request.post(endpoints.steelOcrControl(conversationId, runId, 'cancel'));
-}
-
-export function pauseSteelQuotation(conversationId: string, index: number): Promise<SteelQuotationStatus> {
-  return request.post(endpoints.steelQuotationPause(conversationId, index));
 }

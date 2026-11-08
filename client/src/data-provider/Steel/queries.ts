@@ -2,12 +2,7 @@ import { useMemo } from 'react';
 import { useRecoilValue } from 'recoil';
 import { atom, useAtomValue, useStore } from 'jotai';
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import {
-  DynamicQueryKeys,
-  MutationKeys,
-  QueryKeys,
-  dataService,
-} from 'librechat-data-provider';
+import { DynamicQueryKeys, MutationKeys, QueryKeys, dataService } from 'librechat-data-provider';
 import type {
   OpenAIOAuthTokenLoginStatus,
   OpenAIOAuthTokenLoginMethod,
@@ -27,7 +22,6 @@ import type {
   SteelReviewSaveResponse,
   SteelReviewSourcesResponse,
   SteelReviewSourcePageCount,
-  SteelQuotationStatus,
   SteelOcrStatus,
   SteelOcrKind,
   TMessage,
@@ -43,7 +37,6 @@ import {
   markOlderSteelFlows,
   quotationFlowKey,
   steelStreamOwners,
-  writeSteelFlowStatus,
 } from './flow';
 import store from '~/store';
 
@@ -153,52 +146,65 @@ export const useGetSteelOcrStatusQuery = (
   kind: SteelOcrKind,
   initialData?: SteelOcrStatus,
 ): QueryObserverResult<SteelOcrStatus> =>
-  useSteelStatusQuery<SteelOcrFlowStatus>(conversationId, kind, runId, async (current) => {
-    const data = await dataService.getSteelOcrStatus(conversationId, runId);
-    if (data.runId !== runId || data.kind !== kind) {
-      throw new SteelFlowExpiredError();
-    }
-    return {
-      ...data,
-      generationCreatedAt: current?.generationCreatedAt,
-      delegateOcrIndex: current?.delegateOcrIndex,
-      verifiedByStatus: true,
-    };
-  }, initialData);
+  useSteelStatusQuery<SteelOcrFlowStatus>(
+    conversationId,
+    kind,
+    runId,
+    async (current) => {
+      const data = await dataService.getSteelOcrStatus(conversationId, runId);
+      if (data.runId !== runId || data.kind !== kind) {
+        throw new SteelFlowExpiredError();
+      }
+      return {
+        ...data,
+        generationCreatedAt: current?.generationCreatedAt,
+        delegateOcrIndex: current?.delegateOcrIndex,
+        verifiedByStatus: true,
+      };
+    },
+    initialData,
+  );
 
 export const useGetSteelQuotationStatusQuery = (
   conversationId: string,
   runId: string,
   initialData?: SteelQuotationFlowStatus,
 ): QueryObserverResult<SteelQuotationFlowStatus> =>
-  useSteelStatusQuery<SteelQuotationFlowStatus>(conversationId, 'quotation', runId, async (current) => {
-    const data = await dataService.getSteelQuotationStatus(conversationId);
-    if (data.conversationId !== conversationId) {
-      throw new SteelFlowExpiredError();
-    }
-    const actualKey = quotationFlowKey(data);
-    const matchesLegacyIndex = data.index != null && runId === `legacy:${data.index}`;
-    if (!matchesLegacyIndex && actualKey !== runId) {
-      if (current && actualKey) {
-        return { ...current, latestRunId: actualKey };
+  useSteelStatusQuery<SteelQuotationFlowStatus>(
+    conversationId,
+    'quotation',
+    runId,
+    async (current) => {
+      const data = await dataService.getSteelQuotationStatus(conversationId);
+      if (data.conversationId !== conversationId) {
+        throw new SteelFlowExpiredError();
       }
-      throw new SteelFlowExpiredError();
-    }
-    if (!current || current.stage !== data.stage || current.status !== data.status) {
-      return data;
-    }
-    const { note, chunkIndex, repairAttempt, maxRepairAttempts } = current;
-    return { ...data, note, chunkIndex, repairAttempt, maxRepairAttempts };
-  }, initialData);
+      const actualKey = quotationFlowKey(data);
+      const matchesLegacyIndex = data.index != null && runId === `legacy:${data.index}`;
+      if (!matchesLegacyIndex && actualKey !== runId) {
+        if (current && actualKey) {
+          return { ...current, latestRunId: actualKey };
+        }
+        throw new SteelFlowExpiredError();
+      }
+      if (!current || current.stage !== data.stage || current.status !== data.status) {
+        return data;
+      }
+      const { note, chunkIndex, repairAttempt, maxRepairAttempts } = current;
+      return { ...data, note, chunkIndex, repairAttempt, maxRepairAttempts };
+    },
+    initialData,
+  );
 
 export const useGetSteelMarkdownVersionsQuery = (
   conversationId: string,
   enabled: boolean,
-): QueryObserverResult<SteelMarkdownVersions> => useQuery<SteelMarkdownVersions>(
-  DynamicQueryKeys.steelMarkdownVersions(conversationId),
-  () => dataService.getSteelMarkdownVersions(conversationId),
-  { enabled, staleTime: Infinity, refetchOnWindowFocus: false },
-);
+): QueryObserverResult<SteelMarkdownVersions> =>
+  useQuery<SteelMarkdownVersions>(
+    DynamicQueryKeys.steelMarkdownVersions(conversationId),
+    () => dataService.getSteelMarkdownVersions(conversationId),
+    { enabled, staleTime: Infinity, refetchOnWindowFocus: false },
+  );
 
 export const useGetSteelReviewQuery = (
   input?: {
@@ -218,12 +224,13 @@ export const useGetSteelReviewQuery = (
       input?.messageId ?? '',
       input?.title ?? '',
     ),
-    () => dataService.getSteelReview(
-      input?.conversationId ?? '',
-      input?.kind ?? 'ocr_result',
-      input?.messageId ?? '',
-      input?.title ?? '',
-    ),
+    () =>
+      dataService.getSteelReview(
+        input?.conversationId ?? '',
+        input?.kind ?? 'ocr_result',
+        input?.messageId ?? '',
+        input?.title ?? '',
+      ),
     {
       refetchOnWindowFocus: false,
       refetchOnReconnect: true,
@@ -253,12 +260,13 @@ export const useGetSteelReviewSourcesQuery = (
       input?.messageId ?? '',
       input?.title ?? '',
     ),
-    () => dataService.getSteelReviewSources(
-      input?.conversationId ?? '',
-      input?.kind ?? 'ocr_result',
-      input?.messageId ?? '',
-      input?.title ?? '',
-    ),
+    () =>
+      dataService.getSteelReviewSources(
+        input?.conversationId ?? '',
+        input?.kind ?? 'ocr_result',
+        input?.messageId ?? '',
+        input?.title ?? '',
+      ),
     {
       refetchOnWindowFocus: false,
       refetchOnReconnect: true,
@@ -325,12 +333,13 @@ export const useGetSteelReviewSourcePageCountQuery = (
       input?.messageId ?? '',
       input?.fileId ?? '',
     ),
-    () => dataService.getSteelReviewSourcePageCount(
-      input?.conversationId ?? '',
-      input?.kind ?? 'ocr_result',
-      input?.fileId ?? '',
-      input?.messageId ?? '',
-    ),
+    () =>
+      dataService.getSteelReviewSourcePageCount(
+        input?.conversationId ?? '',
+        input?.kind ?? 'ocr_result',
+        input?.fileId ?? '',
+        input?.messageId ?? '',
+      ),
     {
       enabled,
       retry: false,
@@ -346,9 +355,8 @@ export const usePrepareSteelReviewMutation = (): UseMutationResult<
   SteelReviewPrepare,
   unknown
 > => {
-  return useMutation(
-    [MutationKeys.prepareSteelReview],
-    (input: SteelReviewPrepare) => dataService.prepareSteelReview(input),
+  return useMutation([MutationKeys.prepareSteelReview], (input: SteelReviewPrepare) =>
+    dataService.prepareSteelReview(input),
   );
 };
 
@@ -364,7 +372,9 @@ export const useCommitSteelReviewMutation = (): UseMutationResult<
     (input: SteelReviewCommit) => dataService.commitSteelReview(input),
     {
       onSuccess: (_data, input) => {
-        void queryClient.invalidateQueries(DynamicQueryKeys.steelMarkdownVersions(input.conversationId));
+        void queryClient.invalidateQueries(
+          DynamicQueryKeys.steelMarkdownVersions(input.conversationId),
+        );
         void queryClient.invalidateQueries(
           DynamicQueryKeys.steelReview(
             input.conversationId,
@@ -409,14 +419,21 @@ export const useCommitSteelCustomerMutation = (): UseMutationResult<
         }
 
         const versionsKey = DynamicQueryKeys.steelMarkdownVersions(input.conversationId);
-        queryClient.setQueryData<SteelMarkdownVersions>(versionsKey, (current) => current ? {
-          ...current,
-          versions: current.versions.map((version) =>
-            version.kind === 'customer_data' && version.messageId === input.messageId &&
-            version.outputId === input.outputId && version.title === input.title
-              ? { ...version, revision: data.revision }
-              : version),
-        } : current);
+        queryClient.setQueryData<SteelMarkdownVersions>(versionsKey, (current) =>
+          current
+            ? {
+                ...current,
+                versions: current.versions.map((version) =>
+                  version.kind === 'customer_data' &&
+                  version.messageId === input.messageId &&
+                  version.outputId === input.outputId &&
+                  version.title === input.title
+                    ? { ...version, revision: data.revision }
+                    : version,
+                ),
+              }
+            : current,
+        );
         void queryClient.invalidateQueries(versionsKey);
         void queryClient.invalidateQueries(
           DynamicQueryKeys.steelQuotationStatusPrefix(input.conversationId),
@@ -450,15 +467,16 @@ export const useGetSteelReviewReceiptQuery = (
       input?.digest ?? '',
       input?.title ?? '',
     ),
-    () => dataService.getSteelReviewReceipt(
-      input?.conversationId ?? '',
-      input?.kind ?? 'ocr_result',
-      input?.messageId ?? '',
-      input?.outputId ?? '',
-      input?.operationId ?? '',
-      input?.digest ?? '',
-      input?.title ?? '',
-    ),
+    () =>
+      dataService.getSteelReviewReceipt(
+        input?.conversationId ?? '',
+        input?.kind ?? 'ocr_result',
+        input?.messageId ?? '',
+        input?.outputId ?? '',
+        input?.operationId ?? '',
+        input?.digest ?? '',
+        input?.title ?? '',
+      ),
     {
       refetchOnWindowFocus: false,
       refetchOnReconnect: true,
@@ -520,51 +538,6 @@ export const useRefreshOpenAIOAuthTokenMutation = (): UseMutationResult<
     {
       onSuccess: (data) => {
         queryClient.setQueryData([QueryKeys.openAIOAuthTokenStatus], data);
-      },
-    },
-  );
-};
-
-export const useCancelSteelOcrMutation = (
-  conversationId?: string | null,
-): UseMutationResult<SteelOcrStatus, unknown, string, unknown> => {
-  const queryClient = useQueryClient();
-  return useMutation(
-    [MutationKeys.cancelSteelOcr, conversationId],
-    (runId: string) => dataService.cancelSteelOcr(conversationId ?? '', runId),
-    {
-      onSuccess: (data, runId) => {
-        if (conversationId) {
-          writeSteelFlowStatus(queryClient, conversationId, data.kind, data.runId || runId, data);
-        }
-      },
-      onError: (error) => {
-        if (conversationId && isSteelFlowExpiredError(error)) {
-          void queryClient.invalidateQueries([QueryKeys.steelFlowStatus, conversationId]);
-        }
-      },
-    },
-  );
-};
-
-export const useCancelSteelQuotationMutation = (
-  conversationId?: string | null,
-): UseMutationResult<SteelQuotationStatus, unknown, number, unknown> => {
-  const queryClient = useQueryClient();
-  return useMutation(
-    [MutationKeys.cancelSteelQuotation, conversationId],
-    (index: number) => dataService.cancelSteelQuotation(conversationId ?? '', index),
-    {
-      onSuccess: (data) => {
-        const runId = quotationFlowKey(data);
-        if (conversationId && runId) {
-          writeSteelFlowStatus(queryClient, conversationId, 'quotation', runId, data);
-        }
-      },
-      onError: (error) => {
-        if (conversationId && isSteelFlowExpiredError(error)) {
-          void queryClient.invalidateQueries(DynamicQueryKeys.steelQuotationStatusPrefix(conversationId));
-        }
       },
     },
   );

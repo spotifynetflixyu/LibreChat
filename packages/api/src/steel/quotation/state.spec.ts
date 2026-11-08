@@ -10,14 +10,11 @@ import type {
   SteelQuotationScope,
   SteelQuotationTicket,
 } from '@librechat/data-schemas';
-import type { Request, Response } from 'express';
 import {
   createSteelQuotationStateService as createService,
   MAX_QUOTATION_ARTIFACT_BYTES,
 } from './state';
-import { createQuotationRouteHandlers } from './routes';
-import { registerQuotationExecution } from './control';
-import { seedLegacyPublication } from './fixtures';
+import { expireQuotationRun, seedLegacyPublication } from './fixtures';
 
 let mongoServer: MongoMemoryReplSet;
 let service: ReturnType<typeof createService>;
@@ -78,7 +75,9 @@ async function prepareCustomer(
 }
 
 beforeAll(async () => {
-  mongoServer = await MongoMemoryReplSet.create({ replSet: { count: 1, storageEngine: 'wiredTiger' } });
+  mongoServer = await MongoMemoryReplSet.create({
+    replSet: { count: 1, storageEngine: 'wiredTiger' },
+  });
   await mongoose.connect(mongoServer.getUri());
   service = createService(mongoose);
 });
@@ -102,40 +101,33 @@ afterAll(async () => {
 });
 
 describe('Steel quotation state service', () => {
-  it('pauses before abort and fences the old worker after a new turn claims the run', async () => {
+  it('pauses its turn and fences the old worker after a new turn claims the run', async () => {
     const { run } = await prepareRun();
     const lease = (await service.acquireLease({ scope, runId: run.runId }))!;
-    const execution = registerQuotationExecution(scope, run.runId);
-    const handlers = createQuotationRouteHandlers({ ownsConversation: async () => true });
-    const response = { status: jest.fn(), json: jest.fn() };
-    response.status.mockReturnValue(response);
-    const request = {
-      params: { conversationId: scope.conversationId, index: String(run.index) },
-      user: { id: scope.userId },
-    } as Partial<Request> as Request;
-    await handlers.pause(request, response as Partial<Response> as Response);
-    expect((await service.readActiveRun(scope))?.status).toBe('paused');
-    expect(execution.controller.signal.reason).toBe('user_pause');
-    expect(response.json).toHaveBeenLastCalledWith(
-      expect.objectContaining({
-        status: 'paused',
-        latestRunId: run.runId,
-        stage: 'queued',
-      }),
-    );
+    await expect(
+      service.pauseTurn({ scope, targetMessageId: run.targetMessageId }),
+    ).resolves.toMatchObject({ status: 'paused', stage: 'queued' });
     await expect(
       service.interruptRun({ scope, runId: run.runId, leaseToken: lease.leaseToken }),
     ).resolves.toBeUndefined();
     const claim = await service.claimResume({
-      scope, runId: run.runId, sourceMessageId: 'assistant-target-1',
-      responseId: 'assistant-fork', executionEpoch: 20,
+      scope,
+      runId: run.runId,
+      sourceMessageId: 'assistant-target-1',
+      responseId: 'assistant-fork',
+      executionEpoch: 20,
     });
     expect(claim).toMatchObject({
       ok: true,
-      state: { activeRun: {
-        status: 'running', targetMessageId: 'assistant-fork', executionResponseId: 'assistant-fork',
-        executionEpoch: 20, leaseToken: expect.any(String),
-      } },
+      state: {
+        activeRun: {
+          status: 'running',
+          targetMessageId: 'assistant-fork',
+          executionResponseId: 'assistant-fork',
+          executionEpoch: 20,
+          leaseToken: expect.any(String),
+        },
+      },
     });
     await expect(
       service.transitionRun({
@@ -146,28 +138,7 @@ describe('Steel quotation state service', () => {
         stage: 'finalizing',
       }),
     ).resolves.toBeUndefined();
-    execution.dispose();
   });
-
-  it.each(['cancel', 'pause'] as const)(
-    'rejects an expired index through the %s API',
-    async (action) => {
-      const { run } = await prepareRun();
-      const handlers = createQuotationRouteHandlers({ ownsConversation: async () => true });
-      const response = { status: jest.fn(), json: jest.fn() };
-      response.status.mockReturnValue(response);
-      await handlers[action](
-        {
-          params: { conversationId: scope.conversationId, index: String(run.index + 1) },
-          user: { id: scope.userId },
-        } as Partial<Request> as Request,
-        response as Partial<Response> as Response,
-      );
-      expect(response.status).toHaveBeenCalledWith(409);
-      expect(response.json).toHaveBeenCalledWith({ code: 'flow_expired' });
-      expect((await service.readActiveRun(scope))?.status).toBe('running');
-    },
-  );
 
   it('distinguishes disconnect interruption, terminal failure, and pause by turn owner', async () => {
     const { run } = await prepareRun();
@@ -177,7 +148,10 @@ describe('Steel quotation state service', () => {
     await service.failRun({ scope, runId: run.runId });
     expect((await service.readActiveRun(scope))?.status).toBe('failed');
     await service.claimResume({
-      scope, runId: run.runId, sourceMessageId: 'assistant-target-1', responseId: 'failed-run-fork',
+      scope,
+      runId: run.runId,
+      sourceMessageId: 'assistant-target-1',
+      responseId: 'failed-run-fork',
     });
     await expect(
       service.pauseTurn({ scope, targetMessageId: 'different-turn' }),
@@ -223,15 +197,24 @@ describe('Steel quotation state service', () => {
     const { run } = await prepareRun();
     const State = createSteelQuotationStateModel(mongoose);
     await State.updateOne(scope, { $set: { 'activeRun.status': 'completed' } });
-    const resume = { scope, runId: run.runId, sourceMessageId: 'assistant-target-1', responseId: 'unpublished-fork' };
-    await expect(service.claimResume(resume)).resolves.toEqual({ ok: false, code: 'flow_not_resumable' });
+    const resume = {
+      scope,
+      runId: run.runId,
+      sourceMessageId: 'assistant-target-1',
+      responseId: 'unpublished-fork',
+    };
+    await expect(service.claimResume(resume)).resolves.toEqual({
+      ok: false,
+      code: 'flow_not_resumable',
+    });
     await expect(
       service.pauseTurn({ scope, targetMessageId: run.targetMessageId }),
     ).resolves.toBeUndefined();
     expect((await service.readActiveRun(scope))?.status).toBe('completed');
     await service.settleTurn({ scope, targetMessageId: run.targetMessageId });
     expect(await service.readActiveRun(scope)).toMatchObject({
-      status: 'failed', errorMessage: 'quotation_unpublished',
+      status: 'failed',
+      errorMessage: 'quotation_unpublished',
     });
     await expect(service.claimResume(resume)).resolves.toMatchObject({ ok: true });
   });
@@ -242,35 +225,55 @@ describe('Steel quotation state service', () => {
     { conversationId: 'other-conversation' },
   ])('returns not found for a mismatched quotation scope %o', async (scopeOverride) => {
     const { run } = await prepareRun();
-    await service.pauseRun({ scope, runId: run.runId });
-    await expect(service.claimResume({
-      scope: { ...scope, ...scopeOverride }, runId: run.runId,
-      sourceMessageId: 'assistant-target-1', responseId: 'assistant-fork',
-    })).resolves.toEqual({ ok: false, code: 'flow_not_found' });
+    await service.pauseTurn({ scope, targetMessageId: run.targetMessageId });
+    await expect(
+      service.claimResume({
+        scope: { ...scope, ...scopeOverride },
+        runId: run.runId,
+        sourceMessageId: 'assistant-target-1',
+        responseId: 'assistant-fork',
+      }),
+    ).resolves.toEqual({ ok: false, code: 'flow_not_found' });
     expect((await service.readActiveRun(scope))?.status).toBe('paused');
   });
 
   it('claims the latest recoverable run at most once under concurrent requests', async () => {
     const { run } = await prepareRun();
-    await service.pauseRun({ scope, runId: run.runId });
-    const results = await Promise.all([21, 22].map((executionEpoch) => service.claimResume({
-      scope, runId: run.runId, sourceMessageId: 'assistant-target-1',
-      responseId: `assistant-fork-${executionEpoch}`, executionEpoch,
-    })));
+    await service.pauseTurn({ scope, targetMessageId: run.targetMessageId });
+    const results = await Promise.all(
+      [21, 22].map((executionEpoch) =>
+        service.claimResume({
+          scope,
+          runId: run.runId,
+          sourceMessageId: 'assistant-target-1',
+          responseId: `assistant-fork-${executionEpoch}`,
+          executionEpoch,
+        }),
+      ),
+    );
     expect(results.filter((result) => result.ok)).toHaveLength(1);
-    expect(results.filter((result) => !result.ok)).toEqual([{ ok: false, code: 'flow_not_resumable' }]);
+    expect(results.filter((result) => !result.ok)).toEqual([
+      { ok: false, code: 'flow_not_resumable' },
+    ]);
   });
 
   it('fences order replacement and stores lookup evidence separately from canonical customer data', async () => {
     const order = await service.setOrder({ scope, fullMarkdown: '# order' });
-    await expect(service.setOrder({ scope, fullMarkdown: '# stale', expectedOrderHash: 'wrong' })).rejects.toThrow('order changed');
-    await expect(service.setOrder({ scope, fullMarkdown: '# stale', expectedOrderHash: null })).rejects.toThrow('order changed');
+    await expect(
+      service.setOrder({ scope, fullMarkdown: '# stale', expectedOrderHash: 'wrong' }),
+    ).rejects.toThrow('order changed');
+    await expect(
+      service.setOrder({ scope, fullMarkdown: '# stale', expectedOrderHash: null }),
+    ).rejects.toThrow('order changed');
     const evidence = {
       responseId: 'lookup-response',
       lookupMessageId: 'lookup-message',
       orderHash: order.currentOrder!.sha256,
-      customers: [{ id: 7, erpCustomerCode: 'C7', displayName: 'Customer 7', customerTier: 'C' as const }],
-      customerMarkdown: '## customer_data\n\n| 客戶編號 | 客戶名稱 | 價格等級 | 說明 |\n| --- | --- | --- | --- |\n| C7 | Customer 7 | C |  |',
+      customers: [
+        { id: 7, erpCustomerCode: 'C7', displayName: 'Customer 7', customerTier: 'C' as const },
+      ],
+      customerMarkdown:
+        '## customer_data\n\n| 客戶編號 | 客戶名稱 | 價格等級 | 說明 |\n| --- | --- | --- | --- |\n| C7 | Customer 7 | C |  |',
     };
     await service.saveCustomerLookupEvidence({
       scope,
@@ -278,7 +281,9 @@ describe('Steel quotation state service', () => {
       expectedOrderHash: order.currentOrder!.sha256,
     });
     expect((await service.readState(scope))?.currentCustomer).toBeUndefined();
-    expect((await service.readState(scope))?.customerLookupEvidence).toEqual(expect.objectContaining({ responseId: 'lookup-response' }));
+    expect((await service.readState(scope))?.customerLookupEvidence).toEqual(
+      expect.objectContaining({ responseId: 'lookup-response' }),
+    );
     await service.saveCustomer({
       scope,
       customerMarkdown: evidence.customerMarkdown,
@@ -287,7 +292,11 @@ describe('Steel quotation state service', () => {
       responseId: 'lookup-response',
       orderHash: evidence.orderHash,
       expectedPreparationId: null,
-      selectionProvenance: { method: 'unique', lookupMessageId: 'lookup-message', selectedCustomerId: '7' },
+      selectionProvenance: {
+        method: 'unique',
+        lookupMessageId: 'lookup-message',
+        selectedCustomerId: '7',
+      },
     });
     const saved = await service.readState(scope);
     expect(saved?.currentCustomer?.customerIdentity).toBe('7');
@@ -322,10 +331,7 @@ describe('Steel quotation state service', () => {
       prompts,
       chunks: [{ index: 1, sourceRowCount: 1 }],
     };
-    const accepted = await Promise.all([
-      service.acceptSignal(input),
-      service.acceptSignal(input),
-    ]);
+    const accepted = await Promise.all([service.acceptSignal(input), service.acceptSignal(input)]);
     expect(accepted[0].runId).toBe(accepted[1].runId);
     expect(accepted[0].snapshotRef.sha256).toBe(accepted[1].snapshotRef.sha256);
 
@@ -335,9 +341,7 @@ describe('Steel quotation state service', () => {
     ]);
     expect(leases.filter(Boolean)).toHaveLength(1);
     const state = await service.readState(scope);
-    expect(state?.activeRun?.leaseToken).toBe(
-      leases[0]?.leaseToken ?? leases[1]?.leaseToken,
-    );
+    expect(state?.activeRun?.leaseToken).toBe(leases[0]?.leaseToken ?? leases[1]?.leaseToken);
   });
 
   it('freezes the accepted OCR source snapshot in the immutable run artifact', async () => {
@@ -357,12 +361,14 @@ describe('Steel quotation state service', () => {
       generationId: 'ocr-generation-1',
       resultMessageId: 'ocr-message-1',
       resultHash: 'ocr-result-hash-1',
-      mappings: [{
-        fileId: 'file-1',
-        sourceCode: 'F1',
-        sourceFilename: 'drawing.pdf',
-        mediaType: 'application/pdf',
-      }],
+      mappings: [
+        {
+          fileId: 'file-1',
+          sourceCode: 'F1',
+          sourceFilename: 'drawing.pdf',
+          mediaType: 'application/pdf',
+        },
+      ],
     };
     const run = await service.acceptSignal({
       scope,
@@ -459,16 +465,18 @@ describe('Steel quotation state service', () => {
       expectedPreparationId: first.preparationId,
     });
     expect(second.preparationId).not.toBe(first.preparationId);
-    await expect(service.saveCustomer({
-      scope,
-      customerMarkdown: '## customer_data\n| name | D |',
-      customerIdentity: 'customer-d',
-      triggeringMessageId: 'message-3',
-      responseId: 'response-3',
-      selectionProvenance: { method: 'unique' },
-      orderHash: firstOrderHash,
-      expectedPreparationId: first.preparationId,
-    })).rejects.toThrow('changed since it was read');
+    await expect(
+      service.saveCustomer({
+        scope,
+        customerMarkdown: '## customer_data\n| name | D |',
+        customerIdentity: 'customer-d',
+        triggeringMessageId: 'message-3',
+        responseId: 'response-3',
+        selectionProvenance: { method: 'unique' },
+        orderHash: firstOrderHash,
+        expectedPreparationId: first.preparationId,
+      }),
+    ).rejects.toThrow('changed since it was read');
   });
 
   it('persists an immutable completion receipt on a response-bound ticket', async () => {
@@ -497,39 +505,47 @@ describe('Steel quotation state service', () => {
     expect(first.completionReceipt).toEqual(receipt);
     expect((await service.readState(scope))?.tickets[0]?.completionReceipt).toEqual(receipt);
     await expect(service.issueTicket(input)).resolves.toEqual(first);
-    await expect(service.issueTicket({
-      ...input,
-      completionReceipt: { ...receipt, markdown: `${receipt.markdown}\nchanged` },
-    })).rejects.toThrow('response binding');
-    await expect(service.issueTicket({
-      ...input,
-      completionReceipt: { ...receipt, inputHash: 'd'.repeat(64) },
-    })).rejects.toThrow('response binding');
+    await expect(
+      service.issueTicket({
+        ...input,
+        completionReceipt: { ...receipt, markdown: `${receipt.markdown}\nchanged` },
+      }),
+    ).rejects.toThrow('response binding');
+    await expect(
+      service.issueTicket({
+        ...input,
+        completionReceipt: { ...receipt, inputHash: 'd'.repeat(64) },
+      }),
+    ).rejects.toThrow('response binding');
   });
 
   it('rejects stale and mismatched customer preparations before ticket allocation', async () => {
     const preparation = await prepareCustomer();
     const orderHash = preparation.orderHash;
     if (!orderHash) throw new Error('test setup did not save an order hash');
-    await expect(service.saveCustomer({
-      scope,
-      customerMarkdown: preparation.customerMarkdown,
-      customerIdentity: preparation.customerIdentity,
-      triggeringMessageId: preparation.triggeringMessageId,
-      responseId: 'stale-response',
-      selectionProvenance: preparation.selectionProvenance,
-      orderHash: 'stale-order-hash',
-    })).rejects.toThrow('stale');
-    await expect(service.issueTicket({
-      scope,
-      customerMarkdown: preparation.customerMarkdown,
-      customerIdentity: preparation.customerIdentity,
-      triggeringMessageId: preparation.triggeringMessageId,
-      selectionProvenance: preparation.selectionProvenance,
-      preparationId: 'wrong-preparation',
-      responseId: preparation.responseId,
-      orderHash,
-    })).rejects.toThrow('current customer preparation');
+    await expect(
+      service.saveCustomer({
+        scope,
+        customerMarkdown: preparation.customerMarkdown,
+        customerIdentity: preparation.customerIdentity,
+        triggeringMessageId: preparation.triggeringMessageId,
+        responseId: 'stale-response',
+        selectionProvenance: preparation.selectionProvenance,
+        orderHash: 'stale-order-hash',
+      }),
+    ).rejects.toThrow('stale');
+    await expect(
+      service.issueTicket({
+        scope,
+        customerMarkdown: preparation.customerMarkdown,
+        customerIdentity: preparation.customerIdentity,
+        triggeringMessageId: preparation.triggeringMessageId,
+        selectionProvenance: preparation.selectionProvenance,
+        preparationId: 'wrong-preparation',
+        responseId: preparation.responseId,
+        orderHash,
+      }),
+    ).rejects.toThrow('current customer preparation');
 
     const ticket = await service.issueTicket({
       scope,
@@ -550,16 +566,18 @@ describe('Steel quotation state service', () => {
       selectionProvenance: { method: 'unique' },
       orderHash,
     });
-    await expect(service.acceptSignal({
-      scope,
-      index: ticket.index,
-      token: ticket.token,
-      orderHash,
-      customerMarkdown: ticket.customerMarkdown,
-      customerIdentity: ticket.customerIdentity,
-      prompts,
-      chunks: [],
-    })).rejects.toThrow('customer preparation');
+    await expect(
+      service.acceptSignal({
+        scope,
+        index: ticket.index,
+        token: ticket.token,
+        orderHash,
+        customerMarkdown: ticket.customerMarkdown,
+        customerIdentity: ticket.customerIdentity,
+        prompts,
+        chunks: [],
+      }),
+    ).rejects.toThrow('customer preparation');
     expect((await service.readState(scope))?.nextSignalIndex).toBe(1);
   });
 
@@ -585,10 +603,12 @@ describe('Steel quotation state service', () => {
     const state = await service.readState(scope);
     expect(state?.nextSignalIndex).toBe(1);
     expect(state?.tickets).toHaveLength(1);
-    await expect(service.issueTicket({
-      ...issueInput,
-      customerIdentity: 'tampered-customer',
-    })).rejects.toThrow('response binding');
+    await expect(
+      service.issueTicket({
+        ...issueInput,
+        customerIdentity: 'tampered-customer',
+      }),
+    ).rejects.toThrow('response binding');
     const nextResponseTicket = await service.issueTicket({
       ...issueInput,
       responseId: 'new-response',
@@ -628,7 +648,7 @@ describe('Steel quotation state service', () => {
     await expect(service.setOrder({ scope, fullMarkdown: '# blocked' })).rejects.toThrow(
       'unfinished',
     );
-    await service.cancelRun({ scope, runId: prepared.run.runId });
+    await expireQuotationRun({ mongoose, scope, runId: prepared.run.runId });
     await expect(service.setOrder({ scope, fullMarkdown: '# blocked' })).resolves.toEqual(
       expect.objectContaining({ currentOrder: expect.objectContaining({ markdown: '# blocked' }) }),
     );
@@ -642,13 +662,18 @@ describe('Steel quotation state service', () => {
     const State = createSteelQuotationStateModel(mongoose);
     const update = State.collection.findOneAndUpdate.bind(State.collection);
     let heartbeats = 0;
-    const spy = jest.spyOn(State.collection, 'findOneAndUpdate').mockImplementation(async (...args) => {
-      if (!Array.isArray(args[1]) && args[1].$set?.['activeRun.checkpointRefs']) {
-        heartbeats += 1;
-        await service.heartbeatLease({ ...leaseInput, now: new Date(now.getTime() + heartbeats) });
-      }
-      return update(...args);
-    });
+    const spy = jest
+      .spyOn(State.collection, 'findOneAndUpdate')
+      .mockImplementation(async (...args) => {
+        if (!Array.isArray(args[1]) && args[1].$set?.['activeRun.checkpointRefs']) {
+          heartbeats += 1;
+          await service.heartbeatLease({
+            ...leaseInput,
+            now: new Date(now.getTime() + heartbeats),
+          });
+        }
+        return update(...args);
+      });
     try {
       const saved = await service.checkpoint({
         ...leaseInput,
@@ -676,22 +701,34 @@ describe('Steel quotation state service', () => {
     const State = createSteelQuotationStateModel(mongoose);
     const update = State.collection.findOneAndUpdate.bind(State.collection);
     let interleaved = false;
-    const spy = jest.spyOn(State.collection, 'findOneAndUpdate').mockImplementation(async (...args) => {
-      if (!interleaved && !Array.isArray(args[1]) && args[1].$set?.['activeRun.checkpointRefs']) {
-        interleaved = true;
-        await service.checkpoint({
-          ...leaseInput, operationId: 'chunk:1', kind: 'chunk', payload: 'completed chunk',
-          chunkIndex: 1, now,
-        });
-      }
-      return update(...args);
-    });
+    const spy = jest
+      .spyOn(State.collection, 'findOneAndUpdate')
+      .mockImplementation(async (...args) => {
+        if (!interleaved && !Array.isArray(args[1]) && args[1].$set?.['activeRun.checkpointRefs']) {
+          interleaved = true;
+          await service.checkpoint({
+            ...leaseInput,
+            operationId: 'chunk:1',
+            kind: 'chunk',
+            payload: 'completed chunk',
+            chunkIndex: 1,
+            now,
+          });
+        }
+        return update(...args);
+      });
     try {
       const saved = await service.checkpoint({
-        ...leaseInput, operationId: 'split:1', kind: 'main', payload: 'split plan', now,
+        ...leaseInput,
+        operationId: 'split:1',
+        kind: 'main',
+        payload: 'split plan',
+        now,
       });
-      expect(saved?.activeRun?.checkpointRefs.map((ref) => ref.operationId).sort())
-        .toEqual(['chunk:1', 'split:1']);
+      expect(saved?.activeRun?.checkpointRefs.map((ref) => ref.operationId).sort()).toEqual([
+        'chunk:1',
+        'split:1',
+      ]);
       expect(saved?.activeRun?.chunks[0]?.status).toBe('completed');
     } finally {
       spy.mockRestore();
@@ -699,29 +736,41 @@ describe('Steel quotation state service', () => {
   });
 
   it.each(['cancelled', 'replaced'] as const)(
-    'rejects a checkpoint if its run is %s before the conditional update', async (change) => {
+    'rejects a checkpoint if its run is %s before the conditional update',
+    async (change) => {
       const { run } = await prepareRun();
       const leaseInput = { scope, runId: run.runId, leaseToken: 'old-checkpoint-owner' };
       await service.acquireLease(leaseInput);
       const State = createSteelQuotationStateModel(mongoose);
       const update = State.collection.findOneAndUpdate.bind(State.collection);
       let interleaved = false;
-      const spy = jest.spyOn(State.collection, 'findOneAndUpdate').mockImplementation(async (...args) => {
-        if (!interleaved && !Array.isArray(args[1]) && args[1].$set?.['activeRun.checkpointRefs']) {
-          interleaved = true;
-          if (change === 'cancelled') {
-            await service.cancelRun(leaseInput);
-          } else {
-            await service.releaseLease(leaseInput);
-            await service.acquireLease({ ...leaseInput, leaseToken: 'new-checkpoint-owner' });
+      const spy = jest
+        .spyOn(State.collection, 'findOneAndUpdate')
+        .mockImplementation(async (...args) => {
+          if (
+            !interleaved &&
+            !Array.isArray(args[1]) &&
+            args[1].$set?.['activeRun.checkpointRefs']
+          ) {
+            interleaved = true;
+            if (change === 'cancelled') {
+              await expireQuotationRun({ mongoose, scope, runId: run.runId });
+            } else {
+              await service.releaseLease(leaseInput);
+              await service.acquireLease({ ...leaseInput, leaseToken: 'new-checkpoint-owner' });
+            }
           }
-        }
-        return update(...args);
-      });
+          return update(...args);
+        });
       try {
-        await expect(service.checkpoint({
-          ...leaseInput, operationId: 'split:1', kind: 'main', payload: 'split plan',
-        })).resolves.toBeUndefined();
+        await expect(
+          service.checkpoint({
+            ...leaseInput,
+            operationId: 'split:1',
+            kind: 'main',
+            payload: 'split plan',
+          }),
+        ).resolves.toBeUndefined();
         const state = await service.readState(scope);
         expect(state?.activeRun?.checkpointRefs).toEqual([]);
         expect(state?.activeRun?.chunks[0]?.status).toBe('pending');
@@ -748,14 +797,27 @@ describe('Steel quotation state service', () => {
     jest.useFakeTimers({
       now,
       doNotFake: [
-        'hrtime', 'nextTick', 'performance', 'queueMicrotask', 'setImmediate',
-        'clearImmediate', 'setInterval', 'clearInterval', 'setTimeout', 'clearTimeout',
+        'hrtime',
+        'nextTick',
+        'performance',
+        'queueMicrotask',
+        'setImmediate',
+        'clearImmediate',
+        'setInterval',
+        'clearInterval',
+        'setTimeout',
+        'clearTimeout',
       ],
     });
     try {
-      await expect(service.checkpoint({
-        ...leaseInput, operationId: 'split:1', kind: 'main', payload: 'split plan',
-      })).resolves.toBeUndefined();
+      await expect(
+        service.checkpoint({
+          ...leaseInput,
+          operationId: 'split:1',
+          kind: 'main',
+          payload: 'split plan',
+        }),
+      ).resolves.toBeUndefined();
       expect((await service.readState(scope))?.activeRun?.checkpointRefs).toEqual([]);
     } finally {
       spy.mockRestore();
@@ -798,7 +860,7 @@ describe('Steel quotation state service', () => {
       service.readCheckpoint({ scope, runId: prepared.run.runId, operationId: 'chunk:1' }),
     ).resolves.toContain('system_order_chunk');
 
-    await service.cancelRun({ scope, runId: prepared.run.runId });
+    await expireQuotationRun({ mongoose, scope, runId: prepared.run.runId });
     await expect(
       service.checkpoint({ ...checkpointInput, payload: 'late payload', operationId: 'chunk:2' }),
     ).resolves.toBeUndefined();
@@ -810,7 +872,9 @@ describe('Steel quotation state service', () => {
       runId: prepared.run.runId,
     });
     expect(artifacts).toBe(1);
-    expect(await Artifact.exists({ ...scope, runId: prepared.run.runId, operationId: 'snapshot' })).toBeNull();
+    expect(
+      await Artifact.exists({ ...scope, runId: prepared.run.runId, operationId: 'snapshot' }),
+    ).toBeNull();
     expect(MAX_QUOTATION_ARTIFACT_BYTES).toBeGreaterThan(1_000_000);
   });
 
@@ -818,13 +882,20 @@ describe('Steel quotation state service', () => {
     const { run } = await prepareRun();
     const lease = (await service.acquireLease({ scope, runId: run.runId }))!;
     const input = { scope, runId: run.runId, leaseToken: lease.leaseToken };
-    await expect(service.interruptRun({ ...input, interruption: { reason: 'error', chunkIndex: 2 } }))
-      .resolves.toBeUndefined();
+    await expect(
+      service.interruptRun({ ...input, interruption: { reason: 'error', chunkIndex: 2 } }),
+    ).resolves.toBeUndefined();
     expect((await service.readState(scope))?.activeRun?.leaseToken).toBe(lease.leaseToken);
-    const interrupted = await service.interruptRun({ ...input, interruption: { reason: 'paused', chunkIndex: 1 } });
+    const interrupted = await service.interruptRun({
+      ...input,
+      interruption: { reason: 'paused', chunkIndex: 1 },
+    });
     expect(interrupted?.interruption).toEqual({ reason: 'paused', chunkIndex: 1 });
     const resumed = (await service.acquireLease({ scope, runId: run.runId }))!;
-    expect((await service.readState(scope))?.activeRun?.interruption).toEqual({ reason: 'paused', chunkIndex: 1 });
+    expect((await service.readState(scope))?.activeRun?.interruption).toEqual({
+      reason: 'paused',
+      chunkIndex: 1,
+    });
     await service.interruptRun({ ...input, leaseToken: resumed.leaseToken });
     expect((await service.readState(scope))?.activeRun?.interruption).toBeUndefined();
   });
@@ -844,18 +915,28 @@ describe('Steel quotation state service', () => {
     expect((await State.findOne(scope).lean())?.currentCustomer).toBeUndefined();
     expect(await service.hasSystemOrder(scope)).toBe(false);
     await State.updateOne(scope, { $set: { currentCustomer: retainedCustomer } });
-    expect(await service.hasSystemOrder({ userId: 'other-owner', conversationId: scope.conversationId })).toBe(false);
-    expect(await service.hasSystemOrder({ userId: scope.userId, conversationId: 'other-conversation' })).toBe(false);
+    expect(
+      await service.hasSystemOrder({ userId: 'other-owner', conversationId: scope.conversationId }),
+    ).toBe(false);
+    expect(
+      await service.hasSystemOrder({ userId: scope.userId, conversationId: 'other-conversation' }),
+    ).toBe(false);
 
     const latest = await prepareRun(scope, '# latest order');
     expect(await service.hasSystemOrder(scope)).toBe(false);
     const latestLease = await service.acquireLease({ scope, runId: latest.run.runId });
     if (!latestLease) throw new Error('lease missing');
-    await service.interruptRun({ scope, runId: latest.run.runId, leaseToken: latestLease.leaseToken });
+    await service.interruptRun({
+      scope,
+      runId: latest.run.runId,
+      leaseToken: latestLease.leaseToken,
+    });
     expect(await service.hasSystemOrder(scope)).toBe(false);
-    await service.cancelRun({ scope, runId: latest.run.runId });
+    await expireQuotationRun({ mongoose, scope, runId: latest.run.runId });
     expect(await service.hasSystemOrder(scope)).toBe(false);
-    expect(await Artifact.exists({ ...scope, runId: first.run.runId, operationId: 'final' })).not.toBeNull();
+    expect(
+      await Artifact.exists({ ...scope, runId: first.run.runId, operationId: 'final' }),
+    ).not.toBeNull();
 
     await Artifact.deleteOne({ ...scope, runId: first.run.runId, operationId: 'published' });
     const firstState = await service.readState(scope);
@@ -866,22 +947,48 @@ describe('Steel quotation state service', () => {
     const first = await prepareRun();
     const lease = await service.acquireLease({ scope, runId: first.run.runId });
     if (!lease) throw new Error('lease missing');
-    await service.checkpoint({ scope, runId: first.run.runId, leaseToken: lease.leaseToken,
-      operationId: 'chunk:1', kind: 'chunk', payload: 'saved old quotation', chunkIndex: 1 });
-    await service.cancelRun({ scope, runId: first.run.runId });
+    await service.checkpoint({
+      scope,
+      runId: first.run.runId,
+      leaseToken: lease.leaseToken,
+      operationId: 'chunk:1',
+      kind: 'chunk',
+      payload: 'saved old quotation',
+      chunkIndex: 1,
+    });
+    await expireQuotationRun({ mongoose, scope, runId: first.run.runId });
     await expect(service.acquireLease({ scope, runId: first.run.runId })).resolves.toBeUndefined();
-    const repeated = await service.acceptSignal({ scope, index: first.ticket.index,
-      token: first.ticket.token, orderHash: first.ticket.orderHash,
-      customerMarkdown: first.ticket.customerMarkdown, customerIdentity: first.ticket.customerIdentity,
-      prompts, chunks: [{ index: 1, sourceRowCount: 1 }] });
-    expect(repeated).toEqual(expect.objectContaining({ runId: first.run.runId, status: 'cancelled' }));
-    const ticket = await service.issueTicket({ scope, customerMarkdown: first.ticket.customerMarkdown,
-      customerIdentity: first.ticket.customerIdentity, triggeringMessageId: 'new-quotation-request',
-      selectionProvenance: { method: 'unique' } });
+    const repeated = await service.acceptSignal({
+      scope,
+      index: first.ticket.index,
+      token: first.ticket.token,
+      orderHash: first.ticket.orderHash,
+      customerMarkdown: first.ticket.customerMarkdown,
+      customerIdentity: first.ticket.customerIdentity,
+      prompts,
+      chunks: [{ index: 1, sourceRowCount: 1 }],
+    });
+    expect(repeated).toEqual(
+      expect.objectContaining({ runId: first.run.runId, status: 'cancelled' }),
+    );
+    const ticket = await service.issueTicket({
+      scope,
+      customerMarkdown: first.ticket.customerMarkdown,
+      customerIdentity: first.ticket.customerIdentity,
+      triggeringMessageId: 'new-quotation-request',
+      selectionProvenance: { method: 'unique' },
+    });
     expect(ticket.index).toBeGreaterThan(first.ticket.index);
-    const next = await service.acceptSignal({ scope, index: ticket.index, token: ticket.token,
-      orderHash: ticket.orderHash, customerMarkdown: ticket.customerMarkdown,
-      customerIdentity: ticket.customerIdentity, prompts, chunks: [{ index: 1, sourceRowCount: 1 }] });
+    const next = await service.acceptSignal({
+      scope,
+      index: ticket.index,
+      token: ticket.token,
+      orderHash: ticket.orderHash,
+      customerMarkdown: ticket.customerMarkdown,
+      customerIdentity: ticket.customerIdentity,
+      prompts,
+      chunks: [{ index: 1, sourceRowCount: 1 }],
+    });
     expect(next.runId).not.toBe(first.run.runId);
     expect(next.status).toBe('running');
     expect(next.chunks.every((chunk) => chunk.status !== 'completed')).toBe(true);

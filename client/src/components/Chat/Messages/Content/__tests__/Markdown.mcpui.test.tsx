@@ -1,7 +1,7 @@
 import React from 'react';
 import { RecoilRoot } from 'recoil';
 import userEvent from '@testing-library/user-event';
-import { QueryClient, QueryObserver } from '@tanstack/react-query';
+import { QueryClient, QueryClientProvider, QueryObserver } from '@tanstack/react-query';
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import type { TConversation } from 'librechat-data-provider';
 import type { TMessage } from 'librechat-data-provider';
@@ -110,6 +110,25 @@ const mockUseGetMessagesByConvoId = useGetMessagesByConvoId as jest.MockedFuncti
 >;
 let currentTestMessages: TMessage[] = [];
 
+/** `~/data-provider` is automocked; give every hook an idle query/mutation result by default. */
+function mockIdleDataProviderHooks() {
+  const idle = {
+    ...new QueryObserver(new QueryClient(), {
+      queryKey: ['idle-data-provider-hook'],
+      enabled: false,
+    }).getCurrentResult(),
+    refetch: jest.fn(),
+    mutate: jest.fn(),
+    mutateAsync: jest.fn(),
+    reset: jest.fn(),
+  };
+  for (const [name, hook] of Object.entries(jest.requireMock('~/data-provider'))) {
+    if (name.startsWith('use') && jest.isMockFunction(hook)) {
+      hook.mockReturnValue(idle);
+    }
+  }
+}
+
 function renderMarkdownWithMessageContext({
   children,
   content,
@@ -121,43 +140,47 @@ function renderMarkdownWithMessageContext({
   conversationTitle?: string;
   messageContext?: Record<string, unknown>;
 }) {
+  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <RecoilRoot
-      initializeState={({ set }) =>
-        set(store.conversationByIndex(0), {
-          conversationId: 'conv1',
-          title: conversationTitle,
-        } as TConversation)
-      }
-    >
-      <MessageContext.Provider
-        value={
-          {
-            messageId: 'msg-table',
-            isExpanded: true,
+    <QueryClientProvider client={queryClient}>
+      <RecoilRoot
+        initializeState={({ set }) =>
+          set(store.conversationByIndex(0), {
             conversationId: 'conv1',
-            isCreatedByUser: false,
-            messageTimestamp: '2026-06-27T14:32:00.000Z',
-            markdownTableBaseIndex: 0,
-            ...messageContext,
-          } as any
+            title: conversationTitle,
+          } as TConversation)
         }
       >
-        <div className="message-render" id="msg-table">
-          <h2>{conversationTitle}</h2>
-          <div className="message-content">
-            <Markdown content={content} isLatestMessage={false} />
+        <MessageContext.Provider
+          value={
+            {
+              messageId: 'msg-table',
+              isExpanded: true,
+              conversationId: 'conv1',
+              isCreatedByUser: false,
+              messageTimestamp: '2026-06-27T14:32:00.000Z',
+              markdownTableBaseIndex: 0,
+              ...messageContext,
+            } as any
+          }
+        >
+          <div className="message-render" id="msg-table">
+            <h2>{conversationTitle}</h2>
+            <div className="message-content">
+              <Markdown content={content} isLatestMessage={false} />
+            </div>
           </div>
-        </div>
-      </MessageContext.Provider>
-      {children}
-    </RecoilRoot>,
+        </MessageContext.Provider>
+        {children}
+      </RecoilRoot>
+    </QueryClientProvider>,
   );
 }
 
 describe('Markdown with MCP UI markers (resource IDs)', () => {
   beforeEach(() => {
     jest.clearAllMocks();
+    mockIdleDataProviderHooks();
     currentTestMessages = [];
 
     mockUseMessagesConversation.mockReturnValue({
@@ -238,6 +261,7 @@ describe('Markdown table rendering', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
+    mockIdleDataProviderHooks();
     localStorage.clear();
     document.documentElement.classList.remove('dark', 'light');
     document.documentElement.removeAttribute('data-theme');
@@ -249,7 +273,10 @@ describe('Markdown table rendering', () => {
       queryFn: async () => ({ table: null }),
       enabled: false,
     });
-    mockUseSteelReviewQuery.mockReturnValue({ ...reviewObserver.getCurrentResult(), refetch: jest.fn() });
+    mockUseSteelReviewQuery.mockReturnValue({
+      ...reviewObserver.getCurrentResult(),
+      refetch: jest.fn(),
+    });
     clickAnchor = jest
       .spyOn(HTMLAnchorElement.prototype, 'click')
       .mockImplementation(function captureFilename(this: HTMLAnchorElement) {
@@ -311,26 +338,40 @@ describe('Markdown table rendering', () => {
   });
 
   it('keeps numeric values together in chat and the expanded table without changing copied content', async () => {
-    const content = '| Length | Value | Detail |\n| --- | --- | --- |\n| 5280 | **-1,234.50** | Plate 15 mm, 40 holes |';
+    const content =
+      '| Length | Value | Detail |\n| --- | --- | --- |\n| 5280 | **-1,234.50** | Plate 15 mm, 40 holes |';
     const { container } = renderMarkdownWithMessageContext({ content });
     expect(screen.getByText('5280')).toHaveClass('whitespace-nowrap');
     expect(screen.getByText('-1,234.50')).toHaveClass('whitespace-nowrap');
-    expect(container.querySelector('[data-markdown-cell-content] strong')).toHaveTextContent('-1,234.50');
-    await act(async () => { fireEvent.click(screen.getByLabelText('com_ui_copy_markdown_table')); });
+    expect(container.querySelector('[data-markdown-cell-content] strong')).toHaveTextContent(
+      '-1,234.50',
+    );
+    await act(async () => {
+      fireEvent.click(screen.getByLabelText('com_ui_copy_markdown_table'));
+    });
     expect(writeClipboardText).toHaveBeenCalledWith(content.replace('**-1,234.50**', '-1,234.50'));
     fireEvent.click(screen.getByLabelText('com_ui_expand_table'));
     expect(within(screen.getByRole('dialog')).getByText('5280')).toHaveClass('whitespace-nowrap');
-    expect(within(screen.getByRole('dialog')).getByText('-1,234.50')).toHaveClass('whitespace-nowrap');
+    expect(within(screen.getByRole('dialog')).getByText('-1,234.50')).toHaveClass(
+      'whitespace-nowrap',
+    );
   });
 
   it('toggles long cells independently in chat and the expanded modal while copying their full content', async () => {
     const firstText = 'First long cell content. '.repeat(12).trim();
     const secondText = 'Second long cell content. '.repeat(12).trim();
-    const heightSpy = jest.spyOn(HTMLElement.prototype, 'scrollHeight', 'get').mockImplementation(function (this: HTMLElement) {
-      return this.hasAttribute('data-markdown-cell-content') && (this.textContent?.length ?? 0) > 80 ? 96 : 24;
-    });
+    const heightSpy = jest
+      .spyOn(HTMLElement.prototype, 'scrollHeight', 'get')
+      .mockImplementation(function (this: HTMLElement) {
+        return this.hasAttribute('data-markdown-cell-content') &&
+          (this.textContent?.length ?? 0) > 80
+          ? 96
+          : 24;
+      });
     try {
-      renderMarkdownWithMessageContext({ content: `| First | Second | Short |\n| --- | --- | --- |\n| ${firstText} | ${secondText} | Brief |` });
+      renderMarkdownWithMessageContext({
+        content: `| First | Second | Short |\n| --- | --- | --- |\n| ${firstText} | ${secondText} | Brief |`,
+      });
       const buttons = screen.getAllByRole('button', { name: 'com_ui_table_cell_show_all' });
       expect(buttons).toHaveLength(2);
       const firstContent = screen.getByText(firstText);
@@ -340,11 +381,16 @@ describe('Markdown table rendering', () => {
       fireEvent.click(buttons[0]);
       expect(firstContent).not.toHaveClass('line-clamp-3');
       expect(secondContent).toHaveClass('line-clamp-3');
-      expect(screen.getByRole('button', { name: 'com_ui_table_cell_show_less' })).toHaveAttribute('aria-expanded', 'true');
+      expect(screen.getByRole('button', { name: 'com_ui_table_cell_show_less' })).toHaveAttribute(
+        'aria-expanded',
+        'true',
+      );
       fireEvent.click(screen.getByRole('button', { name: 'com_ui_table_cell_show_less' }));
       expect(firstContent).toHaveClass('line-clamp-3');
 
-      await act(async () => { fireEvent.click(screen.getByLabelText('com_ui_copy_markdown_table')); });
+      await act(async () => {
+        fireEvent.click(screen.getByLabelText('com_ui_copy_markdown_table'));
+      });
       const copiedText = writeClipboardText.mock.calls[0][0];
       expect(copiedText).toContain(firstText);
       expect(copiedText).toContain(secondText);
@@ -352,7 +398,9 @@ describe('Markdown table rendering', () => {
       fireEvent.click(screen.getByLabelText('com_ui_expand_table'));
       const modal = screen.getByRole('dialog');
       expect(within(modal).getByText(firstText)).toHaveClass('line-clamp-3');
-      const modalButtons = within(modal).getAllByRole('button', { name: 'com_ui_table_cell_show_all' });
+      const modalButtons = within(modal).getAllByRole('button', {
+        name: 'com_ui_table_cell_show_all',
+      });
       expect(modalButtons).toHaveLength(2);
       fireEvent.click(modalButtons[0]);
       expect(within(modal).getByText(firstText)).not.toHaveClass('line-clamp-3');
@@ -436,35 +484,42 @@ describe('Markdown table rendering', () => {
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:markdown-table');
   });
 
-  it.each([false, true])('downloads system_order from the menu (expanded: %s)', async (expanded) => {
-    const user = userEvent.setup();
-    renderMarkdownWithMessageContext({
-      content: '## system_order\n\n| 類別 | 厚度 | 零件編號 |\n| --- | --- | --- |\n| 鐵板 | 6 | A |',
-      conversationTitle: 'Order',
-      messageContext: { messageTimestamp: '2026-06-27T14:32:05' },
-    });
-    if (expanded) {
-      await user.click(screen.getByLabelText('com_ui_expand_table'));
-    }
-    const toolbar = expanded ? within(screen.getByRole('dialog')) : screen;
-    await user.click(toolbar.getByLabelText('com_ui_download'));
-    expect(createObjectURL).not.toHaveBeenCalled();
-    expect(screen.getByRole('menuitem', { name: 'com_ui_download_table_by_thickness_zip' }))
-      .not.toHaveAttribute('data-disabled');
-    if (expanded) {
-      expect(screen.getByRole('menu')).toHaveStyle({ zIndex: 1001 });
-      await user.keyboard('{Escape}');
-      expect(screen.getByRole('dialog')).toBeInTheDocument();
+  it.each([false, true])(
+    'downloads system_order from the menu (expanded: %s)',
+    async (expanded) => {
+      const user = userEvent.setup();
+      renderMarkdownWithMessageContext({
+        content:
+          '## system_order\n\n| 類別 | 厚度 | 零件編號 |\n| --- | --- | --- |\n| 鐵板 | 6 | A |',
+        conversationTitle: 'Order',
+        messageContext: { messageTimestamp: '2026-06-27T14:32:05' },
+      });
+      if (expanded) {
+        await user.click(screen.getByLabelText('com_ui_expand_table'));
+      }
+      const toolbar = expanded ? within(screen.getByRole('dialog')) : screen;
       await user.click(toolbar.getByLabelText('com_ui_download'));
-    }
-    await user.click(screen.getByRole('menuitem', { name: 'com_ui_download_table_all_csv' }));
-    expect(downloadedFilename).toBe('Order_2026-06-27_14-32-05.csv');
-    expect((createObjectURL.mock.calls[0][0] as Blob).type).toBe('text/csv;charset=utf-8');
-    await user.click(toolbar.getByLabelText('com_ui_download'));
-    await user.click(screen.getByRole('menuitem', { name: 'com_ui_download_table_by_thickness_zip' }));
-    await waitFor(() => expect(downloadedFilename).toBe('Order_2026-06-27_14-32-05.zip'));
-    expect((createObjectURL.mock.calls[1][0] as Blob).type).toBe('application/zip');
-  });
+      expect(createObjectURL).not.toHaveBeenCalled();
+      expect(
+        screen.getByRole('menuitem', { name: 'com_ui_download_table_by_thickness_zip' }),
+      ).not.toHaveAttribute('data-disabled');
+      if (expanded) {
+        expect(screen.getByRole('menu')).toHaveStyle({ zIndex: 1001 });
+        await user.keyboard('{Escape}');
+        expect(screen.getByRole('dialog')).toBeInTheDocument();
+        await user.click(toolbar.getByLabelText('com_ui_download'));
+      }
+      await user.click(screen.getByRole('menuitem', { name: 'com_ui_download_table_all_csv' }));
+      expect(downloadedFilename).toBe('Order_2026-06-27_14-32-05.csv');
+      expect((createObjectURL.mock.calls[0][0] as Blob).type).toBe('text/csv;charset=utf-8');
+      await user.click(toolbar.getByLabelText('com_ui_download'));
+      await user.click(
+        screen.getByRole('menuitem', { name: 'com_ui_download_table_by_thickness_zip' }),
+      );
+      await waitFor(() => expect(downloadedFilename).toBe('Order_2026-06-27_14-32-05.zip'));
+      expect((createObjectURL.mock.calls[1][0] as Blob).type).toBe('application/zip');
+    },
+  );
 
   it('keeps direct CSV download on other sections with the same columns', () => {
     renderMarkdownWithMessageContext({
@@ -493,8 +548,9 @@ describe('Markdown table rendering', () => {
       content: '## system_order\n\n| 類別 | 零件編號 |\n| --- | --- |\n| 鐵板 | A |',
     });
     await user.click(screen.getByLabelText('com_ui_download'));
-    expect(screen.getByRole('menuitem', { name: 'com_ui_download_table_by_thickness_zip' }))
-      .toHaveAttribute('data-disabled');
+    expect(
+      screen.getByRole('menuitem', { name: 'com_ui_download_table_by_thickness_zip' }),
+    ).toHaveAttribute('data-disabled');
     await user.click(screen.getByRole('menuitem', { name: 'com_ui_download_table_all_csv' }));
     expect(createObjectURL).toHaveBeenCalledTimes(1);
   });
@@ -504,13 +560,21 @@ describe('Markdown table rendering', () => {
     renderMarkdownWithMessageContext({
       content: '## system_order\n\n| 類別 | 厚度 |\n| --- | --- |\n| 鐵板 | 6 |',
     });
-    createObjectURL.mockImplementationOnce(() => { throw new Error('Object URL failed'); });
+    createObjectURL.mockImplementationOnce(() => {
+      throw new Error('Object URL failed');
+    });
     await user.click(screen.getByLabelText('com_ui_download'));
-    await user.click(screen.getByRole('menuitem', { name: 'com_ui_download_table_by_thickness_zip' }));
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('com_ui_download_table_error'));
+    await user.click(
+      screen.getByRole('menuitem', { name: 'com_ui_download_table_by_thickness_zip' }),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole('alert')).toHaveTextContent('com_ui_download_table_error'),
+    );
     expect(screen.getByLabelText('com_ui_download')).not.toBeDisabled();
     await user.click(screen.getByLabelText('com_ui_download'));
-    await user.click(screen.getByRole('menuitem', { name: 'com_ui_download_table_by_thickness_zip' }));
+    await user.click(
+      screen.getByRole('menuitem', { name: 'com_ui_download_table_by_thickness_zip' }),
+    );
     await waitFor(() => expect(downloadedFilename).toMatch(/\.zip$/));
     expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });

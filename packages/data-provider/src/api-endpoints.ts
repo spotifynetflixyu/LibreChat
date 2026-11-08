@@ -333,8 +333,6 @@ export const steelModels = () => `${steelBase()}/ai/models`;
 export const openAIOAuthUsage = () => `${steelBase()}/ai/oauth-usage`;
 export const steelQuotationStatus = (conversationId: string) =>
   `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/quotation`;
-export const steelQuotationCancel = (conversationId: string, index: number) =>
-  `${steelQuotationStatus(conversationId)}/${encodeURIComponent(String(index))}/cancel`;
 export const steelMarkdownVersions = (conversationId: string) =>
   `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/versions`;
 export const steelCustomer = (conversationId: string) =>
@@ -368,7 +366,11 @@ export const steelReviewReceipt = (
   title: string,
 ) => {
   const query = new URLSearchParams({
-    messageId, outputId, operationId, digest, title,
+    messageId,
+    outputId,
+    operationId,
+    digest,
+    title,
   }).toString();
   return `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/review/${encodeURIComponent(kind)}/receipt?${query}`;
 };
@@ -706,8 +708,3 @@ export const graphToken = (scopes: string) =>
 
 export const steelOcrStatus = (conversationId: string, runId: string) =>
   `${steelBase()}/conversations/${encodeURIComponent(conversationId)}/ocr/${encodeURIComponent(runId)}/status`;
-export const steelOcrControl = (
-  conversationId: string, runId: string, action: 'pause' | 'cancel',
-) => `${steelOcrStatus(conversationId, runId).replace(/\/status$/, '')}/${action}`;
-export const steelQuotationPause = (conversationId: string, index: number) =>
-  `${steelQuotationStatus(conversationId)}/${encodeURIComponent(String(index))}/pause`;

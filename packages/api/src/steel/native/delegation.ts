@@ -28,11 +28,7 @@ import type {
   SteelOcrPreprocessingRules,
   SteelOcrPreprocessingSourceFile,
 } from '../ocr/files';
-import type {
-  DelegateOcrClaim,
-  DelegateExecutionLease,
-  SteelOcrStateService,
-} from '../ocr/state';
+import type { DelegateOcrClaim, DelegateExecutionLease, SteelOcrStateService } from '../ocr/state';
 import type { SteelOcrPdfChunkArtifactStore, SteelOcrStoredArtifact } from '../ocr/storage';
 import type { SteelRepositoryClient } from '../repositories/types';
 import type { OcrPreprocessingPageChunk } from '../ocr/chunks';
@@ -61,7 +57,7 @@ import {
 } from './delegate';
 import { runOcrPreprocessingBatchPipeline, toSteelOcrChunkError } from '../ocr/preprocess';
 import { createSteelOcrStateService, STEEL_DELEGATE_OCR_LEASE_MS } from '../ocr/state';
-import { runWithSteelOcrExecution, getSteelOcrFailureStatus } from '../ocr/control';
+import { getSteelOcrFailureStatus } from '../ocr/control';
 import { createMongooseSteelWorkingOrderMemoryWriter } from '../memory/service';
 import { buildSteelDelegateOcrStatusEventEnvelopes } from './events';
 import { createSteelOcrResponseAuditService } from '../ocr/audit';
@@ -465,7 +461,9 @@ export function createSteelDelegateOcrService(
           conversationId,
           requestId,
           messageId: requestId,
-          ...(isNonEmptyString(workflow.runId) ? { runId: workflow.runId, kind: 'delegate' as const } : {}),
+          ...(isNonEmptyString(workflow.runId)
+            ? { runId: workflow.runId, kind: 'delegate' as const }
+            : {}),
           ...(typeof workflow.completedChunks === 'number'
             ? { completedChunks: workflow.completedChunks }
             : {}),
@@ -591,13 +589,21 @@ export function createSteelDelegateOcrService(
         }),
         paddleOcr,
         onProgress: async ({ file: progressFile, progress }) => {
-          const entry = progressByFile.get(progressFile.ocrFileKey) ?? { total: 0, completed: new Set<number>() };
+          const entry = progressByFile.get(progressFile.ocrFileKey) ?? {
+            total: 0,
+            completed: new Set<number>(),
+          };
           if ('chunkCount' in progress) entry.total = progress.chunkCount;
-          if (progress.stage === 'organizer_chunk_saved' || progress.stage === 'organizer_chunk_loaded') {
+          if (
+            progress.stage === 'organizer_chunk_saved' ||
+            progress.stage === 'organizer_chunk_loaded'
+          ) {
             entry.completed.add(progress.chunkIndex);
           }
           if (progress.stage === 'processing_with_merged_markdown') {
-            entry.completed = new Set(Array.from({ length: progress.chunkCount }, (_, index) => index + 1));
+            entry.completed = new Set(
+              Array.from({ length: progress.chunkCount }, (_, index) => index + 1),
+            );
           }
           progressByFile.set(progressFile.ocrFileKey, entry);
           let completedChunks = 0;
@@ -611,8 +617,11 @@ export function createSteelDelegateOcrService(
           workflow.totalChunks = normalizedTotalChunks;
           if (workflow.claimToken) {
             const updated = await getStateService().transitionDelegateOcrRun({
-              claimToken: workflow.claimToken, executionLeaseToken: workflow.executionLeaseToken,
-              stage: progress.stage, completedChunks, totalChunks: normalizedTotalChunks,
+              claimToken: workflow.claimToken,
+              executionLeaseToken: workflow.executionLeaseToken,
+              stage: progress.stage,
+              completedChunks,
+              totalChunks: normalizedTotalChunks,
             });
             if (!updated) throw new DOMException('OCR execution is no longer active', 'AbortError');
           }
@@ -654,14 +663,7 @@ export function createSteelDelegateOcrService(
     signal,
     agent,
   }: CreateSteelDelegateOcrExecuteInput) {
-    return async (input: DelegateOcrExecuteInput): Promise<string> => runWithSteelOcrExecution({
-      scope: req.user?.id && req.steelNativeContext?.conversationId
-        ? { userId: req.user.id, conversationId: req.steelNativeContext.conversationId, tenantId: resolveRequestTenantId(req) }
-        : undefined,
-      responseGenerationId: req.steelNativeContext?.requestId,
-      executionEpoch: req._resumableJobCreatedAt,
-      signal,
-    }, async (signal) => {
+    return async (input: DelegateOcrExecuteInput): Promise<string> => {
       const nativeContext = req.steelNativeContext;
       const delegateContext = nativeContext?.delegateOcrContext;
       const modelOptions = delegateContext?.modelOptions;
@@ -857,12 +859,14 @@ export function createSteelDelegateOcrService(
         if (savedFiles) {
           workflow.filesOverride = savedFiles;
         }
-        const lease = prepared?.lease ?? await stateService.acquireDelegateExecutionLease({
-          executionEpoch: req._resumableJobCreatedAt,
-          responseGenerationId: generationId,
-          claimToken: claim.claimToken,
-          ...(typeof executionLeaseToken === 'string' ? { leaseToken: executionLeaseToken } : {}),
-        });
+        const lease =
+          prepared?.lease ??
+          (await stateService.acquireDelegateExecutionLease({
+            executionEpoch: req._resumableJobCreatedAt,
+            responseGenerationId: generationId,
+            claimToken: claim.claimToken,
+            ...(typeof executionLeaseToken === 'string' ? { leaseToken: executionLeaseToken } : {}),
+          }));
         if (!lease) {
           throw new Error('delegate_ocr execution lease is unavailable');
         }
@@ -1232,10 +1236,12 @@ export function createSteelDelegateOcrService(
         const failedClaim = delegateContext.delegateOcrClaim;
         if (failedClaim) {
           const failureStatus = getSteelOcrFailureStatus(signal);
-          await stateService.transitionDelegateOcrRun({ claimToken: failedClaim.claimToken,
+          await stateService.transitionDelegateOcrRun({
+            claimToken: failedClaim.claimToken,
             executionLeaseToken: delegateContext.delegateOcrExecutionLease?.executionLeaseToken,
             status: failureStatus,
-            errorMessage: signal?.aborted ? undefined : 'OCR processing failed.' });
+            errorMessage: signal?.aborted ? undefined : 'OCR processing failed.',
+          });
           await emitStatus({
             requestId: generationId,
             messageId: triggeringMessageId,
@@ -1251,7 +1257,7 @@ export function createSteelDelegateOcrService(
         }
         throw error;
       }
-    });
+    };
   }
 
   async function prepareDelegateOcrResume({
@@ -1259,7 +1265,9 @@ export function createSteelDelegateOcrService(
     conversationId,
     userId,
     resume: target,
-  }: Parameters<SteelDelegateOcrService['prepareDelegateOcrResume']>[0]): Promise<SteelDelegateOcrResume | undefined> {
+  }: Parameters<SteelDelegateOcrService['prepareDelegateOcrResume']>[0]): Promise<
+    SteelDelegateOcrResume | undefined
+  > {
     if (!target) return undefined;
     const responseGenerationId = req.steelNativeContext?.requestId;
     if (!conversationId || !userId || !responseGenerationId) {

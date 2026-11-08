@@ -42,11 +42,7 @@ export const MAX_QUOTATION_PENDING_FILES = 32;
 export const MAX_QUOTATION_CHUNKS = 512;
 export const DEFAULT_QUOTATION_LEASE_MS = 60_000;
 
-const recoverableStatuses: readonly SteelQuotationRunStatus[] = [
-  'paused',
-  'interrupted',
-  'failed',
-];
+const recoverableStatuses: readonly SteelQuotationRunStatus[] = ['paused', 'interrupted', 'failed'];
 const unfinishedStatuses: readonly SteelQuotationRunStatus[] = ['running', ...recoverableStatuses];
 const leaseStatuses: readonly SteelQuotationRunStatus[] = ['running'];
 
@@ -226,10 +222,15 @@ export interface SteelQuotationStateService {
   /** Reads only the active run for hot lease checks; expired runs fall back to readState retirement. */
   readActiveRun(scope: SteelQuotationScope): Promise<SteelQuotationActiveRun | undefined>;
   isPublishedRun(scope: SteelQuotationScope, run: SteelQuotationActiveRun): Promise<boolean>;
-  hasSystemOrder(scope: SteelQuotationScope, preloadedState?: ISteelQuotationState | null): Promise<boolean>;
+  hasSystemOrder(
+    scope: SteelQuotationScope,
+    preloadedState?: ISteelQuotationState | null,
+  ): Promise<boolean>;
   setOrder(input: SteelQuotationOrderInput): Promise<ISteelQuotationState>;
-  prepareOcrOrder(scope: SteelQuotationScope, expectedOrderHash: string | null):
-    Promise<{ state: ISteelQuotationState; input?: SteelQuotationOcrInput }>;
+  prepareOcrOrder(
+    scope: SteelQuotationScope,
+    expectedOrderHash: string | null,
+  ): Promise<{ state: ISteelQuotationState; input?: SteelQuotationOcrInput }>;
   saveCustomer(input: SteelQuotationSaveCustomerInput): Promise<SteelQuotationCustomerPreparation>;
   saveCustomerLookupEvidence(
     input: SteelQuotationSaveCustomerLookupEvidenceInput,
@@ -260,21 +261,16 @@ export interface SteelQuotationStateService {
     input: SteelQuotationTransitionRunInput,
   ): Promise<SteelQuotationActiveRun | undefined>;
   interruptRun(input: SteelQuotationInterruptInput): Promise<SteelQuotationActiveRun | undefined>;
-  pauseRun(input: SteelQuotationControlInput): Promise<SteelQuotationActiveRun | undefined>;
   claimResume(input: SteelQuotationResumeInput): Promise<SteelQuotationResumeResult>;
   failRun(input: SteelQuotationControlInput): Promise<SteelQuotationActiveRun | undefined>;
   settleTurn(input: SteelQuotationTurnInput): Promise<SteelQuotationActiveRun | undefined>;
   pauseTurn(input: SteelQuotationTurnInput): Promise<SteelQuotationActiveRun | undefined>;
-  cancelRun(input: Omit<SteelQuotationRunInput, 'leaseToken'> & { leaseToken?: string }): Promise<
-    SteelQuotationActiveRun | undefined
-  >;
   deleteConversation(scope: SteelQuotationScope): Promise<SteelQuotationDeleteResult>;
 }
 
 function nowOrDefault(now?: Date): Date {
   return now ? new Date(now.getTime()) : new Date();
 }
-
 
 function byteLength(value: string): number {
   return Buffer.byteLength(value, 'utf8');
@@ -299,7 +295,10 @@ function validateText(value: string, field: string, limit: number): void {
 }
 
 function validateSelectionProvenance(selectionProvenance: SteelQuotationSelectionProvenance): void {
-  if (!selectionProvenance || !['unique', 'selected', 'default_tier'].includes(selectionProvenance.method)) {
+  if (
+    !selectionProvenance ||
+    !['unique', 'selected', 'default_tier'].includes(selectionProvenance.method)
+  ) {
     throw new Error('selectionProvenance method is invalid');
   }
   for (const [name, value] of [
@@ -318,10 +317,18 @@ function validateCustomerLookupEvidence(evidence: SteelQuotationCustomerLookupEv
   validateText(evidence.lookupMessageId, 'customerLookupEvidence.lookupMessageId', 1_000);
   validateText(evidence.orderHash, 'customerLookupEvidence.orderHash', 128);
   if (evidence.customerPreparationId !== undefined) {
-    validateText(evidence.customerPreparationId, 'customerLookupEvidence.customerPreparationId', 200);
+    validateText(
+      evidence.customerPreparationId,
+      'customerLookupEvidence.customerPreparationId',
+      200,
+    );
   }
   if (evidence.customerMarkdown !== undefined) {
-    validateText(evidence.customerMarkdown, 'customerLookupEvidence.customerMarkdown', MAX_QUOTATION_CUSTOMER_BYTES);
+    validateText(
+      evidence.customerMarkdown,
+      'customerLookupEvidence.customerMarkdown',
+      MAX_QUOTATION_CUSTOMER_BYTES,
+    );
   }
   if (!Array.isArray(evidence.customers)) {
     throw new Error('customerLookupEvidence.customers must be an array');
@@ -335,7 +342,11 @@ function validateCustomerLookupEvidence(evidence: SteelQuotationCustomerLookupEv
       ['displayName', customer.displayName],
     ] as const) {
       if (value !== undefined) {
-        validateText(value, `customerLookupEvidence.customers[${index}].${name}`, MAX_QUOTATION_CUSTOMER_BYTES);
+        validateText(
+          value,
+          `customerLookupEvidence.customers[${index}].${name}`,
+          MAX_QUOTATION_CUSTOMER_BYTES,
+        );
       }
     }
     if (customer.customerTier !== undefined && !/^[A-F]$/.test(customer.customerTier)) {
@@ -368,11 +379,13 @@ function sameCompletionReceipt(
   left: SteelQuotationTicketCompletionReceipt | undefined,
   right: SteelQuotationTicketCompletionReceipt | undefined,
 ): boolean {
-  return left?.inputHash === right?.inputHash &&
+  return (
+    left?.inputHash === right?.inputHash &&
     left?.markdown === right?.markdown &&
     left?.ocrGeneration === right?.ocrGeneration &&
     left?.ocrHash === right?.ocrHash &&
-    left?.systemOrderHash === right?.systemOrderHash;
+    left?.systemOrderHash === right?.systemOrderHash
+  );
 }
 
 function validatePositiveIndex(value: number, field: string): void {
@@ -404,7 +417,8 @@ function validateSourceSnapshot(
     validateText(mapping.fileId, 'quotation source fileId', 2_000);
     validateText(mapping.sourceCode, 'quotation source code', 200);
     validateText(mapping.sourceFilename, 'quotation source filename', 2_000);
-    if (mapping.mediaType !== undefined) validateText(mapping.mediaType, 'quotation source mediaType', 200);
+    if (mapping.mediaType !== undefined)
+      validateText(mapping.mediaType, 'quotation source mediaType', 200);
     if (sourceCodes.has(mapping.sourceCode) || fileIds.has(mapping.fileId)) {
       throw new Error('quotation source snapshot mappings must be unique');
     }
@@ -426,11 +440,13 @@ function stateFilter(scope: SteelQuotationScope) {
 }
 
 function sameActiveRunFilter(run?: SteelQuotationActiveRun): Record<string, unknown> {
-  return run ? {
-    'activeRun.runId': run.runId,
-    'activeRun.status': run.status,
-    'activeRun.checkpointRefs': run.checkpointRefs,
-  } : { activeRun: { $exists: false } };
+  return run
+    ? {
+        'activeRun.runId': run.runId,
+        'activeRun.status': run.status,
+        'activeRun.checkpointRefs': run.checkpointRefs,
+      }
+    : { activeRun: { $exists: false } };
 }
 
 function authorityByteLength(state: SteelQuotationStateLike): number {
@@ -470,7 +486,9 @@ function assertAuthorityBounds(state: SteelQuotationStateLike): void {
     throw new Error(`quotation authority exceeds ${MAX_QUOTATION_TICKETS} tickets`);
   }
   if (state.pendingMessages.length > MAX_QUOTATION_PENDING_MESSAGES) {
-    throw new Error(`quotation authority exceeds ${MAX_QUOTATION_PENDING_MESSAGES} pending messages`);
+    throw new Error(
+      `quotation authority exceeds ${MAX_QUOTATION_PENDING_MESSAGES} pending messages`,
+    );
   }
   if ((state.activeRun?.chunks.length ?? 0) > MAX_QUOTATION_CHUNKS) {
     throw new Error(`quotation authority exceeds ${MAX_QUOTATION_CHUNKS} chunks`);
@@ -506,8 +524,10 @@ function artifactRef(
   };
 }
 
-
-function getActiveRun(state: ISteelQuotationState | null, runId: string): SteelQuotationActiveRun | undefined {
+function getActiveRun(
+  state: ISteelQuotationState | null,
+  runId: string,
+): SteelQuotationActiveRun | undefined {
   return state?.activeRun?.runId === runId ? state.activeRun : undefined;
 }
 
@@ -519,35 +539,51 @@ function sameSelectionProvenance(
   left: SteelQuotationSelectionProvenance,
   right: SteelQuotationSelectionProvenance,
 ): boolean {
-  return left.method === right.method &&
+  return (
+    left.method === right.method &&
     left.lookupMessageId === right.lookupMessageId &&
     left.selectionMessageId === right.selectionMessageId &&
-    left.selectedCustomerId === right.selectedCustomerId;
+    left.selectedCustomerId === right.selectedCustomerId
+  );
 }
 
 function matchesCustomerPreparation(
   preparation: SteelQuotationCustomerPreparation | undefined,
-  input: Pick<SteelQuotationIssueTicketInput, 'customerMarkdown' | 'customerIdentity' | 'selectionProvenance'> & {
+  input: Pick<
+    SteelQuotationIssueTicketInput,
+    'customerMarkdown' | 'customerIdentity' | 'selectionProvenance'
+  > & {
     preparationId?: string;
   },
 ): boolean {
-  return preparation !== undefined &&
+  return (
+    preparation !== undefined &&
     preparation.customerMarkdown === input.customerMarkdown &&
     preparation.customerIdentity === input.customerIdentity &&
     preparation.preparationId === input.preparationId &&
-    sameSelectionProvenance(preparation.selectionProvenance, input.selectionProvenance);
+    sameSelectionProvenance(preparation.selectionProvenance, input.selectionProvenance)
+  );
 }
 
 export function createSteelQuotationStateService(
   mongoose: Mongoose,
-  inputs: ReturnType<typeof createSteelQuotationInputMethods> = createSteelQuotationInputMethods(mongoose),
+  inputs: ReturnType<typeof createSteelQuotationInputMethods> = createSteelQuotationInputMethods(
+    mongoose,
+  ),
 ): SteelQuotationStateService {
   const State = createSteelQuotationStateModel(mongoose);
   const Artifact = createSteelQuotationArtifactModel(mongoose);
 
-  async function blocksInputMutation(scope: SteelQuotationScope, run?: SteelQuotationActiveRun): Promise<boolean> {
-    return isUnfinished(run?.status) || Boolean(run?.status === 'completed' &&
-      !await inputs.isSteelQuotationRunPublished(scope, run));
+  async function blocksInputMutation(
+    scope: SteelQuotationScope,
+    run?: SteelQuotationActiveRun,
+  ): Promise<boolean> {
+    return (
+      isUnfinished(run?.status) ||
+      Boolean(
+        run?.status === 'completed' && !(await inputs.isSteelQuotationRunPublished(scope, run)),
+      )
+    );
   }
 
   async function ensureState(scope: SteelQuotationScope): Promise<ISteelQuotationState> {
@@ -586,28 +622,35 @@ export function createSteelQuotationStateService(
     if (!state) return null;
     assertAuthorityBounds(state);
     const run = state.activeRun;
-    if (run && run.status !== 'cancelled' &&
+    if (
+      run &&
+      run.status !== 'cancelled' &&
       new Date(run.acceptedAt).getTime() + STEEL_QUOTATION_INPUT_TTL_MS <= Date.now() &&
-      !await inputs.isSteelQuotationRunPublished(scope, run)) {
-      const retired = await inputs.retireSteelQuotationInput({ scope, runId: run.runId, reason: 'expired' });
+      !(await inputs.isSteelQuotationRunPublished(scope, run))
+    ) {
+      const retired = await inputs.retireSteelQuotationInput({ scope, runId: run.runId });
       if (!retired.ok) throw new SteelQuotationInputError(retired.code);
       return retired.state;
     }
     return state;
   }
-  async function readActiveRun(scope: SteelQuotationScope): Promise<SteelQuotationActiveRun | undefined> {
+  async function readActiveRun(
+    scope: SteelQuotationScope,
+  ): Promise<SteelQuotationActiveRun | undefined> {
     validateScope(scope);
     const state = await State.findOne(stateFilter(scope))
       .select({ activeRun: 1 })
       .lean<Pick<ISteelQuotationState, 'activeRun'>>();
     const run = state?.activeRun;
-    if (run && run.status !== 'cancelled' &&
-      new Date(run.acceptedAt).getTime() + STEEL_QUOTATION_INPUT_TTL_MS <= Date.now()) {
+    if (
+      run &&
+      run.status !== 'cancelled' &&
+      new Date(run.acceptedAt).getTime() + STEEL_QUOTATION_INPUT_TTL_MS <= Date.now()
+    ) {
       return (await readState(scope))?.activeRun;
     }
     return run;
   }
-
 
   async function prepareOcrOrder(scope: SteelQuotationScope, expectedOrderHash: string | null) {
     const result = await inputs.prepareSteelQuotationOcrInput({ scope, expectedOrderHash });
@@ -621,15 +664,24 @@ export function createSteelQuotationStateService(
   ): Promise<boolean> {
     validateScope(scope);
     const state = preloadedState === undefined ? await readState(scope) : preloadedState;
-    if (!state || state.userId !== scope.userId || state.conversationId !== scope.conversationId ||
-      (state.tenantId ?? undefined) !== scope.tenantId) {
+    if (
+      !state ||
+      state.userId !== scope.userId ||
+      state.conversationId !== scope.conversationId ||
+      (state.tenantId ?? undefined) !== scope.tenantId
+    ) {
       return false;
     }
 
     const run = state.activeRun;
     const currentSystemOrder = state.currentSystemOrder;
-    if (!run || !currentSystemOrder || currentSystemOrder.runId !== run.runId ||
-      currentSystemOrder.messageId !== run.targetMessageId || !isCurrentSystemOrderRun(state)) {
+    if (
+      !run ||
+      !currentSystemOrder ||
+      currentSystemOrder.runId !== run.runId ||
+      currentSystemOrder.messageId !== run.targetMessageId ||
+      !isCurrentSystemOrderRun(state)
+    ) {
       return false;
     }
     return inputs.isSteelQuotationRunPublished(scope, run);
@@ -656,8 +708,10 @@ export function createSteelQuotationStateService(
       if (!current) {
         continue;
       }
-      if (input.expectedOrderHash !== undefined &&
-        (current.currentOrder?.sha256 ?? null) !== input.expectedOrderHash) {
+      if (
+        input.expectedOrderHash !== undefined &&
+        (current.currentOrder?.sha256 ?? null) !== input.expectedOrderHash
+      ) {
         throw new Error('quotation order changed since it was read');
       }
       if (await blocksInputMutation(input.scope, current.activeRun)) {
@@ -685,7 +739,9 @@ export function createSteelQuotationStateService(
         tickets: orderChanged ? retainedTickets : current.tickets,
         ...(orderChanged ? { customerLookupEvidence: undefined } : {}),
       });
-      const updated = await State.findOneAndUpdate(filter, update, { new: true }).lean<ISteelQuotationState>();
+      const updated = await State.findOneAndUpdate(filter, update, {
+        new: true,
+      }).lean<ISteelQuotationState>();
       if (updated) {
         assertAuthorityBounds(updated);
         return updated;
@@ -751,7 +807,9 @@ export function createSteelQuotationStateService(
         continue;
       }
       if (await blocksInputMutation(input.scope, current.activeRun)) {
-        throw new Error('cannot save customer preparation while a run is unfinished or unpublished');
+        throw new Error(
+          'cannot save customer preparation while a run is unfinished or unpublished',
+        );
       }
       assertAuthorityBounds({
         ...current,
@@ -770,7 +828,7 @@ export function createSteelQuotationStateService(
           ...stateFilter(input.scope),
           ...(input.orderHash !== undefined
             ? { 'currentOrder.sha256': input.orderHash }
-            : { 'currentOrder': { $exists: false } }),
+            : { currentOrder: { $exists: false } }),
           ...preparationFilter,
           ...sameActiveRunFilter(current.activeRun),
         },
@@ -797,7 +855,9 @@ export function createSteelQuotationStateService(
     if (input.evidence.orderHash !== input.expectedOrderHash) {
       throw new Error('customer lookup evidence order is stale');
     }
-    if ((input.evidence.customerPreparationId ?? undefined) !== input.expectedCustomerPreparationId) {
+    if (
+      (input.evidence.customerPreparationId ?? undefined) !== input.expectedCustomerPreparationId
+    ) {
       throw new Error('customer lookup evidence preparation is stale');
     }
     const now = nowOrDefault(input.now);
@@ -805,8 +865,11 @@ export function createSteelQuotationStateService(
 
     for (let attempt = 0; attempt < 4; attempt += 1) {
       const current = await readState(input.scope);
-      if (!current || current.currentOrder?.sha256 !== input.expectedOrderHash ||
-        current.currentCustomer?.preparationId !== input.expectedCustomerPreparationId) {
+      if (
+        !current ||
+        current.currentOrder?.sha256 !== input.expectedOrderHash ||
+        current.currentCustomer?.preparationId !== input.expectedCustomerPreparationId
+      ) {
         throw new Error('customer lookup evidence is based on stale preparation data');
       }
       const existing = current.customerLookupEvidence;
@@ -814,7 +877,9 @@ export function createSteelQuotationStateService(
         return existing;
       }
       if (await blocksInputMutation(input.scope, current.activeRun)) {
-        throw new Error('cannot save customer lookup evidence while a run is unfinished or unpublished');
+        throw new Error(
+          'cannot save customer lookup evidence while a run is unfinished or unpublished',
+        );
       }
       assertAuthorityBounds({ ...current, customerLookupEvidence: input.evidence });
       const updated = await State.findOneAndUpdate(
@@ -844,9 +909,13 @@ export function createSteelQuotationStateService(
     if (input.responseId !== undefined) validateText(input.responseId, 'responseId', 300);
     if (input.orderHash !== undefined) validateText(input.orderHash, 'orderHash', 128);
     const current = await ensureState(input.scope);
-    if (!current.customerLookupEvidence ||
-      (input.responseId !== undefined && current.customerLookupEvidence.responseId !== input.responseId) ||
-      (input.orderHash !== undefined && current.customerLookupEvidence.orderHash !== input.orderHash)) {
+    if (
+      !current.customerLookupEvidence ||
+      (input.responseId !== undefined &&
+        current.customerLookupEvidence.responseId !== input.responseId) ||
+      (input.orderHash !== undefined &&
+        current.customerLookupEvidence.orderHash !== input.orderHash)
+    ) {
       return current;
     }
     if (await blocksInputMutation(input.scope, current.activeRun)) return current;
@@ -880,17 +949,19 @@ export function createSteelQuotationStateService(
       validateText(input.preparationId, 'preparationId', 200);
     }
     const current = await ensureState(input.scope);
-    if (!current.currentCustomer || (
-      input.preparationId !== undefined
+    if (
+      !current.currentCustomer ||
+      (input.preparationId !== undefined
         ? current.currentCustomer.preparationId !== input.preparationId
-        : current.currentCustomer.responseId !== input.responseId
-    )) {
+        : current.currentCustomer.responseId !== input.responseId)
+    ) {
       return current;
     }
     if (await blocksInputMutation(input.scope, current.activeRun)) return current;
-    const customerFilter = input.preparationId !== undefined
-      ? { 'currentCustomer.preparationId': input.preparationId }
-      : { 'currentCustomer.responseId': input.responseId };
+    const customerFilter =
+      input.preparationId !== undefined
+        ? { 'currentCustomer.preparationId': input.preparationId }
+        : { 'currentCustomer.responseId': input.responseId };
     const updated = await State.findOneAndUpdate(
       {
         ...stateFilter(input.scope),
@@ -914,17 +985,22 @@ export function createSteelQuotationStateService(
     throw new Error('quotation authority state is unavailable');
   }
 
-  async function issueTicket(
-    input: SteelQuotationIssueTicketInput,
-  ): Promise<SteelQuotationTicket> {
+  async function issueTicket(input: SteelQuotationIssueTicketInput): Promise<SteelQuotationTicket> {
     validateScope(input.scope);
     validateText(input.customerMarkdown, 'customerMarkdown', MAX_QUOTATION_CUSTOMER_BYTES);
     validateText(input.customerIdentity, 'customerIdentity', MAX_QUOTATION_CUSTOMER_BYTES);
     validateText(input.triggeringMessageId, 'triggeringMessageId', 1_000);
     validateSelectionProvenance(input.selectionProvenance);
-    const hasBinding = input.preparationId !== undefined ||
-      input.responseId !== undefined || input.orderHash !== undefined;
-    if (hasBinding && (input.preparationId === undefined || input.responseId === undefined || input.orderHash === undefined)) {
+    const hasBinding =
+      input.preparationId !== undefined ||
+      input.responseId !== undefined ||
+      input.orderHash !== undefined;
+    if (
+      hasBinding &&
+      (input.preparationId === undefined ||
+        input.responseId === undefined ||
+        input.orderHash === undefined)
+    ) {
       throw new Error('quotation ticket binding requires preparationId, responseId and orderHash');
     }
     if (input.completionReceipt !== undefined) {
@@ -944,7 +1020,9 @@ export function createSteelQuotationStateService(
     for (let attempt = 0; attempt < 4; attempt += 1) {
       const current = await readState(input.scope);
       if (hasBinding) {
-        const existing = current?.tickets.find((candidate) => candidate.responseId === input.responseId);
+        const existing = current?.tickets.find(
+          (candidate) => candidate.responseId === input.responseId,
+        );
         if (existing) {
           if (
             existing.customerMarkdown !== input.customerMarkdown ||
@@ -963,17 +1041,24 @@ export function createSteelQuotationStateService(
       if (!current?.currentOrder) {
         throw new Error('cannot issue quotation ticket without a current order');
       }
-      if (!(hasBinding && current.activeRun && recoverableStatuses.includes(current.activeRun.status)) &&
-        await blocksInputMutation(input.scope, current.activeRun)) {
+      if (
+        !(
+          hasBinding &&
+          current.activeRun &&
+          recoverableStatuses.includes(current.activeRun.status)
+        ) &&
+        (await blocksInputMutation(input.scope, current.activeRun))
+      ) {
         throw new Error('cannot issue quotation ticket while a run is unfinished or unpublished');
       }
       if (current.tickets.length >= MAX_QUOTATION_TICKETS) {
         throw new Error(`quotation authority exceeds ${MAX_QUOTATION_TICKETS} tickets`);
       }
-      if (hasBinding && (
-        current.currentOrder.sha256 !== input.orderHash ||
-        !matchesCustomerPreparation(current.currentCustomer, input)
-      )) {
+      if (
+        hasBinding &&
+        (current.currentOrder.sha256 !== input.orderHash ||
+          !matchesCustomerPreparation(current.currentCustomer, input))
+      ) {
         throw new Error('quotation ticket does not match the current customer preparation');
       }
       const index = current.nextSignalIndex + 1;
@@ -987,9 +1072,7 @@ export function createSteelQuotationStateService(
         triggeringMessageId: input.triggeringMessageId,
         selectionProvenance: input.selectionProvenance,
         issuedAt: now,
-        ...(hasBinding
-          ? { preparationId: input.preparationId, responseId: input.responseId }
-          : {}),
+        ...(hasBinding ? { preparationId: input.preparationId, responseId: input.responseId } : {}),
         ...(input.completionReceipt ? { completionReceipt: input.completionReceipt } : {}),
       };
       assertAuthorityBounds({
@@ -1149,11 +1232,15 @@ export function createSteelQuotationStateService(
     operationId: string;
   }): Promise<string | undefined> {
     const activeRun = await readActiveRun(input.scope);
-    const ref = activeRun?.runId === input.runId
-      ? activeRun.checkpointRefs.find((candidate) => candidate.operationId === input.operationId)
-      : undefined;
+    const ref =
+      activeRun?.runId === input.runId
+        ? activeRun.checkpointRefs.find((candidate) => candidate.operationId === input.operationId)
+        : undefined;
     if (ref) {
-      return readArtifact({ scope: input.scope, ref: artifactRef(input.scope, input.runId, ref.operationId, ref.kind, ref.sha256) });
+      return readArtifact({
+        scope: input.scope,
+        ref: artifactRef(input.scope, input.runId, ref.operationId, ref.kind, ref.sha256),
+      });
     }
     const found = await getArtifact(input);
     return found?.payload;
@@ -1221,13 +1308,16 @@ export function createSteelQuotationStateService(
     }
     validateSourceSnapshot(input.sourceSnapshot, current.currentOrder.sha256);
     if (ticket.preparationId !== undefined || ticket.responseId !== undefined) {
-      if (ticket.preparationId === undefined || ticket.responseId === undefined ||
+      if (
+        ticket.preparationId === undefined ||
+        ticket.responseId === undefined ||
         !matchesCustomerPreparation(current.currentCustomer, {
           customerMarkdown: ticket.customerMarkdown,
           customerIdentity: ticket.customerIdentity,
           selectionProvenance: ticket.selectionProvenance,
           preparationId: ticket.preparationId,
-        })) {
+        })
+      ) {
         throw new Error('quotation signal customer preparation is stale');
       }
     }
@@ -1276,16 +1366,25 @@ export function createSteelQuotationStateService(
         'activeRun.status': { $in: sourceMessageId ? recoverableStatuses : unfinishedStatuses },
         'activeRun.acceptedAt': { $gt: new Date(now.getTime() - STEEL_QUOTATION_INPUT_TTL_MS) },
         $and: [
-          { $or: [
-            { 'activeRun.leaseToken': null },
-            { 'activeRun.leaseExpiresAt': { $lte: now } },
-          ] },
-          ...(sourceMessageId ? [{ $or: [
-            { 'activeRun.targetMessageId': sourceMessageId },
-            { 'activeRun.executionResponseId': sourceMessageId },
-            { 'activeRun.resumeSourceMessageIds': sourceMessageId },
-            { tickets: { $elemMatch: { acceptedRunId: input.runId, responseId: sourceMessageId } } },
-          ] }] : []),
+          {
+            $or: [{ 'activeRun.leaseToken': null }, { 'activeRun.leaseExpiresAt': { $lte: now } }],
+          },
+          ...(sourceMessageId
+            ? [
+                {
+                  $or: [
+                    { 'activeRun.targetMessageId': sourceMessageId },
+                    { 'activeRun.executionResponseId': sourceMessageId },
+                    { 'activeRun.resumeSourceMessageIds': sourceMessageId },
+                    {
+                      tickets: {
+                        $elemMatch: { acceptedRunId: input.runId, responseId: sourceMessageId },
+                      },
+                    },
+                  ],
+                },
+              ]
+            : []),
         ],
       },
       {
@@ -1306,7 +1405,9 @@ export function createSteelQuotationStateService(
         ...(sourceMessageId && {
           $unset: { 'activeRun.errorMessage': 1 },
           $addToSet: {
-            'activeRun.resumeSourceMessageIds': { $each: [sourceMessageId, input.executionResponseId] },
+            'activeRun.resumeSourceMessageIds': {
+              $each: [sourceMessageId, input.executionResponseId],
+            },
           },
         }),
       },
@@ -1318,15 +1419,23 @@ export function createSteelQuotationStateService(
     return { state: updated, lease: { runId: input.runId, leaseToken, expiresAt } };
   }
 
-  async function claimResume(input: SteelQuotationResumeInput): Promise<SteelQuotationResumeResult> {
-    const claimed = await claimLease({
-      scope: input.scope,
-      runId: input.runId,
-      executionResponseId: input.responseId,
-      executionEpoch: input.executionEpoch,
-    }, input.sourceMessageId).catch((error: unknown) => {
-      if (error instanceof Error && 'code' in error &&
-          error.code === 'STEEL_CONVERSATION_OWNER_MISMATCH') {
+  async function claimResume(
+    input: SteelQuotationResumeInput,
+  ): Promise<SteelQuotationResumeResult> {
+    const claimed = await claimLease(
+      {
+        scope: input.scope,
+        runId: input.runId,
+        executionResponseId: input.responseId,
+        executionEpoch: input.executionEpoch,
+      },
+      input.sourceMessageId,
+    ).catch((error: unknown) => {
+      if (
+        error instanceof Error &&
+        'code' in error &&
+        error.code === 'STEEL_CONVERSATION_OWNER_MISMATCH'
+      ) {
         return undefined;
       }
       throw error;
@@ -1342,11 +1451,15 @@ export function createSteelQuotationStateService(
           : 'flow_not_found',
       };
     }
-    if (run.targetMessageId !== input.sourceMessageId &&
+    if (
+      run.targetMessageId !== input.sourceMessageId &&
       run.executionResponseId !== input.sourceMessageId &&
       !run.resumeSourceMessageIds?.includes(input.sourceMessageId) &&
-      !state?.tickets.some((ticket) => ticket.acceptedRunId === input.runId &&
-        ticket.responseId === input.sourceMessageId)) {
+      !state?.tickets.some(
+        (ticket) =>
+          ticket.acceptedRunId === input.runId && ticket.responseId === input.sourceMessageId,
+      )
+    ) {
       return { ok: false, code: 'flow_not_found' };
     }
     if (new Date(run.acceptedAt).getTime() + STEEL_QUOTATION_INPUT_TTL_MS <= Date.now()) {
@@ -1470,7 +1583,8 @@ export function createSteelQuotationStateService(
           ...(input.interruption && { 'activeRun.interruption': input.interruption }),
         },
         $unset: {
-          'activeRun.leaseToken': 1, 'activeRun.leaseExpiresAt': 1,
+          'activeRun.leaseToken': 1,
+          'activeRun.leaseExpiresAt': 1,
           ...(!input.interruption && { 'activeRun.interruption': 1 }),
         },
       },
@@ -1510,9 +1624,10 @@ export function createSteelQuotationStateService(
           'activeRun.updatedAt': now,
           updatedAt: now,
           ...(status === 'failed' && {
-            'activeRun.errorMessage': expectedRun?.status === 'completed'
-              ? 'quotation_unpublished'
-              : 'Quotation did not finish publishing.',
+            'activeRun.errorMessage':
+              expectedRun?.status === 'completed'
+                ? 'quotation_unpublished'
+                : 'Quotation did not finish publishing.',
           }),
         },
         $unset: {
@@ -1523,12 +1638,6 @@ export function createSteelQuotationStateService(
       { new: true },
     ).lean<ISteelQuotationState>();
     return getActiveRun(updated, input.runId);
-  }
-
-  function pauseRun(
-    input: SteelQuotationControlInput,
-  ): Promise<SteelQuotationActiveRun | undefined> {
-    return controlRun(input, 'paused', ['running']);
   }
 
   function failRun(
@@ -1559,7 +1668,12 @@ export function createSteelQuotationStateService(
   ): Promise<SteelQuotationActiveRun | undefined> {
     const run = await turnRun(input);
     if (!run) return undefined;
-    return controlRun({ scope: input.scope, runId: run.runId }, 'paused', ['running', 'interrupted'], run);
+    return controlRun(
+      { scope: input.scope, runId: run.runId },
+      'paused',
+      ['running', 'interrupted'],
+      run,
+    );
   }
 
   async function settleTurn(
@@ -1578,17 +1692,6 @@ export function createSteelQuotationStateService(
         ? 'failed'
         : (input.status ?? 'failed');
     return controlRun({ scope: input.scope, runId: run.runId }, status, [run.status], run);
-  }
-
-  async function cancelRun(
-    input: Omit<SteelQuotationRunInput, 'leaseToken'> & { leaseToken?: string },
-  ): Promise<SteelQuotationActiveRun | undefined> {
-    validateScope(input.scope);
-    const retired = await inputs.retireSteelQuotationInput({
-      scope: input.scope, runId: input.runId, reason: 'cancelled', now: input.now,
-    });
-    if (!retired.ok) throw new SteelQuotationInputError(retired.code);
-    return getActiveRun(retired.state, input.runId);
   }
 
   async function checkpoint(
@@ -1657,20 +1760,24 @@ export function createSteelQuotationStateService(
       ) {
         return undefined;
       }
-      if (input.chunkIndex !== undefined && !run.chunks.some((chunk) => chunk.index === input.chunkIndex)) {
+      if (
+        input.chunkIndex !== undefined &&
+        !run.chunks.some((chunk) => chunk.index === input.chunkIndex)
+      ) {
         throw new Error('checkpoint chunk does not exist in the quotation run');
       }
       const nextRefs = [
         ...run.checkpointRefs.filter((candidate) => candidate.operationId !== ref.operationId),
         checkpointRef,
       ];
-      const nextChunks = input.chunkIndex === undefined
-        ? run.chunks
-        : run.chunks.map((chunk) =>
-            chunk.index === input.chunkIndex
-              ? { ...chunk, status: 'completed' as const, checkpointRef: ref }
-              : chunk,
-          );
+      const nextChunks =
+        input.chunkIndex === undefined
+          ? run.chunks
+          : run.chunks.map((chunk) =>
+              chunk.index === input.chunkIndex
+                ? { ...chunk, status: 'completed' as const, checkpointRef: ref }
+                : chunk,
+            );
       assertAuthorityBounds({
         ...current,
         activeRun: { ...run, checkpointRefs: nextRefs, chunks: nextChunks },
@@ -1683,7 +1790,9 @@ export function createSteelQuotationStateService(
           'activeRun.leaseToken': input.leaseToken,
           'activeRun.status': { $in: leaseStatuses },
           'activeRun.leaseExpiresAt': { $gt: attemptNow },
-          'activeRun.acceptedAt': { $gt: new Date(attemptNow.getTime() - STEEL_QUOTATION_INPUT_TTL_MS) },
+          'activeRun.acceptedAt': {
+            $gt: new Date(attemptNow.getTime() - STEEL_QUOTATION_INPUT_TTL_MS),
+          },
           'activeRun.checkpointRefs': run.checkpointRefs,
           'activeRun.chunks': run.chunks,
         },
@@ -1707,7 +1816,9 @@ export function createSteelQuotationStateService(
     return undefined;
   }
 
-  async function deleteConversation(scope: SteelQuotationScope): Promise<SteelQuotationDeleteResult> {
+  async function deleteConversation(
+    scope: SteelQuotationScope,
+  ): Promise<SteelQuotationDeleteResult> {
     validateScope(scope);
     const [stateResult, artifactResult] = await Promise.all([
       State.deleteOne(stateFilter(scope)),
@@ -1743,12 +1854,10 @@ export function createSteelQuotationStateService(
     releaseLease,
     transitionRun,
     interruptRun,
-    pauseRun,
     claimResume,
     failRun,
     pauseTurn,
     settleTurn,
-    cancelRun,
     deleteConversation,
   };
 }

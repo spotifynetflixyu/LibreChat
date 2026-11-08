@@ -52,7 +52,7 @@ import { createSteelQuotationMessageNotifier } from './wiring';
 import { createSteelQuotationStateService } from './state';
 import { createOpenAIOAuthModel } from '../native/oauth';
 import { parseMarkdownTables } from '../markdown/table';
-import { seedLegacyPublication } from './fixtures';
+import { expireQuotationRun, seedLegacyPublication } from './fixtures';
 import { invokeQuotationModel } from './model';
 import { quotationStatus } from './routes';
 import * as stateModule from './state';
@@ -441,22 +441,28 @@ function runnerInput(
       const saved = await customPublish?.(input);
       return saved ?? (await ensurePublisher(run))(input);
     },
-    appendSummary: options.appendSummary ?? (async (input) => {
-      const db = await ensureMethods();
-      return db.appendSteelQuotationSummary(input);
-    }),
+    appendSummary:
+      options.appendSummary ??
+      (async (input) => {
+        const db = await ensureMethods();
+        return db.appendSteelQuotationSummary(input);
+      }),
     onSummaryCommitted: options.onSummaryCommitted,
     onCompletedReplay: options.onCompletedReplay,
-    refreshPublicationAdmission: options.refreshPublicationAdmission ?? (async () => {
-      const active = (await service.readState(runScope))?.activeRun;
-      if (!active) return undefined;
-      const db = await ensureMethods();
-      return (await db.admitSteelMarkdown({
-        scope: runScope,
-        responseId: active.targetMessageId ?? active.triggerMessageId ?? 'target-1',
-        generationId: `test-generation-${active.runId}`,
-      })) ?? undefined;
-    }),
+    refreshPublicationAdmission:
+      options.refreshPublicationAdmission ??
+      (async () => {
+        const active = (await service.readState(runScope))?.activeRun;
+        if (!active) return undefined;
+        const db = await ensureMethods();
+        return (
+          (await db.admitSteelMarkdown({
+            scope: runScope,
+            responseId: active.targetMessageId ?? active.triggerMessageId ?? 'target-1',
+            generationId: `test-generation-${active.runId}`,
+          })) ?? undefined
+        );
+      }),
     summarySourceMessageId: options.summarySourceMessageId,
   };
 }
@@ -481,14 +487,18 @@ describe('quotation runner integration', () => {
     const mainError = new Error('main review failed');
     const model = createModel();
     const publishFinal = jest.fn(async () => undefined);
-    await expect(runQuotationPreflight(runnerInput(
-      async (input) => {
-        if (input.role === 'main') throw mainError;
-        return model(input);
-      },
-      createLookupExecutor(),
-      { publishFinal },
-    ))).rejects.toBe(mainError);
+    await expect(
+      runQuotationPreflight(
+        runnerInput(
+          async (input) => {
+            if (input.role === 'main') throw mainError;
+            return model(input);
+          },
+          createLookupExecutor(),
+          { publishFinal },
+        ),
+      ),
+    ).rejects.toBe(mainError);
     expect(publishFinal).toHaveBeenCalledTimes(1);
     const state = await service.readState(scope);
     expect(state?.activeRun?.status).toBe('completed');
@@ -571,10 +581,14 @@ describe('quotation runner integration', () => {
     expect((await service.readState(scope))?.activeRun?.status).toBe('completed');
   });
 
-  it('does not restart a run paused through its control API', async () => {
-    const run = await prepareRun(1);
+  it('does not restart a run paused by its turn Stop', async () => {
+    await prepareRun(1);
     const publishFinal = jest.fn(async () => {
-      await service.pauseRun({ scope, runId: run.runId });
+      const active = await service.readActiveRun(scope);
+      await service.pauseTurn({
+        scope,
+        targetMessageId: active?.executionResponseId ?? active?.targetMessageId,
+      });
       throw new Error('user pause');
     });
     await expect(
@@ -594,9 +608,7 @@ describe('quotation runner integration', () => {
     });
 
     await expect(
-      runQuotationPreflightWithRetries(
-        runnerInput(createModel(), executeLookup, { publishFinal }),
-      ),
+      runQuotationPreflightWithRetries(runnerInput(createModel(), executeLookup, { publishFinal })),
     ).rejects.toThrow('publication storage unavailable');
     expect(publishFinal).toHaveBeenCalledTimes(QUOTATION_MAX_ATTEMPTS);
     expect(executeLookup).toHaveBeenCalledTimes(1);
@@ -607,31 +619,46 @@ describe('quotation runner integration', () => {
     const run = await prepareRun(1);
     const failure = new Error('publication failed before commit');
     const model = createModel();
-    await expect(runQuotationPreflight(runnerInput(model, createLookupExecutor(), {
-      publishFinal: async () => {
-        await createSteelQuotationStateModel(mongoose).updateOne(scope, {
-          $set: { 'activeRun.status': 'completed' },
-          $push: { 'activeRun.checkpointRefs': {
-            ...scope, runId: run.runId, operationId: 'order-published', kind: 'main',
-            artifactId: 'missing-receipt', sha256: 'a'.repeat(64), updatedAt: new Date(),
-          } },
-        });
-        throw failure;
-      },
-    }))).rejects.toBe(failure);
+    await expect(
+      runQuotationPreflight(
+        runnerInput(model, createLookupExecutor(), {
+          publishFinal: async () => {
+            await createSteelQuotationStateModel(mongoose).updateOne(scope, {
+              $set: { 'activeRun.status': 'completed' },
+              $push: {
+                'activeRun.checkpointRefs': {
+                  ...scope,
+                  runId: run.runId,
+                  operationId: 'order-published',
+                  kind: 'main',
+                  artifactId: 'missing-receipt',
+                  sha256: 'a'.repeat(64),
+                  updatedAt: new Date(),
+                },
+              },
+            });
+            throw failure;
+          },
+        }),
+      ),
+    ).rejects.toBe(failure);
     expect(model.mock.calls.some(([input]) => input.role === 'main')).toBe(false);
   });
 
   it('drains an in-flight heartbeat and fences stale timer ticks before publication', async () => {
     const run = await prepareRun(1);
     let release!: () => void;
-    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
     let renewalFinished = false;
     let publicationReads = 0;
     let heartbeatCalls = 0;
     const countPublicationRead = (active?: { checkpointRefs: Array<{ operationId: string }> }) => {
-      if (active?.checkpointRefs.some((ref) => ref.operationId === 'calculation:basis') &&
-        ++publicationReads === 2) {
+      if (
+        active?.checkpointRefs.some((ref) => ref.operationId === 'calculation:basis') &&
+        ++publicationReads === 2
+      ) {
         setImmediate(release);
       }
     };
@@ -644,21 +671,20 @@ describe('quotation runner integration', () => {
       }
       return service.heartbeatLease(input);
     });
-    const factory = jest.spyOn(stateModule, 'createSteelQuotationStateService')
-      .mockReturnValue({
-        ...service,
-        heartbeatLease,
-        readState: async (input) => {
-          const state = await service.readState(input);
-          countPublicationRead(state?.activeRun);
-          return state;
-        },
-        readActiveRun: async (input) => {
-          const active = await service.readActiveRun(input);
-          countPublicationRead(active);
-          return active;
-        },
-      });
+    const factory = jest.spyOn(stateModule, 'createSteelQuotationStateService').mockReturnValue({
+      ...service,
+      heartbeatLease,
+      readState: async (input) => {
+        const state = await service.readState(input);
+        countPublicationRead(state?.activeRun);
+        return state;
+      },
+      readActiveRun: async (input) => {
+        const active = await service.readActiveRun(input);
+        countPublicationRead(active);
+        return active;
+      },
+    });
     const originalInterval = global.setInterval;
     let tick!: () => Promise<void>;
     const timer = jest.spyOn(global, 'setInterval').mockImplementation((callback, delay) => {
@@ -666,29 +692,41 @@ describe('quotation runner integration', () => {
       return originalInterval(() => {}, delay);
     });
     try {
-      const model = createModel({ onChildStarted: () => {
-        void tick();
-        void tick();
-        expect(heartbeatLease).toHaveBeenCalledTimes(1);
-      },
-        onMain: async (input) => { expect(input.signal.aborted).toBe(false); } });
+      const model = createModel({
+        onChildStarted: () => {
+          void tick();
+          void tick();
+          expect(heartbeatLease).toHaveBeenCalledTimes(1);
+        },
+        onMain: async (input) => {
+          expect(input.signal.aborted).toBe(false);
+        },
+      });
       const input = runnerInput(model, createLookupExecutor());
       const publish = input.publishFinal!;
-      await expect(runQuotationPreflight({ ...input, refreshPublicationAdmission: async () => {
-        await tick();
-        expect(heartbeatLease).not.toHaveBeenCalled();
-        return input.refreshPublicationAdmission!();
-      }, publishFinal: async (proof) => {
-        expect(renewalFinished).toBe(true);
-        const renewals = heartbeatLease.mock.calls.length;
-        await tick();
-        expect(heartbeatLease).toHaveBeenCalledTimes(renewals);
-        return publish(proof);
-      } })).resolves.toMatchObject({ status: 'completed' });
+      await expect(
+        runQuotationPreflight({
+          ...input,
+          refreshPublicationAdmission: async () => {
+            await tick();
+            expect(heartbeatLease).not.toHaveBeenCalled();
+            return input.refreshPublicationAdmission!();
+          },
+          publishFinal: async (proof) => {
+            expect(renewalFinished).toBe(true);
+            const renewals = heartbeatLease.mock.calls.length;
+            await tick();
+            expect(heartbeatLease).toHaveBeenCalledTimes(renewals);
+            return publish(proof);
+          },
+        }),
+      ).resolves.toMatchObject({ status: 'completed' });
       expect(heartbeatLease).toHaveBeenCalledTimes(2);
       expect(model.mock.calls.filter(([call]) => call.role === 'main')).toHaveLength(1);
-      const message = await createMethods(mongoose).getMessage({ user: scope.userId,
-        messageId: run.targetMessageId! });
+      const message = await createMethods(mongoose).getMessage({
+        user: scope.userId,
+        messageId: run.targetMessageId!,
+      });
       expect(message?.text).toContain('## quote_summary');
       expect((await service.readState(scope))?.activeRun?.status).toBe('completed');
     } finally {
@@ -699,34 +737,47 @@ describe('quotation runner integration', () => {
   });
 
   it.each(['lease loss', 'renewal error', 'user stop'] as const)(
-    'does not publish after %s at the final lease renewal', async (failure) => {
+    'does not publish after %s at the final lease renewal',
+    async (failure) => {
       await prepareRun(1);
       const controller = new AbortController();
       const error = new Error(failure);
-      const heartbeatLease = jest.fn(async (input: Parameters<typeof service.heartbeatLease>[0]) => {
-        if (failure === 'renewal error') throw error;
-        if (failure === 'user stop') controller.abort(error);
-        if (failure === 'lease loss') {
-          await createSteelQuotationStateModel(mongoose).updateOne(scope, {
-            $set: { 'activeRun.leaseExpiresAt': new Date(0) },
-          });
-        }
-        return service.heartbeatLease(input);
-      });
-      const factory = jest.spyOn(stateModule, 'createSteelQuotationStateService')
+      const heartbeatLease = jest.fn(
+        async (input: Parameters<typeof service.heartbeatLease>[0]) => {
+          if (failure === 'renewal error') throw error;
+          if (failure === 'user stop') controller.abort(error);
+          if (failure === 'lease loss') {
+            await createSteelQuotationStateModel(mongoose).updateOne(scope, {
+              $set: { 'activeRun.leaseExpiresAt': new Date(0) },
+            });
+          }
+          return service.heartbeatLease(input);
+        },
+      );
+      const factory = jest
+        .spyOn(stateModule, 'createSteelQuotationStateService')
         .mockReturnValue({ ...service, heartbeatLease });
       const originalInterval = global.setInterval;
-      const timer = jest.spyOn(global, 'setInterval').mockImplementation((_callback, delay) =>
-        originalInterval(() => {}, delay));
+      const timer = jest
+        .spyOn(global, 'setInterval')
+        .mockImplementation((_callback, delay) => originalInterval(() => {}, delay));
       try {
         const publishFinal = jest.fn();
         const onProgress = jest.fn();
-        await expect(runQuotationPreflight(runnerInput(createModel(), createLookupExecutor(), {
-          signal: controller.signal, publishFinal, onProgress,
-        }))).rejects.toThrow();
+        await expect(
+          runQuotationPreflight(
+            runnerInput(createModel(), createLookupExecutor(), {
+              signal: controller.signal,
+              publishFinal,
+              onProgress,
+            }),
+          ),
+        ).rejects.toThrow();
         expect(heartbeatLease).toHaveBeenCalledTimes(1);
         expect(publishFinal).not.toHaveBeenCalled();
-        expect(onProgress.mock.calls.some(([progress]) => progress.stage === 'main_consolidating')).toBe(false);
+        expect(
+          onProgress.mock.calls.some(([progress]) => progress.stage === 'main_consolidating'),
+        ).toBe(false);
         expect((await service.readState(scope))?.currentSystemOrder).toBeUndefined();
       } finally {
         timer.mockRestore();
@@ -739,31 +790,45 @@ describe('quotation runner integration', () => {
     const run = await prepareRun(1);
     const sent: string[] = [];
     const notify = createSteelQuotationMessageNotifier({
-      scope, responseId: run.targetMessageId!, emit: async ({ event }) => { sent.push(event); },
-    });
-    const model = createModel({ onMain: () => {
-      sent.push('main_model');
-      expect(sent).toEqual(['steel_message_update', 'main_consolidating', 'main_model']);
-    } });
-    await expect(runQuotationPreflight(runnerInput(model, createLookupExecutor(), {
-      onPublicationCommitted: (message) => notify(message),
-      onProgress: async (progress) => {
-        expect(progress.run.status).not.toBe('aggregating');
-        if (progress.stage !== 'main_consolidating') return;
-        const message = await createMethods(mongoose).getMessage({ user: scope.userId,
-          messageId: run.targetMessageId! });
-        expect(message?.text).toContain('## system_order\n\n');
-        expect(progress.run.status).toBe('completed');
-        sent.push(progress.stage);
+      scope,
+      responseId: run.targetMessageId!,
+      emit: async ({ event }) => {
+        sent.push(event);
       },
-    }))).resolves.toMatchObject({ status: 'completed' });
+    });
+    const model = createModel({
+      onMain: () => {
+        sent.push('main_model');
+        expect(sent).toEqual(['steel_message_update', 'main_consolidating', 'main_model']);
+      },
+    });
+    await expect(
+      runQuotationPreflight(
+        runnerInput(model, createLookupExecutor(), {
+          onPublicationCommitted: (message) => notify(message),
+          onProgress: async (progress) => {
+            expect(progress.run.status).not.toBe('aggregating');
+            if (progress.stage !== 'main_consolidating') return;
+            const message = await createMethods(mongoose).getMessage({
+              user: scope.userId,
+              messageId: run.targetMessageId!,
+            });
+            expect(message?.text).toContain('## system_order\n\n');
+            expect(progress.run.status).toBe('completed');
+            sent.push(progress.stage);
+          },
+        }),
+      ),
+    ).resolves.toMatchObject({ status: 'completed' });
   });
 
   it('keeps a completed publication after a user Stop during main without retrying children', async () => {
     const run = await prepareRun(1);
     const controller = new AbortController();
     let entered!: () => void;
-    const waiting = new Promise<void>((resolve) => { entered = resolve; });
+    const waiting = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
     const model = createModel({
       onMain: async (input) => {
         entered();
@@ -788,7 +853,9 @@ describe('quotation runner integration', () => {
     expect(state?.activeRun?.interruption).toBeUndefined();
     expect(publishFinal).toHaveBeenCalledTimes(1);
     const calls = model.mock.calls.length;
-    await expect(runQuotationPreflight(runnerInput(model, createLookupExecutor()))).resolves.toMatchObject({ status: 'completed' });
+    await expect(
+      runQuotationPreflight(runnerInput(model, createLookupExecutor())),
+    ).resolves.toMatchObject({ status: 'completed' });
     expect(model.mock.calls.length).toBe(calls);
   });
 
@@ -899,17 +966,21 @@ describe('quotation runner integration', () => {
     await prepareRun(3);
     const model = createModel();
     const started = jest.fn();
-    await runQuotationPreflight(runnerInput(model, createLookupExecutor(), {
-      onProgress: async (event) => {
-        if (event.stage !== 'started') return;
-        const active = (await service.readState(scope))!.activeRun!;
-        expect(active.status).toBe('running');
-        expect(active.leaseToken).toBeDefined();
-        expect(active.checkpointRefs.some((ref) => ref.operationId === 'recovery-policy')).toBe(false);
-        expect(model).not.toHaveBeenCalled();
-        started();
-      },
-    }));
+    await runQuotationPreflight(
+      runnerInput(model, createLookupExecutor(), {
+        onProgress: async (event) => {
+          if (event.stage !== 'started') return;
+          const active = (await service.readState(scope))!.activeRun!;
+          expect(active.status).toBe('running');
+          expect(active.leaseToken).toBeDefined();
+          expect(active.checkpointRefs.some((ref) => ref.operationId === 'recovery-policy')).toBe(
+            false,
+          );
+          expect(model).not.toHaveBeenCalled();
+          started();
+        },
+      }),
+    );
     expect(started).toHaveBeenCalledTimes(1);
   });
 
@@ -1055,7 +1126,9 @@ describe('quotation runner integration', () => {
     });
     const result = await runQuotationPreflight(runnerInput(model, createLookupExecutor()));
     expect(counts).toEqual([24, 12, 12, 6, 6, 3, 3]);
-    const rows = parseMarkdownTables((await service.readState(scope))?.currentSystemOrder?.markdown ?? '')[0]!.rows;
+    const rows = parseMarkdownTables(
+      (await service.readState(scope))?.currentSystemOrder?.markdown ?? '',
+    )[0]!.rows;
     expect(rows).toHaveLength(24);
     expect(rows.slice(0, 21).every((row) => row[0] === 'ERP-PLATE')).toBe(true);
     const headers = parseMarkdownTables(result.markdown!)[0]!.headers;
@@ -1099,7 +1172,8 @@ describe('quotation runner integration', () => {
     expect(resumed.status).toBe('completed');
     expect(counts.slice(first.length)).toEqual([3]);
     expect(
-      parseMarkdownTables((await service.readState(scope))?.currentSystemOrder?.markdown ?? '')[0]!.rows,
+      parseMarkdownTables((await service.readState(scope))?.currentSystemOrder?.markdown ?? '')[0]!
+        .rows,
     ).toHaveLength(24);
     const restored = await readQuotationHistory({ scope, runId: run.runId });
     expect(restored.activityEvents[restored.activityEvents.length - 1]).toEqual(
@@ -1166,7 +1240,8 @@ describe('quotation runner integration', () => {
             }
           }
           if (failure === 'cancellation') controller.abort(new Error(failure));
-          if (failure === 'lease loss') await service.cancelRun({ scope, runId: run.runId });
+          if (failure === 'lease loss')
+            await expireQuotationRun({ mongoose, scope, runId: run.runId });
           throw new Error(failure);
         },
       });
@@ -1247,14 +1322,18 @@ describe('quotation runner integration', () => {
     const model = createModel();
     const lookup = createLookupExecutor();
     const publishFinal = jest.fn(async () => undefined);
-    await expect(runQuotationPreflight(runnerInput(model, lookup, { publishFinal }))).resolves.toMatchObject({
+    await expect(
+      runQuotationPreflight(runnerInput(model, lookup, { publishFinal })),
+    ).resolves.toMatchObject({
       status: 'completed',
     });
     const callsAfterCompletion = model.mock.calls.length;
     const replay = jest.fn(async (_targetMessageId: string) => undefined);
-    await expect(runQuotationPreflight({
-      ...runnerInput(model, lookup, { publishFinal, onCompletedReplay: replay }),
-    })).resolves.toMatchObject({ status: 'completed' });
+    await expect(
+      runQuotationPreflight({
+        ...runnerInput(model, lookup, { publishFinal, onCompletedReplay: replay }),
+      }),
+    ).resolves.toMatchObject({ status: 'completed' });
     expect(replay).toHaveBeenCalledTimes(1);
     expect(replay).toHaveBeenCalledWith(run.targetMessageId);
     expect(model.mock.calls.length).toBe(callsAfterCompletion);
@@ -1276,7 +1355,9 @@ describe('quotation runner integration', () => {
     });
     const replay = jest.fn(async (_targetMessageId: string) => undefined);
     await expect(
-      runQuotationPreflight(runnerInput(model, createLookupExecutor(), { onCompletedReplay: replay })),
+      runQuotationPreflight(
+        runnerInput(model, createLookupExecutor(), { onCompletedReplay: replay }),
+      ),
     ).rejects.toThrow('Completed quotation has no trusted publication receipt');
     expect(replay).not.toHaveBeenCalled();
     expect(model).not.toHaveBeenCalled();
@@ -1313,7 +1394,9 @@ describe('quotation runner integration', () => {
     const run = await prepareRun(3);
     let reviewedOrder = '';
     const baseModel = createModel({
-      onMainInput: (input) => { reviewedOrder = JSON.parse(input).system_order; },
+      onMainInput: (input) => {
+        reviewedOrder = JSON.parse(input).system_order;
+      },
     });
     const result = await runQuotationPreflight(runnerInput(baseModel, createLookupExecutor()));
     expect(result.status).toBe('completed');
@@ -1323,10 +1406,12 @@ describe('quotation runner integration', () => {
       operationId: 'system-order:normalized',
     });
     expect(normalized).toBe(reviewedOrder);
-    expect(await service.readCheckpoint({ scope, runId: run.runId, operationId: 'final' })).toBeUndefined();
-    expect(await service.readCheckpoint({ scope, runId: run.runId, operationId: 'order-published' })).toEqual(
-      expect.any(String),
-    );
+    expect(
+      await service.readCheckpoint({ scope, runId: run.runId, operationId: 'final' }),
+    ).toBeUndefined();
+    expect(
+      await service.readCheckpoint({ scope, runId: run.runId, operationId: 'order-published' }),
+    ).toEqual(expect.any(String));
   });
 
   it('keeps main review text unchecked, places notes after reviews, and appends the backend summary last', async () => {
@@ -1368,10 +1453,14 @@ describe('quotation runner integration', () => {
       await input.onTextDelta?.('\n\n## Quote_Signal\n\n| leaked |\n| --- |\n| no |');
       return { markdown: '## manual_reviews\n\n需人工複核。', lookups: [], pythonEvidence: [] };
     });
-    await runQuotationPreflight(runnerInput(model, createLookupExecutor(), {
-      publishFinal,
-      onTextDelta: async (text) => { deltas.push(text); },
-    }));
+    await runQuotationPreflight(
+      runnerInput(model, createLookupExecutor(), {
+        publishFinal,
+        onTextDelta: async (text) => {
+          deltas.push(text);
+        },
+      }),
+    );
     expect(publishFinal).toHaveBeenCalledTimes(1);
     expect(mainPayload).toBeDefined();
     expect(parseMarkdownTables(mainPayload!.system_order)[0]!.headers).toHaveLength(16);
@@ -1427,12 +1516,16 @@ describe('quotation runner integration', () => {
         progress.push(event);
       },
     });
-    expect(progress.slice(0, 5).map(({ stage, run: active, chunkIndex, completedChunks }) => [
-      stage ?? active.status,
-      active.status,
-      chunkIndex,
-      completedChunks,
-    ])).toEqual([
+    expect(
+      progress
+        .slice(0, 5)
+        .map(({ stage, run: active, chunkIndex, completedChunks }) => [
+          stage ?? active.status,
+          active.status,
+          chunkIndex,
+          completedChunks,
+        ]),
+    ).toEqual([
       ['started', 'running', undefined, 0],
       ['chunk_started', 'running', 1, 0],
       ['chunk_saved', 'running', 1, 1],
@@ -1440,7 +1533,9 @@ describe('quotation runner integration', () => {
       ['chunk_saved', 'running', 2, 2],
     ]);
     expect(progress.some((event) => event.stage === 'main_review_started')).toBe(true);
-    expect(progress[progress.length - 1]).toEqual(expect.objectContaining({ run: expect.objectContaining({ status: 'completed' }) }));
+    expect(progress[progress.length - 1]).toEqual(
+      expect.objectContaining({ run: expect.objectContaining({ status: 'completed' }) }),
+    );
   });
 
   it('checkpoints a failed raw child before its repaired candidate and saves only the repaired chunk', async () => {
@@ -2318,7 +2413,7 @@ describe('quotation runner integration', () => {
   it('keeps a cancelled signal replay terminal and allocates a fresh index for a new response', async () => {
     await prepareCustomer();
     const first = await acceptPreparedSignal('response-1');
-    await service.cancelRun({ scope, runId: first!.runId });
+    await expireQuotationRun({ mongoose, scope, runId: first!.runId });
     const replay = await acceptPreparedSignal('response-1');
     expect(replay?.status).toBe('cancelled');
     expect((await service.readState(scope))?.nextSignalIndex).toBe(1);
@@ -2448,7 +2543,7 @@ describe('quotation runner integration', () => {
       }),
     );
     await childStarted;
-    await service.cancelRun({ scope, runId: run.runId });
+    await expireQuotationRun({ mongoose, scope, runId: run.runId });
     controller.abort(new Error('cancel requested'));
     await expect(running).resolves.toEqual({ status: 'cancelled' });
     expect(publishFinal).not.toHaveBeenCalled();
@@ -2514,7 +2609,7 @@ describe('quotation runner integration', () => {
     expect(await readQuotationHistory({ scope, runId: 'another-run' })).toEqual(
       createSteelNativeHistory(),
     );
-    await service.cancelRun({ scope, runId: run.runId });
+    await expireQuotationRun({ mongoose, scope, runId: run.runId });
     const onHistory = jest.fn();
     await runQuotationPreflight({ ...runnerInput(model, createLookupExecutor()), onHistory });
     expect(onHistory.mock.calls[0]?.[0].activityEvents).toEqual([
@@ -2525,11 +2620,12 @@ describe('quotation runner integration', () => {
   it('retains the committed current projection for terminal adoption', async () => {
     const run = await prepareRun(1);
     const model = createModel();
-    await expect(runQuotationPreflight(runnerInput(model, createLookupExecutor()))).resolves.toMatchObject({ status: 'completed' });
+    await expect(
+      runQuotationPreflight(runnerInput(model, createLookupExecutor())),
+    ).resolves.toMatchObject({ status: 'completed' });
     const current = (await service.readState(scope))?.currentSystemOrder;
     expect(current).toEqual(expect.objectContaining({ runId: run.runId, messageId: 'target-1' }));
     expect(current?.markdown).toContain('## system_order');
     expect(current?.markdown).not.toContain('## customer_quote');
   });
-
 });

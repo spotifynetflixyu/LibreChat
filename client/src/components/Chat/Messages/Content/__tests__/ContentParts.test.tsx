@@ -35,6 +35,8 @@ jest.mock('~/Providers', () => {
       Provider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
     },
     useMediaContext: () => ({ attachmentsByName: undefined }),
+    /** Steel response extras read the chat; these renders run outside a chat view. */
+    ChatContext: jest.requireActual<typeof import('react')>('react').createContext(null),
   };
 });
 jest.mock('../Parts', () => ({

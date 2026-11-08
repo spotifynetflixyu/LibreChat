@@ -4,38 +4,42 @@ import type { SteelOcrRunMethods, SteelQuotationScope } from '@librechat/data-sc
 import type { Request, Response } from 'express';
 import type { SteelFlowGeneration } from '../lifecycle';
 import { resolveRequestTenantId } from '../../middleware/tenant';
-import { abortSteelOcrExecution } from './control';
 
 interface OcrRequest extends Request {
   user?: { id?: string; tenantId?: string };
   tenantId?: string;
 }
 
-type Action = 'pause' | 'cancel';
 type Handler = (req: OcrRequest, res: Response) => Promise<void>;
 
 export function createOcrRouteHandlers(dependencies: {
   ownsConversation(userId: string, conversationId: string): Promise<boolean>;
   runs?: SteelOcrRunMethods;
   readGeneration?(conversationId: string): Promise<SteelFlowGeneration | null>;
-}): { status: Handler } & { [action in Action]: Handler } {
+}): { status: Handler } {
   const runs = dependencies.runs ?? createSteelOcrRunMethods(mongoose);
-  async function scopeFor(req: OcrRequest, res: Response): Promise<SteelQuotationScope | undefined> {
+  async function scopeFor(
+    req: OcrRequest,
+    res: Response,
+  ): Promise<SteelQuotationScope | undefined> {
     const userId = req.user?.id;
     if (!userId) {
       res.status(401).json({ code: 'authentication_required' });
       return;
     }
     const conversationId = req.params.conversationId;
-    if (typeof conversationId !== 'string' || !conversationId ||
-      !(await dependencies.ownsConversation(userId, conversationId))) {
+    if (
+      typeof conversationId !== 'string' ||
+      !conversationId ||
+      !(await dependencies.ownsConversation(userId, conversationId))
+    ) {
       res.status(404).json({ code: 'conversation_not_found' });
       return;
     }
     return { userId, conversationId, tenantId: resolveRequestTenantId(req) };
   }
-  function handler(action?: Action): Handler {
-    return async (req, res) => {
+  return {
+    async status(req, res) {
       try {
         const scope = await scopeFor(req, res);
         if (!scope) return;
@@ -44,32 +48,47 @@ export function createOcrRouteHandlers(dependencies: {
           res.status(400).json({ code: 'invalid_run_id' });
           return;
         }
-        let result = action ? await runs.controlRun({ scope, runId, action }) : await runs.readRun(scope, runId);
-        if (!action && result.ok && result.run.status === 'running' &&
-          result.run.executionEpoch !== undefined && dependencies.readGeneration) {
+        let result = await runs.readRun(scope, runId);
+        if (
+          result.ok &&
+          result.run.status === 'running' &&
+          result.run.executionEpoch !== undefined &&
+          dependencies.readGeneration
+        ) {
           const generation = await dependencies.readGeneration(scope.conversationId);
-          if (!generation || generation.createdAt !== result.run.executionEpoch ||
-            (!generation.terminalPersistencePending && !['running', 'requires_action'].includes(generation.status))) {
-            await runs.settleTurn({ scope, responseGenerationId: result.run.responseGenerationId ?? '',
-              executionEpoch: result.run.executionEpoch, status: 'interrupted' });
+          if (
+            !generation ||
+            generation.createdAt !== result.run.executionEpoch ||
+            (!generation.terminalPersistencePending &&
+              !['running', 'requires_action'].includes(generation.status))
+          ) {
+            await runs.settleTurn({
+              scope,
+              responseGenerationId: result.run.responseGenerationId ?? '',
+              executionEpoch: result.run.executionEpoch,
+              status: 'interrupted',
+            });
             result = await runs.readRun(scope, runId);
           }
         }
         if (!result.ok) {
-          res.status(result.code === 'flow_not_found' ? 404 : 409).json({ code: result.code });
+          res.status(404).json({ code: result.code });
           return;
         }
-        if ((action === 'pause' || action === 'cancel') && result.run.responseGenerationId) {
-          abortSteelOcrExecution(scope, result.run.responseGenerationId, action === 'pause' ? 'user_pause' : 'cancelled', result.run.executionEpoch);
-        }
         const { run } = result;
-        res.json({ runId: run.runId, kind: run.kind, status: run.status, stage: run.stage,
-          completedChunks: run.completedChunks, totalChunks: run.totalChunks,
-          errorMessage: run.errorMessage ?? null, latestRunId: result.latestRunId });
+        res.json({
+          runId: run.runId,
+          kind: run.kind,
+          status: run.status,
+          stage: run.stage,
+          completedChunks: run.completedChunks,
+          totalChunks: run.totalChunks,
+          errorMessage: run.errorMessage ?? null,
+          latestRunId: result.latestRunId,
+        });
       } catch {
         res.status(500).json({ code: 'ocr_control_failed' });
       }
-    };
-  }
-  return { status: handler(), pause: handler('pause'), cancel: handler('cancel') };
+    },
+  };
 }

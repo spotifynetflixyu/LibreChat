@@ -185,19 +185,23 @@ export function writeSteelFlowStatus(
     snapshot = { ...snapshot, runId: current.runId, latestRunId: current.latestRunId };
   }
   if (
-    'kind' in snapshot && current && 'kind' in current &&
-    current.generationCreatedAt != null && snapshot.generationCreatedAt != null &&
+    'kind' in snapshot &&
+    current &&
+    'kind' in current &&
+    current.generationCreatedAt != null &&
+    snapshot.generationCreatedAt != null &&
     snapshot.generationCreatedAt < current.generationCreatedAt
   ) {
     return;
   }
   const newer = client
     .getQueriesData<FlowStatus>({ queryKey: [QueryKeys.steelFlowStatus, conversationId, kind] })
-    .find(([, candidate]) =>
-      candidate?.runId &&
-      candidate.runId !== snapshot.runId &&
-      !isSupersededSteelFlow(candidate) &&
-      (compareSteelFlowOrder(candidate, snapshot) ?? 0) > 0,
+    .find(
+      ([, candidate]) =>
+        candidate?.runId &&
+        candidate.runId !== snapshot.runId &&
+        !isSupersededSteelFlow(candidate) &&
+        (compareSteelFlowOrder(candidate, snapshot) ?? 0) > 0,
     )?.[1];
   if (newer?.runId) {
     snapshot = { ...snapshot, latestRunId: newer.runId };
@@ -245,7 +249,11 @@ export function writeSteelFlowEvent(
   generationCreatedAt?: number,
 ) {
   const { conversationId } = event;
-  if (!conversationId || conversationId === Constants.NEW_CONVO || conversationId === Constants.PENDING_CONVO) {
+  if (
+    !conversationId ||
+    conversationId === Constants.NEW_CONVO ||
+    conversationId === Constants.PENDING_CONVO
+  ) {
     return;
   }
 
@@ -267,7 +275,6 @@ export function writeSteelFlowEvent(
       maxRepairAttempts: event.maxRepairAttempts,
       completedChunks: event.completedChunks,
       totalChunks: event.totalChunks,
-      canCancel: event.status === 'running',
       ocrSource: event.ocrSource,
     });
     return;
@@ -277,11 +284,12 @@ export function writeSteelFlowEvent(
     return;
   }
   const { runId } = event;
-  if (!runId || (
-    event.type === 'parse_status' &&
-    event.source !== 'ocr_preprocessing' &&
-    event.source !== 'paddleocr_preflight'
-  )) {
+  if (
+    !runId ||
+    (event.type === 'parse_status' &&
+      event.source !== 'ocr_preprocessing' &&
+      event.source !== 'paddleocr_preflight')
+  ) {
     return;
   }
   const kind = event.kind ?? (event.type === 'delegate_ocr_status' ? 'delegate' : 'preflight');
@@ -292,9 +300,8 @@ export function writeSteelFlowEvent(
     runId,
     kind,
     generationCreatedAt: generationCreatedAt ?? current?.generationCreatedAt,
-    delegateOcrIndex: event.type === 'delegate_ocr_status'
-      ? event.delegateOcrIndex
-      : current?.delegateOcrIndex,
+    delegateOcrIndex:
+      event.type === 'delegate_ocr_status' ? event.delegateOcrIndex : current?.delegateOcrIndex,
     latestRunId: runId,
     status: resolveEventOcrFlowStatus(event),
     stage: event.stage ?? current?.stage ?? kind,

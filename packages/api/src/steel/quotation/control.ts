@@ -6,7 +6,10 @@ function executionKey(scope: SteelQuotationScope, runId: string): string {
   return JSON.stringify([scope.userId, scope.conversationId, runId]);
 }
 
-export function registerQuotationExecution(scope: SteelQuotationScope, runId: string): { controller: AbortController; dispose(): void } {
+export function registerQuotationExecution(
+  scope: SteelQuotationScope,
+  runId: string,
+): { controller: AbortController; dispose(): void } {
   const key = executionKey(scope, runId);
   // The caller already owns the newly acquired durable lease. A previous
   // local execution may still be unwinding after its lease expired.
@@ -19,12 +22,4 @@ export function registerQuotationExecution(scope: SteelQuotationScope, runId: st
       if (executions.get(key) === controller) executions.delete(key);
     },
   };
-}
-
-export function abortQuotationExecution(
-  scope: SteelQuotationScope,
-  runId: string,
-  reason?: 'user_pause',
-): void {
-  executions.get(executionKey(scope, runId))?.abort(reason ?? new Error('Quotation cancelled'));
 }

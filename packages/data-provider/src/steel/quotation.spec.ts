@@ -1,13 +1,10 @@
 import { steelQuotationOcrSourceSchema, steelQuotationStatusSchema } from './quotation';
-import { steelQuotationCancel, steelQuotationStatus } from '../api-endpoints';
+import { steelQuotationStatus } from '../api-endpoints';
 
 describe('Steel quotation data contracts', () => {
-  it('escapes conversation and quotation index path parameters', () => {
+  it('escapes the conversation path parameter', () => {
     expect(steelQuotationStatus('conversation/with spaces')).toContain(
       '/conversations/conversation%2Fwith%20spaces/quotation',
-    );
-    expect(steelQuotationCancel('conversation/with spaces', 4)).toContain(
-      '/conversations/conversation%2Fwith%20spaces/quotation/4/cancel',
     );
   });
 
@@ -22,7 +19,6 @@ describe('Steel quotation data contracts', () => {
         latestRunId: 'quotation-run-2',
         completedChunks: 2,
         totalChunks: 3,
-        canCancel: true,
       }),
     ).toEqual({
       conversationId: 'conversation-1',
@@ -33,7 +29,6 @@ describe('Steel quotation data contracts', () => {
       latestRunId: 'quotation-run-2',
       completedChunks: 2,
       totalChunks: 3,
-      canCancel: true,
     });
   });
 
@@ -46,7 +41,6 @@ describe('Steel quotation data contracts', () => {
         status: 'completed',
         completedChunks: 3,
         totalChunks: 3,
-        canCancel: false,
         ocrSource: {
           source: 'ai',
           version: 2,
